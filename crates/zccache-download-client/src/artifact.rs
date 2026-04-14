@@ -1023,6 +1023,8 @@ mod tests {
         chunk_size: usize,
         chunk_delay: Duration,
         path: String,
+        request_started: Option<Arc<AtomicBool>>,
+        release_response: Option<Arc<AtomicBool>>,
     }
 
     struct TestHttpServer {
@@ -1154,6 +1156,21 @@ mod tests {
         panic!("test http server at {addr} did not respond in time");
     }
 
+    fn wait_for_test_condition(
+        timeout: Duration,
+        description: &str,
+        mut predicate: impl FnMut() -> bool,
+    ) {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if predicate() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("timed out waiting for {description}");
+    }
+
     impl Drop for TestHttpServer {
         fn drop(&mut self) {
             self.shutdown.store(true, Ordering::Relaxed);
@@ -1237,6 +1254,23 @@ mod tests {
         if method.eq_ignore_ascii_case("HEAD") {
             stream.flush()?;
             return Ok(());
+        }
+
+        let first_body_request = config
+            .request_started
+            .as_ref()
+            .map(|request_started| {
+                request_started
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            })
+            .unwrap_or(false);
+        if first_body_request {
+            if let Some(release_response) = &config.release_response {
+                while !release_response.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
         }
 
         if config.chunk_size == 0 {
@@ -1433,6 +1467,8 @@ mod tests {
             chunk_size: 0,
             chunk_delay: Duration::ZERO,
             path: "artifact.bin".to_string(),
+            request_started: None,
+            release_response: None,
         });
         let client = DownloadClient::new(Some(daemon.endpoint.clone()));
         let dir = tempfile::tempdir().unwrap();
@@ -1466,6 +1502,8 @@ mod tests {
             chunk_size: 0,
             chunk_delay: Duration::ZERO,
             path: "bad.bin".to_string(),
+            request_started: None,
+            release_response: None,
         });
         let client = DownloadClient::new(Some(daemon.endpoint.clone()));
         let dir = tempfile::tempdir().unwrap();
@@ -1492,6 +1530,8 @@ mod tests {
             chunk_size: 4096,
             chunk_delay: Duration::ZERO,
             path: "multipart.bin".to_string(),
+            request_started: None,
+            release_response: None,
         });
         let client = DownloadClient::new(Some(daemon.endpoint.clone()));
         let dir = tempfile::tempdir().unwrap();
@@ -1524,6 +1564,8 @@ mod tests {
             chunk_size: 0,
             chunk_delay: Duration::ZERO,
             path: "artifact.part-aa".to_string(),
+            request_started: None,
+            release_response: None,
         });
         let server_b = TestHttpServer::start(TestHttpConfig {
             body: Arc::new(part_b),
@@ -1532,6 +1574,8 @@ mod tests {
             chunk_size: 0,
             chunk_delay: Duration::ZERO,
             path: "artifact.part-ab".to_string(),
+            request_started: None,
+            release_response: None,
         });
         let server_c = TestHttpServer::start(TestHttpConfig {
             body: Arc::new(part_c),
@@ -1540,6 +1584,8 @@ mod tests {
             chunk_size: 0,
             chunk_delay: Duration::ZERO,
             path: "artifact.part-ac".to_string(),
+            request_started: None,
+            release_response: None,
         });
 
         let client = DownloadClient::new(Some(daemon.endpoint.clone()));
@@ -1584,6 +1630,8 @@ mod tests {
     #[test]
     fn fetch_no_wait_returns_locked_while_other_client_is_downloading() {
         let daemon = TestDaemon::start();
+        let request_started = Arc::new(AtomicBool::new(false));
+        let release_response = Arc::new(AtomicBool::new(false));
         let body: Vec<u8> = (0..512 * 1024).map(|i| (i % 251) as u8).collect();
         let server = TestHttpServer::start(TestHttpConfig {
             body: Arc::new(body),
@@ -1592,6 +1640,8 @@ mod tests {
             chunk_size: 4096,
             chunk_delay: Duration::from_millis(2),
             path: "slow.bin".to_string(),
+            request_started: Some(Arc::clone(&request_started)),
+            release_response: Some(Arc::clone(&release_response)),
         });
         let dest_dir = tempfile::tempdir().unwrap();
         let destination = dest_dir.path().join("slow.bin");
@@ -1602,16 +1652,12 @@ mod tests {
         let download_thread = thread::spawn(move || {
             let client = DownloadClient::new(Some(endpoint));
             let request = FetchRequest::new(url, &destination_for_thread);
-            client.fetch(request).unwrap()
+            client.fetch(request)
         });
 
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if server.request_count() > 0 {
-                break;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
+        wait_for_test_condition(Duration::from_secs(5), "initial download request", || {
+            request_started.load(Ordering::Acquire)
+        });
 
         let client = DownloadClient::new(Some(daemon.endpoint.clone()));
         let mut no_wait = FetchRequest::new(server.url.clone(), &destination);
@@ -1619,13 +1665,16 @@ mod tests {
         let locked = client.fetch(no_wait).unwrap();
         assert_eq!(locked.status, FetchStatus::Locked);
 
-        let completed = download_thread.join().unwrap();
+        release_response.store(true, Ordering::Release);
+        let completed = download_thread.join().unwrap().unwrap();
         assert_eq!(completed.status, FetchStatus::Downloaded);
     }
 
     #[test]
     fn fetch_multipart_no_wait_returns_locked_while_other_client_is_downloading() {
         let daemon = TestDaemon::start();
+        let request_started = Arc::new(AtomicBool::new(false));
+        let release_response = Arc::new(AtomicBool::new(false));
         let slow_server = TestHttpServer::start(TestHttpConfig {
             body: Arc::new((0..512 * 1024).map(|i| (i % 251) as u8).collect()),
             accept_ranges: false,
@@ -1633,6 +1682,8 @@ mod tests {
             chunk_size: 4096,
             chunk_delay: Duration::from_millis(2),
             path: "slow.part-aa".to_string(),
+            request_started: Some(Arc::clone(&request_started)),
+            release_response: Some(Arc::clone(&release_response)),
         });
         let fast_server = TestHttpServer::start(TestHttpConfig {
             body: Arc::new(b"tail".to_vec()),
@@ -1641,6 +1692,8 @@ mod tests {
             chunk_size: 0,
             chunk_delay: Duration::ZERO,
             path: "slow.part-ab".to_string(),
+            request_started: None,
+            release_response: None,
         });
         let dest_dir = tempfile::tempdir().unwrap();
         let destination = dest_dir.path().join("slow.bin");
@@ -1651,16 +1704,14 @@ mod tests {
         let download_thread = thread::spawn(move || {
             let client = DownloadClient::new(Some(endpoint));
             let request = FetchRequest::new(source, &destination_for_thread);
-            client.fetch(request).unwrap()
+            client.fetch(request)
         });
 
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if slow_server.request_count() > 0 {
-                break;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
+        wait_for_test_condition(
+            Duration::from_secs(5),
+            "initial multipart download request",
+            || request_started.load(Ordering::Acquire),
+        );
 
         let client = DownloadClient::new(Some(daemon.endpoint.clone()));
         let mut no_wait = FetchRequest::new(
@@ -1671,7 +1722,8 @@ mod tests {
         let locked = client.fetch(no_wait).unwrap();
         assert_eq!(locked.status, FetchStatus::Locked);
 
-        let completed = download_thread.join().unwrap();
+        release_response.store(true, Ordering::Release);
+        let completed = download_thread.join().unwrap().unwrap();
         assert_eq!(completed.status, FetchStatus::Downloaded);
     }
 
@@ -1685,6 +1737,8 @@ mod tests {
             chunk_size: 0,
             chunk_delay: Duration::ZERO,
             path: "dry.bin".to_string(),
+            request_started: None,
+            release_response: None,
         });
         let client = DownloadClient::new(Some(daemon.endpoint.clone()));
         let dir = tempfile::tempdir().unwrap();
@@ -1716,6 +1770,8 @@ mod tests {
             chunk_size: 0,
             chunk_delay: Duration::ZERO,
             path: "toolchain.7z".to_string(),
+            request_started: None,
+            release_response: None,
         });
         let client = DownloadClient::new(Some(daemon.endpoint.clone()));
         let cache_path = dir.path().join("cache").join("toolchain.7z");
@@ -1757,6 +1813,8 @@ mod tests {
             chunk_size: 0,
             chunk_delay: Duration::ZERO,
             path: "delayed.bin".to_string(),
+            request_started: None,
+            release_response: None,
         });
         let client = DownloadClient::new(Some(daemon.endpoint.clone()));
         let dir = tempfile::tempdir().unwrap();
@@ -1800,6 +1858,8 @@ mod tests {
             chunk_size: 0,
             chunk_delay: Duration::ZERO,
             path: "bundle.zip".to_string(),
+            request_started: None,
+            release_response: None,
         });
         let client = DownloadClient::new(Some(daemon.endpoint.clone()));
         let cache_path = dir.path().join("cache").join("bundle.zip");
@@ -1833,6 +1893,8 @@ mod tests {
             chunk_size: 0,
             chunk_delay: Duration::ZERO,
             path: "immutable.bin".to_string(),
+            request_started: None,
+            release_response: None,
         });
         let client = DownloadClient::new(Some(daemon.endpoint.clone()));
         let dir = tempfile::tempdir().unwrap();
@@ -1869,6 +1931,8 @@ mod tests {
             chunk_size: 0,
             chunk_delay: Duration::ZERO,
             path: "unsafe.zip".to_string(),
+            request_started: None,
+            release_response: None,
         });
         let client = DownloadClient::new(Some(daemon.endpoint.clone()));
         let cache_path = dir.path().join("cache").join("unsafe.zip");
