@@ -22,7 +22,7 @@ PYTHON_TOOLS = {"python", "python3", "pip", "pip3"}
 # Trampoline scripts at project root that normalize the toolchain PATH
 RUST_TRAMPOLINES = {"_cargo", "_rustc", "_rustfmt"}
 
-ALLOWED_PREFIXES = ("uv run ", "uv pip ")
+ALLOWED_PREFIXES = ("uv run ", "uv pip ", "soldr ")
 
 
 FORBIDDEN_SCRIPT_DIRS = re.compile(
@@ -98,14 +98,20 @@ def check_command(command):
                 trampoline = f"_{tool}" if f"_{tool}" in RUST_TRAMPOLINES else "_cargo"
                 return (
                     tool,
-                    f"Use `./{trampoline} ...` instead of `uv run {tool} ...`. "
-                    f"Trampolines ensure the correct rustup toolchain is on PATH.",
+                    f"Use `./{trampoline} ...` or `soldr {tool} ...` instead "
+                    f"of `uv run {tool} ...`. Both resolve the rustup-managed "
+                    f"toolchain; `uv run <rust-tool>` bypasses that.",
                 )
             # Other uv run commands are fine (uv run python, uv run --script, etc.)
             continue
 
         # Allow uv pip
         if seg.startswith("uv pip "):
+            continue
+
+        # Allow `soldr ...` — soldr resolves the rustup-managed toolchain
+        # the same way the _cargo / _rustc / _rustfmt trampolines do.
+        if seg.startswith("soldr "):
             continue
 
         # Block bare Rust tools

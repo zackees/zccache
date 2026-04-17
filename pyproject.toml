@@ -3,8 +3,11 @@ name = "zccache"
 dynamic = ["version"]
 description = "A high-performance local compiler cache daemon"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = []
+
+[dependency-groups]
+dev = ["soldr>=0.7.0"]
 
 [project.scripts]
 run_zccache = "ci.trampoline:run_zccache"

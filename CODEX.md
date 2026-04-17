@@ -3,9 +3,9 @@ Read [CLAUDE.md](./CLAUDE.md) first. The following conventions are mandatory in 
 ## Rust commands
 
 - Do not run bare `cargo`, `rustc`, or `rustfmt`.
-- Always use the project-root trampolines: `./_cargo`, `./_rustc`, `./_rustfmt`.
-- In this Windows environment, the repo is using the rustup-managed `x86_64-pc-windows-msvc` toolchain pinned by `rust-toolchain.toml`. Do not assume GNU or try to find `gcc`.
-- The trampolines set up the correct rustup environment and are the contract enforced by repo hooks.
+- Always use the project-root trampolines (`./_cargo`, `./_rustc`, `./_rustfmt`) or `soldr <tool>` directly. Both forms resolve through [soldr](https://github.com/zackees/soldr), which calls `rustup which` to pick the rustup-managed toolchain.
+- In this Windows environment, the repo is using the rustup-managed `x86_64-pc-windows-msvc` toolchain pinned by `rust-toolchain.toml`. Do not assume GNU or try to find `gcc`. soldr also enforces MSVC on Windows by default.
+- The trampolines set up the correct rustup environment and are the contract enforced by repo hooks. The `./_cargo` path uses `soldr --no-cache cargo` so the previous bare-cargo semantics are preserved.
 
 Examples:
 

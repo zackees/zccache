@@ -1,22 +1,10 @@
 #!/bin/bash
-# Trampoline: prefers the repo-local rustup proxy when present.
+# Trampoline: runs rustfmt through soldr so the rustup-managed toolchain
+# is always used. soldr resolves rustfmt via `rustup which`.
+#
+# Repo-local .rustup / .cargo detection is preserved here so vendored
+# toolchain layouts (if present) still override the user-global location.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-
-if [ -n "${CARGO_HOME:-}" ]; then
-  CARGO_BIN="$CARGO_HOME/bin"
-elif [ -d "$SCRIPT_DIR/.cargo/bin" ]; then
-  CARGO_BIN="$SCRIPT_DIR/.cargo/bin"
-elif [ -n "${HOME:-}" ] && [ -d "$HOME/.cargo/bin" ]; then
-  CARGO_BIN="$HOME/.cargo/bin"
-elif [ -n "${USERPROFILE:-}" ] && [ -d "$USERPROFILE/.cargo/bin" ]; then
-  CARGO_BIN="$USERPROFILE/.cargo/bin"
-else
-  CARGO_BIN=""
-fi
-
-if [ -n "$CARGO_BIN" ]; then
-  export PATH="$CARGO_BIN:$PATH"
-fi
 
 if [ -z "${RUSTUP_HOME:-}" ] && [ -d "$SCRIPT_DIR/.rustup" ]; then
   export RUSTUP_HOME="$SCRIPT_DIR/.rustup"
@@ -26,14 +14,4 @@ if [ -z "${CARGO_HOME:-}" ] && [ -d "$SCRIPT_DIR/.cargo" ]; then
   export CARGO_HOME="$SCRIPT_DIR/.cargo"
 fi
 
-if [ -n "$CARGO_BIN" ]; then
-  TOOL_PATH="$CARGO_BIN/rustfmt"
-  if [ -x "$TOOL_PATH.exe" ]; then
-    TOOL_PATH="$TOOL_PATH.exe"
-  fi
-  if [ -x "$TOOL_PATH" ]; then
-    exec "$TOOL_PATH" "$@"
-  fi
-fi
-
-exec rustfmt "$@"
+exec uv run soldr rustfmt "$@"
