@@ -82,14 +82,22 @@ runs:
       id: keys
       shell: bash
       run: |
-        # Build a composite key from OS, arch, shared-key, and cargo lock hash
+        # Build a composite key from OS, arch, shared-key, and cargo lock hash.
+        # `shared-key` is folded into every key so matrix builds disambiguate
+        # per-target. Without it, jobs sharing runner.os/runner.arch (e.g.
+        # x86_64-unknown-linux-musl + aarch64-unknown-linux-musl both on
+        # ubuntu-latest → runner.arch=X64) collide on `Unable to reserve cache`.
         OS="${{ runner.os }}"
         ARCH="${{ runner.arch }}"
         SHARED="${{ inputs.shared-key }}"
         if [ -n "$SHARED" ]; then
           PREFIX="zccache-${OS}-${ARCH}-${SHARED}"
+          REG_PREFIX="cargo-registry-${OS}-${ARCH}-${SHARED}"
+          TGT_PREFIX="cargo-target-${OS}-${ARCH}-${SHARED}"
         else
           PREFIX="zccache-${OS}-${ARCH}"
+          REG_PREFIX="cargo-registry-${OS}-${ARCH}"
+          TGT_PREFIX="cargo-target-${OS}-${ARCH}"
         fi
 
         # Hash Cargo.lock for registry cache key (falls back if no lock file)
@@ -110,11 +118,11 @@ runs:
         else
           echo "compilation-restore=" >> "$GITHUB_OUTPUT"
         fi
-        echo "registry-key=cargo-registry-${OS}-${ARCH}-${LOCK_HASH}" >> "$GITHUB_OUTPUT"
-        echo "registry-restore=cargo-registry-${OS}-${ARCH}-" >> "$GITHUB_OUTPUT"
-        echo "target-key=cargo-target-${OS}-${ARCH}-${LOCK_HASH}-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+        echo "registry-key=${REG_PREFIX}-${LOCK_HASH}" >> "$GITHUB_OUTPUT"
+        echo "registry-restore=${REG_PREFIX}-" >> "$GITHUB_OUTPUT"
+        echo "target-key=${TGT_PREFIX}-${LOCK_HASH}-${{ github.sha }}" >> "$GITHUB_OUTPUT"
         if [ "${{ inputs.target-restore-fallback }}" = "true" ]; then
-          echo "target-restore=cargo-target-${OS}-${ARCH}-${LOCK_HASH}-" >> "$GITHUB_OUTPUT"
+          echo "target-restore=${TGT_PREFIX}-${LOCK_HASH}-" >> "$GITHUB_OUTPUT"
         else
           echo "target-restore=" >> "$GITHUB_OUTPUT"
         fi
