@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to publish, for example 1.2.15 or v1.2.15
-        required: true
+        description: Optional tag to publish, for example 1.2.15 or v1.2.15. Leave empty to use the current workspace version.
+        required: false
         type: string
 
 permissions:
@@ -26,12 +26,14 @@ jobs:
     name: Preflight
     runs-on: ubuntu-latest
     outputs:
+      checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
       release_tag: ${{ steps.meta.outputs.release_tag }}
       version: ${{ steps.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+          ref: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag || github.ref_name }}
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -48,10 +50,11 @@ jobs:
           validate_release_metadata()
           PY
 
-      - name: Validate tag matches workspace version
+      - name: Resolve release version and fail on already-published release
         id: meta
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           RAW_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
         run: |
           VERSION="$(python - <<'PY'
@@ -61,19 +64,69 @@ jobs:
           print(data["workspace"]["package"]["version"])
           PY
           )"
-          TAG="${RAW_TAG#refs/tags/}"
-          NORMALIZED_TAG="${TAG#v}"
 
-          if [ -z "$NORMALIZED_TAG" ]; then
-            echo "Release tag is empty" >&2
-            exit 1
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME#refs/tags/}"
+            CHECKOUT_REF="$TAG"
+          else
+            TAG="${RAW_TAG#refs/tags/}"
+            if [ -z "$TAG" ]; then
+              if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+                TAG="$VERSION"
+                CHECKOUT_REF="$VERSION"
+              elif git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+                TAG="v$VERSION"
+                CHECKOUT_REF="$TAG"
+              else
+                TAG="$VERSION"
+                CHECKOUT_REF="$GITHUB_SHA"
+              fi
+            else
+              if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+                CHECKOUT_REF="$TAG"
+              else
+                CHECKOUT_REF="$GITHUB_SHA"
+              fi
+            fi
           fi
+
+          NORMALIZED_TAG="${TAG#v}"
 
           if [ "$NORMALIZED_TAG" != "$VERSION" ]; then
             echo "Tag $TAG does not match workspace version $VERSION" >&2
             exit 1
           fi
 
+          SEEN=""
+          for CANDIDATE in "$TAG" "$NORMALIZED_TAG" "v$NORMALIZED_TAG"; do
+            if [ -z "$CANDIDATE" ]; then
+              continue
+            fi
+            case " $SEEN " in
+              *" $CANDIDATE "*) continue ;;
+            esac
+            SEEN="$SEEN $CANDIDATE"
+
+            RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$CANDIDATE" 2>/dev/null || true)"
+            if [ -z "$RELEASE_JSON" ]; then
+              continue
+            fi
+
+            PUBLISHED_AT="$(RELEASE_JSON="$RELEASE_JSON" python - <<'PY'
+          import json
+          import os
+
+          data = json.loads(os.environ["RELEASE_JSON"])
+          print(data.get("published_at") or "")
+          PY
+            )"
+            if [ -n "$PUBLISHED_AT" ]; then
+              echo "Release $CANDIDATE is already published at $PUBLISHED_AT" >&2
+              exit 1
+            fi
+          done
+
+          echo "checkout_ref=$CHECKOUT_REF" >> "$GITHUB_OUTPUT"
           echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
@@ -148,7 +201,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.preflight.outputs.release_tag }}
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
 
       - uses: ./.github/actions/build-target
         id: build_target
@@ -182,7 +235,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.preflight.outputs.release_tag }}
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -233,7 +286,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.preflight.outputs.release_tag }}
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -257,7 +310,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.preflight.outputs.release_tag }}
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
 
       - uses: actions/download-artifact@v4
         with:

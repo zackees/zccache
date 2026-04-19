@@ -16,6 +16,7 @@ Python scripts for development tooling. Project-root trampolines (`_cargo`, `_ru
 - **`./publish`** â€” Local release operator path; can also build wheels from pre-downloaded `binaries-*` artifacts via `--artifact-download-dir`
 - **Canonical workflow** â€” `.github/workflows/release.yml`
 - **Trigger** â€” push a tag matching the workspace version (`1.2.15` or `v1.2.15`)
+- **Manual runs** â€” `Run workflow` can leave `tag` empty; the workflow derives the current workspace version from the selected branch and fails if that version already has a published GitHub release
 - **PyPI** â€” use Trusted Publishing with GitHub environment `pypi` and workflow `.github/workflows/release.yml`
 - **crates.io** â€” add repository secret `CARGO_REGISTRY_TOKEN`
 - **GitHub Release** â€” created automatically with standalone archives, installer scripts, and `SHA256SUMS`
