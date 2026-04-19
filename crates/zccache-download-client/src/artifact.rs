@@ -1066,20 +1066,16 @@ mod tests {
                                 );
                             });
                         }
-                        Err(err)
-                            if matches!(
-                                err.kind(),
-                                io::ErrorKind::WouldBlock
-                                    | io::ErrorKind::Interrupted
-                                    | io::ErrorKind::ConnectionAborted
-                                    | io::ErrorKind::ConnectionReset
-                            ) =>
-                        {
-                            // Windows can surface transient listener errors while the probe
-                            // connection is racing with the first real client request.
+                        Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(_) => {
+                            // Windows can surface a wide range of transient listener errors
+                            // (Interrupted, ConnectionAborted/Reset, and WSA-specific errnos
+                            // that map to Uncategorized). Never let one kill the accept loop:
+                            // only `shutdown` exits, so a later request still finds a server.
                             thread::sleep(Duration::from_millis(10));
                         }
-                        Err(_) => break,
                     }
                 }
             });
@@ -1169,6 +1165,33 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         panic!("timed out waiting for {description}");
+    }
+
+    // Localhost reqwest calls on Windows can transiently fail with "error sending
+    // request" (backlog pressure) or "error decoding response body" (mid-stream
+    // parse error). The segmented path surfaces these with a "http error:" prefix
+    // via DownloadError::Http; the explicit-multipart path (download_explicit_parts)
+    // stringifies the reqwest::Error directly, producing the raw message. Match
+    // both substrings so either path retries. Real callers don't retry these;
+    // tests with local HTTP servers must.
+    fn is_transient_http_error(err: &str) -> bool {
+        err.contains("error sending request") || err.contains("error decoding response body")
+    }
+
+    fn fetch_with_retry(http: &DownloadClient, req: FetchRequest) -> Result<FetchResult, String> {
+        const MAX_ATTEMPTS: usize = 5;
+        for attempt in 1..=MAX_ATTEMPTS {
+            match http.fetch(req.clone()) {
+                Ok(result) => return Ok(result),
+                Err(err) => {
+                    if !is_transient_http_error(&err) || attempt == MAX_ATTEMPTS {
+                        return Err(err);
+                    }
+                    thread::sleep(Duration::from_millis(25 * attempt as u64));
+                }
+            }
+        }
+        unreachable!()
     }
 
     impl Drop for TestHttpServer {
@@ -1475,13 +1498,13 @@ mod tests {
         let mut request = FetchRequest::new(server.url.clone(), dir.path().join("artifact.bin"));
         request.expected_sha256 = Some(sha256_hex(&body));
 
-        let first = client.fetch(request.clone()).unwrap();
+        let first = fetch_with_retry(&client, request.clone()).unwrap();
         assert_eq!(first.status, FetchStatus::Downloaded);
         assert_eq!(first.sha256, sha256_hex(&body));
         let requests_after_first = server.request_count();
         assert!(requests_after_first > 0);
 
-        let second = client.fetch(request.clone()).unwrap();
+        let second = fetch_with_retry(&client, request.clone()).unwrap();
         assert_eq!(second.status, FetchStatus::AlreadyPresent);
         assert_eq!(server.request_count(), requests_after_first);
 
@@ -1511,7 +1534,7 @@ mod tests {
         let mut request = FetchRequest::new(server.url.clone(), &destination);
         request.expected_sha256 = Some("00".repeat(32));
 
-        let err = client.fetch(request.clone()).unwrap_err();
+        let err = fetch_with_retry(&client, request.clone()).unwrap_err();
         assert!(err.contains("sha256 mismatch"));
         assert!(!destination.exists());
 
@@ -1540,7 +1563,7 @@ mod tests {
         request.download_options.min_segment_size = Some(1024);
         request.expected_sha256 = Some(sha256_hex(&body));
 
-        let result = client.fetch(request).unwrap();
+        let result = fetch_with_retry(&client, request).unwrap();
         assert_eq!(result.status, FetchStatus::Downloaded);
         assert_eq!(result.sha256, sha256_hex(&body));
         assert!(server.range_request_count() >= 2);
@@ -1601,7 +1624,7 @@ mod tests {
         );
         request.expected_sha256 = Some(sha256_hex(&full));
 
-        let first = client.fetch(request.clone()).unwrap();
+        let first = fetch_with_retry(&client, request.clone()).unwrap();
         assert_eq!(first.status, FetchStatus::Downloaded);
         assert_eq!(first.sha256, sha256_hex(&full));
         assert_eq!(fs::read(&destination).unwrap(), full);
@@ -1611,7 +1634,7 @@ mod tests {
             server_c.request_count(),
         );
 
-        let second = client.fetch(request.clone()).unwrap();
+        let second = fetch_with_retry(&client, request.clone()).unwrap();
         assert_eq!(second.status, FetchStatus::AlreadyPresent);
         assert_eq!(
             (
@@ -1652,7 +1675,7 @@ mod tests {
         let download_thread = thread::spawn(move || {
             let client = DownloadClient::new(Some(endpoint));
             let request = FetchRequest::new(url, &destination_for_thread);
-            client.fetch(request)
+            fetch_with_retry(&client, request)
         });
 
         wait_for_test_condition(Duration::from_secs(5), "initial download request", || {
@@ -1662,7 +1685,7 @@ mod tests {
         let client = DownloadClient::new(Some(daemon.endpoint.clone()));
         let mut no_wait = FetchRequest::new(server.url.clone(), &destination);
         no_wait.wait_mode = WaitMode::NoWait;
-        let locked = client.fetch(no_wait).unwrap();
+        let locked = fetch_with_retry(&client, no_wait).unwrap();
         assert_eq!(locked.status, FetchStatus::Locked);
 
         release_response.store(true, Ordering::Release);
@@ -1704,7 +1727,7 @@ mod tests {
         let download_thread = thread::spawn(move || {
             let client = DownloadClient::new(Some(endpoint));
             let request = FetchRequest::new(source, &destination_for_thread);
-            client.fetch(request)
+            fetch_with_retry(&client, request)
         });
 
         wait_for_test_condition(
@@ -1719,7 +1742,7 @@ mod tests {
             &destination,
         );
         no_wait.wait_mode = WaitMode::NoWait;
-        let locked = client.fetch(no_wait).unwrap();
+        let locked = fetch_with_retry(&client, no_wait).unwrap();
         assert_eq!(locked.status, FetchStatus::Locked);
 
         release_response.store(true, Ordering::Release);
@@ -1746,7 +1769,7 @@ mod tests {
         let mut request = FetchRequest::new(server.url.clone(), &destination);
         request.dry_run = true;
 
-        let result = client.fetch(request).unwrap();
+        let result = fetch_with_retry(&client, request).unwrap();
         assert_eq!(result.status, FetchStatus::DryRun);
         assert_eq!(server.request_count(), 0);
         assert!(!destination.exists());
@@ -1780,7 +1803,7 @@ mod tests {
         request.destination_path_expanded = Some(expanded_path.clone());
         request.expected_sha256 = Some(sha256_hex(&archive_bytes));
 
-        let first = client.fetch(request.clone()).unwrap();
+        let first = fetch_with_retry(&client, request.clone()).unwrap();
         assert_eq!(first.status, FetchStatus::Expanded);
         assert_eq!(first.sha256, sha256_hex(&archive_bytes));
         let extracted = [
@@ -1797,7 +1820,7 @@ mod tests {
         assert_eq!(state.kind, FetchStateKind::ExpandedReady);
         assert_eq!(state.sha256.as_deref(), Some(first.sha256.as_str()));
 
-        let second = client.fetch(request).unwrap();
+        let second = fetch_with_retry(&client, request).unwrap();
         assert_eq!(second.status, FetchStatus::AlreadyExpanded);
         assert_eq!(second.sha256, first.sha256);
     }
@@ -1820,15 +1843,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let destination = dir.path().join("delayed.bin");
 
-        let first = client
-            .fetch(FetchRequest::new(server.url.clone(), &destination))
-            .unwrap();
+        let first =
+            fetch_with_retry(&client, FetchRequest::new(server.url.clone(), &destination)).unwrap();
         assert_eq!(first.status, FetchStatus::Downloaded);
         assert_eq!(first.sha256, sha256_hex(&body));
 
         let mut later = FetchRequest::new(server.url.clone(), &destination);
         later.expected_sha256 = Some(first.sha256.clone());
-        let second = client.fetch(later.clone()).unwrap();
+        let second = fetch_with_retry(&client, later.clone()).unwrap();
         assert_eq!(second.status, FetchStatus::AlreadyPresent);
         assert_eq!(second.sha256, first.sha256);
 
@@ -1867,13 +1889,13 @@ mod tests {
 
         let mut initial = FetchRequest::new(server.url.clone(), &cache_path);
         initial.destination_path_expanded = Some(expanded_path.clone());
-        let first = client.fetch(initial).unwrap();
+        let first = fetch_with_retry(&client, initial).unwrap();
         assert_eq!(first.status, FetchStatus::Expanded);
 
         let mut later = FetchRequest::new(server.url.clone(), &cache_path);
         later.destination_path_expanded = Some(expanded_path.clone());
         later.expected_sha256 = Some(first.sha256.clone());
-        let second = client.fetch(later.clone()).unwrap();
+        let second = fetch_with_retry(&client, later.clone()).unwrap();
         assert_eq!(second.status, FetchStatus::AlreadyExpanded);
         assert_eq!(second.sha256, first.sha256);
 
@@ -1900,13 +1922,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let destination = dir.path().join("immutable.bin");
 
-        let _ = client
-            .fetch(FetchRequest::new(server.url.clone(), &destination))
-            .unwrap();
+        let _ =
+            fetch_with_retry(&client, FetchRequest::new(server.url.clone(), &destination)).unwrap();
 
         let mut force = FetchRequest::new(server.url.clone(), &destination);
         force.force = true;
-        let err = client.fetch(force).unwrap_err();
+        let err = fetch_with_retry(&client, force).unwrap_err();
         assert!(err.contains("purge"));
     }
 
@@ -1940,7 +1961,7 @@ mod tests {
         let mut request = FetchRequest::new(server.url.clone(), &cache_path);
         request.destination_path_expanded = Some(expanded_path.clone());
 
-        let err = client.fetch(request).unwrap_err();
+        let err = fetch_with_retry(&client, request).unwrap_err();
         assert!(err.contains("unsafe zip entry"));
         assert!(!dir.path().join("evil.txt").exists());
     }
