@@ -5271,7 +5271,10 @@ mod tests {
             .unwrap();
 
         let env = vec![
-            ("PATH".to_string(), std::env::var("PATH").unwrap_or_default()),
+            (
+                "PATH".to_string(),
+                std::env::var("PATH").unwrap_or_default(),
+            ),
             ("ZCCACHE_TEST_MARKER".to_string(), "hello-hook".to_string()),
         ];
         run_post_link_deploy_hook(&script.to_string_lossy(), &output, Some(&env)).await;
