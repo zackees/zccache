@@ -3,6 +3,7 @@ name: Release Standalone Binaries
 on:
   push:
     tags:
+      - "[0-9]*"
       - "v*"
 
 permissions:
