@@ -39,7 +39,7 @@ jobs:
           cache: true
           cache-key-suffix: dylint
       - name: Install Dylint nightly toolchain
-        run: rustup toolchain install nightly-2025-09-18 --component llvm-tools-preview --component rust-src --component rustc-dev --profile minimal
+        run: rustup toolchain install nightly-2026-03-26 --component llvm-tools-preview --component rust-src --component rustc-dev --profile minimal
       - name: Install stable Rust components
         run: rustup component add rustfmt
       - name: Install Dylint
@@ -49,7 +49,7 @@ jobs:
       - name: Test Dylint Library
         run: |
           export PATH="${CARGO_HOME}/bin:${PATH}"
-          cargo +nightly-2025-09-18 test --manifest-path dylints/ban_std_pathbuf/Cargo.toml
+          cargo +nightly-2026-03-26 test --manifest-path dylints/ban_std_pathbuf/Cargo.toml
       - name: Run Dylint
         run: |
           export PATH="${CARGO_HOME}/bin:${PATH}"

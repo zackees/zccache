@@ -17,7 +17,7 @@ from ci.release_checks import ReleaseCheckError, validate_release_metadata
 from ci.soldr import cargo_command, rust_tool_command, self_build_env
 
 SCRIPT_DIR = Path(__file__).parent.parent.resolve()
-DYLINT_TOOLCHAIN = "nightly-2025-09-18"
+DYLINT_TOOLCHAIN = "nightly-2026-03-26"
 DYLINT_COMPONENTS = ["llvm-tools-preview", "rust-src", "rustc-dev"]
 
 
