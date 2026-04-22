@@ -32,7 +32,11 @@ steps:
 |---|---|---|
 | `cache-cargo-registry` | `true` | Cache `~/.cargo/registry/` and `~/.cargo/git/` |
 | `cache-compilation` | `true` | Cache compilation units via zccache daemon |
-| `cache-target` | `false` | Cache target snapshot + run `zccache warm`; opt-in until [zackees/zccache#65](https://github.com/zackees/zccache/issues/65) adds bounded target snapshot GC |
+| `cache-target` | `false` | Cache target snapshot + run `zccache warm`; opt in only for workflows where target snapshots are worth the disk budget |
+| `target-snapshot-max-size` | `2GiB` | Skip or fail target snapshot save when the pruned snapshot exceeds this size; use `0` for unlimited |
+| `target-snapshot-too-large` | `skip` | `skip` oversized target snapshots or `fail` cleanup |
+| `target-prune-incremental` | `true` | Remove `target/**/incremental` before creating a snapshot |
+| `target-prune-build-script-out` | `false` | Remove `target/**/build/*/out` before creating a snapshot |
 | `compilation-restore-fallback` | `true` | Allow prefix fallback for compilation cache restores |
 | `target-restore-fallback` | `false` | Allow prefix fallback for target snapshot restores |
 | `target-dir` | `target` | Path to the cargo target directory |
@@ -67,9 +71,14 @@ The cleanup action must be called with `if: always()` to ensure caches are saved
 
 State is passed from setup to cleanup via `~/.zccache-action-state/`.
 
+Target snapshots are disabled by default because Cargo does not garbage collect
+`target/`. Most CI should keep the compilation and registry caches enabled and
+leave `cache-target: false`. Enable target snapshots only for jobs where skipping
+Cargo fingerprint work matters enough to spend extra cache and runner disk.
+
 ### Restore policy
 
 - `compilation-restore-fallback: true` keeps the speed-first behavior for incremental CI.
 - `target-restore-fallback: false` is the default because stale Cargo target snapshots are not safe to prefix-restore across different source trees.
-- `cache-target: false` is the default because Cargo target directories can accumulate stale outputs without bounded cleanup; see [zackees/zccache#65](https://github.com/zackees/zccache/issues/65).
-- For release-hardened builds, keep target snapshots disabled and use exact-key-only restores.
+- Target snapshot saves prune `target/**/incremental` by default and skip saving when the snapshot is larger than `target-snapshot-max-size`.
+- For release-hardened builds, keep `cache-target: false` and use exact-key-only restores.

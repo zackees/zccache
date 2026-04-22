@@ -49,14 +49,14 @@ jobs:
         run: python3 -m ci.lint --dylint-only
 
   msrv:
-    name: MSRV (1.75)
+    name: MSRV (1.94.1)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: zackees/setup-soldr@v0
         with:
           cache: true
-          toolchain: 1.75.0
+          toolchain: 1.94.1
           cache-key-suffix: msrv
       - name: Check MSRV
         run: soldr cargo check --workspace

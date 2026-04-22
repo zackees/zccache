@@ -172,6 +172,7 @@ jobs:
       - uses: ./
         with:
           shared-key: bench
+          cache-target: "true"
 
       - name: "Cold build"
         id: cold
@@ -239,6 +240,7 @@ jobs:
       - uses: ./
         with:
           shared-key: bench
+          cache-target: "true"
 
       - name: "Diagnostics: target restore status"
         shell: bash

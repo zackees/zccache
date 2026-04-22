@@ -22,10 +22,30 @@ inputs:
     description: >
       Cache a target/ snapshot (excluding incremental/) and run zccache warm.
       Allows cargo to skip invoking rustc entirely on warm builds. Disabled by
-      default because Cargo target directories do not garbage collect
-      themselves and can grow to multi-GB snapshots that exhaust hosted
-      runners. Enable only for bounded workflows until zackees/zccache#65 is
-      resolved.
+      default because Cargo target directories can grow to multi-GB snapshots.
+    required: false
+    default: "false"
+  target-snapshot-max-size:
+    description: >
+      Maximum target snapshot size after pruning. Supports B, KiB, MiB, and GiB
+      suffixes. Set to "0" or "unlimited" to disable the size guard.
+    required: false
+    default: "2GiB"
+  target-snapshot-too-large:
+    description: >
+      Behavior when the target snapshot exceeds target-snapshot-max-size.
+      Use "skip" to skip saving or "fail" to fail cleanup.
+    required: false
+    default: "skip"
+  target-prune-incremental:
+    description: >
+      Remove target/**/incremental directories before creating a target snapshot.
+    required: false
+    default: "true"
+  target-prune-build-script-out:
+    description: >
+      Remove target/**/build/*/out directories before creating a target snapshot.
+      This can reclaim native build trees, but may force build scripts to rerun.
     required: false
     default: "false"
   compilation-restore-fallback:
@@ -174,6 +194,18 @@ runs:
         TARGET="${{ inputs.target-dir }}"
         META_TAR="$HOME/.zccache-target-meta/target-meta.tar"
         if [ -f "$META_TAR" ]; then
+          MAX_BYTES="$(bash "${{ github.action_path }}/action/cleanup/prepare-target-snapshot.sh" --parse-size "${{ inputs.target-snapshot-max-size }}")"
+          TAR_BYTES="$(wc -c < "$META_TAR" | tr -d '[:space:]')"
+          if [ "$MAX_BYTES" -gt 0 ] && [ "$TAR_BYTES" -gt "$MAX_BYTES" ]; then
+            rm -f "$META_TAR"
+            TOO_LARGE_POLICY="$(printf '%s' "${{ inputs.target-snapshot-too-large }}" | tr '[:upper:]' '[:lower:]')"
+            if [ "$TOO_LARGE_POLICY" = "fail" ]; then
+              echo "ERROR: restored target snapshot exceeds target-snapshot-max-size ($TAR_BYTES > $MAX_BYTES)"
+              exit 1
+            fi
+            echo "Skipping oversized restored target snapshot ($TAR_BYTES > $MAX_BYTES)"
+            exit 0
+          fi
           mkdir -p "$TARGET"
           tar xf "$META_TAR" -C "$TARGET" 2>/dev/null || true
           echo "Restored target snapshot ($(du -sh "$META_TAR" | cut -f1))"
@@ -309,6 +341,10 @@ runs:
         echo "${{ inputs.cache-cargo-registry }}" > ~/.zccache-action-state/cache-registry
         echo "${{ inputs.cache-target }}" > ~/.zccache-action-state/cache-target
         echo "${{ inputs.target-dir }}" > ~/.zccache-action-state/target-dir
+        echo "${{ inputs.target-snapshot-max-size }}" > ~/.zccache-action-state/target-snapshot-max-size
+        echo "${{ inputs.target-snapshot-too-large }}" > ~/.zccache-action-state/target-snapshot-too-large
+        echo "${{ inputs.target-prune-incremental }}" > ~/.zccache-action-state/target-prune-incremental
+        echo "${{ inputs.target-prune-build-script-out }}" > ~/.zccache-action-state/target-prune-build-script-out
 
 branding:
   icon: "zap"

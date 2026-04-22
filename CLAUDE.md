@@ -6,7 +6,7 @@ zccache is a local-first compiler cache daemon (11 crates). See @docs/CLAUDE.md 
 
 - **Always use the project-root trampolines** (`_cargo`, `_rustc`, `_rustfmt`) or `soldr <tool>` directly to execute Rust commands. Bare cargo/rustc and `uv run cargo` are blocked by hook. Both forms dispatch through [soldr](https://github.com/zackees/soldr), which resolves each tool via `rustup which` so the rustup-managed toolchain is always used; the cargo path passes `--no-cache` so the previous bare-cargo semantics are preserved. Usage: `./_cargo check --workspace` or `soldr cargo check --workspace`.
 - **Always use `uv` for Python.** Bare `python`/`pip` are blocked by hook. Use `uv run ...` or `uv pip ...`.
-- MSRV: 1.75 | Edition: 2021 | Toolchain: stable (clippy + rustfmt)
+- MSRV: 1.94.1 | Edition: 2021 | Toolchain: 1.94.1 (clippy + rustfmt)
 - CI: Linux, macOS, Windows. All warnings denied (`RUSTFLAGS="-D warnings"`)
 - Every directory with files must have a README.md (enforced by hook)
 

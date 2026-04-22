@@ -32,7 +32,7 @@ fn open_lock_file(cache_path: &Path) -> io::Result<File> {
 }
 
 // Use UFCS to call fs2 trait methods, avoiding ambiguity with
-// std::fs::File inherent methods added in Rust 1.89 (MSRV is 1.75).
+// std::fs::File inherent methods added in Rust 1.89.
 
 fn try_lock_shared(file: &File) -> io::Result<()> {
     fs2::FileExt::try_lock_shared(file)

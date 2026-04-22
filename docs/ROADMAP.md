@@ -28,7 +28,7 @@ This document describes the phased implementation plan for **zccache**, a high-p
   - `cargo clippy --all-targets --all-features -- -D warnings`
   - `cargo fmt --all -- --check`
   - `cargo test --workspace`
-  - MSRV check (1.75+)
+  - MSRV check (1.94.1)
   - Matrix: Linux (ubuntu-latest), macOS (macos-latest), Windows (windows-latest)
 - `.rustfmt.toml` with project conventions
 - Clippy configuration (`clippy.toml` or workspace-level `Cargo.toml` lint settings)

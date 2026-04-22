@@ -4,6 +4,26 @@ description: >
   Use this as the last step in every job that uses zackees/zccache.
   Must run with `if: always()` to ensure cleanup on failure.
 
+outputs:
+  target-snapshot-saved:
+    description: "Whether a target snapshot tarball was created for saving"
+    value: ${{ steps.target-snapshot.outputs.snapshot-saved }}
+  target-snapshot-skipped-reason:
+    description: "Why target snapshot creation was skipped, when applicable"
+    value: ${{ steps.target-snapshot.outputs.snapshot-skipped-reason }}
+  target-snapshot-bytes:
+    description: "Size in bytes of the target snapshot tarball"
+    value: ${{ steps.target-snapshot.outputs.snapshot-bytes }}
+  target-snapshot-candidate-bytes:
+    description: "Estimated target snapshot payload bytes after pruning"
+    value: ${{ steps.target-snapshot.outputs.candidate-bytes }}
+  target-pruned-dirs:
+    description: "Number of target directories pruned before snapshot creation"
+    value: ${{ steps.target-snapshot.outputs.pruned-dirs }}
+  target-pruned-bytes:
+    description: "Estimated bytes pruned before snapshot creation"
+    value: ${{ steps.target-snapshot.outputs.pruned-bytes }}
+
 runs:
   using: "composite"
   steps:
@@ -32,6 +52,10 @@ runs:
           echo "cache-registry=$(cat "$STATE_DIR/cache-registry" 2>/dev/null || echo 'true')" >> "$GITHUB_OUTPUT"
           echo "cache-target=$(cat "$STATE_DIR/cache-target" 2>/dev/null || echo 'false')" >> "$GITHUB_OUTPUT"
           echo "target-dir=$(cat "$STATE_DIR/target-dir" 2>/dev/null || echo 'target')" >> "$GITHUB_OUTPUT"
+          echo "target-snapshot-max-size=$(cat "$STATE_DIR/target-snapshot-max-size" 2>/dev/null || echo '2GiB')" >> "$GITHUB_OUTPUT"
+          echo "target-snapshot-too-large=$(cat "$STATE_DIR/target-snapshot-too-large" 2>/dev/null || echo 'skip')" >> "$GITHUB_OUTPUT"
+          echo "target-prune-incremental=$(cat "$STATE_DIR/target-prune-incremental" 2>/dev/null || echo 'true')" >> "$GITHUB_OUTPUT"
+          echo "target-prune-build-script-out=$(cat "$STATE_DIR/target-prune-build-script-out" 2>/dev/null || echo 'false')" >> "$GITHUB_OUTPUT"
         else
           echo "save-cache=false" >> "$GITHUB_OUTPUT"
           echo "cache-compilation=false" >> "$GITHUB_OUTPUT"
@@ -57,28 +81,20 @@ runs:
         key: ${{ steps.state.outputs.registry-key }}
 
     - name: Create target snapshot
+      id: target-snapshot
       if: always() && steps.state.outputs.save-cache == 'true' && steps.state.outputs.cache-target == 'true'
       shell: bash
+      env:
+        TARGET_DIR: ${{ steps.state.outputs.target-dir }}
+        TARGET_SNAPSHOT_MAX_SIZE: ${{ steps.state.outputs.target-snapshot-max-size }}
+        TARGET_SNAPSHOT_TOO_LARGE: ${{ steps.state.outputs.target-snapshot-too-large }}
+        TARGET_PRUNE_INCREMENTAL: ${{ steps.state.outputs.target-prune-incremental }}
+        TARGET_PRUNE_BUILD_SCRIPT_OUT: ${{ steps.state.outputs.target-prune-build-script-out }}
       run: |
-        TARGET="${{ steps.state.outputs.target-dir }}"
-        SNAPSHOT_DIR="$HOME/.zccache-target-meta"
-        rm -rf "$SNAPSHOT_DIR"
-        mkdir -p "$SNAPSHOT_DIR"
-        if [ -d "$TARGET" ]; then
-          # Target snapshots are opt-in until zackees/zccache#65 adds bounded GC.
-          # Tar target/ excluding only incremental compilation data.
-          # zccache warm restores .rlib/.rmeta from its artifact cache
-          # when available, but the tar keeps them too as a fallback.
-          # The tar includes proc-macro .so/.dll files as well.
-          tar cf "$SNAPSHOT_DIR/target-meta.tar" -C "$TARGET" \
-            --exclude='incremental' \
-            . 2>/dev/null || true
-          SIZE=$(du -sh "$SNAPSHOT_DIR/target-meta.tar" 2>/dev/null | cut -f1 || echo "?")
-          echo "Saved target snapshot ($SIZE)"
-        fi
+        bash "$GITHUB_ACTION_PATH/prepare-target-snapshot.sh"
 
     - name: Save cargo target snapshot
-      if: always() && steps.state.outputs.save-cache == 'true' && steps.state.outputs.cache-target == 'true'
+      if: always() && steps.state.outputs.save-cache == 'true' && steps.state.outputs.cache-target == 'true' && steps.target-snapshot.outputs.snapshot-saved == 'true'
       uses: actions/cache/save@v4
       with:
         path: ~/.zccache-target-meta

@@ -23,6 +23,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  target-snapshot-gc:
+    name: "Target snapshot GC unit tests"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run target snapshot GC unit tests
+        shell: bash
+        run: bash action/cleanup/tests/test_prepare_target_snapshot.sh
+
   test-action:
     name: "${{ matrix.name }}"
     runs-on: ${{ matrix.os }}

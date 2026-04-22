@@ -894,7 +894,7 @@ mod tests {
     fn rustc_compiler_hash_affects_key() {
         let ctx1 = make_rustc_context("/src/lib.rs", "2021");
         let mut ctx2 = make_rustc_context("/src/lib.rs", "2021");
-        ctx2.compiler_hash = Some(zccache_hash::hash_bytes(b"rustc-1.75.0"));
+        ctx2.compiler_hash = Some(zccache_hash::hash_bytes(b"rustc-1.94.1"));
         assert_ne!(
             ctx1.context_key(),
             ctx2.context_key(),
@@ -905,9 +905,9 @@ mod tests {
     #[test]
     fn rustc_different_compiler_versions_different_key() {
         let mut ctx1 = make_rustc_context("/src/lib.rs", "2021");
-        ctx1.compiler_hash = Some(zccache_hash::hash_bytes(b"rustc-1.75.0"));
+        ctx1.compiler_hash = Some(zccache_hash::hash_bytes(b"rustc-1.94.1"));
         let mut ctx2 = make_rustc_context("/src/lib.rs", "2021");
-        ctx2.compiler_hash = Some(zccache_hash::hash_bytes(b"rustc-1.76.0"));
+        ctx2.compiler_hash = Some(zccache_hash::hash_bytes(b"rustc-1.94.2"));
         assert_ne!(ctx1.context_key(), ctx2.context_key());
     }
 
