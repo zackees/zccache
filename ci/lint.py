@@ -141,7 +141,8 @@ def lint_dylint_only():
     if result != 0:
         return result
 
-    dylint_cmd = cargo_command(f"+{DYLINT_TOOLCHAIN}", "dylint", "--all", "--workspace")
+    # Dylint needs rustup's cargo shim so its nested rust-toolchain files are honored.
+    dylint_cmd = ["cargo", f"+{DYLINT_TOOLCHAIN}", "dylint", "--all", "--workspace"]
     result = run_cmd_capture(dylint_cmd)
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)

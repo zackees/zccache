@@ -47,9 +47,13 @@ jobs:
       - name: Check Dylint Library Formatting
         run: soldr cargo fmt --manifest-path dylints/ban_std_pathbuf/Cargo.toml --all -- --check
       - name: Test Dylint Library
-        run: soldr cargo +nightly-2025-09-18 test --manifest-path dylints/ban_std_pathbuf/Cargo.toml
+        run: |
+          export PATH="${CARGO_HOME}/bin:${PATH}"
+          cargo +nightly-2025-09-18 test --manifest-path dylints/ban_std_pathbuf/Cargo.toml
       - name: Run Dylint
-        run: python3 -m ci.lint --dylint-only
+        run: |
+          export PATH="${CARGO_HOME}/bin:${PATH}"
+          python3 -m ci.lint --dylint-only
 
   msrv:
     name: MSRV (1.94.1)
