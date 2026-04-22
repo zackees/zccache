@@ -21,6 +21,7 @@ jobs:
         with:
           toolchain: 1.94.1
           cache: true
+          target-cache-mode: full
       - name: Check
         run: soldr cargo check --workspace --all-targets
       - name: Test
@@ -39,3 +40,7 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
           exit $status
+      - name: Stop zccache before cache save
+        if: always()
+        shell: bash
+        run: soldr --no-cache zccache stop || zccache stop || true
