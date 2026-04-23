@@ -343,6 +343,15 @@ enum RustPlanCommands {
         /// Print a machine-readable JSON summary.
         #[arg(long)]
         json: bool,
+        /// Active zccache session ID whose compile-cache stats should be included.
+        #[arg(long = "session-id")]
+        session_id: Option<String>,
+        /// IPC endpoint for session stats lookup.
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Journal/log path to report in the summary, overriding the plan path.
+        #[arg(long)]
+        journal: Option<String>,
         /// Local cache directory for bundle path/key reporting.
         #[arg(long = "cache-dir")]
         cache_dir: Option<String>,
@@ -355,6 +364,15 @@ enum RustPlanCommands {
         /// Print a machine-readable JSON summary.
         #[arg(long)]
         json: bool,
+        /// Active zccache session ID whose compile-cache stats should be included.
+        #[arg(long = "session-id")]
+        session_id: Option<String>,
+        /// IPC endpoint for session stats lookup.
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Journal/log path to report in the summary, overriding the plan path.
+        #[arg(long)]
+        journal: Option<String>,
         /// Cache backend to use.
         #[arg(long, default_value = "auto")]
         backend: RustPlanBackendArg,
@@ -370,6 +388,15 @@ enum RustPlanCommands {
         /// Print a machine-readable JSON summary.
         #[arg(long)]
         json: bool,
+        /// Active zccache session ID whose compile-cache stats should be included.
+        #[arg(long = "session-id")]
+        session_id: Option<String>,
+        /// IPC endpoint for session stats lookup.
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Journal/log path to report in the summary, overriding the plan path.
+        #[arg(long)]
+        journal: Option<String>,
         /// Cache backend to use.
         #[arg(long, default_value = "auto")]
         backend: RustPlanBackendArg,
@@ -1715,12 +1742,23 @@ async fn cmd_rust_plan(action: RustPlanCommands) -> ExitCode {
         RustPlanCommands::Validate {
             plan,
             json,
+            session_id,
+            endpoint,
+            journal,
             cache_dir,
         } => {
             let cache_dir = resolve_rust_plan_cache_dir(cache_dir.as_deref());
             match load_rust_plan_for_cli(&plan, RustPlanOperation::Validate, json) {
                 Ok(plan) => {
-                    let summary = RustPlanSummary::validation_success(&plan, cache_dir.as_path());
+                    let mut summary =
+                        RustPlanSummary::validation_success(&plan, cache_dir.as_path());
+                    enrich_rust_plan_summary(
+                        &mut summary,
+                        session_id.as_deref(),
+                        endpoint.as_deref(),
+                        journal.as_deref(),
+                    )
+                    .await;
                     print_rust_plan_summary(&summary, json);
                     ExitCode::SUCCESS
                 }
@@ -1730,6 +1768,9 @@ async fn cmd_rust_plan(action: RustPlanCommands) -> ExitCode {
         RustPlanCommands::Restore {
             plan,
             json,
+            session_id,
+            endpoint,
+            journal,
             backend,
             cache_dir,
         } => {
@@ -1739,7 +1780,14 @@ async fn cmd_rust_plan(action: RustPlanCommands) -> ExitCode {
                 Err(code) => return code,
             };
             match run_rust_plan_restore(&plan, cache_dir.as_path(), backend).await {
-                Ok(summary) => {
+                Ok(mut summary) => {
+                    enrich_rust_plan_summary(
+                        &mut summary,
+                        session_id.as_deref(),
+                        endpoint.as_deref(),
+                        journal.as_deref(),
+                    )
+                    .await;
                     print_rust_plan_summary(&summary, json);
                     ExitCode::SUCCESS
                 }
@@ -1752,6 +1800,9 @@ async fn cmd_rust_plan(action: RustPlanCommands) -> ExitCode {
         RustPlanCommands::Save {
             plan,
             json,
+            session_id,
+            endpoint,
+            journal,
             backend,
             cache_dir,
         } => {
@@ -1761,7 +1812,14 @@ async fn cmd_rust_plan(action: RustPlanCommands) -> ExitCode {
                 Err(code) => return code,
             };
             match run_rust_plan_save(&plan, cache_dir.as_path(), backend).await {
-                Ok(summary) => {
+                Ok(mut summary) => {
+                    enrich_rust_plan_summary(
+                        &mut summary,
+                        session_id.as_deref(),
+                        endpoint.as_deref(),
+                        journal.as_deref(),
+                    )
+                    .await;
                     print_rust_plan_summary(&summary, json);
                     ExitCode::SUCCESS
                 }
@@ -1874,6 +1932,91 @@ fn rust_plan_gha_error(err: GhaError) -> RustPlanError {
     RustPlanError::InvalidPlan(format!("GHA cache backend error: {err}"))
 }
 
+async fn enrich_rust_plan_summary(
+    summary: &mut RustPlanSummary,
+    session_id: Option<&str>,
+    endpoint: Option<&str>,
+    journal: Option<&str>,
+) {
+    if let Some(journal) = journal {
+        summary.journal_log_path = Some(absolute_path(journal));
+    }
+
+    if let Some(session_id) = session_id {
+        let endpoint = resolve_endpoint(endpoint);
+        summary.compile_cache_stats = Some(query_session_stats_json(&endpoint, session_id).await);
+    }
+}
+
+async fn query_session_stats_json(endpoint: &str, session_id: &str) -> serde_json::Value {
+    match query_session_stats(endpoint, session_id).await {
+        Ok(Some(stats)) => session_stats_json(session_id, &stats),
+        Ok(None) => serde_json::json!({
+            "status": "not_tracked",
+            "session_id": session_id,
+            "message": "session exists but stats tracking is not enabled"
+        }),
+        Err(err) => serde_json::json!({
+            "status": "error",
+            "session_id": session_id,
+            "error": err
+        }),
+    }
+}
+
+async fn query_session_stats(
+    endpoint: &str,
+    session_id: &str,
+) -> Result<Option<zccache_protocol::SessionStats>, String> {
+    let mut conn = connect(endpoint)
+        .await
+        .map_err(|err| format!("cannot connect to daemon at {endpoint}: {err}"))?;
+
+    conn.send(&zccache_protocol::Request::SessionStats {
+        session_id: session_id.to_string(),
+    })
+    .await
+    .map_err(|err| format!("failed to send session stats request: {err}"))?;
+
+    let recv_result = conn
+        .recv()
+        .await
+        .map_err(|err| format!("broken daemon connection: {err}"))?;
+    match recv_result {
+        Some(zccache_protocol::Response::SessionStatsResult { stats }) => Ok(stats),
+        Some(zccache_protocol::Response::Error { message }) => Err(message),
+        Some(other) => Err(format!("unexpected daemon response: {other:?}")),
+        None => Err("lost connection to daemon (no response received)".to_string()),
+    }
+}
+
+fn session_stats_json(
+    session_id: &str,
+    stats: &zccache_protocol::SessionStats,
+) -> serde_json::Value {
+    let total = stats.hits + stats.misses;
+    let hit_rate = if total > 0 {
+        Some(stats.hits as f64 / total as f64)
+    } else {
+        None
+    };
+    serde_json::json!({
+        "status": "ok",
+        "session_id": session_id,
+        "duration_ms": stats.duration_ms,
+        "compilations": stats.compilations,
+        "hits": stats.hits,
+        "misses": stats.misses,
+        "non_cacheable": stats.non_cacheable,
+        "errors": stats.errors,
+        "time_saved_ms": stats.time_saved_ms,
+        "unique_sources": stats.unique_sources,
+        "bytes_read": stats.bytes_read,
+        "bytes_written": stats.bytes_written,
+        "hit_rate": hit_rate,
+    })
+}
+
 fn print_rust_plan_summary(summary: &RustPlanSummary, json: bool) {
     if json {
         match serde_json::to_string_pretty(summary) {
@@ -1919,6 +2062,9 @@ fn print_rust_plan_summary(summary: &RustPlanSummary, json: bool) {
     }
     for mismatch in &summary.key_input_mismatches {
         println!("  mismatch: {mismatch}");
+    }
+    if let Some(stats) = &summary.compile_cache_stats {
+        println!("  compile cache stats: {stats}");
     }
 }
 
@@ -3178,6 +3324,12 @@ mod tests {
             "plan.json",
             "--backend",
             "local",
+            "--session-id",
+            "session-123",
+            "--endpoint",
+            "tcp:127.0.0.1:9",
+            "--journal",
+            "session.jsonl",
             "--cache-dir",
             ".cache/rust-plan",
         ])
@@ -3187,6 +3339,9 @@ mod tests {
             Some(Commands::RustPlan {
                 action: RustPlanCommands::Restore {
                     backend: RustPlanBackendArg::Local,
+                    session_id: Some(_),
+                    endpoint: Some(_),
+                    journal: Some(_),
                     ..
                 }
             })
@@ -3211,6 +3366,29 @@ mod tests {
                 }
             })
         ));
+    }
+
+    #[test]
+    fn rust_plan_session_stats_json_separates_compile_cache_stats() {
+        let stats = zccache_protocol::SessionStats {
+            duration_ms: 1000,
+            compilations: 10,
+            hits: 7,
+            misses: 3,
+            non_cacheable: 2,
+            errors: 1,
+            time_saved_ms: 250,
+            unique_sources: 8,
+            bytes_read: 1024,
+            bytes_written: 2048,
+        };
+        let json = session_stats_json("session-123", &stats);
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["session_id"], "session-123");
+        assert_eq!(json["compilations"], 10);
+        assert_eq!(json["hits"], 7);
+        assert_eq!(json["misses"], 3);
+        assert_eq!(json["hit_rate"].as_f64().unwrap(), 0.7);
     }
 
     #[test]
