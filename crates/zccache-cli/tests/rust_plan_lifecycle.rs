@@ -242,6 +242,60 @@ fn rust_plan_for_workspace(root: &Path, target_dir: &Path) -> RustArtifactPlanV1
     }
 }
 
+fn write_synthetic_full_target(target_dir: &Path) {
+    let debug = target_dir.join("debug");
+    write_file(&debug.join("app"), "workspace executable");
+    write_file(&debug.join("deps/libapp-abc.rlib"), "workspace rlib");
+    write_file(&debug.join("deps/app-abc.d"), "workspace depinfo");
+    write_file(&debug.join("deps/libdep-abc.rmeta"), "dependency rmeta");
+    write_file(
+        &debug.join(".fingerprint/app-abc/dep-lib-app"),
+        "workspace fingerprint",
+    );
+    write_file(&debug.join("build/app-abc/output"), "build metadata");
+    write_file(
+        &debug.join("build/app-abc/out/generated.rs"),
+        "generated output",
+    );
+    write_file(
+        &debug.join("incremental/app-abc/session-state.bin"),
+        "transient incremental state",
+    );
+}
+
+fn synthetic_full_plan(root: &Path, target_dir: &Path) -> RustArtifactPlanV1 {
+    RustArtifactPlanV1 {
+        schema_version: 1,
+        mode: RustPlanMode::Full,
+        workspace_root: root.into(),
+        target_dir: target_dir.into(),
+        toolchain: RustToolchainIdentity {
+            rustc: "rustc 1.0.0-test".to_string(),
+            cargo: "cargo 1.0.0-test".to_string(),
+            channel: "test".to_string(),
+            host: "x86_64-unknown-test".to_string(),
+        },
+        target_triple: "x86_64-unknown-test".to_string(),
+        profile: "debug".to_string(),
+        inputs: RustPlanInputs {
+            features_hash: hash_str("default"),
+            rustflags_hash: hash_str(""),
+            env_hash: hash_str(""),
+            lockfile_hash: hash_str("synthetic lockfile"),
+            cargo_config_hash: hash_str(""),
+            manifest_hashes: vec![hash_str("synthetic manifest")],
+        },
+        packages: RustPlanPackages {
+            selected_package_ids: vec!["app 0.1.0".to_string()],
+            workspace_package_ids: vec!["app 0.1.0".to_string()],
+            excluded_path_package_ids: vec![],
+        },
+        allowed_artifact_classes: vec![],
+        cache_schema_version: 1,
+        journal_log_path: None,
+    }
+}
+
 fn json_u64(value: &Value, key: &str) -> u64 {
     value
         .get(key)
@@ -254,6 +308,113 @@ fn json_str<'a>(value: &'a Value, key: &str) -> &'a str {
         .get(key)
         .and_then(Value::as_str)
         .unwrap_or_else(|| panic!("missing string field {key}"))
+}
+
+fn json_object<'a>(value: &'a Value, key: &str) -> &'a serde_json::Map<String, Value> {
+    value
+        .get(key)
+        .and_then(Value::as_object)
+        .unwrap_or_else(|| panic!("missing object field {key}"))
+}
+
+#[test]
+fn rust_plan_full_mode_cli_restores_target_tree_and_prunes_incremental() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    let target_dir = root.join("target");
+    let cache_dir = root.join("cache");
+
+    write_synthetic_full_target(&target_dir);
+
+    let plan = synthetic_full_plan(root, &target_dir);
+    let plan_path = root.join("rust-plan-full.json");
+    write_file(
+        &plan_path,
+        &serde_json::to_string_pretty(&plan).expect("serialize plan"),
+    );
+
+    let plan_path_str = plan_path.to_string_lossy().to_string();
+    let cache_dir_str = cache_dir.to_string_lossy().to_string();
+
+    let save = run_rust_plan(&[
+        "save",
+        "--plan",
+        &plan_path_str,
+        "--json",
+        "--backend",
+        "local",
+        "--cache-dir",
+        &cache_dir_str,
+    ]);
+    assert_eq!(json_str(&save, "operation"), "save");
+    assert_eq!(json_str(&save, "mode"), "full");
+    assert_eq!(json_u64(&save, "saved_file_count"), 7);
+    assert!(json_u64(&save, "saved_bytes") > 0);
+    assert_eq!(
+        save.get("skipped_reasons")
+            .and_then(|reasons| reasons.get("transient_state"))
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+
+    fs::remove_dir_all(&target_dir).expect("remove target dir");
+
+    let restore = run_rust_plan(&[
+        "restore",
+        "--plan",
+        &plan_path_str,
+        "--json",
+        "--backend",
+        "local",
+        "--cache-dir",
+        &cache_dir_str,
+    ]);
+    assert_eq!(json_str(&restore, "operation"), "restore");
+    assert_eq!(json_str(&restore, "mode"), "full");
+    assert_eq!(json_u64(&restore, "restored_file_count"), 7);
+    assert!(json_u64(&restore, "restored_bytes") > 0);
+
+    let effectiveness = json_object(&restore, "target_artifact_effectiveness");
+    assert_eq!(
+        effectiveness
+            .get("eligible_file_count")
+            .and_then(Value::as_u64),
+        Some(7)
+    );
+    assert_eq!(
+        effectiveness
+            .get("restored_file_count")
+            .and_then(Value::as_u64),
+        Some(7)
+    );
+    assert_eq!(
+        effectiveness.get("reuse_ratio").and_then(Value::as_f64),
+        Some(1.0)
+    );
+    assert!(
+        restore
+            .get("compile_cache_stats")
+            .is_some_and(Value::is_null),
+        "target artifact effectiveness must be reported separately from compile-cache stats"
+    );
+
+    assert!(target_dir.join("debug/app").exists());
+    assert!(target_dir.join("debug/deps/libapp-abc.rlib").exists());
+    assert!(target_dir.join("debug/deps/app-abc.d").exists());
+    assert!(target_dir.join("debug/deps/libdep-abc.rmeta").exists());
+    assert!(target_dir
+        .join("debug/.fingerprint/app-abc/dep-lib-app")
+        .exists());
+    assert!(target_dir.join("debug/build/app-abc/output").exists());
+    assert!(target_dir
+        .join("debug/build/app-abc/out/generated.rs")
+        .exists());
+    assert!(
+        !target_dir
+            .join("debug/incremental/app-abc/session-state.bin")
+            .exists(),
+        "full-mode restore should still prune transient incremental state"
+    );
 }
 
 #[test]
