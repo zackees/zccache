@@ -66,6 +66,23 @@ fn run_rust_plan(args: &[&str]) -> Value {
     serde_json::from_slice(&output.stdout).expect("parse rust-plan JSON")
 }
 
+fn run_rust_plan_failure(args: &[&str]) -> Output {
+    let output = {
+        let mut cmd = Command::new(zccache_bin());
+        cmd.args(["rust-plan"]);
+        cmd.args(args);
+        cmd.output()
+            .unwrap_or_else(|err| panic!("failed to run zccache rust-plan: {err}"))
+    };
+    assert!(
+        !output.status.success(),
+        "zccache rust-plan unexpectedly succeeded\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
 fn run_cargo_build(root: &Path, target_dir: &Path, verbose: bool) -> Output {
     let mut cmd = Command::new(cargo_bin());
     cmd.current_dir(root);
@@ -315,6 +332,64 @@ fn json_object<'a>(value: &'a Value, key: &str) -> &'a serde_json::Map<String, V
         .get(key)
         .and_then(Value::as_object)
         .unwrap_or_else(|| panic!("missing object field {key}"))
+}
+
+#[test]
+fn rust_plan_validate_json_reports_compatibility_error_without_cache_mutation() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    let cache_dir = root.join("cache");
+    let plan_path = root.join("bad-rust-plan.json");
+
+    write_file(
+        &plan_path,
+        r#"{
+  "schema_version": 999,
+  "cache_schema_version": 1
+}
+"#,
+    );
+
+    let plan_path_str = plan_path.to_string_lossy().to_string();
+    let cache_dir_str = cache_dir.to_string_lossy().to_string();
+    let output = run_rust_plan_failure(&[
+        "validate",
+        "--plan",
+        &plan_path_str,
+        "--json",
+        "--cache-dir",
+        &cache_dir_str,
+    ]);
+
+    let summary: Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|err| panic!("parse rust-plan failure JSON: {err}"));
+    assert_eq!(json_str(&summary, "operation"), "validate");
+
+    let compatibility = json_object(&summary, "compatibility");
+    assert_eq!(
+        compatibility.get("status").and_then(Value::as_str),
+        Some("error")
+    );
+    let error_text = compatibility
+        .get("errors")
+        .and_then(Value::as_array)
+        .expect("compatibility errors")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        error_text.contains("unsupported Rust artifact plan schema version 999"),
+        "unexpected compatibility error: {error_text}"
+    );
+    assert!(
+        error_text.contains("supported version is 1"),
+        "compatibility error should identify the supported schema version: {error_text}"
+    );
+    assert!(
+        !cache_dir.exists(),
+        "validate compatibility failures should not create or mutate the cache directory"
+    );
 }
 
 #[test]
