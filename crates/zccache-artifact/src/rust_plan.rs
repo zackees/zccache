@@ -262,7 +262,10 @@ pub struct RustPlanSummary {
     pub skipped_samples: Vec<RustPlanSkippedSample>,
     #[serde(default)]
     pub key_input_mismatches: Vec<String>,
+    pub backend: String,
     pub cache_key: String,
+    pub backend_cache_key: Option<String>,
+    pub backend_cache_version: Option<String>,
     pub archive_path: Option<NormalizedPath>,
     pub journal_log_path: Option<NormalizedPath>,
     pub target_artifact_effectiveness: RustPlanArtifactEffectiveness,
@@ -306,7 +309,10 @@ impl RustPlanSummary {
             skipped_reasons: BTreeMap::new(),
             skipped_samples: Vec::new(),
             key_input_mismatches: Vec::new(),
+            backend: "unknown".to_string(),
             cache_key: String::new(),
+            backend_cache_key: None,
+            backend_cache_version: None,
             archive_path: None,
             journal_log_path: None,
             target_artifact_effectiveness: RustPlanArtifactEffectiveness {
@@ -344,7 +350,10 @@ impl RustPlanSummary {
             skipped_reasons: BTreeMap::new(),
             skipped_samples: Vec::new(),
             key_input_mismatches: Vec::new(),
+            backend: "local".to_string(),
             cache_key,
+            backend_cache_key: None,
+            backend_cache_version: None,
             archive_path,
             journal_log_path,
             target_artifact_effectiveness: RustPlanArtifactEffectiveness {
@@ -365,6 +374,23 @@ impl RustPlanSummary {
                 reason: reason.to_string(),
             });
         }
+    }
+
+    /// Record a skipped artifact or backend miss in an operation summary.
+    pub fn record_skip(&mut self, path: impl Into<String>, reason: &'static str) {
+        self.skip(path, reason);
+    }
+
+    /// Set the backend identity fields in an operation summary.
+    pub fn set_backend(
+        &mut self,
+        backend: impl Into<String>,
+        backend_cache_key: Option<String>,
+        backend_cache_version: Option<String>,
+    ) {
+        self.backend = backend.into();
+        self.backend_cache_key = backend_cache_key;
+        self.backend_cache_version = backend_cache_version;
     }
 
     fn refresh_effectiveness(&mut self, eligible: u64) {
@@ -1038,6 +1064,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let plan = sample_plan(dir.path(), RustPlanMode::Thin);
         let summary = restore_rust_plan_local(&plan, &dir.path().join("cache")).unwrap();
+        assert_eq!(summary.backend, "local");
         assert_eq!(summary.restored_file_count, 0);
         assert_eq!(
             summary
@@ -1045,6 +1072,30 @@ mod tests {
                 .get("artifact_absent_from_restored_plan"),
             Some(&1)
         );
+    }
+
+    #[test]
+    fn summary_records_backend_identity_and_manual_skips() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = sample_plan(dir.path(), RustPlanMode::Thin);
+        let mut summary = RustPlanSummary::validation_success(&plan, &dir.path().join("cache"));
+        assert_eq!(summary.backend, "local");
+        assert!(summary.backend_cache_key.is_none());
+
+        summary.set_backend(
+            "gha",
+            Some("rust-plan-v1-key".to_string()),
+            Some("version".to_string()),
+        );
+        summary.record_skip("<gha-cache>", "backend_cache_miss");
+
+        assert_eq!(summary.backend, "gha");
+        assert_eq!(
+            summary.backend_cache_key.as_deref(),
+            Some("rust-plan-v1-key")
+        );
+        assert_eq!(summary.backend_cache_version.as_deref(), Some("version"));
+        assert_eq!(summary.skipped_reasons.get("backend_cache_miss"), Some(&1));
     }
 
     #[test]

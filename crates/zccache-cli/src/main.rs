@@ -1884,19 +1884,26 @@ fn resolve_rust_plan_backend(backend: RustPlanBackendArg) -> RustPlanBackendArg 
     }
 }
 
+fn rust_plan_gha_version(cache_key: &str) -> String {
+    GhaCache::version_hash(&["zccache-rust-plan-v1", cache_key])
+}
+
 async fn restore_rust_plan_gha(
     plan: &RustArtifactPlanV1,
     cache_dir: &Path,
 ) -> Result<RustPlanSummary, RustPlanError> {
     let cache_key = rust_plan_cache_key(plan);
-    let version = GhaCache::version_hash(&["zccache-rust-plan-v1", &cache_key]);
+    let version = rust_plan_gha_version(&cache_key);
     let cache = GhaCache::from_env().map_err(rust_plan_gha_error)?;
     let Some(data) = cache
         .restore(&cache_key, &version)
         .await
         .map_err(rust_plan_gha_error)?
     else {
-        return restore_rust_plan_local(plan, cache_dir);
+        let mut summary = restore_rust_plan_local(plan, cache_dir)?;
+        summary.set_backend("gha", Some(cache_key), Some(version));
+        summary.record_skip("<gha-cache>", "backend_cache_miss");
+        return Ok(summary);
     };
 
     let bundle_dir = rust_plan_bundle_dir(cache_dir, &cache_key);
@@ -1908,7 +1915,9 @@ async fn restore_rust_plan_gha(
         .ok_or_else(|| RustPlanError::InvalidPlan("invalid rust-plan bundle path".to_string()))?;
     std::fs::create_dir_all(bundle_parent)?;
     tar_gz_decode(&data, bundle_parent)?;
-    restore_rust_plan_local(plan, cache_dir)
+    let mut summary = restore_rust_plan_local(plan, cache_dir)?;
+    summary.set_backend("gha", Some(cache_key), Some(version));
+    Ok(summary)
 }
 
 async fn save_rust_plan_gha(
@@ -1919,12 +1928,14 @@ async fn save_rust_plan_gha(
     let cache_key = summary.cache_key.clone();
     let bundle_dir = rust_plan_bundle_dir(cache_dir, &cache_key);
     let data = tar_gz_encode(&bundle_dir)?;
-    let version = GhaCache::version_hash(&["zccache-rust-plan-v1", &cache_key]);
+    let version = rust_plan_gha_version(&cache_key);
     let cache = GhaCache::from_env().map_err(rust_plan_gha_error)?;
     cache
         .save(&cache_key, &version, &data)
         .await
         .map_err(rust_plan_gha_error)?;
+    let mut summary = summary;
+    summary.set_backend("gha", Some(cache_key), Some(version));
     Ok(summary)
 }
 
@@ -2036,7 +2047,14 @@ fn print_rust_plan_summary(summary: &RustPlanSummary, json: bool) {
         summary.compatibility.status
     );
     println!("  mode: {}", summary.mode);
+    println!("  backend: {}", summary.backend);
     println!("  cache key: {}", summary.cache_key);
+    if let Some(key) = &summary.backend_cache_key {
+        println!("  backend cache key: {key}");
+    }
+    if let Some(version) = &summary.backend_cache_version {
+        println!("  backend cache version: {version}");
+    }
     if let Some(path) = &summary.archive_path {
         println!("  bundle: {}", path.display());
     }
@@ -3389,6 +3407,13 @@ mod tests {
         assert_eq!(json["hits"], 7);
         assert_eq!(json["misses"], 3);
         assert_eq!(json["hit_rate"].as_f64().unwrap(), 0.7);
+    }
+
+    #[test]
+    fn rust_plan_gha_version_is_stable_for_backend_diagnostics() {
+        let key = "rust-plan-v1-test";
+        assert_eq!(rust_plan_gha_version(key), rust_plan_gha_version(key));
+        assert_ne!(rust_plan_gha_version(key), rust_plan_gha_version("other"));
     }
 
     #[test]
