@@ -1,8 +1,9 @@
 # Rust Artifact Plan Contract
 
-This document defines the zccache-side contract for Rust artifact plan execution. It is intentionally about ownership, semantics, and diagnostics rather than Rust compiler integration details.
-
-The goal is to let `soldr` produce a versioned Rust build plan and let `zccache` execute that plan by restoring and saving artifacts without having to re-derive Cargo workspace semantics from scratch.
+This document defines the implemented zccache-side contract for Rust artifact
+plan execution. `soldr` produces a versioned Rust build plan, and `zccache`
+validates that plan, restores or saves target artifacts, owns the bundle format,
+integrates with cache backends, and reports machine-readable diagnostics.
 
 ---
 
@@ -28,13 +29,16 @@ The goal is to let `soldr` produce a versioned Rust build plan and let `zccache`
 - Public action inputs.
 - CI presentation and user-facing wiring.
 
-The important boundary is that zccache consumes a structured plan. It should validate that plan, execute it, and report what happened. It should not need to infer the whole Cargo workspace model for the MVP.
+The important boundary is that zccache consumes a structured plan. It validates
+the plan, executes it, and reports what happened. It does not infer the full
+Cargo workspace model by itself.
 
 ---
 
 ## Plan Inputs
 
-The plan is versioned and should carry the minimum information needed for deterministic restore/save decisions:
+The v1 JSON plan carries the minimum information needed for deterministic
+restore/save decisions:
 
 - selected mode: `thin` or `full`
 - workspace root
@@ -48,8 +52,54 @@ The plan is versioned and should carry the minimum information needed for determ
 - workspace and path dependency exclusions
 - allowed artifact classes
 - cache schema version
+- optional journal/log path
 
-zccache should treat these fields as the source of truth for compatibility checks and plan execution. When a plan is unsupported, the failure should be explicit and versioned.
+The implemented top-level shape is:
+
+```json
+{
+  "schema_version": 1,
+  "mode": "thin",
+  "workspace_root": "/repo",
+  "target_dir": "/repo/target",
+  "toolchain": {
+    "rustc": "rustc 1.94.1 ...",
+    "cargo": "cargo 1.94.1 ...",
+    "channel": "1.94.1",
+    "host": "x86_64-unknown-linux-gnu"
+  },
+  "target_triple": "x86_64-unknown-linux-gnu",
+  "profile": "debug",
+  "inputs": {
+    "features_hash": "...",
+    "rustflags_hash": "...",
+    "env_hash": "...",
+    "lockfile_hash": "...",
+    "cargo_config_hash": "...",
+    "manifest_hashes": []
+  },
+  "packages": {
+    "selected_package_ids": [],
+    "workspace_package_ids": [],
+    "excluded_path_package_ids": []
+  },
+  "allowed_artifact_classes": [
+    "rlib",
+    "rmeta",
+    "dep_info",
+    "cargo_fingerprint",
+    "build_script_metadata",
+    "build_script_output"
+  ],
+  "cache_schema_version": 1,
+  "journal_log_path": "/repo/.zccache/session.jsonl"
+}
+```
+
+zccache treats these fields as the source of truth for compatibility checks and
+plan execution. Unsupported `schema_version` or `cache_schema_version` values
+fail before filesystem mutation with a JSON compatibility error when `--json`
+is supplied.
 
 ---
 
@@ -57,119 +107,179 @@ zccache should treat these fields as the source of truth for compatibility check
 
 ### `thin`
 
-`thin` is the bounded dependency-artifact mode.
+`thin` is the bounded dependency-artifact mode and is the integration default
+expected from `soldr` and `setup-soldr`. zccache still requires the plan to say
+`"mode": "thin"` explicitly; the default is applied by the producer/user-facing
+integration layer, not by guessing inside zccache.
 
 It is intended to restore and save the subset of artifacts needed to make dependency crates fresh without recreating unsafe transient state. In practice, that means:
 
 - only the artifact classes explicitly allowed by the plan are eligible
-- transient build state stays out of the bundle
-- restore should be conservative when a field is missing or mismatched
-- save should only persist what the plan says is safe to reuse
+- `rlib`, `rmeta`, `.d`, shared library/proc-macro outputs, Cargo
+  `.fingerprint/**`, and selected build-script metadata/output can be cached
+  when allowed
+- workspace and path dependency outputs named by the plan are excluded
+- `target/**/incremental/**` and other transient state stay out of the bundle
+- restore is conservative when a field is missing or mismatched
+- save only persists what the plan says is safe to reuse
 
 `thin` is the mode that supports the common CI flow: restore dependency artifacts, rebuild only the workspace crates that actually changed, and then save the updated reusable state.
 
 ### `full`
 
-`full` is explicit whole-target caching.
+`full` is explicit whole-target caching and must be requested by the plan.
 
-It is the mode for a plan that wants the full target artifact set restored and saved as a unit. Unlike `thin`, `full` does not try to stay narrow. It still remains plan-driven: zccache saves and restores exactly what the plan describes, not whatever it can infer opportunistically.
+It is the mode for a plan that wants the target artifact set restored and saved
+as a unit. Unlike `thin`, `full` does not try to stay narrow. It still remains
+plan-driven: zccache saves and restores exactly what the plan describes, while
+pruning transient `incremental` state.
 
 ### Shared rule
 
-Both modes are bounded by the plan. zccache should not guess at Cargo semantics beyond the inputs it is given.
+Both modes are bounded by the plan. zccache does not guess at Cargo semantics
+beyond the inputs it is given.
 
 ---
 
-## Backend Direction
+## CLI Contract
+
+The stable CLI surface for `soldr` and `setup-soldr` is:
+
+```text
+zccache rust-plan validate --plan <plan.json> [--json] [--cache-dir <dir>] [--session-id <id>] [--endpoint <ipc>] [--journal <path.jsonl>]
+zccache rust-plan restore  --plan <plan.json> [--json] [--backend auto|local|gha] [--cache-dir <dir>] [--session-id <id>] [--endpoint <ipc>] [--journal <path.jsonl>]
+zccache rust-plan save     --plan <plan.json> [--json] [--backend auto|local|gha] [--cache-dir <dir>] [--session-id <id>] [--endpoint <ipc>] [--journal <path.jsonl>]
+```
+
+Command behavior:
+
+- `validate` checks that a versioned Rust plan is supported and internally
+  consistent, but makes no cache changes.
+- `restore` applies the plan against the selected backend and restores eligible
+  artifacts into `target_dir`.
+- `save` captures eligible artifacts from `target_dir` and persists them through
+  the selected backend.
+- `--json` prints the machine-readable summary or compatibility failure shape.
+- `--backend auto` is the default for `restore` and `save`; it uses GHA cache
+  when the GitHub Actions cache runtime is available and otherwise falls back to
+  local.
+- `--backend local` uses the zccache local bundle directory.
+- `--backend gha` uses the GitHub Actions cache backend with the same bundle
+  contract.
+- `--cache-dir` selects the local bundle root; the bundle is stored under
+  `<cache-dir>/rust-plan/<cache_key>/`.
+- `--session-id` asks the daemon for compile-cache stats for that session.
+- `--endpoint` selects the daemon IPC endpoint used for session stats lookup.
+- `--journal` reports a JSONL journal/log path in the summary, overriding the
+  path carried by the plan.
+
+---
+
+## Bundle and Backends
 
 ### Local backend
 
-The local backend is the primary backend. It owns the on-disk artifact store and the same bundle format used by restore and save.
+The local backend is the reference backend. It writes a zccache-owned bundle at:
 
-That means local cache behavior should be the reference implementation for:
+```text
+<cache-dir>/rust-plan/<cache_key>/
+  manifest.json
+  files/<normalized target-relative artifact paths>
+```
 
-- archive layout
-- integrity checks
-- manifest handling
-- size accounting
-- reuse diagnostics
+`manifest.json` records the manifest schema version, plan schema version, cache
+schema version, mode, cache key, creation time, plan identity hash, and artifact
+entries. Each artifact entry records the normalized target-relative path, class,
+size, and content hash.
+
+Restore validates manifest compatibility, prevents path traversal, verifies
+payload size and content hash, recreates parent directories, and refreshes file
+times so Cargo sees a coherent restored tree.
 
 ### GitHub Actions backend
 
-The GHA backend is a transport / persistence adapter around the same artifact contract.
-
-The design direction is:
-
-- local and GHA backends share the same artifact format
-- GHA is an export/import path, not a separate artifact model
-- cache compatibility should be decided from the plan and the bundle metadata, not from backend-specific assumptions
-- backend failures should surface as diagnostics, not silent reuse misses
-
-This keeps the backend choice orthogonal to the Rust plan semantics. zccache owns the format; the backend only determines where the bundle lives.
+The GHA backend is a transport/persistence adapter around the same artifact
+contract. It uses the plan cache key plus the GHA cache version hash for backend
+identity, imports/export bundles through the local bundle path, and reports
+backend misses as diagnostics. Backend choice is orthogonal to Rust plan
+semantics: zccache owns the format, and the backend only determines where the
+bundle lives.
 
 ---
 
 ## Diagnostics
 
-zccache is the authoritative source for whether plan reuse worked.
+zccache is the authoritative source for whether plan reuse worked. The JSON
+summary is emitted for all operations when `--json` is supplied. Important
+fields include:
 
-For every session, the user should be able to inspect:
+- `operation`: `validate`, `restore`, or `save`
+- `mode`: `thin` or `full`
+- `plan_schema_version` and `cache_schema_version`
+- `compatibility.status` and `compatibility.errors`
+- `restored_file_count` and `restored_bytes`
+- `saved_file_count` and `saved_bytes`
+- `skipped_count`, `skipped_reasons`, and `skipped_samples`
+- `key_input_mismatches`
+- `backend`: `local`, `gha`, or `unknown` for early compatibility failures
+- `cache_key`
+- `backend_cache_key` and `backend_cache_version`
+- `archive_path`
+- `journal_log_path`
+- `target_artifact_effectiveness.eligible_file_count`
+- `target_artifact_effectiveness.restored_file_count`
+- `target_artifact_effectiveness.reuse_ratio`
+- `compile_cache_stats`
 
-- restored artifact count and bytes
-- saved artifact count and bytes
-- skipped artifacts and skip reasons
-- compile-cache hits and misses
-- target artifact hits and misses
-- plan or schema compatibility failures
-- key input mismatches
-- journal or log path for detailed audit
+Common skip and miss reasons include:
 
-When reuse is unexpectedly low, the diagnostics should be able to classify misses into a small set of useful reasons:
+- `artifact_absent_from_restored_plan`
+- `artifact_class_disallowed_by_plan`
+- `workspace_or_path_dependency_excluded_by_plan`
+- `transient_state`
+- `outside_target_dir`
+- `path_traversal`
+- `restored_payload_missing_or_corrupt`
+- `backend_cache_miss`
 
-- artifact absent from the restored plan
-- Cargo fingerprint dirty
-- toolchain, profile, `rustflags`, or target mismatch
-- build-script output or fingerprint mismatch
-- compile-cache miss even though the `rustc` command was equivalent
+`key_input_mismatches` reports bundle/plan mismatches such as cache key, mode,
+or input hash differences. Unsupported plan or cache schema versions appear as
+compatibility errors.
 
-The important nuance is that a successful thin restore can make dependency `rustc` invocations disappear entirely because Cargo considers those dependencies fresh. For that reason, compile-cache hit rate alone is not enough. zccache must report artifact restore effectiveness separately from `rustc` compile-cache reuse.
+`compile_cache_stats` is populated only when `--session-id` is supplied and the
+daemon can return that session. It is intentionally separate from
+`target_artifact_effectiveness`: a successful thin restore can make dependency
+`rustc` invocations disappear entirely because Cargo considers those
+dependencies fresh. That is an artifact-cache success even if compile-cache hit
+rate is low or unchanged.
 
 ---
 
-## Proposed CLI
+## Integration Flow
 
-The proposed CLI shape is:
+Expected CI flow:
 
-```text
-zccache rust-plan validate
-zccache rust-plan restore
-zccache rust-plan save
-```
-
-The commands are intentionally narrow:
-
-- `validate` checks that a versioned Rust plan is supported and internally consistent, but makes no cache changes.
-- `restore` applies the plan against the selected backend and restores eligible artifacts.
-- `save` captures eligible artifacts and persists or exports them according to the backend.
-
-Suggested behavior:
-
-- all three commands should emit structured diagnostics
-- `validate` should fail fast on schema or compatibility errors
-- `restore` should report what was restored, what was skipped, and why
-- `save` should report what was persisted, what was rejected, and why
-
-This CLI is a contract proposal. The exact flags and plan-file plumbing can be finalized later, but the mode split should remain stable because it maps directly to the ownership boundary and to the CI flow.
+1. `setup-soldr` exposes a user-facing cache mode. `thin` is the default;
+   `full` is explicit.
+2. `soldr` resolves Cargo metadata/workspace intent and writes a v1 plan with
+   `mode` set.
+3. `soldr` runs `zccache rust-plan restore --plan <plan> --json --backend auto`.
+4. Cargo builds through the zccache session/wrapper.
+5. `soldr` runs `zccache rust-plan save --plan <plan> --json --backend auto`.
+6. `setup-soldr` presents the zccache JSON summaries in CI output.
 
 ---
 
 ## Acceptance Shape
 
-The implementation is on the right track when:
+The implemented zccache side satisfies the contract when:
 
 - zccache accepts and validates a versioned Rust artifact plan
-- `thin` and `full` are distinct and documented execution modes
+- `thin` is the soldr/setup-soldr default mode and `full` is explicit
+- `thin` and `full` are distinct execution modes
 - local and GHA behavior share the same artifact format
-- restore/save outcomes are visible in session stats and journals
-- miss diagnostics explain whether reuse failed because of the plan, the backend, or the underlying Cargo / `rustc` inputs
-
+- zccache owns the bundle/cache format and backend behavior
+- restore/save outcomes are visible in machine-readable summaries
+- artifact restore effectiveness is reported separately from compile-cache stats
+- miss diagnostics explain whether reuse failed because of the plan, the bundle,
+  the backend, or the underlying Cargo/`rustc` inputs
