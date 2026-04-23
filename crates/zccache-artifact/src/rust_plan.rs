@@ -551,7 +551,28 @@ pub fn restore_rust_plan_local(
                 continue;
             }
         };
-        if !src.exists() {
+        let Ok(metadata) = std::fs::metadata(&src) else {
+            summary.skip(
+                &artifact.relative_path,
+                "restored_payload_missing_or_corrupt",
+            );
+            continue;
+        };
+        if metadata.len() != artifact.size {
+            summary.skip(
+                &artifact.relative_path,
+                "restored_payload_missing_or_corrupt",
+            );
+            continue;
+        }
+        let Ok(content_hash) = zccache_hash::hash_file(&src).map(|hash| hash.to_hex()) else {
+            summary.skip(
+                &artifact.relative_path,
+                "restored_payload_missing_or_corrupt",
+            );
+            continue;
+        };
+        if content_hash != artifact.content_hash {
             summary.skip(
                 &artifact.relative_path,
                 "restored_payload_missing_or_corrupt",
@@ -890,6 +911,17 @@ mod tests {
         std::fs::write(path, bytes).unwrap();
     }
 
+    fn load_manifest(bundle_dir: &Path) -> RustArtifactBundleManifest {
+        let manifest_path = bundle_dir.join(BUNDLE_MANIFEST_NAME);
+        serde_json::from_slice(&std::fs::read(manifest_path).unwrap()).unwrap()
+    }
+
+    fn write_manifest(bundle_dir: &Path, manifest: &RustArtifactBundleManifest) {
+        let manifest_path = bundle_dir.join(BUNDLE_MANIFEST_NAME);
+        let bytes = serde_json::to_vec_pretty(manifest).unwrap();
+        std::fs::write(manifest_path, bytes).unwrap();
+    }
+
     fn synthetic_target(root: &Path) {
         let target = root.join("target").join("debug");
         write(
@@ -1013,6 +1045,68 @@ mod tests {
                 .get("artifact_absent_from_restored_plan"),
             Some(&1)
         );
+    }
+
+    #[test]
+    fn restore_skips_missing_wrong_size_and_wrong_hash_payloads() {
+        let dir = tempfile::tempdir().unwrap();
+        synthetic_target(dir.path());
+        let plan = sample_plan(dir.path(), RustPlanMode::Thin);
+        let cache = dir.path().join("cache");
+
+        let saved = save_rust_plan_local(&plan, &cache).unwrap();
+        assert_eq!(saved.saved_file_count, 6);
+
+        let bundle_dir = rust_plan_bundle_dir(&cache, &rust_plan_cache_key(&plan));
+        let mut manifest = load_manifest(&bundle_dir);
+
+        std::fs::remove_file(
+            bundle_dir
+                .join(BUNDLE_FILES_DIR)
+                .join("debug/deps/libserde-abc.rlib"),
+        )
+        .unwrap();
+        manifest.artifacts[1].size += 1;
+        manifest.artifacts[2].content_hash = "not-the-right-hash".to_string();
+        write_manifest(&bundle_dir, &manifest);
+
+        std::fs::remove_dir_all(plan.target_dir.as_path()).unwrap();
+        let restored = restore_rust_plan_local(&plan, &cache).unwrap();
+
+        assert_eq!(restored.restored_file_count, 3);
+        assert_eq!(
+            restored
+                .skipped_reasons
+                .get("restored_payload_missing_or_corrupt"),
+            Some(&3)
+        );
+        assert!(!plan
+            .target_dir
+            .join("debug/deps/libserde-abc.rlib")
+            .exists());
+    }
+
+    #[test]
+    fn restore_skips_manifest_path_traversal_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        synthetic_target(dir.path());
+        let plan = sample_plan(dir.path(), RustPlanMode::Thin);
+        let cache = dir.path().join("cache");
+
+        save_rust_plan_local(&plan, &cache).unwrap();
+
+        let bundle_dir = rust_plan_bundle_dir(&cache, &rust_plan_cache_key(&plan));
+        let mut manifest = load_manifest(&bundle_dir);
+        manifest.artifacts[0].relative_path = "../escape.txt".to_string();
+        write_manifest(&bundle_dir, &manifest);
+
+        std::fs::remove_dir_all(plan.target_dir.as_path()).unwrap();
+        let restored = restore_rust_plan_local(&plan, &cache).unwrap();
+
+        assert_eq!(restored.restored_file_count, 5);
+        assert_eq!(restored.skipped_count, 1);
+        assert_eq!(restored.skipped_reasons.get("path_traversal"), Some(&1));
+        assert!(!dir.path().join("escape.txt").exists());
     }
 
     #[test]
