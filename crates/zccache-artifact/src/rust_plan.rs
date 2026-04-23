@@ -5,6 +5,7 @@ use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use zccache_core::{normalize_for_key, NormalizedPath};
 
@@ -244,7 +245,7 @@ pub struct RustPlanArtifactEffectiveness {
 }
 
 /// Machine-readable operation summary for soldr/setup-soldr.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct RustPlanSummary {
     pub operation: RustPlanOperation,
     pub mode: RustPlanMode,
@@ -262,6 +263,8 @@ pub struct RustPlanSummary {
     pub skipped_samples: Vec<RustPlanSkippedSample>,
     #[serde(default)]
     pub key_input_mismatches: Vec<String>,
+    #[serde(default)]
+    pub miss_classifications: BTreeMap<String, u64>,
     pub backend: String,
     pub cache_key: String,
     pub backend_cache_key: Option<String>,
@@ -270,6 +273,42 @@ pub struct RustPlanSummary {
     pub journal_log_path: Option<NormalizedPath>,
     pub target_artifact_effectiveness: RustPlanArtifactEffectiveness,
     pub compile_cache_stats: Option<serde_json::Value>,
+}
+
+impl Serialize for RustPlanSummary {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let miss_classifications = self.computed_miss_classifications();
+        let mut state = serializer.serialize_struct("RustPlanSummary", 22)?;
+        state.serialize_field("operation", &self.operation)?;
+        state.serialize_field("mode", &self.mode)?;
+        state.serialize_field("plan_schema_version", &self.plan_schema_version)?;
+        state.serialize_field("cache_schema_version", &self.cache_schema_version)?;
+        state.serialize_field("compatibility", &self.compatibility)?;
+        state.serialize_field("restored_file_count", &self.restored_file_count)?;
+        state.serialize_field("restored_bytes", &self.restored_bytes)?;
+        state.serialize_field("saved_file_count", &self.saved_file_count)?;
+        state.serialize_field("saved_bytes", &self.saved_bytes)?;
+        state.serialize_field("skipped_count", &self.skipped_count)?;
+        state.serialize_field("skipped_reasons", &self.skipped_reasons)?;
+        state.serialize_field("skipped_samples", &self.skipped_samples)?;
+        state.serialize_field("key_input_mismatches", &self.key_input_mismatches)?;
+        state.serialize_field("miss_classifications", &miss_classifications)?;
+        state.serialize_field("backend", &self.backend)?;
+        state.serialize_field("cache_key", &self.cache_key)?;
+        state.serialize_field("backend_cache_key", &self.backend_cache_key)?;
+        state.serialize_field("backend_cache_version", &self.backend_cache_version)?;
+        state.serialize_field("archive_path", &self.archive_path)?;
+        state.serialize_field("journal_log_path", &self.journal_log_path)?;
+        state.serialize_field(
+            "target_artifact_effectiveness",
+            &self.target_artifact_effectiveness,
+        )?;
+        state.serialize_field("compile_cache_stats", &self.compile_cache_stats)?;
+        state.end()
+    }
 }
 
 impl RustPlanSummary {
@@ -309,6 +348,7 @@ impl RustPlanSummary {
             skipped_reasons: BTreeMap::new(),
             skipped_samples: Vec::new(),
             key_input_mismatches: Vec::new(),
+            miss_classifications: BTreeMap::new(),
             backend: "unknown".to_string(),
             cache_key: String::new(),
             backend_cache_key: None,
@@ -350,6 +390,7 @@ impl RustPlanSummary {
             skipped_reasons: BTreeMap::new(),
             skipped_samples: Vec::new(),
             key_input_mismatches: Vec::new(),
+            miss_classifications: BTreeMap::new(),
             backend: "local".to_string(),
             cache_key,
             backend_cache_key: None,
@@ -374,6 +415,7 @@ impl RustPlanSummary {
                 reason: reason.to_string(),
             });
         }
+        self.refresh_miss_classifications();
     }
 
     /// Record a skipped artifact or backend miss in an operation summary.
@@ -401,7 +443,104 @@ impl RustPlanSummary {
         } else {
             self.restored_file_count as f64 / eligible as f64
         };
+        self.refresh_miss_classifications();
     }
+
+    /// Recompute low-reuse classifications from already-recorded diagnostics.
+    pub fn refresh_miss_classifications(&mut self) {
+        self.miss_classifications = self.computed_miss_classifications();
+    }
+
+    #[must_use]
+    pub fn computed_miss_classifications(&self) -> BTreeMap<String, u64> {
+        let mut classifications = BTreeMap::new();
+
+        for (reason, count) in &self.skipped_reasons {
+            if let Some(classification) = skip_reason_miss_classification(reason) {
+                add_miss_classification(&mut classifications, classification, *count);
+            }
+        }
+
+        for mismatch in &self.key_input_mismatches {
+            for classification in key_mismatch_classifications(mismatch) {
+                add_miss_classification(&mut classifications, classification, 1);
+            }
+        }
+
+        if let Some(stats) = &self.compile_cache_stats {
+            let misses = compile_cache_misses(stats);
+            if misses > 0 {
+                add_miss_classification(
+                    &mut classifications,
+                    "zccache_compile_cache_miss_despite_equivalent_rustc_command",
+                    misses,
+                );
+            }
+        }
+
+        classifications
+    }
+}
+
+fn add_miss_classification(
+    classifications: &mut BTreeMap<String, u64>,
+    classification: &'static str,
+    count: u64,
+) {
+    *classifications
+        .entry(classification.to_string())
+        .or_insert(0) += count;
+}
+
+fn skip_reason_miss_classification(reason: &str) -> Option<&'static str> {
+    match reason {
+        "artifact_absent_from_restored_plan" => Some("artifact_absent_from_restored_plan"),
+        "artifact_class_disallowed_by_plan" => Some("artifact_class_disallowed_by_plan"),
+        "workspace_or_path_dependency_excluded_by_plan" => {
+            Some("workspace_or_path_dependency_excluded_by_plan")
+        }
+        "restored_payload_missing_or_corrupt" => Some("restored_payload_missing_or_corrupt"),
+        "backend_cache_miss" => Some("backend_cache_miss"),
+        _ => None,
+    }
+}
+
+fn key_mismatch_classifications(mismatch: &str) -> Vec<&'static str> {
+    let lower = mismatch.to_ascii_lowercase();
+    let mut classifications = Vec::new();
+
+    if lower.contains("cache key")
+        || lower.contains("mode")
+        || lower.contains("toolchain")
+        || lower.contains("profile")
+        || lower.contains("rustflags")
+        || lower.contains("target")
+    {
+        classifications.push("toolchain_profile_rustflags_target_mismatch");
+    }
+
+    if lower.contains("cache key")
+        || lower.contains("input hash")
+        || lower.contains("lockfile")
+        || lower.contains("config")
+        || lower.contains("manifest")
+    {
+        classifications.push("lockfile_config_manifest_hash_mismatch");
+    }
+
+    classifications
+}
+
+fn compile_cache_misses(stats: &serde_json::Value) -> u64 {
+    stats
+        .get("misses")
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| {
+            stats
+                .get("cache_misses")
+                .and_then(serde_json::Value::as_u64)
+        })
+        .unwrap_or(0)
 }
 
 /// File stored in a Rust artifact bundle.
@@ -819,7 +958,6 @@ fn json_u32_field(value: &serde_json::Value, field: &'static str) -> Result<u32,
     u32::try_from(n).map_err(|_| RustPlanError::InvalidPlan(format!("{field} is too large")))
 }
 
-
 fn ensure_supported_cache_schema_version(cache_schema_version: u32) -> Result<(), RustPlanError> {
     if cache_schema_version != RUST_ARTIFACT_CACHE_SCHEMA_VERSION {
         return Err(RustPlanError::UnsupportedCacheSchemaVersion {
@@ -1132,16 +1270,20 @@ mod tests {
     #[test]
     fn omitted_or_empty_allowed_classes_default_to_thin_classes() {
         let dir = tempfile::tempdir().unwrap();
-        let mut plan_value = serde_json::to_value(sample_plan(dir.path(), RustPlanMode::Thin)).unwrap();
-
-        plan_value.as_object_mut().unwrap().remove("allowed_artifact_classes");
-        let omitted = RustArtifactPlanV1::from_json_value(plan_value.clone()).unwrap();
-        assert_eq!(omitted.effective_allowed_classes(), default_thin_classes());
+        let mut plan_value =
+            serde_json::to_value(sample_plan(dir.path(), RustPlanMode::Thin)).unwrap();
 
         plan_value
             .as_object_mut()
             .unwrap()
-            .insert("allowed_artifact_classes".to_string(), serde_json::json!([]));
+            .remove("allowed_artifact_classes");
+        let omitted = RustArtifactPlanV1::from_json_value(plan_value.clone()).unwrap();
+        assert_eq!(omitted.effective_allowed_classes(), default_thin_classes());
+
+        plan_value.as_object_mut().unwrap().insert(
+            "allowed_artifact_classes".to_string(),
+            serde_json::json!([]),
+        );
         let empty = RustArtifactPlanV1::from_json_value(plan_value).unwrap();
         assert_eq!(empty.effective_allowed_classes(), default_thin_classes());
     }
@@ -1208,6 +1350,12 @@ mod tests {
                 .get("artifact_absent_from_restored_plan"),
             Some(&1)
         );
+        assert_eq!(
+            summary
+                .miss_classifications
+                .get("artifact_absent_from_restored_plan"),
+            Some(&1)
+        );
     }
 
     #[test]
@@ -1232,6 +1380,91 @@ mod tests {
         );
         assert_eq!(summary.backend_cache_version.as_deref(), Some("version"));
         assert_eq!(summary.skipped_reasons.get("backend_cache_miss"), Some(&1));
+        assert_eq!(
+            summary.miss_classifications.get("backend_cache_miss"),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn summary_derives_miss_classifications_from_existing_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = sample_plan(dir.path(), RustPlanMode::Thin);
+        let mut summary = RustPlanSummary::validation_success(&plan, &dir.path().join("cache"));
+
+        summary.record_skip("debug/deps/app.exe", "artifact_class_disallowed_by_plan");
+        summary.record_skip(
+            "debug/deps/libapp-abc.rlib",
+            "workspace_or_path_dependency_excluded_by_plan",
+        );
+        summary
+            .key_input_mismatches
+            .push("bundle mode does not match requested plan".to_string());
+        summary
+            .key_input_mismatches
+            .push("bundle input hash does not match requested plan".to_string());
+        summary.compile_cache_stats = Some(serde_json::json!({
+            "compilations": 4,
+            "hits": 1,
+            "misses": 3,
+        }));
+        summary.refresh_miss_classifications();
+
+        assert_eq!(
+            summary
+                .miss_classifications
+                .get("artifact_class_disallowed_by_plan"),
+            Some(&1)
+        );
+        assert_eq!(
+            summary
+                .miss_classifications
+                .get("workspace_or_path_dependency_excluded_by_plan"),
+            Some(&1)
+        );
+        assert_eq!(
+            summary
+                .miss_classifications
+                .get("toolchain_profile_rustflags_target_mismatch"),
+            Some(&1)
+        );
+        assert_eq!(
+            summary
+                .miss_classifications
+                .get("lockfile_config_manifest_hash_mismatch"),
+            Some(&1)
+        );
+        assert_eq!(
+            summary
+                .miss_classifications
+                .get("zccache_compile_cache_miss_despite_equivalent_rustc_command"),
+            Some(&3)
+        );
+    }
+
+    #[test]
+    fn serialized_summary_recomputes_miss_classifications_from_session_stats() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = sample_plan(dir.path(), RustPlanMode::Thin);
+        let mut summary = RustPlanSummary::validation_success(&plan, &dir.path().join("cache"));
+        summary.record_skip("<gha-cache>", "backend_cache_miss");
+
+        summary.compile_cache_stats = Some(serde_json::json!({
+            "status": "ok",
+            "cache_misses": 2,
+        }));
+
+        let json = serde_json::to_value(&summary).unwrap();
+        assert_eq!(
+            json["miss_classifications"]["backend_cache_miss"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            json["miss_classifications"]
+                ["zccache_compile_cache_miss_despite_equivalent_rustc_command"]
+                .as_u64(),
+            Some(2)
+        );
     }
 
     #[test]
@@ -1264,6 +1497,12 @@ mod tests {
         assert_eq!(
             restored
                 .skipped_reasons
+                .get("restored_payload_missing_or_corrupt"),
+            Some(&3)
+        );
+        assert_eq!(
+            restored
+                .miss_classifications
                 .get("restored_payload_missing_or_corrupt"),
             Some(&3)
         );
@@ -1305,7 +1544,9 @@ mod tests {
     #[test]
     fn package_name_parsing_handles_cargo_package_id_shapes() {
         assert_eq!(
-            package_name_from_id("registry+https://github.com/rust-lang/crates.io-index#serde@1.0.0"),
+            package_name_from_id(
+                "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.0"
+            ),
             Some("serde".to_string())
         );
         assert_eq!(
@@ -1319,12 +1560,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         synthetic_target_with_package_exclusions(dir.path());
         let mut plan = sample_plan(dir.path(), RustPlanMode::Thin);
-        plan.packages.workspace_package_ids = vec![
-            "registry+https://github.com/rust-lang/crates.io-index#app@0.1.0".to_string(),
-        ];
-        plan.packages.excluded_path_package_ids = vec![
-            "path+file:///workspace/local_dep#local-dep@0.1.0".to_string(),
-        ];
+        plan.packages.workspace_package_ids =
+            vec!["registry+https://github.com/rust-lang/crates.io-index#app@0.1.0".to_string()];
+        plan.packages.excluded_path_package_ids =
+            vec!["path+file:///workspace/local_dep#local-dep@0.1.0".to_string()];
         let cache = dir.path().join("cache");
 
         let saved = save_rust_plan_local(&plan, &cache).unwrap();
@@ -1340,14 +1579,12 @@ mod tests {
             .skipped_samples
             .iter()
             .any(|sample| sample.path.ends_with("debug/deps/libapp-abc.rlib")));
-        assert!(saved
-            .skipped_samples
-            .iter()
-            .any(|sample| sample.path.ends_with("debug/.fingerprint/app-abc/dep-lib-app")));
-        assert!(saved
-            .skipped_samples
-            .iter()
-            .any(|sample| sample.path.ends_with("debug/build/local_dep-abc/out/gen.rs")));
+        assert!(saved.skipped_samples.iter().any(|sample| sample
+            .path
+            .ends_with("debug/.fingerprint/app-abc/dep-lib-app")));
+        assert!(saved.skipped_samples.iter().any(|sample| sample
+            .path
+            .ends_with("debug/build/local_dep-abc/out/gen.rs")));
     }
     #[test]
     fn from_json_str_accepts_utf8_bom() {
