@@ -220,6 +220,7 @@ fields include:
 - `restored_file_count` and `restored_bytes`
 - `saved_file_count` and `saved_bytes`
 - `skipped_count`, `skipped_reasons`, and `skipped_samples`
+- `miss_classifications`
 - `key_input_mismatches`
 - `backend`: `local`, `gha`, or `unknown` for early compatibility failures
 - `cache_key`
@@ -231,16 +232,21 @@ fields include:
 - `target_artifact_effectiveness.reuse_ratio`
 - `compile_cache_stats`
 
-Common skip and miss reasons include:
+`miss_classifications` folds skip reasons, key mismatches, backend misses,
+corrupt restored payloads, and compile-cache misses into stable issue-vocabulary
+diagnostics. Common classifications include:
 
 - `artifact_absent_from_restored_plan`
 - `artifact_class_disallowed_by_plan`
 - `workspace_or_path_dependency_excluded_by_plan`
-- `transient_state`
-- `outside_target_dir`
-- `path_traversal`
+- `toolchain_profile_rustflags_target_mismatch`
+- `lockfile_config_manifest_hash_mismatch`
 - `restored_payload_missing_or_corrupt`
 - `backend_cache_miss`
+- `zccache_compile_cache_miss_despite_equivalent_rustc_command`
+
+Raw skip reasons remain in `skipped_reasons`; common raw values include
+`transient_state`, `outside_target_dir`, and `path_traversal`.
 
 `key_input_mismatches` reports bundle/plan mismatches such as cache key, mode,
 or input hash differences. Unsupported plan or cache schema versions appear as
