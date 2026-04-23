@@ -18,6 +18,18 @@ fn cargo_bin() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("cargo"))
 }
 
+fn rust_plan_output<F>(args: &[&str], configure: F) -> Output
+where
+    F: FnOnce(&mut Command),
+{
+    let mut cmd = Command::new(zccache_bin());
+    cmd.args(["rust-plan"]);
+    cmd.args(args);
+    configure(&mut cmd);
+    cmd.output()
+        .unwrap_or_else(|err| panic!("failed to run zccache rust-plan: {err}"))
+}
+
 fn write_file(path: &Path, contents: &str) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("create parent directories");
@@ -389,6 +401,159 @@ fn rust_plan_validate_json_reports_compatibility_error_without_cache_mutation() 
     assert!(
         !cache_dir.exists(),
         "validate compatibility failures should not create or mutate the cache directory"
+    );
+}
+
+#[test]
+fn rust_plan_auto_backend_without_gha_env_uses_local_backend() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    let cache_dir = root.join("cache");
+    let target_dir = root.join("target");
+    write_synthetic_full_target(&target_dir);
+
+    let plan = synthetic_full_plan(root, &target_dir);
+    let plan_path = root.join("auto-plan.json");
+    write_file(
+        &plan_path,
+        &serde_json::to_string_pretty(&plan).expect("serialize plan"),
+    );
+
+    let plan_path_str = plan_path.to_string_lossy().to_string();
+    let cache_dir_str = cache_dir.to_string_lossy().to_string();
+    let output = rust_plan_output(
+        &[
+            "save",
+            "--plan",
+            &plan_path_str,
+            "--json",
+            "--backend",
+            "auto",
+            "--cache-dir",
+            &cache_dir_str,
+        ],
+        |cmd| {
+            cmd.env_remove("ACTIONS_CACHE_URL");
+            cmd.env_remove("ACTIONS_RUNTIME_TOKEN");
+        },
+    );
+    assert!(output.status.success(), "auto backend save should succeed");
+
+    let summary: Value =
+        serde_json::from_slice(&output.stdout).expect("parse rust-plan auto backend JSON");
+    assert_eq!(json_str(&summary, "operation"), "save");
+    assert_eq!(json_str(&summary, "backend"), "local");
+    assert!(summary["backend_cache_key"].is_null());
+    assert!(summary["backend_cache_version"].is_null());
+    assert!(!json_str(&summary, "cache_key").is_empty());
+}
+
+#[test]
+fn rust_plan_explicit_gha_backend_without_env_reports_backend_unavailable() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    let cache_dir = root.join("cache");
+    let plan = synthetic_full_plan(root, &root.join("target"));
+    let plan_path = root.join("gha-plan.json");
+    write_file(
+        &plan_path,
+        &serde_json::to_string_pretty(&plan).expect("serialize plan"),
+    );
+
+    let plan_path_str = plan_path.to_string_lossy().to_string();
+    let cache_dir_str = cache_dir.to_string_lossy().to_string();
+    let output = rust_plan_output(
+        &[
+            "restore",
+            "--plan",
+            &plan_path_str,
+            "--json",
+            "--backend",
+            "gha",
+            "--cache-dir",
+            &cache_dir_str,
+        ],
+        |cmd| {
+            cmd.env_remove("ACTIONS_CACHE_URL");
+            cmd.env_remove("ACTIONS_RUNTIME_TOKEN");
+        },
+    );
+    assert!(
+        !output.status.success(),
+        "explicit gha backend should fail without env"
+    );
+
+    let summary: Value =
+        serde_json::from_slice(&output.stdout).expect("parse rust-plan gha failure JSON");
+    assert_eq!(json_str(&summary, "operation"), "restore");
+    assert_eq!(json_str(&summary, "backend"), "gha");
+    assert!(!json_str(&summary, "cache_key").is_empty());
+    assert!(!summary["backend_cache_key"].is_null());
+    assert!(!summary["backend_cache_version"].is_null());
+    let compatibility = json_object(&summary, "compatibility");
+    assert_eq!(
+        compatibility.get("status").and_then(Value::as_str),
+        Some("error")
+    );
+    let error_text = compatibility
+        .get("errors")
+        .and_then(Value::as_array)
+        .expect("compatibility errors")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        error_text.contains("GHA cache backend unavailable"),
+        "expected backend unavailable wording: {error_text}"
+    );
+}
+
+#[test]
+fn rust_plan_session_stats_lookup_errors_surface_in_json() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    let cache_dir = root.join("cache");
+    let plan = synthetic_full_plan(root, &root.join("target"));
+    let plan_path = root.join("stats-plan.json");
+    write_file(
+        &plan_path,
+        &serde_json::to_string_pretty(&plan).expect("serialize plan"),
+    );
+
+    let plan_path_str = plan_path.to_string_lossy().to_string();
+    let cache_dir_str = cache_dir.to_string_lossy().to_string();
+    let output = rust_plan_output(
+        &[
+            "validate",
+            "--plan",
+            &plan_path_str,
+            "--json",
+            "--session-id",
+            "session-123",
+            "--endpoint",
+            "tcp:127.0.0.1:9",
+            "--cache-dir",
+            &cache_dir_str,
+        ],
+        |_| {},
+    );
+    assert!(output.status.success(), "validate should still succeed");
+
+    let summary: Value =
+        serde_json::from_slice(&output.stdout).expect("parse rust-plan session-stats JSON");
+    let stats = json_object(&summary, "compile_cache_stats");
+    assert_eq!(stats.get("status").and_then(Value::as_str), Some("error"));
+    assert_eq!(
+        stats.get("session_id").and_then(Value::as_str),
+        Some("session-123")
+    );
+    assert!(
+        stats
+            .get("error")
+            .and_then(Value::as_str)
+            .is_some_and(|error| error.contains("cannot connect to daemon at tcp:127.0.0.1:9")),
+        "expected endpoint lookup failure to be surfaced in compile_cache_stats"
     );
 }
 
