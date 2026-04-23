@@ -693,7 +693,10 @@ pub fn restore_rust_plan_local(
     let manifest_path = bundle_dir.join(BUNDLE_MANIFEST_NAME);
     let manifest: RustArtifactBundleManifest =
         serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
-    validate_manifest(plan, &cache_key, &manifest, &mut summary)?;
+    if !validate_manifest(plan, &cache_key, &manifest, &mut summary)? {
+        summary.refresh_effectiveness(0);
+        return Ok(summary);
+    }
 
     let now = SystemTime::now();
     let file_times = std::fs::FileTimes::new()
@@ -771,34 +774,39 @@ fn validate_manifest(
     cache_key: &str,
     manifest: &RustArtifactBundleManifest,
     summary: &mut RustPlanSummary,
-) -> Result<(), RustPlanError> {
+) -> Result<bool, RustPlanError> {
     if manifest.manifest_schema_version != RUST_ARTIFACT_CACHE_SCHEMA_VERSION {
         return Err(RustPlanError::UnsupportedCacheSchemaVersion {
             found: manifest.manifest_schema_version,
             supported: RUST_ARTIFACT_CACHE_SCHEMA_VERSION,
         });
     }
+    let mut compatible = true;
     if manifest.cache_key != cache_key {
         summary
             .key_input_mismatches
             .push("bundle cache key does not match requested plan".to_string());
+        compatible = false;
     }
     if manifest.mode != plan.mode {
         summary
             .key_input_mismatches
             .push("bundle mode does not match requested plan".to_string());
+        compatible = false;
     }
     let plan_identity_hash = rust_plan_identity_hash(plan);
     if manifest.plan_identity_hash != plan_identity_hash {
         summary
             .key_input_mismatches
             .push("bundle input hash does not match requested plan".to_string());
+        compatible = false;
     }
-    if summary.key_input_mismatches.is_empty() {
-        Ok(())
+    if compatible {
+        Ok(true)
     } else {
         summary.compatibility.status = "warning".to_string();
-        Ok(())
+        summary.compatibility.errors = summary.key_input_mismatches.clone();
+        Ok(false)
     }
 }
 
@@ -886,10 +894,27 @@ fn classify_artifact(rel: &Path, mode: RustPlanMode) -> Option<RustArtifactClass
         Some("rlib") => Some(RustArtifactClass::Rlib),
         Some("rmeta") => Some(RustArtifactClass::Rmeta),
         Some("d") => Some(RustArtifactClass::DepInfo),
+        Some("so" | "dylib" | "dll") if is_likely_proc_macro_dylib(rel) => {
+            Some(RustArtifactClass::ProcMacro)
+        }
         Some("so" | "dylib" | "dll") => Some(RustArtifactClass::SharedLib),
         _ if mode == RustPlanMode::Full => Some(RustArtifactClass::FullTarget),
         _ => None,
     }
+}
+
+fn is_likely_proc_macro_dylib(rel: &Path) -> bool {
+    if !has_component(rel, "deps") {
+        return false;
+    }
+
+    rel.file_stem()
+        .and_then(OsStr::to_str)
+        .map(|stem| {
+            let stem = stem.to_ascii_lowercase();
+            stem.contains("proc_macro") || stem.contains("proc-macro")
+        })
+        .unwrap_or(false)
 }
 
 fn collect_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), RustPlanError> {
@@ -1142,6 +1167,31 @@ mod tests {
         write(&target.join("incremental").join("state.bin"), b"transient");
     }
 
+    fn synthetic_target_with_final_binary(root: &Path) {
+        synthetic_target(root);
+        let target = root.join("target").join("debug");
+        #[cfg(windows)]
+        write(&target.join("app.exe"), b"final binary");
+        #[cfg(not(windows))]
+        write(&target.join("app"), b"final binary");
+    }
+
+    fn synthetic_target_with_proc_macro_outputs(root: &Path) {
+        synthetic_target(root);
+        let target = root.join("target").join("debug");
+        #[cfg(windows)]
+        let proc_macro = target.join("deps").join("libproc_macro2-def456.dll");
+        #[cfg(not(windows))]
+        let proc_macro = target.join("deps").join("libproc_macro2-def456.so");
+        write(&proc_macro, b"proc-macro dylib");
+
+        #[cfg(windows)]
+        let shared_lib = target.join("deps").join("libserde_shared-def456.dll");
+        #[cfg(not(windows))]
+        let shared_lib = target.join("deps").join("libserde_shared-def456.so");
+        write(&shared_lib, b"shared lib");
+    }
+
     fn synthetic_target_with_package_exclusions(root: &Path) {
         synthetic_target(root);
         let target = root.join("target").join("debug");
@@ -1317,6 +1367,197 @@ mod tests {
             .exists());
         assert!(!plan.target_dir.join("debug/deps/libapp-abc.rlib").exists());
         assert!(!plan.target_dir.join("debug/incremental/state.bin").exists());
+    }
+
+    #[test]
+    fn thin_plan_skips_final_binary_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        synthetic_target_with_final_binary(dir.path());
+        let plan = sample_plan(dir.path(), RustPlanMode::Thin);
+        let cache = dir.path().join("cache");
+
+        let saved = save_rust_plan_local(&plan, &cache).unwrap();
+        assert_eq!(saved.saved_file_count, 6);
+        assert_eq!(
+            saved
+                .skipped_reasons
+                .get("artifact_class_disallowed_by_plan"),
+            Some(&1)
+        );
+        assert!(saved.skipped_samples.iter().any(|sample| {
+            sample.path.ends_with("debug/app.exe") || sample.path.ends_with("debug/app")
+        }));
+
+        std::fs::remove_dir_all(plan.target_dir.as_path()).unwrap();
+        let restored = restore_rust_plan_local(&plan, &cache).unwrap();
+        assert_eq!(restored.restored_file_count, 6);
+        assert!(!plan.target_dir.join("debug/app.exe").exists());
+        assert!(!plan.target_dir.join("debug/app").exists());
+    }
+
+    #[test]
+    fn thin_plan_respects_explicit_class_gates_for_dependency_metadata_and_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        synthetic_target(dir.path());
+        let mut plan = sample_plan(dir.path(), RustPlanMode::Thin);
+        plan.allowed_artifact_classes = vec![RustArtifactClass::Rlib, RustArtifactClass::Rmeta];
+        let cache = dir.path().join("cache");
+
+        let saved = save_rust_plan_local(&plan, &cache).unwrap();
+        assert_eq!(saved.saved_file_count, 2);
+        assert_eq!(
+            saved
+                .skipped_reasons
+                .get("artifact_class_disallowed_by_plan"),
+            Some(&4)
+        );
+        assert_eq!(
+            saved
+                .skipped_reasons
+                .get("workspace_or_path_dependency_excluded_by_plan"),
+            Some(&2)
+        );
+        assert!(saved
+            .skipped_samples
+            .iter()
+            .any(|sample| sample.path.ends_with("debug/deps/serde-abc.d")));
+        assert!(saved.skipped_samples.iter().any(|sample| sample
+            .path
+            .ends_with("debug/.fingerprint/serde-abc/dep-lib-serde")));
+        assert!(saved.skipped_samples.iter().any(|sample| sample
+            .path
+            .ends_with("debug/build/serde-abc/invoked.timestamp")));
+        assert!(saved
+            .skipped_samples
+            .iter()
+            .any(|sample| sample.path.ends_with("debug/build/serde-abc/out/gen.rs")));
+    }
+
+    #[test]
+    fn thin_plan_saves_and_restores_likely_proc_macro_dylibs_without_shared_libs() {
+        let dir = tempfile::tempdir().unwrap();
+        synthetic_target_with_proc_macro_outputs(dir.path());
+        let mut plan = sample_plan(dir.path(), RustPlanMode::Thin);
+        plan.allowed_artifact_classes = vec![
+            RustArtifactClass::Rlib,
+            RustArtifactClass::Rmeta,
+            RustArtifactClass::DepInfo,
+            RustArtifactClass::ProcMacro,
+            RustArtifactClass::CargoFingerprint,
+            RustArtifactClass::BuildScriptMetadata,
+            RustArtifactClass::BuildScriptOutput,
+        ];
+        let cache = dir.path().join("cache");
+
+        let saved = save_rust_plan_local(&plan, &cache).unwrap();
+        assert_eq!(saved.saved_file_count, 7);
+        assert_eq!(
+            saved
+                .skipped_reasons
+                .get("artifact_class_disallowed_by_plan"),
+            Some(&1)
+        );
+        assert!(saved.skipped_samples.iter().any(|sample| {
+            sample
+                .path
+                .ends_with("debug/deps/libserde_shared-def456.dll")
+                || sample
+                    .path
+                    .ends_with("debug/deps/libserde_shared-def456.so")
+        }));
+
+        std::fs::remove_dir_all(plan.target_dir.as_path()).unwrap();
+        let restored = restore_rust_plan_local(&plan, &cache).unwrap();
+        assert_eq!(restored.restored_file_count, 7);
+        assert!(plan
+            .target_dir
+            .join(if cfg!(windows) {
+                "debug/deps/libproc_macro2-def456.dll"
+            } else {
+                "debug/deps/libproc_macro2-def456.so"
+            })
+            .exists());
+        assert!(!plan
+            .target_dir
+            .join(if cfg!(windows) {
+                "debug/deps/libserde_shared-def456.dll"
+            } else {
+                "debug/deps/libserde_shared-def456.so"
+            })
+            .exists());
+    }
+
+    #[test]
+    fn thin_plan_skips_likely_proc_macro_dylibs_when_disallowed() {
+        let dir = tempfile::tempdir().unwrap();
+        synthetic_target_with_proc_macro_outputs(dir.path());
+        let mut plan = sample_plan(dir.path(), RustPlanMode::Thin);
+        plan.allowed_artifact_classes = vec![
+            RustArtifactClass::Rlib,
+            RustArtifactClass::Rmeta,
+            RustArtifactClass::DepInfo,
+            RustArtifactClass::SharedLib,
+            RustArtifactClass::CargoFingerprint,
+            RustArtifactClass::BuildScriptMetadata,
+            RustArtifactClass::BuildScriptOutput,
+        ];
+        let cache = dir.path().join("cache");
+
+        let saved = save_rust_plan_local(&plan, &cache).unwrap();
+        assert_eq!(saved.saved_file_count, 7);
+        assert_eq!(
+            saved
+                .skipped_reasons
+                .get("artifact_class_disallowed_by_plan"),
+            Some(&1)
+        );
+        assert!(saved.skipped_samples.iter().any(|sample| {
+            sample
+                .path
+                .ends_with("debug/deps/libproc_macro2-def456.dll")
+                || sample.path.ends_with("debug/deps/libproc_macro2-def456.so")
+        }));
+    }
+
+    #[test]
+    fn restore_skips_mismatched_bundles_without_mutating_target_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        synthetic_target(dir.path());
+        let plan = sample_plan(dir.path(), RustPlanMode::Thin);
+        let cache = dir.path().join("cache");
+
+        save_rust_plan_local(&plan, &cache).unwrap();
+        let bundle_dir = rust_plan_bundle_dir(&cache, &rust_plan_cache_key(&plan));
+        let mut manifest = load_manifest(&bundle_dir);
+        manifest.cache_key = "rust-plan-v1-deadbeefdeadbeefdeadbeefdeadbeef".to_string();
+        manifest.mode = RustPlanMode::Full;
+        manifest.plan_identity_hash =
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string();
+        write_manifest(&bundle_dir, &manifest);
+
+        std::fs::remove_dir_all(plan.target_dir.as_path()).unwrap();
+        std::fs::create_dir_all(plan.target_dir.as_path()).unwrap();
+
+        let restored = restore_rust_plan_local(&plan, &cache).unwrap();
+        assert_eq!(restored.restored_file_count, 0);
+        assert_eq!(restored.compatibility.status, "warning");
+        assert_eq!(restored.key_input_mismatches.len(), 3);
+        assert_eq!(
+            restored
+                .miss_classifications
+                .get("toolchain_profile_rustflags_target_mismatch"),
+            Some(&2)
+        );
+        assert_eq!(
+            restored
+                .miss_classifications
+                .get("lockfile_config_manifest_hash_mismatch"),
+            Some(&2)
+        );
+        assert!(std::fs::read_dir(plan.target_dir.as_path())
+            .unwrap()
+            .next()
+            .is_none());
     }
 
     #[test]

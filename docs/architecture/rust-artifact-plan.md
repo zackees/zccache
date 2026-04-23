@@ -115,15 +115,20 @@ integration layer, not by guessing inside zccache.
 It is intended to restore and save the subset of artifacts needed to make dependency crates fresh without recreating unsafe transient state. In practice, that means:
 
 - only the artifact classes explicitly allowed by the plan are eligible
-- `rlib`, `rmeta`, `.d`, shared library/proc-macro outputs, Cargo
+- `rlib`, `rmeta`, `.d`, shared library outputs, likely proc-macro dylibs,
+  Cargo
   `.fingerprint/**`, and selected build-script metadata/output can be cached
   when allowed
 - workspace and path dependency outputs named by the plan are excluded
 - `target/**/incremental/**` and other transient state stay out of the bundle
-- restore is conservative when a field is missing or mismatched
+- restore is conservative when a field is missing or mismatched; cache-key,
+  mode, or plan-identity mismatches short-circuit before restoring anything
 - save only persists what the plan says is safe to reuse
 
 `thin` is the mode that supports the common CI flow: restore dependency artifacts, rebuild only the workspace crates that actually changed, and then save the updated reusable state.
+
+The proc-macro classification is heuristic and follows Cargo target names when
+they make the crate type obvious, such as `libproc_macro2-...` dylibs.
 
 ### `full`
 

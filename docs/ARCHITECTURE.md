@@ -11,7 +11,7 @@ This document is the index for zccache's architecture specification. Each subsys
 | [architecture/ipc.md](architecture/ipc.md) | ~60 | Transport abstraction, socket discovery, connection lifecycle, errors |
 | [architecture/metadata-cache.md](architecture/metadata-cache.md) | ~130 | In-memory cache data model, confidence levels, watcher integration |
 | [architecture/artifact-store.md](architecture/artifact-store.md) | ~130 | Disk layout, redb index schema, LRU eviction, corruption detection |
-| [architecture/rust-artifact-plan.md](architecture/rust-artifact-plan.md) | ~120 | Rust plan ownership, thin/full semantics, backends, diagnostics, CLI contract |
+| [architecture/rust-artifact-plan.md](architecture/rust-artifact-plan.md) | ~120 | Rust plan ownership, thin/full semantics, restore hardening, backends, diagnostics, CLI contract |
 | [architecture/runtime.md](architecture/runtime.md) | ~130 | Concurrency model, correctness guarantees, failure modes, crash recovery |
 | [architecture/portability.md](architecture/portability.md) | ~110 | Platform differences, path handling, file identity, future extensions |
 
