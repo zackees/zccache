@@ -4,18 +4,18 @@ use std::process::{Command, Output};
 
 use serde_json::Value;
 use zccache_artifact::{
-    RustArtifactClass, RustArtifactPlanV1, RustPlanInputs, RustPlanMode, RustPlanPackages,
-    RustToolchainIdentity,
+    rust_plan_bundle_dir, rust_plan_cache_key, RustArtifactClass, RustArtifactPlanV1,
+    RustPlanInputs, RustPlanMode, RustPlanPackages, RustToolchainIdentity,
 };
 
 fn zccache_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_zccache"))
 }
 
-fn cargo_bin() -> PathBuf {
-    std::env::var_os("CARGO")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("cargo"))
+fn uv_soldr_cargo_command() -> Command {
+    let mut cmd = Command::new("uv");
+    cmd.args(["run", "--with", "soldr", "soldr", "cargo"]);
+    cmd
 }
 
 fn rust_plan_output<F>(args: &[&str], configure: F) -> Output
@@ -96,7 +96,7 @@ fn run_rust_plan_failure(args: &[&str]) -> Output {
 }
 
 fn run_cargo_build(root: &Path, target_dir: &Path, verbose: bool) -> Output {
-    let mut cmd = Command::new(cargo_bin());
+    let mut cmd = uv_soldr_cargo_command();
     cmd.current_dir(root);
     cmd.env("CARGO_TERM_COLOR", "never");
     let target_dir = target_dir.to_string_lossy().to_string();
@@ -111,11 +111,11 @@ fn run_cargo_build(root: &Path, target_dir: &Path, verbose: bool) -> Output {
 fn toolchain_identity() -> RustToolchainIdentity {
     let rustc = run_command(
         {
-            let mut cmd = Command::new("rustc");
-            cmd.arg("-Vv");
+            let mut cmd = Command::new("uv");
+            cmd.args(["run", "--with", "soldr", "soldr", "rustc", "-Vv"]);
             cmd
         },
-        "rustc -Vv",
+        "uv run --with soldr soldr rustc -Vv",
     );
     let rustc_text = String::from_utf8_lossy(&rustc.stdout);
     let host = rustc_text
@@ -126,11 +126,11 @@ fn toolchain_identity() -> RustToolchainIdentity {
 
     let cargo = run_command(
         {
-            let mut cmd = Command::new(cargo_bin());
+            let mut cmd = uv_soldr_cargo_command();
             cmd.arg("--version");
             cmd
         },
-        "cargo --version",
+        "uv run --with soldr soldr cargo --version",
     );
 
     RustToolchainIdentity {
@@ -146,17 +146,25 @@ fn has_file_with_prefix(dir: &Path, prefix: &str, extension: &str) -> bool {
         return false;
     };
 
-    entries.flatten().any(|entry| {
+    for entry in entries.flatten() {
         let path = entry.path();
-        path.is_file()
-            && path
+        if path.is_file() {
+            if path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| {
                     name.starts_with(prefix)
                         && path.extension().and_then(|ext| ext.to_str()) == Some(extension)
                 })
-    })
+            {
+                return true;
+            }
+        } else if path.is_dir() && has_file_with_prefix(&path, prefix, extension) {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn has_dir_with_prefix(dir: &Path, prefix: &str) -> bool {
@@ -164,14 +172,57 @@ fn has_dir_with_prefix(dir: &Path, prefix: &str) -> bool {
         return false;
     };
 
-    entries.flatten().any(|entry| {
+    for entry in entries.flatten() {
         let path = entry.path();
-        path.is_dir()
-            && path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(prefix))
-    })
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(prefix))
+            && path.is_dir()
+        {
+            return true;
+        }
+        if path.is_dir() && has_dir_with_prefix(&path, prefix) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn dir_entry_names(dir: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+
+    let mut names = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) {
+    if !src.exists() {
+        return;
+    }
+
+    fs::create_dir_all(dst).expect("create destination directory");
+    for entry in fs::read_dir(src).expect("read source directory") {
+        let entry = entry.expect("read source entry");
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        let file_type = entry.file_type().expect("read source file type");
+        if file_type.is_dir() {
+            copy_dir_all(&src_path, &dst_path);
+        } else if file_type.is_file() {
+            if let Some(parent) = dst_path.parent() {
+                fs::create_dir_all(parent).expect("create destination parent");
+            }
+            fs::copy(&src_path, &dst_path).expect("copy file");
+        }
+    }
 }
 
 fn write_workspace(root: &Path) {
@@ -654,6 +705,161 @@ fn rust_plan_full_mode_cli_restores_target_tree_and_prunes_incremental() {
             .join("debug/incremental/app-abc/session-state.bin")
             .exists(),
         "full-mode restore should still prune transient incremental state"
+    );
+}
+
+#[test]
+fn rust_plan_lifecycle_rehydrates_bundle_and_keeps_path_dep_fresh() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    let target_dir = root.join("target");
+    let cache_dir = root.join("cache");
+
+    write_workspace(root);
+
+    let first_build = run_cargo_build(root, &target_dir, false);
+    let first_build_log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&first_build.stdout),
+        String::from_utf8_lossy(&first_build.stderr)
+    );
+    assert!(
+        first_build_log.contains("Compiling local_dep v0.1.0"),
+        "initial build should compile local_dep\n{first_build_log}"
+    );
+    assert!(
+        first_build_log.contains("Compiling app v0.1.0"),
+        "initial build should compile app\n{first_build_log}"
+    );
+
+    let plan = rust_plan_for_workspace(root, &target_dir);
+    let plan_path = root.join("rust-plan.json");
+    write_file(
+        &plan_path,
+        &serde_json::to_string_pretty(&plan).expect("serialize plan"),
+    );
+
+    let plan_path_str = plan_path.to_string_lossy().to_string();
+    let cache_dir_str = cache_dir.to_string_lossy().to_string();
+
+    let save = run_rust_plan(&[
+        "save",
+        "--plan",
+        &plan_path_str,
+        "--json",
+        "--backend",
+        "local",
+        "--cache-dir",
+        &cache_dir_str,
+    ]);
+    assert_eq!(json_str(&save, "operation"), "save");
+    assert_eq!(json_str(&save, "mode"), "thin");
+    assert_eq!(json_str(&save, "backend"), "local");
+    assert!(json_u64(&save, "saved_file_count") > 0);
+    assert!(json_u64(&save, "saved_bytes") > 0);
+    assert!(save
+        .get("target_artifact_effectiveness")
+        .and_then(Value::as_object)
+        .is_some());
+    assert!(save.get("compile_cache_stats").is_some_and(Value::is_null));
+
+    let cache_key = rust_plan_cache_key(&plan);
+    let bundle_dir = rust_plan_bundle_dir(&cache_dir, &cache_key);
+    assert!(bundle_dir.exists(), "save should create a reusable bundle");
+    let bundle_files_dir = bundle_dir.join("files");
+    assert!(
+        has_file_with_prefix(&bundle_files_dir, "liblocal_dep-", "rlib"),
+        "save should capture the path dependency rlib; bundle deps: {:?}",
+        dir_entry_names(&bundle_files_dir)
+    );
+
+    let rehydrated_cache_dir = root.join("rehydrated-cache");
+    let rehydrated_bundle_dir = rust_plan_bundle_dir(&rehydrated_cache_dir, &cache_key);
+    copy_dir_all(&bundle_dir, &rehydrated_bundle_dir);
+    fs::remove_dir_all(&cache_dir).expect("remove original cache dir");
+    fs::remove_dir_all(&target_dir).expect("remove target dir");
+
+    let rehydrated_cache_dir_str = rehydrated_cache_dir.to_string_lossy().to_string();
+    let restore = run_rust_plan(&[
+        "restore",
+        "--plan",
+        &plan_path_str,
+        "--json",
+        "--backend",
+        "local",
+        "--cache-dir",
+        &rehydrated_cache_dir_str,
+    ]);
+    assert_eq!(json_str(&restore, "operation"), "restore");
+    assert_eq!(json_str(&restore, "mode"), "thin");
+    assert_eq!(json_str(&restore, "backend"), "local");
+    assert!(json_u64(&restore, "restored_file_count") > 0);
+    assert!(json_u64(&restore, "restored_bytes") > 0);
+
+    let effectiveness = json_object(&restore, "target_artifact_effectiveness");
+    assert_eq!(
+        effectiveness
+            .get("eligible_file_count")
+            .and_then(Value::as_u64),
+        Some(json_u64(&restore, "restored_file_count"))
+    );
+    assert_eq!(
+        effectiveness
+            .get("restored_file_count")
+            .and_then(Value::as_u64),
+        Some(json_u64(&restore, "restored_file_count"))
+    );
+    assert_eq!(
+        effectiveness.get("reuse_ratio").and_then(Value::as_f64),
+        Some(1.0)
+    );
+    assert!(restore
+        .get("compile_cache_stats")
+        .is_some_and(Value::is_null));
+
+    assert!(
+        has_file_with_prefix(&target_dir, "liblocal_dep-", "rlib"),
+        "restore should bring back the path dependency rlib; restored target entries: {:?}",
+        dir_entry_names(&target_dir)
+    );
+    assert!(
+        has_dir_with_prefix(&target_dir, "local_dep-"),
+        "restore should bring back the path dependency fingerprint state"
+    );
+    assert!(
+        !has_file_with_prefix(&target_dir, "libapp-", "rlib"),
+        "thin restore should not restore the workspace crate rlib"
+    );
+
+    write_file(
+        &root.join("app/src/lib.rs"),
+        r#"pub fn app_value() -> i32 {
+    local_dep::dep_value() + 2
+}
+"#,
+    );
+
+    let rebuild = run_cargo_build(root, &target_dir, true);
+    let rebuild_log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&rebuild.stdout),
+        String::from_utf8_lossy(&rebuild.stderr)
+    );
+    assert!(
+        rebuild_log.contains("Fresh local_dep v0.1.0"),
+        "path dependency should remain fresh after restore\n{rebuild_log}"
+    );
+    assert!(
+        rebuild_log.contains("Compiling app v0.1.0") || rebuild_log.contains("Dirty app v0.1.0"),
+        "workspace crate should rebuild after source edit\n{rebuild_log}"
+    );
+    assert!(
+        !rebuild_log.contains("Fresh app v0.1.0"),
+        "workspace crate should not stay fresh after source edit\n{rebuild_log}"
+    );
+    assert!(
+        has_file_with_prefix(&target_dir, "libapp-", "rlib"),
+        "rebuild should recreate the workspace crate rlib"
     );
 }
 
