@@ -3715,6 +3715,66 @@ fn init_tracing() {
 mod tests {
     use super::*;
 
+    /// Issue #150: connect-time errors that mean "daemon process is gone
+    /// entirely" must be classified as unreachable so `cmd_session_end`
+    /// can fall through to the idempotent success path. The set covers
+    /// every shape `connect()` actually returns when the pipe / socket
+    /// is missing or has no listener.
+    #[test]
+    fn is_daemon_unreachable_recognizes_not_found() {
+        let err = zccache_ipc::IpcError::Io(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert!(is_daemon_unreachable_err(&err));
+    }
+
+    #[test]
+    fn is_daemon_unreachable_recognizes_connection_refused() {
+        let err =
+            zccache_ipc::IpcError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
+        assert!(is_daemon_unreachable_err(&err));
+    }
+
+    #[test]
+    fn is_daemon_unreachable_recognizes_broken_pipe() {
+        let err = zccache_ipc::IpcError::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+        assert!(is_daemon_unreachable_err(&err));
+    }
+
+    /// Mapping ENOENT through `from_raw_os_error` must yield the same
+    /// classification as constructing from `ErrorKind::NotFound`. This
+    /// guards against platform variance (macOS / Linux / Windows could
+    /// in principle synthesize a different kind for the same errno).
+    #[test]
+    fn is_daemon_unreachable_recognizes_raw_enoent() {
+        // ENOENT == 2 on every Unix; on Windows ERROR_FILE_NOT_FOUND == 2 too.
+        let err = zccache_ipc::IpcError::Io(std::io::Error::from_raw_os_error(2));
+        assert!(
+            is_daemon_unreachable_err(&err),
+            "errno 2 must map to a kind in the unreachable set; got kind={:?}",
+            match &err {
+                zccache_ipc::IpcError::Io(io) => io.kind(),
+                _ => unreachable!(),
+            }
+        );
+    }
+
+    /// Timeouts must NOT be classified as unreachable — those are real
+    /// faults and should propagate as exit 1.
+    #[test]
+    fn is_daemon_unreachable_rejects_timeout() {
+        let err = zccache_ipc::IpcError::Io(std::io::Error::from(std::io::ErrorKind::TimedOut));
+        assert!(!is_daemon_unreachable_err(&err));
+    }
+
+    /// Protocol errors (malformed framing, version skew) must NOT be
+    /// classified as unreachable.
+    #[test]
+    fn is_daemon_unreachable_rejects_non_io_variants() {
+        let err = zccache_ipc::IpcError::ConnectionClosed;
+        assert!(!is_daemon_unreachable_err(&err));
+        let err = zccache_ipc::IpcError::Endpoint("bogus".into());
+        assert!(!is_daemon_unreachable_err(&err));
+    }
+
     #[test]
     fn exit_code_zero_stays_zero() {
         assert_eq!(exit_code_from_i32(0), ExitCode::from(0));

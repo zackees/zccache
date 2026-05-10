@@ -48,7 +48,15 @@ fn unreachable_endpoint() -> String {
 /// Regression test for issue #150: `zccache session-end <uuid>` against
 /// a non-existent endpoint must exit 0 (not 1) and emit a one-line
 /// warning to stderr.
+///
+/// `#[ignore]` because this end-to-end test needs the freshly-built
+/// `zccache` binary on the test runner. The unit-level coverage for
+/// the underlying predicate `is_daemon_unreachable_err` lives in
+/// `main.rs`'s `tests` module and is the regression check that runs
+/// in normal CI; this test is the integration smoke test that runs
+/// under `./test --integration`.
 #[test]
+#[ignore]
 fn session_end_with_unreachable_daemon_is_idempotent() {
     let bin = zccache_bin();
     let endpoint = unreachable_endpoint();
