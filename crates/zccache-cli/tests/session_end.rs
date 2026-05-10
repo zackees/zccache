@@ -8,30 +8,16 @@
 //! a daemon-unreachable error must yield exit 0 with a one-line warning
 //! to stderr.
 
+use std::path::PathBuf;
 use std::process::Command;
 
-use zccache_core::NormalizedPath;
-
-fn zccache_bin() -> NormalizedPath {
-    let mut path = std::env::current_exe()
-        .expect("current_exe")
-        .parent()
-        .expect("parent of test binary")
-        .parent()
-        .expect("target dir")
-        .to_path_buf();
-
-    if cfg!(windows) {
-        path.push("zccache.exe");
-    } else {
-        path.push("zccache");
-    }
-
-    assert!(
-        path.exists(),
-        "zccache binary not found at {path:?}. Run `cargo build` first."
-    );
-    NormalizedPath::new(path)
+/// Path to the zccache binary built by cargo for this integration test.
+///
+/// Using `CARGO_BIN_EXE_zccache` makes cargo build the binary automatically
+/// before running the test, so this works under `cargo test --workspace`
+/// without a separate `cargo build` step.
+fn zccache_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_zccache"))
 }
 
 /// Returns an endpoint guaranteed to have no daemon listening — exactly
@@ -67,7 +53,7 @@ fn session_end_with_unreachable_daemon_is_idempotent() {
     let bin = zccache_bin();
     let endpoint = unreachable_endpoint();
 
-    let output = Command::new(bin.as_path())
+    let output = Command::new(&bin)
         .arg("session-end")
         .arg("00000000-0000-0000-0000-000000000000")
         .arg("--endpoint")
