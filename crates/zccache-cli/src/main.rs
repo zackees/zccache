@@ -1512,6 +1512,18 @@ async fn cmd_session_end(endpoint: &str, session_id: String) -> ExitCode {
     let mut conn = match connect(endpoint).await {
         Ok(c) => c,
         Err(e) => {
+            // Daemon-gone case: mirror #137's idempotency at the connection
+            // layer. If the daemon process exited entirely (pipe / socket
+            // missing, or no listener) before soldr's at-exit
+            // `session-end` hits, treat it as success — the session is
+            // implicitly ended when the daemon dies. Other errors (timeout,
+            // protocol mismatch, etc.) still fail loudly. See issue #150.
+            if is_daemon_unreachable_err(&e) {
+                eprintln!(
+                    "session-end: daemon unreachable at {endpoint}, treating session {session_id} as ended"
+                );
+                return ExitCode::SUCCESS;
+            }
             eprintln!("cannot connect to daemon at {endpoint}: {e}");
             return ExitCode::FAILURE;
         }
@@ -3611,6 +3623,28 @@ async fn connect(
     endpoint: &str,
 ) -> Result<zccache_ipc::IpcClientConnection, zccache_ipc::IpcError> {
     zccache_ipc::connect(endpoint).await
+}
+
+/// Is this connect-time error a "daemon process is gone entirely" error?
+///
+/// The conservative set: `NotFound` (Unix socket missing, Windows pipe
+/// missing), `ConnectionRefused` (Unix socket exists but no listener;
+/// Windows backoff helper synthesizes this when all pipe instances are
+/// permanently busy), and `BrokenPipe` (race: pipe vanished between
+/// open and use). Other errors (`TimedOut`, protocol mismatches, etc.)
+/// are NOT daemon-gone — they should still fail loudly.
+///
+/// Used by `session-end` only (issue #150) — other request types keep
+/// their existing strict error semantics.
+fn is_daemon_unreachable_err(err: &zccache_ipc::IpcError) -> bool {
+    use std::io::ErrorKind;
+    match err {
+        zccache_ipc::IpcError::Io(io) => matches!(
+            io.kind(),
+            ErrorKind::NotFound | ErrorKind::ConnectionRefused | ErrorKind::BrokenPipe
+        ),
+        _ => false,
+    }
 }
 
 fn resolve_endpoint(explicit: Option<&str>) -> String {
