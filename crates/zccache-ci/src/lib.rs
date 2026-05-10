@@ -419,6 +419,101 @@ fn dump_compile_journal() {
 }
 
 // ---------------------------------------------------------------------------
+// Daemon kill (with wait + lock cleanup)
+// ---------------------------------------------------------------------------
+
+/// How long [`kill_pids_and_wait`] will poll for the killed processes to
+/// actually exit before giving up. `process.kill()` is asynchronous on Windows
+/// (`TerminateProcess` returns before the process is reaped), so we have to
+/// confirm exit before returning — otherwise `cargo check` races a dying
+/// daemon whose named pipe has already vanished. See issue #152.
+pub const KILL_DAEMON_WAIT: Duration = Duration::from_secs(2);
+
+/// Find every running `zccache-daemon[.exe]` PID by walking the process table.
+fn find_daemon_pids() -> Vec<u32> {
+    use sysinfo::ProcessesToUpdate;
+
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    sys.processes()
+        .iter()
+        .filter_map(|(pid, process)| {
+            let name = process.name().to_string_lossy();
+            (name == "zccache-daemon" || name == "zccache-daemon.exe").then_some(pid.as_u32())
+        })
+        .collect()
+}
+
+/// Send a kill to each PID and poll until every PID is confirmed dead, or
+/// `timeout` elapses. Returns once every PID is gone (or once we time out).
+///
+/// Uses [`zccache_ipc::force_kill_process`] (TerminateProcess on Windows,
+/// SIGKILL on Unix) rather than sysinfo's `Process::kill`, which has been
+/// observed to silently fail to terminate Windows console children spawned via
+/// `cmd /C` in tests — the kill bool returned `true` but the process kept
+/// running. Going through the OS API directly is more reliable.
+///
+/// Exposed for tests; production code should call [`kill_daemon`].
+pub fn kill_pids_and_wait(pids: &[u32], timeout: Duration) {
+    if pids.is_empty() {
+        return;
+    }
+
+    for pid in pids {
+        if let Err(e) = zccache_ipc::force_kill_process(*pid) {
+            eprintln!("force_kill_process({pid}) failed: {e}");
+        }
+    }
+
+    let deadline = Instant::now() + timeout;
+    let poll = Duration::from_millis(25);
+    loop {
+        let any_alive = pids.iter().any(|pid| zccache_ipc::is_process_alive(*pid));
+        if !any_alive {
+            return;
+        }
+        if Instant::now() >= deadline {
+            let still_alive: Vec<u32> = pids
+                .iter()
+                .copied()
+                .filter(|pid| zccache_ipc::is_process_alive(*pid))
+                .collect();
+            eprintln!(
+                "Warning: daemon PIDs still alive after {}ms: {:?}",
+                timeout.as_millis(),
+                still_alive
+            );
+            return;
+        }
+        std::thread::sleep(poll);
+    }
+}
+
+/// Kill every running `zccache-daemon`, wait for them to actually exit, and
+/// remove the stale `daemon.lock` file. Used by the stop hook before invoking
+/// cargo so the build can replace the daemon binary on Windows without racing
+/// the dying process.
+///
+/// See issue #152: prior to this, `kill_daemon` returned immediately after
+/// `process.kill()` and left the lock file pointing at the just-killed PID,
+/// causing `cargo check` to fail with "cannot connect to daemon at \\.\\pipe\\..."
+/// because parallel rustc workers raced the half-dead daemon.
+pub fn kill_daemon() {
+    let pids = find_daemon_pids();
+    if pids.is_empty() {
+        // No daemon running. The lock file may still be stale from a prior
+        // crash, so remove it defensively.
+        zccache_ipc::remove_lock_file();
+        return;
+    }
+    for pid in &pids {
+        eprintln!("Killing running daemon (PID {pid}) to unlock target binaries");
+    }
+    kill_pids_and_wait(&pids, KILL_DAEMON_WAIT);
+    zccache_ipc::remove_lock_file();
+}
+
+// ---------------------------------------------------------------------------
 // Orphan daemon reaper
 // ---------------------------------------------------------------------------
 
@@ -592,6 +687,74 @@ mod tests {
             progress.lines.iter().any(|l| l.contains("-> hang")),
             "expected progress marker, got {:?}",
             progress.lines
+        );
+    }
+
+    /// Issue #152 regression: `kill_pids_and_wait` must not return until the
+    /// killed process is actually dead. The previous `kill_daemon`
+    /// implementation called `process.kill()` and returned immediately, letting
+    /// `cargo check` race a daemon that was still partially alive.
+    ///
+    /// Platform-specific handle-lifetime quirks the test has to work around:
+    ///
+    /// - **Windows**: while a handle to the child is open, the kernel keeps
+    ///   the process *object* alive even after `TerminateProcess` returns, so
+    ///   `OpenProcess` (which `is_process_alive` uses) keeps returning true.
+    /// - **Unix**: dropping a `std::process::Child` without `wait()` leaves
+    ///   the child as a zombie. `kill(pid, 0)` (which `is_process_alive` uses)
+    ///   returns 0 for zombies, so `kill_pids_and_wait` would spin until its
+    ///   timeout. The real daemon case has no such handle held by us — the
+    ///   daemon's parent (the user's shell, or PID 1 after an orphan handoff)
+    ///   does the reaping — so this is a test-setup artifact, not a
+    ///   production concern.
+    ///
+    /// To model the production scenario we spawn a reaper thread that owns
+    /// the `Child` and blocks in `wait()` for the OS to clean up. The instant
+    /// the kill takes effect, the kernel either tears down the process object
+    /// (Windows, once the handle is closed) or reaps the zombie (Unix), and
+    /// `is_process_alive` flips to `false`.
+    #[test]
+    fn kill_pids_and_wait_returns_only_after_child_is_dead() {
+        let child = sleep_forever_cmd().spawn().expect("failed to spawn child");
+        let pid = child.id();
+
+        // Sanity check: process is alive before we ask kill_pids_and_wait to
+        // do anything.
+        assert!(
+            zccache_ipc::is_process_alive(pid),
+            "spawned child PID {pid} should be alive"
+        );
+
+        // Hand the Child to a reaper thread: it owns the handle and calls
+        // wait(), which (a) drops the OS handle so Windows can collect the
+        // process object and (b) reaps the zombie on Unix. See doc comment
+        // above.
+        let reaper = std::thread::spawn(move || {
+            let mut child = child;
+            let _ = child.wait();
+        });
+
+        kill_pids_and_wait(&[pid], Duration::from_secs(5));
+
+        // Make sure the reaper has finished — otherwise on a slow CI runner
+        // we could race the OS cleanup window.
+        reaper.join().expect("reaper thread panicked");
+
+        assert!(
+            !zccache_ipc::is_process_alive(pid),
+            "PID {pid} still alive after kill_pids_and_wait returned"
+        );
+    }
+
+    #[test]
+    fn kill_pids_and_wait_is_a_noop_for_empty_input() {
+        // Should return immediately without polling or panicking.
+        let start = Instant::now();
+        kill_pids_and_wait(&[], Duration::from_secs(60));
+        assert!(
+            start.elapsed() < Duration::from_millis(500),
+            "empty-input kill should return promptly, took {:?}",
+            start.elapsed()
         );
     }
 }

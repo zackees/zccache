@@ -18,7 +18,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, ExitCode};
 
-use zccache_ci::{reap_orphan_daemons, resolve_timeout, StageOutcome, StageRunner};
+use zccache_ci::{kill_daemon, reap_orphan_daemons, resolve_timeout, StageOutcome, StageRunner};
 use zccache_core::NormalizedPath;
 
 fn project_root() -> NormalizedPath {
@@ -84,25 +84,6 @@ enum CheckLevel {
     QuickCheck,
     /// New changes detected — full lint + tests.
     Full,
-}
-
-// ---------------------------------------------------------------------------
-// Pre-check: kill running daemon so cargo can replace the exe
-// ---------------------------------------------------------------------------
-
-fn kill_daemon() {
-    use sysinfo::ProcessesToUpdate;
-
-    let mut sys = sysinfo::System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
-
-    for (pid, process) in sys.processes() {
-        let name = process.name().to_string_lossy();
-        if name == "zccache-daemon" || name == "zccache-daemon.exe" {
-            eprintln!("Killing running daemon (PID {pid}) to unlock target binaries");
-            process.kill();
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
