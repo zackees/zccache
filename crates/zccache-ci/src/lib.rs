@@ -19,6 +19,11 @@
 //!    stage prints `[<elapsed>] -> <name>` so the user can see which stage is
 //!    hanging when the timeout fires. The last printed stage on the timeout
 //!    path is the smoking gun.
+//!
+//! 3. **Orphan daemon reaper** ([`reap_orphan_daemons`]) — kills any
+//!    `zccache-daemon` whose parent PID is no longer alive at startup. This
+//!    catches the case where a previous agent turn was force-killed before
+//!    its daemon could be reaped.
 
 use std::env;
 use std::fs;
@@ -413,6 +418,44 @@ fn dump_compile_journal() {
 }
 
 // ---------------------------------------------------------------------------
+// Orphan daemon reaper
+// ---------------------------------------------------------------------------
+
+/// Kill any `zccache-daemon[.exe]` process whose parent PID is no longer
+/// alive — i.e. a true orphan. Returns the PIDs that were killed.
+///
+/// This is conservative: we only reap when we can confirm the parent is
+/// gone. Daemons spawned by a still-running supervisor are left alone.
+pub fn reap_orphan_daemons() -> Vec<u32> {
+    use sysinfo::{Pid, ProcessesToUpdate};
+
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+
+    let alive: std::collections::HashSet<Pid> = sys.processes().keys().copied().collect();
+
+    let mut killed = Vec::new();
+    for (pid, process) in sys.processes() {
+        let name = process.name().to_string_lossy();
+        if name != "zccache-daemon" && name != "zccache-daemon.exe" {
+            continue;
+        }
+        let parent = process.parent();
+        let is_orphan = match parent {
+            None => true,
+            Some(ppid) => !alive.contains(&ppid),
+        };
+        if is_orphan {
+            eprintln!("Reaping orphan zccache-daemon PID={pid} (parent {parent:?} gone)");
+            if process.kill() {
+                killed.push(pid.as_u32());
+            }
+        }
+    }
+    killed
+}
+
+// ---------------------------------------------------------------------------
 // Tests (kept here so the runner is exercisable without external fixtures)
 // ---------------------------------------------------------------------------
 
@@ -520,6 +563,19 @@ mod tests {
                 "expected elapsed prefix in {line:?}"
             );
         }
+    }
+
+    #[test]
+    fn reap_orphan_daemons_returns_a_vec_without_panic() {
+        // We can't reliably create an orphan zccache-daemon in a unit test
+        // environment, so we just exercise the happy path: the function must
+        // walk the process table and return a Vec<u32> (possibly empty)
+        // without panicking. The Drop test on a real machine catches
+        // regressions where the function tries to kill the wrong process.
+        let killed = reap_orphan_daemons();
+        // No assertion on length: developer machines may have running
+        // daemons whose parent is or isn't alive depending on workflow.
+        let _ = killed.len();
     }
 
     #[test]

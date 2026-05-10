@@ -11,13 +11,14 @@
 //! Safety nets (see issue #141 and `lib.rs`):
 //!   * Wall-clock timeout (default 300s, override `ZCCACHE_CI_TIMEOUT_SECS`)
 //!   * Per-stage progress markers
+//!   * Orphan zccache-daemon reaper at startup
 
 use std::env;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, ExitCode};
 
-use zccache_ci::{resolve_timeout, StageOutcome, StageRunner};
+use zccache_ci::{reap_orphan_daemons, resolve_timeout, StageOutcome, StageRunner};
 use zccache_core::NormalizedPath;
 
 fn project_root() -> NormalizedPath {
@@ -195,7 +196,10 @@ fn main() -> ExitCode {
     // Ensure all spawned cargo/rustc processes find the rustup toolchain
     activate_rustup_toolchain(&root);
 
-    // Kill any running daemon so cargo can replace the exe on Windows
+    // First reap any zccache-daemon whose parent PID is gone — these are
+    // true orphans from a previous force-killed agent turn. Then kill any
+    // remaining daemon so cargo can replace the exe on Windows.
+    let _ = reap_orphan_daemons();
     kill_daemon();
 
     // Run every stage under a shared wall-clock deadline (default 300s,
