@@ -359,10 +359,6 @@ mod tests {
             Path::new("/usr/bin/zccache-daemon"),
             "zccache-daemon"
         ));
-        assert!(exe_stem_matches(
-            Path::new(r"C:\bin\zccache-daemon.exe"),
-            "zccache-daemon"
-        ));
         // A different binary at the same PID must not be accepted.
         assert!(!exe_stem_matches(
             Path::new("/usr/bin/bash"),
@@ -370,6 +366,19 @@ mod tests {
         ));
         assert!(!exe_stem_matches(
             Path::new("/usr/bin/zccache-daemon-x"),
+            "zccache-daemon"
+        ));
+    }
+
+    /// Windows-only: backslash-separated paths require the OS-native
+    /// `Path::file_name` semantics. On Unix `\` is a regular filename
+    /// character, so the same assertion would fail there (issue #143).
+    #[cfg(windows)]
+    #[test]
+    fn exe_stem_matches_strips_exe_suffix_on_windows() {
+        use std::path::Path;
+        assert!(exe_stem_matches(
+            Path::new(r"C:\bin\zccache-daemon.exe"),
             "zccache-daemon"
         ));
     }
