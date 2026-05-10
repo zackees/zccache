@@ -80,7 +80,7 @@ enum CheckLevel {
     Skip,
     /// Dirty files exist but unchanged this session — run `cargo check` only.
     QuickCheck,
-    /// New changes detected — full lint + doc + tests.
+    /// New changes detected — full lint + tests.
     Full,
 }
 
@@ -375,24 +375,12 @@ fn main() -> ExitCode {
         }
     }
 
-    // Doc check (catches unclosed HTML tags, broken intra-doc links, etc.)
-    let doc_cmd: Vec<String> = vec![
-        "cargo".into(),
-        "doc".into(),
-        "--workspace".into(),
-        "--no-deps".into(),
-    ];
-    // Set RUSTDOCFLAGS to deny warnings
-    std::env::set_var("RUSTDOCFLAGS", "-D warnings");
-    let (doc_rc, doc_timeout) = run_streaming(&root, &doc_cmd, "Doc check");
-    if doc_timeout {
-        eprintln!("Doc check timed out — skipping tests");
-        return ExitCode::from(2);
-    }
-    if doc_rc != 0 {
-        eprintln!("Doc check failed — skipping tests");
-        return ExitCode::from(2);
-    }
+    // Doc check is intentionally skipped here. `cargo doc --workspace --no-deps`
+    // takes 5–15s, isn't intercepted by the rustc wrapper cache, and so runs
+    // cold every Stop turn. The dedicated CI workflow (.github/workflows/ci.yml)
+    // already runs it on every PR, and developers can still invoke it manually
+    // with `RUSTDOCFLAGS="-D warnings" soldr cargo doc --workspace --no-deps`.
+    // See #139 fix 2.
 
     // Unit tests only — skip integration/stress tests (which need
     // a fully compiled binary and are gated behind --include-ignored).
