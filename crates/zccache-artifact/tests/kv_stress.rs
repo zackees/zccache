@@ -242,6 +242,50 @@ fn p2_windows_long_path_spill() {
     assert_eq!(got, payload);
 }
 
+#[cfg(windows)]
+#[test]
+fn p2b_windows_spill_remove_and_clear_at_long_path() {
+    // Lock in the long-path safety beyond plain put/get: remove + clear_namespace
+    // both reach into spill_path() too. Build a path whose final spill file
+    // strictly exceeds the 260-char `MAX_PATH` ceiling, then exercise every
+    // code path that joins off the store root.
+    let base = tempfile::tempdir().unwrap();
+    let mut deep = base.path().to_path_buf();
+    while deep.to_string_lossy().len() < 220 {
+        deep = deep.join("very-long-segment");
+    }
+    std::fs::create_dir_all(&deep).unwrap();
+    let s = KvStore::open(&deep).unwrap();
+
+    // Sanity: we want the spill path to definitely exceed legacy MAX_PATH so
+    // the test would actually catch a regression of the `\\?\` fix.
+    let k = key_from(b"p2b");
+    let probe = deep
+        .join("kv")
+        .join("ns")
+        .join(format!("{}.bin", k.to_hex()));
+    assert!(
+        probe.to_string_lossy().len() > 260,
+        "test setup must produce a path >260 chars, got {} chars",
+        probe.to_string_lossy().len()
+    );
+
+    let payload = vec![7u8; INLINE_THRESHOLD + 8];
+    s.put("ns", &k, &payload).unwrap();
+    let got = s.get("ns", &k).unwrap().unwrap();
+    assert_eq!(got, payload);
+
+    // remove must succeed on the long path (touches spill_path()).
+    s.remove("ns", &k).unwrap();
+    assert!(s.get("ns", &k).unwrap().is_none());
+
+    // clear_namespace removes the entire <ns> dir under kv/ — also a long path.
+    let k2 = key_from(b"p2b-2");
+    s.put("ns", &k2, &vec![3u8; INLINE_THRESHOLD + 3]).unwrap();
+    s.clear_namespace("ns").unwrap();
+    assert!(s.get("ns", &k2).unwrap().is_none());
+}
+
 #[cfg(unix)]
 #[test]
 fn p4_symlinked_store_dir() {
