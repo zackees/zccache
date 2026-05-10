@@ -1006,6 +1006,126 @@ mod tests {
         );
     }
 
+    // ─── Cache-key path-independence tests (issue #139, fix #1) ────────────────
+    //
+    // These tests pin the contract that cache keys are independent of the absolute
+    // path at which a workspace happens to live on disk. The same project checked
+    // out at `/tmp/proj-a` and `/tmp/proj-b` must produce the same rustc cache key,
+    // otherwise every `cargo {check,clippy,test}` after moving / re-cloning the
+    // repo cold-misses through the entire dep graph.
+
+    fn make_rustc_context_with_env(env: Vec<(String, String)>) -> RustcCompileContext {
+        let mut ctx = make_rustc_context("/src/lib.rs", "2021");
+        ctx.env_vars = env;
+        ctx.env_vars.sort();
+        ctx
+    }
+
+    /// T1 — Two contexts that differ only in `CARGO_MANIFEST_DIR` must have
+    /// the same cache key. This is the headline regression: the same crate
+    /// checked out at two paths should not invalidate the cache.
+    #[test]
+    fn rustc_context_key_ignores_cargo_manifest_dir() {
+        let ctx_a = make_rustc_context_with_env(vec![
+            (
+                "CARGO_MANIFEST_DIR".into(),
+                "/tmp/proj-a/crates/foo".into(),
+            ),
+            ("CARGO_PKG_NAME".into(), "foo".into()),
+            ("CARGO_PKG_VERSION".into(), "1.2.3".into()),
+        ]);
+        let ctx_b = make_rustc_context_with_env(vec![
+            (
+                "CARGO_MANIFEST_DIR".into(),
+                "/tmp/proj-b/crates/foo".into(),
+            ),
+            ("CARGO_PKG_NAME".into(), "foo".into()),
+            ("CARGO_PKG_VERSION".into(), "1.2.3".into()),
+        ]);
+        assert_eq!(
+            ctx_a.context_key(),
+            ctx_b.context_key(),
+            "CARGO_MANIFEST_DIR is volatile (absolute path) and must NOT \
+             contribute to the cache key; otherwise a project clone or rename \
+             invalidates every dependent compile"
+        );
+    }
+
+    /// T2 — Same idea for `CARGO_MANIFEST_PATH`. Cargo started exporting this
+    /// in newer versions; it's similarly an absolute path to `Cargo.toml`.
+    #[test]
+    fn rustc_context_key_ignores_cargo_manifest_path() {
+        let ctx_a = make_rustc_context_with_env(vec![
+            (
+                "CARGO_MANIFEST_PATH".into(),
+                "/tmp/proj-a/crates/foo/Cargo.toml".into(),
+            ),
+            ("CARGO_PKG_NAME".into(), "foo".into()),
+            ("CARGO_PKG_VERSION".into(), "1.2.3".into()),
+        ]);
+        let ctx_b = make_rustc_context_with_env(vec![
+            (
+                "CARGO_MANIFEST_PATH".into(),
+                "/tmp/proj-b/crates/foo/Cargo.toml".into(),
+            ),
+            ("CARGO_PKG_NAME".into(), "foo".into()),
+            ("CARGO_PKG_VERSION".into(), "1.2.3".into()),
+        ]);
+        assert_eq!(
+            ctx_a.context_key(),
+            ctx_b.context_key(),
+            "CARGO_MANIFEST_PATH is volatile (absolute path) and must NOT \
+             contribute to the cache key"
+        );
+    }
+
+    /// T3 — Negative control: `CARGO_PKG_VERSION` MUST still affect the key
+    /// because `env!("CARGO_PKG_VERSION")` is embedded in compiled output.
+    /// This guards against an over-eager filter that strips too much.
+    #[test]
+    fn rustc_context_key_sensitive_to_cargo_pkg_version() {
+        let ctx_a = make_rustc_context_with_env(vec![(
+            "CARGO_PKG_VERSION".into(),
+            "1.2.3".into(),
+        )]);
+        let ctx_b = make_rustc_context_with_env(vec![(
+            "CARGO_PKG_VERSION".into(),
+            "1.2.4".into(),
+        )]);
+        assert_ne!(
+            ctx_a.context_key(),
+            ctx_b.context_key(),
+            "CARGO_PKG_VERSION feeds env!() macros and MUST be in the cache key"
+        );
+    }
+
+    /// T4 — Extern rmeta paths that share a filename (and therefore the same
+    /// `metadata=` hash from cargo) but differ in their absolute directory
+    /// prefix must produce equal cache keys. This is the cascade-killer: when
+    /// a dep crate is rebuilt at the same content but in a different target
+    /// dir, all downstream crates should still hit.
+    #[test]
+    fn rustc_context_key_ignores_extern_directory_prefix() {
+        let mut ctx_a = make_rustc_context("/src/lib.rs", "2021");
+        ctx_a.extern_crates = vec![(
+            "serde".into(),
+            "/tmp/proj-a/target/debug/deps/libserde-abc123.rmeta".into(),
+        )];
+        let mut ctx_b = make_rustc_context("/src/lib.rs", "2021");
+        ctx_b.extern_crates = vec![(
+            "serde".into(),
+            "/tmp/proj-b/target/debug/deps/libserde-abc123.rmeta".into(),
+        )];
+        assert_eq!(
+            ctx_a.context_key(),
+            ctx_b.context_key(),
+            "extern rmeta paths with the same filename (= same cargo metadata \
+             hash) but different absolute prefixes must produce equal cache \
+             keys; otherwise relocating the workspace cascades through every \
+             downstream crate"
+        );
+    }
+
     #[test]
     fn rustc_artifact_key_stable() {
         let ctx = make_rustc_context("/src/lib.rs", "2021");
