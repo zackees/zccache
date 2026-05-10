@@ -10,14 +10,14 @@
 //! Solution: This module is a verbatim port of clud's same-named pattern
 //! at `crates/clud-bin/src/trampoline.rs` (see the `unlock_exe` and
 //! `gc_old_files` functions there). On launch, the daemon renames itself
-//! (Scripts/zccache-daemon.exe → zccache-daemon.exe.old.<rand>), then
+//! (`Scripts/zccache-daemon.exe` → `zccache-daemon.exe.old.<rand>`), then
 //! copies a fresh unlocked copy back to Scripts/zccache-daemon.exe. The
 //! running process continues from the renamed file. No child process, no
 //! handle transfer.
 //!
 //! Result: Scripts/zccache-daemon.exe is always an unlocked copy. pip
 //! install always works. Each running instance locks its own
-//! zccache-daemon.exe.old.<rand> file.
+//! `zccache-daemon.exe.old.<rand>` file.
 //!
 //! IMPORTANT: Every operation is best-effort. If anything fails, the app
 //! continues normally — it just won't get the lock-free install benefit.
