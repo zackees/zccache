@@ -29,7 +29,7 @@ use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use wait_timeout::ChildExt;
@@ -277,6 +277,7 @@ pub fn kill_process_tree(child: &mut Child) {
 
     #[cfg(windows)]
     {
+        use std::process::Stdio;
         // /T = recursive (kill children), /F = force.
         let _ = Command::new("taskkill")
             .args(["/T", "/F", "/PID", &pid.to_string()])
@@ -462,6 +463,7 @@ pub fn reap_orphan_daemons() -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Stdio;
 
     fn sleep_forever_cmd() -> Command {
         // A child that will never exit on its own. We use the host's interpreter
