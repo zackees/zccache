@@ -3449,6 +3449,7 @@ dependencies = [
  "sysinfo",
  "wait-timeout",
  "zccache-core",
+ "zccache-ipc",
 ]
 
 [[package]]
