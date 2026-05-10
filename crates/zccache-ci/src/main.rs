@@ -10,6 +10,7 @@
 //!
 //! Safety nets (see issue #141 and `lib.rs`):
 //!   * Wall-clock timeout (default 300s, override `ZCCACHE_CI_TIMEOUT_SECS`)
+//!   * Per-stage progress markers
 
 use std::env;
 use std::fs;
@@ -214,6 +215,7 @@ fn main() -> ExitCode {
         if let Some(code) = handle_outcome("quick-check", outcome) {
             return code;
         }
+        runner.finish();
         eprintln!("Quick check passed");
         return ExitCode::SUCCESS;
     }
@@ -277,6 +279,7 @@ fn main() -> ExitCode {
         return code;
     }
 
+    runner.finish();
     eprintln!("All checks passed");
     ExitCode::SUCCESS
 }

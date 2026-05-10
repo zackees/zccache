@@ -8,10 +8,17 @@
 //! loop. The harness gives us 10 minutes wall-clock, but a single agent turn
 //! has been observed running for 45+ minutes when the harness misbehaves.
 //!
-//! This crate enforces a hard wall-clock budget on every stage. On timeout
-//! the entire child process tree is killed (`taskkill /T /F` on Windows,
-//! process-group SIGKILL on Unix) and a best-effort diagnostic snapshot is
-//! dumped to stderr.
+//! This crate enforces:
+//!
+//! 1. **Wall-clock timeout** ([`StageRunner`]) — every stage runs against a
+//!    shared deadline. On timeout the entire child process tree is killed
+//!    (`taskkill /T /F` on Windows, process-group SIGKILL on Unix) and a
+//!    best-effort diagnostic snapshot is dumped to stderr.
+//!
+//! 2. **Per-stage progress markers** ([`StageRunner::start_stage`]) — every
+//!    stage prints `[<elapsed>] -> <name>` so the user can see which stage is
+//!    hanging when the timeout fires. The last printed stage on the timeout
+//!    path is the smoking gun.
 
 use std::env;
 use std::fs;
@@ -49,6 +56,33 @@ pub enum StageOutcome {
     SpawnFailed,
 }
 
+/// Where progress markers are written. The default is stderr so that test
+/// stdout stays clean and so the harness shows progress as the run unfolds.
+pub trait ProgressSink: Send {
+    fn write_line(&mut self, line: &str);
+}
+
+/// A `ProgressSink` that writes directly to stderr.
+pub struct StderrProgress;
+
+impl ProgressSink for StderrProgress {
+    fn write_line(&mut self, line: &str) {
+        let _ = writeln!(std::io::stderr(), "{line}");
+    }
+}
+
+/// A `ProgressSink` that captures lines into an in-memory `Vec` for tests.
+#[derive(Default)]
+pub struct CapturingProgress {
+    pub lines: Vec<String>,
+}
+
+impl ProgressSink for CapturingProgress {
+    fn write_line(&mut self, line: &str) {
+        self.lines.push(line.to_string());
+    }
+}
+
 /// Runs a sequence of stages against a shared wall-clock deadline. Each stage
 /// gets at most `deadline - now()` to complete. If a stage exhausts the
 /// budget, the runner kills the child process tree and returns
@@ -56,20 +90,32 @@ pub enum StageOutcome {
 ///
 /// The runner is intentionally a thin layer around `std::process::Command` so
 /// it composes with whatever the caller wants to spawn (cargo, lint, tests).
-pub struct StageRunner {
+///
+/// Every stage emits a progress marker through the [`ProgressSink`] when it
+/// starts. The default sink writes to stderr; tests use [`CapturingProgress`].
+pub struct StageRunner<P: ProgressSink = StderrProgress> {
     started: Instant,
     deadline: Instant,
+    progress: P,
     /// Last stage label seen — printed on timeout as the smoking-gun stage.
     last_stage: Option<String>,
 }
 
-impl StageRunner {
-    /// Construct a runner with a wall-clock budget starting now.
+impl StageRunner<StderrProgress> {
+    /// Construct a runner that writes progress markers to stderr.
     pub fn new(timeout: Duration) -> Self {
+        Self::with_progress(timeout, StderrProgress)
+    }
+}
+
+impl<P: ProgressSink> StageRunner<P> {
+    /// Construct a runner with an explicit progress sink (used by tests).
+    pub fn with_progress(timeout: Duration, progress: P) -> Self {
         let started = Instant::now();
         Self {
             started,
             deadline: started + timeout,
+            progress,
             last_stage: None,
         }
     }
@@ -91,14 +137,37 @@ impl StageRunner {
         self.last_stage.as_deref()
     }
 
+    /// Borrow the progress sink so callers (mainly tests) can assert on
+    /// captured lines without consuming the runner.
+    pub fn progress_ref(&self) -> &P {
+        &self.progress
+    }
+
+    /// Print a progress marker for a stage and remember its name. Format:
+    /// `[<elapsed>] -> <stage>`.
+    pub fn start_stage(&mut self, stage: &str) {
+        let elapsed = self.elapsed();
+        self.progress
+            .write_line(&format!("[{}] -> {}", format_elapsed(elapsed), stage));
+        self.last_stage = Some(stage.to_string());
+    }
+
+    /// Print the final "done" marker.
+    pub fn finish(&mut self) {
+        let elapsed = self.elapsed();
+        self.progress
+            .write_line(&format!("[{}] done", format_elapsed(elapsed)));
+    }
+
     /// Spawn `cmd` and wait for it to exit, bounded by the global deadline.
     /// On timeout the child's process tree is killed and the diagnostic
     /// snapshot is dumped to stderr.
     ///
-    /// `stage` is the human-readable label for the stage; it is recorded as
-    /// `last_stage` and surfaced in the timeout banner.
+    /// `stage` is the human-readable label for the stage; it is printed via
+    /// the progress sink, recorded as `last_stage`, and surfaced in the
+    /// timeout banner.
     pub fn run(&mut self, stage: &str, cmd: &mut Command) -> StageOutcome {
-        self.last_stage = Some(stage.to_string());
+        self.start_stage(stage);
 
         // Already over budget — bail without spawning.
         if self.remaining().is_zero() {
@@ -141,6 +210,11 @@ impl StageRunner {
             format_elapsed(elapsed)
         );
         let _ = writeln!(std::io::stderr(), "  hung stage: {stage}");
+        if let Some(prev) = &self.last_stage {
+            if prev != stage {
+                let _ = writeln!(std::io::stderr(), "  last stage: {prev}");
+            }
+        }
         if let Some(c) = child {
             let _ = writeln!(std::io::stderr(), "  child PID: {}", c.id());
         }
@@ -421,5 +495,45 @@ mod tests {
         let mut runner = StageRunner::new(Duration::from_millis(0));
         let outcome = runner.run("noop", &mut quick_exit_cmd());
         assert_eq!(outcome, StageOutcome::GlobalTimeout);
+    }
+
+    #[test]
+    fn progress_markers_capture_each_stage() {
+        let mut runner =
+            StageRunner::with_progress(Duration::from_secs(5), CapturingProgress::default());
+        runner.start_stage("fmt-check");
+        runner.start_stage("clippy");
+        runner.start_stage("test");
+        runner.finish();
+
+        let progress = runner.progress_ref();
+        assert_eq!(progress.lines.len(), 4);
+        assert!(progress.lines[0].ends_with("-> fmt-check"));
+        assert!(progress.lines[1].ends_with("-> clippy"));
+        assert!(progress.lines[2].ends_with("-> test"));
+        assert!(progress.lines[3].ends_with("done"));
+
+        // Each marker starts with `[N.Ns]`.
+        for line in &progress.lines {
+            assert!(
+                line.starts_with('[') && line.contains("s]"),
+                "expected elapsed prefix in {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn run_emits_progress_marker_for_hung_stage() {
+        let mut runner =
+            StageRunner::with_progress(Duration::from_millis(200), CapturingProgress::default());
+        let outcome = runner.run("hang", &mut sleep_forever_cmd());
+        assert_eq!(outcome, StageOutcome::GlobalTimeout);
+
+        let progress = runner.progress_ref();
+        assert!(
+            progress.lines.iter().any(|l| l.contains("-> hang")),
+            "expected progress marker, got {:?}",
+            progress.lines
+        );
     }
 }
