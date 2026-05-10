@@ -16,6 +16,48 @@ use std::sync::Arc;
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
+/// Windows long-path (`\\?\`) helpers. On non-Windows platforms every entry
+/// point is a no-op pass-through.
+mod long_path {
+    use std::path::{Path, PathBuf};
+
+    /// Normalize `dir` so that paths joined off it can exceed `MAX_PATH`
+    /// without tripping the legacy Win32 path APIs used by transitive crates
+    /// (notably `tempfile`'s rename-on-persist call into `MoveFileExW`).
+    ///
+    /// On Windows we canonicalize to a verbatim (`\\?\`-prefixed) form so that
+    /// every `path.join(...)` we do downstream inherits the prefix. On Unix
+    /// this is a pure clone — long paths are not a thing there.
+    ///
+    /// The dir must already exist; callers in this crate `create_dir_all`
+    /// first.
+    pub(super) fn ensure_long_path(dir: &Path) -> std::io::Result<PathBuf> {
+        #[cfg(windows)]
+        {
+            // `fs::canonicalize` on Windows returns the verbatim form
+            // (`\\?\C:\...` or `\\?\UNC\...`), which is exactly what we need.
+            // If the path already starts with `\\?\` we keep it as-is.
+            if starts_with_verbatim(dir) {
+                return Ok(dir.to_path_buf());
+            }
+            std::fs::canonicalize(dir)
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(dir.to_path_buf())
+        }
+    }
+
+    #[cfg(windows)]
+    fn starts_with_verbatim(p: &Path) -> bool {
+        // OsStr equality is byte-wise on Windows for the ASCII prefix; using
+        // `to_string_lossy` is fine here because we only inspect the leading
+        // four ASCII bytes.
+        let s = p.as_os_str().to_string_lossy();
+        s.starts_with(r"\\?\")
+    }
+}
+
 const KV_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("kv");
 
 /// Inline-vs-spill threshold. Values ≤ this stay in redb; larger values
@@ -212,8 +254,12 @@ impl KvStore {
 
     /// Open at an explicit dir. Creates the dir + redb file if missing.
     pub fn open<P: AsRef<Path>>(dir: P) -> KvResult<Self> {
-        let dir = dir.as_ref().to_path_buf();
+        let mut dir = dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&dir)?;
+        // On Windows, normalize to a `\\?\`-prefixed (verbatim) form so that
+        // every spill path joined off `cache_dir` exceeds `MAX_PATH` safely.
+        // No-op on Unix.
+        dir = long_path::ensure_long_path(&dir)?;
         let db_path = dir.join("index.redb");
         let db = Database::create(&db_path).map_err(|e| KvError::Redb(e.to_string()))?;
         let store = Self {
@@ -228,8 +274,12 @@ impl KvStore {
     /// [`ArtifactStore`](crate::ArtifactStore)). Both stores see each other's
     /// commits; spill files live under `cache_dir/kv/...`.
     pub fn from_database<P: AsRef<Path>>(db: Arc<Database>, cache_dir: P) -> KvResult<Self> {
-        let cache_dir = cache_dir.as_ref().to_path_buf();
+        let mut cache_dir = cache_dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&cache_dir)?;
+        // Match the verbatim normalization done by [`KvStore::open`] so callers
+        // who route long paths through `from_database` get the same long-path
+        // safety on Windows.
+        cache_dir = long_path::ensure_long_path(&cache_dir)?;
         let store = Self {
             db,
             cache_dir: Arc::new(cache_dir),
