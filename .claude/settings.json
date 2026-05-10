@@ -29,11 +29,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run python -m ci.sccache_setup",
-            "timeout": 15
-          },
-          {
-            "type": "command",
             "command": "uv run python ci/hooks/check-on-start.py",
             "timeout": 15
           }

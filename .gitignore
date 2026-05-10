@@ -17,8 +17,7 @@ Thumbs.db
 # Session cache (hook fingerprints)
 .cache/
 
-# sccache (project-local, versioned by toolchain)
-.sccache/
+# Project-local toolchain caches (managed by soldr)
 .cargo/
 .rustup/
 
