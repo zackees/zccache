@@ -273,6 +273,10 @@ def main():
         if result.returncode != 0:
             return result.returncode
         if not args:
+            # Stop-hook case: --fix with no positional args.
+            # Run clippy ONCE here and return — do NOT fall through to
+            # lint_workspace() below (which also runs clippy + dylint + doc)
+            # otherwise clippy would run twice. See #139 fix 5.
             result = run_cmd(cargo_command(
                 "clippy", "--workspace", "--all-targets",
                 "--", "-D", "warnings",
