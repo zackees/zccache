@@ -908,5 +908,4 @@ mod tests {
         let file_name = path.file_name().unwrap().to_string_lossy();
         assert!(file_name.ends_with("-toolchain.tar.zst"));
     }
-
 }
