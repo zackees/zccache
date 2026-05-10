@@ -7,17 +7,17 @@
 //! Exit codes:
 //!   0 - All passed or skipped (no changes during session)
 //!   2 - Lint or test failures (stderr fed back to Claude)
+//!
+//! Safety nets (see issue #141 and `lib.rs`):
+//!   * Wall-clock timeout (default 300s, override `ZCCACHE_CI_TIMEOUT_SECS`)
 
 use std::env;
 use std::fs;
 use std::path::Path;
-use std::process::{Command, ExitCode, Stdio};
-use std::time::Duration;
+use std::process::{Command, ExitCode};
 
-use wait_timeout::ChildExt;
+use zccache_ci::{resolve_timeout, StageOutcome, StageRunner};
 use zccache_core::NormalizedPath;
-
-const TIMEOUT_SECS: u64 = 120;
 
 fn project_root() -> NormalizedPath {
     let current = env::current_dir().expect("cannot determine working directory");
@@ -85,98 +85,6 @@ enum CheckLevel {
 }
 
 // ---------------------------------------------------------------------------
-// Process tree + thread dumping (replaces Python's tasklist/wmic/ps calls)
-// ---------------------------------------------------------------------------
-
-fn dump_process_tree(pid: u32, label: &str) {
-    eprintln!("Process tree for {label} (PID {pid}):");
-
-    let mut sys = sysinfo::System::new();
-    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-
-    let target = sysinfo::Pid::from_u32(pid);
-
-    // Dump target process
-    if let Some(p) = sys.process(target) {
-        eprintln!(
-            "  PID={pid} name={} status={:?} cpu={:.1}% mem={}KB",
-            p.name().to_string_lossy(),
-            p.status(),
-            p.cpu_usage(),
-            p.memory() / 1024,
-        );
-        eprintln!("  cmd={:?}", p.cmd());
-    }
-
-    // Dump children recursively
-    dump_children(&sys, target, 1);
-}
-
-fn dump_children(sys: &sysinfo::System, parent: sysinfo::Pid, depth: usize) {
-    let indent = "  ".repeat(depth + 1);
-    for (pid, p) in sys.processes() {
-        if p.parent() == Some(parent) {
-            eprintln!(
-                "{indent}child PID={pid} name={} status={:?} cpu={:.1}% mem={}KB",
-                p.name().to_string_lossy(),
-                p.status(),
-                p.cpu_usage(),
-                p.memory() / 1024,
-            );
-            eprintln!("{indent}cmd={:?}", p.cmd());
-
-            // Dump thread info where available
-            dump_threads(*pid);
-
-            // Recurse into grandchildren
-            dump_children(sys, *pid, depth + 1);
-        }
-    }
-}
-
-/// Dump thread-level information for a process.
-///
-/// On Linux: enumerates `/proc/[pid]/task/` for thread IDs and status.
-/// On other platforms: no-op (process-level info from sysinfo is sufficient).
-fn dump_threads(pid: sysinfo::Pid) {
-    #[cfg(target_os = "linux")]
-    {
-        let task_dir = format!("/proc/{pid}/task");
-        if let Ok(entries) = fs::read_dir(&task_dir) {
-            let tids: Vec<u32> = entries
-                .filter_map(|e| e.ok())
-                .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
-                .collect();
-
-            if tids.len() > 1 {
-                eprintln!("    threads ({}):", tids.len());
-                for tid in &tids {
-                    let status_path = format!("/proc/{pid}/task/{tid}/status");
-                    if let Ok(status) = fs::read_to_string(&status_path) {
-                        let name = status
-                            .lines()
-                            .find(|l| l.starts_with("Name:"))
-                            .map(|l| l.trim_start_matches("Name:").trim())
-                            .unwrap_or("?");
-                        let state = status
-                            .lines()
-                            .find(|l| l.starts_with("State:"))
-                            .map(|l| l.trim_start_matches("State:").trim())
-                            .unwrap_or("?");
-                        eprintln!("      tid={tid} name={name} state={state}");
-                    }
-                }
-            }
-        }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = pid;
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Pre-check: kill running daemon so cargo can replace the exe
 // ---------------------------------------------------------------------------
 
@@ -191,45 +99,6 @@ fn kill_daemon() {
         if name == "zccache-daemon" || name == "zccache-daemon.exe" {
             eprintln!("Killing running daemon (PID {pid}) to unlock target binaries");
             process.kill();
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Subprocess execution with timeout
-// ---------------------------------------------------------------------------
-
-fn run_streaming(root: &Path, cmd: &[String], label: &str) -> (i32, bool) {
-    let mut child = match Command::new(&cmd[0])
-        .args(&cmd[1..])
-        .current_dir(root)
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{label}: failed to spawn: {e}");
-            return (-1, false);
-        }
-    };
-
-    match child.wait_timeout(Duration::from_secs(TIMEOUT_SECS)) {
-        Ok(Some(status)) => (status.code().unwrap_or(-1), false),
-        Ok(None) => {
-            eprintln!("\n{}", "=".repeat(60));
-            eprintln!("TIMEOUT: {label} exceeded {TIMEOUT_SECS}s — dumping process tree");
-            eprintln!("{}", "=".repeat(60));
-
-            dump_process_tree(child.id(), label);
-
-            let _ = child.kill();
-            let _ = child.wait();
-            (-1, true)
-        }
-        Err(e) => {
-            eprintln!("{label}: wait error: {e}");
-            (-1, false)
         }
     }
 }
@@ -282,6 +151,36 @@ fn is_target_installed(target: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Build a `Command` configured to run `program args...` with `cwd = root`,
+/// inheriting stdout/stderr.
+fn build_cmd(root: &Path, program: &str, args: &[&str]) -> Command {
+    use std::process::Stdio;
+    let mut c = Command::new(program);
+    c.args(args)
+        .current_dir(root)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    c
+}
+
+fn handle_outcome(stage: &str, outcome: StageOutcome) -> Option<ExitCode> {
+    match outcome {
+        StageOutcome::Exited(0) => None,
+        StageOutcome::Exited(code) => {
+            eprintln!("{stage} failed (exit {code})");
+            Some(ExitCode::from(2))
+        }
+        StageOutcome::GlobalTimeout => {
+            eprintln!("{stage} hit the wall-clock timeout — failing");
+            Some(ExitCode::from(2))
+        }
+        StageOutcome::SpawnFailed => {
+            eprintln!("{stage} could not be spawned — failing");
+            Some(ExitCode::from(2))
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let root = project_root();
 
@@ -298,24 +197,22 @@ fn main() -> ExitCode {
     // Kill any running daemon so cargo can replace the exe on Windows
     kill_daemon();
 
+    // Run every stage under a shared wall-clock deadline (default 300s,
+    // overridable via env var). On timeout the entire process tree is killed
+    // and a diagnostic snapshot is dumped to stderr.
+    let timeout = resolve_timeout();
+    let mut runner = StageRunner::new(timeout);
+
     if level == CheckLevel::QuickCheck {
         eprintln!("Pre-existing dirty files — running cargo check");
-        let check_cmd: Vec<String> = vec![
-            "uv".into(),
-            "run".into(),
-            "cargo".into(),
-            "check".into(),
-            "--workspace".into(),
-            "--all-targets".into(),
-        ];
-        let (rc, timed_out) = run_streaming(&root, &check_cmd, "Quick check");
-        if timed_out {
-            eprintln!("Quick check timed out");
-            return ExitCode::from(2);
-        }
-        if rc != 0 {
-            eprintln!("Quick check failed — uncommitted files do not compile");
-            return ExitCode::from(2);
+        let mut cmd = build_cmd(
+            &root,
+            "uv",
+            &["run", "cargo", "check", "--workspace", "--all-targets"],
+        );
+        let outcome = runner.run("quick-check", &mut cmd);
+        if let Some(code) = handle_outcome("quick-check", outcome) {
+            return code;
         }
         eprintln!("Quick check passed");
         return ExitCode::SUCCESS;
@@ -324,23 +221,10 @@ fn main() -> ExitCode {
     eprintln!("Running full workspace checks (changes detected)");
 
     // Run lint first. If it fails, skip tests entirely.
-    let lint_cmd: Vec<String> = vec![
-        "uv".into(),
-        "run".into(),
-        "python".into(),
-        "-m".into(),
-        "ci.lint".into(),
-        "--fix".into(),
-    ];
-    let (lint_rc, lint_timeout) = run_streaming(&root, &lint_cmd, "Lint");
-
-    if lint_timeout {
-        eprintln!("Lint timed out — skipping tests");
-        return ExitCode::from(2);
-    }
-    if lint_rc != 0 {
-        eprintln!("Lint failed — skipping tests");
-        return ExitCode::from(2);
+    let mut lint_cmd = build_cmd(&root, "uv", &["run", "python", "-m", "ci.lint", "--fix"]);
+    let lint_outcome = runner.run("lint", &mut lint_cmd);
+    if let Some(code) = handle_outcome("lint", lint_outcome) {
+        return code;
     }
 
     // Cross-compile check: on Windows, verify code also compiles for Linux.
@@ -349,23 +233,14 @@ fn main() -> ExitCode {
     if cfg!(windows) {
         let target = "x86_64-unknown-linux-musl";
         if is_target_installed(target) {
-            let xcheck_cmd: Vec<String> = vec![
-                "cargo".into(),
-                "check".into(),
-                "--target".into(),
-                target.into(),
-                "--workspace".into(),
-                "--all-targets".into(),
-            ];
-            let (xcheck_rc, xcheck_timeout) =
-                run_streaming(&root, &xcheck_cmd, "Cross-compile check (Linux)");
-            if xcheck_timeout {
-                eprintln!("Cross-compile check timed out — skipping remaining checks");
-                return ExitCode::from(2);
-            }
-            if xcheck_rc != 0 {
-                eprintln!("Cross-compile check failed — code does not compile for Linux");
-                return ExitCode::from(2);
+            let mut xcheck_cmd = build_cmd(
+                &root,
+                "cargo",
+                &["check", "--target", target, "--workspace", "--all-targets"],
+            );
+            let xcheck_outcome = runner.run("cross-check-linux", &mut xcheck_cmd);
+            if let Some(code) = handle_outcome("cross-check-linux", xcheck_outcome) {
+                return code;
             }
         } else {
             eprintln!(
@@ -386,23 +261,20 @@ fn main() -> ExitCode {
     // a fully compiled binary and are gated behind --include-ignored).
     // Exclude zccache-daemon: its server tests start a real daemon with
     // IPC + file watcher and are effectively integration tests.
-    let test_cmd: Vec<String> = vec![
-        "cargo".into(),
-        "test".into(),
-        "--workspace".into(),
-        "--lib".into(),
-        "--exclude".into(),
-        "zccache-daemon".into(),
-    ];
-    let (test_rc, test_timeout) = run_streaming(&root, &test_cmd, "Tests");
-
-    if test_timeout {
-        eprintln!("Tests timed out — failing");
-        return ExitCode::from(2);
-    }
-    if test_rc != 0 {
-        eprintln!("Tests failed");
-        return ExitCode::from(2);
+    let mut test_cmd = build_cmd(
+        &root,
+        "cargo",
+        &[
+            "test",
+            "--workspace",
+            "--lib",
+            "--exclude",
+            "zccache-daemon",
+        ],
+    );
+    let test_outcome = runner.run("test", &mut test_cmd);
+    if let Some(code) = handle_outcome("test", test_outcome) {
+        return code;
     }
 
     eprintln!("All checks passed");

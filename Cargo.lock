@@ -3443,6 +3443,7 @@ dependencies = [
 name = "zccache-ci"
 version = "1.4.0"
 dependencies = [
+ "libc",
  "md5",
  "serde_json",
  "sysinfo",

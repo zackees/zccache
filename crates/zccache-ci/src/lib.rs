@@ -1,0 +1,425 @@
+//! Library half of the zccache-ci stop hook.
+//!
+//! Exposes the timeout/diagnostics/kill machinery so it is unit-testable
+//! independently of the `main()` entrypoint.
+//!
+//! The Stop hook can hang under pathological conditions (see issue #141):
+//! a daemon-lock deadlock, a runaway test, or a build script in an infinite
+//! loop. The harness gives us 10 minutes wall-clock, but a single agent turn
+//! has been observed running for 45+ minutes when the harness misbehaves.
+//!
+//! This crate enforces a hard wall-clock budget on every stage. On timeout
+//! the entire child process tree is killed (`taskkill /T /F` on Windows,
+//! process-group SIGKILL on Unix) and a best-effort diagnostic snapshot is
+//! dumped to stderr.
+
+use std::env;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use wait_timeout::ChildExt;
+
+/// Default wall-clock timeout for the entire stop hook run, in seconds.
+///
+/// Override via `ZCCACHE_CI_TIMEOUT_SECS`.
+pub const DEFAULT_TIMEOUT_SECS: u64 = 300;
+
+/// Resolve the wall-clock timeout from the environment, falling back to
+/// [`DEFAULT_TIMEOUT_SECS`].
+pub fn resolve_timeout() -> Duration {
+    let secs = env::var("ZCCACHE_CI_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or(DEFAULT_TIMEOUT_SECS);
+    Duration::from_secs(secs)
+}
+
+/// Outcome of running a single stage under [`StageRunner::run`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StageOutcome {
+    /// Stage exited normally with the given status code.
+    Exited(i32),
+    /// Stage was killed because the hard wall-clock deadline elapsed.
+    GlobalTimeout,
+    /// Stage spawn failed before we could even wait on it.
+    SpawnFailed,
+}
+
+/// Runs a sequence of stages against a shared wall-clock deadline. Each stage
+/// gets at most `deadline - now()` to complete. If a stage exhausts the
+/// budget, the runner kills the child process tree and returns
+/// [`StageOutcome::GlobalTimeout`].
+///
+/// The runner is intentionally a thin layer around `std::process::Command` so
+/// it composes with whatever the caller wants to spawn (cargo, lint, tests).
+pub struct StageRunner {
+    started: Instant,
+    deadline: Instant,
+    /// Last stage label seen — printed on timeout as the smoking-gun stage.
+    last_stage: Option<String>,
+}
+
+impl StageRunner {
+    /// Construct a runner with a wall-clock budget starting now.
+    pub fn new(timeout: Duration) -> Self {
+        let started = Instant::now();
+        Self {
+            started,
+            deadline: started + timeout,
+            last_stage: None,
+        }
+    }
+
+    /// Total wall-clock elapsed since the runner was constructed.
+    pub fn elapsed(&self) -> Duration {
+        self.started.elapsed()
+    }
+
+    /// Time remaining before the global deadline expires. Returns
+    /// `Duration::ZERO` if already past the deadline.
+    pub fn remaining(&self) -> Duration {
+        self.deadline.saturating_duration_since(Instant::now())
+    }
+
+    /// Borrow the most recently started stage label, if any. Useful in tests
+    /// and timeout banners to identify the smoking-gun stage.
+    pub fn last_stage(&self) -> Option<&str> {
+        self.last_stage.as_deref()
+    }
+
+    /// Spawn `cmd` and wait for it to exit, bounded by the global deadline.
+    /// On timeout the child's process tree is killed and the diagnostic
+    /// snapshot is dumped to stderr.
+    ///
+    /// `stage` is the human-readable label for the stage; it is recorded as
+    /// `last_stage` and surfaced in the timeout banner.
+    pub fn run(&mut self, stage: &str, cmd: &mut Command) -> StageOutcome {
+        self.last_stage = Some(stage.to_string());
+
+        // Already over budget — bail without spawning.
+        if self.remaining().is_zero() {
+            self.report_timeout(stage, None);
+            return StageOutcome::GlobalTimeout;
+        }
+
+        configure_process_group(cmd);
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = writeln!(std::io::stderr(), "{stage}: failed to spawn child: {e}");
+                return StageOutcome::SpawnFailed;
+            }
+        };
+
+        match child.wait_timeout(self.remaining()) {
+            Ok(Some(status)) => StageOutcome::Exited(status.code().unwrap_or(-1)),
+            Ok(None) => {
+                self.report_timeout(stage, Some(&child));
+                kill_process_tree(&mut child);
+                StageOutcome::GlobalTimeout
+            }
+            Err(e) => {
+                let _ = writeln!(std::io::stderr(), "{stage}: wait error: {e}");
+                let _ = child.kill();
+                let _ = child.wait();
+                StageOutcome::SpawnFailed
+            }
+        }
+    }
+
+    /// Print the timeout banner and dump diagnostics. Public so callers can
+    /// invoke it on alternate code paths (e.g. precondition failures).
+    pub fn report_timeout(&mut self, stage: &str, child: Option<&Child>) {
+        let elapsed = self.elapsed();
+        let _ = writeln!(
+            std::io::stderr(),
+            "STOP-HOOK TIMEOUT after {} - capturing state",
+            format_elapsed(elapsed)
+        );
+        let _ = writeln!(std::io::stderr(), "  hung stage: {stage}");
+        if let Some(c) = child {
+            let _ = writeln!(std::io::stderr(), "  child PID: {}", c.id());
+        }
+
+        capture_diagnostics();
+    }
+}
+
+/// Format a Duration as `<seconds>.<tenths>s`, e.g. `12.4s`.
+pub fn format_elapsed(d: Duration) -> String {
+    let total_ms = d.as_millis();
+    let secs = total_ms / 1000;
+    let tenths = (total_ms % 1000) / 100;
+    format!("{secs}.{tenths}s")
+}
+
+// ---------------------------------------------------------------------------
+// Process-tree kill (Windows: taskkill /T /F, Unix: process-group SIGKILL)
+// ---------------------------------------------------------------------------
+
+/// Configure `cmd` so its children form a new process group / job that we can
+/// kill atomically. On Unix this calls `setsid` via `pre_exec`; on Windows
+/// this sets the `CREATE_NEW_PROCESS_GROUP` creation flag.
+pub fn configure_process_group(cmd: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: setsid is async-signal-safe and only mutates the child's
+        // own process-group state.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = cmd;
+    }
+}
+
+/// Kill `child` and every descendant. Best-effort: errors are swallowed
+/// because we are already on the failure path.
+pub fn kill_process_tree(child: &mut Child) {
+    let pid = child.id();
+
+    #[cfg(windows)]
+    {
+        // /T = recursive (kill children), /F = force.
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+
+    #[cfg(unix)]
+    {
+        // The child started its own session via setsid, so its PGID == its
+        // PID. Negative pid kills the whole process group.
+        let pid_i = pid as i32;
+        unsafe {
+            libc::kill(-pid_i, libc::SIGKILL);
+        }
+    }
+
+    // Reap the direct child to avoid a zombie even on platforms where the
+    // group-kill above did the heavy lifting.
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics snapshot
+// ---------------------------------------------------------------------------
+
+/// Best-effort diagnostics dumped on timeout. Each section is independent and
+/// failure to read one section never aborts the others.
+pub fn capture_diagnostics() {
+    eprintln!("--- diagnostics ---");
+    dump_relevant_processes();
+    dump_daemon_lock();
+    dump_zccache_logs();
+    dump_compile_journal();
+    eprintln!("--- end diagnostics ---");
+}
+
+fn dump_relevant_processes() {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    eprintln!("processes (zccache/cargo/rustc/soldr):");
+    let mut count = 0usize;
+    for (pid, p) in sys.processes() {
+        let name = p.name().to_string_lossy();
+        let lower = name.to_ascii_lowercase();
+        if lower.contains("zccache")
+            || lower.contains("cargo")
+            || lower.contains("rustc")
+            || lower.contains("soldr")
+        {
+            eprintln!(
+                "  PID={pid} name={} status={:?} cpu={:.1}% mem={}KB",
+                name,
+                p.status(),
+                p.cpu_usage(),
+                p.memory() / 1024,
+            );
+            count += 1;
+        }
+    }
+    if count == 0 {
+        eprintln!("  (none found)");
+    }
+}
+
+fn home_dir() -> Option<PathBuf> {
+    let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    env::var_os(key).map(PathBuf::from)
+}
+
+fn dump_daemon_lock() {
+    let Some(home) = home_dir() else { return };
+    let lock = home.join(".zccache").join("daemon.lock");
+    eprintln!("daemon.lock ({}):", lock.display());
+    match fs::read_to_string(&lock) {
+        Ok(s) => {
+            for line in s.lines() {
+                eprintln!("  {line}");
+            }
+        }
+        Err(e) => eprintln!("  (unreadable: {e})"),
+    }
+}
+
+fn dump_tail(path: &Path, lines: usize) {
+    match fs::read_to_string(path) {
+        Ok(s) => {
+            let collected: Vec<&str> = s.lines().collect();
+            let start = collected.len().saturating_sub(lines);
+            for line in &collected[start..] {
+                eprintln!("  {line}");
+            }
+        }
+        Err(e) => eprintln!("  (unreadable {}: {})", path.display(), e),
+    }
+}
+
+fn dump_zccache_logs() {
+    let Some(home) = home_dir() else { return };
+    let log_dir = home.join(".zccache").join("logs");
+    eprintln!("zccache logs ({}):", log_dir.display());
+    let entries = match fs::read_dir(&log_dir) {
+        Ok(it) => it,
+        Err(e) => {
+            eprintln!("  (no log dir: {e})");
+            return;
+        }
+    };
+    let mut found = false;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|s| s.to_str()) == Some("log") {
+            found = true;
+            eprintln!("  --- tail of {} ---", p.display());
+            dump_tail(&p, 50);
+        }
+    }
+    if !found {
+        eprintln!("  (no .log files)");
+    }
+}
+
+fn dump_compile_journal() {
+    let Some(home) = home_dir() else { return };
+    let journal = home
+        .join(".soldr")
+        .join("cache")
+        .join("zccache")
+        .join("logs")
+        .join("compile_journal.jsonl");
+    eprintln!("soldr compile_journal ({}):", journal.display());
+    if !journal.exists() {
+        eprintln!("  (not present)");
+        return;
+    }
+    dump_tail(&journal, 50);
+}
+
+// ---------------------------------------------------------------------------
+// Tests (kept here so the runner is exercisable without external fixtures)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sleep_forever_cmd() -> Command {
+        // A child that will never exit on its own. We use the host's interpreter
+        // so this works on Windows (where `sleep` is not a binary).
+        if cfg!(windows) {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "ping -n 600 127.0.0.1 > NUL"]);
+            c.stdout(Stdio::null()).stderr(Stdio::null());
+            c
+        } else {
+            let mut c = Command::new("sh");
+            c.args(["-c", "sleep 600"]);
+            c.stdout(Stdio::null()).stderr(Stdio::null());
+            c
+        }
+    }
+
+    fn quick_exit_cmd() -> Command {
+        if cfg!(windows) {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "exit 0"]);
+            c.stdout(Stdio::null()).stderr(Stdio::null());
+            c
+        } else {
+            let mut c = Command::new("true");
+            c.stdout(Stdio::null()).stderr(Stdio::null());
+            c
+        }
+    }
+
+    #[test]
+    fn format_elapsed_examples() {
+        assert_eq!(format_elapsed(Duration::from_millis(0)), "0.0s");
+        assert_eq!(format_elapsed(Duration::from_millis(300)), "0.3s");
+        assert_eq!(format_elapsed(Duration::from_millis(12_400)), "12.4s");
+        assert_eq!(format_elapsed(Duration::from_secs(34)), "34.0s");
+    }
+
+    #[test]
+    fn resolve_timeout_uses_default_when_unset() {
+        // The env var is process-global; we don't mutate it here. Just check
+        // the parser shape on a parser miss.
+        let parsed = "0".parse::<u64>().ok().filter(|s| *s > 0);
+        assert!(parsed.is_none(), "0 should be filtered out as invalid");
+
+        let parsed = "abc".parse::<u64>().ok();
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn run_returns_exit_code_when_child_exits_normally() {
+        let mut runner = StageRunner::new(Duration::from_secs(5));
+        let outcome = runner.run("quick", &mut quick_exit_cmd());
+        assert_eq!(outcome, StageOutcome::Exited(0));
+    }
+
+    #[test]
+    fn run_times_out_and_kills_child_when_deadline_elapses() {
+        // Deliberately tight timeout so the test runs in well under a second.
+        let mut runner = StageRunner::new(Duration::from_millis(200));
+
+        let outcome = runner.run("hang", &mut sleep_forever_cmd());
+        assert_eq!(outcome, StageOutcome::GlobalTimeout);
+
+        // last_stage should be set to the hung stage, so the timeout banner
+        // can name it.
+        assert_eq!(runner.last_stage(), Some("hang"));
+    }
+
+    #[test]
+    fn run_skips_when_already_over_budget() {
+        // Budget = 0 -> first run() call should immediately bail without
+        // spawning anything.
+        let mut runner = StageRunner::new(Duration::from_millis(0));
+        let outcome = runner.run("noop", &mut quick_exit_cmd());
+        assert_eq!(outcome, StageOutcome::GlobalTimeout);
+    }
+}
