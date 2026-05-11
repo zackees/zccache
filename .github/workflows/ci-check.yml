@@ -24,6 +24,51 @@ jobs:
           cache: true
       - name: Check
         run: soldr cargo check --workspace --all-targets
+      - name: Stop zccache before cache save
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          status = subprocess.run(
+              ["soldr", "status", "--json"],
+              capture_output=True,
+              text=True,
+              check=False,
+          )
+          if status.returncode != 0:
+              raise SystemExit(0)
+
+          try:
+              payload = json.loads(status.stdout)
+          except json.JSONDecodeError:
+              raise SystemExit(0)
+
+          zccache = payload.get("zccache") or {}
+          binary = zccache.get("binary_path")
+          cache_dir = zccache.get("cache_dir") or zccache.get("state_dir")
+          if not binary:
+              raise SystemExit(0)
+
+          env = os.environ.copy()
+          if cache_dir:
+              env["ZCCACHE_CACHE_DIR"] = cache_dir
+          subprocess.run([binary, "stop"], env=env, check=False)
+          PY
+
+  test:
+    name: Test
+    runs-on: ${{ inputs.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: zackees/setup-soldr@v0
+        with:
+          version: "0.7.14"
+          toolchain: 1.94.1
+          cache: true
       - name: Test
         shell: bash
         run: |
