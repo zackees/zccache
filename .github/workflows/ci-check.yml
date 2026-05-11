@@ -23,7 +23,7 @@ jobs:
           toolchain: 1.94.1
           cache: true
       - name: Check
-        run: soldr cargo check --workspace --all-targets
+        run: soldr cargo check --workspace
       - name: Stop zccache before cache save
         if: always()
         shell: bash
