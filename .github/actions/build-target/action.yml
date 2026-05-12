@@ -98,10 +98,25 @@ runs:
         TARGET_UPPER=$(echo "${{ inputs.target }}" | tr '[:lower:]-' '[:upper:]_')
         echo "CARGO_TARGET_${TARGET_UPPER}_LINKER=${{ inputs.linker }}" >> "$GITHUB_ENV"
 
+    # `setup-soldr@v0` runs an inner cargo (via pip/maturin or cargo-binstall)
+    # during its install step. That cargo opens a jobserver at fds 8,9 and
+    # exports `CARGO_MAKEFLAGS=-j --jobserver-fds=8,9 --jobserver-auth=8,9`
+    # into the runner environment. By the time these release `soldr cargo build`
+    # steps run, those fds are closed, so cargo emits one
+    #   warning: failed to connect to jobserver from environment variable
+    #            `CARGO_MAKEFLAGS=…`: Bad file descriptor (os error 9)
+    # per invocation, which Cargo then deduplicates as
+    #   warning: <crate> generated 1 warning (1 duplicate)
+    # across every rustc compile in the dep graph — turning a single harmless
+    # warning into thousands of log lines. Cargo falls back to its own
+    # jobserver, so the build is correct; we just clear the inherited vars to
+    # cut the noise.
     - name: Build release binaries
       shell: bash
       env:
         PYO3_PYTHON: python
+        CARGO_MAKEFLAGS: ""
+        MAKEFLAGS: ""
       run: |
         soldr cargo build --release --target ${{ inputs.target }} -p zccache-cli
         soldr cargo build --release --target ${{ inputs.target }} -p zccache-daemon
@@ -112,6 +127,8 @@ runs:
       shell: bash
       env:
         PYO3_PYTHON: python
+        CARGO_MAKEFLAGS: ""
+        MAKEFLAGS: ""
       run: |
         HOST_TARGET=$(soldr --no-cache rustc -vV | awk '/^host: / { print $2 }')
         if [ "$HOST_TARGET" != "${{ inputs.target }}" ]; then
