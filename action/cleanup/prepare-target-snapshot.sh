@@ -79,61 +79,87 @@ format_bytes() {
   ' 2>/dev/null || printf '%s B' "$1"
 }
 
-sum_file_bytes_from_find() {
-  local total=0
-  local file size
-  while IFS= read -r -d '' file; do
-    size="$(wc -c < "$file" | tr -d '[:space:]')" || size=0
-    total=$((total + size))
-  done
-  printf '%s\n' "$total"
-}
-
-directory_bytes() {
-  local dir="$1"
-  find "$dir" -type f -print0 2>/dev/null | sum_file_bytes_from_find
-}
-
+# Sum every regular file under `target/`, excluding `incremental/` (and
+# optionally `*/build/*/out`). One Python process spawn — replaces the
+# previous `find | while wc -c` loop that paid 30–50ms of Git-Bash
+# process-spawn cost per file on Windows, dominating cleanup runtime
+# (~80–90s on a typical workspace target/). See zccache#189.
+#
+# Only used in full mode; hot mode already gets its candidate bytes from
+# `select-hot-target.py`'s JSON output.
 snapshot_candidate_bytes() {
   local target="$1"
+  local prune_build_out=0
   if is_true "${TARGET_PRUNE_BUILD_SCRIPT_OUT:-false}"; then
-    find "$target" \
-      \( -type d -name incremental -o -type d -path '*/build/*/out' \) -prune \
-      -o -type f -print0 2>/dev/null | sum_file_bytes_from_find
-  else
-    find "$target" \
-      -type d -name incremental -prune \
-      -o -type f -print0 2>/dev/null | sum_file_bytes_from_find
+    prune_build_out=1
   fi
+  python - "$target" "$prune_build_out" <<'PY'
+import os
+import sys
+
+target = sys.argv[1]
+prune_build_out = sys.argv[2] == "1"
+total = 0
+seen_inodes = set()
+for root, dirs, files in os.walk(target):
+    # Mirror the bash `find -prune` semantics: skip `incremental` and
+    # optionally any `out` directory that sits under a `build/<pkg>/` path.
+    pruned = []
+    for d in dirs:
+        if d == "incremental":
+            pruned.append(d)
+            continue
+        if prune_build_out and d == "out":
+            # `*/build/*/out` — match only if parent's parent is `build`.
+            parent = os.path.basename(root)
+            grandparent = os.path.basename(os.path.dirname(root))
+            if grandparent == "build":
+                pruned.append(d)
+                continue
+    for d in pruned:
+        dirs.remove(d)
+    for fname in files:
+        try:
+            st = os.stat(os.path.join(root, fname))
+        except OSError:
+            continue
+        key = (st.st_dev, st.st_ino)
+        if key in seen_inodes:
+            continue
+        seen_inodes.add(key)
+        total += st.st_size
+print(total)
+PY
 }
 
+# Prune directories matching `find_kind` and emit `count bytes` summary.
+# `bytes` is reported as 0 — the pre-#189 implementation walked each
+# pruned directory before deletion to sum sizes, but the result was
+# purely informational (never gated any decision) and the walk cost
+# ~10–20s extra on Windows per cleanup. The `pruned-dirs` count is
+# still accurate and remains the actionable signal.
 prune_dirs() {
   local target="$1"
   local find_kind="$2"
   local count=0
-  local bytes=0
-  local dir dir_bytes
+  local dir
 
   if [ "$find_kind" = "incremental" ]; then
     while IFS= read -r -d '' dir; do
-      dir_bytes="$(directory_bytes "$dir")"
       rm -rf -- "$dir"
       count=$((count + 1))
-      bytes=$((bytes + dir_bytes))
     done < <(find "$target" -type d -name incremental -prune -print0 2>/dev/null)
   elif [ "$find_kind" = "build-out" ]; then
     while IFS= read -r -d '' dir; do
-      dir_bytes="$(directory_bytes "$dir")"
       rm -rf -- "$dir"
       count=$((count + 1))
-      bytes=$((bytes + dir_bytes))
     done < <(find "$target" -type d -path '*/build/*/out' -prune -print0 2>/dev/null)
   else
     echo "unknown prune kind: $find_kind" >&2
     return 2
   fi
 
-  printf '%s %s\n' "$count" "$bytes"
+  printf '%s 0\n' "$count"
 }
 
 emit_outputs() {
@@ -239,9 +265,15 @@ if is_true "${TARGET_PRUNE_BUILD_SCRIPT_OUT:-false}"; then
   PRUNED_BYTES=$((PRUNED_BYTES + bytes))
 fi
 
-CANDIDATE_BYTES="$(snapshot_candidate_bytes "$TARGET")"
-if [ "$SNAPSHOT_MODE" = "full" ] && [ "$MAX_BYTES" -gt 0 ] && [ "$CANDIDATE_BYTES" -gt "$MAX_BYTES" ]; then
-  finish_too_large "$CANDIDATE_BYTES"
+# Full mode needs a whole-`target/` walk to gate the size check below.
+# Hot mode does its own walk inside `select-hot-target.py` and rebinds
+# `CANDIDATE_BYTES` from its JSON stats — skip the bash-side walk
+# entirely for hot mode to avoid duplicating the work (#189).
+if [ "$SNAPSHOT_MODE" = "full" ]; then
+  CANDIDATE_BYTES="$(snapshot_candidate_bytes "$TARGET")"
+  if [ "$MAX_BYTES" -gt 0 ] && [ "$CANDIDATE_BYTES" -gt "$MAX_BYTES" ]; then
+    finish_too_large "$CANDIDATE_BYTES"
+  fi
 fi
 
 if [ "$SNAPSHOT_MODE" = "hot" ]; then
