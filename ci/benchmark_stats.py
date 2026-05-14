@@ -313,7 +313,10 @@ def _duration_seconds(value: str) -> float | None:
     if match is None:
         return None
     number = float(match.group(1))
-    if match.group(2) == "ms":
+    unit = match.group(2)
+    if number == 0.0:
+        return 0.000001 if unit == "ms" else 0.001
+    if unit == "ms":
         return round(number / 1000.0, 6)
     return round(number, 6)
 

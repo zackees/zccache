@@ -191,6 +191,23 @@ def test_parse_benchmark_log_extracts_all_tables():
     assert rust_link[1]["scenario"] == "Workspace staticlib link, Warm"
 
 
+def test_parse_benchmark_log_clamps_zero_duration_cells_for_ratios():
+    log = """
+## C Static-Library Link Benchmark: 50 .o inputs, 5 warm trials
+
+| Scenario | Bare ar | sccache | zccache | vs sccache | vs Bare ar |
+|:---------|----------:|--------:|--------:|-----------:|--------------:|
+| Static archive, Cold | 0.057s | 0.057s | 0.000s | 1797x faster | 1797x faster |
+"""
+
+    row = benchmark_stats.parse_benchmark_log(log)[0]
+
+    assert row["zccache_seconds"] == 0.001
+    assert row["zccache_vs_bare_ratio"] == 57.0
+    assert row["zccache_vs_sccache_ratio"] == 57.0
+    assert benchmark_stats._duration_seconds("0.0ms") == 0.000001
+
+
 def test_group_results_by_language_returns_expected_buckets():
     rows = benchmark_stats.parse_benchmark_log(SAMPLE_LOG)
 

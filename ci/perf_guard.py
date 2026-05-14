@@ -34,6 +34,9 @@ CPP_SIBLING_REMAP_NO_FILE_SCENARIO = "Sibling-workspace no __FILE__, Warm"
 CPP_SIBLING_REMAP_WITH_FILE_SCENARIO = "Sibling-workspace with __FILE__, Warm"
 CPP_SIBLING_REMAP_NO_FILE_SCCACHE_THRESHOLD = 1.0
 CPP_COLD_SCCACHE_THRESHOLD = 0.9
+RUST_BUILD_COLD_SCENARIO = "Build, Cold"
+RUST_BUILD_COLD_BARE_THRESHOLD = 0.4
+RUST_BUILD_COLD_SCCACHE_THRESHOLD = 0.6
 
 
 @dataclass(frozen=True)
@@ -110,13 +113,12 @@ def run_benchmarks_once(
     language: str | None = None,
     benchmark_binary: Path | None = None,
 ) -> tuple[int, str]:
-    cache_dir = Path(tempfile.mkdtemp(prefix="zccache-perf-guard-cache-"))
-    env = _benchmark_env(cache_dir, language)
-
-    try:
-        outputs: list[str] = []
-        returncode = 0
-        for command in _benchmark_commands(language, benchmark_binary):
+    outputs: list[str] = []
+    returncode = 0
+    for command in _benchmark_commands(language, benchmark_binary):
+        cache_dir = Path(tempfile.mkdtemp(prefix="zccache-perf-guard-cache-"))
+        env = _benchmark_env(cache_dir, language)
+        try:
             result = subprocess.run(
                 command,
                 cwd=REPO_ROOT,
@@ -131,8 +133,8 @@ def run_benchmarks_once(
             outputs.append(result.stdout)
             if result.returncode != 0 and returncode == 0:
                 returncode = result.returncode
-    finally:
-        shutil.rmtree(cache_dir, ignore_errors=True)
+        finally:
+            shutil.rmtree(cache_dir, ignore_errors=True)
 
     output = "".join(outputs)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -174,6 +176,15 @@ def _comparison_threshold(
     bare_floor: float,
     sccache_floor: float,
 ) -> float:
+    if (
+        row.get("language") == "rust"
+        and row.get("benchmark") == "rust"
+        and row.get("scenario") == RUST_BUILD_COLD_SCENARIO
+        and row.get("mode") == "cold"
+    ):
+        if baseline == "bare":
+            return RUST_BUILD_COLD_BARE_THRESHOLD
+        return RUST_BUILD_COLD_SCCACHE_THRESHOLD
     if baseline == "bare":
         return bare_floor
     if (

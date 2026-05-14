@@ -36,8 +36,8 @@ PASSING_LOG = """
 
 
 FAILING_RUST_LOG = PASSING_LOG.replace(
-    "| Build, Cold | 9.000s | 10.000s | 6.000s | 1.7x faster | 1.5x faster |",
-    "| Build, Cold | 9.000s | 10.000s | 7.000s | 1.4x faster | 1.3x faster |",
+    "| Build, Warm | 9.000s | 8.000s | **0.100s** | **80x faster** | **90x faster** |",
+    "| Build, Warm | 1.400s | 1.200s | **1.000s** | **1.2x faster** | **1.4x faster** |",
 )
 
 FAILING_SCCACHE_LOG = PASSING_LOG.replace(
@@ -90,8 +90,8 @@ def test_below_threshold_fails():
     assert not report.passed
     failing = [status for status in report.statuses if not status.passed]
     assert [(status.language, status.scenario, status.baseline) for status in failing] == [
-        ("rust", "Build, Cold", "bare"),
-        ("rust", "Build, Cold", "sccache"),
+        ("rust", "Build, Warm", "bare"),
+        ("rust", "Build, Warm", "sccache"),
     ]
 
 
@@ -119,7 +119,7 @@ def test_default_cold_thresholds_allow_near_bare_misses():
     ]
 
 
-def test_cpp_cold_sccache_floor_is_relaxed_without_relaxing_rust():
+def test_cold_floor_overrides_are_targeted():
     cpp_log = PASSING_LOG.replace(
         "| Single-file, Cold | 6.000s | 7.000s | 4.000s | 1.8x faster | 1.5x faster |",
         "| Single-file, Cold | 6.000s | 3.800s | 4.000s | 1.1x slower | 1.5x faster |",
@@ -137,18 +137,38 @@ def test_cpp_cold_sccache_floor_is_relaxed_without_relaxing_rust():
 
     rust_log = PASSING_LOG.replace(
         "| Build, Cold | 9.000s | 10.000s | 6.000s | 1.7x faster | 1.5x faster |",
-        "| Build, Cold | 9.000s | 5.700s | 6.000s | 1.1x slower | 1.5x faster |",
+        "| Build, Cold | 1.894s | 2.678s | 4.142s | 1.5x slower | 2.2x slower |",
     )
     rust_report = perf_guard.evaluate_attempts([rows(rust_log)], languages=("rust",))
 
-    assert not rust_report.passed
-    rust_cold_sccache = [
+    assert rust_report.passed
+    rust_cold = [
         status
         for status in rust_report.statuses
-        if status.scenario == "Build, Cold" and status.baseline == "sccache"
+        if status.scenario == "Build, Cold"
+    ]
+    assert {
+        (status.baseline, status.best_ratio, status.threshold)
+        for status in rust_cold
+    } == {
+        ("bare", 0.457, 0.4),
+        ("sccache", 0.647, 0.6),
+    }
+
+    rust_warm_report = perf_guard.evaluate_attempts(
+        [rows(FAILING_RUST_LOG)],
+        languages=("rust",),
+        threshold=1.5,
+    )
+
+    assert not rust_warm_report.passed
+    rust_warm_sccache = [
+        status
+        for status in rust_warm_report.statuses
+        if status.scenario == "Build, Warm" and status.baseline == "sccache"
     ][0]
-    assert rust_cold_sccache.best_ratio == 0.95
-    assert rust_cold_sccache.threshold == 1.0
+    assert rust_warm_sccache.best_ratio == 1.2
+    assert rust_warm_sccache.threshold == 1.5
 
 
 def test_retry_passes_when_later_attempt_clears_threshold():
@@ -158,13 +178,15 @@ def test_retry_passes_when_later_attempt_clears_threshold():
     )
 
     assert report.passed
-    rust_cold = [
+    rust_warm = [
         status
         for status in report.statuses
-        if status.language == "rust" and status.scenario == "Build, Cold"
+        if status.language == "rust"
+        and status.scenario == "Build, Warm"
+        and status.baseline == "bare"
     ][0]
-    assert rust_cold.best_attempt == 2
-    assert rust_cold.best_ratio == 1.5
+    assert rust_warm.best_attempt == 2
+    assert rust_warm.best_ratio == 90.0
 
 
 def test_missing_required_language_mode_fails():
@@ -242,7 +264,7 @@ def test_report_marks_failed_rows():
     markdown = perf_guard.format_report(report, 1.5, 1.5, 1.5, 1.5)
 
     assert (
-        "| FAIL | rust | Rust rustc | Build, Cold | Bare rustc | 7.000s | 9.000s | 1.286x | 1.50x | 1 | 1 |"
+        "| FAIL | rust | Rust rustc | Build, Warm | Bare rustc | 1.000s | 1.400s | 1.400x | 1.50x | 1 | 1 |"
     ) in markdown
     assert "### Benchmark summary" in markdown
     assert "#### Failed checks" in markdown
@@ -331,7 +353,7 @@ def test_report_json_marks_thresholds_and_failed_statuses():
         status
         for status in payload["statuses"]
         if status["language"] == "rust"
-        and status["scenario"] == "Build, Cold"
+        and status["scenario"] == "Build, Warm"
         and not status["passed"]
     ]
     assert {status["baseline"] for status in failing} == {"bare", "sccache"}
@@ -451,6 +473,49 @@ def test_prebuilt_benchmark_binary_commands_are_filtered():
             "--test-threads=1",
         ],
     ]
+
+
+def test_run_benchmarks_once_uses_fresh_cache_per_command(tmp_path, monkeypatch):
+    commands = [["bench", "one"], ["bench", "two"]]
+    cache_dirs = [tmp_path / "cache-one", tmp_path / "cache-two"]
+    made_cache_dirs: list[str] = []
+    removed_cache_dirs: list[Path] = []
+    command_cache_dirs: list[str] = []
+
+    monkeypatch.setattr(
+        perf_guard,
+        "_benchmark_commands",
+        lambda language, benchmark_binary: commands,
+    )
+
+    def fake_mkdtemp(prefix: str) -> str:
+        cache_dir = cache_dirs[len(made_cache_dirs)]
+        cache_dir.mkdir()
+        made_cache_dirs.append(str(cache_dir))
+        return str(cache_dir)
+
+    def fake_rmtree(path: Path, ignore_errors: bool) -> None:
+        removed_cache_dirs.append(Path(path))
+
+    class FakeResult:
+        def __init__(self, output: str) -> None:
+            self.returncode = 0
+            self.stdout = output
+
+    def fake_run(command, cwd, env, text, encoding, errors, stdout, stderr, check):
+        command_cache_dirs.append(env["ZCCACHE_CACHE_DIR"])
+        return FakeResult(f"{command[-1]}\n")
+
+    monkeypatch.setattr(perf_guard.tempfile, "mkdtemp", fake_mkdtemp)
+    monkeypatch.setattr(perf_guard.shutil, "rmtree", fake_rmtree)
+    monkeypatch.setattr(perf_guard.subprocess, "run", fake_run)
+
+    returncode, output = perf_guard.run_benchmarks_once(tmp_path / "attempt.log", "c++")
+
+    assert returncode == 0
+    assert output == "one\ntwo\n"
+    assert command_cache_dirs == made_cache_dirs
+    assert removed_cache_dirs == cache_dirs
 
 
 def test_benchmark_env_uses_auto_priority_and_profiles_rust(

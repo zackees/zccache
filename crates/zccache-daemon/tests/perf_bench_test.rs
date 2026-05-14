@@ -2994,7 +2994,10 @@ async fn measure_cpp_sibling_remap_mode(
 
     eprintln!("  [3/3] zccache (prime: workspace A, warm: workspace B, remap=auto)");
     let zccache_cache_dir = zccache_test_support::temp_cache_dir().unwrap();
-    let _zccache_cache_guard = EnvVarGuard::set_path("ZCCACHE_CACHE_DIR", zccache_cache_dir.path());
+    let _zccache_cache_guard = EnvVarGuard::set_path(
+        zccache_core::config::CACHE_DIR_ENV,
+        zccache_cache_dir.path(),
+    );
     let (endpoint, server_handle, shutdown) = start_daemon().await;
     let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
 
