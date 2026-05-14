@@ -149,8 +149,18 @@ jobs:
           summary_path="perf-guard-output/perf-guard-summary.md"
           result_path="perf-guard-output/perf-guard-result.txt"
           status="${{ steps.perf_guard.outputs.status }}"
+          print_fail_colored() {
+            local line
+            while IFS= read -r line || [[ -n "$line" ]]; do
+              if [[ "$line" == *FAIL* ]]; then
+                printf '\033[31m%s\033[0m\n' "$line"
+              else
+                printf '%s\n' "$line"
+              fi
+            done
+          }
           if [[ -f "$summary_path" ]]; then
-            cat "$summary_path"
+            print_fail_colored < "$summary_path"
           fi
           if [[ -f "$result_path" ]]; then
             result="$(cat "$result_path")"
@@ -163,8 +173,8 @@ jobs:
           fi
           if [[ "$status" != "0" ]]; then
             echo "::error title=Perf guard failed::$result"
-            echo "$result"
+            printf '%s\n' "$result" | print_fail_colored
             exit 1
           fi
           echo "::notice title=Perf guard ok::$result"
-          echo "$result"
+          printf '%s\n' "$result" | print_fail_colored
