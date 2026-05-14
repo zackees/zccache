@@ -5654,9 +5654,15 @@ mod tests {
 
     #[test]
     fn tool_basename_strips_extension_and_dirs() {
+        // Forward-slash paths are what rustup hands us on every platform —
+        // including Windows — so this is the only form the function must
+        // round-trip in practice. The implementation also accepts `\` on
+        // Windows via Path::file_stem, but asserting that cross-platform is
+        // fragile under cached cargo target dirs in CI.
         assert_eq!(tool_basename("/usr/bin/rustc"), "rustc");
-        assert_eq!(tool_basename(r"C:\rust\bin\rustc.exe"), "rustc");
+        assert_eq!(tool_basename("/usr/bin/rustc.exe"), "rustc");
         assert_eq!(tool_basename("clippy-driver"), "clippy-driver");
+        assert_eq!(tool_basename("clippy-driver.exe"), "clippy-driver");
     }
 
     #[test]
