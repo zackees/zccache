@@ -6172,10 +6172,7 @@ async fn handle_compile_multi(
                             "multi-file depfile parse failed for {}: {e}",
                             source_path.display()
                         );
-                        zccache_depgraph::scanner::scan_recursive(
-                            &source_path,
-                            &ctx.include_search,
-                        )
+                        zccache_depgraph::scanner::scan_recursive(&source_path, &ctx.include_search)
                     }
                 }
             } else {
@@ -6221,8 +6218,9 @@ async fn handle_compile_multi(
                 let path = NormalizedPath::new(p);
                 hash_map.get(&path).copied()
             };
-            let update_result =
-                state_task.dep_graph.update(&context_key, scan_result, get_hash);
+            let update_result = state_task
+                .dep_graph
+                .update(&context_key, scan_result, get_hash);
 
             let persist = if let Some(artifact_key) = update_result {
                 let output_name = output_path
