@@ -6097,7 +6097,26 @@ async fn handle_compile_multi(
         };
     }
 
-    // ── Phase 3: Cache each miss result individually ─────────────────
+    // ── Phase 3: Cache each miss result in parallel ──────────────────
+    //
+    // Each miss requires: read .o, parse depfile, hash deps (rayon), update
+    // dep_graph, build CachedArtifact, insert into DashMaps. For a 50-file
+    // batch the sequential version dominated wall time (~12ms × 50 = 600ms).
+    // We fan out the per-miss work onto `spawn_blocking` and batch the async
+    // sync points (watch_directories, apply_changes) at the end.
+    struct MissOutcome {
+        dep_dirs: Vec<NormalizedPath>,
+        output_path: NormalizedPath,
+        persist: Option<PersistTaskParams>,
+    }
+    struct PersistTaskParams {
+        artifact_key_hex: String,
+        persist_meta: ArtifactIndex,
+        payloads: Vec<Arc<Vec<u8>>>,
+        payload_size: usize,
+    }
+
+    let mut miss_set: tokio::task::JoinSet<MissOutcome> = tokio::task::JoinSet::new();
     for unit in &unit_results {
         let (source_path, output_path, context_key, ctx) = match unit {
             UnitCacheResult::Miss {
@@ -6105,63 +6124,70 @@ async fn handle_compile_multi(
                 output_path,
                 context_key,
                 ctx,
-            } => (source_path, output_path, context_key, ctx),
+            } => (
+                source_path.clone(),
+                output_path.clone(),
+                *context_key,
+                ctx.clone(),
+            ),
             UnitCacheResult::Hit { .. } => continue,
         };
 
-        let output_data = match std::fs::read(output_path) {
-            Ok(data) => data,
-            Err(_) => continue,
-        };
+        let state_task = Arc::clone(&state);
+        let cwd_path_task = cwd_path.clone();
+        let sid_task = sid;
+        miss_set.spawn_blocking(move || {
+            let output_data = std::fs::read(&output_path).unwrap_or_default();
 
-        // Scan includes: use depfile if available, fall back to scanner.
-        let scan_result = if supports_depfile {
-            let d_path = source_path.with_extension("d");
-            // Multi-file -MD places .d files relative to the source
-            let cwd_d_path = cwd_path.join(
-                d_path
-                    .file_name()
-                    .unwrap_or_else(|| std::ffi::OsStr::new("deps.d")),
-            );
-            let depfile_path: NormalizedPath = if d_path.exists() {
-                d_path.into()
-            } else if cwd_d_path.exists() {
-                cwd_d_path
+            // Scan includes: use depfile if available, fall back to scanner.
+            let scan_result = if supports_depfile {
+                let d_path = source_path.with_extension("d");
+                // Multi-file -MD places .d files relative to the source
+                let cwd_d_path = cwd_path_task.join(
+                    d_path
+                        .file_name()
+                        .unwrap_or_else(|| std::ffi::OsStr::new("deps.d")),
+                );
+                let depfile_path: NormalizedPath = if d_path.exists() {
+                    d_path.into()
+                } else if cwd_d_path.exists() {
+                    cwd_d_path
+                } else {
+                    let stem = source_path
+                        .file_stem()
+                        .unwrap_or_else(|| std::ffi::OsStr::new("out"));
+                    cwd_path_task.join(stem).with_extension("d").into()
+                };
+                match zccache_depgraph::depfile::parse_depfile_path(
+                    &depfile_path,
+                    &source_path,
+                    &cwd_path_task,
+                ) {
+                    Ok(result) => {
+                        let _ = std::fs::remove_file(&depfile_path);
+                        result
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "multi-file depfile parse failed for {}: {e}",
+                            source_path.display()
+                        );
+                        zccache_depgraph::scanner::scan_recursive(
+                            &source_path,
+                            &ctx.include_search,
+                        )
+                    }
+                }
             } else {
-                // Try deriving from source file stem in cwd
-                let stem = source_path
-                    .file_stem()
-                    .unwrap_or_else(|| std::ffi::OsStr::new("out"));
-                cwd_path.join(stem).with_extension("d").into()
+                zccache_depgraph::scanner::scan_recursive(&source_path, &ctx.include_search)
             };
-            match zccache_depgraph::depfile::parse_depfile_path(
-                &depfile_path,
-                source_path,
-                &cwd_path,
-            ) {
-                Ok(result) => {
-                    let _ = std::fs::remove_file(&depfile_path);
-                    result
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "multi-file depfile parse failed for {}: {e}",
-                        source_path.display()
-                    );
-                    zccache_depgraph::scanner::scan_recursive(source_path, &ctx.include_search)
-                }
-            }
-        } else {
-            zccache_depgraph::scanner::scan_recursive(source_path, &ctx.include_search)
-        };
 
-        let tracked_paths: Vec<NormalizedPath> = std::iter::once(source_path.clone())
-            .chain(scan_result.resolved.iter().cloned())
-            .collect();
-        state.cache_system.register_tracked(&tracked_paths);
+            let tracked_paths: Vec<NormalizedPath> = std::iter::once(source_path.clone())
+                .chain(scan_result.resolved.iter().cloned())
+                .collect();
+            state_task.cache_system.register_tracked(&tracked_paths);
 
-        // Watch parent directories of source file AND discovered headers.
-        {
+            // Collect parent dirs for the batched watch_directories call.
             let dep_dirs: Vec<NormalizedPath> = {
                 let mut dirs = HashSet::new();
                 if let Some(parent) = source_path.parent() {
@@ -6174,118 +6200,167 @@ async fn handle_compile_multi(
                 }
                 dirs.into_iter().collect()
             };
-            watch_directories(&state, &dep_dirs).await;
-        }
 
-        // Hash all files (source + headers) in parallel
-        let hash_map: HashMap<NormalizedPath, ContentHash> = {
-            use rayon::prelude::*;
-            let all_paths: Vec<&NormalizedPath> = std::iter::once(source_path)
-                .chain(scan_result.resolved.iter())
-                .collect();
-            all_paths
-                .par_iter()
-                .filter_map(|path| {
-                    hash_file(&state.cache_system, path, snap_clock)
-                        .ok()
-                        .map(|h| ((*path).clone(), h))
-                })
-                .collect()
-        };
-
-        // Store artifact
-        let get_hash = |p: &Path| {
-            let path = NormalizedPath::new(p);
-            hash_map.get(&path).copied()
-        };
-        let update_result = state.dep_graph.update(context_key, scan_result, get_hash);
-        if let Some(artifact_key) = update_result {
-            let artifact = ArtifactData {
-                outputs: vec![ArtifactOutput {
-                    name: output_path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned(),
-                    data: Arc::new(output_data),
-                }],
-                stdout: Arc::new(Vec::new()),
-                stderr: Arc::new(Vec::new()),
-                exit_code: 0,
+            // Hash all files (source + headers) in parallel via rayon.
+            let hash_map: HashMap<NormalizedPath, ContentHash> = {
+                use rayon::prelude::*;
+                let all_paths: Vec<&NormalizedPath> = std::iter::once(&source_path)
+                    .chain(scan_result.resolved.iter())
+                    .collect();
+                all_paths
+                    .par_iter()
+                    .filter_map(|path| {
+                        hash_file(&state_task.cache_system, path, snap_clock)
+                            .ok()
+                            .map(|h| ((*path).clone(), h))
+                    })
+                    .collect()
             };
 
-            let artifact_key_hex = artifact_key.hash().to_hex();
-            let artifact_bytes: u64 = artifact.outputs.iter().map(|o| o.data.len() as u64).sum();
+            let get_hash = |p: &Path| {
+                let path = NormalizedPath::new(p);
+                hash_map.get(&path).copied()
+            };
+            let update_result =
+                state_task.dep_graph.update(&context_key, scan_result, get_hash);
 
-            // Build CachedArtifact once (no deep copies — all Arc clones).
-            let cached = CachedArtifact::from_artifact_data(&artifact);
+            let persist = if let Some(artifact_key) = update_result {
+                let output_name = output_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                let output_arc = Arc::new(output_data);
+                let artifact_key_hex = artifact_key.hash().to_hex();
+                let artifact_bytes: u64 = output_arc.len() as u64;
 
-            // Spawn disk persistence to background (meta.clone() is cheap — Arc fields only).
-            {
-                let artifact_dir = state.artifact_dir.clone();
-                let key_hex = artifact_key_hex.clone();
-                let persist_meta = cached.meta.clone();
-                let payloads: Vec<Arc<Vec<u8>>> = artifact
-                    .outputs
-                    .iter()
-                    .map(|o| Arc::clone(&o.data))
-                    .collect();
-                let payload_size: usize = payloads.iter().map(|p| p.len()).sum();
-                state
-                    .in_flight_bytes
-                    .fetch_add(payload_size, Ordering::Relaxed);
-                let guard = InFlightGuard {
-                    state: Arc::clone(&state),
-                    size: payload_size,
+                // Build the cached artifact directly (avoid constructing the
+                // full ArtifactData wrapper just to compute the same fields).
+                let empty = Arc::new(Vec::new());
+                let meta = ArtifactIndex::new(
+                    vec![output_name],
+                    vec![artifact_bytes],
+                    Arc::clone(&empty),
+                    Arc::clone(&empty),
+                    0,
+                );
+                let cached = CachedArtifact {
+                    meta: meta.clone(),
+                    stdout: Arc::clone(&empty),
+                    stderr: Arc::clone(&empty),
+                    payloads: Some(Arc::from(vec![CachedPayload::Bytes(Arc::clone(
+                        &output_arc,
+                    ))])),
+                    last_used: std::time::Instant::now(),
                 };
-                let sem = Arc::clone(&state.persist_semaphore);
-                let state_ref = Arc::clone(&state);
-                tokio::spawn(async move {
-                    let _permit = sem.acquire().await.unwrap();
-                    tokio::task::spawn_blocking(move || {
-                        let _guard = guard;
-                        for (i, payload) in payloads.iter().enumerate() {
-                            let cache_path = artifact_dir.join(format!("{key_hex}_{i}"));
-                            if let Err(e) = std::fs::write(&cache_path, &**payload) {
-                                tracing::warn!(
-                                    path = %cache_path.display(),
-                                    "failed to persist artifact output: {e}"
-                                );
-                            }
-                        }
-                        state_ref
-                            .artifact_store
-                            .insert(&key_hex, &persist_meta)
-                            .ok();
-                    })
-                    .await
-                    .ok();
+
+                state_task
+                    .artifacts
+                    .insert(artifact_key_hex.clone(), cached);
+
+                let current_clock = state_task.cache_system.current_clock();
+                state_task.fast_hit_cache.insert(
+                    context_key,
+                    FastHitEntry {
+                        clock: current_clock,
+                        artifact_key_hex: artifact_key_hex.clone(),
+                        cached_at: std::time::Instant::now(),
+                    },
+                );
+
+                state_task.stats.record_miss(0, artifact_bytes);
+                let src = source_path.clone();
+                record_session_stat(&state_task.sessions, &sid_task, move |t| {
+                    t.record_miss(src, artifact_bytes);
                 });
-            }
 
-            state.artifacts.insert(artifact_key_hex.clone(), cached);
-
-            // Populate fast-hit cache for future requests
-            let current_clock = state.cache_system.current_clock();
-            state.fast_hit_cache.insert(
-                *context_key,
-                FastHitEntry {
-                    clock: current_clock,
+                let payload_size = output_arc.len();
+                Some(PersistTaskParams {
                     artifact_key_hex,
-                    cached_at: std::time::Instant::now(),
-                },
-            );
+                    persist_meta: meta,
+                    payloads: vec![output_arc],
+                    payload_size,
+                })
+            } else {
+                None
+            };
 
-            state.stats.record_miss(0, artifact_bytes);
-            let src = source_path.clone();
-            record_session_stat(&state.sessions, &sid, move |t| {
-                t.record_miss(src, artifact_bytes);
-            });
+            MissOutcome {
+                dep_dirs,
+                output_path,
+                persist,
+            }
+        });
+    }
+
+    // Collect outcomes and batch the async sync points.
+    let mut all_dep_dirs: HashSet<NormalizedPath> = HashSet::new();
+    let mut all_miss_outputs: Vec<NormalizedPath> = Vec::new();
+    let mut persist_jobs: Vec<PersistTaskParams> = Vec::new();
+    while let Some(joined) = miss_set.join_next().await {
+        let outcome = match joined {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::error!("multi-file miss task panicked: {e}");
+                continue;
+            }
+        };
+        for d in outcome.dep_dirs {
+            all_dep_dirs.insert(d);
         }
+        all_miss_outputs.push(outcome.output_path);
+        if let Some(p) = outcome.persist {
+            persist_jobs.push(p);
+        }
+    }
 
-        // Miss outputs have genuinely new content — advance the clock so
-        // downstream consumers (link cache) see the change.
-        state.cache_system.apply_changes(vec![output_path.clone()]);
+    // Single batched watch_directories call (was 1 per miss).
+    let dep_dirs_vec: Vec<NormalizedPath> = all_dep_dirs.into_iter().collect();
+    watch_directories(&state, &dep_dirs_vec).await;
+
+    // Spawn the artifact-persist tasks now that locks are released.
+    for job in persist_jobs {
+        let artifact_dir = state.artifact_dir.clone();
+        let key_hex = job.artifact_key_hex;
+        let persist_meta = job.persist_meta;
+        let payloads = job.payloads;
+        let payload_size = job.payload_size;
+        state
+            .in_flight_bytes
+            .fetch_add(payload_size, Ordering::Relaxed);
+        let guard = InFlightGuard {
+            state: Arc::clone(&state),
+            size: payload_size,
+        };
+        let sem = Arc::clone(&state.persist_semaphore);
+        let state_ref = Arc::clone(&state);
+        tokio::spawn(async move {
+            let _permit = sem.acquire().await.unwrap();
+            tokio::task::spawn_blocking(move || {
+                let _guard = guard;
+                for (i, payload) in payloads.iter().enumerate() {
+                    let cache_path = artifact_dir.join(format!("{key_hex}_{i}"));
+                    if let Err(e) = std::fs::write(&cache_path, &**payload) {
+                        tracing::warn!(
+                            path = %cache_path.display(),
+                            "failed to persist artifact output: {e}"
+                        );
+                    }
+                }
+                state_ref
+                    .artifact_store
+                    .insert(&key_hex, &persist_meta)
+                    .ok();
+            })
+            .await
+            .ok();
+        });
+    }
+
+    // Single batched apply_changes call (was 1 per miss): all miss outputs
+    // have new content; advance the clock once for downstream consumers.
+    if !all_miss_outputs.is_empty() {
+        state.cache_system.apply_changes(all_miss_outputs);
     }
 
     Response::CompileResult {
