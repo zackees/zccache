@@ -3425,7 +3425,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-artifact"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "bincode",
  "blake3",
@@ -3442,7 +3442,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-ci"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "libc",
  "md5",
@@ -3455,7 +3455,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-cli"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "blake3",
  "clap",
@@ -3487,7 +3487,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-compiler"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "clang",
  "tempfile",
@@ -3499,7 +3499,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-core"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "serde",
  "tempfile",
@@ -3510,7 +3510,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-daemon"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "bincode",
  "clap",
@@ -3544,7 +3544,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-depgraph"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "blake3",
  "dashmap",
@@ -3562,7 +3562,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-download"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "blake3",
  "bytes",
@@ -3578,7 +3578,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-download-cli"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "clap",
  "serde",
@@ -3588,7 +3588,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-download-client"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "dashmap",
  "flate2",
@@ -3615,7 +3615,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-download-daemon"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "clap",
  "dashmap",
@@ -3633,7 +3633,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-download-protocol"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "bincode",
  "bytes",
@@ -3645,7 +3645,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-fingerprint"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "clap",
  "criterion",
@@ -3668,7 +3668,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-fscache"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "dashmap",
  "rayon",
@@ -3681,7 +3681,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-gha"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "reqwest",
  "serde",
@@ -3694,7 +3694,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-hash"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "blake3",
  "criterion",
@@ -3706,7 +3706,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-ipc"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "bytes",
  "serde",
@@ -3720,7 +3720,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-protocol"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "bincode",
  "bytes",
@@ -3731,7 +3731,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-test-support"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "tempfile",
  "tokio",
@@ -3742,7 +3742,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-watcher"
-version = "1.4.7"
+version = "1.4.8"
 dependencies = [
  "globset",
  "jwalk",

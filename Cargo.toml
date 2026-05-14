@@ -25,7 +25,7 @@ members = [
 exclude = ["dylints/ban_std_pathbuf"]
 
 [workspace.package]
-version = "1.4.7"
+version = "1.4.8"
 edition = "2021"
 rust-version = "1.94.1"
 license = "MIT OR Apache-2.0"

@@ -101,6 +101,9 @@ enum Commands {
         /// IPC endpoint (default: platform-specific).
         #[arg(long)]
         endpoint: Option<String>,
+        /// Print final session statistics as JSON to stdout.
+        #[arg(long)]
+        json: bool,
     },
     /// Query stats for an active session (without ending it).
     #[command(name = "session-stats")]
@@ -110,6 +113,9 @@ enum Commands {
         /// IPC endpoint (default: platform-specific).
         #[arg(long)]
         endpoint: Option<String>,
+        /// Print active session statistics as JSON to stdout.
+        #[arg(long)]
+        json: bool,
     },
     /// Wrap a compiler invocation (explicit mode).
     Wrap {
@@ -728,16 +734,18 @@ fn main() -> ExitCode {
         Commands::SessionEnd {
             session_id,
             endpoint,
+            json,
         } => {
             let endpoint = resolve_endpoint(endpoint.as_deref());
-            cmd_session_end(&endpoint, session_id)
+            cmd_session_end(&endpoint, session_id, json)
         }
         Commands::SessionStatsCmd {
             session_id,
             endpoint,
+            json,
         } => {
             let endpoint = resolve_endpoint(endpoint.as_deref());
-            run_async(cmd_session_stats(&endpoint, session_id))
+            run_async(cmd_session_stats(&endpoint, session_id, json))
         }
         Commands::Wrap { strict_paths, args } => {
             let strict_paths = match parse_optional_strict_paths(
@@ -1611,30 +1619,17 @@ async fn cmd_session_start(
     }
 }
 
-fn cmd_session_end(endpoint: &str, session_id: String) -> ExitCode {
+fn cmd_session_end(endpoint: &str, session_id: String, json: bool) -> ExitCode {
     // Thin wrapper around the shared library entry point. All daemon
     // callers (CLI, soldr, future tools) must agree on what "the daemon
     // is gone" means — see `session_end_idempotent` for the contract
     // and issue #159 for why this lives in the library.
     match session_end_idempotent(endpoint, &session_id) {
         Ok(Some(s)) => {
-            let total = s.hits + s.misses;
-            let hit_rate = if total > 0 {
-                format!("{:.1}%", s.hits as f64 / total as f64 * 100.0)
+            if json {
+                print_session_stats_json(&session_id, &s);
             } else {
-                "n/a".to_string()
-            };
-            eprintln!(
-                "Session {session_id} complete ({})",
-                format_duration_ms(s.duration_ms)
-            );
-            eprintln!(
-                "  {} compilations: {} hits, {} misses, {} non-cacheable",
-                s.compilations, s.hits, s.misses, s.non_cacheable
-            );
-            eprintln!("  Hit rate: {hit_rate}");
-            if s.time_saved_ms > 0 {
-                eprintln!("  Time saved: ~{}", format_duration_ms(s.time_saved_ms));
+                print_session_stats_human(&session_id, &s, "complete");
             }
             ExitCode::SUCCESS
         }
@@ -1642,19 +1637,33 @@ fn cmd_session_end(endpoint: &str, session_id: String) -> ExitCode {
         //   - daemon was unreachable (already logged by the library), and
         //   - daemon was reached but had no stats for this session.
         // Both are no-op successes.
-        Ok(None) => ExitCode::SUCCESS,
+        Ok(None) => {
+            if json {
+                print_session_stats_unavailable_json(&session_id, "stats_unavailable");
+            }
+            ExitCode::SUCCESS
+        }
         Err(e) => {
-            eprintln!("zccache: session-end failed: {e}");
+            if json {
+                print_session_stats_error_json(&session_id, &e.to_string());
+            } else {
+                eprintln!("zccache: session-end failed: {e}");
+            }
             ExitCode::FAILURE
         }
     }
 }
 
-async fn cmd_session_stats(endpoint: &str, session_id: String) -> ExitCode {
+async fn cmd_session_stats(endpoint: &str, session_id: String, json: bool) -> ExitCode {
     let mut conn = match connect(endpoint).await {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("cannot connect to daemon at {endpoint}: {e}");
+            let message = format!("cannot connect to daemon at {endpoint}: {e}");
+            if json {
+                print_session_stats_error_json(&session_id, &message);
+            } else {
+                eprintln!("{message}");
+            }
             return ExitCode::FAILURE;
         }
     };
@@ -1665,54 +1674,138 @@ async fn cmd_session_stats(endpoint: &str, session_id: String) -> ExitCode {
         })
         .await
     {
-        eprintln!("zccache: failed to send to daemon: {e}");
+        let message = format!("zccache: failed to send to daemon: {e}");
+        if json {
+            print_session_stats_error_json(&session_id, &message);
+        } else {
+            eprintln!("{message}");
+        }
         return ExitCode::FAILURE;
     }
 
     let recv_result = match conn.recv().await {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("zccache: broken connection to daemon: {e}");
+            let message = format!("zccache: broken connection to daemon: {e}");
+            if json {
+                print_session_stats_error_json(&session_id, &message);
+            } else {
+                eprintln!("{message}");
+            }
             return ExitCode::FAILURE;
         }
     };
     match recv_result {
         Some(zccache_protocol::Response::SessionStatsResult { stats }) => {
             if let Some(s) = stats {
-                let total = s.hits + s.misses;
-                let hit_rate = if total > 0 {
-                    format!("{:.1}%", s.hits as f64 / total as f64 * 100.0)
+                if json {
+                    print_session_stats_json(&session_id, &s);
                 } else {
-                    "n/a".to_string()
-                };
-                eprintln!(
-                    "Session {session_id} (active, {})",
-                    format_duration_ms(s.duration_ms)
-                );
-                eprintln!(
-                    "  {} compilations: {} hits, {} misses, {} non-cacheable",
-                    s.compilations, s.hits, s.misses, s.non_cacheable
-                );
-                eprintln!("  Hit rate: {hit_rate}");
-                if s.time_saved_ms > 0 {
-                    eprintln!("  Time saved: ~{}", format_duration_ms(s.time_saved_ms));
+                    print_session_stats_human(&session_id, &s, "active");
                 }
+            } else if json {
+                print_session_stats_unavailable_json(&session_id, "stats_not_enabled");
             } else {
                 eprintln!("Session {session_id}: stats tracking not enabled");
             }
             ExitCode::SUCCESS
         }
         Some(zccache_protocol::Response::Error { message }) => {
-            eprintln!("session-stats failed: {message}");
+            if json {
+                print_session_stats_error_json(&session_id, &message);
+            } else {
+                eprintln!("session-stats failed: {message}");
+            }
             ExitCode::FAILURE
         }
         None => {
-            eprintln!("zccache: lost connection to daemon (no response received)");
+            let message = "zccache: lost connection to daemon (no response received)";
+            if json {
+                print_session_stats_error_json(&session_id, message);
+            } else {
+                eprintln!("{message}");
+            }
             ExitCode::FAILURE
         }
         Some(other) => {
-            eprintln!("zccache: unexpected response from daemon: {other:?}");
+            let message = format!("zccache: unexpected response from daemon: {other:?}");
+            if json {
+                print_session_stats_error_json(&session_id, &message);
+            } else {
+                eprintln!("{message}");
+            }
             ExitCode::FAILURE
+        }
+    }
+}
+
+fn print_session_stats_human(
+    session_id: &str,
+    stats: &zccache_protocol::SessionStats,
+    state: &str,
+) {
+    let total = stats.hits + stats.misses;
+    let hit_rate = if total > 0 {
+        format!("{:.1}%", stats.hits as f64 / total as f64 * 100.0)
+    } else {
+        "n/a".to_string()
+    };
+    let label = if state == "active" {
+        format!(
+            "Session {session_id} (active, {})",
+            format_duration_ms(stats.duration_ms)
+        )
+    } else {
+        format!(
+            "Session {session_id} {state} ({})",
+            format_duration_ms(stats.duration_ms)
+        )
+    };
+    eprintln!("{label}");
+    eprintln!(
+        "  {} compilations: {} hits, {} misses, {} non-cacheable",
+        stats.compilations, stats.hits, stats.misses, stats.non_cacheable
+    );
+    eprintln!("  Hit rate: {hit_rate}");
+    if stats.time_saved_ms > 0 {
+        eprintln!("  Time saved: ~{}", format_duration_ms(stats.time_saved_ms));
+    }
+}
+
+fn print_session_stats_json(session_id: &str, stats: &zccache_protocol::SessionStats) {
+    print_json_value(&session_stats_json(session_id, stats));
+}
+
+fn print_session_stats_unavailable_json(session_id: &str, reason: &str) {
+    print_json_value(&session_stats_unavailable_json(session_id, reason));
+}
+
+fn print_session_stats_error_json(session_id: &str, error: &str) {
+    print_json_value(&session_stats_error_json(session_id, error));
+}
+
+fn session_stats_unavailable_json(session_id: &str, reason: &str) -> serde_json::Value {
+    serde_json::json!({
+        "status": "unavailable",
+        "session_id": session_id,
+        "reason": reason,
+    })
+}
+
+fn session_stats_error_json(session_id: &str, error: &str) -> serde_json::Value {
+    serde_json::json!({
+        "status": "error",
+        "session_id": session_id,
+        "error": error,
+    })
+}
+
+fn print_json_value(value: &serde_json::Value) {
+    match serde_json::to_string_pretty(value) {
+        Ok(s) => println!("{s}"),
+        Err(err) => {
+            eprintln!("zccache: failed to encode JSON output: {err}");
+            println!(r#"{{"status":"error","error":"failed to encode JSON output"}}"#);
         }
     }
 }
@@ -4037,6 +4130,41 @@ mod tests {
         assert_eq!(json["hits"], 7);
         assert_eq!(json["misses"], 3);
         assert_eq!(json["hit_rate"].as_f64().unwrap(), 0.7);
+    }
+
+    #[test]
+    fn session_end_accepts_json_flag() {
+        let cli = Cli::try_parse_from(["zccache", "session-end", "session-123", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::SessionEnd { json: true, .. })
+        ));
+    }
+
+    #[test]
+    fn session_stats_accepts_json_flag() {
+        let cli =
+            Cli::try_parse_from(["zccache", "session-stats", "session-123", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::SessionStatsCmd { json: true, .. })
+        ));
+    }
+
+    #[test]
+    fn session_stats_unavailable_json_has_scrapeable_status() {
+        let json = session_stats_unavailable_json("session-123", "stats_not_enabled");
+        assert_eq!(json["status"], "unavailable");
+        assert_eq!(json["session_id"], "session-123");
+        assert_eq!(json["reason"], "stats_not_enabled");
+    }
+
+    #[test]
+    fn session_stats_error_json_has_scrapeable_status() {
+        let json = session_stats_error_json("session-123", "unknown session");
+        assert_eq!(json["status"], "error");
+        assert_eq!(json["session_id"], "session-123");
+        assert_eq!(json["error"], "unknown session");
     }
 
     #[test]

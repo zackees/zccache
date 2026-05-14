@@ -31,6 +31,13 @@ export ZCCACHE_SESSION_ID=<uuid>
 zccache clang++ -c foo.cpp -o foo.o
 
 # Query stats mid-build (non-destructive, session stays active)
+zccache session-stats <session_id> --json
+```
+
+JSON output is written to stdout and is intended for tools that need stable
+hit/miss counters. Without `--json`, human-readable output is written to stderr:
+
+```bash
 zccache session-stats <session_id>
 # stderr: Session <id> (active, 12.3s)
 #           45 compilations: 30 hits, 12 misses, 3 non-cacheable
@@ -48,7 +55,9 @@ zccache session-end <session_id>
 | `session-start` | `--log <path>` | Write per-compilation diagnostics to a log file |
 | `session-start` | `--cwd <path>` | Override working directory (default: current dir) |
 | `session-start` | `--endpoint <ep>` | IPC endpoint override |
+| `session-stats` | `--json` | Print machine-readable session stats to stdout |
 | `session-stats` | `--endpoint <ep>` | IPC endpoint override |
+| `session-end` | `--json` | Print final machine-readable session stats to stdout |
 | `session-end` | `--endpoint <ep>` | IPC endpoint override |
 
 ## Download Command
