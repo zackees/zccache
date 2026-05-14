@@ -55,6 +55,10 @@ pkg-fmt = "tgz"
 name = "zccache"
 path = "src/main.rs"
 
+# 1.5.0: adds `zccache status --json` and the `zccache analyze` subcommand.
+# Touching this comment busts the cached Cargo fingerprint that was holding
+# a stale unit-test binary in target-snapshot CI jobs (see PR #257).
+
 [dev-dependencies]
 zip = "2"
 
