@@ -1580,11 +1580,17 @@ fn analyze_journal(journal_path: &str) -> Result<AnalyzeReport, std::io::Error> 
 }
 
 fn tool_basename(compiler: &str) -> String {
-    let path = std::path::Path::new(compiler);
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
+    // Split on both separators so Windows-style paths round-trip on Unix
+    // (where std::path doesn't recognize `\` as a component boundary).
+    let last_component = compiler
+        .rsplit(|c: char| c == '/' || c == '\\')
+        .next()
         .unwrap_or(compiler);
+    let stem = last_component
+        .rsplit_once('.')
+        .map(|(stem, _ext)| stem)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(last_component);
     stem.to_string()
 }
 
