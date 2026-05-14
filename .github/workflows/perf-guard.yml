@@ -114,24 +114,117 @@ jobs:
         shell: bash
         run: chmod +x perf-guard-bin/perf_bench_test
 
-      - name: Run perf regression guard
+      # --- Per-test perf guard steps -----------------------------------
+      # Each benchmark test gets its own step so the GitHub Actions UI shows
+      # per-test timing and failure status. Each step writes its results to
+      # `perf-guard-output/<test_name>/`. The final aggregation step combines
+      # those into a single pass/fail outcome for the job.
+
+      - name: "C — perf_c_zccache_vs_bare"
+        if: matrix.language == 'c'
+        shell: bash
+        run: |
+          python3 -m ci.perf_guard --run-benchmarks --language c --test perf_c_zccache_vs_bare \
+            --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
+            --output-dir perf-guard-output/perf_c_zccache_vs_bare || true
+
+      - name: "C — perf_c_archive_link"
+        if: matrix.language == 'c'
+        shell: bash
+        run: |
+          python3 -m ci.perf_guard --run-benchmarks --language c --test perf_c_archive_link \
+            --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
+            --output-dir perf-guard-output/perf_c_archive_link || true
+
+      - name: "C++ — perf_warm_cache_zccache_vs_sccache"
+        if: matrix.language == 'c++'
+        shell: bash
+        run: |
+          python3 -m ci.perf_guard --run-benchmarks --language c++ --test perf_warm_cache_zccache_vs_sccache \
+            --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
+            --output-dir perf-guard-output/perf_warm_cache_zccache_vs_sccache || true
+
+      - name: "C++ — perf_response_file"
+        if: matrix.language == 'c++'
+        shell: bash
+        run: |
+          python3 -m ci.perf_guard --run-benchmarks --language c++ --test perf_response_file \
+            --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
+            --output-dir perf-guard-output/perf_response_file || true
+
+      - name: "C++ — perf_cpp_sibling_remap_warm"
+        if: matrix.language == 'c++'
+        shell: bash
+        run: |
+          python3 -m ci.perf_guard --run-benchmarks --language c++ --test perf_cpp_sibling_remap_warm \
+            --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
+            --output-dir perf-guard-output/perf_cpp_sibling_remap_warm || true
+
+      - name: "C++ — perf_cpp_driver_link"
+        if: matrix.language == 'c++'
+        shell: bash
+        run: |
+          python3 -m ci.perf_guard --run-benchmarks --language c++ --test perf_cpp_driver_link \
+            --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
+            --output-dir perf-guard-output/perf_cpp_driver_link || true
+
+      - name: "Rust — perf_rustc_zccache_vs_sccache"
+        if: matrix.language == 'rust'
+        shell: bash
+        run: |
+          python3 -m ci.perf_guard --run-benchmarks --language rust --test perf_rustc_zccache_vs_sccache \
+            --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
+            --output-dir perf-guard-output/perf_rustc_zccache_vs_sccache || true
+
+      - name: "Rust — perf_rustc_sibling_remap_warm"
+        if: matrix.language == 'rust'
+        shell: bash
+        run: |
+          python3 -m ci.perf_guard --run-benchmarks --language rust --test perf_rustc_sibling_remap_warm \
+            --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
+            --output-dir perf-guard-output/perf_rustc_sibling_remap_warm || true
+
+      - name: "Rust — perf_rust_workspace_link"
+        if: matrix.language == 'rust'
+        shell: bash
+        run: |
+          python3 -m ci.perf_guard --run-benchmarks --language rust --test perf_rust_workspace_link \
+            --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
+            --output-dir perf-guard-output/perf_rust_workspace_link || true
+
+      - name: Aggregate perf guard results
         id: perf_guard
+        if: always()
         shell: bash
         run: |
           set +e
-          python3 -m ci.perf_guard \
-            --run-benchmarks \
-            --language "${{ matrix.language }}" \
-            --bare-threshold 1.5 \
-            --sccache-threshold 1.5 \
-            --cold-bare-threshold 0.85 \
-            --cold-sccache-threshold 1.0 \
-            --attempts 3 \
-            --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
-            --output-dir perf-guard-output
-          status=$?
-          echo "status=$status" >> "$GITHUB_OUTPUT"
-          exit 0
+          overall=0
+          shopt -s nullglob
+          for dir in perf-guard-output/*/; do
+            name="$(basename "$dir")"
+            result_file="$dir/perf-guard-result.txt"
+            summary_file="$dir/perf-guard-summary.md"
+            echo "::group::$name"
+            if [[ -f "$summary_file" ]]; then
+              cat "$summary_file"
+            fi
+            if [[ -f "$result_file" ]]; then
+              result="$(cat "$result_file")"
+              if [[ "$result" == *FAILED* ]]; then
+                overall=1
+                echo "::error title=Perf guard failed ($name)::$result"
+              else
+                echo "::notice title=Perf guard ok ($name)::$result"
+              fi
+              printf '%s\n' "$result"
+            else
+              overall=1
+              echo "::error title=Perf guard missing ($name)::no perf-guard-result.txt produced"
+            fi
+            echo "::endgroup::"
+          done
+          shopt -u nullglob
+          echo "status=$overall" >> "$GITHUB_OUTPUT"
 
       - name: Upload perf guard artifacts
         if: always()
@@ -141,13 +234,11 @@ jobs:
           path: perf-guard-output
           if-no-files-found: warn
 
-      # When the perf guard regresses, re-run the language's benchmarks under
+      # When any per-test step regressed, re-run only the failing tests under
       # `perf record` and turn the captured stacks into a flamegraph + top-N
       # report. The dev test binary is already built with
       # debug = "line-tables-only" (see [profile.dev] in Cargo.toml), so the
       # captured samples resolve to zccache_* function names + source lines.
-      # This step is best-effort — its `exit 0` keeps the job moving on to
-      # `Print perf guard result`, which is what actually fails the job.
       - name: Profile failing perf guard run
         id: profile_failure
         if: steps.perf_guard.outputs.status != '0'
@@ -170,13 +261,18 @@ jobs:
           mkdir -p perf-profile-output
           pushd perf-profile-output >/dev/null
 
-          # Which tests belong to the failing language? `benchmark_stats`
-          # already encodes that mapping — re-use it instead of duplicating
-          # the list in YAML.
-          TEST_NAMES="$(python3 -c "from ci import benchmark_stats; \
-            print(' '.join(benchmark_stats.BENCHMARK_TESTS_BY_LANGUAGE['${{ matrix.language }}']))")"
+          # Profile only the per-test directories whose result.txt is FAILED.
+          FAILED_TESTS=""
+          for dir in ../perf-guard-output/*/; do
+            [[ -d "$dir" ]] || continue
+            result_file="$dir/perf-guard-result.txt"
+            name="$(basename "$dir")"
+            if [[ -f "$result_file" ]] && grep -q FAILED "$result_file"; then
+              FAILED_TESTS="$FAILED_TESTS $name"
+            fi
+          done
 
-          for test_name in $TEST_NAMES; do
+          for test_name in $FAILED_TESTS; do
             echo "::group::perf record: $test_name"
             perf record \
               -F 999 \
@@ -195,7 +291,6 @@ jobs:
                   inferno-flamegraph < "$test_name.collapsed.txt" > "$test_name.flamegraph.svg"
 
                   # Top 20 hot stacks (inclusive sample count).
-                  # Folded format: "frame1;frame2;...;frameN COUNT"
                   sort -rn -k2 -t' ' "$test_name.collapsed.txt" \
                     | head -20 > "$test_name.top20-stacks.txt"
 
@@ -211,7 +306,6 @@ jobs:
                   }' "$test_name.collapsed.txt" \
                     | sort -rn | head -20 > "$test_name.top20-self.txt"
 
-                  # Daemon-side hot leaves, restricted to zccache_* symbols.
                   grep -E '^[0-9]+ (zccache|_ZN.*zccache)' "$test_name.top20-self.txt" \
                     > "$test_name.top20-zccache.txt" || true
                 fi
@@ -222,8 +316,6 @@ jobs:
 
           popd >/dev/null
 
-          # Compact step-summary so the failure reason and the hot frames
-          # are visible at a glance in the GitHub Actions UI.
           {
             echo "## Profiler results: ${{ matrix.label }} speed floor"
             echo ""
@@ -274,40 +366,13 @@ jobs:
           path: perf-profile-output
           if-no-files-found: warn
 
-      - name: Print perf guard result
+      - name: Fail job if any per-test guard failed
         if: always()
         shell: bash
         run: |
-          set -euo pipefail
-          summary_path="perf-guard-output/perf-guard-summary.md"
-          result_path="perf-guard-output/perf-guard-result.txt"
           status="${{ steps.perf_guard.outputs.status }}"
-          print_fail_colored() {
-            local line
-            while IFS= read -r line || [[ -n "$line" ]]; do
-              if [[ "$line" == *FAIL* ]]; then
-                printf '\033[31m%s\033[0m\n' "$line"
-              else
-                printf '%s\n' "$line"
-              fi
-            done
-          }
-          if [[ -f "$summary_path" ]]; then
-            print_fail_colored < "$summary_path"
-          fi
-          if [[ -f "$result_path" ]]; then
-            result="$(cat "$result_path")"
-          else
-            result="PERF GUARD FAILED: no perf guard result was produced."
-            status=1
-          fi
-          if [[ -z "$status" ]]; then
-            status=1
-          fi
-          if [[ "$status" != "0" ]]; then
-            echo "::error title=Perf guard failed::$result"
-            printf '%s\n' "$result" | print_fail_colored
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "::error title=Perf guard failed::one or more per-test perf guards failed"
             exit 1
           fi
-          echo "::notice title=Perf guard ok::$result"
-          printf '%s\n' "$result" | print_fail_colored
+          echo "All per-test perf guards passed."

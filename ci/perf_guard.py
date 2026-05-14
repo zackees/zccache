@@ -7,7 +7,9 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -95,31 +97,62 @@ def _benchmark_binary_command(benchmark_binary: Path, test_name: str | None = No
 def _benchmark_commands(
     language: str | None,
     benchmark_binary: Path | None = None,
+    test_name: str | None = None,
 ) -> list[list[str]]:
     if benchmark_binary is not None:
+        if test_name is not None:
+            return [_benchmark_binary_command(benchmark_binary, test_name)]
         if language is None:
             return [_benchmark_binary_command(benchmark_binary)]
         return [
-            _benchmark_binary_command(benchmark_binary, test_name)
-            for test_name in benchmark_stats.BENCHMARK_TESTS_BY_LANGUAGE[language]
+            _benchmark_binary_command(benchmark_binary, name)
+            for name in benchmark_stats.BENCHMARK_TESTS_BY_LANGUAGE[language]
         ]
+    if test_name is not None:
+        return [benchmark_stats.benchmark_command_for_test(test_name)]
     if language is None:
         return [benchmark_stats.BENCHMARK_COMMAND]
     return benchmark_stats.benchmark_commands_for_language(language)
+
+
+def _format_elapsed(seconds: float) -> str:
+    total = int(seconds)
+    minutes, secs = divmod(total, 60)
+    return f"{minutes:d}m{secs:02d}s"
+
+
+def _command_label(command: list[str]) -> str:
+    if len(command) >= 2 and not command[1].startswith("--"):
+        return command[1]
+    return Path(command[0]).name
 
 
 def run_benchmarks_once(
     log_path: Path,
     language: str | None = None,
     benchmark_binary: Path | None = None,
+    test_name: str | None = None,
 ) -> tuple[int, str]:
     outputs: list[str] = []
     returncode = 0
-    for command in _benchmark_commands(language, benchmark_binary):
+    commands = _benchmark_commands(language, benchmark_binary, test_name)
+    total_start = time.monotonic()
+    for cmd_index, command in enumerate(commands, start=1):
+        label = _command_label(command)
+        banner = (
+            f"[perf-guard] [{cmd_index}/{len(commands)}] "
+            f"[T+{_format_elapsed(time.monotonic() - total_start)}] "
+            f"starting {label}\n"
+        )
+        sys.stdout.write(banner)
+        sys.stdout.flush()
+        outputs.append(banner)
+
         cache_dir = Path(tempfile.mkdtemp(prefix="zccache-perf-guard-cache-"))
         env = _benchmark_env(cache_dir, language)
+        cmd_start = time.monotonic()
         try:
-            result = subprocess.run(
+            with subprocess.Popen(
                 command,
                 cwd=REPO_ROOT,
                 env=env,
@@ -128,18 +161,32 @@ def run_benchmarks_once(
                 errors="replace",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                check=False,
+                bufsize=1,
+            ) as proc:
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                    outputs.append(line)
+                proc.wait()
+                cmd_returncode = proc.returncode
+            if cmd_returncode != 0 and returncode == 0:
+                returncode = cmd_returncode
+            cmd_elapsed = time.monotonic() - cmd_start
+            footer = (
+                f"[perf-guard] [{cmd_index}/{len(commands)}] "
+                f"finished {label} "
+                f"(exit={cmd_returncode}, elapsed={_format_elapsed(cmd_elapsed)})\n"
             )
-            outputs.append(result.stdout)
-            if result.returncode != 0 and returncode == 0:
-                returncode = result.returncode
+            sys.stdout.write(footer)
+            sys.stdout.flush()
+            outputs.append(footer)
         finally:
             shutil.rmtree(cache_dir, ignore_errors=True)
 
     output = "".join(outputs)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text(output, encoding="utf-8")
-    print(output, end="")
     return returncode, output
 
 
@@ -209,6 +256,7 @@ def evaluate_attempts(
     cold_sccache_threshold: float = DEFAULT_COLD_SCCACHE_THRESHOLD,
     command_failures: list[int] | None = None,
     languages: tuple[str, ...] = REQUIRED_LANGUAGES,
+    require_coverage: bool = True,
 ) -> GuardReport:
     if threshold is not None:
         bare_threshold = threshold
@@ -273,17 +321,20 @@ def evaluate_attempts(
                         if isinstance(baseline_seconds, int | float):
                             status.best_baseline_seconds = float(baseline_seconds)
 
-    missing = [
-        f"{language} {mode}"
-        for language in languages
-        for mode in REQUIRED_MODES
-        if (language, mode) not in language_modes
-    ]
-    missing.extend(
-        f"{benchmark} / {scenario}"
-        for benchmark, scenario in _required_scenarios(languages)
-        if (benchmark, scenario) not in seen_scenarios
-    )
+    if require_coverage:
+        missing = [
+            f"{language} {mode}"
+            for language in languages
+            for mode in REQUIRED_MODES
+            if (language, mode) not in language_modes
+        ]
+        missing.extend(
+            f"{benchmark} / {scenario}"
+            for benchmark, scenario in _required_scenarios(languages)
+            if (benchmark, scenario) not in seen_scenarios
+        )
+    else:
+        missing = []
 
     ordered = sorted(
         statuses.values(),
@@ -572,6 +623,8 @@ def _run_attempts(
     languages: tuple[str, ...],
     benchmark_language: str | None,
     benchmark_binary: Path | None,
+    test_name: str | None = None,
+    require_coverage: bool = True,
 ) -> tuple[list[list[dict[str, Any]]], list[int]]:
     parsed_attempts: list[list[dict[str, Any]]] = []
     command_failures: list[int] = []
@@ -579,7 +632,9 @@ def _run_attempts(
     for attempt in range(1, attempts + 1):
         log_path = output_dir / f"attempt-{attempt}.log"
         print(f"=== Perf guard attempt {attempt}/{attempts} ===")
-        returncode, output = run_benchmarks_once(log_path, benchmark_language, benchmark_binary)
+        returncode, output = run_benchmarks_once(
+            log_path, benchmark_language, benchmark_binary, test_name
+        )
         rows = benchmark_stats.parse_benchmark_log(output)
         parsed_attempts.append(rows)
         write_attempt_json(
@@ -601,6 +656,7 @@ def _run_attempts(
             cold_sccache_threshold=cold_sccache_threshold,
             command_failures=command_failures,
             languages=languages,
+            require_coverage=require_coverage,
         )
         if returncode == 0 and interim.passed:
             break
@@ -649,6 +705,10 @@ def main() -> int:
         choices=KNOWN_LANGUAGES,
         help="Run and require only one benchmark language.",
     )
+    parser.add_argument(
+        "--test",
+        help="Run a single benchmark test by name (requires --language).",
+    )
     args = parser.parse_args()
 
     if args.threshold is not None:
@@ -672,8 +732,18 @@ def main() -> int:
         parser.error("--benchmark-binary requires --run-benchmarks")
     if args.benchmark_binary and not args.benchmark_binary.is_file():
         parser.error(f"--benchmark-binary does not exist: {args.benchmark_binary}")
+    if args.test and not args.language:
+        parser.error("--test requires --language")
+    if args.test:
+        known_tests = benchmark_stats.BENCHMARK_TESTS_BY_LANGUAGE.get(args.language, ())
+        if args.test not in known_tests:
+            parser.error(
+                f"--test {args.test!r} is not a known test for language {args.language!r}; "
+                f"known tests: {', '.join(known_tests)}"
+            )
 
     languages = (args.language,) if args.language else REQUIRED_LANGUAGES
+    require_coverage = args.test is None
     args.output_dir.mkdir(parents=True, exist_ok=True)
     if args.input_log:
         attempts = _load_input_log(args.input_log)
@@ -697,6 +767,8 @@ def main() -> int:
             languages,
             args.language,
             args.benchmark_binary,
+            test_name=args.test,
+            require_coverage=require_coverage,
         )
 
     report = evaluate_attempts(
@@ -707,6 +779,7 @@ def main() -> int:
         cold_sccache_threshold=args.cold_sccache_threshold,
         command_failures=command_failures,
         languages=languages,
+        require_coverage=require_coverage,
     )
     markdown = format_report(
         report,

@@ -122,8 +122,6 @@ fn generate_cpp_project(dir: &Path, with_file_tags: bool) {
     std::fs::write(
         incdir.join("common.h"),
         r#"#pragma once
-#include <vector>
-#include <string>
 #include <cstdint>
 namespace bench {
   template<typename T>
@@ -148,10 +146,10 @@ namespace bench {
 namespace unit_{i:03} {{
 {file_tag}
   double compute(int n) {{ return std::sin(n * 0.{i:03}1); }}
-  std::vector<double> build(int n) {{
-    std::vector<double> v(n);
-    for (int j = 0; j < n; ++j) v[j] = compute(j);
-    return v;
+  double accumulate(int n) {{
+    double s = 0;
+    for (int j = 0; j < n; ++j) s += compute(j);
+    return s;
   }}
 }}
 "#,
@@ -240,7 +238,14 @@ fn generate_c_project(dir: &Path) {
         incdir.join("common_c.h"),
         r#"#pragma once
 #include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 #include <math.h>
+#include <time.h>
+#include <errno.h>
 
 static inline uint64_t bench_mix(uint64_t x) {
     x ^= x >> 33;
@@ -249,6 +254,18 @@ static inline uint64_t bench_mix(uint64_t x) {
     x *= 0xc4ceb9fe1a85ec53ULL;
     x ^= x >> 33;
     return x;
+}
+
+static inline size_t bench_strlen(const char *s) {
+    return s ? strlen(s) : 0;
+}
+
+static inline double bench_now(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0.0;
+    }
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
 }
 "#,
     )

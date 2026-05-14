@@ -485,7 +485,7 @@ def test_run_benchmarks_once_uses_fresh_cache_per_command(tmp_path, monkeypatch)
     monkeypatch.setattr(
         perf_guard,
         "_benchmark_commands",
-        lambda language, benchmark_binary: commands,
+        lambda language, benchmark_binary, test_name=None: commands,
     )
 
     def fake_mkdtemp(prefix: str) -> str:
@@ -497,23 +497,34 @@ def test_run_benchmarks_once_uses_fresh_cache_per_command(tmp_path, monkeypatch)
     def fake_rmtree(path: Path, ignore_errors: bool) -> None:
         removed_cache_dirs.append(Path(path))
 
-    class FakeResult:
-        def __init__(self, output: str) -> None:
+    class FakePopen:
+        def __init__(self, command, **kwargs) -> None:
+            command_cache_dirs.append(kwargs["env"]["ZCCACHE_CACHE_DIR"])
             self.returncode = 0
-            self.stdout = output
+            self.stdout = iter([f"{command[-1]}\n"])
 
-    def fake_run(command, cwd, env, text, encoding, errors, stdout, stderr, check):
-        command_cache_dirs.append(env["ZCCACHE_CACHE_DIR"])
-        return FakeResult(f"{command[-1]}\n")
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def wait(self) -> int:
+            return self.returncode
 
     monkeypatch.setattr(perf_guard.tempfile, "mkdtemp", fake_mkdtemp)
     monkeypatch.setattr(perf_guard.shutil, "rmtree", fake_rmtree)
-    monkeypatch.setattr(perf_guard.subprocess, "run", fake_run)
+    monkeypatch.setattr(perf_guard.subprocess, "Popen", FakePopen)
 
     returncode, output = perf_guard.run_benchmarks_once(tmp_path / "attempt.log", "c++")
 
     assert returncode == 0
-    assert output == "one\ntwo\n"
+    assert "one\n" in output
+    assert "two\n" in output
+    assert "starting one" in output
+    assert "starting two" in output
+    assert "finished one" in output
+    assert "finished two" in output
     assert command_cache_dirs == made_cache_dirs
     assert removed_cache_dirs == cache_dirs
 
