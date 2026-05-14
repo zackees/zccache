@@ -127,6 +127,16 @@ def test_stage_debug_tree_handles_dsym_directories(tmp_path: Path) -> None:
         )
 
 
+def test_build_target_dereferences_debug_sidecar_symlinks() -> None:
+    action = (
+        Path(__file__).resolve().parents[2]
+        / ".github/actions/build-target/action.yml"
+    ).read_text(encoding="utf-8")
+
+    assert 'cp -RL "$src" staging-debug/' in action
+    assert 'cp -L "$src" staging-debug/' in action
+
+
 def test_stage_debug_tree_skips_empty_input(tmp_path: Path) -> None:
     debug_input_dir = tmp_path / "staging-debug"
     output_dir = tmp_path / "output"

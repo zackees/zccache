@@ -193,11 +193,11 @@ runs:
         mkdir -p staging-debug
         copy_debug() {
           local src="$1"
-          if [ -e "$src" ]; then
+          if [ -e "$src" ] || [ -L "$src" ]; then
             if [ -d "$src" ]; then
-              cp -R "$src" staging-debug/
+              cp -RL "$src" staging-debug/
             else
-              cp "$src" staging-debug/
+              cp -L "$src" staging-debug/
             fi
           fi
         }
