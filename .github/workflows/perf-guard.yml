@@ -199,6 +199,19 @@ jobs:
         run: |
           set +e
           overall=0
+          # Highlight any line containing "FAIL" in red so the runner log
+          # surfaces regressions at a glance. Restored from commit 06424f7
+          # after the per-test split (46bbbee) inadvertently dropped it.
+          print_fail_colored() {
+            local line
+            while IFS= read -r line || [[ -n "$line" ]]; do
+              if [[ "$line" == *FAIL* ]]; then
+                printf '\033[31m%s\033[0m\n' "$line"
+              else
+                printf '%s\n' "$line"
+              fi
+            done
+          }
           shopt -s nullglob
           for dir in perf-guard-output/*/; do
             name="$(basename "$dir")"
@@ -206,7 +219,7 @@ jobs:
             summary_file="$dir/perf-guard-summary.md"
             echo "::group::$name"
             if [[ -f "$summary_file" ]]; then
-              cat "$summary_file"
+              print_fail_colored < "$summary_file"
             fi
             if [[ -f "$result_file" ]]; then
               result="$(cat "$result_file")"
@@ -216,7 +229,7 @@ jobs:
               else
                 echo "::notice title=Perf guard ok ($name)::$result"
               fi
-              printf '%s\n' "$result"
+              printf '%s\n' "$result" | print_fail_colored
             else
               overall=1
               echo "::error title=Perf guard missing ($name)::no perf-guard-result.txt produced"
