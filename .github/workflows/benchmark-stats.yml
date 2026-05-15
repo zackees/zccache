@@ -38,6 +38,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang python3-pil
 
+      - name: Install Emscripten
+        shell: bash
+        env:
+          EMSDK_VERSION: "3.1.74"
+        run: |
+          set -euo pipefail
+          sudo git clone --depth 1 https://github.com/emscripten-core/emsdk.git /opt/emsdk
+          sudo chown -R "$(id -u):$(id -g)" /opt/emsdk
+          /opt/emsdk/emsdk install "${EMSDK_VERSION}"
+          /opt/emsdk/emsdk activate "${EMSDK_VERSION}"
+          # Add em++ etc. to PATH for subsequent steps; the perf test also
+          # falls back to /opt/emsdk/upstream/emscripten if not on PATH.
+          echo "/opt/emsdk" >> "$GITHUB_PATH"
+          echo "/opt/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
+          /opt/emsdk/upstream/emscripten/em++ --version
+
       - name: Generate benchmark report
         shell: bash
         env:
