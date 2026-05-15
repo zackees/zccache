@@ -1582,10 +1582,7 @@ fn analyze_journal(journal_path: &str) -> Result<AnalyzeReport, std::io::Error> 
 fn tool_basename(compiler: &str) -> String {
     // Split on both separators so Windows-style paths round-trip on Unix
     // (where std::path doesn't recognize `\` as a component boundary).
-    let last_component = compiler
-        .rsplit(|c: char| c == '/' || c == '\\')
-        .next()
-        .unwrap_or(compiler);
+    let last_component = compiler.rsplit(['/', '\\']).next().unwrap_or(compiler);
     let stem = last_component
         .rsplit_once('.')
         .map(|(stem, _ext)| stem)
@@ -5687,7 +5684,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("messy.jsonl");
         let mut f = std::fs::File::create(&path).unwrap();
-        writeln!(f, "").unwrap();
+        writeln!(f).unwrap();
         writeln!(f, "not json").unwrap();
         writeln!(
             f,
