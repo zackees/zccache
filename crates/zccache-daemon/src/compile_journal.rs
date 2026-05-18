@@ -13,7 +13,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::SystemTime;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use zccache_core::NormalizedPath;
 use zccache_protocol::Response;
@@ -21,6 +21,10 @@ use zccache_protocol::Response;
 use crate::event_log::{format_timestamp, open_append};
 
 /// A single journal entry serialized as one JSON line.
+///
+/// The fields below the legacy block are populated only when `--profile`
+/// mode is wired up (see issue #256, Wave 2). All extended fields skip
+/// serialization when absent so legacy journal lines remain unchanged.
 #[derive(Debug, Serialize)]
 pub struct JournalEntry {
     /// ISO 8601 UTC timestamp.
@@ -42,6 +46,54 @@ pub struct JournalEntry {
     pub session_id: Option<String>,
     /// Wall-clock nanoseconds.
     pub latency_ns: u128,
+
+    // ─── Extended profile-mode fields (issue #256). ─────────────────────
+    // All optional; emission is gated behind `--profile` in a follow-up PR.
+    /// Crate name parsed from `--crate-name`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crate_name: Option<String>,
+    /// Canonical crate kind: one of
+    /// `"lib"`, `"bin"`, `"proc-macro"`, `"build-script"`, `"test"`,
+    /// `"bench"`, `"example"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crate_type: Option<String>,
+    /// Canonical output extension: one of
+    /// `"rlib"`, `"rmeta"`, `"so"`, `"dylib"`, `"exe"`, `"a"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_ext: Option<String>,
+    /// Why this entry missed: `"first_seen"`, `"inputs"`, `"flag"`,
+    /// `"dep_graph"`, `"rustc_version"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub miss_reason: Option<String>,
+    /// Evidence bucket — only the dimension that flipped is populated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub miss_diff: Option<MissDiff>,
+    /// Subdivided self-profile timings in nanoseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub self_profile_ns: Option<SelfProfileNs>,
+}
+
+/// Evidence for a cache miss: only the dimension that actually changed
+/// is populated. Empty vectors are omitted from the JSON entirely
+/// (so an empty `MissDiff` serializes as `{}`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MissDiff {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_flags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_deps: Vec<String>,
+}
+
+/// Per-compile self-profile spans, in nanoseconds (matching the
+/// `_ns` convention used throughout zccache).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelfProfileNs {
+    pub hash_inputs: u128,
+    pub lookup: u128,
+    pub decompress: u128,
+    pub store: u128,
 }
 
 /// Pre-captured request metadata for journal logging.
@@ -71,7 +123,101 @@ impl JournalEntry {
             exit_code,
             session_id: ctx.session_id,
             latency_ns,
+            crate_name: None,
+            crate_type: None,
+            output_ext: None,
+            miss_reason: None,
+            miss_diff: None,
+            self_profile_ns: None,
         }
+    }
+}
+
+// ─── Derivation helpers (pure functions, no daemon state) ──────────────────
+//
+// Per issue #256 part J: these parse rustc-style argument vectors into
+// the canonical strings the extended journal schema uses. They live in
+// this module so the writer can call them without crossing crate
+// boundaries. They are public so the eventual `--profile` plumbing
+// (Wave 2) and any analyzer-side tooling can reuse them.
+
+/// Find `--crate-name <name>` or `--crate-name=<name>` in a rustc-style
+/// argument vector. Returns `None` when the flag is missing or appears
+/// at the end of the vector with no following value.
+#[must_use]
+pub fn derive_crate_name(args: &[String]) -> Option<String> {
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if let Some(rest) = a.strip_prefix("--crate-name=") {
+            if !rest.is_empty() {
+                return Some(rest.to_string());
+            }
+        } else if a == "--crate-name" {
+            if let Some(next) = args.get(i + 1) {
+                return Some(next.clone());
+            }
+            return None;
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Find `--crate-type <type>` or `--crate-type=<type>` and normalize to
+/// one of the seven canonical kinds the schema enumerates. Returns
+/// `None` if no value is present or the value is unrecognized.
+///
+/// Special case: cargo invokes `build.rs` as
+/// `--crate-name build_script_build --crate-type bin`. When we detect
+/// the build-script crate-name, the kind is reported as
+/// `"build-script"` regardless of the literal `--crate-type`.
+#[must_use]
+pub fn derive_crate_type(args: &[String]) -> Option<&'static str> {
+    if derive_crate_name(args).as_deref() == Some("build_script_build") {
+        return Some("build-script");
+    }
+
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        let raw: Option<&str> = if let Some(rest) = a.strip_prefix("--crate-type=") {
+            Some(rest)
+        } else if a == "--crate-type" {
+            args.get(i + 1).map(String::as_str)
+        } else {
+            None
+        };
+        if let Some(raw) = raw {
+            // `--crate-type lib,rlib` is legal; take the first segment
+            // since the journal field is scalar.
+            let first = raw.split(',').next().unwrap_or(raw).trim();
+            return match first {
+                // Canonical seven (schema enum).
+                "lib" => Some("lib"),
+                "bin" => Some("bin"),
+                "proc-macro" | "proc_macro" => Some("proc-macro"),
+                "test" => Some("test"),
+                "bench" => Some("bench"),
+                "example" => Some("example"),
+                _ => None,
+            };
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Map a canonical crate-type to the output-extension that rustc emits.
+/// Returns `None` when the crate-type is missing or outside the
+/// schema-recognized set.
+#[must_use]
+pub fn derive_output_ext(crate_type: Option<&str>) -> Option<&'static str> {
+    match crate_type? {
+        "lib" => Some("rlib"),
+        "bin" | "build-script" | "test" | "bench" | "example" => Some("exe"),
+        "proc-macro" => Some("so"),
+        _ => None,
     }
 }
 
@@ -330,19 +476,52 @@ mod tests {
         }
     }
 
+    /// Helper: build a `JournalEntry` with all profile-mode extension
+    /// fields set to `None`, so existing tests don't have to enumerate them.
+    #[allow(clippy::too_many_arguments)]
+    fn legacy_entry(
+        ts: &str,
+        outcome: &'static str,
+        compiler: &str,
+        args: Vec<String>,
+        cwd: &str,
+        env: Option<Vec<(String, String)>>,
+        exit_code: i32,
+        session_id: Option<String>,
+        latency_ns: u128,
+    ) -> JournalEntry {
+        JournalEntry {
+            ts: ts.to_string(),
+            outcome,
+            compiler: compiler.to_string(),
+            args,
+            cwd: cwd.to_string(),
+            env,
+            exit_code,
+            session_id,
+            latency_ns,
+            crate_name: None,
+            crate_type: None,
+            output_ext: None,
+            miss_reason: None,
+            miss_diff: None,
+            self_profile_ns: None,
+        }
+    }
+
     #[test]
     fn test_journal_entry_serialization() {
-        let entry = JournalEntry {
-            ts: "2026-03-17T10:30:00.123Z".to_string(),
-            outcome: "hit",
-            compiler: "/usr/bin/clang++".to_string(),
-            args: vec!["-c".to_string(), "foo.cpp".to_string()],
-            cwd: "/project/build".to_string(),
-            env: Some(vec![("CC".to_string(), "clang".to_string())]),
-            exit_code: 0,
-            session_id: Some("test-uuid".to_string()),
-            latency_ns: 1_234_567,
-        };
+        let entry = legacy_entry(
+            "2026-03-17T10:30:00.123Z",
+            "hit",
+            "/usr/bin/clang++",
+            vec!["-c".to_string(), "foo.cpp".to_string()],
+            "/project/build",
+            Some(vec![("CC".to_string(), "clang".to_string())]),
+            0,
+            Some("test-uuid".to_string()),
+            1_234_567,
+        );
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"outcome\":\"hit\""), "json: {json}");
         assert!(
@@ -360,17 +539,17 @@ mod tests {
 
     #[test]
     fn test_journal_entry_env_omitted_when_none() {
-        let entry = JournalEntry {
-            ts: "2026-03-17T10:30:00.123Z".to_string(),
-            outcome: "miss",
-            compiler: "clang".to_string(),
-            args: vec![],
-            cwd: "/tmp".to_string(),
-            env: None,
-            exit_code: 0,
-            session_id: None,
-            latency_ns: 0,
-        };
+        let entry = legacy_entry(
+            "2026-03-17T10:30:00.123Z",
+            "miss",
+            "clang",
+            vec![],
+            "/tmp",
+            None,
+            0,
+            None,
+            0,
+        );
         let json = serde_json::to_string(&entry).unwrap();
         assert!(!json.contains("\"env\""), "env should be omitted: {json}");
         assert!(json.contains("\"session_id\":null"), "json: {json}");
@@ -692,17 +871,7 @@ mod tests {
 
     #[test]
     fn test_serialization_empty_fields() {
-        let entry = JournalEntry {
-            ts: "".to_string(),
-            outcome: "miss",
-            compiler: "".to_string(),
-            args: vec![],
-            cwd: "".to_string(),
-            env: None,
-            exit_code: 0,
-            session_id: None,
-            latency_ns: 0,
-        };
+        let entry = legacy_entry("", "miss", "", vec![], "", None, 0, None, 0);
         let json = serde_json::to_string(&entry).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["compiler"], "");
@@ -712,21 +881,21 @@ mod tests {
 
     #[test]
     fn test_serialization_special_characters() {
-        let entry = JournalEntry {
-            ts: "2026-03-17T10:30:00Z".to_string(),
-            outcome: "hit",
-            compiler: r"C:\Program Files\LLVM\bin\clang++.exe".to_string(),
-            args: vec![
+        let entry = legacy_entry(
+            "2026-03-17T10:30:00Z",
+            "hit",
+            r"C:\Program Files\LLVM\bin\clang++.exe",
+            vec![
                 "-DFOO=\"bar baz\"".to_string(),
                 "-I/path/with spaces".to_string(),
                 "file\twith\ttabs.cpp".to_string(),
             ],
-            cwd: "/home/用户/项目".to_string(),
-            env: Some(vec![("PATH".to_string(), r"C:\a;C:\b".to_string())]),
-            exit_code: 0,
-            session_id: None,
-            latency_ns: 42,
-        };
+            "/home/用户/项目",
+            Some(vec![("PATH".to_string(), r"C:\a;C:\b".to_string())]),
+            0,
+            None,
+            42,
+        );
         let json = serde_json::to_string(&entry).unwrap();
         // Must parse back to identical values
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -738,17 +907,17 @@ mod tests {
     #[test]
     fn test_serialization_large_args() {
         let args: Vec<String> = (0..10_000).map(|i| format!("-DVAR_{i}=val")).collect();
-        let entry = JournalEntry {
-            ts: "2026-03-17T10:30:00Z".to_string(),
-            outcome: "miss",
-            compiler: "clang".to_string(),
-            args: args.clone(),
-            cwd: "/tmp".to_string(),
-            env: None,
-            exit_code: 0,
-            session_id: None,
-            latency_ns: 0,
-        };
+        let entry = legacy_entry(
+            "2026-03-17T10:30:00Z",
+            "miss",
+            "clang",
+            args,
+            "/tmp",
+            None,
+            0,
+            None,
+            0,
+        );
         let json = serde_json::to_string(&entry).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["args"].as_array().unwrap().len(), 10_000);
@@ -756,17 +925,17 @@ mod tests {
 
     #[test]
     fn test_serialization_u128_max_latency() {
-        let entry = JournalEntry {
-            ts: "2026-03-17T10:30:00Z".to_string(),
-            outcome: "miss",
-            compiler: "clang".to_string(),
-            args: vec![],
-            cwd: "/tmp".to_string(),
-            env: None,
-            exit_code: 0,
-            session_id: None,
-            latency_ns: u128::MAX,
-        };
+        let entry = legacy_entry(
+            "2026-03-17T10:30:00Z",
+            "miss",
+            "clang",
+            vec![],
+            "/tmp",
+            None,
+            0,
+            None,
+            u128::MAX,
+        );
         // Serialization itself must succeed.
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("latency_ns"));
@@ -1001,17 +1170,17 @@ mod tests {
     fn test_serialization_newline_injection() {
         // Newlines in fields must not corrupt JSONL (one JSON object per line).
         // serde_json should escape them as \n in the JSON string.
-        let entry = JournalEntry {
-            ts: "2026-03-17T10:30:00Z".to_string(),
-            outcome: "miss",
-            compiler: "clang".to_string(),
-            args: vec!["-DMSG=\"line1\nline2\"".to_string()],
-            cwd: "/tmp".to_string(),
-            env: None,
-            exit_code: 0,
-            session_id: None,
-            latency_ns: 0,
-        };
+        let entry = legacy_entry(
+            "2026-03-17T10:30:00Z",
+            "miss",
+            "clang",
+            vec!["-DMSG=\"line1\nline2\"".to_string()],
+            "/tmp",
+            None,
+            0,
+            None,
+            0,
+        );
         let json = serde_json::to_string(&entry).unwrap();
         // The serialized JSON must be a single line (no raw newlines)
         assert_eq!(
@@ -1027,21 +1196,21 @@ mod tests {
     #[test]
     fn test_serialization_control_chars_and_null_bytes() {
         // Strings with control characters (including NUL) must serialize to valid JSON.
-        let entry = JournalEntry {
-            ts: "2026-03-17T10:30:00Z".to_string(),
-            outcome: "hit",
-            compiler: "clang".to_string(),
-            args: vec![
+        let entry = legacy_entry(
+            "2026-03-17T10:30:00Z",
+            "hit",
+            "clang",
+            vec![
                 "has\0null".to_string(),
                 "has\x01ctrl".to_string(),
                 "has\x7fDEL".to_string(),
             ],
-            cwd: "/tmp".to_string(),
-            env: None,
-            exit_code: 0,
-            session_id: None,
-            latency_ns: 0,
-        };
+            "/tmp",
+            None,
+            0,
+            None,
+            0,
+        );
         let json = serde_json::to_string(&entry).unwrap();
         // Must produce valid single-line JSON
         assert_eq!(json.lines().count(), 1);
@@ -1093,17 +1262,17 @@ mod tests {
     fn test_serialization_exit_code_boundary_values() {
         // Ensure extreme exit codes serialize and round-trip correctly
         for exit_code in [i32::MIN, -1, 0, 1, 127, 255, i32::MAX] {
-            let entry = JournalEntry {
-                ts: "2026-03-17T10:30:00Z".to_string(),
-                outcome: "error",
-                compiler: "clang".to_string(),
-                args: vec![],
-                cwd: "/tmp".to_string(),
-                env: None,
+            let entry = legacy_entry(
+                "2026-03-17T10:30:00Z",
+                "error",
+                "clang",
+                vec![],
+                "/tmp",
+                None,
                 exit_code,
-                session_id: None,
-                latency_ns: 0,
-            };
+                None,
+                0,
+            );
             let json = serde_json::to_string(&entry).unwrap();
             let v: serde_json::Value = serde_json::from_str(&json).unwrap();
             assert_eq!(
@@ -1122,17 +1291,17 @@ mod tests {
         // This is better than most JSON parsers (Python/JS lose precision at 2^53).
 
         // u64::MAX round-trips exactly through serde_json::Value
-        let entry_u64max = JournalEntry {
-            ts: "2026-03-17T10:30:00Z".to_string(),
-            outcome: "miss",
-            compiler: "clang".to_string(),
-            args: vec![],
-            cwd: "/tmp".to_string(),
-            env: None,
-            exit_code: 0,
-            session_id: None,
-            latency_ns: u64::MAX as u128,
-        };
+        let entry_u64max = legacy_entry(
+            "2026-03-17T10:30:00Z",
+            "miss",
+            "clang",
+            vec![],
+            "/tmp",
+            None,
+            0,
+            None,
+            u64::MAX as u128,
+        );
         let json = serde_json::to_string(&entry_u64max).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(
@@ -1142,17 +1311,17 @@ mod tests {
         );
 
         // u64::MAX + 1 does NOT round-trip (falls to f64)
-        let entry_above = JournalEntry {
-            ts: "2026-03-17T10:30:00Z".to_string(),
-            outcome: "miss",
-            compiler: "clang".to_string(),
-            args: vec![],
-            cwd: "/tmp".to_string(),
-            env: None,
-            exit_code: 0,
-            session_id: None,
-            latency_ns: u64::MAX as u128 + 1,
-        };
+        let entry_above = legacy_entry(
+            "2026-03-17T10:30:00Z",
+            "miss",
+            "clang",
+            vec![],
+            "/tmp",
+            None,
+            0,
+            None,
+            u64::MAX as u128 + 1,
+        );
         let json2 = serde_json::to_string(&entry_above).unwrap();
         let v2: serde_json::Value = serde_json::from_str(&json2).unwrap();
         assert!(
@@ -1201,6 +1370,249 @@ mod tests {
             })
             .collect();
         assert_eq!(rotated.len(), 1);
+    }
+
+    // ─── Profile-mode schema extension tests (issue #256 part J) ──────────
+
+    #[test]
+    fn serializes_extended_fields_when_present() {
+        let entry = JournalEntry {
+            ts: "2026-03-17T10:30:00.123Z".to_string(),
+            outcome: "miss",
+            compiler: "/usr/bin/rustc".to_string(),
+            args: vec!["--crate-name".into(), "soldr_cli".into()],
+            cwd: "/project".to_string(),
+            env: None,
+            exit_code: 0,
+            session_id: Some("sess-1".to_string()),
+            latency_ns: 1_234_567,
+            crate_name: Some("soldr_cli".to_string()),
+            crate_type: Some("bin".to_string()),
+            output_ext: Some("exe".to_string()),
+            miss_reason: Some("inputs".to_string()),
+            miss_diff: Some(MissDiff {
+                changed_files: vec!["src/main.rs".to_string(), "build.rs".to_string()],
+                changed_flags: vec!["-C".to_string(), "debuginfo=2".to_string()],
+                changed_deps: vec!["serde@1.0.213".to_string()],
+            }),
+            self_profile_ns: Some(SelfProfileNs {
+                hash_inputs: 12_400_000,
+                lookup: 410_000,
+                decompress: 14_100_000,
+                store: 203_000_000,
+            }),
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+
+        // Legacy fields still serialize.
+        assert!(json.contains("\"outcome\":\"miss\""), "json: {json}");
+        assert!(
+            json.contains("\"compiler\":\"/usr/bin/rustc\""),
+            "json: {json}"
+        );
+        assert!(json.contains("\"latency_ns\":1234567"), "json: {json}");
+
+        // Each new key appears exactly once.
+        assert!(
+            json.contains("\"crate_name\":\"soldr_cli\""),
+            "json: {json}"
+        );
+        assert!(json.contains("\"crate_type\":\"bin\""), "json: {json}");
+        assert!(json.contains("\"output_ext\":\"exe\""), "json: {json}");
+        assert!(json.contains("\"miss_reason\":\"inputs\""), "json: {json}");
+        assert!(json.contains("\"miss_diff\""), "json: {json}");
+        assert!(json.contains("\"self_profile_ns\""), "json: {json}");
+
+        // Round-trip through serde_json::Value to confirm structure.
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["crate_name"], "soldr_cli");
+        assert_eq!(v["crate_type"], "bin");
+        assert_eq!(v["output_ext"], "exe");
+        assert_eq!(v["miss_reason"], "inputs");
+        assert_eq!(v["miss_diff"]["changed_files"][0], "src/main.rs");
+        assert_eq!(v["miss_diff"]["changed_files"][1], "build.rs");
+        assert_eq!(v["miss_diff"]["changed_flags"][0], "-C");
+        assert_eq!(v["miss_diff"]["changed_flags"][1], "debuginfo=2");
+        assert_eq!(v["miss_diff"]["changed_deps"][0], "serde@1.0.213");
+        assert_eq!(v["self_profile_ns"]["hash_inputs"], 12_400_000_u64);
+        assert_eq!(v["self_profile_ns"]["lookup"], 410_000_u64);
+        assert_eq!(v["self_profile_ns"]["decompress"], 14_100_000_u64);
+        assert_eq!(v["self_profile_ns"]["store"], 203_000_000_u64);
+    }
+
+    #[test]
+    fn omits_extended_fields_when_none() {
+        // A legacy-shape JournalEntry (constructed via JournalEntry::new) must
+        // not emit any of the new keys. This protects the default-off invariant.
+        let ctx = JournalContext {
+            compiler: "/usr/bin/clang++".to_string(),
+            args: vec!["-c".to_string(), "test.cpp".to_string()],
+            cwd: "/project".to_string(),
+            env: None,
+            session_id: Some("s".to_string()),
+        };
+        let entry = JournalEntry::new(ctx, "hit", 0, 1000);
+        let json = serde_json::to_string(&entry).unwrap();
+
+        for forbidden in [
+            "\"crate_name\"",
+            "\"crate_type\"",
+            "\"output_ext\"",
+            "\"miss_reason\"",
+            "\"miss_diff\"",
+            "\"self_profile_ns\"",
+        ] {
+            assert!(
+                !json.contains(forbidden),
+                "legacy journal must omit {forbidden}: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn miss_diff_omits_empty_arrays() {
+        // An entirely empty MissDiff must serialize as `{}` so we never burn
+        // bytes on noise.
+        let diff = MissDiff {
+            changed_files: vec![],
+            changed_flags: vec![],
+            changed_deps: vec![],
+        };
+        let json = serde_json::to_string(&diff).unwrap();
+        assert_eq!(
+            json, "{}",
+            "empty MissDiff should serialize as {{}}: {json}"
+        );
+    }
+
+    #[test]
+    fn miss_diff_round_trips_populated_arrays() {
+        let diff = MissDiff {
+            changed_files: vec!["src/main.rs".to_string(), "src/lib.rs".to_string()],
+            changed_flags: vec!["-C".to_string(), "opt-level=3".to_string()],
+            changed_deps: vec!["serde@1.0.0".to_string()],
+        };
+        let json = serde_json::to_string(&diff).unwrap();
+        let parsed: MissDiff = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.changed_files, diff.changed_files);
+        assert_eq!(parsed.changed_flags, diff.changed_flags);
+        assert_eq!(parsed.changed_deps, diff.changed_deps);
+    }
+
+    #[test]
+    fn miss_diff_partial_population_omits_empty() {
+        // Only changed_files populated — the other two arrays must be absent
+        // from the JSON (skipped, not emitted as []).
+        let diff = MissDiff {
+            changed_files: vec!["src/main.rs".to_string()],
+            changed_flags: vec![],
+            changed_deps: vec![],
+        };
+        let json = serde_json::to_string(&diff).unwrap();
+        assert!(json.contains("\"changed_files\""), "json: {json}");
+        assert!(!json.contains("\"changed_flags\""), "json: {json}");
+        assert!(!json.contains("\"changed_deps\""), "json: {json}");
+    }
+
+    #[test]
+    fn derive_crate_name_spaced_form() {
+        let args = vec![
+            "--edition".to_string(),
+            "2021".to_string(),
+            "--crate-name".to_string(),
+            "foo".to_string(),
+            "src/lib.rs".to_string(),
+        ];
+        assert_eq!(derive_crate_name(&args), Some("foo".to_string()));
+    }
+
+    #[test]
+    fn derive_crate_name_equals_form() {
+        let args = vec!["--crate-name=bar_baz".to_string(), "src/lib.rs".to_string()];
+        assert_eq!(derive_crate_name(&args), Some("bar_baz".to_string()));
+    }
+
+    #[test]
+    fn derive_crate_name_missing_returns_none() {
+        let args = vec!["-c".to_string(), "foo.cpp".to_string()];
+        assert_eq!(derive_crate_name(&args), None);
+    }
+
+    #[test]
+    fn derive_crate_name_dangling_flag_returns_none() {
+        // `--crate-name` with no following value must not panic / out-of-bounds.
+        let args = vec!["--crate-name".to_string()];
+        assert_eq!(derive_crate_name(&args), None);
+    }
+
+    #[test]
+    fn derive_crate_type_lib() {
+        let args = vec![
+            "--crate-name".to_string(),
+            "foo".to_string(),
+            "--crate-type".to_string(),
+            "lib".to_string(),
+        ];
+        assert_eq!(derive_crate_type(&args), Some("lib"));
+    }
+
+    #[test]
+    fn derive_crate_type_bin() {
+        let args = vec!["--crate-type".to_string(), "bin".to_string()];
+        assert_eq!(derive_crate_type(&args), Some("bin"));
+    }
+
+    #[test]
+    fn derive_crate_type_proc_macro_normalizes_to_hyphen() {
+        // rustc accepts `proc-macro` (canonical). Confirm it stays canonical
+        // (no underscore variant emitted).
+        let args = vec!["--crate-type=proc-macro".to_string()];
+        assert_eq!(derive_crate_type(&args), Some("proc-macro"));
+    }
+
+    #[test]
+    fn derive_crate_type_build_script_via_crate_name() {
+        // Cargo invokes build.rs as `--crate-name build_script_build`.
+        // That overrides the literal crate-type (which would be "bin").
+        let args = vec![
+            "--crate-name".to_string(),
+            "build_script_build".to_string(),
+            "--crate-type".to_string(),
+            "bin".to_string(),
+        ];
+        assert_eq!(derive_crate_type(&args), Some("build-script"));
+    }
+
+    #[test]
+    fn derive_crate_type_missing_returns_none() {
+        let args = vec!["-c".to_string(), "foo.cpp".to_string()];
+        assert_eq!(derive_crate_type(&args), None);
+    }
+
+    #[test]
+    fn derive_crate_type_unknown_value_returns_none() {
+        // An unrecognized crate-type should be dropped, not propagated raw.
+        let args = vec!["--crate-type".to_string(), "weirdo".to_string()];
+        assert_eq!(derive_crate_type(&args), None);
+    }
+
+    #[test]
+    fn derive_output_ext_for_each_crate_type() {
+        // The full table per the issue: crate_type → output_ext.
+        assert_eq!(derive_output_ext(Some("lib")), Some("rlib"));
+        assert_eq!(derive_output_ext(Some("bin")), Some("exe"));
+        assert_eq!(derive_output_ext(Some("proc-macro")), Some("so"));
+        assert_eq!(derive_output_ext(Some("build-script")), Some("exe"));
+        assert_eq!(derive_output_ext(Some("test")), Some("exe"));
+        assert_eq!(derive_output_ext(Some("bench")), Some("exe"));
+        assert_eq!(derive_output_ext(Some("example")), Some("exe"));
+        assert_eq!(derive_output_ext(None), None);
+    }
+
+    #[test]
+    fn derive_output_ext_unknown_returns_none() {
+        assert_eq!(derive_output_ext(Some("nonsense")), None);
     }
 
     #[test]
