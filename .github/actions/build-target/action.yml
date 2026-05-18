@@ -98,14 +98,54 @@ runs:
         TARGET_UPPER=$(echo "${{ inputs.target }}" | tr '[:lower:]-' '[:upper:]_')
         echo "CARGO_TARGET_${TARGET_UPPER}_LINKER=${{ inputs.linker }}" >> "$GITHUB_ENV"
 
+    # Static-link the MSVC C runtime (vcruntime + UCRT) for Windows release
+    # binaries. Without `+crt-static` the published `zccache.exe` declares
+    # imports against `VCRUNTIME140.dll` and the `api-ms-win-crt-*` UCRT
+    # API-set forwarders; on runner images where any of those DLLs is
+    # missing or version-skewed, the Windows loader rejects the image
+    # before `main` with `STATUS_DLL_INIT_FAILED` (exit `-1073741502` /
+    # `0xC0000142`). Self-contained CRT linkage is the standard approach
+    # for distributable Rust binaries on Windows (rustc/cargo/rustup all
+    # ship this way). See zccache#269.
+    #
+    # We DO NOT apply +crt-static to the Python extension (.pyd) builds
+    # below — those load into the host Python process and must share its
+    # C runtime. Static CRT linkage is appended to RUSTFLAGS only for the
+    # standalone binary build step.
     - name: Build release binaries
       shell: bash
       env:
         PYO3_PYTHON: python
       run: |
+        if [[ "${{ inputs.target }}" == *pc-windows-msvc ]]; then
+          export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static"
+        fi
         soldr cargo build --release --target ${{ inputs.target }} -p zccache-cli
         soldr cargo build --release --target ${{ inputs.target }} -p zccache-daemon
         soldr cargo build --release --target ${{ inputs.target }} -p zccache-fingerprint
+
+    # Windows DLL load smoke gate (see zccache#269). If the just-built
+    # `zccache.exe` cannot complete loader init on this host, `--version`
+    # exits non-zero before any Rust code runs and the release stops here
+    # rather than shipping a binary that will fail in CI consumers. Other
+    # platforms run the same check for symmetry but the Windows leg is
+    # the one that actually catches the regression. ARM64 Windows builds
+    # are cross-compiled on x64 runners and so cannot exec the binary on
+    # this leg — skip the smoke for that target only.
+    - name: Smoke test built binary
+      shell: bash
+      run: |
+        case "${{ inputs.target }}" in
+          aarch64-pc-windows-msvc|aarch64-unknown-linux-musl|aarch64-unknown-linux-gnu)
+            # Cross-compiled; skip exec on host. TODO: when matrix gains
+            # an arm64 runner, gate aarch64-pc-windows-msvc through it.
+            echo "Skipping smoke test for cross-compiled target ${{ inputs.target }}"
+            exit 0
+            ;;
+        esac
+        BIN="target/${{ inputs.target }}/release/zccache${{ inputs.binary_ext }}"
+        echo "Smoke test: $BIN --version"
+        "$BIN" --version
 
     - name: Build Python extension artifacts
       if: inputs.include_python == 'true'
