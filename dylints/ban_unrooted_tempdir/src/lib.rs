@@ -134,7 +134,11 @@ fn normalize_slashes(path: &str) -> String {
     path.replace('\\', "/")
 }
 
-fn def_path_equals(cx: &LateContext<'_>, def_id: rustc_hir::def_id::DefId, expected: &[&str]) -> bool {
+fn def_path_equals(
+    cx: &LateContext<'_>,
+    def_id: rustc_hir::def_id::DefId,
+    expected: &[&str],
+) -> bool {
     let def_path = cx.get_def_path(def_id);
     if def_path.len() != expected.len() {
         return false;
