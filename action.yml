@@ -415,33 +415,27 @@ runs:
           zccache warm --target-dir "$TARGET" || true
           # Per-crate fingerprint revalidation — the content-hash analogue
           # of cargo's nightly `-Z checksum-freshness`. For each crate in
-          # the manifest written at save time, recompute blake3 of every
-          # tracked workspace source. If all hashes still match → bump
-          # that crate's dep-info mtime to "future" so cargo's normal
-          # `source.mtime > dep_info.mtime` check skips rustc. Crates with
-          # any mismatch are left alone → cargo correctly invokes rustc.
-          # Missing manifest (older snapshot) is a silent no-op: cargo
-          # falls through to its baseline check (overbuild but correct).
+          # the sidecar manifest written at save time, recompute blake3 of
+          # every tracked workspace source. If all hashes still match →
+          # bump that crate's freshness anchors (in-fingerprint dep-info
+          # files for lib/bin/test/build-script-compile, plus the `output`
+          # file referenced by RerunIfChanged for build-script-run) so
+          # cargo's normal `source.mtime > anchor.mtime` check trusts the
+          # cache. Crates with any mismatch are left alone → cargo
+          # correctly invokes rustc and/or reruns build scripts. Missing
+          # manifest (snapshot saved by an older daemon) is a silent
+          # no-op: cargo falls through to its baseline check (overbuild
+          # but correct).
+          #
+          # No blanket `find ... touch '+1 min'` follows. snapshot-fp-validate
+          # covers every freshness signal cargo uses for workspace crates,
+          # so there is nothing left to forge — see PR #279 for the
+          # original underbuild bug a blanket touch caused.
           zccache snapshot-fp-validate \
             --target-dir "$TARGET" \
             --workspace-root "$GITHUB_WORKSPACE" \
             --stamp-seconds-ahead 60 \
             || true
-          # Touch restored *output* files (rlib/rmeta/build artifacts) to ONE
-          # fixed future timestamp so cargo's "output newer than source"
-          # check passes for unchanged crates after restore. Plain 'touch'
-          # gives 1ms differences between files, which cargo interprets as
-          # "dep newer than output" → dirty.
-          #
-          # EXCLUDE .fingerprint/ from the stamping pass. Those directories
-          # hold the dep-info files cargo uses to decide whether to re-invoke
-          # rustc at all: snapshot-fp-validate above has already future-
-          # stamped only the dep-info files of unchanged crates. A blanket
-          # touch here would clobber that decision and silently underbuild
-          # changed crates — see PR #279 for the bug and rationale.
-          STAMP=$(date -d '+1 minute' +%Y%m%d%H%M.%S 2>/dev/null || date -v+1M +%Y%m%d%H%M.%S)
-          find "$TARGET" -type f -not -path '*/.fingerprint/*' \
-            -exec touch -t "$STAMP" {} + 2>/dev/null || true
         fi
 
     # --- Start daemon ---
