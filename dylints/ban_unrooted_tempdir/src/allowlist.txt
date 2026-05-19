@@ -25,3 +25,10 @@ crates/zccache-cli/src/main.rs
 # walks $TMPDIR looking for stale test fixtures; it does not create state
 # there at zccache runtime.
 crates/zccache-test-support/src/lib.rs
+
+# Daemon startup walks $TMPDIR to clean up legacy state from older zccache
+# installs (see `cleanup_legacy_temp_root_state`). The response-file write
+# paths at lines 2235/6817 are transient sidecars whose lifetime is bounded
+# by the compiler subprocess and which deliberately don't live under the
+# user-visible `~/.zccache/` tree. Migrating those is a follow-up.
+crates/zccache-daemon/src/server.rs
