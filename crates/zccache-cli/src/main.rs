@@ -2005,6 +2005,16 @@ fn warm_target(
     let deps_dir = target_dir.join(profile).join("deps");
     std::fs::create_dir_all(&deps_dir)
         .map_err(|e| format!("failed to create {}: {e}", deps_dir.display()))?;
+    // mtime bump below is the LRU recency signal for zccache's *own*
+    // artifact-cache eviction (see `crates/zccache-daemon/src/eviction.rs`,
+    // which picks the highest mtime across an artifact group as last-use).
+    // We hardlink each artifact-cache file into target/, which shares an
+    // inode with the cache file — so touching the dst here also bumps the
+    // cache file's mtime, telling eviction "this artifact was just used,
+    // don't evict it". NOT a cargo-freshness signal: cargo never
+    // mtime-checks rlib outputs (they're content-keyed by their filename
+    // hash), so don't be tempted to remove this thinking it duplicates
+    // snapshot-fp-validate. Doing so would silently regress eviction.
     let now = std::time::SystemTime::now();
     let file_times = std::fs::FileTimes::new()
         .set_accessed(now)
@@ -2059,7 +2069,11 @@ fn warm_target(
                 }
             }
 
-            // Touch mtime to current time so cargo sees the file as fresh.
+            // Touch the just-hardlinked dst to bump the underlying inode's
+            // mtime, which propagates to the artifact-cache file via the
+            // shared-inode hardlink. See the comment on `file_times` above
+            // — this is the LRU recency signal for eviction, not a
+            // cargo-freshness hack.
             if let Ok(f) = std::fs::File::open(&dst) {
                 let _ = f.set_times(file_times);
             }
