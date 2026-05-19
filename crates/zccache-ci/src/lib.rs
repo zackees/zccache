@@ -28,7 +28,8 @@
 use std::env;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use zccache_core::NormalizedPath;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
@@ -345,9 +346,9 @@ fn dump_relevant_processes() {
     }
 }
 
-fn home_dir() -> Option<PathBuf> {
+fn home_dir() -> Option<NormalizedPath> {
     let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    env::var_os(key).map(PathBuf::from)
+    env::var_os(key).map(|os| NormalizedPath::new(Path::new(&os)))
 }
 
 fn dump_daemon_lock() {

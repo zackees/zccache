@@ -4,3 +4,20 @@ crates/zccache-download-cli/src/main.rs
 crates/zccache-download-daemon/src/lib.rs
 crates/zccache-cli/src/lib.rs
 crates/zccache-cli/src/symbols.rs
+# The cli's `main.rs`, `python.rs`, and `snapshot_fp.rs` carry the legacy
+# clap surface plus the pyo3 bindings; migrating their `PathBuf` fields to
+# `NormalizedPath` interacts with clap's `value_parser`, pyo3's `IntoPy`
+# bounds, and the downstream cargo-fingerprint consumers that flow through
+# raw paths. Track migration separately so the lint can keep catching new
+# violations elsewhere.
+crates/zccache-cli/src/main.rs
+crates/zccache-cli/src/python.rs
+crates/zccache-cli/src/snapshot_fp.rs
+# Daemon server still spawns child processes and hands them raw PathBuf
+# command lines; migration depends on the IPC types adopting
+# NormalizedPath end-to-end.
+crates/zccache-daemon/src/server.rs
+# zccache-download holds the FetchRequest archive_path / destination
+# fields as PathBuf; the download daemon serializes those over the wire,
+# so the migration is a protocol-shaped change.
+crates/zccache-download/src/lib.rs
