@@ -105,6 +105,22 @@ runs:
           ~/.cargo/git/db/
         key: ${{ steps.state.outputs.registry-key }}
 
+    # Record per-crate source content hashes BEFORE tarring so the
+    # post-restore validation step on the next run can selectively
+    # future-stamp dep-info files for crates whose sources still match.
+    # The manifest lives under `<target>/.zccache-fp-manifest.json` so it
+    # rides the existing tar without special inclusion rules. Failure is
+    # logged but never fatal — without the manifest the restore side
+    # falls back to cargo's normal mtime check (overbuild but correct).
+    - name: Record fingerprint source hashes
+      if: always() && steps.state.outputs.save-cache == 'true' && steps.state.outputs.cache-target == 'true'
+      shell: bash
+      run: |
+        zccache snapshot-fp-record \
+          --target-dir "${{ steps.state.outputs.target-dir }}" \
+          --workspace-root "$GITHUB_WORKSPACE" \
+          || true
+
     - name: Create target snapshot
       id: target-snapshot
       if: always() && steps.state.outputs.save-cache == 'true' && steps.state.outputs.cache-target == 'true'

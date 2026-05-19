@@ -23,6 +23,7 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 thiserror = { workspace = true }
 blake3 = { workspace = true }
+serde = { workspace = true }
 zccache-core = { workspace = true }
 zccache-artifact = { workspace = true }
 zccache-compiler = { workspace = true }

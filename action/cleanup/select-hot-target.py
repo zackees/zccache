@@ -7,7 +7,13 @@ import os
 from pathlib import Path
 
 
-MUST_KEEP_NAMES = {"CACHEDIR.TAG", ".rustc_info.json"}
+MUST_KEEP_NAMES = {
+    "CACHEDIR.TAG",
+    ".rustc_info.json",
+    # Sidecar manifest written by `zccache snapshot-fp-record`. Must ride
+    # the tar so `snapshot-fp-validate` on the restore side can read it.
+    ".zccache-fp-manifest.json",
+}
 MUST_KEEP_SUFFIXES = {".d", ".rmeta"}
 BUILD_METADATA_NAMES = {"output", "invoked.timestamp", "root-output"}
 

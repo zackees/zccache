@@ -22,6 +22,8 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL_WIN: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+mod snapshot_fp;
+
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -281,6 +283,48 @@ enum Commands {
         /// Skip `*/build/*/out/` directories during the walk.
         #[arg(long)]
         prune_build_script_out: bool,
+    },
+    /// Pre-tar: record blake3 hashes of every workspace source tracked by
+    /// each crate's cargo dep-info. The sidecar manifest written under
+    /// `<target>/.zccache-fp-manifest.json` lets `snapshot-fp-validate`
+    /// (run post-restore on a different runner) decide *per crate* which
+    /// fingerprints still match the current source tree. See the rationale
+    /// in `snapshot_fp.rs`.
+    #[command(name = "snapshot-fp-record")]
+    SnapshotFpRecord {
+        /// Cargo target directory (default: ./target).
+        #[arg(long, default_value = "target")]
+        target_dir: PathBuf,
+        /// Workspace root (paths in the manifest are stored relative to this).
+        /// Defaults to the current working directory.
+        #[arg(long)]
+        workspace_root: Option<PathBuf>,
+        /// Build profile under target/ to walk (default: debug).
+        #[arg(long, default_value = "debug")]
+        profile: String,
+        /// Manifest output path (default: `<target>/.zccache-fp-manifest.json`).
+        #[arg(long)]
+        manifest_path: Option<PathBuf>,
+    },
+    /// Post-restore: read the manifest and bump only the dep-info mtimes of
+    /// crates whose every tracked source still matches its recorded hash.
+    /// Crates with any mismatch are left alone so cargo's normal
+    /// `source.mtime > dep_info.mtime → rebuild` check fires for them.
+    #[command(name = "snapshot-fp-validate")]
+    SnapshotFpValidate {
+        #[arg(long, default_value = "target")]
+        target_dir: PathBuf,
+        #[arg(long)]
+        workspace_root: Option<PathBuf>,
+        #[arg(long, default_value = "debug")]
+        profile: String,
+        #[arg(long)]
+        manifest_path: Option<PathBuf>,
+        /// How far in the future (seconds) to stamp clean crates' dep-info
+        /// files. Default 60 matches the existing post-restore touch step
+        /// in `action.yml` so output and fingerprint mtimes line up.
+        #[arg(long, default_value_t = 60)]
+        stamp_seconds_ahead: u64,
     },
 }
 
@@ -568,6 +612,9 @@ const KNOWN_SUBCOMMANDS: &[&str] = &[
     "gha-cache",
     "rust-plan",
     "warm",
+    "snapshot-bytes",
+    "snapshot-fp-record",
+    "snapshot-fp-validate",
     "help",
     "--help",
     "-h",
@@ -841,6 +888,25 @@ fn main() -> ExitCode {
             prune_incremental,
             prune_build_script_out,
         } => cmd_snapshot_bytes(&target, prune_incremental, prune_build_script_out),
+        Commands::SnapshotFpRecord {
+            target_dir,
+            workspace_root,
+            profile,
+            manifest_path,
+        } => cmd_snapshot_fp_record(&target_dir, workspace_root, &profile, manifest_path),
+        Commands::SnapshotFpValidate {
+            target_dir,
+            workspace_root,
+            profile,
+            manifest_path,
+            stamp_seconds_ahead,
+        } => cmd_snapshot_fp_validate(
+            &target_dir,
+            workspace_root,
+            &profile,
+            manifest_path,
+            stamp_seconds_ahead,
+        ),
     }
 }
 
@@ -2397,6 +2463,62 @@ fn cmd_snapshot_bytes(
         }
         Err(err) => {
             eprintln!("zccache snapshot-bytes: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_snapshot_fp_record(
+    target_dir: &Path,
+    workspace_root: Option<PathBuf>,
+    profile: &str,
+    manifest_path: Option<PathBuf>,
+) -> ExitCode {
+    let workspace = workspace_root.unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+    let manifest = manifest_path.unwrap_or_else(|| target_dir.join(snapshot_fp::MANIFEST_FILENAME));
+    match snapshot_fp::record(target_dir, &workspace, &manifest, profile) {
+        Ok(stats) => {
+            eprintln!(
+                "zccache snapshot-fp-record: wrote {} ({} crates, {} sources)",
+                manifest.display(),
+                stats.crates_recorded,
+                stats.sources_hashed,
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("zccache snapshot-fp-record: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_snapshot_fp_validate(
+    target_dir: &Path,
+    workspace_root: Option<PathBuf>,
+    profile: &str,
+    manifest_path: Option<PathBuf>,
+    stamp_seconds_ahead: u64,
+) -> ExitCode {
+    let workspace = workspace_root.unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+    let manifest = manifest_path.unwrap_or_else(|| target_dir.join(snapshot_fp::MANIFEST_FILENAME));
+    match snapshot_fp::validate(
+        target_dir,
+        &workspace,
+        &manifest,
+        profile,
+        stamp_seconds_ahead,
+    ) {
+        Ok(stats) => {
+            eprintln!(
+                "zccache snapshot-fp-validate: {} clean / {} dirty",
+                stats.crates_clean,
+                stats.crates_dirty(),
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("zccache snapshot-fp-validate: {e}");
             ExitCode::FAILURE
         }
     }
