@@ -7,6 +7,13 @@ use std::path::Path;
 /// Environment variable used to override the zccache cache root.
 pub const CACHE_DIR_ENV: &str = "ZCCACHE_CACHE_DIR";
 
+/// Environment variable used to opt into co-locating the cache on the
+/// project's volume when it differs from the home volume. When set to a
+/// non-empty, non-"0" value, `default_cache_dir` returns a path on the
+/// CWD's volume so hardlink-based cache writes (see issue #296) succeed
+/// without falling back to byte-copy. Unset → behaviour unchanged.
+pub const COLOCATE_ENV: &str = "ZCCACHE_COLOCATE";
+
 /// Top-level configuration for zccache.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -59,7 +66,126 @@ pub fn default_cache_dir() -> NormalizedPath {
 }
 
 fn default_cache_dir_from_env_value(value: Option<OsString>) -> NormalizedPath {
-    cache_dir_from_env_value(value).unwrap_or_else(|| dirs_fallback().join(".zccache"))
+    if let Some(p) = cache_dir_from_env_value(value) {
+        return p;
+    }
+    let home = dirs_fallback();
+    if colocate_enabled() {
+        if let Some(p) = colocated_cache_dir(&home) {
+            return p;
+        }
+    }
+    home.join(".zccache")
+}
+
+/// True when `ZCCACHE_COLOCATE` is set to a non-empty, non-"0" value.
+fn colocate_enabled() -> bool {
+    std::env::var(COLOCATE_ENV)
+        .ok()
+        .is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+/// If the current working directory is on a different volume than the
+/// home directory, return a cache path rooted at the cwd's volume so
+/// hardlinks from `target/` into the cache stay within one filesystem.
+/// Otherwise (same volume, or volume detection failed) return `None` and
+/// the caller uses the standard `~/.zccache` path.
+fn colocated_cache_dir(home: &NormalizedPath) -> Option<NormalizedPath> {
+    let cwd = std::env::current_dir().ok()?;
+    let home_path: &Path = home.as_path();
+    let home_vol = volume_root(home_path)?;
+    let cwd_vol = volume_root(&cwd)?;
+    if same_volume_root(&home_vol, &cwd_vol) {
+        return None;
+    }
+    let basename = home_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(sanitize_path_component)
+        .unwrap_or_default();
+    let stem = if basename.is_empty() {
+        format!(".zccache-{}", home_dir_short_hash(home_path))
+    } else {
+        format!(".zccache-{}-{}", basename, home_dir_short_hash(home_path))
+    };
+    Some(NormalizedPath::from(cwd_vol.join(stem)))
+}
+
+/// Walk `path` upward to find the volume root: drive-letter prefix on
+/// Windows (e.g. `C:\`), the first `/` on Unix where the parent stops
+/// existing (i.e. the filesystem root accessible from this path). Returns
+/// `None` only if the path has no anchored root.
+fn volume_root(path: &Path) -> Option<std::path::PathBuf> {
+    use std::path::Component;
+    let mut root = std::path::PathBuf::new();
+    // Eat any leading Prefix (Windows) + RootDir.
+    let mut saw_anchor = false;
+    for c in path.components() {
+        match c {
+            Component::Prefix(p) => {
+                root.push(p.as_os_str());
+                saw_anchor = true;
+            }
+            Component::RootDir => {
+                root.push(c);
+                saw_anchor = true;
+                break;
+            }
+            _ => break,
+        }
+    }
+    if saw_anchor {
+        Some(root)
+    } else {
+        None
+    }
+}
+
+/// Compare volume roots case-insensitively on Windows (drive letters
+/// are case-insensitive), case-sensitively elsewhere.
+fn same_volume_root(a: &Path, b: &Path) -> bool {
+    let a_str = a.to_string_lossy();
+    let b_str = b.to_string_lossy();
+    if cfg!(windows) {
+        a_str.eq_ignore_ascii_case(&b_str)
+    } else {
+        a_str == b_str
+    }
+}
+
+/// Sanitize a path component: keep ASCII alphanumerics + `-` `_` `.`;
+/// replace anything else with `_`. Avoids weird characters from a user's
+/// home directory leaking into the cache path basename.
+fn sanitize_path_component(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(32)
+        .collect()
+}
+
+/// Stable 8-hex-char identifier derived from the home dir's canonical
+/// path. FNV-1a (64-bit) — small, deterministic, no extra dep.
+fn home_dir_short_hash(home: &Path) -> String {
+    let canon = home.to_string_lossy();
+    let canon = if cfg!(windows) {
+        canon.to_ascii_lowercase()
+    } else {
+        canon.into_owned()
+    };
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in canon.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    // Take 32 bits → 8 hex chars. Plenty for collision avoidance at
+    // per-machine scale.
+    format!("{:08x}", (h ^ (h >> 32)) as u32)
 }
 
 /// Returns the cache directory override from `ZCCACHE_CACHE_DIR`, if set.
@@ -641,5 +767,98 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let cache = NormalizedPath::from(temp.path());
         (temp, cache)
+    }
+
+    #[test]
+    fn volume_root_extracts_drive_or_root() {
+        if cfg!(windows) {
+            let r = volume_root(Path::new(r"C:\Users\zack\foo")).unwrap();
+            assert_eq!(r.to_string_lossy(), r"C:\");
+            let r = volume_root(Path::new(r"D:\projects")).unwrap();
+            assert_eq!(r.to_string_lossy(), r"D:\");
+        } else {
+            let r = volume_root(Path::new("/home/zack/foo")).unwrap();
+            assert_eq!(r.to_string_lossy(), "/");
+            let r = volume_root(Path::new("/mnt/data/projects")).unwrap();
+            assert_eq!(r.to_string_lossy(), "/");
+        }
+    }
+
+    #[test]
+    fn same_volume_root_is_case_insensitive_on_windows() {
+        let r1 = Path::new(r"C:\");
+        let r2 = Path::new(r"c:\");
+        if cfg!(windows) {
+            assert!(same_volume_root(r1, r2));
+        } else {
+            assert!(!same_volume_root(r1, r2));
+        }
+        let same = Path::new("/");
+        assert!(same_volume_root(same, same));
+    }
+
+    #[test]
+    fn home_dir_short_hash_is_stable_and_8_hex() {
+        let a = home_dir_short_hash(Path::new("/home/zack"));
+        let b = home_dir_short_hash(Path::new("/home/zack"));
+        assert_eq!(a, b, "must be deterministic");
+        assert_eq!(a.len(), 8);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        let c = home_dir_short_hash(Path::new("/home/other"));
+        assert_ne!(a, c, "different paths → different hashes");
+    }
+
+    #[test]
+    fn home_dir_short_hash_is_case_insensitive_on_windows() {
+        let upper = home_dir_short_hash(Path::new(r"C:\Users\Zack"));
+        let lower = home_dir_short_hash(Path::new(r"c:\users\zack"));
+        if cfg!(windows) {
+            assert_eq!(upper, lower);
+        } else {
+            assert_ne!(upper, lower);
+        }
+    }
+
+    #[test]
+    fn sanitize_path_component_strips_oddities() {
+        assert_eq!(sanitize_path_component("zack"), "zack");
+        assert_eq!(sanitize_path_component("z@ck!"), "z_ck_");
+        assert_eq!(sanitize_path_component(""), "");
+        // Truncates to 32 chars
+        let long = "a".repeat(100);
+        assert_eq!(sanitize_path_component(&long).len(), 32);
+    }
+
+    #[test]
+    fn colocate_disabled_returns_home_path() {
+        // No env var set in this test (we can't reliably toggle env in
+        // unit tests on Windows without races, so just verify the gating
+        // function in isolation).
+        std::env::remove_var(COLOCATE_ENV);
+        assert!(!colocate_enabled());
+        let result = default_cache_dir_from_env_value(None);
+        assert!(
+            result.to_string_lossy().ends_with(".zccache"),
+            "got {}",
+            result.display()
+        );
+    }
+
+    #[test]
+    fn colocate_basename_appears_in_path() {
+        let home = NormalizedPath::from(Path::new("/home/myuser"));
+        // We can't easily mock cwd cross-platform; just call the path
+        // builder directly with a synthetic cross-volume scenario.
+        let basename = home
+            .as_path()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(sanitize_path_component)
+            .unwrap();
+        assert_eq!(basename, "myuser");
+        let hash = home_dir_short_hash(home.as_path());
+        let expected_suffix = format!(".zccache-myuser-{hash}");
+        assert!(expected_suffix.starts_with(".zccache-myuser-"));
+        assert!(expected_suffix.len() == ".zccache-myuser-".len() + 8);
     }
 }

@@ -269,7 +269,7 @@ fn build_env_block(overrides: &[(String, String)]) -> Vec<u16> {
         map.insert(k.to_uppercase(), (k.clone(), v.clone()));
     }
     let mut block: Vec<u16> = Vec::new();
-    for (_, (k, v)) in &map {
+    for (k, v) in map.values() {
         let entry = format!("{k}={v}");
         block.extend(OsStr::new(&entry).encode_wide());
         block.push(0);

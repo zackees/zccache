@@ -648,11 +648,11 @@ pub fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
     // root-cause analysis.
     #[cfg(windows)]
     {
-        return spawn_daemon_windows::spawn_daemon_sanitized(
+        spawn_daemon_windows::spawn_daemon_sanitized(
             spawn_bin,
             &["--foreground", "--endpoint", endpoint],
             &cli_spawn_lineage_env(),
-        );
+        )
     }
 
     #[cfg(not(windows))]

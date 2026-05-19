@@ -270,7 +270,7 @@ pub async fn install_async(opts: InstallOptions) -> Result<InstallReport, Symbol
 /// Cache layout: `<zccache cache dir>/symbols/<asset-filename>`. The asset
 /// filename already encodes version + target, so two callers asking for the
 /// same archive land on the same path. Writes use a same-directory tempfile
-/// + atomic rename, so a kill during download can't leave a partial file
+/// plus atomic rename, so a kill during download can't leave a partial file
 /// that looks like a cache hit to the next caller.
 async fn fetch_archive(
     url: &str,
@@ -332,7 +332,9 @@ fn archive_cache_path(version: &str, target: &str, kind: ArchiveKind) -> PathBuf
         "zccache-v{version}-{target}-debug.{ext}",
         ext = kind.file_extension(),
     );
-    PathBuf::from(zccache_core::config::symbols_cache_dir().into_path_buf()).join(filename)
+    zccache_core::config::symbols_cache_dir()
+        .into_path_buf()
+        .join(filename)
 }
 
 fn open_lockfile(path: &Path) -> Result<File, SymbolsError> {
