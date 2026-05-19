@@ -53,6 +53,14 @@ fn main() {
     let args = Args::parse();
 
     if args.foreground {
+        // FIRST thing in the long-lived path: drop any stdio handles we
+        // inherited from the spawning process. Without this, an orphaned
+        // daemon keeps its grandparent's pipe write ends alive and the
+        // grandparent's pipe reader (e.g. `subprocess.Popen(stdout=PIPE)`)
+        // never sees EOF after the parent exits. See issue #276. Must run
+        // before init_tracing() so the subscriber's stdout/stderr writes
+        // land in the null device too.
+        zccache_daemon::trampoline::detach_stdio();
         init_tracing(&args.log_level);
         // Long-lived process: release exe-file lock and cwd handle so
         // `pip install --upgrade zccache` and `rm -rf <project>` can

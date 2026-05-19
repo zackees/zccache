@@ -104,6 +104,124 @@ pub fn release_cwd() {
     let _ = std::env::set_current_dir(std::env::temp_dir());
 }
 
+/// Detach inherited stdio (stdin/stdout/stderr) by re-opening them to the
+/// platform null device (`/dev/null` on Unix, `NUL` on Windows). This
+/// closes whatever file descriptors / handles the daemon inherited from
+/// its spawning process, releasing any pipe write ends in particular.
+///
+/// Without this, a grandparent process that reads the daemon's
+/// (inherited) stdout via a pipe — e.g. Python's
+/// `subprocess.Popen(["soldr", "cargo", "build", ...], stdout=PIPE)` —
+/// never observes EOF after the parent exits, because the orphaned daemon
+/// keeps the pipe's write end alive indefinitely. See issue #276 for the
+/// real-world hang this fix prevents (47+ minute waits on Windows).
+///
+/// Called once, very early in the daemon binary's `main()` before the
+/// tracing subscriber is installed, so the subscriber's stdout/stderr
+/// writes go to the null device from the start. Do not move this later:
+/// any code that writes via `println!` / `tracing` between startup and
+/// the detach point would still hit the inherited pipe and defeat the
+/// purpose.
+///
+/// Best-effort — no panics on failure. A best-effort detach is strictly
+/// better than no detach, and any platform where this fails is a platform
+/// where the original pipe write end could not have been opened anyway.
+pub fn detach_stdio() {
+    #[cfg(unix)]
+    detach_stdio_unix();
+
+    #[cfg(windows)]
+    detach_stdio_windows();
+}
+
+#[cfg(unix)]
+fn detach_stdio_unix() {
+    // SAFETY: open/dup2/close are async-signal-safe and we're running on
+    // the main thread with no other threads spawned yet. Failure of any
+    // step is logged at debug level (we cannot use tracing here — it
+    // hasn't been initialised — and we deliberately don't write to
+    // stderr, since that's exactly what we're trying to detach).
+    unsafe {
+        let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
+        if null < 0 {
+            return;
+        }
+        let _ = libc::dup2(null, libc::STDIN_FILENO);
+        let _ = libc::dup2(null, libc::STDOUT_FILENO);
+        let _ = libc::dup2(null, libc::STDERR_FILENO);
+        if null > libc::STDERR_FILENO {
+            let _ = libc::close(null);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn detach_stdio_windows() {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+
+    extern "system" {
+        fn CreateFileW(
+            lp_file_name: *const u16,
+            dw_desired_access: u32,
+            dw_share_mode: u32,
+            lp_security_attributes: *mut std::ffi::c_void,
+            dw_creation_disposition: u32,
+            dw_flags_and_attributes: u32,
+            h_template_file: *mut std::ffi::c_void,
+        ) -> *mut std::ffi::c_void;
+        fn GetStdHandle(n_std_handle: u32) -> *mut std::ffi::c_void;
+        fn SetStdHandle(n_std_handle: u32, h_handle: *mut std::ffi::c_void) -> i32;
+        fn CloseHandle(h_object: *mut std::ffi::c_void) -> i32;
+    }
+
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const OPEN_EXISTING: u32 = 3;
+    const STD_INPUT_HANDLE: u32 = 0xFFFF_FFF6; // (DWORD)-10
+    const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5; // (DWORD)-11
+    const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF4; // (DWORD)-12
+    const INVALID_HANDLE_VALUE: *mut std::ffi::c_void = -1isize as *mut std::ffi::c_void;
+
+    let nul: Vec<u16> = OsStr::new("NUL").encode_wide().chain(Some(0)).collect();
+
+    // Replace each std handle with a fresh handle to NUL. Open one fresh
+    // NUL handle per slot so closing the old one (which may be the same
+    // underlying object on consoles) doesn't invalidate the others.
+    for (slot, access) in [
+        (STD_INPUT_HANDLE, GENERIC_READ),
+        (STD_OUTPUT_HANDLE, GENERIC_WRITE),
+        (STD_ERROR_HANDLE, GENERIC_WRITE),
+    ] {
+        // SAFETY: we own the std handle slots for this process; no other
+        // thread is touching them this early in startup.
+        unsafe {
+            let nul_handle = CreateFileW(
+                nul.as_ptr(),
+                access,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                ptr::null_mut(),
+                OPEN_EXISTING,
+                0,
+                ptr::null_mut(),
+            );
+            if nul_handle.is_null() || nul_handle == INVALID_HANDLE_VALUE {
+                continue;
+            }
+            let old = GetStdHandle(slot);
+            let _ = SetStdHandle(slot, nul_handle);
+            // GetStdHandle returns NULL when no handle is set and
+            // INVALID_HANDLE_VALUE on error; neither is closeable.
+            if !old.is_null() && old != INVALID_HANDLE_VALUE {
+                let _ = CloseHandle(old);
+            }
+        }
+    }
+}
+
 /// True if `exe` lives directly inside `<global_cache_dir>/runtime-binaries/`,
 /// i.e. the CLI already copied us out of the install path. Compared
 /// against the canonicalized cache dir to be robust to symlinks and
