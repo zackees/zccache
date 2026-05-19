@@ -29,9 +29,9 @@ use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use zccache_core::NormalizedPath;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
+use zccache_core::NormalizedPath;
 
 use wait_timeout::ChildExt;
 
