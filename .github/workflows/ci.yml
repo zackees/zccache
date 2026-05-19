@@ -48,12 +48,18 @@ jobs:
         run: soldr cargo install cargo-dylint dylint-link --version 5.0.0
       - name: Build compatible Dylint driver
         run: python3 ci/build_dylint_driver.py
-      - name: Check Dylint Library Formatting
+      - name: Check Dylint Library Formatting (ban_std_pathbuf)
         run: soldr cargo fmt --manifest-path dylints/ban_std_pathbuf/Cargo.toml --all -- --check
-      - name: Test Dylint Library
+      - name: Check Dylint Library Formatting (ban_unrooted_tempdir)
+        run: soldr cargo fmt --manifest-path dylints/ban_unrooted_tempdir/Cargo.toml --all -- --check
+      - name: Test Dylint Library (ban_std_pathbuf)
         run: |
           export PATH="${CARGO_HOME}/bin:${PATH}"
           cargo +nightly-2026-03-26 test --manifest-path dylints/ban_std_pathbuf/Cargo.toml
+      - name: Test Dylint Library (ban_unrooted_tempdir)
+        run: |
+          export PATH="${CARGO_HOME}/bin:${PATH}"
+          cargo +nightly-2026-03-26 test --manifest-path dylints/ban_unrooted_tempdir/Cargo.toml
       - name: Run Dylint
         run: |
           export PATH="${CARGO_HOME}/bin:${PATH}"

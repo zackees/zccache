@@ -149,18 +149,17 @@ def lint_dylint_only():
         return result
 
     dylint_cmd = cargo_command("dylint", "--all", "--workspace")
-    result = subprocess.run(
-        dylint_cmd,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        cwd=str(SCRIPT_DIR),
-        env=dylint_env(),
-        capture_output=True,
-    )
-    sys.stdout.write(result.stdout)
-    sys.stderr.write(result.stderr)
-    if result.returncode != 0 and ensure_dylint_aliases():
+
+    # cargo-dylint expects libraries on disk as `<name>@<toolchain>.<ext>` but
+    # cargo emits them as bare `<name>.<ext>`. Each freshly-built library
+    # therefore fails the first time it runs. After every build cycle we
+    # alias the just-built libraries and retry. With N dylints in the
+    # workspace the worst case is N+1 invocations — each retry compiles the
+    # next library fresh, so we loop until no new aliases need creating.
+    max_attempts = 6
+    last_result = None
+    for attempt in range(1, max_attempts + 1):
+        capture = attempt < max_attempts
         result = subprocess.run(
             dylint_cmd,
             text=True,
@@ -168,8 +167,19 @@ def lint_dylint_only():
             errors="replace",
             cwd=str(SCRIPT_DIR),
             env=dylint_env(),
+            capture_output=capture,
         )
-    return result.returncode
+        if capture:
+            sys.stdout.write(result.stdout or "")
+            sys.stderr.write(result.stderr or "")
+        last_result = result
+        if result.returncode == 0:
+            break
+        if not ensure_dylint_aliases():
+            # No new aliases to create — the failure isn't a missing-alias
+            # one, so further retries won't help.
+            break
+    return last_result.returncode if last_result is not None else 1
 
 
 def detect_crate(file_path):
@@ -219,14 +229,21 @@ def lint_workspace():
         print("Formatting issues found. Run './lint --fix' to auto-fix.", file=sys.stderr)
         return result.returncode
 
-    result = run_cmd(cargo_command(
-        "fmt",
-        "--manifest-path", "dylints/ban_std_pathbuf/Cargo.toml",
-        "--all", "--check",
-    ))
-    if result.returncode != 0:
-        print("Dylint library formatting issues found.", file=sys.stderr)
-        return result.returncode
+    for dylint_manifest in (
+        "dylints/ban_std_pathbuf/Cargo.toml",
+        "dylints/ban_unrooted_tempdir/Cargo.toml",
+    ):
+        result = run_cmd(cargo_command(
+            "fmt",
+            "--manifest-path", dylint_manifest,
+            "--all", "--check",
+        ))
+        if result.returncode != 0:
+            print(
+                f"Dylint library formatting issues found in {dylint_manifest}.",
+                file=sys.stderr,
+            )
+            return result.returncode
 
     result = run_cmd(cargo_command(
         "clippy", "--workspace", "--all-targets",
