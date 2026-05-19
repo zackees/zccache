@@ -29,6 +29,7 @@
 //! anomalies with the daemon's lifetime.
 
 use std::io::Write;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::event_log::open_append;
@@ -37,6 +38,21 @@ use crate::event_log::open_append;
 /// also work — these constants exist for the call sites we ship today.
 pub const EVENT_SPAWN: &str = "spawn";
 pub const EVENT_DIED_IDLE: &str = "died-idle";
+
+/// Soft cap on the live `daemon-lifecycle.log` size. When the file
+/// exceeds this on the next `write_event` call, it is renamed to
+/// `daemon-lifecycle.log.1` (replacing the prior archive, if any) and
+/// a fresh empty file is opened for the new event. This bounds total
+/// disk footprint to `2 × MAX_LOG_SIZE` (current + one archive) and
+/// preserves the most-recent chunk of history.
+///
+/// 1 MiB chosen because each event is ~200 bytes, so a full live file
+/// holds ~5000 events — comfortable history even under pathological
+/// respawn loops. Operators who need more history can grow this
+/// constant; the file format is plain JSONL so concatenating
+/// `daemon-lifecycle.log.1` + `daemon-lifecycle.log` yields a complete
+/// in-order replay.
+const MAX_LOG_SIZE: u64 = 1024 * 1024;
 
 /// Append a JSONL line describing a daemon lifecycle event.
 ///
@@ -59,6 +75,14 @@ fn try_write(event_name: &str, extra: &serde_json::Value) -> std::io::Result<()>
     if let Some(parent) = log_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+
+    // Soft-cap rotation. We have no long-lived file handle to juggle
+    // (each write opens and closes one), so a plain rename works on
+    // every OS without the Windows handle-replacement dance that
+    // `event_log::LogWriter::rotate` needs. Errors are silenced
+    // because lifecycle logging is best-effort — we'd rather lose a
+    // rotation than fail to write the next event.
+    let _ = rotate_if_oversized(&log_path);
 
     let mut envelope = serde_json::Map::new();
     envelope.insert("ts_ms".to_string(), serde_json::Value::from(now_ms()));
@@ -90,6 +114,41 @@ fn log_file_path() -> std::path::PathBuf {
         .as_path()
         .join("logs")
         .join("daemon-lifecycle.log")
+}
+
+/// If the live log file exceeds `MAX_LOG_SIZE`, rename it to `.1`
+/// (replacing any existing archive) and let the caller open a fresh
+/// file for the next write. No-op if the file does not exist or is
+/// under the threshold. All errors are propagated to the caller so
+/// `try_write` can decide to silence them — lifecycle logging never
+/// blocks the daemon.
+fn rotate_if_oversized(log_path: &std::path::Path) -> std::io::Result<()> {
+    let size = match std::fs::metadata(log_path) {
+        Ok(m) => m.len(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    if size <= MAX_LOG_SIZE {
+        return Ok(());
+    }
+    let archive = archive_path(log_path);
+    // `fs::rename` is atomic on the same filesystem and replaces an
+    // existing destination on every supported platform (Windows
+    // included, via `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` which
+    // Rust uses under the hood). We don't need a separate remove.
+    std::fs::rename(log_path, &archive)
+}
+
+fn archive_path(log_path: &std::path::Path) -> PathBuf {
+    let mut name = log_path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    name.push(".1");
+    log_path
+        .parent()
+        .map(|p| p.join(&name))
+        .unwrap_or_else(|| PathBuf::from(name))
 }
 
 fn now_ms() -> u64 {
@@ -138,6 +197,110 @@ mod tests {
         assert_eq!(second["uptime_secs"], 7200);
 
         // Restore env so other tests aren't affected.
+        match prev {
+            Some(v) => std::env::set_var("ZCCACHE_CACHE_DIR", v),
+            None => std::env::remove_var("ZCCACHE_CACHE_DIR"),
+        }
+    }
+
+    /// `archive_path` derives the `.1` neighbor reliably for the
+    /// common case (parent + filename present). Validates the rename
+    /// target before exercising the bigger rotation test.
+    #[test]
+    fn archive_path_appends_dot_one_alongside_parent() {
+        let p = std::path::PathBuf::from("/tmp/zc/logs/daemon-lifecycle.log");
+        assert_eq!(
+            archive_path(&p),
+            std::path::PathBuf::from("/tmp/zc/logs/daemon-lifecycle.log.1")
+        );
+    }
+
+    /// When the live log exceeds `MAX_LOG_SIZE`, the next `write_event`
+    /// must rename it to `.1` and start a fresh file holding just the
+    /// new event. A second oversize round must *replace* `.1` (not
+    /// accumulate `.2`, `.3`, …), bounding total disk use.
+    #[test]
+    fn write_event_rotates_when_live_log_exceeds_max() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let prev = std::env::var_os("ZCCACHE_CACHE_DIR");
+        std::env::set_var("ZCCACHE_CACHE_DIR", tmp.path());
+
+        let log_path = tmp.path().join("logs").join("daemon-lifecycle.log");
+        let archive = tmp.path().join("logs").join("daemon-lifecycle.log.1");
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+
+        // Pre-populate the live log with >MAX_LOG_SIZE bytes of placeholder
+        // content. The exact bytes don't matter — only the file size.
+        let padding = vec![b'x'; (MAX_LOG_SIZE + 1024) as usize];
+        std::fs::write(&log_path, &padding).expect("seed oversized log");
+        assert!(std::fs::metadata(&log_path).unwrap().len() > MAX_LOG_SIZE);
+
+        // First write: triggers rotation. Live log now holds just our
+        // new event; archive holds the padding.
+        write_event(EVENT_SPAWN, serde_json::json!({"first": true}));
+
+        let live = std::fs::read_to_string(&log_path).expect("live log readable");
+        assert_eq!(
+            live.lines().count(),
+            1,
+            "live log should hold just the new event, got: {live:?}"
+        );
+        let v: serde_json::Value = serde_json::from_str(live.trim()).expect("jsonl parses");
+        assert_eq!(v["first"], true);
+        assert!(archive.exists(), "archive {} should exist", archive.display());
+        assert!(
+            std::fs::metadata(&archive).unwrap().len() > MAX_LOG_SIZE,
+            "archive holds the prior padding"
+        );
+
+        // Drive the live log back over the threshold and rotate again.
+        // The new archive must REPLACE the old one — bounding disk to
+        // 2 × MAX_LOG_SIZE — not accumulate as `.2`.
+        std::fs::write(&log_path, &padding).expect("re-seed oversized log");
+        write_event(EVENT_DIED_IDLE, serde_json::json!({"second": true}));
+
+        assert!(archive.exists(), "archive still present after second rotation");
+        assert!(
+            !tmp.path().join("logs").join("daemon-lifecycle.log.2").exists(),
+            "no .2 archive — single-rotation policy bounds disk"
+        );
+
+        // The replaced archive should now hold the SECOND batch of
+        // padding, not the first. Read a small prefix to confirm it's
+        // not the original first-batch contents.
+        let archive_first_bytes = std::fs::read(&archive).expect("archive readable");
+        assert!(
+            archive_first_bytes.starts_with(b"xxx"),
+            "archive holds the most-recent padding from before this rotation"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("ZCCACHE_CACHE_DIR", v),
+            None => std::env::remove_var("ZCCACHE_CACHE_DIR"),
+        }
+    }
+
+    /// Rotation is a no-op when the live log is under the threshold.
+    /// Belts-and-braces: the test above already implies this, but a
+    /// dedicated guard makes the contract obvious to a future reader
+    /// inspecting `rotate_if_oversized` semantics.
+    #[test]
+    fn write_event_does_not_rotate_when_under_max() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let prev = std::env::var_os("ZCCACHE_CACHE_DIR");
+        std::env::set_var("ZCCACHE_CACHE_DIR", tmp.path());
+
+        let log_path = tmp.path().join("logs").join("daemon-lifecycle.log");
+        let archive = tmp.path().join("logs").join("daemon-lifecycle.log.1");
+
+        write_event(EVENT_SPAWN, serde_json::json!({"only": "event"}));
+        write_event(EVENT_SPAWN, serde_json::json!({"another": "event"}));
+
+        assert!(log_path.exists(), "live log written");
+        assert!(!archive.exists(), "no archive on a tiny log");
+        let contents = std::fs::read_to_string(&log_path).unwrap();
+        assert_eq!(contents.lines().count(), 2);
+
         match prev {
             Some(v) => std::env::set_var("ZCCACHE_CACHE_DIR", v),
             None => std::env::remove_var("ZCCACHE_CACHE_DIR"),
