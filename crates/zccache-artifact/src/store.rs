@@ -25,9 +25,10 @@
 //! on the keys that hadn't been flushed — the daemon repopulates them on
 //! next access. Graceful shutdown flushes synchronously.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use zccache_core::NormalizedPath;
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -90,7 +91,7 @@ impl ArtifactIndex {
 /// I/O happens exclusively in `flush()`, called by the daemon's background
 /// WAL writer on its timer.
 pub struct ArtifactStore {
-    path: PathBuf,
+    path: NormalizedPath,
     entries: DashMap<String, ArtifactIndex>,
 }
 
@@ -118,7 +119,7 @@ impl ArtifactStore {
             Err(e) => return Err(e),
         };
         Ok(Self {
-            path: path.to_path_buf(),
+            path: NormalizedPath::new(path),
             entries,
         })
     }
@@ -207,16 +208,18 @@ impl ArtifactStore {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut tmp = self.path.clone();
         let name = self
             .path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "index.bin".into());
-        tmp.set_file_name(format!(".{name}.tmp-{}", std::process::id()));
+        let tmp = self
+            .path
+            .as_path()
+            .with_file_name(format!(".{name}.tmp-{}", std::process::id()));
         let result = (|| -> std::io::Result<()> {
             std::fs::write(&tmp, &bytes)?;
-            std::fs::rename(&tmp, &self.path)?;
+            std::fs::rename(&tmp, self.path.as_path())?;
             Ok(())
         })();
         if result.is_err() {
