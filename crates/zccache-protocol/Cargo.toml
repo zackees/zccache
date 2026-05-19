@@ -16,3 +16,6 @@ bincode = { workspace = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
 zccache-core = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

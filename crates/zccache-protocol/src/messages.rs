@@ -347,13 +347,63 @@ pub struct SessionStats {
     pub bytes_written: u64,
 }
 
+/// Where an artifact output's bytes live on the daemon's filesystem at the
+/// moment a request is built.
+///
+/// `Bytes` is the only variant any current client emits — `Path` is reserved
+/// for future sccache-emulation paths where the client already has the bytes
+/// on disk and the daemon can hardlink directly via `persist_artifact_file`
+/// (falling back to copy on cross-volume failure).
+///
+/// The variant was introduced pre-emptively in PR for issue #296 so that
+/// landing the eventual `Request::Store` handler won't require a second
+/// `PROTOCOL_VERSION` bump. See `crates/zccache-daemon/src/server.rs` —
+/// `CachedPayload` is the internal sibling of this type and predates it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ArtifactPayload {
+    /// Bytes shipped inline in the IPC message. Used by every current call
+    /// site; future remote-daemon scenarios may also need this.
+    Bytes(Arc<Vec<u8>>),
+    /// Path on the daemon's filesystem. The daemon hardlinks from this path
+    /// into the cache (falling back to copy on cross-volume failure). Path
+    /// must be absolute and readable by the daemon process (same user).
+    /// No current client emits this variant.
+    Path(NormalizedPath),
+}
+
+impl ArtifactPayload {
+    /// Size in bytes of the underlying output. For `Path`, stats the file;
+    /// returns 0 on I/O error (matches the prior `unwrap_or_default()`
+    /// semantics elsewhere in the daemon for missing-output cases).
+    #[must_use]
+    pub fn size_bytes(&self) -> u64 {
+        match self {
+            Self::Bytes(b) => b.len() as u64,
+            Self::Path(p) => std::fs::metadata(p.as_path()).map(|m| m.len()).unwrap_or(0),
+        }
+    }
+
+    /// Returns `Some` of the inline bytes when this is the `Bytes` variant.
+    /// Useful for daemon-internal sites that still want the byte path —
+    /// `None` signals "the bytes live on disk; route through a hardlink/read
+    /// helper instead."
+    #[must_use]
+    pub fn as_bytes(&self) -> Option<&Arc<Vec<u8>>> {
+        match self {
+            Self::Bytes(b) => Some(b),
+            Self::Path(_) => None,
+        }
+    }
+}
+
 /// A single output file from compilation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArtifactOutput {
     /// Relative filename (e.g., "foo.o").
     pub name: String,
-    /// File contents (Arc-wrapped to avoid deep copies during caching).
-    pub data: Arc<Vec<u8>>,
+    /// Where the bytes live — inline in the message or on disk for hardlink.
+    /// See `ArtifactPayload` for the variant rationale.
+    pub payload: ArtifactPayload,
 }
 
 /// Information about a cached Rust compilation artifact.
@@ -689,7 +739,8 @@ mod tests {
     // Compile-time check: PROTOCOL_VERSION must be positive.
     const _: () = assert!(crate::PROTOCOL_VERSION > 0);
     // Compile-time check: PROTOCOL_VERSION == 8 after Compile/CompileEphemeral
-    // gained `stdin: Vec<u8>` to forward the wrapper's stdin over IPC.
+    // gained `stdin: Vec<u8>` and ArtifactPayload replaced
+    // ArtifactOutput.data: Arc<Vec<u8>> (issue #296 Option B).
     const _FINGERPRINT_VERSION: () = assert!(crate::PROTOCOL_VERSION == 8);
 
     #[test]
@@ -797,10 +848,11 @@ mod tests {
 
     #[test]
     fn artifact_clone_shares_payload_via_arc() {
+        let bytes = Arc::new(vec![1u8, 2, 3, 4]);
         let artifact = ArtifactData {
             outputs: vec![ArtifactOutput {
                 name: "test.o".into(),
-                data: Arc::new(vec![1, 2, 3, 4]),
+                payload: ArtifactPayload::Bytes(Arc::clone(&bytes)),
             }],
             stdout: Arc::new(vec![5, 6]),
             stderr: Arc::new(vec![7, 8]),
@@ -810,12 +862,49 @@ mod tests {
         let cloned = artifact.clone();
 
         // Arc::clone bumps refcount — both point to the same allocation.
-        assert!(Arc::ptr_eq(
-            &artifact.outputs[0].data,
-            &cloned.outputs[0].data
-        ));
+        let orig_inner = artifact.outputs[0].payload.as_bytes().unwrap();
+        let cloned_inner = cloned.outputs[0].payload.as_bytes().unwrap();
+        assert!(Arc::ptr_eq(orig_inner, cloned_inner));
+        assert!(Arc::ptr_eq(orig_inner, &bytes));
         assert!(Arc::ptr_eq(&artifact.stdout, &cloned.stdout));
         assert!(Arc::ptr_eq(&artifact.stderr, &cloned.stderr));
+    }
+
+    #[test]
+    fn artifact_payload_size_bytes_for_bytes_variant() {
+        let p = ArtifactPayload::Bytes(Arc::new(vec![0u8; 1234]));
+        assert_eq!(p.size_bytes(), 1234);
+    }
+
+    #[test]
+    fn artifact_payload_size_bytes_for_path_variant() {
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        std::fs::write(tmp.path(), vec![0u8; 4321]).expect("write");
+        let p = ArtifactPayload::Path(NormalizedPath::from(tmp.path()));
+        assert_eq!(p.size_bytes(), 4321);
+    }
+
+    #[test]
+    fn artifact_payload_size_bytes_for_missing_path_is_zero() {
+        let p = ArtifactPayload::Path(NormalizedPath::from(std::path::Path::new(
+            "/this/path/does/not/exist/zccache",
+        )));
+        assert_eq!(p.size_bytes(), 0);
+    }
+
+    #[test]
+    fn artifact_payload_round_trips_through_bincode() {
+        let bytes_variant = ArtifactPayload::Bytes(Arc::new(b"hello".to_vec()));
+        let encoded = bincode::serialize(&bytes_variant).expect("serialize bytes");
+        let decoded: ArtifactPayload = bincode::deserialize(&encoded).expect("deserialize bytes");
+        assert_eq!(decoded, bytes_variant);
+
+        let path_variant = ArtifactPayload::Path(NormalizedPath::from(std::path::Path::new(
+            "/tmp/some/place.rlib",
+        )));
+        let encoded = bincode::serialize(&path_variant).expect("serialize path");
+        let decoded: ArtifactPayload = bincode::deserialize(&encoded).expect("deserialize path");
+        assert_eq!(decoded, path_variant);
     }
 
     #[test]

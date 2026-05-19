@@ -16,7 +16,7 @@ use zccache_depgraph::{
 use zccache_fscache::{CacheSystem, Clock};
 use zccache_hash::ContentHash;
 use zccache_ipc::{IpcConnection, IpcListener};
-use zccache_protocol::{ArtifactData, ArtifactOutput, Request, Response};
+use zccache_protocol::{ArtifactData, ArtifactOutput, ArtifactPayload, Request, Response};
 use zccache_watcher::{NotifyWatcher, SettleBuffer, SettledEvent};
 
 use crate::compile_journal::{extract_outcome, CompileJournal, JournalContext, JournalEntry};
@@ -318,14 +318,16 @@ pub(crate) struct CachedArtifact {
 }
 
 impl CachedArtifact {
-    /// Create from a freshly compiled `ArtifactData` (payloads already in memory).
+    /// Create from a freshly compiled `ArtifactData`. Payload mapping is
+    /// 1:1 between the protocol `ArtifactPayload` enum and the internal
+    /// `CachedPayload` enum.
     fn from_artifact_data(artifact: &ArtifactData) -> Self {
         let meta = ArtifactIndex::new(
             artifact.outputs.iter().map(|o| o.name.clone()).collect(),
             artifact
                 .outputs
                 .iter()
-                .map(|o| o.data.len() as u64)
+                .map(|o| o.payload.size_bytes())
                 .collect(),
             Arc::clone(&artifact.stdout),
             Arc::clone(&artifact.stderr),
@@ -339,7 +341,10 @@ impl CachedArtifact {
                 artifact
                     .outputs
                     .iter()
-                    .map(|o| CachedPayload::Bytes(Arc::clone(&o.data)))
+                    .map(|o| match &o.payload {
+                        ArtifactPayload::Bytes(b) => CachedPayload::Bytes(Arc::clone(b)),
+                        ArtifactPayload::Path(p) => CachedPayload::File(p.clone()),
+                    })
                     .collect::<Vec<_>>(),
             )),
             last_used: std::time::Instant::now(),
@@ -454,10 +459,16 @@ fn migrate_meta_files(
                 .into_owned();
 
             // Write {key}_0, {key}_1, ... data files if missing.
+            // Legacy `.meta` files only ever stored inline bytes, so we
+            // only handle the `Bytes` variant here. Any `Path` variant
+            // would be a forward-compat artefact that legacy migration
+            // can safely skip — caller treats failures as non-cacheable.
             for (i, out) in artifact.outputs.iter().enumerate() {
                 let data_path = artifact_dir.join(format!("{stem}_{i}"));
                 if !data_path.exists() {
-                    std::fs::write(&data_path, &*out.data).ok();
+                    if let Some(bytes) = out.payload.as_bytes() {
+                        std::fs::write(&data_path, bytes.as_slice()).ok();
+                    }
                 }
             }
 
@@ -2182,7 +2193,7 @@ async fn handle_link_ephemeral(
                 .map(|(name, path)| {
                     std::fs::read(path).ok().map(|data| ArtifactOutput {
                         name: name.clone(),
-                        data: Arc::new(data),
+                        payload: ArtifactPayload::Bytes(Arc::new(data)),
                     })
                 })
                 .collect()
@@ -2193,7 +2204,7 @@ async fn handle_link_ephemeral(
                 .map(|(name, path)| {
                     std::fs::read(path).ok().map(|data| ArtifactOutput {
                         name: name.clone(),
-                        data: Arc::new(data),
+                        payload: ArtifactPayload::Bytes(Arc::new(data)),
                     })
                 })
                 .collect()
@@ -2207,7 +2218,7 @@ async fn handle_link_ephemeral(
             // Log side-effect captures (preserves prior tracing).
             let side_effect_start = 1 + parsed_tool.secondary_outputs.len();
             for o in outputs.iter().skip(side_effect_start) {
-                tracing::debug!(file = %o.name, size = o.data.len(), "caching side-effect file");
+                tracing::debug!(file = %o.name, size = o.payload.size_bytes(), "caching side-effect file");
             }
 
             let artifact = ArtifactData {
@@ -2225,10 +2236,18 @@ async fn handle_link_ephemeral(
                 let artifact_dir = state.artifact_dir.clone();
                 let kh = key_hex.clone();
                 let persist_meta = cached.meta.clone();
+                // link-ephemeral always reads outputs into memory above, so
+                // every payload is the `Bytes` variant in practice. The
+                // match keeps us forward-compatible if a `Path` variant
+                // ever reaches this site (materialise by read; degraded but
+                // correct).
                 let payloads: Vec<Arc<Vec<u8>>> = artifact
                     .outputs
                     .iter()
-                    .map(|o| Arc::clone(&o.data))
+                    .filter_map(|o| match &o.payload {
+                        ArtifactPayload::Bytes(b) => Some(Arc::clone(b)),
+                        ArtifactPayload::Path(p) => std::fs::read(p.as_path()).ok().map(Arc::new),
+                    })
                     .collect();
                 let payload_size: usize = payloads.iter().map(|p| p.len()).sum();
                 state
@@ -5843,15 +5862,18 @@ async fn handle_compile(
                             .unwrap_or_default()
                             .to_string_lossy()
                             .into_owned(),
-                        data: Arc::new(output_data),
+                        payload: ArtifactPayload::Bytes(Arc::new(output_data)),
                     }],
                     stdout: Arc::clone(&stdout),
                     stderr: Arc::clone(&stderr),
                     exit_code,
                 };
 
-                let artifact_bytes: u64 =
-                    artifact.outputs.iter().map(|o| o.data.len() as u64).sum();
+                let artifact_bytes: u64 = artifact
+                    .outputs
+                    .iter()
+                    .map(|o| o.payload.size_bytes())
+                    .sum();
 
                 // Build CachedArtifact once (no deep copies — all Arc clones).
                 let cached = CachedArtifact::from_artifact_data(&artifact);
@@ -5863,10 +5885,18 @@ async fn handle_compile(
                     let artifact_dir = state.artifact_dir.clone();
                     let key_hex = artifact_key_hex.clone();
                     let persist_meta = cached.meta.clone();
+                    // Same Bytes-only-in-practice contract as the link-ephemeral
+                    // site above; match-and-materialise keeps Path-variant
+                    // forward-compatibility correct.
                     let payloads: Vec<Arc<Vec<u8>>> = artifact
                         .outputs
                         .iter()
-                        .map(|o| Arc::clone(&o.data))
+                        .filter_map(|o| match &o.payload {
+                            ArtifactPayload::Bytes(b) => Some(Arc::clone(b)),
+                            ArtifactPayload::Path(p) => {
+                                std::fs::read(p.as_path()).ok().map(Arc::new)
+                            }
+                        })
                         .collect();
                     let payload_size: usize = payloads.iter().map(|p| p.len()).sum();
                     state
