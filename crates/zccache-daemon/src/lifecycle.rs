@@ -63,10 +63,7 @@ const MAX_LOG_SIZE: u64 = 1024 * 1024;
 /// best-effort.
 pub fn write_event(event_name: &str, extra: serde_json::Value) {
     if let Err(e) = try_write(event_name, &extra) {
-        tracing::warn!(
-            event = event_name,
-            "failed to write lifecycle event: {e}"
-        );
+        tracing::warn!(event = event_name, "failed to write lifecycle event: {e}");
     }
 }
 
@@ -174,7 +171,10 @@ mod tests {
         let prev = std::env::var_os("ZCCACHE_CACHE_DIR");
         std::env::set_var("ZCCACHE_CACHE_DIR", tmp.path());
 
-        write_event(EVENT_SPAWN, serde_json::json!({"endpoint": "test://nowhere"}));
+        write_event(
+            EVENT_SPAWN,
+            serde_json::json!({"endpoint": "test://nowhere"}),
+        );
         write_event(
             EVENT_DIED_IDLE,
             serde_json::json!({"idle_secs": 3600u64, "uptime_secs": 7200u64}),
@@ -247,7 +247,11 @@ mod tests {
         );
         let v: serde_json::Value = serde_json::from_str(live.trim()).expect("jsonl parses");
         assert_eq!(v["first"], true);
-        assert!(archive.exists(), "archive {} should exist", archive.display());
+        assert!(
+            archive.exists(),
+            "archive {} should exist",
+            archive.display()
+        );
         assert!(
             std::fs::metadata(&archive).unwrap().len() > MAX_LOG_SIZE,
             "archive holds the prior padding"
@@ -259,9 +263,15 @@ mod tests {
         std::fs::write(&log_path, &padding).expect("re-seed oversized log");
         write_event(EVENT_DIED_IDLE, serde_json::json!({"second": true}));
 
-        assert!(archive.exists(), "archive still present after second rotation");
         assert!(
-            !tmp.path().join("logs").join("daemon-lifecycle.log.2").exists(),
+            archive.exists(),
+            "archive still present after second rotation"
+        );
+        assert!(
+            !tmp.path()
+                .join("logs")
+                .join("daemon-lifecycle.log.2")
+                .exists(),
             "no .2 archive — single-rotation policy bounds disk"
         );
 
