@@ -1,4 +1,9 @@
 crates/zccache-core/src/path.rs
+# `config::volume_root` constructs a path component-by-component (Prefix +
+# RootDir) which is exactly what `PathBuf::push` is for. NormalizedPath
+# doesn't expose mutation, so the assembly stays on raw PathBuf and the
+# result is wrapped into NormalizedPath at the boundary.
+crates/zccache-core/src/config.rs
 crates/zccache-download-client/src/artifact.rs
 crates/zccache-download-cli/src/main.rs
 crates/zccache-download-daemon/src/lib.rs
