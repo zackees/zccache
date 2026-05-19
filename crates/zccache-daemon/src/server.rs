@@ -975,6 +975,17 @@ impl DaemonServer {
                     let idle = now_secs().saturating_sub(last);
                     if idle >= timeout {
                         tracing::info!(idle_secs = idle, "idle timeout — shutting down");
+                        // Persist a "died-idle" lifecycle event so operators
+                        // can see why the daemon exited. Pair this with the
+                        // "spawn" entry to reconstruct daemon lifetime from
+                        // the lifecycle log alone — tracing stderr is NUL'd.
+                        crate::lifecycle::write_event(
+                            crate::lifecycle::EVENT_DIED_IDLE,
+                            serde_json::json!({
+                                "idle_secs": idle,
+                                "idle_timeout_secs": timeout,
+                            }),
+                        );
                         state.shutdown.notify_one();
                         break;
                     }

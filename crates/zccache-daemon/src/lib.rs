@@ -10,6 +10,7 @@ pub mod crash;
 pub mod event_log;
 pub mod eviction;
 pub mod fingerprint;
+pub mod lifecycle;
 pub mod lineage;
 mod process;
 pub mod server;

@@ -142,6 +142,19 @@ fn run_server(args: Args) {
 
     tracing::info!(%endpoint, idle_timeout, "zccache-daemon starting");
 
+    // Persist a "spawn" lifecycle event to disk. tracing logs go to
+    // stderr which is detached to NUL, so this file-based sink is the
+    // only way an operator (or CI) can correlate daemon lifetime with
+    // surrounding events after the fact.
+    zccache_daemon::lifecycle::write_event(
+        zccache_daemon::lifecycle::EVENT_SPAWN,
+        serde_json::json!({
+            "endpoint": &endpoint,
+            "idle_timeout": idle_timeout,
+            "version": env!("CARGO_PKG_VERSION"),
+        }),
+    );
+
     // Write lock file so CLI can detect us
     let pid = std::process::id();
     if let Err(e) = zccache_ipc::write_lock_file(pid) {
