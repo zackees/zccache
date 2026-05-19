@@ -1825,7 +1825,7 @@ fn cmd_kv(action: KvCommands) -> ExitCode {
 
 fn cmd_warm(target_dir: &Path, profile: &str) -> ExitCode {
     let cache_dir = zccache_core::config::default_cache_dir();
-    let index_path = cache_dir.join("index.redb");
+    let index_path = zccache_core::config::index_path_from_cache_dir(&cache_dir);
     let artifact_dir = cache_dir.join("artifacts");
     // Look for Cargo.lock in cwd or next to target_dir
     let lockfile = {
@@ -4647,7 +4647,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = dir.path().join("cache");
         let artifact_dir = cache_dir.join("artifacts");
-        let index_path = cache_dir.join("index.redb");
+        let index_path = cache_dir.join("index.bin");
         let target_dir = dir.path().join("target");
 
         std::fs::create_dir_all(&artifact_dir).unwrap();
@@ -4698,7 +4698,9 @@ mod tests {
         store.insert(key3, &idx3);
         std::fs::write(artifact_dir.join(format!("{key3}_0")), b"object-file").unwrap();
 
-        drop(store); // Release redb lock
+        store.flush().unwrap();
+        store.flush().unwrap();
+        drop(store);
 
         // Run warm
         let (restored, skipped, errors) =
@@ -4759,7 +4761,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = dir.path().join("cache");
         let artifact_dir = cache_dir.join("artifacts");
-        let index_path = cache_dir.join("index.redb");
+        let index_path = cache_dir.join("index.bin");
         let target_dir = dir.path().join("target");
 
         std::fs::create_dir_all(&artifact_dir).unwrap();
@@ -4775,6 +4777,7 @@ mod tests {
         );
         store.insert(key, &idx);
         // DON'T write the payload file — simulate missing artifact on disk
+        store.flush().unwrap();
         drop(store);
 
         let (restored, skipped, errors) =
@@ -4803,7 +4806,7 @@ mod tests {
     fn make_test_store(dir: &Path) -> (PathBuf, PathBuf) {
         let cache_dir = dir.join("cache");
         let artifact_dir = cache_dir.join("artifacts");
-        let index_path = cache_dir.join("index.redb");
+        let index_path = cache_dir.join("index.bin");
         std::fs::create_dir_all(&artifact_dir).unwrap();
 
         let store = zccache_artifact::ArtifactStore::open(&index_path).unwrap();
@@ -4870,6 +4873,7 @@ mod tests {
         );
         std::fs::write(artifact_dir.join(format!("{k4}_0")), b"cpp-object").unwrap();
 
+        store.flush().unwrap();
         drop(store);
         (index_path, artifact_dir)
     }
@@ -5054,7 +5058,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = dir.path().join("cache");
         let artifact_dir = cache_dir.join("artifacts");
-        let index_path = cache_dir.join("index.redb");
+        let index_path = cache_dir.join("index.bin");
         std::fs::create_dir_all(&artifact_dir).unwrap();
 
         let store = zccache_artifact::ArtifactStore::open(&index_path).unwrap();
@@ -5087,6 +5091,7 @@ mod tests {
         );
         std::fs::write(artifact_dir.join(format!("{k_new}_0")), b"new-serde").unwrap();
 
+        store.flush().unwrap();
         drop(store);
 
         let target_dir = dir.path().join("target");
@@ -5119,7 +5124,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = dir.path().join("cache");
         let artifact_dir = cache_dir.join("artifacts");
-        let index_path = cache_dir.join("index.redb");
+        let index_path = cache_dir.join("index.bin");
         std::fs::create_dir_all(&artifact_dir).unwrap();
 
         let store = zccache_artifact::ArtifactStore::open(&index_path).unwrap();
@@ -5136,6 +5141,7 @@ mod tests {
         );
         // But payload is only 5 bytes (corrupted/truncated)
         std::fs::write(artifact_dir.join(format!("{key}_0")), b"short").unwrap();
+        store.flush().unwrap();
         drop(store);
 
         let target_dir = dir.path().join("target");
