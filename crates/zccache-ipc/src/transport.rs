@@ -4,10 +4,36 @@
 //! and Unix domain sockets on Unix. Messages are length-prefixed
 //! bincode via `zccache-protocol`.
 
+use std::time::Duration;
+
 use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::error::IpcError;
+
+/// Suggested per-recv timeout for client-side request/response IPC.
+///
+/// Five minutes. Covers the slowest legitimate workload — unity / LTO
+/// builds where the daemon runs the compile inline and only responds when
+/// the linker finishes — while still bounding the rare "daemon alive but
+/// stuck" failure mode.
+///
+/// **This is an opt-in default; the IPC layer does not apply it on its
+/// own.** Callers that want timeout enforcement must call
+/// `set_recv_timeout(DEFAULT_CLIENT_RECV_TIMEOUT)` after connecting (or
+/// pass a per-call value to `recv_with_timeout`). Server-side and
+/// idle-style readers leave the field as `None` and keep the historical
+/// unbounded behavior. Peer death is OS-detected and surfaces as
+/// `IpcError::Io(_)` or `IpcError::ConnectionClosed` without involving
+/// this timeout.
+///
+/// Five minutes is intentionally generous. If a real workload exceeds it,
+/// switch that single call site to `recv_with_timeout` with a longer
+/// budget rather than bumping the const — the const is also the upper
+/// bound on hung-daemon detection latency for `ensure_daemon`'s
+/// auto-recovery path, and shortening it is the easier fix once the
+/// daemon side is fast enough.
+pub const DEFAULT_CLIENT_RECV_TIMEOUT: Duration = Duration::from_secs(300);
 
 // ── Platform-specific connection inner ──────────────────────────────
 
@@ -26,6 +52,10 @@ pub struct IpcConnection {
     reader: tokio::io::ReadHalf<StreamType>,
     writer: tokio::io::WriteHalf<StreamType>,
     read_buf: BytesMut,
+    /// Optional default timeout for `recv`. `None` means unbounded
+    /// (today's historical behavior, kept for server-side and other
+    /// idle-style readers). Set via `set_recv_timeout`.
+    recv_timeout: Option<Duration>,
 }
 
 /// Client-side IPC connection (Windows uses a different type).
@@ -34,6 +64,8 @@ pub struct IpcClientConnection {
     reader: tokio::io::ReadHalf<tokio::net::windows::named_pipe::NamedPipeClient>,
     writer: tokio::io::WriteHalf<tokio::net::windows::named_pipe::NamedPipeClient>,
     read_buf: BytesMut,
+    /// Optional default timeout for `recv`. See `IpcConnection::recv_timeout`.
+    recv_timeout: Option<Duration>,
 }
 
 // ── IpcConnection impl (server-side on Windows, both on Unix) ───────
@@ -47,10 +79,57 @@ impl IpcConnection {
         Ok(())
     }
 
+    /// Configure the default timeout applied to subsequent `recv` calls.
+    ///
+    /// Until called, `recv` is unbounded (today's behavior). After this
+    /// call, `recv` returns `Err(IpcError::Timeout(_))` if the next
+    /// message does not arrive within `timeout`. Use this once after
+    /// `connect()` on the client side to bound request/response round
+    /// trips. Server-side readers should leave it unset.
+    pub fn set_recv_timeout(&mut self, timeout: Duration) {
+        self.recv_timeout = Some(timeout);
+    }
+
+    /// Clear the default `recv` timeout, restoring unbounded behavior.
+    pub fn clear_recv_timeout(&mut self) {
+        self.recv_timeout = None;
+    }
+
+    /// Current default `recv` timeout. `None` means unbounded.
+    pub fn recv_timeout(&self) -> Option<Duration> {
+        self.recv_timeout
+    }
+
     /// Receive a deserializable message from the connection.
     ///
-    /// Returns `None` if the connection was closed cleanly.
+    /// Returns `None` if the connection was closed cleanly. If a default
+    /// timeout has been configured via [`Self::set_recv_timeout`] and the
+    /// next message does not arrive within that window, returns
+    /// `Err(IpcError::Timeout(_))`.
     pub async fn recv<T: serde::de::DeserializeOwned>(&mut self) -> Result<Option<T>, IpcError> {
+        match self.recv_timeout {
+            Some(t) => self.recv_with_timeout(t).await,
+            None => self.recv_loop().await,
+        }
+    }
+
+    /// Receive a deserializable message with a per-call timeout override.
+    ///
+    /// Independent of any default set via [`Self::set_recv_timeout`].
+    pub async fn recv_with_timeout<T: serde::de::DeserializeOwned>(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<T>, IpcError> {
+        match tokio::time::timeout(timeout, self.recv_loop()).await {
+            Ok(result) => result,
+            Err(_) => Err(IpcError::Timeout(timeout)),
+        }
+    }
+
+    /// The recv read loop, factored out so both `recv` and
+    /// `recv_with_timeout` share the same implementation. Always
+    /// unbounded — the wrapping methods add the deadline.
+    async fn recv_loop<T: serde::de::DeserializeOwned>(&mut self) -> Result<Option<T>, IpcError> {
         loop {
             if let Some(msg) = zccache_protocol::decode_message::<T>(&mut self.read_buf)? {
                 return Ok(Some(msg));
@@ -80,10 +159,48 @@ impl IpcClientConnection {
         Ok(())
     }
 
+    /// See [`IpcConnection::set_recv_timeout`].
+    pub fn set_recv_timeout(&mut self, timeout: Duration) {
+        self.recv_timeout = Some(timeout);
+    }
+
+    /// See [`IpcConnection::clear_recv_timeout`].
+    pub fn clear_recv_timeout(&mut self) {
+        self.recv_timeout = None;
+    }
+
+    /// See [`IpcConnection::recv_timeout`].
+    pub fn recv_timeout(&self) -> Option<Duration> {
+        self.recv_timeout
+    }
+
     /// Receive a deserializable message from the connection.
     ///
-    /// Returns `None` if the connection was closed cleanly.
+    /// Returns `None` if the connection was closed cleanly. If a default
+    /// timeout has been configured via [`Self::set_recv_timeout`] and the
+    /// next message does not arrive within that window, returns
+    /// `Err(IpcError::Timeout(_))`.
     pub async fn recv<T: serde::de::DeserializeOwned>(&mut self) -> Result<Option<T>, IpcError> {
+        match self.recv_timeout {
+            Some(t) => self.recv_with_timeout(t).await,
+            None => self.recv_loop().await,
+        }
+    }
+
+    /// Receive a deserializable message with a per-call timeout override.
+    ///
+    /// Independent of any default set via [`Self::set_recv_timeout`].
+    pub async fn recv_with_timeout<T: serde::de::DeserializeOwned>(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<T>, IpcError> {
+        match tokio::time::timeout(timeout, self.recv_loop()).await {
+            Ok(result) => result,
+            Err(_) => Err(IpcError::Timeout(timeout)),
+        }
+    }
+
+    async fn recv_loop<T: serde::de::DeserializeOwned>(&mut self) -> Result<Option<T>, IpcError> {
         loop {
             if let Some(msg) = zccache_protocol::decode_message::<T>(&mut self.read_buf)? {
                 return Ok(Some(msg));
@@ -177,6 +294,7 @@ impl IpcListener {
                 reader,
                 writer,
                 read_buf: BytesMut::with_capacity(4096),
+                recv_timeout: None,
             })
         }
         #[cfg(windows)]
@@ -202,6 +320,7 @@ impl IpcListener {
                 reader,
                 writer,
                 read_buf: BytesMut::with_capacity(4096),
+                recv_timeout: None,
             })
         }
     }
@@ -221,6 +340,7 @@ pub async fn connect(endpoint: &str) -> Result<IpcConnection, IpcError> {
         reader,
         writer,
         read_buf: BytesMut::with_capacity(4096),
+        recv_timeout: None,
     })
 }
 
@@ -274,6 +394,7 @@ pub async fn connect(endpoint: &str) -> Result<IpcClientConnection, IpcError> {
         reader,
         writer,
         read_buf: BytesMut::with_capacity(4096),
+        recv_timeout: None,
     })
 }
 

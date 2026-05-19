@@ -4501,16 +4501,29 @@ fn which_on_path(name: &str) -> Option<NormalizedPath> {
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 /// Platform-correct connect (returns different types on Unix vs Windows).
+///
+/// All in-process IPC sites in `main.rs` route through this helper, so a
+/// single `set_recv_timeout` call here applies the 5-minute default to
+/// every CLI subcommand: Status, Shutdown, Clear, SessionStart,
+/// SessionStats, FingerprintCheck/Mark/Invalidate, and — critically —
+/// the Compile / CompileEphemeral / LinkEphemeral hot paths where the
+/// daemon does the actual rustc/clang invocation and only responds when
+/// done. The 300s budget accommodates the slowest legitimate unity / LTO
+/// workload while still bounding "alive but stuck" hangs.
 #[cfg(unix)]
 async fn connect(endpoint: &str) -> Result<zccache_ipc::IpcConnection, zccache_ipc::IpcError> {
-    zccache_ipc::connect(endpoint).await
+    let mut conn = zccache_ipc::connect(endpoint).await?;
+    conn.set_recv_timeout(zccache_ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
+    Ok(conn)
 }
 
 #[cfg(windows)]
 async fn connect(
     endpoint: &str,
 ) -> Result<zccache_ipc::IpcClientConnection, zccache_ipc::IpcError> {
-    zccache_ipc::connect(endpoint).await
+    let mut conn = zccache_ipc::connect(endpoint).await?;
+    conn.set_recv_timeout(zccache_ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
+    Ok(conn)
 }
 
 fn resolve_endpoint(explicit: Option<&str>) -> String {

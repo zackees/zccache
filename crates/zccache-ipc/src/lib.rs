@@ -12,7 +12,9 @@ pub mod transport;
 pub use error::IpcError;
 #[cfg(windows)]
 pub use transport::IpcClientConnection;
-pub use transport::{connect, unique_test_endpoint, IpcConnection, IpcListener};
+pub use transport::{
+    connect, unique_test_endpoint, IpcConnection, IpcListener, DEFAULT_CLIENT_RECV_TIMEOUT,
+};
 
 use zccache_core::NormalizedPath;
 

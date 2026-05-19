@@ -333,14 +333,18 @@ enum VersionCheck {
 async fn connect_client(
     endpoint: &str,
 ) -> Result<zccache_ipc::IpcConnection, zccache_ipc::IpcError> {
-    zccache_ipc::connect(endpoint).await
+    let mut conn = zccache_ipc::connect(endpoint).await?;
+    conn.set_recv_timeout(zccache_ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
+    Ok(conn)
 }
 
 #[cfg(windows)]
 async fn connect_client(
     endpoint: &str,
 ) -> Result<zccache_ipc::IpcClientConnection, zccache_ipc::IpcError> {
-    zccache_ipc::connect(endpoint).await
+    let mut conn = zccache_ipc::connect(endpoint).await?;
+    conn.set_recv_timeout(zccache_ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
+    Ok(conn)
 }
 
 async fn check_daemon_version(endpoint: &str) -> VersionCheck {
@@ -787,6 +791,12 @@ pub fn client_session_end(
 /// permanently busy), and `BrokenPipe` (race: pipe vanished between
 /// open and use). Other errors (`TimedOut`, protocol mismatches, etc.)
 /// are NOT daemon-gone — they should still fail loudly.
+///
+/// `IpcError::Timeout` is explicitly **NOT** in the unreachable set. A
+/// timed-out recv means we connected successfully but the peer did not
+/// respond in the configured window — that's either a hung daemon (a
+/// real fault) or a per-call budget that was too tight (caller error).
+/// Either way: propagate, don't silently swallow.
 ///
 /// Used by `session_end_idempotent` (issue #159) and the CLI's
 /// `cmd_session_end` (issue #150 / #151) to map "the daemon already
@@ -1236,6 +1246,21 @@ mod tests {
     fn is_daemon_unreachable_recognizes_broken_pipe() {
         let err = zccache_ipc::IpcError::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
         assert!(is_daemon_unreachable_err(&err));
+    }
+
+    /// `IpcError::Timeout` is explicitly NOT daemon-unreachable. A
+    /// timed-out recv means we connected successfully but the peer did
+    /// not respond — that's a hung-daemon fault, not a vanished daemon.
+    /// Soldr's at-exit `session_end` path classifies vanished-daemon as
+    /// a no-op; if `Timeout` were misclassified here, a stuck daemon
+    /// would be silently swallowed and the user would never see it.
+    #[test]
+    fn is_daemon_unreachable_timeout_is_not_unreachable() {
+        let err = zccache_ipc::IpcError::Timeout(std::time::Duration::from_secs(5));
+        assert!(
+            !is_daemon_unreachable_err(&err),
+            "Timeout must propagate as a real fault, not be swallowed as daemon-unreachable"
+        );
     }
 
     /// Mapping ENOENT through `from_raw_os_error` must yield the same

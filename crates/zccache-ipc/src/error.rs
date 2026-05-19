@@ -14,4 +14,14 @@ pub enum IpcError {
 
     #[error("endpoint error: {0}")]
     Endpoint(String),
+
+    /// `recv` exceeded the configured timeout while waiting for a response.
+    ///
+    /// Distinct from peer-death (which surfaces as `Io` from the OS closing
+    /// the socket / pipe). A `Timeout` means we successfully connected, the
+    /// peer is presumably still alive, but it didn't respond in the allotted
+    /// time — caller should treat this as a real fault, not as
+    /// daemon-unreachable.
+    #[error("recv timed out after {0:?}")]
+    Timeout(std::time::Duration),
 }
