@@ -7,6 +7,14 @@ use std::path::Path;
 /// Environment variable used to override the zccache cache root.
 pub const CACHE_DIR_ENV: &str = "ZCCACHE_CACHE_DIR";
 
+/// Default idle timeout in seconds before the daemon auto-shuts down.
+///
+/// `3600` = 60 minutes. Single source of truth for both
+/// [`Config::default`] and the `zccache-daemon` `--idle-timeout` clap
+/// argument. Operators can override via the `ZCCACHE_IDLE_TIMEOUT_SECS`
+/// env var or the `--idle-timeout` flag; `0` disables auto-shutdown.
+pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 3600;
+
 /// Environment variable used to opt into co-locating the cache on the
 /// project's volume when it differs from the home volume. When set to a
 /// non-empty, non-"0" value, `default_cache_dir` returns a path on the
@@ -43,7 +51,7 @@ impl Default for Config {
         Self {
             cache_dir: default_cache_dir(),
             max_cache_size: 10 * 1024 * 1024 * 1024, // 10 GB
-            idle_timeout_secs: 3600,
+            idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
             enable_watcher: true,
             watcher_poll_fallback: false,
             log_level: String::from("info"),

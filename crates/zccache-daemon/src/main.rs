@@ -40,14 +40,22 @@ struct Args {
     #[arg(long)]
     endpoint: Option<String>,
 
-    /// Idle timeout in seconds (0 = no timeout). Default: 3600.
+    /// Idle timeout in seconds (0 = no timeout).
+    ///
+    /// Default comes from `zccache_core::config::DEFAULT_IDLE_TIMEOUT_SECS`
+    /// (60 minutes), kept as the single source of truth so [`Config::default`]
+    /// and this flag never drift apart.
     ///
     /// Reads `ZCCACHE_IDLE_TIMEOUT_SECS` from the environment when the
     /// flag is not given. Setting the env var on `zccache-cli` propagates
     /// to the daemon via `spawn_daemon`'s inherited environment, so a
     /// caller can ask for a shorter idle window without touching the
     /// command line. `0` disables the timeout (daemon runs forever).
-    #[arg(long, default_value = "3600", env = "ZCCACHE_IDLE_TIMEOUT_SECS")]
+    #[arg(
+        long,
+        default_value_t = zccache_core::config::DEFAULT_IDLE_TIMEOUT_SECS,
+        env = "ZCCACHE_IDLE_TIMEOUT_SECS"
+    )]
     idle_timeout: u64,
 
     /// Disable loading/saving the dependency graph from/to disk.
