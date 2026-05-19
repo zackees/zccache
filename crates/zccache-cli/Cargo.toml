@@ -39,6 +39,9 @@ jwalk = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 tempfile = { workspace = true }
+reqwest = { workspace = true }
+zip = { workspace = true }
+fs2 = { workspace = true }
 pyo3 = { version = "0.23", features = ["extension-module", "generate-import-lib", "abi3-py310"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
@@ -59,9 +62,6 @@ path = "src/main.rs"
 # 1.5.0: adds `zccache status --json` and the `zccache analyze` subcommand.
 # Touching this comment busts the cached Cargo fingerprint that was holding
 # a stale unit-test binary in target-snapshot CI jobs (see PR #257).
-
-[dev-dependencies]
-zip = "2"
 
 [build-dependencies]
 pyo3-build-config = "0.23"

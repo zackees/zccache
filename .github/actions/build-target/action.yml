@@ -228,7 +228,17 @@ runs:
         # split-debuginfo = "packed" profile setting:
         #   Linux:        <bin>.dwp
         #   macOS:        <bin>.dSYM/   (directory)
-        #   Windows MSVC: <bin>.pdb     (Cargo's default already)
+        #   Windows MSVC: <bin>.pdb
+        #
+        # Windows PDB naming: rustc's MSVC linker writes PDBs using the
+        # underscored crate name, not the [[bin]] name. So:
+        #   zccache-daemon.exe  ->  zccache_daemon.pdb
+        #   zccache-fp.exe      ->  zccache_fp.pdb
+        # `zccache.exe` is the exception because its [[bin]] name has no
+        # hyphens. Windbg/cdb find a PDB by GUID via the codeview record
+        # embedded in the PE, so the underscored filename on disk still
+        # resolves for `zccache-daemon.exe`. See zccache#276 for the
+        # missing-PDB regression that motivated this naming fix.
         rm -rf staging-debug
         mkdir -p staging-debug
         copy_debug() {
@@ -246,8 +256,8 @@ runs:
         case "$TARGET" in
           *pc-windows-msvc)
             copy_debug "$TARGET_DIR/zccache.pdb"
-            copy_debug "$TARGET_DIR/zccache-daemon.pdb"
-            copy_debug "$TARGET_DIR/zccache-fp.pdb"
+            copy_debug "$TARGET_DIR/zccache_daemon.pdb"
+            copy_debug "$TARGET_DIR/zccache_fp.pdb"
             ;;
           *apple-darwin)
             copy_debug "$TARGET_DIR/zccache.dSYM"
@@ -262,6 +272,32 @@ runs:
         esac
         echo "Staged debug sidecars:"
         ls -la staging-debug || true
+        # Fail the build if a target's debug sidecars are missing entirely.
+        # On Windows in particular, silent misses regressed zccache#276 where
+        # only zccache.pdb shipped while the daemon/fp PDBs were skipped.
+        if [ -z "$(ls -A staging-debug 2>/dev/null)" ]; then
+          echo "::error::No debug sidecars staged for target $TARGET" >&2
+          exit 1
+        fi
+        # Per-binary completeness check: each of the three bins must have a
+        # matching sidecar present. Failing here surfaces naming drift (e.g.
+        # the rustc PDB-name convention change that caused zccache#276)
+        # before it ships to a release.
+        case "$TARGET" in
+          *pc-windows-msvc) require=("zccache.pdb" "zccache_daemon.pdb" "zccache_fp.pdb") ;;
+          *apple-darwin)    require=("zccache.dSYM" "zccache-daemon.dSYM" "zccache-fp.dSYM") ;;
+          *)                require=("zccache.dwp" "zccache-daemon.dwp" "zccache-fp.dwp") ;;
+        esac
+        missing=()
+        for entry in "${require[@]}"; do
+          if [ ! -e "staging-debug/$entry" ]; then
+            missing+=("$entry")
+          fi
+        done
+        if [ ${#missing[@]} -gt 0 ]; then
+          echo "::error::Missing debug sidecars for $TARGET: ${missing[*]}" >&2
+          exit 1
+        fi
 
     - name: Package standalone archive
       shell: bash

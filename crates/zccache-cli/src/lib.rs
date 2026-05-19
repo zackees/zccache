@@ -6,6 +6,8 @@ use zccache_core::NormalizedPath;
 #[cfg(feature = "python")]
 mod python;
 
+pub mod symbols;
+
 pub use zccache_download_client::{
     ArchiveFormat, DownloadSource, FetchRequest, FetchResult, FetchState, FetchStateKind,
     FetchStatus, WaitMode,

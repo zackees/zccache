@@ -31,6 +31,7 @@ use zccache_artifact::{
     restore_rust_plan_local, rust_plan_bundle_dir, rust_plan_cache_key, save_rust_plan_local,
     RustArtifactPlanV1, RustPlanError, RustPlanOperation, RustPlanSummary,
 };
+use zccache_cli::symbols::{self, InstallOptions as SymbolsInstallOptions};
 use zccache_cli::{
     client_download, run_ino_convert_cached, session_end_idempotent, ArchiveFormat, DownloadParams,
     DownloadSource, InoConvertOptions, WaitMode,
@@ -326,6 +327,36 @@ enum Commands {
         #[arg(long, default_value_t = 60)]
         stamp_seconds_ahead: u64,
     },
+    /// Download and install matching debug symbols (PDB/dSYM/dwp) next to
+    /// the running zccache binary. See `zccache#276`.
+    Symbols {
+        #[command(subcommand)]
+        action: SymbolsCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SymbolsCommands {
+    /// Download the matching `-debug` archive from the GitHub release and
+    /// drop the per-binary sidecars next to the running zccache executable
+    /// so cdb/WinDbg (or perf/lldb) can resolve symbols.
+    Install {
+        /// Override the release version to fetch (defaults to the running
+        /// binary's compile-time `CARGO_PKG_VERSION`).
+        #[arg(long)]
+        version: Option<String>,
+        /// Override the Rust target triple (defaults to the running binary's
+        /// compile-time `ZCCACHE_BUILD_TARGET`).
+        #[arg(long)]
+        target: Option<String>,
+        /// Install into this directory instead of the directory containing
+        /// the running zccache executable.
+        #[arg(long)]
+        prefix: Option<PathBuf>,
+        /// Re-download even if matching sidecars are already present.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -615,6 +646,7 @@ const KNOWN_SUBCOMMANDS: &[&str] = &[
     "snapshot-bytes",
     "snapshot-fp-record",
     "snapshot-fp-validate",
+    "symbols",
     "help",
     "--help",
     "-h",
@@ -648,6 +680,12 @@ fn exit_code_from_i32(code: i32) -> ExitCode {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
+
+    // Best-effort: if the user opted in via env, fetch matching debug
+    // sidecars before doing anything else so the very first command's
+    // failure (if any) lands with resolvable symbols. Idempotent — skips
+    // when already installed. See `zccache_cli::symbols`.
+    symbols::maybe_auto_install();
 
     // Auto-detect: if first arg isn't a known subcommand or a --flag, enter wrap mode.
     // e.g., `zccache clang++ -c foo.cpp -o foo.o`
@@ -907,6 +945,56 @@ fn main() -> ExitCode {
             manifest_path,
             stamp_seconds_ahead,
         ),
+        Commands::Symbols { action } => match action {
+            SymbolsCommands::Install {
+                version,
+                target,
+                prefix,
+                force,
+            } => cmd_symbols_install(version, target, prefix, force),
+        },
+    }
+}
+
+fn cmd_symbols_install(
+    version: Option<String>,
+    target: Option<String>,
+    prefix: Option<PathBuf>,
+    force: bool,
+) -> ExitCode {
+    let opts = SymbolsInstallOptions {
+        version,
+        target,
+        prefix,
+        force,
+        // The user invoked the subcommand directly; wait for any peer
+        // install to finish rather than skipping silently.
+        lock_behavior: zccache_cli::symbols::LockBehavior::Wait,
+    };
+    match symbols::install(opts) {
+        Ok(report) => {
+            if report.skipped_already_present {
+                println!(
+                    "zccache symbols: already installed in {}",
+                    report.prefix.display()
+                );
+            } else {
+                println!(
+                    "zccache symbols: installed {} sidecar(s) into {} (from {})",
+                    report.installed.len(),
+                    report.prefix.display(),
+                    report.url,
+                );
+                for path in &report.installed {
+                    println!("  {}", path.display());
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("zccache symbols install: {err}");
+            ExitCode::FAILURE
+        }
     }
 }
 
