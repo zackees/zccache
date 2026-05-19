@@ -6,7 +6,22 @@ import re
 import sys
 
 
-RUST_TOOLS = {"cargo", "rustc", "rustfmt", "clippy-driver", "cargo-clippy", "cargo-fmt"}
+RUST_TOOLS = {
+    "cargo",
+    "rustc",
+    "rustfmt",
+    "clippy-driver",
+    "cargo-clippy",
+    "cargo-fmt",
+    # `rustup` is also gated — `rustup run <toolchain> cargo ...` and
+    # `rustup which ...` are the usual escape hatches around soldr's
+    # toolchain selection. `soldr rustup` is a documented passthrough.
+    "rustup",
+    "rustdoc",
+    "rust-gdb",
+    "rust-lldb",
+    "rust-analyzer",
+}
 PYTHON_TOOLS = {"python", "python3", "pip", "pip3"}
 LEGACY_RUST_TRAMPOLINES = {"_cargo", "_rustc", "_rustfmt"}
 

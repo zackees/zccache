@@ -258,6 +258,25 @@ pub fn depgraph_dir() -> NormalizedPath {
     depgraph_dir_from_cache_dir(&default_cache_dir())
 }
 
+/// Returns the directory that caches downloaded debug-symbol archives so
+/// repeated installs (different prefixes, post-version-bump, --force) don't
+/// re-fetch the same zip/tar.gz from GitHub.
+///
+/// All zccache subsystems that need a scratch or download location must
+/// root them under [`default_cache_dir`] so the user's `~/.zccache/` is the
+/// single ground truth — never `$TMPDIR`. Enforced by the `ban_unrooted_tempdir`
+/// dylint.
+#[must_use]
+pub fn symbols_cache_dir() -> NormalizedPath {
+    symbols_cache_dir_from_cache_dir(&default_cache_dir())
+}
+
+/// Returns the symbols-archive cache under an explicit cache root.
+#[must_use]
+pub fn symbols_cache_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
+    cache_dir.join("symbols")
+}
+
 /// Returns the path to the artifact index database.
 #[must_use]
 pub fn index_path() -> NormalizedPath {

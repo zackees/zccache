@@ -65,6 +65,9 @@ pub struct InstallReport {
     /// holding the install lock. Caller can choose to retry later.
     pub skipped_lock_busy: bool,
     pub url: String,
+    /// Set when the archive came from the on-disk cache under
+    /// `<cache_dir>/symbols/` rather than the network.
+    pub cache_hit: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -195,6 +198,7 @@ pub async fn install_async(opts: InstallOptions) -> Result<InstallReport, Symbol
             skipped_already_present: true,
             skipped_lock_busy: false,
             url,
+            cache_hit: false,
         });
     }
 
@@ -219,6 +223,7 @@ pub async fn install_async(opts: InstallOptions) -> Result<InstallReport, Symbol
             skipped_already_present: false,
             skipped_lock_busy: true,
             url,
+            cache_hit: false,
         });
     }
 
@@ -231,34 +236,11 @@ pub async fn install_async(opts: InstallOptions) -> Result<InstallReport, Symbol
             skipped_already_present: true,
             skipped_lock_busy: false,
             url,
+            cache_hit: false,
         });
     }
 
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("zccache/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| SymbolsError::Fetch {
-            url: url.clone(),
-            source: e,
-        })?;
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| SymbolsError::Fetch {
-            url: url.clone(),
-            source: e,
-        })?;
-    if !response.status().is_success() {
-        return Err(SymbolsError::HttpStatus {
-            url: url.clone(),
-            status: response.status().as_u16(),
-        });
-    }
-    let bytes = response.bytes().await.map_err(|e| SymbolsError::Fetch {
-        url: url.clone(),
-        source: e,
-    })?;
+    let (bytes, cache_hit) = fetch_archive(&url, &version, &target, kind, opts.force).await?;
 
     let installed = match kind {
         ArchiveKind::WindowsPdb => extract_zip(&bytes, &prefix)?,
@@ -278,7 +260,79 @@ pub async fn install_async(opts: InstallOptions) -> Result<InstallReport, Symbol
         skipped_already_present: false,
         skipped_lock_busy: false,
         url,
+        cache_hit,
     })
+}
+
+/// Returns the bytes of the matching debug archive plus a flag indicating
+/// whether they came from the on-disk archive cache rather than the network.
+///
+/// Cache layout: `<zccache cache dir>/symbols/<asset-filename>`. The asset
+/// filename already encodes version + target, so two callers asking for the
+/// same archive land on the same path. Writes use a same-directory tempfile
+/// + atomic rename, so a kill during download can't leave a partial file
+/// that looks like a cache hit to the next caller.
+async fn fetch_archive(
+    url: &str,
+    version: &str,
+    target: &str,
+    kind: ArchiveKind,
+    force: bool,
+) -> Result<(Vec<u8>, bool), SymbolsError> {
+    let cache_path = archive_cache_path(version, target, kind);
+
+    if !force {
+        if let Ok(bytes) = fs::read(&cache_path) {
+            if !bytes.is_empty() {
+                return Ok((bytes, true));
+            }
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("zccache/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| SymbolsError::Fetch {
+            url: url.to_string(),
+            source: e,
+        })?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| SymbolsError::Fetch {
+            url: url.to_string(),
+            source: e,
+        })?;
+    if !response.status().is_success() {
+        return Err(SymbolsError::HttpStatus {
+            url: url.to_string(),
+            status: response.status().as_u16(),
+        });
+    }
+    let bytes = response.bytes().await.map_err(|e| SymbolsError::Fetch {
+        url: url.to_string(),
+        source: e,
+    })?;
+
+    // Best-effort cache write: a permission or disk-full error here should
+    // not fail the install — the bytes are already in memory and the caller
+    // can extract them.
+    if let Some(parent) = cache_path.parent() {
+        if fs::create_dir_all(parent).is_ok() {
+            let _ = write_atomically(&cache_path, &mut io::Cursor::new(bytes.as_ref()));
+        }
+    }
+
+    Ok((bytes.to_vec(), false))
+}
+
+fn archive_cache_path(version: &str, target: &str, kind: ArchiveKind) -> PathBuf {
+    let filename = format!(
+        "zccache-v{version}-{target}-debug.{ext}",
+        ext = kind.file_extension(),
+    );
+    PathBuf::from(zccache_core::config::symbols_cache_dir().into_path_buf()).join(filename)
 }
 
 fn open_lockfile(path: &Path) -> Result<File, SymbolsError> {
@@ -658,5 +712,33 @@ mod tests {
         let challenger = open_lockfile(&lock).unwrap();
         let got = acquire_exclusive(&challenger, LockBehavior::SkipIfBusy).unwrap();
         assert!(!got, "challenger must see SkipIfBusy -> Ok(false)");
+    }
+
+    /// The archive cache lives under the configured `default_cache_dir`
+    /// (overridable via `ZCCACHE_CACHE_DIR`), never `$TMPDIR`. This is the
+    /// invariant that the `ban_unrooted_tempdir` dylint enforces from the
+    /// other direction.
+    #[test]
+    fn archive_cache_path_is_under_zccache_cache_dir() {
+        let path = archive_cache_path("1.6.0", "x86_64-pc-windows-msvc", ArchiveKind::WindowsPdb);
+        let expected_leaf = "zccache-v1.6.0-x86_64-pc-windows-msvc-debug.zip";
+        assert_eq!(
+            path.file_name().and_then(|s| s.to_str()),
+            Some(expected_leaf)
+        );
+
+        let parent = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str());
+        assert_eq!(parent, Some("symbols"));
+
+        let expected_root = zccache_core::config::default_cache_dir();
+        assert!(
+            path.starts_with(expected_root.as_path()),
+            "cache path {} should be under default_cache_dir {}",
+            path.display(),
+            expected_root.as_path().display(),
+        );
     }
 }

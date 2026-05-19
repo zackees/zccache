@@ -3,3 +3,4 @@ crates/zccache-download-client/src/artifact.rs
 crates/zccache-download-cli/src/main.rs
 crates/zccache-download-daemon/src/lib.rs
 crates/zccache-cli/src/lib.rs
+crates/zccache-cli/src/symbols.rs

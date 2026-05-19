@@ -979,10 +979,16 @@ fn cmd_symbols_install(
                     report.prefix.display()
                 );
             } else {
+                let source = if report.cache_hit {
+                    "cached archive"
+                } else {
+                    "GitHub release"
+                };
                 println!(
-                    "zccache symbols: installed {} sidecar(s) into {} (from {})",
+                    "zccache symbols: installed {} sidecar(s) into {} (from {}: {})",
                     report.installed.len(),
                     report.prefix.display(),
+                    source,
                     report.url,
                 );
                 for path in &report.installed {

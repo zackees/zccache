@@ -1,0 +1,27 @@
+# Each non-empty, non-comment line is matched against the tail of each
+# source file path (slashes normalized). Files in `*/tests/*` and
+# `*/benches/*` directories are blanket-allowed in lib.rs and do NOT need
+# entries here.
+#
+# This allowlist exists for the small set of production source files that
+# legitimately reference the banned APIs:
+#   - chdir-to-temp on Windows to release the launch-cwd handle (the path
+#     is used as a destination, no scratch dir is created there).
+#   - the dedicated test-support crate, which is dev-only.
+#
+# DO NOT add new entries without an inline comment explaining why this
+# call site cannot land under `zccache_core::config::default_cache_dir()`.
+
+# Daemon trampoline chdirs to $TMPDIR so the parent's launch-cwd directory
+# can be deleted on Windows. The path is the chdir destination, not a
+# scratch location. See `release_cwd()`.
+crates/zccache-daemon/src/trampoline.rs
+
+# Same release_cwd pattern, duplicated in the cli's compiler-wrap path so
+# the cli doesn't need a runtime dep on the daemon crate.
+crates/zccache-cli/src/main.rs
+
+# zccache-test-support is a dev-only crate. The temp-dir cleanup helper
+# walks $TMPDIR looking for stale test fixtures; it does not create state
+# there at zccache runtime.
+crates/zccache-test-support/src/lib.rs
