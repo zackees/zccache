@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -524,8 +524,10 @@ fn scan_snapshot(config: &ScanConfig) -> HashMap<NormalizedPath, FileState> {
         // Step 1: collect the candidate file paths from the (already-parallel)
         // jwalk traversal. Applying the include/exclude globs here is cheap
         // (string match) and avoids an extra `metadata()` syscall for files
-        // we'd just drop.
-        let candidates: Vec<PathBuf> = walker
+        // we'd just drop. Normalize at collection time so step 2's parallel
+        // metadata fetch already operates on the watcher's canonical key
+        // type.
+        let candidates: Vec<NormalizedPath> = walker
             .into_iter()
             .flatten()
             .filter_map(|entry| {
@@ -537,7 +539,7 @@ fn scan_snapshot(config: &ScanConfig) -> HashMap<NormalizedPath, FileState> {
                 if config.exclude_globs.is_match(&rel) || !config.include_globs.is_match(&rel) {
                     return None;
                 }
-                Some(path)
+                Some(NormalizedPath::new(&path))
             })
             .collect();
 
@@ -550,7 +552,7 @@ fn scan_snapshot(config: &ScanConfig) -> HashMap<NormalizedPath, FileState> {
             .filter_map(|path| {
                 let metadata = path.metadata().ok()?;
                 Some((
-                    NormalizedPath::new(path),
+                    path.clone(),
                     FileState {
                         mtime_ns: metadata
                             .modified()
