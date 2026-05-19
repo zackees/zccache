@@ -40,7 +40,7 @@ blake3 = { version = "1", features = ["pure"] }
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 dashmap = "6"
 redb = "2"
 clang = { version = "2", features = ["runtime"] }
