@@ -413,11 +413,25 @@ runs:
         TARGET="${{ inputs.target-dir }}"
         if [ -d "$TARGET" ]; then
           zccache warm --target-dir "$TARGET" || true
-          # Touch all target files to ONE fixed timestamp so cargo sees
-          # consistent mtimes. Plain 'touch' gives 1ms differences between
-          # files, which cargo interprets as "dep newer than output" → dirty.
+          # Touch restored *output* files (rlib/rmeta/build artifacts) to ONE
+          # fixed future timestamp so cargo's "output newer than source"
+          # check passes for unchanged crates after restore. Plain 'touch'
+          # gives 1ms differences between files, which cargo interprets as
+          # "dep newer than output" → dirty.
+          #
+          # EXCLUDE .fingerprint/ from the stamping pass. Those directories
+          # hold the dep-info files cargo uses to decide whether to re-invoke
+          # rustc at all: if their mtime is newer than every source file,
+          # cargo trusts the cached binary and skips the build — even when
+          # the source actually changed. With the restore-key fallback
+          # enabled (target-restore-fallback: "true"), a snapshot from a
+          # previous commit with the same Cargo.lock will then be linked
+          # against the current source layout, surfacing as panics with
+          # line numbers from the old source. Preserving the fingerprint
+          # mtimes lets cargo's normal staleness check run.
           STAMP=$(date -d '+1 minute' +%Y%m%d%H%M.%S 2>/dev/null || date -v+1M +%Y%m%d%H%M.%S)
-          find "$TARGET" -type f -exec touch -t "$STAMP" {} + 2>/dev/null || true
+          find "$TARGET" -type f -not -path '*/.fingerprint/*' \
+            -exec touch -t "$STAMP" {} + 2>/dev/null || true
         fi
 
     # --- Start daemon ---
