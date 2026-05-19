@@ -3034,6 +3034,51 @@ fn persist_artifact_payloads(
         .reduce(|| Ok(()), |a, b| a.and(b))
 }
 
+/// Persist artifact payloads when the daemon already has them on disk — typical
+/// for the rustc multi-compile miss path where the compiler just wrote outputs
+/// to `target/.../<name>` and the daemon would otherwise `std::fs::read` them
+/// into RAM before writing them back to the cache.
+///
+/// Each cache file is created via `persist_artifact_file` — `std::fs::hard_link`
+/// with a same-volume requirement and a copy fallback for cross-volume cases.
+/// Net effect on the cold-write path: one disk write per output instead of two,
+/// halving the per-file overhead Defender real-time scanning pays on Windows.
+///
+/// Pack mode (`ZCCACHE_PACK_ARTIFACTS=1`) still needs the bytes contiguous, so
+/// it materialises each path via `std::fs::read` and falls through to the
+/// existing `persist_artifact_output`. The hardlink win only applies when pack
+/// mode is off (the default).
+fn persist_artifact_paths(
+    artifact_dir: &Path,
+    key_hex: &str,
+    sources: &[NormalizedPath],
+) -> std::io::Result<()> {
+    if pack_mode_enabled() {
+        let bytes: Vec<Arc<Vec<u8>>> = sources
+            .iter()
+            .map(|p| std::fs::read(p.as_path()).map(Arc::new))
+            .collect::<std::io::Result<_>>()?;
+        let pack = build_pack(&bytes);
+        return persist_artifact_output(&pack_path_for(artifact_dir, key_hex), &pack);
+    }
+    if sources.len() < PAR_WRITE_THRESHOLD {
+        for (i, source) in sources.iter().enumerate() {
+            let cache_path = artifact_dir.join(format!("{key_hex}_{i}"));
+            persist_artifact_file(&cache_path, source.as_path())?;
+        }
+        return Ok(());
+    }
+    use rayon::prelude::*;
+    sources
+        .par_iter()
+        .enumerate()
+        .map(|(i, source)| {
+            let cache_path = artifact_dir.join(format!("{key_hex}_{i}"));
+            persist_artifact_file(&cache_path, source.as_path()).map(|_| ())
+        })
+        .reduce(|| Ok(()), |a, b| a.and(b))
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct PersistArtifactFileStats {
     hardlink_count: u64,
@@ -6577,7 +6622,16 @@ async fn handle_compile_multi(
         let cwd_path_task = cwd_path.clone();
         let sid_task = sid;
         miss_set.spawn_blocking(move || {
-            let output_data = std::fs::read(&output_path).unwrap_or_default();
+            // The compiler just wrote `output_path`; we only need its size for
+            // bookkeeping (artifact-bytes stats, ArtifactIndex.output_sizes).
+            // The bytes themselves stay on disk — we persist via hardlink
+            // below, so reading them into RAM would waste a memcpy and double
+            // the Defender write-scan budget. `unwrap_or(0)` matches the old
+            // `unwrap_or_default()` semantics for the size-fetch on a missing
+            // output path: caller treats that as a non-cacheable result.
+            let output_size = std::fs::metadata(&output_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
 
             // Scan includes: use depfile if available, fall back to scanner.
             let scan_result = if supports_depfile {
@@ -6662,18 +6716,53 @@ async fn handle_compile_multi(
                 .dep_graph
                 .update(&context_key, scan_result, get_hash);
 
-            let persist = if let Some(artifact_key) = update_result {
+            if let Some(artifact_key) = update_result {
                 let output_name = output_path
                     .file_name()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .into_owned();
-                let output_arc = Arc::new(output_data);
                 let artifact_key_hex = artifact_key.hash().to_hex();
-                let artifact_bytes: u64 = output_arc.len() as u64;
+                let artifact_bytes: u64 = output_size;
+
+                // Persist via hardlink synchronously in this miss task: cheap
+                // (~tens of µs on NTFS), keeps the cache file alive at the
+                // exact path future hits will look it up at, and eliminates
+                // the second `std::fs::write` Defender used to scan on the
+                // background persist path. If the hardlink fails (cross-volume
+                // fallback to copy also fails, missing source, etc.) we skip
+                // caching this artifact rather than risk inserting a state
+                // entry whose cache file doesn't exist — same end-user
+                // observation as the prior "background persist failed
+                // silently" path, just visible immediately.
+                if let Err(e) = persist_artifact_paths(
+                    state_task.artifact_dir.as_path(),
+                    &artifact_key_hex,
+                    std::slice::from_ref(&output_path),
+                ) {
+                    tracing::warn!(
+                        key = %artifact_key_hex,
+                        output = %output_path.display(),
+                        "failed to persist artifact via hardlink: {e}"
+                    );
+                    return MissOutcome {
+                        dep_dirs,
+                        output_path,
+                        persist: None,
+                    };
+                }
+                let cache_file_path = state_task
+                    .artifact_dir
+                    .join(format!("{artifact_key_hex}_0"));
 
                 // Build the cached artifact directly (avoid constructing the
                 // full ArtifactData wrapper just to compute the same fields).
+                // Payloads point at the *cache* file (the just-hardlinked
+                // copy), not the original output path: cargo may rewrite
+                // the output on the next build via tmp+rename, which would
+                // detach the old inode from the user-visible path while the
+                // cache-side hardlink keeps it alive — the cache copy is the
+                // stable reference.
                 let empty = Arc::new(Vec::new());
                 let meta = ArtifactIndex::new(
                     vec![output_name],
@@ -6686,9 +6775,7 @@ async fn handle_compile_multi(
                     meta: meta.clone(),
                     stdout: Arc::clone(&empty),
                     stderr: Arc::clone(&empty),
-                    payloads: Some(Arc::from(vec![CachedPayload::Bytes(Arc::clone(
-                        &output_arc,
-                    ))])),
+                    payloads: Some(Arc::from(vec![CachedPayload::File(cache_file_path)])),
                     last_used: std::time::Instant::now(),
                 };
 
@@ -6712,16 +6799,13 @@ async fn handle_compile_multi(
                     t.record_miss(src, artifact_bytes);
                 });
 
-                let payload_size = output_arc.len();
-                Some(PersistTaskParams {
-                    artifact_key_hex,
-                    persist_meta: meta,
-                    payloads: vec![output_arc],
-                    payload_size,
-                })
-            } else {
-                None
-            };
+                // Files are already on disk via the hardlink above. The
+                // remaining work is the redb index entry, which goes through
+                // the same background WAL the byte-write path used.
+                let _ = state_task.index_writer_tx.send((artifact_key_hex, meta));
+            }
+            // No PersistTaskParams: persistence is complete synchronously.
+            let persist: Option<PersistTaskParams> = None;
 
             MissOutcome {
                 dep_dirs,
@@ -6920,6 +7004,52 @@ mod tests {
         assert_eq!(std::fs::read(dir.path().join("abc123_0")).unwrap(), b"one");
         assert_eq!(std::fs::read(dir.path().join("abc123_1")).unwrap(), b"two");
         assert!(!dir.path().join("abc123.pack").exists());
+    }
+
+    #[test]
+    fn persist_artifact_paths_hardlinks_in_unpacked_layout() {
+        std::env::remove_var("ZCCACHE_PACK_ARTIFACTS");
+        let dir = tempfile::tempdir().unwrap();
+        let key = "deadc0de";
+        // Source files that simulate "compiler just wrote these".
+        let src_a = dir.path().join("foo.rlib");
+        let src_b = dir.path().join("foo.rmeta");
+        std::fs::write(&src_a, b"rlib-bytes").unwrap();
+        std::fs::write(&src_b, b"rmeta-bytes").unwrap();
+        let sources = vec![
+            NormalizedPath::from(src_a.clone()),
+            NormalizedPath::from(src_b.clone()),
+        ];
+        persist_artifact_paths(dir.path(), key, &sources).unwrap();
+
+        let cache_a = dir.path().join("deadc0de_0");
+        let cache_b = dir.path().join("deadc0de_1");
+        assert_eq!(std::fs::read(&cache_a).unwrap(), b"rlib-bytes");
+        assert_eq!(std::fs::read(&cache_b).unwrap(), b"rmeta-bytes");
+
+        // On the same-volume happy path we expect a real hardlink — both
+        // names should resolve to the same inode. Inode-equality test via
+        // platform metadata. Skip on platforms that don't easily expose
+        // it (Windows tests still verify the bytes match above).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let src_ino = std::fs::metadata(&src_a).unwrap().ino();
+            let cache_ino = std::fs::metadata(&cache_a).unwrap().ino();
+            assert_eq!(src_ino, cache_ino, "expected hardlink (shared inode)");
+        }
+    }
+
+    #[test]
+    fn persist_artifact_paths_falls_back_to_copy_when_source_missing() {
+        std::env::remove_var("ZCCACHE_PACK_ARTIFACTS");
+        let dir = tempfile::tempdir().unwrap();
+        let key = "nopath";
+        let missing = dir.path().join("does-not-exist.rlib");
+        let sources = vec![NormalizedPath::from(missing)];
+        // Hardlink fails (source missing), copy also fails → err propagates.
+        // Caller's contract is "best effort; on err skip caching."
+        assert!(persist_artifact_paths(dir.path(), key, &sources).is_err());
     }
 
     async fn start_daemon() -> (String, tokio::task::JoinHandle<()>, Arc<Notify>) {
