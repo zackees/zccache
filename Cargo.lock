@@ -3429,6 +3429,7 @@ version = "1.5.0"
 dependencies = [
  "bincode",
  "blake3",
+ "dashmap",
  "rayon",
  "redb",
  "serde",

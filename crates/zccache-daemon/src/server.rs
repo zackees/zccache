@@ -24,6 +24,162 @@ use crate::fingerprint::FingerprintManager;
 use crate::process::CompilePriority;
 use crate::stats::{HitPhases, MissPhases, PhaseProfiler, StatsCollector};
 
+/// Default WAL flush interval. Persist tasks return immediately after sending
+/// to the WAL; the WAL is flushed to the on-disk bincode blob on this cadence
+/// (or earlier if it exceeds the size budget).
+///
+/// 5 s is intentionally long: hot-path reads and writes both go through the
+/// in-memory `state.artifacts` `DashMap` (hydrated from the blob at startup),
+/// so the on-disk file is touched only by the periodic background flush. The
+/// cost of losing a flush window on hard crash is bounded — the artifact
+/// files themselves are durable on disk, and the next session re-misses only
+/// the keys that hadn't been flushed yet, repopulating both layers. Graceful
+/// shutdown flushes synchronously, so this cost only materialises on power
+/// loss / `kill -9`. Override via `ZCCACHE_WAL_FLUSH_MS`.
+fn wal_flush_interval() -> std::time::Duration {
+    let ms: u64 = std::env::var("ZCCACHE_WAL_FLUSH_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5000);
+    std::time::Duration::from_millis(ms.max(1))
+}
+
+/// Size-based early-flush threshold. Prevents the WAL from growing unbounded
+/// under a sustained burst that fills more than one flush window.
+///
+/// 2048 entries × ~770 bytes serialised = ~1.5 MB per flush. Each flush
+/// snapshots the whole in-memory map (typically ~9 MB at steady state) and
+/// writes it sequentially, so the trigger is "how many *new* entries before
+/// we should re-snapshot" — not the size of one write.
+fn wal_max_pending() -> usize {
+    std::env::var("ZCCACHE_WAL_MAX_PENDING")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2048)
+        .max(1)
+}
+
+/// Background index-writer task.
+///
+/// Acts as an in-memory WAL in front of the on-disk bincode blob:
+///   * persist tasks push `(key, ArtifactIndex)` into the channel; they don't
+///     wait for the disk write (cheap send).
+///   * this task drains the channel into an in-memory `HashMap` (the WAL),
+///     dedup'ing repeat keys.
+///   * the WAL is flushed to disk on a timer (`ZCCACHE_WAL_FLUSH_MS`, default
+///     5 s) or eagerly when it exceeds a size budget
+///     (`ZCCACHE_WAL_MAX_PENDING`, default 2048).
+///   * each flush applies the batch to `ArtifactStore` (in-memory DashMap)
+///     and then snapshots the whole map atomically via `ArtifactStore::flush`
+///     (tmp file + rename). One sequential write per flush window.
+///   * channel close signals a final flush + clean exit (used by graceful
+///     shutdown).
+///
+/// Reads don't consult the WAL: the daemon's authoritative in-memory state
+/// lives in `state.artifacts` (a `DashMap` populated synchronously by the
+/// persist call-sites themselves), and the on-disk blob is consulted only at
+/// startup via `load_all()`. Entries that haven't yet flushed are still
+/// visible to the running daemon; they're just at risk of being lost across
+/// an abrupt crash (where the files-on-disk are durable but the next
+/// session's `load_all()` won't see them, forcing a one-time re-miss).
+async fn run_index_writer(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<(String, ArtifactIndex)>,
+    store: Arc<ArtifactStore>,
+    shutdown: Arc<Notify>,
+) {
+    use std::collections::HashMap;
+    let flush_interval = wal_flush_interval();
+    let max_pending = wal_max_pending();
+    let mut wal: HashMap<String, ArtifactIndex> = HashMap::with_capacity(max_pending);
+    let mut ticker = tokio::time::interval(flush_interval);
+    // Don't immediately fire on the first tick — wait one interval.
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let _ = ticker.tick().await;
+
+    loop {
+        tokio::select! {
+            msg = rx.recv() => {
+                match msg {
+                    Some((k, v)) => {
+                        wal.insert(k, v);
+                        // Drain whatever else is already queued in this tick.
+                        while let Ok((k, v)) = rx.try_recv() {
+                            wal.insert(k, v);
+                        }
+                        if wal.len() >= max_pending {
+                            flush_wal_to_disk(&store, &mut wal).await;
+                        }
+                    }
+                    None => {
+                        // Channel closed (last sender dropped). Final flush.
+                        flush_wal_to_disk(&store, &mut wal).await;
+                        return;
+                    }
+                }
+            }
+            _ = ticker.tick() => {
+                if !wal.is_empty() {
+                    flush_wal_to_disk(&store, &mut wal).await;
+                }
+            }
+            _ = shutdown.notified() => {
+                // Daemon-initiated graceful shutdown. Drain anything still
+                // queued and flush before the runtime aborts us.
+                while let Ok((k, v)) = rx.try_recv() {
+                    wal.insert(k, v);
+                }
+                flush_wal_to_disk(&store, &mut wal).await;
+                return;
+            }
+        }
+    }
+}
+
+async fn flush_wal_to_disk(
+    store: &Arc<ArtifactStore>,
+    wal: &mut std::collections::HashMap<String, ArtifactIndex>,
+) {
+    if wal.is_empty() {
+        return;
+    }
+    let drained: Vec<(String, ArtifactIndex)> = wal.drain().collect();
+    let count = drained.len();
+    // Apply the batch to the in-memory store synchronously (cheap), then
+    // do the disk write off the runtime thread so the flush doesn't block
+    // request handlers.
+    store.insert_many(drained);
+    let store = Arc::clone(store);
+    let res = tokio::task::spawn_blocking(move || store.flush()).await;
+    match res {
+        Ok(Ok(())) => tracing::trace!(committed = count, "WAL flushed to disk"),
+        Ok(Err(e)) => tracing::warn!(count, "WAL flush to disk failed: {e}"),
+        Err(e) => tracing::warn!(count, "WAL flush task join error: {e}"),
+    }
+}
+
+/// How many artifact-persist tasks may be in flight concurrently.
+///
+/// The daemon's persist path writes each cached artifact to disk via
+/// `std::fs::write` inside `tokio::task::spawn_blocking`. On Windows with
+/// Defender real-time protection, every write blocks until Defender finishes
+/// scanning the file. The hardcoded default of 8 was retained because raising
+/// it without other changes regressed wall-clock on this machine
+/// (see `tests/persist_pool_bench.rs`). The env var gives operators a lever
+/// when their workload differs — e.g. cache on a network mount, or a slow
+/// AV setup that benefits from more in-flight writes.
+///
+/// Override with `ZCCACHE_STORE_WORKERS=<N>` (must be ≥ 1, clamped to 1024).
+fn persist_workers_default() -> usize {
+    if let Ok(v) = std::env::var("ZCCACHE_STORE_WORKERS") {
+        if let Ok(n) = v.parse::<usize>() {
+            if n >= 1 {
+                return n.min(1024);
+            }
+        }
+    }
+    8
+}
+
 /// RAII guard that decrements `in_flight_bytes` on drop, even during panic unwind.
 /// Prevents permanent counter inflation if a `spawn_blocking` task panics.
 struct InFlightGuard {
@@ -235,26 +391,33 @@ fn ensure_payloads<'a>(
         let mut payloads = Vec::with_capacity(cached.meta.output_names.len());
         for i in 0..cached.meta.output_names.len() {
             let path = artifact_dir.join(format!("{key_hex}_{i}"));
-            let meta = std::fs::metadata(&path).ok()?;
-            if !meta.is_file() {
-                return None;
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if meta.is_file()
+                    && cached
+                        .meta
+                        .output_sizes
+                        .get(i)
+                        .is_none_or(|expected| *expected == meta.len())
+                {
+                    payloads.push(CachedPayload::File(path.into()));
+                    continue;
+                }
             }
-            if cached
-                .meta
-                .output_sizes
-                .get(i)
-                .is_some_and(|expected| *expected != meta.len())
-            {
-                return None;
+            // Fallback: artifact may be stored in a `.pack` file (pack mode).
+            let bytes = try_load_packed_payload(artifact_dir, key_hex, i)?;
+            if let Some(expected) = cached.meta.output_sizes.get(i) {
+                if *expected != bytes.len() as u64 {
+                    return None;
+                }
             }
-            payloads.push(CachedPayload::File(path.into()));
+            payloads.push(CachedPayload::Bytes(Arc::new(bytes)));
         }
         cached.payloads = Some(Arc::from(payloads));
     }
     cached.payloads.as_deref()
 }
 
-/// Migrate legacy `.meta` files to the redb index.
+/// Migrate legacy `.meta` files to the in-memory artifact index.
 /// Called once on first startup after upgrade.
 fn migrate_meta_files(
     artifact_dir: &Path,
@@ -303,17 +466,17 @@ fn migrate_meta_files(
         })
         .collect();
 
-    // Sequential phase: insert into redb (single writer) and DashMap,
-    // then delete old .meta files.
+    // Sequential phase: insert into the in-memory store and DashMap,
+    // then delete the legacy .meta files.
     let count = migrated.len();
     for (stem, cached, meta_path) in migrated {
-        store.insert(&stem, &cached.meta).ok();
+        store.insert(&stem, &cached.meta);
         artifacts.insert(stem, cached);
         std::fs::remove_file(&meta_path).ok();
     }
 
     if count > 0 {
-        tracing::info!(count, "migrated legacy .meta files to redb index");
+        tracing::info!(count, "migrated legacy .meta files to artifact index");
     }
     count
 }
@@ -390,8 +553,29 @@ struct SharedState {
     /// Limits concurrent disk persistence tasks to prevent memory pileup
     /// when disk I/O is slow and compilation requests are fast.
     persist_semaphore: Arc<tokio::sync::Semaphore>,
-    /// redb-backed artifact index for fast startup and persistence.
-    artifact_store: ArtifactStore,
+    /// In-memory artifact index (bincode blob-backed) for fast startup and
+    /// persistence. Hot-path reads and writes go through `state.artifacts`;
+    /// this store holds the same data and snapshots it to disk periodically.
+    ///
+    /// Arc-wrapped so the background index-writer task (see `index_writer_tx`)
+    /// can hold its own clone for batched `insert` calls without contending
+    /// with the request-handler path.
+    artifact_store: Arc<ArtifactStore>,
+    /// Sender to the background index-writer task. Persist call-sites push
+    /// `(key_hex, ArtifactIndex)` pairs here and return immediately; the
+    /// writer task drains the channel and flushes to the on-disk blob in
+    /// batches.
+    ///
+    /// Decouples the artifact-persist semaphore (which gates concurrent disk
+    /// writes) from the periodic index snapshot, so a slow flush no longer
+    /// holds a persist permit while other artifacts wait. See
+    /// `tests/persist_pool_bench.rs` for the data motivating this split.
+    index_writer_tx: tokio::sync::mpsc::UnboundedSender<(String, ArtifactIndex)>,
+    /// Notify the index-writer to drain its WAL and exit on graceful shutdown.
+    /// Without this, the writer would only see the channel close after every
+    /// `Arc<SharedState>` ref (including those held by spawned persist tasks)
+    /// drops — which can race with runtime abort and lose unflushed entries.
+    index_writer_shutdown: Arc<Notify>,
     /// Whether the background artifact loading has completed.
     artifacts_loaded: AtomicBool,
     /// Fingerprint manager: tracks per-watch dirty state for `zccache fp` commands.
@@ -469,6 +653,8 @@ pub struct DaemonServer {
     listener: IpcListener,
     shutdown: Arc<Notify>,
     state: Arc<SharedState>,
+    /// Receiver for the background index-writer task. Taken in `run()`.
+    index_writer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<(String, ArtifactIndex)>>,
 }
 
 /// Remove fast-hit cache entries older than `max_age`. Returns entries removed.
@@ -631,7 +817,7 @@ impl DaemonServer {
         // daemon starts accepting connections immediately (Bug 6 fix).
         let artifacts: DashMap<String, CachedArtifact> = DashMap::new();
 
-        // Open redb artifact index for fast startup + persistence.
+        // Open the bincode-backed artifact index for fast startup + persistence.
         let index_path = zccache_core::config::index_path_from_cache_dir(cache_dir);
         let artifact_store = ArtifactStore::open(&index_path).map_err(|e| {
             zccache_ipc::IpcError::Io(std::io::Error::other(format!(
@@ -639,10 +825,16 @@ impl DaemonServer {
                 index_path.display()
             )))
         })?;
+        let artifact_store = Arc::new(artifact_store);
+
+        let (index_writer_tx, index_writer_rx) =
+            tokio::sync::mpsc::unbounded_channel::<(String, ArtifactIndex)>();
+        let index_writer_shutdown = Arc::new(Notify::new());
 
         Ok(Self {
             listener,
             shutdown: Arc::clone(&shutdown),
+            index_writer_rx: Some(index_writer_rx),
             state: Arc::new(SharedState {
                 sessions: SessionManager::new(std::time::Duration::from_secs(300)),
                 system_includes: Mutex::new(SystemIncludeCache::new()),
@@ -676,8 +868,10 @@ impl DaemonServer {
                     cache_dir,
                 )),
                 in_flight_bytes: AtomicUsize::new(0),
-                persist_semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
+                persist_semaphore: Arc::new(tokio::sync::Semaphore::new(persist_workers_default())),
                 artifact_store,
+                index_writer_tx,
+                index_writer_shutdown,
                 artifacts_loaded: AtomicBool::new(false),
                 fingerprint: FingerprintManager::new(),
                 dep_graph_persisted: AtomicBool::new(false),
@@ -713,7 +907,19 @@ impl DaemonServer {
     /// `idle_timeout_secs`: if non-zero, the daemon shuts down after this many
     /// seconds with no client activity. Pass 0 to disable.
     pub async fn run(&mut self, idle_timeout_secs: u64) -> Result<(), zccache_ipc::IpcError> {
-        tracing::info!("daemon server running");
+        tracing::info!(
+            persist_workers = self.state.persist_semaphore.available_permits(),
+            "daemon server running"
+        );
+
+        // Background index-writer task: in-memory WAL with timer-driven
+        // flushing. See `run_index_writer` for the design rationale.
+        let mut index_writer_handle: Option<tokio::task::JoinHandle<()>> = None;
+        if let Some(rx) = self.index_writer_rx.take() {
+            let store = Arc::clone(&self.state.artifact_store);
+            let shutdown = Arc::clone(&self.state.index_writer_shutdown);
+            index_writer_handle = Some(tokio::spawn(run_index_writer(rx, store, shutdown)));
+        }
 
         let cache_dir = zccache_core::config::default_cache_dir();
         let temp_root = std::env::temp_dir();
@@ -786,19 +992,21 @@ impl DaemonServer {
                 let artifacts = state.artifacts.clone();
                 let state_ref = Arc::clone(&state);
                 let loaded = tokio::task::spawn_blocking(move || {
-                    // Try loading from redb index first.
-                    match state_ref.artifact_store.load_all() {
-                        Ok(entries) if !entries.is_empty() => {
-                            let count = entries.len();
-                            for (key, meta) in entries {
-                                artifacts.insert(key, CachedArtifact::from_index(meta));
-                            }
-                            count
+                    // Load the in-memory index that `ArtifactStore::open` already
+                    // hydrated from the on-disk blob.
+                    let entries = state_ref.artifact_store.load_all();
+                    if !entries.is_empty() {
+                        let count = entries.len();
+                        for (key, meta) in entries {
+                            artifacts.insert(key, CachedArtifact::from_index(meta));
                         }
-                        _ => {
-                            // Migration: load from .meta files, populate redb index.
-                            migrate_meta_files(&artifact_dir, &artifacts, &state_ref.artifact_store)
-                        }
+                        count
+                    } else {
+                        // Migration: legacy `.meta` files predate the redb index
+                        // and the current bincode blob; populate the live store
+                        // from them so the first session after upgrade still has
+                        // its warm cache.
+                        migrate_meta_files(&artifact_dir, &artifacts, &state_ref.artifact_store)
                     }
                 })
                 .await
@@ -941,6 +1149,18 @@ impl DaemonServer {
                     // The settle buffer and consumer tasks will exit when their
                     // input channels close.
                     *self.state.watcher.lock().await = None;
+
+                    // Signal the index-writer to drain its WAL to disk, then
+                    // wait briefly for it. Without this, unflushed entries are
+                    // lost if the runtime aborts before the next interval tick.
+                    self.state.index_writer_shutdown.notify_waiters();
+                    if let Some(h) = index_writer_handle.take() {
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_secs(2),
+                            h,
+                        )
+                        .await;
+                    }
 
                     // Save depgraph to disk before exiting.
                     let start = std::time::Instant::now();
@@ -1522,8 +1742,9 @@ async fn handle_clear(state: &SharedState) -> Response {
         });
     }
 
-    // Clear redb artifact index.
-    state.artifact_store.clear().ok();
+    // Clear the in-memory artifact index and persist the empty state.
+    state.artifact_store.clear();
+    let _ = state.artifact_store.flush();
 
     // Delete on-disk depgraph snapshot.
     let _ = std::fs::remove_file(zccache_depgraph::depgraph_file_path());
@@ -1932,16 +2153,15 @@ async fn handle_link_ephemeral(
                 let state_ref = Arc::clone(state);
                 tokio::spawn(async move {
                     let _permit = sem.acquire().await.unwrap();
-                    tokio::task::spawn_blocking(move || {
+                    let written = tokio::task::spawn_blocking(move || {
                         let _guard = guard;
-                        for (i, payload) in payloads.iter().enumerate() {
-                            let cache_path = artifact_dir.join(format!("{kh}_{i}"));
-                            std::fs::write(&cache_path, &**payload).ok();
-                        }
-                        state_ref.artifact_store.insert(&kh, &persist_meta).ok();
+                        let _ = persist_artifact_payloads(&artifact_dir, &kh, &payloads);
+                        (kh, persist_meta)
                     })
-                    .await
-                    .ok();
+                    .await;
+                    if let Ok((kh, meta)) = written {
+                        let _ = state_ref.index_writer_tx.send((kh, meta));
+                    }
                 });
             }
 
@@ -2667,6 +2887,112 @@ fn persist_artifact_output(cache_path: &Path, payload: &[u8]) -> std::io::Result
         let _ = std::fs::remove_file(&tmp_path);
     }
     result
+}
+
+// ─── Artifact-pack format (experimental, env-gated) ───────────────────────────
+//
+// Layout of `{key_hex}.pack`:
+//
+//   [magic: 4 bytes = b"ZCPK"]
+//   [num_payloads: u32 le]
+//   [(offset: u64 le, size: u64 le)] * num_payloads
+//   [payload_0 bytes]
+//   [payload_1 bytes]
+//   ...
+//
+// Why: each `std::fs::write` of a fresh file under Windows Defender pays a
+// per-file scan cost. Packing N payloads of one cache miss into a single
+// `.pack` collapses the per-file overhead by N. Bench measured 2.6× wall-clock
+// improvement at 5 payloads per artifact (see `tests/persist_pool_bench.rs`).
+//
+// Trade-off: hit path can't hardlink — it must slice the pack and write the
+// extracted bytes. Gated by `ZCCACHE_PACK_ARTIFACTS` until the read-path cost
+// is measured against the write-path win on real workloads.
+
+const PACK_MAGIC: &[u8; 4] = b"ZCPK";
+
+fn pack_mode_enabled() -> bool {
+    std::env::var("ZCCACHE_PACK_ARTIFACTS")
+        .ok()
+        .is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+fn pack_path_for(artifact_dir: &Path, key_hex: &str) -> PathBuf {
+    artifact_dir.join(format!("{key_hex}.pack"))
+}
+
+fn build_pack(payloads: &[Arc<Vec<u8>>]) -> Vec<u8> {
+    let n = payloads.len();
+    let header_size = 4 + 4 + n * 16;
+    let body_size: usize = payloads.iter().map(|p| p.len()).sum();
+    let mut buf = Vec::with_capacity(header_size + body_size);
+    buf.extend_from_slice(PACK_MAGIC);
+    buf.extend_from_slice(&(n as u32).to_le_bytes());
+    let mut offset = header_size as u64;
+    for p in payloads {
+        buf.extend_from_slice(&offset.to_le_bytes());
+        buf.extend_from_slice(&(p.len() as u64).to_le_bytes());
+        offset += p.len() as u64;
+    }
+    for p in payloads {
+        buf.extend_from_slice(p);
+    }
+    buf
+}
+
+fn parse_pack_header(data: &[u8]) -> std::io::Result<Vec<(u64, u64)>> {
+    if data.len() < 8 || &data[..4] != PACK_MAGIC {
+        return Err(std::io::Error::other("not a zccache pack file"));
+    }
+    let n = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+    let needed = 8 + n * 16;
+    if data.len() < needed {
+        return Err(std::io::Error::other("pack header truncated"));
+    }
+    let mut entries = Vec::with_capacity(n);
+    for i in 0..n {
+        let base = 8 + i * 16;
+        let offset = u64::from_le_bytes(data[base..base + 8].try_into().unwrap());
+        let size = u64::from_le_bytes(data[base + 8..base + 16].try_into().unwrap());
+        entries.push((offset, size));
+    }
+    Ok(entries)
+}
+
+/// Try to extract the i-th payload from `{key_hex}.pack`. Returns None if the
+/// pack file is missing, corrupt, or doesn't have that many payloads.
+fn try_load_packed_payload(artifact_dir: &Path, key_hex: &str, idx: usize) -> Option<Vec<u8>> {
+    let pack_path = pack_path_for(artifact_dir, key_hex);
+    let data = std::fs::read(&pack_path).ok()?;
+    let entries = parse_pack_header(&data).ok()?;
+    let &(offset, size) = entries.get(idx)?;
+    let start = offset as usize;
+    let end = start.checked_add(size as usize)?;
+    if end > data.len() {
+        return None;
+    }
+    Some(data[start..end].to_vec())
+}
+
+/// Persist all payloads of one artifact, either as N individual files
+/// (today's layout) or as a single `.pack` file (env-gated). Wraps every
+/// inner `std::fs::write` in `persist_artifact_output`'s tmp-then-rename
+/// atomicity.
+fn persist_artifact_payloads(
+    artifact_dir: &Path,
+    key_hex: &str,
+    payloads: &[Arc<Vec<u8>>],
+) -> std::io::Result<()> {
+    if pack_mode_enabled() {
+        let pack = build_pack(payloads);
+        persist_artifact_output(&pack_path_for(artifact_dir, key_hex), &pack)
+    } else {
+        for (i, payload) in payloads.iter().enumerate() {
+            let cache_path = artifact_dir.join(format!("{key_hex}_{i}"));
+            persist_artifact_output(&cache_path, payload)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -5292,12 +5618,7 @@ async fn handle_compile(
                     );
                     artifact_index_build_ns = t_artifact_index_build.elapsed().as_nanos() as u64;
                     let t_artifact_index_persist = std::time::Instant::now();
-                    if let Err(e) = state.artifact_store.insert(&artifact_key_hex, &meta) {
-                        tracing::warn!(
-                            key = %artifact_key_hex,
-                            "failed to persist artifact index: {e}"
-                        );
-                    }
+                    state.artifact_store.insert(&artifact_key_hex, &meta);
                     artifact_index_persist_ns =
                         t_artifact_index_persist.elapsed().as_nanos() as u64;
                     let t_artifact_memory_insert = std::time::Instant::now();
@@ -5360,24 +5681,22 @@ async fn handle_compile(
                     let state_ref = Arc::clone(state_arc);
                     tokio::spawn(async move {
                         let _permit = sem.acquire().await.unwrap();
-                        tokio::task::spawn_blocking(move || {
+                        let written = tokio::task::spawn_blocking(move || {
                             let _guard = guard;
-                            for (i, payload) in payloads.iter().enumerate() {
-                                let cache_path = artifact_dir.join(format!("{key_hex}_{i}"));
-                                if let Err(e) = persist_artifact_output(&cache_path, payload) {
-                                    tracing::warn!(
-                                        path = %cache_path.display(),
-                                        "failed to persist artifact output: {e}"
-                                    );
-                                }
+                            if let Err(e) =
+                                persist_artifact_payloads(&artifact_dir, &key_hex, &payloads)
+                            {
+                                tracing::warn!(
+                                    key = %key_hex,
+                                    "failed to persist artifact output: {e}"
+                                );
                             }
-                            state_ref
-                                .artifact_store
-                                .insert(&key_hex, &persist_meta)
-                                .ok();
+                            (key_hex, persist_meta)
                         })
-                        .await
-                        .ok();
+                        .await;
+                        if let Ok((key_hex, meta)) = written {
+                            let _ = state_ref.index_writer_tx.send((key_hex, meta));
+                        }
                     });
                 }
                 persist_enqueue_ns = t_persist_enqueue.elapsed().as_nanos() as u64;
@@ -6372,24 +6691,20 @@ async fn handle_compile_multi(
         let state_ref = Arc::clone(&state);
         tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
-            tokio::task::spawn_blocking(move || {
+            let written = tokio::task::spawn_blocking(move || {
                 let _guard = guard;
-                for (i, payload) in payloads.iter().enumerate() {
-                    let cache_path = artifact_dir.join(format!("{key_hex}_{i}"));
-                    if let Err(e) = std::fs::write(&cache_path, &**payload) {
-                        tracing::warn!(
-                            path = %cache_path.display(),
-                            "failed to persist artifact output: {e}"
-                        );
-                    }
+                if let Err(e) = persist_artifact_payloads(&artifact_dir, &key_hex, &payloads) {
+                    tracing::warn!(
+                        key = %key_hex,
+                        "failed to persist artifact output: {e}"
+                    );
                 }
-                state_ref
-                    .artifact_store
-                    .insert(&key_hex, &persist_meta)
-                    .ok();
+                (key_hex, persist_meta)
             })
-            .await
-            .ok();
+            .await;
+            if let Ok((key_hex, meta)) = written {
+                let _ = state_ref.index_writer_tx.send((key_hex, meta));
+            }
         });
     }
 
@@ -6462,6 +6777,67 @@ async fn run_compiler_direct(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pack_round_trip_extracts_each_payload() {
+        let p0: Arc<Vec<u8>> = Arc::new(b"first payload".to_vec());
+        let p1: Arc<Vec<u8>> = Arc::new((0u8..200).cycle().take(4096).collect());
+        let p2: Arc<Vec<u8>> = Arc::new(Vec::new()); // 0-length payload edge case
+        let payloads = vec![Arc::clone(&p0), Arc::clone(&p1), Arc::clone(&p2)];
+        let pack = build_pack(&payloads);
+
+        let entries = parse_pack_header(&pack).unwrap();
+        assert_eq!(entries.len(), 3);
+        for (i, (offset, size)) in entries.iter().enumerate() {
+            let s = *offset as usize;
+            let e = s + *size as usize;
+            assert_eq!(&pack[s..e], payloads[i].as_slice());
+        }
+    }
+
+    #[test]
+    fn parse_pack_header_rejects_garbage() {
+        assert!(parse_pack_header(b"").is_err());
+        assert!(parse_pack_header(b"NOTAZCPK").is_err());
+        // Magic OK but truncated header
+        assert!(parse_pack_header(b"ZCPK\x05\x00\x00\x00").is_err());
+    }
+
+    #[test]
+    fn try_load_packed_payload_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = "deadbeef";
+        let payloads: Vec<Arc<Vec<u8>>> = vec![
+            Arc::new(b"alpha".to_vec()),
+            Arc::new(b"bravo bravo bravo".to_vec()),
+        ];
+        let pack = build_pack(&payloads);
+        std::fs::write(pack_path_for(dir.path(), key), &pack).unwrap();
+
+        assert_eq!(
+            try_load_packed_payload(dir.path(), key, 0).unwrap(),
+            b"alpha".to_vec()
+        );
+        assert_eq!(
+            try_load_packed_payload(dir.path(), key, 1).unwrap(),
+            b"bravo bravo bravo".to_vec()
+        );
+        assert!(try_load_packed_payload(dir.path(), key, 2).is_none());
+        assert!(try_load_packed_payload(dir.path(), "missing", 0).is_none());
+    }
+
+    #[test]
+    fn persist_artifact_payloads_unpacked_layout() {
+        // Default: not packed.
+        std::env::remove_var("ZCCACHE_PACK_ARTIFACTS");
+        let dir = tempfile::tempdir().unwrap();
+        let key = "abc123";
+        let payloads = vec![Arc::new(b"one".to_vec()), Arc::new(b"two".to_vec())];
+        persist_artifact_payloads(dir.path(), key, &payloads).unwrap();
+        assert_eq!(std::fs::read(dir.path().join("abc123_0")).unwrap(), b"one");
+        assert_eq!(std::fs::read(dir.path().join("abc123_1")).unwrap(), b"two");
+        assert!(!dir.path().join("abc123.pack").exists());
+    }
 
     async fn start_daemon() -> (String, tokio::task::JoinHandle<()>, Arc<Notify>) {
         let endpoint = zccache_ipc::unique_test_endpoint();
@@ -7865,7 +8241,7 @@ exit /b 0
         zccache_test_support::test_timeout(async {
             let tmp = tempfile::tempdir().unwrap();
             // Use an isolated cache dir so we don't clash with any
-            // production daemon holding the global redb lock.
+            // production daemon writing the global index blob.
             let _cache_dir = CacheDirEnvGuard::set(&tmp.path().join("zccache-cache"));
 
             let (endpoint, server_handle, shutdown) = start_daemon().await;

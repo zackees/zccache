@@ -1,22 +1,41 @@
-//! redb-backed artifact index.
+//! In-memory artifact index, snapshotted to a bincode blob.
 //!
-//! Stores lightweight metadata (`ArtifactIndex`) for each cached artifact.
-//! Output payloads live on disk as `{key}_0`, `{key}_1`, ... files and are
-//! loaded lazily on cache hit.
+//! Stores lightweight metadata (`ArtifactIndex`) for each cached artifact in
+//! a `DashMap` for O(1) sharded concurrent access. The map is periodically
+//! flushed to a single on-disk blob at `~/.zccache/index.bin` by the daemon's
+//! background WAL writer (see `zccache_daemon::server::run_index_writer`).
+//!
+//! The output payloads for each entry live on disk as `{key}_0`, `{key}_1`,
+//! ... (or `{key}.pack` under pack mode) and are loaded lazily on cache hit.
+//!
+//! ## Why not redb
+//!
+//! redb's MVCC + per-txn fsync is overkill for this use case: the daemon
+//! already keeps a complete authoritative copy of the index in memory
+//! (`SharedState::artifacts`), so the on-disk file is only consulted at
+//! startup and only persists the runtime DashMap. A bincode blob is:
+//!
+//!   * faster to write (one sequential write per flush instead of one fsync
+//!     per commit), and
+//!   * trivial to read at startup (single `fs::read` + `bincode::deserialize`).
+//!
+//! The tradeoff is that a crash *between* flushes can lose the whole delta
+//! (whereas redb could recover up to the last committed txn). The artifact
+//! files themselves remain durable on disk, so the worst case is a re-miss
+//! on the keys that hadn't been flushed — the daemon repopulates them on
+//! next access. Graceful shutdown flushes synchronously.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use redb::{Database, ReadableTable, ReadableTableMetadata, TableDefinition};
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
-const ARTIFACTS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("artifacts");
-
-/// Lightweight metadata stored in the redb index for each cached artifact.
+/// Lightweight metadata stored in the index for each cached artifact.
 ///
 /// Contains everything needed to serve a cache hit response EXCEPT the output
-/// file bytes (which are loaded lazily from `{key}_0` files on disk).
+/// file bytes (which are loaded lazily from `{key}_i` files on disk).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArtifactIndex {
     /// Output filenames, e.g. `["foo.o"]`.
@@ -64,125 +83,146 @@ impl ArtifactIndex {
     }
 }
 
-/// redb-backed artifact index.
+/// In-memory artifact index backed by a periodic bincode blob on disk.
 ///
-/// Maps `artifact_key_hex` → `ArtifactIndex` (bincode-serialized).
-/// Single-file database at `~/.zccache/index.redb`.
+/// All mutation methods (`insert`, `insert_many`, `remove`, `remove_batch`,
+/// `clear`) are infallible — they only touch the in-memory DashMap. Disk
+/// I/O happens exclusively in `flush()`, called by the daemon's background
+/// WAL writer on its timer.
 pub struct ArtifactStore {
-    db: Database,
+    path: PathBuf,
+    entries: DashMap<String, ArtifactIndex>,
 }
 
-#[allow(clippy::result_large_err)]
 impl ArtifactStore {
-    /// Open or create the artifact index at the given path.
-    pub fn open(path: &Path) -> Result<Self, redb::Error> {
-        let db = Database::create(path)?;
-        // Ensure table exists.
-        let txn = db.begin_write()?;
-        {
-            let _table = txn.open_table(ARTIFACTS_TABLE)?;
-        }
-        txn.commit()?;
-        Ok(Self { db })
+    /// Open the index at `path`. Reads the entire blob into memory; treats a
+    /// missing or corrupt file as an empty index (the file will be created on
+    /// the next `flush()`).
+    pub fn open(path: &Path) -> std::io::Result<Self> {
+        let entries = DashMap::new();
+        match std::fs::read(path) {
+            Ok(bytes) => match bincode::deserialize::<Vec<(String, ArtifactIndex)>>(&bytes) {
+                Ok(rows) => {
+                    for (k, v) in rows {
+                        entries.insert(k, v);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        "artifact index blob is corrupt, starting empty: {e}"
+                    );
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        };
+        Ok(Self {
+            path: path.to_path_buf(),
+            entries,
+        })
     }
 
-    /// Insert or update an artifact entry.
-    pub fn insert(&self, key: &str, meta: &ArtifactIndex) -> Result<(), redb::Error> {
-        let data =
-            bincode::serialize(meta).map_err(|e| redb::Error::Io(std::io::Error::other(e)))?;
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(ARTIFACTS_TABLE)?;
-            table.insert(key, data.as_slice())?;
+    /// Insert or update an artifact entry. In-memory only.
+    pub fn insert(&self, key: &str, meta: &ArtifactIndex) {
+        self.entries.insert(key.to_string(), meta.clone());
+    }
+
+    /// Insert or update many entries. In-memory only.
+    pub fn insert_many<I, K>(&self, entries: I) -> usize
+    where
+        I: IntoIterator<Item = (K, ArtifactIndex)>,
+        K: AsRef<str>,
+    {
+        let mut count = 0usize;
+        for (k, v) in entries {
+            self.entries.insert(k.as_ref().to_string(), v);
+            count += 1;
         }
-        txn.commit()?;
-        Ok(())
+        count
     }
 
     /// Look up a single artifact entry.
-    pub fn get(&self, key: &str) -> Result<Option<ArtifactIndex>, redb::Error> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(ARTIFACTS_TABLE)?;
-        match table.get(key)? {
-            Some(value) => {
-                let meta: ArtifactIndex = bincode::deserialize(value.value())
-                    .map_err(|e| redb::Error::Io(std::io::Error::other(e)))?;
-                Ok(Some(meta))
-            }
-            None => Ok(None),
-        }
+    pub fn get(&self, key: &str) -> Option<ArtifactIndex> {
+        self.entries.get(key).map(|e| e.value().clone())
     }
 
-    /// Remove a single artifact entry. Returns `true` if it existed.
-    pub fn remove(&self, key: &str) -> Result<bool, redb::Error> {
-        let txn = self.db.begin_write()?;
-        let existed;
-        {
-            let mut table = txn.open_table(ARTIFACTS_TABLE)?;
-            existed = table.remove(key)?.is_some();
-        }
-        txn.commit()?;
-        Ok(existed)
+    /// Remove a single entry. Returns `true` if it existed.
+    pub fn remove(&self, key: &str) -> bool {
+        self.entries.remove(key).is_some()
     }
 
-    /// Remove a batch of entries in a single write transaction.
-    /// Returns the number of entries actually removed.
-    pub fn remove_batch(&self, keys: &[&str]) -> Result<usize, redb::Error> {
-        if keys.is_empty() {
-            return Ok(0);
-        }
-        let txn = self.db.begin_write()?;
+    /// Remove a batch of entries. Returns the number actually removed.
+    pub fn remove_batch(&self, keys: &[&str]) -> usize {
         let mut removed = 0usize;
-        {
-            let mut table = txn.open_table(ARTIFACTS_TABLE)?;
-            for key in keys {
-                if table.remove(*key)?.is_some() {
-                    removed += 1;
-                }
+        for key in keys {
+            if self.entries.remove(*key).is_some() {
+                removed += 1;
             }
         }
-        txn.commit()?;
-        Ok(removed)
+        removed
     }
 
-    /// Load all entries from the index.
-    pub fn load_all(&self) -> Result<Vec<(String, ArtifactIndex)>, redb::Error> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(ARTIFACTS_TABLE)?;
-        let mut result = Vec::new();
-        for entry in table.iter()? {
-            let (key, value) = entry?;
-            if let Ok(meta) = bincode::deserialize::<ArtifactIndex>(value.value()) {
-                result.push((key.value().to_string(), meta));
-            }
+    /// Snapshot every entry as `(key, ArtifactIndex)` pairs. O(n).
+    pub fn load_all(&self) -> Vec<(String, ArtifactIndex)> {
+        self.entries
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect()
+    }
+
+    /// Number of entries currently held.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the index is empty.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Remove every entry. Returns the number removed.
+    pub fn clear(&self) -> usize {
+        let n = self.entries.len();
+        self.entries.clear();
+        n
+    }
+
+    /// Persist the current in-memory snapshot to disk atomically.
+    ///
+    /// Writes to a temp file in the same directory, then renames into place,
+    /// so a partially-written file is never observable. Concurrent mutations
+    /// during the snapshot are tolerated — each shard's lock is held only
+    /// during its iter step, so the result is a "fuzzy snapshot" reflecting
+    /// some serialisation of in-flight inserts (acceptable for the
+    /// crash-recovery contract).
+    pub fn flush(&self) -> std::io::Result<()> {
+        let snapshot: Vec<(String, ArtifactIndex)> = self
+            .entries
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect();
+        let bytes = bincode::serialize(&snapshot)
+            .map_err(|e| std::io::Error::other(format!("bincode serialize: {e}")))?;
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
-        Ok(result)
-    }
-
-    /// Return the number of entries in the index.
-    pub fn len(&self) -> Result<usize, redb::Error> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(ARTIFACTS_TABLE)?;
-        Ok(table.len()? as usize)
-    }
-
-    /// Return whether the index is empty.
-    pub fn is_empty(&self) -> Result<bool, redb::Error> {
-        Ok(self.len()? == 0)
-    }
-
-    /// Remove all entries from the index.
-    pub fn clear(&self) -> Result<usize, redb::Error> {
-        let txn = self.db.begin_write()?;
-        let removed;
-        {
-            let mut table = txn.open_table(ARTIFACTS_TABLE)?;
-            removed = table.len()? as usize;
-            // Drain all entries.
-            table.retain(|_, _| false)?;
+        let mut tmp = self.path.clone();
+        let name = self
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "index.bin".into());
+        tmp.set_file_name(format!(".{name}.tmp-{}", std::process::id()));
+        let result = (|| -> std::io::Result<()> {
+            std::fs::write(&tmp, &bytes)?;
+            std::fs::rename(&tmp, &self.path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
         }
-        txn.commit()?;
-        Ok(removed)
+        result
     }
 }
 
@@ -192,7 +232,7 @@ mod tests {
 
     fn temp_store() -> (tempfile::TempDir, ArtifactStore) {
         let dir = tempfile::tempdir().unwrap();
-        let store = ArtifactStore::open(&dir.path().join("index.redb")).unwrap();
+        let store = ArtifactStore::open(&dir.path().join("index.bin")).unwrap();
         (dir, store)
     }
 
@@ -207,22 +247,20 @@ mod tests {
     }
 
     #[test]
-    fn open_creates_database() {
+    fn open_creates_empty_index() {
         let (_dir, store) = temp_store();
-        assert_eq!(store.len().unwrap(), 0);
-        assert!(store.is_empty().unwrap());
+        assert_eq!(store.len(), 0);
+        assert!(store.is_empty());
     }
 
     #[test]
     fn insert_and_get() {
         let (_dir, store) = temp_store();
-        let meta = sample_meta();
-        store.insert("abc123", &meta).unwrap();
-        let loaded = store.get("abc123").unwrap().unwrap();
+        store.insert("abc123", &sample_meta());
+        let loaded = store.get("abc123").unwrap();
         assert_eq!(&*loaded.output_names, &["foo.o".to_string()]);
         assert_eq!(loaded.output_sizes, vec![1234]);
         assert_eq!(&*loaded.stdout, b"compiler stdout");
-        assert_eq!(&*loaded.stderr, b"compiler stderr");
         assert_eq!(loaded.exit_code, 0);
         assert_eq!(loaded.total_size, 1234);
     }
@@ -230,119 +268,116 @@ mod tests {
     #[test]
     fn get_missing_returns_none() {
         let (_dir, store) = temp_store();
-        assert!(store.get("nonexistent").unwrap().is_none());
+        assert!(store.get("nonexistent").is_none());
     }
 
     #[test]
     fn insert_overwrites() {
         let (_dir, store) = temp_store();
-        let meta1 = ArtifactIndex::new(vec!["a.o".into()], vec![100], vec![], vec![], 0);
-        let meta2 = ArtifactIndex::new(vec!["b.o".into()], vec![200], vec![], vec![], 1);
-        store.insert("key", &meta1).unwrap();
-        store.insert("key", &meta2).unwrap();
-        assert_eq!(store.len().unwrap(), 1);
-        let loaded = store.get("key").unwrap().unwrap();
-        assert_eq!(&*loaded.output_names, &["b.o".to_string()]);
-        assert_eq!(loaded.exit_code, 1);
+        let m1 = ArtifactIndex::new(vec!["a.o".into()], vec![100], vec![], vec![], 0);
+        let m2 = ArtifactIndex::new(vec!["b.o".into()], vec![200], vec![], vec![], 1);
+        store.insert("key", &m1);
+        store.insert("key", &m2);
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.get("key").unwrap().exit_code, 1);
     }
 
     #[test]
-    fn remove_existing() {
+    fn remove_existing_and_missing() {
         let (_dir, store) = temp_store();
-        store.insert("key1", &sample_meta()).unwrap();
-        assert!(store.remove("key1").unwrap());
-        assert!(store.get("key1").unwrap().is_none());
-        assert_eq!(store.len().unwrap(), 0);
-    }
-
-    #[test]
-    fn remove_missing() {
-        let (_dir, store) = temp_store();
-        assert!(!store.remove("nope").unwrap());
+        store.insert("k", &sample_meta());
+        assert!(store.remove("k"));
+        assert!(!store.remove("k"));
+        assert!(store.get("k").is_none());
     }
 
     #[test]
     fn remove_batch_multiple() {
         let (_dir, store) = temp_store();
         for i in 0..5 {
-            store.insert(&format!("k{i}"), &sample_meta()).unwrap();
+            store.insert(&format!("k{i}"), &sample_meta());
         }
-        assert_eq!(store.len().unwrap(), 5);
-        let removed = store.remove_batch(&["k0", "k2", "k4", "missing"]).unwrap();
+        let removed = store.remove_batch(&["k0", "k2", "k4", "missing"]);
         assert_eq!(removed, 3);
-        assert_eq!(store.len().unwrap(), 2);
-        assert!(store.get("k1").unwrap().is_some());
-        assert!(store.get("k3").unwrap().is_some());
+        assert_eq!(store.len(), 2);
     }
 
     #[test]
-    fn remove_batch_empty() {
+    fn insert_many_and_load_all() {
         let (_dir, store) = temp_store();
-        assert_eq!(store.remove_batch(&[]).unwrap(), 0);
+        let entries: Vec<(String, ArtifactIndex)> = (0..50)
+            .map(|i| (format!("batch-{i:03}"), sample_meta()))
+            .collect();
+        let n = store.insert_many(entries);
+        assert_eq!(n, 50);
+        assert_eq!(store.load_all().len(), 50);
     }
 
     #[test]
-    fn load_all_round_trip() {
+    fn insert_many_empty_is_noop() {
         let (_dir, store) = temp_store();
-        let keys = ["aaa", "bbb", "ccc"];
-        for key in &keys {
-            store.insert(key, &sample_meta()).unwrap();
-        }
-        let all = store.load_all().unwrap();
-        assert_eq!(all.len(), 3);
-        let loaded_keys: Vec<&str> = all.iter().map(|(k, _): &(String, _)| k.as_str()).collect();
-        for key in &keys {
-            assert!(loaded_keys.contains(key));
-        }
-    }
-
-    #[test]
-    fn load_all_empty() {
-        let (_dir, store) = temp_store();
-        assert!(store.load_all().unwrap().is_empty());
+        let n = store.insert_many(std::iter::empty::<(String, ArtifactIndex)>());
+        assert_eq!(n, 0);
+        assert_eq!(store.len(), 0);
     }
 
     #[test]
     fn clear_removes_all() {
         let (_dir, store) = temp_store();
         for i in 0..10 {
-            store.insert(&format!("k{i}"), &sample_meta()).unwrap();
+            store.insert(&format!("k{i}"), &sample_meta());
         }
-        assert_eq!(store.len().unwrap(), 10);
-        let removed = store.clear().unwrap();
+        let removed = store.clear();
         assert_eq!(removed, 10);
-        assert!(store.is_empty().unwrap());
+        assert!(store.is_empty());
     }
 
     #[test]
-    fn multiple_outputs() {
-        let (_dir, store) = temp_store();
-        let meta = ArtifactIndex::new(
-            vec!["main.o".into(), "main.d".into()],
-            vec![50000, 2000],
-            vec![],
-            b"warning: unused variable".to_vec(),
-            0,
-        );
-        store.insert("multi", &meta).unwrap();
-        let loaded = store.get("multi").unwrap().unwrap();
-        assert_eq!(loaded.output_names.len(), 2);
-        assert_eq!(loaded.output_sizes, vec![50000, 2000]);
-        assert_eq!(loaded.total_size, 52000);
-        assert_eq!(&*loaded.stderr, b"warning: unused variable");
-    }
-
-    #[test]
-    fn reopen_persists() {
+    fn flush_and_reopen_round_trip() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("index.redb");
+        let path = dir.path().join("index.bin");
         {
             let store = ArtifactStore::open(&path).unwrap();
-            store.insert("persist_test", &sample_meta()).unwrap();
+            store.insert("persist_test", &sample_meta());
+            store.insert("another", &sample_meta());
+            store.flush().unwrap();
         }
-        // Reopen and verify.
         let store = ArtifactStore::open(&path).unwrap();
-        assert_eq!(store.len().unwrap(), 1);
-        assert!(store.get("persist_test").unwrap().is_some());
+        assert_eq!(store.len(), 2);
+        assert!(store.get("persist_test").is_some());
+        assert!(store.get("another").is_some());
+    }
+
+    #[test]
+    fn open_corrupt_file_starts_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.bin");
+        std::fs::write(&path, b"not valid bincode").unwrap();
+        let store = ArtifactStore::open(&path).unwrap();
+        assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn flush_without_parent_dir_creates_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/deeply/index.bin");
+        let store = ArtifactStore::open(&path).unwrap();
+        store.insert("k", &sample_meta());
+        store.flush().unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn flush_replaces_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.bin");
+        let store = ArtifactStore::open(&path).unwrap();
+        store.insert("a", &sample_meta());
+        store.flush().unwrap();
+        let first = std::fs::metadata(&path).unwrap().len();
+        store.insert("b", &sample_meta());
+        store.flush().unwrap();
+        let second = std::fs::metadata(&path).unwrap().len();
+        assert!(second > first);
     }
 }

@@ -13,6 +13,7 @@ description = "Disk-backed artifact storage for zccache"
 [dependencies]
 redb = { workspace = true }
 bincode = { workspace = true }
+dashmap = { workspace = true }
 blake3 = { workspace = true }
 rayon = { workspace = true }
 tracing = { workspace = true }

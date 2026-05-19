@@ -302,10 +302,16 @@ fn depgraph_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
     cache_dir.join("depgraph")
 }
 
-/// Returns the redb artifact index path under an explicit cache root.
+/// Returns the artifact index path under an explicit cache root.
+///
+/// Bincode blob written by `ArtifactStore::flush`. Prior versions used a
+/// redb file at `index.redb`; existing files are left on disk (untouched)
+/// when this daemon starts — the new daemon rebuilds its index from misses
+/// as compiles happen. Users wanting to reclaim the orphaned bytes can
+/// `zccache clear` or delete `index.redb` manually.
 #[must_use]
 pub fn index_path_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
-    cache_dir.join("index.redb")
+    cache_dir.join("index.bin")
 }
 
 fn crash_dump_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
@@ -373,7 +379,7 @@ mod tests {
         );
         assert_eq!(
             index_path_from_cache_dir(&cache_dir),
-            override_dir.join("index.redb")
+            override_dir.join("index.bin")
         );
         assert_eq!(
             crash_dump_dir_from_cache_dir(&cache_dir),
@@ -605,10 +611,10 @@ mod tests {
     }
 
     #[test]
-    fn index_path_ends_with_redb() {
+    fn index_path_ends_with_bin() {
         let (_temp, cache) = temp_cache_dir();
         let p = index_path_from_cache_dir(&cache);
-        assert!(p.ends_with("index.redb"));
+        assert!(p.ends_with("index.bin"));
         assert!(p.starts_with(cache));
     }
 

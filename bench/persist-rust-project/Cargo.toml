@@ -1,0 +1,33 @@
+[workspace]
+# Standalone; do not join the parent workspace.
+
+[package]
+name = "persist-rust-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# A handful of "dummy-linked" dependencies: real crates that produce real
+# rlib/rmeta/.d outputs so the persist path sees a realistic mix of file sizes
+# and counts. None are exercised in code except a single touch in main.rs.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+once_cell = "1"
+regex = "1"
+url = "2"
+indexmap = "2"
+bytes = "1"
+itertools = "0.13"
+thiserror = "1"
+anyhow = "1"
+hex = "0.4"
+base64 = "0.22"
+
+[profile.dev]
+debug = 1
+
+[profile.release]
+debug = 0

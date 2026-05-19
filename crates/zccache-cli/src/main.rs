@@ -901,7 +901,7 @@ async fn cmd_stop(endpoint: &str) -> ExitCode {
                 // No daemon — but the index file might still be there from a
                 // crashed prior run. Probe once so callers (CI tar) can rely
                 // on the lock being gone after `zccache stop` returns.
-                wait_for_redb_release(endpoint).await;
+                wait_for_daemon_teardown(endpoint).await;
                 return ExitCode::SUCCESS;
             };
 
@@ -913,7 +913,7 @@ async fn cmd_stop(endpoint: &str) -> ExitCode {
                             eprintln!(
                                 "daemon process {pid} terminated after IPC connection failed"
                             );
-                            wait_for_redb_release(endpoint).await;
+                            wait_for_daemon_teardown(endpoint).await;
                             return ExitCode::SUCCESS;
                         }
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -953,7 +953,7 @@ async fn cmd_stop(endpoint: &str) -> ExitCode {
             // for the IPC endpoint to drop and for `index.redb` to be
             // openable (i.e. no exclusive share lock) so callers like the CI
             // post-step tar do not race the daemon. See issue #182.
-            wait_for_redb_release(endpoint).await;
+            wait_for_daemon_teardown(endpoint).await;
             eprintln!("daemon stopped");
             ExitCode::SUCCESS
         }
@@ -985,23 +985,24 @@ fn stop_wait_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
-/// Poll until both the IPC endpoint is unreachable and `index.redb` can be
-/// opened (or does not exist). Emits a warning on timeout but never fails the
-/// caller — the worst case is that the caller (e.g. CI cache tar) sees the
-/// same error it would have seen without this wait.
-async fn wait_for_redb_release(endpoint: &str) {
-    let index_path = zccache_core::config::index_path();
+/// Poll until the IPC endpoint is unreachable. Emits a warning on timeout
+/// but never fails the caller — the worst case is that the caller (e.g. CI
+/// cache tar) sees the same error it would have seen without this wait.
+///
+/// The legacy redb-era version of this routine also waited for the index
+/// file's exclusive share lock to drop on Windows. With the bincode blob
+/// there is no file lock — `flush()` writes via temp+rename, holding the
+/// file handle only briefly during the rename — so endpoint reachability
+/// is the only signal we need.
+async fn wait_for_daemon_teardown(endpoint: &str) {
     let deadline = std::time::Instant::now() + stop_wait_timeout();
     loop {
-        let endpoint_gone = !is_ipc_endpoint_reachable(endpoint).await;
-        let index_free = is_index_openable(index_path.as_path());
-        if endpoint_gone && index_free {
+        if !is_ipc_endpoint_reachable(endpoint).await {
             return;
         }
         if std::time::Instant::now() >= deadline {
             eprintln!(
-                "zccache: timed out waiting for daemon teardown after stop \
-                 (endpoint_gone={endpoint_gone}, index_free={index_free}); \
+                "zccache: timed out waiting for daemon endpoint to disappear after stop; \
                  continuing anyway. set ZCCACHE_STOP_TIMEOUT_SECS to override."
             );
             return;
@@ -1013,31 +1014,6 @@ async fn wait_for_redb_release(endpoint: &str) {
 /// True if a fresh `connect()` to the daemon IPC endpoint succeeds.
 async fn is_ipc_endpoint_reachable(endpoint: &str) -> bool {
     connect(endpoint).await.is_ok()
-}
-
-/// True if `index.redb` is either absent or openable for read. On Windows,
-/// redb opens the index with exclusive share mode; any other handle opening
-/// it returns `ERROR_SHARING_VIOLATION` (raw OS error 32, surfaced as
-/// `ErrorKind::PermissionDenied` in current stable). On Unix this almost
-/// always succeeds, which is also "lock released".
-fn is_index_openable(path: &std::path::Path) -> bool {
-    match std::fs::OpenOptions::new().read(true).open(path) {
-        Ok(_) => true,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
-        Err(err) => {
-            // ERROR_SHARING_VIOLATION (32) is the case we want to keep
-            // polling on. Anything else (PermissionDenied for ACL reasons,
-            // etc.) we also treat as "not ready" so we don't falsely report
-            // success while the daemon still holds the file.
-            if err.raw_os_error() == Some(32) || err.kind() == std::io::ErrorKind::PermissionDenied
-            {
-                return false;
-            }
-            // Any other unexpected error: treat as "ready" so we don't spin
-            // forever on a fundamentally broken cache dir.
-            true
-        }
-    }
 }
 
 async fn cmd_status(endpoint: &str, json: bool) -> ExitCode {
@@ -1946,9 +1922,7 @@ fn warm_target(
     let store = zccache_artifact::ArtifactStore::open(index_path)
         .map_err(|e| format!("failed to open artifact index: {e}"))?;
 
-    let all_entries = store
-        .load_all()
-        .map_err(|e| format!("failed to read artifact index: {e}"))?;
+    let all_entries = store.load_all();
 
     if all_entries.is_empty() {
         return Err("no cached artifacts found in index".to_string());
@@ -4694,7 +4668,7 @@ mod tests {
             vec![],
             0,
         );
-        store.insert(key1, &idx1).unwrap();
+        store.insert(key1, &idx1);
         // Write payload files on disk
         std::fs::write(artifact_dir.join(format!("{key1}_0")), b"rlib-content").unwrap();
         std::fs::write(artifact_dir.join(format!("{key1}_1")), b"rmeta-content").unwrap();
@@ -4709,7 +4683,7 @@ mod tests {
             vec![],
             0,
         );
-        store.insert(key2, &idx2).unwrap();
+        store.insert(key2, &idx2);
         std::fs::write(artifact_dir.join(format!("{key2}_0")), b"proc-macro2-rlib").unwrap();
 
         // Artifact 3: NOT Rust (C++ object file) — should be filtered out
@@ -4721,7 +4695,7 @@ mod tests {
             vec![],
             0,
         );
-        store.insert(key3, &idx3).unwrap();
+        store.insert(key3, &idx3);
         std::fs::write(artifact_dir.join(format!("{key3}_0")), b"object-file").unwrap();
 
         drop(store); // Release redb lock
@@ -4799,7 +4773,7 @@ mod tests {
             vec![],
             0,
         );
-        store.insert(key, &idx).unwrap();
+        store.insert(key, &idx);
         // DON'T write the payload file — simulate missing artifact on disk
         drop(store);
 
@@ -4836,72 +4810,64 @@ mod tests {
 
         // serde (in a typical Cargo.lock)
         let k1 = "aaaa0001";
-        store
-            .insert(
-                k1,
-                &zccache_artifact::ArtifactIndex::new(
-                    vec![
-                        "libserde-abc123.rlib".into(),
-                        "libserde-abc123.rmeta".into(),
-                        "serde-abc123.d".into(),
-                    ],
-                    vec![100, 50, 10],
-                    vec![],
-                    vec![],
-                    0,
-                ),
-            )
-            .unwrap();
+        store.insert(
+            k1,
+            &zccache_artifact::ArtifactIndex::new(
+                vec![
+                    "libserde-abc123.rlib".into(),
+                    "libserde-abc123.rmeta".into(),
+                    "serde-abc123.d".into(),
+                ],
+                vec![100, 50, 10],
+                vec![],
+                vec![],
+                0,
+            ),
+        );
         std::fs::write(artifact_dir.join(format!("{k1}_0")), b"serde-rlib").unwrap();
         std::fs::write(artifact_dir.join(format!("{k1}_1")), b"serde-rmeta").unwrap();
         std::fs::write(artifact_dir.join(format!("{k1}_2")), b"serde-d").unwrap();
 
         // proc-macro2 (hyphen → underscore in filename)
         let k2 = "aaaa0002";
-        store
-            .insert(
-                k2,
-                &zccache_artifact::ArtifactIndex::new(
-                    vec!["libproc_macro2-def456.rlib".into()],
-                    vec![200],
-                    vec![],
-                    vec![],
-                    0,
-                ),
-            )
-            .unwrap();
+        store.insert(
+            k2,
+            &zccache_artifact::ArtifactIndex::new(
+                vec!["libproc_macro2-def456.rlib".into()],
+                vec![200],
+                vec![],
+                vec![],
+                0,
+            ),
+        );
         std::fs::write(artifact_dir.join(format!("{k2}_0")), b"proc-macro2-rlib").unwrap();
 
         // tokio (NOT in our test lockfile)
         let k3 = "aaaa0003";
-        store
-            .insert(
-                k3,
-                &zccache_artifact::ArtifactIndex::new(
-                    vec!["libtokio-ghi789.rlib".into()],
-                    vec![300],
-                    vec![],
-                    vec![],
-                    0,
-                ),
-            )
-            .unwrap();
+        store.insert(
+            k3,
+            &zccache_artifact::ArtifactIndex::new(
+                vec!["libtokio-ghi789.rlib".into()],
+                vec![300],
+                vec![],
+                vec![],
+                0,
+            ),
+        );
         std::fs::write(artifact_dir.join(format!("{k3}_0")), b"tokio-rlib").unwrap();
 
         // C++ object file (no crate name pattern)
         let k4 = "aaaa0004";
-        store
-            .insert(
-                k4,
-                &zccache_artifact::ArtifactIndex::new(
-                    vec!["foo.o".into()],
-                    vec![50],
-                    vec![],
-                    vec![],
-                    0,
-                ),
-            )
-            .unwrap();
+        store.insert(
+            k4,
+            &zccache_artifact::ArtifactIndex::new(
+                vec!["foo.o".into()],
+                vec![50],
+                vec![],
+                vec![],
+                0,
+            ),
+        );
         std::fs::write(artifact_dir.join(format!("{k4}_0")), b"cpp-object").unwrap();
 
         drop(store);
@@ -5095,34 +5061,30 @@ mod tests {
 
         // Old version's artifact (different hash suffix)
         let k_old = "bbbb0001";
-        store
-            .insert(
-                k_old,
-                &zccache_artifact::ArtifactIndex::new(
-                    vec!["libserde-old111.rlib".into()],
-                    vec![100],
-                    vec![],
-                    vec![],
-                    0,
-                ),
-            )
-            .unwrap();
+        store.insert(
+            k_old,
+            &zccache_artifact::ArtifactIndex::new(
+                vec!["libserde-old111.rlib".into()],
+                vec![100],
+                vec![],
+                vec![],
+                0,
+            ),
+        );
         std::fs::write(artifact_dir.join(format!("{k_old}_0")), b"old-serde").unwrap();
 
         // New version's artifact (different hash suffix)
         let k_new = "bbbb0002";
-        store
-            .insert(
-                k_new,
-                &zccache_artifact::ArtifactIndex::new(
-                    vec!["libserde-new222.rlib".into()],
-                    vec![100],
-                    vec![],
-                    vec![],
-                    0,
-                ),
-            )
-            .unwrap();
+        store.insert(
+            k_new,
+            &zccache_artifact::ArtifactIndex::new(
+                vec!["libserde-new222.rlib".into()],
+                vec![100],
+                vec![],
+                vec![],
+                0,
+            ),
+        );
         std::fs::write(artifact_dir.join(format!("{k_new}_0")), b"new-serde").unwrap();
 
         drop(store);
@@ -5162,18 +5124,16 @@ mod tests {
 
         let store = zccache_artifact::ArtifactStore::open(&index_path).unwrap();
         let key = "cccc0001";
-        store
-            .insert(
-                key,
-                &zccache_artifact::ArtifactIndex::new(
-                    vec!["libserde-abc123.rlib".into()],
-                    vec![1000], // Claims 1000 bytes
-                    vec![],
-                    vec![],
-                    0,
-                ),
-            )
-            .unwrap();
+        store.insert(
+            key,
+            &zccache_artifact::ArtifactIndex::new(
+                vec!["libserde-abc123.rlib".into()],
+                vec![1000], // Claims 1000 bytes
+                vec![],
+                vec![],
+                0,
+            ),
+        );
         // But payload is only 5 bytes (corrupted/truncated)
         std::fs::write(artifact_dir.join(format!("{key}_0")), b"short").unwrap();
         drop(store);
@@ -5262,62 +5222,13 @@ mod tests {
         }
     }
 
-    /// `wait_for_redb_release` keys on `is_index_openable`. A missing index
-    /// file is the common case in CI when no daemon ever started — it must
-    /// report "ready" so the wait does not stall.
+    /// The bounded wait loop must return promptly when the IPC endpoint is
+    /// already unreachable (typical CI shape after a clean stop).
     #[test]
-    fn index_openable_treats_missing_file_as_ready() {
+    fn wait_for_daemon_teardown_returns_when_endpoint_unreachable() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let missing = tmp.path().join("does-not-exist.redb");
-        assert!(is_index_openable(&missing));
-    }
-
-    /// An ordinary index file with no exclusive lock should be reported as
-    /// openable. This is the path Unix always takes and the path Windows
-    /// takes after the daemon's `Drop` fires.
-    #[test]
-    fn index_openable_succeeds_for_unlocked_file() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join("index.redb");
-        std::fs::write(&path, b"fake redb body").expect("write");
-        assert!(is_index_openable(&path));
-    }
-
-    /// Simulate a daemon holding the file with Windows exclusive share mode.
-    /// The probe must return false so the poll loop keeps waiting; on Unix
-    /// this open succeeds (no exclusive share semantics), so the assertion
-    /// flips. Either way we exercise the branch that gates the poll loop.
-    #[cfg(windows)]
-    #[test]
-    fn index_openable_returns_false_for_exclusive_share_lock() {
-        use std::os::windows::fs::OpenOptionsExt;
-        // FILE_SHARE_NONE = 0, matching redb's exclusive open on Windows.
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join("index.redb");
-        std::fs::write(&path, b"fake redb body").expect("write");
-        let _holder = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .share_mode(0)
-            .open(&path)
-            .expect("hold exclusive");
-        assert!(!is_index_openable(&path));
-        drop(_holder);
-        assert!(is_index_openable(&path));
-    }
-
-    /// The bounded wait loop must return promptly once both conditions are
-    /// true. Use an endpoint we know is unreachable plus a missing index
-    /// file so the very first poll satisfies the predicate.
-    #[test]
-    fn wait_for_redb_release_returns_when_both_conditions_satisfied() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        // Point the index probe at a non-existent file.
-        std::env::set_var("ZCCACHE_CACHE_DIR", tmp.path());
         std::env::set_var("ZCCACHE_STOP_TIMEOUT_SECS", "2");
 
-        // An obviously-bad endpoint so `connect()` fails fast and
-        // `is_ipc_endpoint_reachable` returns false on the first probe.
         let unreachable_endpoint = if cfg!(windows) {
             r"\\.\pipe\zccache-test-does-not-exist-182".to_string()
         } else {
@@ -5332,64 +5243,13 @@ mod tests {
             .build()
             .expect("runtime");
         let started = std::time::Instant::now();
-        rt.block_on(wait_for_redb_release(&unreachable_endpoint));
+        rt.block_on(wait_for_daemon_teardown(&unreachable_endpoint));
         let elapsed = started.elapsed();
         std::env::remove_var("ZCCACHE_STOP_TIMEOUT_SECS");
-        std::env::remove_var("ZCCACHE_CACHE_DIR");
 
-        // The first iteration of the loop should satisfy both predicates and
-        // return immediately — well under the 2s timeout we configured.
         assert!(
             elapsed < std::time::Duration::from_secs(2),
-            "wait_for_redb_release blocked for {elapsed:?} despite both conditions \
-             being satisfied at t=0"
-        );
-    }
-
-    /// Verify the env-var override is honored and the timeout fires when the
-    /// index file is held by a locker we never release within the budget.
-    #[cfg(windows)]
-    #[test]
-    fn wait_for_redb_release_times_out_when_index_stays_locked() {
-        use std::os::windows::fs::OpenOptionsExt;
-
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join("index.redb");
-        std::fs::write(&path, b"fake redb body").expect("write");
-        let _holder = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .share_mode(0)
-            .open(&path)
-            .expect("hold exclusive");
-
-        std::env::set_var("ZCCACHE_CACHE_DIR", tmp.path());
-        // 1 second timeout so the test stays fast.
-        std::env::set_var("ZCCACHE_STOP_TIMEOUT_SECS", "1");
-
-        let unreachable_endpoint = r"\\.\pipe\zccache-test-does-not-exist-182-timeout".to_string();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        let started = std::time::Instant::now();
-        rt.block_on(wait_for_redb_release(&unreachable_endpoint));
-        let elapsed = started.elapsed();
-
-        std::env::remove_var("ZCCACHE_STOP_TIMEOUT_SECS");
-        std::env::remove_var("ZCCACHE_CACHE_DIR");
-        drop(_holder);
-
-        // We expect roughly the configured 1s budget — allow generous slack
-        // for CI variance. The point is: it returned, it did not hang
-        // forever, and it took at least the configured timeout.
-        assert!(
-            elapsed >= std::time::Duration::from_millis(900),
-            "wait returned in {elapsed:?}, before the 1s timeout"
-        );
-        assert!(
-            elapsed < std::time::Duration::from_secs(5),
-            "wait took {elapsed:?}, exceeding reasonable slack on 1s timeout"
+            "wait_for_daemon_teardown blocked for {elapsed:?} despite endpoint unreachable at t=0"
         );
     }
 

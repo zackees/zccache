@@ -1,7 +1,8 @@
 //! Disk artifact cache for zccache.
 //!
-//! Provides content-addressed storage for compilation artifacts,
-//! backed by the filesystem with a redb index for metadata and eviction.
+//! Provides content-addressed storage for compilation artifacts, backed by
+//! the filesystem with an in-memory `ArtifactIndex` snapshotted to a bincode
+//! blob (`index.bin`) for metadata and eviction.
 
 #![allow(clippy::missing_errors_doc)] // TODO: add error docs
 
@@ -38,8 +39,8 @@ pub struct ArtifactStoreConfig {
 /// Artifacts are stored in a content-addressed directory layout:
 /// `{cache_dir}/artifacts/{hash[0..2]}/{hash[2..4]}/{hash}`
 ///
-/// A redb database at `{cache_dir}/index.redb` tracks metadata
-/// and access times for eviction.
+/// A bincode blob at `{cache_dir}/index.bin` tracks metadata and access
+/// times for eviction; see `store.rs` for the in-memory + flush design.
 pub struct ArtifactStoreLegacy {
     config: ArtifactStoreConfig,
 }
