@@ -54,8 +54,14 @@ jobs:
         run: |
           install_dir="$HOME/.local/bin"
           mkdir -p "$install_dir"
-          install -m755 target/release/zccache        "$install_dir/zccache"
-          install -m755 target/release/zccache-daemon "$install_dir/zccache-daemon"
+          # soldr may pin a target triple, in which case the artifacts
+          # live under `target/<triple>/release/`. Find them either way.
+          z=$(find target -path '*release/zccache' -type f -not -path '*/deps/*' | head -1)
+          zd=$(find target -path '*release/zccache-daemon' -type f -not -path '*/deps/*' | head -1)
+          test -n "$z"  || { echo "zccache binary not found under target/"; find target -name 'zccache' -type f; exit 1; }
+          test -n "$zd" || { echo "zccache-daemon binary not found under target/"; find target -name 'zccache-daemon' -type f; exit 1; }
+          install -m755 "$z"  "$install_dir/zccache"
+          install -m755 "$zd" "$install_dir/zccache-daemon"
           echo "$install_dir" >> "$GITHUB_PATH"
           # macOS: strip the quarantine xattr if the runner image attached
           # one. Harmless no-op when absent.
@@ -70,17 +76,23 @@ jobs:
         run: |
           $installDir = "$env:USERPROFILE\.local\bin"
           New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-          Copy-Item target/release/zccache.exe        "$installDir/zccache.exe"        -Force
-          Copy-Item target/release/zccache-daemon.exe "$installDir/zccache-daemon.exe" -Force
+          # Same triple-subdir-or-flat layout as Unix; resolve the actual
+          # path before copying.
+          $z  = Get-ChildItem -Recurse target -Filter zccache.exe        | Where-Object { $_.FullName -match '\\release\\' -and $_.FullName -notmatch '\\deps\\' } | Select-Object -First 1
+          $zd = Get-ChildItem -Recurse target -Filter zccache-daemon.exe | Where-Object { $_.FullName -match '\\release\\' -and $_.FullName -notmatch '\\deps\\' } | Select-Object -First 1
+          if (-not $z)  { Write-Error "zccache.exe not found under target/";        exit 1 }
+          if (-not $zd) { Write-Error "zccache-daemon.exe not found under target/"; exit 1 }
+          Copy-Item $z.FullName  "$installDir/zccache.exe"        -Force
+          Copy-Item $zd.FullName "$installDir/zccache-daemon.exe" -Force
           Add-Content $env:GITHUB_PATH $installDir
 
       - name: smoke compile through wrapper (Unix)
         if: runner.os != 'Windows'
         env:
-          # Set the wrapper here, not in the recipe, so cargo + every
-          # tool in the chain sees the same path. zccache binary lives
-          # at $HOME/.local/bin/zccache from the install step above.
-          RUSTC_WRAPPER: ${{ runner.os == 'macOS' && format('/Users/runner/.local/bin/zccache') || format('/home/runner/.local/bin/zccache') }}
+          # `zccache` is on PATH (from the install step above). cargo
+          # resolves RUSTC_WRAPPER via the usual PATH lookup, so a bare
+          # name works on every OS without runner-specific paths.
+          RUSTC_WRAPPER: zccache
         run: |
           cd "$(mktemp -d)"
           cargo new --lib hello
@@ -98,8 +110,9 @@ jobs:
       - name: smoke compile through wrapper (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          RUSTC_WRAPPER: zccache
         run: |
-          $env:RUSTC_WRAPPER = "$env:USERPROFILE\.local\bin\zccache.exe"
           $tmp = New-Item -ItemType Directory -Path "$env:TEMP/zc-e2e-$(Get-Random)" -Force
           Set-Location $tmp
           cargo new --lib hello
