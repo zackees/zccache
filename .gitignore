@@ -18,10 +18,11 @@ Thumbs.db
 .cache/
 
 # Claude Code runtime state (settings.json/rules/hooks ARE tracked,
-# but per-session locks/state files are not)
+# but per-session locks/state files and per-user local overrides are not)
 .claude/scheduled_tasks.lock
 .claude/scheduled_tasks/
 .claude/worktrees/
+.claude/settings.local.json
 
 # Project-local toolchain caches (managed by soldr)
 .cargo/

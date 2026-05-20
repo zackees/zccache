@@ -34,22 +34,6 @@
           }
         ]
       }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "soldr cargo fmt --all",
-            "timeout": 60
-          },
-          {
-            "type": "command",
-            "command": "soldr cargo run -p zccache-ci",
-            "timeout": 600
-          }
-        ]
-      }
     ]
   }
 }
