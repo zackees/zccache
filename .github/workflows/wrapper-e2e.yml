@@ -1,9 +1,13 @@
 name: Wrapper end-to-end
 
-# Smoke test the RUSTC_WRAPPER path end-to-end. Builds zccache from source,
-# puts both binaries on PATH, then drives a real cargo build through soldr
-# with the wrapper enabled. proc-macro2 + serde-derive force build-script
-# rustc invocations — exactly the path that broke on macOS in 1.7.2.
+# Smoke test the RUSTC_WRAPPER path end-to-end. Build zccache from source,
+# put both binaries on PATH, then drive a real `cargo build` against a
+# small crate with proc-macro build scripts (serde --features derive),
+# routing every rustc invocation through the freshly-built wrapper.
+#
+# Green on macos-13 / macos-14 is the acceptance signal that the 1.7.2
+# macOS regression — build-script rustc failing in ~4ms with stderr
+# swallowed — is fixed.
 
 on:
   push:
@@ -37,21 +41,26 @@ jobs:
           soldr --version
           rustc --version || true
 
+      # Force soldr to honor the workspace-relative `target/` dir so the
+      # next step can copy the artifacts out predictably across OSes —
+      # soldr otherwise picks its own CARGO_TARGET_DIR under
+      # `$HOME/.soldr/...`. The `--target-dir` is per-invocation; nothing
+      # else in CI relies on it.
       - name: build zccache release binaries
-        run: soldr cargo build --release -p zccache-cli -p zccache-daemon
+        run: soldr cargo build --release --target-dir target -p zccache-cli -p zccache-daemon
 
       - name: install binaries on PATH (Unix)
         if: runner.os != 'Windows'
         run: |
           install_dir="$HOME/.local/bin"
           mkdir -p "$install_dir"
-          install -m755 target/release/zccache "$install_dir/zccache"
+          install -m755 target/release/zccache        "$install_dir/zccache"
           install -m755 target/release/zccache-daemon "$install_dir/zccache-daemon"
           echo "$install_dir" >> "$GITHUB_PATH"
           # macOS: strip the quarantine xattr if the runner image attached
           # one. Harmless no-op when absent.
           if [ "${{ runner.os }}" = "macOS" ]; then
-            xattr -dr com.apple.quarantine "$install_dir/zccache" || true
+            xattr -dr com.apple.quarantine "$install_dir/zccache"        || true
             xattr -dr com.apple.quarantine "$install_dir/zccache-daemon" || true
           fi
 
@@ -67,16 +76,21 @@ jobs:
 
       - name: smoke compile through wrapper (Unix)
         if: runner.os != 'Windows'
+        env:
+          # Set the wrapper here, not in the recipe, so cargo + every
+          # tool in the chain sees the same path. zccache binary lives
+          # at $HOME/.local/bin/zccache from the install step above.
+          RUSTC_WRAPPER: ${{ runner.os == 'macOS' && format('/Users/runner/.local/bin/zccache') || format('/home/runner/.local/bin/zccache') }}
         run: |
           cd "$(mktemp -d)"
           cargo new --lib hello
           cd hello
+          # serde-derive pulls in proc-macro2 + serde_derive, both of
+          # which have build scripts. cargo will run the wrapper for
+          # each build-script rustc invocation — the exact path that
+          # broke on macOS in 1.7.2.
           cargo add serde --features derive
-          # `soldr --zccache system` enables RUSTC_WRAPPER=zccache using the
-          # PATH-resolved binary. Build-script rustc invocations under
-          # proc-macro2 / serde-derive go through the wrapper — the path
-          # that was broken on macOS in 1.7.2.
-          soldr --zccache system cargo build --verbose 2>&1 | tee build.log
+          cargo build --verbose 2>&1 | tee build.log
           grep -F 'Compiling proc-macro2' build.log
           grep -F 'Compiling serde'        build.log
           test -d "$HOME/.zccache/logs"
@@ -85,12 +99,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $env:RUSTC_WRAPPER = "$env:USERPROFILE\.local\bin\zccache.exe"
           $tmp = New-Item -ItemType Directory -Path "$env:TEMP/zc-e2e-$(Get-Random)" -Force
           Set-Location $tmp
           cargo new --lib hello
           Set-Location hello
           cargo add serde --features derive
-          soldr --zccache system cargo build --verbose 2>&1 | Tee-Object -FilePath build.log
+          cargo build --verbose 2>&1 | Tee-Object -FilePath build.log
           if (-not (Select-String -Path build.log -Pattern 'Compiling proc-macro2')) { exit 1 }
           if (-not (Select-String -Path build.log -Pattern 'Compiling serde'))        { exit 1 }
           if (-not (Test-Path "$env:USERPROFILE/.zccache/logs")) { exit 1 }

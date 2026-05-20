@@ -125,16 +125,11 @@ libraries = [{ path = "dylints/*" }]
 [profile.dev]
 debug = "line-tables-only"
 
-# Release builds keep function-name + source-line debug info so external
-# profilers (perf, samply, Instruments, WPA, ETW) can attribute samples to
-# functions and lines. The debug info is split into a per-binary sidecar:
-#   - Linux:        <binary>.dwp (DWARF package, requires rust-dwp at build)
-#   - macOS:        <binary>.dSYM/ (debug symbol bundle, dsymutil)
-#   - Windows MSVC: <binary>.pdb  (already the default, kept explicit)
-# The shipped binary stays slim because the debug info is in the sidecar.
-# Runtime is unaffected — the sidecar is not loaded at execution time.
-# Override with CARGO_PROFILE_RELEASE_DEBUG=none cargo build --release for a
-# smallest-possible binary when no profiling is needed.
+# Release builds keep only `file:line` debug info inline — enough for a
+# panic backtrace or a profiler to attribute a sample to source, and
+# nothing else. No DWARF variable/type tables, no separate sidecar
+# (`.dwp` / `.dSYM` / `.pdb`) — the shipped binary is the whole story.
+# Override with `CARGO_PROFILE_RELEASE_DEBUG=none cargo build --release`
+# for a smallest-possible binary when not even line info is needed.
 [profile.release]
 debug = "line-tables-only"
-split-debuginfo = "packed"
