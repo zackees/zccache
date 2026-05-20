@@ -1478,6 +1478,7 @@ async fn handle_connection(
                 cwd,
                 compiler,
                 env,
+                stdin,
             } => {
                 let ctx = JournalContext {
                     compiler: compiler.to_string_lossy().into_owned(),
@@ -1493,6 +1494,7 @@ async fn handle_connection(
                     &cwd,
                     &compiler,
                     env,
+                    stdin,
                 )
                 .await;
                 (resp, Some(ctx))
@@ -1504,6 +1506,7 @@ async fn handle_connection(
                 args,
                 cwd,
                 env,
+                stdin,
             } => {
                 let ctx = JournalContext {
                     compiler: compiler.to_string_lossy().into_owned(),
@@ -1520,6 +1523,7 @@ async fn handle_connection(
                     &ctx.args,
                     &cwd,
                     env,
+                    stdin,
                 )
                 .await;
                 (resp, Some(ctx))
@@ -1778,6 +1782,7 @@ async fn handle_clear(state: &SharedState) -> Response {
 
 /// Handle a single-roundtrip ephemeral compile: session start + compile + session end.
 /// Avoids 3 IPC roundtrips for drop-in wrapper mode.
+#[allow(clippy::too_many_arguments)] // Single dispatch hop; ergonomic refactor unblocked once we stop adding new client-side fields.
 async fn handle_compile_ephemeral(
     state: &Arc<SharedState>,
     client_pid: u32,
@@ -1786,6 +1791,7 @@ async fn handle_compile_ephemeral(
     args: &[String],
     cwd: &Path,
     env: Option<Vec<(String, String)>>,
+    stdin: Vec<u8>,
 ) -> Response {
     // 1. Start ephemeral session (inline, no IPC roundtrip)
     state.stats.record_session();
@@ -1802,7 +1808,7 @@ async fn handle_compile_ephemeral(
     };
 
     // 2. Compile — pass the compiler from the ephemeral request
-    let result = handle_compile(state, &session_id, args, cwd, compiler, env).await;
+    let result = handle_compile(state, &session_id, args, cwd, compiler, env, stdin).await;
 
     // 3. End session (best-effort, no response needed)
     if let Ok(sid) = session_id.parse::<SessionId>() {
@@ -4543,6 +4549,7 @@ async fn handle_compile(
     cwd: &Path,
     compiler_path: &Path,
     client_env: Option<Vec<(String, String)>>,
+    _stdin: Vec<u8>,
 ) -> Response {
     let state = state_arc.as_ref();
     let compile_start = std::time::Instant::now();
@@ -8284,6 +8291,7 @@ exit /b 0
                     cwd: cwd.clone().into(),
                     compiler: clang.to_string_lossy().into_owned().into(),
                     env: None,
+                    stdin: Vec::new(),
                 })
                 .await
                 .unwrap();
@@ -8316,6 +8324,7 @@ exit /b 0
                     cwd: cwd.clone().into(),
                     compiler: clang.to_string_lossy().into_owned().into(),
                     env: None,
+                    stdin: Vec::new(),
                 })
                 .await
                 .unwrap();
@@ -8355,6 +8364,7 @@ exit /b 0
                     cwd: cwd.clone().into(),
                     compiler: clang.to_string_lossy().into_owned().into(),
                     env: None,
+                    stdin: Vec::new(),
                 })
                 .await
                 .unwrap();
@@ -8485,6 +8495,7 @@ exit /b 0
                     cwd: cwd.clone().into(),
                     compiler: "/nonexistent/compiler".to_string().into(),
                     env: None,
+                    stdin: Vec::new(),
                 })
                 .await
                 .unwrap();
@@ -8558,6 +8569,7 @@ exit /b 0
                     cwd: cwd.clone().into(),
                     compiler: clang.to_string_lossy().into_owned().into(),
                     env: None,
+                    stdin: Vec::new(),
                 })
                 .await
                 .unwrap();
@@ -8581,6 +8593,7 @@ exit /b 0
                     cwd: cwd.clone().into(),
                     compiler: clang.to_string_lossy().into_owned().into(),
                     env: None,
+                    stdin: Vec::new(),
                 })
                 .await
                 .unwrap();
@@ -8641,6 +8654,7 @@ exit /b 0
                     cwd: cwd.into(),
                     compiler: clang.to_string_lossy().into_owned().into(),
                     env: None,
+                    stdin: Vec::new(),
                 })
                 .await
                 .unwrap();
@@ -8712,6 +8726,7 @@ exit /b 0
                     cwd: cwd.clone().into(),
                     compiler: clang.to_string_lossy().into_owned().into(),
                     env: None,
+                    stdin: Vec::new(),
                 })
                 .await
                 .unwrap();
@@ -8740,6 +8755,7 @@ exit /b 0
                     cwd: cwd.clone().into(),
                     compiler: clang.to_string_lossy().into_owned().into(),
                     env: None,
+                    stdin: Vec::new(),
                 })
                 .await
                 .unwrap();

@@ -95,6 +95,7 @@ async fn test_session_start_with_nonexistent_compiler() {
                 cwd: std::env::current_dir().unwrap().into(),
                 compiler: "/nonexistent/compiler".to_string().into(),
                 env: None,
+                stdin: Vec::new(),
             })
             .await
             .unwrap();
@@ -303,6 +304,7 @@ int main() {
                 cwd: tmp.path().to_string_lossy().into_owned().into(),
                 compiler: compiler_str.clone().into(),
                 env: None,
+                stdin: Vec::new(),
             })
             .await
             .unwrap();
@@ -340,6 +342,7 @@ int main() {
                 cwd: tmp.path().to_string_lossy().into_owned().into(),
                 compiler: compiler_str.into(),
                 env: None,
+                stdin: Vec::new(),
             })
             .await
             .unwrap();

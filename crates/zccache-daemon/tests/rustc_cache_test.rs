@@ -90,6 +90,7 @@ async fn compile_with_env(
             cwd: cwd.to_path_buf().into(),
             compiler: NormalizedPath::new(compiler),
             env,
+            stdin: Vec::new(),
         })
         .await
         .unwrap();

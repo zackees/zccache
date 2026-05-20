@@ -74,6 +74,7 @@ async fn compile_and_read(
             cwd: cwd.to_string().into(),
             compiler: compiler.to_string().into(),
             env: None,
+            stdin: Vec::new(),
         })
         .await
         .unwrap();

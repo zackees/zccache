@@ -81,6 +81,7 @@ async fn compile_with_env(
             cwd: cwd.to_string().into(),
             compiler: compiler.to_string().into(),
             env,
+            stdin: Vec::new(),
         })
         .await
         .unwrap();
@@ -560,6 +561,7 @@ async fn adversarial_invalid_session_id() {
             cwd: cwd.into(),
             compiler: "/usr/bin/clang".to_string().into(),
             env: None,
+            stdin: Vec::new(),
         })
         .await
         .unwrap();
@@ -605,6 +607,7 @@ async fn adversarial_non_cacheable_passthrough() {
             cwd: cwd.clone().into(),
             compiler: comp.clone().into(),
             env: None,
+            stdin: Vec::new(),
         })
         .await
         .unwrap();
@@ -1180,6 +1183,7 @@ async fn compiler_override_uses_wrapped_compiler() {
             cwd: cwd.clone().into(),
             compiler: clang.to_string_lossy().into_owned().into(),
             env: None,
+            stdin: Vec::new(),
         })
         .await
         .unwrap();

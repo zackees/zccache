@@ -134,6 +134,156 @@ pub fn detach_stdio() {
     detach_stdio_windows();
 }
 
+/// Redirect this process's stdout + stderr to the given log file, leaving
+/// stdin nulled.
+///
+/// Differs from [`detach_stdio`] in that the daemon's tracing output and
+/// any pre-tracing panic spew lands in a file instead of `/dev/null` (Unix)
+/// or `NUL` (Windows). The CLI passes the path via `--log-file` and the
+/// daemon calls this before [`crate::crash::install_panic_hook`] so even a
+/// dyld / gatekeeper / pre-runtime panic on macOS leaves evidence on disk.
+///
+/// Best-effort: open errors fall through to [`detach_stdio`] so a missing
+/// directory or read-only filesystem never blocks daemon start.
+pub fn redirect_stdio_to_log(log_path: &Path) {
+    #[cfg(unix)]
+    if !redirect_stdio_to_log_unix(log_path) {
+        detach_stdio_unix();
+    }
+
+    #[cfg(windows)]
+    if !redirect_stdio_to_log_windows(log_path) {
+        detach_stdio_windows();
+    }
+}
+
+#[cfg(unix)]
+fn redirect_stdio_to_log_unix(log_path: &Path) -> bool {
+    // SAFETY: open/dup2/close are async-signal-safe and we're running on
+    // the main thread with no other threads spawned yet.
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let path_c = match CString::new(log_path.as_os_str().as_bytes()) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    unsafe {
+        let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY);
+        if null < 0 {
+            return false;
+        }
+        let _ = libc::dup2(null, libc::STDIN_FILENO);
+        if null > libc::STDERR_FILENO {
+            let _ = libc::close(null);
+        }
+
+        let log_fd = libc::open(
+            path_c.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND,
+            0o644,
+        );
+        if log_fd < 0 {
+            return false;
+        }
+        let _ = libc::dup2(log_fd, libc::STDOUT_FILENO);
+        let _ = libc::dup2(log_fd, libc::STDERR_FILENO);
+        if log_fd > libc::STDERR_FILENO {
+            let _ = libc::close(log_fd);
+        }
+    }
+    true
+}
+
+#[cfg(windows)]
+fn redirect_stdio_to_log_windows(log_path: &Path) -> bool {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+
+    extern "system" {
+        fn CreateFileW(
+            lp_file_name: *const u16,
+            dw_desired_access: u32,
+            dw_share_mode: u32,
+            lp_security_attributes: *mut std::ffi::c_void,
+            dw_creation_disposition: u32,
+            dw_flags_and_attributes: u32,
+            h_template_file: *mut std::ffi::c_void,
+        ) -> *mut std::ffi::c_void;
+        fn GetStdHandle(n_std_handle: u32) -> *mut std::ffi::c_void;
+        fn SetStdHandle(n_std_handle: u32, h_handle: *mut std::ffi::c_void) -> i32;
+        fn CloseHandle(h_object: *mut std::ffi::c_void) -> i32;
+        fn SetFilePointerEx(
+            h_file: *mut std::ffi::c_void,
+            li_distance_to_move: i64,
+            lp_new_file_pointer: *mut i64,
+            dw_move_method: u32,
+        ) -> i32;
+    }
+
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const OPEN_EXISTING: u32 = 3;
+    const OPEN_ALWAYS: u32 = 4;
+    const FILE_END: u32 = 2;
+    const STD_INPUT_HANDLE: u32 = 0xFFFF_FFF6;
+    const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5;
+    const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF4;
+    const INVALID_HANDLE_VALUE: *mut std::ffi::c_void = -1isize as *mut std::ffi::c_void;
+
+    let path_w: Vec<u16> = log_path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let nul_w: Vec<u16> = OsStr::new("NUL").encode_wide().chain(Some(0)).collect();
+
+    unsafe {
+        // stdin → NUL (read).
+        let nul_in = CreateFileW(
+            nul_w.as_ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            ptr::null_mut(),
+            OPEN_EXISTING,
+            0,
+            ptr::null_mut(),
+        );
+        if !nul_in.is_null() && nul_in != INVALID_HANDLE_VALUE {
+            let old = GetStdHandle(STD_INPUT_HANDLE);
+            let _ = SetStdHandle(STD_INPUT_HANDLE, nul_in);
+            if !old.is_null() && old != INVALID_HANDLE_VALUE {
+                let _ = CloseHandle(old);
+            }
+        }
+
+        // stdout + stderr → log file (append).
+        let log_handle = CreateFileW(
+            path_w.as_ptr(),
+            GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            ptr::null_mut(),
+            OPEN_ALWAYS,
+            0,
+            ptr::null_mut(),
+        );
+        if log_handle.is_null() || log_handle == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        // Seek to EOF so we append rather than truncate.
+        let _ = SetFilePointerEx(log_handle, 0, ptr::null_mut(), FILE_END);
+
+        for slot in [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            let old = GetStdHandle(slot);
+            let _ = SetStdHandle(slot, log_handle);
+            if !old.is_null() && old != INVALID_HANDLE_VALUE {
+                let _ = CloseHandle(old);
+            }
+        }
+    }
+    true
+}
+
 #[cfg(unix)]
 fn detach_stdio_unix() {
     // SAFETY: open/dup2/close are async-signal-safe and we're running on

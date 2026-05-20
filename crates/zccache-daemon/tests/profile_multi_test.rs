@@ -121,6 +121,7 @@ async fn profile_multi_file_warm_path() {
                 cwd: cwd.clone().into(),
                 compiler: compiler.clone().into(),
                 env: None,
+                stdin: Vec::new(),
             })
             .await
             .unwrap();
@@ -150,6 +151,7 @@ async fn profile_multi_file_warm_path() {
                 cwd: cwd.clone().into(),
                 compiler: compiler.clone().into(),
                 env: None,
+                stdin: Vec::new(),
             })
             .await
             .unwrap();
@@ -194,6 +196,7 @@ async fn profile_multi_file_warm_path() {
                     cwd: cwd.clone().into(),
                     compiler: compiler.clone().into(),
                     env: None,
+                    stdin: Vec::new(),
                 })
                 .await
                 .unwrap();

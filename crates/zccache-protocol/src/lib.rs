@@ -10,7 +10,7 @@ pub use messages::*;
 /// Protocol version number. Bump this when the wire format changes:
 /// new/removed/reordered enum variants or struct field changes.
 /// Patch releases that don't change the protocol keep the same version.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 use bytes::{Buf, BufMut, BytesMut};
 

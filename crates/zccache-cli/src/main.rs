@@ -4075,6 +4075,7 @@ async fn cmd_compile(
     compiler: NormalizedPath,
     client_env: Vec<(String, String)>,
 ) -> ExitCode {
+    let stdin_bytes = slurp_stdin_if_piped();
     let mut conn = match connect(endpoint).await {
         Ok(c) => c,
         Err(e) => {
@@ -4090,6 +4091,7 @@ async fn cmd_compile(
             cwd,
             compiler,
             env: Some(client_env),
+            stdin: stdin_bytes,
         })
         .await
     {
@@ -4154,6 +4156,7 @@ async fn cmd_compile_ephemeral(
         }
     };
 
+    let stdin_bytes = slurp_stdin_if_piped();
     if let Err(e) = conn
         .send(&zccache_protocol::Request::CompileEphemeral {
             client_pid: std::process::id(),
@@ -4162,6 +4165,7 @@ async fn cmd_compile_ephemeral(
             args,
             cwd,
             env: Some(client_env),
+            stdin: stdin_bytes,
         })
         .await
     {
@@ -4534,6 +4538,37 @@ fn resolve_endpoint(explicit: Option<&str>) -> String {
         return ep;
     }
     zccache_ipc::default_endpoint()
+}
+
+/// Cap on stdin bytes the wrapper will buffer before forwarding to the
+/// daemon. 16 MiB matches the IPC frame budget — sources bigger than this
+/// don't fit in a single Compile request anyway.
+const MAX_STDIN_BYTES: usize = 16 * 1024 * 1024;
+
+/// Read the wrapper's stdin to EOF when it's not a terminal (i.e. cargo or
+/// some other parent has piped or redirected stdin into us), returning the
+/// raw bytes. Interactive shells (stdin is a TTY) return an empty payload
+/// without blocking on a read.
+///
+/// The cargo RUSTC_WRAPPER scenario normally hands the wrapper an
+/// already-closed stdin (cargo opens `/dev/null` or an immediately-EOF pipe),
+/// so the read returns `Ok(0)` and the cost is one syscall. The bytes flow
+/// over IPC to the daemon, which forwards them to the compiler child so
+/// invocations like `rustc -` (read source from stdin) still work.
+fn slurp_stdin_if_piped() -> Vec<u8> {
+    use std::io::IsTerminal;
+    use std::io::Read;
+
+    let mut stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        return Vec::new();
+    }
+    let mut buf = Vec::new();
+    let _ = stdin
+        .by_ref()
+        .take(MAX_STDIN_BYTES as u64)
+        .read_to_end(&mut buf);
+    buf
 }
 
 fn run_async(future: impl std::future::Future<Output = ExitCode>) -> ExitCode {

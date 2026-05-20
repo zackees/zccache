@@ -1,0 +1,122 @@
+name: Wrapper end-to-end
+
+# Smoke test the RUSTC_WRAPPER path end-to-end. Builds zccache from source,
+# puts both binaries on PATH, then drives a real cargo build through soldr
+# with the wrapper enabled. proc-macro2 + serde-derive force build-script
+# rustc invocations — exactly the path that broke on macOS in 1.7.2.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  wrapper-e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-13       # Intel — reproduces the 1.7.2 regression
+          - os: macos-14       # arm64 — Apple Silicon path
+          - os: ubuntu-latest  # parity reference
+          - os: windows-latest # parity reference
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: install soldr (latest)
+        run: uv tool install soldr
+
+      - name: print toolchain
+        run: |
+          soldr --version
+          rustc --version || true
+
+      - name: build zccache release binaries
+        run: soldr cargo build --release -p zccache-cli -p zccache-daemon
+
+      - name: install binaries on PATH (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          install_dir="$HOME/.local/bin"
+          mkdir -p "$install_dir"
+          install -m755 target/release/zccache "$install_dir/zccache"
+          install -m755 target/release/zccache-daemon "$install_dir/zccache-daemon"
+          echo "$install_dir" >> "$GITHUB_PATH"
+          # macOS: strip the quarantine xattr if the runner image attached
+          # one. Harmless no-op when absent.
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            xattr -dr com.apple.quarantine "$install_dir/zccache" || true
+            xattr -dr com.apple.quarantine "$install_dir/zccache-daemon" || true
+          fi
+
+      - name: install binaries on PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installDir = "$env:USERPROFILE\.local\bin"
+          New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+          Copy-Item target/release/zccache.exe        "$installDir/zccache.exe"        -Force
+          Copy-Item target/release/zccache-daemon.exe "$installDir/zccache-daemon.exe" -Force
+          Add-Content $env:GITHUB_PATH $installDir
+
+      - name: smoke compile through wrapper (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd "$(mktemp -d)"
+          cargo new --lib hello
+          cd hello
+          cargo add serde --features derive
+          # `soldr --zccache system` enables RUSTC_WRAPPER=zccache using the
+          # PATH-resolved binary. Build-script rustc invocations under
+          # proc-macro2 / serde-derive go through the wrapper — the path
+          # that was broken on macOS in 1.7.2.
+          soldr --zccache system cargo build --verbose 2>&1 | tee build.log
+          grep -F 'Compiling proc-macro2' build.log
+          grep -F 'Compiling serde'        build.log
+          test -d "$HOME/.zccache/logs"
+
+      - name: smoke compile through wrapper (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tmp = New-Item -ItemType Directory -Path "$env:TEMP/zc-e2e-$(Get-Random)" -Force
+          Set-Location $tmp
+          cargo new --lib hello
+          Set-Location hello
+          cargo add serde --features derive
+          soldr --zccache system cargo build --verbose 2>&1 | Tee-Object -FilePath build.log
+          if (-not (Select-String -Path build.log -Pattern 'Compiling proc-macro2')) { exit 1 }
+          if (-not (Select-String -Path build.log -Pattern 'Compiling serde'))        { exit 1 }
+          if (-not (Test-Path "$env:USERPROFILE/.zccache/logs")) { exit 1 }
+
+      - name: dump zccache logs on failure (Unix)
+        if: failure() && runner.os != 'Windows'
+        run: |
+          for d in "$HOME/.zccache/logs" "$HOME/.zccache"; do
+            [ -d "$d" ] || continue
+            echo "===== ls -la $d ====="
+            ls -la "$d" || true
+            for f in "$d"/*.log "$d"/*.log.1; do
+              [ -f "$f" ] || continue
+              echo "===== $f ====="
+              cat "$f" || true
+            done
+          done
+
+      - name: dump zccache logs on failure (Windows)
+        if: failure() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $logs = "$env:USERPROFILE/.zccache/logs"
+          if (Test-Path $logs) {
+            Get-ChildItem $logs | ForEach-Object {
+              Write-Host "===== $($_.FullName) ====="
+              Get-Content $_.FullName -ErrorAction SilentlyContinue
+            }
+          }

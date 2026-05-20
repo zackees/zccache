@@ -52,6 +52,12 @@ pub enum Request {
         /// If `None`, the daemon's own environment is inherited (backward compat).
         /// If `Some`, the compiler process uses exactly these env vars.
         env: Option<Vec<(String, String)>>,
+        /// Bytes the wrapper read from its own stdin, ferried to the compiler
+        /// child's stdin over IPC. Empty = no stdin (`Stdio::null` on the
+        /// daemon side). cargo's RUSTC_WRAPPER path normally yields zero
+        /// bytes here; the field exists so that `rustc -` and similar
+        /// stdin-consuming invocations work transparently.
+        stdin: Vec<u8>,
     },
     /// End a session.
     SessionEnd {
@@ -76,6 +82,10 @@ pub enum Request {
         cwd: NormalizedPath,
         /// Client environment variables to pass to the compiler process.
         env: Option<Vec<(String, String)>>,
+        /// Bytes the wrapper read from its own stdin, ferried to the compiler
+        /// child's stdin over IPC. Empty = `Stdio::null` on the daemon side.
+        /// See `Request::Compile` for context.
+        stdin: Vec<u8>,
     },
     /// Single-roundtrip ephemeral link/archive: used for `zccache ar ...` or
     /// `zccache ld ...` in drop-in wrapper mode.
@@ -536,8 +546,11 @@ mod tests {
             args: vec!["-c".into(), "main.cpp".into(), "-o".into(), "main.o".into()],
             cwd: "/home/user/project/build".into(),
             env: Some(vec![("PATH".into(), "/usr/bin".into())]),
+            stdin: Vec::new(),
         });
-        // Also test with env = None
+        // Non-empty stdin payload must round-trip byte-for-byte — including
+        // embedded NULs and binary bytes — so `rustc -` style invocations
+        // through the wrapper see the same input the parent sent us.
         roundtrip(&Request::CompileEphemeral {
             client_pid: 1,
             working_dir: ".".into(),
@@ -545,6 +558,7 @@ mod tests {
             args: vec![],
             cwd: ".".into(),
             env: None,
+            stdin: b"hello\x00world\nbinary\xff\xfe".to_vec(),
         });
     }
 
@@ -623,6 +637,7 @@ mod tests {
             cwd: "/tmp".into(),
             compiler: "/usr/bin/gcc".into(),
             env: None,
+            stdin: Vec::new(),
         });
     }
 
@@ -673,8 +688,9 @@ mod tests {
 
     // Compile-time check: PROTOCOL_VERSION must be positive.
     const _: () = assert!(crate::PROTOCOL_VERSION > 0);
-    // Compile-time check: PROTOCOL_VERSION == 7 after dep_graph_persisted addition.
-    const _FINGERPRINT_VERSION: () = assert!(crate::PROTOCOL_VERSION == 7);
+    // Compile-time check: PROTOCOL_VERSION == 8 after Compile/CompileEphemeral
+    // gained `stdin: Vec<u8>` to forward the wrapper's stdin over IPC.
+    const _FINGERPRINT_VERSION: () = assert!(crate::PROTOCOL_VERSION == 8);
 
     #[test]
     fn fingerprint_check_roundtrip() {

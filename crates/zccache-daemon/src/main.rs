@@ -61,6 +61,16 @@ struct Args {
     /// Disable loading/saving the dependency graph from/to disk.
     #[arg(long)]
     no_depgraph_cache: bool,
+
+    /// File path to redirect the daemon's own stdout + stderr onto.
+    ///
+    /// Set by `zccache-cli`'s `spawn_daemon` so that errors which fire
+    /// before the lifecycle log / panic hook can attach (dyld failures on
+    /// macOS, Gatekeeper kills, early-init panics) leave evidence on
+    /// disk instead of disappearing into `/dev/null`. When unset the
+    /// daemon falls back to the legacy detach-stdio behavior.
+    #[arg(long)]
+    log_file: Option<NormalizedPath>,
 }
 
 fn main() {
@@ -71,10 +81,18 @@ fn main() {
         // inherited from the spawning process. Without this, an orphaned
         // daemon keeps its grandparent's pipe write ends alive and the
         // grandparent's pipe reader (e.g. `subprocess.Popen(stdout=PIPE)`)
-        // never sees EOF after the parent exits. See issue #276. Must run
-        // before init_tracing() so the subscriber's stdout/stderr writes
-        // land in the null device too.
-        zccache_daemon::trampoline::detach_stdio();
+        // never sees EOF after the parent exits. See issue #276.
+        //
+        // When the CLI hands us a `--log-file` we redirect stdout +
+        // stderr onto that file instead of `/dev/null` (stdin stays
+        // nulled) so failures that fire before the lifecycle log /
+        // panic hook still leave evidence on disk. Must run before
+        // init_tracing() so the subscriber's writes land in the log
+        // file too.
+        match args.log_file.as_deref() {
+            Some(path) => zccache_daemon::trampoline::redirect_stdio_to_log(path),
+            None => zccache_daemon::trampoline::detach_stdio(),
+        }
         init_tracing(&args.log_level);
         // Long-lived process: release exe-file lock and cwd handle so
         // `pip install --upgrade zccache` and `rm -rf <project>` can

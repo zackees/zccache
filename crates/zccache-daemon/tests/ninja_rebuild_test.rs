@@ -209,6 +209,7 @@ async fn build_all_ipc(
                 cwd: cwd.clone().into(),
                 compiler: compiler.clone().into(),
                 env: None,
+                stdin: Vec::new(),
             })
             .await
             .unwrap();
@@ -596,6 +597,7 @@ async fn ninja_concurrent_cold_build() {
                 cwd: cwd.into(),
                 compiler: comp.into(),
                 env: None,
+                stdin: Vec::new(),
             })
             .await
             .unwrap();

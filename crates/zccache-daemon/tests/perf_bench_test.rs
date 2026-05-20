@@ -398,6 +398,7 @@ async fn zccache_compile_c_single(
                 cwd: cwd.into(),
                 compiler: compiler.to_string().into(),
                 env: None,
+                stdin: Vec::new(),
             })
             .await
             .unwrap();
@@ -438,6 +439,7 @@ async fn zccache_compile_single(
                 cwd: cwd.into(),
                 compiler: compiler.to_string().into(),
                 env: None,
+                stdin: Vec::new(),
             })
             .await
             .unwrap();
@@ -471,6 +473,7 @@ async fn zccache_compile_multi(
             cwd: cwd.into(),
             compiler: compiler.to_string().into(),
             env: None,
+            stdin: Vec::new(),
         })
         .await
         .unwrap();
@@ -757,6 +760,7 @@ async fn zccache_compile_single_rsp(
                 cwd: cwd.into(),
                 compiler: compiler.to_string().into(),
                 env: None,
+                stdin: Vec::new(),
             })
             .await
             .unwrap();
@@ -785,6 +789,7 @@ async fn zccache_compile_multi_rsp(
             cwd: cwd.into(),
             compiler: compiler.to_string().into(),
             env: None,
+            stdin: Vec::new(),
         })
         .await
         .unwrap();
@@ -1428,6 +1433,7 @@ async fn run_zccache_rust_final_link_timed(
             cwd: cwd.to_string_lossy().into_owned().into(),
             compiler: rustc.to_string_lossy().into_owned().into(),
             env: None,
+            stdin: Vec::new(),
         })
         .await
         .unwrap();
@@ -2496,6 +2502,7 @@ async fn run_zccache_rustc_batch(
                 cwd: cwd.into(),
                 compiler: rc.to_string().into(),
                 env: None,
+                stdin: Vec::new(),
             })
             .await
             .unwrap();
@@ -2869,6 +2876,7 @@ async fn zccache_compile_cpp_single_with_env(
                 cwd: cwd.into(),
                 compiler: compiler.to_string().into(),
                 env: Some(env.clone()),
+                stdin: Vec::new(),
             })
             .await
             .unwrap();
@@ -3337,6 +3345,7 @@ async fn run_zccache_rustc_batch_with_env(
                 cwd: cwd.into(),
                 compiler: rc.to_string().into(),
                 env: Some(env.clone()),
+                stdin: Vec::new(),
             })
             .await
             .unwrap();

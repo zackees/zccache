@@ -71,6 +71,7 @@ async fn compile(
             cwd: cwd.into(),
             compiler: compiler.to_string_lossy().into_owned().into(),
             env: None,
+            stdin: Vec::new(),
         })
         .await
         .unwrap();

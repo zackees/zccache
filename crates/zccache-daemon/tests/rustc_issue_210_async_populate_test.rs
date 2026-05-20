@@ -129,6 +129,7 @@ async fn compile(
             cwd: cwd.to_path_buf().into(),
             compiler: NormalizedPath::new(compiler),
             env: None,
+            stdin: Vec::new(),
         })
         .await
         .unwrap();

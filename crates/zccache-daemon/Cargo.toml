@@ -40,6 +40,7 @@ zccache-hash = { workspace = true }
 zccache-compiler = { workspace = true }
 zccache-depgraph = { workspace = true }
 zccache-fingerprint = { workspace = true }
+running-process-core = { workspace = true }
 filetime = { workspace = true }
 dashmap = { workspace = true }
 rayon = { workspace = true }

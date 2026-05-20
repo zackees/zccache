@@ -6,9 +6,6 @@ use zccache_core::NormalizedPath;
 #[cfg(feature = "python")]
 mod python;
 
-#[cfg(windows)]
-mod spawn_daemon_windows;
-
 pub mod symbols;
 
 pub use zccache_download_client::{
@@ -625,10 +622,67 @@ pub fn gc_runtime_binaries_in(dir: &Path) {
     }
 }
 
+/// Subdir of the global cache directory where the daemon writes its own
+/// stdout + stderr on every spawn. Each spawn gets a fresh file named
+/// `daemon-spawn-{pid}-{nanos}.log` so concurrent CLI invocations don't
+/// stomp each other. Errors that hit the daemon before its panic hook or
+/// lifecycle log are alive land here — previously they went to `/dev/null`
+/// on Unix and caused silent failures (notably the macOS regression that
+/// motivated this change).
+const DAEMON_SPAWN_LOGS_SUBDIR: &str = "logs";
+
+/// Allocate a unique per-spawn log path under `{cache_dir}/logs/`.
+/// The directory is created lazily; if creation fails we still hand back a
+/// path — the daemon's own opener will see the error and fall back to
+/// `Stdio::null` after warning.
+fn allocate_daemon_spawn_log_path() -> std::path::PathBuf {
+    let dir = zccache_core::config::default_cache_dir().join(DAEMON_SPAWN_LOGS_SUBDIR);
+    let _ = std::fs::create_dir_all(dir.as_path());
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    dir.as_path()
+        .join(format!("daemon-spawn-{}-{nanos}.log", std::process::id()))
+}
+
+/// Best-effort sweep of `daemon-spawn-*.log` files older than 24h to keep
+/// the logs/ directory from accumulating forever. Cheap to call before each
+/// spawn — matches the existing `gc_runtime_binaries` pattern.
+pub fn gc_daemon_spawn_logs() {
+    let dir = zccache_core::config::default_cache_dir().join(DAEMON_SPAWN_LOGS_SUBDIR);
+    let entries = match std::fs::read_dir(dir.as_path()) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let now = std::time::SystemTime::now();
+    let cutoff = std::time::Duration::from_secs(60 * 60 * 24);
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !name.starts_with("daemon-spawn-") {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| now.duration_since(t).ok());
+        if let Some(age) = modified {
+            if age > cutoff {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
 pub fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
-    // GC before the new spawn so the dir doesn't grow unbounded across
-    // crash-loop scenarios. Live daemons are skipped (locked files).
+    // GC before the new spawn so neither dir grows unbounded across
+    // crash-loop scenarios. Live daemons keep their open log file FDs;
+    // GC only touches files older than the 24h cutoff.
     gc_runtime_binaries();
+    gc_daemon_spawn_logs();
 
     // Prefer to spawn from a relocated copy in the zccache global dir.
     // Fall back to the canonical install path if the copy fails — the
@@ -642,35 +696,49 @@ pub fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
         Err(_) => bin,
     };
 
-    // On Windows we cannot use std::process::Command::spawn for the
-    // daemon: it calls CreateProcessW with bInheritHandles = TRUE and
-    // the kernel duplicates every inheritable handle in our table —
-    // including orphaned pipe handles inherited from a grandparent
-    // (e.g. Python's `subprocess.Popen(stdout=PIPE)`). The daemon would
-    // then hold that pipe open and the grandparent's read would never
-    // EOF. See `spawn_daemon_windows` and issue #289 for the full
-    // root-cause analysis.
+    // Allocate a per-spawn log file path. Passed to the daemon via
+    // `--log-file`; the daemon reopens its own stdout + stderr onto that
+    // path early in startup. This replaces the previous Unix
+    // `Stdio::null()` daemon spawn which made macOS dyld/gatekeeper
+    // failures invisible (see PR #312 for full diagnosis).
+    let log_path = allocate_daemon_spawn_log_path();
+    let log_arg = log_path.to_string_lossy().into_owned();
+
+    // Delegate the actual spawn to `running_process_core::sanitized::spawn`.
+    // That helper handles both platform-specific quirks the daemon hits:
+    //  • Windows: STARTUPINFOEX + PROC_THREAD_ATTRIBUTE_HANDLE_LIST so
+    //    grandparent pipe handles (e.g. Python's
+    //    `subprocess.Popen(stdout=PIPE)` further up the chain) don't
+    //    leak into the daemon and prevent EOF on the parent's read.
+    //  • Unix: `setsid()` to detach from the controlling tty + close every
+    //    fd > 2 between fork and exec so the same orphan-handle issue
+    //    doesn't bite on macOS in particular.
+    //
+    // SanitizedChild always opens NUL for its stdio at the spawn site;
+    // the daemon then redirects its own stdout + stderr to `--log-file`
+    // once it's running.
+    let mut cmd = std::process::Command::new(spawn_bin);
+    cmd.args([
+        "--foreground",
+        "--endpoint",
+        endpoint,
+        "--log-file",
+        &log_arg,
+    ]);
+    #[cfg(not(windows))]
+    apply_cli_spawn_lineage(&mut cmd);
     #[cfg(windows)]
     {
-        spawn_daemon_windows::spawn_daemon_sanitized(
-            spawn_bin,
-            &["--foreground", "--endpoint", endpoint],
-            &cli_spawn_lineage_env(),
-        )
+        // On Windows the sanitized spawn rebuilds the environment block
+        // itself; pass our lineage overrides via `cmd.env(...)` so they
+        // land in the merged block.
+        for (k, v) in cli_spawn_lineage_env() {
+            cmd.env(k, v);
+        }
     }
-
-    #[cfg(not(windows))]
-    {
-        let mut cmd = std::process::Command::new(spawn_bin);
-        cmd.args(["--foreground", "--endpoint", endpoint]);
-        cmd.stdin(std::process::Stdio::null());
-        cmd.stdout(std::process::Stdio::null());
-        cmd.stderr(std::process::Stdio::null());
-        apply_cli_spawn_lineage(&mut cmd);
-        cmd.spawn()
-            .map_err(|e| format!("failed to spawn daemon: {e}"))?;
-        Ok(())
-    }
+    running_process_core::sanitized::spawn(&mut cmd)
+        .map(|_child| ())
+        .map_err(|e| format!("failed to spawn daemon (sanitized): {e}"))
 }
 
 #[derive(Debug, Clone)]

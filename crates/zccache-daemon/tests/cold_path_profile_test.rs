@@ -203,6 +203,7 @@ async fn compile_one(
             cwd: cwd.to_string().into(),
             compiler: compiler.to_string().into(),
             env: None,
+            stdin: Vec::new(),
         })
         .await
         .unwrap();
