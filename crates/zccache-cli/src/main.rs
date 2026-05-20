@@ -1356,14 +1356,9 @@ fn cmd_analyze(journal_path: &str, json: bool) -> ExitCode {
     let report = match analyze_journal(journal_path) {
         Ok(report) => report,
         Err(e) => {
-            let message = format!("zccache analyze: failed to read {journal_path}: {e}");
+            let message = format_analyze_error(journal_path, &e);
             if json {
-                let value = serde_json::json!({
-                    "status": "error",
-                    "journal_path": journal_path,
-                    "error": message,
-                });
-                print_json_value(&value);
+                print_json_value(&analyze_error_json(journal_path, &e));
             } else {
                 eprintln!("{message}");
             }
@@ -1377,6 +1372,57 @@ fn cmd_analyze(journal_path: &str, json: bool) -> ExitCode {
         report.print_human(journal_path);
     }
     ExitCode::SUCCESS
+}
+
+const ANALYZE_EXPECTED_INPUT: &str = "compile journal JSONL from zccache session-start --journal";
+
+#[derive(Debug)]
+enum AnalyzeError {
+    Read(std::io::Error),
+    EmptyInput,
+    SessionStatsJson,
+    JsonDocument,
+    NoJournalEntries { line_count: u64 },
+}
+
+impl std::fmt::Display for AnalyzeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Read(err) => write!(f, "failed to read: {err}"),
+            Self::EmptyInput => write!(f, "input is empty; expected {ANALYZE_EXPECTED_INPUT}"),
+            Self::SessionStatsJson => {
+                write!(
+                    f,
+                    "input is session-stats JSON; expected {ANALYZE_EXPECTED_INPUT}"
+                )
+            }
+            Self::JsonDocument => {
+                write!(
+                    f,
+                    "input is a JSON document, not a JSONL compile journal; expected {ANALYZE_EXPECTED_INPUT}"
+                )
+            }
+            Self::NoJournalEntries { line_count } => {
+                write!(
+                    f,
+                    "no compile journal entries found in {line_count} line(s); expected {ANALYZE_EXPECTED_INPUT}"
+                )
+            }
+        }
+    }
+}
+
+fn format_analyze_error(journal_path: &str, err: &AnalyzeError) -> String {
+    format!("zccache analyze: {journal_path}: {err}")
+}
+
+fn analyze_error_json(journal_path: &str, err: &AnalyzeError) -> serde_json::Value {
+    serde_json::json!({
+        "status": "error",
+        "journal_path": journal_path,
+        "error": format_analyze_error(journal_path, err),
+        "expected_input": ANALYZE_EXPECTED_INPUT,
+    })
 }
 
 /// Aggregated read-only view of a compile journal.
@@ -1699,13 +1745,10 @@ impl AnalyzeReport {
     }
 }
 
-fn analyze_journal(journal_path: &str) -> Result<AnalyzeReport, std::io::Error> {
-    use std::io::{BufRead, BufReader};
-    let file = std::fs::File::open(journal_path)?;
-    let reader = BufReader::new(file);
+fn analyze_journal(journal_path: &str) -> Result<AnalyzeReport, AnalyzeError> {
+    let content = std::fs::read_to_string(journal_path).map_err(AnalyzeError::Read)?;
     let mut report = AnalyzeReport::default();
-    for line in reader.lines() {
-        let line = line?;
+    for line in content.lines() {
         report.line_count += 1;
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -1713,10 +1756,53 @@ fn analyze_journal(journal_path: &str) -> Result<AnalyzeReport, std::io::Error> 
         }
         // Permissive parse: skip malformed lines rather than fail the run.
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if !is_compile_journal_entry(&value) {
+                continue;
+            }
             report.ingest(&value);
         }
     }
+    if report.parsed_count == 0 {
+        return Err(classify_analyze_input_without_entries(
+            content.trim(),
+            report.line_count,
+        ));
+    }
     Ok(report)
+}
+
+fn classify_analyze_input_without_entries(trimmed: &str, line_count: u64) -> AnalyzeError {
+    if trimmed.is_empty() {
+        return AnalyzeError::EmptyInput;
+    }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if is_session_stats_json(&value) {
+            return AnalyzeError::SessionStatsJson;
+        }
+        return AnalyzeError::JsonDocument;
+    }
+    AnalyzeError::NoJournalEntries { line_count }
+}
+
+fn is_compile_journal_entry(value: &serde_json::Value) -> bool {
+    let outcome = value.get("outcome").and_then(|v| v.as_str());
+    let has_known_outcome = matches!(
+        outcome,
+        Some("hit" | "miss" | "error" | "link_hit" | "link_miss")
+    );
+    has_known_outcome
+        && value.get("compiler").and_then(|v| v.as_str()).is_some()
+        && value.get("args").and_then(|v| v.as_array()).is_some()
+}
+
+fn is_session_stats_json(value: &serde_json::Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.contains_key("compilations")
+        && object.contains_key("hits")
+        && object.contains_key("misses")
+        && object.contains_key("hit_rate")
 }
 
 fn tool_basename(compiler: &str) -> String {
@@ -5708,6 +5794,92 @@ mod tests {
         assert_eq!(report.parsed_count, 2);
         assert_eq!(report.hit_count, 1);
         assert_eq!(report.miss_count, 1);
+    }
+
+    #[test]
+    fn analyze_journal_missing_file_has_structured_error_hint() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("missing.jsonl");
+        let path_str = path.to_str().unwrap();
+
+        let err = analyze_journal(path_str).expect_err("missing file should fail");
+        match &err {
+            AnalyzeError::Read(_) => {}
+            other => panic!("expected read error, got: {other:?}"),
+        }
+
+        let json = analyze_error_json(path_str, &err);
+        assert_eq!(json["status"], "error");
+        assert_eq!(json["journal_path"].as_str().unwrap(), path_str);
+        assert_eq!(
+            json["expected_input"].as_str().unwrap(),
+            ANALYZE_EXPECTED_INPUT
+        );
+        assert!(json["error"].as_str().unwrap().contains("failed to read"));
+    }
+
+    #[test]
+    fn analyze_journal_rejects_session_stats_json() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("last-session-stats.json");
+        let stats = zccache_protocol::SessionStats {
+            duration_ms: 1000,
+            compilations: 10,
+            hits: 7,
+            misses: 3,
+            non_cacheable: 2,
+            errors: 1,
+            time_saved_ms: 250,
+            unique_sources: 8,
+            bytes_read: 1024,
+            bytes_written: 2048,
+        };
+        let stats_json = session_stats_json("session-123", &stats);
+        std::fs::write(&path, serde_json::to_string_pretty(&stats_json).unwrap()).unwrap();
+
+        let err = analyze_journal(path.to_str().unwrap()).expect_err("stats JSON should fail");
+        match &err {
+            AnalyzeError::SessionStatsJson => {}
+            other => panic!("expected session-stats JSON error, got: {other:?}"),
+        }
+        let rendered = err.to_string();
+        assert!(rendered.contains("session-stats JSON"));
+        assert!(rendered.contains(ANALYZE_EXPECTED_INPUT));
+    }
+
+    #[test]
+    fn analyze_journal_rejects_empty_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+
+        let err = analyze_journal(path.to_str().unwrap()).expect_err("empty file should fail");
+        match &err {
+            AnalyzeError::EmptyInput => {}
+            other => panic!("expected empty input error, got: {other:?}"),
+        }
+        assert!(err.to_string().contains(ANALYZE_EXPECTED_INPUT));
+    }
+
+    #[test]
+    fn analyze_journal_rejects_file_without_journal_entries() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("not-a-journal.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f).unwrap();
+        writeln!(f, "not json").unwrap();
+        writeln!(f, "{{}}").unwrap();
+        drop(f);
+
+        let err =
+            analyze_journal(path.to_str().unwrap()).expect_err("no journal entries should fail");
+        match &err {
+            AnalyzeError::NoJournalEntries { line_count } => assert_eq!(*line_count, 3),
+            other => panic!("expected no journal entries error, got: {other:?}"),
+        }
+        assert!(err.to_string().contains("no compile journal entries"));
+        assert!(err.to_string().contains(ANALYZE_EXPECTED_INPUT));
     }
 
     #[test]
