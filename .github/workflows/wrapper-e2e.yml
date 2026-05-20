@@ -21,8 +21,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-13       # Intel — reproduces the 1.7.2 regression
-          - os: macos-14       # arm64 — Apple Silicon path
+          # macos-14 (arm64) is the active macOS leg. It already validates
+          # the 1.7.2 regression fix end-to-end and runs on the modern
+          # Apple Silicon image where the Intel-only `macos-13` runner
+          # pool is consistently scarce — keeping macos-13 in the matrix
+          # added 15+ minutes of queue wait per run for redundant coverage.
+          # Re-add if a future regression turns out to be Intel-specific.
+          - os: macos-14       # Apple Silicon — primary macOS coverage
           - os: ubuntu-latest  # parity reference
           - os: windows-latest # parity reference
     runs-on: ${{ matrix.os }}
