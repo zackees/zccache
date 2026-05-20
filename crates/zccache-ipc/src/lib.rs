@@ -230,11 +230,33 @@ fn daemon_exe_for_pid(pid: u32) -> Option<NormalizedPath> {
 }
 
 #[cfg(target_os = "macos")]
-fn daemon_exe_for_pid(_pid: u32) -> Option<NormalizedPath> {
-    // proc_pidpath is the right call but pulling in libc/libproc just for
-    // CI-recycle defense isn't worth it on macOS, where this failure mode
-    // hasn't been observed. Fall back to alive-only.
-    None
+fn daemon_exe_for_pid(pid: u32) -> Option<NormalizedPath> {
+    // `proc_pidpath` from libproc (`libSystem.dylib`) — same one
+    // `ps`/`lsof` use under the hood. Available on macOS 10.5+.
+    //
+    // PROC_PIDPATHINFO_MAXSIZE is documented as 4 * MAXPATHLEN (= 4096)
+    // in `<sys/proc_info.h>`. Allocate exactly that and let the call
+    // tell us how many bytes it wrote.
+    const PROC_PIDPATHINFO_MAXSIZE: usize = 4096;
+
+    extern "C" {
+        fn proc_pidpath(pid: i32, buf: *mut std::ffi::c_void, bufsize: u32) -> i32;
+    }
+
+    let mut buf = vec![0u8; PROC_PIDPATHINFO_MAXSIZE];
+    // SAFETY: pid is a u32 from the caller, buf is a freshly-allocated
+    // Vec we own. bufsize matches the allocation size. proc_pidpath
+    // returns the number of bytes written (>0) or -1 on error and is
+    // tolerant of stale PIDs (returns ESRCH).
+    let written = unsafe { proc_pidpath(pid as i32, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    if written <= 0 {
+        // EPERM (process belongs to another user), ESRCH (pid gone), etc.
+        // Don't trust the PID — recycled-PID defense fires.
+        return None;
+    }
+    buf.truncate(written as usize);
+    let s = std::str::from_utf8(&buf).ok()?;
+    Some(NormalizedPath::from(std::path::PathBuf::from(s)))
 }
 
 #[cfg(windows)]
@@ -354,6 +376,51 @@ mod tests {
         let a = NormalizedPath::from("/tmp/zccache-a");
         let b = NormalizedPath::from("/tmp/zccache-b");
         assert_ne!(endpoint_for_cache_dir(&a), endpoint_for_cache_dir(&b));
+    }
+
+    /// On macOS, `daemon_exe_for_pid` must reject a PID whose
+    /// executable is something other than `zccache-daemon`. Until
+    /// `proc_pidpath` was wired up, this returned `None` and
+    /// `verify_pid_exe_stem` fell back to alive-only — which meant a
+    /// recycled PID in `daemon.lock` could keep the CLI talking to a
+    /// random process on a shared CI runner. This test would have
+    /// failed before that fix.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn recycled_pid_is_rejected_on_macos() {
+        use std::process::Stdio;
+
+        // `/bin/sleep 60` — guaranteed-alive, not zccache-daemon.
+        let mut sleeper = std::process::Command::new("sleep")
+            .arg("60")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn /bin/sleep");
+        let pid = sleeper.id();
+
+        let exe = daemon_exe_for_pid(pid);
+        let verified = verify_pid_exe_stem(pid, "zccache-daemon");
+
+        // Clean up before assertions so a panic doesn't orphan the child.
+        let _ = sleeper.kill();
+        let _ = sleeper.wait();
+
+        let exe = exe.expect("proc_pidpath must succeed for an alive child");
+        let basename = exe
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_owned();
+        assert_eq!(
+            basename, "sleep",
+            "proc_pidpath should report `sleep` as the executable"
+        );
+        assert!(
+            !verified,
+            "verify_pid_exe_stem must reject a /bin/sleep PID even though it is alive"
+        );
     }
 
     #[test]

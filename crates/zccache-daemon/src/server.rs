@@ -1380,7 +1380,56 @@ async fn handle_connection(
     state: Arc<SharedState>,
 ) -> Result<(), zccache_ipc::IpcError> {
     loop {
-        let request: Option<Request> = conn.recv().await?;
+        let request: Option<Request> = match conn.recv().await {
+            Ok(req) => req,
+            Err(zccache_ipc::IpcError::Protocol(
+                zccache_protocol::ProtocolError::VersionMismatch { expected, received },
+            )) => {
+                // Don't drop the connection silently — without a reply the
+                // CLI surfaces the (correct) closure as the misleading
+                // "lost connection to daemon (no response received)". Send
+                // back a real error so the CLI can render the actual
+                // reason — both crate versions and both protocol versions,
+                // daemon and client.
+                //
+                // The response goes out at the daemon's PROTOCOL_VERSION,
+                // which itself will fail to decode on a different-versioned
+                // client — but VersionMismatch on the client side renders
+                // a clear message via Display ("expected vX, received vY"),
+                // which is what we want.
+                let daemon_crate = env!("CARGO_PKG_VERSION");
+                let msg = format!(
+                    "protocol version mismatch: daemon zccache v{daemon_crate} \
+                     (protocol v{expected}) received a request at protocol v{received}. \
+                     Run `zccache stop` and retry — the CLI you connected with is built \
+                     against a different PROTOCOL_VERSION than this daemon."
+                );
+                tracing::warn!("{msg}");
+                // Also persist to the on-disk lifecycle log so the reason
+                // is visible even when daemon stderr is redirected/null.
+                // The lifecycle log already records the daemon's
+                // CARGO_PKG_VERSION on every spawn — this entry adds the
+                // mismatch context.
+                crate::lifecycle::write_event(
+                    "version_mismatch",
+                    serde_json::json!({
+                        "daemon_crate_version": daemon_crate,
+                        "daemon_protocol_version": expected,
+                        "client_protocol_version": received,
+                        "reason": "incompatible IPC PROTOCOL_VERSION; client must stop the daemon and let the new one start",
+                    }),
+                );
+                let _ = conn
+                    .send(&Response::Error {
+                        message: msg.clone(),
+                    })
+                    .await;
+                return Err(zccache_ipc::IpcError::Protocol(
+                    zccache_protocol::ProtocolError::VersionMismatch { expected, received },
+                ));
+            }
+            Err(e) => return Err(e),
+        };
         let Some(request) = request else {
             tracing::debug!("client disconnected");
             return Ok(());
@@ -4542,6 +4591,7 @@ fn compile_failure_stderr(message: String) -> Response {
 }
 
 /// Handle a Compile request: parse args, check depgraph, run compiler or return cached.
+#[allow(clippy::too_many_arguments)] // Hot dispatch path; refactor parked.
 async fn handle_compile(
     state_arc: &Arc<SharedState>,
     session_id: &str,
@@ -4549,7 +4599,7 @@ async fn handle_compile(
     cwd: &Path,
     compiler_path: &Path,
     client_env: Option<Vec<(String, String)>>,
-    _stdin: Vec<u8>,
+    stdin: Vec<u8>,
 ) -> Response {
     let state = state_arc.as_ref();
     let compile_start = std::time::Instant::now();
@@ -4810,8 +4860,16 @@ async fn handle_compile(
             record_session_stat(&state.sessions, &sid, |t| t.record_non_cacheable());
             write_session_log(&state.sessions, &sid, &format!("non-cacheable: {reason}"));
             // Use raw args — compiler handles @file natively
-            return run_compiler_direct(&compiler, args, cwd, &state.sessions, &sid, &client_env)
-                .await;
+            return run_compiler_direct(
+                &compiler,
+                args,
+                cwd,
+                &state.sessions,
+                &sid,
+                &client_env,
+                &stdin,
+            )
+            .await;
         }
         zccache_compiler::ParsedInvocation::MultiFile {
             compilations,
@@ -5078,6 +5136,7 @@ async fn handle_compile(
                     &state.sessions,
                     &sid,
                     &client_env,
+                    &stdin,
                 )
                 .await;
             }
@@ -6908,6 +6967,7 @@ async fn handle_compile_multi(
 }
 
 /// Run the compiler directly without caching.
+#[allow(clippy::too_many_arguments)] // Mirrors handle_compile's surface — refactor parked.
 async fn run_compiler_direct(
     compiler: &NormalizedPath,
     args: &[String],
@@ -6915,6 +6975,7 @@ async fn run_compiler_direct(
     sessions: &SessionManager,
     sid: &SessionId,
     client_env: &Option<Vec<(String, String)>>,
+    stdin_bytes: &[u8],
 ) -> Response {
     let tmp_dir = std::env::temp_dir();
     let _rsp_guard =
@@ -6939,8 +7000,16 @@ async fn run_compiler_direct(
     }
     apply_client_env(&mut cmd, client_env, &lineage);
     let compiler_priority = CompilePriority::from_client_env(client_env.as_deref());
-    let result =
-        crate::process::tokio_command_output_with_priority(&mut cmd, compiler_priority).await;
+    let result = crate::process::tokio_command_output_with_priority_stdin(
+        &mut cmd,
+        compiler_priority,
+        if stdin_bytes.is_empty() {
+            None
+        } else {
+            Some(stdin_bytes)
+        },
+    )
+    .await;
 
     match result {
         Ok(output) => {

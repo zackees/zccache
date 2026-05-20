@@ -709,3 +709,57 @@ daemon instances unless an explicit endpoint is supplied.
   status, clear, warm, and download helper commands.
 - Explicit `ZCCACHE_ENDPOINT` and `ZCCACHE_DOWNLOAD_ENDPOINT` still take
   precedence for callers that need custom IPC routing.
+
+---
+
+## DD-022: Wrapper stdin Forwarded over IPC (PROTOCOL_VERSION 7 → 8)
+
+**Context:** zccache as `RUSTC_WRAPPER` is supposed to be a transparent
+shim — every byte cargo would have piped to `rustc` should reach `rustc`
+unchanged. Before 1.7.3 the daemon nulled the compiler child's stdin
+(`Stdio::null()` in `crates/zccache-daemon/src/process.rs`), so the
+`rustc -` form ("read source from stdin") and any other stdin-consuming
+invocation silently saw EOF instead of the parent's bytes. The cargo
+RUSTC_WRAPPER path doesn't exercise this in practice (cargo opens
+`/dev/null` for the wrapper's stdin), but the contract was still broken.
+
+**Decision:** Bump `PROTOCOL_VERSION` from 7 to 8 and add `stdin: Vec<u8>`
+to `Request::Compile` and `Request::CompileEphemeral`. The wrapper reads
+its own stdin to EOF (capped at 16 MiB — matches the IPC frame budget
+and is two orders of magnitude above any plausible compiler input),
+skips the read when stdin is a TTY, and includes the bytes in the
+request. The daemon writes the bytes into the compiler child's piped
+stdin in the non-cacheable / direct-run path
+(`run_compiler_direct` → `tokio_command_output_with_priority_stdin`).
+An empty payload routes back to `Stdio::null()` — the legacy behaviour
+and the cargo-RUSTC_WRAPPER reality.
+
+The bytes are carried as a single `Vec<u8>`, not a streaming channel.
+Streaming would require splitting the request frame from a follow-up
+data frame (a new IPC dance) for a use case that almost never appears
+in practice; the 16 MiB cap leaves the door open for `rustc -` plus
+some headroom while staying within today's bincode message budget.
+
+**Mismatch surfacing.** Because PROTOCOL_VERSION 7 and 8 are wire-
+incompatible, a 1.7.3 CLI connecting to a 1.7.2 daemon (or vice versa)
+must produce a *clear* error. Before this change the daemon dropped
+the connection silently and the CLI rendered "lost connection to
+daemon (no response received)". Now the daemon catches the
+VersionMismatch on `recv`, writes back a `Response::Error` and
+records a `version_mismatch` event in `daemon-lifecycle.log`
+containing both crate versions (`daemon zccache v1.7.3`) and both
+protocol versions. The CLI surfaces the error via the existing
+`Display` chain on `IpcError::Protocol` — `zccache[err][R]: broken
+connection to daemon: protocol error: protocol version mismatch:
+expected v8, received v7. Run zccache stop first.`
+
+**Consequences:**
+- Mismatch errors are debuggable in one line.
+- Cacheable compile paths intentionally ignore the stdin field. A
+  cache hit must match `(args, env, source)`; stdin would have to
+  participate in the cache key to keep correctness, and we judge the
+  cost not worth the breadth (cargo's wrapper-mode never sends stdin).
+- The 16 MiB cap is hardcoded in `slurp_stdin_if_piped`
+  (`crates/zccache-cli/src/main.rs`). Exceeding it truncates silently
+  today; a future fix can either widen the cap or fall back to direct
+  compile.
