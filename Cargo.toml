@@ -125,11 +125,19 @@ libraries = [{ path = "dylints/*" }]
 [profile.dev]
 debug = "line-tables-only"
 
-# Release builds keep only `file:line` debug info inline — enough for a
-# panic backtrace or a profiler to attribute a sample to source, and
-# nothing else. No DWARF variable/type tables, no separate sidecar
-# (`.dwp` / `.dSYM` / `.pdb`) — the shipped binary is the whole story.
+# Release builds keep only `file:line` debug info — enough for a panic
+# backtrace or a profiler to attribute a sample to source, and nothing
+# else (no DWARF variable/type tables). The info is split into a
+# per-binary sidecar so the shipped binary stays slim:
+#   - Linux:        `<binary>.dwp`  (DWARF package, requires rust-dwp)
+#   - macOS:        `<binary>.dSYM/` (dsymutil bundle)
+#   - Windows MSVC: `<binary>.pdb`  (always emitted by msvc, kept explicit)
+# The release workflow stages each sidecar alongside its binary
+# (`.github/workflows/release.yml` — "Stage debug sidecars" step), and
+# `zccache symbols install` lazily downloads the matching sidecar at
+# runtime when a backtrace needs symbolicating.
 # Override with `CARGO_PROFILE_RELEASE_DEBUG=none cargo build --release`
-# for a smallest-possible binary when not even line info is needed.
+# for a smallest-possible binary when even line info isn't needed.
 [profile.release]
 debug = "line-tables-only"
+split-debuginfo = "packed"
