@@ -704,8 +704,11 @@ pub fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
     let log_path = allocate_daemon_spawn_log_path();
     let log_arg = log_path.to_string_lossy().into_owned();
 
-    // Delegate the actual spawn to `running_process_core::sanitized::spawn`.
-    // That helper handles both platform-specific quirks the daemon hits:
+    // Delegate the actual spawn to `running_process_core::spawn_daemon`
+    // (renamed from `sanitized::spawn` in the 3.2 → 3.3 reshape — same
+    // semantics, lives in the `spawn` module now and is re-exported at
+    // the crate root). That helper handles both platform-specific quirks
+    // the daemon hits:
     //  • Windows: STARTUPINFOEX + PROC_THREAD_ATTRIBUTE_HANDLE_LIST so
     //    grandparent pipe handles (e.g. Python's
     //    `subprocess.Popen(stdout=PIPE)` further up the chain) don't
@@ -714,7 +717,7 @@ pub fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
     //    fd > 2 between fork and exec so the same orphan-handle issue
     //    doesn't bite on macOS in particular.
     //
-    // SanitizedChild always opens NUL for its stdio at the spawn site;
+    // `DaemonChild` always opens NUL for its stdio at the spawn site;
     // the daemon then redirects its own stdout + stderr to `--log-file`
     // once it's running.
     let mut cmd = std::process::Command::new(spawn_bin);
@@ -736,7 +739,7 @@ pub fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
             cmd.env(k, v);
         }
     }
-    running_process_core::sanitized::spawn(&mut cmd)
+    running_process_core::spawn_daemon(&mut cmd)
         .map(|_child| ())
         .map_err(|e| format!("failed to spawn daemon (sanitized): {e}"))
 }

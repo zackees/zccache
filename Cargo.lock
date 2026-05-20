@@ -2075,9 +2075,9 @@ dependencies = [
 
 [[package]]
 name = "running-process-core"
-version = "3.2.0"
+version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce223866d57eeb453b34bf5ec6d632616f76d3bdbcbc8a19a9511fe3e9c85d95"
+checksum = "4e7281b95e4dc54c3863d12892d3c4ce60517e88eb5c41f233844bd713817ce3"
 dependencies = [
  "libc",
  "portable-pty",
