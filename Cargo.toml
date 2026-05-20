@@ -22,7 +22,11 @@ members = [
     "crates/zccache-fingerprint",
     "crates/zccache-gha",
 ]
-exclude = ["dylints/ban_std_pathbuf", "dylints/ban_unrooted_tempdir"]
+exclude = [
+    "dylints/ban_std_pathbuf",
+    "dylints/ban_unrooted_tempdir",
+    "dylints/ban_raw_subprocess_in_daemon",
+]
 
 [workspace.package]
 version = "1.7.1"

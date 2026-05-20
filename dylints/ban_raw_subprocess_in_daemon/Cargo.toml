@@ -1,0 +1,20 @@
+[package]
+name = "ban_raw_subprocess_in_daemon"
+version = "0.1.0"
+description = "Ban raw std/tokio Command spawn/output/status in zccache-daemon production code"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Match the dylint_linting pin used by the sibling dylints — same toolchain
+# (rust-toolchain.toml here), same upstream commit.
+dylint_linting = { git = "https://github.com/trailofbits/dylint", rev = "4bd91ce7729b74c7ee5664bbb588f7baf30b4a09" }
+
+[dev-dependencies]
+dylint_testing = { git = "https://github.com/trailofbits/dylint", rev = "4bd91ce7729b74c7ee5664bbb588f7baf30b4a09" }
+
+[package.metadata.rust-analyzer]
+rustc_private = true
