@@ -1,0 +1,1 @@
+unpacked source tree for the `medium` fixture, a self-contained pure-rust workspace with roughly 200 transitive crates. `medium.tar.gz` is the canonical checked-in archive; this directory is the regen source consumed by `perf/fixtures/regen.sh`.

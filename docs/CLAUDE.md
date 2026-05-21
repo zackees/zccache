@@ -16,6 +16,7 @@ Architecture docs are split by subsystem. Read only what's relevant to your curr
 | `zccache-hash` | [overview.md](architecture/overview.md) (2.8) |
 | `zccache-compiler` | [overview.md](architecture/overview.md) (2.9), [data-flow.md](architecture/data-flow.md) |
 | `zccache-core` | [overview.md](architecture/overview.md) |
+| Perf measurement workflows | [/PERF.md](../PERF.md) — `perf-rust-cluster.yml`, scenarios, gate semantics |
 | Platform-specific issues | [portability.md](architecture/portability.md) |
 
 ## Where to document new features

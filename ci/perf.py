@@ -7,8 +7,8 @@ Four benchmarks:
   - perf_rustc_zccache_vs_sccache: Rust compilation (50 .rs lib files)
 
 Usage:
-    ./perf               # run all benchmarks
-    ./perf --nocapture   # (default) show output as it runs
+    ./perf.sh               # run all benchmarks
+    ./perf.sh --nocapture   # (default) show output as it runs
 """
 
 import subprocess

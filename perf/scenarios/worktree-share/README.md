@@ -1,0 +1,1 @@
+scenario that pins cross-worktree cache reuse by building the same fixture in two sibling worktrees and asserting a warm hit on the second. red here means `ZCCACHE_PATH_REMAP=auto` path injection regressed (issue #352).

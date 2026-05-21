@@ -1,0 +1,21 @@
+[package]
+name = "sqlite-link-app"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone workspace — see ../medium/Cargo.toml for rationale.
+[workspace]
+
+[dependencies]
+# `bundled` makes rusqlite compile libsqlite3 from source via cc-rs.
+# That introduces a C build script into the dep graph, which has a
+# completely different fingerprint surface than pure Rust crates —
+# the whole point of this fixture.
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+[profile.release]
+codegen-units = 16
+lto = false

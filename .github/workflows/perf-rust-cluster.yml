@@ -1,0 +1,692 @@
+name: zccache Perf Cluster (Rust)
+
+# See PERF.md for branch-naming convention and per-branch scope table.
+# Mirrors soldr's perf-cluster.yml; the diff is:
+#   - fetch-binaries job downloads pre-built soldr + zccache from each
+#     repo's build pipeline (zccache/build.yml for the zccache trio,
+#     soldr/release-auto.yml for the soldr binary). No local cargo
+#     build in the perf job — circular bootstrap with the binaries
+#     under test.
+#   - bench job pins the downloaded zccache via `soldr update-zccache`
+#     before scenarios run;
+#   - fail loudly when CROSS_REPO_PAT is missing or either upstream
+#     build is broken.
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        # mac-x86 is intentionally not listed (Intel macs are EOL on
+        # GHA's roadmap). Until a matrix row exists for a given
+        # platform its cells gate themselves out via the
+        # bench/fetch-binaries gate steps, so the dispatch UI stays
+        # stable as cross-platform RSS pollers land in
+        # perf/lib/common.sh.
+        description: Platform subset
+        type: choice
+        required: true
+        default: linux
+        options:
+          - all
+          - linux
+          - mac-arm
+          - win
+      fixtures:
+        description: Fixture subset
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - medium
+          - sqlite-link
+      scenarios:
+        # Single-select dropdown to match the platforms / fixtures
+        # shape. Arbitrary subsets (e.g. "cold + worktree but not
+        # touch") aren't expressible here today — pick `all` or one
+        # specific scenario. If subsets become a regular need, swap
+        # back to per-scenario booleans.
+        description: Scenario subset
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - cold-tar-untar-warm
+          - worktree-share
+          - touch-no-change
+      debug:
+        description: Verbose tracing + retain raw RSS CSVs
+        type: boolean
+        required: true
+        default: false
+  push:
+    branches:
+      - main
+      - 'perf/**'
+      - 'evaluate/**'
+    paths:
+      - '.github/workflows/perf-rust-cluster.yml'
+      - 'perf/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  # Never cancel a perf run in flight — every measurement is a data
+  # point we want to keep, even if a follow-up push lands before this
+  # one finishes. Runs queue per-ref instead of superseding.
+  group: perf-rust-cluster-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    # Resolve the effective (platforms, fixtures, scenarios) scope
+    # once and pipe the result to every downstream gate via job
+    # outputs. Two sources:
+    #
+    # 1. `workflow_dispatch` -> use the dispatch inputs verbatim.
+    # 2. `push` -> parse the branch name. `main` and `perf/all` are
+    #    full-sweep aliases. `perf/<P>-<F>-<S>` narrows on the named
+    #    axis tokens (see PERF.md for the full table). Unknown
+    #    perf/* branches fall back to a full sweep with an
+    #    `::notice::` so the dev still gets useful data while
+    #    iterating on a feature branch.
+    name: setup
+    runs-on: ubuntu-24.04
+    outputs:
+      platforms: ${{ steps.parse.outputs.platforms }}
+      fixtures:  ${{ steps.parse.outputs.fixtures }}
+      scenarios: ${{ steps.parse.outputs.scenarios }}
+      source:    ${{ steps.parse.outputs.source }}
+    steps:
+      - name: Parse scope
+        id: parse
+        env:
+          EVENT:    ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          IN_PLAT:  ${{ inputs.platforms }}
+          IN_FIX:   ${{ inputs.fixtures }}
+          IN_SCEN:  ${{ inputs.scenarios }}
+        run: |
+          set -euo pipefail
+
+          PLAT="all"; FIX="all"; SCEN="all"; SOURCE="default"
+
+          if [[ "${EVENT}" == "workflow_dispatch" ]]; then
+            PLAT="${IN_PLAT:-linux}"
+            FIX="${IN_FIX:-all}"
+            SCEN="${IN_SCEN:-all}"
+            SOURCE="dispatch"
+          else
+            case "${REF_NAME}" in
+              main|perf/all)
+                SOURCE="alias:${REF_NAME}"
+                ;;
+              perf/*)
+                triple="${REF_NAME#perf/}"
+                # Strict 3-token split. Branches with fewer or more
+                # tokens fall through to the unknown-branch arm.
+                IFS='-' read -r tp tf ts rest <<<"${triple}"
+                bad=0
+                # Platform token
+                case "${tp}" in
+                  all|linux|win) plat="${tp}" ;;
+                  mac)           plat="mac-arm" ;;
+                  *)             bad=1 ;;
+                esac
+                # Fixture token
+                case "${tf}" in
+                  all|medium) fix="${tf}" ;;
+                  sqlite)     fix="sqlite-link" ;;
+                  *)          bad=1 ;;
+                esac
+                # Scenario token
+                case "${ts}" in
+                  all)      scen="all" ;;
+                  cold)     scen="cold-tar-untar-warm" ;;
+                  worktree) scen="worktree-share" ;;
+                  touch)    scen="touch-no-change" ;;
+                  *)        bad=1 ;;
+                esac
+                if [[ -n "${rest}" || "${bad}" == "1" ]]; then
+                  echo "::notice::Branch '${REF_NAME}' does not match perf/<plat>-<fix>-<scen>; running full sweep. See PERF.md."
+                  SOURCE="unknown-perf:${REF_NAME}"
+                else
+                  PLAT="${plat}"; FIX="${fix}"; SCEN="${scen}"
+                  SOURCE="branch:${REF_NAME}"
+                fi
+                ;;
+              *)
+                # evaluate/** and anything else covered by the push
+                # filter that isn't main/perf — run full.
+                SOURCE="non-perf:${REF_NAME}"
+                ;;
+            esac
+          fi
+
+          {
+            echo "## Scope"
+            echo ""
+            echo "| axis | value |"
+            echo "| --- | --- |"
+            echo "| event | ${EVENT} |"
+            echo "| ref | ${REF_NAME} |"
+            echo "| source | ${SOURCE} |"
+            echo "| platforms | ${PLAT} |"
+            echo "| fixtures | ${FIX} |"
+            echo "| scenarios | ${SCEN} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "platforms=${PLAT}" >> "$GITHUB_OUTPUT"
+          echo "fixtures=${FIX}"   >> "$GITHUB_OUTPUT"
+          echo "scenarios=${SCEN}" >> "$GITHUB_OUTPUT"
+          echo "source=${SOURCE}"  >> "$GITHUB_OUTPUT"
+
+  fetch-binaries:
+    # Replaces soldr's `build-soldr` job. Instead of compiling soldr
+    # from source we pull the latest pre-built soldr binary from
+    # zackees/soldr's release-auto build artifact, and the matching
+    # zccache trio (zccache, zccache-daemon, zccache-fp) from this
+    # repo's build.yml artifact. Both downloads use commit-SHA-pinned
+    # actions/download-artifact@v4 and a Personal Access Token
+    # (CROSS_REPO_PAT) with read access to the soldr repo. Missing
+    # secret, missing successful build on main, or missing binaries
+    # in the staged tree are hard failures with explicit
+    # `::error::` annotations.
+    needs: setup
+    name: fetch-binaries (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Currently ships linux only; win / mac-arm / mac-x86 rows
+        # drop in here once perf/lib/common.sh has cross-platform
+        # RSS pollers. The dispatch input still accepts those names
+        # so the surface stays stable.
+        include:
+          - platform: linux
+            runs_on: ubuntu-24.04
+    runs-on: ${{ matrix.runs_on }}
+    steps:
+      # Platform gate is a step (not job-level `if:`) because GHA
+      # rejects `matrix.X` references in job-level `if:` expressions
+      # with "Unrecognized named-value: 'matrix'", even though the
+      # same context is available at `runs-on:` and inside step
+      # `if:` blocks. Mirrors the gate-step pattern used by the
+      # bench job below.
+      - name: Gate cell against resolved scope
+        id: gate
+        env:
+          REQ_PLATFORMS: ${{ needs.setup.outputs.platforms }}
+          M_PLATFORM:    ${{ matrix.platform }}
+        run: |
+          if [[ "${REQ_PLATFORMS}" == "all" ]] \
+             || [[ ",${REQ_PLATFORMS}," == *",${M_PLATFORM},"* ]]; then
+            echo "selected=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "selected=false" >> "$GITHUB_OUTPUT"
+            echo "Platform ${M_PLATFORM} not in scope '${REQ_PLATFORMS}'; skipping fetch." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Verify CROSS_REPO_PAT is set
+        if: steps.gate.outputs.selected == 'true'
+        env:
+          HAS_PAT: ${{ secrets.CROSS_REPO_PAT != '' }}
+        run: |
+          if [[ "${HAS_PAT}" != "true" ]]; then
+            echo "::error::CROSS_REPO_PAT secret missing. See PERF.md → Setup."
+            exit 1
+          fi
+
+      - name: Discover latest successful soldr build on main
+        if: steps.gate.outputs.selected == 'true'
+        id: soldr-run
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          set -euo pipefail
+          RUN_ID=$(gh run list --repo zackees/soldr --branch main \
+            --workflow release-auto.yml --status success --limit 1 \
+            --json databaseId --jq '.[0].databaseId // empty')
+          if [[ -z "${RUN_ID}" ]]; then
+            echo "::error::No successful soldr release-auto build on main. Trigger zackees/soldr release-auto.yml manually or push a fix."
+            exit 1
+          fi
+          echo "run-id=${RUN_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Discover latest successful zccache build on main
+        if: steps.gate.outputs.selected == 'true'
+        id: zccache-run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUN_ID=$(gh run list --repo zackees/zccache --branch main \
+            --workflow build.yml --status success --limit 1 \
+            --json databaseId --jq '.[0].databaseId // empty')
+          if [[ -z "${RUN_ID}" ]]; then
+            echo "::error::No successful zccache build on main. Trigger zackees/zccache build.yml manually or push a fix."
+            exit 1
+          fi
+          echo "run-id=${RUN_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Download soldr Linux binary
+        if: steps.gate.outputs.selected == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          github-token: ${{ secrets.CROSS_REPO_PAT }}
+          repository: zackees/soldr
+          run-id: ${{ steps.soldr-run.outputs.run-id }}
+          name: release-soldr-x86_64-unknown-linux-gnu
+          path: staged/soldr/
+
+      - name: Download zccache trio
+        if: steps.gate.outputs.selected == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          github-token: ${{ secrets.CROSS_REPO_PAT }}
+          repository: zackees/zccache
+          run-id: ${{ steps.zccache-run.outputs.run-id }}
+          name: binaries-x86_64-unknown-linux-musl
+          path: staged/zccache/
+
+      - name: Verify staged binaries and chmod +x
+        if: steps.gate.outputs.selected == 'true'
+        run: |
+          set -euo pipefail
+          # Soldr ships its release artifact as a tarball (soldr-<version>-<target>.tar.gz).
+          # Extract the soldr binary into staged/soldr/soldr if needed.
+          if [[ ! -f staged/soldr/soldr ]]; then
+            tarball=$(find staged/soldr -maxdepth 2 -type f -name 'soldr-*.tar.gz' | head -n1)
+            if [[ -n "${tarball}" ]]; then
+              tar -C staged/soldr -xzf "${tarball}"
+            fi
+          fi
+
+          find staged -maxdepth 4 -type f -printf '%p\t%s bytes\n'
+          for needed in staged/soldr/soldr staged/zccache/zccache staged/zccache/zccache-daemon staged/zccache/zccache-fp; do
+            if [[ ! -f "${needed}" ]]; then
+              # Some artifacts unpack into a subdir; fall back to a recursive find.
+              found=$(find staged -type f -name "$(basename "${needed}")" | head -n1)
+              if [[ -n "${found}" ]]; then
+                mkdir -p "$(dirname "${needed}")"
+                mv "${found}" "${needed}"
+              else
+                echo "::error::Missing required binary ${needed} in downloaded artifacts"
+                exit 1
+              fi
+            fi
+            chmod +x "${needed}"
+          done
+
+      - name: Upload staged binaries for downstream jobs
+        if: steps.gate.outputs.selected == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-binaries-${{ matrix.platform }}
+          path: staged/
+          retention-days: 7
+
+  bench:
+    name: bench (${{ matrix.platform }} / ${{ matrix.fixture }})
+    needs: [setup, fetch-binaries]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux]
+        fixture: [medium, sqlite-link]
+        include:
+          - platform: linux
+            runs_on: ubuntu-24.04
+    runs-on: ${{ matrix.runs_on }}
+    steps:
+      - name: Gate cell against resolved scope
+        id: gate
+        env:
+          REQ_PLATFORMS: ${{ needs.setup.outputs.platforms }}
+          REQ_FIXTURES:  ${{ needs.setup.outputs.fixtures }}
+          REQ_SCENARIOS: ${{ needs.setup.outputs.scenarios }}
+          M_PLATFORM:    ${{ matrix.platform }}
+          M_FIXTURE:     ${{ matrix.fixture }}
+        run: |
+          in_subset() {
+            local req="$1" val="$2"
+            [[ "${req}" == "all" ]] && return 0
+            [[ ",${req}," == *",${val},"* ]] && return 0
+            return 1
+          }
+
+          # Cell is gated on (platform, fixture) only. Scenarios that
+          # are not selected are filtered out of the per-cell loop
+          # below, so a cell with zero selected scenarios still skips
+          # the rest of the steps but does not consume bench-time.
+          ALL_SCENARIOS="cold-tar-untar-warm worktree-share touch-no-change"
+          selected_scenarios=""
+          for s in ${ALL_SCENARIOS}; do
+            if in_subset "${REQ_SCENARIOS}" "${s}"; then
+              selected_scenarios="${selected_scenarios:+${selected_scenarios} }${s}"
+            fi
+          done
+
+          if in_subset "${REQ_PLATFORMS}" "${M_PLATFORM}" \
+             && in_subset "${REQ_FIXTURES}" "${M_FIXTURE}" \
+             && [[ -n "${selected_scenarios}" ]]; then
+            echo "selected=true" >> "$GITHUB_OUTPUT"
+            echo "scenarios=${selected_scenarios}" >> "$GITHUB_OUTPUT"
+          else
+            echo "selected=false" >> "$GITHUB_OUTPUT"
+            echo "Cell (${M_PLATFORM}, ${M_FIXTURE}) not selected by dispatch inputs (or zero matching scenarios); skipping." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Checkout
+        if: steps.gate.outputs.selected == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust toolchain
+        if: steps.gate.outputs.selected == 'true'
+        run: |
+          # Workers need cargo on PATH so soldr cargo can dispatch to
+          # it. Soldr fetches/manages zccache itself on first use, but
+          # we override that below by pinning the artifact build via
+          # `soldr update-zccache`.
+          rustup show active-toolchain || rustup toolchain install stable --profile minimal --no-self-update
+
+      - name: Install fixture native deps
+        if: steps.gate.outputs.selected == 'true' && matrix.fixture == 'sqlite-link'
+        run: |
+          # rusqlite's `bundled` feature compiles libsqlite3 from C
+          # via cc-rs. ubuntu-24.04 ships gcc already, but be
+          # explicit so a future image change does not silently break
+          # this row.
+          which gcc || sudo apt-get install -y gcc
+
+      - name: Download staged binaries
+        if: steps.gate.outputs.selected == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: perf-binaries-${{ matrix.platform }}
+          path: staged
+
+      - name: Stage soldr on PATH
+        if: steps.gate.outputs.selected == 'true'
+        run: |
+          chmod +x staged/soldr/soldr
+          mkdir -p "$HOME/.local/bin"
+          cp staged/soldr/soldr "$HOME/.local/bin/soldr"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Pin zccache via soldr update-zccache
+        if: steps.gate.outputs.selected == 'true'
+        run: |
+          set -euo pipefail
+          chmod +x staged/zccache/zccache staged/zccache/zccache-daemon staged/zccache/zccache-fp
+          soldr update-zccache "$(pwd)/staged/zccache" --json | tee zccache-pin.json
+          soldr update-zccache --status --json | tee zccache-pin-status.json
+          if ! jq -e '.pinned == true' zccache-pin-status.json >/dev/null; then
+            echo "::error::soldr update-zccache reports pinned=false after pinning"
+            cat zccache-pin-status.json
+            exit 1
+          fi
+
+      - name: Verify soldr is the artifact build
+        if: steps.gate.outputs.selected == 'true'
+        run: |
+          which soldr
+          soldr version --json
+
+      - name: Run selected scenarios
+        if: steps.gate.outputs.selected == 'true'
+        id: run
+        env:
+          SOLDR_DEBUG: ${{ inputs.debug == true && '1' || '' }}
+          SELECTED_SCENARIOS: ${{ steps.gate.outputs.scenarios }}
+          M_PLATFORM: ${{ matrix.platform }}
+          M_FIXTURE: ${{ matrix.fixture }}
+        run: |
+          set -o pipefail
+
+          out_root="${RUNNER_TEMP}/perf-${M_PLATFORM}-${M_FIXTURE}"
+          mkdir -p "${out_root}"
+          echo "out_root=${out_root}" >> "$GITHUB_OUTPUT"
+
+          # One header for the cell; each scenario appends a row via
+          # measure::append_summary_md.
+          {
+            echo "## ${M_PLATFORM} / ${M_FIXTURE}"
+            echo
+            echo "| scenario | cold/A ms | warm/B ms | speedup | hits/misses | hit rate | peak daemon RSS |"
+            echo "| --- | --- | --- | --- | --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          status=0
+          for scenario in ${SELECTED_SCENARIOS}; do
+            # Per-scenario workdir keeps cache dirs / tarball / RSS
+            # CSV isolated even though all scenarios share this runner.
+            workdir="${out_root}/${scenario}"
+            mkdir -p "${workdir}"
+            bash perf/lib/extract.sh "${M_FIXTURE}" "${workdir}"
+
+            echo "::group::scenario: ${scenario}"
+            if bash "perf/scenarios/${scenario}/run.sh" "${workdir}/${M_FIXTURE}" \
+                 | tee "${workdir}/result.json"; then
+              :
+            else
+              # Don't abort the loop on a single scenario failure —
+              # the other scenarios on this fixture are independent
+              # signals worth collecting. Final exit status reflects
+              # the worst case.
+              echo "scenario ${scenario} failed"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "${status}"
+
+      - name: Upload raw results
+        if: steps.gate.outputs.selected == 'true' && always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-results-${{ matrix.platform }}-${{ matrix.fixture }}
+          path: |
+            ${{ steps.run.outputs.out_root }}/*/result.json
+            ${{ steps.run.outputs.out_root }}/*/*-shutdown.json
+            ${{ steps.run.outputs.out_root }}/*/rss-*.csv
+            ${{ steps.run.outputs.out_root }}/*/warm-cache-report.json
+            ${{ steps.run.outputs.out_root }}/*/cold-cache-report.json
+            ${{ steps.run.outputs.out_root }}/*/warm-zccache-logs/**
+            ${{ steps.run.outputs.out_root }}/*/cold-zccache-logs/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  evaluate:
+    # Per-platform gate: pull every fixture's artifact for this
+    # platform via `pattern: perf-results-<platform>-*` and iterate
+    # (fixture x scenario) internally. One Evaluate check per
+    # platform (max 3 when win and mac-arm matrix rows land alongside
+    # linux). cold-tar-untar-warm is the hard gate (fails the
+    # workflow); worktree-share and touch-no-change are soft today
+    # (::warning::) — they'll be promoted to hard once their
+    # baselines are trusted.
+    name: Evaluate ${{ matrix.platform }}
+    needs: [setup, bench]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runs_on: ubuntu-24.04
+            min_speedup: "3.0"
+    runs-on: ${{ matrix.runs_on }}
+    steps:
+      - name: Gate cell against resolved scope
+        id: gate
+        env:
+          REQ_PLATFORMS: ${{ needs.setup.outputs.platforms }}
+          M_PLATFORM:    ${{ matrix.platform }}
+        run: |
+          in_subset() {
+            local req="$1" val="$2"
+            [[ "${req}" == "all" ]] && return 0
+            [[ ",${req}," == *",${val},"* ]] && return 0
+            return 1
+          }
+
+          # Fixture/scenario subsetting is done inside the evaluate
+          # step (via needs.setup.outputs). The cell-level gate only
+          # decides whether this whole platform's evaluator runs.
+          if in_subset "${REQ_PLATFORMS}" "${M_PLATFORM}"; then
+            echo "selected=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "selected=false" >> "$GITHUB_OUTPUT"
+            echo "Evaluate (${M_PLATFORM}) not selected by dispatch inputs; skipping." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Download all perf results for ${{ matrix.platform }}
+        if: steps.gate.outputs.selected == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          # Glob across every fixture bench cell ran for this
+          # platform. v4's `pattern:` keeps each artifact's
+          # subdirectory under `perf-results/` so the scenario
+          # lookup below stays unambiguous.
+          pattern: perf-results-${{ matrix.platform }}-*
+          path: perf-results
+
+      - name: Evaluate scenarios for ${{ matrix.platform }}
+        if: steps.gate.outputs.selected == 'true'
+        env:
+          MIN_SPEEDUP:   ${{ matrix.min_speedup }}
+          REQ_FIXTURES:  ${{ needs.setup.outputs.fixtures }}
+          REQ_SCENARIOS: ${{ needs.setup.outputs.scenarios }}
+          M_PLATFORM:    ${{ matrix.platform }}
+        run: |
+          set -uo pipefail
+
+          in_subset() {
+            local req="$1" val="$2"
+            [[ "${req}" == "all" ]] && return 0
+            [[ ",${req}," == *",${val},"* ]] && return 0
+            return 1
+          }
+
+          # scenario -> "fail" or "warn". cold-tar-untar-warm is the
+          # only gate today; the others are soft until their baselines
+          # stabilize (see workflow header).
+          mode_for() {
+            case "$1" in
+              cold-tar-untar-warm) echo "fail" ;;
+              worktree-share|touch-no-change) echo "warn" ;;
+              *) echo "warn" ;;
+            esac
+          }
+
+          # Each scenario emits a different (cold_key, warm_key) pair.
+          # Centralizing here keeps the assertion loop scenario-agnostic.
+          cold_key_for() {
+            case "$1" in
+              worktree-share) echo "a_ms" ;;
+              *) echo "cold_ms" ;;
+            esac
+          }
+          warm_key_for() {
+            case "$1" in
+              worktree-share) echo "b_ms" ;;
+              *) echo "warm_ms" ;;
+            esac
+          }
+
+          {
+            echo "## Evaluate ${M_PLATFORM}"
+            echo
+            echo "| fixture | scenario | cold ms | warm ms | speedup | threshold | mode | result |"
+            echo "| --- | --- | --- | --- | --- | --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          status=0
+          for fixture in medium sqlite-link; do
+            if ! in_subset "${REQ_FIXTURES}" "${fixture}"; then
+              echo "fixture ${fixture} not selected by dispatch input / branch narrowing; skipping"
+              continue
+            fi
+
+            # download-artifact@v4 with `pattern:` lays each artifact
+            # under its own subdir: perf-results/perf-results-<plat>-<fixt>/.
+            fixture_root="perf-results/perf-results-${M_PLATFORM}-${fixture}"
+            if [[ ! -d "${fixture_root}" ]]; then
+              echo "::warning::no artifact for fixture ${fixture} on ${M_PLATFORM} — bench cell likely skipped"
+              continue
+            fi
+
+            for scenario in cold-tar-untar-warm worktree-share touch-no-change; do
+              if ! in_subset "${REQ_SCENARIOS}" "${scenario}"; then
+                echo "scenario ${scenario} not selected by dispatch input; skipping"
+                continue
+              fi
+
+              mode="$(mode_for "${scenario}")"
+              cold_key="$(cold_key_for "${scenario}")"
+              warm_key="$(warm_key_for "${scenario}")"
+
+              result_json="$(find "${fixture_root}" -type f -path "*/${scenario}/result.json" | head -n1)"
+              if [[ -z "${result_json}" ]]; then
+                echo "| ${fixture} | ${scenario} | - | - | - | >= ${MIN_SPEEDUP}x | ${mode} | MISSING |" >> "$GITHUB_STEP_SUMMARY"
+                if [[ "${mode}" == "fail" ]]; then
+                  echo "::error::${scenario}/result.json not found in ${fixture} artifact"
+                  status=1
+                else
+                  echo "::warning::${scenario}/result.json not found in ${fixture} artifact"
+                fi
+                continue
+              fi
+
+              cold_ms="$(jq -r --arg k "${cold_key}" '.[$k] // empty' "${result_json}")"
+              warm_ms="$(jq -r --arg k "${warm_key}" '.[$k] // empty' "${result_json}")"
+
+              if [[ -z "${cold_ms}" || -z "${warm_ms}" ]]; then
+                echo "| ${fixture} | ${scenario} | ${cold_ms:--} | ${warm_ms:--} | - | >= ${MIN_SPEEDUP}x | ${mode} | BAD-JSON |" >> "$GITHUB_STEP_SUMMARY"
+                if [[ "${mode}" == "fail" ]]; then
+                  echo "::error::${fixture}/${scenario} result.json missing ${cold_key}/${warm_key}"
+                  status=1
+                else
+                  echo "::warning::${fixture}/${scenario} result.json missing ${cold_key}/${warm_key}"
+                fi
+                continue
+              fi
+
+              # Treat a 0ms warm build as a measurement bug, not a win.
+              if (( warm_ms <= 0 )); then
+                echo "| ${fixture} | ${scenario} | ${cold_ms} | ${warm_ms} | - | >= ${MIN_SPEEDUP}x | ${mode} | BAD-WARM |" >> "$GITHUB_STEP_SUMMARY"
+                if [[ "${mode}" == "fail" ]]; then
+                  echo "::error::${fixture}/${scenario} ${warm_key}=${warm_ms} is non-positive"
+                  status=1
+                else
+                  echo "::warning::${fixture}/${scenario} ${warm_key}=${warm_ms} is non-positive"
+                fi
+                continue
+              fi
+
+              speedup="$(awk -v c="${cold_ms}" -v w="${warm_ms}" 'BEGIN { printf "%.2f", c / w }')"
+              pass="$(awk -v s="${speedup}" -v t="${MIN_SPEEDUP}" 'BEGIN { print (s >= t) ? "1" : "0" }')"
+
+              if [[ "${pass}" == "1" ]]; then
+                echo "| ${fixture} | ${scenario} | ${cold_ms} | ${warm_ms} | ${speedup}x | >= ${MIN_SPEEDUP}x | ${mode} | PASS |" >> "$GITHUB_STEP_SUMMARY"
+                echo "${fixture}/${scenario}: ${speedup}x >= ${MIN_SPEEDUP}x — PASS"
+              else
+                if [[ "${mode}" == "fail" ]]; then
+                  echo "| ${fixture} | ${scenario} | ${cold_ms} | ${warm_ms} | ${speedup}x | >= ${MIN_SPEEDUP}x | fail | FAIL |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "::error::${fixture}/${scenario} only ${speedup}x faster (need >= ${MIN_SPEEDUP}x)"
+                  status=1
+                else
+                  echo "| ${fixture} | ${scenario} | ${cold_ms} | ${warm_ms} | ${speedup}x | >= ${MIN_SPEEDUP}x | warn | WARN |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "::warning::${fixture}/${scenario} only ${speedup}x faster (need >= ${MIN_SPEEDUP}x); soft gate — not failing today"
+                fi
+              fi
+            done
+          done
+
+          exit "${status}"

@@ -69,7 +69,7 @@ hand-maintained text stats. Full results, rendered HTML, and machine-readable
 JSON are published in the
 [benchmark-stats branch](https://github.com/zackees/zccache/tree/benchmark-stats)
 and at [zackees.github.io/zccache](https://zackees.github.io/zccache/). Run the
-same suite locally with `./perf`.
+same suite locally with `./perf.sh`.
 
 ### Why is zccache so much faster on warm hits?
 

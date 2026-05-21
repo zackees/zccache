@@ -1,0 +1,1 @@
+scenario that pins mtime and content-hash robustness by `touch`ing source files without changing their content and rebuilding. red here means soldr save/load is mtime-sensitive instead of content-keyed (issue #377).

@@ -1,0 +1,1 @@
+shared bash helpers used by `perf/scenarios/*/run.sh`. `common.sh` exports `measure::*` functions for the rss poller, `du` sampling, and step-summary emission; `extract.sh` untars a checked-in fixture into a scratch workdir.

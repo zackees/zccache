@@ -6,7 +6,7 @@ Python scripts for development tooling. Rust commands go through `soldr <tool>` 
 
 - **`./lint`** - Workspace linting (rustfmt + clippy), supports single-file mode
 - **`./test`** - Workspace tests, supports per-crate filtering
-- **`./perf`** - Performance benchmarks (zccache vs sccache vs bare clang)
+- **`./perf.sh`** - Performance benchmarks (zccache vs sccache vs bare clang)
 - **`python -m ci.benchmark_stats`** - Generates `index.html`, `latest.json`, and per-language benchmark JPGs from perf output for the published benchmark report
 - **`python -m ci.perf_guard`** - Fails CI when Rust, C, or C++ zccache benchmark rows fall below the bare-compiler or pinned-sccache speed floors
 

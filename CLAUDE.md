@@ -22,8 +22,10 @@ soldr cargo clippy --workspace --all-targets -- -D warnings
 soldr cargo fmt --all
 RUSTDOCFLAGS="-D warnings" soldr cargo doc --workspace --no-deps
 soldr cargo bench -p zccache-hash
-./perf                      # performance benchmark (zccache vs sccache vs bare clang)
+./perf.sh                   # performance benchmark (zccache vs sccache vs bare clang)
 ```
+
+See [PERF.md](PERF.md) for the scenario-driven `perf-rust-cluster.yml` workflow (cold-tar-untar-warm and friends).
 
 ## Distribution
 

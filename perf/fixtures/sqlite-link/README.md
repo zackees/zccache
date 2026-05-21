@@ -1,0 +1,1 @@
+unpacked source tree for the `sqlite-link` fixture, a self-contained rust workspace that bundles libsqlite3 through cc-rs to exercise mixed rust + c caching. `sqlite-link.tar.gz` is the canonical checked-in archive; this directory is the regen source consumed by `perf/fixtures/regen.sh`.

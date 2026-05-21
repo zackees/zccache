@@ -1,0 +1,1 @@
+scenario that pins cache archive fidelity by populating the cache, tarring it, untarring into a fresh location, and rebuilding warm. red here means the tar/untar round-trip lost or corrupted cache state.
