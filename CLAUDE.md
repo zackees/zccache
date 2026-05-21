@@ -16,6 +16,11 @@ zccache is a local-first compiler cache daemon (11 crates). See @docs/CLAUDE.md 
 > Do not invent ad-hoc benchmarks (`criterion`, `divan`, `hyperfine` in a one-off
 > script). The perf cluster is the regression-blocking measurement; everything else
 > is diagnostic.
+>
+> **When iterating on a perf problem: reproduce locally first.** One GHA cycle is
+> 5–17 minutes; one local cycle is seconds. Use the cluster to confirm a fix you
+> already validated locally — not to test hypotheses you haven't tried yet. See
+> PERF.md → "Iterating on a perf problem — local-first, GHA last."
 
 ## Essential Rules
 

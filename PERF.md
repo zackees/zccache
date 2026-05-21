@@ -158,6 +158,20 @@ Every cell appends to `$GITHUB_STEP_SUMMARY`. From the run page:
 
 Raw `result.json`, `*-shutdown.json`, and `rss-*.csv` are uploaded as `perf-results-<platform>-<fixture>` artifacts (14-day retention).
 
+## Iterating on a perf problem — local-first, GHA last
+
+When you find (or suspect) a perf regression, the bias is **reproduce and fix locally first**. GHA is the gate; the local loop is the iteration loop. One GHA cycle is 5–17 minutes; one local cycle is seconds to a couple of minutes. Burning GHA cycles on hypotheses you haven't tried locally is the slowest possible workflow.
+
+The flow:
+
+1. **Reproduce locally.** Pick the narrowest scenario that surfaces the problem and run it on the same fixture the GHA job hit. See [Local dry-runs](#local-dry-runs) below for the one-liner. Capture the JSON `{"scenario":...}` line — that's your baseline.
+2. **Form one hypothesis.** Don't change two things at once or you'll lose attribution.
+3. **Edit + re-run the local scenario.** Compare cold_ms, warm_ms, ratio (warm/cold), hits, misses against your baseline. Iterate locally until the JSON line says you fixed it.
+4. **Only now push.** Open a `perf/<plat>-<fix>-<scen>` branch matched to the narrowest cell that exercises your fix (see [Picking a branch](#picking-a-branch-for-the-work-youre-doing)). Watch the GHA run to confirm the local result reproduces on the cluster's hardware.
+5. **Iterate on GHA only when you must.** If the bug only reproduces under GHA's environment (older glibc, different filesystem, specific runner image), you've earned the right to push uncertain hypotheses. Note in the commit message that local repro failed and why — future-you will want that context.
+
+The cluster is the regression-blocking measurement, but it is a bad iteration loop. Use it accordingly.
+
 ## Local dry-runs
 
 You can run any single scenario locally without GHA:
@@ -167,7 +181,9 @@ You can run any single scenario locally without GHA:
 bash perf/lib/extract.sh medium /tmp/perf-medium && bash perf/scenarios/cold-tar-untar-warm/run.sh /tmp/perf-medium/medium
 ```
 
-The scripts are POSIX bash and do not require any GHA-only env vars; `measure::append_summary_md` is a no-op when `$GITHUB_STEP_SUMMARY` is unset.
+Swap `medium` → `sqlite-link` for the smaller fixture, and `cold-tar-untar-warm` → `worktree-share` / `touch-no-change` for the other two scenarios. The scripts are POSIX bash and do not require any GHA-only env vars; `measure::append_summary_md` is a no-op when `$GITHUB_STEP_SUMMARY` is unset.
+
+To diff between runs, re-pipe the result.json into a file and `jq -r 'to_entries | map("\(.key)=\(.value)") | join(" ")'` it — keys appear in a stable order, so visual diff works.
 
 ## Related
 
