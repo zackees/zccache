@@ -3560,6 +3560,7 @@ dependencies = [
  "zccache-hash",
  "zccache-ipc",
  "zccache-protocol",
+ "zccache-symbols",
  "zip",
 ]
 
@@ -3810,6 +3811,14 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror 2.0.18",
+ "zccache-core",
+]
+
+[[package]]
+name = "zccache-symbols"
+version = "1.8.1"
+dependencies = [
+ "tempfile",
  "zccache-core",
 ]
 

@@ -1,0 +1,24 @@
+[package]
+name = "zccache-symbols"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Release-build marker, symbol cache, and symbol-archive fetcher for zccache"
+
+[lib]
+name = "zccache_symbols"
+path = "src/lib.rs"
+
+[dependencies]
+zccache-core = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[[bin]]
+name = "zccache-stamp"
+path = "src/bin/stamp.rs"

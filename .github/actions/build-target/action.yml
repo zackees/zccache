@@ -298,6 +298,52 @@ runs:
           exit 1
         fi
 
+    - name: Build release stamping helper (native host)
+      shell: bash
+      run: |
+        # `zccache-stamp` appends a 128-byte release marker to each
+        # binary. Built for the HOST (no --target) so we don't need
+        # the target's runtime to run the helper itself. Just appends
+        # bytes — never executes the (possibly cross-compiled) target.
+        cargo build --release --bin zccache-stamp
+
+    - name: Stamp release binaries with release marker
+      shell: bash
+      run: |
+        # Host-binary path: same `target/release` on every runner.
+        # On Windows runners the helper has a `.exe` suffix; on
+        # Linux/macOS it doesn't.
+        case "$RUNNER_OS" in
+          Windows) STAMP="target/release/zccache-stamp.exe" ;;
+          *)       STAMP="target/release/zccache-stamp" ;;
+        esac
+        if [ ! -x "$STAMP" ] && [ ! -e "$STAMP" ]; then
+          echo "::error::zccache-stamp not found at $STAMP" >&2
+          exit 1
+        fi
+        # We stamp the *target* binaries after stripping (so the stamp
+        # isn't clipped) and before archiving (so the archive carries
+        # the stamped bytes). Build timestamp captured once for all
+        # three binaries so they share the same provenance footer.
+        NOW="$(date -u +%s)"
+        VERSION="${{ inputs.version }}"
+        if [ -z "$VERSION" ]; then
+          VERSION=$(python -c "import tomllib; from pathlib import Path; print(tomllib.loads(Path('Cargo.toml').read_text(encoding='utf-8'))['workspace']['package']['version'])")
+        fi
+        for bin in zccache zccache-daemon zccache-fp; do
+          BIN_PATH="staging/${bin}${{ inputs.binary_ext }}"
+          if [ ! -e "$BIN_PATH" ]; then
+            echo "::error::binary missing for stamping: $BIN_PATH" >&2
+            exit 1
+          fi
+          "$STAMP" \
+            --binary "$BIN_PATH" \
+            --sha "$GITHUB_SHA" \
+            --version "$VERSION" \
+            --triple "${{ inputs.target }}" \
+            --timestamp "$NOW"
+        done
+
     - name: Package standalone archive
       shell: bash
       run: |

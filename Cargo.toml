@@ -21,6 +21,7 @@ members = [
     "crates/zccache-ci",
     "crates/zccache-fingerprint",
     "crates/zccache-gha",
+    "crates/zccache-symbols",
 ]
 exclude = [
     "dylints/ban_std_pathbuf",
@@ -89,6 +90,7 @@ zccache-cli = { path = "crates/zccache-cli" }
 zccache-test-support = { path = "crates/zccache-test-support" }
 zccache-fingerprint = { path = "crates/zccache-fingerprint" }
 zccache-gha = { path = "crates/zccache-gha" }
+zccache-symbols = { path = "crates/zccache-symbols" }
 
 # Vendored notify with fixes for Windows ReadDirectoryChangesW:
 # 1. Detect buffer overflow (bytes_written == 0) and report as error

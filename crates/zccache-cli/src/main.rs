@@ -357,6 +357,19 @@ enum SymbolsCommands {
         #[arg(long)]
         force: bool,
     },
+    /// Resolve symbols for one or more crash dumps. Reads the release
+    /// marker appended to the running zccache binary to determine which
+    /// version + target's symbol archive to fetch; the archive is cached
+    /// under `<cache>/symbols/<v>-<triple>/` (one copy per build) and a
+    /// `<dump>.symref` sidecar is written next to each crash dump
+    /// pointing at the cached symbol directory. If the running binary
+    /// is a dev build (no release marker), reports that and exits — use
+    /// the local `target/release/*.{pdb,dwp,dSYM}` manually.
+    Symbolicate {
+        /// One or more crash dump paths (`crash-*.txt` or `crash-*.dmp`).
+        #[arg(required = true)]
+        dumps: Vec<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -952,7 +965,92 @@ fn main() -> ExitCode {
                 prefix,
                 force,
             } => cmd_symbols_install(version, target, prefix, force),
+            SymbolsCommands::Symbolicate { dumps } => cmd_symbols_symbolicate(dumps),
         },
+    }
+}
+
+fn cmd_symbols_symbolicate(dumps: Vec<PathBuf>) -> ExitCode {
+    let marker = match zccache_symbols::read_marker_from_current_exe() {
+        Some(m) => m,
+        None => {
+            eprintln!(
+                "zccache symbolicate: this binary has no release marker (dev build). \
+                 No automatic symbol fetch possible — use the local \
+                 target/release/zccache.{{pdb,dwp,dSYM}} manually."
+            );
+            return ExitCode::from(2);
+        }
+    };
+
+    // Cache layout: `<cache>/symbols/<version>-<triple>/`. One symbol
+    // copy per build, referenced from each crash via a `.symref`
+    // sidecar — true dedup. The existing `symbols::install` is the
+    // battle-tested fetch path; we just point its `--prefix` at our
+    // shared dir.
+    let cache_root: PathBuf = zccache_core::config::default_cache_dir().into_path_buf();
+    let symbols_dir =
+        zccache_symbols::symbols_dir_for(&cache_root, &marker.version, &marker.triple);
+    let symbols_dir_path: PathBuf = symbols_dir.into_path_buf();
+
+    let opts = SymbolsInstallOptions {
+        version: Some(marker.version.clone()),
+        target: Some(marker.triple.clone()),
+        prefix: Some(symbols_dir_path.clone()),
+        force: false,
+        lock_behavior: zccache_cli::symbols::LockBehavior::Wait,
+    };
+    let report = match symbols::install(opts) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("zccache symbolicate: failed to install symbols: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Err(e) = zccache_symbols::mark_ready(&symbols_dir_path) {
+        eprintln!(
+            "zccache symbolicate: warning — failed to write .ready sentinel in {}: {e}",
+            symbols_dir_path.display()
+        );
+    }
+
+    println!(
+        "zccache symbolicate: symbols at {} (version {} / {})",
+        symbols_dir_path.display(),
+        marker.version,
+        marker.triple,
+    );
+    if !report.skipped_already_present {
+        let source = if report.cache_hit {
+            "cached archive"
+        } else {
+            "GitHub release"
+        };
+        println!(
+            "  (downloaded {} sidecar(s) from {})",
+            report.installed.len(),
+            source,
+        );
+    }
+
+    let mut had_error = false;
+    for dump in dumps {
+        match zccache_symbols::write_symref_sidecar(&dump, &symbols_dir_path) {
+            Ok(sidecar) => println!("  wrote {}", sidecar.display()),
+            Err(e) => {
+                eprintln!(
+                    "zccache symbolicate: failed to write sidecar for {}: {e}",
+                    dump.display()
+                );
+                had_error = true;
+            }
+        }
+    }
+    if had_error {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
