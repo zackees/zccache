@@ -2,6 +2,21 @@
 
 zccache is a local-first compiler cache daemon (11 crates). See @docs/CLAUDE.md for which architecture doc to read based on what you're working on, and where to document new features.
 
+> [!IMPORTANT]
+> ## Performance work → read [PERF.md](PERF.md) FIRST
+>
+> **The `perf-rust-cluster` GitHub Action is the only sanctioned path for zccache perf work.**
+> If you are testing, measuring, optimizing, or regressing zccache's performance —
+> read **[PERF.md](PERF.md)** before doing anything else.
+>
+> Branch naming (`perf/<plat>-<fix>-<scen>`) controls exactly which cells of the matrix
+> run. Pushing to a wrong branch name silently runs the full sweep — costly and slow.
+> **Do not guess.** PERF.md has the complete 48-pattern scope table.
+>
+> Do not invent ad-hoc benchmarks (`criterion`, `divan`, `hyperfine` in a one-off
+> script). The perf cluster is the regression-blocking measurement; everything else
+> is diagnostic.
+
 ## Essential Rules
 
 - **Always use `soldr <tool>` directly** to execute Rust commands. Bare cargo/rustc, legacy root trampolines, and `uv run cargo` are blocked by hook. soldr resolves repo-local `.cargo` / `.rustup` homes and the rustup-managed toolchain pinned by `rust-toolchain.toml`.
