@@ -2,15 +2,14 @@ name: zccache Perf Cluster (Rust)
 
 # See PERF.md for branch-naming convention and per-branch scope table.
 # Mirrors soldr's perf-cluster.yml; the diff is:
-#   - fetch-binaries job downloads pre-built soldr + zccache from each
-#     repo's build pipeline (zccache/build.yml for the zccache trio,
-#     soldr/release-auto.yml for the soldr binary). No local cargo
-#     build in the perf job — circular bootstrap with the binaries
-#     under test.
-#   - bench job pins the downloaded zccache via `soldr update-zccache`
-#     before scenarios run;
-#   - fail loudly when CROSS_REPO_PAT is missing or either upstream
-#     build is broken.
+#   - build-binaries job builds soldr + zccache from source (plain
+#     cargo + Swatinem cache + mold linker — no soldr/zccache
+#     wrapping cargo, would be circular with the binaries under
+#     test);
+#   - bench job pins the freshly-built zccache into soldr via
+#     `soldr update-zccache` before scenarios run;
+#   - fail loudly when either source build fails or when
+#     `soldr update-zccache --status` reports pinned=false.
 
 on:
   workflow_dispatch:
@@ -19,7 +18,7 @@ on:
         # mac-x86 is intentionally not listed (Intel macs are EOL on
         # GHA's roadmap). Until a matrix row exists for a given
         # platform its cells gate themselves out via the
-        # bench/fetch-binaries gate steps, so the dispatch UI stays
+        # bench/build-binaries gate steps, so the dispatch UI stays
         # stable as cross-platform RSS pollers land in
         # perf/lib/common.sh.
         description: Platform subset
@@ -188,19 +187,15 @@ jobs:
           echo "scenarios=${SCEN}" >> "$GITHUB_OUTPUT"
           echo "source=${SOURCE}"  >> "$GITHUB_OUTPUT"
 
-  fetch-binaries:
-    # Replaces soldr's `build-soldr` job. Instead of compiling soldr
-    # from source we pull the latest pre-built soldr binary from
-    # zackees/soldr's release-auto build artifact, and the matching
-    # zccache trio (zccache, zccache-daemon, zccache-fp) from this
-    # repo's build.yml artifact. Both downloads use commit-SHA-pinned
-    # actions/download-artifact@v4 and a Personal Access Token
-    # (CROSS_REPO_PAT) with read access to the soldr repo. Missing
-    # secret, missing successful build on main, or missing binaries
-    # in the staged tree are hard failures with explicit
-    # `::error::` annotations.
+  build-binaries:
+    # Build soldr + zccache from source. Plain cargo invocations
+    # (NOT wrapped by soldr or zccache — that would be circular with
+    # the binaries under test). Fast-build stack: Swatinem/rust-cache
+    # for cargo intermediates + mold linker on Linux. Both repos are
+    # checked out at HEAD-of-main on each run; a broken source tree
+    # in either repo fails the build loudly.
     needs: setup
-    name: fetch-binaries (${{ matrix.platform }})
+    name: build-binaries (${{ matrix.platform }})
     strategy:
       fail-fast: false
       matrix:
@@ -230,98 +225,83 @@ jobs:
             echo "selected=true" >> "$GITHUB_OUTPUT"
           else
             echo "selected=false" >> "$GITHUB_OUTPUT"
-            echo "Platform ${M_PLATFORM} not in scope '${REQ_PLATFORMS}'; skipping fetch." >> "$GITHUB_STEP_SUMMARY"
+            echo "Platform ${M_PLATFORM} not in scope '${REQ_PLATFORMS}'; skipping build." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Verify CROSS_REPO_PAT is set
+      - name: Checkout zccache
         if: steps.gate.outputs.selected == 'true'
-        env:
-          HAS_PAT: ${{ secrets.CROSS_REPO_PAT != '' }}
-        run: |
-          if [[ "${HAS_PAT}" != "true" ]]; then
-            echo "::error::CROSS_REPO_PAT secret missing. See PERF.md → Setup."
-            exit 1
-          fi
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Discover latest successful soldr build on main
+      - name: Checkout soldr
         if: steps.gate.outputs.selected == 'true'
-        id: soldr-run
-        env:
-          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
-        run: |
-          set -euo pipefail
-          RUN_ID=$(gh run list --repo zackees/soldr --branch main \
-            --workflow release-auto.yml --status success --limit 1 \
-            --json databaseId --jq '.[0].databaseId // empty')
-          if [[ -z "${RUN_ID}" ]]; then
-            echo "::error::No successful soldr release-auto build on main. Trigger zackees/soldr release-auto.yml manually or push a fix."
-            exit 1
-          fi
-          echo "run-id=${RUN_ID}" >> "$GITHUB_OUTPUT"
-
-      - name: Discover latest successful zccache build on main
-        if: steps.gate.outputs.selected == 'true'
-        id: zccache-run
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          RUN_ID=$(gh run list --repo zackees/zccache --branch main \
-            --workflow build.yml --status success --limit 1 \
-            --json databaseId --jq '.[0].databaseId // empty')
-          if [[ -z "${RUN_ID}" ]]; then
-            echo "::error::No successful zccache build on main. Trigger zackees/zccache build.yml manually or push a fix."
-            exit 1
-          fi
-          echo "run-id=${RUN_ID}" >> "$GITHUB_OUTPUT"
-
-      - name: Download soldr Linux binary
-        if: steps.gate.outputs.selected == 'true'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          github-token: ${{ secrets.CROSS_REPO_PAT }}
           repository: zackees/soldr
-          run-id: ${{ steps.soldr-run.outputs.run-id }}
-          name: release-soldr-x86_64-unknown-linux-gnu
-          path: staged/soldr/
+          ref: main
+          path: soldr-src
 
-      - name: Download zccache trio
-        if: steps.gate.outputs.selected == 'true'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          github-token: ${{ secrets.CROSS_REPO_PAT }}
-          repository: zackees/zccache
-          run-id: ${{ steps.zccache-run.outputs.run-id }}
-          name: binaries-x86_64-unknown-linux-musl
-          path: staged/zccache/
-
-      - name: Verify staged binaries and chmod +x
+      - name: Install Rust toolchain
         if: steps.gate.outputs.selected == 'true'
         run: |
-          set -euo pipefail
-          # Soldr ships its release artifact as a tarball (soldr-<version>-<target>.tar.gz).
-          # Extract the soldr binary into staged/soldr/soldr if needed.
-          if [[ ! -f staged/soldr/soldr ]]; then
-            tarball=$(find staged/soldr -maxdepth 2 -type f -name 'soldr-*.tar.gz' | head -n1)
-            if [[ -n "${tarball}" ]]; then
-              tar -C staged/soldr -xzf "${tarball}"
-            fi
-          fi
+          rustup show active-toolchain || rustup toolchain install stable --profile minimal --no-self-update
 
+      - name: Install mold linker
+        if: steps.gate.outputs.selected == 'true' && matrix.platform == 'linux'
+        run: |
+          which mold || sudo apt-get install -y mold
+
+      - name: Restore cargo cache for zccache build
+        if: steps.gate.outputs.selected == 'true'
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: perf-rust-cluster-zccache-${{ matrix.platform }}
+          workspaces: . -> target
+
+      - name: Build zccache trio (release)
+        if: steps.gate.outputs.selected == 'true'
+        env:
+          RUSTFLAGS: -C link-arg=-fuse-ld=mold
+        run: |
+          cargo build --release --bin zccache --bin zccache-daemon --bin zccache-fp
+
+      - name: Stage zccache binaries
+        if: steps.gate.outputs.selected == 'true'
+        run: |
+          mkdir -p staged/zccache
+          cp target/release/zccache target/release/zccache-daemon target/release/zccache-fp staged/zccache/
+          chmod +x staged/zccache/zccache staged/zccache/zccache-daemon staged/zccache/zccache-fp
+
+      - name: Restore cargo cache for soldr build
+        if: steps.gate.outputs.selected == 'true'
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: perf-rust-cluster-soldr-${{ matrix.platform }}
+          workspaces: soldr-src -> target
+
+      - name: Build soldr (release)
+        if: steps.gate.outputs.selected == 'true'
+        env:
+          RUSTFLAGS: -C link-arg=-fuse-ld=mold
+        working-directory: soldr-src
+        run: |
+          cargo build --release -p soldr-cli
+
+      - name: Stage soldr binary
+        if: steps.gate.outputs.selected == 'true'
+        run: |
+          mkdir -p staged/soldr
+          cp soldr-src/target/release/soldr staged/soldr/
+          chmod +x staged/soldr/soldr
+
+      - name: Verify staged binaries
+        if: steps.gate.outputs.selected == 'true'
+        run: |
           find staged -maxdepth 4 -type f -printf '%p\t%s bytes\n'
           for needed in staged/soldr/soldr staged/zccache/zccache staged/zccache/zccache-daemon staged/zccache/zccache-fp; do
             if [[ ! -f "${needed}" ]]; then
-              # Some artifacts unpack into a subdir; fall back to a recursive find.
-              found=$(find staged -type f -name "$(basename "${needed}")" | head -n1)
-              if [[ -n "${found}" ]]; then
-                mkdir -p "$(dirname "${needed}")"
-                mv "${found}" "${needed}"
-              else
-                echo "::error::Missing required binary ${needed} in downloaded artifacts"
-                exit 1
-              fi
+              echo "::error::Missing required binary ${needed} after source build"
+              exit 1
             fi
-            chmod +x "${needed}"
           done
 
       - name: Upload staged binaries for downstream jobs
@@ -334,7 +314,7 @@ jobs:
 
   bench:
     name: bench (${{ matrix.platform }} / ${{ matrix.fixture }})
-    needs: [setup, fetch-binaries]
+    needs: [setup, build-binaries]
     strategy:
       fail-fast: false
       matrix:

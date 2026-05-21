@@ -1,23 +1,24 @@
 # PERF.md — testing zccache performance
 
-zccache has one performance workflow today: **`.github/workflows/perf-rust-cluster.yml`** (the Rust perf cluster). It exercises zccache against Rust workloads using pre-built `soldr` and `zccache` binaries pulled from each repo's build pipeline artifacts (`zccache/build.yml` for the zccache trio, `soldr/release-auto.yml` for the soldr binary), wired together via the new sticky `soldr update-zccache <dir>` API so the cluster can install a freshly-built zccache into a freshly-built soldr toolchain home. A future **`perf-cpp-cluster.yml`** will mirror this shape for C/C++ workloads (clang/gcc + zccache).
+zccache has one performance workflow today: **`.github/workflows/perf-rust-cluster.yml`** (the Rust perf cluster). It exercises zccache against Rust workloads by **building `soldr` and `zccache` from source on every run** (plain `cargo build --release` + `Swatinem/rust-cache` + `mold` linker — no soldr/zccache wrapping cargo, that would be circular), then wires them together via the new sticky `soldr update-zccache <dir>` API so the freshly-built zccache is the one under test. A future **`perf-cpp-cluster.yml`** will mirror this shape for C/C++ workloads (clang/gcc + zccache).
 
 For the per-scenario design rationale (what each cell proves), see [`perf/README.md`](perf/README.md).
 
 ## Setup
 
-This workflow downloads pre-built binaries from the `zackees/soldr` and `zackees/zccache` build pipelines. Cross-repo artifact reads require a fine-grained Personal Access Token.
+No secrets required. Both repos are public; `actions/checkout` reads them with the default `GITHUB_TOKEN`.
 
-1. Create a fine-grained PAT at <https://github.com/settings/personal-access-tokens/new> with `Actions: Read` scope on **both** `zackees/soldr` and `zackees/zccache`.
-2. Add the token as repo secret `CROSS_REPO_PAT` in this repo's Settings → Secrets and variables → Actions.
+If either source tree at `main` HEAD fails to build, the `build-binaries` job fails loudly with the cargo error message — that is the fail-loud signal that the upstream is broken.
 
-If `CROSS_REPO_PAT` is missing or expired, the `fetch-binaries` job fails loudly with a clear error message — no silent skipping.
+### Why build from source instead of consuming pre-built artifacts?
 
-Also required: both repos must have at least one **successful** main-branch run of their respective build pipeline (`zackees/zccache:.github/workflows/build.yml` and `zackees/soldr:.github/workflows/release-auto.yml`). If either is missing or broken, the workflow fails loudly. Trigger them via the Actions tab → `Run workflow` on `main` if needed. Note that soldr's `release-auto.yml` only fires on version bumps in `Cargo.toml` or tag pushes — a stale main may need a manual dispatch before the perf cluster has artifacts to consume.
+Two reasons:
+- **`soldr` and `zccache` are the binaries under test.** Building them with themselves (wrapping `cargo` with `soldr` or `zccache`) would either bootstrap them off prior cached versions of themselves, or measure the bootstrap rather than the cache. Plain `cargo build --release` sidesteps both pitfalls.
+- **`main` HEAD is the substance of the test.** Whatever soldr or zccache do today on `main` is what the perf cluster measures today. Artifact consumption would lag by however stale the upstream's most recent dispatched build happens to be (soldr's `release-auto.yml` only fires on releases; zccache's `build.yml` is `workflow_dispatch`-only).
 
-### Why two repos for the binaries?
+### What about speed?
 
-We deliberately do not build soldr or zccache inside the perf job. Building soldr requires soldr (toolchain bootstrap), and building zccache benefits from a working soldr + zccache (compiler caching). Doing both inside the perf job would either circularly depend on the artifacts under test or measure the bootstrap rather than the cache. Pulling artifacts from each repo's `build.yml` cleanly separates "produce a binary" from "measure that binary."
+`Swatinem/rust-cache` caches cargo intermediates per-repo per-platform; warm rebuilds are typically a few minutes. `mold` linker is installed on Linux to shorten the final-link step. The first run on a new platform is slower because both caches are empty.
 
 ## How it triggers
 
