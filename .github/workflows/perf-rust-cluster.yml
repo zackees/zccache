@@ -74,7 +74,6 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 concurrency:
   # Never cancel a perf run in flight — every measurement is a data
@@ -413,7 +412,7 @@ jobs:
             exit 1
           fi
 
-      - name: Verify soldr is the artifact build
+      - name: Verify soldr is the source build
         if: steps.gate.outputs.selected == 'true'
         run: |
           which soldr
