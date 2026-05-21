@@ -107,12 +107,14 @@ fn write_minidump_for_context(crash_context: &crash_handler::CrashContext) {
     }
     let path = unique_dump_path(&crash_dir, "dmp");
 
-    // Best-effort backtrace. Signal-handler-time backtraces can be
-    // flaky on macOS but usually work on Linux/Windows. The
-    // `force_capture` is required because RUST_BACKTRACE may not be
-    // set in the test environment.
-    let backtrace = std::backtrace::Backtrace::force_capture();
-
+    // No backtrace capture here. `std::backtrace::Backtrace::force_capture()`
+    // allocates a Vec, which is async-signal-unsafe — on Linux that can
+    // deadlock the malloc lock acquired by the crashing thread, leaving
+    // no dump on disk at all. The panic-hook path captures backtraces
+    // safely because it runs in a normal context, not a signal handler.
+    // When we swap this to actual Breakpad minidump format, the thread
+    // register state in the dump gives offline tools enough to
+    // reconstruct the stack without needing in-handler walking.
     let signal_summary = format_signal_summary(crash_context);
     let body = format!(
         "zccache daemon crash report (signal-level)\n\
@@ -126,8 +128,8 @@ fn write_minidump_for_context(crash_context: &crash_handler::CrashContext) {
          Signal:\n\
          {signal_summary}\n\
          \n\
-         Backtrace:\n\
-         {backtrace}\n",
+         Backtrace: <not captured — async-signal-unsafe; use core file \
+         or run with a debugger attached>\n",
         version = env!("CARGO_PKG_VERSION"),
         os = std::env::consts::OS,
         arch = std::env::consts::ARCH,
@@ -152,10 +154,19 @@ fn format_signal_summary(cc: &crash_handler::CrashContext) -> String {
 
 #[cfg(target_os = "macos")]
 fn format_signal_summary(cc: &crash_handler::CrashContext) -> String {
-    format!(
-        "exception_type = {}\nexception_code = {}\nthread = {}",
-        cc.exception.kind, cc.exception.code, cc.task
-    )
+    // `exception` is None for signals delivered via the regular POSIX
+    // path rather than Mach exception ports — record what we have either
+    // way so the dump never silently drops the cause.
+    match cc.exception.as_ref() {
+        Some(exc) => format!(
+            "exception_kind = {}\nexception_code = {}\nexception_subcode = {:?}\nthread = {}",
+            exc.kind, exc.code, exc.subcode, cc.thread
+        ),
+        None => format!(
+            "exception = <none — posix-signal path>\nthread = {}",
+            cc.thread
+        ),
+    }
 }
 
 #[cfg(target_os = "windows")]
