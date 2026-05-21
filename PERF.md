@@ -169,8 +169,35 @@ The flow:
 3. **Edit + re-run the local scenario.** Compare cold_ms, warm_ms, ratio (warm/cold), hits, misses against your baseline. Iterate locally until the JSON line says you fixed it.
 4. **Only now push.** Open a `perf/<plat>-<fix>-<scen>` branch matched to the narrowest cell that exercises your fix (see [Picking a branch](#picking-a-branch-for-the-work-youre-doing)). Watch the GHA run to confirm the local result reproduces on the cluster's hardware.
 5. **Iterate on GHA only when you must.** If the bug only reproduces under GHA's environment (older glibc, different filesystem, specific runner image), you've earned the right to push uncertain hypotheses. Note in the commit message that local repro failed and why — future-you will want that context.
+6. **Lock the fix in with a perf unit test.** See [Preventing regressions](#preventing-regressions--add-a-perf-unit-test). Without a test, the bug comes back the next time someone refactors the affected path.
 
 The cluster is the regression-blocking measurement, but it is a bad iteration loop. Use it accordingly.
+
+## Preventing regressions — add a perf unit test
+
+Every perf bug you fix should leave a test behind that fails when the regression returns. Tests are the spec: if the perf characteristic isn't tested, it doesn't exist. The perf cluster catches scenario-level cold/warm collapses, but a tight unit test pins down the specific function or path that was slow and makes the future fix obvious.
+
+Two venues, picked by what you're protecting:
+
+**1. Compile-time speed floors (C / C++ / Rust vs bare + vs sccache).** Extend [`crates/zccache-daemon/tests/perf_bench_test.rs`](crates/zccache-daemon/tests/perf_bench_test.rs) with a new `#[test] #[ignore]` benchmark, then add a threshold row in [`ci/perf_guard.py`](ci/perf_guard.py) so [`.github/workflows/perf-guard.yml`](.github/workflows/perf-guard.yml) gates on it on every push to main. The existing rows are your template (`perf_c_zccache_vs_bare`, `perf_warm_cache_zccache_vs_sccache`, etc.).
+
+**2. Function- or path-level budget assertions.** For a regression scoped to a single function (e.g. "session-end took 200 ms when it used to take 5 ms"), add a `#[test]` in the relevant crate that asserts a `Duration` budget:
+
+```rust
+#[test]
+fn session_end_under_50ms() {
+    let t = Instant::now();
+    daemon.session_end(session_id).unwrap();
+    let elapsed = t.elapsed();
+    assert!(elapsed < Duration::from_millis(50), "session_end took {:?}", elapsed);
+}
+```
+
+Pick the budget at ~3× the post-fix measurement so machine variance doesn't make the test flaky. Mark `#[ignore]` if the test is too slow for the normal suite — `./test --full` picks up ignored tests and CI runs that variant.
+
+**Naming convention:** prefix the test with `perf_` so it's discoverable and so a future cleanup can grep them all. Reference the issue number in a comment (e.g. `// regression test for #320`) — future-you will want to find why the budget was picked.
+
+**Avoid `criterion` / `divan`** for these tests. The point is a single hard assertion that flips a CI red, not a statistical comparison — those tools are for diagnosis (PERF.md → "Iterating on a perf problem"), not regression gates.
 
 ## Local dry-runs
 

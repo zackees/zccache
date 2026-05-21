@@ -21,6 +21,12 @@ zccache is a local-first compiler cache daemon (11 crates). See @docs/CLAUDE.md 
 > 5–17 minutes; one local cycle is seconds. Use the cluster to confirm a fix you
 > already validated locally — not to test hypotheses you haven't tried yet. See
 > PERF.md → "Iterating on a perf problem — local-first, GHA last."
+>
+> **Every perf fix lands with a perf unit test.** Without a test, the bug comes
+> back. Either extend `crates/zccache-daemon/tests/perf_bench_test.rs` + add a
+> threshold row in `ci/perf_guard.py`, or add a `#[test]` `Duration` budget
+> assertion in the crate where the regression lived. See PERF.md →
+> "Preventing regressions — add a perf unit test."
 
 ## Essential Rules
 
