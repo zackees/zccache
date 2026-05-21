@@ -371,8 +371,8 @@ jobs:
         run: |
           # Workers need cargo on PATH so soldr cargo can dispatch to
           # it. Soldr fetches/manages zccache itself on first use, but
-          # we override that below by pinning the artifact build via
-          # `soldr update-zccache`.
+          # we override that below by pinning the freshly-built zccache
+          # via `soldr update-zccache`.
           rustup show active-toolchain || rustup toolchain install stable --profile minimal --no-self-update
 
       - name: Install fixture native deps

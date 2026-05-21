@@ -129,7 +129,7 @@ Short tokens keep the branch name unambiguous (the real names contain hyphens th
 | `perf/mac-sqlite-worktree` | **single cell**: mac × sqlite-link × worktree |
 | `perf/mac-sqlite-touch` | **single cell**: mac × sqlite-link × touch |
 
-> Today, only `linux` has a matrix row in `fetch-binaries` / `bench`. `win` and `mac` branches resolve correctly via setup but their cells gate out until cross-platform runner rows land. The branch names stay stable.
+> Today, only `linux` has a matrix row in `build-binaries` / `bench`. `win` and `mac` branches resolve correctly via setup but their cells gate out until cross-platform runner rows land. The branch names stay stable.
 
 ## Picking a branch for the work you're doing
 
