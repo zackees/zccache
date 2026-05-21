@@ -993,6 +993,7 @@ impl DaemonServer {
                         crate::lifecycle::write_event(
                             crate::lifecycle::EVENT_DIED_IDLE,
                             serde_json::json!({
+                                "reason": crate::lifecycle::REASON_IDLE_TIMEOUT,
                                 "idle_secs": idle,
                                 "idle_timeout_secs": timeout,
                             }),
@@ -1457,6 +1458,18 @@ async fn handle_connection(
             Request::Ping => (Response::Pong, None),
             Request::Shutdown => {
                 conn.send(&Response::ShuttingDown).await?;
+                // Record graceful exit alongside the existing "spawn"
+                // event so a single parse of `daemon-lifecycle.log`
+                // reconstructs the daemon's full lifetime. Pairs with
+                // EVENT_DIED_IDLE for unattended exits and the CLI's
+                // EVENT_SPAWN_ATTEMPT for the matching start side.
+                crate::lifecycle::write_event(
+                    crate::lifecycle::EVENT_DIED_SHUTDOWN,
+                    serde_json::json!({
+                        "reason": crate::lifecycle::REASON_GRACEFUL_SHUTDOWN,
+                        "uptime_secs": now_secs().saturating_sub(state.start_time),
+                    }),
+                );
                 state.shutdown.notify_one();
                 return Ok(());
             }

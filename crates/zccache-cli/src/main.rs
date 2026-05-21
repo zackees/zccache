@@ -4419,9 +4419,21 @@ async fn check_daemon_version(endpoint: &str) -> VersionCheck {
 }
 
 /// Spawn a new daemon and wait for it to become ready.
-async fn spawn_and_wait(endpoint: &str) -> Result<(), String> {
+async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), String> {
     let daemon_bin = find_daemon_binary().ok_or("cannot find zccache-daemon binary")?;
-    tracing::debug!(?daemon_bin, %endpoint, "spawning daemon");
+    tracing::debug!(?daemon_bin, %endpoint, reason, "spawning daemon");
+    // Record *why* the CLI is about to spawn a daemon so an operator
+    // can correlate each CLI decision with the resulting daemon PID
+    // by parsing the single `daemon-lifecycle.log`. See zccache#323
+    // for the diagnostic gap that motivated this.
+    zccache_core::lifecycle::write_event(
+        zccache_core::lifecycle::EVENT_SPAWN_ATTEMPT,
+        serde_json::json!({
+            "reason": reason,
+            "endpoint": endpoint,
+            "client_pid": std::process::id(),
+        }),
+    );
     zccache_cli::spawn_daemon(&daemon_bin, endpoint)?;
 
     for _ in 0..100 {
@@ -4491,12 +4503,20 @@ async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                 "daemon is older than client, auto-recovering"
             );
             stop_stale_daemon(endpoint).await;
-            return spawn_and_wait(endpoint).await;
+            return spawn_and_wait(
+                endpoint,
+                zccache_core::lifecycle::REASON_REPLACED_STALE_VERSION,
+            )
+            .await;
         }
         VersionCheck::CommError => {
             tracing::info!("cannot communicate with daemon, auto-recovering");
             stop_stale_daemon(endpoint).await;
-            return spawn_and_wait(endpoint).await;
+            return spawn_and_wait(
+                endpoint,
+                zccache_core::lifecycle::REASON_REPLACED_COMM_ERROR,
+            )
+            .await;
         }
         VersionCheck::Unreachable => {
             // Fall through to lock-file check / spawn
@@ -4524,14 +4544,22 @@ async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                         "daemon is older than client during startup, auto-recovering"
                     );
                     stop_stale_daemon(endpoint).await;
-                    return spawn_and_wait(endpoint).await;
+                    return spawn_and_wait(
+                        endpoint,
+                        zccache_core::lifecycle::REASON_REPLACED_STALE_VERSION,
+                    )
+                    .await;
                 }
                 VersionCheck::CommError => {
                     tracing::info!(
                         "cannot communicate with daemon during startup, auto-recovering"
                     );
                     stop_stale_daemon(endpoint).await;
-                    return spawn_and_wait(endpoint).await;
+                    return spawn_and_wait(
+                        endpoint,
+                        zccache_core::lifecycle::REASON_REPLACED_COMM_ERROR,
+                    )
+                    .await;
                 }
                 VersionCheck::Unreachable => continue,
             }
@@ -4542,7 +4570,7 @@ async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
     }
 
     // No daemon running — spawn one
-    spawn_and_wait(endpoint).await
+    spawn_and_wait(endpoint, zccache_core::lifecycle::REASON_INITIAL_START).await
 }
 
 /// Find the daemon binary. Looks next to the CLI binary first, then on PATH.

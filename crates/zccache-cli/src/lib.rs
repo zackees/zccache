@@ -375,8 +375,23 @@ async fn check_daemon_version(endpoint: &str) -> VersionCheck {
     }
 }
 
-async fn spawn_and_wait(endpoint: &str) -> Result<(), String> {
+async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), String> {
     let daemon_bin = find_daemon_binary().ok_or("cannot find zccache-daemon binary")?;
+    // Record *why* the CLI is about to spawn a daemon. Pairs with the
+    // daemon-side "spawn" event so an operator can correlate each CLI
+    // decision with the resulting daemon PID by parsing the single
+    // `daemon-lifecycle.log`. Reasons: initial-start vs. one of the
+    // replaced-* variants. This is the diagnostic gap zccache#323
+    // identified — knowing 5 daemons spawned without knowing why
+    // makes the root cause undebuggable.
+    zccache_core::lifecycle::write_event(
+        zccache_core::lifecycle::EVENT_SPAWN_ATTEMPT,
+        serde_json::json!({
+            "reason": reason,
+            "endpoint": endpoint,
+            "client_pid": std::process::id(),
+        }),
+    );
     spawn_daemon(&daemon_bin, endpoint)?;
 
     for _ in 0..100 {
@@ -420,12 +435,20 @@ async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                 "daemon is older than client, auto-recovering"
             );
             stop_stale_daemon(endpoint).await;
-            return spawn_and_wait(endpoint).await;
+            return spawn_and_wait(
+                endpoint,
+                zccache_core::lifecycle::REASON_REPLACED_STALE_VERSION,
+            )
+            .await;
         }
         VersionCheck::CommError => {
             tracing::info!("cannot communicate with daemon, auto-recovering");
             stop_stale_daemon(endpoint).await;
-            return spawn_and_wait(endpoint).await;
+            return spawn_and_wait(
+                endpoint,
+                zccache_core::lifecycle::REASON_REPLACED_COMM_ERROR,
+            )
+            .await;
         }
         VersionCheck::Unreachable => {}
     }
@@ -444,11 +467,19 @@ async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                         "daemon is older than client during startup, auto-recovering"
                     );
                     stop_stale_daemon(endpoint).await;
-                    return spawn_and_wait(endpoint).await;
+                    return spawn_and_wait(
+                        endpoint,
+                        zccache_core::lifecycle::REASON_REPLACED_STALE_VERSION,
+                    )
+                    .await;
                 }
                 VersionCheck::CommError => {
                     stop_stale_daemon(endpoint).await;
-                    return spawn_and_wait(endpoint).await;
+                    return spawn_and_wait(
+                        endpoint,
+                        zccache_core::lifecycle::REASON_REPLACED_COMM_ERROR,
+                    )
+                    .await;
                 }
                 VersionCheck::Unreachable => continue,
             }
@@ -458,7 +489,7 @@ async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
         ));
     }
 
-    spawn_and_wait(endpoint).await
+    spawn_and_wait(endpoint, zccache_core::lifecycle::REASON_INITIAL_START).await
 }
 
 fn find_daemon_binary() -> Option<NormalizedPath> {
@@ -646,22 +677,59 @@ fn allocate_daemon_spawn_log_path() -> std::path::PathBuf {
         .join(format!("daemon-spawn-{}-{nanos}.log", std::process::id()))
 }
 
-/// Best-effort sweep of `daemon-spawn-*.log` files older than 24h to keep
-/// the logs/ directory from accumulating forever. Cheap to call before each
-/// spawn — matches the existing `gc_runtime_binaries` pattern.
-pub fn gc_daemon_spawn_logs() {
+/// Default age cutoff for entries swept by [`gc_log_directory`]. Files
+/// older than this are removed. Subdirectories are skipped (the daemon
+/// doesn't create any under `logs/` today).
+const LOG_GC_CUTOFF: std::time::Duration = std::time::Duration::from_secs(60 * 60 * 24);
+
+/// Best-effort sweep of stale files in `{cache_dir}/logs/`.
+///
+/// Catches every log type that lands in this directory — not just
+/// `daemon-spawn-*.log`. As of the issue-#323 fix this includes:
+///   * `daemon-spawn-{pid}-{nanos}.log` (per-spawn daemon stdio
+///     capture; CLI-owned)
+///   * `daemon-lifecycle.log.1` (rotated lifecycle archive; the daemon
+///     handles its own 1 MiB soft-cap but never garbage-collects the
+///     archive, so it can sit on disk forever after the daemon exits)
+///   * `daemon.log.*` (rotated event-log archives; the EventLogger
+///     keeps N by count, this adds a time-based safety net for archives
+///     left behind by daemons that exited before the next rotation)
+///   * `compile_journal.jsonl.*` (rotated compile-journal archives;
+///     same rationale)
+///   * Anything else that may have accumulated here from past versions
+///     or external tooling
+///
+/// The active `daemon-lifecycle.log` is intentionally *preserved* — a
+/// long-idle daemon may go 24h between writes (spawn → next event),
+/// and deleting it mid-life would erase the very history that #323
+/// needed to diagnose the multi-spawn bug.
+pub fn gc_log_directory() {
     let dir = zccache_core::config::default_cache_dir().join(DAEMON_SPAWN_LOGS_SUBDIR);
-    let entries = match std::fs::read_dir(dir.as_path()) {
+    gc_log_directory_in(dir.as_path(), LOG_GC_CUTOFF);
+}
+
+/// Test seam for [`gc_log_directory`]. Sweeps stale files in `dir`
+/// older than `cutoff`, preserving the active
+/// `daemon-lifecycle.log` regardless of age.
+pub fn gc_log_directory_in(dir: &Path, cutoff: std::time::Duration) {
+    let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
     };
     let now = std::time::SystemTime::now();
-    let cutoff = std::time::Duration::from_secs(60 * 60 * 24);
     for entry in entries.flatten() {
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        if !name.starts_with("daemon-spawn-") {
+        // Skip the live lifecycle log: it's the one file that may sit
+        // untouched between a daemon's `spawn` and `died-*` events.
+        // Every other file in `logs/` either rotates often or is a
+        // historical artifact safe to discard once old.
+        if name == zccache_core::lifecycle::LIVE_LOG_FILENAME {
+            continue;
+        }
+        let file_type = entry.file_type();
+        if file_type.map(|t| !t.is_file()).unwrap_or(true) {
             continue;
         }
         let modified = entry
@@ -677,12 +745,20 @@ pub fn gc_daemon_spawn_logs() {
     }
 }
 
+/// Back-compat alias for the broadened sweep. Earlier callers used
+/// the spawn-log-only name; new code should use [`gc_log_directory`].
+#[deprecated(note = "use gc_log_directory instead — sweeps the full logs/ directory")]
+pub fn gc_daemon_spawn_logs() {
+    gc_log_directory();
+}
+
 pub fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
     // GC before the new spawn so neither dir grows unbounded across
     // crash-loop scenarios. Live daemons keep their open log file FDs;
-    // GC only touches files older than the 24h cutoff.
+    // GC only touches files older than the 24h cutoff and preserves
+    // the active `daemon-lifecycle.log` regardless of age.
     gc_runtime_binaries();
-    gc_daemon_spawn_logs();
+    gc_log_directory();
 
     // Prefer to spawn from a relocated copy in the zccache global dir.
     // Fall back to the canonical install path if the copy fails — the
@@ -1370,5 +1446,108 @@ mod tests {
             matches!(result, Ok(None)),
             "vanished daemon must produce Ok(None) (success no-op), got {result:?}"
         );
+    }
+
+    /// `gc_log_directory_in` must:
+    /// 1. delete every stale file regardless of name (not just
+    ///    `daemon-spawn-*.log`), so leftover `daemon-lifecycle.log.1`,
+    ///    `daemon.log.<ts>`, `compile_journal.jsonl.<ts>`, and stray
+    ///    files from previous versions all get reaped;
+    /// 2. preserve the live `daemon-lifecycle.log` even when it's
+    ///    older than the cutoff — a long-idle daemon may only touch
+    ///    it twice (at `spawn` and `died-*`).
+    #[test]
+    fn gc_log_directory_sweeps_stale_files_and_preserves_lifecycle_log() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let logs = tmp.path();
+
+        // Fresh files (mtime = now). Must all survive a sweep with a
+        // 60-second cutoff regardless of name.
+        for name in [
+            "daemon-lifecycle.log",
+            "daemon-lifecycle.log.1",
+            "daemon-spawn-1234-9999.log",
+            "daemon.log",
+            "daemon.log.2026-01-01T00-00-00Z",
+            "compile_journal.jsonl",
+            "compile_journal.jsonl.2026-01-01T00-00-00Z",
+            "last-session.log",
+            "stray-from-external-tool.txt",
+        ] {
+            std::fs::write(logs.join(name), b"x").unwrap();
+        }
+
+        gc_log_directory_in(logs, std::time::Duration::from_secs(60));
+
+        for name in [
+            "daemon-lifecycle.log",
+            "daemon-lifecycle.log.1",
+            "daemon-spawn-1234-9999.log",
+            "daemon.log",
+            "daemon.log.2026-01-01T00-00-00Z",
+            "compile_journal.jsonl",
+            "compile_journal.jsonl.2026-01-01T00-00-00Z",
+            "last-session.log",
+            "stray-from-external-tool.txt",
+        ] {
+            assert!(
+                logs.join(name).exists(),
+                "{name} must survive when mtime is fresh"
+            );
+        }
+
+        // Now age every file by overwriting mtime to two days ago.
+        // Then sweep with a 24h cutoff. Only `daemon-lifecycle.log`
+        // should survive — it's the live writer and may sit idle for
+        // an arbitrarily long time between events.
+        let two_days_ago =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 60 * 48);
+        for name in [
+            "daemon-lifecycle.log",
+            "daemon-lifecycle.log.1",
+            "daemon-spawn-1234-9999.log",
+            "daemon.log",
+            "daemon.log.2026-01-01T00-00-00Z",
+            "compile_journal.jsonl",
+            "compile_journal.jsonl.2026-01-01T00-00-00Z",
+            "last-session.log",
+            "stray-from-external-tool.txt",
+        ] {
+            let path = logs.join(name);
+            let f = std::fs::File::options().write(true).open(&path).unwrap();
+            f.set_modified(two_days_ago).unwrap();
+        }
+
+        gc_log_directory_in(logs, std::time::Duration::from_secs(60 * 60 * 24));
+
+        assert!(
+            logs.join("daemon-lifecycle.log").exists(),
+            "active lifecycle log must be preserved even when stale"
+        );
+        for name in [
+            "daemon-lifecycle.log.1",
+            "daemon-spawn-1234-9999.log",
+            "daemon.log",
+            "daemon.log.2026-01-01T00-00-00Z",
+            "compile_journal.jsonl",
+            "compile_journal.jsonl.2026-01-01T00-00-00Z",
+            "last-session.log",
+            "stray-from-external-tool.txt",
+        ] {
+            assert!(
+                !logs.join(name).exists(),
+                "{name} should have been swept (older than 24h cutoff)"
+            );
+        }
+    }
+
+    /// Sweeping a nonexistent directory is a silent no-op (called
+    /// before every spawn — must never fail on a fresh install).
+    #[test]
+    fn gc_log_directory_silently_handles_missing_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("does-not-exist");
+        gc_log_directory_in(&missing, std::time::Duration::from_secs(60));
+        assert!(!missing.exists());
     }
 }
