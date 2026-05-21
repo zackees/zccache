@@ -20,6 +20,49 @@ use zccache_protocol::Response;
 
 use crate::event_log::{format_timestamp, open_append};
 
+/// Closed enum of `miss_reason` values written to the compile journal.
+///
+/// Per issue #322 the set is finite so consumers can build histograms over
+/// it. The constants are `&'static str` rather than a real enum because the
+/// JSON serialization is a flat string — modeling them as an enum would add
+/// a `to_str()` shim with no extra type safety in the daemon. The `ALL`
+/// slice is the canonical iteration order; new variants must be appended.
+///
+/// Mapping (the *why* of each bucket):
+/// - `context_not_found` — daemon has no dep-graph context for this compile
+///   unit (cold cache, first time the daemon has seen this crate).
+/// - `input_fingerprint_mismatch` — source files, headers, or flags changed
+///   between the cached entry and the current invocation.
+/// - `no_artifact_for_key` — cache key was computed and a context existed,
+///   but the on-disk artifact is gone (e.g. GC'd, never persisted).
+/// - `version_skew` — compiler/toolchain or zccache schema version differs
+///   from the cached entry.
+/// - `uncacheable_input` — invocation parsed but is intrinsically
+///   uncacheable (rustc emits PGO profile, `-C link-arg=…` host-specific,
+///   etc.).
+/// - `unknown` — fallback; emitted whenever the daemon detected a miss but
+///   has not (yet) attributed a precise reason. Follow-up work narrows
+///   `unknown` into the concrete buckets above. Consumers should still
+///   treat the field as present so dashboards don't crash.
+pub mod miss_reason {
+    pub const CONTEXT_NOT_FOUND: &str = "context_not_found";
+    pub const INPUT_FINGERPRINT_MISMATCH: &str = "input_fingerprint_mismatch";
+    pub const NO_ARTIFACT_FOR_KEY: &str = "no_artifact_for_key";
+    pub const VERSION_SKEW: &str = "version_skew";
+    pub const UNCACHEABLE_INPUT: &str = "uncacheable_input";
+    pub const UNKNOWN: &str = "unknown";
+
+    /// Closed iteration over all documented buckets. Append-only.
+    pub const ALL: &[&str] = &[
+        CONTEXT_NOT_FOUND,
+        INPUT_FINGERPRINT_MISMATCH,
+        NO_ARTIFACT_FOR_KEY,
+        VERSION_SKEW,
+        UNCACHEABLE_INPUT,
+        UNKNOWN,
+    ];
+}
+
 /// A single journal entry serialized as one JSON line.
 ///
 /// The fields below the legacy block are populated only when `--profile`
@@ -61,8 +104,11 @@ pub struct JournalEntry {
     /// `"rlib"`, `"rmeta"`, `"so"`, `"dylib"`, `"exe"`, `"a"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_ext: Option<String>,
-    /// Why this entry missed: `"first_seen"`, `"inputs"`, `"flag"`,
-    /// `"dep_graph"`, `"rustc_version"`.
+    /// Categorical reason for `outcome: miss` (issue #322). Always populated
+    /// on misses; always omitted on hits/errors. Allowed values are the
+    /// finite set documented in the [`miss_reason`] module (see also
+    /// `docs/journal-schema.md`). `String` (not `&'static str`) so the
+    /// derive(Deserialize) round-trip used in analyzer tooling works.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub miss_reason: Option<String>,
     /// Evidence bucket — only the dimension that flipped is populated.
@@ -107,11 +153,17 @@ pub struct JournalContext {
 
 impl JournalEntry {
     /// Create a new journal entry with the current UTC timestamp.
+    ///
+    /// `miss_reason` must be `Some(_)` when `outcome == "miss" | "link_miss"`
+    /// and `None` otherwise. The canonical caller threads the value from
+    /// [`extract_outcome`], which enforces this invariant. The string must
+    /// be one of the constants in the [`miss_reason`] module.
     pub fn new(
         ctx: JournalContext,
         outcome: &'static str,
         exit_code: i32,
         latency_ns: u128,
+        miss_reason: Option<&'static str>,
     ) -> Self {
         Self {
             ts: format_timestamp(SystemTime::now()),
@@ -126,7 +178,7 @@ impl JournalEntry {
             crate_name: None,
             crate_type: None,
             output_ext: None,
-            miss_reason: None,
+            miss_reason: miss_reason.map(str::to_string),
             miss_diff: None,
             self_profile_ns: None,
         }
@@ -416,34 +468,40 @@ fn gc_journal_files(path: &Path) {
     }
 }
 
-/// Extract outcome string and exit code from a Response.
+/// Extract outcome string, exit code, and default miss reason from a Response.
 ///
-/// Returns `None` for non-compile/link responses (Ping, Status, etc.).
-pub fn extract_outcome(response: &Response) -> Option<(&'static str, i32)> {
+/// Returns `None` for non-compile/link responses (Ping, Status, etc.). The
+/// third tuple element is `Some(_)` only when the outcome is `"miss"` or
+/// `"link_miss"` (issue #322 acceptance criteria #1: every miss carries a
+/// reason). Concrete attributions (`context_not_found`, etc.) are layered
+/// on by the compile-handler in follow-up work; this function is the
+/// canonical *default* so the journal-writer cannot accidentally omit the
+/// field.
+pub fn extract_outcome(response: &Response) -> Option<(&'static str, i32, Option<&'static str>)> {
     match response {
         Response::CompileResult {
             exit_code, cached, ..
         } => {
             if *exit_code != 0 {
-                Some(("error", *exit_code))
+                Some(("error", *exit_code, None))
             } else if *cached {
-                Some(("hit", *exit_code))
+                Some(("hit", *exit_code, None))
             } else {
-                Some(("miss", *exit_code))
+                Some(("miss", *exit_code, Some(miss_reason::UNKNOWN)))
             }
         }
         Response::LinkResult {
             exit_code, cached, ..
         } => {
             if *exit_code != 0 {
-                Some(("error", *exit_code))
+                Some(("error", *exit_code, None))
             } else if *cached {
-                Some(("link_hit", *exit_code))
+                Some(("link_hit", *exit_code, None))
             } else {
-                Some(("link_miss", *exit_code))
+                Some(("link_miss", *exit_code, Some(miss_reason::UNKNOWN)))
             }
         }
-        Response::Error { .. } => Some(("error", -1)),
+        Response::Error { .. } => Some(("error", -1, None)),
         _ => None,
     }
 }
@@ -567,7 +625,7 @@ mod tests {
             env: None,
             session_id: Some("session-1".to_string()),
         };
-        let entry = JournalEntry::new(ctx, "hit", 0, 5_000_000);
+        let entry = JournalEntry::new(ctx, "hit", 0, 5_000_000, None);
         journal.log(&entry, None);
 
         // Give the background thread time to write.
@@ -593,7 +651,7 @@ mod tests {
             env: None,
             session_id: None,
         };
-        let entry = JournalEntry::new(ctx, "miss", 0, 0);
+        let entry = JournalEntry::new(ctx, "miss", 0, 0, Some(miss_reason::UNKNOWN));
         // Should not panic.
         journal.log(&entry, None);
     }
@@ -614,7 +672,7 @@ mod tests {
             env: None,
             session_id: Some("test-session".to_string()),
         };
-        let entry = JournalEntry::new(ctx, "miss", 0, 2_000_000);
+        let entry = JournalEntry::new(ctx, "miss", 0, 2_000_000, Some(miss_reason::UNKNOWN));
         journal.log(&entry, Some(&session_path));
 
         // Give the background thread time to write.
@@ -648,7 +706,7 @@ mod tests {
             env: None,
             session_id: Some("close-test".to_string()),
         };
-        let entry = JournalEntry::new(ctx, "hit", 0, 100);
+        let entry = JournalEntry::new(ctx, "hit", 0, 100, None);
         journal.log(&entry, Some(&session_path));
         journal.close_session(&session_path);
 
@@ -667,7 +725,7 @@ mod tests {
             stderr: Arc::new(vec![]),
             cached: true,
         };
-        assert_eq!(extract_outcome(&resp), Some(("hit", 0)));
+        assert_eq!(extract_outcome(&resp), Some(("hit", 0, None)));
     }
 
     #[test]
@@ -678,7 +736,10 @@ mod tests {
             stderr: Arc::new(vec![]),
             cached: false,
         };
-        assert_eq!(extract_outcome(&resp), Some(("miss", 0)));
+        assert_eq!(
+            extract_outcome(&resp),
+            Some(("miss", 0, Some(miss_reason::UNKNOWN)))
+        );
     }
 
     #[test]
@@ -689,7 +750,7 @@ mod tests {
             stderr: Arc::new(vec![]),
             cached: false,
         };
-        assert_eq!(extract_outcome(&resp), Some(("error", 1)));
+        assert_eq!(extract_outcome(&resp), Some(("error", 1, None)));
     }
 
     #[test]
@@ -701,7 +762,7 @@ mod tests {
             cached: true,
             warning: None,
         };
-        assert_eq!(extract_outcome(&resp), Some(("link_hit", 0)));
+        assert_eq!(extract_outcome(&resp), Some(("link_hit", 0, None)));
     }
 
     #[test]
@@ -713,7 +774,10 @@ mod tests {
             cached: false,
             warning: None,
         };
-        assert_eq!(extract_outcome(&resp), Some(("link_miss", 0)));
+        assert_eq!(
+            extract_outcome(&resp),
+            Some(("link_miss", 0, Some(miss_reason::UNKNOWN)))
+        );
     }
 
     #[test]
@@ -721,7 +785,7 @@ mod tests {
         let resp = Response::Error {
             message: "something broke".to_string(),
         };
-        assert_eq!(extract_outcome(&resp), Some(("error", -1)));
+        assert_eq!(extract_outcome(&resp), Some(("error", -1, None)));
     }
 
     #[test]
@@ -742,7 +806,7 @@ mod tests {
             stderr: Arc::new(vec![]),
             cached: true,
         };
-        assert_eq!(extract_outcome(&resp), Some(("error", 1)));
+        assert_eq!(extract_outcome(&resp), Some(("error", 1, None)));
     }
 
     #[test]
@@ -754,7 +818,7 @@ mod tests {
             cached: true,
             warning: None,
         };
-        assert_eq!(extract_outcome(&resp), Some(("error", 2)));
+        assert_eq!(extract_outcome(&resp), Some(("error", 2, None)));
     }
 
     #[test]
@@ -766,7 +830,7 @@ mod tests {
             cached: false,
             warning: None,
         };
-        assert_eq!(extract_outcome(&resp), Some(("error", 1)));
+        assert_eq!(extract_outcome(&resp), Some(("error", 1, None)));
     }
 
     #[test]
@@ -847,7 +911,7 @@ mod tests {
             stderr: Arc::new(vec![]),
             cached: false,
         };
-        assert_eq!(extract_outcome(&resp_neg1), Some(("error", -1)));
+        assert_eq!(extract_outcome(&resp_neg1), Some(("error", -1, None)));
 
         let resp_min = Response::CompileResult {
             exit_code: i32::MIN,
@@ -855,7 +919,7 @@ mod tests {
             stderr: Arc::new(vec![]),
             cached: true,
         };
-        assert_eq!(extract_outcome(&resp_min), Some(("error", i32::MIN)));
+        assert_eq!(extract_outcome(&resp_min), Some(("error", i32::MIN, None)));
 
         let resp_link_neg = Response::LinkResult {
             exit_code: -1,
@@ -864,7 +928,7 @@ mod tests {
             cached: false,
             warning: None,
         };
-        assert_eq!(extract_outcome(&resp_link_neg), Some(("error", -1)));
+        assert_eq!(extract_outcome(&resp_link_neg), Some(("error", -1, None)));
     }
 
     // --- Serialization edge cases ---
@@ -966,7 +1030,8 @@ mod tests {
                 env: None,
                 session_id: None,
             };
-            let entry = JournalEntry::new(ctx, "miss", 0, i as u128 * 1000);
+            let entry =
+                JournalEntry::new(ctx, "miss", 0, i as u128 * 1000, Some(miss_reason::UNKNOWN));
             journal.log(&entry, None);
         }
 
@@ -999,7 +1064,7 @@ mod tests {
                         env: None,
                         session_id: Some(format!("thread-{t}")),
                     };
-                    let entry = JournalEntry::new(ctx, "hit", 0, i as u128);
+                    let entry = JournalEntry::new(ctx, "hit", 0, i as u128, None);
                     j.log(&entry, None);
                 }
             }));
@@ -1043,7 +1108,7 @@ mod tests {
                 env: None,
                 session_id: Some("multi".to_string()),
             };
-            let entry = JournalEntry::new(ctx, "miss", 0, i as u128);
+            let entry = JournalEntry::new(ctx, "miss", 0, i as u128, Some(miss_reason::UNKNOWN));
             journal.log(&entry, Some(&session_path));
         }
 
@@ -1077,7 +1142,7 @@ mod tests {
                 env: None,
                 session_id: Some(sid.to_string()),
             };
-            let entry = JournalEntry::new(ctx, "hit", 0, 0);
+            let entry = JournalEntry::new(ctx, "hit", 0, 0, None);
             journal.log(&entry, Some(path));
         }
 
@@ -1126,7 +1191,7 @@ mod tests {
             env: None,
             session_id: Some("reopen".to_string()),
         };
-        let entry1 = JournalEntry::new(ctx1, "miss", 0, 100);
+        let entry1 = JournalEntry::new(ctx1, "miss", 0, 100, Some(miss_reason::UNKNOWN));
         journal.log(&entry1, Some(&session_path));
 
         // Close session — releases file handle
@@ -1140,7 +1205,7 @@ mod tests {
             env: None,
             session_id: Some("reopen".to_string()),
         };
-        let entry2 = JournalEntry::new(ctx2, "hit", 0, 200);
+        let entry2 = JournalEntry::new(ctx2, "hit", 0, 200, None);
         journal.log(&entry2, Some(&session_path));
 
         wait_for_lines(&session_path, 2);
@@ -1234,7 +1299,7 @@ mod tests {
             env: None,
             session_id: Some("dc".to_string()),
         };
-        let entry = JournalEntry::new(ctx, "hit", 0, 0);
+        let entry = JournalEntry::new(ctx, "hit", 0, 0, None);
         journal.log(&entry, Some(&session_path));
 
         // Close twice — second close removes from empty map, must not panic
@@ -1255,7 +1320,7 @@ mod tests {
             stderr: Arc::new(vec![]),
             cached: false,
         };
-        assert_eq!(extract_outcome(&resp), Some(("error", i32::MAX)));
+        assert_eq!(extract_outcome(&resp), Some(("error", i32::MAX, None)));
     }
 
     #[test]
@@ -1341,7 +1406,7 @@ mod tests {
             env: None,
             session_id: Some("x".to_string()),
         };
-        let entry = JournalEntry::new(ctx, "miss", 0, 0);
+        let entry = JournalEntry::new(ctx, "miss", 0, 0, Some(miss_reason::UNKNOWN));
         journal.log(&entry, Some(Path::new("/nonexistent/path.jsonl")));
     }
 
@@ -1452,7 +1517,7 @@ mod tests {
             env: None,
             session_id: Some("s".to_string()),
         };
-        let entry = JournalEntry::new(ctx, "hit", 0, 1000);
+        let entry = JournalEntry::new(ctx, "hit", 0, 1000, None);
         let json = serde_json::to_string(&entry).unwrap();
 
         for forbidden in [
@@ -1613,6 +1678,198 @@ mod tests {
     #[test]
     fn derive_output_ext_unknown_returns_none() {
         assert_eq!(derive_output_ext(Some("nonsense")), None);
+    }
+
+    // ─── Issue #322 — miss_reason wiring ──────────────────────────────────
+
+    #[test]
+    fn miss_reason_constants_match_documented_schema() {
+        // Acceptance criteria #2: the finite enum of miss reasons must be a
+        // documented public surface so consumers can build histograms.
+        assert_eq!(miss_reason::CONTEXT_NOT_FOUND, "context_not_found");
+        assert_eq!(
+            miss_reason::INPUT_FINGERPRINT_MISMATCH,
+            "input_fingerprint_mismatch"
+        );
+        assert_eq!(miss_reason::NO_ARTIFACT_FOR_KEY, "no_artifact_for_key");
+        assert_eq!(miss_reason::VERSION_SKEW, "version_skew");
+        assert_eq!(miss_reason::UNCACHEABLE_INPUT, "uncacheable_input");
+        assert_eq!(miss_reason::UNKNOWN, "unknown");
+        // The all-values slice lets consumers iterate the closed set.
+        assert!(miss_reason::ALL.contains(&miss_reason::UNKNOWN));
+        assert!(miss_reason::ALL.contains(&miss_reason::CONTEXT_NOT_FOUND));
+    }
+
+    #[test]
+    fn extract_outcome_compile_miss_supplies_default_reason() {
+        // Acceptance criteria #1: every miss must carry a reason. The
+        // canonical translation point (extract_outcome) must default to
+        // miss_reason::UNKNOWN so the journal-writer side cannot forget.
+        let resp = Response::CompileResult {
+            exit_code: 0,
+            stdout: Arc::new(vec![]),
+            stderr: Arc::new(vec![]),
+            cached: false,
+        };
+        let (outcome, exit_code, miss) = extract_outcome(&resp).unwrap();
+        assert_eq!(outcome, "miss");
+        assert_eq!(exit_code, 0);
+        assert_eq!(miss, Some(miss_reason::UNKNOWN));
+    }
+
+    #[test]
+    fn extract_outcome_link_miss_supplies_default_reason() {
+        let resp = Response::LinkResult {
+            exit_code: 0,
+            stdout: Arc::new(vec![]),
+            stderr: Arc::new(vec![]),
+            cached: false,
+            warning: None,
+        };
+        let (outcome, _exit, miss) = extract_outcome(&resp).unwrap();
+        assert_eq!(outcome, "link_miss");
+        assert_eq!(miss, Some(miss_reason::UNKNOWN));
+    }
+
+    #[test]
+    fn extract_outcome_hit_has_no_miss_reason() {
+        // miss_reason must not be set on hits — keeps legacy hit records lean.
+        let resp = Response::CompileResult {
+            exit_code: 0,
+            stdout: Arc::new(vec![]),
+            stderr: Arc::new(vec![]),
+            cached: true,
+        };
+        let (outcome, _, miss) = extract_outcome(&resp).unwrap();
+        assert_eq!(outcome, "hit");
+        assert_eq!(miss, None);
+    }
+
+    #[test]
+    fn extract_outcome_error_has_no_miss_reason() {
+        // Errors are a distinct outcome category — no miss_reason.
+        let resp = Response::CompileResult {
+            exit_code: 1,
+            stdout: Arc::new(vec![]),
+            stderr: Arc::new(vec![]),
+            cached: false,
+        };
+        let (outcome, _, miss) = extract_outcome(&resp).unwrap();
+        assert_eq!(outcome, "error");
+        assert_eq!(miss, None);
+    }
+
+    #[test]
+    fn journal_entry_new_records_miss_reason() {
+        // JournalEntry::new is the canonical builder used by the dispatch
+        // site. It must thread miss_reason through to the field.
+        let ctx = JournalContext {
+            compiler: "rustc".into(),
+            args: vec![],
+            cwd: "/tmp".into(),
+            env: None,
+            session_id: None,
+        };
+        let entry = JournalEntry::new(ctx, "miss", 0, 0, Some(miss_reason::CONTEXT_NOT_FOUND));
+        assert_eq!(entry.miss_reason.as_deref(), Some("context_not_found"));
+    }
+
+    #[test]
+    fn journal_entry_new_hit_omits_miss_reason() {
+        let ctx = JournalContext {
+            compiler: "rustc".into(),
+            args: vec![],
+            cwd: "/tmp".into(),
+            env: None,
+            session_id: None,
+        };
+        let entry = JournalEntry::new(ctx, "hit", 0, 0, None);
+        assert_eq!(entry.miss_reason, None);
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(
+            !json.contains("\"miss_reason\""),
+            "hit entries must omit miss_reason: {json}"
+        );
+    }
+
+    #[test]
+    fn journal_jsonl_miss_record_includes_miss_reason_field() {
+        // Integration: writing a Response::CompileResult { cached: false } to
+        // the journal must produce a JSONL line that includes "miss_reason".
+        // This is the field consumers (setup-soldr) read.
+        let dir = tempfile::tempdir().unwrap();
+        let journal = CompileJournal::new(dir.path().to_path_buf().into());
+
+        let ctx = JournalContext {
+            compiler: "/usr/bin/rustc".into(),
+            args: vec!["--crate-name".into(), "foo".into()],
+            cwd: "/project".into(),
+            env: None,
+            session_id: None,
+        };
+        // Use the canonical extractor so the test exercises the same path the
+        // real dispatcher does.
+        let resp = Response::CompileResult {
+            exit_code: 0,
+            stdout: Arc::new(vec![]),
+            stderr: Arc::new(vec![]),
+            cached: false,
+        };
+        let (outcome, exit_code, miss) = extract_outcome(&resp).unwrap();
+        journal.log(
+            &JournalEntry::new(ctx, outcome, exit_code, 1_000_000, miss),
+            None,
+        );
+
+        let path = dir.path().join("compile_journal.jsonl");
+        wait_for_lines(&path, 1);
+        let content = fs::read_to_string(&path).unwrap();
+        let line = content.lines().next().expect("expected one journal line");
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(v["outcome"], "miss");
+        assert!(
+            v.get("miss_reason").is_some(),
+            "miss record must have miss_reason field: {line}"
+        );
+        // The default value is the documented 'unknown' bucket — concrete
+        // attributions are layered on in follow-ups.
+        assert_eq!(v["miss_reason"], "unknown");
+    }
+
+    #[test]
+    fn journal_jsonl_hit_record_omits_miss_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = CompileJournal::new(dir.path().to_path_buf().into());
+
+        let ctx = JournalContext {
+            compiler: "/usr/bin/rustc".into(),
+            args: vec![],
+            cwd: "/project".into(),
+            env: None,
+            session_id: None,
+        };
+        let resp = Response::CompileResult {
+            exit_code: 0,
+            stdout: Arc::new(vec![]),
+            stderr: Arc::new(vec![]),
+            cached: true,
+        };
+        let (outcome, exit_code, miss) = extract_outcome(&resp).unwrap();
+        journal.log(
+            &JournalEntry::new(ctx, outcome, exit_code, 1_000_000, miss),
+            None,
+        );
+
+        let path = dir.path().join("compile_journal.jsonl");
+        wait_for_lines(&path, 1);
+        let content = fs::read_to_string(&path).unwrap();
+        let line = content.lines().next().expect("expected one journal line");
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(v["outcome"], "hit");
+        assert!(
+            v.get("miss_reason").is_none(),
+            "hit record must omit miss_reason: {line}"
+        );
     }
 
     #[test]

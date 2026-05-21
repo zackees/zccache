@@ -1751,7 +1751,7 @@ async fn handle_connection(
 
         // Log to compile journal for journalable requests.
         if let Some(ctx) = journal_ctx {
-            if let Some((outcome, exit_code)) = extract_outcome(&response) {
+            if let Some((outcome, exit_code, miss_reason)) = extract_outcome(&response) {
                 let latency_ns = journal_start.elapsed().as_nanos();
                 // Look up session journal path for per-session logging.
                 let session_journal_path = ctx.session_id.as_ref().and_then(|sid| {
@@ -1763,7 +1763,7 @@ async fn handle_connection(
                     })
                 });
                 state.journal.log(
-                    &JournalEntry::new(ctx, outcome, exit_code, latency_ns),
+                    &JournalEntry::new(ctx, outcome, exit_code, latency_ns, miss_reason),
                     session_journal_path.as_deref(),
                 );
             }

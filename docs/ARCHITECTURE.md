@@ -24,5 +24,6 @@ This document is the index for zccache's architecture specification. Each subsys
 - **Disk cache & eviction** → [artifact-store.md](architecture/artifact-store.md)
 - **Thread safety & crash safety** → [runtime.md](architecture/runtime.md)
 - **Windows/macOS/Linux differences** → [portability.md](architecture/portability.md)
+- **Compile journal fields & `miss_reason` enum** → [journal-schema.md](journal-schema.md)
 
 See also: [DESIGN_DECISIONS.md](DESIGN_DECISIONS.md) for rationale behind key choices, [ROADMAP.md](ROADMAP.md) for implementation phases.

@@ -27,6 +27,9 @@ Dedicated OS thread:  event log writer (daemon.log)
 Dedicated OS thread:  compile journal writer (compile_journal.jsonl + per-session journals)
 ```
 
+For the on-disk record shape and the closed `miss_reason` enum, see
+[journal-schema.md](../journal-schema.md).
+
 ### Synchronization Points
 
 | Resource | Mechanism | Contention |

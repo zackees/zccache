@@ -17,6 +17,7 @@ Architecture docs are split by subsystem. Read only what's relevant to your curr
 | `zccache-compiler` | [overview.md](architecture/overview.md) (2.9), [data-flow.md](architecture/data-flow.md) |
 | `zccache-core` | [overview.md](architecture/overview.md) |
 | Platform-specific issues | [portability.md](architecture/portability.md) |
+| Compile journal record shape | [journal-schema.md](journal-schema.md) |
 
 ## Where to document new features
 
