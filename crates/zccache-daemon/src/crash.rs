@@ -9,7 +9,7 @@
 //! delegate to the shared core implementation, and the daemon's
 //! `main.rs` still installs them in the same order it always has.
 //!
-//! New code should call [`zccache_core::crash::install("zccache-daemon")`]
+//! New code should call `zccache_core::crash::install("zccache-daemon")`
 //! once at the top of `main` and rely on the returned `CrashGuard` to
 //! keep handlers registered.
 

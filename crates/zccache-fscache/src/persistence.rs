@@ -58,8 +58,8 @@ use zccache_core::NormalizedPath;
 
 /// On-disk format version for the persisted [`MetadataCache`] snapshot.
 ///
-/// Bump this whenever the layout of [`PersistedMetadata`] or
-/// [`PersistedEntry`] changes in a way that older daemons cannot read.
+/// Bump this whenever the layout of `PersistedMetadata` or
+/// `PersistedEntry` changes in a way that older daemons cannot read.
 /// Mismatches are handled by [`MetadataCache::load_from_disk`] returning
 /// `Err`; the caller (daemon) treats that as "start empty".
 pub const FORMAT_VERSION: u32 = 1;

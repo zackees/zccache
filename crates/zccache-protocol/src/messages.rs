@@ -363,7 +363,7 @@ pub struct SessionStats {
     pub phase_profile: Option<PhaseProfileSummary>,
 }
 
-/// Aggregate phase-timing totals from the daemon's [`PhaseProfiler`].
+/// Aggregate phase-timing totals from the daemon's PhaseProfiler.
 ///
 /// Totals are in nanoseconds. Divide hit-path totals by `hit_count` and
 /// miss-path totals by `miss_count` to derive per-compile averages.

@@ -1716,7 +1716,7 @@ struct AnalyzeReport {
     miss_crate_counts: std::collections::HashMap<String, u64>,
     /// Issue #256: per-crate hit/miss/wall-clock rollup used by the
     /// default human-readable table. Keyed by crate_name (or
-    /// "<unknown>" when the journal line lacks one).
+    /// `<unknown>` when the journal line lacks one).
     by_crate: std::collections::HashMap<String, CrateBucket>,
 }
 
