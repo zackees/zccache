@@ -4012,6 +4012,15 @@ fn session_stats_json(
     } else {
         None
     };
+    // `phase_profile` reaches downstream consumers (soldr's
+    // `last-session-stats.json`, perf-harness `render_summary`) through
+    // this JSON. Emit the full struct when populated so each consumer
+    // can pick fields without a separate IPC roundtrip.
+    let phase_profile = stats
+        .phase_profile
+        .as_ref()
+        .map(phase_profile_summary_json)
+        .unwrap_or(serde_json::Value::Null);
     serde_json::json!({
         "status": "ok",
         "session_id": session_id,
@@ -4026,6 +4035,32 @@ fn session_stats_json(
         "bytes_read": stats.bytes_read,
         "bytes_written": stats.bytes_written,
         "hit_rate": hit_rate,
+        "phase_profile": phase_profile,
+    })
+}
+
+fn phase_profile_summary_json(
+    p: &zccache_protocol::PhaseProfileSummary,
+) -> serde_json::Value {
+    serde_json::json!({
+        "hit_count": p.hit_count,
+        "miss_count": p.miss_count,
+        "parse_args_ns": p.parse_args_ns,
+        "build_context_ns": p.build_context_ns,
+        "hash_source_ns": p.hash_source_ns,
+        "hash_headers_ns": p.hash_headers_ns,
+        "depgraph_check_ns": p.depgraph_check_ns,
+        "request_cache_lookup_ns": p.request_cache_lookup_ns,
+        "cross_root_validate_ns": p.cross_root_validate_ns,
+        "artifact_lookup_ns": p.artifact_lookup_ns,
+        "write_output_ns": p.write_output_ns,
+        "bookkeeping_ns": p.bookkeeping_ns,
+        "total_hit_ns": p.total_hit_ns,
+        "compiler_exec_ns": p.compiler_exec_ns,
+        "include_scan_ns": p.include_scan_ns,
+        "hash_all_ns": p.hash_all_ns,
+        "artifact_store_ns": p.artifact_store_ns,
+        "total_miss_ns": p.total_miss_ns,
     })
 }
 
@@ -5387,6 +5422,7 @@ mod tests {
             unique_sources: 8,
             bytes_read: 1024,
             bytes_written: 2048,
+            phase_profile: None,
         };
         let json = session_stats_json("session-123", &stats);
         assert_eq!(json["status"], "ok");
@@ -6452,6 +6488,7 @@ mod tests {
             unique_sources: 8,
             bytes_read: 1024,
             bytes_written: 2048,
+            phase_profile: None,
         };
         let stats_json = session_stats_json("session-123", &stats);
         std::fs::write(&path, serde_json::to_string_pretty(&stats_json).unwrap()).unwrap();

@@ -351,6 +351,67 @@ pub struct SessionStats {
     pub bytes_read: u64,
     /// Total artifact bytes stored into cache.
     pub bytes_written: u64,
+    /// Daemon-wide phase-timing aggregate. `None` from older daemons that
+    /// don't populate the field; `Some` from PROTOCOL_VERSION >= 9 daemons.
+    ///
+    /// Aggregate is daemon-wide totals since the last
+    /// `PhaseProfiler::reset()` (which is called on `Request::Clear`). For
+    /// fresh-daemon perf scenarios this is equivalent to "this session's
+    /// phase totals". For long-lived daemons handling overlapping sessions,
+    /// totals cross-contaminate — that's acceptable for v1 and revisited if
+    /// a real consumer needs per-session isolation.
+    pub phase_profile: Option<PhaseProfileSummary>,
+}
+
+/// Aggregate phase-timing totals from the daemon's [`PhaseProfiler`].
+///
+/// Totals are in nanoseconds. Divide hit-path totals by `hit_count` and
+/// miss-path totals by `miss_count` to derive per-compile averages.
+///
+/// Use case: a perf harness collects this from a warm-rebuild session to
+/// identify which phase dominates the warm-side wall time (e.g.
+/// `write_output_ns` for artifact materialization vs `depgraph_check_ns`
+/// for depgraph lookups).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PhaseProfileSummary {
+    /// Number of cache-hit compiles that contributed to the hit-path totals.
+    pub hit_count: u64,
+    /// Number of cache-miss compiles that contributed to the miss-path totals.
+    pub miss_count: u64,
+    // ── Hit-path totals (ns) ──
+    /// Argument parsing.
+    pub parse_args_ns: u64,
+    /// Build compile context + register with depgraph.
+    pub build_context_ns: u64,
+    /// Source-file hash via the metadata cache fast path.
+    pub hash_source_ns: u64,
+    /// Header hashes via the metadata cache fast path.
+    pub hash_headers_ns: u64,
+    /// Depgraph verdict lookup.
+    pub depgraph_check_ns: u64,
+    /// Request-level cache lookup.
+    pub request_cache_lookup_ns: u64,
+    /// Cross-root request validation.
+    pub cross_root_validate_ns: u64,
+    /// In-memory artifact-store lookup.
+    pub artifact_lookup_ns: u64,
+    /// Write cached outputs to disk (hardlink-first, copy fallback).
+    pub write_output_ns: u64,
+    /// Stats recording + session bookkeeping.
+    pub bookkeeping_ns: u64,
+    /// Wall-clock total of the hit path.
+    pub total_hit_ns: u64,
+    // ── Miss-path totals (ns) ──
+    /// Run the actual compiler subprocess.
+    pub compiler_exec_ns: u64,
+    /// Scan included files post-compile.
+    pub include_scan_ns: u64,
+    /// Hash all inputs for the artifact key.
+    pub hash_all_ns: u64,
+    /// Persist the new artifact to disk.
+    pub artifact_store_ns: u64,
+    /// Wall-clock total of the miss path.
+    pub total_miss_ns: u64,
 }
 
 /// Where an artifact output's bytes live on the daemon's filesystem at the
@@ -449,6 +510,7 @@ mod tests {
             unique_sources: 42,
             bytes_read: 1024 * 1024,
             bytes_written: 512 * 1024,
+            phase_profile: None,
         };
         roundtrip(&stats);
     }
@@ -466,8 +528,67 @@ mod tests {
             unique_sources: 0,
             bytes_read: 0,
             bytes_written: 0,
+            phase_profile: None,
         };
         roundtrip(&stats);
+    }
+
+    #[test]
+    fn session_stats_with_phase_profile_roundtrip() {
+        // Regression guard for PROTOCOL_VERSION 9 — a populated phase_profile
+        // must round-trip both bincode (IPC wire) and serde-json (the form
+        // soldr writes to last-session-stats.json).
+        let stats = SessionStats {
+            duration_ms: 12345,
+            compilations: 146,
+            hits: 103,
+            misses: 12,
+            non_cacheable: 31,
+            errors: 3,
+            time_saved_ms: 223,
+            unique_sources: 115,
+            bytes_read: 143_812_577,
+            bytes_written: 62_500_000,
+            phase_profile: Some(PhaseProfileSummary {
+                hit_count: 103,
+                miss_count: 12,
+                parse_args_ns: 4_000_000,
+                build_context_ns: 19_000_000,
+                hash_source_ns: 6_000_000,
+                hash_headers_ns: 11_000_000,
+                depgraph_check_ns: 28_000_000,
+                request_cache_lookup_ns: 2_500_000,
+                cross_root_validate_ns: 1_200_000,
+                artifact_lookup_ns: 8_700_000,
+                write_output_ns: 540_000_000,
+                bookkeeping_ns: 3_300_000,
+                total_hit_ns: 623_700_000,
+                compiler_exec_ns: 11_400_000_000,
+                include_scan_ns: 270_000_000,
+                hash_all_ns: 95_000_000,
+                artifact_store_ns: 120_000_000,
+                total_miss_ns: 11_885_000_000,
+            }),
+        };
+        roundtrip(&stats);
+
+        // serde-json round-trip — written to last-session-stats.json and
+        // read by both `zccache analyze` and the perf harness's
+        // `perf_local.py render_summary`.
+        let json = serde_json::to_string(&stats).expect("serialize");
+        let decoded: SessionStats = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(stats, decoded);
+
+        // An old-daemon-style JSON that omits phase_profile must decode to
+        // None (back-compat with PROTOCOL_VERSION 8 consumers that haven't
+        // upgraded the field expectation).
+        let legacy = r#"{
+            "duration_ms": 0, "compilations": 0, "hits": 0, "misses": 0,
+            "non_cacheable": 0, "errors": 0, "time_saved_ms": 0,
+            "unique_sources": 0, "bytes_read": 0, "bytes_written": 0
+        }"#;
+        let decoded: SessionStats = serde_json::from_str(legacy).expect("legacy decode");
+        assert!(decoded.phase_profile.is_none());
     }
 
     #[test]
@@ -574,6 +695,7 @@ mod tests {
             unique_sources: 30,
             bytes_read: 2_000_000,
             bytes_written: 500_000,
+            phase_profile: None,
         };
         let resp = Response::SessionEnded { stats: Some(stats) };
         roundtrip(&resp);
@@ -678,6 +800,7 @@ mod tests {
             unique_sources: 9,
             bytes_read: 50_000,
             bytes_written: 20_000,
+            phase_profile: None,
         };
         roundtrip(&Response::SessionStatsResult { stats: Some(stats) });
         roundtrip(&Response::SessionStatsResult { stats: None });
@@ -748,10 +871,12 @@ mod tests {
 
     // Compile-time check: PROTOCOL_VERSION must be positive.
     const _: () = assert!(crate::PROTOCOL_VERSION > 0);
-    // Compile-time check: PROTOCOL_VERSION == 8 after Compile/CompileEphemeral
-    // gained `stdin: Vec<u8>` and ArtifactPayload replaced
-    // ArtifactOutput.data: Arc<Vec<u8>> (issue #296 Option B).
-    const _FINGERPRINT_VERSION: () = assert!(crate::PROTOCOL_VERSION == 8);
+    // Compile-time check: PROTOCOL_VERSION == 9 after SessionStats gained
+    // `phase_profile: Option<PhaseProfileSummary>` (perf observability for
+    // per-session phase aggregates). v8 was the prior pin after
+    // Compile/CompileEphemeral gained `stdin: Vec<u8>` and ArtifactPayload
+    // replaced ArtifactOutput.data: Arc<Vec<u8>> (issue #296 Option B).
+    const _FINGERPRINT_VERSION: () = assert!(crate::PROTOCOL_VERSION == 9);
 
     #[test]
     fn fingerprint_check_roundtrip() {

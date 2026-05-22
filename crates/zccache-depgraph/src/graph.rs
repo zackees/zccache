@@ -285,19 +285,40 @@ impl DepGraph {
             return CacheVerdict::NeedsPreprocessor;
         }
 
+        // Helper: a file is fresh if the journal hasn't seen it change
+        // since `since` OR — when the journal has no opinion (post-restart
+        // cold journal, the watcher dropped events, etc.) — if its current
+        // content hash matches the hash we stored at last `update()`.
+        // The journal is in-memory and starts empty after every daemon
+        // restart; without this fallback, every cached header reports
+        // "changed" and every Warm context degrades to HeadersChanged.
+        let fresh_or_hash_match = |path: &NormalizedPath| -> bool {
+            if is_fresh(path) {
+                return true;
+            }
+            let current = match get_hash(path) {
+                Some(h) => h,
+                None => return false,
+            };
+            entry
+                .last_file_hashes
+                .iter()
+                .any(|(p, h)| p == path && *h == current)
+        };
+
         // Check source file freshness.
-        let source_fresh = is_fresh(&entry.context.source_file);
+        let source_fresh = fresh_or_hash_match(&entry.context.source_file);
 
         // Check all headers.
         let mut changed_headers = Vec::new();
         for header in &entry.resolved_includes {
-            if !is_fresh(header) {
+            if !fresh_or_hash_match(header) {
                 changed_headers.push(header.clone());
             }
         }
         // Also check force-included files (PCH, -include).
         for fi in &entry.context.force_includes {
-            if !is_fresh(fi) {
+            if !fresh_or_hash_match(fi) {
                 changed_headers.push(fi.clone());
             }
         }
@@ -401,19 +422,36 @@ impl DepGraph {
             );
         }
 
+        // See `check()` above for the rationale — content-hash fallback
+        // catches the post-restart empty-journal case where every header
+        // would otherwise look "changed".
+        let fresh_or_hash_match = |path: &NormalizedPath| -> bool {
+            if is_fresh(path) {
+                return true;
+            }
+            let current = match get_hash(path) {
+                Some(h) => h,
+                None => return false,
+            };
+            entry
+                .last_file_hashes
+                .iter()
+                .any(|(p, h)| p == path && *h == current)
+        };
+
         // Check source file freshness.
-        let source_fresh = is_fresh(&entry.context.source_file);
+        let source_fresh = fresh_or_hash_match(&entry.context.source_file);
 
         // Check all headers.
         let mut changed_headers = Vec::new();
         for header in &entry.resolved_includes {
-            if !is_fresh(header) {
+            if !fresh_or_hash_match(header) {
                 changed_headers.push(header.clone());
             }
         }
         // Also check force-included files (PCH, -include).
         for fi in &entry.context.force_includes {
-            if !is_fresh(fi) {
+            if !fresh_or_hash_match(fi) {
                 changed_headers.push(fi.clone());
             }
         }
@@ -720,6 +758,41 @@ impl DepGraph {
         self.contexts.get(key).map(|e| e.state)
     }
 
+    /// Count contexts by state. Returned as `(cold, warm, stale)`.
+    ///
+    /// Used by the daemon's depgraph save / load logging to diagnose
+    /// post-save / post-load state distribution — specifically to find
+    /// out whether contexts are getting persisted as Warm (so `is_cold`
+    /// returns `false` after restore, enabling the cache lookup path)
+    /// or as Cold (so every warm-side compile takes the `cold_skip`
+    /// branch and misses regardless of artifact-store state).
+    #[must_use]
+    pub fn state_breakdown(&self) -> (usize, usize, usize) {
+        let mut cold = 0usize;
+        let mut warm = 0usize;
+        let mut stale = 0usize;
+        for entry in self.contexts.iter() {
+            match entry.value().state {
+                ContextState::Cold => cold += 1,
+                ContextState::Warm => warm += 1,
+                ContextState::Stale => stale += 1,
+            }
+        }
+        (cold, warm, stale)
+    }
+
+    /// Number of contexts whose `artifact_key` is set. Combined with
+    /// `state_breakdown()` this distinguishes contexts that have a
+    /// computed key (a successful prior compile) from contexts that
+    /// were registered but never reached a Warm state.
+    #[must_use]
+    pub fn contexts_with_artifact_key(&self) -> usize {
+        self.contexts
+            .iter()
+            .filter(|e| e.value().artifact_key.is_some())
+            .count()
+    }
+
     /// Get the resolved includes for a context.
     #[must_use]
     pub fn get_includes(&self, key: &ContextKey) -> Option<Vec<NormalizedPath>> {
@@ -900,9 +973,19 @@ mod tests {
         };
         graph.update(&key, scan, dummy_hash);
 
-        // Source is stale, headers are fresh.
+        // Source is stale-by-watcher AND its content hash now differs from
+        // the stored hash (post-fallback semantics: a header/source is
+        // only "changed" if journal says stale AND the content hash also
+        // moved).
         let is_fresh = |p: &Path| p != Path::new("/src/a.c");
-        let verdict = graph.check(&key, is_fresh, dummy_hash);
+        let changed_source_hash = |p: &Path| -> Option<ContentHash> {
+            if p == Path::new("/src/a.c") {
+                Some(zccache_hash::hash_bytes(b"source-modified"))
+            } else {
+                dummy_hash(p)
+            }
+        };
+        let verdict = graph.check(&key, is_fresh, changed_source_hash);
         assert!(matches!(verdict, CacheVerdict::SourceChanged { .. }));
     }
 
@@ -921,15 +1004,49 @@ mod tests {
         };
         graph.update(&key, scan, dummy_hash);
 
-        // b.h is stale.
+        // b.h is stale-by-watcher AND its current content hash differs
+        // from the stored hash (so the hash-fallback also flags it).
         let is_fresh = |p: &Path| p != Path::new("/inc/b.h");
-        let verdict = graph.check(&key, is_fresh, dummy_hash);
+        let changed_b_hash = |p: &Path| -> Option<ContentHash> {
+            if p == Path::new("/inc/b.h") {
+                Some(zccache_hash::hash_bytes(b"b-modified"))
+            } else {
+                dummy_hash(p)
+            }
+        };
+        let verdict = graph.check(&key, is_fresh, changed_b_hash);
         match verdict {
             CacheVerdict::HeadersChanged { changed } => {
                 assert_eq!(changed, vec![NormalizedPath::from("/inc/b.h")]);
             }
             other => panic!("expected HeadersChanged, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn warm_context_header_stale_by_watcher_but_hash_unchanged_returns_hit() {
+        // Regression guard for the journal-cold-after-restart fix:
+        // an empty in-memory journal post-restart makes `is_fresh` return
+        // false for every path, but if the content hash still matches the
+        // stored one we must treat the file as fresh-by-content. Before
+        // the fix, every cached header was reported as HeadersChanged and
+        // every Warm context degraded to a miss on the warm side of the
+        // cold-tar-untar-warm perf scenario.
+        let graph = DepGraph::new();
+        let key = graph.register(make_ctx("/src/a.c"));
+
+        let scan = ScanResult {
+            resolved: vec![NormalizedPath::from("/inc/b.h")],
+            unresolved: Vec::new(),
+            has_computed: false,
+        };
+        graph.update(&key, scan, dummy_hash);
+
+        // Journal claims b.h has changed (it's never been seen), but
+        // dummy_hash returns the same hash for the same path — so the
+        // content didn't actually change.
+        let verdict = graph.check(&key, never_fresh, dummy_hash);
+        assert!(matches!(verdict, CacheVerdict::Hit { .. }));
     }
 
     #[test]
@@ -1014,7 +1131,17 @@ mod tests {
         graph.update(&key, scan, dummy_hash);
         assert_eq!(graph.get_state(&key), Some(ContextState::Warm));
 
-        graph.check(&key, never_fresh, dummy_hash);
+        // Both the watcher AND the content hash say h.h changed — the
+        // hash-fallback can't rescue this one, so the verdict is
+        // HeadersChanged and the entry flips to Stale.
+        let changed_h_hash = |p: &Path| -> Option<ContentHash> {
+            if p == Path::new("/h.h") {
+                Some(zccache_hash::hash_bytes(b"h-modified"))
+            } else {
+                dummy_hash(p)
+            }
+        };
+        graph.check(&key, never_fresh, changed_h_hash);
         assert_eq!(graph.get_state(&key), Some(ContextState::Stale));
     }
 

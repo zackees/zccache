@@ -569,7 +569,7 @@ jobs:
         include:
           - platform: linux
             runs_on: ubuntu-24.04
-            min_speedup: "3.0"
+            min_speedup: "4.5"
     runs-on: ${{ matrix.runs_on }}
     steps:
       - name: Gate cell against resolved scope

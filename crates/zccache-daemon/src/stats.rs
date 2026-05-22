@@ -327,6 +327,44 @@ impl PhaseProfiler {
         self.miss_count.store(0, Ordering::Relaxed);
     }
 
+    /// Return a snapshot of raw phase-timing totals (not averaged).
+    ///
+    /// Used by [`crate::server`]'s `SessionEnd` / `SessionStats` handlers
+    /// to populate [`zccache_protocol::SessionStats::phase_profile`]. The
+    /// caller divides by `hit_count` / `miss_count` if it wants averages —
+    /// the existing [`snapshot`] does that, but pre-averaged values can't
+    /// be summed if a downstream tool ever wants to combine results from
+    /// multiple sessions. Keep the wire format raw and let consumers
+    /// average.
+    ///
+    /// Returns counts as they currently sit in the atomics; no clamping
+    /// to `max(1)` as in [`snapshot`].
+    ///
+    /// [`snapshot`]: PhaseProfiler::snapshot
+    #[must_use]
+    pub fn totals_snapshot(&self) -> PhaseTotals {
+        PhaseTotals {
+            hit_count: self.count.load(Ordering::Relaxed),
+            miss_count: self.miss_count.load(Ordering::Relaxed),
+            parse_args_ns: self.parse_args_ns.load(Ordering::Relaxed),
+            build_context_ns: self.build_context_ns.load(Ordering::Relaxed),
+            hash_source_ns: self.hash_source_ns.load(Ordering::Relaxed),
+            hash_headers_ns: self.hash_headers_ns.load(Ordering::Relaxed),
+            depgraph_check_ns: self.depgraph_check_ns.load(Ordering::Relaxed),
+            request_cache_lookup_ns: self.request_cache_lookup_ns.load(Ordering::Relaxed),
+            cross_root_validate_ns: self.cross_root_validate_ns.load(Ordering::Relaxed),
+            artifact_lookup_ns: self.artifact_lookup_ns.load(Ordering::Relaxed),
+            write_output_ns: self.write_output_ns.load(Ordering::Relaxed),
+            bookkeeping_ns: self.bookkeeping_ns.load(Ordering::Relaxed),
+            total_hit_ns: self.total_hit_ns.load(Ordering::Relaxed),
+            compiler_exec_ns: self.compiler_exec_ns.load(Ordering::Relaxed),
+            include_scan_ns: self.include_scan_ns.load(Ordering::Relaxed),
+            hash_all_ns: self.hash_all_ns.load(Ordering::Relaxed),
+            artifact_store_ns: self.artifact_store_ns.load(Ordering::Relaxed),
+            total_miss_ns: self.total_miss_ns.load(Ordering::Relaxed),
+        }
+    }
+
     /// Return a snapshot of average phase durations.
     #[must_use]
     pub fn snapshot(&self) -> ProfileSnapshot {
@@ -383,6 +421,57 @@ pub struct MissPhases {
     pub hash_all_ns: u64,
     pub artifact_store_ns: u64,
     pub total_ns: u64,
+}
+
+/// Raw phase-timing totals — symmetric to [`ProfileSnapshot`] but without
+/// the per-compile averaging. The struct layout intentionally mirrors
+/// [`zccache_protocol::PhaseProfileSummary`] so the conversion is
+/// field-for-field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhaseTotals {
+    pub hit_count: u64,
+    pub miss_count: u64,
+    pub parse_args_ns: u64,
+    pub build_context_ns: u64,
+    pub hash_source_ns: u64,
+    pub hash_headers_ns: u64,
+    pub depgraph_check_ns: u64,
+    pub request_cache_lookup_ns: u64,
+    pub cross_root_validate_ns: u64,
+    pub artifact_lookup_ns: u64,
+    pub write_output_ns: u64,
+    pub bookkeeping_ns: u64,
+    pub total_hit_ns: u64,
+    pub compiler_exec_ns: u64,
+    pub include_scan_ns: u64,
+    pub hash_all_ns: u64,
+    pub artifact_store_ns: u64,
+    pub total_miss_ns: u64,
+}
+
+impl From<PhaseTotals> for zccache_protocol::PhaseProfileSummary {
+    fn from(t: PhaseTotals) -> Self {
+        Self {
+            hit_count: t.hit_count,
+            miss_count: t.miss_count,
+            parse_args_ns: t.parse_args_ns,
+            build_context_ns: t.build_context_ns,
+            hash_source_ns: t.hash_source_ns,
+            hash_headers_ns: t.hash_headers_ns,
+            depgraph_check_ns: t.depgraph_check_ns,
+            request_cache_lookup_ns: t.request_cache_lookup_ns,
+            cross_root_validate_ns: t.cross_root_validate_ns,
+            artifact_lookup_ns: t.artifact_lookup_ns,
+            write_output_ns: t.write_output_ns,
+            bookkeeping_ns: t.bookkeeping_ns,
+            total_hit_ns: t.total_hit_ns,
+            compiler_exec_ns: t.compiler_exec_ns,
+            include_scan_ns: t.include_scan_ns,
+            hash_all_ns: t.hash_all_ns,
+            artifact_store_ns: t.artifact_store_ns,
+            total_miss_ns: t.total_miss_ns,
+        }
+    }
 }
 
 /// Averaged profile snapshot.
@@ -559,6 +648,94 @@ mod tests {
         let s = p.snapshot();
         assert_eq!(s.hit_count, 0);
         assert_eq!(s.miss_count, 0);
+    }
+
+    #[test]
+    fn totals_snapshot_round_trips_to_phase_profile_summary() {
+        // Records one hit and one miss with distinct values in every field,
+        // then verifies that `totals_snapshot()` returns the raw atomics
+        // (not averaged) and that the protocol-crate `From` conversion
+        // preserves every field. This is the wire-format proof for the
+        // observability path: PhaseProfiler atomics → PhaseTotals →
+        // protocol::PhaseProfileSummary → JSON in last-session-stats.json.
+        let p = PhaseProfiler::new();
+        p.record_hit(&HitPhases {
+            parse_args_ns: 11,
+            build_context_ns: 22,
+            hash_source_ns: 33,
+            hash_headers_ns: 44,
+            depgraph_check_ns: 55,
+            request_cache_lookup_ns: 66,
+            cross_root_validate_ns: 77,
+            artifact_lookup_ns: 88,
+            write_output_ns: 99,
+            bookkeeping_ns: 101,
+            total_ns: 596,
+        });
+        p.record_miss(&MissPhases {
+            compiler_exec_ns: 1_000,
+            include_scan_ns: 2_000,
+            hash_all_ns: 3_000,
+            artifact_store_ns: 4_000,
+            total_ns: 10_000,
+        });
+
+        let totals = p.totals_snapshot();
+        assert_eq!(totals.hit_count, 1);
+        assert_eq!(totals.miss_count, 1);
+        // Raw totals — NOT averaged. snapshot() would divide by hit_count.
+        assert_eq!(totals.parse_args_ns, 11);
+        assert_eq!(totals.write_output_ns, 99);
+        assert_eq!(totals.total_hit_ns, 596);
+        assert_eq!(totals.compiler_exec_ns, 1_000);
+        assert_eq!(totals.total_miss_ns, 10_000);
+
+        // From-impl preserves every field for the protocol crate.
+        let summary: zccache_protocol::PhaseProfileSummary = totals.clone().into();
+        assert_eq!(summary.hit_count, totals.hit_count);
+        assert_eq!(summary.miss_count, totals.miss_count);
+        assert_eq!(summary.parse_args_ns, totals.parse_args_ns);
+        assert_eq!(summary.build_context_ns, totals.build_context_ns);
+        assert_eq!(summary.hash_source_ns, totals.hash_source_ns);
+        assert_eq!(summary.hash_headers_ns, totals.hash_headers_ns);
+        assert_eq!(summary.depgraph_check_ns, totals.depgraph_check_ns);
+        assert_eq!(
+            summary.request_cache_lookup_ns,
+            totals.request_cache_lookup_ns
+        );
+        assert_eq!(summary.cross_root_validate_ns, totals.cross_root_validate_ns);
+        assert_eq!(summary.artifact_lookup_ns, totals.artifact_lookup_ns);
+        assert_eq!(summary.write_output_ns, totals.write_output_ns);
+        assert_eq!(summary.bookkeeping_ns, totals.bookkeeping_ns);
+        assert_eq!(summary.total_hit_ns, totals.total_hit_ns);
+        assert_eq!(summary.compiler_exec_ns, totals.compiler_exec_ns);
+        assert_eq!(summary.include_scan_ns, totals.include_scan_ns);
+        assert_eq!(summary.hash_all_ns, totals.hash_all_ns);
+        assert_eq!(summary.artifact_store_ns, totals.artifact_store_ns);
+        assert_eq!(summary.total_miss_ns, totals.total_miss_ns);
+    }
+
+    #[test]
+    fn totals_snapshot_reflects_reset() {
+        let p = PhaseProfiler::new();
+        p.record_hit(&HitPhases {
+            parse_args_ns: 100,
+            build_context_ns: 200,
+            hash_source_ns: 300,
+            hash_headers_ns: 400,
+            depgraph_check_ns: 500,
+            request_cache_lookup_ns: 0,
+            cross_root_validate_ns: 0,
+            artifact_lookup_ns: 600,
+            write_output_ns: 700,
+            bookkeeping_ns: 800,
+            total_ns: 3600,
+        });
+        assert_eq!(p.totals_snapshot().total_hit_ns, 3600);
+        p.reset();
+        let totals = p.totals_snapshot();
+        assert_eq!(totals.hit_count, 0);
+        assert_eq!(totals.total_hit_ns, 0);
     }
 
     #[test]

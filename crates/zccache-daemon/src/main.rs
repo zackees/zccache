@@ -221,9 +221,20 @@ fn run_server(args: Args) {
         match outcome {
             zccache_depgraph::DepGraphLoadOutcome::Loaded { graph } => {
                 let stats = graph.stats();
+                let (cold_ctxs, warm_ctxs, stale_ctxs) = graph.state_breakdown();
+                let ctxs_with_key = graph.contexts_with_artifact_key();
+                // State breakdown explains why cold_skip fires after load:
+                // an `is_cold` check only returns false for Warm contexts,
+                // so cold/stale contexts will take the cold_skip branch on
+                // the first warm-side compile and miss regardless of what
+                // the artifact_store knows.
                 tracing::info!(
                     contexts = stats.context_count,
                     files = stats.file_count,
+                    cold = cold_ctxs,
+                    warm = warm_ctxs,
+                    stale = stale_ctxs,
+                    with_artifact_key = ctxs_with_key,
                     elapsed_ms = start.elapsed().as_millis() as u64,
                     "loaded depgraph from disk"
                 );

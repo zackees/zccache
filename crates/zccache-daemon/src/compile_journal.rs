@@ -951,6 +951,7 @@ mod tests {
                     unique_sources: 0,
                     bytes_read: 0,
                     bytes_written: 0,
+                    phase_profile: None,
                 }),
             },
         ];

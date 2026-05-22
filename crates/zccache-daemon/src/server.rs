@@ -1374,13 +1374,25 @@ impl DaemonServer {
                     if let Some(parent) = path.parent() {
                         std::fs::create_dir_all(parent).ok();
                     }
+                    let (cold_ctxs, warm_ctxs, stale_ctxs) =
+                        self.state.dep_graph.state_breakdown();
+                    let ctxs_with_key = self.state.dep_graph.contexts_with_artifact_key();
                     match zccache_depgraph::save_to_file(&self.state.dep_graph, &path) {
                         Ok(()) => {
                             self.state
                                 .dep_graph_persisted
                                 .store(true, Ordering::Release);
+                            // State breakdown lets a future warm-side daemon
+                            // explain its cold_skip miss rate: if cold_ctxs
+                            // is high relative to warm_ctxs, the warm side
+                            // will take the cold_skip branch for those keys
+                            // and never consult the artifact_store.
                             tracing::info!(
                                 elapsed_ms = start.elapsed().as_millis() as u64,
+                                cold = cold_ctxs,
+                                warm = warm_ctxs,
+                                stale = stale_ctxs,
+                                with_artifact_key = ctxs_with_key,
                                 "depgraph saved"
                             );
                         }
@@ -1832,6 +1844,10 @@ async fn handle_connection(
                                     unique_sources: f.unique_sources,
                                     bytes_read: f.bytes_read,
                                     bytes_written: f.bytes_written,
+                                    // Daemon-wide phase totals — see
+                                    // PhaseProfileSummary doc for the
+                                    // single-vs-multi-session caveat.
+                                    phase_profile: Some(state.profiler.totals_snapshot().into()),
                                 }
                             });
                             Response::SessionStatsResult { stats }
@@ -1869,6 +1885,7 @@ async fn handle_connection(
                                     unique_sources: f.unique_sources,
                                     bytes_read: f.bytes_read,
                                     bytes_written: f.bytes_written,
+                                    phase_profile: Some(state.profiler.totals_snapshot().into()),
                                 }
                             });
                             Response::SessionEnded { stats }

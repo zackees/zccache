@@ -290,6 +290,30 @@ def render_summary(results_dir: Path, scenario: str, fixture: str) -> int:
     if report is None:
         report = {}
 
+    # `last-session-stats.json` is zccache's own JSON output (written by
+    # `zccache session-end --json`); it includes `phase_profile` from
+    # PROTOCOL_VERSION 9 onward. Soldr's `cache report` is the
+    # canonical structured form but it copies a fixed set of keys into
+    # `last_session` and strips unknown fields, so a fresh phase_profile
+    # field arrives in `last-session-stats.json` before it surfaces in
+    # the report block. Pull it directly to avoid that lag.
+    if "phase_profile" not in report:
+        stats_candidates = [
+            results_dir / "warm-zccache-logs" / "last-session-stats.json",
+            results_dir / "b-zccache-logs" / "last-session-stats.json",
+        ]
+        for candidate in stats_candidates:
+            if not candidate.is_file():
+                continue
+            try:
+                raw = json.loads(candidate.read_text())
+            except json.JSONDecodeError:
+                continue
+            phase = raw.get("phase_profile")
+            if phase is not None:
+                report["phase_profile"] = phase
+                break
+
     compiles = report.get("compilations")
     hits = report.get("hits")
     misses = report.get("misses")
@@ -301,7 +325,7 @@ def render_summary(results_dir: Path, scenario: str, fixture: str) -> int:
     daemon_rss = result.get("peak_daemon_rss_bytes")
     compile_rss = result.get("peak_compile_rss_bytes")
 
-    threshold = 3.0
+    threshold = 4.5
     verdict = "PASS" if speedup >= threshold else "FAIL"
 
     print()
@@ -337,7 +361,72 @@ def render_summary(results_dir: Path, scenario: str, fixture: str) -> int:
         f"bytes_W={fmt_bytes(bytes_w)} daemon_RSS={fmt_bytes(daemon_rss)}"
     )
 
+    render_phase_breakdown(report.get("phase_profile"))
+
     return 0 if verdict == "PASS" else 1
+
+
+def render_phase_breakdown(phase_profile) -> None:
+    """Print a phase-breakdown table from `SessionStats.phase_profile`.
+
+    Skipped silently when the daemon didn't populate the field (old
+    PROTOCOL_VERSION) or when both hit and miss counts are zero.
+    """
+    if not isinstance(phase_profile, dict):
+        return
+    hit_count = int(phase_profile.get("hit_count") or 0)
+    miss_count = int(phase_profile.get("miss_count") or 0)
+    if hit_count == 0 and miss_count == 0:
+        return
+
+    # (label, total-ns, denom-count). Hit phases use hit_count for the
+    # per-event average; miss phases use miss_count. The two metadata-cache
+    # sub-phases are summed so the table speaks the language used in design
+    # discussion ("metadata cache (source+hdrs)").
+    src_ns = int(phase_profile.get("hash_source_ns") or 0)
+    hdr_ns = int(phase_profile.get("hash_headers_ns") or 0)
+    rows = [
+        ("parse_args",                  int(phase_profile.get("parse_args_ns") or 0),           hit_count),
+        ("build_context",               int(phase_profile.get("build_context_ns") or 0),         hit_count),
+        ("metadata cache (source+hdrs)", src_ns + hdr_ns,                                        hit_count),
+        ("depgraph_check",              int(phase_profile.get("depgraph_check_ns") or 0),        hit_count),
+        ("request_cache_lookup",        int(phase_profile.get("request_cache_lookup_ns") or 0),  hit_count),
+        ("cross_root_validate",         int(phase_profile.get("cross_root_validate_ns") or 0),   hit_count),
+        ("artifact_lookup",             int(phase_profile.get("artifact_lookup_ns") or 0),       hit_count),
+        ("write_output (materialize)",  int(phase_profile.get("write_output_ns") or 0),          hit_count),
+        ("bookkeeping",                 int(phase_profile.get("bookkeeping_ns") or 0),           hit_count),
+        ("compiler_exec",               int(phase_profile.get("compiler_exec_ns") or 0),         miss_count),
+        ("include_scan",                int(phase_profile.get("include_scan_ns") or 0),          miss_count),
+        ("hash_all",                    int(phase_profile.get("hash_all_ns") or 0),              miss_count),
+        ("artifact_store",              int(phase_profile.get("artifact_store_ns") or 0),        miss_count),
+    ]
+    rows.sort(key=lambda r: r[1], reverse=True)
+
+    print()
+    print(
+        f"### Phase breakdown (warm-side daemon — {hit_count} hits, {miss_count} misses)"
+    )
+    print()
+    print("| Phase | Total ms | Avg per event (µs) |")
+    print("| --- | ---: | ---: |")
+    for label, total_ns, denom in rows:
+        if total_ns == 0:
+            continue
+        total_ms = total_ns / 1_000_000
+        if denom > 0:
+            avg_us = total_ns / denom / 1_000
+            avg_cell = f"{avg_us:.1f}"
+        else:
+            avg_cell = "—"
+        print(f"| {label} | {total_ms:.1f} | {avg_cell} |")
+
+    total_hit_ns = int(phase_profile.get("total_hit_ns") or 0)
+    total_miss_ns = int(phase_profile.get("total_miss_ns") or 0)
+    print()
+    print(
+        f"total_hit_ns={total_hit_ns / 1_000_000:.1f}ms "
+        f"total_miss_ns={total_miss_ns / 1_000_000:.1f}ms"
+    )
 
 
 # ---------------------------------------------------------------------------

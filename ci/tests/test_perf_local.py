@@ -164,12 +164,12 @@ def _write_scenario_results(
 
 
 def test_render_summary_pass_at_threshold(tmp_path, capsys):
-    """speedup >= 3.0x must return 0 (PASS)."""
+    """speedup >= 4.5x must return 0 (PASS)."""
     results_dir = _write_scenario_results(
         tmp_path,
         "cold-tar-untar-warm",
-        cold_ms=60_000,
-        warm_ms=20_000,  # 3.0x exactly
+        cold_ms=90_000,
+        warm_ms=20_000,  # 4.5x exactly
         cache_report={
             "compilations": 100,
             "hits": 95,
@@ -187,12 +187,12 @@ def test_render_summary_pass_at_threshold(tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "**PASS**" in out
-    assert "3.00x" in out
+    assert "4.50x" in out
     assert "95 (95.0%)" in out  # hits cell shows count + ratio inline
 
 
 def test_render_summary_fail_below_threshold(tmp_path, capsys):
-    """speedup < 3.0x must return 1 (FAIL)."""
+    """speedup < 4.5x must return 1 (FAIL)."""
     results_dir = _write_scenario_results(
         tmp_path,
         "cold-tar-untar-warm",
@@ -247,8 +247,8 @@ def test_render_summary_handles_worktree_share_a_b_keys(tmp_path, capsys):
     results_dir = _write_scenario_results(
         tmp_path,
         "worktree-share",
-        cold_ms=12_000,
-        warm_ms=3_000,  # b/a = 4x
+        cold_ms=18_000,
+        warm_ms=3_000,  # b/a = 6x — above the 4.5x gate
         cache_report={
             "compilations": 50,
             "hits": 40,
@@ -266,7 +266,7 @@ def test_render_summary_handles_worktree_share_a_b_keys(tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "**PASS**" in out
-    assert "4.00x" in out
+    assert "6.00x" in out
 
 
 def test_render_summary_missing_result_json_fails(tmp_path, capsys):
@@ -312,3 +312,142 @@ def test_render_summary_bad_timing_fails(tmp_path, capsys):
 def test_docker_available_returns_bool():
     result = perf_local.docker_available()
     assert isinstance(result, bool)
+
+
+# ── render_phase_breakdown ────────────────────────────────────────────────────
+#
+# Drives directly off `SessionStats.phase_profile` (added in
+# PROTOCOL_VERSION 9). Renders a phase-sorted table so a perf operator can
+# spot the dominant warm-rebuild cost without leaving the harness output.
+
+
+def _phase_profile_with_writeoutput_dominant() -> dict:
+    """Realistic-shape PhaseProfileSummary where write_output dominates.
+
+    Numbers are sized so the table sort order is deterministic without being
+    too close to overflow-readable values. Totals are in nanoseconds (the
+    wire format)."""
+    return {
+        "hit_count": 100,
+        "miss_count": 5,
+        "parse_args_ns":           5_000_000,    # 5ms
+        "build_context_ns":       12_000_000,    # 12ms
+        "hash_source_ns":         80_000_000,    # 80ms
+        "hash_headers_ns":        76_000_000,    # 76ms — sums w/ source to 156ms
+        "depgraph_check_ns":     198_000_000,    # 198ms
+        "request_cache_lookup_ns": 4_000_000,    # 4ms
+        "cross_root_validate_ns":  8_000_000,
+        "artifact_lookup_ns":     42_000_000,    # 42ms
+        "write_output_ns":       312_000_000,    # 312ms — dominant
+        "bookkeeping_ns":          3_000_000,
+        "total_hit_ns":          740_000_000,
+        "compiler_exec_ns":      900_000_000,    # 900ms across 5 misses
+        "include_scan_ns":        25_000_000,
+        "hash_all_ns":            12_000_000,
+        "artifact_store_ns":      18_000_000,
+        "total_miss_ns":         955_000_000,
+    }
+
+
+def test_render_summary_includes_phase_breakdown(tmp_path, capsys):
+    """When the daemon supplies phase_profile, render_summary appends a
+    phase breakdown table sorted by total descending."""
+    results_dir = _write_scenario_results(
+        tmp_path,
+        "cold-tar-untar-warm",
+        cold_ms=60_000,
+        warm_ms=10_000,  # 6x — PASS, irrelevant to this assertion
+        cache_report={
+            "compilations": 105,
+            "hits": 100,
+            "misses": 5,
+            "non_cacheable": 0,
+            "errors": 0,
+            "bytes_written": 0,
+            "time_saved_ms": 0,
+            "unique_sources": 100,
+            "phase_profile": _phase_profile_with_writeoutput_dominant(),
+        },
+    )
+    rc = perf_local.render_summary(results_dir, "cold-tar-untar-warm", "medium")
+    assert rc == 0
+    out = capsys.readouterr().out
+
+    assert "Phase breakdown" in out
+    assert "100 hits, 5 misses" in out
+    # write_output is the dominant hit phase — 312 ms total
+    assert "write_output (materialize)" in out
+    assert "312.0" in out
+    # Combined source+headers hash row appears with summed total (156 ms)
+    assert "metadata cache (source+hdrs)" in out
+    assert "156.0" in out
+    # compiler_exec on the miss path (900 ms) shows up
+    assert "compiler_exec" in out
+    assert "900.0" in out
+    # Bookkeeping (~3 ms) still renders (tiny totals are not suppressed
+    # unless they are exactly zero).
+    assert "bookkeeping" in out
+
+    # Sort order: the first phase-table row after the header must be the
+    # largest total (compiler_exec at 900ms beats write_output at 312ms).
+    breakdown = out.split("Phase breakdown", 1)[1]
+    first_data_row = next(
+        line for line in breakdown.splitlines()
+        if line.startswith("| ") and "Phase" not in line and "---" not in line
+    )
+    assert "compiler_exec" in first_data_row
+
+
+def test_render_summary_handles_absent_phase_profile(tmp_path, capsys):
+    """Old daemons (PROTOCOL_VERSION <= 8) don't populate phase_profile.
+    Old reports also lack the field. The summary still renders cleanly
+    with no phase-breakdown section."""
+    results_dir = _write_scenario_results(
+        tmp_path,
+        "cold-tar-untar-warm",
+        cold_ms=60_000,
+        warm_ms=10_000,
+        cache_report={
+            "compilations": 50,
+            "hits": 48,
+            "misses": 2,
+            "non_cacheable": 0,
+            "errors": 0,
+            "bytes_written": 0,
+            "time_saved_ms": 0,
+            "unique_sources": 48,
+            # No phase_profile key — emulating an old daemon report.
+        },
+    )
+    rc = perf_local.render_summary(results_dir, "cold-tar-untar-warm", "medium")
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "**PASS**" in out
+    assert "Phase breakdown" not in out
+
+
+def test_render_summary_skips_phase_breakdown_when_all_counts_zero(tmp_path, capsys):
+    """A daemon that started but processed no compiles will emit
+    phase_profile with all zeros. Don't print a useless empty table."""
+    empty_profile = {k: 0 for k in _phase_profile_with_writeoutput_dominant()}
+    results_dir = _write_scenario_results(
+        tmp_path,
+        "cold-tar-untar-warm",
+        cold_ms=60_000,
+        warm_ms=10_000,
+        cache_report={
+            "compilations": 0,
+            "hits": 0,
+            "misses": 0,
+            "non_cacheable": 0,
+            "errors": 0,
+            "bytes_written": 0,
+            "time_saved_ms": 0,
+            "unique_sources": 0,
+            "phase_profile": empty_profile,
+        },
+    )
+    rc = perf_local.render_summary(results_dir, "cold-tar-untar-warm", "medium")
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Phase breakdown" not in out

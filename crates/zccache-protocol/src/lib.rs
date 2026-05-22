@@ -10,7 +10,12 @@ pub use messages::*;
 /// Protocol version number. Bump this when the wire format changes:
 /// new/removed/reordered enum variants or struct field changes.
 /// Patch releases that don't change the protocol keep the same version.
-pub const PROTOCOL_VERSION: u32 = 8;
+///
+/// v9 (current): `SessionStats` gained `phase_profile: Option<PhaseProfileSummary>`
+///                so per-session aggregate phase timing reaches clients.
+/// v8: `Compile` / `CompileEphemeral` gained `stdin: Vec<u8>` and
+///     `ArtifactPayload` replaced `ArtifactOutput.data: Arc<Vec<u8>>`.
+pub const PROTOCOL_VERSION: u32 = 9;
 
 use bytes::{Buf, BufMut, BytesMut};
 
