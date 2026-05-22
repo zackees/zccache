@@ -4039,9 +4039,7 @@ fn session_stats_json(
     })
 }
 
-fn phase_profile_summary_json(
-    p: &zccache_protocol::PhaseProfileSummary,
-) -> serde_json::Value {
+fn phase_profile_summary_json(p: &zccache_protocol::PhaseProfileSummary) -> serde_json::Value {
     serde_json::json!({
         "hit_count": p.hit_count,
         "miss_count": p.miss_count,

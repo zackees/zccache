@@ -703,7 +703,10 @@ mod tests {
             summary.request_cache_lookup_ns,
             totals.request_cache_lookup_ns
         );
-        assert_eq!(summary.cross_root_validate_ns, totals.cross_root_validate_ns);
+        assert_eq!(
+            summary.cross_root_validate_ns,
+            totals.cross_root_validate_ns
+        );
         assert_eq!(summary.artifact_lookup_ns, totals.artifact_lookup_ns);
         assert_eq!(summary.write_output_ns, totals.write_output_ns);
         assert_eq!(summary.bookkeeping_ns, totals.bookkeeping_ns);
