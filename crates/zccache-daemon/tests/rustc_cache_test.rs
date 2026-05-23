@@ -5,19 +5,19 @@
 
 use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 #[cfg(unix)]
-type ClientConn = zccache_ipc::IpcConnection;
+type ClientConn = zccache_monocrate::ipc::IpcConnection;
 #[cfg(windows)]
-type ClientConn = zccache_ipc::IpcClientConnection;
+type ClientConn = zccache_monocrate::ipc::IpcClientConnection;
 
 async fn start_daemon() -> (
     String,
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
 ) {
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
@@ -280,7 +280,7 @@ async fn compile_worktree_app_with_env(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration-level: starts real daemon with IPC + rustc
 async fn test_rustc_lib_compile_cached() {
-    let rustc = match zccache_test_support::find_rustc() {
+    let rustc = match zccache_monocrate::test_support::find_rustc() {
         Some(p) => p,
         None => {
             eprintln!("skipping test: rustc not found");
@@ -288,7 +288,7 @@ async fn test_rustc_lib_compile_cached() {
         }
     };
 
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("lib.rs");
         let output = tmp.path().join("libhello.rlib");
@@ -296,7 +296,7 @@ async fn test_rustc_lib_compile_cached() {
         std::fs::write(&src, "pub fn hello() -> i32 { 42 }\n").unwrap();
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let session_id = start_session(&mut client).await;
 
         let rustc_str = rustc.to_string_lossy().to_string();
@@ -367,18 +367,18 @@ async fn test_rustc_lib_compile_cached() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration-level: starts real daemon with IPC + rustc
 async fn test_rustc_different_source_different_artifact() {
-    let rustc = match zccache_test_support::find_rustc() {
+    let rustc = match zccache_monocrate::test_support::find_rustc() {
         Some(p) => p,
         None => return,
     };
 
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("lib.rs");
         let output = tmp.path().join("libhello.rlib");
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let session_id = start_session(&mut client).await;
 
         let rustc_str = rustc.to_string_lossy().to_string();
@@ -446,12 +446,12 @@ async fn test_rustc_different_source_different_artifact() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration-level: starts real daemon with IPC + rustc
 async fn test_rustc_emit_metadata_cached() {
-    let rustc = match zccache_test_support::find_rustc() {
+    let rustc = match zccache_monocrate::test_support::find_rustc() {
         Some(p) => p,
         None => return,
     };
 
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("lib.rs");
         let output = tmp.path().join("libhello.rmeta");
@@ -459,7 +459,7 @@ async fn test_rustc_emit_metadata_cached() {
         std::fs::write(&src, "pub fn hello() -> i32 { 42 }\n").unwrap();
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let session_id = start_session(&mut client).await;
 
         let rustc_str = rustc.to_string_lossy().to_string();
@@ -508,12 +508,12 @@ async fn test_rustc_emit_metadata_cached() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration-level: starts real daemon with IPC + rustc
 async fn test_rustc_multi_output_cached() {
-    let rustc = match zccache_test_support::find_rustc() {
+    let rustc = match zccache_monocrate::test_support::find_rustc() {
         Some(p) => p,
         None => return,
     };
 
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("lib.rs");
         let out_dir = tmp.path().join("deps");
@@ -522,7 +522,7 @@ async fn test_rustc_multi_output_cached() {
         std::fs::write(&src, "pub fn add(a: i32, b: i32) -> i32 { a + b }\n").unwrap();
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let session_id = start_session(&mut client).await;
 
         let rustc_str = rustc.to_string_lossy().to_string();
@@ -627,12 +627,12 @@ async fn test_rustc_multi_output_cached() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration-level: starts real daemon with IPC + rustc
 async fn test_rustc_extern_change_invalidates() {
-    let rustc = match zccache_test_support::find_rustc() {
+    let rustc = match zccache_monocrate::test_support::find_rustc() {
         Some(p) => p,
         None => return,
     };
 
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let src_a = tmp.path().join("a.rs");
         let src_b = tmp.path().join("b.rs");
@@ -649,7 +649,7 @@ async fn test_rustc_extern_change_invalidates() {
         .unwrap();
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let session_id = start_session(&mut client).await;
 
         let rustc_str = rustc.to_string_lossy().to_string();
@@ -761,7 +761,7 @@ async fn test_rustc_extern_change_invalidates() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration-level: starts real daemon with IPC + rustc
 async fn test_rustc_sibling_git_worktree_equivalent_cache_sharing() {
-    let rustc = match zccache_test_support::find_rustc() {
+    let rustc = match zccache_monocrate::test_support::find_rustc() {
         Some(p) => p,
         None => {
             eprintln!("skipping test: rustc not found");
@@ -769,7 +769,7 @@ async fn test_rustc_sibling_git_worktree_equivalent_cache_sharing() {
         }
     };
 
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let root_a = tmp.path().join("worktree-a");
         let root_b = tmp.path().join("worktree-b");
@@ -782,8 +782,8 @@ async fn test_rustc_sibling_git_worktree_equivalent_cache_sharing() {
         write_worktree_project(&root_b, 7, 1);
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client_a = zccache_ipc::connect(&endpoint).await.unwrap();
-        let mut client_b = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client_a = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
+        let mut client_b = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let session_a = start_session_in(&mut client_a, &root_a).await;
         let session_b = start_session_in(&mut client_b, &root_b).await;
 
@@ -934,7 +934,7 @@ async fn test_rustc_sibling_git_worktree_equivalent_cache_sharing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration-level: starts real daemon with IPC + rustc
 async fn test_rustc_path_remap_auto_file_macro_hits_across_sibling_git_roots() {
-    let rustc = match zccache_test_support::find_rustc() {
+    let rustc = match zccache_monocrate::test_support::find_rustc() {
         Some(p) => p,
         None => {
             eprintln!("skipping test: rustc not found");
@@ -942,7 +942,7 @@ async fn test_rustc_path_remap_auto_file_macro_hits_across_sibling_git_roots() {
         }
     };
 
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let root_a = tmp.path().join("worktree-a");
         let root_b = tmp.path().join("worktree-b");
@@ -955,8 +955,8 @@ async fn test_rustc_path_remap_auto_file_macro_hits_across_sibling_git_roots() {
         write_path_sensitive_lib(&root_b, 7);
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client_a = zccache_ipc::connect(&endpoint).await.unwrap();
-        let mut client_b = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client_a = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
+        let mut client_b = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let session_a = start_session_in(&mut client_a, &root_a).await;
         let session_b = start_session_in(&mut client_b, &root_b).await;
 
@@ -1014,7 +1014,7 @@ async fn test_rustc_path_remap_auto_file_macro_hits_across_sibling_git_roots() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration-level: starts real daemon with IPC + rustc
 async fn test_rustc_path_remap_conservative_cross_root_misses() {
-    let rustc = match zccache_test_support::find_rustc() {
+    let rustc = match zccache_monocrate::test_support::find_rustc() {
         Some(p) => p,
         None => {
             eprintln!("skipping test: rustc not found");
@@ -1022,7 +1022,7 @@ async fn test_rustc_path_remap_conservative_cross_root_misses() {
         }
     };
 
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let root_a = tmp.path().join("worktree-a");
         let root_b = tmp.path().join("worktree-b");
@@ -1035,8 +1035,8 @@ async fn test_rustc_path_remap_conservative_cross_root_misses() {
         write_path_sensitive_lib(&root_b, 7);
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client_a = zccache_ipc::connect(&endpoint).await.unwrap();
-        let mut client_b = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client_a = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
+        let mut client_b = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let session_a = start_session_in(&mut client_a, &root_a).await;
         let session_b = start_session_in(&mut client_b, &root_b).await;
         let rustc_str = rustc.to_string_lossy().to_string();

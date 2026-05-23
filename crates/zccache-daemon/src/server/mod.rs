@@ -21,8 +21,8 @@ use zccache_depgraph::{
 };
 use zccache_fscache::{CacheSystem, Clock};
 use zccache_monocrate::hash::ContentHash;
-use zccache_ipc::{IpcConnection, IpcListener};
-use zccache_protocol::{ArtifactData, ArtifactOutput, ArtifactPayload, Request, Response};
+use zccache_monocrate::ipc::{IpcConnection, IpcListener};
+use zccache_monocrate::protocol::{ArtifactData, ArtifactOutput, ArtifactPayload, Request, Response};
 use zccache_watcher::{NotifyWatcher, SettleBuffer, SettledEvent};
 
 use crate::compile_journal::{extract_outcome, CompileJournal, JournalContext, JournalEntry};

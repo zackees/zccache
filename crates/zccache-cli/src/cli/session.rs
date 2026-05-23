@@ -30,7 +30,7 @@ pub(crate) async fn cmd_session_start(
     };
 
     if let Err(e) = conn
-        .send(&zccache_protocol::Request::SessionStart {
+        .send(&zccache_monocrate::protocol::Request::SessionStart {
             client_pid: std::process::id(),
             working_dir: cwd.into(),
             log_file: log.map(NormalizedPath::from),
@@ -52,7 +52,7 @@ pub(crate) async fn cmd_session_start(
         }
     };
     match recv_result {
-        Some(zccache_protocol::Response::SessionStarted {
+        Some(zccache_monocrate::protocol::Response::SessionStarted {
             session_id,
             journal_path,
         }) => {
@@ -77,7 +77,7 @@ pub(crate) async fn cmd_session_start(
             }
             ExitCode::SUCCESS
         }
-        Some(zccache_protocol::Response::Error { message }) => {
+        Some(zccache_monocrate::protocol::Response::Error { message }) => {
             eprintln!("session-start failed: {message}");
             ExitCode::FAILURE
         }
@@ -142,7 +142,7 @@ pub(crate) async fn cmd_session_stats(endpoint: &str, session_id: String, json: 
     };
 
     if let Err(e) = conn
-        .send(&zccache_protocol::Request::SessionStats {
+        .send(&zccache_monocrate::protocol::Request::SessionStats {
             session_id: session_id.clone(),
         })
         .await
@@ -169,7 +169,7 @@ pub(crate) async fn cmd_session_stats(endpoint: &str, session_id: String, json: 
         }
     };
     match recv_result {
-        Some(zccache_protocol::Response::SessionStatsResult { stats }) => {
+        Some(zccache_monocrate::protocol::Response::SessionStatsResult { stats }) => {
             if let Some(s) = stats {
                 if json {
                     print_session_stats_json(&session_id, &s);
@@ -183,7 +183,7 @@ pub(crate) async fn cmd_session_stats(endpoint: &str, session_id: String, json: 
             }
             ExitCode::SUCCESS
         }
-        Some(zccache_protocol::Response::Error { message }) => {
+        Some(zccache_monocrate::protocol::Response::Error { message }) => {
             if json {
                 print_session_stats_error_json(&session_id, &message);
             } else {
@@ -214,7 +214,7 @@ pub(crate) async fn cmd_session_stats(endpoint: &str, session_id: String, json: 
 
 pub(crate) fn print_session_stats_human(
     session_id: &str,
-    stats: &zccache_protocol::SessionStats,
+    stats: &zccache_monocrate::protocol::SessionStats,
     state: &str,
 ) {
     let total = stats.hits + stats.misses;
@@ -245,7 +245,7 @@ pub(crate) fn print_session_stats_human(
     }
 }
 
-pub(crate) fn print_session_stats_json(session_id: &str, stats: &zccache_protocol::SessionStats) {
+pub(crate) fn print_session_stats_json(session_id: &str, stats: &zccache_monocrate::protocol::SessionStats) {
     print_json_value(&session_stats_json(session_id, stats));
 }
 
@@ -275,7 +275,7 @@ pub(crate) fn session_stats_error_json(session_id: &str, error: &str) -> serde_j
 
 pub(crate) fn session_stats_json(
     session_id: &str,
-    stats: &zccache_protocol::SessionStats,
+    stats: &zccache_monocrate::protocol::SessionStats,
 ) -> serde_json::Value {
     let total = stats.hits + stats.misses;
     let hit_rate = if total > 0 {
@@ -311,7 +311,7 @@ pub(crate) fn session_stats_json(
 }
 
 pub(crate) fn phase_profile_summary_json(
-    p: &zccache_protocol::PhaseProfileSummary,
+    p: &zccache_monocrate::protocol::PhaseProfileSummary,
 ) -> serde_json::Value {
     serde_json::json!({
         "hit_count": p.hit_count,
@@ -357,12 +357,12 @@ pub(crate) async fn query_session_stats_json(
 pub(crate) async fn query_session_stats(
     endpoint: &str,
     session_id: &str,
-) -> Result<Option<zccache_protocol::SessionStats>, String> {
+) -> Result<Option<zccache_monocrate::protocol::SessionStats>, String> {
     let mut conn = connect(endpoint)
         .await
         .map_err(|err| format!("cannot connect to daemon at {endpoint}: {err}"))?;
 
-    conn.send(&zccache_protocol::Request::SessionStats {
+    conn.send(&zccache_monocrate::protocol::Request::SessionStats {
         session_id: session_id.to_string(),
     })
     .await
@@ -373,8 +373,8 @@ pub(crate) async fn query_session_stats(
         .await
         .map_err(|err| format!("broken daemon connection: {err}"))?;
     match recv_result {
-        Some(zccache_protocol::Response::SessionStatsResult { stats }) => Ok(stats),
-        Some(zccache_protocol::Response::Error { message }) => Err(message),
+        Some(zccache_monocrate::protocol::Response::SessionStatsResult { stats }) => Ok(stats),
+        Some(zccache_monocrate::protocol::Response::Error { message }) => Err(message),
         Some(other) => Err(format!("unexpected daemon response: {other:?}")),
         None => Err("lost connection to daemon (no response). Often a daemon-CLI protocol version mismatch — try `zccache stop`".to_string()),
     }

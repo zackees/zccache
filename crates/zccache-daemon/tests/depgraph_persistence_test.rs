@@ -14,7 +14,7 @@ use tokio::task::JoinHandle;
 use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
 use zccache_depgraph::{CompileContext, DepGraph, IncludeSearchPaths};
-use zccache_protocol::{DaemonStatus, Request, Response};
+use zccache_monocrate::protocol::{DaemonStatus, Request, Response};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -76,7 +76,7 @@ async fn start_daemon_with_preloaded_graph(
 }
 
 async fn get_status(endpoint: &str) -> DaemonStatus {
-    let mut client = zccache_ipc::connect(endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(endpoint).await.unwrap();
     client.send(&Request::Status).await.unwrap();
     match client.recv().await.unwrap() {
         Some(Response::Status(s)) => s,
@@ -102,7 +102,7 @@ fn make_ctx(source: &str) -> CompileContext {
 #[ignore] // integration: starts real daemon, mutates ZCCACHE_CACHE_DIR
 async fn fresh_daemon_reports_not_persisted() {
     let _guard = CacheDirGuard::new();
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let (handle, shutdown) = start_daemon(&endpoint).await;
 
     let status = get_status(&endpoint).await;
@@ -141,7 +141,7 @@ async fn preloaded_graph_reports_persisted() {
     let loaded = zccache_depgraph::load_from_file(&path).unwrap();
     assert_eq!(loaded.stats().context_count, 1);
 
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let (handle, shutdown) = start_daemon_with_preloaded_graph(&endpoint, loaded).await;
 
     let status = get_status(&endpoint).await;
@@ -179,7 +179,7 @@ async fn shutdown_save_restore_roundtrip() {
     let _ = graph.register(make_ctx("/src/bar.cpp"));
     assert_eq!(graph.stats().context_count, 2);
 
-    let endpoint1 = zccache_ipc::unique_test_endpoint();
+    let endpoint1 = zccache_monocrate::ipc::unique_test_endpoint();
     let (handle1, shutdown1) = start_daemon_with_preloaded_graph(&endpoint1, graph).await;
 
     let status1 = get_status(&endpoint1).await;
@@ -213,7 +213,7 @@ async fn shutdown_save_restore_roundtrip() {
     let loaded = zccache_depgraph::load_from_file(&new_path).unwrap();
     assert_eq!(loaded.stats().context_count, 2, "loaded graph survived");
 
-    let endpoint2 = zccache_ipc::unique_test_endpoint();
+    let endpoint2 = zccache_monocrate::ipc::unique_test_endpoint();
     let (handle2, shutdown2) = start_daemon_with_preloaded_graph(&endpoint2, loaded).await;
     let status2 = get_status(&endpoint2).await;
 

@@ -14,19 +14,19 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 // ─── Platform types ──────────────────────────────────────────────────────────
 
 #[cfg(unix)]
-type ClientConn = zccache_ipc::IpcConnection;
+type ClientConn = zccache_monocrate::ipc::IpcConnection;
 #[cfg(windows)]
-type ClientConn = zccache_ipc::IpcClientConnection;
+type ClientConn = zccache_monocrate::ipc::IpcClientConnection;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 async fn start_daemon() -> (String, JoinHandle<()>, Arc<Notify>) {
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
@@ -116,13 +116,13 @@ struct TestHarness {
 
 impl TestHarness {
     async fn new() -> Option<Self> {
-        let clang = zccache_test_support::find_clang()?;
+        let clang = zccache_monocrate::test_support::find_clang()?;
         let tmp = tempfile::tempdir().unwrap();
         let log = tmp.path().join("log.txt");
         let cwd = tmp.path().to_string_lossy().into_owned();
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let session_id = start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
 
         Some(Self {
@@ -262,7 +262,7 @@ async fn corner_syntax_error_not_cached() {
 #[tokio::test]
 #[ignore] // integration: spawns clang, run with --full
 async fn corner_cache_survives_session_restart() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(c) => c,
         None => return,
     };
@@ -275,7 +275,7 @@ async fn corner_cache_survives_session_restart() {
     let (endpoint, server_handle, shutdown) = start_daemon().await;
 
     // Session A: compile
-    let mut client1 = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client1 = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let sid1 = start_session(&mut client1, &clang, &cwd, &log1.to_string_lossy()).await;
 
     let src = tmp.path().join("persist.cpp");
@@ -302,7 +302,7 @@ async fn corner_cache_survives_session_restart() {
     let _: Option<Response> = client1.recv().await.unwrap();
 
     // Session B: new client, new session, same daemon
-    let mut client2 = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client2 = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let sid2 = start_session(&mut client2, &clang, &cwd, &log2.to_string_lossy()).await;
 
     // Recompile same file in session B — should hit
@@ -340,7 +340,7 @@ async fn corner_cache_survives_session_restart() {
 #[tokio::test]
 #[ignore] // integration: spawns clang 4x concurrently, run with --full
 async fn corner_thundering_herd_same_file() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(c) => c,
         None => return,
     };
@@ -365,7 +365,7 @@ async fn corner_thundering_herd_same_file() {
         let log = tmp.path().join(format!("log_{i}.txt"));
 
         handles.push(tokio::spawn(async move {
-            let mut client = zccache_ipc::connect(&ep).await.unwrap();
+            let mut client = zccache_monocrate::ipc::connect(&ep).await.unwrap();
             let sid = start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
 
             let obj_name = format!("out_{i}/herd.o");
@@ -428,7 +428,7 @@ async fn corner_thundering_herd_same_file() {
 #[tokio::test]
 #[ignore] // integration: spawns clang 4x concurrently, run with --full
 async fn corner_thundering_herd_all_warm() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(c) => c,
         None => return,
     };
@@ -443,7 +443,7 @@ async fn corner_thundering_herd_all_warm() {
     // Warm the cache with a single compile
     {
         let log = tmp.path().join("warm_log.txt");
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let sid = start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
         let obj_path = tmp.path().join("warm.o");
         let (exit, cached, _) = compile_and_read(
@@ -472,7 +472,7 @@ async fn corner_thundering_herd_all_warm() {
         let log = tmp.path().join(format!("warm_log_{i}.txt"));
 
         handles.push(tokio::spawn(async move {
-            let mut client = zccache_ipc::connect(&ep).await.unwrap();
+            let mut client = zccache_monocrate::ipc::connect(&ep).await.unwrap();
             let sid = start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
 
             let obj_name = format!("warm_out_{i}/warm.o");

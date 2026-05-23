@@ -4,7 +4,7 @@
 //! check, mark-success, mark-failure, invalidate, and watcher-based change detection.
 
 use zccache_daemon::DaemonServer;
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 /// Helper: start a daemon server on a unique endpoint.
 async fn start_daemon() -> (
@@ -12,7 +12,7 @@ async fn start_daemon() -> (
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
 ) {
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
@@ -32,7 +32,7 @@ fn create_file(dir: &std::path::Path, rel: &str, content: &str) {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon
 async fn test_fingerprint_check_miss_then_skip() {
-    zccache_test_support::test_timeout(async {
+    zccache_monocrate::test_support::test_timeout(async {
         let (endpoint, server_handle, shutdown) = start_daemon().await;
         let src = tempfile::TempDir::new().unwrap();
         let cache_dir = tempfile::TempDir::new().unwrap();
@@ -41,7 +41,7 @@ async fn test_fingerprint_check_miss_then_skip() {
         let cache_file = cache_dir.path().join("fp.json");
 
         // First check: should return "run" (no cache).
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         client
             .send(&Request::FingerprintCheck {
                 cache_file: cache_file.clone().into(),
@@ -102,7 +102,7 @@ async fn test_fingerprint_check_miss_then_skip() {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon
 async fn test_fingerprint_mark_failure_forces_rerun() {
-    zccache_test_support::test_timeout(async {
+    zccache_monocrate::test_support::test_timeout(async {
         let (endpoint, server_handle, shutdown) = start_daemon().await;
         let src = tempfile::TempDir::new().unwrap();
         let cache_dir = tempfile::TempDir::new().unwrap();
@@ -110,7 +110,7 @@ async fn test_fingerprint_mark_failure_forces_rerun() {
         create_file(src.path(), "a.rs", "fn main() {}");
         let cache_file = cache_dir.path().join("fp.json");
 
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
         // Check → mark failure.
         client
@@ -168,7 +168,7 @@ async fn test_fingerprint_mark_failure_forces_rerun() {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon
 async fn test_fingerprint_invalidate() {
-    zccache_test_support::test_timeout(async {
+    zccache_monocrate::test_support::test_timeout(async {
         let (endpoint, server_handle, shutdown) = start_daemon().await;
         let src = tempfile::TempDir::new().unwrap();
         let cache_dir = tempfile::TempDir::new().unwrap();
@@ -176,7 +176,7 @@ async fn test_fingerprint_invalidate() {
         create_file(src.path(), "a.rs", "fn main() {}");
         let cache_file = cache_dir.path().join("fp.json");
 
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
         // Check → mark success.
         client
@@ -240,7 +240,7 @@ async fn test_fingerprint_invalidate() {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon
 async fn test_fingerprint_two_watches_independent() {
-    zccache_test_support::test_timeout(async {
+    zccache_monocrate::test_support::test_timeout(async {
         let (endpoint, server_handle, shutdown) = start_daemon().await;
         let src = tempfile::TempDir::new().unwrap();
         let cache_dir = tempfile::TempDir::new().unwrap();
@@ -249,7 +249,7 @@ async fn test_fingerprint_two_watches_independent() {
         let cache1 = cache_dir.path().join("c1.json");
         let cache2 = cache_dir.path().join("c2.json");
 
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
         // Initialize cache1 and mark success.
         client

@@ -3,7 +3,7 @@
 //! Tests the full flow: compile .o files → `ar rcsD` → cache hit/miss.
 
 use zccache_daemon::DaemonServer;
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 /// Helper: start a daemon server on a unique endpoint.
 async fn start_daemon() -> (
@@ -11,7 +11,7 @@ async fn start_daemon() -> (
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
 ) {
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
@@ -135,7 +135,7 @@ fn client_env_with_path_remap_auto() -> Vec<(String, String)> {
 #[tokio::test]
 #[ignore] // Integration test — starts a real daemon. Run with `test --full`.
 async fn test_ar_cache_miss_then_hit() {
-    let ar_path = match zccache_test_support::find_on_path("ar") {
+    let ar_path = match zccache_monocrate::test_support::find_on_path("ar") {
         Some(p) => p,
         None => {
             eprintln!("skipping test: ar not found on PATH");
@@ -149,7 +149,7 @@ async fn test_ar_cache_miss_then_hit() {
     let output_lib = tmp.path().join("libfoo.a");
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
     // First link — should be a cache miss
     client
@@ -243,8 +243,8 @@ async fn test_ar_cache_miss_then_hit() {
 #[tokio::test]
 #[ignore] // Integration test — starts a real daemon + compiler driver. Run with `test --full`.
 async fn test_link_path_remap_auto_hits_across_sibling_git_roots() {
-    let archiver = match zccache_test_support::find_on_path("ar")
-        .or_else(|| zccache_test_support::find_on_path("llvm-ar"))
+    let archiver = match zccache_monocrate::test_support::find_on_path("ar")
+        .or_else(|| zccache_monocrate::test_support::find_on_path("llvm-ar"))
     {
         Some(path) => path,
         None => {
@@ -255,7 +255,7 @@ async fn test_link_path_remap_auto_hits_across_sibling_git_roots() {
     let mut skipped = Vec::new();
     let mut selected_compiler = None;
     for name in ["clang", "gcc"] {
-        let Some(path) = zccache_test_support::find_on_path(name) else {
+        let Some(path) = zccache_monocrate::test_support::find_on_path(name) else {
             skipped.push(format!("{name}: not found on PATH"));
             continue;
         };
@@ -306,7 +306,7 @@ async fn test_link_path_remap_auto_hits_across_sibling_git_roots() {
     );
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
     // Clear persisted artifacts to ensure test isolation from prior runs.
     client.send(&Request::Clear).await.unwrap();
@@ -398,7 +398,7 @@ async fn test_link_path_remap_auto_hits_across_sibling_git_roots() {
 #[tokio::test]
 #[ignore] // Integration test — starts a real daemon. Run with `test --full`.
 async fn test_ar_cache_invalidated_on_input_change() {
-    let ar_path = match zccache_test_support::find_on_path("ar") {
+    let ar_path = match zccache_monocrate::test_support::find_on_path("ar") {
         Some(p) => p,
         None => {
             eprintln!("skipping test: ar not found on PATH");
@@ -412,7 +412,7 @@ async fn test_ar_cache_invalidated_on_input_change() {
     let output_lib = tmp.path().join("libbar.a");
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
     let make_args = |lib: &std::path::Path, dir: &std::path::Path| -> Vec<String> {
         vec![
@@ -493,7 +493,7 @@ async fn test_ar_cache_invalidated_on_input_change() {
 #[tokio::test]
 #[ignore] // Integration test — starts a real daemon. Run with `test --full`.
 async fn test_ar_non_deterministic_warning() {
-    let ar_path = match zccache_test_support::find_on_path("ar") {
+    let ar_path = match zccache_monocrate::test_support::find_on_path("ar") {
         Some(p) => p,
         None => {
             eprintln!("skipping test: ar not found on PATH");
@@ -507,7 +507,7 @@ async fn test_ar_non_deterministic_warning() {
     let output_lib = tmp.path().join("libwarn.a");
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
     // ar rcs (no D flag) — should warn about non-determinism
     client
@@ -559,7 +559,7 @@ async fn test_ar_non_deterministic_warning() {
 #[tokio::test]
 #[ignore] // Integration test — starts a real daemon. Run with `test --full`.
 async fn test_ar_non_cacheable_passthrough() {
-    let ar_path = match zccache_test_support::find_on_path("ar") {
+    let ar_path = match zccache_monocrate::test_support::find_on_path("ar") {
         Some(p) => p,
         None => {
             eprintln!("skipping test: ar not found on PATH");
@@ -583,7 +583,7 @@ async fn test_ar_non_cacheable_passthrough() {
     assert!(status.success(), "ar rcsD should succeed");
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
     // ar t (list operation) — non-cacheable, should pass through
     client
@@ -624,7 +624,7 @@ async fn test_ar_non_cacheable_passthrough() {
 #[tokio::test]
 #[ignore] // Integration test — starts a real daemon. Run with `test --full`.
 async fn test_link_stats_in_status() {
-    let ar_path = match zccache_test_support::find_on_path("ar") {
+    let ar_path = match zccache_monocrate::test_support::find_on_path("ar") {
         Some(p) => p,
         None => {
             eprintln!("skipping test: ar not found on PATH");
@@ -638,7 +638,7 @@ async fn test_link_stats_in_status() {
     let output_lib = tmp.path().join("libstats.a");
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
     // One deterministic link — cache miss
     client

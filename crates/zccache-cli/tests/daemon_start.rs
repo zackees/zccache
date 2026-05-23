@@ -190,7 +190,7 @@ fn stop_kills_locked_process_when_ipc_is_unreachable() {
     let bin = zccache_bin();
     stop_daemon_and_wait(&bin);
 
-    let lock_path = zccache_ipc::lock_file_path();
+    let lock_path = zccache_monocrate::ipc::lock_file_path();
     let mut child = spawn_sleepy_process();
     std::fs::write(&lock_path, child.id().to_string()).expect("write daemon lock");
 

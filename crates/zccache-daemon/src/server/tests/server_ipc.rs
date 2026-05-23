@@ -8,7 +8,7 @@ use super::super::*;
 use super::CacheDirEnvGuard;
 
 async fn start_daemon() -> (String, tokio::task::JoinHandle<()>, Arc<Notify>) {
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
@@ -20,10 +20,10 @@ async fn start_daemon() -> (String, tokio::task::JoinHandle<()>, Arc<Notify>) {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + file watcher
 async fn test_server_ping_pong() {
-    zccache_test_support::test_timeout(async {
+    zccache_monocrate::test_support::test_timeout(async {
         let (endpoint, server_task, shutdown) = start_daemon().await;
 
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         client.send(&Request::Ping).await.unwrap();
         let resp: Option<Response> = client.recv().await.unwrap();
         assert_eq!(resp, Some(Response::Pong));
@@ -37,10 +37,10 @@ async fn test_server_ping_pong() {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + file watcher
 async fn test_server_shutdown_request() {
-    zccache_test_support::test_timeout(async {
+    zccache_monocrate::test_support::test_timeout(async {
         let (endpoint, server_task, shutdown) = start_daemon().await;
 
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         client.send(&Request::Shutdown).await.unwrap();
         let resp: Option<Response> = client.recv().await.unwrap();
         assert_eq!(resp, Some(Response::ShuttingDown));
@@ -54,10 +54,10 @@ async fn test_server_shutdown_request() {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + file watcher
 async fn test_server_clear_empty() {
-    zccache_test_support::test_timeout(async {
+    zccache_monocrate::test_support::test_timeout(async {
         let (endpoint, server_task, shutdown) = start_daemon().await;
 
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         client.send(&Request::Clear).await.unwrap();
         let resp: Option<Response> = client.recv().await.unwrap();
         match resp {
@@ -83,10 +83,10 @@ async fn test_server_clear_empty() {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + file watcher
 async fn test_server_status() {
-    zccache_test_support::test_timeout(async {
+    zccache_monocrate::test_support::test_timeout(async {
         let (endpoint, server_task, shutdown) = start_daemon().await;
 
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         client.send(&Request::Status).await.unwrap();
         let resp: Option<Response> = client.recv().await.unwrap();
         assert!(matches!(resp, Some(Response::Status(_))));
@@ -103,11 +103,11 @@ async fn test_server_status() {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + compiler
 async fn cli_session_lifecycle() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("hello.cpp");
         let obj = tmp.path().join("hello.o");
@@ -121,7 +121,7 @@ async fn cli_session_lifecycle() {
         .unwrap();
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
         // session-start
         client
@@ -257,9 +257,9 @@ async fn cli_session_lifecycle() {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC
 async fn cli_session_end_invalid_id() {
-    zccache_test_support::test_timeout(async {
+    zccache_monocrate::test_support::test_timeout(async {
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
         client
             .send(&Request::SessionEnd {
@@ -295,9 +295,9 @@ async fn cli_session_end_invalid_id() {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC
 async fn cli_session_end_unknown_uuid_is_idempotent() {
-    zccache_test_support::test_timeout(async {
+    zccache_monocrate::test_support::test_timeout(async {
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
         client
             .send(&Request::SessionEnd {
@@ -335,14 +335,14 @@ async fn cli_session_end_unknown_uuid_is_idempotent() {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC
 async fn cli_compile_unknown_uuid_is_idempotent() {
-    zccache_test_support::test_timeout(async {
+    zccache_monocrate::test_support::test_timeout(async {
         let tmp = tempfile::tempdir().unwrap();
         // Use an isolated cache dir so we don't clash with any
         // production daemon writing the global index blob.
         let _cache_dir = CacheDirEnvGuard::set(&tmp.path().join("zccache-cache"));
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
         let cwd = tmp.path().to_string_lossy().into_owned();
 
@@ -384,12 +384,12 @@ async fn cli_compile_unknown_uuid_is_idempotent() {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + compiler
 async fn cli_clear_resets_cache() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
 
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("clear_test.cpp");
         let obj = tmp.path().join("clear_test.o");
@@ -398,7 +398,7 @@ async fn cli_clear_resets_cache() {
         std::fs::write(&src, "int main() { return 0; }\n").unwrap();
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
         // Start session
         client
@@ -544,12 +544,12 @@ async fn cli_clear_resets_cache() {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + compiler
 async fn cli_multi_file_compilation_runs_directly() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
 
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let src_a = tmp.path().join("multi_a.cpp");
         let src_b = tmp.path().join("multi_b.cpp");
@@ -559,7 +559,7 @@ async fn cli_multi_file_compilation_runs_directly() {
         std::fs::write(&src_b, "int bar() { return 2; }\n").unwrap();
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
         // Start session
         client

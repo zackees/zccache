@@ -18,7 +18,7 @@ impl DaemonServer {
     /// cache directory must use [`Self::bind_with_cache_dir`] instead — this
     /// reads `ZCCACHE_CACHE_DIR` from a process-global env, which races when
     /// multiple tests run in parallel.
-    pub fn bind(endpoint: &str) -> Result<Self, zccache_ipc::IpcError> {
+    pub fn bind(endpoint: &str) -> Result<Self, zccache_monocrate::ipc::IpcError> {
         Self::bind_with_cache_dir(endpoint, &zccache_monocrate::core::config::default_cache_dir())
     }
 
@@ -28,7 +28,7 @@ impl DaemonServer {
     pub fn bind_with_cache_dir(
         endpoint: &str,
         cache_dir: &zccache_monocrate::core::NormalizedPath,
-    ) -> Result<Self, zccache_ipc::IpcError> {
+    ) -> Result<Self, zccache_monocrate::ipc::IpcError> {
         let listener = IpcListener::bind(endpoint)?;
         let shutdown = Arc::new(Notify::new());
         let now = now_secs();
@@ -43,7 +43,7 @@ impl DaemonServer {
         // Open the bincode-backed artifact index for fast startup + persistence.
         let index_path = zccache_monocrate::core::config::index_path_from_cache_dir(cache_dir);
         let artifact_store = ArtifactStore::open(&index_path).map_err(|e| {
-            zccache_ipc::IpcError::Io(std::io::Error::other(format!(
+            zccache_monocrate::ipc::IpcError::Io(std::io::Error::other(format!(
                 "failed to open artifact index at {}: {e}",
                 index_path.display()
             )))

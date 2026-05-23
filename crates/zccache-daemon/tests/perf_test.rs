@@ -6,13 +6,13 @@
 use std::time::Instant;
 use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 /// Platform-correct client connection type.
 #[cfg(unix)]
-type ClientConn = zccache_ipc::IpcConnection;
+type ClientConn = zccache_monocrate::ipc::IpcConnection;
 #[cfg(windows)]
-type ClientConn = zccache_ipc::IpcClientConnection;
+type ClientConn = zccache_monocrate::ipc::IpcClientConnection;
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -69,7 +69,7 @@ async fn start_daemon() -> (
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
 ) {
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
@@ -374,7 +374,7 @@ async fn bench_zccache(
     let log = src_dir.join("zccache_bench.log");
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let (sid, compiler) = start_session(&mut client, clang, &cwd, &log.to_string_lossy()).await;
 
     let mut cold_ms = Vec::new();
@@ -584,7 +584,7 @@ fn print_three_way(bare: &BenchResult, sccache: &BenchResult, zccache: &BenchRes
 #[tokio::test]
 #[ignore]
 async fn perf_full_benchmark() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             println!("SKIP: clang not found at ~/.clang-tool-chain");
@@ -599,9 +599,9 @@ async fn perf_full_benchmark() {
         }
     };
 
-    let bare_dir = zccache_test_support::temp_cache_dir().unwrap();
-    let sccache_dir = zccache_test_support::temp_cache_dir().unwrap();
-    let zccache_dir = zccache_test_support::temp_cache_dir().unwrap();
+    let bare_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
+    let sccache_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
+    let zccache_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
 
     generate_test_files(bare_dir.path(), FILE_COUNT);
     generate_test_files(sccache_dir.path(), FILE_COUNT);
@@ -639,7 +639,7 @@ async fn perf_full_benchmark() {
 #[tokio::test]
 #[ignore]
 async fn perf_sanity_check() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             println!("SKIP: clang not found");
@@ -654,7 +654,7 @@ async fn perf_sanity_check() {
         }
     };
 
-    let tmp = zccache_test_support::temp_cache_dir().unwrap();
+    let tmp = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     generate_test_files(tmp.path(), 1);
     let cwd = tmp.path().to_string_lossy().into_owned();
 
@@ -691,13 +691,13 @@ async fn perf_sanity_check() {
     println!("sccache stats:\n{stats_text}");
 
     // zccache: cold then warm
-    let zcc_tmp = zccache_test_support::temp_cache_dir().unwrap();
+    let zcc_tmp = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     generate_test_files(zcc_tmp.path(), 1);
     let zcc_cwd = zcc_tmp.path().to_string_lossy().into_owned();
     let log = zcc_tmp.path().join("log.txt");
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let (sid, compiler) =
         start_session(&mut client, &clang, &zcc_cwd, &log.to_string_lossy()).await;
 

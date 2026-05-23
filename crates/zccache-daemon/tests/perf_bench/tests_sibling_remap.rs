@@ -18,7 +18,7 @@ use super::sibling_remap::{
 #[tokio::test]
 #[ignore] // Run explicitly: soldr cargo test -p zccache-daemon --test perf_bench_test -- perf_cpp_sibling_remap_warm --nocapture --ignored
 async fn perf_cpp_sibling_remap_warm() {
-    let compiler_path = match zccache_test_support::find_clang() {
+    let compiler_path = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("SKIP: no C++ compiler found");
@@ -90,7 +90,7 @@ async fn perf_cpp_sibling_remap_warm() {
 #[tokio::test]
 #[ignore] // Run explicitly: soldr cargo test -p zccache-daemon --test perf_bench_test -- perf_rustc_sibling_remap_warm --nocapture --ignored
 async fn perf_rustc_sibling_remap_warm() {
-    let rustc_path = match zccache_test_support::find_rustc() {
+    let rustc_path = match zccache_monocrate::test_support::find_rustc() {
         Some(p) => p,
         None => {
             eprintln!("SKIP: rustc not found");
@@ -110,7 +110,7 @@ async fn perf_rustc_sibling_remap_warm() {
     eprintln!("================================================================");
     eprintln!();
 
-    let parent = zccache_test_support::temp_cache_dir().unwrap();
+    let parent = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     let workspace_a = parent.path().join("workspace-a");
     let workspace_b = parent.path().join("workspace-b");
     std::fs::create_dir_all(&workspace_a).unwrap();
@@ -133,7 +133,7 @@ async fn perf_rustc_sibling_remap_warm() {
 
     // ── sccache warm in workspace B ────────────────────────────────────
     let sccache_warm = if let Some(scc_bin) = find_sccache() {
-        let scd = zccache_test_support::temp_cache_dir().unwrap();
+        let scd = zccache_monocrate::test_support::temp_cache_dir().unwrap();
         let scd_s = scd.path().to_string_lossy().into_owned();
         std::env::set_var("SCCACHE_DIR", &scd_s);
         eprintln!("  [2/3] sccache (workspace B, warm)");
@@ -177,7 +177,7 @@ async fn perf_rustc_sibling_remap_warm() {
     // ── zccache primed from workspace A, warm in workspace B ───────────
     eprintln!("  [3/3] zccache (prime: workspace A, warm: workspace B, remap=auto)");
     let (_zccache_cache_dir, ep, sh, sd) = start_daemon().await;
-    let mut cl = zccache_ipc::connect(&ep).await.unwrap();
+    let mut cl = zccache_monocrate::ipc::connect(&ep).await.unwrap();
     let workspace_a_str = workspace_a.to_string_lossy().into_owned();
     let workspace_b_str = workspace_b.to_string_lossy().into_owned();
 

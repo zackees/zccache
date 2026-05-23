@@ -3,13 +3,13 @@
 //! Run with: soldr cargo test -p zccache-daemon --test profile_test -- --nocapture --ignored
 
 use zccache_daemon::DaemonServer;
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 /// Platform-correct client connection type.
 #[cfg(unix)]
-type ClientConn = zccache_ipc::IpcConnection;
+type ClientConn = zccache_monocrate::ipc::IpcConnection;
 #[cfg(windows)]
-type ClientConn = zccache_ipc::IpcClientConnection;
+type ClientConn = zccache_monocrate::ipc::IpcClientConnection;
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -204,7 +204,7 @@ fn print_profile(profile: &zccache_daemon::ProfileSnapshot) {
 #[tokio::test]
 #[ignore]
 async fn profile_compile_phases() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             println!("SKIP: clang not found at ~/.clang-tool-chain");
@@ -234,7 +234,7 @@ async fn profile_compile_phases() {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
     let server = Arc::new(Mutex::new(Some(server)));
@@ -249,7 +249,7 @@ async fn profile_compile_phases() {
     // Give server a moment to start
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let sid = start_session(&mut client, &clang, &cwd).await;
     let compiler = clang.to_string_lossy().into_owned();
 

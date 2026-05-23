@@ -3,7 +3,7 @@
 
 use std::path::Path;
 use std::time::{Duration, Instant};
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 use super::common::{clean_objects, ClientConn, NUM_FILES, RSP_NUM_DEFINES, RSP_NUM_INCLUDES};
 

@@ -3,7 +3,7 @@
 //! Tests the full flow: compile .o files → `gcc -shared` → cache hit/miss.
 
 use zccache_daemon::DaemonServer;
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 /// Helper: start a daemon server on a unique endpoint.
 async fn start_daemon() -> (
@@ -11,7 +11,7 @@ async fn start_daemon() -> (
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
 ) {
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
@@ -36,7 +36,7 @@ fn compile_object(gcc: &std::path::Path, dir: &std::path::Path, name: &str, body
 #[tokio::test]
 #[ignore] // Integration test — starts a real daemon + gcc. Run with `test --full`.
 async fn test_dll_cache_miss_then_hit() {
-    let gcc_path = match zccache_test_support::find_on_path("gcc") {
+    let gcc_path = match zccache_monocrate::test_support::find_on_path("gcc") {
         Some(p) => p,
         None => {
             eprintln!("skipping test: gcc not found on PATH");
@@ -61,7 +61,7 @@ async fn test_dll_cache_miss_then_hit() {
     let output_dll = tmp.path().join("libmath.dll");
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
     // Clear persisted artifacts to ensure test isolation from prior runs
     client.send(&Request::Clear).await.unwrap();
@@ -155,7 +155,7 @@ async fn test_dll_cache_miss_then_hit() {
 #[tokio::test]
 #[ignore] // Integration test — starts a real daemon + gcc. Run with `test --full`.
 async fn test_dll_cache_invalidated_on_input_change() {
-    let gcc_path = match zccache_test_support::find_on_path("gcc") {
+    let gcc_path = match zccache_monocrate::test_support::find_on_path("gcc") {
         Some(p) => p,
         None => {
             eprintln!("skipping test: gcc not found on PATH");
@@ -174,7 +174,7 @@ async fn test_dll_cache_invalidated_on_input_change() {
     let output_dll = tmp.path().join("libfunc.dll");
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
     // Clear persisted artifacts to ensure test isolation from prior runs
     client.send(&Request::Clear).await.unwrap();
@@ -264,7 +264,7 @@ async fn test_dll_cache_invalidated_on_input_change() {
 #[tokio::test]
 #[ignore] // Integration test — starts a real daemon + gcc. Run with `test --full`.
 async fn test_dll_non_deterministic_warning() {
-    let gcc_path = match zccache_test_support::find_on_path("gcc") {
+    let gcc_path = match zccache_monocrate::test_support::find_on_path("gcc") {
         Some(p) => p,
         None => {
             eprintln!("skipping test: gcc not found on PATH");
@@ -283,7 +283,7 @@ async fn test_dll_non_deterministic_warning() {
     let output_dll = tmp.path().join("libwarn.dll");
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
     // Clear persisted artifacts to ensure test isolation from prior runs
     client.send(&Request::Clear).await.unwrap();
@@ -343,7 +343,7 @@ async fn test_dll_non_deterministic_warning() {
 #[tokio::test]
 #[ignore] // Integration test — starts a real daemon + gcc. Run with `test --full`.
 async fn test_exe_cache_miss_then_hit() {
-    let gcc_path = match zccache_test_support::find_on_path("gcc") {
+    let gcc_path = match zccache_monocrate::test_support::find_on_path("gcc") {
         Some(p) => p,
         None => {
             eprintln!("skipping test: gcc not found on PATH");
@@ -362,7 +362,7 @@ async fn test_exe_cache_miss_then_hit() {
     let output_exe = tmp.path().join("main.exe");
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
     // Clear persisted artifacts to ensure test isolation from prior runs
     client.send(&Request::Clear).await.unwrap();
@@ -473,7 +473,7 @@ fn compile_object_with(compiler: &std::path::Path, dir: &std::path::Path, name: 
 #[tokio::test]
 #[ignore] // Integration test — starts a real daemon + clang. Run with `test --full`.
 async fn test_clang_link_cache_miss_then_hit() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
@@ -486,7 +486,7 @@ async fn test_clang_link_cache_miss_then_hit() {
         .join(if cfg!(windows) { "main.exe" } else { "main" });
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
     // Clear persisted artifacts to ensure test isolation
     client.send(&Request::Clear).await.unwrap();

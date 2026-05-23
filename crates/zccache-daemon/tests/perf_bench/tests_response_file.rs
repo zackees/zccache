@@ -1,7 +1,7 @@
 //! Response-file C++ warm-cache benchmark.
 
 use std::path::Path;
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 use super::common::{
     find_sccache, fmt_dur, fmt_ratio, median, print_trials, start_daemon, NUM_FILES,
@@ -18,7 +18,7 @@ use super::response_file::{
 #[tokio::test]
 #[ignore] // Run explicitly: soldr cargo test -p zccache-daemon --test perf_bench_test -- perf_response_file --nocapture --ignored
 async fn perf_response_file() {
-    let compiler_path = match zccache_test_support::find_clang() {
+    let compiler_path = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("SKIP: no C++ compiler found");
@@ -40,7 +40,7 @@ async fn perf_response_file() {
     eprintln!();
 
     // ── Baseline RSP (fresh dir) ─────────────────────────────────────
-    let bl_dir = zccache_test_support::temp_cache_dir().unwrap();
+    let bl_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     generate_project(bl_dir.path());
     generate_response_files(bl_dir.path());
 
@@ -71,11 +71,11 @@ async fn perf_response_file() {
     let sccache_multi_times;
 
     if let Some(sccache_bin) = find_sccache() {
-        let sc_dir = zccache_test_support::temp_cache_dir().unwrap();
+        let sc_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
         generate_project(sc_dir.path());
         generate_response_files(sc_dir.path());
 
-        let sc_cache_dir = zccache_test_support::temp_cache_dir().unwrap();
+        let sc_cache_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
         let sc_cache_str = sc_cache_dir.path().to_string_lossy().into_owned();
         std::env::set_var("SCCACHE_DIR", &sc_cache_str);
 
@@ -161,7 +161,7 @@ async fn perf_response_file() {
     }
 
     // ── zccache RSP (fresh dir, in-process daemon) ───────────────────
-    let zc_dir = zccache_test_support::temp_cache_dir().unwrap();
+    let zc_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     generate_project(zc_dir.path());
     generate_response_files(zc_dir.path());
     let zc_cwd = zc_dir.path().to_string_lossy().into_owned();
@@ -169,7 +169,7 @@ async fn perf_response_file() {
     eprintln!("  [3/3] zccache (in-process daemon)");
 
     let (_zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
     client
         .send(&Request::SessionStart {

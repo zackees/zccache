@@ -51,7 +51,7 @@ async fn start_daemon() -> (
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
 ) {
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
@@ -65,11 +65,11 @@ async fn start_daemon() -> (
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration-level: starts real daemon + spawns CLI binary
 async fn cli_binary_session_round_trip() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("cli_test.cpp");
         let obj = tmp.path().join("cli_test.o");
@@ -175,11 +175,11 @@ async fn cli_binary_session_round_trip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration-level: starts real daemon + spawns CLI binary
 async fn cli_binary_ephemeral_session() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("ephemeral.cpp");
         let obj = tmp.path().join("ephemeral.o");
@@ -242,11 +242,11 @@ async fn cli_binary_ephemeral_session() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration-level: starts real daemon + spawns CLI binary
 async fn cli_binary_compiler_override_cpp_session_c_file() {
-    let clangpp = match zccache_test_support::find_clang() {
+    let clangpp = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         // Derive clang (C compiler) from clang++ path
         let clang =
             clangpp

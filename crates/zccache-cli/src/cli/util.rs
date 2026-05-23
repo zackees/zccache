@@ -53,7 +53,7 @@ pub(crate) fn resolve_endpoint(explicit: Option<&str>) -> String {
     if let Ok(ep) = std::env::var("ZCCACHE_ENDPOINT") {
         return ep;
     }
-    zccache_ipc::default_endpoint()
+    zccache_monocrate::ipc::default_endpoint()
 }
 
 /// Platform-correct connect (returns different types on Unix vs Windows).
@@ -69,18 +69,18 @@ pub(crate) fn resolve_endpoint(explicit: Option<&str>) -> String {
 #[cfg(unix)]
 pub(crate) async fn connect(
     endpoint: &str,
-) -> Result<zccache_ipc::IpcConnection, zccache_ipc::IpcError> {
-    let mut conn = zccache_ipc::connect(endpoint).await?;
-    conn.set_recv_timeout(zccache_ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
+) -> Result<zccache_monocrate::ipc::IpcConnection, zccache_monocrate::ipc::IpcError> {
+    let mut conn = zccache_monocrate::ipc::connect(endpoint).await?;
+    conn.set_recv_timeout(zccache_monocrate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
     Ok(conn)
 }
 
 #[cfg(windows)]
 pub(crate) async fn connect(
     endpoint: &str,
-) -> Result<zccache_ipc::IpcClientConnection, zccache_ipc::IpcError> {
-    let mut conn = zccache_ipc::connect(endpoint).await?;
-    conn.set_recv_timeout(zccache_ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
+) -> Result<zccache_monocrate::ipc::IpcClientConnection, zccache_monocrate::ipc::IpcError> {
+    let mut conn = zccache_monocrate::ipc::connect(endpoint).await?;
+    conn.set_recv_timeout(zccache_monocrate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
     Ok(conn)
 }
 

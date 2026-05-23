@@ -10,12 +10,12 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
-use zccache_protocol::{DaemonStatus, Request, Response, RustArtifactInfo};
+use zccache_monocrate::protocol::{DaemonStatus, Request, Response, RustArtifactInfo};
 
 #[cfg(unix)]
-type ClientConn = zccache_ipc::IpcConnection;
+type ClientConn = zccache_monocrate::ipc::IpcConnection;
 #[cfg(windows)]
-type ClientConn = zccache_ipc::IpcClientConnection;
+type ClientConn = zccache_monocrate::ipc::IpcClientConnection;
 
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -79,7 +79,7 @@ impl Drop for CacheEnvGuard {
 }
 
 async fn start_daemon() -> (String, JoinHandle<()>, Arc<Notify>) {
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     start_daemon_at(&endpoint).await
 }
 
@@ -259,12 +259,12 @@ async fn wait_for_rust_artifacts(client: &mut ClientConn) -> Vec<RustArtifactInf
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn profiled_rust_build_miss_populates_artifact() {
-    let rustc = match zccache_test_support::find_rustc() {
+    let rustc = match zccache_monocrate::test_support::find_rustc() {
         Some(path) => path,
         None => return,
     };
 
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let _cache_env = CacheEnvGuard::new_profiled(&tmp.path().join("cache"));
         let src = tmp.path().join("lib.rs");
@@ -273,7 +273,7 @@ async fn profiled_rust_build_miss_populates_artifact() {
         write_lib(&src, 232);
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let session_id = start_session(&mut client).await;
         let args = cargo_build_args(&src, &out_dir, "profile232", "profile232");
 
@@ -299,12 +299,12 @@ async fn profiled_rust_build_miss_populates_artifact() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration-level: starts real daemon with IPC + rustc
 async fn issue_210_same_context_immediate_recompile_hits_after_miss() {
-    let rustc = match zccache_test_support::find_rustc() {
+    let rustc = match zccache_monocrate::test_support::find_rustc() {
         Some(path) => path,
         None => return,
     };
 
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let _cache_env = CacheEnvGuard::new(&tmp.path().join("cache"));
         let src = tmp.path().join("lib.rs");
@@ -312,7 +312,7 @@ async fn issue_210_same_context_immediate_recompile_hits_after_miss() {
         write_lib(&src, 210);
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let session_id = start_session(&mut client).await;
         let args = simple_lib_args(&src, &output, "issue210");
 
@@ -339,12 +339,12 @@ async fn issue_210_same_context_immediate_recompile_hits_after_miss() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration-level: starts real daemon with IPC + rustc
 async fn issue_210_status_and_list_reflect_populated_rust_artifacts() {
-    let rustc = match zccache_test_support::find_rustc() {
+    let rustc = match zccache_monocrate::test_support::find_rustc() {
         Some(path) => path,
         None => return,
     };
 
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let _cache_env = CacheEnvGuard::new(&tmp.path().join("cache"));
         let src = tmp.path().join("lib.rs");
@@ -353,7 +353,7 @@ async fn issue_210_status_and_list_reflect_populated_rust_artifacts() {
         write_lib(&src, 211);
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let session_id = start_session(&mut client).await;
         let args = cargo_build_args(&src, &out_dir, "issue210_status", "status210");
 
@@ -398,12 +398,12 @@ async fn issue_210_status_and_list_reflect_populated_rust_artifacts() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration-level: starts real daemon with IPC + rustc
 async fn issue_210_clear_leaves_no_stale_rust_artifacts() {
-    let rustc = match zccache_test_support::find_rustc() {
+    let rustc = match zccache_monocrate::test_support::find_rustc() {
         Some(path) => path,
         None => return,
     };
 
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let _cache_env = CacheEnvGuard::new(&tmp.path().join("cache"));
         let src = tmp.path().join("lib.rs");
@@ -411,7 +411,7 @@ async fn issue_210_clear_leaves_no_stale_rust_artifacts() {
         write_lib(&src, 212);
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let session_id = start_session(&mut client).await;
         let args = simple_lib_args(&src, &output, "clear210");
 
@@ -452,12 +452,12 @@ async fn issue_210_clear_leaves_no_stale_rust_artifacts() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration-level: starts real daemon with IPC + rustc
 async fn issue_210_shutdown_after_just_populated_rust_artifact() {
-    let rustc = match zccache_test_support::find_rustc() {
+    let rustc = match zccache_monocrate::test_support::find_rustc() {
         Some(path) => path,
         None => return,
     };
 
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let _cache_env = CacheEnvGuard::new(&tmp.path().join("cache"));
         let src = tmp.path().join("lib.rs");
@@ -465,7 +465,7 @@ async fn issue_210_shutdown_after_just_populated_rust_artifact() {
         write_lib(&src, 213);
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let session_id = start_session(&mut client).await;
         let args = simple_lib_args(&src, &output, "restart210");
 
@@ -487,12 +487,12 @@ async fn issue_210_shutdown_after_just_populated_rust_artifact() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration-level: starts real daemon with IPC + rustc
 async fn issue_210_build_and_check_warm_hits_are_preserved() {
-    let rustc = match zccache_test_support::find_rustc() {
+    let rustc = match zccache_monocrate::test_support::find_rustc() {
         Some(path) => path,
         None => return,
     };
 
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let _cache_env = CacheEnvGuard::new(&tmp.path().join("cache"));
         let src = tmp.path().join("lib.rs");
@@ -501,7 +501,7 @@ async fn issue_210_build_and_check_warm_hits_are_preserved() {
         write_lib(&src, 214);
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let session_id = start_session(&mut client).await;
 
         let build_args = cargo_build_args(&src, &out_dir, "build210", "build210");

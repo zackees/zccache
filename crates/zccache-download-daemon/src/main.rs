@@ -62,7 +62,7 @@ fn query_daemon_status(endpoint: &str) -> Result<zccache_download::DownloadDaemo
         .build()
         .map_err(|e| format!("failed to create runtime: {e}"))?;
     rt.block_on(async {
-        let mut conn = zccache_ipc::connect(endpoint)
+        let mut conn = zccache_monocrate::ipc::connect(endpoint)
             .await
             .map_err(|e| format!("download daemon not running at {endpoint}: {e}"))?;
         conn.send(&Request::Status)

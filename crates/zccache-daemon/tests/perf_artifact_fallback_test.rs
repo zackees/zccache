@@ -92,7 +92,7 @@ async fn perf_artifact_lookup_hits_before_background_load_completes() {
     let key_hex = "abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abcd";
     let cache_dir = seed_cache_dir(&dir, key_hex);
 
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).expect("bind daemon");
 
     // Critical invariant 1: the in-memory DashMap is empty immediately

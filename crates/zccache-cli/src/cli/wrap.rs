@@ -408,7 +408,7 @@ async fn cmd_compile(
     };
 
     if let Err(e) = conn
-        .send(&zccache_protocol::Request::Compile {
+        .send(&zccache_monocrate::protocol::Request::Compile {
             session_id: session_id.to_string(),
             args,
             cwd,
@@ -430,7 +430,7 @@ async fn cmd_compile(
         }
     };
     match recv_result {
-        Some(zccache_protocol::Response::CompileResult {
+        Some(zccache_monocrate::protocol::Response::CompileResult {
             exit_code,
             stdout,
             stderr,
@@ -442,7 +442,7 @@ async fn cmd_compile(
             let _ = std::io::stderr().write_all(&stderr);
             exit_code_from_i32(exit_code)
         }
-        Some(zccache_protocol::Response::Error { message }) => {
+        Some(zccache_monocrate::protocol::Response::Error { message }) => {
             eprintln!("zccache[err][E]: daemon error: {message}");
             ExitCode::FAILURE
         }
@@ -481,7 +481,7 @@ async fn cmd_compile_ephemeral(
 
     let stdin_bytes = slurp_stdin_if_piped();
     if let Err(e) = conn
-        .send(&zccache_protocol::Request::CompileEphemeral {
+        .send(&zccache_monocrate::protocol::Request::CompileEphemeral {
             client_pid: std::process::id(),
             working_dir: cwd.clone(),
             compiler: compiler.into(),
@@ -504,7 +504,7 @@ async fn cmd_compile_ephemeral(
         }
     };
     match recv_result {
-        Some(zccache_protocol::Response::CompileResult {
+        Some(zccache_monocrate::protocol::Response::CompileResult {
             exit_code,
             stdout,
             stderr,
@@ -515,7 +515,7 @@ async fn cmd_compile_ephemeral(
             let _ = std::io::stderr().write_all(&stderr);
             exit_code_from_i32(exit_code)
         }
-        Some(zccache_protocol::Response::Error { message }) => {
+        Some(zccache_monocrate::protocol::Response::Error { message }) => {
             eprintln!("zccache[err][E]: daemon error: {message}");
             ExitCode::FAILURE
         }
@@ -551,7 +551,7 @@ async fn cmd_link_ephemeral(
     };
 
     if let Err(e) = conn
-        .send(&zccache_protocol::Request::LinkEphemeral {
+        .send(&zccache_monocrate::protocol::Request::LinkEphemeral {
             client_pid: std::process::id(),
             tool: tool.into(),
             args,
@@ -572,7 +572,7 @@ async fn cmd_link_ephemeral(
         }
     };
     match recv_result {
-        Some(zccache_protocol::Response::LinkResult {
+        Some(zccache_monocrate::protocol::Response::LinkResult {
             exit_code,
             stdout,
             stderr,
@@ -587,7 +587,7 @@ async fn cmd_link_ephemeral(
             }
             exit_code_from_i32(exit_code)
         }
-        Some(zccache_protocol::Response::Error { message }) => {
+        Some(zccache_monocrate::protocol::Response::Error { message }) => {
             eprintln!("zccache[err][E]: daemon error: {message}");
             ExitCode::FAILURE
         }

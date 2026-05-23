@@ -55,7 +55,7 @@ pub async fn measure_cpp_sibling_remap_mode(
     eprintln!("  Mode: {scenario}");
     eprintln!();
 
-    let parent = zccache_test_support::temp_cache_dir().unwrap();
+    let parent = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     let workspace_a = parent.path().join("workspace-a");
     let workspace_b = parent.path().join("workspace-b");
     std::fs::create_dir_all(&workspace_a).unwrap();
@@ -92,7 +92,7 @@ pub async fn measure_cpp_sibling_remap_mode(
     eprintln!();
 
     let sccache_warm = if let Some(sccache_bin) = find_sccache() {
-        let sc_cache_dir = zccache_test_support::temp_cache_dir().unwrap();
+        let sc_cache_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
         let sc_cache_str = sc_cache_dir.path().to_string_lossy().into_owned();
         std::env::set_var("SCCACHE_DIR", &sc_cache_str);
         eprintln!("  [2/3] sccache (prime: workspace A, warm: workspace B)");
@@ -140,7 +140,7 @@ pub async fn measure_cpp_sibling_remap_mode(
 
     eprintln!("  [3/3] zccache (prime: workspace A, warm: workspace B, remap=auto)");
     let (_zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
     let workspace_a_str = workspace_a.to_string_lossy().into_owned();
     let workspace_b_str = workspace_b.to_string_lossy().into_owned();

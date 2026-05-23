@@ -13,7 +13,7 @@ impl DaemonServer {
     ///
     /// `idle_timeout_secs`: if non-zero, the daemon shuts down after this many
     /// seconds with no client activity. Pass 0 to disable.
-    pub async fn run(&mut self, idle_timeout_secs: u64) -> Result<(), zccache_ipc::IpcError> {
+    pub async fn run(&mut self, idle_timeout_secs: u64) -> Result<(), zccache_monocrate::ipc::IpcError> {
         tracing::info!(
             persist_workers = self.state.persist_semaphore.available_permits(),
             "daemon server running"
@@ -53,7 +53,7 @@ impl DaemonServer {
             let cleaned = zccache_monocrate::core::config::cleanup_legacy_temp_root_state(
                 &temp_root,
                 &cache_dir,
-                zccache_ipc::is_process_alive,
+                zccache_monocrate::ipc::is_process_alive,
             );
             if cleaned > 0 {
                 tracing::info!(cleaned, "cleaned legacy temp-root zccache state");
@@ -63,7 +63,7 @@ impl DaemonServer {
         // Clean up stale depfile directories from dead daemon instances.
         {
             let cleaned =
-                zccache_monocrate::core::config::cleanup_stale_depfile_dirs(zccache_ipc::is_process_alive);
+                zccache_monocrate::core::config::cleanup_stale_depfile_dirs(zccache_monocrate::ipc::is_process_alive);
             if cleaned > 0 {
                 tracing::info!(cleaned, "cleaned stale depfile directories");
             }

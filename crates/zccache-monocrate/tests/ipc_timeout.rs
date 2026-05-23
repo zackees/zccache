@@ -14,8 +14,8 @@
 
 use std::time::{Duration, Instant};
 
-use zccache_ipc::{connect, unique_test_endpoint, IpcError, IpcListener};
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::ipc::{connect, unique_test_endpoint, IpcError, IpcListener};
+use zccache_monocrate::protocol::{Request, Response};
 
 /// Default-unbounded: no `set_recv_timeout` call → `recv` waits as long
 /// as needed. Listener delays 200ms before responding. With the new

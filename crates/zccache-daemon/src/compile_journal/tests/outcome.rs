@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use zccache_protocol::Response;
+use zccache_monocrate::protocol::Response;
 
 use super::super::{extract_outcome, miss_reason};
 
@@ -123,7 +123,7 @@ fn test_extract_outcome_link_error() {
 #[test]
 fn test_extract_outcome_all_non_journalable() {
     use zccache_monocrate::core::NormalizedPath;
-    use zccache_protocol::{DaemonStatus, LookupResult as LR, SessionStats, StoreResult as SR};
+    use zccache_monocrate::protocol::{DaemonStatus, LookupResult as LR, SessionStats, StoreResult as SR};
 
     let non_journalable: Vec<Response> = vec![
         Response::Pong,

@@ -83,7 +83,7 @@ fn rust_plan_cli_parses_validate_restore_save() {
 
 #[test]
 fn rust_plan_session_stats_json_separates_compile_cache_stats() {
-    let stats = zccache_protocol::SessionStats {
+    let stats = zccache_monocrate::protocol::SessionStats {
         duration_ms: 1000,
         compilations: 10,
         hits: 7,

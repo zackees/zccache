@@ -14,12 +14,12 @@
 
 use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 #[cfg(unix)]
-type ClientConn = zccache_ipc::IpcConnection;
+type ClientConn = zccache_monocrate::ipc::IpcConnection;
 #[cfg(windows)]
-type ClientConn = zccache_ipc::IpcClientConnection;
+type ClientConn = zccache_monocrate::ipc::IpcClientConnection;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -28,7 +28,7 @@ async fn start_daemon() -> (
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
 ) {
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
@@ -97,11 +97,11 @@ struct TestHarness {
 
 impl TestHarness {
     async fn new() -> Option<Self> {
-        let rustc = zccache_test_support::find_rustc()?;
+        let rustc = zccache_monocrate::test_support::find_rustc()?;
         let tmp = tempfile::tempdir().unwrap();
         let cwd = tmp.path().to_string_lossy().into_owned();
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let session_id = do_start_session(&mut client, &cwd).await;
         Some(Self {
             rustc,
@@ -573,7 +573,7 @@ async fn rustc_failed_compile_not_cached() {
 #[tokio::test]
 #[ignore]
 async fn rustc_cache_persists_across_sessions() {
-    let rustc = match zccache_test_support::find_rustc() {
+    let rustc = match zccache_monocrate::test_support::find_rustc() {
         Some(p) => p,
         None => return,
     };
@@ -585,7 +585,7 @@ async fn rustc_cache_persists_across_sessions() {
     let (endpoint, server_handle, shutdown) = start_daemon().await;
 
     // Session A: compile → miss
-    let mut client_a = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client_a = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let sid_a = do_start_session(&mut client_a, &cwd).await;
     let (ec, cached) = compile(
         &mut client_a,
@@ -620,7 +620,7 @@ async fn rustc_cache_persists_across_sessions() {
     let _ = client_a.recv::<Response>().await;
 
     // Session B: same file → hit
-    let mut client_b = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client_b = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let sid_b = do_start_session(&mut client_b, &cwd).await;
     std::fs::remove_file(tmp.path().join("libsess.rlib")).unwrap();
     let (ec, cached) = compile(
@@ -893,7 +893,7 @@ async fn rustc_z_flag_with_value_in_cache_key() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore]
 async fn rustc_thundering_herd_same_file() {
-    let rustc = match zccache_test_support::find_rustc() {
+    let rustc = match zccache_monocrate::test_support::find_rustc() {
         Some(p) => p,
         None => return,
     };
@@ -914,7 +914,7 @@ async fn rustc_thundering_herd_same_file() {
         std::fs::create_dir_all(&out_dir).unwrap();
 
         handles.push(tokio::spawn(async move {
-            let mut cl = zccache_ipc::connect(&ep).await.unwrap();
+            let mut cl = zccache_monocrate::ipc::connect(&ep).await.unwrap();
             let sid = do_start_session(&mut cl, &cwd).await;
             let out = format!("out_{i}/libherd.rlib");
             let (ec, cached) = compile(
@@ -972,7 +972,7 @@ async fn rustc_thundering_herd_same_file() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn rustc_concurrent_different_externs() {
-    let rustc = match zccache_test_support::find_rustc() {
+    let rustc = match zccache_monocrate::test_support::find_rustc() {
         Some(p) => p,
         None => return,
     };
@@ -992,7 +992,7 @@ async fn rustc_concurrent_different_externs() {
     .unwrap();
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut cl = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut cl = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let sid = do_start_session(&mut cl, &cwd).await;
 
     // Compile A v1 and A v2
@@ -1252,7 +1252,7 @@ async fn rustc_missing_extern_not_cached() {
 #[tokio::test]
 #[ignore]
 async fn rustc_cache_persists_but_extern_change_invalidates() {
-    let rustc = match zccache_test_support::find_rustc() {
+    let rustc = match zccache_monocrate::test_support::find_rustc() {
         Some(p) => p,
         None => return,
     };
@@ -1271,7 +1271,7 @@ async fn rustc_cache_persists_but_extern_change_invalidates() {
     let (endpoint, server_handle, shutdown) = start_daemon().await;
 
     // Session A: compile A, compile B with extern A → miss
-    let mut cl_a = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut cl_a = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let sid_a = do_start_session(&mut cl_a, &cwd).await;
 
     let (ec, _) = compile(
@@ -1332,7 +1332,7 @@ async fn rustc_cache_persists_but_extern_change_invalidates() {
     std::thread::sleep(std::time::Duration::from_millis(1100));
     std::fs::write(tmp.path().join("a.rs"), "pub fn val() -> i32 { 99 }\n").unwrap();
 
-    let mut cl_mid = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut cl_mid = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let sid_mid = do_start_session(&mut cl_mid, &cwd).await;
     let (ec, _) = compile(
         &mut cl_mid,
@@ -1364,7 +1364,7 @@ async fn rustc_cache_persists_but_extern_change_invalidates() {
     let _ = cl_mid.recv::<Response>().await;
 
     // Session B: compile B with extern A → must be MISS (extern content changed)
-    let mut cl_b = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut cl_b = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let sid_b = do_start_session(&mut cl_b, &cwd).await;
 
     std::fs::remove_file(tmp.path().join("libb.rlib")).unwrap();

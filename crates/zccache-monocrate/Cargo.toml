@@ -11,8 +11,8 @@ description = "Transitional monocrate absorbing the zccache workspace (issue #36
 
 [features]
 default = []
-# Enables zccache_monocrate::test_support (dev-only helpers, populated in Wave 2).
-test-support = []
+# Enables zccache_monocrate::test_support (dev-only helpers).
+test-support = ["dep:tracing-subscriber"]
 
 [dependencies]
 # core
@@ -28,8 +28,17 @@ memmap2 = { workspace = true }
 
 # gha
 reqwest = { workspace = true, features = ["json"] }
-tokio = { workspace = true, features = ["fs", "io-util"] }
 sha2 = { workspace = true }
+
+# protocol
+bincode = { workspace = true }
+bytes = { workspace = true }
+
+# ipc + test-support: needs full tokio
+tokio = { workspace = true }
+
+# test-support (gated)
+tracing-subscriber = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -45,7 +54,15 @@ windows-sys = { version = "0.59", features = [
 [dev-dependencies]
 tempfile = { workspace = true }
 criterion = { version = "0.5", features = ["html_reports"] }
+# Self-dep so monocrate's own integration tests can pull in the gated
+# test_support module without needing a separate workspace member.
+zccache-monocrate = { path = ".", features = ["test-support"] }
 
 [[bench]]
 name = "hashing"
 harness = false
+
+[[bin]]
+name = "echo_shim"
+path = "src/bin/echo_shim.rs"
+required-features = ["test-support"]

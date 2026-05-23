@@ -448,7 +448,7 @@ fn find_daemon_pids() -> Vec<u32> {
 /// Send a kill to each PID and poll until every PID is confirmed dead, or
 /// `timeout` elapses. Returns once every PID is gone (or once we time out).
 ///
-/// Uses [`zccache_ipc::force_kill_process`] (TerminateProcess on Windows,
+/// Uses [`zccache_monocrate::ipc::force_kill_process`] (TerminateProcess on Windows,
 /// SIGKILL on Unix) rather than sysinfo's `Process::kill`, which has been
 /// observed to silently fail to terminate Windows console children spawned via
 /// `cmd /C` in tests — the kill bool returned `true` but the process kept
@@ -461,7 +461,7 @@ pub fn kill_pids_and_wait(pids: &[u32], timeout: Duration) {
     }
 
     for pid in pids {
-        if let Err(e) = zccache_ipc::force_kill_process(*pid) {
+        if let Err(e) = zccache_monocrate::ipc::force_kill_process(*pid) {
             eprintln!("force_kill_process({pid}) failed: {e}");
         }
     }
@@ -469,7 +469,7 @@ pub fn kill_pids_and_wait(pids: &[u32], timeout: Duration) {
     let deadline = Instant::now() + timeout;
     let poll = Duration::from_millis(25);
     loop {
-        let any_alive = pids.iter().any(|pid| zccache_ipc::is_process_alive(*pid));
+        let any_alive = pids.iter().any(|pid| zccache_monocrate::ipc::is_process_alive(*pid));
         if !any_alive {
             return;
         }
@@ -477,7 +477,7 @@ pub fn kill_pids_and_wait(pids: &[u32], timeout: Duration) {
             let still_alive: Vec<u32> = pids
                 .iter()
                 .copied()
-                .filter(|pid| zccache_ipc::is_process_alive(*pid))
+                .filter(|pid| zccache_monocrate::ipc::is_process_alive(*pid))
                 .collect();
             eprintln!(
                 "Warning: daemon PIDs still alive after {}ms: {:?}",
@@ -508,14 +508,14 @@ pub fn kill_daemon() {
     if pids.is_empty() {
         // No daemon running. The lock file may still be stale from a prior
         // crash, so remove it defensively.
-        zccache_ipc::remove_lock_file();
+        zccache_monocrate::ipc::remove_lock_file();
         return;
     }
     for pid in &pids {
         eprintln!("Killing running daemon (PID {pid}) to unlock target binaries");
     }
     kill_pids_and_wait(&pids, KILL_DAEMON_WAIT);
-    zccache_ipc::remove_lock_file();
+    zccache_monocrate::ipc::remove_lock_file();
 }
 
 // ---------------------------------------------------------------------------
@@ -716,7 +716,7 @@ mod tests {
         let pid = child.id();
 
         assert!(
-            zccache_ipc::is_process_alive(pid),
+            zccache_monocrate::ipc::is_process_alive(pid),
             "spawned child PID {pid} should be alive"
         );
 
@@ -730,7 +730,7 @@ mod tests {
         waiter.join().expect("reaper thread panicked");
 
         assert!(
-            !zccache_ipc::is_process_alive(pid),
+            !zccache_monocrate::ipc::is_process_alive(pid),
             "PID {pid} still alive after kill_pids_and_wait returned"
         );
     }

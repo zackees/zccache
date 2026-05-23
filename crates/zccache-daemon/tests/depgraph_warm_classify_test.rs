@@ -15,7 +15,7 @@ use zccache_depgraph::{
     classify_load, depgraph_file_path, save_to_file, CompileContext, ContextState, DepGraph,
     DepGraphLoadOutcome, IncludeSearchPaths, DEPGRAPH_VERSION,
 };
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 static ENV_SERIAL: Mutex<()> = Mutex::new(());
 
@@ -79,7 +79,7 @@ async fn start_daemon_with_warning(
 }
 
 async fn start_session_and_capture_log(endpoint: &str, log_file: &std::path::Path) -> String {
-    let mut client = zccache_ipc::connect(endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(endpoint).await.unwrap();
     client
         .send(&Request::SessionStart {
             client_pid: std::process::id(),
@@ -151,7 +151,7 @@ async fn corrupt_depgraph_emits_warning_in_session_log() {
     assert!(matches!(outcome, DepGraphLoadOutcome::Corrupt { .. }));
     let warning = outcome.warning(&path).expect("corrupt must warn");
 
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let (handle, shutdown) = start_daemon_with_warning(&endpoint, Some(warning), None).await;
 
     let log_path: PathBuf =
@@ -199,7 +199,7 @@ async fn version_mismatch_depgraph_emits_warning_in_session_log() {
     }
     let warning = outcome.warning(&path).expect("must warn");
 
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let (handle, shutdown) = start_daemon_with_warning(&endpoint, Some(warning), None).await;
 
     let log_path: PathBuf =
@@ -234,7 +234,7 @@ async fn missing_depgraph_emits_no_warning() {
     assert!(matches!(outcome, DepGraphLoadOutcome::Missing));
     assert!(outcome.warning(&path).is_none());
 
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let (handle, shutdown) = start_daemon_with_warning(&endpoint, None, None).await;
 
     let log_path: PathBuf =

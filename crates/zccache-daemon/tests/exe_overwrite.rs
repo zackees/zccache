@@ -28,7 +28,7 @@ fn daemon_exe_path_is_overwritable_while_running() {
     let dest = tmp.path().join("zccache-daemon.exe");
     std::fs::copy(daemon_src, &dest).expect("copy daemon binary into tempdir");
 
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let cache_dir = tmp.path().join("cache");
     std::fs::create_dir_all(&cache_dir).expect("create per-test cache dir");
 

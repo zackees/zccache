@@ -69,7 +69,7 @@ async fn link_cache_hit_restores_sibling_side_effects() {
     std::fs::write(&input, b"fake object").unwrap();
 
     let _cache_dir = CacheDirEnvGuard::set(&tmp.path().join("zccache-cache"));
-    let server = DaemonServer::bind(&zccache_ipc::unique_test_endpoint()).unwrap();
+    let server = DaemonServer::bind(&zccache_monocrate::ipc::unique_test_endpoint()).unwrap();
     let args = vec![
         "-o".to_string(),
         output.to_string_lossy().into_owned(),

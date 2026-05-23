@@ -3,7 +3,7 @@
 
 use std::path::Path;
 use std::time::{Duration, Instant};
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 use super::common::{ClientConn, RUSTC_NUM_FILES};
 

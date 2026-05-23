@@ -109,12 +109,12 @@ fn print_status(args: &Args) {
     let endpoint = args
         .endpoint
         .clone()
-        .unwrap_or_else(zccache_ipc::default_endpoint);
+        .unwrap_or_else(zccache_monocrate::ipc::default_endpoint);
 
     println!("zccache-daemon v{}", env!("CARGO_PKG_VERSION"));
     println!();
     println!("  endpoint:   {endpoint}");
-    println!("  lock file:  {}", zccache_ipc::lock_file_path().display());
+    println!("  lock file:  {}", zccache_monocrate::ipc::lock_file_path().display());
     println!();
 
     // Try to connect and get status from a running daemon
@@ -145,22 +145,22 @@ fn print_status(args: &Args) {
 
 async fn query_daemon_status(
     endpoint: &str,
-) -> Result<zccache_protocol::DaemonStatus, Box<dyn std::error::Error>> {
-    let mut conn = zccache_ipc::connect(endpoint).await?;
+) -> Result<zccache_monocrate::protocol::DaemonStatus, Box<dyn std::error::Error>> {
+    let mut conn = zccache_monocrate::ipc::connect(endpoint).await?;
     // Client-style round trip: opt into the 5-minute default so a hung
     // daemon surfaces as a Timeout rather than blocking forever.
-    conn.set_recv_timeout(zccache_ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
-    conn.send(&zccache_protocol::Request::Status).await?;
-    let resp: Option<zccache_protocol::Response> = conn.recv().await?;
+    conn.set_recv_timeout(zccache_monocrate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
+    conn.send(&zccache_monocrate::protocol::Request::Status).await?;
+    let resp: Option<zccache_monocrate::protocol::Response> = conn.recv().await?;
     match resp {
-        Some(zccache_protocol::Response::Status(s)) => Ok(s),
+        Some(zccache_monocrate::protocol::Response::Status(s)) => Ok(s),
         Some(other) => Err(format!("unexpected response: {other:?}").into()),
         None => Err("connection closed".into()),
     }
 }
 
 fn run_server(args: Args) {
-    let endpoint = args.endpoint.unwrap_or_else(zccache_ipc::default_endpoint);
+    let endpoint = args.endpoint.unwrap_or_else(zccache_monocrate::ipc::default_endpoint);
     let idle_timeout = args.idle_timeout;
 
     // The returned guard MUST stay alive — drop unregisters the
@@ -192,7 +192,7 @@ fn run_server(args: Args) {
 
     // Write lock file so CLI can detect us
     let pid = std::process::id();
-    if let Err(e) = zccache_ipc::write_lock_file(pid) {
+    if let Err(e) = zccache_monocrate::ipc::write_lock_file(pid) {
         tracing::warn!("failed to write lock file: {e}");
     }
 
@@ -271,7 +271,7 @@ fn run_server(args: Args) {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("failed to bind {endpoint}: {e}");
-                zccache_ipc::remove_lock_file();
+                zccache_monocrate::ipc::remove_lock_file();
                 std::process::exit(1);
             }
         };
@@ -302,12 +302,12 @@ fn run_server(args: Args) {
 
         if let Err(e) = server.run(idle_timeout).await {
             tracing::error!("server error: {e}");
-            zccache_ipc::remove_lock_file();
+            zccache_monocrate::ipc::remove_lock_file();
             std::process::exit(1);
         }
 
         tracing::info!("daemon exiting cleanly");
-        zccache_ipc::remove_lock_file();
+        zccache_monocrate::ipc::remove_lock_file();
     });
 }
 

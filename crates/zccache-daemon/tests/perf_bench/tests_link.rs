@@ -31,9 +31,9 @@ async fn perf_c_archive_link() {
     let output = "libzccache_link_bench.a".to_string();
     let outputs = vec![output.clone()];
 
-    let bare_dir = zccache_test_support::temp_cache_dir().unwrap();
-    let sccache_dir = zccache_test_support::temp_cache_dir().unwrap();
-    let zccache_dir = zccache_test_support::temp_cache_dir().unwrap();
+    let bare_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
+    let sccache_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
+    let zccache_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     let objects = prepare_fake_archive_inputs(bare_dir.path());
     prepare_fake_archive_inputs(sccache_dir.path());
     prepare_fake_archive_inputs(zccache_dir.path());
@@ -78,7 +78,7 @@ async fn perf_c_archive_link() {
 #[tokio::test]
 #[ignore] // Run explicitly: soldr cargo test -p zccache-daemon --test perf_bench_test -- perf_cpp_driver_link --nocapture --ignored
 async fn perf_cpp_driver_link() {
-    let compiler_path = match zccache_test_support::find_clang() {
+    let compiler_path = match zccache_monocrate::test_support::find_clang() {
         Some(path) => path,
         None => {
             eprintln!("SKIP: no C++ compiler found");
@@ -89,9 +89,9 @@ async fn perf_cpp_driver_link() {
     let output = bench_exe_name("cpp_link_app");
     let outputs = vec![output.clone()];
 
-    let bare_dir = zccache_test_support::temp_cache_dir().unwrap();
-    let sccache_dir = zccache_test_support::temp_cache_dir().unwrap();
-    let zccache_dir = zccache_test_support::temp_cache_dir().unwrap();
+    let bare_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
+    let sccache_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
+    let zccache_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     let objects = match prepare_cpp_link_inputs(&compiler, bare_dir.path()) {
         Ok(objects) => objects,
         Err(error) => {
@@ -158,9 +158,9 @@ async fn perf_emcc_link() {
     };
     let compiler = compiler_path.to_string_lossy().to_string();
 
-    let bare_dir = zccache_test_support::temp_cache_dir().unwrap();
-    let sccache_dir = zccache_test_support::temp_cache_dir().unwrap();
-    let zccache_dir = zccache_test_support::temp_cache_dir().unwrap();
+    let bare_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
+    let sccache_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
+    let zccache_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     let objects = match prepare_cpp_link_inputs(&compiler, bare_dir.path()) {
         Ok(objects) => objects,
         Err(error) => {
@@ -244,7 +244,7 @@ async fn perf_emcc_link() {
 #[tokio::test]
 #[ignore] // Run explicitly: soldr cargo test -p zccache-daemon --test perf_bench_test -- perf_rust_workspace_link --nocapture --ignored
 async fn perf_rust_workspace_link() {
-    let rustc_path = match zccache_test_support::find_rustc() {
+    let rustc_path = match zccache_monocrate::test_support::find_rustc() {
         Some(path) => path,
         None => {
             eprintln!("SKIP: rustc not found");
@@ -255,9 +255,9 @@ async fn perf_rust_workspace_link() {
     let output = rust_final_output_name();
     let args = rust_final_link_args(&output);
 
-    let bare_dir = zccache_test_support::temp_cache_dir().unwrap();
-    let sccache_dir = zccache_test_support::temp_cache_dir().unwrap();
-    let zccache_dir = zccache_test_support::temp_cache_dir().unwrap();
+    let bare_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
+    let sccache_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
+    let zccache_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     if let Err(error) = prepare_rust_link_inputs(&rustc, bare_dir.path()) {
         eprintln!("SKIP: failed to prepare Rust link inputs\n{error}");
         return;
@@ -319,7 +319,7 @@ async fn perf_rust_workspace_link() {
     eprintln!();
 
     let (sccache_cold, sccache_warm) = if let Some(sccache_bin) = find_sccache() {
-        let sc_cache_dir = zccache_test_support::temp_cache_dir().unwrap();
+        let sc_cache_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
         let _cache_dir = start_fresh_sccache(&sccache_bin, sc_cache_dir.path());
         eprintln!("  [2/3] sccache ({})", sccache_bin.display());
         let cold = match try_run_sccache_rust_final_link_timed(
@@ -400,7 +400,7 @@ async fn perf_rust_workspace_link() {
         "zccache Rust linker warmup",
     );
     let (_zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     clear_zccache(&mut client).await;
     let zccache_cwd = zccache_dir.path().to_string_lossy().into_owned();
     let session_id = start_zccache_session(&mut client, &zccache_cwd).await;

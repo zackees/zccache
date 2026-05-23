@@ -17,9 +17,9 @@ pub use artifact::{
 };
 
 #[cfg(unix)]
-type ClientConn = zccache_ipc::IpcConnection;
+type ClientConn = zccache_monocrate::ipc::IpcConnection;
 #[cfg(windows)]
-type ClientConn = zccache_ipc::IpcClientConnection;
+type ClientConn = zccache_monocrate::ipc::IpcClientConnection;
 
 pub use zccache_download_protocol::daemon_mgmt::{
     default_endpoint, lock_file_path, read_lock_file_pid, remove_lock_file, write_lock_file,
@@ -30,7 +30,7 @@ pub fn check_running_daemon() -> Option<u32> {
     // Verify the PID actually points at the download daemon. A bare
     // is_process_alive check would falsely accept a recycled PID inherited
     // from a restored CI cache (see issue #132).
-    if zccache_ipc::verify_pid_exe_stem(pid, "zccache-download-daemon") {
+    if zccache_monocrate::ipc::verify_pid_exe_stem(pid, "zccache-download-daemon") {
         Some(pid)
     } else {
         remove_lock_file();
@@ -43,13 +43,13 @@ pub fn check_running_daemon() -> Option<u32> {
 }
 
 #[cfg(unix)]
-async fn connect_client(endpoint: &str) -> Result<ClientConn, zccache_ipc::IpcError> {
-    zccache_ipc::connect(endpoint).await
+async fn connect_client(endpoint: &str) -> Result<ClientConn, zccache_monocrate::ipc::IpcError> {
+    zccache_monocrate::ipc::connect(endpoint).await
 }
 
 #[cfg(windows)]
-async fn connect_client(endpoint: &str) -> Result<ClientConn, zccache_ipc::IpcError> {
-    zccache_ipc::connect(endpoint).await
+async fn connect_client(endpoint: &str) -> Result<ClientConn, zccache_monocrate::ipc::IpcError> {
+    zccache_monocrate::ipc::connect(endpoint).await
 }
 
 fn resolve_endpoint(explicit: Option<&str>) -> String {

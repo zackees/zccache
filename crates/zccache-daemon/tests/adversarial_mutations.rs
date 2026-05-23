@@ -12,14 +12,14 @@
 use std::path::Path;
 use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 // ─── Platform types ──────────────────────────────────────────────────────────
 
 #[cfg(unix)]
-type ClientConn = zccache_ipc::IpcConnection;
+type ClientConn = zccache_monocrate::ipc::IpcConnection;
 #[cfg(windows)]
-type ClientConn = zccache_ipc::IpcClientConnection;
+type ClientConn = zccache_monocrate::ipc::IpcClientConnection;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -28,7 +28,7 @@ async fn start_daemon() -> (
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
 ) {
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
@@ -120,13 +120,13 @@ struct TestHarness {
 
 impl TestHarness {
     async fn new() -> Option<Self> {
-        let clang = zccache_test_support::find_clang()?;
+        let clang = zccache_monocrate::test_support::find_clang()?;
         let tmp = tempfile::tempdir().unwrap();
         let log = tmp.path().join("log.txt");
         let cwd = tmp.path().to_string_lossy().into_owned();
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let session_id = start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
 
         Some(Self {

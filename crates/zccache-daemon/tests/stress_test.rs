@@ -9,13 +9,13 @@
 //! - Edge cases in paths, empty files, etc.
 
 use zccache_daemon::DaemonServer;
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 /// Platform-correct client connection type.
 #[cfg(unix)]
-type ClientConn = zccache_ipc::IpcConnection;
+type ClientConn = zccache_monocrate::ipc::IpcConnection;
 #[cfg(windows)]
-type ClientConn = zccache_ipc::IpcClientConnection;
+type ClientConn = zccache_monocrate::ipc::IpcClientConnection;
 
 /// Helper: start a daemon server on a unique endpoint.
 async fn start_daemon() -> (
@@ -23,7 +23,7 @@ async fn start_daemon() -> (
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
 ) {
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move { server.run(0).await.unwrap() });
@@ -124,7 +124,7 @@ fn bytes_contain(haystack: &[u8], needle: &str) -> bool {
 #[tokio::test]
 #[ignore] // integration: spawns clang, run with --full
 async fn adversarial_different_flags_different_cache_entries() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
@@ -140,7 +140,7 @@ async fn adversarial_different_flags_different_cache_entries() {
     .unwrap();
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let (sid, comp) = start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
 
     let (ec, c) = compile(
@@ -236,7 +236,7 @@ async fn adversarial_different_flags_different_cache_entries() {
 #[tokio::test]
 #[ignore] // integration: spawns clang, run with --full
 async fn adversarial_define_changes_invalidate_cache() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
@@ -252,7 +252,7 @@ async fn adversarial_define_changes_invalidate_cache() {
     .unwrap();
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let (sid, comp) = start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
 
     let (ec, c) = compile(
@@ -296,7 +296,7 @@ async fn adversarial_define_changes_invalidate_cache() {
 #[tokio::test]
 #[ignore] // integration: spawns clang, run with --full
 async fn adversarial_compile_errors_never_cached() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
@@ -308,7 +308,7 @@ async fn adversarial_compile_errors_never_cached() {
     std::fs::write(&src, "int main() { SYNTAX ERROR HERE }\n").unwrap();
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let (sid, comp) = start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
 
     let (ec, c) = compile(
@@ -356,7 +356,7 @@ async fn adversarial_compile_errors_never_cached() {
 #[tokio::test]
 #[ignore] // integration: spawns clang 8x concurrently, run with --full
 async fn adversarial_concurrent_same_file() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
@@ -377,7 +377,7 @@ async fn adversarial_concurrent_same_file() {
         let obj = out_dir.join("concurrent.o");
         let log = out_dir.join("log.txt");
         handles.push(tokio::spawn(async move {
-            let mut client = zccache_ipc::connect(&ep).await.unwrap();
+            let mut client = zccache_monocrate::ipc::connect(&ep).await.unwrap();
             let (sid, comp) =
                 start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
             let (ec, _c) = compile(
@@ -415,7 +415,7 @@ async fn adversarial_concurrent_same_file() {
 #[tokio::test]
 #[ignore] // integration: spawns clang 10x concurrently, run with --full
 async fn adversarial_concurrent_different_files() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
@@ -433,7 +433,7 @@ async fn adversarial_concurrent_different_files() {
         let log = tmp.path().join(format!("log{i}.txt"));
         std::fs::write(&src, format!("int main() {{ return {i}; }}\n")).unwrap();
         handles.push(tokio::spawn(async move {
-            let mut client = zccache_ipc::connect(&ep).await.unwrap();
+            let mut client = zccache_monocrate::ipc::connect(&ep).await.unwrap();
             let (sid, comp) =
                 start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
             let (ec, c) = compile(
@@ -480,7 +480,7 @@ async fn adversarial_concurrent_different_files() {
 #[tokio::test]
 #[ignore] // integration: spawns clang, run with --full
 async fn adversarial_cross_session_cache_sharing() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
@@ -494,7 +494,7 @@ async fn adversarial_cross_session_cache_sharing() {
     std::fs::write(&src, "int main() { return 7; }\n").unwrap();
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client1 = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client1 = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let (sid1, comp1) = start_session(&mut client1, &clang, &cwd, &log1.to_string_lossy()).await;
     let (ec, c) = compile(
         &mut client1,
@@ -508,7 +508,7 @@ async fn adversarial_cross_session_cache_sharing() {
     assert!(!c, "session 1 first compile should be a miss");
     let obj1_data = std::fs::read(&obj1).unwrap();
 
-    let mut client2 = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client2 = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let (sid2, comp2) = start_session(&mut client2, &clang, &cwd, &log2.to_string_lossy()).await;
     assert_ne!(sid1, sid2, "sessions should have different IDs");
     let (ec, c) = compile(
@@ -540,7 +540,7 @@ async fn adversarial_cross_session_cache_sharing() {
 #[tokio::test]
 #[ignore] // integration: requires clang on PATH, run with --full
 async fn adversarial_invalid_session_id() {
-    if zccache_test_support::find_clang().is_none() {
+    if zccache_monocrate::test_support::find_clang().is_none() {
         return;
     }
     let tmp = tempfile::tempdir().unwrap();
@@ -548,7 +548,7 @@ async fn adversarial_invalid_session_id() {
     std::fs::write(&src, "int main() { return 0; }\n").unwrap();
     let cwd = tmp.path().to_string_lossy().into_owned();
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
     client
         .send(&Request::Compile {
@@ -586,7 +586,7 @@ async fn adversarial_invalid_session_id() {
 #[tokio::test]
 #[ignore] // integration: spawns clang, run with --full
 async fn adversarial_non_cacheable_passthrough() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
@@ -598,7 +598,7 @@ async fn adversarial_non_cacheable_passthrough() {
     std::fs::write(&src, "#include <stdio.h>\nint main() { return 0; }\n").unwrap();
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let (sid, comp) = start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
 
     client
@@ -645,7 +645,7 @@ async fn adversarial_non_cacheable_passthrough() {
 #[tokio::test]
 #[ignore] // integration: spawns clang, run with --full
 async fn adversarial_empty_source_file() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
@@ -657,7 +657,7 @@ async fn adversarial_empty_source_file() {
     std::fs::write(&src, "").unwrap();
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let (sid, comp) = start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
 
     let (ec, c) = compile(
@@ -688,7 +688,7 @@ async fn adversarial_empty_source_file() {
 #[tokio::test]
 #[ignore] // integration: spawns clang, run with --full
 async fn adversarial_warnings_still_cached() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
@@ -700,7 +700,7 @@ async fn adversarial_warnings_still_cached() {
     std::fs::write(&src, "int main() { int unused_var = 42; return 0; }\n").unwrap();
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let (sid, comp) = start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
 
     let (ec, c) = compile(
@@ -743,7 +743,7 @@ async fn adversarial_warnings_still_cached() {
 #[tokio::test]
 #[ignore] // integration: spawns clang, run with --full
 async fn adversarial_output_path_does_not_affect_cache_key() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
@@ -756,7 +756,7 @@ async fn adversarial_output_path_does_not_affect_cache_key() {
     std::fs::write(&src, "int main() { return 0; }\n").unwrap();
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let (sid, comp) = start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
 
     let (ec, c) = compile(
@@ -792,7 +792,7 @@ async fn adversarial_output_path_does_not_affect_cache_key() {
 #[tokio::test]
 #[ignore] // integration: spawns clang twice, run with --full
 async fn adversarial_workspace_rename_hits_cache() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
@@ -820,7 +820,7 @@ async fn adversarial_workspace_rename_hits_cache() {
     let log = tmp.path().join("workspace-rename.log");
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client_a = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client_a = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let cwd_a = ws_a.to_string_lossy().into_owned();
     let (sid_a, comp_a) =
         start_session(&mut client_a, &clang, &cwd_a, &log.to_string_lossy()).await;
@@ -846,7 +846,7 @@ async fn adversarial_workspace_rename_hits_cache() {
     assert_eq!(ec, 0);
     assert!(!cached);
 
-    let mut client_b = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client_b = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let cwd_b = ws_b.to_string_lossy().into_owned();
     let (sid_b, comp_b) =
         start_session(&mut client_b, &clang, &cwd_b, &log.to_string_lossy()).await;
@@ -886,7 +886,7 @@ async fn adversarial_workspace_rename_hits_cache() {
 #[tokio::test]
 #[ignore] // integration: spawns clang twice, run with --full
 async fn path_remap_auto_compiles_file_macro_stably_across_git_roots() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
@@ -910,7 +910,7 @@ async fn path_remap_auto_compiles_file_macro_stably_across_git_roots() {
     let (endpoint, server_handle, shutdown) = start_daemon().await;
     let env = client_env_with_path_remap_auto();
 
-    let mut client_a = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client_a = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let cwd_a = ws_a.to_string_lossy().into_owned();
     let (sid_a, comp_a) =
         start_session(&mut client_a, &clang, &cwd_a, &log.to_string_lossy()).await;
@@ -943,7 +943,7 @@ async fn path_remap_auto_compiles_file_macro_stably_across_git_roots() {
         "auto path remap should keep slash-normalized root A out of __FILE__ object bytes"
     );
 
-    let mut client_b = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client_b = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let cwd_b = ws_b.to_string_lossy().into_owned();
     let (sid_b, comp_b) =
         start_session(&mut client_b, &clang, &cwd_b, &log.to_string_lossy()).await;
@@ -978,7 +978,7 @@ async fn path_remap_auto_compiles_file_macro_stably_across_git_roots() {
 #[tokio::test]
 #[ignore] // integration: spawns clang 20x, run with --full
 async fn adversarial_rapid_recompile_cycle() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
@@ -990,7 +990,7 @@ async fn adversarial_rapid_recompile_cycle() {
     std::fs::write(&src, "int main() { return 0; }\n").unwrap();
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let (sid, comp) = start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
     let src_str = src.to_string_lossy().into_owned();
     let obj_str = obj.to_string_lossy().into_owned();
@@ -1026,7 +1026,7 @@ async fn adversarial_rapid_recompile_cycle() {
 #[tokio::test]
 #[ignore] // integration: spawns clang, run with --full
 async fn adversarial_spaces_in_filename() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
@@ -1038,7 +1038,7 @@ async fn adversarial_spaces_in_filename() {
     std::fs::write(&src, "int main() { return 0; }\n").unwrap();
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let (sid, comp) = start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
     let (ec, c) = compile(
         &mut client,
@@ -1068,7 +1068,7 @@ async fn adversarial_spaces_in_filename() {
 #[tokio::test]
 #[ignore] // integration: spawns clang, run with --full
 async fn adversarial_werror_vs_no_werror() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
@@ -1080,7 +1080,7 @@ async fn adversarial_werror_vs_no_werror() {
     std::fs::write(&src, "int main() { int x = 0; return 0; }\n").unwrap();
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let (sid, comp) = start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
 
     let (ec, c) = compile(
@@ -1146,7 +1146,7 @@ async fn adversarial_werror_vs_no_werror() {
 #[tokio::test]
 #[ignore] // integration: spawns clang, run with --full
 async fn compiler_override_uses_wrapped_compiler() {
-    let clangpp = match zccache_test_support::find_clang() {
+    let clangpp = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => return,
     };
@@ -1167,7 +1167,7 @@ async fn compiler_override_uses_wrapped_compiler() {
     std::fs::write(&src, "struct Point { int x; int y; };\nint main(void) {\n\tstruct Point p = { .x = 1, .y = 2 };\n\treturn p.x + p.y - 3;\n}\n").unwrap();
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let (sid, _clangpp_compiler) =
         start_session(&mut client, &clangpp, &cwd, &log.to_string_lossy()).await;
 

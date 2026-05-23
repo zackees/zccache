@@ -4,7 +4,7 @@
 
 use std::path::Path;
 use std::time::{Duration, Instant};
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 use super::common::{
     clean_link_outputs, clear_dir_contents, clear_zccache, find_sccache, fmt_dur, fmt_ratio,
@@ -97,7 +97,7 @@ pub async fn measure_ephemeral_link_scenario(
     eprintln!();
 
     let (sccache_cold, sccache_warm) = if let Some(sccache_bin) = find_sccache() {
-        let sc_cache_dir = zccache_test_support::temp_cache_dir().unwrap();
+        let sc_cache_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
         let _cache_dir = start_fresh_sccache(&sccache_bin, sc_cache_dir.path());
         eprintln!("  [2/3] sccache ({})", sccache_bin.display());
 
@@ -159,7 +159,7 @@ pub async fn measure_ephemeral_link_scenario(
     clean_link_outputs(zccache_dir, outputs);
 
     let (_zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     clear_zccache(&mut client).await;
 
     let zccache_cold = run_zccache_link_timed(

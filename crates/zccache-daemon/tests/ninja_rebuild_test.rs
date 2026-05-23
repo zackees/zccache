@@ -20,8 +20,8 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
-use zccache_protocol::{Request, Response};
-use zccache_test_support::{MesonProject, TestProject};
+use zccache_monocrate::protocol::{Request, Response};
+use zccache_monocrate::test_support::{MesonProject, TestProject};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -96,8 +96,8 @@ async fn start_daemon(endpoint: &str) -> (JoinHandle<()>, Arc<Notify>) {
     (handle, shutdown)
 }
 
-async fn get_status(endpoint: &str) -> zccache_protocol::DaemonStatus {
-    let mut client = zccache_ipc::connect(endpoint).await.unwrap();
+async fn get_status(endpoint: &str) -> zccache_monocrate::protocol::DaemonStatus {
+    let mut client = zccache_monocrate::ipc::connect(endpoint).await.unwrap();
     client.send(&Request::Status).await.unwrap();
     match client.recv().await.unwrap() {
         Some(Response::Status(s)) => s,
@@ -106,7 +106,7 @@ async fn get_status(endpoint: &str) -> zccache_protocol::DaemonStatus {
 }
 
 async fn clear_cache(endpoint: &str) {
-    let mut client = zccache_ipc::connect(endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(endpoint).await.unwrap();
     client.send(&Request::Clear).await.unwrap();
     match client.recv().await.unwrap() {
         Some(Response::Cleared { .. }) => {}
@@ -172,7 +172,7 @@ async fn build_all_ipc(
     units: &[(NormalizedPath, NormalizedPath)],
     root: &Path,
 ) -> Vec<(String, i32, bool)> {
-    let mut client = zccache_ipc::connect(endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(endpoint).await.unwrap();
     let cwd = root.to_string_lossy().into_owned();
     let compiler = clang.to_string_lossy().into_owned();
     let flags = TestProject::compiler_flags();
@@ -250,7 +250,7 @@ async fn build_all_ipc(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration: spawns clang 30+ times, run with --full
 async fn ninja_cold_then_warm_rebuild_cli() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("skipping: clang not found");
@@ -267,7 +267,7 @@ async fn ninja_cold_then_warm_rebuild_cli() {
     let root = tmp.path();
     let units = normalize_units(project.generate(root));
 
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let (server_handle, shutdown) = start_daemon(&endpoint).await;
 
     // Clear any persistent artifacts from prior runs
@@ -337,7 +337,7 @@ async fn ninja_cold_then_warm_rebuild_cli() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration: spawns clang 30+ times, run with --full
 async fn ninja_cold_then_warm_rebuild_ipc() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("skipping: clang not found");
@@ -351,7 +351,7 @@ async fn ninja_cold_then_warm_rebuild_ipc() {
     let root = tmp.path();
     let units = normalize_units(project.generate(root));
 
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let (server_handle, shutdown) = start_daemon(&endpoint).await;
     clear_cache(&endpoint).await;
 
@@ -403,7 +403,7 @@ async fn ninja_cold_then_warm_rebuild_ipc() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration: spawns clang 30+ times, run with --full
 async fn ninja_persistent_artifacts_survive_restart() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("skipping: clang not found");
@@ -417,7 +417,7 @@ async fn ninja_persistent_artifacts_survive_restart() {
     let root = tmp.path();
     let units = normalize_units(project.generate(root));
 
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let (server_handle, shutdown) = start_daemon(&endpoint).await;
 
     // ── Cold build (don't clear — other tests may be running) ───────
@@ -485,7 +485,7 @@ async fn ninja_persistent_artifacts_survive_restart() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration: spawns clang 30+ times, run with --full
 async fn ninja_header_change_invalidates_dependents() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("skipping: clang not found");
@@ -499,7 +499,7 @@ async fn ninja_header_change_invalidates_dependents() {
     let root = tmp.path();
     let units = normalize_units(project.generate(root));
 
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let (server_handle, shutdown) = start_daemon(&endpoint).await;
     clear_cache(&endpoint).await;
 
@@ -537,7 +537,7 @@ async fn ninja_header_change_invalidates_dependents() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore] // integration: spawns clang 30+ times concurrently, run with --full
 async fn ninja_concurrent_cold_build() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("skipping: clang not found");
@@ -552,14 +552,14 @@ async fn ninja_concurrent_cold_build() {
     let root = tmp.path();
     let units = normalize_units(project.generate(root));
 
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let (server_handle, shutdown) = start_daemon(&endpoint).await;
     clear_cache(&endpoint).await;
 
     let flags = TestProject::compiler_flags();
 
     // Start a session
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     client
         .send(&Request::SessionStart {
             client_pid: std::process::id(),
@@ -587,7 +587,7 @@ async fn ninja_concurrent_cold_build() {
         let comp = compiler.clone();
         let sid = session_id.clone();
         handles.push(tokio::spawn(async move {
-            let mut conn = zccache_ipc::connect(&ep).await.unwrap();
+            let mut conn = zccache_monocrate::ipc::connect(&ep).await.unwrap();
             let mut args = fl;
             args.push(src.to_string_lossy().into_owned());
             args.push("-o".into());
@@ -651,7 +651,7 @@ async fn ninja_concurrent_cold_build() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration: spawns clang 30+ times, run with --full
 async fn ninja_clear_forces_cold_rebuild() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("skipping: clang not found");
@@ -665,7 +665,7 @@ async fn ninja_clear_forces_cold_rebuild() {
     let root = tmp.path();
     let units = normalize_units(project.generate(root));
 
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let (server_handle, shutdown) = start_daemon(&endpoint).await;
     clear_cache(&endpoint).await;
 
@@ -715,7 +715,7 @@ async fn ninja_clear_forces_cold_rebuild() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore]
 async fn stress_large_project_cold_warm() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("skipping: clang not found");
@@ -735,7 +735,7 @@ async fn stress_large_project_cold_warm() {
     let units = normalize_units(project.generate(root));
     eprintln!("Generated {} compilation units", units.len());
 
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let (server_handle, shutdown) = start_daemon(&endpoint).await;
     clear_cache(&endpoint).await;
 
@@ -806,7 +806,7 @@ async fn stress_large_project_cold_warm() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore]
 async fn bench_medium_project_warm_iterations() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("skipping: clang not found");
@@ -822,7 +822,7 @@ async fn bench_medium_project_warm_iterations() {
     let root = tmp.path();
     let units = normalize_units(project.generate(root));
 
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let (server_handle, shutdown) = start_daemon(&endpoint).await;
     clear_cache(&endpoint).await;
 
@@ -919,7 +919,7 @@ fn find_ninja() -> Option<NormalizedPath> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn meson_ninja_cold_then_warm_rebuild() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("skipping: clang not found");
@@ -958,7 +958,7 @@ async fn meson_ninja_cold_then_warm_rebuild() {
     let build_dir = tmp.path().join("build");
     let native_file = tmp.path().join("native.ini");
 
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let (server_handle, shutdown) = start_daemon(&endpoint).await;
     clear_cache(&endpoint).await;
 
@@ -1034,7 +1034,7 @@ async fn meson_ninja_cold_then_warm_rebuild() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn meson_ninja_bench_warm_iterations() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("skipping: clang not found");
@@ -1069,7 +1069,7 @@ async fn meson_ninja_bench_warm_iterations() {
     let build_dir = tmp.path().join("build");
     let native_file = tmp.path().join("native.ini");
 
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let (server_handle, shutdown) = start_daemon(&endpoint).await;
     clear_cache(&endpoint).await;
 

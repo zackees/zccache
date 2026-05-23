@@ -16,12 +16,12 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 #[cfg(unix)]
-type ClientConn = zccache_ipc::IpcConnection;
+type ClientConn = zccache_monocrate::ipc::IpcConnection;
 #[cfg(windows)]
-type ClientConn = zccache_ipc::IpcClientConnection;
+type ClientConn = zccache_monocrate::ipc::IpcClientConnection;
 
 const SEP: &str =
     "================================================================================";
@@ -374,7 +374,7 @@ fn print_phase_profile(profile: &zccache_daemon::ProfileSnapshot) {
 #[tokio::test]
 #[ignore]
 async fn cold_path_stress_profile() {
-    let compiler_path = match zccache_test_support::find_clang() {
+    let compiler_path = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("SKIP: no C++ compiler found");
@@ -410,7 +410,7 @@ async fn cold_path_stress_profile() {
 
     // Single daemon for all sizes — avoids index.redb lock contention.
     // We take profiler snapshots before/after each size to compute per-size averages.
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
     let server = Arc::new(Mutex::new(server));
@@ -428,7 +428,7 @@ async fn cold_path_stress_profile() {
         let cwd = tmp.path().to_string_lossy().into_owned();
         let files = source_paths(tmp.path(), file_count);
 
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let sid = start_session(&mut client, &cwd).await;
 
         // ── Cold pass ────────────────────────────────────────────────
@@ -585,7 +585,7 @@ async fn cold_path_stress_profile() {
 #[tokio::test]
 #[ignore]
 async fn cold_path_concurrent_stress() {
-    let compiler_path = match zccache_test_support::find_clang() {
+    let compiler_path = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("SKIP: no C++ compiler found");
@@ -611,7 +611,7 @@ async fn cold_path_concurrent_stress() {
     }
 
     // Single daemon serving all sessions
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
     let server = Arc::new(Mutex::new(server));
@@ -631,7 +631,7 @@ async fn cold_path_concurrent_stress() {
         let dir = tmp.path().to_path_buf();
 
         tasks.push(tokio::spawn(async move {
-            let mut client = zccache_ipc::connect(&ep).await.unwrap();
+            let mut client = zccache_monocrate::ipc::connect(&ep).await.unwrap();
             let cwd = dir.to_string_lossy().into_owned();
             let sid = start_session_inline(&mut client, &cwd).await;
             let files = source_paths(&dir, FILE_COUNT);
@@ -724,7 +724,7 @@ async fn start_session_inline(client: &mut ClientConn, cwd: &str) -> String {
 #[tokio::test]
 #[ignore]
 async fn cold_path_first_file_penalty() {
-    let compiler_path = match zccache_test_support::find_clang() {
+    let compiler_path = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("SKIP: no C++ compiler found");
@@ -741,7 +741,7 @@ async fn cold_path_first_file_penalty() {
     eprintln!("{}\n", SEP);
 
     // Single daemon for all trials
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move { server.run(0).await.unwrap() });
@@ -756,7 +756,7 @@ async fn cold_path_first_file_penalty() {
         let cwd = tmp.path().to_string_lossy().into_owned();
         let files = source_paths(tmp.path(), 2);
 
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         let sid = start_session(&mut client, &cwd).await;
 
         // First file — cold compile (system includes already cached after trial 0,

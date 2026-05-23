@@ -27,11 +27,11 @@ pub(crate) async fn check_daemon_version(endpoint: &str) -> VersionCheck {
         Ok(c) => c,
         Err(_) => return VersionCheck::Unreachable,
     };
-    if conn.send(&zccache_protocol::Request::Status).await.is_err() {
+    if conn.send(&zccache_monocrate::protocol::Request::Status).await.is_err() {
         return VersionCheck::CommError;
     }
-    match conn.recv::<zccache_protocol::Response>().await {
-        Ok(Some(zccache_protocol::Response::Status(s))) => {
+    match conn.recv::<zccache_monocrate::protocol::Response>().await {
+        Ok(Some(zccache_monocrate::protocol::Response::Status(s))) => {
             if s.version == zccache_monocrate::core::VERSION {
                 return VersionCheck::Ok;
             }
@@ -90,23 +90,23 @@ pub(crate) async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), S
 pub(crate) async fn stop_stale_daemon(endpoint: &str) {
     // Try graceful shutdown via IPC
     if let Ok(mut conn) = connect(endpoint).await {
-        let _ = conn.send(&zccache_protocol::Request::Shutdown).await;
+        let _ = conn.send(&zccache_monocrate::protocol::Request::Shutdown).await;
         // Give it a moment to process the shutdown
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 
     // Force-kill via lock file PID if the daemon is still alive
-    if let Some(pid) = zccache_ipc::check_running_daemon() {
+    if let Some(pid) = zccache_monocrate::ipc::check_running_daemon() {
         tracing::debug!(pid, "force-killing stale daemon process");
-        if zccache_ipc::force_kill_process(pid).is_ok() {
+        if zccache_monocrate::ipc::force_kill_process(pid).is_ok() {
             for _ in 0..50 {
-                if !zccache_ipc::is_process_alive(pid) {
+                if !zccache_monocrate::ipc::is_process_alive(pid) {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         }
-        zccache_ipc::remove_lock_file();
+        zccache_monocrate::ipc::remove_lock_file();
     }
 
     // Wait briefly for the endpoint (named pipe / socket) to be fully released
@@ -162,7 +162,7 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
     }
 
     // Check lock file for a running daemon we just can't reach yet
-    if let Some(pid) = zccache_ipc::check_running_daemon() {
+    if let Some(pid) = zccache_monocrate::ipc::check_running_daemon() {
         for _ in 0..20 {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             match check_daemon_version(endpoint).await {
@@ -271,7 +271,7 @@ pub(crate) async fn cmd_stop(endpoint: &str) -> ExitCode {
     let mut conn = match connect(endpoint).await {
         Ok(c) => c,
         Err(_) => {
-            let Some(pid) = zccache_ipc::check_running_daemon() else {
+            let Some(pid) = zccache_monocrate::ipc::check_running_daemon() else {
                 eprintln!("daemon not running at {endpoint}");
                 // No daemon — but the index file might still be there from a
                 // crashed prior run. Probe once so callers (CI tar) can rely
@@ -280,11 +280,11 @@ pub(crate) async fn cmd_stop(endpoint: &str) -> ExitCode {
                 return ExitCode::SUCCESS;
             };
 
-            match zccache_ipc::force_kill_process(pid) {
+            match zccache_monocrate::ipc::force_kill_process(pid) {
                 Ok(()) => {
                     for _ in 0..50 {
-                        if !zccache_ipc::is_process_alive(pid) {
-                            zccache_ipc::remove_lock_file();
+                        if !zccache_monocrate::ipc::is_process_alive(pid) {
+                            zccache_monocrate::ipc::remove_lock_file();
                             eprintln!(
                                 "daemon process {pid} terminated after IPC connection failed"
                             );
@@ -309,7 +309,7 @@ pub(crate) async fn cmd_stop(endpoint: &str) -> ExitCode {
         }
     };
 
-    if let Err(e) = conn.send(&zccache_protocol::Request::Shutdown).await {
+    if let Err(e) = conn.send(&zccache_monocrate::protocol::Request::Shutdown).await {
         eprintln!("zccache[err][S]: failed to send to daemon: {e}");
         return ExitCode::FAILURE;
     }
@@ -321,7 +321,7 @@ pub(crate) async fn cmd_stop(endpoint: &str) -> ExitCode {
         }
     };
     match recv_result {
-        Some(zccache_protocol::Response::ShuttingDown) => {
+        Some(zccache_monocrate::protocol::Response::ShuttingDown) => {
             // The daemon acknowledges `Shutdown` immediately and continues
             // teardown asynchronously. On Windows the redb index lock is held
             // until the daemon process actually exits and `Drop` fires. Wait

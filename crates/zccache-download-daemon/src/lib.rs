@@ -66,16 +66,16 @@ struct SharedState {
 }
 
 pub struct DownloadDaemon {
-    listener: zccache_ipc::IpcListener,
+    listener: zccache_monocrate::ipc::IpcListener,
     state: Arc<SharedState>,
 }
 
 impl DownloadDaemon {
-    pub fn bind(endpoint: &str) -> Result<Self, zccache_ipc::IpcError> {
-        let listener = zccache_ipc::IpcListener::bind(endpoint)?;
+    pub fn bind(endpoint: &str) -> Result<Self, zccache_monocrate::ipc::IpcError> {
+        let listener = zccache_monocrate::ipc::IpcListener::bind(endpoint)?;
         let log_path = zccache_monocrate::core::config::log_dir().join("download-daemon.log");
         let logger = FileLogger::new(&log_path)
-            .map_err(|e| zccache_ipc::IpcError::Io(std::io::Error::other(e.to_string())))?;
+            .map_err(|e| zccache_monocrate::ipc::IpcError::Io(std::io::Error::other(e.to_string())))?;
         Ok(Self {
             listener,
             state: Arc::new(SharedState {
@@ -94,7 +94,7 @@ impl DownloadDaemon {
         Arc::clone(&self.state.shutdown)
     }
 
-    pub async fn run(&mut self) -> Result<(), zccache_ipc::IpcError> {
+    pub async fn run(&mut self) -> Result<(), zccache_monocrate::ipc::IpcError> {
         loop {
             tokio::select! {
                 _ = self.state.shutdown.notified() => {
@@ -118,7 +118,7 @@ impl DownloadDaemon {
 
 async fn handle_connection(
     state: Arc<SharedState>,
-    mut conn: zccache_ipc::IpcConnection,
+    mut conn: zccache_monocrate::ipc::IpcConnection,
 ) -> Result<(), String> {
     let client_id = state.next_client_id.fetch_add(1, Ordering::Relaxed);
     let mut attached_job_id: Option<String> = None;
@@ -291,7 +291,7 @@ async fn handle_connection(
 }
 
 async fn send_terminal(
-    conn: &mut zccache_ipc::IpcConnection,
+    conn: &mut zccache_monocrate::ipc::IpcConnection,
     status: DownloadStatus,
 ) -> Result<(), String> {
     match status.phase {

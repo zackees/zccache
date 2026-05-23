@@ -3,7 +3,7 @@
 //! Tests the full client → daemon → clang toolchain discovery pipeline.
 
 use zccache_daemon::DaemonServer;
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 /// Helper: start a daemon server on a unique endpoint and return the endpoint + shutdown handle.
 async fn start_daemon() -> (
@@ -11,7 +11,7 @@ async fn start_daemon() -> (
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
 ) {
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
@@ -23,10 +23,10 @@ async fn start_daemon() -> (
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC
 async fn test_client_connects_and_pings_daemon() {
-    zccache_test_support::test_timeout(async {
+    zccache_monocrate::test_support::test_timeout(async {
         let (endpoint, server_handle, shutdown) = start_daemon().await;
 
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         client.send(&Request::Ping).await.unwrap();
         let resp: Option<Response> = client.recv().await.unwrap();
         assert_eq!(resp, Some(Response::Pong));
@@ -40,14 +40,14 @@ async fn test_client_connects_and_pings_daemon() {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC
 async fn test_multiple_clients_concurrent() {
-    zccache_test_support::test_timeout(async {
+    zccache_monocrate::test_support::test_timeout(async {
         let (endpoint, server_handle, shutdown) = start_daemon().await;
 
         let mut handles = Vec::new();
         for _ in 0..5 {
             let ep = endpoint.clone();
             handles.push(tokio::spawn(async move {
-                let mut client = zccache_ipc::connect(&ep).await.unwrap();
+                let mut client = zccache_monocrate::ipc::connect(&ep).await.unwrap();
                 client.send(&Request::Ping).await.unwrap();
                 let resp: Option<Response> = client.recv().await.unwrap();
                 assert_eq!(resp, Some(Response::Pong));
@@ -67,10 +67,10 @@ async fn test_multiple_clients_concurrent() {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC
 async fn test_session_start_with_nonexistent_compiler() {
-    zccache_test_support::test_timeout(async {
+    zccache_monocrate::test_support::test_timeout(async {
         let (endpoint, server_handle, shutdown) = start_daemon().await;
 
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         client
             .send(&Request::SessionStart {
                 client_pid: std::process::id(),
@@ -123,15 +123,15 @@ async fn test_session_start_with_nonexistent_compiler() {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + compiler
 async fn test_session_start_with_clang_toolchain() {
-    if zccache_test_support::find_clang().is_none() {
+    if zccache_monocrate::test_support::find_clang().is_none() {
         eprintln!("skipping test: clang not found");
         return;
     }
 
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let (endpoint, server_handle, shutdown) = start_daemon().await;
 
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
         client
             .send(&Request::SessionStart {
                 client_pid: std::process::id(),
@@ -191,15 +191,15 @@ async fn test_session_start_with_clang_toolchain() {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + compiler
 async fn test_full_client_flow() {
-    if zccache_test_support::find_clang().is_none() {
+    if zccache_monocrate::test_support::find_clang().is_none() {
         eprintln!("skipping test: clang not found");
         return;
     }
 
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let (endpoint, server_handle, shutdown) = start_daemon().await;
 
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
         // 1. Ping
         client.send(&Request::Ping).await.unwrap();
@@ -247,7 +247,7 @@ async fn test_full_client_flow() {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + compiler
 async fn test_compile_hello_cpp_cached() {
-    let clang_path = match zccache_test_support::find_clang() {
+    let clang_path = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("skipping test: clang not found");
@@ -255,7 +255,7 @@ async fn test_compile_hello_cpp_cached() {
         }
     };
 
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         // Create temp dir with hello.cpp
         let tmp = tempfile::tempdir().unwrap();
         let hello_cpp = tmp.path().join("hello.cpp");
@@ -274,7 +274,7 @@ int main() {
         let output_obj = tmp.path().join("hello.o");
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
         // Start session with log file
         client

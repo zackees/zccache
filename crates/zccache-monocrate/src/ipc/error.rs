@@ -7,7 +7,7 @@ pub enum IpcError {
     Io(#[from] std::io::Error),
 
     #[error("protocol error: {0}")]
-    Protocol(#[from] zccache_protocol::ProtocolError),
+    Protocol(#[from] crate::protocol::ProtocolError),
 
     #[error("connection closed")]
     ConnectionClosed,

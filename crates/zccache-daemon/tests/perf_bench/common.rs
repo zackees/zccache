@@ -14,12 +14,12 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 #[cfg(unix)]
-pub type ClientConn = zccache_ipc::IpcConnection;
+pub type ClientConn = zccache_monocrate::ipc::IpcConnection;
 #[cfg(windows)]
-pub type ClientConn = zccache_ipc::IpcClientConnection;
+pub type ClientConn = zccache_monocrate::ipc::IpcClientConnection;
 
 pub const NUM_FILES: usize = 50;
 pub const WARM_TRIALS: usize = 5;
@@ -45,8 +45,8 @@ pub async fn start_daemon() -> (
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
 ) {
-    let cache_dir = zccache_test_support::temp_cache_dir().unwrap();
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let cache_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let normalized = zccache_monocrate::core::NormalizedPath::new(cache_dir.path());
     let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &normalized).unwrap();
     let shutdown = server.shutdown_handle();
@@ -72,7 +72,7 @@ pub fn find_sccache() -> Option<NormalizedPath> {
 }
 
 pub fn find_empp() -> Option<NormalizedPath> {
-    if let Some(p) = zccache_test_support::find_on_path("em++") {
+    if let Some(p) = zccache_monocrate::test_support::find_on_path("em++") {
         return Some(p);
     }
     let extra: &[&str] = if cfg!(windows) {
@@ -97,8 +97,8 @@ pub fn find_empp() -> Option<NormalizedPath> {
 }
 
 pub fn find_archiver() -> Option<NormalizedPath> {
-    zccache_test_support::find_on_path("ar")
-        .or_else(|| zccache_test_support::find_on_path("llvm-ar"))
+    zccache_monocrate::test_support::find_on_path("ar")
+        .or_else(|| zccache_monocrate::test_support::find_on_path("llvm-ar"))
 }
 
 pub fn bench_exe_name(stem: &str) -> String {

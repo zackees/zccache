@@ -1,6 +1,6 @@
 //! C compilation perf benchmark + the always-on C11 regression guard.
 
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 use super::c_project::{
     baseline_c_single, c_source_names, generate_c_project, nuke_and_regenerate_c,
@@ -13,8 +13,8 @@ use super::common::{
 #[tokio::test]
 #[ignore] // Run explicitly: soldr cargo test -p zccache-daemon --test perf_bench_test -- perf_c_zccache_vs_bare --nocapture --ignored
 async fn perf_c_zccache_vs_bare() {
-    zccache_test_support::ensure_clang_tool_chain_on_path();
-    let compiler_path = match zccache_test_support::find_on_path("clang") {
+    zccache_monocrate::test_support::ensure_clang_tool_chain_on_path();
+    let compiler_path = match zccache_monocrate::test_support::find_on_path("clang") {
         Some(p) => p,
         None => {
             eprintln!("SKIP: no C compiler found");
@@ -32,7 +32,7 @@ async fn perf_c_zccache_vs_bare() {
     eprintln!("================================================================");
     eprintln!();
 
-    let bl_dir = zccache_test_support::temp_cache_dir().unwrap();
+    let bl_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     generate_c_project(bl_dir.path());
 
     eprintln!("  [1/2] Bare clang");
@@ -49,10 +49,10 @@ async fn perf_c_zccache_vs_bare() {
     let sccache_cold;
     let sccache_warm;
     if let Some(sccache_bin) = find_sccache() {
-        let sc_dir = zccache_test_support::temp_cache_dir().unwrap();
+        let sc_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
         generate_c_project(sc_dir.path());
 
-        let sc_cache_dir = zccache_test_support::temp_cache_dir().unwrap();
+        let sc_cache_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
         let sc_cache_str = sc_cache_dir.path().to_string_lossy().into_owned();
         std::env::set_var("SCCACHE_DIR", &sc_cache_str);
 
@@ -105,13 +105,13 @@ async fn perf_c_zccache_vs_bare() {
         sccache_warm = None;
     }
 
-    let zc_dir = zccache_test_support::temp_cache_dir().unwrap();
+    let zc_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     generate_c_project(zc_dir.path());
     let zc_cwd = zc_dir.path().to_string_lossy().into_owned();
 
     eprintln!("  [3/3] zccache");
     let (_zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
     client
         .send(&Request::SessionStart {
@@ -207,14 +207,14 @@ async fn perf_c_zccache_vs_bare() {
 /// forced to install it just to run this guard.
 #[test]
 fn generated_c_project_compiles_under_std_c11() {
-    zccache_test_support::ensure_clang_tool_chain_on_path();
-    let Some(compiler_path) = zccache_test_support::find_on_path("clang") else {
+    zccache_monocrate::test_support::ensure_clang_tool_chain_on_path();
+    let Some(compiler_path) = zccache_monocrate::test_support::find_on_path("clang") else {
         eprintln!("SKIP: no `clang` on PATH; skipping strict-C11 compile guard");
         return;
     };
     let compiler = compiler_path.to_string_lossy().to_string();
 
-    let dir = zccache_test_support::temp_cache_dir().unwrap();
+    let dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     generate_c_project(dir.path());
 
     // Exact compile flags used by `warmup_c_compiler`. If this fails, the

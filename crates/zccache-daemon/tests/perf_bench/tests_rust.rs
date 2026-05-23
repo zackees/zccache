@@ -1,7 +1,7 @@
 //! Rust (rustc) warm-cache benchmark: zccache vs sccache vs bare rustc.
 
 use std::time::Duration;
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 use super::common::{
     find_sccache, fmt_dur, fmt_ratio, median, print_trials, start_daemon, RUSTC_NUM_FILES,
@@ -17,7 +17,7 @@ use super::rust_project::{
 #[tokio::test]
 #[ignore]
 async fn perf_rustc_zccache_vs_sccache() {
-    let rustc_path = match zccache_test_support::find_rustc() {
+    let rustc_path = match zccache_monocrate::test_support::find_rustc() {
         Some(p) => p,
         None => {
             eprintln!("SKIP: rustc not found");
@@ -41,7 +41,7 @@ async fn perf_rustc_zccache_vs_sccache() {
     eprintln!("  ─── Build mode (cargo build) ───");
     eprintln!();
 
-    let bl_dir = zccache_test_support::temp_cache_dir().unwrap();
+    let bl_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     generate_rust_project(bl_dir.path());
     eprintln!("  [1/3] Bare rustc");
     warmup_rustc(&rc, bl_dir.path());
@@ -55,9 +55,9 @@ async fn perf_rustc_zccache_vs_sccache() {
     let build_sc_cold;
     let build_sc_warm;
     if let Some(ref scc_bin) = find_sccache() {
-        let sd = zccache_test_support::temp_cache_dir().unwrap();
+        let sd = zccache_monocrate::test_support::temp_cache_dir().unwrap();
         generate_rust_project(sd.path());
-        let scd = zccache_test_support::temp_cache_dir().unwrap();
+        let scd = zccache_monocrate::test_support::temp_cache_dir().unwrap();
         let scd_s = scd.path().to_string_lossy().into_owned();
         std::env::set_var("SCCACHE_DIR", &scd_s);
         eprintln!("  [2/3] sccache");
@@ -105,12 +105,12 @@ async fn perf_rustc_zccache_vs_sccache() {
         build_sc_warm = None;
     }
 
-    let zd = zccache_test_support::temp_cache_dir().unwrap();
+    let zd = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     generate_rust_project(zd.path());
     let zc = zd.path().to_string_lossy().into_owned();
     eprintln!("  [3/3] zccache");
     let (_zccache_cache_dir, ep, sh, sd) = start_daemon().await;
-    let mut cl = zccache_ipc::connect(&ep).await.unwrap();
+    let mut cl = zccache_monocrate::ipc::connect(&ep).await.unwrap();
     cl.send(&Request::SessionStart {
         client_pid: std::process::id(),
         working_dir: zc.clone().into(),
@@ -141,7 +141,7 @@ async fn perf_rustc_zccache_vs_sccache() {
     eprintln!("  ─── Check mode (cargo check) ───");
     eprintln!();
 
-    let bl_dir2 = zccache_test_support::temp_cache_dir().unwrap();
+    let bl_dir2 = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     generate_rust_project(bl_dir2.path());
     eprintln!("  [1/3] Bare rustc");
     warmup_rustc(&rc, bl_dir2.path());
@@ -155,9 +155,9 @@ async fn perf_rustc_zccache_vs_sccache() {
     let check_sc_cold;
     let check_sc_warm;
     if let Some(ref scc_bin) = find_sccache() {
-        let sd = zccache_test_support::temp_cache_dir().unwrap();
+        let sd = zccache_monocrate::test_support::temp_cache_dir().unwrap();
         generate_rust_project(sd.path());
-        let scd = zccache_test_support::temp_cache_dir().unwrap();
+        let scd = zccache_monocrate::test_support::temp_cache_dir().unwrap();
         let scd_s = scd.path().to_string_lossy().into_owned();
         std::env::set_var("SCCACHE_DIR", &scd_s);
         eprintln!("  [2/3] sccache");

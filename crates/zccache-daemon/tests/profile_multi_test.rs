@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 use zccache_daemon::DaemonServer;
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 const NUM_FILES: usize = 50;
 const WARM_ITERS: usize = 10;
@@ -49,7 +49,7 @@ fn clean_objects(dir: &std::path::Path) {
 #[tokio::test]
 #[ignore]
 async fn profile_multi_file_warm_path() {
-    let compiler_path = match zccache_test_support::find_clang() {
+    let compiler_path = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("SKIP: no C++ compiler found");
@@ -69,7 +69,7 @@ async fn profile_multi_file_warm_path() {
     eprintln!("  Compiler: {compiler}\n");
 
     // Start daemon — keep server accessible for profile_snapshot()
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
 
@@ -84,7 +84,7 @@ async fn profile_multi_file_warm_path() {
     // Give server time to start accepting
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
     // Start session
     client

@@ -28,7 +28,7 @@ fn daemon_releases_inherited_stdout_and_stderr_pipes() {
     let cache_dir = tmp.path().join("cache");
     std::fs::create_dir_all(&cache_dir).expect("create cache dir");
 
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
 
     let mut child = Command::new(daemon_bin)
         .args(["--foreground", "--endpoint", &endpoint])

@@ -9,7 +9,7 @@ use std::time::Duration;
 use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::error::IpcError;
+use super::error::IpcError;
 
 /// Suggested per-recv timeout for client-side request/response IPC.
 ///
@@ -73,7 +73,7 @@ pub struct IpcClientConnection {
 impl IpcConnection {
     /// Send a serializable message over the connection.
     pub async fn send<T: serde::Serialize>(&mut self, msg: &T) -> Result<(), IpcError> {
-        let buf = zccache_protocol::encode_message(msg)?;
+        let buf = crate::protocol::encode_message(msg)?;
         self.writer.write_all(&buf).await?;
         self.writer.flush().await?;
         Ok(())
@@ -131,7 +131,7 @@ impl IpcConnection {
     /// unbounded — the wrapping methods add the deadline.
     async fn recv_loop<T: serde::de::DeserializeOwned>(&mut self) -> Result<Option<T>, IpcError> {
         loop {
-            if let Some(msg) = zccache_protocol::decode_message::<T>(&mut self.read_buf)? {
+            if let Some(msg) = crate::protocol::decode_message::<T>(&mut self.read_buf)? {
                 return Ok(Some(msg));
             }
             let mut tmp = [0u8; 4096];
@@ -153,7 +153,7 @@ impl IpcConnection {
 impl IpcClientConnection {
     /// Send a serializable message over the connection.
     pub async fn send<T: serde::Serialize>(&mut self, msg: &T) -> Result<(), IpcError> {
-        let buf = zccache_protocol::encode_message(msg)?;
+        let buf = crate::protocol::encode_message(msg)?;
         self.writer.write_all(&buf).await?;
         self.writer.flush().await?;
         Ok(())
@@ -202,7 +202,7 @@ impl IpcClientConnection {
 
     async fn recv_loop<T: serde::de::DeserializeOwned>(&mut self) -> Result<Option<T>, IpcError> {
         loop {
-            if let Some(msg) = zccache_protocol::decode_message::<T>(&mut self.read_buf)? {
+            if let Some(msg) = crate::protocol::decode_message::<T>(&mut self.read_buf)? {
                 return Ok(Some(msg));
             }
             let mut tmp = [0u8; 4096];
@@ -418,7 +418,7 @@ pub fn unique_test_endpoint() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zccache_protocol::{Request, Response};
+    use crate::protocol::{Request, Response};
 
     #[tokio::test]
     async fn test_ping_pong() {

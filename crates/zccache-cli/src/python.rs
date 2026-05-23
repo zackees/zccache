@@ -78,8 +78,8 @@ pub struct NativeDaemonStatus {
     dep_graph_persisted: bool,
 }
 
-impl From<zccache_protocol::DaemonStatus> for NativeDaemonStatus {
-    fn from(value: zccache_protocol::DaemonStatus) -> Self {
+impl From<zccache_monocrate::protocol::DaemonStatus> for NativeDaemonStatus {
+    fn from(value: zccache_monocrate::protocol::DaemonStatus) -> Self {
         Self {
             version: value.version,
             artifact_count: value.artifact_count,
@@ -142,8 +142,8 @@ pub struct NativeSessionStats {
     bytes_written: u64,
 }
 
-impl From<zccache_protocol::SessionStats> for NativeSessionStats {
-    fn from(value: zccache_protocol::SessionStats) -> Self {
+impl From<zccache_monocrate::protocol::SessionStats> for NativeSessionStats {
+    fn from(value: zccache_monocrate::protocol::SessionStats) -> Self {
         Self {
             duration_ms: value.duration_ms,
             compilations: value.compilations,
@@ -757,7 +757,7 @@ fn default_endpoint() -> String {
 
 #[pyfunction]
 fn check_running_daemon() -> Option<u32> {
-    zccache_ipc::check_running_daemon()
+    zccache_monocrate::ipc::check_running_daemon()
 }
 
 #[pymodule]

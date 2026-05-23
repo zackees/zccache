@@ -28,7 +28,7 @@ pub(crate) async fn cmd_fp_check(
         }
     };
 
-    let request = zccache_protocol::Request::FingerprintCheck {
+    let request = zccache_monocrate::protocol::Request::FingerprintCheck {
         cache_file: cache_file.into(),
         cache_type: cache_type.to_string(),
         root: root.into(),
@@ -42,8 +42,8 @@ pub(crate) async fn cmd_fp_check(
         return ExitCode::from(2);
     }
 
-    match conn.recv::<zccache_protocol::Response>().await {
-        Ok(Some(zccache_protocol::Response::FingerprintCheckResult {
+    match conn.recv::<zccache_monocrate::protocol::Response>().await {
+        Ok(Some(zccache_monocrate::protocol::Response::FingerprintCheckResult {
             decision,
             reason,
             changed_files,
@@ -64,7 +64,7 @@ pub(crate) async fn cmd_fp_check(
                 ExitCode::SUCCESS
             }
         }
-        Ok(Some(zccache_protocol::Response::Error { message })) => {
+        Ok(Some(zccache_monocrate::protocol::Response::Error { message })) => {
             eprintln!("zccache fp: daemon error: {message}");
             ExitCode::from(2)
         }
@@ -94,11 +94,11 @@ pub(crate) async fn cmd_fp_mark(endpoint: &str, cache_file: &Path, success: bool
     };
 
     let request = if success {
-        zccache_protocol::Request::FingerprintMarkSuccess {
+        zccache_monocrate::protocol::Request::FingerprintMarkSuccess {
             cache_file: cache_file.into(),
         }
     } else {
-        zccache_protocol::Request::FingerprintMarkFailure {
+        zccache_monocrate::protocol::Request::FingerprintMarkFailure {
             cache_file: cache_file.into(),
         }
     };
@@ -108,8 +108,8 @@ pub(crate) async fn cmd_fp_mark(endpoint: &str, cache_file: &Path, success: bool
         return ExitCode::from(2);
     }
 
-    match conn.recv::<zccache_protocol::Response>().await {
-        Ok(Some(zccache_protocol::Response::FingerprintAck)) => {
+    match conn.recv::<zccache_monocrate::protocol::Response>().await {
+        Ok(Some(zccache_monocrate::protocol::Response::FingerprintAck)) => {
             let label = if success {
                 "mark-success"
             } else {
@@ -118,7 +118,7 @@ pub(crate) async fn cmd_fp_mark(endpoint: &str, cache_file: &Path, success: bool
             eprintln!("zccache fp: {label}");
             ExitCode::SUCCESS
         }
-        Ok(Some(zccache_protocol::Response::Error { message })) => {
+        Ok(Some(zccache_monocrate::protocol::Response::Error { message })) => {
             eprintln!("zccache fp: daemon error: {message}");
             ExitCode::from(2)
         }
@@ -147,7 +147,7 @@ pub(crate) async fn cmd_fp_invalidate(endpoint: &str, cache_file: &Path) -> Exit
         }
     };
 
-    let request = zccache_protocol::Request::FingerprintInvalidate {
+    let request = zccache_monocrate::protocol::Request::FingerprintInvalidate {
         cache_file: cache_file.into(),
     };
 
@@ -156,12 +156,12 @@ pub(crate) async fn cmd_fp_invalidate(endpoint: &str, cache_file: &Path) -> Exit
         return ExitCode::from(2);
     }
 
-    match conn.recv::<zccache_protocol::Response>().await {
-        Ok(Some(zccache_protocol::Response::FingerprintAck)) => {
+    match conn.recv::<zccache_monocrate::protocol::Response>().await {
+        Ok(Some(zccache_monocrate::protocol::Response::FingerprintAck)) => {
             eprintln!("zccache fp: invalidated");
             ExitCode::SUCCESS
         }
-        Ok(Some(zccache_protocol::Response::Error { message })) => {
+        Ok(Some(zccache_monocrate::protocol::Response::Error { message })) => {
             eprintln!("zccache fp: daemon error: {message}");
             ExitCode::from(2)
         }

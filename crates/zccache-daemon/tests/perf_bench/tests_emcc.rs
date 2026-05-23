@@ -42,7 +42,7 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
     eprintln!();
 
     // ── Bare em++ ────────────────────────────────────────────────────
-    let bl_dir = zccache_test_support::temp_cache_dir().unwrap();
+    let bl_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     generate_project(bl_dir.path());
 
     eprintln!("  [1/3] Bare em++ (baseline)");
@@ -68,10 +68,10 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
     let sccache_cold_multi;
     let sccache_warm_multi;
     if let Some(sccache_bin) = find_sccache() {
-        let sc_dir = zccache_test_support::temp_cache_dir().unwrap();
+        let sc_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
         generate_project(sc_dir.path());
 
-        let sc_cache_dir = zccache_test_support::temp_cache_dir().unwrap();
+        let sc_cache_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
         let sc_cache_str = sc_cache_dir.path().to_string_lossy().into_owned();
         std::env::set_var("SCCACHE_DIR", &sc_cache_str);
 
@@ -147,13 +147,13 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
     }
 
     // ── zccache em++ ──────────────────────────────────────────────────
-    let zc_dir = zccache_test_support::temp_cache_dir().unwrap();
+    let zc_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     generate_project(zc_dir.path());
     let zc_cwd = zc_dir.path().to_string_lossy().into_owned();
 
     eprintln!("  [3/3] zccache em++");
     let (_zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let session_id = start_zccache_session(&mut client, &zc_cwd).await;
 
     nuke_and_regenerate(zc_dir.path());
@@ -269,7 +269,7 @@ async fn perf_emcc_sibling_remap_warm() {
     eprintln!("================================================================");
     eprintln!();
 
-    let parent = zccache_test_support::temp_cache_dir().unwrap();
+    let parent = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     let workspace_a = parent.path().join("workspace-a");
     let workspace_b = parent.path().join("workspace-b");
     std::fs::create_dir_all(&workspace_a).unwrap();
@@ -292,7 +292,7 @@ async fn perf_emcc_sibling_remap_warm() {
 
     // ── sccache em++ warm in workspace B ──────────────────────────────
     let sccache_warm = if let Some(sccache_bin) = find_sccache() {
-        let sc_cache_dir = zccache_test_support::temp_cache_dir().unwrap();
+        let sc_cache_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
         let sc_cache_str = sc_cache_dir.path().to_string_lossy().into_owned();
         std::env::set_var("SCCACHE_DIR", &sc_cache_str);
         eprintln!("  [2/3] sccache em++ (workspace B, warm)");
@@ -335,7 +335,7 @@ async fn perf_emcc_sibling_remap_warm() {
     // ── zccache primed from workspace A, warm in workspace B ──────────
     eprintln!("  [3/3] zccache em++ (prime: workspace A, warm: workspace B, remap=auto)");
     let (_zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
     let workspace_a_str = workspace_a.to_string_lossy().into_owned();
     let workspace_b_str = workspace_b.to_string_lossy().into_owned();

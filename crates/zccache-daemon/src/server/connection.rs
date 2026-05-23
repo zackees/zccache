@@ -6,12 +6,12 @@ use super::*;
 pub(super) async fn handle_connection(
     mut conn: IpcConnection,
     state: Arc<SharedState>,
-) -> Result<(), zccache_ipc::IpcError> {
+) -> Result<(), zccache_monocrate::ipc::IpcError> {
     loop {
         let request: Option<Request> = match conn.recv().await {
             Ok(req) => req,
-            Err(zccache_ipc::IpcError::Protocol(
-                zccache_protocol::ProtocolError::VersionMismatch { expected, received },
+            Err(zccache_monocrate::ipc::IpcError::Protocol(
+                zccache_monocrate::protocol::ProtocolError::VersionMismatch { expected, received },
             )) => {
                 // Don't drop the connection silently — without a reply the
                 // CLI surfaces the (correct) closure as the misleading
@@ -52,8 +52,8 @@ pub(super) async fn handle_connection(
                         message: msg.clone(),
                     })
                     .await;
-                return Err(zccache_ipc::IpcError::Protocol(
-                    zccache_protocol::ProtocolError::VersionMismatch { expected, received },
+                return Err(zccache_monocrate::ipc::IpcError::Protocol(
+                    zccache_monocrate::protocol::ProtocolError::VersionMismatch { expected, received },
                 ));
             }
             Err(e) => return Err(e),
@@ -100,7 +100,7 @@ pub(super) async fn handle_connection(
                     .sum();
                 let metadata_entries = state.cache_system.metadata().len() as u64;
                 (
-                    Response::Status(zccache_protocol::DaemonStatus {
+                    Response::Status(zccache_monocrate::protocol::DaemonStatus {
                         version: zccache_monocrate::core::VERSION.to_string(),
                         artifact_count,
                         cache_size_bytes,
@@ -132,11 +132,11 @@ pub(super) async fn handle_connection(
                 )
             }
             Request::Lookup { .. } => (
-                Response::LookupResult(zccache_protocol::LookupResult::Miss),
+                Response::LookupResult(zccache_monocrate::protocol::LookupResult::Miss),
                 None,
             ),
             Request::Store { .. } => (
-                Response::StoreResult(zccache_protocol::StoreResult::Stored),
+                Response::StoreResult(zccache_monocrate::protocol::StoreResult::Stored),
                 None,
             ),
             Request::Clear => (handle_clear(&state).await, None),
@@ -225,7 +225,7 @@ pub(super) async fn handle_connection(
                         if let Some(session) = state.sessions.get(&sid) {
                             let stats = session.stats_tracker.as_ref().map(|tracker| {
                                 let f = tracker.finalize(session.created_at);
-                                zccache_protocol::SessionStats {
+                                zccache_monocrate::protocol::SessionStats {
                                     duration_ms: f.duration_ms,
                                     compilations: f.compilations,
                                     hits: f.hits,
@@ -266,7 +266,7 @@ pub(super) async fn handle_connection(
                             }
                             let stats = session.stats_tracker.map(|tracker| {
                                 let f = tracker.finalize(session.created_at);
-                                zccache_protocol::SessionStats {
+                                zccache_monocrate::protocol::SessionStats {
                                     duration_ms: f.duration_ms,
                                     compilations: f.compilations,
                                     hits: f.hits,
@@ -374,7 +374,7 @@ pub(super) async fn handle_connection(
                             || n.ends_with(".dll")
                     });
                     if is_rust {
-                        artifacts.push(zccache_protocol::RustArtifactInfo {
+                        artifacts.push(zccache_monocrate::protocol::RustArtifactInfo {
                             cache_key: key,
                             output_names: names.clone(),
                             payload_count: names.len(),

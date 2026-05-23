@@ -27,8 +27,6 @@ serde = { workspace = true }
 zccache-monocrate = { workspace = true }
 zccache-artifact = { workspace = true }
 zccache-compiler = { workspace = true }
-zccache-protocol = { workspace = true }
-zccache-ipc = { workspace = true }
 zccache-download = { workspace = true }
 zccache-download-client = { workspace = true }
 zccache-symbols = { workspace = true }
@@ -85,6 +83,7 @@ required-features = []
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+zccache-monocrate = { workspace = true, features = ["test-support"] }
 
 [[bench]]
 name = "warm_restore"

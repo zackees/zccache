@@ -15,7 +15,7 @@ pub(crate) async fn cmd_clear(endpoint: &str) -> ExitCode {
         }
     };
 
-    if let Err(e) = conn.send(&zccache_protocol::Request::Clear).await {
+    if let Err(e) = conn.send(&zccache_monocrate::protocol::Request::Clear).await {
         eprintln!("zccache[err][S]: failed to send to daemon: {e}");
         return ExitCode::FAILURE;
     }
@@ -27,7 +27,7 @@ pub(crate) async fn cmd_clear(endpoint: &str) -> ExitCode {
         }
     };
     match recv_result {
-        Some(zccache_protocol::Response::Cleared {
+        Some(zccache_monocrate::protocol::Response::Cleared {
             artifacts_removed,
             metadata_cleared,
             dep_graph_contexts_cleared,

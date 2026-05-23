@@ -8,3 +8,8 @@
 pub mod core;
 pub mod gha;
 pub mod hash;
+pub mod ipc;
+pub mod protocol;
+
+#[cfg(feature = "test-support")]
+pub mod test_support;

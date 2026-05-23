@@ -10,20 +10,20 @@
 //!   doesn't cause stale cache hits
 
 use zccache_daemon::DaemonServer;
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 /// Platform-correct client connection type.
 #[cfg(unix)]
-type ClientConn = zccache_ipc::IpcConnection;
+type ClientConn = zccache_monocrate::ipc::IpcConnection;
 #[cfg(windows)]
-type ClientConn = zccache_ipc::IpcClientConnection;
+type ClientConn = zccache_monocrate::ipc::IpcClientConnection;
 
 async fn start_daemon() -> (
     String,
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
 ) {
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move { server.run(0).await.unwrap() });
@@ -89,7 +89,7 @@ async fn compile_raw(
 #[tokio::test]
 #[ignore] // integration: spawns clang + watcher sleeps, run with --full
 async fn pch_usage_is_cacheable() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("skipping test: clang not found");
@@ -121,7 +121,7 @@ async fn pch_usage_is_cacheable() {
     std::fs::write(&source, "int main() { return PCH_VALUE; }\n").unwrap();
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let sid = start_session(&mut client, &cwd, &log.to_string_lossy()).await;
 
     // Generate PCH through the daemon (now cacheable with -x c++-header).
@@ -287,7 +287,7 @@ async fn pch_usage_is_cacheable() {
 #[tokio::test]
 #[ignore] // integration: spawns clang, run with --full
 async fn pch_generation_is_cacheable() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("skipping test: clang not found");
@@ -306,7 +306,7 @@ async fn pch_generation_is_cacheable() {
     std::fs::write(&header, "#define GEN_VALUE 1\n").unwrap();
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let sid = start_session(&mut client, &cwd, &log.to_string_lossy()).await;
 
     let pch_args = || {
@@ -365,7 +365,7 @@ async fn pch_generation_is_cacheable() {
 #[tokio::test]
 #[ignore] // integration: spawns clang + watcher sleeps, run with --full
 async fn pch_sub_header_change_invalidates_cache() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("skipping test: clang not found");
@@ -402,7 +402,7 @@ async fn pch_sub_header_change_invalidates_cache() {
     std::fs::write(&source, "int main() { return SUB_VALUE; }\n").unwrap();
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let sid = start_session(&mut client, &cwd, &log.to_string_lossy()).await;
 
     let pch_gen_args = || {
@@ -537,7 +537,7 @@ async fn pch_sub_header_change_invalidates_cache() {
 #[tokio::test]
 #[ignore] // integration: spawns clang + watcher sleeps, run with --full
 async fn pch_build_dir_separation_sub_header_change() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("skipping test: clang not found");
@@ -579,7 +579,7 @@ async fn pch_build_dir_separation_sub_header_change() {
     std::fs::write(&source, "int main() { return SUB_VALUE; }\n").unwrap();
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let sid = start_session(&mut client, &cwd, &log.to_string_lossy()).await;
 
     let pch_gen_args = || {
@@ -695,7 +695,7 @@ async fn pch_build_dir_separation_sub_header_change() {
 #[tokio::test]
 #[ignore] // integration: spawns clang + watcher sleeps, run with --full
 async fn pch_chained_sub_header_change() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("skipping test: clang not found");
@@ -736,7 +736,7 @@ async fn pch_chained_sub_header_change() {
     std::fs::write(&source, "int main() { return SUB_VALUE + TEST_EXTRA; }\n").unwrap();
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let sid = start_session(&mut client, &cwd, &log.to_string_lossy()).await;
 
     // ── Build the PCH chain ─────────────────────────────────────
@@ -947,7 +947,7 @@ async fn pch_chained_sub_header_change() {
 #[tokio::test]
 #[ignore] // integration: spawns clang + watcher sleeps, run with --full
 async fn pch_rebuild_no_spurious_output_in_source_tree() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("skipping test: clang not found");
@@ -989,7 +989,7 @@ async fn pch_rebuild_no_spurious_output_in_source_tree() {
     let main_obj = build_dir.join("main.o");
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
     let sid = start_session(&mut client, &cwd, &log.to_string_lossy()).await;
 
     let isrc = format!("-I{}", src_dir.to_string_lossy());

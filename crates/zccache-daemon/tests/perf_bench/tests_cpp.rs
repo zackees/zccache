@@ -1,7 +1,7 @@
 //! C++ warm-cache benchmark: zccache vs sccache vs bare clang++.
 
 use std::path::Path;
-use zccache_protocol::{Request, Response};
+use zccache_monocrate::protocol::{Request, Response};
 
 use super::common::{
     find_sccache, fmt_dur, fmt_ratio, median, print_trials, start_daemon, NUM_FILES, WARM_TRIALS,
@@ -15,7 +15,7 @@ use super::cpp_project::{
 #[tokio::test]
 #[ignore] // Run explicitly: soldr cargo test -p zccache-daemon --test perf_bench_test -- --nocapture --ignored
 async fn perf_warm_cache_zccache_vs_sccache() {
-    let compiler_path = match zccache_test_support::find_clang() {
+    let compiler_path = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("SKIP: no C++ compiler found");
@@ -34,7 +34,7 @@ async fn perf_warm_cache_zccache_vs_sccache() {
     eprintln!();
 
     // ── Baseline (fresh dir) ──────────────────────────────────────────
-    let bl_dir = zccache_test_support::temp_cache_dir().unwrap();
+    let bl_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     generate_project(bl_dir.path());
 
     eprintln!("  [1/3] Bare clang (baseline)");
@@ -65,11 +65,11 @@ async fn perf_warm_cache_zccache_vs_sccache() {
     let sccache_multi_times;
 
     if let Some(sccache_bin) = find_sccache() {
-        let sc_dir = zccache_test_support::temp_cache_dir().unwrap();
+        let sc_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
         generate_project(sc_dir.path());
 
         // Use a fresh cache dir so previous sccache usage doesn't pollute results.
-        let sc_cache_dir = zccache_test_support::temp_cache_dir().unwrap();
+        let sc_cache_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
         let sc_cache_str = sc_cache_dir.path().to_string_lossy().into_owned();
 
         // Set SCCACHE_DIR for this process so both server and client see it.
@@ -164,14 +164,14 @@ async fn perf_warm_cache_zccache_vs_sccache() {
     }
 
     // ── zccache (fresh dir, in-process daemon) ────────────────────────
-    let zc_dir = zccache_test_support::temp_cache_dir().unwrap();
+    let zc_dir = zccache_monocrate::test_support::temp_cache_dir().unwrap();
     generate_project(zc_dir.path());
     let zc_cwd = zc_dir.path().to_string_lossy().into_owned();
 
     eprintln!("  [3/3] zccache (in-process daemon)");
 
     let (_zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
-    let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+    let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
     // Start session
     client

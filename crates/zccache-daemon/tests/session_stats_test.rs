@@ -14,19 +14,19 @@
 //!   6. session-end → verify final stats match mid-session snapshot
 
 use zccache_daemon::DaemonServer;
-use zccache_protocol::{Request, Response, SessionStats};
+use zccache_monocrate::protocol::{Request, Response, SessionStats};
 
 #[cfg(windows)]
-type ClientConn = zccache_ipc::IpcClientConnection;
+type ClientConn = zccache_monocrate::ipc::IpcClientConnection;
 #[cfg(not(windows))]
-type ClientConn = zccache_ipc::IpcConnection;
+type ClientConn = zccache_monocrate::ipc::IpcConnection;
 
 async fn start_daemon() -> (
     String,
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
 ) {
-    let endpoint = zccache_ipc::unique_test_endpoint();
+    let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
@@ -88,14 +88,14 @@ async fn compile(
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + compiler
 async fn session_stats_mid_session_query() {
-    let clang = match zccache_test_support::find_clang() {
+    let clang = match zccache_monocrate::test_support::find_clang() {
         Some(p) => p,
         None => {
             eprintln!("skipping: clang not found");
             return;
         }
     };
-    zccache_test_support::test_timeout(async move {
+    zccache_monocrate::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let cwd = tmp.path().to_string_lossy().into_owned();
 
@@ -110,7 +110,7 @@ async fn session_stats_mid_session_query() {
             .collect();
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
         // ── Start session with stats tracking ──
         client
@@ -205,9 +205,9 @@ async fn session_stats_mid_session_query() {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC
 async fn session_stats_not_tracked_returns_none() {
-    zccache_test_support::test_timeout(async {
+    zccache_monocrate::test_support::test_timeout(async {
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
         client
             .send(&Request::SessionStart {
@@ -239,9 +239,9 @@ async fn session_stats_not_tracked_returns_none() {
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC
 async fn session_stats_unknown_session() {
-    zccache_test_support::test_timeout(async {
+    zccache_monocrate::test_support::test_timeout(async {
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = zccache_ipc::connect(&endpoint).await.unwrap();
+        let mut client = zccache_monocrate::ipc::connect(&endpoint).await.unwrap();
 
         client
             .send(&Request::SessionStats {
