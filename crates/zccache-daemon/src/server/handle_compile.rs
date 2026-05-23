@@ -245,7 +245,7 @@ pub(super) async fn handle_compile(
         let lineage_for_probe = lineage.clone();
         cache
             .get_or_discover(&compiler, |c| {
-                let disc_args = zccache_depgraph::discovery_args();
+                let disc_args = zccache_monocrate::depgraph::discovery_args();
                 let output = {
                     let mut cmd = std::process::Command::new(c);
                     cmd.args(&disc_args);
@@ -255,7 +255,7 @@ pub(super) async fn handle_compile(
                 match output {
                     Ok(out) => {
                         let stderr = String::from_utf8_lossy(&out.stderr);
-                        zccache_depgraph::parse_system_include_output(&stderr)
+                        zccache_monocrate::depgraph::parse_system_include_output(&stderr)
                     }
                     Err(e) => {
                         tracing::warn!("failed to run compiler for include discovery: {e}");
@@ -584,7 +584,7 @@ pub(super) async fn handle_compile(
         // Cold context — skip hashing and depgraph check entirely.
         hash_headers_ns = 0;
         depgraph_check_ns = 0;
-        verdict = zccache_depgraph::CacheVerdict::Cold;
+        verdict = zccache_monocrate::depgraph::CacheVerdict::Cold;
         diag_reason = "cold_skip".to_string();
     } else {
         // Hash includes + force-includes in parallel (PCH-aware).
@@ -636,7 +636,7 @@ pub(super) async fn handle_compile(
             hash_map.get(&path).copied()
         }) {
             depgraph_check_ns = 0;
-            verdict = zccache_depgraph::CacheVerdict::Hit { artifact_key };
+            verdict = zccache_monocrate::depgraph::CacheVerdict::Hit { artifact_key };
             diag_reason = "fast_key_match".to_string();
         } else {
             let t4 = std::time::Instant::now();
@@ -671,18 +671,18 @@ pub(super) async fn handle_compile(
             output_path.display(),
             &context_key.hash().to_hex()[..8],
             match &verdict {
-                zccache_depgraph::CacheVerdict::Hit { .. } => "Hit",
-                zccache_depgraph::CacheVerdict::SourceChanged { .. } => "SourceChanged",
-                zccache_depgraph::CacheVerdict::HeadersChanged { .. } => "HeadersChanged",
-                zccache_depgraph::CacheVerdict::Cold => "Cold",
-                zccache_depgraph::CacheVerdict::NeedsPreprocessor => "NeedsPreprocessor",
+                zccache_monocrate::depgraph::CacheVerdict::Hit { .. } => "Hit",
+                zccache_monocrate::depgraph::CacheVerdict::SourceChanged { .. } => "SourceChanged",
+                zccache_monocrate::depgraph::CacheVerdict::HeadersChanged { .. } => "HeadersChanged",
+                zccache_monocrate::depgraph::CacheVerdict::Cold => "Cold",
+                zccache_monocrate::depgraph::CacheVerdict::NeedsPreprocessor => "NeedsPreprocessor",
             },
             diag_reason,
         ),
     );
     match verdict {
-        zccache_depgraph::CacheVerdict::Hit { artifact_key }
-        | zccache_depgraph::CacheVerdict::SourceChanged { artifact_key } => {
+        zccache_monocrate::depgraph::CacheVerdict::Hit { artifact_key }
+        | zccache_monocrate::depgraph::CacheVerdict::SourceChanged { artifact_key } => {
             // ── Phase: artifact lookup + write ─────────────────────────
             let t5 = std::time::Instant::now();
             let artifact_key_hex = artifact_key.hash().to_hex();
@@ -823,9 +823,9 @@ pub(super) async fn handle_compile(
                 &format!("[DIAG] artifact_not_found: key={artifact_key_hex}"),
             );
         }
-        zccache_depgraph::CacheVerdict::Cold
-        | zccache_depgraph::CacheVerdict::HeadersChanged { .. }
-        | zccache_depgraph::CacheVerdict::NeedsPreprocessor => {
+        zccache_monocrate::depgraph::CacheVerdict::Cold
+        | zccache_monocrate::depgraph::CacheVerdict::HeadersChanged { .. }
+        | zccache_monocrate::depgraph::CacheVerdict::NeedsPreprocessor => {
             // Need to compile and scan includes
         }
     }
@@ -848,7 +848,7 @@ pub(super) async fn handle_compile(
     let pre_exec_ns = compile_start.elapsed().as_nanos() as u64;
     let t_exec = std::time::Instant::now();
     let supports_depfile = compilation.family.supports_depfile();
-    let (mut extra_args, mut depfile_strategy) = zccache_depgraph::depfile::prepare_depfile(
+    let (mut extra_args, mut depfile_strategy) = zccache_monocrate::depgraph::depfile::prepare_depfile(
         supports_depfile,
         &dep_flags,
         &output_path,
@@ -949,7 +949,7 @@ pub(super) async fn handle_compile(
     // For MSVC /showIncludes: parse dependency info from stderr and
     // filter out the /showIncludes lines before returning to the client.
     let (show_includes_scan, stderr_bytes) = if depfile_strategy == DepfileStrategy::ShowIncludes {
-        let (scan, filtered) = zccache_depgraph::show_includes::parse_show_includes(
+        let (scan, filtered) = zccache_monocrate::depgraph::show_includes::parse_show_includes(
             &output.stderr,
             &source_path,
             &cwd_path,
@@ -1030,7 +1030,7 @@ pub(super) async fn handle_compile(
                 | DepfileStrategy::UserSpecified { path }
                 | DepfileStrategy::UserDefault { path } => {
                     let cwd_path: NormalizedPath = cwd.into();
-                    match zccache_depgraph::depfile::parse_depfile_path(
+                    match zccache_monocrate::depgraph::depfile::parse_depfile_path(
                         path,
                         &source_path,
                         &cwd_path,
@@ -1054,7 +1054,7 @@ pub(super) async fn handle_compile(
                             if matches!(depfile_strategy, DepfileStrategy::Injected { .. }) {
                                 let _ = std::fs::remove_file(path);
                             }
-                            zccache_depgraph::scanner::scan_recursive(
+                            zccache_monocrate::depgraph::scanner::scan_recursive(
                                 &source_path,
                                 &ctx.include_search,
                             )
@@ -1064,11 +1064,11 @@ pub(super) async fn handle_compile(
                 DepfileStrategy::ShowIncludes => {
                     // Already parsed from stderr above.
                     show_includes_scan.unwrap_or_else(|| {
-                        zccache_depgraph::scanner::scan_recursive(&source_path, &ctx.include_search)
+                        zccache_monocrate::depgraph::scanner::scan_recursive(&source_path, &ctx.include_search)
                     })
                 }
                 DepfileStrategy::Unsupported => {
-                    zccache_depgraph::scanner::scan_recursive(&source_path, &ctx.include_search)
+                    zccache_monocrate::depgraph::scanner::scan_recursive(&source_path, &ctx.include_search)
                 }
             }
         };

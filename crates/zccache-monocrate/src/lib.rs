@@ -8,11 +8,14 @@
 pub mod artifact;
 pub mod compiler;
 pub mod core;
+pub mod depgraph;
+pub mod fingerprint;
 pub mod fscache;
 pub mod gha;
 pub mod hash;
 pub mod ipc;
 pub mod protocol;
+pub mod symbols;
 pub mod watcher;
 
 #[cfg(feature = "test-support")]

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 use zccache_monocrate::core::NormalizedPath;
-use zccache_depgraph::{ContextKey, DepGraph};
+use zccache_monocrate::depgraph::{ContextKey, DepGraph};
 use zccache_monocrate::fscache::CacheSystem;
 
 use crate::server::{trim_fast_hit_cache, CachedArtifact, FastHitEntry};
@@ -292,7 +292,7 @@ mod tests {
     use super::*;
     use crate::server::CachedPayload;
     use std::time::{Instant, SystemTime};
-    use zccache_depgraph::CompileContext;
+    use zccache_monocrate::depgraph::CompileContext;
     use zccache_monocrate::fscache::{Confidence, FileMetadata};
 
     fn empty_caches() -> (
@@ -312,7 +312,7 @@ mod tests {
     fn make_ctx(source: &str) -> CompileContext {
         CompileContext {
             source_file: source.into(),
-            include_search: zccache_depgraph::IncludeSearchPaths::default(),
+            include_search: zccache_monocrate::depgraph::IncludeSearchPaths::default(),
             defines: Vec::new(),
             flags: Vec::new(),
             force_includes: Vec::new(),

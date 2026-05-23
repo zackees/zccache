@@ -13,7 +13,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
-use zccache_depgraph::{CompileContext, DepGraph, IncludeSearchPaths};
+use zccache_monocrate::depgraph::{CompileContext, DepGraph, IncludeSearchPaths};
 use zccache_monocrate::protocol::{DaemonStatus, Request, Response};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -111,7 +111,7 @@ async fn fresh_daemon_reports_not_persisted() {
         "fresh daemon must report dep_graph_persisted = false, got: {status:?}",
     );
     assert_eq!(status.dep_graph_disk_size, 0);
-    assert_eq!(status.dep_graph_version, zccache_depgraph::DEPGRAPH_VERSION);
+    assert_eq!(status.dep_graph_version, zccache_monocrate::depgraph::DEPGRAPH_VERSION);
     // Issue #262 explicitly checked that the (cached, cold, non-cacheable)
     // counters coexist with the persisted state.
     assert_eq!(status.cache_hits, 0);
@@ -131,14 +131,14 @@ async fn preloaded_graph_reports_persisted() {
     // Pre-populate a graph and save it (so the on-disk file exists too).
     let graph = DepGraph::new();
     let _ = graph.register(make_ctx("/src/main.cpp"));
-    let path = zccache_depgraph::depgraph_file_path();
+    let path = zccache_monocrate::depgraph::depgraph_file_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).unwrap();
     }
-    zccache_depgraph::save_to_file(&graph, &path).unwrap();
+    zccache_monocrate::depgraph::save_to_file(&graph, &path).unwrap();
 
     // Re-load to simulate the daemon's own startup path.
-    let loaded = zccache_depgraph::load_from_file(&path).unwrap();
+    let loaded = zccache_monocrate::depgraph::load_from_file(&path).unwrap();
     assert_eq!(loaded.stats().context_count, 1);
 
     let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
@@ -189,7 +189,7 @@ async fn shutdown_save_restore_roundtrip() {
         "preloaded daemon should already report persisted=true",
     );
 
-    let saved_path = zccache_depgraph::depgraph_file_path();
+    let saved_path = zccache_monocrate::depgraph::depgraph_file_path();
     shutdown1.notify_one();
     handle1.await.unwrap();
 
@@ -204,13 +204,13 @@ async fn shutdown_save_restore_roundtrip() {
     // ── Phase 2: brand-new cache_dir, plant the saved snapshot, start a
     //    completely fresh daemon → load_from_file → report persisted. ───
     let guard2 = CacheDirGuard::new();
-    let new_path = zccache_depgraph::depgraph_file_path();
+    let new_path = zccache_monocrate::depgraph::depgraph_file_path();
     if let Some(parent) = new_path.parent() {
         std::fs::create_dir_all(parent).unwrap();
     }
     std::fs::write(&new_path, &saved_bytes).unwrap();
 
-    let loaded = zccache_depgraph::load_from_file(&new_path).unwrap();
+    let loaded = zccache_monocrate::depgraph::load_from_file(&new_path).unwrap();
     assert_eq!(loaded.stats().context_count, 2, "loaded graph survived");
 
     let endpoint2 = zccache_monocrate::ipc::unique_test_endpoint();

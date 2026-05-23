@@ -9,7 +9,7 @@ use super::super::*;
 fn test_context_key(source: &str) -> ContextKey {
     CompileContext {
         source_file: source.into(),
-        include_search: zccache_depgraph::IncludeSearchPaths::default(),
+        include_search: zccache_monocrate::depgraph::IncludeSearchPaths::default(),
         defines: Vec::new(),
         flags: Vec::new(),
         force_includes: Vec::new(),

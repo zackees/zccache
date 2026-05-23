@@ -16,7 +16,7 @@ use std::time::{Duration, SystemTime};
 
 use tokio::sync::mpsc;
 use zccache_monocrate::core::NormalizedPath;
-use zccache_depgraph::{SessionId, SessionManager};
+use zccache_monocrate::depgraph::{SessionId, SessionManager};
 
 /// Open a file in append mode with sharing flags that allow deletion on Windows.
 ///
@@ -573,7 +573,7 @@ mod tests {
         let logger = EventLogger::new(log_dir.clone().into(), 10 * 1024 * 1024, 5);
 
         let sessions = SessionManager::new(Duration::from_secs(300));
-        let sid = sessions.create(zccache_depgraph::SessionConfig {
+        let sid = sessions.create(zccache_monocrate::depgraph::SessionConfig {
             client_pid: 42,
             working_dir: "/test".into(),
             log_file: Some(session_log.to_path_buf().into()),

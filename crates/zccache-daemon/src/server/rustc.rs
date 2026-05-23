@@ -13,11 +13,11 @@ pub(super) enum BuildContextResult {
     /// Rustc compilation.
     Rustc {
         /// The Rustc-specific context (for context key computation).
-        rustc_ctx: Box<zccache_depgraph::RustcCompileContext>,
+        rustc_ctx: Box<zccache_monocrate::depgraph::RustcCompileContext>,
         /// A "compatible" CompileContext for dep_graph storage (has source_file).
         compat_ctx: CompileContext,
         /// Parsed args for extern crate info, output path derivation, etc.
-        rustc_args: Box<zccache_depgraph::RustcParsedArgs>,
+        rustc_args: Box<zccache_monocrate::depgraph::RustcParsedArgs>,
     },
 }
 
@@ -35,9 +35,9 @@ pub(super) fn build_compile_context(
     // Dispatch to the correct parser based on compiler family.
     let parsed = match compilation.family {
         zccache_monocrate::compiler::CompilerFamily::Msvc => {
-            zccache_depgraph::msvc_args::parse_msvc_args(&compilation.original_args, cwd)
+            zccache_monocrate::depgraph::msvc_args::parse_msvc_args(&compilation.original_args, cwd)
         }
-        _ => zccache_depgraph::args::parse_gnu_args(&compilation.original_args, cwd),
+        _ => zccache_monocrate::depgraph::args::parse_gnu_args(&compilation.original_args, cwd),
     };
     let dep_flags = parsed.dep_flags.clone();
     let mut ctx = CompileContext::from_parsed_args(parsed);
@@ -69,13 +69,13 @@ pub(super) fn build_rustc_compile_context(
     client_env: &[(String, String)],
     compiler_hash_cache: &CompilerHashCache,
 ) -> BuildContextResult {
-    let rustc_args = zccache_depgraph::parse_rustc_args(&compilation.original_args, cwd);
+    let rustc_args = zccache_monocrate::depgraph::parse_rustc_args(&compilation.original_args, cwd);
 
     // Hash the rustc binary for compiler version identity.
     // Different rustc versions produce different output for the same source.
     let compiler_hash = compiler_hash_cache.get_or_hash(&compilation.compiler);
 
-    let rustc_ctx = zccache_depgraph::RustcCompileContext::from_parsed_args(
+    let rustc_ctx = zccache_monocrate::depgraph::RustcCompileContext::from_parsed_args(
         &rustc_args,
         client_env,
         compiler_hash,
@@ -104,10 +104,10 @@ pub(super) fn build_rustc_compile_context(
 /// Parses rustc's dep-info file which has multiple rules (one per output target),
 /// all sharing the same dependencies. Extracts the unique set of source file deps.
 pub(super) fn scan_rustc_deps(
-    rustc_args: &zccache_depgraph::RustcParsedArgs,
+    rustc_args: &zccache_monocrate::depgraph::RustcParsedArgs,
     source_path: &Path,
     cwd: &Path,
-) -> zccache_depgraph::ScanResult {
+) -> zccache_monocrate::depgraph::ScanResult {
     let mut result = if rustc_args.emit_types.iter().any(|t| t == "dep-info") {
         let name = rustc_args.crate_name.as_deref().unwrap_or("unknown");
         let ext_suffix = rustc_args.extra_filename.as_deref().unwrap_or("");
@@ -117,21 +117,21 @@ pub(super) fn scan_rustc_deps(
             if let Ok(content) = std::fs::read_to_string(&depfile_path) {
                 parse_rustc_depinfo(&content, source_path, cwd)
             } else {
-                zccache_depgraph::ScanResult {
+                zccache_monocrate::depgraph::ScanResult {
                     resolved: Vec::new(),
                     unresolved: Vec::new(),
                     has_computed: false,
                 }
             }
         } else {
-            zccache_depgraph::ScanResult {
+            zccache_monocrate::depgraph::ScanResult {
                 resolved: Vec::new(),
                 unresolved: Vec::new(),
                 has_computed: false,
             }
         }
     } else {
-        zccache_depgraph::ScanResult {
+        zccache_monocrate::depgraph::ScanResult {
             resolved: Vec::new(),
             unresolved: Vec::new(),
             has_computed: false,
@@ -167,7 +167,7 @@ pub(super) fn parse_rustc_depinfo(
     content: &str,
     source_path: &Path,
     cwd: &Path,
-) -> zccache_depgraph::ScanResult {
+) -> zccache_monocrate::depgraph::ScanResult {
     let mut deps = std::collections::HashSet::new();
 
     for line in content.lines() {
@@ -248,7 +248,7 @@ pub(super) fn parse_rustc_depinfo(
     }
     resolved.sort();
 
-    zccache_depgraph::ScanResult {
+    zccache_monocrate::depgraph::ScanResult {
         resolved,
         unresolved: Vec::new(),
         has_computed: false,
@@ -269,7 +269,7 @@ pub(super) struct RustcOutputFile {
 }
 
 pub(super) fn rustc_expected_output_paths(
-    rustc_args: &zccache_depgraph::RustcParsedArgs,
+    rustc_args: &zccache_monocrate::depgraph::RustcParsedArgs,
     primary_output_path: &Path,
     cwd: &Path,
 ) -> Vec<NormalizedPath> {
@@ -299,7 +299,7 @@ pub(super) fn rustc_expected_output_paths(
 
 /// Collect output file metadata from a rustc compilation without reading bytes.
 pub(super) fn collect_rustc_output_files(
-    rustc_args: &zccache_depgraph::RustcParsedArgs,
+    rustc_args: &zccache_monocrate::depgraph::RustcParsedArgs,
     primary_output_path: &Path,
     cwd: &Path,
 ) -> Vec<RustcOutputFile> {

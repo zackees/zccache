@@ -471,7 +471,7 @@ pub(super) fn request_cache_artifact_matches(
         file_hashes.push((path, hash));
     }
 
-    let artifact_key = zccache_depgraph::compute_artifact_key(
+    let artifact_key = zccache_monocrate::depgraph::compute_artifact_key(
         &entry.context_key,
         &mut file_hashes,
         Some(root.as_path()),

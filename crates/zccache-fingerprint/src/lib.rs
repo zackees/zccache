@@ -1,34 +1,73 @@
-//! Lightweight fingerprint cache for CI and tooling.
+//! PyO3 cdylib for the fingerprint engine.
 //!
-//! Answers "has this set of files changed since the last successful operation?"
-//! without the full machinery of the artifact store or metadata cache.
-//!
-//! # Cache Types
-//!
-//! - [`TwoLayerCache`] — Per-file mtime→blake3 fingerprinting. Skips hashing
-//!   when mtime is unchanged (Layer 1). When mtime differs but content hasn't,
-//!   updates the cached mtime silently (Layer 2, smart touch handling).
-//!
-//! - [`HashCache`] — Single aggregate blake3 hash of an entire file set.
-//!   Suited for all-or-nothing decisions like "run all tests".
-//!
-//! Both use the pending pattern for crash safety: `check()` pre-computes
-//! the fingerprint, then `mark_success()`/`mark_failure()` promotes it.
+//! The Rust fingerprint engine itself lives in
+//! `zccache_monocrate::fingerprint` (issue #365). This crate exists solely
+//! to host the `_native` Python extension module so the polished
+//! `zccache.fingerprint` Python package can `import zccache.fingerprint._native`.
 
-pub mod decision;
-pub mod error;
-pub mod file_lock;
-pub mod hash_cache;
-pub mod persist;
-pub mod scan;
-pub mod two_layer;
+use pyo3::prelude::*;
 
-pub use decision::{CacheDecision, RunReason};
-pub use error::{FingerprintError, Result};
-pub use hash_cache::{compute_aggregate_hash, HashCache};
-pub use persist::detect_pending_type;
-pub use scan::{walk_files, walk_files_glob, ScannedFile};
-pub use two_layer::TwoLayerCache;
+use zccache_monocrate::fingerprint::error::FingerprintError;
+use zccache_monocrate::fingerprint::hash_cache::compute_aggregate_hash;
+use zccache_monocrate::fingerprint::scan::{self, ScannedFile};
 
-#[cfg(feature = "python")]
-mod python;
+fn to_py_err(e: FingerprintError) -> PyErr {
+    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
+}
+
+fn io_to_py_err(e: std::io::Error) -> PyErr {
+    PyErr::new::<pyo3::exceptions::PyOSError, _>(e.to_string())
+}
+
+/// Walk files by extension filter and compute an aggregate blake3 hash.
+#[pyfunction]
+#[pyo3(signature = (root, extensions=vec![], exclude_dirs=vec![]))]
+fn hash_files(root: &str, extensions: Vec<String>, exclude_dirs: Vec<String>) -> PyResult<String> {
+    let ext_refs: Vec<&str> = extensions.iter().map(String::as_str).collect();
+    let dir_refs: Vec<&str> = exclude_dirs.iter().map(String::as_str).collect();
+    let files = scan::walk_files(root.as_ref(), &ext_refs, &dir_refs).map_err(to_py_err)?;
+    compute_aggregate_hash(&files).map_err(to_py_err)
+}
+
+/// Walk files by glob patterns and compute an aggregate blake3 hash.
+#[pyfunction]
+#[pyo3(signature = (root, include=vec![], exclude=vec![]))]
+fn hash_files_glob(root: &str, include: Vec<String>, exclude: Vec<String>) -> PyResult<String> {
+    let inc_refs: Vec<&str> = include.iter().map(String::as_str).collect();
+    let exc_refs: Vec<&str> = exclude.iter().map(String::as_str).collect();
+    let files = scan::walk_files_glob(root.as_ref(), &inc_refs, &exc_refs).map_err(to_py_err)?;
+    compute_aggregate_hash(&files).map_err(to_py_err)
+}
+
+/// Walk files by extension filter and return per-file blake3 hashes.
+///
+/// Returns a list of `(relative_path, blake3_hex)` tuples.
+#[pyfunction]
+#[pyo3(signature = (root, extensions=vec![], exclude_dirs=vec![]))]
+fn walk_and_hash(
+    root: &str,
+    extensions: Vec<String>,
+    exclude_dirs: Vec<String>,
+) -> PyResult<Vec<(String, String)>> {
+    let ext_refs: Vec<&str> = extensions.iter().map(String::as_str).collect();
+    let dir_refs: Vec<&str> = exclude_dirs.iter().map(String::as_str).collect();
+    let files = scan::walk_files(root.as_ref(), &ext_refs, &dir_refs).map_err(to_py_err)?;
+    hash_each_file(&files)
+}
+
+fn hash_each_file(files: &[ScannedFile]) -> PyResult<Vec<(String, String)>> {
+    let mut result = Vec::with_capacity(files.len());
+    for file in files {
+        let hash = zccache_monocrate::hash::hash_file(&file.absolute).map_err(io_to_py_err)?;
+        result.push((file.relative.clone(), hash.to_hex()));
+    }
+    Ok(result)
+}
+
+#[pymodule]
+fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(hash_files, m)?)?;
+    m.add_function(wrap_pyfunction!(hash_files_glob, m)?)?;
+    m.add_function(wrap_pyfunction!(walk_and_hash, m)?)?;
+    Ok(())
+}

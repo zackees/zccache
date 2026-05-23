@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use zccache_cli::symbols::{self, InstallOptions as SymbolsInstallOptions};
 
 pub(crate) fn cmd_symbols_symbolicate(dumps: Vec<PathBuf>) -> ExitCode {
-    let marker = match zccache_symbols::read_marker_from_current_exe() {
+    let marker = match zccache_monocrate::symbols::read_marker_from_current_exe() {
         Some(m) => m,
         None => {
             eprintln!(
@@ -25,7 +25,7 @@ pub(crate) fn cmd_symbols_symbolicate(dumps: Vec<PathBuf>) -> ExitCode {
     // shared dir.
     let cache_root: PathBuf = zccache_monocrate::core::config::default_cache_dir().into_path_buf();
     let symbols_dir =
-        zccache_symbols::symbols_dir_for(&cache_root, &marker.version, &marker.triple);
+        zccache_monocrate::symbols::symbols_dir_for(&cache_root, &marker.version, &marker.triple);
     let symbols_dir_path: PathBuf = symbols_dir.into_path_buf();
 
     let opts = SymbolsInstallOptions {
@@ -43,7 +43,7 @@ pub(crate) fn cmd_symbols_symbolicate(dumps: Vec<PathBuf>) -> ExitCode {
         }
     };
 
-    if let Err(e) = zccache_symbols::mark_ready(&symbols_dir_path) {
+    if let Err(e) = zccache_monocrate::symbols::mark_ready(&symbols_dir_path) {
         eprintln!(
             "zccache symbolicate: warning — failed to write .ready sentinel in {}: {e}",
             symbols_dir_path.display()
@@ -71,7 +71,7 @@ pub(crate) fn cmd_symbols_symbolicate(dumps: Vec<PathBuf>) -> ExitCode {
 
     let mut had_error = false;
     for dump in dumps {
-        match zccache_symbols::write_symref_sidecar(&dump, &symbols_dir_path) {
+        match zccache_monocrate::symbols::write_symref_sidecar(&dump, &symbols_dir_path) {
             Ok(sidecar) => println!("  wrote {}", sidecar.display()),
             Err(e) => {
                 eprintln!(

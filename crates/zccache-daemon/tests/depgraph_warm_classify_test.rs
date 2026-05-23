@@ -11,7 +11,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
-use zccache_depgraph::{
+use zccache_monocrate::depgraph::{
     classify_load, depgraph_file_path, save_to_file, CompileContext, ContextState, DepGraph,
     DepGraphLoadOutcome, IncludeSearchPaths, DEPGRAPH_VERSION,
 };
@@ -111,7 +111,7 @@ async fn valid_depgraph_makes_session_warm() {
     let key = graph.register(make_ctx("/src/main.cpp"));
     graph.update(
         &key,
-        zccache_depgraph::ScanResult {
+        zccache_monocrate::depgraph::ScanResult {
             resolved: vec![NormalizedPath::from("/inc/a.h")],
             unresolved: Vec::new(),
             has_computed: false,
@@ -262,7 +262,7 @@ async fn loaded_graph_with_missing_artifact_is_still_warm() {
     let key = graph.register(make_ctx("/src/orphan.cpp"));
     graph.update(
         &key,
-        zccache_depgraph::ScanResult {
+        zccache_monocrate::depgraph::ScanResult {
             resolved: Vec::new(),
             unresolved: Vec::new(),
             has_computed: false,

@@ -135,7 +135,7 @@ uv pip install maturin pytest --python .venv/Scripts/python.exe
 The crate also exports its API for use as a Rust library:
 
 ```rust
-use zccache_fingerprint::{walk_files, TwoLayerCache, CacheDecision};
+use zccache_monocrate::fingerprint::{walk_files, TwoLayerCache, CacheDecision};
 
 let files = walk_files(root, &["rs"], &["target"])?;
 let cache = TwoLayerCache::new(cache_path);

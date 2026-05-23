@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify};
 use zccache_monocrate::artifact::{ArtifactIndex, ArtifactStore};
 use zccache_monocrate::core::NormalizedPath;
-use zccache_depgraph::{
+use zccache_monocrate::depgraph::{
     CompileContext, ContextKey, DepGraph, DepfileStrategy, SessionId, SessionManager,
     SystemIncludeCache, UserDepFlags,
 };

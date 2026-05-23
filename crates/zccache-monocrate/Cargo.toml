@@ -53,13 +53,23 @@ globset = "0.4"
 # compiler
 clang = { workspace = true }
 
+# depgraph
+rkyv = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+
+# fingerprint
+clap = { workspace = true }
+fs2 = { workspace = true }
+
 # test-support (gated)
 tracing-subscriber = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+tikv-jemallocator = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
+mimalloc = { workspace = true }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
@@ -81,7 +91,23 @@ harness = false
 name = "scan_metadata"
 harness = false
 
+[[bench]]
+name = "scan_recursive"
+harness = false
+
+[[bench]]
+name = "fingerprint"
+harness = false
+
 [[bin]]
 name = "echo_shim"
 path = "src/bin/echo_shim.rs"
 required-features = ["test-support"]
+
+[[bin]]
+name = "zccache-fp"
+path = "src/bin/zccache-fp.rs"
+
+[[bin]]
+name = "zccache-stamp"
+path = "src/bin/zccache-stamp.rs"

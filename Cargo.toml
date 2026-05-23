@@ -7,13 +7,11 @@ members = [
     "crates/zccache-download-client",
     "crates/zccache-download-daemon",
     "crates/zccache-download-cli",
-    "crates/zccache-depgraph",
     "crates/zccache-watcher",
     "crates/zccache-daemon",
     "crates/zccache-cli",
     "crates/zccache-ci",
     "crates/zccache-fingerprint",
-    "crates/zccache-symbols",
 ]
 exclude = [
     "dylints/ban_std_pathbuf",
@@ -69,12 +67,10 @@ zccache-download-protocol = { path = "crates/zccache-download-protocol" }
 zccache-download = { path = "crates/zccache-download" }
 zccache-download-client = { path = "crates/zccache-download-client" }
 zccache-download-daemon = { path = "crates/zccache-download-daemon" }
-zccache-depgraph = { path = "crates/zccache-depgraph" }
 zccache-watcher = { path = "crates/zccache-watcher" }
 zccache-daemon = { path = "crates/zccache-daemon" }
 zccache-cli = { path = "crates/zccache-cli" }
 zccache-fingerprint = { path = "crates/zccache-fingerprint" }
-zccache-symbols = { path = "crates/zccache-symbols" }
 
 # Vendored notify with fixes for Windows ReadDirectoryChangesW:
 # 1. Detect buffer overflow (bytes_written == 0) and report as error

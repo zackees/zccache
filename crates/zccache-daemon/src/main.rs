@@ -209,17 +209,17 @@ fn run_server(args: Args) {
     // mismatch or corruption the outcome carries a warning that we surface
     // both on stderr (for operators) and via the daemon server (which forwards
     // it into per-session logs) so the cold fallback is never silent.
-    let path = zccache_depgraph::depgraph_file_path();
+    let path = zccache_monocrate::depgraph::depgraph_file_path();
     let (dep_graph, depgraph_load_warning) = if args.no_depgraph_cache {
         let _ = std::fs::remove_file(&path);
         tracing::info!("depgraph cache disabled — starting with empty graph");
         (None, None)
     } else {
         let start = std::time::Instant::now();
-        let outcome = zccache_depgraph::classify_load(&path);
+        let outcome = zccache_monocrate::depgraph::classify_load(&path);
         let warning = outcome.warning(&path);
         match outcome {
-            zccache_depgraph::DepGraphLoadOutcome::Loaded { graph } => {
+            zccache_monocrate::depgraph::DepGraphLoadOutcome::Loaded { graph } => {
                 let stats = graph.stats();
                 let (cold_ctxs, warm_ctxs, stale_ctxs) = graph.state_breakdown();
                 let ctxs_with_key = graph.contexts_with_artifact_key();
@@ -240,8 +240,8 @@ fn run_server(args: Args) {
                 );
                 (Some(graph), None)
             }
-            zccache_depgraph::DepGraphLoadOutcome::Missing => (None, None),
-            zccache_depgraph::DepGraphLoadOutcome::VersionMismatch {
+            zccache_monocrate::depgraph::DepGraphLoadOutcome::Missing => (None, None),
+            zccache_monocrate::depgraph::DepGraphLoadOutcome::VersionMismatch {
                 file_version,
                 expected_version,
             } => {
@@ -255,8 +255,8 @@ fn run_server(args: Args) {
                 }
                 (None, warning)
             }
-            zccache_depgraph::DepGraphLoadOutcome::Corrupt { ref message }
-            | zccache_depgraph::DepGraphLoadOutcome::IoError { ref message } => {
+            zccache_monocrate::depgraph::DepGraphLoadOutcome::Corrupt { ref message }
+            | zccache_monocrate::depgraph::DepGraphLoadOutcome::IoError { ref message } => {
                 tracing::warn!("depgraph load failed: {message} — starting with empty graph");
                 if let Some(ref w) = warning {
                     eprintln!("{w}");

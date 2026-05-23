@@ -227,8 +227,8 @@ impl FingerprintManager {
         // Hash all files and build tracked state.
         let mut tracked = HashMap::new();
         for file in &files {
-            let mtime = zccache_fingerprint::persist::mtime_ns(&file.absolute).unwrap_or(0);
-            let size = zccache_fingerprint::persist::file_size(&file.absolute).unwrap_or(0);
+            let mtime = zccache_monocrate::fingerprint::persist::mtime_ns(&file.absolute).unwrap_or(0);
+            let size = zccache_monocrate::fingerprint::persist::file_size(&file.absolute).unwrap_or(0);
             let hash_hex = match zccache_monocrate::hash::hash_file(&file.absolute) {
                 Ok(h) => h.to_hex(),
                 Err(_) => String::new(),
@@ -324,8 +324,8 @@ impl FingerprintManager {
                 if let Ok(rel) = path.strip_prefix(root) {
                     let rel_str = rel.to_string_lossy().replace('\\', "/");
                     // Re-hash the changed file.
-                    let mtime = zccache_fingerprint::persist::mtime_ns(&path).unwrap_or(0);
-                    let size = zccache_fingerprint::persist::file_size(&path).unwrap_or(0);
+                    let mtime = zccache_monocrate::fingerprint::persist::mtime_ns(&path).unwrap_or(0);
+                    let size = zccache_monocrate::fingerprint::persist::file_size(&path).unwrap_or(0);
                     let hash_hex = match zccache_monocrate::hash::hash_file(&path) {
                         Ok(h) => h.to_hex(),
                         Err(_) => String::new(),
@@ -381,17 +381,17 @@ impl FingerprintManager {
         include_globs: &[String],
         exclude: &[String],
     ) -> std::result::Result<
-        Vec<zccache_fingerprint::ScannedFile>,
-        zccache_fingerprint::FingerprintError,
+        Vec<zccache_monocrate::fingerprint::ScannedFile>,
+        zccache_monocrate::fingerprint::FingerprintError,
     > {
         if !include_globs.is_empty() {
             let include_refs: Vec<&str> = include_globs.iter().map(|s| s.as_str()).collect();
             let exclude_refs: Vec<&str> = exclude.iter().map(|s| s.as_str()).collect();
-            zccache_fingerprint::walk_files_glob(root, &include_refs, &exclude_refs)
+            zccache_monocrate::fingerprint::walk_files_glob(root, &include_refs, &exclude_refs)
         } else {
             let ext_refs: Vec<&str> = extensions.iter().map(|s| s.as_str()).collect();
             let exclude_refs: Vec<&str> = exclude.iter().map(|s| s.as_str()).collect();
-            zccache_fingerprint::walk_files(root, &ext_refs, &exclude_refs)
+            zccache_monocrate::fingerprint::walk_files(root, &ext_refs, &exclude_refs)
         }
     }
 
@@ -402,8 +402,8 @@ impl FingerprintManager {
         let root = watch.root.clone();
         for (rel_path, tracked) in watch.files.iter_mut() {
             let abs = root.join(rel_path);
-            let mtime = zccache_fingerprint::persist::mtime_ns(&abs).unwrap_or(0);
-            let size = zccache_fingerprint::persist::file_size(&abs).unwrap_or(0);
+            let mtime = zccache_monocrate::fingerprint::persist::mtime_ns(&abs).unwrap_or(0);
+            let size = zccache_monocrate::fingerprint::persist::file_size(&abs).unwrap_or(0);
             if mtime == tracked.mtime_ns && size == tracked.size {
                 continue; // Layer 1: fast skip
             }

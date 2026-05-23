@@ -13,7 +13,7 @@ pub(super) async fn handle_session_start(
     journal_path: Option<NormalizedPath>,
     profile: bool,
 ) -> Response {
-    let session_config = zccache_depgraph::SessionConfig {
+    let session_config = zccache_monocrate::depgraph::SessionConfig {
         client_pid,
         working_dir: working_dir.into(),
         log_file,
@@ -62,7 +62,7 @@ pub(super) async fn handle_session_start(
 pub(super) fn record_session_stat(
     sessions: &SessionManager,
     session_id: &SessionId,
-    f: impl FnOnce(&mut zccache_depgraph::SessionStatsTracker),
+    f: impl FnOnce(&mut zccache_monocrate::depgraph::SessionStatsTracker),
 ) {
     sessions.mutate(session_id, |session| {
         if let Some(ref mut tracker) = session.stats_tracker {

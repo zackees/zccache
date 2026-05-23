@@ -230,11 +230,11 @@ impl DaemonServer {
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(300)).await;
-                    let path = zccache_depgraph::depgraph_file_path();
+                    let path = zccache_monocrate::depgraph::depgraph_file_path();
                     if let Some(parent) = path.parent() {
                         std::fs::create_dir_all(parent).ok();
                     }
-                    match zccache_depgraph::save_to_file(&state.dep_graph, &path) {
+                    match zccache_monocrate::depgraph::save_to_file(&state.dep_graph, &path) {
                         Ok(()) => {
                             state.dep_graph_persisted.store(true, Ordering::Release);
                             tracing::debug!("periodic depgraph save");
@@ -320,14 +320,14 @@ impl DaemonServer {
 
                     // Save depgraph to disk before exiting.
                     let start = std::time::Instant::now();
-                    let path = zccache_depgraph::depgraph_file_path();
+                    let path = zccache_monocrate::depgraph::depgraph_file_path();
                     if let Some(parent) = path.parent() {
                         std::fs::create_dir_all(parent).ok();
                     }
                     let (cold_ctxs, warm_ctxs, stale_ctxs) =
                         self.state.dep_graph.state_breakdown();
                     let ctxs_with_key = self.state.dep_graph.contexts_with_artifact_key();
-                    match zccache_depgraph::save_to_file(&self.state.dep_graph, &path) {
+                    match zccache_monocrate::depgraph::save_to_file(&self.state.dep_graph, &path) {
                         Ok(()) => {
                             self.state
                                 .dep_graph_persisted

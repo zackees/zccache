@@ -17,10 +17,8 @@ RUST_PUBLISH_ORDER = [
     "zccache-download-daemon",
     "zccache-download-client",
     "zccache-download-cli",
-    "zccache-depgraph",
     "zccache-watcher",
     "zccache-fingerprint",
-    "zccache-symbols",
     "zccache-cli",
     "zccache-daemon",
 ]

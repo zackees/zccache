@@ -31,8 +31,6 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 sysinfo = "0.33"
 zccache-monocrate = { workspace = true }
-zccache-depgraph = { workspace = true }
-zccache-fingerprint = { workspace = true }
 running-process-core = { workspace = true }
 filetime = { workspace = true }
 dashmap = { workspace = true }

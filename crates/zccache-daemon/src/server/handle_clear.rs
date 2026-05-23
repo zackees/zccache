@@ -69,7 +69,7 @@ pub(super) async fn handle_clear(state: &SharedState) -> Response {
     let _ = std::fs::remove_file(state.metadata_path.as_path());
 
     // Delete on-disk depgraph snapshot.
-    let _ = std::fs::remove_file(zccache_depgraph::depgraph_file_path());
+    let _ = std::fs::remove_file(zccache_monocrate::depgraph::depgraph_file_path());
 
     tracing::info!(
         artifacts_removed,

@@ -121,8 +121,8 @@ pub(super) async fn handle_connection(
                         sessions_total: snap.sessions_total,
                         sessions_active: state.sessions.active_count() as u64,
                         cache_dir: zccache_monocrate::core::config::default_cache_dir(),
-                        dep_graph_version: zccache_depgraph::DEPGRAPH_VERSION,
-                        dep_graph_disk_size: zccache_depgraph::depgraph_file_path()
+                        dep_graph_version: zccache_monocrate::depgraph::DEPGRAPH_VERSION,
+                        dep_graph_disk_size: zccache_monocrate::depgraph::depgraph_file_path()
                             .metadata()
                             .map(|m| m.len())
                             .unwrap_or(0),

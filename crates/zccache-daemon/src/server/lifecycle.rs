@@ -141,7 +141,7 @@ impl DaemonServer {
     ///
     /// Must be called before `run()` (while this is the only Arc holder).
     /// Marks the graph as persisted because it was restored from disk.
-    pub fn set_dep_graph(&mut self, graph: zccache_depgraph::DepGraph) {
+    pub fn set_dep_graph(&mut self, graph: zccache_monocrate::depgraph::DepGraph) {
         let state =
             Arc::get_mut(&mut self.state).expect("set_dep_graph must be called before run()");
         state.dep_graph = graph;
@@ -150,7 +150,7 @@ impl DaemonServer {
 
     /// Record a load-time depgraph warning to mirror into per-session logs.
     ///
-    /// Called by the daemon's startup path after [`zccache_depgraph::classify_load`]
+    /// Called by the daemon's startup path after [`zccache_monocrate::depgraph::classify_load`]
     /// returns a non-`Loaded` outcome that warrants surfacing (version
     /// mismatch, corruption, I/O error). The warning is appended to each
     /// session's log file at `SessionStart` so a cold fallback caused by a
