@@ -106,7 +106,7 @@ pub fn is_link_invocation(tool: &str, args: &[String]) -> bool {
     // Module mode does NOT imply compilation â€” it needs `-c` or `--precompile`.
     for pair in effective_args.windows(2) {
         if pair[0] == "-x" {
-            if let Some(mode) = super::source_mode_from_language(&pair[1]) {
+            if let Some(mode) = crate::parse::source_mode_from_language(&pair[1]) {
                 if mode.implies_compilation() {
                     return false;
                 }
