@@ -2,11 +2,6 @@
 resolver = "2"
 members = [
     "crates/zccache-monocrate",
-    "crates/zccache-download-protocol",
-    "crates/zccache-download",
-    "crates/zccache-download-client",
-    "crates/zccache-download-daemon",
-    "crates/zccache-download-cli",
     "crates/zccache-watcher",
     "crates/zccache-daemon",
     "crates/zccache-cli",
@@ -63,10 +58,6 @@ tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_support
 mimalloc = "0.1"
 running-process-core = "3.3"
 zccache-monocrate = { path = "crates/zccache-monocrate" }
-zccache-download-protocol = { path = "crates/zccache-download-protocol" }
-zccache-download = { path = "crates/zccache-download" }
-zccache-download-client = { path = "crates/zccache-download-client" }
-zccache-download-daemon = { path = "crates/zccache-download-daemon" }
 zccache-watcher = { path = "crates/zccache-watcher" }
 zccache-daemon = { path = "crates/zccache-daemon" }
 zccache-cli = { path = "crates/zccache-cli" }

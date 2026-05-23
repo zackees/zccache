@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use zccache_download::DownloadOptions;
-use zccache_download_client::{
+use zccache_monocrate::download::DownloadOptions;
+use zccache_monocrate::download_client::{
     is_terminal, ArchiveFormat, DownloadClient, DownloadSource, FetchRequest, FetchResult,
     FetchState, WaitMode,
 };
@@ -134,7 +134,7 @@ fn main() -> std::process::ExitCode {
                             if is_terminal(&status) {
                                 return if matches!(
                                     status.phase,
-                                    zccache_download::DownloadPhase::Completed
+                                    zccache_monocrate::download::DownloadPhase::Completed
                                 ) {
                                     std::process::ExitCode::SUCCESS
                                 } else {
@@ -331,7 +331,7 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-fn print_status(status: &zccache_download::DownloadStatus, json: bool) {
+fn print_status(status: &zccache_monocrate::download::DownloadStatus, json: bool) {
     if json {
         println!(
             "{{\"phase\":\"{:?}\",\"total_bytes\":{},\"downloaded_bytes\":{},\"percentage\":{},\"active_clients\":{},\"destination\":\"{}\",\"source_url\":\"{}\",\"error\":{}}}",

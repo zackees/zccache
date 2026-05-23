@@ -4,9 +4,9 @@ crates/zccache-monocrate/src/core/path.rs
 # doesn't expose mutation, so the assembly stays on raw PathBuf and the
 # result is wrapped into NormalizedPath at the boundary.
 crates/zccache-monocrate/src/core/config.rs
-crates/zccache-download-client/src/artifact.rs
-crates/zccache-download-cli/src/main.rs
-crates/zccache-download-daemon/src/lib.rs
+crates/zccache-monocrate/src/download_client/artifact.rs
+crates/zccache-monocrate/src/bin/zccache-download.rs
+crates/zccache-monocrate/src/download_daemon/mod.rs
 crates/zccache-cli/src/lib.rs
 crates/zccache-cli/src/symbols.rs
 # The cli's `main.rs`, `python.rs`, and `snapshot_fp.rs` carry the legacy
@@ -25,4 +25,4 @@ crates/zccache-daemon/src/server.rs
 # zccache-download holds the FetchRequest archive_path / destination
 # fields as PathBuf; the download daemon serializes those over the wire,
 # so the migration is a protocol-shaped change.
-crates/zccache-download/src/lib.rs
+crates/zccache-monocrate/src/download/mod.rs

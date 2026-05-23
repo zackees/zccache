@@ -12,7 +12,7 @@ description = "Transitional monocrate absorbing the zccache workspace (issue #36
 [features]
 default = []
 # Enables zccache_monocrate::test_support (dev-only helpers).
-test-support = ["dep:tracing-subscriber"]
+test-support = []
 
 [dependencies]
 # core
@@ -61,8 +61,18 @@ uuid = { version = "1", features = ["v4"] }
 clap = { workspace = true }
 fs2 = { workspace = true }
 
-# test-support (gated)
-tracing-subscriber = { workspace = true, optional = true }
+# download stack
+futures = { workspace = true }
+tokio-util = { workspace = true }
+zip = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+ruzstd = { workspace = true }
+lzma-rs = { workspace = true }
+sevenz-rust = { workspace = true }
+
+# shared: used by test_support, download-daemon bin, etc.
+tracing-subscriber = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -111,3 +121,12 @@ path = "src/bin/zccache-fp.rs"
 [[bin]]
 name = "zccache-stamp"
 path = "src/bin/zccache-stamp.rs"
+
+[[bin]]
+name = "zccache-download-daemon"
+path = "src/bin/zccache-download-daemon.rs"
+
+[[bin]]
+name = "zccache-download"
+path = "src/bin/zccache-download.rs"
+doc = false

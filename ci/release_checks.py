@@ -12,11 +12,6 @@ from typing import Any
 ROOT = Path(__file__).parent.parent.resolve()
 RUST_PUBLISH_ORDER = [
     "zccache-monocrate",
-    "zccache-download",
-    "zccache-download-protocol",
-    "zccache-download-daemon",
-    "zccache-download-client",
-    "zccache-download-cli",
     "zccache-watcher",
     "zccache-fingerprint",
     "zccache-cli",

@@ -8,7 +8,7 @@ mod python;
 
 pub mod symbols;
 
-pub use zccache_download_client::{
+pub use zccache_monocrate::download_client::{
     ArchiveFormat, DownloadSource, FetchRequest, FetchResult, FetchState, FetchStateKind,
     FetchStatus, WaitMode,
 };
@@ -195,7 +195,7 @@ pub fn client_download(
     params: DownloadParams,
 ) -> Result<FetchResult, String> {
     let request = build_download_request(params);
-    let client = zccache_download_client::DownloadClient::new(endpoint.map(ToOwned::to_owned));
+    let client = zccache_monocrate::download_client::DownloadClient::new(endpoint.map(ToOwned::to_owned));
     client.fetch(request)
 }
 
@@ -204,7 +204,7 @@ pub fn client_download_exists(
     params: DownloadParams,
 ) -> Result<FetchState, String> {
     let request = build_download_request(params);
-    let client = zccache_download_client::DownloadClient::new(endpoint.map(ToOwned::to_owned));
+    let client = zccache_monocrate::download_client::DownloadClient::new(endpoint.map(ToOwned::to_owned));
     client.exists(&request)
 }
 

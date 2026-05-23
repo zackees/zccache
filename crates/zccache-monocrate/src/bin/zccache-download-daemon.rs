@@ -7,8 +7,8 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 static GLOBAL_WIN: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use clap::Parser;
-use zccache_download_protocol::daemon_mgmt;
-use zccache_download_protocol::{Request, Response};
+use zccache_monocrate::download_protocol::daemon_mgmt;
+use zccache_monocrate::download_protocol::{Request, Response};
 
 #[derive(Debug, Parser)]
 #[command(name = "zccache-download-daemon", version, about)]
@@ -56,7 +56,7 @@ fn print_status(args: &Args) {
 }
 
 /// Connect to a running daemon over IPC and query its status.
-fn query_daemon_status(endpoint: &str) -> Result<zccache_download::DownloadDaemonStatus, String> {
+fn query_daemon_status(endpoint: &str) -> Result<zccache_monocrate::download::DownloadDaemonStatus, String> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

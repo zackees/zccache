@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use zccache_download::{canonical_destination, stable_download_id, DownloadOptions, DownloadPhase};
 
-use crate::DownloadClient;
+use super::DownloadClient;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WaitMode {
@@ -276,7 +276,7 @@ impl DownloadClient {
                     )?;
                     let status = loop {
                         let status = handle.wait(None)?;
-                        if crate::is_terminal(&status) {
+                        if super::is_terminal(&status) {
                             break status;
                         }
                     };
