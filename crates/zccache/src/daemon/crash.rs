@@ -1,7 +1,7 @@
-//! Daemon-side façade over [`zccache::core::crash`].
+//! Daemon-side façade over [`crate::core::crash`].
 //!
 //! Historically this module owned the panic hook + signal handler
-//! implementation. Issue #313 moved that code into `zccache::core::crash`
+//! implementation. Issue #313 moved that code into `crate::core::crash`
 //! so the CLI can install the same coverage with one call. The
 //! daemon-only knobs that survived (`install_panic_hook`,
 //! `install_minidump_handler`, `check_previous_crashes`,
@@ -9,13 +9,13 @@
 //! delegate to the shared core implementation, and the daemon's
 //! `main.rs` still installs them in the same order it always has.
 //!
-//! New code should call `zccache::core::crash::install("zccache-daemon")`
+//! New code should call `crate::core::crash::install("zccache-daemon")`
 //! once at the top of `main` and rely on the returned `CrashGuard` to
 //! keep handlers registered.
 
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
-pub use zccache::core::crash::{
+pub use crate::core::crash::{
     check_previous_crashes, clear_crash_dumps, list_crash_dumps, CrashGuard,
 };
 
@@ -23,7 +23,7 @@ pub use zccache::core::crash::{
 /// Kept as a free function so the existing crash-trigger fixture (which
 /// is shared with the panic-only minidump test) keeps compiling.
 pub fn install_panic_hook() {
-    let _ = zccache::core::crash::install("zccache-daemon");
+    let _ = crate::core::crash::install("zccache-daemon");
 }
 
 /// Install OS-level signal/exception handlers. Returns a guard the
@@ -36,7 +36,7 @@ pub fn install_minidump_handler() -> Option<MinidumpHandle> {
     // so it's safe for the daemon to call install_panic_hook() first
     // and then install_minidump_handler() — they end up wired through
     // the same guard.
-    let guard = zccache::core::crash::install("zccache-daemon");
+    let guard = crate::core::crash::install("zccache-daemon");
     Some(MinidumpHandle { _guard: guard })
 }
 
@@ -52,7 +52,7 @@ pub struct MinidumpHandle {
 /// want to record a synthesised "crash report" (e.g. a graceful shutdown
 /// from a recoverable error that still warrants postmortem).
 pub fn write_crash_dump(panic_info: &str, backtrace: &str) -> Option<NormalizedPath> {
-    let crash_dir = zccache::core::config::crash_dump_dir();
+    let crash_dir = crate::core::config::crash_dump_dir();
     std::fs::create_dir_all(&crash_dir).ok()?;
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

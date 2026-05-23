@@ -11,7 +11,7 @@ use reqwest::header::{
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DownloadOptions {
@@ -130,7 +130,7 @@ pub async fn download_to_path(
     cancel_token: CancellationToken,
 ) -> Result<Option<u64>, DownloadError> {
     let client = reqwest::Client::builder()
-        .user_agent(format!("zccache-download/{}", zccache::core::VERSION))
+        .user_agent(format!("zccache-download/{}", crate::core::VERSION))
         .build()
         .map_err(|e| DownloadError::Http(e.to_string()))?;
 
@@ -467,7 +467,7 @@ async fn download_segment(request: SegmentDownload<'_>) -> Result<u64, DownloadE
 }
 
 pub fn stable_download_id(path: &Path) -> String {
-    let key = zccache::core::normalize_for_key(path);
+    let key = crate::core::normalize_for_key(path);
     blake3::hash(key.as_bytes()).to_hex().to_string()
 }
 

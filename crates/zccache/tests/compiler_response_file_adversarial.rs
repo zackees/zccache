@@ -14,13 +14,13 @@
 //! Run single: soldr cargo test -p zccache-compiler --test response_file_adversarial -- <test_name> --nocapture
 
 use std::path::Path;
-use zccache_compiler::response_file::{
+use zccache::compiler::response_file::{
     expand_response_files, parse_response_file_content, ResponseFileError,
 };
 use zccache::core::NormalizedPath;
 
 #[cfg(windows)]
-use zccache_compiler::response_file::write_response_file_if_needed;
+use zccache::compiler::response_file::write_response_file_if_needed;
 
 fn s(v: &[&str]) -> Vec<String> {
     v.iter().map(|x| x.to_string()).collect()
@@ -1059,8 +1059,8 @@ fn integration_all_args_from_response_file() {
 
     let args = s(&[&format!("@{}", path.display())]);
     let expanded = expand_response_files(&args).unwrap();
-    match zccache_compiler::parse_invocation("gcc", &expanded) {
-        zccache_compiler::ParsedInvocation::Cacheable(c) => {
+    match zccache::compiler::parse_invocation("gcc", &expanded) {
+        zccache::compiler::ParsedInvocation::Cacheable(c) => {
             assert_eq!(c.source_file, Path::new("foo.cpp"));
             assert_eq!(c.output_file, Path::new("foo.o"));
             assert!(c.original_args.contains(&"-O2".to_string()));
@@ -1079,8 +1079,8 @@ fn integration_c_flag_from_response_file() {
 
     let args = s(&["foo.cpp", &format!("@{}", path.display()), "-o", "foo.o"]);
     let expanded = expand_response_files(&args).unwrap();
-    match zccache_compiler::parse_invocation("clang", &expanded) {
-        zccache_compiler::ParsedInvocation::Cacheable(c) => {
+    match zccache::compiler::parse_invocation("clang", &expanded) {
+        zccache::compiler::ParsedInvocation::Cacheable(c) => {
             assert_eq!(c.source_file, Path::new("foo.cpp"));
             assert_eq!(c.output_file, Path::new("foo.o"));
         }
@@ -1097,8 +1097,8 @@ fn integration_noncacheable_flag_from_response_file() {
 
     let args = s(&["-c", "foo.cpp", &format!("@{}", path.display())]);
     let expanded = expand_response_files(&args).unwrap();
-    match zccache_compiler::parse_invocation("gcc", &expanded) {
-        zccache_compiler::ParsedInvocation::NonCacheable { .. } => { /* expected */ }
+    match zccache::compiler::parse_invocation("gcc", &expanded) {
+        zccache::compiler::ParsedInvocation::NonCacheable { .. } => { /* expected */ }
         other => panic!("expected cacheable, got: {other:?}"),
     }
 }
@@ -1112,8 +1112,8 @@ fn integration_quoted_source_path_from_response_file() {
 
     let args = s(&[&format!("@{}", path.display())]);
     let expanded = expand_response_files(&args).unwrap();
-    match zccache_compiler::parse_invocation("gcc", &expanded) {
-        zccache_compiler::ParsedInvocation::Cacheable(c) => {
+    match zccache::compiler::parse_invocation("gcc", &expanded) {
+        zccache::compiler::ParsedInvocation::Cacheable(c) => {
             assert_eq!(c.source_file, Path::new("path with spaces/main.cpp"));
             assert_eq!(c.output_file, Path::new("main.o"));
         }
@@ -1138,8 +1138,8 @@ fn integration_nested_response_files_cacheable() {
 
     let args = s(&[&format!("@{}", outer_file.display()), "-o", "main.o"]);
     let expanded = expand_response_files(&args).unwrap();
-    match zccache_compiler::parse_invocation("g++", &expanded) {
-        zccache_compiler::ParsedInvocation::Cacheable(c) => {
+    match zccache::compiler::parse_invocation("g++", &expanded) {
+        zccache::compiler::ParsedInvocation::Cacheable(c) => {
             assert_eq!(c.source_file, Path::new("main.cpp"));
             assert_eq!(c.output_file, Path::new("main.o"));
             assert!(c.original_args.contains(&"-O2".to_string()));
@@ -1159,8 +1159,8 @@ fn integration_multiple_sources_via_response_file() {
 
     let args = s(&["-c", "a.cpp", &format!("@{}", path.display())]);
     let expanded = expand_response_files(&args).unwrap();
-    match zccache_compiler::parse_invocation("gcc", &expanded) {
-        zccache_compiler::ParsedInvocation::MultiFile { compilations, .. } => {
+    match zccache::compiler::parse_invocation("gcc", &expanded) {
+        zccache::compiler::ParsedInvocation::MultiFile { compilations, .. } => {
             assert_eq!(compilations.len(), 2);
         }
         other => {
@@ -1182,8 +1182,8 @@ fn integration_define_with_quoted_value_in_cache_key() {
 
     let args = s(&["-c", "main.cpp", &format!("@{}", path.display())]);
     let expanded = expand_response_files(&args).unwrap();
-    match zccache_compiler::parse_invocation("clang++", &expanded) {
-        zccache_compiler::ParsedInvocation::Cacheable(c) => {
+    match zccache::compiler::parse_invocation("clang++", &expanded) {
+        zccache::compiler::ParsedInvocation::Cacheable(c) => {
             assert!(c.original_args.contains(&"-DVERSION=1.2.3".to_string()));
             assert!(c
                 .original_args

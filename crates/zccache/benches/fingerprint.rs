@@ -2,7 +2,7 @@ use std::path::Path;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use tempfile::TempDir;
-use zccache_fingerprint::{walk_files, walk_files_glob, HashCache, TwoLayerCache};
+use zccache::fingerprint::{walk_files, walk_files_glob, HashCache, TwoLayerCache};
 
 /// Create a synthetic directory tree with `n` files.
 fn create_synthetic_tree(dir: &Path, n: usize) {
@@ -157,7 +157,7 @@ fn bench_two_layer_fast_path(c: &mut Criterion) {
         b.iter(|| {
             let cache = TwoLayerCache::new(cache_file.clone());
             let decision = cache.try_skip_fast(src.path()).unwrap();
-            assert_eq!(decision, Some(zccache_fingerprint::CacheDecision::Skip));
+            assert_eq!(decision, Some(zccache::fingerprint::CacheDecision::Skip));
         });
     });
 }

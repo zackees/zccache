@@ -2,7 +2,7 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use zccache::gha::{GhaCache, GhaError};
+use crate::gha::{GhaCache, GhaError};
 
 use super::targz::{tar_gz_decode, tar_gz_encode};
 

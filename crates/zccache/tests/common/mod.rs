@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use zccache_fingerprint::ScannedFile;
+use zccache::fingerprint::ScannedFile;
 
 /// Create a file with content, creating parent dirs as needed.
 pub fn create_file(dir: &Path, rel: &str, content: &str) {

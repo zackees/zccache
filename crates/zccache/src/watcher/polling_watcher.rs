@@ -5,7 +5,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FileState {

@@ -35,7 +35,7 @@ pub(super) enum UnitCacheResult {
 /// compilations where all units share the same flags.
 pub(super) fn check_unit_cache(
     state: &SharedState,
-    compilation: &zccache::compiler::CacheableCompilation,
+    compilation: &crate::compiler::CacheableCompilation,
     cwd_path: &Path,
     key_root: &NormalizedPath,
     system_includes: &[NormalizedPath],
@@ -209,8 +209,8 @@ pub(super) fn check_unit_cache(
     let t_depgraph = t0.elapsed();
 
     // Try to serve from cache
-    if let zccache::depgraph::CacheVerdict::Hit { artifact_key }
-    | zccache::depgraph::CacheVerdict::SourceChanged { artifact_key } = verdict
+    if let crate::depgraph::CacheVerdict::Hit { artifact_key }
+    | crate::depgraph::CacheVerdict::SourceChanged { artifact_key } = verdict
     {
         let artifact_key_hex = artifact_key.hash().to_hex();
         if let Some(mut cached_ref) = lookup_artifact_with_disk_fallback(state, &artifact_key_hex) {
@@ -296,7 +296,7 @@ pub(super) async fn handle_compile_multi(
     state: Arc<SharedState>,
     sid: SessionId,
     compiler: NormalizedPath,
-    compilations: Vec<zccache::compiler::CacheableCompilation>,
+    compilations: Vec<crate::compiler::CacheableCompilation>,
     original_args: Arc<[String]>,
     source_indices: Vec<usize>,
     cwd_path: NormalizedPath,
@@ -317,10 +317,10 @@ pub(super) async fn handle_compile_multi(
     let shared_base: Arc<CompileContext> = {
         let first = &compilations[0];
         let parsed = match first.family {
-            zccache::compiler::CompilerFamily::Msvc => {
-                zccache::depgraph::msvc_args::parse_msvc_args(&first.original_args, &cwd_path)
+            crate::compiler::CompilerFamily::Msvc => {
+                crate::depgraph::msvc_args::parse_msvc_args(&first.original_args, &cwd_path)
             }
-            _ => zccache::depgraph::args::parse_gnu_args(&first.original_args, &cwd_path),
+            _ => crate::depgraph::args::parse_gnu_args(&first.original_args, &cwd_path),
         };
         let mut base = CompileContext::from_parsed_args(parsed);
         for path in &system_includes {
@@ -503,7 +503,7 @@ pub(super) async fn handle_compile_multi(
         compiler_args.push("-MD".to_string());
     }
 
-    let _rsp_guard = match zccache::compiler::response_file::write_response_file_if_needed(
+    let _rsp_guard = match crate::compiler::response_file::write_response_file_if_needed(
         &compiler_args,
         &state.depfile_tmpdir,
     ) {
@@ -635,7 +635,7 @@ pub(super) async fn handle_compile_multi(
                         .unwrap_or_else(|| std::ffi::OsStr::new("out"));
                     cwd_path_task.join(stem).with_extension("d").into()
                 };
-                match zccache::depgraph::depfile::parse_depfile_path(
+                match crate::depgraph::depfile::parse_depfile_path(
                     &depfile_path,
                     &source_path,
                     &cwd_path_task,
@@ -649,11 +649,11 @@ pub(super) async fn handle_compile_multi(
                             "multi-file depfile parse failed for {}: {e}",
                             source_path.display()
                         );
-                        zccache::depgraph::scanner::scan_recursive(&source_path, &ctx.include_search)
+                        crate::depgraph::scanner::scan_recursive(&source_path, &ctx.include_search)
                     }
                 }
             } else {
-                zccache::depgraph::scanner::scan_recursive(&source_path, &ctx.include_search)
+                crate::depgraph::scanner::scan_recursive(&source_path, &ctx.include_search)
             };
 
             let tracked_paths: Vec<NormalizedPath> = std::iter::once(source_path.clone())

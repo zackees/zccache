@@ -12,7 +12,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
-use zccache_fscache::CacheSystem;
+use crate::fscache::CacheSystem;
 
 /// Deferred overflow recovery.
 ///
@@ -127,9 +127,9 @@ mod tests {
     use std::fs;
     use std::sync::Arc;
     use tempfile::TempDir;
-    use zccache::core::NormalizedPath;
-    use zccache_fscache::clock::Clock;
-    use zccache_fscache::Confidence;
+    use crate::core::NormalizedPath;
+    use crate::fscache::clock::Clock;
+    use crate::fscache::Confidence;
 
     fn create_file(dir: &TempDir, name: &str, content: &str) -> NormalizedPath {
         let path = dir.path().join(name);

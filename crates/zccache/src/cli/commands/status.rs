@@ -18,7 +18,7 @@ pub(crate) async fn cmd_status(endpoint: &str, json: bool) -> ExitCode {
         }
     };
 
-    if let Err(e) = conn.send(&zccache::protocol::Request::Status).await {
+    if let Err(e) = conn.send(&crate::protocol::Request::Status).await {
         let message = format!("zccache: failed to send to daemon: {e}");
         if json {
             print_status_error_json(endpoint, &message);
@@ -40,7 +40,7 @@ pub(crate) async fn cmd_status(endpoint: &str, json: bool) -> ExitCode {
         }
     };
     match recv_result {
-        Some(zccache::protocol::Response::Status(s)) => {
+        Some(crate::protocol::Response::Status(s)) => {
             if json {
                 print_status_ok_json(endpoint, &s);
                 return ExitCode::SUCCESS;
@@ -59,7 +59,7 @@ pub(crate) async fn cmd_status(endpoint: &str, json: bool) -> ExitCode {
                 } else {
                     &s.version
                 },
-                zccache::protocol::PROTOCOL_VERSION,
+                crate::protocol::PROTOCOL_VERSION,
                 endpoint,
                 format_uptime(s.uptime_secs)
             );
@@ -147,7 +147,7 @@ pub(crate) async fn cmd_status(endpoint: &str, json: bool) -> ExitCode {
     }
 }
 
-fn print_status_ok_json(endpoint: &str, s: &zccache::protocol::DaemonStatus) {
+fn print_status_ok_json(endpoint: &str, s: &crate::protocol::DaemonStatus) {
     let total = s.cache_hits + s.cache_misses;
     let hit_rate = if total > 0 {
         Some(s.cache_hits as f64 / total as f64)
@@ -163,7 +163,7 @@ fn print_status_ok_json(endpoint: &str, s: &zccache::protocol::DaemonStatus) {
     let value = serde_json::json!({
         "status": "ok",
         "endpoint": endpoint,
-        "protocol_version": zccache::protocol::PROTOCOL_VERSION,
+        "protocol_version": crate::protocol::PROTOCOL_VERSION,
         "hit_rate": hit_rate,
         "link_hit_rate": link_hit_rate,
         "daemon": s,

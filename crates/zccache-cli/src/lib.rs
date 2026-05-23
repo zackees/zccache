@@ -1,3 +1,5 @@
+#![cfg(feature = "python")]
+
 use std::path::PathBuf;
 
 use pyo3::exceptions::{PyOSError, PyRuntimeError};

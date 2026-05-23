@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 /// A request from client to daemon.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -870,13 +870,13 @@ mod tests {
     }
 
     // Compile-time check: PROTOCOL_VERSION must be positive.
-    const _: () = assert!(super::PROTOCOL_VERSION > 0);
+    const _: () = assert!(super::super::PROTOCOL_VERSION > 0);
     // Compile-time check: PROTOCOL_VERSION == 9 after SessionStats gained
     // `phase_profile: Option<PhaseProfileSummary>` (perf observability for
     // per-session phase aggregates). v8 was the prior pin after
     // Compile/CompileEphemeral gained `stdin: Vec<u8>` and ArtifactPayload
     // replaced ArtifactOutput.data: Arc<Vec<u8>> (issue #296 Option B).
-    const _FINGERPRINT_VERSION: () = assert!(super::PROTOCOL_VERSION == 9);
+    const _FINGERPRINT_VERSION: () = assert!(super::super::PROTOCOL_VERSION == 9);
 
     #[test]
     fn fingerprint_check_roundtrip() {

@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 /// A parsed `--extern name=path` declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -385,7 +385,7 @@ fn resolve_path(path: &str, cwd: &Path) -> NormalizedPath {
 
 #[cfg(test)]
 mod tests {
-    use zccache::core::NormalizedPath;
+    use crate::core::NormalizedPath;
 
     use super::*;
 

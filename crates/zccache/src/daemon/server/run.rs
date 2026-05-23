@@ -13,7 +13,7 @@ impl DaemonServer {
     ///
     /// `idle_timeout_secs`: if non-zero, the daemon shuts down after this many
     /// seconds with no client activity. Pass 0 to disable.
-    pub async fn run(&mut self, idle_timeout_secs: u64) -> Result<(), zccache::ipc::IpcError> {
+    pub async fn run(&mut self, idle_timeout_secs: u64) -> Result<(), crate::ipc::IpcError> {
         tracing::info!(
             persist_workers = self.state.persist_semaphore.available_permits(),
             "daemon server running"
@@ -28,7 +28,7 @@ impl DaemonServer {
             index_writer_handle = Some(tokio::spawn(run_index_writer(rx, store, shutdown)));
         }
 
-        let cache_dir = zccache::core::config::default_cache_dir();
+        let cache_dir = crate::core::config::default_cache_dir();
         let temp_root = std::env::temp_dir();
 
         // Clean up legacy log backup directory (Bug 7).
@@ -50,10 +50,10 @@ impl DaemonServer {
 
         // Remove legacy temp-root state from older builds before starting the daemon.
         {
-            let cleaned = zccache::core::config::cleanup_legacy_temp_root_state(
+            let cleaned = crate::core::config::cleanup_legacy_temp_root_state(
                 &temp_root,
                 &cache_dir,
-                zccache::ipc::is_process_alive,
+                crate::ipc::is_process_alive,
             );
             if cleaned > 0 {
                 tracing::info!(cleaned, "cleaned legacy temp-root zccache state");
@@ -63,7 +63,7 @@ impl DaemonServer {
         // Clean up stale depfile directories from dead daemon instances.
         {
             let cleaned =
-                zccache::core::config::cleanup_stale_depfile_dirs(zccache::ipc::is_process_alive);
+                crate::core::config::cleanup_stale_depfile_dirs(crate::ipc::is_process_alive);
             if cleaned > 0 {
                 tracing::info!(cleaned, "cleaned stale depfile directories");
             }
@@ -140,8 +140,8 @@ impl DaemonServer {
         // Start memory eviction background task.
         {
             let state = Arc::clone(&self.state);
-            let budget = zccache::core::config::Config::default().max_memory_bytes;
-            let interval_secs = zccache::core::config::Config::default().eviction_interval_secs;
+            let budget = crate::core::config::Config::default().max_memory_bytes;
+            let interval_secs = crate::core::config::Config::default().eviction_interval_secs;
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
@@ -182,8 +182,8 @@ impl DaemonServer {
         // Start disk artifact GC background task.
         {
             let state = Arc::clone(&self.state);
-            let max_cache_size = zccache::core::config::Config::default().max_cache_size;
-            let interval_secs = zccache::core::config::Config::default().disk_gc_interval_secs;
+            let max_cache_size = crate::core::config::Config::default().max_cache_size;
+            let interval_secs = crate::core::config::Config::default().disk_gc_interval_secs;
             tokio::spawn(async move {
                 // Run once immediately at startup to reclaim excess disk from Bug 5.
                 {
@@ -230,11 +230,11 @@ impl DaemonServer {
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(300)).await;
-                    let path = zccache::depgraph::depgraph_file_path();
+                    let path = crate::depgraph::depgraph_file_path();
                     if let Some(parent) = path.parent() {
                         std::fs::create_dir_all(parent).ok();
                     }
-                    match zccache::depgraph::save_to_file(&state.dep_graph, &path) {
+                    match crate::depgraph::save_to_file(&state.dep_graph, &path) {
                         Ok(()) => {
                             state.dep_graph_persisted.store(true, Ordering::Release);
                             tracing::debug!("periodic depgraph save");
@@ -320,14 +320,14 @@ impl DaemonServer {
 
                     // Save depgraph to disk before exiting.
                     let start = std::time::Instant::now();
-                    let path = zccache::depgraph::depgraph_file_path();
+                    let path = crate::depgraph::depgraph_file_path();
                     if let Some(parent) = path.parent() {
                         std::fs::create_dir_all(parent).ok();
                     }
                     let (cold_ctxs, warm_ctxs, stale_ctxs) =
                         self.state.dep_graph.state_breakdown();
                     let ctxs_with_key = self.state.dep_graph.contexts_with_artifact_key();
-                    match zccache::depgraph::save_to_file(&self.state.dep_graph, &path) {
+                    match crate::depgraph::save_to_file(&self.state.dep_graph, &path) {
                         Ok(()) => {
                             self.state
                                 .dep_graph_persisted
@@ -390,7 +390,7 @@ impl DaemonServer {
     /// Initialize the file watcher pipeline:
     /// `NotifyWatcher (OS thread) → SettleBuffer (tokio task) → CacheSystem consumer (tokio task)`
     async fn start_watcher_pipeline(&self) {
-        let ignore = Arc::new(zccache::watcher::IgnoreFilter::default());
+        let ignore = Arc::new(crate::watcher::IgnoreFilter::default());
         let (watcher, raw_rx) = match NotifyWatcher::new(ignore) {
             Ok(w) => w,
             Err(e) => {

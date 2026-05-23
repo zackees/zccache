@@ -4,7 +4,7 @@
 //! `read_marker_from_path` in the daemon and CLI.
 
 use std::io::Write;
-use zccache_symbols::marker::{read_marker_from_path, MARKER_SIZE};
+use zccache::symbols::marker::{read_marker_from_path, MARKER_SIZE};
 
 #[test]
 fn stamp_then_read_returns_same_fields() {

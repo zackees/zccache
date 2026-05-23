@@ -5,6 +5,8 @@
 //! extension module so the polished `zccache.watcher` Python package can
 //! `import zccache.watcher._native`.
 
+#![cfg(feature = "python")]
+
 use std::path::PathBuf;
 use std::time::Duration;
 

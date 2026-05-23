@@ -15,13 +15,13 @@ fn make_test_store(dir: &Path) -> (PathBuf, PathBuf) {
     let index_path = cache_dir.join("index.bin");
     std::fs::create_dir_all(&artifact_dir).unwrap();
 
-    let store = zccache::artifact::ArtifactStore::open(&index_path).unwrap();
+    let store = crate::artifact::ArtifactStore::open(&index_path).unwrap();
 
     // serde (in a typical Cargo.lock)
     let k1 = "aaaa0001";
     store.insert(
         k1,
-        &zccache::artifact::ArtifactIndex::new(
+        &crate::artifact::ArtifactIndex::new(
             vec![
                 "libserde-abc123.rlib".into(),
                 "libserde-abc123.rmeta".into(),
@@ -41,7 +41,7 @@ fn make_test_store(dir: &Path) -> (PathBuf, PathBuf) {
     let k2 = "aaaa0002";
     store.insert(
         k2,
-        &zccache::artifact::ArtifactIndex::new(
+        &crate::artifact::ArtifactIndex::new(
             vec!["libproc_macro2-def456.rlib".into()],
             vec![200],
             vec![],
@@ -55,7 +55,7 @@ fn make_test_store(dir: &Path) -> (PathBuf, PathBuf) {
     let k3 = "aaaa0003";
     store.insert(
         k3,
-        &zccache::artifact::ArtifactIndex::new(
+        &crate::artifact::ArtifactIndex::new(
             vec!["libtokio-ghi789.rlib".into()],
             vec![300],
             vec![],
@@ -69,7 +69,7 @@ fn make_test_store(dir: &Path) -> (PathBuf, PathBuf) {
     let k4 = "aaaa0004";
     store.insert(
         k4,
-        &zccache::artifact::ArtifactIndex::new(vec!["foo.o".into()], vec![50], vec![], vec![], 0),
+        &crate::artifact::ArtifactIndex::new(vec!["foo.o".into()], vec![50], vec![], vec![], 0),
     );
     std::fs::write(artifact_dir.join(format!("{k4}_0")), b"cpp-object").unwrap();
 
@@ -261,13 +261,13 @@ fn adversarial_version_bump_old_artifact_in_cache() {
     let index_path = cache_dir.join("index.bin");
     std::fs::create_dir_all(&artifact_dir).unwrap();
 
-    let store = zccache::artifact::ArtifactStore::open(&index_path).unwrap();
+    let store = crate::artifact::ArtifactStore::open(&index_path).unwrap();
 
     // Old version's artifact (different hash suffix)
     let k_old = "bbbb0001";
     store.insert(
         k_old,
-        &zccache::artifact::ArtifactIndex::new(
+        &crate::artifact::ArtifactIndex::new(
             vec!["libserde-old111.rlib".into()],
             vec![100],
             vec![],
@@ -281,7 +281,7 @@ fn adversarial_version_bump_old_artifact_in_cache() {
     let k_new = "bbbb0002";
     store.insert(
         k_new,
-        &zccache::artifact::ArtifactIndex::new(
+        &crate::artifact::ArtifactIndex::new(
             vec!["libserde-new222.rlib".into()],
             vec![100],
             vec![],
@@ -327,11 +327,11 @@ fn adversarial_corrupted_cache_file() {
     let index_path = cache_dir.join("index.bin");
     std::fs::create_dir_all(&artifact_dir).unwrap();
 
-    let store = zccache::artifact::ArtifactStore::open(&index_path).unwrap();
+    let store = crate::artifact::ArtifactStore::open(&index_path).unwrap();
     let key = "cccc0001";
     store.insert(
         key,
-        &zccache::artifact::ArtifactIndex::new(
+        &crate::artifact::ArtifactIndex::new(
             vec!["libserde-abc123.rlib".into()],
             vec![1000], // Claims 1000 bytes
             vec![],

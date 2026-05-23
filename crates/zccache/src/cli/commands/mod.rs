@@ -6,7 +6,7 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 pub(crate) mod analyze;
 pub(crate) mod args;
@@ -43,7 +43,7 @@ pub fn run() -> ExitCode {
     // Best-effort: if the user opted in via env, fetch matching debug
     // sidecars before doing anything else so the very first command's
     // failure (if any) lands with resolvable symbols. Idempotent — skips
-    // when already installed. See `zccache::cli::symbols`.
+    // when already installed. See `crate::cli::symbols`.
     symbols_lib::maybe_auto_install();
 
     // Auto-detect: if first arg isn't a known subcommand or a --flag, enter wrap mode.

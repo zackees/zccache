@@ -3495,367 +3495,81 @@ dependencies = [
 ]
 
 [[package]]
-name = "zccache-artifact"
+name = "zccache"
 version = "1.9.0"
 dependencies = [
  "bincode",
  "blake3",
+ "bytes",
+ "clang",
+ "clap",
+ "crash-handler",
+ "criterion",
  "dashmap",
+ "filetime",
+ "flate2",
+ "fs2",
+ "futures",
+ "globset",
+ "jwalk",
+ "libc",
+ "lzma-rs",
+ "md5",
+ "memmap2",
+ "mimalloc",
+ "notify",
  "rayon",
  "redb",
+ "reqwest",
+ "rkyv",
+ "running-process-core",
+ "ruzstd",
+ "sadness-generator",
  "serde",
  "serde_json",
+ "sevenz-rust",
+ "sha2",
+ "sysinfo 0.33.1",
+ "tar",
  "tempfile",
  "thiserror 2.0.18",
+ "tikv-jemallocator",
+ "tokio",
+ "tokio-util",
  "tracing",
- "zccache-core",
- "zccache-hash",
-]
-
-[[package]]
-name = "zccache-ci"
-version = "1.9.0"
-dependencies = [
- "libc",
- "md5",
- "serde_json",
- "sysinfo 0.33.1",
+ "tracing-subscriber",
+ "uuid",
  "wait-timeout",
- "zccache-core",
- "zccache-ipc",
+ "windows-sys 0.59.0",
+ "zccache",
+ "zip",
 ]
 
 [[package]]
 name = "zccache-cli"
 version = "1.9.0"
 dependencies = [
- "blake3",
- "clap",
- "criterion",
- "flate2",
- "fs2",
- "jwalk",
- "mimalloc",
  "pyo3",
  "pyo3-build-config",
- "rayon",
- "reqwest",
- "running-process-core",
- "sadness-generator",
- "serde",
- "serde_json",
- "tar",
- "tempfile",
- "thiserror 2.0.18",
- "tikv-jemallocator",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "windows-sys 0.59.0",
- "zccache-artifact",
- "zccache-compiler",
- "zccache-core",
- "zccache-download",
- "zccache-download-client",
- "zccache-gha",
- "zccache-hash",
- "zccache-ipc",
- "zccache-protocol",
- "zccache-symbols",
- "zip",
-]
-
-[[package]]
-name = "zccache-compiler"
-version = "1.9.0"
-dependencies = [
- "clang",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
- "zccache-core",
- "zccache-hash",
-]
-
-[[package]]
-name = "zccache-core"
-version = "1.9.0"
-dependencies = [
- "crash-handler",
- "libc",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "zccache-daemon"
-version = "1.9.0"
-dependencies = [
- "bincode",
- "clap",
- "criterion",
- "dashmap",
- "filetime",
- "libc",
- "mimalloc",
- "rayon",
- "running-process-core",
- "sadness-generator",
- "serde",
- "serde_json",
- "sysinfo 0.33.1",
- "tempfile",
- "thiserror 2.0.18",
- "tikv-jemallocator",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "windows-sys 0.59.0",
- "zccache-artifact",
- "zccache-compiler",
- "zccache-core",
- "zccache-depgraph",
- "zccache-fingerprint",
- "zccache-fscache",
- "zccache-hash",
- "zccache-ipc",
- "zccache-protocol",
- "zccache-test-support",
- "zccache-watcher",
-]
-
-[[package]]
-name = "zccache-depgraph"
-version = "1.9.0"
-dependencies = [
- "blake3",
- "criterion",
- "dashmap",
- "rayon",
- "rkyv",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
- "uuid",
- "zccache-core",
- "zccache-hash",
-]
-
-[[package]]
-name = "zccache-download"
-version = "1.9.0"
-dependencies = [
- "blake3",
- "bytes",
- "futures",
- "reqwest",
- "serde",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "zccache-core",
-]
-
-[[package]]
-name = "zccache-download-cli"
-version = "1.9.0"
-dependencies = [
- "clap",
- "serde",
- "zccache-download",
- "zccache-download-client",
-]
-
-[[package]]
-name = "zccache-download-client"
-version = "1.9.0"
-dependencies = [
- "dashmap",
- "flate2",
- "fs2",
- "lzma-rs",
- "reqwest",
- "ruzstd",
- "serde",
- "serde_json",
- "sevenz-rust",
- "sha2",
- "tar",
- "tempfile",
- "tokio",
- "tokio-util",
- "tracing",
- "zccache-core",
- "zccache-download",
- "zccache-download-daemon",
- "zccache-download-protocol",
- "zccache-ipc",
- "zip",
-]
-
-[[package]]
-name = "zccache-download-daemon"
-version = "1.9.0"
-dependencies = [
- "clap",
- "dashmap",
- "mimalloc",
- "tikv-jemallocator",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "zccache-core",
- "zccache-download",
- "zccache-download-protocol",
- "zccache-ipc",
-]
-
-[[package]]
-name = "zccache-download-protocol"
-version = "1.9.0"
-dependencies = [
- "bincode",
- "bytes",
- "serde",
- "tempfile",
- "zccache-core",
- "zccache-download",
+ "zccache",
 ]
 
 [[package]]
 name = "zccache-fingerprint"
 version = "1.9.0"
 dependencies = [
- "clap",
- "criterion",
- "fs2",
- "globset",
- "jwalk",
- "mimalloc",
  "pyo3",
  "pyo3-build-config",
- "rayon",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tikv-jemallocator",
- "tracing",
- "zccache-core",
- "zccache-hash",
-]
-
-[[package]]
-name = "zccache-fscache"
-version = "1.9.0"
-dependencies = [
- "bincode",
- "dashmap",
- "rayon",
- "serde",
- "tempfile",
- "tracing",
- "zccache-core",
- "zccache-hash",
-]
-
-[[package]]
-name = "zccache-gha"
-version = "1.9.0"
-dependencies = [
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "zccache-hash"
-version = "1.9.0"
-dependencies = [
- "blake3",
- "criterion",
- "memmap2",
- "serde",
- "tempfile",
- "zccache-core",
-]
-
-[[package]]
-name = "zccache-ipc"
-version = "1.9.0"
-dependencies = [
- "bytes",
- "serde",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "zccache-core",
- "zccache-protocol",
-]
-
-[[package]]
-name = "zccache-protocol"
-version = "1.9.0"
-dependencies = [
- "bincode",
- "bytes",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "zccache-core",
-]
-
-[[package]]
-name = "zccache-symbols"
-version = "1.9.0"
-dependencies = [
- "tempfile",
- "zccache-core",
-]
-
-[[package]]
-name = "zccache-test-support"
-version = "1.9.0"
-dependencies = [
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "zccache-core",
+ "zccache",
 ]
 
 [[package]]
 name = "zccache-watcher"
 version = "1.9.0"
 dependencies = [
- "criterion",
- "globset",
- "jwalk",
- "notify",
  "pyo3",
  "pyo3-build-config",
- "rayon",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "zccache-core",
- "zccache-fscache",
- "zccache-hash",
+ "zccache",
 ]
 
 [[package]]

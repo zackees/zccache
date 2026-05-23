@@ -19,13 +19,13 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use dashmap::DashMap;
 use rayon::prelude::*;
 use rkyv::{Archive, Deserialize, Serialize};
-use zccache::core::NormalizedPath;
-use zccache::hash::ContentHash;
+use crate::core::NormalizedPath;
+use crate::hash::ContentHash;
 
-use super::super::context::{ArtifactKey, CompileContext, ContextKey};
-use super::super::graph::{ContextEntry, ContextState, DepGraph, FileEntry};
-use super::super::scanner::{IncludeDirective, IncludeKind};
-use super::super::search_paths::IncludeSearchPaths;
+use super::context::{ArtifactKey, CompileContext, ContextKey};
+use super::graph::{ContextEntry, ContextState, DepGraph, FileEntry};
+use super::scanner::{IncludeDirective, IncludeKind};
+use super::search_paths::IncludeSearchPaths;
 
 mod persistence;
 #[cfg(test)]

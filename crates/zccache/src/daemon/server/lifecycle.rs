@@ -12,14 +12,14 @@ pub(super) static ARTIFACT_PERSIST_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 impl DaemonServer {
     /// Create a new daemon server bound to the given endpoint, using the
-    /// configured cache directory (resolved via [`zccache::core::config::default_cache_dir`]).
+    /// configured cache directory (resolved via [`crate::core::config::default_cache_dir`]).
     ///
     /// Production callers should use this. Tests that need to isolate their
     /// cache directory must use [`Self::bind_with_cache_dir`] instead — this
     /// reads `ZCCACHE_CACHE_DIR` from a process-global env, which races when
     /// multiple tests run in parallel.
-    pub fn bind(endpoint: &str) -> Result<Self, zccache::ipc::IpcError> {
-        Self::bind_with_cache_dir(endpoint, &zccache::core::config::default_cache_dir())
+    pub fn bind(endpoint: &str) -> Result<Self, crate::ipc::IpcError> {
+        Self::bind_with_cache_dir(endpoint, &crate::core::config::default_cache_dir())
     }
 
     /// Create a new daemon server bound to the given endpoint, rooted at an
@@ -27,13 +27,13 @@ impl DaemonServer {
     /// parallel tests can each operate in isolation.
     pub fn bind_with_cache_dir(
         endpoint: &str,
-        cache_dir: &zccache::core::NormalizedPath,
-    ) -> Result<Self, zccache::ipc::IpcError> {
+        cache_dir: &crate::core::NormalizedPath,
+    ) -> Result<Self, crate::ipc::IpcError> {
         let listener = IpcListener::bind(endpoint)?;
         let shutdown = Arc::new(Notify::new());
         let now = now_secs();
         let instance = SERVER_INSTANCE.fetch_add(1, Ordering::Relaxed);
-        let artifact_dir = zccache::core::config::artifacts_dir_from_cache_dir(cache_dir);
+        let artifact_dir = crate::core::config::artifacts_dir_from_cache_dir(cache_dir);
         std::fs::create_dir_all(&artifact_dir).ok();
 
         // Artifact loading is deferred to a background task in run() so the
@@ -41,9 +41,9 @@ impl DaemonServer {
         let artifacts: DashMap<String, CachedArtifact> = DashMap::new();
 
         // Open the bincode-backed artifact index for fast startup + persistence.
-        let index_path = zccache::core::config::index_path_from_cache_dir(cache_dir);
+        let index_path = crate::core::config::index_path_from_cache_dir(cache_dir);
         let artifact_store = ArtifactStore::open(&index_path).map_err(|e| {
-            zccache::ipc::IpcError::Io(std::io::Error::other(format!(
+            crate::ipc::IpcError::Io(std::io::Error::other(format!(
                 "failed to open artifact index at {}: {e}",
                 index_path.display()
             )))
@@ -58,9 +58,9 @@ impl DaemonServer {
         // corrupt snapshot falls back to an empty cache (the
         // `MetadataCache::lookup` stat-verify safety net still guards
         // correctness on every subsequent lookup).
-        let metadata_path = zccache::core::config::metadata_path_from_cache_dir(cache_dir);
+        let metadata_path = crate::core::config::metadata_path_from_cache_dir(cache_dir);
         let cache_system =
-            match zccache::fscache::MetadataCache::load_from_disk(metadata_path.as_path()) {
+            match crate::fscache::MetadataCache::load_from_disk(metadata_path.as_path()) {
                 Ok(metadata) => {
                     let loaded = metadata.len();
                     if loaded > 0 {
@@ -101,7 +101,7 @@ impl DaemonServer {
                 artifact_dir,
                 metadata_path,
                 depfile_tmpdir: {
-                    let dir = zccache::core::config::depfile_dir_from_cache_dir(cache_dir)
+                    let dir = crate::core::config::depfile_dir_from_cache_dir(cache_dir)
                         .join(format!("{}-{instance}", std::process::id()));
                     std::fs::create_dir_all(&dir).ok();
                     dir
@@ -115,7 +115,7 @@ impl DaemonServer {
                 compiler_hash_cache: CompilerHashCache::new(),
                 watched_raw_dirs: DashMap::new(),
                 pch_source_map: DashMap::new(),
-                journal: CompileJournal::new(zccache::core::config::log_dir_from_cache_dir(
+                journal: CompileJournal::new(crate::core::config::log_dir_from_cache_dir(
                     cache_dir,
                 )),
                 in_flight_bytes: AtomicUsize::new(0),
@@ -141,7 +141,7 @@ impl DaemonServer {
     ///
     /// Must be called before `run()` (while this is the only Arc holder).
     /// Marks the graph as persisted because it was restored from disk.
-    pub fn set_dep_graph(&mut self, graph: zccache::depgraph::DepGraph) {
+    pub fn set_dep_graph(&mut self, graph: crate::depgraph::DepGraph) {
         let state =
             Arc::get_mut(&mut self.state).expect("set_dep_graph must be called before run()");
         state.dep_graph = graph;
@@ -150,7 +150,7 @@ impl DaemonServer {
 
     /// Record a load-time depgraph warning to mirror into per-session logs.
     ///
-    /// Called by the daemon's startup path after [`zccache::depgraph::classify_load`]
+    /// Called by the daemon's startup path after [`crate::depgraph::classify_load`]
     /// returns a non-`Loaded` outcome that warrants surfacing (version
     /// mismatch, corruption, I/O error). The warning is appended to each
     /// session's log file at `SessionStart` so a cold fallback caused by a

@@ -9,12 +9,12 @@ use std::time::Instant;
 use dashmap::DashMap;
 use tokio::sync::{watch, Notify, RwLock};
 use tokio_util::sync::CancellationToken;
-use zccache::core::NormalizedPath;
-use zccache_download::{
+use crate::core::NormalizedPath;
+use crate::download::{
     percentage, stable_download_id, DownloadDaemonStatus, DownloadOptions, DownloadPhase,
     DownloadStatus,
 };
-use zccache_download_protocol::{Request, Response};
+use crate::download_protocol::{Request, Response};
 
 #[derive(Clone)]
 struct FileLogger {
@@ -66,16 +66,16 @@ struct SharedState {
 }
 
 pub struct DownloadDaemon {
-    listener: zccache::ipc::IpcListener,
+    listener: crate::ipc::IpcListener,
     state: Arc<SharedState>,
 }
 
 impl DownloadDaemon {
-    pub fn bind(endpoint: &str) -> Result<Self, zccache::ipc::IpcError> {
-        let listener = zccache::ipc::IpcListener::bind(endpoint)?;
-        let log_path = zccache::core::config::log_dir().join("download-daemon.log");
+    pub fn bind(endpoint: &str) -> Result<Self, crate::ipc::IpcError> {
+        let listener = crate::ipc::IpcListener::bind(endpoint)?;
+        let log_path = crate::core::config::log_dir().join("download-daemon.log");
         let logger = FileLogger::new(&log_path)
-            .map_err(|e| zccache::ipc::IpcError::Io(std::io::Error::other(e.to_string())))?;
+            .map_err(|e| crate::ipc::IpcError::Io(std::io::Error::other(e.to_string())))?;
         Ok(Self {
             listener,
             state: Arc::new(SharedState {
@@ -94,7 +94,7 @@ impl DownloadDaemon {
         Arc::clone(&self.state.shutdown)
     }
 
-    pub async fn run(&mut self) -> Result<(), zccache::ipc::IpcError> {
+    pub async fn run(&mut self) -> Result<(), crate::ipc::IpcError> {
         loop {
             tokio::select! {
                 _ = self.state.shutdown.notified() => {
@@ -118,7 +118,7 @@ impl DownloadDaemon {
 
 async fn handle_connection(
     state: Arc<SharedState>,
-    mut conn: zccache::ipc::IpcConnection,
+    mut conn: crate::ipc::IpcConnection,
 ) -> Result<(), String> {
     let client_id = state.next_client_id.fetch_add(1, Ordering::Relaxed);
     let mut attached_job_id: Option<String> = None;
@@ -291,7 +291,7 @@ async fn handle_connection(
 }
 
 async fn send_terminal(
-    conn: &mut zccache::ipc::IpcConnection,
+    conn: &mut crate::ipc::IpcConnection,
     status: DownloadStatus,
 ) -> Result<(), String> {
     match status.phase {
@@ -317,7 +317,7 @@ fn daemon_status(state: &SharedState) -> DownloadDaemonStatus {
         .map(|entry| entry.active_clients.load(Ordering::Relaxed) as u64)
         .sum();
     DownloadDaemonStatus {
-        version: zccache::core::VERSION.to_string(),
+        version: crate::core::VERSION.to_string(),
         active_downloads: state.jobs.len() as u64,
         connected_clients,
         uptime_secs: state.start_time.elapsed().as_secs(),
@@ -353,7 +353,7 @@ async fn attach_job(
         return Ok((existing, false));
     }
 
-    let metadata_dir = zccache::core::config::default_cache_dir()
+    let metadata_dir = crate::core::config::default_cache_dir()
         .join("downloads")
         .join(&download_id);
     let initial_status = if destination.exists() && !options.force {
@@ -443,7 +443,7 @@ fn spawn_download_worker(state: Arc<SharedState>, job: Arc<DownloadJob>, options
             },
         );
 
-        let result = zccache_download::download_to_path(
+        let result = crate::download::download_to_path(
             &url,
             &destination,
             &metadata_dir,
@@ -466,7 +466,7 @@ fn spawn_download_worker(state: Arc<SharedState>, job: Arc<DownloadJob>, options
                     .logger
                     .log(&format!("download completed id={} bytes={total}", job.id));
             }
-            Err(zccache_download::DownloadError::Cancelled) => {
+            Err(crate::download::DownloadError::Cancelled) => {
                 status.phase = DownloadPhase::Cancelled;
                 status.error = None;
                 state

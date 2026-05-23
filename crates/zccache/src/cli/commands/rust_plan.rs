@@ -2,12 +2,12 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use zccache::artifact::{
+use crate::artifact::{
     restore_rust_plan_local, rust_plan_bundle_dir, rust_plan_cache_key, save_rust_plan_local,
     RustArtifactPlanV1, RustPlanError, RustPlanOperation, RustPlanSummary,
 };
-use zccache::core::NormalizedPath;
-use zccache::gha::{GhaCache, GhaError};
+use crate::core::NormalizedPath;
+use crate::gha::{GhaCache, GhaError};
 
 use super::args::{RustPlanBackendArg, RustPlanCommands};
 use super::session::query_session_stats_json;
@@ -175,7 +175,7 @@ pub(crate) async fn cmd_rust_plan(action: RustPlanCommands) -> ExitCode {
 fn resolve_rust_plan_cache_dir(explicit: Option<&str>) -> NormalizedPath {
     explicit
         .map(NormalizedPath::from)
-        .unwrap_or_else(|| zccache::core::config::default_cache_dir().join("rust-artifacts"))
+        .unwrap_or_else(|| crate::core::config::default_cache_dir().join("rust-artifacts"))
 }
 
 fn load_rust_plan_for_cli(

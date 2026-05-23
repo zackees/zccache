@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 use super::args::{ParsedArgs, UserDepFlags};
 use super::search_paths::IncludeSearchPaths;

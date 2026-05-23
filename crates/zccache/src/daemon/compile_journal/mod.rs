@@ -20,7 +20,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 use super::event_log::{format_timestamp, open_append};
 

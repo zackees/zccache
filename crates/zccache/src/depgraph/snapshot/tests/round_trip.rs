@@ -6,8 +6,8 @@
 //! field. Cross-cutting behavior across save/load lives in `behavioral.rs`.
 
 use tempfile::TempDir;
-use zccache::core::NormalizedPath;
-use zccache::hash::ContentHash;
+use crate::core::NormalizedPath;
+use crate::hash::ContentHash;
 
 use super::{make_ctx, test_path};
 use super::super::super::context::CompileContext;
@@ -75,9 +75,9 @@ fn populated_graph_roundtrip() {
     let key = graph.register(ctx);
 
     // Update with resolved includes and file hashes.
-    let source_hash = zccache::hash::hash_bytes(b"source content");
-    let header_hash = zccache::hash::hash_bytes(b"header content");
-    let pch_hash = zccache::hash::hash_bytes(b"pch content");
+    let source_hash = crate::hash::hash_bytes(b"source content");
+    let header_hash = crate::hash::hash_bytes(b"header content");
+    let pch_hash = crate::hash::hash_bytes(b"pch content");
     let hashes: std::collections::HashMap<NormalizedPath, ContentHash> = [
         (NormalizedPath::from("/src/main.cpp"), source_hash),
         (NormalizedPath::from("/include/header.h"), header_hash),
@@ -126,8 +126,8 @@ fn last_file_hashes_roundtrip() {
     let graph = DepGraph::new();
 
     let key = graph.register(make_ctx("/src/a.cpp"));
-    let hash1 = zccache::hash::hash_bytes(b"content1");
-    let hash2 = zccache::hash::hash_bytes(b"content2");
+    let hash1 = crate::hash::hash_bytes(b"content1");
+    let hash2 = crate::hash::hash_bytes(b"content2");
     let hashes: std::collections::HashMap<NormalizedPath, ContentHash> = [
         (NormalizedPath::from("/src/a.cpp"), hash1),
         (NormalizedPath::from("/inc/b.h"), hash2),
@@ -164,7 +164,7 @@ fn artifact_key_some_roundtrip() {
     let graph = DepGraph::new();
 
     let key = graph.register(make_ctx("/src/c.cpp"));
-    let hash = zccache::hash::hash_bytes(b"source");
+    let hash = crate::hash::hash_bytes(b"source");
     let hashes: std::collections::HashMap<NormalizedPath, ContentHash> =
         [(NormalizedPath::from("/src/c.cpp"), hash)]
             .into_iter()
@@ -389,7 +389,7 @@ fn empty_strings_roundtrip() {
     let key = graph.register(ctx);
 
     // Empty path hash.
-    let hash = zccache::hash::hash_bytes(b"");
+    let hash = crate::hash::hash_bytes(b"");
     let hashes: std::collections::HashMap<NormalizedPath, ContentHash> =
         [(NormalizedPath::from(""), hash)].into_iter().collect();
     graph.update(
@@ -422,8 +422,8 @@ fn file_hash_bytes_exact_roundtrip() {
     let graph = DepGraph::new();
 
     let key = graph.register(make_ctx("/src/a.cpp"));
-    let source_hash = zccache::hash::hash_bytes(b"specific source content 12345");
-    let header_hash = zccache::hash::hash_bytes(b"specific header content 67890");
+    let source_hash = crate::hash::hash_bytes(b"specific source content 12345");
+    let header_hash = crate::hash::hash_bytes(b"specific header content 67890");
 
     let hashes: std::collections::HashMap<NormalizedPath, ContentHash> = [
         (NormalizedPath::from("/src/a.cpp"), source_hash),

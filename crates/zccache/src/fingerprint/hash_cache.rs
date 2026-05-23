@@ -1,5 +1,5 @@
 use std::path::Path;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 use rayon::prelude::*;
 
@@ -22,7 +22,7 @@ pub fn compute_aggregate_hash(files: &[ScannedFile]) -> Result<String> {
     let contents = contents?;
 
     // Phase 2: Hash sequentially to preserve order-dependent aggregate hash.
-    let mut hasher = zccache::hash::StreamHasher::new();
+    let mut hasher = crate::hash::StreamHasher::new();
     // Domain separation.
     hasher.update(b"zccache-fingerprint-v1");
 
@@ -175,7 +175,7 @@ impl HashCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::scan;
+    use super::super::scan;
     use std::fs;
     use tempfile::TempDir;
 
@@ -414,7 +414,7 @@ mod tests {
         let cache = HashCache::new(cache_dir.path().join("fp.json"));
         let err = cache.mark_success().unwrap_err();
         assert!(
-            matches!(err, super::error::FingerprintError::NoPendingData { .. }),
+            matches!(err, super::super::error::FingerprintError::NoPendingData { .. }),
             "expected NoPendingData, got: {err}"
         );
     }

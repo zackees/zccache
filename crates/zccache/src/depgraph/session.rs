@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 use super::context::ContextKey;
 
@@ -438,9 +438,9 @@ mod tests {
         let mgr = SessionManager::new(Duration::from_secs(900));
         let id = mgr.create(test_config());
 
-        let ctx = super::context::CompileContext {
+        let ctx = super::super::context::CompileContext {
             source_file: "/src/main.c".into(),
-            include_search: super::search_paths::IncludeSearchPaths::default(),
+            include_search: super::super::search_paths::IncludeSearchPaths::default(),
             defines: Vec::new(),
             flags: Vec::new(),
             force_includes: Vec::new(),
@@ -459,9 +459,9 @@ mod tests {
     #[test]
     fn add_context_nonexistent_session_returns_false() {
         let mgr = SessionManager::new(Duration::from_secs(900));
-        let ctx = super::context::CompileContext {
+        let ctx = super::super::context::CompileContext {
             source_file: "/src/main.c".into(),
-            include_search: super::search_paths::IncludeSearchPaths::default(),
+            include_search: super::super::search_paths::IncludeSearchPaths::default(),
             defines: Vec::new(),
             flags: Vec::new(),
             force_includes: Vec::new(),

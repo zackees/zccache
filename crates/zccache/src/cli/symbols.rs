@@ -332,7 +332,7 @@ fn archive_cache_path(version: &str, target: &str, kind: ArchiveKind) -> PathBuf
         "zccache-v{version}-{target}-debug.{ext}",
         ext = kind.file_extension(),
     );
-    zccache::core::config::symbols_cache_dir()
+    crate::core::config::symbols_cache_dir()
         .into_path_buf()
         .join(filename)
 }
@@ -735,7 +735,7 @@ mod tests {
             .and_then(|s| s.to_str());
         assert_eq!(parent, Some("symbols"));
 
-        let expected_root = zccache::core::config::default_cache_dir();
+        let expected_root = crate::core::config::default_cache_dir();
         assert!(
             path.starts_with(expected_root.as_path()),
             "cache path {} should be under default_cache_dir {}",

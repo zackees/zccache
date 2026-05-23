@@ -28,8 +28,8 @@ pub(super) struct CacheDirEnvGuard {
 
 impl CacheDirEnvGuard {
     pub(super) fn set(path: &Path) -> Self {
-        let previous = std::env::var_os(zccache::core::config::CACHE_DIR_ENV);
-        std::env::set_var(zccache::core::config::CACHE_DIR_ENV, path);
+        let previous = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
+        std::env::set_var(crate::core::config::CACHE_DIR_ENV, path);
         Self { previous }
     }
 }
@@ -37,8 +37,8 @@ impl CacheDirEnvGuard {
 impl Drop for CacheDirEnvGuard {
     fn drop(&mut self) {
         match &self.previous {
-            Some(previous) => std::env::set_var(zccache::core::config::CACHE_DIR_ENV, previous),
-            None => std::env::remove_var(zccache::core::config::CACHE_DIR_ENV),
+            Some(previous) => std::env::set_var(crate::core::config::CACHE_DIR_ENV, previous),
+            None => std::env::remove_var(crate::core::config::CACHE_DIR_ENV),
         }
     }
 }

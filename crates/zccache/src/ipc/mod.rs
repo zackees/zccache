@@ -16,7 +16,7 @@ pub use transport::{
     connect, unique_test_endpoint, IpcConnection, IpcListener, DEFAULT_CLIENT_RECV_TIMEOUT,
 };
 
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 /// Returns the platform-specific default IPC endpoint path.
 ///
@@ -28,7 +28,7 @@ use zccache::core::NormalizedPath;
 /// so independently managed cache roots get independent daemon instances.
 #[must_use]
 pub fn default_endpoint() -> String {
-    if let Some(cache_dir) = zccache::core::config::cache_dir_override() {
+    if let Some(cache_dir) = crate::core::config::cache_dir_override() {
         return endpoint_for_cache_dir(&cache_dir);
     }
 
@@ -54,7 +54,7 @@ fn endpoint_for_cache_dir(cache_dir: &std::path::Path) -> String {
     }
     #[cfg(windows)]
     {
-        let suffix = zccache::core::stable_path_id(cache_dir);
+        let suffix = crate::core::stable_path_id(cache_dir);
         format!(r"\\.\pipe\zccache-{suffix}")
     }
 }
@@ -62,7 +62,7 @@ fn endpoint_for_cache_dir(cache_dir: &std::path::Path) -> String {
 /// Returns the path for the daemon lock file.
 #[must_use]
 pub fn lock_file_path() -> NormalizedPath {
-    if let Some(cache_dir) = zccache::core::config::cache_dir_override() {
+    if let Some(cache_dir) = crate::core::config::cache_dir_override() {
         return cache_dir.join("daemon.lock");
     }
 
@@ -76,7 +76,7 @@ pub fn lock_file_path() -> NormalizedPath {
     }
     #[cfg(windows)]
     {
-        zccache::core::config::default_cache_dir().join("daemon.lock")
+        crate::core::config::default_cache_dir().join("daemon.lock")
     }
 }
 
@@ -332,8 +332,8 @@ mod tests {
     impl EnvGuard {
         fn set_cache_dir(value: &std::path::Path) -> Self {
             let lock = ENV_LOCK.lock().unwrap();
-            let previous = std::env::var_os(zccache::core::config::CACHE_DIR_ENV);
-            std::env::set_var(zccache::core::config::CACHE_DIR_ENV, value);
+            let previous = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
+            std::env::set_var(crate::core::config::CACHE_DIR_ENV, value);
             Self {
                 _lock: lock,
                 previous,
@@ -344,8 +344,8 @@ mod tests {
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             match &self.previous {
-                Some(value) => std::env::set_var(zccache::core::config::CACHE_DIR_ENV, value),
-                None => std::env::remove_var(zccache::core::config::CACHE_DIR_ENV),
+                Some(value) => std::env::set_var(crate::core::config::CACHE_DIR_ENV, value),
+                None => std::env::remove_var(crate::core::config::CACHE_DIR_ENV),
             }
         }
     }
@@ -365,7 +365,7 @@ mod tests {
         #[cfg(windows)]
         {
             assert!(endpoint.starts_with(r"\\.\pipe\zccache-"));
-            assert!(endpoint.ends_with(&zccache::core::stable_path_id(&cache_dir)));
+            assert!(endpoint.ends_with(&crate::core::stable_path_id(&cache_dir)));
         }
 
         assert_eq!(lock_file_path(), cache_dir.join("daemon.lock"));

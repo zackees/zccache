@@ -6,12 +6,12 @@ use super::*;
 pub(super) async fn handle_connection(
     mut conn: IpcConnection,
     state: Arc<SharedState>,
-) -> Result<(), zccache::ipc::IpcError> {
+) -> Result<(), crate::ipc::IpcError> {
     loop {
         let request: Option<Request> = match conn.recv().await {
             Ok(req) => req,
-            Err(zccache::ipc::IpcError::Protocol(
-                zccache::protocol::ProtocolError::VersionMismatch { expected, received },
+            Err(crate::ipc::IpcError::Protocol(
+                crate::protocol::ProtocolError::VersionMismatch { expected, received },
             )) => {
                 // Don't drop the connection silently — without a reply the
                 // CLI surfaces the (correct) closure as the misleading
@@ -52,8 +52,8 @@ pub(super) async fn handle_connection(
                         message: msg.clone(),
                     })
                     .await;
-                return Err(zccache::ipc::IpcError::Protocol(
-                    zccache::protocol::ProtocolError::VersionMismatch { expected, received },
+                return Err(crate::ipc::IpcError::Protocol(
+                    crate::protocol::ProtocolError::VersionMismatch { expected, received },
                 ));
             }
             Err(e) => return Err(e),
@@ -100,8 +100,8 @@ pub(super) async fn handle_connection(
                     .sum();
                 let metadata_entries = state.cache_system.metadata().len() as u64;
                 (
-                    Response::Status(zccache::protocol::DaemonStatus {
-                        version: zccache::core::VERSION.to_string(),
+                    Response::Status(crate::protocol::DaemonStatus {
+                        version: crate::core::VERSION.to_string(),
                         artifact_count,
                         cache_size_bytes,
                         metadata_entries,
@@ -120,9 +120,9 @@ pub(super) async fn handle_connection(
                         dep_graph_files: dg.file_count as u64,
                         sessions_total: snap.sessions_total,
                         sessions_active: state.sessions.active_count() as u64,
-                        cache_dir: zccache::core::config::default_cache_dir(),
-                        dep_graph_version: zccache::depgraph::DEPGRAPH_VERSION,
-                        dep_graph_disk_size: zccache::depgraph::depgraph_file_path()
+                        cache_dir: crate::core::config::default_cache_dir(),
+                        dep_graph_version: crate::depgraph::DEPGRAPH_VERSION,
+                        dep_graph_disk_size: crate::depgraph::depgraph_file_path()
                             .metadata()
                             .map(|m| m.len())
                             .unwrap_or(0),
@@ -132,11 +132,11 @@ pub(super) async fn handle_connection(
                 )
             }
             Request::Lookup { .. } => (
-                Response::LookupResult(zccache::protocol::LookupResult::Miss),
+                Response::LookupResult(crate::protocol::LookupResult::Miss),
                 None,
             ),
             Request::Store { .. } => (
-                Response::StoreResult(zccache::protocol::StoreResult::Stored),
+                Response::StoreResult(crate::protocol::StoreResult::Stored),
                 None,
             ),
             Request::Clear => (handle_clear(&state).await, None),
@@ -225,7 +225,7 @@ pub(super) async fn handle_connection(
                         if let Some(session) = state.sessions.get(&sid) {
                             let stats = session.stats_tracker.as_ref().map(|tracker| {
                                 let f = tracker.finalize(session.created_at);
-                                zccache::protocol::SessionStats {
+                                crate::protocol::SessionStats {
                                     duration_ms: f.duration_ms,
                                     compilations: f.compilations,
                                     hits: f.hits,
@@ -266,7 +266,7 @@ pub(super) async fn handle_connection(
                             }
                             let stats = session.stats_tracker.map(|tracker| {
                                 let f = tracker.finalize(session.created_at);
-                                zccache::protocol::SessionStats {
+                                crate::protocol::SessionStats {
                                     duration_ms: f.duration_ms,
                                     compilations: f.compilations,
                                     hits: f.hits,
@@ -374,7 +374,7 @@ pub(super) async fn handle_connection(
                             || n.ends_with(".dll")
                     });
                     if is_rust {
-                        artifacts.push(zccache::protocol::RustArtifactInfo {
+                        artifacts.push(crate::protocol::RustArtifactInfo {
                             cache_key: key,
                             output_names: names.clone(),
                             payload_count: names.len(),

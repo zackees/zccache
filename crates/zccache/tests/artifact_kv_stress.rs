@@ -6,8 +6,8 @@
 
 use std::sync::Arc;
 
-use zccache_artifact::kv::{is_valid_namespace, INLINE_THRESHOLD, MAX_VALUE_BYTES};
-use zccache_artifact::{Key, KvError, KvStore};
+use zccache::artifact::kv::{is_valid_namespace, INLINE_THRESHOLD, MAX_VALUE_BYTES};
+use zccache::artifact::{Key, KvError, KvStore};
 
 fn store_in_dir(dir: &std::path::Path) -> KvStore {
     KvStore::open(dir).unwrap()

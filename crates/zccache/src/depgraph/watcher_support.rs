@@ -14,7 +14,7 @@ use std::path::Path;
 
 use super::context::ContextKey;
 use super::graph::DepGraph;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 /// Set of directories that should be watched, with tracked filenames per directory.
 ///
@@ -144,7 +144,7 @@ impl WatchSet {
 fn is_higher_priority(
     dir_a: &Path,
     dir_b: &Path,
-    search: &crate::search_paths::IncludeSearchPaths,
+    search: &super::search_paths::IncludeSearchPaths,
 ) -> bool {
     let all_dirs: Vec<&Path> = search.all_search_dirs().collect();
 
@@ -278,15 +278,15 @@ impl DepGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zccache::core::NormalizedPath;
+    use crate::core::NormalizedPath;
 
-    use super::context::CompileContext;
-    use super::scanner::ScanResult;
-    use super::search_paths::IncludeSearchPaths;
-    use zccache::hash::ContentHash;
+    use super::super::context::CompileContext;
+    use super::super::scanner::ScanResult;
+    use super::super::search_paths::IncludeSearchPaths;
+    use crate::hash::ContentHash;
 
     fn dummy_hash(path: &Path) -> Option<ContentHash> {
-        Some(zccache::hash::hash_bytes(path.to_string_lossy().as_bytes()))
+        Some(crate::hash::hash_bytes(path.to_string_lossy().as_bytes()))
     }
 
     fn make_ctx_with_search(source: &str, search: IncludeSearchPaths) -> CompileContext {
@@ -653,13 +653,13 @@ mod tests {
         graph.update(&key, scan, dummy_hash);
         assert_eq!(
             graph.get_state(&key),
-            Some(super::graph::ContextState::Warm)
+            Some(super::super::graph::ContextState::Warm)
         );
 
         assert!(graph.mark_stale(&key));
         assert_eq!(
             graph.get_state(&key),
-            Some(super::graph::ContextState::Stale)
+            Some(super::super::graph::ContextState::Stale)
         );
     }
 

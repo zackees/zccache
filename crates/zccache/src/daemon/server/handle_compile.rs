@@ -43,7 +43,7 @@ pub(super) async fn handle_compile(
         Err(err) => return compile_failure_stderr(format!("zccache: {err}")),
     };
     if let Err(err) =
-        zccache::compiler::strict_paths::validate_args(&expanded_args, strict_paths_mode)
+        crate::compiler::strict_paths::validate_args(&expanded_args, strict_paths_mode)
     {
         let compiler = compiler_path.display().to_string();
         return compile_failure_stderr(err.diagnostic(&compiler, &expanded_args));
@@ -245,7 +245,7 @@ pub(super) async fn handle_compile(
         let lineage_for_probe = lineage.clone();
         cache
             .get_or_discover(&compiler, |c| {
-                let disc_args = zccache::depgraph::discovery_args();
+                let disc_args = crate::depgraph::discovery_args();
                 let output = {
                     let mut cmd = std::process::Command::new(c);
                     cmd.args(&disc_args);
@@ -255,7 +255,7 @@ pub(super) async fn handle_compile(
                 match output {
                     Ok(out) => {
                         let stderr = String::from_utf8_lossy(&out.stderr);
-                        zccache::depgraph::parse_system_include_output(&stderr)
+                        crate::depgraph::parse_system_include_output(&stderr)
                     }
                     Err(e) => {
                         tracing::warn!("failed to run compiler for include discovery: {e}");
@@ -277,10 +277,10 @@ pub(super) async fn handle_compile(
     // ── Phase: expand response files + parse args ─────────────────────
     let t0 = std::time::Instant::now();
     let compiler_str = compiler.to_str().unwrap_or("");
-    let parsed = zccache::compiler::parse_invocation(compiler_str, &effective_args);
+    let parsed = crate::compiler::parse_invocation(compiler_str, &effective_args);
     let compilation = match parsed {
-        zccache::compiler::ParsedInvocation::Cacheable(c) => c,
-        zccache::compiler::ParsedInvocation::NonCacheable { reason } => {
+        crate::compiler::ParsedInvocation::Cacheable(c) => c,
+        crate::compiler::ParsedInvocation::NonCacheable { reason } => {
             state.stats.record_non_cacheable();
             record_session_stat(&state.sessions, &sid, |t| t.record_non_cacheable());
             write_session_log(&state.sessions, &sid, &format!("non-cacheable: {reason}"));
@@ -297,7 +297,7 @@ pub(super) async fn handle_compile(
             )
             .await;
         }
-        zccache::compiler::ParsedInvocation::MultiFile {
+        crate::compiler::ParsedInvocation::MultiFile {
             compilations,
             original_args,
             source_indices,
@@ -584,7 +584,7 @@ pub(super) async fn handle_compile(
         // Cold context — skip hashing and depgraph check entirely.
         hash_headers_ns = 0;
         depgraph_check_ns = 0;
-        verdict = zccache::depgraph::CacheVerdict::Cold;
+        verdict = crate::depgraph::CacheVerdict::Cold;
         diag_reason = "cold_skip".to_string();
     } else {
         // Hash includes + force-includes in parallel (PCH-aware).
@@ -636,7 +636,7 @@ pub(super) async fn handle_compile(
             hash_map.get(&path).copied()
         }) {
             depgraph_check_ns = 0;
-            verdict = zccache::depgraph::CacheVerdict::Hit { artifact_key };
+            verdict = crate::depgraph::CacheVerdict::Hit { artifact_key };
             diag_reason = "fast_key_match".to_string();
         } else {
             let t4 = std::time::Instant::now();
@@ -671,18 +671,18 @@ pub(super) async fn handle_compile(
             output_path.display(),
             &context_key.hash().to_hex()[..8],
             match &verdict {
-                zccache::depgraph::CacheVerdict::Hit { .. } => "Hit",
-                zccache::depgraph::CacheVerdict::SourceChanged { .. } => "SourceChanged",
-                zccache::depgraph::CacheVerdict::HeadersChanged { .. } => "HeadersChanged",
-                zccache::depgraph::CacheVerdict::Cold => "Cold",
-                zccache::depgraph::CacheVerdict::NeedsPreprocessor => "NeedsPreprocessor",
+                crate::depgraph::CacheVerdict::Hit { .. } => "Hit",
+                crate::depgraph::CacheVerdict::SourceChanged { .. } => "SourceChanged",
+                crate::depgraph::CacheVerdict::HeadersChanged { .. } => "HeadersChanged",
+                crate::depgraph::CacheVerdict::Cold => "Cold",
+                crate::depgraph::CacheVerdict::NeedsPreprocessor => "NeedsPreprocessor",
             },
             diag_reason,
         ),
     );
     match verdict {
-        zccache::depgraph::CacheVerdict::Hit { artifact_key }
-        | zccache::depgraph::CacheVerdict::SourceChanged { artifact_key } => {
+        crate::depgraph::CacheVerdict::Hit { artifact_key }
+        | crate::depgraph::CacheVerdict::SourceChanged { artifact_key } => {
             // ── Phase: artifact lookup + write ─────────────────────────
             let t5 = std::time::Instant::now();
             let artifact_key_hex = artifact_key.hash().to_hex();
@@ -823,9 +823,9 @@ pub(super) async fn handle_compile(
                 &format!("[DIAG] artifact_not_found: key={artifact_key_hex}"),
             );
         }
-        zccache::depgraph::CacheVerdict::Cold
-        | zccache::depgraph::CacheVerdict::HeadersChanged { .. }
-        | zccache::depgraph::CacheVerdict::NeedsPreprocessor => {
+        crate::depgraph::CacheVerdict::Cold
+        | crate::depgraph::CacheVerdict::HeadersChanged { .. }
+        | crate::depgraph::CacheVerdict::NeedsPreprocessor => {
             // Need to compile and scan includes
         }
     }
@@ -848,7 +848,7 @@ pub(super) async fn handle_compile(
     let pre_exec_ns = compile_start.elapsed().as_nanos() as u64;
     let t_exec = std::time::Instant::now();
     let supports_depfile = compilation.family.supports_depfile();
-    let (mut extra_args, mut depfile_strategy) = zccache::depgraph::depfile::prepare_depfile(
+    let (mut extra_args, mut depfile_strategy) = crate::depgraph::depfile::prepare_depfile(
         supports_depfile,
         &dep_flags,
         &output_path,
@@ -858,7 +858,7 @@ pub(super) async fn handle_compile(
     // For MSVC, use /showIncludes to get complete dependency info
     // (equivalent to depfiles for gcc/clang). This enables cache hits
     // for files with computed includes like `#include MACRO`.
-    if compilation.family == zccache::compiler::CompilerFamily::Msvc
+    if compilation.family == crate::compiler::CompilerFamily::Msvc
         && depfile_strategy == DepfileStrategy::Unsupported
     {
         if !dep_flags.has_md {
@@ -877,7 +877,7 @@ pub(super) async fn handle_compile(
         &combined_args
     };
 
-    let _rsp_guard = match zccache::compiler::response_file::write_response_file_if_needed(
+    let _rsp_guard = match crate::compiler::response_file::write_response_file_if_needed(
         rsp_args,
         &state.depfile_tmpdir,
     ) {
@@ -949,7 +949,7 @@ pub(super) async fn handle_compile(
     // For MSVC /showIncludes: parse dependency info from stderr and
     // filter out the /showIncludes lines before returning to the client.
     let (show_includes_scan, stderr_bytes) = if depfile_strategy == DepfileStrategy::ShowIncludes {
-        let (scan, filtered) = zccache::depgraph::show_includes::parse_show_includes(
+        let (scan, filtered) = crate::depgraph::show_includes::parse_show_includes(
             &output.stderr,
             &source_path,
             &cwd_path,
@@ -1030,7 +1030,7 @@ pub(super) async fn handle_compile(
                 | DepfileStrategy::UserSpecified { path }
                 | DepfileStrategy::UserDefault { path } => {
                     let cwd_path: NormalizedPath = cwd.into();
-                    match zccache::depgraph::depfile::parse_depfile_path(
+                    match crate::depgraph::depfile::parse_depfile_path(
                         path,
                         &source_path,
                         &cwd_path,
@@ -1054,7 +1054,7 @@ pub(super) async fn handle_compile(
                             if matches!(depfile_strategy, DepfileStrategy::Injected { .. }) {
                                 let _ = std::fs::remove_file(path);
                             }
-                            zccache::depgraph::scanner::scan_recursive(
+                            crate::depgraph::scanner::scan_recursive(
                                 &source_path,
                                 &ctx.include_search,
                             )
@@ -1064,11 +1064,11 @@ pub(super) async fn handle_compile(
                 DepfileStrategy::ShowIncludes => {
                     // Already parsed from stderr above.
                     show_includes_scan.unwrap_or_else(|| {
-                        zccache::depgraph::scanner::scan_recursive(&source_path, &ctx.include_search)
+                        crate::depgraph::scanner::scan_recursive(&source_path, &ctx.include_search)
                     })
                 }
                 DepfileStrategy::Unsupported => {
-                    zccache::depgraph::scanner::scan_recursive(&source_path, &ctx.include_search)
+                    crate::depgraph::scanner::scan_recursive(&source_path, &ctx.include_search)
                 }
             }
         };

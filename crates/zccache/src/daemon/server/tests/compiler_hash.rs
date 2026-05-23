@@ -80,16 +80,16 @@ fn rustc_context_build_reuses_compiler_hash_cache() {
         "-o".into(),
         output.to_string_lossy().into_owned(),
     ];
-    let compilation = zccache::compiler::CacheableCompilation {
+    let compilation = crate::compiler::CacheableCompilation {
         compiler: compiler.clone().into(),
-        family: zccache::compiler::CompilerFamily::Rustc,
+        family: crate::compiler::CompilerFamily::Rustc,
         source_file: source.clone().into(),
         output_file: output.into(),
         original_args: std::sync::Arc::from(args),
         unknown_flags: Vec::new(),
     };
     let cache = CompilerHashCache::new();
-    let expected_hash = zccache::hash::hash_file(&compiler).ok();
+    let expected_hash = crate::hash::hash_file(&compiler).ok();
 
     let first = build_rustc_compile_context(&compilation, tmp.path(), &[], &cache);
     let second = build_rustc_compile_context(&compilation, tmp.path(), &[], &cache);

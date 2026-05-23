@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use zccache::protocol::Response;
+use crate::protocol::Response;
 
 use super::super::{extract_outcome, miss_reason};
 
@@ -122,8 +122,8 @@ fn test_extract_outcome_link_error() {
 
 #[test]
 fn test_extract_outcome_all_non_journalable() {
-    use zccache::core::NormalizedPath;
-    use zccache::protocol::{DaemonStatus, LookupResult as LR, SessionStats, StoreResult as SR};
+    use crate::core::NormalizedPath;
+    use crate::protocol::{DaemonStatus, LookupResult as LR, SessionStats, StoreResult as SR};
 
     let non_journalable: Vec<Response> = vec![
         Response::Pong,

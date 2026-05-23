@@ -5,8 +5,8 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use zccache::compiler::strict_paths::StrictPathsMode;
-use zccache::core::NormalizedPath;
+use crate::compiler::strict_paths::StrictPathsMode;
+use crate::core::NormalizedPath;
 
 use super::daemon::{ensure_daemon, which_on_path};
 use super::util::{connect, exit_code_from_i32, resolve_endpoint, run_async, slurp_stdin_if_piped};
@@ -39,7 +39,7 @@ fn run_passthrough(args: &[String]) -> ExitCode {
 /// preserving their mtime and avoiding unnecessary downstream rebuilds.
 /// After formatting, the new content hash of each file is stored in the cache.
 fn run_rustfmt_cached(rustfmt_path: &Path, args: &[String], cwd: &Path) -> ExitCode {
-    use zccache::compiler::parse_rustfmt::{find_rustfmt_config, parse_rustfmt_invocation};
+    use crate::compiler::parse_rustfmt::{find_rustfmt_config, parse_rustfmt_invocation};
 
     let parsed = match parse_rustfmt_invocation(args) {
         Some(p) => p,
@@ -52,11 +52,11 @@ fn run_rustfmt_cached(rustfmt_path: &Path, args: &[String], cwd: &Path) -> ExitC
     // Build format context: rustfmt binary identity + config + flags.
     // Changes to any of these invalidate the entire format cache scope.
     let context_hash = {
-        let mut hasher = zccache::hash::StreamHasher::new();
+        let mut hasher = crate::hash::StreamHasher::new();
         hasher.update(b"zccache-fmt-v1");
 
         // Hash rustfmt binary content for version identity
-        if let Ok(bin_hash) = zccache::hash::hash_file(rustfmt_path) {
+        if let Ok(bin_hash) = crate::hash::hash_file(rustfmt_path) {
             hasher.update(bin_hash.as_bytes());
         } else {
             hasher.update(b"unknown-binary");
@@ -68,7 +68,7 @@ fn run_rustfmt_cached(rustfmt_path: &Path, args: &[String], cwd: &Path) -> ExitC
             .clone()
             .or_else(|| find_rustfmt_config(cwd));
         if let Some(ref cfg) = config_path {
-            if let Ok(cfg_hash) = zccache::hash::hash_file(cfg) {
+            if let Ok(cfg_hash) = crate::hash::hash_file(cfg) {
                 hasher.update(cfg_hash.as_bytes());
             }
         }
@@ -83,7 +83,7 @@ fn run_rustfmt_cached(rustfmt_path: &Path, args: &[String], cwd: &Path) -> ExitC
     };
 
     // Format cache directory: {cache_dir}/fmt/{context_hash}/
-    let cache_dir = zccache::core::config::default_cache_dir()
+    let cache_dir = crate::core::config::default_cache_dir()
         .join("fmt")
         .join(&context_hash);
 
@@ -93,7 +93,7 @@ fn run_rustfmt_cached(rustfmt_path: &Path, args: &[String], cwd: &Path) -> ExitC
     // Resolve source files to absolute paths and check cache (parallel)
     use rayon::prelude::*;
 
-    let results: Vec<(NormalizedPath, bool, Option<zccache::hash::ContentHash>)> = parsed
+    let results: Vec<(NormalizedPath, bool, Option<crate::hash::ContentHash>)> = parsed
         .source_files
         .par_iter()
         .map(|src| {
@@ -102,7 +102,7 @@ fn run_rustfmt_cached(rustfmt_path: &Path, args: &[String], cwd: &Path) -> ExitC
             } else {
                 cwd.join(src).into()
             };
-            let (is_hit, hash) = match zccache::hash::hash_file(&abs) {
+            let (is_hit, hash) = match crate::hash::hash_file(&abs) {
                 Ok(content_hash) => {
                     let marker = cache_dir.join(content_hash.to_hex());
                     (marker.exists(), Some(content_hash))
@@ -114,7 +114,7 @@ fn run_rustfmt_cached(rustfmt_path: &Path, args: &[String], cwd: &Path) -> ExitC
         .collect();
 
     let mut miss_files: Vec<NormalizedPath> = Vec::new();
-    let mut all_files: Vec<(NormalizedPath, bool, Option<zccache::hash::ContentHash>)> = Vec::new();
+    let mut all_files: Vec<(NormalizedPath, bool, Option<crate::hash::ContentHash>)> = Vec::new();
     for (abs, is_hit, hash) in results {
         if !is_hit {
             miss_files.push(abs.clone());
@@ -163,7 +163,7 @@ fn run_rustfmt_cached(rustfmt_path: &Path, args: &[String], cwd: &Path) -> ExitC
             let new_hash = if parsed.check_mode {
                 *cached_hash
             } else {
-                zccache::hash::hash_file(abs).ok()
+                crate::hash::hash_file(abs).ok()
             };
             if let Some(h) = new_hash {
                 let marker = cache_dir.join(h.to_hex());
@@ -180,7 +180,7 @@ fn run_rustfmt_on_files(
     rustfmt_path: &Path,
     original_args: &[String],
     files: &[NormalizedPath],
-    parsed: &zccache::compiler::parse_rustfmt::ParsedRustfmt,
+    parsed: &crate::compiler::parse_rustfmt::ParsedRustfmt,
 ) -> Result<i32, std::io::Error> {
     // Reconstruct args: flags + the miss files (not the original file list)
     let mut cmd = std::process::Command::new(rustfmt_path);
@@ -321,13 +321,13 @@ pub(crate) fn run_wrap(
     let _ = std::env::set_current_dir(std::env::temp_dir());
 
     // Check if this is a rustfmt invocation — handle via format cache path
-    if zccache::compiler::detect_family(&args[0]).is_formatter() {
+    if crate::compiler::detect_family(&args[0]).is_formatter() {
         return run_rustfmt_cached(&wrapped_tool, &tool_args, &cwd);
     }
 
     // Check if this is an archiver or linker tool (including gcc -shared)
-    if zccache::compiler::parse_archiver::is_archiver(&args[0])
-        || zccache::compiler::parse_linker::is_link_invocation(&args[0], &tool_args)
+    if crate::compiler::parse_archiver::is_archiver(&args[0])
+        || crate::compiler::parse_linker::is_link_invocation(&args[0], &tool_args)
     {
         return run_async(cmd_link_ephemeral(
             &endpoint,
@@ -338,7 +338,7 @@ pub(crate) fn run_wrap(
         ));
     }
 
-    if let Err(err) = zccache::compiler::strict_paths::validate_args(&tool_args, strict_paths_mode) {
+    if let Err(err) = crate::compiler::strict_paths::validate_args(&tool_args, strict_paths_mode) {
         eprintln!("{}", err.diagnostic(&args[0], &tool_args));
         return ExitCode::FAILURE;
     }
@@ -375,7 +375,7 @@ pub(crate) fn run_wrap(
 /// Resolve a compiler name/path to an absolute path.
 /// Normalizes MSYS paths on Windows, then searches PATH if not already absolute.
 fn resolve_compiler_path(compiler: &str) -> NormalizedPath {
-    let normalized = zccache::core::path::normalize_msys_path(compiler);
+    let normalized = crate::core::path::normalize_msys_path(compiler);
     let path = Path::new(&normalized);
 
     // Already absolute — return as-is.
@@ -408,7 +408,7 @@ async fn cmd_compile(
     };
 
     if let Err(e) = conn
-        .send(&zccache::protocol::Request::Compile {
+        .send(&crate::protocol::Request::Compile {
             session_id: session_id.to_string(),
             args,
             cwd,
@@ -430,7 +430,7 @@ async fn cmd_compile(
         }
     };
     match recv_result {
-        Some(zccache::protocol::Response::CompileResult {
+        Some(crate::protocol::Response::CompileResult {
             exit_code,
             stdout,
             stderr,
@@ -442,7 +442,7 @@ async fn cmd_compile(
             let _ = std::io::stderr().write_all(&stderr);
             exit_code_from_i32(exit_code)
         }
-        Some(zccache::protocol::Response::Error { message }) => {
+        Some(crate::protocol::Response::Error { message }) => {
             eprintln!("zccache[err][E]: daemon error: {message}");
             ExitCode::FAILURE
         }
@@ -481,7 +481,7 @@ async fn cmd_compile_ephemeral(
 
     let stdin_bytes = slurp_stdin_if_piped();
     if let Err(e) = conn
-        .send(&zccache::protocol::Request::CompileEphemeral {
+        .send(&crate::protocol::Request::CompileEphemeral {
             client_pid: std::process::id(),
             working_dir: cwd.clone(),
             compiler: compiler.into(),
@@ -504,7 +504,7 @@ async fn cmd_compile_ephemeral(
         }
     };
     match recv_result {
-        Some(zccache::protocol::Response::CompileResult {
+        Some(crate::protocol::Response::CompileResult {
             exit_code,
             stdout,
             stderr,
@@ -515,7 +515,7 @@ async fn cmd_compile_ephemeral(
             let _ = std::io::stderr().write_all(&stderr);
             exit_code_from_i32(exit_code)
         }
-        Some(zccache::protocol::Response::Error { message }) => {
+        Some(crate::protocol::Response::Error { message }) => {
             eprintln!("zccache[err][E]: daemon error: {message}");
             ExitCode::FAILURE
         }
@@ -551,7 +551,7 @@ async fn cmd_link_ephemeral(
     };
 
     if let Err(e) = conn
-        .send(&zccache::protocol::Request::LinkEphemeral {
+        .send(&crate::protocol::Request::LinkEphemeral {
             client_pid: std::process::id(),
             tool: tool.into(),
             args,
@@ -572,7 +572,7 @@ async fn cmd_link_ephemeral(
         }
     };
     match recv_result {
-        Some(zccache::protocol::Response::LinkResult {
+        Some(crate::protocol::Response::LinkResult {
             exit_code,
             stdout,
             stderr,
@@ -587,7 +587,7 @@ async fn cmd_link_ephemeral(
             }
             exit_code_from_i32(exit_code)
         }
-        Some(zccache::protocol::Response::Error { message }) => {
+        Some(crate::protocol::Response::Error { message }) => {
             eprintln!("zccache[err][E]: daemon error: {message}");
             ExitCode::FAILURE
         }

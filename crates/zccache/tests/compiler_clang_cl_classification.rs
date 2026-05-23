@@ -19,8 +19,8 @@
 
 use std::path::Path;
 
-use zccache_compiler::response_file::expand_response_files_in;
-use zccache_compiler::{parse_invocation, CompilerFamily, ParsedInvocation};
+use zccache::compiler::response_file::expand_response_files_in;
+use zccache::compiler::{parse_invocation, CompilerFamily, ParsedInvocation};
 use zccache::core::NormalizedPath;
 
 fn s(v: &[&str]) -> Vec<String> {

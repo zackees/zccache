@@ -9,10 +9,10 @@ use std::thread;
 use std::time::Duration;
 use tempfile::TempDir;
 use zccache::core::NormalizedPath;
-use zccache_fscache::clock::Clock;
-use zccache_fscache::CacheSystem;
-use zccache_watcher::settle::{SettleBuffer, SettledEvent};
-use zccache_watcher::{IgnoreFilter, NotifyWatcher, WatchEvent};
+use zccache::fscache::clock::Clock;
+use zccache::fscache::CacheSystem;
+use zccache::watcher::settle::{SettleBuffer, SettledEvent};
+use zccache::watcher::{IgnoreFilter, NotifyWatcher, WatchEvent};
 
 /// Helper: create a file with content, return path.
 fn create_file(dir: &TempDir, name: &str, content: &str) -> NormalizedPath {
@@ -200,7 +200,7 @@ fn stress_journal_overflow_recovery() {
         let entry = cache.metadata().get(path).unwrap();
         assert_eq!(
             entry.confidence,
-            zccache_fscache::Confidence::Low,
+            zccache::fscache::Confidence::Low,
             "entry should be Low after overflow"
         );
     }
@@ -519,7 +519,7 @@ fn adversarial_many_apply_overflow_cycles() {
             let entry = cache.metadata().get(path).unwrap();
             assert_eq!(
                 entry.confidence,
-                zccache_fscache::Confidence::Low,
+                zccache::fscache::Confidence::Low,
                 "cycle {cycle}: should be Low after overflow"
             );
         }

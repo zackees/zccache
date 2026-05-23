@@ -1,7 +1,7 @@
 //! Daemon lifecycle: start, stop, version probing, ensure-running, binary discovery.
 
 use std::process::ExitCode;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 use super::util::{connect, resolve_endpoint, run_async};
 
@@ -27,16 +27,16 @@ pub(crate) async fn check_daemon_version(endpoint: &str) -> VersionCheck {
         Ok(c) => c,
         Err(_) => return VersionCheck::Unreachable,
     };
-    if conn.send(&zccache::protocol::Request::Status).await.is_err() {
+    if conn.send(&crate::protocol::Request::Status).await.is_err() {
         return VersionCheck::CommError;
     }
-    match conn.recv::<zccache::protocol::Response>().await {
-        Ok(Some(zccache::protocol::Response::Status(s))) => {
-            if s.version == zccache::core::VERSION {
+    match conn.recv::<crate::protocol::Response>().await {
+        Ok(Some(crate::protocol::Response::Status(s))) => {
+            if s.version == crate::core::VERSION {
                 return VersionCheck::Ok;
             }
-            let client_ver = zccache::core::version::current();
-            match zccache::core::version::Version::parse(&s.version) {
+            let client_ver = crate::core::version::current();
+            match crate::core::version::Version::parse(&s.version) {
                 Some(daemon_ver) => match daemon_ver.cmp(&client_ver) {
                     std::cmp::Ordering::Equal => VersionCheck::Ok,
                     std::cmp::Ordering::Greater => VersionCheck::DaemonNewer {
@@ -64,8 +64,8 @@ pub(crate) async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), S
     // can correlate each CLI decision with the resulting daemon PID
     // by parsing the single `daemon-lifecycle.log`. See zccache#323
     // for the diagnostic gap that motivated this.
-    zccache::core::lifecycle::write_event(
-        zccache::core::lifecycle::EVENT_SPAWN_ATTEMPT,
+    crate::core::lifecycle::write_event(
+        crate::core::lifecycle::EVENT_SPAWN_ATTEMPT,
         serde_json::json!({
             "reason": reason,
             "endpoint": endpoint,
@@ -90,23 +90,23 @@ pub(crate) async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), S
 pub(crate) async fn stop_stale_daemon(endpoint: &str) {
     // Try graceful shutdown via IPC
     if let Ok(mut conn) = connect(endpoint).await {
-        let _ = conn.send(&zccache::protocol::Request::Shutdown).await;
+        let _ = conn.send(&crate::protocol::Request::Shutdown).await;
         // Give it a moment to process the shutdown
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 
     // Force-kill via lock file PID if the daemon is still alive
-    if let Some(pid) = zccache::ipc::check_running_daemon() {
+    if let Some(pid) = crate::ipc::check_running_daemon() {
         tracing::debug!(pid, "force-killing stale daemon process");
-        if zccache::ipc::force_kill_process(pid).is_ok() {
+        if crate::ipc::force_kill_process(pid).is_ok() {
             for _ in 0..50 {
-                if !zccache::ipc::is_process_alive(pid) {
+                if !crate::ipc::is_process_alive(pid) {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         }
-        zccache::ipc::remove_lock_file();
+        crate::ipc::remove_lock_file();
     }
 
     // Wait briefly for the endpoint (named pipe / socket) to be fully released
@@ -129,7 +129,7 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
         VersionCheck::DaemonNewer { daemon_ver } => {
             tracing::debug!(
                 daemon_ver,
-                client_ver = zccache::core::VERSION,
+                client_ver = crate::core::VERSION,
                 "daemon is newer than client, proceeding"
             );
             return Ok(());
@@ -137,13 +137,13 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
         VersionCheck::DaemonOlder { daemon_ver } => {
             tracing::info!(
                 daemon_ver,
-                client_ver = zccache::core::VERSION,
+                client_ver = crate::core::VERSION,
                 "daemon is older than client, auto-recovering"
             );
             stop_stale_daemon(endpoint).await;
             return spawn_and_wait(
                 endpoint,
-                zccache::core::lifecycle::REASON_REPLACED_STALE_VERSION,
+                crate::core::lifecycle::REASON_REPLACED_STALE_VERSION,
             )
             .await;
         }
@@ -152,7 +152,7 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
             stop_stale_daemon(endpoint).await;
             return spawn_and_wait(
                 endpoint,
-                zccache::core::lifecycle::REASON_REPLACED_COMM_ERROR,
+                crate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
             )
             .await;
         }
@@ -162,7 +162,7 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
     }
 
     // Check lock file for a running daemon we just can't reach yet
-    if let Some(pid) = zccache::ipc::check_running_daemon() {
+    if let Some(pid) = crate::ipc::check_running_daemon() {
         for _ in 0..20 {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             match check_daemon_version(endpoint).await {
@@ -170,7 +170,7 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                 VersionCheck::DaemonNewer { daemon_ver } => {
                     tracing::debug!(
                         daemon_ver,
-                        client_ver = zccache::core::VERSION,
+                        client_ver = crate::core::VERSION,
                         "daemon is newer than client, proceeding"
                     );
                     return Ok(());
@@ -178,13 +178,13 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                 VersionCheck::DaemonOlder { daemon_ver } => {
                     tracing::info!(
                         daemon_ver,
-                        client_ver = zccache::core::VERSION,
+                        client_ver = crate::core::VERSION,
                         "daemon is older than client during startup, auto-recovering"
                     );
                     stop_stale_daemon(endpoint).await;
                     return spawn_and_wait(
                         endpoint,
-                        zccache::core::lifecycle::REASON_REPLACED_STALE_VERSION,
+                        crate::core::lifecycle::REASON_REPLACED_STALE_VERSION,
                     )
                     .await;
                 }
@@ -195,7 +195,7 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                     stop_stale_daemon(endpoint).await;
                     return spawn_and_wait(
                         endpoint,
-                        zccache::core::lifecycle::REASON_REPLACED_COMM_ERROR,
+                        crate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
                     )
                     .await;
                 }
@@ -208,7 +208,7 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
     }
 
     // No daemon running — spawn one
-    spawn_and_wait(endpoint, zccache::core::lifecycle::REASON_INITIAL_START).await
+    spawn_and_wait(endpoint, crate::core::lifecycle::REASON_INITIAL_START).await
 }
 
 /// Find the daemon binary. Looks next to the CLI binary first, then on PATH.
@@ -271,7 +271,7 @@ pub(crate) async fn cmd_stop(endpoint: &str) -> ExitCode {
     let mut conn = match connect(endpoint).await {
         Ok(c) => c,
         Err(_) => {
-            let Some(pid) = zccache::ipc::check_running_daemon() else {
+            let Some(pid) = crate::ipc::check_running_daemon() else {
                 eprintln!("daemon not running at {endpoint}");
                 // No daemon — but the index file might still be there from a
                 // crashed prior run. Probe once so callers (CI tar) can rely
@@ -280,11 +280,11 @@ pub(crate) async fn cmd_stop(endpoint: &str) -> ExitCode {
                 return ExitCode::SUCCESS;
             };
 
-            match zccache::ipc::force_kill_process(pid) {
+            match crate::ipc::force_kill_process(pid) {
                 Ok(()) => {
                     for _ in 0..50 {
-                        if !zccache::ipc::is_process_alive(pid) {
-                            zccache::ipc::remove_lock_file();
+                        if !crate::ipc::is_process_alive(pid) {
+                            crate::ipc::remove_lock_file();
                             eprintln!(
                                 "daemon process {pid} terminated after IPC connection failed"
                             );
@@ -309,7 +309,7 @@ pub(crate) async fn cmd_stop(endpoint: &str) -> ExitCode {
         }
     };
 
-    if let Err(e) = conn.send(&zccache::protocol::Request::Shutdown).await {
+    if let Err(e) = conn.send(&crate::protocol::Request::Shutdown).await {
         eprintln!("zccache[err][S]: failed to send to daemon: {e}");
         return ExitCode::FAILURE;
     }
@@ -321,7 +321,7 @@ pub(crate) async fn cmd_stop(endpoint: &str) -> ExitCode {
         }
     };
     match recv_result {
-        Some(zccache::protocol::Response::ShuttingDown) => {
+        Some(crate::protocol::Response::ShuttingDown) => {
             // The daemon acknowledges `Shutdown` immediately and continues
             // teardown asynchronously. On Windows the redb index lock is held
             // until the daemon process actually exits and `Drop` fires. Wait

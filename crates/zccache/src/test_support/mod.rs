@@ -5,7 +5,7 @@
 
 use std::path::Path;
 use std::time::{Duration, SystemTime};
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 // ─── Tool discovery ─────────────────────────────────────────────────────────
 

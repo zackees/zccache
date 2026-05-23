@@ -1,12 +1,12 @@
 //! `zccache defender-exclusions` CLI commands (issue #273).
 //!
-//! Thin shell over [`zccache::core::defender`]. The path-set computation,
+//! Thin shell over [`crate::core::defender`]. The path-set computation,
 //! token elevation check, and PowerShell subprocess plumbing all live in
 //! `zccache-core` so the daemon's first-run banner can reuse them.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
-use zccache::core::defender::{
+use crate::core::defender::{
     add_exclusions, compute_exclusion_paths, is_elevated, query_excluded, remove_exclusions,
     ExclusionStatus,
 };
@@ -18,7 +18,7 @@ elevation. Re-run from an elevated PowerShell or Administrator cmd.";
 /// Cache root used by every subcommand. Centralized so a future
 /// `zccache cache-root` (issue #275) only changes one site.
 fn resolved_cache_root() -> PathBuf {
-    zccache::core::config::default_cache_dir().into_path_buf()
+    crate::core::config::default_cache_dir().into_path_buf()
 }
 
 /// On non-Windows, every subcommand prints the same one-liner and exits

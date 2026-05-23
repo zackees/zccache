@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 use zccache::core::{normalize_for_key, NormalizedPath};
-use zccache_depgraph::*;
+use zccache::depgraph::*;
 
 // ---------------------------------------------------------------------------
 // Helpers

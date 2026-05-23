@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 /// Maximum nesting depth for response files to prevent stack overflow.
 const MAX_DEPTH: usize = 10;
@@ -569,9 +569,9 @@ mod tests {
         let path = f.path().to_str().unwrap();
         let args = s(&["-c", "foo.cpp", "-o", "foo.o", &format!("@{path}")]);
         let expanded = expand_response_files(&args).unwrap();
-        let result = super::parse_invocation("gcc", &expanded);
+        let result = super::super::parse_invocation("gcc", &expanded);
         match result {
-            super::ParsedInvocation::Cacheable(c) => {
+            super::super::ParsedInvocation::Cacheable(c) => {
                 assert_eq!(c.source_file, NormalizedPath::new("foo.cpp"));
                 assert_eq!(c.output_file, NormalizedPath::new("foo.o"));
                 assert!(c.original_args.contains(&"-O2".to_string()));

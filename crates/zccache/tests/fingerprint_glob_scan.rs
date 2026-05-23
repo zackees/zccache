@@ -1,7 +1,7 @@
 mod common;
 
 use tempfile::TempDir;
-use zccache_fingerprint::{walk_files, walk_files_glob};
+use zccache::fingerprint::{walk_files, walk_files_glob};
 
 // ── Basic patterns ───────────────────────────────────────────────
 

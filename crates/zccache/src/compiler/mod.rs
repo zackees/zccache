@@ -33,7 +33,7 @@ pub mod strict_paths;
 mod tests;
 
 use std::sync::Arc;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 pub use detect::detect_family;
 pub use parse::parse_invocation;

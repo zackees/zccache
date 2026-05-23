@@ -7,7 +7,7 @@
 //! or admin).
 
 use std::path::{Path, PathBuf};
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 /// Sentinel file written after a successful extract. Its presence
 /// declares the directory "complete and ready to consume." Absence

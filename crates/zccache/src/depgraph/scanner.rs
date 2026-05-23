@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use super::search_paths::IncludeSearchPaths;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 /// The kind of `#include` directive.
 #[derive(Debug, Clone, PartialEq, Eq)]

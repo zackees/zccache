@@ -28,7 +28,7 @@ pub(crate) async fn cmd_fp_check(
         }
     };
 
-    let request = zccache::protocol::Request::FingerprintCheck {
+    let request = crate::protocol::Request::FingerprintCheck {
         cache_file: cache_file.into(),
         cache_type: cache_type.to_string(),
         root: root.into(),
@@ -42,8 +42,8 @@ pub(crate) async fn cmd_fp_check(
         return ExitCode::from(2);
     }
 
-    match conn.recv::<zccache::protocol::Response>().await {
-        Ok(Some(zccache::protocol::Response::FingerprintCheckResult {
+    match conn.recv::<crate::protocol::Response>().await {
+        Ok(Some(crate::protocol::Response::FingerprintCheckResult {
             decision,
             reason,
             changed_files,
@@ -64,7 +64,7 @@ pub(crate) async fn cmd_fp_check(
                 ExitCode::SUCCESS
             }
         }
-        Ok(Some(zccache::protocol::Response::Error { message })) => {
+        Ok(Some(crate::protocol::Response::Error { message })) => {
             eprintln!("zccache fp: daemon error: {message}");
             ExitCode::from(2)
         }
@@ -94,11 +94,11 @@ pub(crate) async fn cmd_fp_mark(endpoint: &str, cache_file: &Path, success: bool
     };
 
     let request = if success {
-        zccache::protocol::Request::FingerprintMarkSuccess {
+        crate::protocol::Request::FingerprintMarkSuccess {
             cache_file: cache_file.into(),
         }
     } else {
-        zccache::protocol::Request::FingerprintMarkFailure {
+        crate::protocol::Request::FingerprintMarkFailure {
             cache_file: cache_file.into(),
         }
     };
@@ -108,8 +108,8 @@ pub(crate) async fn cmd_fp_mark(endpoint: &str, cache_file: &Path, success: bool
         return ExitCode::from(2);
     }
 
-    match conn.recv::<zccache::protocol::Response>().await {
-        Ok(Some(zccache::protocol::Response::FingerprintAck)) => {
+    match conn.recv::<crate::protocol::Response>().await {
+        Ok(Some(crate::protocol::Response::FingerprintAck)) => {
             let label = if success {
                 "mark-success"
             } else {
@@ -118,7 +118,7 @@ pub(crate) async fn cmd_fp_mark(endpoint: &str, cache_file: &Path, success: bool
             eprintln!("zccache fp: {label}");
             ExitCode::SUCCESS
         }
-        Ok(Some(zccache::protocol::Response::Error { message })) => {
+        Ok(Some(crate::protocol::Response::Error { message })) => {
             eprintln!("zccache fp: daemon error: {message}");
             ExitCode::from(2)
         }
@@ -147,7 +147,7 @@ pub(crate) async fn cmd_fp_invalidate(endpoint: &str, cache_file: &Path) -> Exit
         }
     };
 
-    let request = zccache::protocol::Request::FingerprintInvalidate {
+    let request = crate::protocol::Request::FingerprintInvalidate {
         cache_file: cache_file.into(),
     };
 
@@ -156,12 +156,12 @@ pub(crate) async fn cmd_fp_invalidate(endpoint: &str, cache_file: &Path) -> Exit
         return ExitCode::from(2);
     }
 
-    match conn.recv::<zccache::protocol::Response>().await {
-        Ok(Some(zccache::protocol::Response::FingerprintAck)) => {
+    match conn.recv::<crate::protocol::Response>().await {
+        Ok(Some(crate::protocol::Response::FingerprintAck)) => {
             eprintln!("zccache fp: invalidated");
             ExitCode::SUCCESS
         }
-        Ok(Some(zccache::protocol::Response::Error { message })) => {
+        Ok(Some(crate::protocol::Response::Error { message })) => {
             eprintln!("zccache fp: daemon error: {message}");
             ExitCode::from(2)
         }

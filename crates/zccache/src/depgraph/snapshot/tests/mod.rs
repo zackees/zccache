@@ -4,11 +4,11 @@
 //! See the directory's `README.md` for the layout overview.
 
 use tempfile::TempDir;
-use zccache::core::NormalizedPath;
-use zccache::hash::ContentHash;
+use crate::core::NormalizedPath;
+use crate::hash::ContentHash;
 
-use super::super::super::context::CompileContext;
-use super::super::super::search_paths::IncludeSearchPaths;
+use super::super::context::CompileContext;
+use super::super::search_paths::IncludeSearchPaths;
 
 mod behavioral;
 mod persistence;
@@ -35,7 +35,7 @@ pub(super) fn make_ctx(source: &str) -> CompileContext {
 /// Hash a path's bytes — used by tests that don't care what the hash is,
 /// only that it is stable per-path.
 pub(super) fn dummy_hash(path: &std::path::Path) -> Option<ContentHash> {
-    Some(zccache::hash::hash_bytes(path.to_string_lossy().as_bytes()))
+    Some(crate::hash::hash_bytes(path.to_string_lossy().as_bytes()))
 }
 
 /// Freshness oracle that always reports "no change since last scan". Used

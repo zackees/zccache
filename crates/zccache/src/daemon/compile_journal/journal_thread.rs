@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::Path;
 
 use tokio::sync::mpsc;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 use super::super::event_log::open_append;
 

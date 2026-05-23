@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use rkyv::Deserialize;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 use super::super::graph::DepGraph;
 
@@ -20,7 +20,7 @@ const SERIALIZE_SCRATCH: usize = 4096;
 /// Returns the default path for the depgraph snapshot file.
 #[must_use]
 pub fn depgraph_file_path() -> NormalizedPath {
-    zccache::core::config::depgraph_dir().join("depgraph.bin")
+    crate::core::config::depgraph_dir().join("depgraph.bin")
 }
 
 /// Save the dependency graph to disk with atomic write.

@@ -76,7 +76,7 @@ fn depfile_basic() {
 
     // Parse depfile
     let source = cwd.join("main.c");
-    let result = zccache_depgraph::depfile::parse_depfile_path(&depfile, &source, cwd).unwrap();
+    let result = zccache::depgraph::depfile::parse_depfile_path(&depfile, &source, cwd).unwrap();
 
     // Should contain util.h (and possibly system headers)
     let util_h = std::fs::canonicalize(cwd.join("util.h")).unwrap();
@@ -138,7 +138,7 @@ int main() { return 0; }
     assert!(output.status.success());
 
     let source = cwd.join("main.c");
-    let result = zccache_depgraph::depfile::parse_depfile_path(&depfile, &source, cwd).unwrap();
+    let result = zccache::depgraph::depfile::parse_depfile_path(&depfile, &source, cwd).unwrap();
 
     // All three headers should be in the dependency list
     let a_h = std::fs::canonicalize(cwd.join("a.h")).unwrap();
@@ -206,7 +206,7 @@ fn depfile_computed_include() {
     );
 
     let source = cwd.join("main.c");
-    let result = zccache_depgraph::depfile::parse_depfile_path(&depfile, &source, cwd).unwrap();
+    let result = zccache::depgraph::depfile::parse_depfile_path(&depfile, &source, cwd).unwrap();
 
     // The compiler resolves computed includes — depfile should contain computed.h
     let computed_h = std::fs::canonicalize(cwd.join("computed.h")).unwrap();
@@ -252,7 +252,7 @@ fn depfile_system_headers_with_md() {
     assert!(output.status.success());
 
     let source = cwd.join("main.c");
-    let result = zccache_depgraph::depfile::parse_depfile_path(&depfile, &source, cwd).unwrap();
+    let result = zccache::depgraph::depfile::parse_depfile_path(&depfile, &source, cwd).unwrap();
 
     // Should contain at least one system header (stdio.h or its internal includes)
     assert!(
@@ -317,16 +317,16 @@ fn depfile_parity_with_scanner() {
 
     // Parse depfile
     let depfile_result =
-        zccache_depgraph::depfile::parse_depfile_path(&depfile_path, &source, cwd).unwrap();
+        zccache::depgraph::depfile::parse_depfile_path(&depfile_path, &source, cwd).unwrap();
 
     // Scan with scanner
-    let search_paths = zccache_depgraph::IncludeSearchPaths {
+    let search_paths = zccache::depgraph::IncludeSearchPaths {
         iquote: vec![],
         user: vec![cwd.to_path_buf().into()],
         system: vec![],
         after: vec![],
     };
-    let scan_result = zccache_depgraph::scanner::scan_recursive(&source, &search_paths);
+    let scan_result = zccache::depgraph::scanner::scan_recursive(&source, &search_paths);
 
     // All scanner-resolved paths should appear in depfile results
     for path in &scan_result.resolved {
@@ -367,12 +367,12 @@ fn depfile_strategy_injected_works_end_to_end() {
 
     let output_file = cwd.join("test.o");
 
-    let dep_flags = zccache_depgraph::UserDepFlags::default();
+    let dep_flags = zccache::depgraph::UserDepFlags::default();
     let (extra_args, strategy) =
-        zccache_depgraph::depfile::prepare_depfile(true, &dep_flags, &output_file, &tmpdir);
+        zccache::depgraph::depfile::prepare_depfile(true, &dep_flags, &output_file, &tmpdir);
 
     let depfile_path = match &strategy {
-        zccache_depgraph::DepfileStrategy::Injected { path } => path.clone(),
+        zccache::depgraph::DepfileStrategy::Injected { path } => path.clone(),
         other => panic!("expected Injected, got: {other:?}"),
     };
 
@@ -405,7 +405,7 @@ fn depfile_strategy_injected_works_end_to_end() {
     // Parse depfile
     let source = cwd.join("test.c");
     let result =
-        zccache_depgraph::depfile::parse_depfile_path(&depfile_path, &source, cwd).unwrap();
+        zccache::depgraph::depfile::parse_depfile_path(&depfile_path, &source, cwd).unwrap();
 
     let test_h = std::fs::canonicalize(cwd.join("test.h")).unwrap();
     assert!(

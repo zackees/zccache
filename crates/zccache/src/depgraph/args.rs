@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use super::search_paths::IncludeSearchPaths;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 /// Dependency-generation flags already present in the user's compiler args.
 #[derive(Debug, Clone, Default)]

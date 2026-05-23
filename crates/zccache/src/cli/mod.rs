@@ -1,7 +1,7 @@
 #![allow(clippy::missing_errors_doc)]
 
 use std::path::Path;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 pub mod commands;
 pub mod defender;
@@ -17,7 +17,7 @@ pub use runtime::{
     run_async, runtime_binaries_dir, spawn_daemon,
 };
 
-pub use zccache::download_client::{
+pub use crate::download_client::{
     ArchiveFormat, DownloadSource, FetchRequest, FetchResult, FetchState, FetchStateKind,
     FetchStatus, WaitMode,
 };
@@ -80,8 +80,8 @@ pub fn run_ino_convert_cached(
     output: &Path,
     options: &InoConvertOptions,
 ) -> Result<InoConvertResult, Box<dyn std::error::Error>> {
-    let input_hash = zccache::hash::hash_file(input)?;
-    let mut hasher = zccache::hash::StreamHasher::new();
+    let input_hash = crate::hash::hash_file(input)?;
+    let mut hasher = crate::hash::StreamHasher::new();
     hasher.update(b"zccache-ino-convert-v1");
     hasher.update(input_hash.as_bytes());
     hasher.update(input.as_os_str().to_string_lossy().as_bytes());
@@ -90,7 +90,7 @@ pub fn run_ino_convert_cached(
     } else {
         b"no-arduino-h"
     });
-    if let Some(libclang_hash) = zccache::compiler::arduino::libclang_hash() {
+    if let Some(libclang_hash) = crate::compiler::arduino::libclang_hash() {
         hasher.update(libclang_hash.as_bytes());
     }
     for arg in &options.clang_args {
@@ -99,7 +99,7 @@ pub fn run_ino_convert_cached(
     }
     let cache_key = hasher.finalize().to_hex();
 
-    let cache_dir = zccache::core::config::default_cache_dir().join("ino");
+    let cache_dir = crate::core::config::default_cache_dir().join("ino");
     std::fs::create_dir_all(&cache_dir)?;
     let cached_cpp = cache_dir.join(format!("{cache_key}.ino.cpp"));
 
@@ -107,9 +107,9 @@ pub fn run_ino_convert_cached(
         return restore_cached_ino_output(&cached_cpp, output);
     }
 
-    let generated = zccache::compiler::arduino::generate_ino_cpp(
+    let generated = crate::compiler::arduino::generate_ino_cpp(
         input,
-        &zccache::compiler::arduino::ArduinoConversionOptions {
+        &crate::compiler::arduino::ArduinoConversionOptions {
             clang_args: options.clang_args.clone(),
             inject_arduino_include: options.inject_arduino_include,
         },
@@ -127,8 +127,8 @@ fn restore_cached_ino_output(
     output: &Path,
 ) -> Result<InoConvertResult, Box<dyn std::error::Error>> {
     if output.exists() {
-        let output_hash = zccache::hash::hash_file(output)?;
-        let cached_hash = zccache::hash::hash_file(cached_cpp)?;
+        let output_hash = crate::hash::hash_file(output)?;
+        let cached_hash = crate::hash::hash_file(cached_cpp)?;
         if output_hash == cached_hash {
             return Ok(InoConvertResult {
                 cache_hit: true,
@@ -166,7 +166,7 @@ fn resolve_endpoint(explicit: Option<&str>) -> String {
     if let Ok(ep) = std::env::var("ZCCACHE_ENDPOINT") {
         return ep;
     }
-    zccache::ipc::default_endpoint()
+    crate::ipc::default_endpoint()
 }
 
 pub fn infer_download_archive_path(
@@ -174,7 +174,7 @@ pub fn infer_download_archive_path(
     archive_format: ArchiveFormat,
 ) -> std::path::PathBuf {
     let file_name = infer_download_file_name(source, archive_format);
-    zccache::core::config::default_cache_dir()
+    crate::core::config::default_cache_dir()
         .join("downloads")
         .join("artifacts")
         .join(file_name)
@@ -204,7 +204,7 @@ pub fn client_download(
     params: DownloadParams,
 ) -> Result<FetchResult, String> {
     let request = build_download_request(params);
-    let client = zccache::download_client::DownloadClient::new(endpoint.map(ToOwned::to_owned));
+    let client = crate::download_client::DownloadClient::new(endpoint.map(ToOwned::to_owned));
     client.fetch(request)
 }
 
@@ -213,7 +213,7 @@ pub fn client_download_exists(
     params: DownloadParams,
 ) -> Result<FetchState, String> {
     let request = build_download_request(params);
-    let client = zccache::download_client::DownloadClient::new(endpoint.map(ToOwned::to_owned));
+    let client = crate::download_client::DownloadClient::new(endpoint.map(ToOwned::to_owned));
     client.exists(&request)
 }
 
@@ -337,12 +337,12 @@ pub fn client_stop(endpoint: Option<&str>) -> Result<bool, String> {
             Ok(c) => c,
             Err(_) => return Ok(false),
         };
-        conn.send(&zccache::protocol::Request::Shutdown)
+        conn.send(&crate::protocol::Request::Shutdown)
             .await
             .map_err(|e| format!("failed to send to daemon: {e}"))?;
-        match conn.recv::<zccache::protocol::Response>().await {
-            Ok(Some(zccache::protocol::Response::ShuttingDown)) => Ok(true),
-            Ok(Some(zccache::protocol::Response::Error { message })) => Err(message),
+        match conn.recv::<crate::protocol::Response>().await {
+            Ok(Some(crate::protocol::Response::ShuttingDown)) => Ok(true),
+            Ok(Some(crate::protocol::Response::Error { message })) => Err(message),
             Ok(None) => Err("lost connection to daemon (no response received)".to_string()),
             Ok(Some(other)) => Err(format!("unexpected response from daemon: {other:?}")),
             Err(e) => Err(format!("broken connection to daemon: {e}")),
@@ -350,18 +350,18 @@ pub fn client_stop(endpoint: Option<&str>) -> Result<bool, String> {
     })
 }
 
-pub fn client_status(endpoint: Option<&str>) -> Result<zccache::protocol::DaemonStatus, String> {
+pub fn client_status(endpoint: Option<&str>) -> Result<crate::protocol::DaemonStatus, String> {
     let endpoint = resolve_endpoint(endpoint);
     run_async(async move {
         let mut conn = connect_client(&endpoint)
             .await
             .map_err(|e| format!("daemon not running at {endpoint}: {e}"))?;
-        conn.send(&zccache::protocol::Request::Status)
+        conn.send(&crate::protocol::Request::Status)
             .await
             .map_err(|e| format!("failed to send to daemon: {e}"))?;
-        match conn.recv::<zccache::protocol::Response>().await {
-            Ok(Some(zccache::protocol::Response::Status(status))) => Ok(status),
-            Ok(Some(zccache::protocol::Response::Error { message })) => Err(message),
+        match conn.recv::<crate::protocol::Response>().await {
+            Ok(Some(crate::protocol::Response::Status(status))) => Ok(status),
+            Ok(Some(crate::protocol::Response::Error { message })) => Err(message),
             Ok(None) => Err("lost connection to daemon (no response received)".to_string()),
             Ok(Some(other)) => Err(format!("unexpected response from daemon: {other:?}")),
             Err(e) => Err(format!("broken connection to daemon: {e}")),
@@ -386,7 +386,7 @@ pub fn client_session_start(
         let mut conn = connect_client(&endpoint)
             .await
             .map_err(|e| format!("cannot connect to daemon at {endpoint}: {e}"))?;
-        conn.send(&zccache::protocol::Request::SessionStart {
+        conn.send(&crate::protocol::Request::SessionStart {
             client_pid: std::process::id(),
             working_dir: cwd.into(),
             log_file,
@@ -397,15 +397,15 @@ pub fn client_session_start(
         .await
         .map_err(|e| format!("failed to send to daemon: {e}"))?;
 
-        match conn.recv::<zccache::protocol::Response>().await {
-            Ok(Some(zccache::protocol::Response::SessionStarted {
+        match conn.recv::<crate::protocol::Response>().await {
+            Ok(Some(crate::protocol::Response::SessionStarted {
                 session_id,
                 journal_path,
             })) => Ok(SessionStartResponse {
                 session_id,
                 journal_path: journal_path.map(|p| p.display().to_string()),
             }),
-            Ok(Some(zccache::protocol::Response::Error { message })) => Err(message),
+            Ok(Some(crate::protocol::Response::Error { message })) => Err(message),
             Ok(None) => Err("lost connection to daemon (no response received)".to_string()),
             Ok(Some(other)) => Err(format!("unexpected response from daemon: {other:?}")),
             Err(e) => Err(format!("broken connection to daemon: {e}")),
@@ -425,7 +425,7 @@ pub fn client_session_start(
 pub fn client_session_end(
     endpoint: Option<&str>,
     session_id: &str,
-) -> Result<Option<zccache::protocol::SessionStats>, String> {
+) -> Result<Option<crate::protocol::SessionStats>, String> {
     let endpoint = resolve_endpoint(endpoint);
     session_end_idempotent(&endpoint, session_id).map_err(|e| e.to_string())
 }
@@ -450,10 +450,10 @@ pub fn client_session_end(
 /// died" connect-time failures onto a success no-op. Other request
 /// types keep their existing strict error semantics.
 #[must_use]
-pub fn is_daemon_unreachable_err(err: &zccache::ipc::IpcError) -> bool {
+pub fn is_daemon_unreachable_err(err: &crate::ipc::IpcError) -> bool {
     use std::io::ErrorKind;
     match err {
-        zccache::ipc::IpcError::Io(io) => matches!(
+        crate::ipc::IpcError::Io(io) => matches!(
             io.kind(),
             ErrorKind::NotFound | ErrorKind::ConnectionRefused | ErrorKind::BrokenPipe
         ),
@@ -495,7 +495,7 @@ pub fn is_daemon_unreachable_err(err: &zccache::ipc::IpcError) -> bool {
 pub fn session_end_idempotent(
     endpoint: &str,
     session_id: &str,
-) -> Result<Option<zccache::protocol::SessionStats>, zccache::ipc::IpcError> {
+) -> Result<Option<crate::protocol::SessionStats>, crate::ipc::IpcError> {
     let endpoint = endpoint.to_string();
     let session_id = session_id.to_string();
 
@@ -506,7 +506,7 @@ pub fn session_end_idempotent(
         .enable_all()
         .build()
         .map_err(|e| {
-            zccache::ipc::IpcError::Endpoint(format!("failed to create tokio runtime: {e}"))
+            crate::ipc::IpcError::Endpoint(format!("failed to create tokio runtime: {e}"))
         })?;
 
     runtime.block_on(async move {
@@ -523,18 +523,18 @@ pub fn session_end_idempotent(
             }
         };
 
-        conn.send(&zccache::protocol::Request::SessionEnd {
+        conn.send(&crate::protocol::Request::SessionEnd {
             session_id: session_id.clone(),
         })
         .await?;
 
-        match conn.recv::<zccache::protocol::Response>().await? {
-            Some(zccache::protocol::Response::SessionEnded { stats }) => Ok(stats),
-            Some(zccache::protocol::Response::Error { message }) => Err(
-                zccache::ipc::IpcError::Endpoint(format!("session-end failed: {message}")),
+        match conn.recv::<crate::protocol::Response>().await? {
+            Some(crate::protocol::Response::SessionEnded { stats }) => Ok(stats),
+            Some(crate::protocol::Response::Error { message }) => Err(
+                crate::ipc::IpcError::Endpoint(format!("session-end failed: {message}")),
             ),
-            None => Err(zccache::ipc::IpcError::ConnectionClosed),
-            Some(other) => Err(zccache::ipc::IpcError::Endpoint(format!(
+            None => Err(crate::ipc::IpcError::ConnectionClosed),
+            Some(other) => Err(crate::ipc::IpcError::Endpoint(format!(
                 "unexpected response from daemon: {other:?}"
             ))),
         }
@@ -544,22 +544,22 @@ pub fn session_end_idempotent(
 pub fn client_session_stats(
     endpoint: Option<&str>,
     session_id: &str,
-) -> Result<Option<zccache::protocol::SessionStats>, String> {
+) -> Result<Option<crate::protocol::SessionStats>, String> {
     let endpoint = resolve_endpoint(endpoint);
     let session_id = session_id.to_string();
     run_async(async move {
         let mut conn = connect_client(&endpoint)
             .await
             .map_err(|e| format!("cannot connect to daemon at {endpoint}: {e}"))?;
-        conn.send(&zccache::protocol::Request::SessionStats {
+        conn.send(&crate::protocol::Request::SessionStats {
             session_id: session_id.clone(),
         })
         .await
         .map_err(|e| format!("failed to send to daemon: {e}"))?;
 
-        match conn.recv::<zccache::protocol::Response>().await {
-            Ok(Some(zccache::protocol::Response::SessionStatsResult { stats })) => Ok(stats),
-            Ok(Some(zccache::protocol::Response::Error { message })) => Err(message),
+        match conn.recv::<crate::protocol::Response>().await {
+            Ok(Some(crate::protocol::Response::SessionStatsResult { stats })) => Ok(stats),
+            Ok(Some(crate::protocol::Response::Error { message })) => Err(message),
             Ok(None) => Err("lost connection to daemon (no response received)".to_string()),
             Ok(Some(other)) => Err(format!("unexpected response from daemon: {other:?}")),
             Err(e) => Err(format!("broken connection to daemon: {e}")),
@@ -597,7 +597,7 @@ pub fn fingerprint_check(
             .await
             .map_err(|e| format!("cannot connect to daemon at {endpoint}: {e}"))?;
 
-        conn.send(&zccache::protocol::Request::FingerprintCheck {
+        conn.send(&crate::protocol::Request::FingerprintCheck {
             cache_file: cache_file.into(),
             cache_type,
             root: root.into(),
@@ -608,8 +608,8 @@ pub fn fingerprint_check(
         .await
         .map_err(|e| format!("failed to send to daemon: {e}"))?;
 
-        match conn.recv::<zccache::protocol::Response>().await {
-            Ok(Some(zccache::protocol::Response::FingerprintCheckResult {
+        match conn.recv::<crate::protocol::Response>().await {
+            Ok(Some(crate::protocol::Response::FingerprintCheckResult {
                 decision,
                 reason,
                 changed_files,
@@ -618,7 +618,7 @@ pub fn fingerprint_check(
                 reason,
                 changed_files,
             }),
-            Ok(Some(zccache::protocol::Response::Error { message })) => Err(message),
+            Ok(Some(crate::protocol::Response::Error { message })) => Err(message),
             Ok(None) => Err("lost connection to daemon (no response received)".to_string()),
             Ok(Some(other)) => Err(format!("unexpected response from daemon: {other:?}")),
             Err(e) => Err(format!("broken connection to daemon: {e}")),
@@ -647,20 +647,20 @@ fn fingerprint_mark(
             .await
             .map_err(|e| format!("cannot connect to daemon at {endpoint}: {e}"))?;
         let request = if success {
-            zccache::protocol::Request::FingerprintMarkSuccess {
+            crate::protocol::Request::FingerprintMarkSuccess {
                 cache_file: cache_file.into(),
             }
         } else {
-            zccache::protocol::Request::FingerprintMarkFailure {
+            crate::protocol::Request::FingerprintMarkFailure {
                 cache_file: cache_file.into(),
             }
         };
         conn.send(&request)
             .await
             .map_err(|e| format!("failed to send to daemon: {e}"))?;
-        match conn.recv::<zccache::protocol::Response>().await {
-            Ok(Some(zccache::protocol::Response::FingerprintAck)) => Ok(()),
-            Ok(Some(zccache::protocol::Response::Error { message })) => Err(message),
+        match conn.recv::<crate::protocol::Response>().await {
+            Ok(Some(crate::protocol::Response::FingerprintAck)) => Ok(()),
+            Ok(Some(crate::protocol::Response::Error { message })) => Err(message),
             Ok(None) => Err("lost connection to daemon (no response received)".to_string()),
             Ok(Some(other)) => Err(format!("unexpected response from daemon: {other:?}")),
             Err(e) => Err(format!("broken connection to daemon: {e}")),
@@ -676,14 +676,14 @@ pub fn fingerprint_invalidate(endpoint: Option<&str>, cache_file: &Path) -> Resu
         let mut conn = connect_client(&endpoint)
             .await
             .map_err(|e| format!("cannot connect to daemon at {endpoint}: {e}"))?;
-        conn.send(&zccache::protocol::Request::FingerprintInvalidate {
+        conn.send(&crate::protocol::Request::FingerprintInvalidate {
             cache_file: cache_file.into(),
         })
         .await
         .map_err(|e| format!("failed to send to daemon: {e}"))?;
-        match conn.recv::<zccache::protocol::Response>().await {
-            Ok(Some(zccache::protocol::Response::FingerprintAck)) => Ok(()),
-            Ok(Some(zccache::protocol::Response::Error { message })) => Err(message),
+        match conn.recv::<crate::protocol::Response>().await {
+            Ok(Some(crate::protocol::Response::FingerprintAck)) => Ok(()),
+            Ok(Some(crate::protocol::Response::Error { message })) => Err(message),
             Ok(None) => Err("lost connection to daemon (no response received)".to_string()),
             Ok(Some(other)) => Err(format!("unexpected response from daemon: {other:?}")),
             Err(e) => Err(format!("broken connection to daemon: {e}")),
@@ -831,7 +831,7 @@ mod tests {
     fn session_end_idempotent_swallows_vanished_daemon() {
         // Construct an endpoint that is guaranteed to have no listener —
         // a unique pipe / socket name with no server bound to it.
-        let endpoint = zccache::ipc::unique_test_endpoint();
+        let endpoint = crate::ipc::unique_test_endpoint();
         let session_id = "00000000-0000-0000-0000-000000000000";
 
         let result = session_end_idempotent(&endpoint, session_id);
@@ -852,7 +852,7 @@ mod tests {
     /// error".
     #[test]
     fn session_end_idempotent_treats_timeout_as_real_error() {
-        let err = zccache::ipc::IpcError::Io(std::io::Error::from(std::io::ErrorKind::TimedOut));
+        let err = crate::ipc::IpcError::Io(std::io::Error::from(std::io::ErrorKind::TimedOut));
         assert!(
             !is_daemon_unreachable_err(&err),
             "TimedOut must NOT be classified as daemon-unreachable; session_end_idempotent \
@@ -864,9 +864,9 @@ mod tests {
     /// connection mid-response) must NOT be classified as unreachable.
     #[test]
     fn session_end_idempotent_treats_protocol_errors_as_real() {
-        let err = zccache::ipc::IpcError::ConnectionClosed;
+        let err = crate::ipc::IpcError::ConnectionClosed;
         assert!(!is_daemon_unreachable_err(&err));
-        let err = zccache::ipc::IpcError::Endpoint("bogus".into());
+        let err = crate::ipc::IpcError::Endpoint("bogus".into());
         assert!(!is_daemon_unreachable_err(&err));
     }
 
@@ -878,20 +878,20 @@ mod tests {
     /// pipe / socket is missing or has no listener.
     #[test]
     fn is_daemon_unreachable_recognizes_not_found() {
-        let err = zccache::ipc::IpcError::Io(std::io::Error::from(std::io::ErrorKind::NotFound));
+        let err = crate::ipc::IpcError::Io(std::io::Error::from(std::io::ErrorKind::NotFound));
         assert!(is_daemon_unreachable_err(&err));
     }
 
     #[test]
     fn is_daemon_unreachable_recognizes_connection_refused() {
         let err =
-            zccache::ipc::IpcError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
+            crate::ipc::IpcError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
         assert!(is_daemon_unreachable_err(&err));
     }
 
     #[test]
     fn is_daemon_unreachable_recognizes_broken_pipe() {
-        let err = zccache::ipc::IpcError::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+        let err = crate::ipc::IpcError::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
         assert!(is_daemon_unreachable_err(&err));
     }
 
@@ -903,7 +903,7 @@ mod tests {
     /// would be silently swallowed and the user would never see it.
     #[test]
     fn is_daemon_unreachable_timeout_is_not_unreachable() {
-        let err = zccache::ipc::IpcError::Timeout(std::time::Duration::from_secs(5));
+        let err = crate::ipc::IpcError::Timeout(std::time::Duration::from_secs(5));
         assert!(
             !is_daemon_unreachable_err(&err),
             "Timeout must propagate as a real fault, not be swallowed as daemon-unreachable"
@@ -917,12 +917,12 @@ mod tests {
     #[test]
     fn is_daemon_unreachable_recognizes_raw_enoent() {
         // ENOENT == 2 on every Unix; on Windows ERROR_FILE_NOT_FOUND == 2 too.
-        let err = zccache::ipc::IpcError::Io(std::io::Error::from_raw_os_error(2));
+        let err = crate::ipc::IpcError::Io(std::io::Error::from_raw_os_error(2));
         assert!(
             is_daemon_unreachable_err(&err),
             "errno 2 must map to a kind in the unreachable set; got kind={:?}",
             match &err {
-                zccache::ipc::IpcError::Io(io) => io.kind(),
+                crate::ipc::IpcError::Io(io) => io.kind(),
                 _ => unreachable!(),
             }
         );
@@ -937,7 +937,7 @@ mod tests {
     /// Test failed teardown even after every workspace test passed.
     #[test]
     fn client_session_end_swallows_vanished_daemon() {
-        let endpoint = zccache::ipc::unique_test_endpoint();
+        let endpoint = crate::ipc::unique_test_endpoint();
         let session_id = "00000000-0000-0000-0000-000000000000";
 
         let result = client_session_end(Some(&endpoint), session_id);

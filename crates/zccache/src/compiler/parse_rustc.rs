@@ -4,7 +4,7 @@
 //! crate types, `--emit=` mixed types, host-side proc-macro dylibs, etc.
 
 use std::sync::Arc;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 use super::{CacheableCompilation, CompilerFamily, ParsedInvocation};
 

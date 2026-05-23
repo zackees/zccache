@@ -2,7 +2,7 @@ mod common;
 
 use std::sync::Arc;
 use tempfile::TempDir;
-use zccache_fingerprint::{walk_files, CacheDecision, HashCache, TwoLayerCache};
+use zccache::fingerprint::{walk_files, CacheDecision, HashCache, TwoLayerCache};
 
 // ── Independent caches in parallel (no locking needed) ───────────
 

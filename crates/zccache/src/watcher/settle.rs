@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 use super::WatchEvent;
 

@@ -4,7 +4,7 @@
 use std::fs;
 use std::sync::Arc;
 
-use zccache::protocol::Response;
+use crate::protocol::Response;
 
 use super::super::{
     extract_outcome, miss_reason, CompileJournal, JournalContext, JournalEntry, MissDiff,

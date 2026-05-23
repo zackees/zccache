@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::SystemTime;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 use serde::{Deserialize, Serialize};
 

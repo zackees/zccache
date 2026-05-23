@@ -15,7 +15,7 @@ pub(crate) async fn cmd_clear(endpoint: &str) -> ExitCode {
         }
     };
 
-    if let Err(e) = conn.send(&zccache::protocol::Request::Clear).await {
+    if let Err(e) = conn.send(&crate::protocol::Request::Clear).await {
         eprintln!("zccache[err][S]: failed to send to daemon: {e}");
         return ExitCode::FAILURE;
     }
@@ -27,7 +27,7 @@ pub(crate) async fn cmd_clear(endpoint: &str) -> ExitCode {
         }
     };
     match recv_result {
-        Some(zccache::protocol::Response::Cleared {
+        Some(crate::protocol::Response::Cleared {
             artifacts_removed,
             metadata_cleared,
             dep_graph_contexts_cleared,
@@ -59,7 +59,7 @@ pub(crate) async fn cmd_clear(endpoint: &str) -> ExitCode {
 pub(crate) fn cmd_kv(action: super::args::KvCommands) -> ExitCode {
     use super::args::KvCommands;
     use std::io::{Read, Write};
-    use zccache::artifact::{Key, KvError, KvStore};
+    use crate::artifact::{Key, KvError, KvStore};
 
     fn open_store() -> Result<KvStore, ExitCode> {
         match KvStore::open_default() {
@@ -227,8 +227,8 @@ pub(crate) fn cmd_kv(action: super::args::KvCommands) -> ExitCode {
 }
 
 pub(crate) fn cmd_warm(target_dir: &Path, profile: &str) -> ExitCode {
-    let cache_dir = zccache::core::config::default_cache_dir();
-    let index_path = zccache::core::config::index_path_from_cache_dir(&cache_dir);
+    let cache_dir = crate::core::config::default_cache_dir();
+    let index_path = crate::core::config::index_path_from_cache_dir(&cache_dir);
     let artifact_dir = cache_dir.join("artifacts");
     // Look for Cargo.lock in cwd or next to target_dir
     let lockfile = {
@@ -324,7 +324,7 @@ pub(crate) fn warm_target(
         return Err(format!("no artifact index at {}", index_path.display()));
     }
 
-    let store = zccache::artifact::ArtifactStore::open(index_path)
+    let store = crate::artifact::ArtifactStore::open(index_path)
         .map_err(|e| format!("failed to open artifact index: {e}"))?;
 
     let all_entries = store.load_all();
@@ -449,7 +449,7 @@ pub(crate) fn warm_target(
 }
 
 pub(crate) fn cmd_crashes(clear: bool) -> ExitCode {
-    let crash_dir = zccache::core::config::crash_dump_dir();
+    let crash_dir = crate::core::config::crash_dump_dir();
 
     if clear {
         let count = match std::fs::read_dir(&crash_dir) {
@@ -511,7 +511,7 @@ pub(crate) fn cmd_crashes(clear: bool) -> ExitCode {
 /// zccache binary on PATH honored `ZCCACHE_CACHE_DIR` before trusting the
 /// Defender-exclusion contract.
 pub(crate) fn cmd_cache_root(json: bool) -> ExitCode {
-    let (root, source) = zccache::core::config::resolve_cache_root();
+    let (root, source) = crate::core::config::resolve_cache_root();
     if json {
         let payload = serde_json::json!({
             "cache_root": root.as_path(),

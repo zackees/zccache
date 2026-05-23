@@ -17,7 +17,7 @@ pub mod polling_watcher;
 pub mod recovery;
 pub mod settle;
 
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 pub use ignore::IgnoreFilter;
 pub use notify_watcher::NotifyWatcher;

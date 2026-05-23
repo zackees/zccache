@@ -1,6 +1,6 @@
-//! Map a [`zccache::protocol::Response`] to a journal-ready tuple.
+//! Map a [`crate::protocol::Response`] to a journal-ready tuple.
 
-use zccache::protocol::Response;
+use crate::protocol::Response;
 
 use super::miss_reason;
 

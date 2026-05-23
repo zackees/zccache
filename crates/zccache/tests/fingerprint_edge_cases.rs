@@ -1,7 +1,7 @@
 mod common;
 
 use tempfile::TempDir;
-use zccache_fingerprint::{
+use zccache::fingerprint::{
     walk_files, walk_files_glob, CacheDecision, HashCache, RunReason, TwoLayerCache,
 };
 

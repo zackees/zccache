@@ -15,8 +15,8 @@ pub(super) async fn handle_link_ephemeral(
     env: Option<Vec<(String, String)>>,
 ) -> Response {
     let lineage = super::super::lineage::Lineage::current(Some(client_pid), None);
-    use zccache::compiler::parse_archiver::{parse_archive_invocation, ParsedArchiveInvocation};
-    use zccache::compiler::parse_linker::{parse_linker_invocation, ParsedLinkerInvocation};
+    use crate::compiler::parse_archiver::{parse_archive_invocation, ParsedArchiveInvocation};
+    use crate::compiler::parse_linker::{parse_linker_invocation, ParsedLinkerInvocation};
 
     state.stats.record_link();
     let worktree_root = resolve_worktree_root(cwd, env.as_deref());
@@ -39,7 +39,7 @@ pub(super) async fn handle_link_ephemeral(
     let parsed_tool = match parse_archive_invocation(tool.to_str().unwrap_or(""), args) {
         ParsedArchiveInvocation::Cacheable(c) => ParsedTool {
             non_determinism_hint: match c.family {
-                zccache::compiler::parse_archiver::ArchiverFamily::MsvcLib => "/BREPRO".to_string(),
+                crate::compiler::parse_archiver::ArchiverFamily::MsvcLib => "/BREPRO".to_string(),
                 _ => "D".to_string(),
             },
             input_files: c.input_files,
@@ -53,7 +53,7 @@ pub(super) async fn handle_link_ephemeral(
             match parse_linker_invocation(tool.to_str().unwrap_or(""), args.to_vec()) {
                 ParsedLinkerInvocation::Cacheable(c) => ParsedTool {
                     non_determinism_hint: match c.family {
-                        zccache::compiler::parse_linker::LinkerFamily::MsvcLink => {
+                        crate::compiler::parse_linker::LinkerFamily::MsvcLink => {
                             "/DETERMINISTIC".to_string()
                         }
                         _ => "--build-id=sha1 (avoid --build-id=uuid)".to_string(),
@@ -124,14 +124,14 @@ pub(super) async fn handle_link_ephemeral(
         cwd_path,
         link_path_remap_key_root,
     );
-    let mut key_builder = zccache::hash::link_cache_key::LinkCacheKeyBuilder::new().tool(tool_hash);
+    let mut key_builder = crate::hash::link_cache_key::LinkCacheKeyBuilder::new().tool(tool_hash);
 
     if link_path_remap_key_root.is_some() {
         key_builder = key_builder.flag(LINK_PATH_REMAP_AUTO_KEY_FLAG);
     }
     if link_key_plan.root_specific {
         let root_identity = link_path_remap_key_root
-            .map(zccache::core::path::normalize_for_key)
+            .map(crate::core::path::normalize_for_key)
             .unwrap_or_default();
         key_builder = key_builder.flag(format!(
             "{LINK_PATH_REMAP_ROOT_SPECIFIC_FLAG}:{root_identity}"
@@ -476,7 +476,7 @@ pub(super) async fn run_tool_passthrough(
     tmp_dir: &Path,
 ) -> Response {
     let _rsp_guard =
-        match zccache::compiler::response_file::write_response_file_if_needed(args, tmp_dir) {
+        match crate::compiler::response_file::write_response_file_if_needed(args, tmp_dir) {
             Ok(guard) => guard,
             Err(e) => {
                 return Response::Error {

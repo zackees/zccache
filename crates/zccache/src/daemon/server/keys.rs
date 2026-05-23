@@ -73,14 +73,14 @@ pub(super) fn compile_worktree_root(
 pub(super) fn normalize_path_for_request_key(path: &Path, key_root: Option<&Path>) -> String {
     if let Some(root) = key_root {
         if let Ok(relative) = path.strip_prefix(root) {
-            let relative = zccache::core::path::normalize_for_key(relative);
+            let relative = crate::core::path::normalize_for_key(relative);
             if relative.is_empty() {
                 return REQUEST_ROOT_MARKER.to_string();
             }
             return format!("{REQUEST_ROOT_MARKER}/{relative}");
         }
     }
-    zccache::core::path::normalize_for_key(path)
+    crate::core::path::normalize_for_key(path)
 }
 
 pub(super) fn normalize_request_path_value(value: &str, key_root: Option<&Path>) -> Option<String> {
@@ -132,7 +132,7 @@ pub(super) fn normalize_cc_prefix_map_arg_for_key(
 }
 
 pub(super) fn same_key_path(left: &Path, right: &Path) -> bool {
-    zccache::core::path::normalize_for_key(left) == zccache::core::path::normalize_for_key(right)
+    crate::core::path::normalize_for_key(left) == crate::core::path::normalize_for_key(right)
 }
 
 pub(super) fn has_ffile_prefix_map_for_old(args: &[String], old: &Path) -> bool {
@@ -146,8 +146,8 @@ pub(super) fn has_ffile_prefix_map_for_old(args: &[String], old: &Path) -> bool 
 
 pub(super) fn compiler_supports_ffile_prefix_map(compiler_path: &Path) -> bool {
     matches!(
-        zccache::compiler::detect_family(&compiler_path.to_string_lossy()),
-        zccache::compiler::CompilerFamily::Clang | zccache::compiler::CompilerFamily::Gcc
+        crate::compiler::detect_family(&compiler_path.to_string_lossy()),
+        crate::compiler::CompilerFamily::Clang | crate::compiler::CompilerFamily::Gcc
     )
 }
 
@@ -300,9 +300,9 @@ pub(super) fn request_fingerprint(
     key_root: Option<&Path>,
     client_env: Option<&[(String, String)]>,
 ) -> ContentHash {
-    let mut h = zccache::hash::StreamHasher::new();
+    let mut h = crate::hash::StreamHasher::new();
     h.update(b"zccache-request-v2\0");
-    let compiler = zccache::core::path::normalize_for_key(compiler);
+    let compiler = crate::core::path::normalize_for_key(compiler);
     h.update(compiler.as_bytes());
     h.update(&[0]);
     let mut i = 0;
@@ -423,7 +423,7 @@ pub(super) fn request_cache_resolved_inputs(
 }
 
 pub(super) fn request_cache_inputs_fresh_since(
-    journal: &zccache::fscache::ChangeJournal,
+    journal: &crate::fscache::ChangeJournal,
     paths: &[NormalizedPath],
     since: Clock,
 ) -> bool {
@@ -471,7 +471,7 @@ pub(super) fn request_cache_artifact_matches(
         file_hashes.push((path, hash));
     }
 
-    let artifact_key = zccache::depgraph::compute_artifact_key(
+    let artifact_key = crate::depgraph::compute_artifact_key(
         &entry.context_key,
         &mut file_hashes,
         Some(root.as_path()),
@@ -492,11 +492,11 @@ pub(super) fn request_cache_artifact_matches(
 
 pub(super) fn strict_paths_mode_from_client_env(
     client_env: Option<&[(String, String)]>,
-) -> Result<zccache::compiler::strict_paths::StrictPathsMode, String> {
+) -> Result<crate::compiler::strict_paths::StrictPathsMode, String> {
     let Some(env) = client_env else {
-        return Ok(zccache::compiler::strict_paths::StrictPathsMode::Off);
+        return Ok(crate::compiler::strict_paths::StrictPathsMode::Off);
     };
-    zccache::compiler::strict_paths::StrictPathsMode::from_env_vars(
+    crate::compiler::strict_paths::StrictPathsMode::from_env_vars(
         env.iter()
             .map(|(key, value)| (key.as_str(), value.as_str())),
     )

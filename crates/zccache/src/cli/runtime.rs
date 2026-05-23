@@ -7,7 +7,7 @@
 //! threshold. Re-exported from `cli/mod.rs` so the public path is unchanged.
 
 use std::path::Path;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 pub fn run_async<T>(
     future: impl std::future::Future<Output = Result<T, String>>,
@@ -31,18 +31,18 @@ enum VersionCheck {
 #[cfg(unix)]
 pub async fn connect_client(
     endpoint: &str,
-) -> Result<zccache::ipc::IpcConnection, zccache::ipc::IpcError> {
-    let mut conn = zccache::ipc::connect(endpoint).await?;
-    conn.set_recv_timeout(zccache::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
+) -> Result<crate::ipc::IpcConnection, crate::ipc::IpcError> {
+    let mut conn = crate::ipc::connect(endpoint).await?;
+    conn.set_recv_timeout(crate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
     Ok(conn)
 }
 
 #[cfg(windows)]
 pub async fn connect_client(
     endpoint: &str,
-) -> Result<zccache::ipc::IpcClientConnection, zccache::ipc::IpcError> {
-    let mut conn = zccache::ipc::connect(endpoint).await?;
-    conn.set_recv_timeout(zccache::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
+) -> Result<crate::ipc::IpcClientConnection, crate::ipc::IpcError> {
+    let mut conn = crate::ipc::connect(endpoint).await?;
+    conn.set_recv_timeout(crate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
     Ok(conn)
 }
 
@@ -52,19 +52,19 @@ async fn check_daemon_version(endpoint: &str) -> VersionCheck {
         Err(_) => return VersionCheck::Unreachable,
     };
     if conn
-        .send(&zccache::protocol::Request::Status)
+        .send(&crate::protocol::Request::Status)
         .await
         .is_err()
     {
         return VersionCheck::CommError;
     }
-    match conn.recv::<zccache::protocol::Response>().await {
-        Ok(Some(zccache::protocol::Response::Status(s))) => {
-            if s.version == zccache::core::VERSION {
+    match conn.recv::<crate::protocol::Response>().await {
+        Ok(Some(crate::protocol::Response::Status(s))) => {
+            if s.version == crate::core::VERSION {
                 return VersionCheck::Ok;
             }
-            let client_ver = zccache::core::version::current();
-            match zccache::core::version::Version::parse(&s.version) {
+            let client_ver = crate::core::version::current();
+            match crate::core::version::Version::parse(&s.version) {
                 Some(daemon_ver) => match daemon_ver.cmp(&client_ver) {
                     std::cmp::Ordering::Equal => VersionCheck::Ok,
                     std::cmp::Ordering::Greater => VersionCheck::DaemonNewer,
@@ -90,8 +90,8 @@ async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), String> {
     // replaced-* variants. This is the diagnostic gap zccache#323
     // identified — knowing 5 daemons spawned without knowing why
     // makes the root cause undebuggable.
-    zccache::core::lifecycle::write_event(
-        zccache::core::lifecycle::EVENT_SPAWN_ATTEMPT,
+    crate::core::lifecycle::write_event(
+        crate::core::lifecycle::EVENT_SPAWN_ATTEMPT,
         serde_json::json!({
             "reason": reason,
             "endpoint": endpoint,
@@ -113,21 +113,21 @@ async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), String> {
 async fn stop_stale_daemon(endpoint: &str) {
     if let Ok(mut conn) = connect_client(endpoint).await {
         let _ = conn
-            .send(&zccache::protocol::Request::Shutdown)
+            .send(&crate::protocol::Request::Shutdown)
             .await;
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 
-    if let Some(pid) = zccache::ipc::check_running_daemon() {
-        if zccache::ipc::force_kill_process(pid).is_ok() {
+    if let Some(pid) = crate::ipc::check_running_daemon() {
+        if crate::ipc::force_kill_process(pid).is_ok() {
             for _ in 0..50 {
-                if !zccache::ipc::is_process_alive(pid) {
+                if !crate::ipc::is_process_alive(pid) {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         }
-        zccache::ipc::remove_lock_file();
+        crate::ipc::remove_lock_file();
     }
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -139,13 +139,13 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
         VersionCheck::DaemonOlder { daemon_ver } => {
             tracing::info!(
                 daemon_ver,
-                client_ver = zccache::core::VERSION,
+                client_ver = crate::core::VERSION,
                 "daemon is older than client, auto-recovering"
             );
             stop_stale_daemon(endpoint).await;
             return spawn_and_wait(
                 endpoint,
-                zccache::core::lifecycle::REASON_REPLACED_STALE_VERSION,
+                crate::core::lifecycle::REASON_REPLACED_STALE_VERSION,
             )
             .await;
         }
@@ -154,14 +154,14 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
             stop_stale_daemon(endpoint).await;
             return spawn_and_wait(
                 endpoint,
-                zccache::core::lifecycle::REASON_REPLACED_COMM_ERROR,
+                crate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
             )
             .await;
         }
         VersionCheck::Unreachable => {}
     }
 
-    if let Some(pid) = zccache::ipc::check_running_daemon() {
+    if let Some(pid) = crate::ipc::check_running_daemon() {
         let mut backoff = std::time::Duration::from_millis(100);
         for _ in 0..20 {
             tokio::time::sleep(backoff).await;
@@ -171,13 +171,13 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                 VersionCheck::DaemonOlder { daemon_ver } => {
                     tracing::info!(
                         daemon_ver,
-                        client_ver = zccache::core::VERSION,
+                        client_ver = crate::core::VERSION,
                         "daemon is older than client during startup, auto-recovering"
                     );
                     stop_stale_daemon(endpoint).await;
                     return spawn_and_wait(
                         endpoint,
-                        zccache::core::lifecycle::REASON_REPLACED_STALE_VERSION,
+                        crate::core::lifecycle::REASON_REPLACED_STALE_VERSION,
                     )
                     .await;
                 }
@@ -185,7 +185,7 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                     stop_stale_daemon(endpoint).await;
                     return spawn_and_wait(
                         endpoint,
-                        zccache::core::lifecycle::REASON_REPLACED_COMM_ERROR,
+                        crate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
                     )
                     .await;
                 }
@@ -199,7 +199,7 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
 
     spawn_and_wait(
         endpoint,
-        zccache::core::lifecycle::REASON_INITIAL_START,
+        crate::core::lifecycle::REASON_INITIAL_START,
     )
     .await
 }
@@ -304,7 +304,7 @@ const RUNTIME_BINARIES_SUBDIR: &str = "runtime-binaries";
 /// Returns `<global_cache_dir>/runtime-binaries`.
 #[must_use]
 pub fn runtime_binaries_dir() -> NormalizedPath {
-    zccache::core::config::default_cache_dir().join(RUNTIME_BINARIES_SUBDIR)
+    crate::core::config::default_cache_dir().join(RUNTIME_BINARIES_SUBDIR)
 }
 
 /// Copy `canonical` (the daemon binary at its install location) to a unique
@@ -379,7 +379,7 @@ const DAEMON_SPAWN_LOGS_SUBDIR: &str = "logs";
 /// path — the daemon's own opener will see the error and fall back to
 /// `Stdio::null` after warning.
 fn allocate_daemon_spawn_log_path() -> std::path::PathBuf {
-    let dir = zccache::core::config::default_cache_dir().join(DAEMON_SPAWN_LOGS_SUBDIR);
+    let dir = crate::core::config::default_cache_dir().join(DAEMON_SPAWN_LOGS_SUBDIR);
     let _ = std::fs::create_dir_all(dir.as_path());
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -416,7 +416,7 @@ const LOG_GC_CUTOFF: std::time::Duration = std::time::Duration::from_secs(60 * 6
 /// and deleting it mid-life would erase the very history that #323
 /// needed to diagnose the multi-spawn bug.
 pub fn gc_log_directory() {
-    let dir = zccache::core::config::default_cache_dir().join(DAEMON_SPAWN_LOGS_SUBDIR);
+    let dir = crate::core::config::default_cache_dir().join(DAEMON_SPAWN_LOGS_SUBDIR);
     gc_log_directory_in(dir.as_path(), LOG_GC_CUTOFF);
 }
 
@@ -437,7 +437,7 @@ pub fn gc_log_directory_in(dir: &Path, cutoff: std::time::Duration) {
         // untouched between a daemon's `spawn` and `died-*` events.
         // Every other file in `logs/` either rotates often or is a
         // historical artifact safe to discard once old.
-        if name == zccache::core::lifecycle::LIVE_LOG_FILENAME {
+        if name == crate::core::lifecycle::LIVE_LOG_FILENAME {
             continue;
         }
         let file_type = entry.file_type();

@@ -227,7 +227,7 @@ fn analyze_journal_missing_file_has_structured_error_hint() {
 fn analyze_journal_rejects_session_stats_json() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = tmp.path().join("last-session-stats.json");
-    let stats = zccache::protocol::SessionStats {
+    let stats = crate::protocol::SessionStats {
         duration_ms: 1000,
         compilations: 10,
         hits: 7,

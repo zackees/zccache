@@ -19,8 +19,8 @@
 use std::path::{Path, PathBuf};
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use zccache_depgraph::scanner::scan_recursive;
-use zccache_depgraph::search_paths::IncludeSearchPaths;
+use zccache::depgraph::scanner::scan_recursive;
+use zccache::depgraph::search_paths::IncludeSearchPaths;
 
 /// Build a tree of `#include "h_<id>.h"` headers in a single flat directory.
 ///

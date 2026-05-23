@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use zccache_artifact::{ArtifactIndex, ArtifactStore};
+use zccache::artifact::{ArtifactIndex, ArtifactStore};
 
 fn sample_index(i: u32) -> ArtifactIndex {
     ArtifactIndex::new(

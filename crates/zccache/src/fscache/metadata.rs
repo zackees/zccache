@@ -3,7 +3,7 @@
 use dashmap::DashMap;
 use rayon::prelude::*;
 use std::time::{Duration, Instant, SystemTime};
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 /// Confidence level for a cached metadata entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -167,13 +167,13 @@ impl MetadataCache {
     /// not applied. Returns `None` if the entry is missing, Low confidence,
     /// or has no cached hash.
     #[must_use]
-    pub fn get_cached_hash(&self, path: &NormalizedPath) -> Option<zccache::hash::ContentHash> {
+    pub fn get_cached_hash(&self, path: &NormalizedPath) -> Option<crate::hash::ContentHash> {
         self.entries
             .get(path)
             .and_then(|entry| match entry.confidence {
                 Confidence::High | Confidence::Medium => entry
                     .content_hash
-                    .map(zccache::hash::ContentHash::from_bytes),
+                    .map(crate::hash::ContentHash::from_bytes),
                 Confidence::Low => None,
             })
     }
@@ -191,7 +191,7 @@ impl MetadataCache {
     pub fn get_cached_hash_if_stat_valid(
         &self,
         path: &NormalizedPath,
-    ) -> Option<zccache::hash::ContentHash> {
+    ) -> Option<crate::hash::ContentHash> {
         let entry = self.entries.get(path)?;
         match entry.confidence {
             Confidence::High | Confidence::Medium => {}
@@ -199,7 +199,7 @@ impl MetadataCache {
         }
         let hash = entry
             .content_hash
-            .map(zccache::hash::ContentHash::from_bytes)?;
+            .map(crate::hash::ContentHash::from_bytes)?;
 
         // One stat syscall to verify mtime + size still match.
         let fs_meta = std::fs::metadata(path).ok()?;

@@ -9,7 +9,7 @@ use super::super::*;
 fn test_context_key(source: &str) -> ContextKey {
     CompileContext {
         source_file: source.into(),
-        include_search: zccache::depgraph::IncludeSearchPaths::default(),
+        include_search: crate::depgraph::IncludeSearchPaths::default(),
         defines: Vec::new(),
         flags: Vec::new(),
         force_includes: Vec::new(),
@@ -180,7 +180,7 @@ fn request_cache_resolved_inputs_requires_cross_root_shareable_entry() {
 
 #[test]
 fn request_cache_inputs_fresh_since_uses_journal_tracking() {
-    let journal = zccache::fscache::ChangeJournal::new();
+    let journal = crate::fscache::ChangeJournal::new();
     let path: NormalizedPath = "/tmp/request-cache-input.cc".into();
     let clock = journal.current_clock();
 

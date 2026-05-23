@@ -4,7 +4,7 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 pub(crate) fn absolute_path(path: &str) -> NormalizedPath {
     let path = Path::new(path);
@@ -53,7 +53,7 @@ pub(crate) fn resolve_endpoint(explicit: Option<&str>) -> String {
     if let Ok(ep) = std::env::var("ZCCACHE_ENDPOINT") {
         return ep;
     }
-    zccache::ipc::default_endpoint()
+    crate::ipc::default_endpoint()
 }
 
 /// Platform-correct connect (returns different types on Unix vs Windows).
@@ -69,18 +69,18 @@ pub(crate) fn resolve_endpoint(explicit: Option<&str>) -> String {
 #[cfg(unix)]
 pub(crate) async fn connect(
     endpoint: &str,
-) -> Result<zccache::ipc::IpcConnection, zccache::ipc::IpcError> {
-    let mut conn = zccache::ipc::connect(endpoint).await?;
-    conn.set_recv_timeout(zccache::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
+) -> Result<crate::ipc::IpcConnection, crate::ipc::IpcError> {
+    let mut conn = crate::ipc::connect(endpoint).await?;
+    conn.set_recv_timeout(crate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
     Ok(conn)
 }
 
 #[cfg(windows)]
 pub(crate) async fn connect(
     endpoint: &str,
-) -> Result<zccache::ipc::IpcClientConnection, zccache::ipc::IpcError> {
-    let mut conn = zccache::ipc::connect(endpoint).await?;
-    conn.set_recv_timeout(zccache::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
+) -> Result<crate::ipc::IpcClientConnection, crate::ipc::IpcError> {
+    let mut conn = crate::ipc::connect(endpoint).await?;
+    conn.set_recv_timeout(crate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
     Ok(conn)
 }
 

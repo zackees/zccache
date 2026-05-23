@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 /// Parse compiler `-v -E` output to extract system include paths.
 ///

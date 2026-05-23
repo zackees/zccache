@@ -330,7 +330,7 @@ impl PhaseProfiler {
     /// Return a snapshot of raw phase-timing totals (not averaged).
     ///
     /// Used by [`super::server`]'s `SessionEnd` / `SessionStats` handlers
-    /// to populate [`zccache::protocol::SessionStats::phase_profile`]. The
+    /// to populate [`crate::protocol::SessionStats::phase_profile`]. The
     /// caller divides by `hit_count` / `miss_count` if it wants averages —
     /// the existing [`snapshot`] does that, but pre-averaged values can't
     /// be summed if a downstream tool ever wants to combine results from
@@ -425,7 +425,7 @@ pub struct MissPhases {
 
 /// Raw phase-timing totals — symmetric to [`ProfileSnapshot`] but without
 /// the per-compile averaging. The struct layout intentionally mirrors
-/// [`zccache::protocol::PhaseProfileSummary`] so the conversion is
+/// [`crate::protocol::PhaseProfileSummary`] so the conversion is
 /// field-for-field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhaseTotals {
@@ -449,7 +449,7 @@ pub struct PhaseTotals {
     pub total_miss_ns: u64,
 }
 
-impl From<PhaseTotals> for zccache::protocol::PhaseProfileSummary {
+impl From<PhaseTotals> for crate::protocol::PhaseProfileSummary {
     fn from(t: PhaseTotals) -> Self {
         Self {
             hit_count: t.hit_count,
@@ -691,7 +691,7 @@ mod tests {
         assert_eq!(totals.total_miss_ns, 10_000);
 
         // From-impl preserves every field for the protocol crate.
-        let summary: zccache::protocol::PhaseProfileSummary = totals.clone().into();
+        let summary: crate::protocol::PhaseProfileSummary = totals.clone().into();
         assert_eq!(summary.hit_count, totals.hit_count);
         assert_eq!(summary.miss_count, totals.miss_count);
         assert_eq!(summary.parse_args_ns, totals.parse_args_ns);

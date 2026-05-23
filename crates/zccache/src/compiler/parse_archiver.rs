@@ -3,7 +3,7 @@
 //! Handles parsing command-line arguments for `ar`, `llvm-ar`, and MSVC `lib.exe`
 //! to determine cacheability and extract cache-relevant information.
 
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 /// Supported archiver tool families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

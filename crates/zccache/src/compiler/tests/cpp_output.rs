@@ -2,7 +2,7 @@
 
 use super::args;
 use super::super::{parse_invocation, ParsedInvocation};
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 // ─── PCH default output tests ─────────────────────────────────────────
 

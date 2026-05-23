@@ -4,7 +4,7 @@
 //! mode flags, and configuration for cache key computation.
 
 use std::path::Path;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 /// Parsed rustfmt invocation.
 #[derive(Debug, Clone)]

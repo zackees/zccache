@@ -13,31 +13,31 @@ pub(super) enum BuildContextResult {
     /// Rustc compilation.
     Rustc {
         /// The Rustc-specific context (for context key computation).
-        rustc_ctx: Box<zccache::depgraph::RustcCompileContext>,
+        rustc_ctx: Box<crate::depgraph::RustcCompileContext>,
         /// A "compatible" CompileContext for dep_graph storage (has source_file).
         compat_ctx: CompileContext,
         /// Parsed args for extern crate info, output path derivation, etc.
-        rustc_args: Box<zccache::depgraph::RustcParsedArgs>,
+        rustc_args: Box<crate::depgraph::RustcParsedArgs>,
     },
 }
 
 pub(super) fn build_compile_context(
-    compilation: &zccache::compiler::CacheableCompilation,
+    compilation: &crate::compiler::CacheableCompilation,
     cwd: &Path,
     system_includes: &[NormalizedPath],
     client_env: &[(String, String)],
     compiler_hash_cache: &CompilerHashCache,
 ) -> BuildContextResult {
-    if compilation.family == zccache::compiler::CompilerFamily::Rustc {
+    if compilation.family == crate::compiler::CompilerFamily::Rustc {
         return build_rustc_compile_context(compilation, cwd, client_env, compiler_hash_cache);
     }
 
     // Dispatch to the correct parser based on compiler family.
     let parsed = match compilation.family {
-        zccache::compiler::CompilerFamily::Msvc => {
-            zccache::depgraph::msvc_args::parse_msvc_args(&compilation.original_args, cwd)
+        crate::compiler::CompilerFamily::Msvc => {
+            crate::depgraph::msvc_args::parse_msvc_args(&compilation.original_args, cwd)
         }
-        _ => zccache::depgraph::args::parse_gnu_args(&compilation.original_args, cwd),
+        _ => crate::depgraph::args::parse_gnu_args(&compilation.original_args, cwd),
     };
     let dep_flags = parsed.dep_flags.clone();
     let mut ctx = CompileContext::from_parsed_args(parsed);
@@ -64,18 +64,18 @@ pub(super) fn build_compile_context(
 
 /// Build compile context for a Rustc invocation.
 pub(super) fn build_rustc_compile_context(
-    compilation: &zccache::compiler::CacheableCompilation,
+    compilation: &crate::compiler::CacheableCompilation,
     cwd: &Path,
     client_env: &[(String, String)],
     compiler_hash_cache: &CompilerHashCache,
 ) -> BuildContextResult {
-    let rustc_args = zccache::depgraph::parse_rustc_args(&compilation.original_args, cwd);
+    let rustc_args = crate::depgraph::parse_rustc_args(&compilation.original_args, cwd);
 
     // Hash the rustc binary for compiler version identity.
     // Different rustc versions produce different output for the same source.
     let compiler_hash = compiler_hash_cache.get_or_hash(&compilation.compiler);
 
-    let rustc_ctx = zccache::depgraph::RustcCompileContext::from_parsed_args(
+    let rustc_ctx = crate::depgraph::RustcCompileContext::from_parsed_args(
         &rustc_args,
         client_env,
         compiler_hash,
@@ -104,10 +104,10 @@ pub(super) fn build_rustc_compile_context(
 /// Parses rustc's dep-info file which has multiple rules (one per output target),
 /// all sharing the same dependencies. Extracts the unique set of source file deps.
 pub(super) fn scan_rustc_deps(
-    rustc_args: &zccache::depgraph::RustcParsedArgs,
+    rustc_args: &crate::depgraph::RustcParsedArgs,
     source_path: &Path,
     cwd: &Path,
-) -> zccache::depgraph::ScanResult {
+) -> crate::depgraph::ScanResult {
     let mut result = if rustc_args.emit_types.iter().any(|t| t == "dep-info") {
         let name = rustc_args.crate_name.as_deref().unwrap_or("unknown");
         let ext_suffix = rustc_args.extra_filename.as_deref().unwrap_or("");
@@ -117,21 +117,21 @@ pub(super) fn scan_rustc_deps(
             if let Ok(content) = std::fs::read_to_string(&depfile_path) {
                 parse_rustc_depinfo(&content, source_path, cwd)
             } else {
-                zccache::depgraph::ScanResult {
+                crate::depgraph::ScanResult {
                     resolved: Vec::new(),
                     unresolved: Vec::new(),
                     has_computed: false,
                 }
             }
         } else {
-            zccache::depgraph::ScanResult {
+            crate::depgraph::ScanResult {
                 resolved: Vec::new(),
                 unresolved: Vec::new(),
                 has_computed: false,
             }
         }
     } else {
-        zccache::depgraph::ScanResult {
+        crate::depgraph::ScanResult {
             resolved: Vec::new(),
             unresolved: Vec::new(),
             has_computed: false,
@@ -167,7 +167,7 @@ pub(super) fn parse_rustc_depinfo(
     content: &str,
     source_path: &Path,
     cwd: &Path,
-) -> zccache::depgraph::ScanResult {
+) -> crate::depgraph::ScanResult {
     let mut deps = std::collections::HashSet::new();
 
     for line in content.lines() {
@@ -248,7 +248,7 @@ pub(super) fn parse_rustc_depinfo(
     }
     resolved.sort();
 
-    zccache::depgraph::ScanResult {
+    crate::depgraph::ScanResult {
         resolved,
         unresolved: Vec::new(),
         has_computed: false,
@@ -269,7 +269,7 @@ pub(super) struct RustcOutputFile {
 }
 
 pub(super) fn rustc_expected_output_paths(
-    rustc_args: &zccache::depgraph::RustcParsedArgs,
+    rustc_args: &crate::depgraph::RustcParsedArgs,
     primary_output_path: &Path,
     cwd: &Path,
 ) -> Vec<NormalizedPath> {
@@ -299,7 +299,7 @@ pub(super) fn rustc_expected_output_paths(
 
 /// Collect output file metadata from a rustc compilation without reading bytes.
 pub(super) fn collect_rustc_output_files(
-    rustc_args: &zccache::depgraph::RustcParsedArgs,
+    rustc_args: &crate::depgraph::RustcParsedArgs,
     primary_output_path: &Path,
     cwd: &Path,
 ) -> Vec<RustcOutputFile> {
@@ -418,8 +418,8 @@ pub(super) fn rust_args_have_remap_for_old(args: &[String], old: &Path) -> bool 
 }
 
 pub(super) fn compiler_is_rustc_like(compiler_path: &Path) -> bool {
-    zccache::compiler::detect_family(&compiler_path.to_string_lossy())
-        == zccache::compiler::CompilerFamily::Rustc
+    crate::compiler::detect_family(&compiler_path.to_string_lossy())
+        == crate::compiler::CompilerFamily::Rustc
 }
 
 pub(super) fn rustc_request_key_root(
@@ -464,7 +464,7 @@ pub(super) fn rust_remap_gate(
     let Some(root) = worktree_root else {
         return RustRemapGate::Missing;
     };
-    let root_key = zccache::core::path::normalize_for_key(root.as_path());
+    let root_key = crate::core::path::normalize_for_key(root.as_path());
     let root_child_prefix = format!("{root_key}/");
     let mut saw_malformed = false;
     let mut saw_external = false;
@@ -479,7 +479,7 @@ pub(super) fn rust_remap_gate(
             saw_malformed = true;
             continue;
         }
-        let old_key = zccache::core::path::normalize_for_key(old_path);
+        let old_key = crate::core::path::normalize_for_key(old_path);
         if old_key == root_key {
             return RustRemapGate::Ok;
         }

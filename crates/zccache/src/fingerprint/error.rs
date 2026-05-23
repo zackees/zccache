@@ -1,4 +1,4 @@
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 /// Errors that can occur during fingerprint operations.
 #[derive(Debug, thiserror::Error)]

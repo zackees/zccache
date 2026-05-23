@@ -4,12 +4,12 @@ mod artifact;
 
 use std::path::Path;
 
-use zccache::core::NormalizedPath;
-use zccache_download::{
+use crate::core::NormalizedPath;
+use crate::download::{
     canonical_destination, DownloadAttachResult, DownloadDaemonStatus, DownloadOptions,
     DownloadStatus,
 };
-use zccache_download_protocol::{Request, Response};
+use crate::download_protocol::{Request, Response};
 
 pub use artifact::{
     ArchiveFormat, DownloadSource, FetchRequest, FetchResult, FetchState, FetchStateKind,
@@ -17,11 +17,11 @@ pub use artifact::{
 };
 
 #[cfg(unix)]
-type ClientConn = zccache::ipc::IpcConnection;
+type ClientConn = crate::ipc::IpcConnection;
 #[cfg(windows)]
-type ClientConn = zccache::ipc::IpcClientConnection;
+type ClientConn = crate::ipc::IpcClientConnection;
 
-pub use zccache_download_protocol::daemon_mgmt::{
+pub use crate::download_protocol::daemon_mgmt::{
     default_endpoint, lock_file_path, read_lock_file_pid, remove_lock_file, write_lock_file,
 };
 
@@ -30,7 +30,7 @@ pub fn check_running_daemon() -> Option<u32> {
     // Verify the PID actually points at the download daemon. A bare
     // is_process_alive check would falsely accept a recycled PID inherited
     // from a restored CI cache (see issue #132).
-    if zccache::ipc::verify_pid_exe_stem(pid, "zccache-download-daemon") {
+    if crate::ipc::verify_pid_exe_stem(pid, "zccache-download-daemon") {
         Some(pid)
     } else {
         remove_lock_file();
@@ -43,13 +43,13 @@ pub fn check_running_daemon() -> Option<u32> {
 }
 
 #[cfg(unix)]
-async fn connect_client(endpoint: &str) -> Result<ClientConn, zccache::ipc::IpcError> {
-    zccache::ipc::connect(endpoint).await
+async fn connect_client(endpoint: &str) -> Result<ClientConn, crate::ipc::IpcError> {
+    crate::ipc::connect(endpoint).await
 }
 
 #[cfg(windows)]
-async fn connect_client(endpoint: &str) -> Result<ClientConn, zccache::ipc::IpcError> {
-    zccache::ipc::connect(endpoint).await
+async fn connect_client(endpoint: &str) -> Result<ClientConn, crate::ipc::IpcError> {
+    crate::ipc::connect(endpoint).await
 }
 
 fn resolve_endpoint(explicit: Option<&str>) -> String {
@@ -332,9 +332,9 @@ impl DownloadHandle {
 pub fn is_terminal(status: &DownloadStatus) -> bool {
     matches!(
         status.phase,
-        zccache_download::DownloadPhase::Completed
-            | zccache_download::DownloadPhase::Cancelled
-            | zccache_download::DownloadPhase::Failed
+        crate::download::DownloadPhase::Completed
+            | crate::download::DownloadPhase::Cancelled
+            | crate::download::DownloadPhase::Failed
     )
 }
 

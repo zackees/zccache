@@ -1,3 +1,5 @@
+#![cfg(feature = "python")]
+
 //! PyO3 cdylib for the fingerprint engine.
 //!
 //! The Rust fingerprint engine itself lives in

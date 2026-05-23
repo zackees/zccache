@@ -15,14 +15,14 @@ use std::sync::Arc;
 
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 /// Windows long-path (`\\?\`) helpers. On non-Windows platforms every entry
 /// point is a no-op pass-through.
 mod long_path {
     use std::path::Path;
 
-    use zccache::core::NormalizedPath;
+    use crate::core::NormalizedPath;
 
     /// Normalize `dir` so that paths joined off it can exceed `MAX_PATH`
     /// without tripping the legacy Win32 path APIs used by transitive crates
@@ -251,7 +251,7 @@ pub struct KvStore {
 impl KvStore {
     /// Open under the canonical zccache root (`default_cache_dir()`).
     pub fn open_default() -> KvResult<Self> {
-        let dir = zccache::core::config::default_cache_dir();
+        let dir = crate::core::config::default_cache_dir();
         Self::open(dir)
     }
 

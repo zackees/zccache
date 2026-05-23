@@ -19,12 +19,12 @@ use super::super::daemon::{ensure_daemon, wait_for_daemon_teardown};
 #[tokio::test]
 #[ignore] // Integration test — needs daemon binary. Run with `test --full`.
 async fn ensure_daemon_auto_recovers_on_comm_error() {
-    let endpoint = zccache::ipc::unique_test_endpoint();
+    let endpoint = crate::ipc::unique_test_endpoint();
 
     // Spawn a fake stale daemon: accepts one connection, drops it (CommError),
     // then shuts down so the endpoint is released for the real daemon.
     let ep = endpoint.clone();
-    let mut listener = zccache::ipc::IpcListener::bind(&ep).unwrap();
+    let mut listener = crate::ipc::IpcListener::bind(&ep).unwrap();
     let server = tokio::spawn(async move {
         // Accept the connection from check_daemon_version, drop it immediately
         let _ = listener.accept().await;

@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::Path;
 use std::time::SystemTime;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 /// Maximum size (bytes) for a single side-effect file. Larger files are skipped.
 const MAX_SIDE_EFFECT_SIZE: u64 = 50 * 1024 * 1024; // 50 MB

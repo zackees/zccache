@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 /// Ordered include search paths, preserving -I/-isystem/-iquote/-idirafter.
 ///

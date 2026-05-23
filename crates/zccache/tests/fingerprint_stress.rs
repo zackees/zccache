@@ -1,7 +1,7 @@
 mod common;
 
 use tempfile::TempDir;
-use zccache_fingerprint::{walk_files, walk_files_glob, CacheDecision, HashCache, TwoLayerCache};
+use zccache::fingerprint::{walk_files, walk_files_glob, CacheDecision, HashCache, TwoLayerCache};
 
 fn setup() -> (TempDir, TempDir) {
     (TempDir::new().unwrap(), TempDir::new().unwrap())

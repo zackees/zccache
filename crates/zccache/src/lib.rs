@@ -2,7 +2,7 @@
 //!
 //! Each `pub mod` below corresponds to a former workspace crate of the same
 //! name (`zccache-core` → [`core`], `zccache-hash` → [`hash`], etc.). New code
-//! should `use zccache::<module>::*` instead of the legacy
+//! should `use crate::<module>::*` instead of the legacy
 //! `zccache_<module>::*` paths, which are being deleted wave by wave.
 
 pub mod artifact;

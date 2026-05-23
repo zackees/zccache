@@ -12,9 +12,9 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
-use zccache::core::NormalizedPath;
-use zccache::depgraph::{ContextKey, DepGraph};
-use zccache::fscache::CacheSystem;
+use crate::core::NormalizedPath;
+use crate::depgraph::{ContextKey, DepGraph};
+use crate::fscache::CacheSystem;
 
 use super::server::{trim_fast_hit_cache, CachedArtifact, FastHitEntry};
 
@@ -290,10 +290,10 @@ pub(crate) fn evict_disk_artifacts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::server::CachedPayload;
+    use super::super::server::CachedPayload;
     use std::time::{Instant, SystemTime};
-    use zccache::depgraph::CompileContext;
-    use zccache::fscache::{Confidence, FileMetadata};
+    use crate::depgraph::CompileContext;
+    use crate::fscache::{Confidence, FileMetadata};
 
     fn empty_caches() -> (
         CacheSystem,
@@ -312,7 +312,7 @@ mod tests {
     fn make_ctx(source: &str) -> CompileContext {
         CompileContext {
             source_file: source.into(),
-            include_search: zccache::depgraph::IncludeSearchPaths::default(),
+            include_search: crate::depgraph::IncludeSearchPaths::default(),
             defines: Vec::new(),
             flags: Vec::new(),
             force_includes: Vec::new(),
@@ -342,7 +342,7 @@ mod tests {
         fh.insert(
             make_context_key("/tmp/snap.c"),
             FastHitEntry {
-                clock: zccache::fscache::Clock::ZERO,
+                clock: crate::fscache::Clock::ZERO,
                 artifact_key_hex: String::new(),
                 cached_at: Instant::now(),
             },
@@ -370,7 +370,7 @@ mod tests {
             fh.insert(
                 make_context_key(&format!("/tmp/fh{i}.c")),
                 FastHitEntry {
-                    clock: zccache::fscache::Clock::ZERO,
+                    clock: crate::fscache::Clock::ZERO,
                     artifact_key_hex: String::new(),
                     cached_at: Instant::now(),
                 },
@@ -463,7 +463,7 @@ mod tests {
             fh.insert(
                 make_context_key(&format!("/tmp/inflight{i}.c")),
                 FastHitEntry {
-                    clock: zccache::fscache::Clock::ZERO,
+                    clock: crate::fscache::Clock::ZERO,
                     artifact_key_hex: String::new(),
                     cached_at: Instant::now(),
                 },
@@ -493,7 +493,7 @@ mod tests {
     }
 
     fn make_artifact(payload_size: usize) -> CachedArtifact {
-        use zccache::artifact::ArtifactIndex;
+        use crate::artifact::ArtifactIndex;
         CachedArtifact {
             meta: ArtifactIndex::new(
                 vec!["test.o".to_string()],

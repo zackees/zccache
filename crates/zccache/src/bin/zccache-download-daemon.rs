@@ -90,7 +90,7 @@ fn run_server(args: Args) {
         .build()
         .expect("failed to create runtime");
     rt.block_on(async move {
-        let mut server = match zccache_download_daemon::DownloadDaemon::bind(&endpoint) {
+        let mut server = match zccache::download_daemon::DownloadDaemon::bind(&endpoint) {
             Ok(server) => server,
             Err(err) => {
                 eprintln!("failed to bind download daemon at {endpoint}: {err}");

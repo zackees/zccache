@@ -7,8 +7,8 @@
 use std::time::Duration;
 
 use tempfile::TempDir;
-use zccache::core::NormalizedPath;
-use zccache::hash::ContentHash;
+use crate::core::NormalizedPath;
+use crate::hash::ContentHash;
 
 use super::{always_fresh, dummy_hash, make_ctx, test_path};
 use super::super::super::context::CompileContext;
@@ -55,15 +55,15 @@ fn loaded_graph_serves_cache_hits() {
     let hashes: std::collections::HashMap<NormalizedPath, ContentHash> = [
         (
             NormalizedPath::from("/src/main.cpp"),
-            zccache::hash::hash_bytes(b"src"),
+            crate::hash::hash_bytes(b"src"),
         ),
         (
             NormalizedPath::from("/include/a.h"),
-            zccache::hash::hash_bytes(b"a"),
+            crate::hash::hash_bytes(b"a"),
         ),
         (
             NormalizedPath::from("/pch.h"),
-            zccache::hash::hash_bytes(b"pch"),
+            crate::hash::hash_bytes(b"pch"),
         ),
     ]
     .into_iter()
@@ -126,7 +126,7 @@ fn context_key_consistent_after_roundtrip() {
     let original_key = ctx.context_key();
     graph.register(ctx);
 
-    let hash = zccache::hash::hash_bytes(b"x");
+    let hash = crate::hash::hash_bytes(b"x");
     let hashes: std::collections::HashMap<NormalizedPath, ContentHash> = [
         (NormalizedPath::from("/src/main.cpp"), hash),
         (NormalizedPath::from("/fi/pch.h"), hash),
@@ -205,7 +205,7 @@ fn unicode_paths_roundtrip() {
         unknown_flags: Vec::new(),
     };
     let key = graph.register(ctx);
-    let hash = zccache::hash::hash_bytes(b"x");
+    let hash = crate::hash::hash_bytes(b"x");
     let hashes: std::collections::HashMap<NormalizedPath, ContentHash> =
         [(NormalizedPath::from(unicode_source), hash)]
             .into_iter()
@@ -372,13 +372,13 @@ fn overlapping_contexts_roundtrip() {
     let hashes: std::collections::HashMap<NormalizedPath, ContentHash> = [
         (
             NormalizedPath::from("/src/a.cpp"),
-            zccache::hash::hash_bytes(b"a"),
+            crate::hash::hash_bytes(b"a"),
         ),
         (
             NormalizedPath::from("/src/b.cpp"),
-            zccache::hash::hash_bytes(b"b"),
+            crate::hash::hash_bytes(b"b"),
         ),
-        (shared_header.clone(), zccache::hash::hash_bytes(b"shared")),
+        (shared_header.clone(), crate::hash::hash_bytes(b"shared")),
     ]
     .into_iter()
     .collect();

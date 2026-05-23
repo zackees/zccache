@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 use rayon::prelude::*;
 
@@ -73,7 +73,7 @@ impl TwoLayerCache {
                         Ok((file.relative.clone(), cached_entry.clone(), false))
                     } else {
                         // Layer 2: mtime or size differ → hash the file.
-                        let hash = zccache::hash::hash_file(&file.absolute)?;
+                        let hash = crate::hash::hash_file(&file.absolute)?;
                         let hash_hex = hash.to_hex();
                         let content_changed = hash_hex != cached_entry.hash;
                         Ok((
@@ -88,7 +88,7 @@ impl TwoLayerCache {
                     }
                 } else {
                     // New file not in cache.
-                    let hash = zccache::hash::hash_file(&file.absolute)?;
+                    let hash = crate::hash::hash_file(&file.absolute)?;
                     Ok((
                         file.relative.clone(),
                         FileEntry {
@@ -198,7 +198,7 @@ impl TwoLayerCache {
             .map(|file| {
                 let mtime = persist::mtime_ns(&file.absolute)?;
                 let size = persist::file_size(&file.absolute)?;
-                let hash = zccache::hash::hash_file(&file.absolute)?;
+                let hash = crate::hash::hash_file(&file.absolute)?;
                 Ok((
                     file.relative.clone(),
                     FileEntry {
@@ -216,7 +216,7 @@ impl TwoLayerCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::{persist, scan};
+    use super::super::{persist, scan};
     use std::fs;
     use tempfile::TempDir;
 
@@ -439,7 +439,7 @@ mod tests {
         let cache = TwoLayerCache::new(cache_dir.path().join("fp.json"));
         let err = cache.mark_success().unwrap_err();
         assert!(
-            matches!(err, super::error::FingerprintError::NoPendingData { .. }),
+            matches!(err, super::super::error::FingerprintError::NoPendingData { .. }),
             "expected NoPendingData, got: {err}"
         );
     }
@@ -450,7 +450,7 @@ mod tests {
         let cache = TwoLayerCache::new(cache_dir.path().join("fp.json"));
         let err = cache.mark_failure().unwrap_err();
         assert!(
-            matches!(err, super::error::FingerprintError::NoPendingData { .. }),
+            matches!(err, super::super::error::FingerprintError::NoPendingData { .. }),
             "expected NoPendingData, got: {err}"
         );
     }

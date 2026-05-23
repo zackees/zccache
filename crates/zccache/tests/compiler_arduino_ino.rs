@@ -1,7 +1,7 @@
 use std::fs;
 
 fn libclang_available() -> bool {
-    zccache_compiler::arduino::can_load_libclang()
+    zccache::compiler::arduino::can_load_libclang()
 }
 
 #[test]
@@ -32,9 +32,9 @@ static unsigned long tick(unsigned long now = 0) {
     )
     .unwrap();
 
-    let generated = zccache_compiler::arduino::generate_ino_cpp(
+    let generated = zccache::compiler::arduino::generate_ino_cpp(
         &ino,
-        &zccache_compiler::arduino::ArduinoConversionOptions::default(),
+        &zccache::compiler::arduino::ArduinoConversionOptions::default(),
     )
     .unwrap();
 
@@ -82,9 +82,9 @@ int helper(int value) {
     )
     .unwrap();
 
-    let generated = zccache_compiler::arduino::generate_ino_cpp(
+    let generated = zccache::compiler::arduino::generate_ino_cpp(
         &ino,
-        &zccache_compiler::arduino::ArduinoConversionOptions::default(),
+        &zccache::compiler::arduino::ArduinoConversionOptions::default(),
     )
     .unwrap();
 

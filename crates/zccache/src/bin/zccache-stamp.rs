@@ -100,7 +100,7 @@ fn main() -> ExitCode {
     println!(
         "stamped {} ({} bytes appended)",
         args.binary.display(),
-        zccache_symbols::marker::MARKER_SIZE
+        zccache::symbols::marker::MARKER_SIZE
     );
     ExitCode::SUCCESS
 }

@@ -54,7 +54,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::Path;
 use std::time::{Instant, SystemTime};
-use zccache::core::NormalizedPath;
+use crate::core::NormalizedPath;
 
 /// On-disk format version for the persisted [`MetadataCache`] snapshot.
 ///
@@ -289,7 +289,7 @@ impl PersistIter for MetadataCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::metadata::Confidence;
+    use super::super::metadata::Confidence;
     use std::fs;
     use tempfile::TempDir;
 
