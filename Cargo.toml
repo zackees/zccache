@@ -3,9 +3,7 @@ resolver = "2"
 members = [
     "crates/zccache-monocrate",
     "crates/zccache-watcher",
-    "crates/zccache-daemon",
     "crates/zccache-cli",
-    "crates/zccache-ci",
     "crates/zccache-fingerprint",
 ]
 exclude = [
@@ -59,7 +57,6 @@ mimalloc = "0.1"
 running-process-core = "3.3"
 zccache-monocrate = { path = "crates/zccache-monocrate" }
 zccache-watcher = { path = "crates/zccache-watcher" }
-zccache-daemon = { path = "crates/zccache-daemon" }
 zccache-cli = { path = "crates/zccache-cli" }
 zccache-fingerprint = { path = "crates/zccache-fingerprint" }
 

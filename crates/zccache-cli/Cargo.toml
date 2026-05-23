@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
-description = "Command-line interface for the zccache compiler cache"
+description = "PyO3 cdylib hosting the `zccache._native` extension module"
 
 [lib]
 crate-type = ["rlib", "cdylib"]
@@ -17,72 +17,12 @@ default = []
 python = ["dep:pyo3"]
 
 [dependencies]
-tokio = { workspace = true, features = ["rt", "net", "io-util", "macros"] }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-clap = { workspace = true }
-thiserror = { workspace = true }
-blake3 = { workspace = true }
-serde = { workspace = true }
 zccache-monocrate = { workspace = true }
-running-process-core = { workspace = true }
-serde_json = { workspace = true }
-rayon = { workspace = true }
-jwalk = { workspace = true }
-tar = { workspace = true }
-flate2 = { workspace = true }
-tempfile = { workspace = true }
-reqwest = { workspace = true }
-zip = { workspace = true }
-fs2 = { workspace = true }
-pyo3 = { version = "0.23", features = ["extension-module", "generate-import-lib", "abi3-py310"], optional = true }
-# Cross-platform crash-trigger primitives; used by the
-# `cli-crash-trigger` fixture binary. Tiny crate, regular dep rather
-# than dev-dep so the `[[bin]]` target sees it.
-sadness-generator = "0.6"
-
-[target.'cfg(unix)'.dependencies]
-tikv-jemallocator = { workspace = true }
-
-[target.'cfg(windows)'.dependencies]
-mimalloc = { workspace = true }
-windows-sys = { version = "0.59", features = [
-    "Win32_Foundation",
-    "Win32_Security",
-    "Win32_Storage_FileSystem",
-    "Win32_System_Pipes",
-    "Win32_System_Threading",
-] }
-
-[package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/{ version }/zccache-{ version }-{ target }.tar.gz"
-bin-dir = "zccache-{ version }-{ target }/{ bin }{ binary-ext }"
-pkg-fmt = "tgz"
-
-[[bin]]
-name = "zccache"
-path = "src/main.rs"
-
-# Test-only fixture binary used by `tests/cli_crash_test.rs`. Lives in
-# the regular `src/bin/` slot so `env!("CARGO_BIN_EXE_cli-crash-trigger")`
-# works inside integration tests; it is not packaged into the wheel
-# because the release workflow ships only the `zccache` binary.
-[[bin]]
-name = "cli-crash-trigger"
-path = "src/bin/cli_crash_trigger.rs"
-required-features = []
-
-# 1.5.0: adds `zccache status --json` and the `zccache analyze` subcommand.
-# Touching this comment busts the cached Cargo fingerprint that was holding
-# a stale unit-test binary in target-snapshot CI jobs (see PR #257).
-
-[dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-zccache-monocrate = { workspace = true, features = ["test-support"] }
-
-[[bench]]
-name = "warm_restore"
-harness = false
+pyo3 = { version = "0.23", features = [
+    "extension-module",
+    "generate-import-lib",
+    "abi3-py310",
+], optional = true }
 
 [build-dependencies]
 pyo3-build-config = "0.23"

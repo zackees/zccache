@@ -74,7 +74,7 @@ jobs:
       # `$HOME/.soldr/...`. The `--target-dir` is per-invocation; nothing
       # else in CI relies on it.
       - name: build zccache release binaries
-        run: soldr cargo build --release --target-dir target -p zccache-cli -p zccache-daemon
+        run: soldr cargo build --release --target-dir target -p zccache-monocrate --bin zccache -p zccache-monocrate --bin zccache-daemon
 
       - name: install binaries on PATH (Unix)
         if: runner.os != 'Windows'

@@ -1,1554 +1,781 @@
-#![allow(clippy::missing_errors_doc)]
+use std::path::PathBuf;
 
-use std::path::Path;
-use zccache_monocrate::core::NormalizedPath;
+use pyo3::exceptions::{PyOSError, PyRuntimeError};
+use pyo3::prelude::*;
+use pyo3::types::PyAny;
 
-#[cfg(feature = "python")]
-mod python;
-
-pub mod symbols;
-
-pub use zccache_monocrate::download_client::{
-    ArchiveFormat, DownloadSource, FetchRequest, FetchResult, FetchState, FetchStateKind,
-    FetchStatus, WaitMode,
+use zccache_monocrate::cli::{
+    build_download_request, client_download, client_download_exists, client_session_end,
+    client_session_start, client_session_stats, client_start, client_status, client_stop,
+    fingerprint_check, fingerprint_invalidate, fingerprint_mark_failure, fingerprint_mark_success,
+    run_ino_convert_cached, DownloadParams, DownloadSource, InoConvertOptions, WaitMode,
 };
 
-#[derive(Debug, Clone)]
-pub struct InoConvertOptions {
-    pub clang_args: Vec<String>,
-    pub inject_arduino_include: bool,
+fn runtime_to_py_err(message: String) -> PyErr {
+    PyErr::new::<PyRuntimeError, _>(message)
 }
 
-impl Default for InoConvertOptions {
-    fn default() -> Self {
+fn parse_download_source(source: &Bound<'_, PyAny>) -> PyResult<DownloadSource> {
+    if let Ok(url) = source.extract::<String>() {
+        return Ok(DownloadSource::Url(url));
+    }
+    if let Ok(urls) = source.extract::<Vec<String>>() {
+        return Ok(DownloadSource::MultipartUrls(urls));
+    }
+    Err(PyErr::new::<PyRuntimeError, _>(
+        "source must be a URL string or a list of URL strings",
+    ))
+}
+
+#[pyclass(module = "zccache._native")]
+#[derive(Clone)]
+pub struct NativeDaemonStatus {
+    #[pyo3(get)]
+    version: String,
+    #[pyo3(get)]
+    artifact_count: u64,
+    #[pyo3(get)]
+    cache_size_bytes: u64,
+    #[pyo3(get)]
+    metadata_entries: u64,
+    #[pyo3(get)]
+    uptime_secs: u64,
+    #[pyo3(get)]
+    cache_hits: u64,
+    #[pyo3(get)]
+    cache_misses: u64,
+    #[pyo3(get)]
+    total_compilations: u64,
+    #[pyo3(get)]
+    non_cacheable: u64,
+    #[pyo3(get)]
+    compile_errors: u64,
+    #[pyo3(get)]
+    time_saved_ms: u64,
+    #[pyo3(get)]
+    total_links: u64,
+    #[pyo3(get)]
+    link_hits: u64,
+    #[pyo3(get)]
+    link_misses: u64,
+    #[pyo3(get)]
+    link_non_cacheable: u64,
+    #[pyo3(get)]
+    dep_graph_contexts: u64,
+    #[pyo3(get)]
+    dep_graph_files: u64,
+    #[pyo3(get)]
+    sessions_total: u64,
+    #[pyo3(get)]
+    sessions_active: u64,
+    #[pyo3(get)]
+    cache_dir: String,
+    #[pyo3(get)]
+    dep_graph_version: u32,
+    #[pyo3(get)]
+    dep_graph_disk_size: u64,
+    #[pyo3(get)]
+    dep_graph_persisted: bool,
+}
+
+impl From<zccache_monocrate::protocol::DaemonStatus> for NativeDaemonStatus {
+    fn from(value: zccache_monocrate::protocol::DaemonStatus) -> Self {
         Self {
-            clang_args: Vec::new(),
-            inject_arduino_include: true,
+            version: value.version,
+            artifact_count: value.artifact_count,
+            cache_size_bytes: value.cache_size_bytes,
+            metadata_entries: value.metadata_entries,
+            uptime_secs: value.uptime_secs,
+            cache_hits: value.cache_hits,
+            cache_misses: value.cache_misses,
+            total_compilations: value.total_compilations,
+            non_cacheable: value.non_cacheable,
+            compile_errors: value.compile_errors,
+            time_saved_ms: value.time_saved_ms,
+            total_links: value.total_links,
+            link_hits: value.link_hits,
+            link_misses: value.link_misses,
+            link_non_cacheable: value.link_non_cacheable,
+            dep_graph_contexts: value.dep_graph_contexts,
+            dep_graph_files: value.dep_graph_files,
+            sessions_total: value.sessions_total,
+            sessions_active: value.sessions_active,
+            cache_dir: value.cache_dir.display().to_string(),
+            dep_graph_version: value.dep_graph_version,
+            dep_graph_disk_size: value.dep_graph_disk_size,
+            dep_graph_persisted: value.dep_graph_persisted,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InoConvertResult {
-    pub cache_hit: bool,
-    pub skipped_write: bool,
+#[pyclass(module = "zccache._native")]
+#[derive(Clone)]
+pub struct NativeSessionStart {
+    #[pyo3(get)]
+    session_id: String,
+    #[pyo3(get)]
+    journal_path: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct DownloadParams {
-    pub source: DownloadSource,
-    pub archive_path: Option<std::path::PathBuf>,
-    pub unarchive_path: Option<std::path::PathBuf>,
-    pub expected_sha256: Option<String>,
-    pub archive_format: ArchiveFormat,
-    pub max_connections: Option<usize>,
-    pub min_segment_size: Option<u64>,
-    pub wait_mode: WaitMode,
-    pub dry_run: bool,
-    pub force: bool,
+#[pyclass(module = "zccache._native")]
+#[derive(Clone)]
+pub struct NativeSessionStats {
+    #[pyo3(get)]
+    duration_ms: u64,
+    #[pyo3(get)]
+    compilations: u64,
+    #[pyo3(get)]
+    hits: u64,
+    #[pyo3(get)]
+    misses: u64,
+    #[pyo3(get)]
+    non_cacheable: u64,
+    #[pyo3(get)]
+    errors: u64,
+    #[pyo3(get)]
+    time_saved_ms: u64,
+    #[pyo3(get)]
+    unique_sources: u64,
+    #[pyo3(get)]
+    bytes_read: u64,
+    #[pyo3(get)]
+    bytes_written: u64,
 }
 
-impl DownloadParams {
-    #[must_use]
-    pub fn new(source: impl Into<DownloadSource>) -> Self {
+impl From<zccache_monocrate::protocol::SessionStats> for NativeSessionStats {
+    fn from(value: zccache_monocrate::protocol::SessionStats) -> Self {
         Self {
-            source: source.into(),
-            archive_path: None,
-            unarchive_path: None,
-            expected_sha256: None,
-            archive_format: ArchiveFormat::Auto,
+            duration_ms: value.duration_ms,
+            compilations: value.compilations,
+            hits: value.hits,
+            misses: value.misses,
+            non_cacheable: value.non_cacheable,
+            errors: value.errors,
+            time_saved_ms: value.time_saved_ms,
+            unique_sources: value.unique_sources,
+            bytes_read: value.bytes_read,
+            bytes_written: value.bytes_written,
+        }
+    }
+}
+
+#[pyclass(module = "zccache._native")]
+#[derive(Clone)]
+pub struct NativeFingerprintCheck {
+    #[pyo3(get)]
+    decision: String,
+    #[pyo3(get)]
+    reason: Option<String>,
+    #[pyo3(get)]
+    changed_files: Vec<String>,
+}
+
+#[pyclass(module = "zccache._native")]
+#[derive(Clone)]
+pub struct NativeInoConvertResult {
+    #[pyo3(get)]
+    cache_hit: bool,
+    #[pyo3(get)]
+    skipped_write: bool,
+}
+
+#[pyclass(module = "zccache._native")]
+#[derive(Clone)]
+pub struct NativeDownloadStatus {
+    #[pyo3(get)]
+    phase: String,
+    #[pyo3(get)]
+    total_bytes: Option<u64>,
+    #[pyo3(get)]
+    downloaded_bytes: u64,
+    #[pyo3(get)]
+    percentage: Option<f32>,
+    #[pyo3(get)]
+    active_clients: u32,
+    #[pyo3(get)]
+    destination: String,
+    #[pyo3(get)]
+    source_url: String,
+    #[pyo3(get)]
+    error: Option<String>,
+}
+
+impl From<zccache_monocrate::download::DownloadStatus> for NativeDownloadStatus {
+    fn from(value: zccache_monocrate::download::DownloadStatus) -> Self {
+        Self {
+            phase: format!("{:?}", value.phase).to_lowercase(),
+            total_bytes: value.total_bytes,
+            downloaded_bytes: value.downloaded_bytes,
+            percentage: value.percentage,
+            active_clients: value.active_clients,
+            destination: value.destination.display().to_string(),
+            source_url: value.source_url,
+            error: value.error,
+        }
+    }
+}
+
+#[pyclass(module = "zccache._native")]
+#[derive(Clone)]
+pub struct NativeDownloadDaemonStatus {
+    #[pyo3(get)]
+    version: String,
+    #[pyo3(get)]
+    active_downloads: u64,
+    #[pyo3(get)]
+    connected_clients: u64,
+    #[pyo3(get)]
+    uptime_secs: u64,
+    #[pyo3(get)]
+    endpoint: String,
+}
+
+impl From<zccache_monocrate::download::DownloadDaemonStatus> for NativeDownloadDaemonStatus {
+    fn from(value: zccache_monocrate::download::DownloadDaemonStatus) -> Self {
+        Self {
+            version: value.version,
+            active_downloads: value.active_downloads,
+            connected_clients: value.connected_clients,
+            uptime_secs: value.uptime_secs,
+            endpoint: value.endpoint,
+        }
+    }
+}
+
+fn parse_archive_format(value: &str) -> zccache_monocrate::download_client::ArchiveFormat {
+    match value.to_ascii_lowercase().as_str() {
+        "none" => zccache_monocrate::download_client::ArchiveFormat::None,
+        "zst" => zccache_monocrate::download_client::ArchiveFormat::Zst,
+        "zip" => zccache_monocrate::download_client::ArchiveFormat::Zip,
+        "xz" => zccache_monocrate::download_client::ArchiveFormat::Xz,
+        "tar.gz" | "targz" => zccache_monocrate::download_client::ArchiveFormat::TarGz,
+        "tar.xz" | "tarxz" => zccache_monocrate::download_client::ArchiveFormat::TarXz,
+        "tar.zst" | "tarzst" => zccache_monocrate::download_client::ArchiveFormat::TarZst,
+        "7z" | "sevenz" => zccache_monocrate::download_client::ArchiveFormat::SevenZip,
+        _ => zccache_monocrate::download_client::ArchiveFormat::Auto,
+    }
+}
+
+#[pyclass(module = "zccache._native")]
+#[derive(Clone)]
+pub struct NativeFetchResult {
+    #[pyo3(get)]
+    status: String,
+    #[pyo3(get)]
+    cache_path: String,
+    #[pyo3(get)]
+    expanded_path: Option<String>,
+    #[pyo3(get)]
+    bytes: Option<u64>,
+    #[pyo3(get)]
+    sha256: String,
+}
+
+impl From<zccache_monocrate::download_client::FetchResult> for NativeFetchResult {
+    fn from(value: zccache_monocrate::download_client::FetchResult) -> Self {
+        Self {
+            status: format!("{:?}", value.status).to_lowercase(),
+            cache_path: value.cache_path.display().to_string(),
+            expanded_path: value.expanded_path.map(|path| path.display().to_string()),
+            bytes: value.bytes,
+            sha256: value.sha256,
+        }
+    }
+}
+
+#[pyclass(module = "zccache._native")]
+#[derive(Clone)]
+pub struct NativeFetchState {
+    #[pyo3(get)]
+    kind: String,
+    #[pyo3(get)]
+    cache_path: String,
+    #[pyo3(get)]
+    expanded_path: Option<String>,
+    #[pyo3(get)]
+    bytes: Option<u64>,
+    #[pyo3(get)]
+    sha256: Option<String>,
+    #[pyo3(get)]
+    reason: Option<String>,
+}
+
+impl From<zccache_monocrate::download_client::FetchState> for NativeFetchState {
+    fn from(value: zccache_monocrate::download_client::FetchState) -> Self {
+        Self {
+            kind: format!("{:?}", value.kind).to_lowercase(),
+            cache_path: value.cache_path.display().to_string(),
+            expanded_path: value.expanded_path.map(|path| path.display().to_string()),
+            bytes: value.bytes,
+            sha256: value.sha256,
+            reason: value.reason,
+        }
+    }
+}
+
+#[pyclass(module = "zccache._native")]
+pub struct NativeDownloadHandle {
+    handle: Option<zccache_monocrate::download_client::DownloadHandle>,
+    initiator: bool,
+    download_id: String,
+}
+
+#[pymethods]
+impl NativeDownloadHandle {
+    #[getter]
+    fn initiator(&self) -> bool {
+        self.initiator
+    }
+
+    #[getter]
+    fn download_id(&self) -> String {
+        self.download_id.clone()
+    }
+
+    fn status(&mut self) -> PyResult<NativeDownloadStatus> {
+        let handle = self
+            .handle
+            .as_mut()
+            .ok_or_else(|| runtime_to_py_err("download handle is closed".to_string()))?;
+        handle
+            .status()
+            .map(NativeDownloadStatus::from)
+            .map_err(runtime_to_py_err)
+    }
+
+    #[pyo3(signature = (timeout_ms=None))]
+    fn wait(&mut self, timeout_ms: Option<u64>) -> PyResult<NativeDownloadStatus> {
+        let handle = self
+            .handle
+            .as_mut()
+            .ok_or_else(|| runtime_to_py_err("download handle is closed".to_string()))?;
+        handle
+            .wait(timeout_ms)
+            .map(NativeDownloadStatus::from)
+            .map_err(runtime_to_py_err)
+    }
+
+    fn cancel(&mut self) -> PyResult<NativeDownloadStatus> {
+        let handle = self
+            .handle
+            .as_mut()
+            .ok_or_else(|| runtime_to_py_err("download handle is closed".to_string()))?;
+        handle
+            .cancel()
+            .map(NativeDownloadStatus::from)
+            .map_err(runtime_to_py_err)
+    }
+
+    fn close(&mut self) -> PyResult<()> {
+        if let Some(handle) = self.handle.take() {
+            handle.close().map_err(runtime_to_py_err)?;
+        }
+        Ok(())
+    }
+}
+
+#[pyclass(module = "zccache._native")]
+pub struct NativeDownloadApi {
+    client: zccache_monocrate::download_client::DownloadClient,
+}
+
+#[pymethods]
+impl NativeDownloadApi {
+    #[new]
+    #[pyo3(signature = (endpoint=None))]
+    fn new(endpoint: Option<String>) -> Self {
+        let client = zccache_monocrate::download_client::DownloadClient::new(endpoint.clone());
+        Self { client }
+    }
+
+    fn start(&self) -> PyResult<()> {
+        self.client.start_daemon().map_err(runtime_to_py_err)
+    }
+
+    fn stop(&self) -> PyResult<bool> {
+        self.client.stop_daemon().map_err(runtime_to_py_err)
+    }
+
+    fn daemon_status(&self) -> PyResult<NativeDownloadDaemonStatus> {
+        self.client
+            .daemon_status()
+            .map(NativeDownloadDaemonStatus::from)
+            .map_err(runtime_to_py_err)
+    }
+
+    #[pyo3(signature = (
+        source_url,
+        destination,
+        force=false,
+        max_connections=None,
+        min_segment_size=None
+    ))]
+    fn download(
+        &self,
+        source_url: String,
+        destination: String,
+        force: bool,
+        max_connections: Option<usize>,
+        min_segment_size: Option<u64>,
+    ) -> PyResult<NativeDownloadHandle> {
+        let options = zccache_monocrate::download::DownloadOptions {
+            force,
+            max_connections,
+            min_segment_size,
+        };
+        let handle = self
+            .client
+            .download(&source_url, PathBuf::from(destination).as_path(), options)
+            .map_err(runtime_to_py_err)?;
+        let initiator = handle.initiator();
+        let download_id = handle.download_id().to_string();
+        Ok(NativeDownloadHandle {
+            handle: Some(handle),
+            initiator,
+            download_id,
+        })
+    }
+
+    #[pyo3(signature = (
+        source,
+        destination=None,
+        expanded=None,
+        expected_sha256=None,
+        archive_format="auto".to_string(),
+        max_connections=None,
+        min_segment_size=None,
+        blocking=true,
+        dry_run=false,
+        force=false
+    ))]
+    fn fetch(
+        &self,
+        source: &Bound<'_, PyAny>,
+        destination: Option<String>,
+        expanded: Option<String>,
+        expected_sha256: Option<String>,
+        archive_format: String,
+        max_connections: Option<usize>,
+        min_segment_size: Option<u64>,
+        blocking: bool,
+        dry_run: bool,
+        force: bool,
+    ) -> PyResult<NativeFetchResult> {
+        let source = parse_download_source(source)?;
+        let request = build_download_request(DownloadParams {
+            source,
+            archive_path: destination.map(PathBuf::from),
+            unarchive_path: expanded.map(PathBuf::from),
+            expected_sha256,
+            archive_format: parse_archive_format(&archive_format),
+            max_connections,
+            min_segment_size,
+            wait_mode: if blocking {
+                WaitMode::Block
+            } else {
+                WaitMode::NoWait
+            },
+            dry_run,
+            force,
+        });
+        self.client
+            .fetch(request)
+            .map(NativeFetchResult::from)
+            .map_err(runtime_to_py_err)
+    }
+
+    #[pyo3(signature = (
+        source,
+        destination=None,
+        expanded=None,
+        expected_sha256=None,
+        archive_format="auto".to_string()
+    ))]
+    fn exists(
+        &self,
+        source: &Bound<'_, PyAny>,
+        destination: Option<String>,
+        expanded: Option<String>,
+        expected_sha256: Option<String>,
+        archive_format: String,
+    ) -> PyResult<NativeFetchState> {
+        let source = parse_download_source(source)?;
+        let request = build_download_request(DownloadParams {
+            source,
+            archive_path: destination.map(PathBuf::from),
+            unarchive_path: expanded.map(PathBuf::from),
+            expected_sha256,
+            archive_format: parse_archive_format(&archive_format),
             max_connections: None,
             min_segment_size: None,
             wait_mode: WaitMode::Block,
             dry_run: false,
             force: false,
-        }
+        });
+        self.client
+            .exists(&request)
+            .map(NativeFetchState::from)
+            .map_err(runtime_to_py_err)
     }
 }
 
-pub fn run_ino_convert_cached(
-    input: &Path,
-    output: &Path,
-    options: &InoConvertOptions,
-) -> Result<InoConvertResult, Box<dyn std::error::Error>> {
-    let input_hash = zccache_monocrate::hash::hash_file(input)?;
-    let mut hasher = zccache_monocrate::hash::StreamHasher::new();
-    hasher.update(b"zccache-ino-convert-v1");
-    hasher.update(input_hash.as_bytes());
-    hasher.update(input.as_os_str().to_string_lossy().as_bytes());
-    hasher.update(if options.inject_arduino_include {
-        b"include-arduino-h"
-    } else {
-        b"no-arduino-h"
-    });
-    if let Some(libclang_hash) = zccache_monocrate::compiler::arduino::libclang_hash() {
-        hasher.update(libclang_hash.as_bytes());
-    }
-    for arg in &options.clang_args {
-        hasher.update(arg.as_bytes());
-        hasher.update(b"\0");
-    }
-    let cache_key = hasher.finalize().to_hex();
+#[pyclass(module = "zccache._native")]
+pub struct NativeClient {
+    endpoint: Option<String>,
+}
 
-    let cache_dir = zccache_monocrate::core::config::default_cache_dir().join("ino");
-    std::fs::create_dir_all(&cache_dir)?;
-    let cached_cpp = cache_dir.join(format!("{cache_key}.ino.cpp"));
-
-    if cached_cpp.exists() {
-        return restore_cached_ino_output(&cached_cpp, output);
+#[pymethods]
+impl NativeClient {
+    #[new]
+    #[pyo3(signature = (endpoint=None))]
+    fn new(endpoint: Option<String>) -> Self {
+        Self { endpoint }
     }
 
-    let generated = zccache_monocrate::compiler::arduino::generate_ino_cpp(
-        input,
-        &zccache_monocrate::compiler::arduino::ArduinoConversionOptions {
-            clang_args: options.clang_args.clone(),
-            inject_arduino_include: options.inject_arduino_include,
-        },
-    )?;
-
-    write_file_atomically(&cached_cpp, generated.cpp.as_bytes())?;
-    restore_cached_ino_output(&cached_cpp, output).map(|_| InoConvertResult {
-        cache_hit: false,
-        skipped_write: false,
-    })
-}
-
-fn restore_cached_ino_output(
-    cached_cpp: &Path,
-    output: &Path,
-) -> Result<InoConvertResult, Box<dyn std::error::Error>> {
-    if output.exists() {
-        let output_hash = zccache_monocrate::hash::hash_file(output)?;
-        let cached_hash = zccache_monocrate::hash::hash_file(cached_cpp)?;
-        if output_hash == cached_hash {
-            return Ok(InoConvertResult {
-                cache_hit: true,
-                skipped_write: true,
-            });
-        }
+    fn start(&self) -> PyResult<()> {
+        client_start(self.endpoint.as_deref()).map_err(runtime_to_py_err)
     }
 
-    if let Some(parent) = output.parent() {
-        std::fs::create_dir_all(parent)?;
+    fn stop(&self) -> PyResult<bool> {
+        client_stop(self.endpoint.as_deref()).map_err(runtime_to_py_err)
     }
-    std::fs::copy(cached_cpp, output)?;
-    Ok(InoConvertResult {
-        cache_hit: true,
-        skipped_write: false,
-    })
-}
 
-fn write_file_atomically(path: &Path, data: &[u8]) -> Result<(), std::io::Error> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent)?;
-
-    let tmp = tempfile::NamedTempFile::new_in(parent)?;
-    std::fs::write(tmp.path(), data)?;
-    match tmp.persist(path) {
-        Ok(_) => Ok(()),
-        Err(err) => Err(err.error),
+    fn status(&self) -> PyResult<NativeDaemonStatus> {
+        client_status(self.endpoint.as_deref())
+            .map(NativeDaemonStatus::from)
+            .map_err(runtime_to_py_err)
     }
-}
 
-fn resolve_endpoint(explicit: Option<&str>) -> String {
-    if let Some(ep) = explicit {
-        return ep.to_string();
-    }
-    if let Ok(ep) = std::env::var("ZCCACHE_ENDPOINT") {
-        return ep;
-    }
-    zccache_monocrate::ipc::default_endpoint()
-}
-
-pub fn infer_download_archive_path(
-    source: &DownloadSource,
-    archive_format: ArchiveFormat,
-) -> std::path::PathBuf {
-    let file_name = infer_download_file_name(source, archive_format);
-    zccache_monocrate::core::config::default_cache_dir()
-        .join("downloads")
-        .join("artifacts")
-        .join(file_name)
-        .into_path_buf()
-}
-
-#[must_use]
-pub fn build_download_request(params: DownloadParams) -> FetchRequest {
-    let archive_path = params
-        .archive_path
-        .unwrap_or_else(|| infer_download_archive_path(&params.source, params.archive_format));
-    let mut request = FetchRequest::new(params.source, archive_path);
-    request.destination_path_expanded = params.unarchive_path;
-    request.expected_sha256 = params.expected_sha256;
-    request.archive_format = params.archive_format;
-    request.wait_mode = params.wait_mode;
-    request.dry_run = params.dry_run;
-    request.force = params.force;
-    request.download_options.force = params.force;
-    request.download_options.max_connections = params.max_connections;
-    request.download_options.min_segment_size = params.min_segment_size;
-    request
-}
-
-pub fn client_download(
-    endpoint: Option<&str>,
-    params: DownloadParams,
-) -> Result<FetchResult, String> {
-    let request = build_download_request(params);
-    let client = zccache_monocrate::download_client::DownloadClient::new(endpoint.map(ToOwned::to_owned));
-    client.fetch(request)
-}
-
-pub fn client_download_exists(
-    endpoint: Option<&str>,
-    params: DownloadParams,
-) -> Result<FetchState, String> {
-    let request = build_download_request(params);
-    let client = zccache_monocrate::download_client::DownloadClient::new(endpoint.map(ToOwned::to_owned));
-    client.exists(&request)
-}
-
-fn infer_download_file_name(source: &DownloadSource, archive_format: ArchiveFormat) -> String {
-    let base = infer_source_file_name(source);
-    let hash = blake3::hash(download_source_key(source).as_bytes())
-        .to_hex()
-        .to_string();
-    let suffix = archive_suffix(archive_format);
-
-    if base.contains('.') || suffix.is_empty() {
-        format!("{hash}-{base}")
-    } else {
-        format!("{hash}-{base}{suffix}")
-    }
-}
-
-fn infer_source_file_name(source: &DownloadSource) -> String {
-    match source {
-        DownloadSource::Url(url) => {
-            infer_url_file_name(url).unwrap_or_else(|| "download".to_string())
-        }
-        DownloadSource::MultipartUrls(urls) => infer_multipart_file_name(urls),
-    }
-}
-
-fn infer_url_file_name(url: &str) -> Option<String> {
-    url.split(['?', '#'])
-        .next()
-        .and_then(|value| value.rsplit('/').next())
-        .filter(|value| !value.is_empty())
-        .map(sanitize_download_file_name)
-        .filter(|value| !value.is_empty())
-}
-
-fn infer_multipart_file_name(urls: &[String]) -> String {
-    let base = urls
-        .first()
-        .and_then(|url| infer_url_file_name(url))
-        .map(|name| strip_part_suffix(&name).to_string())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "multipart-download".to_string());
-    if base.contains('.') {
-        base
-    } else {
-        "multipart-download".to_string()
-    }
-}
-
-fn strip_part_suffix(value: &str) -> &str {
-    if let Some((base, suffix)) = value.rsplit_once(".part-") {
-        if !base.is_empty() && !suffix.is_empty() {
-            return base;
-        }
-    }
-    if let Some((base, suffix)) = value.rsplit_once(".part_") {
-        if !base.is_empty() && !suffix.is_empty() {
-            return base;
-        }
-    }
-    if let Some(index) = value.rfind(".part") {
-        let suffix = &value[index + ".part".len()..];
-        if !suffix.is_empty()
-            && suffix
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
-        {
-            return &value[..index];
-        }
-    }
-    value
-}
-
-fn download_source_key(source: &DownloadSource) -> String {
-    match source {
-        DownloadSource::Url(url) => url.clone(),
-        DownloadSource::MultipartUrls(urls) => urls.join("\n"),
-    }
-}
-
-fn sanitize_download_file_name(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| match ch {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-            c if c.is_control() => '_',
-            c => c,
-        })
-        .collect()
-}
-
-fn archive_suffix(format: ArchiveFormat) -> &'static str {
-    match format {
-        ArchiveFormat::Auto | ArchiveFormat::None => "",
-        ArchiveFormat::Zst => ".zst",
-        ArchiveFormat::Zip => ".zip",
-        ArchiveFormat::Xz => ".xz",
-        ArchiveFormat::TarGz => ".tar.gz",
-        ArchiveFormat::TarXz => ".tar.xz",
-        ArchiveFormat::TarZst => ".tar.zst",
-        ArchiveFormat::SevenZip => ".7z",
-    }
-}
-
-fn run_async<T>(future: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("failed to create tokio runtime: {e}"))?
-        .block_on(future)
-}
-
-#[derive(Debug)]
-enum VersionCheck {
-    Ok,
-    Unreachable,
-    DaemonOlder { daemon_ver: String },
-    DaemonNewer,
-    CommError,
-}
-
-#[cfg(unix)]
-async fn connect_client(
-    endpoint: &str,
-) -> Result<zccache_monocrate::ipc::IpcConnection, zccache_monocrate::ipc::IpcError> {
-    let mut conn = zccache_monocrate::ipc::connect(endpoint).await?;
-    conn.set_recv_timeout(zccache_monocrate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
-    Ok(conn)
-}
-
-#[cfg(windows)]
-async fn connect_client(
-    endpoint: &str,
-) -> Result<zccache_monocrate::ipc::IpcClientConnection, zccache_monocrate::ipc::IpcError> {
-    let mut conn = zccache_monocrate::ipc::connect(endpoint).await?;
-    conn.set_recv_timeout(zccache_monocrate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
-    Ok(conn)
-}
-
-async fn check_daemon_version(endpoint: &str) -> VersionCheck {
-    let mut conn = match connect_client(endpoint).await {
-        Ok(c) => c,
-        Err(_) => return VersionCheck::Unreachable,
-    };
-    if conn.send(&zccache_monocrate::protocol::Request::Status).await.is_err() {
-        return VersionCheck::CommError;
-    }
-    match conn.recv::<zccache_monocrate::protocol::Response>().await {
-        Ok(Some(zccache_monocrate::protocol::Response::Status(s))) => {
-            if s.version == zccache_monocrate::core::VERSION {
-                return VersionCheck::Ok;
-            }
-            let client_ver = zccache_monocrate::core::version::current();
-            match zccache_monocrate::core::version::Version::parse(&s.version) {
-                Some(daemon_ver) => match daemon_ver.cmp(&client_ver) {
-                    std::cmp::Ordering::Equal => VersionCheck::Ok,
-                    std::cmp::Ordering::Greater => VersionCheck::DaemonNewer,
-                    std::cmp::Ordering::Less => VersionCheck::DaemonOlder {
-                        daemon_ver: s.version,
-                    },
+    #[pyo3(signature = (
+        source,
+        destination=None,
+        expanded=None,
+        expected_sha256=None,
+        max_connections=None,
+        min_segment_size=None,
+        blocking=true,
+        dry_run=false,
+        force=false
+    ))]
+    fn download(
+        &self,
+        source: &Bound<'_, PyAny>,
+        destination: Option<String>,
+        expanded: Option<String>,
+        expected_sha256: Option<String>,
+        max_connections: Option<usize>,
+        min_segment_size: Option<u64>,
+        blocking: bool,
+        dry_run: bool,
+        force: bool,
+    ) -> PyResult<NativeFetchResult> {
+        let source = parse_download_source(source)?;
+        client_download(
+            self.endpoint.as_deref(),
+            DownloadParams {
+                source,
+                archive_path: destination.map(PathBuf::from),
+                unarchive_path: expanded.map(PathBuf::from),
+                expected_sha256,
+                archive_format: zccache_monocrate::download_client::ArchiveFormat::Auto,
+                max_connections,
+                min_segment_size,
+                wait_mode: if blocking {
+                    WaitMode::Block
+                } else {
+                    WaitMode::NoWait
                 },
-                None => VersionCheck::DaemonOlder {
-                    daemon_ver: s.version,
-                },
-            }
-        }
-        _ => VersionCheck::CommError,
-    }
-}
-
-async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), String> {
-    let daemon_bin = find_daemon_binary().ok_or("cannot find zccache-daemon binary")?;
-    // Record *why* the CLI is about to spawn a daemon. Pairs with the
-    // daemon-side "spawn" event so an operator can correlate each CLI
-    // decision with the resulting daemon PID by parsing the single
-    // `daemon-lifecycle.log`. Reasons: initial-start vs. one of the
-    // replaced-* variants. This is the diagnostic gap zccache#323
-    // identified — knowing 5 daemons spawned without knowing why
-    // makes the root cause undebuggable.
-    zccache_monocrate::core::lifecycle::write_event(
-        zccache_monocrate::core::lifecycle::EVENT_SPAWN_ATTEMPT,
-        serde_json::json!({
-            "reason": reason,
-            "endpoint": endpoint,
-            "client_pid": std::process::id(),
-        }),
-    );
-    spawn_daemon(&daemon_bin, endpoint)?;
-
-    for _ in 0..100 {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        if connect_client(endpoint).await.is_ok() {
-            return Ok(());
-        }
-    }
-    Err("daemon started but not accepting connections after 10s".to_string())
-}
-
-/// Stop a stale daemon that is unreachable or version-incompatible.
-async fn stop_stale_daemon(endpoint: &str) {
-    if let Ok(mut conn) = connect_client(endpoint).await {
-        let _ = conn.send(&zccache_monocrate::protocol::Request::Shutdown).await;
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                dry_run,
+                force,
+            },
+        )
+        .map(NativeFetchResult::from)
+        .map_err(runtime_to_py_err)
     }
 
-    if let Some(pid) = zccache_monocrate::ipc::check_running_daemon() {
-        if zccache_monocrate::ipc::force_kill_process(pid).is_ok() {
-            for _ in 0..50 {
-                if !zccache_monocrate::ipc::is_process_alive(pid) {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-        }
-        zccache_monocrate::ipc::remove_lock_file();
+    #[pyo3(signature = (
+        source,
+        destination=None,
+        expanded=None,
+        expected_sha256=None
+    ))]
+    fn download_exists(
+        &self,
+        source: &Bound<'_, PyAny>,
+        destination: Option<String>,
+        expanded: Option<String>,
+        expected_sha256: Option<String>,
+    ) -> PyResult<NativeFetchState> {
+        let source = parse_download_source(source)?;
+        client_download_exists(
+            self.endpoint.as_deref(),
+            DownloadParams {
+                source,
+                archive_path: destination.map(PathBuf::from),
+                unarchive_path: expanded.map(PathBuf::from),
+                expected_sha256,
+                archive_format: zccache_monocrate::download_client::ArchiveFormat::Auto,
+                max_connections: None,
+                min_segment_size: None,
+                wait_mode: WaitMode::Block,
+                dry_run: false,
+                force: false,
+            },
+        )
+        .map(NativeFetchState::from)
+        .map_err(runtime_to_py_err)
     }
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-}
-
-async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
-    match check_daemon_version(endpoint).await {
-        VersionCheck::Ok | VersionCheck::DaemonNewer => return Ok(()),
-        VersionCheck::DaemonOlder { daemon_ver } => {
-            tracing::info!(
-                daemon_ver,
-                client_ver = zccache_monocrate::core::VERSION,
-                "daemon is older than client, auto-recovering"
-            );
-            stop_stale_daemon(endpoint).await;
-            return spawn_and_wait(
-                endpoint,
-                zccache_monocrate::core::lifecycle::REASON_REPLACED_STALE_VERSION,
-            )
-            .await;
-        }
-        VersionCheck::CommError => {
-            tracing::info!("cannot communicate with daemon, auto-recovering");
-            stop_stale_daemon(endpoint).await;
-            return spawn_and_wait(
-                endpoint,
-                zccache_monocrate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
-            )
-            .await;
-        }
-        VersionCheck::Unreachable => {}
-    }
-
-    if let Some(pid) = zccache_monocrate::ipc::check_running_daemon() {
-        let mut backoff = std::time::Duration::from_millis(100);
-        for _ in 0..20 {
-            tokio::time::sleep(backoff).await;
-            backoff = (backoff * 2).min(std::time::Duration::from_millis(500));
-            match check_daemon_version(endpoint).await {
-                VersionCheck::Ok | VersionCheck::DaemonNewer => return Ok(()),
-                VersionCheck::DaemonOlder { daemon_ver } => {
-                    tracing::info!(
-                        daemon_ver,
-                        client_ver = zccache_monocrate::core::VERSION,
-                        "daemon is older than client during startup, auto-recovering"
-                    );
-                    stop_stale_daemon(endpoint).await;
-                    return spawn_and_wait(
-                        endpoint,
-                        zccache_monocrate::core::lifecycle::REASON_REPLACED_STALE_VERSION,
-                    )
-                    .await;
-                }
-                VersionCheck::CommError => {
-                    stop_stale_daemon(endpoint).await;
-                    return spawn_and_wait(
-                        endpoint,
-                        zccache_monocrate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
-                    )
-                    .await;
-                }
-                VersionCheck::Unreachable => continue,
-            }
-        }
-        return Err(format!(
-            "daemon process {pid} exists but not accepting connections after retrying"
-        ));
-    }
-
-    spawn_and_wait(endpoint, zccache_monocrate::core::lifecycle::REASON_INITIAL_START).await
-}
-
-fn find_daemon_binary() -> Option<NormalizedPath> {
-    let name = if cfg!(windows) {
-        "zccache-daemon.exe"
-    } else {
-        "zccache-daemon"
-    };
-
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join(name);
-            if candidate.exists() {
-                return Some(candidate.into());
-            }
-        }
-    }
-
-    which_on_path(name)
-}
-
-fn which_on_path(name: &str) -> Option<NormalizedPath> {
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate.into());
-        }
-        #[cfg(windows)]
-        if Path::new(name).extension().is_none() {
-            let with_exe = dir.join(format!("{name}.exe"));
-            if with_exe.is_file() {
-                return Some(with_exe.into());
-            }
-        }
-    }
-    None
-}
-
-/// Initialize spawn-lineage env vars on a command the CLI is about to spawn.
-///
-/// Mirrors the daemon-side propagation in `zccache_daemon::lineage` so that
-/// any process attribution (orphan tracking, running-process scanners) sees
-/// a consistent chain across CLI -> daemon -> compiler hops. The chain is
-/// initialized with the CLI's PID, and the originator marker (used by
-/// running-process for crash-resilient orphan discovery) is set to
-/// `zccache-cli:<pid>` unless an outer tool has already claimed it.
-#[cfg(not(windows))]
-fn apply_cli_spawn_lineage(cmd: &mut std::process::Command) {
-    for (k, v) in cli_spawn_lineage_env() {
-        cmd.env(k, v);
-    }
-}
-
-/// Compute the lineage env-var pairs the CLI sets on the daemon it
-/// spawns. Returns the same overrides `apply_cli_spawn_lineage` writes
-/// onto a `Command`, in a form usable by the Windows raw-spawn path
-/// (which needs to build its own merged environment block).
-fn cli_spawn_lineage_env() -> Vec<(String, String)> {
-    const ENV_ORIGINATOR: &str = "RUNNING_PROCESS_ORIGINATOR";
-    const ENV_LINEAGE: &str = "ZCCACHE_LINEAGE";
-    const ENV_PARENT_PID: &str = "ZCCACHE_PARENT_PID";
-    const ENV_CLIENT_PID: &str = "ZCCACHE_CLIENT_PID";
-
-    let cli_pid = std::process::id();
-    let mut out: Vec<(String, String)> = Vec::with_capacity(4);
-
-    // Preserve any outer originator (e.g. the build tool was already wrapped
-    // by running-process). Otherwise, claim the originator slot ourselves.
-    if std::env::var(ENV_ORIGINATOR).is_err() {
-        out.push((ENV_ORIGINATOR.to_string(), format!("zccache-cli:{cli_pid}")));
-    }
-
-    // Extend or initialize the chain with our PID.
-    let chain = match std::env::var(ENV_LINEAGE) {
-        Ok(existing)
-            if existing
-                .rsplit_once('>')
-                .map_or(existing.as_str(), |(_, last)| last)
-                != cli_pid.to_string() =>
-        {
-            format!("{existing}>{cli_pid}")
-        }
-        Ok(existing) => existing,
-        Err(_) => cli_pid.to_string(),
-    };
-    out.push((ENV_LINEAGE.to_string(), chain));
-    out.push((ENV_PARENT_PID.to_string(), cli_pid.to_string()));
-    out.push((ENV_CLIENT_PID.to_string(), cli_pid.to_string()));
-    out
-}
-
-/// Subdir of the zccache global cache directory where the CLI stores
-/// per-launch copies of the daemon binary. The daemon runs from one of
-/// these copies, never from the install path (e.g. `Scripts/zccache-daemon.exe`),
-/// so `pip install --upgrade zccache` can always overwrite the install
-/// path regardless of whether a daemon is alive. See issue #134.
-const RUNTIME_BINARIES_SUBDIR: &str = "runtime-binaries";
-
-/// Returns `<global_cache_dir>/runtime-binaries`.
-#[must_use]
-pub fn runtime_binaries_dir() -> NormalizedPath {
-    zccache_monocrate::core::config::default_cache_dir().join(RUNTIME_BINARIES_SUBDIR)
-}
-
-/// Copy `canonical` (the daemon binary at its install location) to a unique
-/// path inside [`runtime_binaries_dir`] and return the new path. The caller
-/// then spawns from the returned path so the install location is never
-/// file-locked by a running daemon.
-///
-/// On copy failure the caller should fall back to spawning `canonical`
-/// directly; the in-place `unlock_exe()` in the daemon then handles the
-/// lock removal as a fallback.
-pub fn prepare_daemon_exe(canonical: &Path) -> Result<std::path::PathBuf, std::io::Error> {
-    prepare_daemon_exe_in(canonical, runtime_binaries_dir().as_path())
-}
-
-/// Test seam for [`prepare_daemon_exe`]: copies `canonical` into `dir`
-/// (which is created if missing) and returns the destination path.
-pub fn prepare_daemon_exe_in(
-    canonical: &Path,
-    dir: &Path,
-) -> Result<std::path::PathBuf, std::io::Error> {
-    std::fs::create_dir_all(dir)?;
-
-    // Per-launch unique name. PID alone is reused across reboots; xor with
-    // the current nanos timestamp to keep collisions rare even when several
-    // CLI processes spawn back-to-back.
-    let rand_id: u32 = std::process::id()
-        ^ std::time::UNIX_EPOCH
-            .elapsed()
-            .unwrap_or_default()
-            .subsec_nanos();
-    let extension = canonical.extension().and_then(|s| s.to_str()).unwrap_or("");
-    let file_name = if extension.is_empty() {
-        format!("zccache-daemon.{rand_id}")
-    } else {
-        format!("zccache-daemon.{rand_id}.{extension}")
-    };
-    let dest = dir.join(&file_name);
-    std::fs::copy(canonical, &dest)?;
-    Ok(dest)
-}
-
-/// Best-effort delete every entry in [`runtime_binaries_dir`]. On Windows
-/// the kernel refuses to delete a file with an open handle, so files
-/// belonging to a *currently running* daemon are silently skipped — no PID
-/// tracking, no sidecar files. Cheap enough to call before every spawn.
-pub fn gc_runtime_binaries() {
-    gc_runtime_binaries_in(runtime_binaries_dir().as_path());
-}
-
-/// Test seam for [`gc_runtime_binaries`].
-pub fn gc_runtime_binaries_in(dir: &Path) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let _ = std::fs::remove_file(entry.path());
-    }
-}
-
-/// Subdir of the global cache directory where the daemon writes its own
-/// stdout + stderr on every spawn. Each spawn gets a fresh file named
-/// `daemon-spawn-{pid}-{nanos}.log` so concurrent CLI invocations don't
-/// stomp each other. Errors that hit the daemon before its panic hook or
-/// lifecycle log are alive land here — previously they went to `/dev/null`
-/// on Unix and caused silent failures (notably the macOS regression that
-/// motivated this change).
-const DAEMON_SPAWN_LOGS_SUBDIR: &str = "logs";
-
-/// Allocate a unique per-spawn log path under `{cache_dir}/logs/`.
-/// The directory is created lazily; if creation fails we still hand back a
-/// path — the daemon's own opener will see the error and fall back to
-/// `Stdio::null` after warning.
-fn allocate_daemon_spawn_log_path() -> std::path::PathBuf {
-    let dir = zccache_monocrate::core::config::default_cache_dir().join(DAEMON_SPAWN_LOGS_SUBDIR);
-    let _ = std::fs::create_dir_all(dir.as_path());
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    dir.as_path()
-        .join(format!("daemon-spawn-{}-{nanos}.log", std::process::id()))
-}
-
-/// Default age cutoff for entries swept by [`gc_log_directory`]. Files
-/// older than this are removed. Subdirectories are skipped (the daemon
-/// doesn't create any under `logs/` today).
-const LOG_GC_CUTOFF: std::time::Duration = std::time::Duration::from_secs(60 * 60 * 24);
-
-/// Best-effort sweep of stale files in `{cache_dir}/logs/`.
-///
-/// Catches every log type that lands in this directory — not just
-/// `daemon-spawn-*.log`. As of the issue-#323 fix this includes:
-///   * `daemon-spawn-{pid}-{nanos}.log` (per-spawn daemon stdio
-///     capture; CLI-owned)
-///   * `daemon-lifecycle.log.1` (rotated lifecycle archive; the daemon
-///     handles its own 1 MiB soft-cap but never garbage-collects the
-///     archive, so it can sit on disk forever after the daemon exits)
-///   * `daemon.log.*` (rotated event-log archives; the EventLogger
-///     keeps N by count, this adds a time-based safety net for archives
-///     left behind by daemons that exited before the next rotation)
-///   * `compile_journal.jsonl.*` (rotated compile-journal archives;
-///     same rationale)
-///   * Anything else that may have accumulated here from past versions
-///     or external tooling
-///
-/// The active `daemon-lifecycle.log` is intentionally *preserved* — a
-/// long-idle daemon may go 24h between writes (spawn → next event),
-/// and deleting it mid-life would erase the very history that #323
-/// needed to diagnose the multi-spawn bug.
-pub fn gc_log_directory() {
-    let dir = zccache_monocrate::core::config::default_cache_dir().join(DAEMON_SPAWN_LOGS_SUBDIR);
-    gc_log_directory_in(dir.as_path(), LOG_GC_CUTOFF);
-}
-
-/// Test seam for [`gc_log_directory`]. Sweeps stale files in `dir`
-/// older than `cutoff`, preserving the active
-/// `daemon-lifecycle.log` regardless of age.
-pub fn gc_log_directory_in(dir: &Path, cutoff: std::time::Duration) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    let now = std::time::SystemTime::now();
-    for entry in entries.flatten() {
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        // Skip the live lifecycle log: it's the one file that may sit
-        // untouched between a daemon's `spawn` and `died-*` events.
-        // Every other file in `logs/` either rotates often or is a
-        // historical artifact safe to discard once old.
-        if name == zccache_monocrate::core::lifecycle::LIVE_LOG_FILENAME {
-            continue;
-        }
-        let file_type = entry.file_type();
-        if file_type.map(|t| !t.is_file()).unwrap_or(true) {
-            continue;
-        }
-        let modified = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| now.duration_since(t).ok());
-        if let Some(age) = modified {
-            if age > cutoff {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-    }
-}
-
-/// Back-compat alias for the broadened sweep. Earlier callers used
-/// the spawn-log-only name; new code should use [`gc_log_directory`].
-#[deprecated(note = "use gc_log_directory instead — sweeps the full logs/ directory")]
-pub fn gc_daemon_spawn_logs() {
-    gc_log_directory();
-}
-
-pub fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
-    // GC before the new spawn so neither dir grows unbounded across
-    // crash-loop scenarios. Live daemons keep their open log file FDs;
-    // GC only touches files older than the 24h cutoff and preserves
-    // the active `daemon-lifecycle.log` regardless of age.
-    gc_runtime_binaries();
-    gc_log_directory();
-
-    // Prefer to spawn from a relocated copy in the zccache global dir.
-    // Fall back to the canonical install path if the copy fails — the
-    // daemon's own `unlock_exe()` then handles the in-place rename.
-    let bin_owned: std::path::PathBuf;
-    let spawn_bin: &Path = match prepare_daemon_exe(bin) {
-        Ok(p) => {
-            bin_owned = p;
-            &bin_owned
-        }
-        Err(_) => bin,
-    };
-
-    // Allocate a per-spawn log file path. Passed to the daemon via
-    // `--log-file`; the daemon reopens its own stdout + stderr onto that
-    // path early in startup. This replaces the previous Unix
-    // `Stdio::null()` daemon spawn which made macOS dyld/gatekeeper
-    // failures invisible (see PR #312 for full diagnosis).
-    let log_path = allocate_daemon_spawn_log_path();
-    let log_arg = log_path.to_string_lossy().into_owned();
-
-    // Delegate the actual spawn to `running_process_core::spawn_daemon`
-    // (renamed from `sanitized::spawn` in the 3.2 → 3.3 reshape — same
-    // semantics, lives in the `spawn` module now and is re-exported at
-    // the crate root). That helper handles both platform-specific quirks
-    // the daemon hits:
-    //  • Windows: STARTUPINFOEX + PROC_THREAD_ATTRIBUTE_HANDLE_LIST so
-    //    grandparent pipe handles (e.g. Python's
-    //    `subprocess.Popen(stdout=PIPE)` further up the chain) don't
-    //    leak into the daemon and prevent EOF on the parent's read.
-    //  • Unix: `setsid()` to detach from the controlling tty + close every
-    //    fd > 2 between fork and exec so the same orphan-handle issue
-    //    doesn't bite on macOS in particular.
-    //
-    // `DaemonChild` always opens NUL for its stdio at the spawn site;
-    // the daemon then redirects its own stdout + stderr to `--log-file`
-    // once it's running.
-    let mut cmd = std::process::Command::new(spawn_bin);
-    cmd.args([
-        "--foreground",
-        "--endpoint",
-        endpoint,
-        "--log-file",
-        &log_arg,
-    ]);
-    #[cfg(not(windows))]
-    apply_cli_spawn_lineage(&mut cmd);
-    #[cfg(windows)]
-    {
-        // On Windows the sanitized spawn rebuilds the environment block
-        // itself; pass our lineage overrides via `cmd.env(...)` so they
-        // land in the merged block.
-        for (k, v) in cli_spawn_lineage_env() {
-            cmd.env(k, v);
-        }
-    }
-    running_process_core::spawn_daemon(&mut cmd)
-        .map(|_child| ())
-        .map_err(|e| format!("failed to spawn daemon (sanitized): {e}"))
-}
-
-#[derive(Debug, Clone)]
-pub struct SessionStartResponse {
-    pub session_id: String,
-    pub journal_path: Option<String>,
-}
-
-pub fn client_start(endpoint: Option<&str>) -> Result<(), String> {
-    let endpoint = resolve_endpoint(endpoint);
-    run_async(async move { ensure_daemon(&endpoint).await })
-}
-
-pub fn client_stop(endpoint: Option<&str>) -> Result<bool, String> {
-    let endpoint = resolve_endpoint(endpoint);
-    run_async(async move {
-        let mut conn = match connect_client(&endpoint).await {
-            Ok(c) => c,
-            Err(_) => return Ok(false),
-        };
-        conn.send(&zccache_monocrate::protocol::Request::Shutdown)
-            .await
-            .map_err(|e| format!("failed to send to daemon: {e}"))?;
-        match conn.recv::<zccache_monocrate::protocol::Response>().await {
-            Ok(Some(zccache_monocrate::protocol::Response::ShuttingDown)) => Ok(true),
-            Ok(Some(zccache_monocrate::protocol::Response::Error { message })) => Err(message),
-            Ok(None) => Err("lost connection to daemon (no response received)".to_string()),
-            Ok(Some(other)) => Err(format!("unexpected response from daemon: {other:?}")),
-            Err(e) => Err(format!("broken connection to daemon: {e}")),
-        }
-    })
-}
-
-pub fn client_status(endpoint: Option<&str>) -> Result<zccache_monocrate::protocol::DaemonStatus, String> {
-    let endpoint = resolve_endpoint(endpoint);
-    run_async(async move {
-        let mut conn = connect_client(&endpoint)
-            .await
-            .map_err(|e| format!("daemon not running at {endpoint}: {e}"))?;
-        conn.send(&zccache_monocrate::protocol::Request::Status)
-            .await
-            .map_err(|e| format!("failed to send to daemon: {e}"))?;
-        match conn.recv::<zccache_monocrate::protocol::Response>().await {
-            Ok(Some(zccache_monocrate::protocol::Response::Status(status))) => Ok(status),
-            Ok(Some(zccache_monocrate::protocol::Response::Error { message })) => Err(message),
-            Ok(None) => Err("lost connection to daemon (no response received)".to_string()),
-            Ok(Some(other)) => Err(format!("unexpected response from daemon: {other:?}")),
-            Err(e) => Err(format!("broken connection to daemon: {e}")),
-        }
-    })
-}
-
-pub fn client_session_start(
-    endpoint: Option<&str>,
-    cwd: &Path,
-    log_file: Option<&Path>,
-    track_stats: bool,
-    journal_path: Option<&Path>,
-) -> Result<SessionStartResponse, String> {
-    let endpoint = resolve_endpoint(endpoint);
-    let cwd = cwd.to_path_buf();
-    let log_file = log_file.map(NormalizedPath::from);
-    let journal_path = journal_path.map(NormalizedPath::from);
-
-    run_async(async move {
-        ensure_daemon(&endpoint).await?;
-        let mut conn = connect_client(&endpoint)
-            .await
-            .map_err(|e| format!("cannot connect to daemon at {endpoint}: {e}"))?;
-        conn.send(&zccache_monocrate::protocol::Request::SessionStart {
-            client_pid: std::process::id(),
-            working_dir: cwd.into(),
-            log_file,
+    #[pyo3(signature = (cwd, log_file=None, track_stats=false, journal_path=None))]
+    fn session_start(
+        &self,
+        cwd: String,
+        log_file: Option<String>,
+        track_stats: bool,
+        journal_path: Option<String>,
+    ) -> PyResult<NativeSessionStart> {
+        let cwd = PathBuf::from(cwd);
+        let log_file = log_file.map(PathBuf::from);
+        let journal_path = journal_path.map(PathBuf::from);
+        client_session_start(
+            self.endpoint.as_deref(),
+            cwd.as_path(),
+            log_file.as_deref(),
             track_stats,
-            journal_path,
-            profile: false,
+            journal_path.as_deref(),
+        )
+        .map(|result| NativeSessionStart {
+            session_id: result.session_id,
+            journal_path: result.journal_path,
         })
-        .await
-        .map_err(|e| format!("failed to send to daemon: {e}"))?;
-
-        match conn.recv::<zccache_monocrate::protocol::Response>().await {
-            Ok(Some(zccache_monocrate::protocol::Response::SessionStarted {
-                session_id,
-                journal_path,
-            })) => Ok(SessionStartResponse {
-                session_id,
-                journal_path: journal_path.map(|p| p.display().to_string()),
-            }),
-            Ok(Some(zccache_monocrate::protocol::Response::Error { message })) => Err(message),
-            Ok(None) => Err("lost connection to daemon (no response received)".to_string()),
-            Ok(Some(other)) => Err(format!("unexpected response from daemon: {other:?}")),
-            Err(e) => Err(format!("broken connection to daemon: {e}")),
-        }
-    })
-}
-
-/// End a session — daemon-unreachable is treated as a successful no-op.
-///
-/// Thin `String`-error wrapper around [`session_end_idempotent`]. All in-process
-/// callers (Python bindings, soldr, future tools) route through here, so the
-/// idempotency contract that #151 / #159 established for the CLI subprocess
-/// path applies equally to library users. Without this, soldr's at-exit
-/// `zccache session-end` from `rust-plan save` fails Windows CI with
-/// "cannot connect to daemon at \\.\pipe\zccache-…" when the daemon already
-/// exited — every workspace test passed but teardown failed.
-pub fn client_session_end(
-    endpoint: Option<&str>,
-    session_id: &str,
-) -> Result<Option<zccache_monocrate::protocol::SessionStats>, String> {
-    let endpoint = resolve_endpoint(endpoint);
-    session_end_idempotent(&endpoint, session_id).map_err(|e| e.to_string())
-}
-
-/// Is this connect-time error a "daemon process is gone entirely" error?
-///
-/// The conservative set: `NotFound` (Unix socket missing, Windows pipe
-/// missing), `ConnectionRefused` (Unix socket exists but no listener;
-/// Windows backoff helper synthesizes this when all pipe instances are
-/// permanently busy), and `BrokenPipe` (race: pipe vanished between
-/// open and use). Other errors (`TimedOut`, protocol mismatches, etc.)
-/// are NOT daemon-gone — they should still fail loudly.
-///
-/// `IpcError::Timeout` is explicitly **NOT** in the unreachable set. A
-/// timed-out recv means we connected successfully but the peer did not
-/// respond in the configured window — that's either a hung daemon (a
-/// real fault) or a per-call budget that was too tight (caller error).
-/// Either way: propagate, don't silently swallow.
-///
-/// Used by `session_end_idempotent` (issue #159) and the CLI's
-/// `cmd_session_end` (issue #150 / #151) to map "the daemon already
-/// died" connect-time failures onto a success no-op. Other request
-/// types keep their existing strict error semantics.
-#[must_use]
-pub fn is_daemon_unreachable_err(err: &zccache_monocrate::ipc::IpcError) -> bool {
-    use std::io::ErrorKind;
-    match err {
-        zccache_monocrate::ipc::IpcError::Io(io) => matches!(
-            io.kind(),
-            ErrorKind::NotFound | ErrorKind::ConnectionRefused | ErrorKind::BrokenPipe
-        ),
-        _ => false,
+        .map_err(runtime_to_py_err)
     }
-}
 
-/// End a session, treating a vanished daemon as success.
-///
-/// This is the shared library entry point for ending a session. It is
-/// the contract used by the CLI's `zccache session-end <uuid>`
-/// subcommand AND by any in-process caller (e.g. soldr's at-exit
-/// `rust-plan save`) — both must agree on what "the daemon already
-/// died" means.
-///
-/// # Return shape
-///
-/// - `Ok(Some(stats))` — daemon was reached and returned stats for the
-///   session.
-/// - `Ok(None)` — daemon was reached but returned no stats (session
-///   was tracked without stats), OR the daemon was unreachable at
-///   connect time. Both are no-ops from the caller's perspective:
-///   the session is implicitly ended when the daemon dies (see #137
-///   for the daemon-side mirror), and a caller that just wants to
-///   "end the session, don't care if the daemon is still alive"
-///   should treat both as success.
-/// - `Err(IpcError)` — anything else: timeouts, protocol mismatches,
-///   send/recv mid-conversation failures, daemon error responses.
-///   These are real faults and must be surfaced.
-///
-/// # Why a separate function
-///
-/// Issue #159: soldr was failing Windows CI on every main commit
-/// because its in-process session-end (called from `rust-plan save`)
-/// did not share code with `cmd_session_end`, so #151's
-/// connect-failure idempotency only applied to the CLI subprocess
-/// path. Promoting this contract to the library lets all callers —
-/// current and future — share the same behavior.
-pub fn session_end_idempotent(
-    endpoint: &str,
-    session_id: &str,
-) -> Result<Option<zccache_monocrate::protocol::SessionStats>, zccache_monocrate::ipc::IpcError> {
-    let endpoint = endpoint.to_string();
-    let session_id = session_id.to_string();
+    fn session_end(&self, session_id: String) -> PyResult<Option<NativeSessionStats>> {
+        client_session_end(self.endpoint.as_deref(), &session_id)
+            .map(|stats| stats.map(NativeSessionStats::from))
+            .map_err(runtime_to_py_err)
+    }
 
-    // Build a dedicated current-thread runtime. Can't use the existing
-    // `run_async` helper because its `Output = Result<T, String>` shape
-    // doesn't compose with our `Result<_, IpcError>` return type.
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| {
-            zccache_monocrate::ipc::IpcError::Endpoint(format!("failed to create tokio runtime: {e}"))
-        })?;
+    fn session_stats(&self, session_id: String) -> PyResult<Option<NativeSessionStats>> {
+        client_session_stats(self.endpoint.as_deref(), &session_id)
+            .map(|stats| stats.map(NativeSessionStats::from))
+            .map_err(runtime_to_py_err)
+    }
 
-    runtime.block_on(async move {
-        let mut conn = match connect_client(&endpoint).await {
-            Ok(c) => c,
-            Err(e) => {
-                if is_daemon_unreachable_err(&e) {
-                    eprintln!(
-                        "session-end: daemon unreachable at {endpoint}, treating session {session_id} as ended"
-                    );
-                    return Ok(None);
-                }
-                return Err(e);
-            }
-        };
-
-        conn.send(&zccache_monocrate::protocol::Request::SessionEnd {
-            session_id: session_id.clone(),
+    #[pyo3(signature = (
+        cache_file,
+        cache_type="two-layer".to_string(),
+        root=".".to_string(),
+        extensions=vec![],
+        include_globs=vec![],
+        exclude=vec![]
+    ))]
+    fn fingerprint_check(
+        &self,
+        cache_file: String,
+        cache_type: String,
+        root: String,
+        extensions: Vec<String>,
+        include_globs: Vec<String>,
+        exclude: Vec<String>,
+    ) -> PyResult<NativeFingerprintCheck> {
+        fingerprint_check(
+            self.endpoint.as_deref(),
+            PathBuf::from(cache_file).as_path(),
+            &cache_type,
+            PathBuf::from(root).as_path(),
+            &extensions,
+            &include_globs,
+            &exclude,
+        )
+        .map(|result| NativeFingerprintCheck {
+            decision: result.decision,
+            reason: result.reason,
+            changed_files: result.changed_files,
         })
-        .await?;
+        .map_err(runtime_to_py_err)
+    }
 
-        match conn.recv::<zccache_monocrate::protocol::Response>().await? {
-            Some(zccache_monocrate::protocol::Response::SessionEnded { stats }) => Ok(stats),
-            Some(zccache_monocrate::protocol::Response::Error { message }) => Err(
-                zccache_monocrate::ipc::IpcError::Endpoint(format!("session-end failed: {message}")),
-            ),
-            None => Err(zccache_monocrate::ipc::IpcError::ConnectionClosed),
-            Some(other) => Err(zccache_monocrate::ipc::IpcError::Endpoint(format!(
-                "unexpected response from daemon: {other:?}"
-            ))),
-        }
+    fn fingerprint_mark_success(&self, cache_file: String) -> PyResult<()> {
+        fingerprint_mark_success(
+            self.endpoint.as_deref(),
+            PathBuf::from(cache_file).as_path(),
+        )
+        .map_err(runtime_to_py_err)
+    }
+
+    fn fingerprint_mark_failure(&self, cache_file: String) -> PyResult<()> {
+        fingerprint_mark_failure(
+            self.endpoint.as_deref(),
+            PathBuf::from(cache_file).as_path(),
+        )
+        .map_err(runtime_to_py_err)
+    }
+
+    fn fingerprint_invalidate(&self, cache_file: String) -> PyResult<()> {
+        fingerprint_invalidate(
+            self.endpoint.as_deref(),
+            PathBuf::from(cache_file).as_path(),
+        )
+        .map_err(runtime_to_py_err)
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (
+    input,
+    output,
+    clang_args=vec![],
+    inject_arduino_include=true
+))]
+fn convert_ino(
+    input: String,
+    output: String,
+    clang_args: Vec<String>,
+    inject_arduino_include: bool,
+) -> PyResult<NativeInoConvertResult> {
+    run_ino_convert_cached(
+        PathBuf::from(input).as_path(),
+        PathBuf::from(output).as_path(),
+        &InoConvertOptions {
+            clang_args,
+            inject_arduino_include,
+        },
+    )
+    .map(|result| NativeInoConvertResult {
+        cache_hit: result.cache_hit,
+        skipped_write: result.skipped_write,
     })
+    .map_err(|e| PyErr::new::<PyOSError, _>(e.to_string()))
 }
 
-pub fn client_session_stats(
-    endpoint: Option<&str>,
-    session_id: &str,
-) -> Result<Option<zccache_monocrate::protocol::SessionStats>, String> {
-    let endpoint = resolve_endpoint(endpoint);
-    let session_id = session_id.to_string();
-    run_async(async move {
-        let mut conn = connect_client(&endpoint)
-            .await
-            .map_err(|e| format!("cannot connect to daemon at {endpoint}: {e}"))?;
-        conn.send(&zccache_monocrate::protocol::Request::SessionStats {
-            session_id: session_id.clone(),
-        })
-        .await
-        .map_err(|e| format!("failed to send to daemon: {e}"))?;
-
-        match conn.recv::<zccache_monocrate::protocol::Response>().await {
-            Ok(Some(zccache_monocrate::protocol::Response::SessionStatsResult { stats })) => Ok(stats),
-            Ok(Some(zccache_monocrate::protocol::Response::Error { message })) => Err(message),
-            Ok(None) => Err("lost connection to daemon (no response received)".to_string()),
-            Ok(Some(other)) => Err(format!("unexpected response from daemon: {other:?}")),
-            Err(e) => Err(format!("broken connection to daemon: {e}")),
-        }
-    })
+#[pyfunction]
+fn default_endpoint() -> String {
+    zccache_monocrate::cli::resolve_endpoint(None)
 }
 
-#[derive(Debug, Clone)]
-pub struct FingerprintCheckResponse {
-    pub decision: String,
-    pub reason: Option<String>,
-    pub changed_files: Vec<String>,
+#[pyfunction]
+fn check_running_daemon() -> Option<u32> {
+    zccache_monocrate::ipc::check_running_daemon()
 }
 
-pub fn fingerprint_check(
-    endpoint: Option<&str>,
-    cache_file: &Path,
-    cache_type: &str,
-    root: &Path,
-    extensions: &[String],
-    include_globs: &[String],
-    exclude: &[String],
-) -> Result<FingerprintCheckResponse, String> {
-    let endpoint = resolve_endpoint(endpoint);
-    let cache_file = cache_file.to_path_buf();
-    let cache_type = cache_type.to_string();
-    let root = root.to_path_buf();
-    let extensions = extensions.to_vec();
-    let include_globs = include_globs.to_vec();
-    let exclude = exclude.to_vec();
-
-    run_async(async move {
-        ensure_daemon(&endpoint).await?;
-        let mut conn = connect_client(&endpoint)
-            .await
-            .map_err(|e| format!("cannot connect to daemon at {endpoint}: {e}"))?;
-
-        conn.send(&zccache_monocrate::protocol::Request::FingerprintCheck {
-            cache_file: cache_file.into(),
-            cache_type,
-            root: root.into(),
-            extensions,
-            include_globs,
-            exclude,
-        })
-        .await
-        .map_err(|e| format!("failed to send to daemon: {e}"))?;
-
-        match conn.recv::<zccache_monocrate::protocol::Response>().await {
-            Ok(Some(zccache_monocrate::protocol::Response::FingerprintCheckResult {
-                decision,
-                reason,
-                changed_files,
-            })) => Ok(FingerprintCheckResponse {
-                decision,
-                reason,
-                changed_files,
-            }),
-            Ok(Some(zccache_monocrate::protocol::Response::Error { message })) => Err(message),
-            Ok(None) => Err("lost connection to daemon (no response received)".to_string()),
-            Ok(Some(other)) => Err(format!("unexpected response from daemon: {other:?}")),
-            Err(e) => Err(format!("broken connection to daemon: {e}")),
-        }
-    })
-}
-
-pub fn fingerprint_mark_success(endpoint: Option<&str>, cache_file: &Path) -> Result<(), String> {
-    fingerprint_mark(endpoint, cache_file, true)
-}
-
-pub fn fingerprint_mark_failure(endpoint: Option<&str>, cache_file: &Path) -> Result<(), String> {
-    fingerprint_mark(endpoint, cache_file, false)
-}
-
-fn fingerprint_mark(
-    endpoint: Option<&str>,
-    cache_file: &Path,
-    success: bool,
-) -> Result<(), String> {
-    let endpoint = resolve_endpoint(endpoint);
-    let cache_file = cache_file.to_path_buf();
-    run_async(async move {
-        ensure_daemon(&endpoint).await?;
-        let mut conn = connect_client(&endpoint)
-            .await
-            .map_err(|e| format!("cannot connect to daemon at {endpoint}: {e}"))?;
-        let request = if success {
-            zccache_monocrate::protocol::Request::FingerprintMarkSuccess {
-                cache_file: cache_file.into(),
-            }
-        } else {
-            zccache_monocrate::protocol::Request::FingerprintMarkFailure {
-                cache_file: cache_file.into(),
-            }
-        };
-        conn.send(&request)
-            .await
-            .map_err(|e| format!("failed to send to daemon: {e}"))?;
-        match conn.recv::<zccache_monocrate::protocol::Response>().await {
-            Ok(Some(zccache_monocrate::protocol::Response::FingerprintAck)) => Ok(()),
-            Ok(Some(zccache_monocrate::protocol::Response::Error { message })) => Err(message),
-            Ok(None) => Err("lost connection to daemon (no response received)".to_string()),
-            Ok(Some(other)) => Err(format!("unexpected response from daemon: {other:?}")),
-            Err(e) => Err(format!("broken connection to daemon: {e}")),
-        }
-    })
-}
-
-pub fn fingerprint_invalidate(endpoint: Option<&str>, cache_file: &Path) -> Result<(), String> {
-    let endpoint = resolve_endpoint(endpoint);
-    let cache_file = cache_file.to_path_buf();
-    run_async(async move {
-        ensure_daemon(&endpoint).await?;
-        let mut conn = connect_client(&endpoint)
-            .await
-            .map_err(|e| format!("cannot connect to daemon at {endpoint}: {e}"))?;
-        conn.send(&zccache_monocrate::protocol::Request::FingerprintInvalidate {
-            cache_file: cache_file.into(),
-        })
-        .await
-        .map_err(|e| format!("failed to send to daemon: {e}"))?;
-        match conn.recv::<zccache_monocrate::protocol::Response>().await {
-            Ok(Some(zccache_monocrate::protocol::Response::FingerprintAck)) => Ok(()),
-            Ok(Some(zccache_monocrate::protocol::Response::Error { message })) => Err(message),
-            Ok(None) => Err("lost connection to daemon (no response received)".to_string()),
-            Ok(Some(other)) => Err(format!("unexpected response from daemon: {other:?}")),
-            Err(e) => Err(format!("broken connection to daemon: {e}")),
-        }
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn infer_download_path_keeps_url_filename() {
-        let path = infer_download_archive_path(
-            &DownloadSource::Url("https://example.com/releases/toolchain.tar.gz?download=1".into()),
-            ArchiveFormat::Auto,
-        );
-        let file_name = path.file_name().unwrap().to_string_lossy();
-        assert!(file_name.ends_with("-toolchain.tar.gz"));
-    }
-
-    #[test]
-    fn infer_download_path_uses_archive_format_suffix_when_needed() {
-        let path = infer_download_archive_path(
-            &DownloadSource::Url("https://example.com/download".into()),
-            ArchiveFormat::Zip,
-        );
-        let file_name = path.file_name().unwrap().to_string_lossy();
-        assert!(file_name.ends_with(".zip"));
-    }
-
-    #[test]
-    fn build_download_request_derives_archive_path_when_missing() {
-        let request = build_download_request(DownloadParams::new("https://example.com/file.zip"));
-        let file_name = request
-            .destination_path
-            .file_name()
-            .unwrap()
-            .to_string_lossy();
-        assert!(file_name.ends_with("-file.zip"));
-    }
-
-    #[test]
-    fn infer_download_path_strips_multipart_suffix_from_first_part() {
-        let path = infer_download_archive_path(
-            &DownloadSource::MultipartUrls(vec![
-                "https://example.com/toolchain.tar.zst.part-aa".into(),
-                "https://example.com/toolchain.tar.zst.part-ab".into(),
-            ]),
-            ArchiveFormat::Auto,
-        );
-        let file_name = path.file_name().unwrap().to_string_lossy();
-        assert!(file_name.ends_with("-toolchain.tar.zst"));
-    }
-
-    #[test]
-    fn prepare_daemon_exe_in_copies_to_target_dir() {
-        let tmp = tempfile::tempdir().expect("create tempdir");
-        let src = tmp.path().join("zccache-daemon.exe");
-        std::fs::write(&src, b"fake-daemon-bytes").expect("write source");
-
-        let dest_dir = tmp.path().join("runtime-binaries");
-        let copied =
-            prepare_daemon_exe_in(&src, &dest_dir).expect("prepare_daemon_exe_in succeeds");
-
-        assert!(
-            copied.is_file(),
-            "copy at {} should exist",
-            copied.display()
-        );
-        assert_eq!(
-            copied.parent().unwrap(),
-            dest_dir,
-            "copy should land inside dest_dir"
-        );
-        assert!(
-            copied
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("zccache-daemon."),
-            "filename should start with zccache-daemon., got {}",
-            copied.display()
-        );
-        assert!(
-            copied.extension().and_then(|s| s.to_str()) == Some("exe"),
-            "extension should be preserved"
-        );
-        assert_eq!(
-            std::fs::read(&copied).unwrap(),
-            b"fake-daemon-bytes",
-            "copy contents should match source"
-        );
-    }
-
-    #[test]
-    fn prepare_daemon_exe_in_creates_missing_dest_dir() {
-        let tmp = tempfile::tempdir().expect("create tempdir");
-        let src = tmp.path().join("zccache-daemon");
-        std::fs::write(&src, b"x").expect("write source");
-
-        let dest_dir = tmp.path().join("nested").join("runtime-binaries");
-        assert!(!dest_dir.exists(), "precondition: dest_dir does not exist");
-
-        let copied = prepare_daemon_exe_in(&src, &dest_dir).expect("create + copy");
-        assert!(dest_dir.is_dir(), "dest_dir should now exist");
-        assert!(copied.is_file());
-    }
-
-    #[test]
-    fn gc_runtime_binaries_in_removes_unlocked_entries() {
-        let tmp = tempfile::tempdir().expect("create tempdir");
-        let dir = tmp.path().join("runtime-binaries");
-        std::fs::create_dir_all(&dir).expect("create dir");
-
-        let a = dir.join("zccache-daemon.111.exe");
-        let b = dir.join("zccache-daemon.222.exe");
-        std::fs::write(&a, b"a").unwrap();
-        std::fs::write(&b, b"b").unwrap();
-
-        gc_runtime_binaries_in(&dir);
-
-        assert!(!a.exists(), "{} should be GC'd", a.display());
-        assert!(!b.exists(), "{} should be GC'd", b.display());
-        assert!(dir.is_dir(), "directory itself remains");
-    }
-
-    #[test]
-    fn gc_runtime_binaries_in_is_noop_for_missing_dir() {
-        let tmp = tempfile::tempdir().expect("create tempdir");
-        let dir = tmp.path().join("does-not-exist");
-        gc_runtime_binaries_in(&dir);
-    }
-
-    /// Issue #159: `session_end_idempotent` is the shared library entry
-    /// point for ending a session — used by the CLI `session-end` command
-    /// AND by tools like soldr that call into the library directly. When
-    /// the daemon process is gone (pipe / socket missing), this function
-    /// must return `Ok(None)` rather than propagating the connect-time
-    /// I/O error. Soldr's at-exit `rust-plan save` previously failed
-    /// Windows CI because its in-process session-end did NOT go through
-    /// `cmd_session_end` (which is gated to the CLI subprocess path) and
-    /// so the #151 idempotency fix didn't apply.
-    #[test]
-    fn session_end_idempotent_swallows_vanished_daemon() {
-        // Construct an endpoint that is guaranteed to have no listener —
-        // a unique pipe / socket name with no server bound to it.
-        let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
-        let session_id = "00000000-0000-0000-0000-000000000000";
-
-        let result = session_end_idempotent(&endpoint, session_id);
-
-        assert!(
-            matches!(result, Ok(None)),
-            "vanished daemon must produce Ok(None) (success no-op), got {result:?}"
-        );
-    }
-
-    /// Control: non-unreachable errors (the function shouldn't be a
-    /// blanket "ignore everything"). We can't easily synthesize a live
-    /// daemon error here, but we can at least assert the routing via the
-    /// helper used inside the function: connect-time `TimedOut` must NOT
-    /// be classified as unreachable, so the function would propagate it
-    /// (rather than silently return Ok(None)). This guards against a
-    /// regression where someone widens the unreachable set to "any I/O
-    /// error".
-    #[test]
-    fn session_end_idempotent_treats_timeout_as_real_error() {
-        let err = zccache_monocrate::ipc::IpcError::Io(std::io::Error::from(std::io::ErrorKind::TimedOut));
-        assert!(
-            !is_daemon_unreachable_err(&err),
-            "TimedOut must NOT be classified as daemon-unreachable; session_end_idempotent \
-             would otherwise silently swallow real timeouts"
-        );
-    }
-
-    /// Control: protocol-layer errors (malformed framing, closed
-    /// connection mid-response) must NOT be classified as unreachable.
-    #[test]
-    fn session_end_idempotent_treats_protocol_errors_as_real() {
-        let err = zccache_monocrate::ipc::IpcError::ConnectionClosed;
-        assert!(!is_daemon_unreachable_err(&err));
-        let err = zccache_monocrate::ipc::IpcError::Endpoint("bogus".into());
-        assert!(!is_daemon_unreachable_err(&err));
-    }
-
-    /// Issue #150: connect-time errors that mean "daemon process is gone
-    /// entirely" must be classified as unreachable so the idempotent
-    /// session-end paths (`session_end_idempotent` + the CLI's
-    /// `cmd_session_end` wrapper) can fall through to the success path.
-    /// The set covers every shape `connect()` actually returns when the
-    /// pipe / socket is missing or has no listener.
-    #[test]
-    fn is_daemon_unreachable_recognizes_not_found() {
-        let err = zccache_monocrate::ipc::IpcError::Io(std::io::Error::from(std::io::ErrorKind::NotFound));
-        assert!(is_daemon_unreachable_err(&err));
-    }
-
-    #[test]
-    fn is_daemon_unreachable_recognizes_connection_refused() {
-        let err =
-            zccache_monocrate::ipc::IpcError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
-        assert!(is_daemon_unreachable_err(&err));
-    }
-
-    #[test]
-    fn is_daemon_unreachable_recognizes_broken_pipe() {
-        let err = zccache_monocrate::ipc::IpcError::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
-        assert!(is_daemon_unreachable_err(&err));
-    }
-
-    /// `IpcError::Timeout` is explicitly NOT daemon-unreachable. A
-    /// timed-out recv means we connected successfully but the peer did
-    /// not respond — that's a hung-daemon fault, not a vanished daemon.
-    /// Soldr's at-exit `session_end` path classifies vanished-daemon as
-    /// a no-op; if `Timeout` were misclassified here, a stuck daemon
-    /// would be silently swallowed and the user would never see it.
-    #[test]
-    fn is_daemon_unreachable_timeout_is_not_unreachable() {
-        let err = zccache_monocrate::ipc::IpcError::Timeout(std::time::Duration::from_secs(5));
-        assert!(
-            !is_daemon_unreachable_err(&err),
-            "Timeout must propagate as a real fault, not be swallowed as daemon-unreachable"
-        );
-    }
-
-    /// Mapping ENOENT through `from_raw_os_error` must yield the same
-    /// classification as constructing from `ErrorKind::NotFound`. This
-    /// guards against platform variance (macOS / Linux / Windows could
-    /// in principle synthesize a different kind for the same errno).
-    #[test]
-    fn is_daemon_unreachable_recognizes_raw_enoent() {
-        // ENOENT == 2 on every Unix; on Windows ERROR_FILE_NOT_FOUND == 2 too.
-        let err = zccache_monocrate::ipc::IpcError::Io(std::io::Error::from_raw_os_error(2));
-        assert!(
-            is_daemon_unreachable_err(&err),
-            "errno 2 must map to a kind in the unreachable set; got kind={:?}",
-            match &err {
-                zccache_monocrate::ipc::IpcError::Io(io) => io.kind(),
-                _ => unreachable!(),
-            }
-        );
-    }
-
-    /// Regression: `client_session_end` is the in-process library entry point
-    /// used by Python bindings and external tools (soldr's `rust-plan save`).
-    /// It must mirror `session_end_idempotent` — a vanished daemon is a no-op
-    /// success, not a hard error. Before this fix, soldr called
-    /// `client_session_end`, got `Err("cannot connect to daemon at …")`,
-    /// surfaced it as "soldr: zccache session-end … failed: …", and Windows
-    /// Test failed teardown even after every workspace test passed.
-    #[test]
-    fn client_session_end_swallows_vanished_daemon() {
-        let endpoint = zccache_monocrate::ipc::unique_test_endpoint();
-        let session_id = "00000000-0000-0000-0000-000000000000";
-
-        let result = client_session_end(Some(&endpoint), session_id);
-
-        assert!(
-            matches!(result, Ok(None)),
-            "vanished daemon must produce Ok(None) (success no-op), got {result:?}"
-        );
-    }
-
-    /// `gc_log_directory_in` must:
-    /// 1. delete every stale file regardless of name (not just
-    ///    `daemon-spawn-*.log`), so leftover `daemon-lifecycle.log.1`,
-    ///    `daemon.log.<ts>`, `compile_journal.jsonl.<ts>`, and stray
-    ///    files from previous versions all get reaped;
-    /// 2. preserve the live `daemon-lifecycle.log` even when it's
-    ///    older than the cutoff — a long-idle daemon may only touch
-    ///    it twice (at `spawn` and `died-*`).
-    #[test]
-    fn gc_log_directory_sweeps_stale_files_and_preserves_lifecycle_log() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let logs = tmp.path();
-
-        // Fresh files (mtime = now). Must all survive a sweep with a
-        // 60-second cutoff regardless of name.
-        for name in [
-            "daemon-lifecycle.log",
-            "daemon-lifecycle.log.1",
-            "daemon-spawn-1234-9999.log",
-            "daemon.log",
-            "daemon.log.2026-01-01T00-00-00Z",
-            "compile_journal.jsonl",
-            "compile_journal.jsonl.2026-01-01T00-00-00Z",
-            "last-session.log",
-            "stray-from-external-tool.txt",
-        ] {
-            std::fs::write(logs.join(name), b"x").unwrap();
-        }
-
-        gc_log_directory_in(logs, std::time::Duration::from_secs(60));
-
-        for name in [
-            "daemon-lifecycle.log",
-            "daemon-lifecycle.log.1",
-            "daemon-spawn-1234-9999.log",
-            "daemon.log",
-            "daemon.log.2026-01-01T00-00-00Z",
-            "compile_journal.jsonl",
-            "compile_journal.jsonl.2026-01-01T00-00-00Z",
-            "last-session.log",
-            "stray-from-external-tool.txt",
-        ] {
-            assert!(
-                logs.join(name).exists(),
-                "{name} must survive when mtime is fresh"
-            );
-        }
-
-        // Now age every file by overwriting mtime to two days ago.
-        // Then sweep with a 24h cutoff. Only `daemon-lifecycle.log`
-        // should survive — it's the live writer and may sit idle for
-        // an arbitrarily long time between events.
-        let two_days_ago =
-            std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 60 * 48);
-        for name in [
-            "daemon-lifecycle.log",
-            "daemon-lifecycle.log.1",
-            "daemon-spawn-1234-9999.log",
-            "daemon.log",
-            "daemon.log.2026-01-01T00-00-00Z",
-            "compile_journal.jsonl",
-            "compile_journal.jsonl.2026-01-01T00-00-00Z",
-            "last-session.log",
-            "stray-from-external-tool.txt",
-        ] {
-            let path = logs.join(name);
-            let f = std::fs::File::options().write(true).open(&path).unwrap();
-            f.set_modified(two_days_ago).unwrap();
-        }
-
-        gc_log_directory_in(logs, std::time::Duration::from_secs(60 * 60 * 24));
-
-        assert!(
-            logs.join("daemon-lifecycle.log").exists(),
-            "active lifecycle log must be preserved even when stale"
-        );
-        for name in [
-            "daemon-lifecycle.log.1",
-            "daemon-spawn-1234-9999.log",
-            "daemon.log",
-            "daemon.log.2026-01-01T00-00-00Z",
-            "compile_journal.jsonl",
-            "compile_journal.jsonl.2026-01-01T00-00-00Z",
-            "last-session.log",
-            "stray-from-external-tool.txt",
-        ] {
-            assert!(
-                !logs.join(name).exists(),
-                "{name} should have been swept (older than 24h cutoff)"
-            );
-        }
-    }
-
-    /// Sweeping a nonexistent directory is a silent no-op (called
-    /// before every spawn — must never fail on a fresh install).
-    #[test]
-    fn gc_log_directory_silently_handles_missing_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        let missing = tmp.path().join("does-not-exist");
-        gc_log_directory_in(&missing, std::time::Duration::from_secs(60));
-        assert!(!missing.exists());
-    }
+#[pymodule]
+fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<NativeClient>()?;
+    m.add_class::<NativeDaemonStatus>()?;
+    m.add_class::<NativeSessionStart>()?;
+    m.add_class::<NativeSessionStats>()?;
+    m.add_class::<NativeFingerprintCheck>()?;
+    m.add_class::<NativeInoConvertResult>()?;
+    m.add_class::<NativeDownloadStatus>()?;
+    m.add_class::<NativeDownloadDaemonStatus>()?;
+    m.add_class::<NativeFetchResult>()?;
+    m.add_class::<NativeFetchState>()?;
+    m.add_class::<NativeDownloadHandle>()?;
+    m.add_class::<NativeDownloadApi>()?;
+    m.add_function(wrap_pyfunction!(convert_ino, m)?)?;
+    m.add_function(wrap_pyfunction!(default_endpoint, m)?)?;
+    m.add_function(wrap_pyfunction!(check_running_daemon, m)?)?;
+    Ok(())
 }

@@ -6,8 +6,11 @@
 //! `zccache_<module>::*` paths, which are being deleted wave by wave.
 
 pub mod artifact;
+pub mod ci;
+pub mod cli;
 pub mod compiler;
 pub mod core;
+pub mod daemon;
 pub mod depgraph;
 pub mod download;
 pub mod download_client;

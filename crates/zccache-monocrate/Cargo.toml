@@ -71,6 +71,16 @@ ruzstd = { workspace = true }
 lzma-rs = { workspace = true }
 sevenz-rust = { workspace = true }
 
+# daemon
+running-process-core = { workspace = true }
+filetime = { workspace = true }
+sysinfo = "0.33"
+sadness-generator = "0.6"
+
+# ci
+md5 = "0.7"
+wait-timeout = "0.2"
+
 # shared: used by test_support, download-daemon bin, etc.
 tracing-subscriber = { workspace = true }
 
@@ -130,3 +140,40 @@ path = "src/bin/zccache-download-daemon.rs"
 name = "zccache-download"
 path = "src/bin/zccache-download.rs"
 doc = false
+
+[[bin]]
+name = "zccache-daemon"
+path = "src/bin/zccache-daemon.rs"
+
+[[bin]]
+name = "crash-trigger"
+path = "src/bin/crash-trigger.rs"
+
+[[bin]]
+name = "zccache"
+path = "src/bin/zccache.rs"
+
+[[bin]]
+name = "cli-crash-trigger"
+path = "src/bin/cli-crash-trigger.rs"
+
+[[bin]]
+name = "zccache-ci"
+path = "src/bin/zccache-ci.rs"
+
+[[bench]]
+name = "write_payloads"
+harness = false
+
+[[bench]]
+name = "read_outputs"
+harness = false
+
+[[bench]]
+name = "persist_payloads"
+harness = false
+
+[[bench]]
+name = "warm_restore"
+harness = false
+

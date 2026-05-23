@@ -40,7 +40,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          soldr --no-cache cargo test -p zccache-daemon --test perf_bench_test --no-run
+          soldr --no-cache cargo test -p zccache-monocrate --test daemon_perf_bench_test --no-run
           bench_bin="$(
             find target/debug/deps \
               -maxdepth 1 \

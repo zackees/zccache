@@ -14,8 +14,6 @@ RUST_PUBLISH_ORDER = [
     "zccache-monocrate",
     "zccache-watcher",
     "zccache-fingerprint",
-    "zccache-cli",
-    "zccache-daemon",
 ]
 DYNAMIC_VERSION_PYPROJECTS = (
     ROOT / "pyproject.toml",

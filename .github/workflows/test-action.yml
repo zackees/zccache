@@ -207,7 +207,7 @@ jobs:
 
       - name: Build zccache CLI
         shell: bash
-        run: cargo build -p zccache-cli
+        run: cargo build -p zccache-monocrate --bin zccache
 
       # --- Test cargo-registry hash ---
       - name: "cargo-registry hash: produces 16-char hex"
@@ -300,7 +300,7 @@ jobs:
 
       - name: Build zccache CLI
         shell: bash
-        run: cargo build -p zccache-cli
+        run: cargo build -p zccache-monocrate --bin zccache
 
       # --- Unit tests always run ---
       - name: "zccache-monocrate unit tests"
