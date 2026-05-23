@@ -11,8 +11,7 @@ description = "Dependency graph tracking for zccache cache invalidation"
 
 
 [dependencies]
-zccache-core = { workspace = true }
-zccache-hash = { workspace = true }
+zccache-monocrate = { workspace = true }
 blake3 = { workspace = true }
 dashmap = { workspace = true }
 rayon = { workspace = true }

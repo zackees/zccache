@@ -2,7 +2,7 @@
 
 use super::args;
 use crate::{parse_invocation, CompilerFamily, ParsedInvocation};
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 #[test]
 fn basic_cacheable_compilation() {

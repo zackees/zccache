@@ -26,7 +26,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::NormalizedPath;
+use super::NormalizedPath;
 
 /// Standard event names. Free-form strings also work — these
 /// constants exist for the call sites we ship today.
@@ -128,7 +128,7 @@ fn open_append(path: &Path) -> std::io::Result<std::fs::File> {
 /// Absolute path to the live lifecycle log file.
 #[must_use]
 pub fn log_file_path() -> NormalizedPath {
-    log_file_path_in(&crate::config::log_dir())
+    log_file_path_in(&super::config::log_dir())
 }
 
 /// Same as [`log_file_path`] but rooted at a caller-supplied logs

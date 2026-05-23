@@ -89,7 +89,7 @@ fn rustc_context_build_reuses_compiler_hash_cache() {
         unknown_flags: Vec::new(),
     };
     let cache = CompilerHashCache::new();
-    let expected_hash = zccache_hash::hash_file(&compiler).ok();
+    let expected_hash = zccache_monocrate::hash::hash_file(&compiler).ok();
 
     let first = build_rustc_compile_context(&compilation, tmp.path(), &[], &cache);
     let second = build_rustc_compile_context(&compilation, tmp.path(), &[], &cache);

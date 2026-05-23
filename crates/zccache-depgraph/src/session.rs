@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 use crate::context::ContextKey;
 

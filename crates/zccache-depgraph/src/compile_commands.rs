@@ -3,7 +3,7 @@
 //! Supports both the `"command"` (string) and `"arguments"` (array)
 //! forms as defined by the clang compilation database specification.
 
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 use serde::Deserialize;
 
@@ -91,7 +91,7 @@ pub fn parse_compile_commands_json(json: &str) -> Result<Vec<CompileCommand>, se
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use zccache_core::NormalizedPath;
+    use zccache_monocrate::core::NormalizedPath;
 
     use super::*;
 

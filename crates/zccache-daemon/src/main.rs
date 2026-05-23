@@ -16,7 +16,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 static GLOBAL_WIN: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use clap::Parser;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 const DAEMON_MAX_BLOCKING_THREADS: usize = 16;
 
@@ -42,7 +42,7 @@ struct Args {
 
     /// Idle timeout in seconds (0 = no timeout).
     ///
-    /// Default comes from `zccache_core::config::DEFAULT_IDLE_TIMEOUT_SECS`
+    /// Default comes from `zccache_monocrate::core::config::DEFAULT_IDLE_TIMEOUT_SECS`
     /// (60 minutes), kept as the single source of truth so [`Config::default`]
     /// and this flag never drift apart.
     ///
@@ -53,7 +53,7 @@ struct Args {
     /// command line. `0` disables the timeout (daemon runs forever).
     #[arg(
         long,
-        default_value_t = zccache_core::config::DEFAULT_IDLE_TIMEOUT_SECS,
+        default_value_t = zccache_monocrate::core::config::DEFAULT_IDLE_TIMEOUT_SECS,
         env = "ZCCACHE_IDLE_TIMEOUT_SECS"
     )]
     idle_timeout: u64,
@@ -166,16 +166,16 @@ fn run_server(args: Args) {
     // The returned guard MUST stay alive — drop unregisters the
     // OS-level signal/exception handlers. Bind it for the whole
     // `run_server` lifetime by storing it in this stack frame.
-    let _crash_guard = zccache_core::crash::install("zccache-daemon");
-    zccache_core::crash::check_previous_crashes();
+    let _crash_guard = zccache_monocrate::core::crash::install("zccache-daemon");
+    zccache_monocrate::core::crash::check_previous_crashes();
 
     tracing::info!(%endpoint, idle_timeout, "zccache-daemon starting");
 
     // Issue #273: on Windows, warn once on stderr if the cache dir is
     // not on Defender's exclusion list. Non-fatal; no-ops off Windows
     // and when `ZCCACHE_QUIET` is set.
-    let cache_root = zccache_core::config::default_cache_dir();
-    zccache_core::defender::maybe_emit_first_run_banner(cache_root.as_path());
+    let cache_root = zccache_monocrate::core::config::default_cache_dir();
+    zccache_monocrate::core::defender::maybe_emit_first_run_banner(cache_root.as_path());
 
     // Persist a "spawn" lifecycle event to disk. tracing logs go to
     // stderr which is detached to NUL, so this file-based sink is the

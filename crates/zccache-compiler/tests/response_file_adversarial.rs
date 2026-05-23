@@ -17,7 +17,7 @@ use std::path::Path;
 use zccache_compiler::response_file::{
     expand_response_files, parse_response_file_content, ResponseFileError,
 };
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 #[cfg(windows)]
 use zccache_compiler::response_file::write_response_file_if_needed;

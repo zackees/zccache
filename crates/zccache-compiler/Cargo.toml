@@ -13,8 +13,7 @@ description = "Compiler detection and argument parsing for zccache"
 [dependencies]
 tracing = { workspace = true }
 thiserror = { workspace = true }
-zccache-core = { workspace = true }
-zccache-hash = { workspace = true }
+zccache-monocrate = { workspace = true }
 clang = { workspace = true }
 
 [dev-dependencies]

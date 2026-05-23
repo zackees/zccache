@@ -11,7 +11,7 @@
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
 use zccache_depgraph::{CompileContext, DepGraph, IncludeSearchPaths};
 use zccache_protocol::{DaemonStatus, Request, Response};
@@ -34,8 +34,8 @@ impl CacheDirGuard {
     fn new() -> Self {
         let lock = ENV_SERIAL.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        let prev = std::env::var_os(zccache_core::config::CACHE_DIR_ENV);
-        std::env::set_var(zccache_core::config::CACHE_DIR_ENV, tmp.path());
+        let prev = std::env::var_os(zccache_monocrate::core::config::CACHE_DIR_ENV);
+        std::env::set_var(zccache_monocrate::core::config::CACHE_DIR_ENV, tmp.path());
         Self {
             _tmp: tmp,
             prev,
@@ -47,8 +47,8 @@ impl CacheDirGuard {
 impl Drop for CacheDirGuard {
     fn drop(&mut self) {
         match self.prev.take() {
-            Some(v) => std::env::set_var(zccache_core::config::CACHE_DIR_ENV, v),
-            None => std::env::remove_var(zccache_core::config::CACHE_DIR_ENV),
+            Some(v) => std::env::set_var(zccache_monocrate::core::config::CACHE_DIR_ENV, v),
+            None => std::env::remove_var(zccache_monocrate::core::config::CACHE_DIR_ENV),
         }
     }
 }

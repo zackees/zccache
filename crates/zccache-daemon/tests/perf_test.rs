@@ -4,7 +4,7 @@
 //! Run with: soldr cargo test -p zccache-daemon --test perf_test -- --nocapture --ignored
 
 use std::time::Instant;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
 use zccache_protocol::{Request, Response};
 

@@ -2,7 +2,7 @@
 //!
 //! A cache key uniquely identifies a compilation invocation's inputs.
 
-use crate::ContentHash;
+use super::ContentHash;
 use std::collections::BTreeMap;
 
 /// Builder for constructing a deterministic cache key.
@@ -109,7 +109,7 @@ impl CacheKeyBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hash_bytes;
+    use super::super::hash_bytes;
 
     #[test]
     fn cache_key_deterministic() {

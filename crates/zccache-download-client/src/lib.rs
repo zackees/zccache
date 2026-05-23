@@ -4,7 +4,7 @@ mod artifact;
 
 use std::path::Path;
 
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 use zccache_download::{
     canonical_destination, DownloadAttachResult, DownloadDaemonStatus, DownloadOptions,
     DownloadStatus,

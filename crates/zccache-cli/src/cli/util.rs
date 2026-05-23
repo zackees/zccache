@@ -4,7 +4,7 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 pub(crate) fn absolute_path(path: &str) -> NormalizedPath {
     let path = Path::new(path);

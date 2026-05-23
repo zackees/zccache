@@ -30,7 +30,7 @@ impl CompilerHashCache {
     }
 
     pub(super) fn get_or_hash(&self, path: &Path) -> Option<ContentHash> {
-        self.get_or_hash_with(path, |path| zccache_hash::hash_file(path).ok())
+        self.get_or_hash_with(path, |path| zccache_monocrate::hash::hash_file(path).ok())
     }
 
     pub(super) fn get_or_hash_with<F>(&self, path: &Path, hasher: F) -> Option<ContentHash>

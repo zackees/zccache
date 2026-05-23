@@ -377,7 +377,7 @@ fn detach_stdio_windows() {
 /// against the canonicalized cache dir to be robust to symlinks and
 /// short-name (8.3) tilde expansion on Windows.
 fn exe_is_under_runtime_binaries(exe: &Path) -> bool {
-    let runtime_dir = zccache_core::config::default_cache_dir().join("runtime-binaries");
+    let runtime_dir = zccache_monocrate::core::config::default_cache_dir().join("runtime-binaries");
     let runtime_canon = match fs::canonicalize(&runtime_dir) {
         Ok(p) => p,
         Err(_) => return false,

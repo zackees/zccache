@@ -6,7 +6,7 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 pub(crate) mod analyze;
 pub(crate) mod args;

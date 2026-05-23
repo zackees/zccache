@@ -13,7 +13,7 @@ use std::sync::{Mutex, OnceLock};
 
 use clang::{Clang, Entity, EntityKind, Index};
 use thiserror::Error;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 /// Conversion settings for `.ino` parsing and `.ino.cpp` generation.
 #[derive(Debug, Clone)]
@@ -83,10 +83,10 @@ pub fn can_load_libclang() -> bool {
 }
 
 /// Return the discovered `libclang` binary path and hash it for cache keys.
-pub fn libclang_hash() -> Option<zccache_hash::ContentHash> {
+pub fn libclang_hash() -> Option<zccache_monocrate::hash::ContentHash> {
     libclang_path()
         .as_ref()
-        .and_then(|path| zccache_hash::hash_file(path).ok())
+        .and_then(|path| zccache_monocrate::hash::hash_file(path).ok())
 }
 
 /// Generate an Arduino-style `.ino.cpp` file from an `.ino` source.

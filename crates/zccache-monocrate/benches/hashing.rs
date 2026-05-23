@@ -9,17 +9,17 @@ fn bench_hash_bytes(c: &mut Criterion) {
 
     group.throughput(Throughput::Bytes(1024));
     group.bench_function("1KB", |b| {
-        b.iter(|| zccache_hash::hash_bytes(black_box(&data_1kb)));
+        b.iter(|| zccache_monocrate::hash::hash_bytes(black_box(&data_1kb)));
     });
 
     group.throughput(Throughput::Bytes(1024 * 1024));
     group.bench_function("1MB", |b| {
-        b.iter(|| zccache_hash::hash_bytes(black_box(&data_1mb)));
+        b.iter(|| zccache_monocrate::hash::hash_bytes(black_box(&data_1mb)));
     });
 
     group.throughput(Throughput::Bytes(64 * 1024 * 1024));
     group.bench_function("64MB", |b| {
-        b.iter(|| zccache_hash::hash_bytes(black_box(&data_64mb)));
+        b.iter(|| zccache_monocrate::hash::hash_bytes(black_box(&data_64mb)));
     });
 
     group.finish();

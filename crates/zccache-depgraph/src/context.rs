@@ -6,9 +6,9 @@
 
 use std::path::Path;
 
-use zccache_core::path::normalize_for_key;
-use zccache_core::NormalizedPath;
-use zccache_hash::ContentHash;
+use zccache_monocrate::core::path::normalize_for_key;
+use zccache_monocrate::core::NormalizedPath;
+use zccache_monocrate::hash::ContentHash;
 
 use crate::args::ParsedArgs;
 use crate::rustc_args::RustcParsedArgs;
@@ -643,7 +643,7 @@ pub fn compute_rustc_artifact_key_with_root<P: AsRef<Path> + Ord>(
 
 #[cfg(test)]
 mod tests {
-    use zccache_core::NormalizedPath;
+    use zccache_monocrate::core::NormalizedPath;
 
     use super::*;
     use crate::args::UserDepFlags;
@@ -751,21 +751,21 @@ mod tests {
         let mut file_hashes_a = vec![
             (
                 NormalizedPath::from(r"C:\work\include\foo.h"),
-                zccache_hash::hash_bytes(b"header"),
+                zccache_monocrate::hash::hash_bytes(b"header"),
             ),
             (
                 NormalizedPath::from(r"C:\work\src\main.cpp"),
-                zccache_hash::hash_bytes(b"source"),
+                zccache_monocrate::hash::hash_bytes(b"source"),
             ),
         ];
         let mut file_hashes_b = vec![
             (
                 NormalizedPath::from("c:/work/include/foo.h"),
-                zccache_hash::hash_bytes(b"header"),
+                zccache_monocrate::hash::hash_bytes(b"header"),
             ),
             (
                 NormalizedPath::from("c:/work/src/main.cpp"),
-                zccache_hash::hash_bytes(b"source"),
+                zccache_monocrate::hash::hash_bytes(b"source"),
             ),
         ];
 
@@ -809,8 +809,8 @@ mod tests {
         let ctx = make_context("/src/a.c", &[], &[]);
         let ck = ctx.context_key();
 
-        let hash_a = zccache_hash::hash_bytes(b"content A");
-        let hash_b = zccache_hash::hash_bytes(b"content B");
+        let hash_a = zccache_monocrate::hash::hash_bytes(b"content A");
+        let hash_b = zccache_monocrate::hash::hash_bytes(b"content B");
 
         let ak1 =
             compute_artifact_key(&ck, &mut [(NormalizedPath::from("/src/a.c"), hash_a)], None);
@@ -824,7 +824,7 @@ mod tests {
         let ctx = make_context("/src/a.c", &[], &[]);
         let ck = ctx.context_key();
 
-        let hash = zccache_hash::hash_bytes(b"content");
+        let hash = zccache_monocrate::hash::hash_bytes(b"content");
 
         let ak1 = compute_artifact_key(&ck, &mut [(NormalizedPath::from("/src/a.c"), hash)], None);
         let ak2 = compute_artifact_key(&ck, &mut [(NormalizedPath::from("/src/a.c"), hash)], None);
@@ -836,8 +836,8 @@ mod tests {
         let ctx = make_context("/src/a.c", &[], &[]);
         let ck = ctx.context_key();
 
-        let h1 = zccache_hash::hash_bytes(b"content 1");
-        let h2 = zccache_hash::hash_bytes(b"content 2");
+        let h1 = zccache_monocrate::hash::hash_bytes(b"content 1");
+        let h2 = zccache_monocrate::hash::hash_bytes(b"content 2");
 
         let ak1 = compute_artifact_key(
             &ck,
@@ -950,21 +950,21 @@ mod tests {
         let mut hashes_a = vec![
             (
                 NormalizedPath::from("/workspace-a/include/foo.h"),
-                zccache_hash::hash_bytes(b"header"),
+                zccache_monocrate::hash::hash_bytes(b"header"),
             ),
             (
                 NormalizedPath::from("/workspace-a/src/main.cpp"),
-                zccache_hash::hash_bytes(b"source"),
+                zccache_monocrate::hash::hash_bytes(b"source"),
             ),
         ];
         let mut hashes_b = vec![
             (
                 NormalizedPath::from("/workspace-b/include/foo.h"),
-                zccache_hash::hash_bytes(b"header"),
+                zccache_monocrate::hash::hash_bytes(b"header"),
             ),
             (
                 NormalizedPath::from("/workspace-b/src/main.cpp"),
-                zccache_hash::hash_bytes(b"source"),
+                zccache_monocrate::hash::hash_bytes(b"source"),
             ),
         ];
 
@@ -1270,7 +1270,7 @@ mod tests {
     fn rustc_compiler_hash_affects_key() {
         let ctx1 = make_rustc_context("/src/lib.rs", "2021");
         let mut ctx2 = make_rustc_context("/src/lib.rs", "2021");
-        ctx2.compiler_hash = Some(zccache_hash::hash_bytes(b"rustc-1.94.1"));
+        ctx2.compiler_hash = Some(zccache_monocrate::hash::hash_bytes(b"rustc-1.94.1"));
         assert_ne!(
             ctx1.context_key(),
             ctx2.context_key(),
@@ -1281,9 +1281,9 @@ mod tests {
     #[test]
     fn rustc_different_compiler_versions_different_key() {
         let mut ctx1 = make_rustc_context("/src/lib.rs", "2021");
-        ctx1.compiler_hash = Some(zccache_hash::hash_bytes(b"rustc-1.94.1"));
+        ctx1.compiler_hash = Some(zccache_monocrate::hash::hash_bytes(b"rustc-1.94.1"));
         let mut ctx2 = make_rustc_context("/src/lib.rs", "2021");
-        ctx2.compiler_hash = Some(zccache_hash::hash_bytes(b"rustc-1.94.2"));
+        ctx2.compiler_hash = Some(zccache_monocrate::hash::hash_bytes(b"rustc-1.94.2"));
         assert_ne!(ctx1.context_key(), ctx2.context_key());
     }
 
@@ -1364,9 +1364,9 @@ mod tests {
         let ctx = make_rustc_context("/src/lib.rs", "2021");
         let ck = ctx.context_key();
 
-        let src_hash = zccache_hash::hash_bytes(b"source");
-        let ext_hash_a = zccache_hash::hash_bytes(b"extern A");
-        let ext_hash_b = zccache_hash::hash_bytes(b"extern B");
+        let src_hash = zccache_monocrate::hash::hash_bytes(b"source");
+        let ext_hash_a = zccache_monocrate::hash::hash_bytes(b"extern A");
+        let ext_hash_b = zccache_monocrate::hash::hash_bytes(b"extern B");
 
         let ak1 = compute_rustc_artifact_key(
             &ck,
@@ -1497,8 +1497,8 @@ mod tests {
         let ctx = make_rustc_context("/src/lib.rs", "2021");
         let ck = ctx.context_key();
 
-        let src_hash = zccache_hash::hash_bytes(b"source");
-        let ext_hash = zccache_hash::hash_bytes(b"extern");
+        let src_hash = zccache_monocrate::hash::hash_bytes(b"source");
+        let ext_hash = zccache_monocrate::hash::hash_bytes(b"extern");
 
         let ak1 = compute_rustc_artifact_key(
             &ck,
@@ -1524,9 +1524,9 @@ mod tests {
         let ck_b = ctx_b.context_key_with_root(Some(root_b));
         assert_eq!(ck_a, ck_b);
 
-        let src_hash = zccache_hash::hash_bytes(b"source");
-        let dep_hash = zccache_hash::hash_bytes(b"dependency");
-        let ext_hash = zccache_hash::hash_bytes(b"extern");
+        let src_hash = zccache_monocrate::hash::hash_bytes(b"source");
+        let dep_hash = zccache_monocrate::hash::hash_bytes(b"dependency");
+        let ext_hash = zccache_monocrate::hash::hash_bytes(b"extern");
 
         let ak_a = compute_rustc_artifact_key_with_root(
             &ck_a,

@@ -2,7 +2,7 @@
 
 use super::args;
 use crate::{detect_family, parse_invocation, CompilerFamily, ParsedInvocation};
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 #[test]
 fn detect_clippy_driver_family() {

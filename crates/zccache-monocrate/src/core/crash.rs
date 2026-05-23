@@ -31,7 +31,7 @@
 //! anything newer is on disk. One readdir + N stats per CLI invocation —
 //! cheap enough to keep on the hot path.
 
-use crate::NormalizedPath;
+use super::NormalizedPath;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -90,7 +90,7 @@ pub fn install(bin_stem: &'static str) -> CrashGuard {
 /// is mid-startup and an `eprintln!` would race with their own tracing
 /// init.
 fn write_last_run_marker(bin_stem: &str) -> std::io::Result<()> {
-    let cache_dir = crate::config::default_cache_dir();
+    let cache_dir = super::config::default_cache_dir();
     std::fs::create_dir_all(&cache_dir)?;
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -100,7 +100,7 @@ fn write_last_run_marker(bin_stem: &str) -> std::io::Result<()> {
 }
 
 fn last_run_marker_path(bin_stem: &str) -> PathBuf {
-    let cache_dir = crate::config::default_cache_dir();
+    let cache_dir = super::config::default_cache_dir();
     cache_dir
         .join(format!("last_run_{bin_stem}.txt"))
         .as_path()
@@ -177,7 +177,7 @@ fn install_signal_handler() -> Option<crash_handler::CrashHandler> {
 }
 
 fn write_signal_dump(ctx: &crash_handler::CrashContext) {
-    let crash_dir = crate::config::crash_dump_dir();
+    let crash_dir = super::config::crash_dump_dir();
     if std::fs::create_dir_all(&crash_dir).is_err() {
         return;
     }
@@ -308,7 +308,7 @@ fn format_signal_summary(_cc: &crash_handler::CrashContext) -> String {
 /// Write a Rust-panic dump. Caller is the panic hook (not signal
 /// context), so allocation here is fine.
 fn write_panic_dump(panic_info: &str, backtrace: &str) -> Option<NormalizedPath> {
-    let crash_dir = crate::config::crash_dump_dir();
+    let crash_dir = super::config::crash_dump_dir();
     std::fs::create_dir_all(&crash_dir).ok()?;
     let path = unique_dump_path(&crash_dir, "panic", "txt");
 
@@ -380,7 +380,7 @@ fn bin_stem() -> &'static str {
 /// previous crashes via [`check_previous_crashes`] with structured
 /// tracing instead.
 pub fn note_previous_crashes() {
-    let crash_dir = crate::config::crash_dump_dir();
+    let crash_dir = super::config::crash_dump_dir();
     let marker = last_run_marker_path(bin_stem());
     let marker_mtime = std::fs::metadata(&marker)
         .and_then(|m| m.modified())
@@ -438,7 +438,7 @@ pub fn note_previous_crashes() {
 /// each one to suppress repeats across daemon restarts. Kept for
 /// callers that already piped daemon output through `tracing`.
 pub fn check_previous_crashes() {
-    let crash_dir = crate::config::crash_dump_dir();
+    let crash_dir = super::config::crash_dump_dir();
     let entries = match std::fs::read_dir(&crash_dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -486,7 +486,7 @@ fn read_crash_summary(path: &Path) -> String {
 /// List all crash dump files (text + binary minidumps), sorted by name.
 #[must_use]
 pub fn list_crash_dumps() -> Vec<NormalizedPath> {
-    let crash_dir = crate::config::crash_dump_dir();
+    let crash_dir = super::config::crash_dump_dir();
     let mut dumps: Vec<NormalizedPath> = match std::fs::read_dir(&crash_dir) {
         Ok(entries) => entries
             .flatten()
@@ -502,7 +502,7 @@ pub fn list_crash_dumps() -> Vec<NormalizedPath> {
 /// Delete all crash dump files and their `.reported` markers. Returns
 /// the number of `.txt`/`.dmp` files deleted.
 pub fn clear_crash_dumps() -> usize {
-    let crash_dir = crate::config::crash_dump_dir();
+    let crash_dir = super::config::crash_dump_dir();
     let entries = match std::fs::read_dir(&crash_dir) {
         Ok(e) => e,
         Err(_) => return 0,
@@ -573,7 +573,7 @@ mod tests {
     }
 
     /// `list_crash_dumps`/`clear_crash_dumps` read from
-    /// `crate::config::crash_dump_dir()` which consults
+    /// `super::config::crash_dump_dir()` which consults
     /// `ZCCACHE_CACHE_DIR`. The test runner shares process env across
     /// threads, so manipulating that env var would race with any
     /// concurrent test that also calls `default_cache_dir()`. We

@@ -4,7 +4,7 @@
 //! because linker behavior is order-sensitive (symbol resolution, archive
 //! member ordering).
 
-use crate::ContentHash;
+use super::ContentHash;
 use std::collections::BTreeMap;
 
 /// Builder for constructing a deterministic link/archive cache key.
@@ -102,7 +102,7 @@ impl LinkCacheKeyBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hash_bytes;
+    use super::super::hash_bytes;
 
     #[test]
     fn link_key_deterministic() {
@@ -240,7 +240,7 @@ mod tests {
         let tool = hash_bytes(b"tool-binary");
         let source = hash_bytes(b"source-content");
 
-        let compile_key = crate::cache_key::CacheKeyBuilder::new()
+        let compile_key = super::super::cache_key::CacheKeyBuilder::new()
             .compiler(tool)
             .source(source)
             .arg("rcs")

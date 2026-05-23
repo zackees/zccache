@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
-use zccache_core::{normalize_for_key, NormalizedPath};
+use zccache_monocrate::core::{normalize_for_key, NormalizedPath};
 use zccache_depgraph::*;
 
 // ---------------------------------------------------------------------------
@@ -46,9 +46,9 @@ fn contains_path<T: AsRef<Path>>(paths: &[T], path: &NormalizedPath) -> bool {
 }
 
 /// Hash a file's content with blake3 via zccache-hash.
-fn hash_file(path: &Path) -> Option<zccache_hash::ContentHash> {
+fn hash_file(path: &Path) -> Option<zccache_monocrate::hash::ContentHash> {
     let data = std::fs::read(path).ok()?;
-    Some(zccache_hash::hash_bytes(&data))
+    Some(zccache_monocrate::hash::hash_bytes(&data))
 }
 
 /// Build a freshness oracle from a set of "stale" paths.
@@ -57,7 +57,7 @@ fn freshness_oracle(stale: &HashSet<String>) -> impl Fn(&Path) -> bool + '_ {
 }
 
 /// Build a hash oracle that reads files from disk.
-fn disk_hash_oracle() -> impl Fn(&Path) -> Option<zccache_hash::ContentHash> {
+fn disk_hash_oracle() -> impl Fn(&Path) -> Option<zccache_monocrate::hash::ContentHash> {
     |p: &Path| hash_file(p)
 }
 
@@ -665,7 +665,7 @@ fn stress_concurrent_register_and_trim() {
                     has_computed: false,
                 };
                 graph.update(&key, scan, |p: &Path| {
-                    Some(zccache_hash::hash_bytes(p.to_string_lossy().as_bytes()))
+                    Some(zccache_monocrate::hash::hash_bytes(p.to_string_lossy().as_bytes()))
                 });
             }
         }));
@@ -723,7 +723,7 @@ fn stress_concurrent_shadow_detection() {
                     has_computed: false,
                 };
                 graph.update(&key, scan, |p: &Path| {
-                    Some(zccache_hash::hash_bytes(p.to_string_lossy().as_bytes()))
+                    Some(zccache_monocrate::hash::hash_bytes(p.to_string_lossy().as_bytes()))
                 });
             }
         }));
@@ -1168,7 +1168,7 @@ fn adversarial_watch_set_large_graph() {
             has_computed: false,
         };
         graph.update(&key, scan, |p: &Path| {
-            Some(zccache_hash::hash_bytes(p.to_string_lossy().as_bytes()))
+            Some(zccache_monocrate::hash::hash_bytes(p.to_string_lossy().as_bytes()))
         });
     }
 
@@ -1221,7 +1221,7 @@ fn adversarial_trim_cleans_orphaned_files() {
         has_computed: false,
     };
     graph.update(&key, scan, |p: &Path| {
-        Some(zccache_hash::hash_bytes(p.to_string_lossy().as_bytes()))
+        Some(zccache_monocrate::hash::hash_bytes(p.to_string_lossy().as_bytes()))
     });
 
     // Trim everything (Duration::ZERO means all entries are older than cutoff).

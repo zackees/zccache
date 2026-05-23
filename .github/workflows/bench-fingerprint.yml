@@ -11,7 +11,7 @@ concurrency:
 # Each job does: cold build -> clean -> warm build -> no-op build (measure + diagnose)
 
 env:
-  BUILD_TARGET: zccache-core
+  BUILD_TARGET: zccache-monocrate
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
 

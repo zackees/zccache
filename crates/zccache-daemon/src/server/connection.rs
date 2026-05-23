@@ -101,7 +101,7 @@ pub(super) async fn handle_connection(
                 let metadata_entries = state.cache_system.metadata().len() as u64;
                 (
                     Response::Status(zccache_protocol::DaemonStatus {
-                        version: zccache_core::VERSION.to_string(),
+                        version: zccache_monocrate::core::VERSION.to_string(),
                         artifact_count,
                         cache_size_bytes,
                         metadata_entries,
@@ -120,7 +120,7 @@ pub(super) async fn handle_connection(
                         dep_graph_files: dg.file_count as u64,
                         sessions_total: snap.sessions_total,
                         sessions_active: state.sessions.active_count() as u64,
-                        cache_dir: zccache_core::config::default_cache_dir(),
+                        cache_dir: zccache_monocrate::core::config::default_cache_dir(),
                         dep_graph_version: zccache_depgraph::DEPGRAPH_VERSION,
                         dep_graph_disk_size: zccache_depgraph::depgraph_file_path()
                             .metadata()

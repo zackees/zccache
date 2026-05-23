@@ -1,6 +1,6 @@
 //! Configuration types for zccache.
 
-use crate::NormalizedPath;
+use super::NormalizedPath;
 use std::ffi::OsString;
 use std::path::Path;
 

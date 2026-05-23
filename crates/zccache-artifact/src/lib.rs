@@ -23,7 +23,7 @@ pub use rust_plan::{
 pub use store::{ArtifactIndex, ArtifactStore};
 
 use std::path::Path;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 /// Configuration for the artifact store.
 #[derive(Debug, Clone)]
@@ -49,14 +49,14 @@ impl ArtifactStoreLegacy {
     /// Open or create an artifact store at the given configuration.
     ///
     /// Creates the cache directory if it does not exist.
-    pub fn open(config: ArtifactStoreConfig) -> zccache_core::Result<Self> {
+    pub fn open(config: ArtifactStoreConfig) -> zccache_monocrate::core::Result<Self> {
         std::fs::create_dir_all(&config.cache_dir)?;
         Ok(Self { config })
     }
 
     /// Returns the path where an artifact with the given key would be stored.
     #[must_use]
-    pub fn artifact_path(&self, key: &zccache_hash::ContentHash) -> NormalizedPath {
+    pub fn artifact_path(&self, key: &zccache_monocrate::hash::ContentHash) -> NormalizedPath {
         let shards = key.shard_prefix(2, 1);
         self.config
             .cache_dir
@@ -68,7 +68,7 @@ impl ArtifactStoreLegacy {
 
     /// Check if an artifact exists for the given cache key.
     #[must_use]
-    pub fn contains(&self, key: &zccache_hash::ContentHash) -> bool {
+    pub fn contains(&self, key: &zccache_monocrate::hash::ContentHash) -> bool {
         self.artifact_path(key).exists()
     }
 

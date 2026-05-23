@@ -14,7 +14,7 @@ use std::path::Path;
 
 use crate::context::ContextKey;
 use crate::graph::DepGraph;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 /// Set of directories that should be watched, with tracked filenames per directory.
 ///
@@ -278,15 +278,15 @@ impl DepGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zccache_core::NormalizedPath;
+    use zccache_monocrate::core::NormalizedPath;
 
     use crate::context::CompileContext;
     use crate::scanner::ScanResult;
     use crate::search_paths::IncludeSearchPaths;
-    use zccache_hash::ContentHash;
+    use zccache_monocrate::hash::ContentHash;
 
     fn dummy_hash(path: &Path) -> Option<ContentHash> {
-        Some(zccache_hash::hash_bytes(path.to_string_lossy().as_bytes()))
+        Some(zccache_monocrate::hash::hash_bytes(path.to_string_lossy().as_bytes()))
     }
 
     fn make_ctx_with_search(source: &str, search: IncludeSearchPaths) -> CompileContext {

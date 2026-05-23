@@ -11,7 +11,7 @@ description = "Rust client API for the zccache download daemon"
 
 [dependencies]
 tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "time", "fs"] }
-zccache-core = { workspace = true }
+zccache-monocrate = { workspace = true }
 zccache-ipc = { workspace = true }
 zccache-download = { workspace = true }
 zccache-download-protocol = { workspace = true }

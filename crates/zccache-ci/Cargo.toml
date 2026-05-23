@@ -8,7 +8,7 @@ description = "CI tools for zccache (stop hook with process/thread dumping)"
 publish = false
 
 [dependencies]
-zccache-core = { workspace = true }
+zccache-monocrate = { workspace = true }
 zccache-ipc = { workspace = true }
 md5 = "0.7"
 serde_json = "1"

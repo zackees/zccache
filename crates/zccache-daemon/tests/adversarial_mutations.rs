@@ -10,7 +10,7 @@
 //! Run single: soldr cargo test -p zccache-daemon --test adversarial_mutations -- <test_name> --nocapture
 
 use std::path::Path;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
 use zccache_protocol::{Request, Response};
 

@@ -1,7 +1,7 @@
 #![allow(clippy::missing_errors_doc)]
 
 use std::path::Path;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 #[cfg(feature = "python")]
 mod python;
@@ -71,8 +71,8 @@ pub fn run_ino_convert_cached(
     output: &Path,
     options: &InoConvertOptions,
 ) -> Result<InoConvertResult, Box<dyn std::error::Error>> {
-    let input_hash = zccache_hash::hash_file(input)?;
-    let mut hasher = zccache_hash::StreamHasher::new();
+    let input_hash = zccache_monocrate::hash::hash_file(input)?;
+    let mut hasher = zccache_monocrate::hash::StreamHasher::new();
     hasher.update(b"zccache-ino-convert-v1");
     hasher.update(input_hash.as_bytes());
     hasher.update(input.as_os_str().to_string_lossy().as_bytes());
@@ -90,7 +90,7 @@ pub fn run_ino_convert_cached(
     }
     let cache_key = hasher.finalize().to_hex();
 
-    let cache_dir = zccache_core::config::default_cache_dir().join("ino");
+    let cache_dir = zccache_monocrate::core::config::default_cache_dir().join("ino");
     std::fs::create_dir_all(&cache_dir)?;
     let cached_cpp = cache_dir.join(format!("{cache_key}.ino.cpp"));
 
@@ -118,8 +118,8 @@ fn restore_cached_ino_output(
     output: &Path,
 ) -> Result<InoConvertResult, Box<dyn std::error::Error>> {
     if output.exists() {
-        let output_hash = zccache_hash::hash_file(output)?;
-        let cached_hash = zccache_hash::hash_file(cached_cpp)?;
+        let output_hash = zccache_monocrate::hash::hash_file(output)?;
+        let cached_hash = zccache_monocrate::hash::hash_file(cached_cpp)?;
         if output_hash == cached_hash {
             return Ok(InoConvertResult {
                 cache_hit: true,
@@ -165,7 +165,7 @@ pub fn infer_download_archive_path(
     archive_format: ArchiveFormat,
 ) -> std::path::PathBuf {
     let file_name = infer_download_file_name(source, archive_format);
-    zccache_core::config::default_cache_dir()
+    zccache_monocrate::core::config::default_cache_dir()
         .join("downloads")
         .join("artifacts")
         .join(file_name)
@@ -354,11 +354,11 @@ async fn check_daemon_version(endpoint: &str) -> VersionCheck {
     }
     match conn.recv::<zccache_protocol::Response>().await {
         Ok(Some(zccache_protocol::Response::Status(s))) => {
-            if s.version == zccache_core::VERSION {
+            if s.version == zccache_monocrate::core::VERSION {
                 return VersionCheck::Ok;
             }
-            let client_ver = zccache_core::version::current();
-            match zccache_core::version::Version::parse(&s.version) {
+            let client_ver = zccache_monocrate::core::version::current();
+            match zccache_monocrate::core::version::Version::parse(&s.version) {
                 Some(daemon_ver) => match daemon_ver.cmp(&client_ver) {
                     std::cmp::Ordering::Equal => VersionCheck::Ok,
                     std::cmp::Ordering::Greater => VersionCheck::DaemonNewer,
@@ -384,8 +384,8 @@ async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), String> {
     // replaced-* variants. This is the diagnostic gap zccache#323
     // identified — knowing 5 daemons spawned without knowing why
     // makes the root cause undebuggable.
-    zccache_core::lifecycle::write_event(
-        zccache_core::lifecycle::EVENT_SPAWN_ATTEMPT,
+    zccache_monocrate::core::lifecycle::write_event(
+        zccache_monocrate::core::lifecycle::EVENT_SPAWN_ATTEMPT,
         serde_json::json!({
             "reason": reason,
             "endpoint": endpoint,
@@ -431,13 +431,13 @@ async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
         VersionCheck::DaemonOlder { daemon_ver } => {
             tracing::info!(
                 daemon_ver,
-                client_ver = zccache_core::VERSION,
+                client_ver = zccache_monocrate::core::VERSION,
                 "daemon is older than client, auto-recovering"
             );
             stop_stale_daemon(endpoint).await;
             return spawn_and_wait(
                 endpoint,
-                zccache_core::lifecycle::REASON_REPLACED_STALE_VERSION,
+                zccache_monocrate::core::lifecycle::REASON_REPLACED_STALE_VERSION,
             )
             .await;
         }
@@ -446,7 +446,7 @@ async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
             stop_stale_daemon(endpoint).await;
             return spawn_and_wait(
                 endpoint,
-                zccache_core::lifecycle::REASON_REPLACED_COMM_ERROR,
+                zccache_monocrate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
             )
             .await;
         }
@@ -463,13 +463,13 @@ async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                 VersionCheck::DaemonOlder { daemon_ver } => {
                     tracing::info!(
                         daemon_ver,
-                        client_ver = zccache_core::VERSION,
+                        client_ver = zccache_monocrate::core::VERSION,
                         "daemon is older than client during startup, auto-recovering"
                     );
                     stop_stale_daemon(endpoint).await;
                     return spawn_and_wait(
                         endpoint,
-                        zccache_core::lifecycle::REASON_REPLACED_STALE_VERSION,
+                        zccache_monocrate::core::lifecycle::REASON_REPLACED_STALE_VERSION,
                     )
                     .await;
                 }
@@ -477,7 +477,7 @@ async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                     stop_stale_daemon(endpoint).await;
                     return spawn_and_wait(
                         endpoint,
-                        zccache_core::lifecycle::REASON_REPLACED_COMM_ERROR,
+                        zccache_monocrate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
                     )
                     .await;
                 }
@@ -489,7 +489,7 @@ async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
         ));
     }
 
-    spawn_and_wait(endpoint, zccache_core::lifecycle::REASON_INITIAL_START).await
+    spawn_and_wait(endpoint, zccache_monocrate::core::lifecycle::REASON_INITIAL_START).await
 }
 
 fn find_daemon_binary() -> Option<NormalizedPath> {
@@ -592,7 +592,7 @@ const RUNTIME_BINARIES_SUBDIR: &str = "runtime-binaries";
 /// Returns `<global_cache_dir>/runtime-binaries`.
 #[must_use]
 pub fn runtime_binaries_dir() -> NormalizedPath {
-    zccache_core::config::default_cache_dir().join(RUNTIME_BINARIES_SUBDIR)
+    zccache_monocrate::core::config::default_cache_dir().join(RUNTIME_BINARIES_SUBDIR)
 }
 
 /// Copy `canonical` (the daemon binary at its install location) to a unique
@@ -667,7 +667,7 @@ const DAEMON_SPAWN_LOGS_SUBDIR: &str = "logs";
 /// path — the daemon's own opener will see the error and fall back to
 /// `Stdio::null` after warning.
 fn allocate_daemon_spawn_log_path() -> std::path::PathBuf {
-    let dir = zccache_core::config::default_cache_dir().join(DAEMON_SPAWN_LOGS_SUBDIR);
+    let dir = zccache_monocrate::core::config::default_cache_dir().join(DAEMON_SPAWN_LOGS_SUBDIR);
     let _ = std::fs::create_dir_all(dir.as_path());
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -704,7 +704,7 @@ const LOG_GC_CUTOFF: std::time::Duration = std::time::Duration::from_secs(60 * 6
 /// and deleting it mid-life would erase the very history that #323
 /// needed to diagnose the multi-spawn bug.
 pub fn gc_log_directory() {
-    let dir = zccache_core::config::default_cache_dir().join(DAEMON_SPAWN_LOGS_SUBDIR);
+    let dir = zccache_monocrate::core::config::default_cache_dir().join(DAEMON_SPAWN_LOGS_SUBDIR);
     gc_log_directory_in(dir.as_path(), LOG_GC_CUTOFF);
 }
 
@@ -725,7 +725,7 @@ pub fn gc_log_directory_in(dir: &Path, cutoff: std::time::Duration) {
         // untouched between a daemon's `spawn` and `died-*` events.
         // Every other file in `logs/` either rotates often or is a
         // historical artifact safe to discard once old.
-        if name == zccache_core::lifecycle::LIVE_LOG_FILENAME {
+        if name == zccache_monocrate::core::lifecycle::LIVE_LOG_FILENAME {
             continue;
         }
         let file_type = entry.file_type();

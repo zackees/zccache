@@ -54,7 +54,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::Path;
 use std::time::{Instant, SystemTime};
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 /// On-disk format version for the persisted [`MetadataCache`] snapshot.
 ///

@@ -3,7 +3,7 @@
 //! Tests the full daemon pipeline for Rust compiler invocations,
 //! verifying cache miss → cache hit behavior.
 
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
 use zccache_protocol::{Request, Response};
 

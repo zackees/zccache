@@ -8,7 +8,7 @@ static GLOBAL_WIN: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::path::Path;
 use std::process::ExitCode;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use zccache_fingerprint::{

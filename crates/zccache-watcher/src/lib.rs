@@ -19,7 +19,7 @@ mod python;
 pub mod recovery;
 pub mod settle;
 
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 pub use ignore::IgnoreFilter;
 pub use notify_watcher::NotifyWatcher;

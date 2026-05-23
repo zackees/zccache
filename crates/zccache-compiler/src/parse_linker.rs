@@ -4,7 +4,7 @@
 //! and compiler drivers (`gcc`, `clang`) to determine cacheability for
 //! linking (shared libraries, DLLs, and executables).
 
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 /// Supported linker tool families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

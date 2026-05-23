@@ -15,7 +15,7 @@ dashmap = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-zccache-core = { workspace = true }
+zccache-monocrate = { workspace = true }
 zccache-ipc = { workspace = true }
 zccache-download = { workspace = true }
 zccache-download-protocol = { workspace = true }

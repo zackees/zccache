@@ -14,7 +14,7 @@ name = "zccache_symbols"
 path = "src/lib.rs"
 
 [dependencies]
-zccache-core = { workspace = true }
+zccache-monocrate = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

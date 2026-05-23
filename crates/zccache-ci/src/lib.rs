@@ -31,7 +31,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 use wait_timeout::ChildExt;
 

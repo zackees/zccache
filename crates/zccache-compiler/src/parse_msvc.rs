@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 use crate::{CacheableCompilation, CompilerFamily, ParsedInvocation};
 

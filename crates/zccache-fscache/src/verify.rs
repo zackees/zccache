@@ -6,9 +6,9 @@
 use crate::metadata::{Confidence, FileMetadata, MetadataCache};
 use std::path::Path;
 use std::time::Instant;
-use zccache_core::NormalizedPath;
-use zccache_core::Result;
-use zccache_hash::ContentHash;
+use zccache_monocrate::core::NormalizedPath;
+use zccache_monocrate::core::Result;
+use zccache_monocrate::hash::ContentHash;
 
 /// Result of verifying cached metadata against the current filesystem state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,13 +54,13 @@ impl MetadataCache {
         let normalized = NormalizedPath::from(path);
         let cached = self
             .get(&normalized)
-            .ok_or_else(|| zccache_core::Error::Cache {
+            .ok_or_else(|| zccache_monocrate::core::Error::Cache {
                 message: format!("path not in cache: {}", path.display()),
             })?;
 
         let fresh = match Self::stat_file(path) {
             Ok(m) => m,
-            Err(zccache_core::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(zccache_monocrate::core::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(VerifyResult::Gone);
             }
             Err(e) => return Err(e),
@@ -100,9 +100,9 @@ impl MetadataCache {
         // "A wrong cache hit is catastrophic; an extra stat is cheap."
         let fresh = match Self::stat_file(path) {
             Ok(m) => m,
-            Err(zccache_core::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(zccache_monocrate::core::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
                 self.remove(&normalized);
-                return Err(zccache_core::Error::FileNotFound(path.into()));
+                return Err(zccache_monocrate::core::Error::FileNotFound(path.into()));
             }
             Err(e) => return Err(e),
         };
@@ -139,14 +139,14 @@ impl MetadataCache {
     /// Stat the file, hash it, insert at High confidence, return hash.
     fn hash_and_insert(&self, path: &Path) -> Result<ContentHash> {
         let pre_stat = Self::stat_file(path)?;
-        let hash = zccache_hash::hash_file(path)?;
+        let hash = zccache_monocrate::hash::hash_file(path)?;
         let post_stat = Self::stat_file(path)?;
 
         // TOCTOU check: if file changed during hashing, retry up to 3 times.
         if pre_stat.mtime != post_stat.mtime || pre_stat.size != post_stat.size {
             for _ in 0..3 {
                 let pre = Self::stat_file(path)?;
-                let h = zccache_hash::hash_file(path)?;
+                let h = zccache_monocrate::hash::hash_file(path)?;
                 let post = Self::stat_file(path)?;
                 if pre.mtime == post.mtime && pre.size == post.size {
                     self.insert(
@@ -191,7 +191,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
     use tempfile::TempDir;
-    use zccache_core::NormalizedPath;
+    use zccache_monocrate::core::NormalizedPath;
 
     /// Helper: create a file with given content, return its path.
     fn create_file(dir: &TempDir, name: &str, content: &str) -> NormalizedPath {
@@ -387,7 +387,7 @@ mod tests {
         assert_eq!(entry.confidence, Confidence::High);
         assert!(entry.content_hash.is_some());
 
-        let expected = zccache_hash::hash_file(&path).unwrap();
+        let expected = zccache_monocrate::hash::hash_file(&path).unwrap();
         assert_eq!(hash, expected);
     }
 
@@ -425,7 +425,7 @@ mod tests {
         let hash_v2 = cache.lookup(&path).unwrap();
         assert_ne!(hash_v1, hash_v2);
 
-        let expected = zccache_hash::hash_bytes(b"v2 with more content");
+        let expected = zccache_monocrate::hash::hash_bytes(b"v2 with more content");
         assert_eq!(hash_v2, expected);
     }
 
@@ -532,7 +532,7 @@ mod tests {
         fs::write(&path, "changed content").unwrap();
 
         let new_hash = cache.lookup(&path).unwrap();
-        let expected = zccache_hash::hash_bytes(b"changed content");
+        let expected = zccache_monocrate::hash::hash_bytes(b"changed content");
         assert_eq!(new_hash, expected);
     }
 
@@ -553,14 +553,14 @@ mod tests {
         // 2. Create the file
         fs::write(&path, "version 1").unwrap();
         let hash_v1 = cache.lookup(&path).unwrap();
-        assert_eq!(hash_v1, zccache_hash::hash_bytes(b"version 1"));
+        assert_eq!(hash_v1, zccache_monocrate::hash::hash_bytes(b"version 1"));
 
         // 3. First edit
         sleep_for_mtime();
         fs::write(&path, "version 2").unwrap();
         let hash_v2 = cache.lookup(&path).unwrap();
         assert_ne!(hash_v1, hash_v2);
-        assert_eq!(hash_v2, zccache_hash::hash_bytes(b"version 2"));
+        assert_eq!(hash_v2, zccache_monocrate::hash::hash_bytes(b"version 2"));
 
         // 4. Second edit
         sleep_for_mtime();
@@ -569,7 +569,7 @@ mod tests {
         assert_ne!(hash_v2, hash_v3);
         assert_eq!(
             hash_v3,
-            zccache_hash::hash_bytes(b"version 3 with extra stuff")
+            zccache_monocrate::hash::hash_bytes(b"version 3 with extra stuff")
         );
 
         // 5. Remove
@@ -634,7 +634,7 @@ mod tests {
 
         let cache = MetadataCache::new();
         let hash = cache.lookup(&path).unwrap();
-        assert_eq!(hash, zccache_hash::hash_bytes(b""));
+        assert_eq!(hash, zccache_monocrate::hash::hash_bytes(b""));
     }
 
     // ---------------------------------------------------------------

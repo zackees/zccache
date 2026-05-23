@@ -227,8 +227,8 @@ pub(crate) fn cmd_kv(action: super::args::KvCommands) -> ExitCode {
 }
 
 pub(crate) fn cmd_warm(target_dir: &Path, profile: &str) -> ExitCode {
-    let cache_dir = zccache_core::config::default_cache_dir();
-    let index_path = zccache_core::config::index_path_from_cache_dir(&cache_dir);
+    let cache_dir = zccache_monocrate::core::config::default_cache_dir();
+    let index_path = zccache_monocrate::core::config::index_path_from_cache_dir(&cache_dir);
     let artifact_dir = cache_dir.join("artifacts");
     // Look for Cargo.lock in cwd or next to target_dir
     let lockfile = {
@@ -449,7 +449,7 @@ pub(crate) fn warm_target(
 }
 
 pub(crate) fn cmd_crashes(clear: bool) -> ExitCode {
-    let crash_dir = zccache_core::config::crash_dump_dir();
+    let crash_dir = zccache_monocrate::core::config::crash_dump_dir();
 
     if clear {
         let count = match std::fs::read_dir(&crash_dir) {
@@ -511,7 +511,7 @@ pub(crate) fn cmd_crashes(clear: bool) -> ExitCode {
 /// zccache binary on PATH honored `ZCCACHE_CACHE_DIR` before trusting the
 /// Defender-exclusion contract.
 pub(crate) fn cmd_cache_root(json: bool) -> ExitCode {
-    let (root, source) = zccache_core::config::resolve_cache_root();
+    let (root, source) = zccache_monocrate::core::config::resolve_cache_root();
     if json {
         let payload = serde_json::json!({
             "cache_root": root.as_path(),

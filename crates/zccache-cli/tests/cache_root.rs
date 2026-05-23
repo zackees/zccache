@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 fn zccache_bin() -> NormalizedPath {
     let mut path = std::env::current_exe()

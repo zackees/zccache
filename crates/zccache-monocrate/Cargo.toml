@@ -1,0 +1,51 @@
+[package]
+name = "zccache-monocrate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Transitional monocrate absorbing the zccache workspace (issue #365)"
+
+[features]
+default = []
+# Enables zccache_monocrate::test_support (dev-only helpers, populated in Wave 2).
+test-support = []
+
+[dependencies]
+# core
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+crash-handler = "0.6"
+
+# hash
+blake3 = { workspace = true }
+memmap2 = { workspace = true }
+
+# gha
+reqwest = { workspace = true, features = ["json"] }
+tokio = { workspace = true, features = ["fs", "io-util"] }
+sha2 = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "hashing"
+harness = false

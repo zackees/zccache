@@ -1,7 +1,7 @@
 //! `zccache cargo-registry` subcommands: save / restore / hash / clean.
 
 use std::process::ExitCode;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 use super::util::{env_flag_truthy, format_bytes};
 
@@ -169,7 +169,7 @@ pub(crate) fn cmd_cargo_registry_hash(lockfile: &str) -> ExitCode {
         eprintln!("lockfile not found: {lockfile}");
         return ExitCode::FAILURE;
     }
-    let hash = match zccache_hash::hash_file(path) {
+    let hash = match zccache_monocrate::hash::hash_file(path) {
         Ok(h) => h,
         Err(e) => {
             eprintln!("zccache cargo-registry hash: failed to hash {lockfile}: {e}");

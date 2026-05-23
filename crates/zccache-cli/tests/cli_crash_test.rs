@@ -1,5 +1,5 @@
 //! End-to-end coverage for the CLI-side install of
-//! `zccache_core::crash::install("zccache")`.
+//! `zccache_monocrate::core::crash::install("zccache")`.
 //!
 //! Spawns the `cli-crash-trigger` fixture (defined at
 //! `crates/zccache-cli/src/bin/cli_crash_trigger.rs`) with a per-test

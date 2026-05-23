@@ -6,7 +6,7 @@
 //! both `zccache` and the kind label.
 
 fn main() {
-    let _guard = zccache_core::crash::install("zccache");
+    let _guard = zccache_monocrate::core::crash::install("zccache");
     let mode = std::env::args().nth(1).unwrap_or_default();
     match mode.as_str() {
         "panic" => panic!("intentional test panic from cli-crash-trigger"),

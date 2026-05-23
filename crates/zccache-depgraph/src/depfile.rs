@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::args::UserDepFlags;
 use crate::scanner::ScanResult;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 /// Errors that can occur while parsing a `.d` file.
 #[derive(Debug)]
@@ -337,7 +337,7 @@ pub(crate) fn strip_win_prefix(path: NormalizedPath) -> NormalizedPath {
 
 #[cfg(test)]
 mod tests {
-    use zccache_core::NormalizedPath;
+    use zccache_monocrate::core::NormalizedPath;
 
     use super::*;
     use tempfile::TempDir;

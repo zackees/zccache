@@ -32,7 +32,7 @@ pub(super) fn hash_file_via_cache(state: &SharedState, path: &Path) -> Option<Co
         return Some(hash);
     }
     // Fall back to direct hash
-    zccache_hash::hash_file(path).ok()
+    zccache_monocrate::hash::hash_file(path).ok()
 }
 
 /// Hash a file using the CacheSystem's metadata cache.

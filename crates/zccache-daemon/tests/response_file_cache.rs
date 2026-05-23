@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
 use zccache_protocol::{Request, Response};
 

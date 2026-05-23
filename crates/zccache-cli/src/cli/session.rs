@@ -2,7 +2,7 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 use super::daemon::ensure_daemon;
 use super::util::{connect, format_duration_ms, print_json_value};

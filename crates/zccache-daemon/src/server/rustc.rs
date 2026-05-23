@@ -464,7 +464,7 @@ pub(super) fn rust_remap_gate(
     let Some(root) = worktree_root else {
         return RustRemapGate::Missing;
     };
-    let root_key = zccache_core::path::normalize_for_key(root.as_path());
+    let root_key = zccache_monocrate::core::path::normalize_for_key(root.as_path());
     let root_child_prefix = format!("{root_key}/");
     let mut saw_malformed = false;
     let mut saw_external = false;
@@ -479,7 +479,7 @@ pub(super) fn rust_remap_gate(
             saw_malformed = true;
             continue;
         }
-        let old_key = zccache_core::path::normalize_for_key(old_path);
+        let old_key = zccache_monocrate::core::path::normalize_for_key(old_path);
         if old_key == root_key {
             return RustRemapGate::Ok;
         }

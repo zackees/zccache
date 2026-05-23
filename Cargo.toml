@@ -1,8 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/zccache-core",
-    "crates/zccache-hash",
+    "crates/zccache-monocrate",
     "crates/zccache-protocol",
     "crates/zccache-download-protocol",
     "crates/zccache-download",
@@ -20,7 +19,6 @@ members = [
     "crates/zccache-test-support",
     "crates/zccache-ci",
     "crates/zccache-fingerprint",
-    "crates/zccache-gha",
     "crates/zccache-symbols",
 ]
 exclude = [
@@ -72,8 +70,7 @@ rkyv = { version = "0.7", features = ["validation"] }
 tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms"] }
 mimalloc = "0.1"
 running-process-core = "3.3"
-zccache-core = { path = "crates/zccache-core" }
-zccache-hash = { path = "crates/zccache-hash" }
+zccache-monocrate = { path = "crates/zccache-monocrate" }
 zccache-protocol = { path = "crates/zccache-protocol" }
 zccache-download-protocol = { path = "crates/zccache-download-protocol" }
 zccache-download = { path = "crates/zccache-download" }
@@ -89,7 +86,6 @@ zccache-daemon = { path = "crates/zccache-daemon" }
 zccache-cli = { path = "crates/zccache-cli" }
 zccache-test-support = { path = "crates/zccache-test-support" }
 zccache-fingerprint = { path = "crates/zccache-fingerprint" }
-zccache-gha = { path = "crates/zccache-gha" }
 zccache-symbols = { path = "crates/zccache-symbols" }
 
 # Vendored notify with fixes for Windows ReadDirectoryChangesW:

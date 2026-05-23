@@ -4,7 +4,7 @@
 //! For rustc, see [`crate::parse_rustc`].
 
 use std::sync::Arc;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 use crate::detect::{detect_family, is_source_file, MODULE_EXTENSIONS};
 use crate::{parse_msvc, CacheableCompilation, CompilerFamily, ParsedInvocation, SourceMode};

@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
-use zccache_core::NormalizedPath;
-use zccache_hash::ContentHash;
+use zccache_monocrate::core::NormalizedPath;
+use zccache_monocrate::hash::ContentHash;
 
 use crate::context::{
     compute_artifact_key, compute_context_key, ArtifactKey, CompileContext, ContextKey,
@@ -892,7 +892,7 @@ impl Default for DepGraph {
 mod tests {
     use super::*;
     use std::path::Path;
-    use zccache_core::NormalizedPath;
+    use zccache_monocrate::core::NormalizedPath;
 
     use crate::search_paths::IncludeSearchPaths;
 
@@ -916,7 +916,7 @@ mod tests {
     }
 
     fn dummy_hash(path: &Path) -> Option<ContentHash> {
-        Some(zccache_hash::hash_bytes(path.to_string_lossy().as_bytes()))
+        Some(zccache_monocrate::hash::hash_bytes(path.to_string_lossy().as_bytes()))
     }
 
     #[test]
@@ -980,7 +980,7 @@ mod tests {
         let is_fresh = |p: &Path| p != Path::new("/src/a.c");
         let changed_source_hash = |p: &Path| -> Option<ContentHash> {
             if p == Path::new("/src/a.c") {
-                Some(zccache_hash::hash_bytes(b"source-modified"))
+                Some(zccache_monocrate::hash::hash_bytes(b"source-modified"))
             } else {
                 dummy_hash(p)
             }
@@ -1009,7 +1009,7 @@ mod tests {
         let is_fresh = |p: &Path| p != Path::new("/inc/b.h");
         let changed_b_hash = |p: &Path| -> Option<ContentHash> {
             if p == Path::new("/inc/b.h") {
-                Some(zccache_hash::hash_bytes(b"b-modified"))
+                Some(zccache_monocrate::hash::hash_bytes(b"b-modified"))
             } else {
                 dummy_hash(p)
             }
@@ -1136,7 +1136,7 @@ mod tests {
         // HeadersChanged and the entry flips to Stale.
         let changed_h_hash = |p: &Path| -> Option<ContentHash> {
             if p == Path::new("/h.h") {
-                Some(zccache_hash::hash_bytes(b"h-modified"))
+                Some(zccache_monocrate::hash::hash_bytes(b"h-modified"))
             } else {
                 dummy_hash(p)
             }
@@ -1208,10 +1208,10 @@ mod tests {
             has_computed: false,
         };
 
-        let hash_v1 = |_: &Path| Some(zccache_hash::hash_bytes(b"v1"));
+        let hash_v1 = |_: &Path| Some(zccache_monocrate::hash::hash_bytes(b"v1"));
         let ak1 = graph.update(&key, scan.clone(), hash_v1).unwrap();
 
-        let hash_v2 = |_: &Path| Some(zccache_hash::hash_bytes(b"v2"));
+        let hash_v2 = |_: &Path| Some(zccache_monocrate::hash::hash_bytes(b"v2"));
         let ak2 = graph.update(&key, scan, hash_v2).unwrap();
 
         assert_ne!(ak1, ak2);
@@ -1431,7 +1431,7 @@ mod tests {
             if p == Path::new("/inc/b.h") {
                 None
             } else {
-                Some(zccache_hash::hash_bytes(p.to_string_lossy().as_bytes()))
+                Some(zccache_monocrate::hash::hash_bytes(p.to_string_lossy().as_bytes()))
             }
         };
         let result = graph.update(&key, scan, partial_hash);

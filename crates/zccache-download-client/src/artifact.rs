@@ -414,7 +414,7 @@ fn normalize_target(path: &Path, create_parent: bool) -> Result<PathBuf, String>
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         std::fs::canonicalize(parent).map_err(|e| e.to_string())?
     } else {
-        zccache_core::NormalizedPath::new(parent).into_path_buf()
+        zccache_monocrate::core::NormalizedPath::new(parent).into_path_buf()
     };
     Ok(canonical_parent.join(file_name))
 }
@@ -572,7 +572,7 @@ fn download_explicit_parts(part_urls: &[String], destination: &Path) -> Result<(
         .map_err(|e| format!("failed to create tokio runtime: {e}"))?;
     runtime.block_on(async move {
         let client = reqwest::Client::builder()
-            .user_agent(format!("zccache-download/{}", zccache_core::VERSION))
+            .user_agent(format!("zccache-download/{}", zccache_monocrate::core::VERSION))
             .build()
             .map_err(|e| e.to_string())?;
 
@@ -678,13 +678,13 @@ fn acquire_fetch_lock(request: &ResolvedFetchRequest) -> Result<FetchLock, Strin
 }
 
 fn fetch_lock_path(request: &ResolvedFetchRequest) -> PathBuf {
-    let mut key = zccache_core::normalize_for_key(&request.cache_path);
+    let mut key = zccache_monocrate::core::normalize_for_key(&request.cache_path);
     if let Some(expanded_path) = &request.expanded_path {
         key.push('\n');
-        key.push_str(&zccache_core::normalize_for_key(expanded_path));
+        key.push_str(&zccache_monocrate::core::normalize_for_key(expanded_path));
     }
     let hash = stable_download_id(Path::new(&key));
-    zccache_core::config::default_cache_dir()
+    zccache_monocrate::core::config::default_cache_dir()
         .join("downloads")
         .join("locks")
         .join(format!("{hash}.lock"))
@@ -693,7 +693,7 @@ fn fetch_lock_path(request: &ResolvedFetchRequest) -> PathBuf {
 
 fn artifact_marker_path(cache_path: &Path) -> PathBuf {
     let hash = stable_download_id(cache_path);
-    zccache_core::config::default_cache_dir()
+    zccache_monocrate::core::config::default_cache_dir()
         .join("downloads")
         .join("artifact-state")
         .join(format!("{hash}.json"))
@@ -702,7 +702,7 @@ fn artifact_marker_path(cache_path: &Path) -> PathBuf {
 
 fn expanded_marker_path(expanded_path: &Path) -> PathBuf {
     let hash = stable_download_id(expanded_path);
-    zccache_core::config::default_cache_dir()
+    zccache_monocrate::core::config::default_cache_dir()
         .join("downloads")
         .join("expanded-state")
         .join(format!("{hash}.json"))

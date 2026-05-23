@@ -25,7 +25,7 @@
 use std::fs;
 use std::time::{Duration, Instant, SystemTime};
 use tempfile::TempDir;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 use zccache_fscache::{Confidence, FileMetadata, MetadataCache};
 
 /// Roughly the order of magnitude of headers a `medium` perf fixture

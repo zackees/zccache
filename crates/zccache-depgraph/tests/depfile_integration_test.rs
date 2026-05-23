@@ -5,7 +5,7 @@
 
 use std::process::Command;
 use tempfile::TempDir;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 /// Check if a compiler is available on PATH.
 fn has_compiler(name: &str) -> bool {

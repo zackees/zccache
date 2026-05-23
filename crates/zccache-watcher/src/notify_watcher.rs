@@ -40,7 +40,7 @@ impl NotifyWatcher {
     /// Returns an error if the OS file watcher cannot be initialized.
     pub fn new(
         ignore: Arc<IgnoreFilter>,
-    ) -> zccache_core::Result<(Self, mpsc::UnboundedReceiver<WatchEvent>)> {
+    ) -> zccache_monocrate::core::Result<(Self, mpsc::UnboundedReceiver<WatchEvent>)> {
         let (tx, rx) = mpsc::unbounded_channel();
 
         let watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
@@ -73,7 +73,7 @@ impl NotifyWatcher {
     /// # Errors
     ///
     /// Returns an error if the path cannot be watched.
-    pub fn watch(&mut self, path: &Path) -> zccache_core::Result<()> {
+    pub fn watch(&mut self, path: &Path) -> zccache_monocrate::core::Result<()> {
         self.watcher
             .watch(path, RecursiveMode::NonRecursive)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -87,7 +87,7 @@ impl NotifyWatcher {
     /// # Errors
     ///
     /// Returns an error if the path cannot be watched.
-    pub fn watch_recursive(&mut self, path: &Path) -> zccache_core::Result<()> {
+    pub fn watch_recursive(&mut self, path: &Path) -> zccache_monocrate::core::Result<()> {
         self.watcher
             .watch(path, RecursiveMode::Recursive)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -99,7 +99,7 @@ impl NotifyWatcher {
     /// # Errors
     ///
     /// Returns an error if the path was not being watched.
-    pub fn unwatch(&mut self, path: &Path) -> zccache_core::Result<()> {
+    pub fn unwatch(&mut self, path: &Path) -> zccache_monocrate::core::Result<()> {
         self.watcher
             .unwatch(path)
             .map_err(|e| std::io::Error::other(e.to_string()))?;

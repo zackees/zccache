@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 use rayon::prelude::*;
 
@@ -73,7 +73,7 @@ impl TwoLayerCache {
                         Ok((file.relative.clone(), cached_entry.clone(), false))
                     } else {
                         // Layer 2: mtime or size differ → hash the file.
-                        let hash = zccache_hash::hash_file(&file.absolute)?;
+                        let hash = zccache_monocrate::hash::hash_file(&file.absolute)?;
                         let hash_hex = hash.to_hex();
                         let content_changed = hash_hex != cached_entry.hash;
                         Ok((
@@ -88,7 +88,7 @@ impl TwoLayerCache {
                     }
                 } else {
                     // New file not in cache.
-                    let hash = zccache_hash::hash_file(&file.absolute)?;
+                    let hash = zccache_monocrate::hash::hash_file(&file.absolute)?;
                     Ok((
                         file.relative.clone(),
                         FileEntry {
@@ -198,7 +198,7 @@ impl TwoLayerCache {
             .map(|file| {
                 let mtime = persist::mtime_ns(&file.absolute)?;
                 let size = persist::file_size(&file.absolute)?;
-                let hash = zccache_hash::hash_file(&file.absolute)?;
+                let hash = zccache_monocrate::hash::hash_file(&file.absolute)?;
                 Ok((
                     file.relative.clone(),
                     FileEntry {

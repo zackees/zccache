@@ -10,7 +10,7 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 
 use tempfile::TempDir;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 const VERSION: &str = "1.2.3";
 

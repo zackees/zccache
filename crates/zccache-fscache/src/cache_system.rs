@@ -7,9 +7,9 @@
 
 use crate::clock::{ChangeJournal, Clock};
 use crate::metadata::MetadataCache;
-use zccache_core::NormalizedPath;
-use zccache_core::Result;
-use zccache_hash::ContentHash;
+use zccache_monocrate::core::NormalizedPath;
+use zccache_monocrate::core::Result;
+use zccache_monocrate::hash::ContentHash;
 
 /// Result of a clock-aware lookup.
 #[derive(Debug, Clone)]
@@ -267,7 +267,7 @@ mod tests {
 
         // lookup_since with c1 → journal says no change, but no cached hash → slow path.
         let result = cache.lookup_since(&path, c1).unwrap();
-        let expected = zccache_hash::hash_bytes(b"data");
+        let expected = zccache_monocrate::hash::hash_bytes(b"data");
         assert_eq!(result.hash, expected);
     }
 
@@ -311,7 +311,7 @@ mod tests {
         let result = cache.lookup_since(&path, Clock::ZERO).unwrap();
 
         // Should have computed the hash.
-        let expected = zccache_hash::hash_bytes(b"hello");
+        let expected = zccache_monocrate::hash::hash_bytes(b"hello");
         assert_eq!(result.hash, expected);
     }
 
@@ -349,7 +349,7 @@ mod tests {
         // Lookup with old clock → journal says "changed" → full stat path.
         let r2 = cache.lookup_since(&path, Clock::ZERO).unwrap();
         assert_ne!(r1.hash, r2.hash);
-        assert_eq!(r2.hash, zccache_hash::hash_bytes(b"v2"));
+        assert_eq!(r2.hash, zccache_monocrate::hash::hash_bytes(b"v2"));
 
         // Lookup with new clock → journal says "not changed" → fast path.
         let r3 = cache.lookup_since(&path, c2).unwrap();
@@ -415,7 +415,7 @@ mod tests {
         // Now lookup_since should use fast path (journal says no change, hash cached).
         let r2 = cache.lookup_since(&path, clock).unwrap();
         assert_eq!(r1.hash, r2.hash);
-        assert_eq!(r2.hash, zccache_hash::hash_bytes(b"content"));
+        assert_eq!(r2.hash, zccache_monocrate::hash::hash_bytes(b"content"));
     }
 
     #[test]
@@ -448,7 +448,7 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 for path in &paths {
                     let result = cache.lookup_since(path, c1).unwrap();
-                    assert_eq!(result.hash, zccache_hash::hash_file(path).unwrap(),);
+                    assert_eq!(result.hash, zccache_monocrate::hash::hash_file(path).unwrap(),);
                 }
             }));
         }

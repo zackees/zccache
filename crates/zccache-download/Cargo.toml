@@ -18,7 +18,7 @@ futures = { workspace = true }
 reqwest = { workspace = true }
 tokio-util = { workspace = true }
 blake3 = { workspace = true }
-zccache-core = { workspace = true }
+zccache-monocrate = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

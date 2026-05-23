@@ -15,7 +15,7 @@
 
 use std::process::Command;
 use std::time::{Duration, Instant};
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 /// Find the zccache binary in the target directory.
 fn zccache_bin() -> NormalizedPath {

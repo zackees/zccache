@@ -19,8 +19,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use dashmap::DashMap;
 use rayon::prelude::*;
 use rkyv::{Archive, Deserialize, Serialize};
-use zccache_core::NormalizedPath;
-use zccache_hash::ContentHash;
+use zccache_monocrate::core::NormalizedPath;
+use zccache_monocrate::hash::ContentHash;
 
 use crate::context::{ArtifactKey, CompileContext, ContextKey};
 use crate::graph::{ContextEntry, ContextState, DepGraph, FileEntry};

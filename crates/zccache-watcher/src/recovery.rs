@@ -127,7 +127,7 @@ mod tests {
     use std::fs;
     use std::sync::Arc;
     use tempfile::TempDir;
-    use zccache_core::NormalizedPath;
+    use zccache_monocrate::core::NormalizedPath;
     use zccache_fscache::clock::Clock;
     use zccache_fscache::Confidence;
 

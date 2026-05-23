@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rayon::prelude::*;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
-use zccache_core::{normalize_for_key, NormalizedPath};
+use zccache_monocrate::core::{normalize_for_key, NormalizedPath};
 
 /// Upper bound on save-time worker threads. Beyond this Windows filter-driver
 /// serialization dominates and extra threads stop helping (see issue #177 and
@@ -598,7 +598,7 @@ pub fn rust_plan_identity_hash(plan: &RustArtifactPlanV1) -> String {
         "cache_schema_version": plan.cache_schema_version,
     });
     let bytes = serde_json::to_vec(&payload).unwrap_or_default();
-    zccache_hash::hash_bytes(&bytes).to_hex()
+    zccache_monocrate::hash::hash_bytes(&bytes).to_hex()
 }
 
 /// Bundle directory for a plan cache key.
@@ -710,7 +710,7 @@ fn bundle_one_artifact(
     }
     std::fs::copy(&sel.source_path, &dst)?;
     let size = std::fs::metadata(&sel.source_path)?.len();
-    let content_hash = zccache_hash::hash_file(&sel.source_path)?.to_hex();
+    let content_hash = zccache_monocrate::hash::hash_file(&sel.source_path)?.to_hex();
     Ok(RustBundledArtifact {
         relative_path: sel.relative_path.clone(),
         class: sel.class,
@@ -827,7 +827,7 @@ pub fn restore_rust_plan_local(
             );
             continue;
         }
-        let Ok(content_hash) = zccache_hash::hash_file(&src).map(|hash| hash.to_hex()) else {
+        let Ok(content_hash) = zccache_monocrate::hash::hash_file(&src).map(|hash| hash.to_hex()) else {
             summary.skip(
                 &artifact.relative_path,
                 "restored_payload_missing_or_corrupt",

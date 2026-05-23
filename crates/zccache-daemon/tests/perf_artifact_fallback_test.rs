@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 use zccache_artifact::{ArtifactIndex, ArtifactStore};
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
 
 /// Cache layout helper: pre-populate `index.bin` with one entry
@@ -50,7 +50,7 @@ use zccache_daemon::DaemonServer;
 /// against.
 fn seed_cache_dir(dir: &TempDir, key_hex: &str) -> NormalizedPath {
     let cache_dir = NormalizedPath::new(dir.path());
-    let artifact_dir = zccache_core::config::artifacts_dir_from_cache_dir(&cache_dir);
+    let artifact_dir = zccache_monocrate::core::config::artifacts_dir_from_cache_dir(&cache_dir);
     std::fs::create_dir_all(&artifact_dir).expect("create artifact dir");
 
     // Write the payload file the daemon expects at `{artifact_dir}/{key}_0`.
@@ -65,7 +65,7 @@ fn seed_cache_dir(dir: &TempDir, key_hex: &str) -> NormalizedPath {
     // Build a one-entry `index.bin` with `ArtifactStore`, then drop the
     // store so the daemon's own `ArtifactStore::open` reads the blob
     // from disk like a fresh restore.
-    let index_path = zccache_core::config::index_path_from_cache_dir(&cache_dir);
+    let index_path = zccache_monocrate::core::config::index_path_from_cache_dir(&cache_dir);
     {
         let store = ArtifactStore::open(index_path.as_path()).expect("open store");
         let meta = ArtifactIndex::new(

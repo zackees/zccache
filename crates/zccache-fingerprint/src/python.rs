@@ -51,7 +51,7 @@ fn walk_and_hash(
 fn hash_each_file(files: &[ScannedFile]) -> PyResult<Vec<(String, String)>> {
     let mut result = Vec::with_capacity(files.len());
     for file in files {
-        let hash = zccache_hash::hash_file(&file.absolute).map_err(io_to_py_err)?;
+        let hash = zccache_monocrate::hash::hash_file(&file.absolute).map_err(io_to_py_err)?;
         result.push((file.relative.clone(), hash.to_hex()));
     }
     Ok(result)

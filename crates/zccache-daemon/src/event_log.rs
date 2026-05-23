@@ -15,7 +15,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use tokio::sync::mpsc;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 use zccache_depgraph::{SessionId, SessionManager};
 
 /// Open a file in append mode with sharing flags that allow deletion on Windows.

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
 use zccache_protocol::{DaemonStatus, Request, Response, RustArtifactInfo};
 
@@ -40,11 +40,11 @@ impl CacheEnvGuard {
 
     fn new_inner(cache_dir: &Path, profiled: bool) -> Self {
         let lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let old_cache_dir = std::env::var(zccache_core::config::CACHE_DIR_ENV).ok();
+        let old_cache_dir = std::env::var(zccache_monocrate::core::config::CACHE_DIR_ENV).ok();
         let old_profile_rust_miss = std::env::var("ZCCACHE_PROFILE_RUST_MISS").ok();
         let old_compile_priority = std::env::var("ZCCACHE_COMPILE_PRIORITY").ok();
         unsafe {
-            std::env::set_var(zccache_core::config::CACHE_DIR_ENV, cache_dir);
+            std::env::set_var(zccache_monocrate::core::config::CACHE_DIR_ENV, cache_dir);
             if profiled {
                 std::env::set_var("ZCCACHE_PROFILE_RUST_MISS", "1");
                 std::env::set_var("ZCCACHE_COMPILE_PRIORITY", "auto");
@@ -63,8 +63,8 @@ impl Drop for CacheEnvGuard {
     fn drop(&mut self) {
         unsafe {
             match &self.old_cache_dir {
-                Some(value) => std::env::set_var(zccache_core::config::CACHE_DIR_ENV, value),
-                None => std::env::remove_var(zccache_core::config::CACHE_DIR_ENV),
+                Some(value) => std::env::set_var(zccache_monocrate::core::config::CACHE_DIR_ENV, value),
+                None => std::env::remove_var(zccache_monocrate::core::config::CACHE_DIR_ENV),
             }
             match &self.old_profile_rust_miss {
                 Some(value) => std::env::set_var("ZCCACHE_PROFILE_RUST_MISS", value),

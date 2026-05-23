@@ -2,7 +2,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::Path;
 use std::time::{Duration, Instant};
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 // fs2::FileExt trait methods are called via UFCS below to avoid
 // ambiguity with std::fs::File inherent methods added in Rust 1.89.

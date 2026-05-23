@@ -7,14 +7,14 @@ on:
       - "action.yml"
       - "action/**"
       - "crates/zccache-cli/**"
-      - "crates/zccache-gha/**"
+      - "crates/zccache-monocrate/**"
       - ".github/workflows/test-action.yml"
   pull_request:
     paths:
       - "action.yml"
       - "action/**"
       - "crates/zccache-cli/**"
-      - "crates/zccache-gha/**"
+      - "crates/zccache-monocrate/**"
       - ".github/workflows/test-action.yml"
   workflow_dispatch:
 
@@ -93,7 +93,7 @@ jobs:
       # --- Cold build ---
       - name: Build (cold cache)
         shell: bash
-        run: cargo build -p zccache-core --target ${{ matrix.target }}
+        run: cargo build -p zccache-monocrate --target ${{ matrix.target }}
 
       - name: Record zccache stats after cold build
         shell: bash
@@ -126,7 +126,7 @@ jobs:
 
       - name: Build (warm cache — should hit zccache)
         shell: bash
-        run: cargo build -p zccache-core --target ${{ matrix.target }}
+        run: cargo build -p zccache-monocrate --target ${{ matrix.target }}
 
       - name: Verify zccache cache hits after warm build
         shell: bash
@@ -183,7 +183,7 @@ jobs:
           save-cache: "false"
 
       - name: Build something
-        run: cargo check -p zccache-core
+        run: cargo check -p zccache-monocrate
 
       - name: Cleanup (should skip save)
         if: always()
@@ -303,9 +303,9 @@ jobs:
         run: cargo build -p zccache-cli
 
       # --- Unit tests always run ---
-      - name: "zccache-gha unit tests"
+      - name: "zccache-monocrate unit tests"
         shell: bash
-        run: cargo test -p zccache-gha
+        run: cargo test -p zccache-monocrate
 
       # --- Test gha-cache status (works without cache API) ---
       - name: "gha-cache status: runs without error"
@@ -327,8 +327,8 @@ jobs:
         uses: actions/cache@v5
         with:
           path: /tmp/gha-cache-primer
-          key: zccache-gha-test-primer-${{ github.sha }}
-          restore-keys: zccache-gha-test-primer-
+          key: zccache-monocrate-test-primer-${{ github.sha }}
+          restore-keys: zccache-monocrate-test-primer-
 
       - name: "gha-cache save: upload test data"
         shell: bash

@@ -3,7 +3,7 @@
 pub mod daemon_mgmt;
 
 use serde::{Deserialize, Serialize};
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 use zccache_download::{DownloadDaemonStatus, DownloadOptions, DownloadStatus};
 
 pub const PROTOCOL_VERSION: u32 = 1;

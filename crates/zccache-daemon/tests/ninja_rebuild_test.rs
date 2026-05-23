@@ -18,7 +18,7 @@ use std::path::Path;
 use std::sync::{Arc, Once};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
 use zccache_protocol::{Request, Response};
 use zccache_test_support::{MesonProject, TestProject};
@@ -428,7 +428,7 @@ async fn ninja_persistent_artifacts_survive_restart() {
     }
 
     // Check that .meta files were written to the persistent artifact dir
-    let artifact_dir = zccache_core::config::default_cache_dir().join("artifacts");
+    let artifact_dir = zccache_monocrate::core::config::default_cache_dir().join("artifacts");
     let meta_count_before = std::fs::read_dir(&artifact_dir)
         .map(|entries| {
             entries

@@ -124,14 +124,14 @@ pub(super) async fn handle_link_ephemeral(
         cwd_path,
         link_path_remap_key_root,
     );
-    let mut key_builder = zccache_hash::link_cache_key::LinkCacheKeyBuilder::new().tool(tool_hash);
+    let mut key_builder = zccache_monocrate::hash::link_cache_key::LinkCacheKeyBuilder::new().tool(tool_hash);
 
     if link_path_remap_key_root.is_some() {
         key_builder = key_builder.flag(LINK_PATH_REMAP_AUTO_KEY_FLAG);
     }
     if link_key_plan.root_specific {
         let root_identity = link_path_remap_key_root
-            .map(zccache_core::path::normalize_for_key)
+            .map(zccache_monocrate::core::path::normalize_for_key)
             .unwrap_or_default();
         key_builder = key_builder.flag(format!(
             "{LINK_PATH_REMAP_ROOT_SPECIFIC_FLAG}:{root_identity}"

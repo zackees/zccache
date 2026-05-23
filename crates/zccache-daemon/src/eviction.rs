@@ -12,7 +12,7 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 use zccache_depgraph::{ContextKey, DepGraph};
 use zccache_fscache::CacheSystem;
 

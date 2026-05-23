@@ -16,8 +16,7 @@ rayon = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 bincode = { workspace = true }
-zccache-core = { workspace = true }
-zccache-hash = { workspace = true }
+zccache-monocrate = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

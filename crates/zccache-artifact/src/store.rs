@@ -28,7 +28,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};

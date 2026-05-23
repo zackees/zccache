@@ -20,7 +20,7 @@ notify = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
-zccache-core = { workspace = true }
+zccache-monocrate = { workspace = true }
 zccache-fscache = { workspace = true }
 pyo3 = { version = "0.23", features = ["extension-module", "generate-import-lib", "abi3-py310"], optional = true }
 jwalk = { workspace = true }
@@ -29,7 +29,6 @@ rayon = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-zccache-hash = { workspace = true }
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]

@@ -33,8 +33,8 @@ fn main() -> ExitCode {
     // handler so a fault inside arg parsing or symbol install still
     // leaves a dump under `~/.zccache/crashes/`. Guard stays alive
     // until main returns. See issue #313.
-    let _crash_guard = zccache_core::crash::install("zccache");
-    zccache_core::crash::note_previous_crashes();
+    let _crash_guard = zccache_monocrate::core::crash::install("zccache");
+    zccache_monocrate::core::crash::note_previous_crashes();
 
     cli::run()
 }

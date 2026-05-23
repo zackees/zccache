@@ -78,7 +78,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use zccache_watcher::{IgnoreFilter, NotifyWatcher, SettleBuffer, SettledEvent};
 
-async fn run_watcher(root: &std::path::Path) -> zccache_core::Result<()> {
+async fn run_watcher(root: &std::path::Path) -> zccache_monocrate::core::Result<()> {
     let ignore = Arc::new(IgnoreFilter::default());
     let (mut watcher, raw_rx) = NotifyWatcher::new(ignore)?;
     watcher.watch_recursive(root)?;

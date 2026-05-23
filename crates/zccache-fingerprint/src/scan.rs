@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::path::Path;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 

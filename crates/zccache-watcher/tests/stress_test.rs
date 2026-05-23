@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tempfile::TempDir;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 use zccache_fscache::clock::Clock;
 use zccache_fscache::CacheSystem;
 use zccache_watcher::settle::{SettleBuffer, SettledEvent};
@@ -80,7 +80,7 @@ fn stress_cache_system_many_files() {
                 result.hash, original_hashes[i],
                 "file {i} should have changed"
             );
-            let expected = zccache_hash::hash_bytes(format!("modified content {i}").as_bytes());
+            let expected = zccache_monocrate::hash::hash_bytes(format!("modified content {i}").as_bytes());
             assert_eq!(result.hash, expected, "file {i} hash mismatch");
         } else {
             assert_eq!(
@@ -216,7 +216,7 @@ fn stress_journal_overflow_recovery() {
     // Lookups after overflow should still work (re-verify via slow path).
     for path in &paths {
         let result = cache.lookup_since(path, c_overflow).unwrap();
-        let expected = zccache_hash::hash_file(path).unwrap();
+        let expected = zccache_monocrate::hash::hash_file(path).unwrap();
         assert_eq!(result.hash, expected);
     }
 }
@@ -293,7 +293,7 @@ fn adversarial_rapid_file_mutations() {
 
     // Final lookup should return hash of the LAST version written.
     let result = cache.lookup_since(&path, c).unwrap();
-    let expected = zccache_hash::hash_bytes(last_content.as_bytes());
+    let expected = zccache_monocrate::hash::hash_bytes(last_content.as_bytes());
     assert_eq!(result.hash, expected);
 }
 
@@ -337,7 +337,7 @@ fn adversarial_same_size_different_content() {
         hash1.hash, hash2.hash,
         "same-size different content must produce different hash"
     );
-    assert_eq!(hash2.hash, zccache_hash::hash_bytes(b"BBBB"));
+    assert_eq!(hash2.hash, zccache_monocrate::hash::hash_bytes(b"BBBB"));
 }
 
 #[test]
@@ -417,7 +417,7 @@ fn adversarial_concurrent_writers_and_readers() {
         let t = i % 4;
         let expected_content = format!("t{t}_r9");
         let result = cache.lookup_since(path, c_final).unwrap();
-        let expected = zccache_hash::hash_bytes(expected_content.as_bytes());
+        let expected = zccache_monocrate::hash::hash_bytes(expected_content.as_bytes());
         assert_eq!(result.hash, expected, "file {i} hash mismatch after writes");
     }
 }
@@ -461,7 +461,7 @@ fn adversarial_rename_chain() {
     let result = cache
         .lookup_since(&NormalizedPath::new(&path_d), Clock::ZERO)
         .unwrap();
-    assert_eq!(result.hash, zccache_hash::hash_bytes(b"chain content"));
+    assert_eq!(result.hash, zccache_monocrate::hash::hash_bytes(b"chain content"));
 }
 
 #[test]
@@ -473,7 +473,7 @@ fn adversarial_empty_and_binary_files() {
     // Empty file.
     let empty = create_file(&dir, "empty.c", "");
     let h_empty = cache.lookup_since(&empty, Clock::ZERO).unwrap();
-    assert_eq!(h_empty.hash, zccache_hash::hash_bytes(b""));
+    assert_eq!(h_empty.hash, zccache_monocrate::hash::hash_bytes(b""));
 
     // Binary content (null bytes, high bytes).
     let binary_content: Vec<u8> = (0..=255).cycle().take(8192).collect();
@@ -482,7 +482,7 @@ fn adversarial_empty_and_binary_files() {
     let h_bin = cache
         .lookup_since(&NormalizedPath::new(&bin_path), Clock::ZERO)
         .unwrap();
-    assert_eq!(h_bin.hash, zccache_hash::hash_bytes(&binary_content));
+    assert_eq!(h_bin.hash, zccache_monocrate::hash::hash_bytes(&binary_content));
 
     // Large file (1MB).
     let large_content = vec![0x42u8; 1_048_576];
@@ -491,7 +491,7 @@ fn adversarial_empty_and_binary_files() {
     let h_large = cache
         .lookup_since(&NormalizedPath::new(&large_path), Clock::ZERO)
         .unwrap();
-    assert_eq!(h_large.hash, zccache_hash::hash_bytes(&large_content));
+    assert_eq!(h_large.hash, zccache_monocrate::hash::hash_bytes(&large_content));
 }
 
 #[test]
@@ -527,7 +527,7 @@ fn adversarial_many_apply_overflow_cycles() {
         // Lookups should still work (slow path re-verifies).
         for path in &paths {
             let result = cache.lookup_since(path, Clock::ZERO).unwrap();
-            let expected = zccache_hash::hash_file(path).unwrap();
+            let expected = zccache_monocrate::hash::hash_file(path).unwrap();
             assert_eq!(result.hash, expected, "cycle {cycle}: hash mismatch");
         }
     }
@@ -594,17 +594,17 @@ fn integration_full_pipeline() {
 
                 // Verify updated hash.
                 let result = cache.lookup_since(&path_a, c).unwrap();
-                assert_eq!(result.hash, zccache_hash::hash_bytes(b"file a modified"));
+                assert_eq!(result.hash, zccache_monocrate::hash::hash_bytes(b"file a modified"));
 
                 // B should be unchanged.
                 let result_b = cache.lookup_since(&path_b, c).unwrap();
-                assert_eq!(result_b.hash, zccache_hash::hash_bytes(b"file b"));
+                assert_eq!(result_b.hash, zccache_monocrate::hash::hash_bytes(b"file b"));
             }
             Ok(Some(SettledEvent::Overflow)) => {
                 // Overflow is acceptable — just verify cache still works.
                 cache.apply_overflow();
                 let result = cache.lookup_since(&path_a, Clock::ZERO).unwrap();
-                assert_eq!(result.hash, zccache_hash::hash_bytes(b"file a modified"));
+                assert_eq!(result.hash, zccache_monocrate::hash::hash_bytes(b"file a modified"));
             }
             Ok(None) => panic!("settle channel closed unexpectedly"),
             Err(_) => {

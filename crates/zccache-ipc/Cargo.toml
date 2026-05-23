@@ -17,7 +17,7 @@ thiserror = { workspace = true }
 bytes = { workspace = true }
 serde = { workspace = true }
 zccache-protocol = { workspace = true }
-zccache-core = { workspace = true }
+zccache-monocrate = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -73,14 +73,14 @@ pub(super) fn compile_worktree_root(
 pub(super) fn normalize_path_for_request_key(path: &Path, key_root: Option<&Path>) -> String {
     if let Some(root) = key_root {
         if let Ok(relative) = path.strip_prefix(root) {
-            let relative = zccache_core::path::normalize_for_key(relative);
+            let relative = zccache_monocrate::core::path::normalize_for_key(relative);
             if relative.is_empty() {
                 return REQUEST_ROOT_MARKER.to_string();
             }
             return format!("{REQUEST_ROOT_MARKER}/{relative}");
         }
     }
-    zccache_core::path::normalize_for_key(path)
+    zccache_monocrate::core::path::normalize_for_key(path)
 }
 
 pub(super) fn normalize_request_path_value(value: &str, key_root: Option<&Path>) -> Option<String> {
@@ -132,7 +132,7 @@ pub(super) fn normalize_cc_prefix_map_arg_for_key(
 }
 
 pub(super) fn same_key_path(left: &Path, right: &Path) -> bool {
-    zccache_core::path::normalize_for_key(left) == zccache_core::path::normalize_for_key(right)
+    zccache_monocrate::core::path::normalize_for_key(left) == zccache_monocrate::core::path::normalize_for_key(right)
 }
 
 pub(super) fn has_ffile_prefix_map_for_old(args: &[String], old: &Path) -> bool {
@@ -300,9 +300,9 @@ pub(super) fn request_fingerprint(
     key_root: Option<&Path>,
     client_env: Option<&[(String, String)]>,
 ) -> ContentHash {
-    let mut h = zccache_hash::StreamHasher::new();
+    let mut h = zccache_monocrate::hash::StreamHasher::new();
     h.update(b"zccache-request-v2\0");
-    let compiler = zccache_core::path::normalize_for_key(compiler);
+    let compiler = zccache_monocrate::core::path::normalize_for_key(compiler);
     h.update(compiler.as_bytes());
     h.update(&[0]);
     let mut i = 0;

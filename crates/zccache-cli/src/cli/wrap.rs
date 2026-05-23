@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 use zccache_compiler::strict_paths::StrictPathsMode;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 use super::daemon::{ensure_daemon, which_on_path};
 use super::util::{connect, exit_code_from_i32, resolve_endpoint, run_async, slurp_stdin_if_piped};
@@ -52,11 +52,11 @@ fn run_rustfmt_cached(rustfmt_path: &Path, args: &[String], cwd: &Path) -> ExitC
     // Build format context: rustfmt binary identity + config + flags.
     // Changes to any of these invalidate the entire format cache scope.
     let context_hash = {
-        let mut hasher = zccache_hash::StreamHasher::new();
+        let mut hasher = zccache_monocrate::hash::StreamHasher::new();
         hasher.update(b"zccache-fmt-v1");
 
         // Hash rustfmt binary content for version identity
-        if let Ok(bin_hash) = zccache_hash::hash_file(rustfmt_path) {
+        if let Ok(bin_hash) = zccache_monocrate::hash::hash_file(rustfmt_path) {
             hasher.update(bin_hash.as_bytes());
         } else {
             hasher.update(b"unknown-binary");
@@ -68,7 +68,7 @@ fn run_rustfmt_cached(rustfmt_path: &Path, args: &[String], cwd: &Path) -> ExitC
             .clone()
             .or_else(|| find_rustfmt_config(cwd));
         if let Some(ref cfg) = config_path {
-            if let Ok(cfg_hash) = zccache_hash::hash_file(cfg) {
+            if let Ok(cfg_hash) = zccache_monocrate::hash::hash_file(cfg) {
                 hasher.update(cfg_hash.as_bytes());
             }
         }
@@ -83,7 +83,7 @@ fn run_rustfmt_cached(rustfmt_path: &Path, args: &[String], cwd: &Path) -> ExitC
     };
 
     // Format cache directory: {cache_dir}/fmt/{context_hash}/
-    let cache_dir = zccache_core::config::default_cache_dir()
+    let cache_dir = zccache_monocrate::core::config::default_cache_dir()
         .join("fmt")
         .join(&context_hash);
 
@@ -93,7 +93,7 @@ fn run_rustfmt_cached(rustfmt_path: &Path, args: &[String], cwd: &Path) -> ExitC
     // Resolve source files to absolute paths and check cache (parallel)
     use rayon::prelude::*;
 
-    let results: Vec<(NormalizedPath, bool, Option<zccache_hash::ContentHash>)> = parsed
+    let results: Vec<(NormalizedPath, bool, Option<zccache_monocrate::hash::ContentHash>)> = parsed
         .source_files
         .par_iter()
         .map(|src| {
@@ -102,7 +102,7 @@ fn run_rustfmt_cached(rustfmt_path: &Path, args: &[String], cwd: &Path) -> ExitC
             } else {
                 cwd.join(src).into()
             };
-            let (is_hit, hash) = match zccache_hash::hash_file(&abs) {
+            let (is_hit, hash) = match zccache_monocrate::hash::hash_file(&abs) {
                 Ok(content_hash) => {
                     let marker = cache_dir.join(content_hash.to_hex());
                     (marker.exists(), Some(content_hash))
@@ -114,7 +114,7 @@ fn run_rustfmt_cached(rustfmt_path: &Path, args: &[String], cwd: &Path) -> ExitC
         .collect();
 
     let mut miss_files: Vec<NormalizedPath> = Vec::new();
-    let mut all_files: Vec<(NormalizedPath, bool, Option<zccache_hash::ContentHash>)> = Vec::new();
+    let mut all_files: Vec<(NormalizedPath, bool, Option<zccache_monocrate::hash::ContentHash>)> = Vec::new();
     for (abs, is_hit, hash) in results {
         if !is_hit {
             miss_files.push(abs.clone());
@@ -163,7 +163,7 @@ fn run_rustfmt_cached(rustfmt_path: &Path, args: &[String], cwd: &Path) -> ExitC
             let new_hash = if parsed.check_mode {
                 *cached_hash
             } else {
-                zccache_hash::hash_file(abs).ok()
+                zccache_monocrate::hash::hash_file(abs).ok()
             };
             if let Some(h) = new_hash {
                 let marker = cache_dir.join(h.to_hex());
@@ -375,7 +375,7 @@ pub(crate) fn run_wrap(
 /// Resolve a compiler name/path to an absolute path.
 /// Normalizes MSYS paths on Windows, then searches PATH if not already absolute.
 fn resolve_compiler_path(compiler: &str) -> NormalizedPath {
-    let normalized = zccache_core::path::normalize_msys_path(compiler);
+    let normalized = zccache_monocrate::core::path::normalize_msys_path(compiler);
     let path = Path::new(&normalized);
 
     // Already absolute — return as-is.

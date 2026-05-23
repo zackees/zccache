@@ -1,6 +1,6 @@
 //! Error types for zccache.
 
-use crate::NormalizedPath;
+use super::NormalizedPath;
 
 /// Top-level error type for zccache operations.
 #[derive(Debug, thiserror::Error)]

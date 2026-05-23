@@ -9,7 +9,7 @@ use dashmap::DashMap;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 /// Monotonically increasing clock tick.
 ///

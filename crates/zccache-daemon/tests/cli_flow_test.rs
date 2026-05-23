@@ -7,7 +7,7 @@
 
 use std::sync::Once;
 
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
 
 /// Build the CLI binary once across all tests (avoids Cargo lock contention).

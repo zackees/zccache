@@ -9,7 +9,7 @@ use std::time::Instant;
 use dashmap::DashMap;
 use tokio::sync::{watch, Notify, RwLock};
 use tokio_util::sync::CancellationToken;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 use zccache_download::{
     percentage, stable_download_id, DownloadDaemonStatus, DownloadOptions, DownloadPhase,
     DownloadStatus,
@@ -73,7 +73,7 @@ pub struct DownloadDaemon {
 impl DownloadDaemon {
     pub fn bind(endpoint: &str) -> Result<Self, zccache_ipc::IpcError> {
         let listener = zccache_ipc::IpcListener::bind(endpoint)?;
-        let log_path = zccache_core::config::log_dir().join("download-daemon.log");
+        let log_path = zccache_monocrate::core::config::log_dir().join("download-daemon.log");
         let logger = FileLogger::new(&log_path)
             .map_err(|e| zccache_ipc::IpcError::Io(std::io::Error::other(e.to_string())))?;
         Ok(Self {
@@ -317,7 +317,7 @@ fn daemon_status(state: &SharedState) -> DownloadDaemonStatus {
         .map(|entry| entry.active_clients.load(Ordering::Relaxed) as u64)
         .sum();
     DownloadDaemonStatus {
-        version: zccache_core::VERSION.to_string(),
+        version: zccache_monocrate::core::VERSION.to_string(),
         active_downloads: state.jobs.len() as u64,
         connected_clients,
         uptime_secs: state.start_time.elapsed().as_secs(),
@@ -353,7 +353,7 @@ async fn attach_job(
         return Ok((existing, false));
     }
 
-    let metadata_dir = zccache_core::config::default_cache_dir()
+    let metadata_dir = zccache_monocrate::core::config::default_cache_dir()
         .join("downloads")
         .join(&download_id);
     let initial_status = if destination.exists() && !options.force {

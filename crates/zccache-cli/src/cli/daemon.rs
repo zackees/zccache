@@ -1,7 +1,7 @@
 //! Daemon lifecycle: start, stop, version probing, ensure-running, binary discovery.
 
 use std::process::ExitCode;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 use super::util::{connect, resolve_endpoint, run_async};
 
@@ -32,11 +32,11 @@ pub(crate) async fn check_daemon_version(endpoint: &str) -> VersionCheck {
     }
     match conn.recv::<zccache_protocol::Response>().await {
         Ok(Some(zccache_protocol::Response::Status(s))) => {
-            if s.version == zccache_core::VERSION {
+            if s.version == zccache_monocrate::core::VERSION {
                 return VersionCheck::Ok;
             }
-            let client_ver = zccache_core::version::current();
-            match zccache_core::version::Version::parse(&s.version) {
+            let client_ver = zccache_monocrate::core::version::current();
+            match zccache_monocrate::core::version::Version::parse(&s.version) {
                 Some(daemon_ver) => match daemon_ver.cmp(&client_ver) {
                     std::cmp::Ordering::Equal => VersionCheck::Ok,
                     std::cmp::Ordering::Greater => VersionCheck::DaemonNewer {
@@ -64,8 +64,8 @@ pub(crate) async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), S
     // can correlate each CLI decision with the resulting daemon PID
     // by parsing the single `daemon-lifecycle.log`. See zccache#323
     // for the diagnostic gap that motivated this.
-    zccache_core::lifecycle::write_event(
-        zccache_core::lifecycle::EVENT_SPAWN_ATTEMPT,
+    zccache_monocrate::core::lifecycle::write_event(
+        zccache_monocrate::core::lifecycle::EVENT_SPAWN_ATTEMPT,
         serde_json::json!({
             "reason": reason,
             "endpoint": endpoint,
@@ -129,7 +129,7 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
         VersionCheck::DaemonNewer { daemon_ver } => {
             tracing::debug!(
                 daemon_ver,
-                client_ver = zccache_core::VERSION,
+                client_ver = zccache_monocrate::core::VERSION,
                 "daemon is newer than client, proceeding"
             );
             return Ok(());
@@ -137,13 +137,13 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
         VersionCheck::DaemonOlder { daemon_ver } => {
             tracing::info!(
                 daemon_ver,
-                client_ver = zccache_core::VERSION,
+                client_ver = zccache_monocrate::core::VERSION,
                 "daemon is older than client, auto-recovering"
             );
             stop_stale_daemon(endpoint).await;
             return spawn_and_wait(
                 endpoint,
-                zccache_core::lifecycle::REASON_REPLACED_STALE_VERSION,
+                zccache_monocrate::core::lifecycle::REASON_REPLACED_STALE_VERSION,
             )
             .await;
         }
@@ -152,7 +152,7 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
             stop_stale_daemon(endpoint).await;
             return spawn_and_wait(
                 endpoint,
-                zccache_core::lifecycle::REASON_REPLACED_COMM_ERROR,
+                zccache_monocrate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
             )
             .await;
         }
@@ -170,7 +170,7 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                 VersionCheck::DaemonNewer { daemon_ver } => {
                     tracing::debug!(
                         daemon_ver,
-                        client_ver = zccache_core::VERSION,
+                        client_ver = zccache_monocrate::core::VERSION,
                         "daemon is newer than client, proceeding"
                     );
                     return Ok(());
@@ -178,13 +178,13 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                 VersionCheck::DaemonOlder { daemon_ver } => {
                     tracing::info!(
                         daemon_ver,
-                        client_ver = zccache_core::VERSION,
+                        client_ver = zccache_monocrate::core::VERSION,
                         "daemon is older than client during startup, auto-recovering"
                     );
                     stop_stale_daemon(endpoint).await;
                     return spawn_and_wait(
                         endpoint,
-                        zccache_core::lifecycle::REASON_REPLACED_STALE_VERSION,
+                        zccache_monocrate::core::lifecycle::REASON_REPLACED_STALE_VERSION,
                     )
                     .await;
                 }
@@ -195,7 +195,7 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                     stop_stale_daemon(endpoint).await;
                     return spawn_and_wait(
                         endpoint,
-                        zccache_core::lifecycle::REASON_REPLACED_COMM_ERROR,
+                        zccache_monocrate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
                     )
                     .await;
                 }
@@ -208,7 +208,7 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
     }
 
     // No daemon running — spawn one
-    spawn_and_wait(endpoint, zccache_core::lifecycle::REASON_INITIAL_START).await
+    spawn_and_wait(endpoint, zccache_monocrate::core::lifecycle::REASON_INITIAL_START).await
 }
 
 /// Find the daemon binary. Looks next to the CLI binary first, then on PATH.

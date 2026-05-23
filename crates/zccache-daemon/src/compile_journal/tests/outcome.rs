@@ -122,7 +122,7 @@ fn test_extract_outcome_link_error() {
 
 #[test]
 fn test_extract_outcome_all_non_journalable() {
-    use zccache_core::NormalizedPath;
+    use zccache_monocrate::core::NormalizedPath;
     use zccache_protocol::{DaemonStatus, LookupResult as LR, SessionStats, StoreResult as SR};
 
     let non_journalable: Vec<Response> = vec![

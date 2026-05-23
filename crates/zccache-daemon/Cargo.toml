@@ -30,13 +30,12 @@ clap = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 sysinfo = "0.33"
-zccache-core = { workspace = true }
+zccache-monocrate = { workspace = true }
 zccache-protocol = { workspace = true }
 zccache-ipc = { workspace = true }
 zccache-fscache = { workspace = true }
 zccache-artifact = { workspace = true }
 zccache-watcher = { workspace = true }
-zccache-hash = { workspace = true }
 zccache-compiler = { workspace = true }
 zccache-depgraph = { workspace = true }
 zccache-fingerprint = { workspace = true }

@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 use dashmap::DashMap;
 
@@ -229,7 +229,7 @@ impl FingerprintManager {
         for file in &files {
             let mtime = zccache_fingerprint::persist::mtime_ns(&file.absolute).unwrap_or(0);
             let size = zccache_fingerprint::persist::file_size(&file.absolute).unwrap_or(0);
-            let hash_hex = match zccache_hash::hash_file(&file.absolute) {
+            let hash_hex = match zccache_monocrate::hash::hash_file(&file.absolute) {
                 Ok(h) => h.to_hex(),
                 Err(_) => String::new(),
             };
@@ -326,7 +326,7 @@ impl FingerprintManager {
                     // Re-hash the changed file.
                     let mtime = zccache_fingerprint::persist::mtime_ns(&path).unwrap_or(0);
                     let size = zccache_fingerprint::persist::file_size(&path).unwrap_or(0);
-                    let hash_hex = match zccache_hash::hash_file(&path) {
+                    let hash_hex = match zccache_monocrate::hash::hash_file(&path) {
                         Ok(h) => h.to_hex(),
                         Err(_) => String::new(),
                     };
@@ -408,7 +408,7 @@ impl FingerprintManager {
                 continue; // Layer 1: fast skip
             }
             // Layer 2: mtime/size changed — re-hash to confirm.
-            let hash_hex = match zccache_hash::hash_file(&abs) {
+            let hash_hex = match zccache_monocrate::hash::hash_file(&abs) {
                 Ok(h) => h.to_hex(),
                 Err(_) => {
                     changed.push(rel_path.clone());

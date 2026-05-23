@@ -14,7 +14,7 @@ serde = { workspace = true }
 bincode = { workspace = true }
 bytes = { workspace = true }
 zccache-download = { workspace = true }
-zccache-core = { workspace = true }
+zccache-monocrate = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -28,7 +28,7 @@ impl DaemonServer {
             index_writer_handle = Some(tokio::spawn(run_index_writer(rx, store, shutdown)));
         }
 
-        let cache_dir = zccache_core::config::default_cache_dir();
+        let cache_dir = zccache_monocrate::core::config::default_cache_dir();
         let temp_root = std::env::temp_dir();
 
         // Clean up legacy log backup directory (Bug 7).
@@ -50,7 +50,7 @@ impl DaemonServer {
 
         // Remove legacy temp-root state from older builds before starting the daemon.
         {
-            let cleaned = zccache_core::config::cleanup_legacy_temp_root_state(
+            let cleaned = zccache_monocrate::core::config::cleanup_legacy_temp_root_state(
                 &temp_root,
                 &cache_dir,
                 zccache_ipc::is_process_alive,
@@ -63,7 +63,7 @@ impl DaemonServer {
         // Clean up stale depfile directories from dead daemon instances.
         {
             let cleaned =
-                zccache_core::config::cleanup_stale_depfile_dirs(zccache_ipc::is_process_alive);
+                zccache_monocrate::core::config::cleanup_stale_depfile_dirs(zccache_ipc::is_process_alive);
             if cleaned > 0 {
                 tracing::info!(cleaned, "cleaned stale depfile directories");
             }
@@ -140,8 +140,8 @@ impl DaemonServer {
         // Start memory eviction background task.
         {
             let state = Arc::clone(&self.state);
-            let budget = zccache_core::config::Config::default().max_memory_bytes;
-            let interval_secs = zccache_core::config::Config::default().eviction_interval_secs;
+            let budget = zccache_monocrate::core::config::Config::default().max_memory_bytes;
+            let interval_secs = zccache_monocrate::core::config::Config::default().eviction_interval_secs;
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
@@ -182,8 +182,8 @@ impl DaemonServer {
         // Start disk artifact GC background task.
         {
             let state = Arc::clone(&self.state);
-            let max_cache_size = zccache_core::config::Config::default().max_cache_size;
-            let interval_secs = zccache_core::config::Config::default().disk_gc_interval_secs;
+            let max_cache_size = zccache_monocrate::core::config::Config::default().max_cache_size;
+            let interval_secs = zccache_monocrate::core::config::Config::default().disk_gc_interval_secs;
             tokio::spawn(async move {
                 // Run once immediately at startup to reclaim excess disk from Bug 5.
                 {

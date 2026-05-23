@@ -24,15 +24,13 @@ clap = { workspace = true }
 thiserror = { workspace = true }
 blake3 = { workspace = true }
 serde = { workspace = true }
-zccache-core = { workspace = true }
+zccache-monocrate = { workspace = true }
 zccache-artifact = { workspace = true }
 zccache-compiler = { workspace = true }
-zccache-hash = { workspace = true }
 zccache-protocol = { workspace = true }
 zccache-ipc = { workspace = true }
 zccache-download = { workspace = true }
 zccache-download-client = { workspace = true }
-zccache-gha = { workspace = true }
 zccache-symbols = { workspace = true }
 running-process-core = { workspace = true }
 serde_json = { workspace = true }

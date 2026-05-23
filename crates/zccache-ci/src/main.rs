@@ -19,7 +19,7 @@ use std::path::Path;
 use std::process::{Command, ExitCode};
 
 use zccache_ci::{reap_orphan_daemons, resolve_timeout, StageOutcome, StageRunner};
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 fn project_root() -> NormalizedPath {
     let current = env::current_dir().expect("cannot determine working directory");

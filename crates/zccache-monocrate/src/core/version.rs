@@ -35,7 +35,7 @@ impl Version {
 
 /// Return the version of the currently compiled crate.
 pub fn current() -> Version {
-    Version::parse(crate::VERSION).expect("CARGO_PKG_VERSION is not valid semver")
+    Version::parse(super::VERSION).expect("CARGO_PKG_VERSION is not valid semver")
 }
 
 #[cfg(test)]

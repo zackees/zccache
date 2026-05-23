@@ -12,7 +12,7 @@
 //! Run all:    soldr cargo test -p zccache-daemon --test rustc_adversarial_test -- --nocapture --ignored --test-threads=1
 //! Run single: soldr cargo test -p zccache-daemon --test rustc_adversarial_test -- <test_name> --nocapture --ignored
 
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
 use zccache_protocol::{Request, Response};
 

@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 /// Maximum nesting depth for response files to prevent stack overflow.
 const MAX_DEPTH: usize = 10;

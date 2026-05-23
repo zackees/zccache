@@ -12,7 +12,7 @@
 
 use std::path::Path;
 use std::time::{Duration, Instant};
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
 use zccache_protocol::{Request, Response};
 
@@ -47,7 +47,7 @@ pub async fn start_daemon() -> (
 ) {
     let cache_dir = zccache_test_support::temp_cache_dir().unwrap();
     let endpoint = zccache_ipc::unique_test_endpoint();
-    let normalized = zccache_core::NormalizedPath::new(cache_dir.path());
+    let normalized = zccache_monocrate::core::NormalizedPath::new(cache_dir.path());
     let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &normalized).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {

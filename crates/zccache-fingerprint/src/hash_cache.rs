@@ -1,5 +1,5 @@
 use std::path::Path;
-use zccache_core::NormalizedPath;
+use zccache_monocrate::core::NormalizedPath;
 
 use rayon::prelude::*;
 
@@ -22,7 +22,7 @@ pub fn compute_aggregate_hash(files: &[ScannedFile]) -> Result<String> {
     let contents = contents?;
 
     // Phase 2: Hash sequentially to preserve order-dependent aggregate hash.
-    let mut hasher = zccache_hash::StreamHasher::new();
+    let mut hasher = zccache_monocrate::hash::StreamHasher::new();
     // Domain separation.
     hasher.update(b"zccache-fingerprint-v1");
 
