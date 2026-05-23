@@ -11,7 +11,7 @@ from typing import Any
 
 ROOT = Path(__file__).parent.parent.resolve()
 RUST_PUBLISH_ORDER = [
-    "zccache-monocrate",
+    "zccache",
     "zccache-watcher",
     "zccache-fingerprint",
 ]

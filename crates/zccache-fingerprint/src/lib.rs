@@ -1,15 +1,15 @@
 //! PyO3 cdylib for the fingerprint engine.
 //!
 //! The Rust fingerprint engine itself lives in
-//! `zccache_monocrate::fingerprint` (issue #365). This crate exists solely
+//! `zccache::fingerprint` (issue #365). This crate exists solely
 //! to host the `_native` Python extension module so the polished
 //! `zccache.fingerprint` Python package can `import zccache.fingerprint._native`.
 
 use pyo3::prelude::*;
 
-use zccache_monocrate::fingerprint::error::FingerprintError;
-use zccache_monocrate::fingerprint::hash_cache::compute_aggregate_hash;
-use zccache_monocrate::fingerprint::scan::{self, ScannedFile};
+use zccache::fingerprint::error::FingerprintError;
+use zccache::fingerprint::hash_cache::compute_aggregate_hash;
+use zccache::fingerprint::scan::{self, ScannedFile};
 
 fn to_py_err(e: FingerprintError) -> PyErr {
     PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
@@ -58,7 +58,7 @@ fn walk_and_hash(
 fn hash_each_file(files: &[ScannedFile]) -> PyResult<Vec<(String, String)>> {
     let mut result = Vec::with_capacity(files.len());
     for file in files {
-        let hash = zccache_monocrate::hash::hash_file(&file.absolute).map_err(io_to_py_err)?;
+        let hash = zccache::hash::hash_file(&file.absolute).map_err(io_to_py_err)?;
         result.push((file.relative.clone(), hash.to_hex()));
     }
     Ok(result)

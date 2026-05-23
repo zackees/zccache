@@ -1,6 +1,6 @@
 //! PyO3 cdylib for the polling watcher.
 //!
-//! The Rust polling watcher itself lives in `zccache_monocrate::watcher`
+//! The Rust polling watcher itself lives in `zccache::watcher`
 //! (issue #365). This crate exists solely to host the `_native` Python
 //! extension module so the polished `zccache.watcher` Python package can
 //! `import zccache.watcher._native`.
@@ -11,7 +11,7 @@ use std::time::Duration;
 use pyo3::exceptions::{PyOSError, PyRuntimeError};
 use pyo3::prelude::*;
 
-use zccache_monocrate::watcher::{PollWatchBatch, PollingWatcher, PollingWatcherConfig};
+use zccache::watcher::{PollWatchBatch, PollingWatcher, PollingWatcherConfig};
 
 fn io_to_py_err(e: std::io::Error) -> PyErr {
     PyErr::new::<PyOSError, _>(e.to_string())

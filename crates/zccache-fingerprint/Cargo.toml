@@ -17,7 +17,7 @@ default = []
 python = ["dep:pyo3"]
 
 [dependencies]
-zccache-monocrate = { workspace = true }
+zccache = { workspace = true }
 pyo3 = { version = "0.23", features = [
     "extension-module",
     "generate-import-lib",

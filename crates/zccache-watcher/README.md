@@ -45,7 +45,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
-use zccache_monocrate::watcher::{PollWatchBatch, PollingWatcher, PollingWatcherConfig};
+use zccache::watcher::{PollWatchBatch, PollingWatcher, PollingWatcherConfig};
 
 let mut config = PollingWatcherConfig::new(".");
 config.include_globs = vec!["**/*.rs".to_string()];
@@ -76,9 +76,9 @@ Daemon pipeline flow:
 ```rust
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use zccache_monocrate::watcher::{IgnoreFilter, NotifyWatcher, SettleBuffer, SettledEvent};
+use zccache::watcher::{IgnoreFilter, NotifyWatcher, SettleBuffer, SettledEvent};
 
-async fn run_watcher(root: &std::path::Path) -> zccache_monocrate::core::Result<()> {
+async fn run_watcher(root: &std::path::Path) -> zccache::core::Result<()> {
     let ignore = Arc::new(IgnoreFilter::default());
     let (mut watcher, raw_rx) = NotifyWatcher::new(ignore)?;
     watcher.watch_recursive(root)?;

@@ -1,0 +1,179 @@
+[package]
+name = "zccache"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Local-first compiler cache for C/C++/Rust/Emscripten"
+
+[features]
+default = []
+# Enables zccache::test_support (dev-only helpers).
+test-support = []
+
+[dependencies]
+# core
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+crash-handler = "0.6"
+
+# hash
+blake3 = { workspace = true }
+memmap2 = { workspace = true }
+
+# gha
+reqwest = { workspace = true, features = ["json"] }
+sha2 = { workspace = true }
+
+# protocol
+bincode = { workspace = true }
+bytes = { workspace = true }
+
+# ipc + test-support: needs full tokio
+tokio = { workspace = true }
+
+# fscache
+dashmap = { workspace = true }
+rayon = { workspace = true }
+
+# artifact
+redb = { workspace = true }
+tempfile = { workspace = true }
+
+# watcher
+notify = { workspace = true }
+jwalk = { workspace = true }
+globset = "0.4"
+
+# compiler
+clang = { workspace = true }
+
+# depgraph
+rkyv = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+
+# fingerprint
+clap = { workspace = true }
+fs2 = { workspace = true }
+
+# download stack
+futures = { workspace = true }
+tokio-util = { workspace = true }
+zip = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+ruzstd = { workspace = true }
+lzma-rs = { workspace = true }
+sevenz-rust = { workspace = true }
+
+# daemon
+running-process-core = { workspace = true }
+filetime = { workspace = true }
+sysinfo = "0.33"
+sadness-generator = "0.6"
+
+# ci
+md5 = "0.7"
+wait-timeout = "0.2"
+
+# shared: used by test_support, download-daemon bin, etc.
+tracing-subscriber = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+tikv-jemallocator = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+mimalloc = { workspace = true }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+# Self-dep so zccache's own integration tests can pull in the gated
+# test_support module without needing a separate workspace member.
+zccache = { path = ".", features = ["test-support"] }
+
+[[bench]]
+name = "hashing"
+harness = false
+
+[[bench]]
+name = "scan_metadata"
+harness = false
+
+[[bench]]
+name = "scan_recursive"
+harness = false
+
+[[bench]]
+name = "fingerprint"
+harness = false
+
+[[bin]]
+name = "echo_shim"
+path = "src/bin/echo_shim.rs"
+required-features = ["test-support"]
+
+[[bin]]
+name = "zccache-fp"
+path = "src/bin/zccache-fp.rs"
+
+[[bin]]
+name = "zccache-stamp"
+path = "src/bin/zccache-stamp.rs"
+
+[[bin]]
+name = "zccache-download-daemon"
+path = "src/bin/zccache-download-daemon.rs"
+
+[[bin]]
+name = "zccache-download"
+path = "src/bin/zccache-download.rs"
+doc = false
+
+[[bin]]
+name = "zccache-daemon"
+path = "src/bin/zccache-daemon.rs"
+
+[[bin]]
+name = "crash-trigger"
+path = "src/bin/crash-trigger.rs"
+
+[[bin]]
+name = "zccache"
+path = "src/bin/zccache.rs"
+
+[[bin]]
+name = "cli-crash-trigger"
+path = "src/bin/cli-crash-trigger.rs"
+
+[[bin]]
+name = "zccache-ci"
+path = "src/bin/zccache-ci.rs"
+
+[[bench]]
+name = "write_payloads"
+harness = false
+
+[[bench]]
+name = "read_outputs"
+harness = false
+
+[[bench]]
+name = "persist_payloads"
+harness = false
+
+[[bench]]
+name = "warm_restore"
+harness = false
+

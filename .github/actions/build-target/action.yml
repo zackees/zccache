@@ -119,8 +119,8 @@ runs:
         if [[ "${{ inputs.target }}" == *pc-windows-msvc ]]; then
           export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static"
         fi
-        cargo build --release --target ${{ inputs.target }} -p zccache-monocrate --bin zccache
-        cargo build --release --target ${{ inputs.target }} -p zccache-monocrate --bin zccache-daemon
+        cargo build --release --target ${{ inputs.target }} -p zccache --bin zccache
+        cargo build --release --target ${{ inputs.target }} -p zccache --bin zccache-daemon
         cargo build --release --target ${{ inputs.target }} -p zccache-fingerprint
 
     # Windows DLL load smoke gate (see zccache#269). If the just-built
@@ -159,7 +159,7 @@ runs:
           export PYO3_CROSS_PYTHON_IMPLEMENTATION=CPython
         fi
 
-        cargo build --release --target ${{ inputs.target }} -p zccache-monocrate --bin zccache --features python --lib
+        cargo build --release --target ${{ inputs.target }} -p zccache --bin zccache --features python --lib
         cargo build --release --target ${{ inputs.target }} -p zccache-watcher --features python --lib
         cargo build --release --target ${{ inputs.target }} -p zccache-fingerprint --features python --lib
 

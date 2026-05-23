@@ -82,7 +82,7 @@ const ALLOWLIST: &str = include_str!("allowlist.txt");
 /// Only daemon production code is in scope. Other crates have their own
 /// spawn discipline (cli has `spawn_daemon_windows::spawn_daemon_sanitized`;
 /// the ci/fingerprint crates don't spawn compilers).
-const DAEMON_SOURCE_PREFIX: &str = "crates/zccache-monocrate/src/daemon/";
+const DAEMON_SOURCE_PREFIX: &str = "crates/zccache/src/daemon/";
 
 impl<'tcx> LateLintPass<'tcx> for BanRawSubprocessInDaemon {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'tcx>) {

@@ -4,7 +4,7 @@ use pyo3::exceptions::{PyOSError, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use zccache_monocrate::cli::{
+use zccache::cli::{
     build_download_request, client_download, client_download_exists, client_session_end,
     client_session_start, client_session_stats, client_start, client_status, client_stop,
     fingerprint_check, fingerprint_invalidate, fingerprint_mark_failure, fingerprint_mark_success,
@@ -78,8 +78,8 @@ pub struct NativeDaemonStatus {
     dep_graph_persisted: bool,
 }
 
-impl From<zccache_monocrate::protocol::DaemonStatus> for NativeDaemonStatus {
-    fn from(value: zccache_monocrate::protocol::DaemonStatus) -> Self {
+impl From<zccache::protocol::DaemonStatus> for NativeDaemonStatus {
+    fn from(value: zccache::protocol::DaemonStatus) -> Self {
         Self {
             version: value.version,
             artifact_count: value.artifact_count,
@@ -142,8 +142,8 @@ pub struct NativeSessionStats {
     bytes_written: u64,
 }
 
-impl From<zccache_monocrate::protocol::SessionStats> for NativeSessionStats {
-    fn from(value: zccache_monocrate::protocol::SessionStats) -> Self {
+impl From<zccache::protocol::SessionStats> for NativeSessionStats {
+    fn from(value: zccache::protocol::SessionStats) -> Self {
         Self {
             duration_ms: value.duration_ms,
             compilations: value.compilations,
@@ -200,8 +200,8 @@ pub struct NativeDownloadStatus {
     error: Option<String>,
 }
 
-impl From<zccache_monocrate::download::DownloadStatus> for NativeDownloadStatus {
-    fn from(value: zccache_monocrate::download::DownloadStatus) -> Self {
+impl From<zccache::download::DownloadStatus> for NativeDownloadStatus {
+    fn from(value: zccache::download::DownloadStatus) -> Self {
         Self {
             phase: format!("{:?}", value.phase).to_lowercase(),
             total_bytes: value.total_bytes,
@@ -230,8 +230,8 @@ pub struct NativeDownloadDaemonStatus {
     endpoint: String,
 }
 
-impl From<zccache_monocrate::download::DownloadDaemonStatus> for NativeDownloadDaemonStatus {
-    fn from(value: zccache_monocrate::download::DownloadDaemonStatus) -> Self {
+impl From<zccache::download::DownloadDaemonStatus> for NativeDownloadDaemonStatus {
+    fn from(value: zccache::download::DownloadDaemonStatus) -> Self {
         Self {
             version: value.version,
             active_downloads: value.active_downloads,
@@ -242,17 +242,17 @@ impl From<zccache_monocrate::download::DownloadDaemonStatus> for NativeDownloadD
     }
 }
 
-fn parse_archive_format(value: &str) -> zccache_monocrate::download_client::ArchiveFormat {
+fn parse_archive_format(value: &str) -> zccache::download_client::ArchiveFormat {
     match value.to_ascii_lowercase().as_str() {
-        "none" => zccache_monocrate::download_client::ArchiveFormat::None,
-        "zst" => zccache_monocrate::download_client::ArchiveFormat::Zst,
-        "zip" => zccache_monocrate::download_client::ArchiveFormat::Zip,
-        "xz" => zccache_monocrate::download_client::ArchiveFormat::Xz,
-        "tar.gz" | "targz" => zccache_monocrate::download_client::ArchiveFormat::TarGz,
-        "tar.xz" | "tarxz" => zccache_monocrate::download_client::ArchiveFormat::TarXz,
-        "tar.zst" | "tarzst" => zccache_monocrate::download_client::ArchiveFormat::TarZst,
-        "7z" | "sevenz" => zccache_monocrate::download_client::ArchiveFormat::SevenZip,
-        _ => zccache_monocrate::download_client::ArchiveFormat::Auto,
+        "none" => zccache::download_client::ArchiveFormat::None,
+        "zst" => zccache::download_client::ArchiveFormat::Zst,
+        "zip" => zccache::download_client::ArchiveFormat::Zip,
+        "xz" => zccache::download_client::ArchiveFormat::Xz,
+        "tar.gz" | "targz" => zccache::download_client::ArchiveFormat::TarGz,
+        "tar.xz" | "tarxz" => zccache::download_client::ArchiveFormat::TarXz,
+        "tar.zst" | "tarzst" => zccache::download_client::ArchiveFormat::TarZst,
+        "7z" | "sevenz" => zccache::download_client::ArchiveFormat::SevenZip,
+        _ => zccache::download_client::ArchiveFormat::Auto,
     }
 }
 
@@ -271,8 +271,8 @@ pub struct NativeFetchResult {
     sha256: String,
 }
 
-impl From<zccache_monocrate::download_client::FetchResult> for NativeFetchResult {
-    fn from(value: zccache_monocrate::download_client::FetchResult) -> Self {
+impl From<zccache::download_client::FetchResult> for NativeFetchResult {
+    fn from(value: zccache::download_client::FetchResult) -> Self {
         Self {
             status: format!("{:?}", value.status).to_lowercase(),
             cache_path: value.cache_path.display().to_string(),
@@ -300,8 +300,8 @@ pub struct NativeFetchState {
     reason: Option<String>,
 }
 
-impl From<zccache_monocrate::download_client::FetchState> for NativeFetchState {
-    fn from(value: zccache_monocrate::download_client::FetchState) -> Self {
+impl From<zccache::download_client::FetchState> for NativeFetchState {
+    fn from(value: zccache::download_client::FetchState) -> Self {
         Self {
             kind: format!("{:?}", value.kind).to_lowercase(),
             cache_path: value.cache_path.display().to_string(),
@@ -315,7 +315,7 @@ impl From<zccache_monocrate::download_client::FetchState> for NativeFetchState {
 
 #[pyclass(module = "zccache._native")]
 pub struct NativeDownloadHandle {
-    handle: Option<zccache_monocrate::download_client::DownloadHandle>,
+    handle: Option<zccache::download_client::DownloadHandle>,
     initiator: bool,
     download_id: String,
 }
@@ -376,7 +376,7 @@ impl NativeDownloadHandle {
 
 #[pyclass(module = "zccache._native")]
 pub struct NativeDownloadApi {
-    client: zccache_monocrate::download_client::DownloadClient,
+    client: zccache::download_client::DownloadClient,
 }
 
 #[pymethods]
@@ -384,7 +384,7 @@ impl NativeDownloadApi {
     #[new]
     #[pyo3(signature = (endpoint=None))]
     fn new(endpoint: Option<String>) -> Self {
-        let client = zccache_monocrate::download_client::DownloadClient::new(endpoint.clone());
+        let client = zccache::download_client::DownloadClient::new(endpoint.clone());
         Self { client }
     }
 
@@ -418,7 +418,7 @@ impl NativeDownloadApi {
         max_connections: Option<usize>,
         min_segment_size: Option<u64>,
     ) -> PyResult<NativeDownloadHandle> {
-        let options = zccache_monocrate::download::DownloadOptions {
+        let options = zccache::download::DownloadOptions {
             force,
             max_connections,
             min_segment_size,
@@ -577,7 +577,7 @@ impl NativeClient {
                 archive_path: destination.map(PathBuf::from),
                 unarchive_path: expanded.map(PathBuf::from),
                 expected_sha256,
-                archive_format: zccache_monocrate::download_client::ArchiveFormat::Auto,
+                archive_format: zccache::download_client::ArchiveFormat::Auto,
                 max_connections,
                 min_segment_size,
                 wait_mode: if blocking {
@@ -614,7 +614,7 @@ impl NativeClient {
                 archive_path: destination.map(PathBuf::from),
                 unarchive_path: expanded.map(PathBuf::from),
                 expected_sha256,
-                archive_format: zccache_monocrate::download_client::ArchiveFormat::Auto,
+                archive_format: zccache::download_client::ArchiveFormat::Auto,
                 max_connections: None,
                 min_segment_size: None,
                 wait_mode: WaitMode::Block,
@@ -752,12 +752,12 @@ fn convert_ino(
 
 #[pyfunction]
 fn default_endpoint() -> String {
-    zccache_monocrate::cli::resolve_endpoint(None)
+    zccache::cli::resolve_endpoint(None)
 }
 
 #[pyfunction]
 fn check_running_daemon() -> Option<u32> {
-    zccache_monocrate::ipc::check_running_daemon()
+    zccache::ipc::check_running_daemon()
 }
 
 #[pymodule]

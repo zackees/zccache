@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/zccache-monocrate",
+    "crates/zccache",
     "crates/zccache-watcher",
     "crates/zccache-cli",
     "crates/zccache-fingerprint",
@@ -55,7 +55,7 @@ rkyv = { version = "0.7", features = ["validation"] }
 tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms"] }
 mimalloc = "0.1"
 running-process-core = "3.3"
-zccache-monocrate = { path = "crates/zccache-monocrate" }
+zccache = { path = "crates/zccache" }
 zccache-watcher = { path = "crates/zccache-watcher" }
 zccache-cli = { path = "crates/zccache-cli" }
 zccache-fingerprint = { path = "crates/zccache-fingerprint" }

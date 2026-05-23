@@ -94,7 +94,7 @@ Hooks are in `ci/hooks/` (Python) and `crates/zccache-ci` (Rust):
 - **PostToolUse**: `ci/hooks/readme_guard.py` errors if directory lacks README.md
 - **PostToolUse**: `ci/hooks/loc_guard.py` warns when an edited source file exceeds 1,000 LOC and hard-blocks (exit 2) above 1,500 LOC — split into focused submodules before the file crosses the threshold
 - **SessionStart**: `ci/hooks/check-on-start.py` captures git fingerprint
-- **Stop**: `soldr cargo run -p zccache-monocrate --bin zccache-ci` runs lint + unit tests in parallel (skips if no changes)
+- **Stop**: `soldr cargo run -p zccache --bin zccache-ci` runs lint + unit tests in parallel (skips if no changes)
 
 ## Language Policy
 

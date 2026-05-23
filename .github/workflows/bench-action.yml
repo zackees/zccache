@@ -13,7 +13,7 @@ concurrency:
   group: bench-action-${{ github.ref }}
   cancel-in-progress: true
 
-# Benchmarks three caching strategies building zccache-monocrate:
+# Benchmarks three caching strategies building zccache:
 #
 # 1. Bare cargo (no caching at all)
 # 2. sccache (mozilla-actions/sccache-action)
@@ -26,7 +26,7 @@ concurrency:
 # - No-op: immediate rebuild, nothing changed — tests cargo skip path
 
 env:
-  BUILD_TARGET: zccache-monocrate
+  BUILD_TARGET: zccache
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
 
@@ -277,7 +277,7 @@ jobs:
           find target/debug/deps -name "*.rlib" -exec stat -c "%n mtime=%Y" {} \; 2>/dev/null | head -5
           echo ""
           echo "=== source file mtimes ==="
-          stat -c "%n mtime=%Y" crates/zccache-monocrate/src/*.rs 2>/dev/null | head -5
+          stat -c "%n mtime=%Y" crates/zccache/src/*.rs 2>/dev/null | head -5
           echo ""
           echo "=== zccache binary ==="
           which zccache && zccache --version
@@ -342,7 +342,7 @@ jobs:
       - name: Print comparison table
         shell: bash
         run: |
-          echo "## Benchmark: \`cargo build -p zccache-monocrate\` on ubuntu-24.04" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Benchmark: \`cargo build -p zccache\` on ubuntu-24.04" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Scenario | Bare | sccache | zccache | zccache vs sccache | zccache vs bare |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|---|---|---|---|" >> "$GITHUB_STEP_SUMMARY"

@@ -23,8 +23,8 @@ SCRIPT_DIR = Path(__file__).parent.parent.resolve()
 def main():
     cmd = cargo_command(
         "test",
-        "-p", "zccache-daemon",
-        "--test", "perf_bench_test",
+        "-p", "zccache",
+        "--test", "daemon_perf_bench_test",
         "--",
         "--nocapture",
         "--ignored",
