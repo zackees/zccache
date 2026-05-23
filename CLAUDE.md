@@ -1,6 +1,8 @@
 # CLAUDE.md
 
-zccache is a local-first compiler cache daemon (11 crates). See @docs/CLAUDE.md for which architecture doc to read based on what you're working on, and where to document new features.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+zccache is a local-first compiler cache (21 crates) for C/C++/Rust/Emscripten, inspired by sccache but optimized for warm-hit latency. Architecture: a persistent `zccache-daemon` holds an in-memory metadata cache and a filesystem watcher; the `zccache` CLI (binary in `zccache-cli`) shells out per compile but talks to the daemon over a single length-prefixed bincode IPC roundtrip (Unix sockets / Windows named pipes via `zccache-ipc`). The daemon is lazily started by the CLI when not running. See @docs/CLAUDE.md for which architecture doc to read based on what you're working on, and where to document new features.
 
 > [!IMPORTANT]
 > ## Performance work → read [PERF.md](PERF.md) FIRST
@@ -90,6 +92,7 @@ Hooks are in `ci/hooks/` (Python) and `crates/zccache-ci` (Rust):
 - **PreToolUse**: `ci/hooks/tool_guard.py` blocks bare Rust commands (must use `soldr`) and bare `python`/`pip` (must use `uv`)
 - **PostToolUse**: `ci/hooks/lint.py` auto-formats + runs clippy on edited `.rs` files
 - **PostToolUse**: `ci/hooks/readme_guard.py` errors if directory lacks README.md
+- **PostToolUse**: `ci/hooks/loc_guard.py` warns when an edited source file exceeds 1,000 LOC and hard-blocks (exit 2) above 1,500 LOC — split into focused submodules before the file crosses the threshold
 - **SessionStart**: `ci/hooks/check-on-start.py` captures git fingerprint
 - **Stop**: `soldr cargo run -p zccache-ci` runs lint + unit tests in parallel (skips if no changes)
 
@@ -112,6 +115,7 @@ Hooks are in `ci/hooks/` (Python) and `crates/zccache-ci` (Rust):
 - **Protocol version bump required on wire format changes.** When changing `Request`, `Response`, or any struct serialized over IPC, bump `PROTOCOL_VERSION` in `zccache-protocol`. See DD-018.
 - **Zero extra roundtrips.** Never add a separate handshake, version check, or metadata query that requires its own IPC roundtrip. Piggyback on existing messages instead. Example: protocol version is embedded in every message frame, not fetched via a separate Status request. If you need new metadata exchanged between CLI and daemon, add it to the framing layer or to an existing request/response - never introduce a new preliminary exchange.
 - **Avoid gratuitous `clone()`.** Do not clone to placate the borrow checker - restructure code instead. Prefer: moves over clones for single-use values, `&str`/`&Path` over owned types in function signatures that only read, `Arc::clone(&x)` over cloning the inner data then wrapping. Cloning is acceptable when data genuinely needs to exist in two places (e.g., inserting into a map while retaining a copy, or moving into a spawned task). Every `clone()` on a `Vec`, `String`, or `PathBuf` should be justified - if you can't explain why both the original and the copy are needed, eliminate it.
+- **No source file over 1,000 LOC.** Enforced by the `loc_guard.py` PostToolUse hook (warns >1K, blocks >1.5K). The split pattern is "convert `foo.rs` → `foo/mod.rs` + per-domain files alongside, with tests in a `tests/` subdirectory". PRs #355–#363 are the precedents (server.rs, cli/main.rs, perf_bench_test.rs, compiler/lib.rs, server/{tests,mod}.rs, compile_journal.rs, depgraph/snapshot.rs). Re-export `pub` items from `mod.rs` so the public path is unchanged.
 - **Preserve cache-file mtime on hits — never stamp `now()`.** Materializing a cached artifact (`write_cached_output`, `write_cached_file`, `write_cached_payload`, `write_payloads_par`) must leave the resulting file's mtime equal to the cache file's stored mtime. The hardlink fast path already inherits the cache mtime; do not add a `touch_mtime` / `set_file_mtime(_, now())` after the link. **Why:** cargo's incremental fingerprint records the artifact's mtime at first compile and treats a later "newer" mtime as evidence the artifact was externally modified — invalidating the downstream graph and paying re-link / re-fingerprint cost that fully cancels the cache savings. Measured in iter7 of the cold-tar-untar-warm OODA loop: switching `touch_mtime` to a no-op cut per-hit overhead from 5.9 ms to 2.8 ms and recovered the bin-caching win (warm 11.6 s → 9.8 s on the same code). The named `touch_mtime` seam is kept as a marker so the rule is greppable; if a future cc/cpp consumer needs `mtime = now()` semantics for make/ninja, gate it on the consumer rather than re-globalizing the behavior.
 
 ## Core Principles

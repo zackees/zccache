@@ -1,35 +1,92 @@
 # Crates Architecture
 
+21 crates split into two product surfaces: the **compile cache** (`zccache-daemon` + `zccache-cli`, plus their library subsystems) and a separate **download cache** (`zccache-download-daemon` + `zccache-download-cli`, plus their library subsystems). A few utility binaries (`zccache-fp`, `zccache-stamp`) and one CI lib (`zccache-ci`) round out the workspace.
+
 ## Dependency Graph
 
 ```
-zccache-daemon (bin) ─────────────────────────────────────────┐
-  ├─ zccache-ipc ─── zccache-protocol ─── zccache-core       │
-  ├─ zccache-fscache ─── zccache-core                        │
-  ├─ zccache-artifact ─── zccache-hash ─── zccache-core      │
-  ├─ zccache-watcher ─── zccache-fscache                     │
-  └─ zccache-compiler ─── zccache-hash                       │
-                                                              │
-zccache-cli (bin: "zccache") ─────────────────────────────────┤
-  ├─ zccache-ipc                                              │
-  ├─ zccache-protocol                                         │
-  └─ zccache-core                                             │
-                                                              │
-zccache-test-support (test utilities) ────────────────────────┘
+APPLICATION BINARIES
+────────────────────
+zccache-cli (bin "zccache")  ──┐
+  deps: artifact, compiler, core, hash, ipc, protocol,
+        download, download-client, gha, symbols      │
+                                                      │
+zccache-daemon (bin)  ─────────┤
+  deps: artifact, compiler, core, hash, ipc, protocol,
+        fscache, watcher, depgraph, fingerprint,      │
+        test-support (dev only)                       │
+                                                      │
+zccache-download-daemon (bin)  ┤  deps: core, ipc, download, download-protocol
+zccache-download-cli (bin "zccache-download")  ┤  deps: download, download-client
+                                                      │
+SIDECAR BINARIES                                      │
+────────────────                                      │
+zccache-fp (in zccache-fingerprint)  ┤  deps: core, hash
+zccache-stamp (in zccache-symbols)   ┤  deps: core
+                                                      │
+COMPILE-CACHE SUBSYSTEM LIBS                          │
+────────────────────────────                          │
+zccache-artifact ───── hash ──── core
+zccache-compiler ──── hash
+zccache-fscache ───── core
+zccache-watcher ───── fscache
+zccache-depgraph ──── hash, core
+zccache-fingerprint ── hash, core
+zccache-protocol ──── core
+zccache-ipc ──────── protocol, core
+                                                      │
+DOWNLOAD-CACHE SUBSYSTEM LIBS                         │
+─────────────────────────────                         │
+zccache-download ──── core
+zccache-download-protocol ─── download, core
+zccache-download-client  ──── download, download-protocol,
+                              download-daemon, core, ipc
+                                                      │
+SHARED FOUNDATIONS                                    │
+──────────────────                                    │
+zccache-core   (Error/Result, Config, NormalizedPath)
+zccache-hash   (blake3 ContentHash, CacheKeyBuilder)
+                                                      │
+OTHER                                                 │
+─────                                                 │
+zccache-gha          (lib, no internal deps)
+zccache-symbols      (lib + zccache-stamp bin)
+zccache-ci           (lib, used by Stop hook — core, ipc)
+zccache-test-support (dev-only test utilities)
 ```
 
 ## Crate Responsibilities
 
+### Shared foundations
 - **zccache-core** — Shared error types (`Error`/`Result`), `Config`, `NormalizedPath` for cross-platform path handling
 - **zccache-hash** — `ContentHash` (blake3), `CacheKeyBuilder` with domain-separated deterministic hashing
-- **zccache-protocol** — `Request`/`Response` enums, `ArtifactData`, length-prefixed bincode framing
+
+### Compile-cache subsystem libs
+- **zccache-protocol** — `Request`/`Response` enums, `ArtifactData`, length-prefixed bincode framing; bump `PROTOCOL_VERSION` on any wire-format change
 - **zccache-ipc** — Platform IPC endpoint discovery (`default_endpoint()`: Unix sockets vs named pipes)
 - **zccache-fscache** — `MetadataCache` (DashMap-backed) with `Confidence` levels and time-based decay
-- **zccache-artifact** — Content-addressed disk store with 2-level hex sharding, redb index for LRU eviction
+- **zccache-artifact** — Content-addressed disk store with 2-level hex sharding, redb index for LRU eviction; also Rust-plan bundle save/restore
 - **zccache-watcher** — `FileWatcher` trait over notify crate; dedicated OS thread, events via tokio channel
-- **zccache-compiler** — `CompilerFamily` detection, `ParsedInvocation` for cacheability checks
-- **zccache-daemon** — Tokio async runtime, IPC server, orchestrates all subsystems
-- **zccache-cli** — Subcommands: start, stop, status, clear, wrap, inspect
+- **zccache-compiler** — `CompilerFamily` detection, `ParsedInvocation` for cacheability checks (clang/gcc/msvc/rustc/clang-cl), plus `parse_linker`, `parse_archiver`, `parse_msvc`, `parse_rustfmt`, `response_file`, `strict_paths`, `arduino` submodules
+- **zccache-depgraph** — Persistent dependency graph for cache invalidation; snapshot save/load, dep walker
+- **zccache-fingerprint** — File fingerprinting engine + `zccache-fp` CLI for inspecting/marking fingerprints
+
+### Compile-cache application binaries
+- **zccache-daemon** — Tokio async runtime, IPC server, orchestrates all compile-cache subsystems
+- **zccache-cli** — `zccache` binary: subcommands (start/stop/status/clear/analyze/warm/session/snapshot/cargo-registry/gha/rust-plan/fp/symbols), compiler wrapper mode, daemon lifecycle, GHA + Rust-plan save/restore
+
+### Download-cache (separate daemon for fetching cached artifact archives)
+- **zccache-download** — Core download engine and types
+- **zccache-download-protocol** — IPC protocol for download daemon
+- **zccache-download-client** — Rust client API for the download daemon
+- **zccache-download-daemon** — Per-user `zccache-download-daemon` binary
+- **zccache-download-cli** — `zccache-download` CLI binary
+
+### Other
+- **zccache-symbols** — Release-build marker, symbol cache, and symbol-archive fetcher; ships `zccache-stamp` CI helper
+- **zccache-gha** — GitHub Actions Cache API client (used by both daemons for shared caching)
+- **zccache-ci** — Stop-hook helper (process/thread dumping) run after every Claude Code Stop event
+- **zccache-test-support** — Shared test utilities (dev-dependency only)
 
 ## Key Design Patterns
 
@@ -43,6 +100,6 @@ zccache-test-support (test utilities) ──────────────
 
 **Concurrency:** Tokio tasks for IPC, DashMap for metadata cache (sharded lock-free reads), redb MVCC for artifact index, file watcher on dedicated OS thread.
 
-## Current Status
+## File-size discipline
 
-Phase 0 (scaffolding) is complete. All 11 crates are stubbed with real types, traits, and tests. Phase 1 (daemon + CLI + IPC) is next. See @docs/ROADMAP.md for the full phased plan.
+No source file > 1,000 LOC. Enforced by `ci/hooks/loc_guard.py` (warns >1K, blocks >1.5K). When a file approaches the cap, convert it to a directory module: `foo.rs` → `foo/mod.rs` + per-domain files alongside, with tests in a `tests/` subdirectory. Re-export `pub` items from `mod.rs` so the public path is unchanged. Precedents: PRs #355–#363 split server.rs, cli/main.rs, perf_bench_test.rs, compiler/lib.rs, server/{tests,mod}.rs, compile_journal.rs, and depgraph/snapshot.rs.
