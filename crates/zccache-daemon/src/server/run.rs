@@ -390,7 +390,7 @@ impl DaemonServer {
     /// Initialize the file watcher pipeline:
     /// `NotifyWatcher (OS thread) → SettleBuffer (tokio task) → CacheSystem consumer (tokio task)`
     async fn start_watcher_pipeline(&self) {
-        let ignore = Arc::new(zccache_watcher::IgnoreFilter::default());
+        let ignore = Arc::new(zccache_monocrate::watcher::IgnoreFilter::default());
         let (watcher, raw_rx) = match NotifyWatcher::new(ignore) {
             Ok(w) => w,
             Err(e) => {

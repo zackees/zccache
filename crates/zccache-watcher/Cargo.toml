@@ -7,33 +7,22 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
-description = "Filesystem watching subsystem for zccache"
+description = "PyO3 cdylib hosting the `zccache.watcher._native` extension module"
 
 [lib]
 crate-type = ["rlib", "cdylib"]
 
 [features]
+default = []
 python = ["dep:pyo3"]
 
 [dependencies]
-notify = { workspace = true }
-tokio = { workspace = true }
-tracing = { workspace = true }
-thiserror = { workspace = true }
 zccache-monocrate = { workspace = true }
-zccache-fscache = { workspace = true }
-pyo3 = { version = "0.23", features = ["extension-module", "generate-import-lib", "abi3-py310"], optional = true }
-jwalk = { workspace = true }
-globset = "0.4"
-rayon = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }
-criterion = { version = "0.5", features = ["html_reports"] }
-
-[[bench]]
-name = "scan_metadata"
-harness = false
+pyo3 = { version = "0.23", features = [
+    "extension-module",
+    "generate-import-lib",
+    "abi3-py310",
+], optional = true }
 
 [build-dependencies]
 pyo3-build-config = "0.23"

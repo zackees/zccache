@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use serde_json::Value;
-use zccache_artifact::{
+use zccache_monocrate::artifact::{
     RustArtifactClass, RustArtifactPlanV1, RustPlanInputs, RustPlanMode, RustPlanPackages,
     RustToolchainIdentity,
 };

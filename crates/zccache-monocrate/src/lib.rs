@@ -5,11 +5,15 @@
 //! should `use zccache_monocrate::<module>::*` instead of the legacy
 //! `zccache_<module>::*` paths, which are being deleted wave by wave.
 
+pub mod artifact;
+pub mod compiler;
 pub mod core;
+pub mod fscache;
 pub mod gha;
 pub mod hash;
 pub mod ipc;
 pub mod protocol;
+pub mod watcher;
 
 #[cfg(feature = "test-support")]
 pub mod test_support;

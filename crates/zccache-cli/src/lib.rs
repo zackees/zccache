@@ -81,7 +81,7 @@ pub fn run_ino_convert_cached(
     } else {
         b"no-arduino-h"
     });
-    if let Some(libclang_hash) = zccache_compiler::arduino::libclang_hash() {
+    if let Some(libclang_hash) = zccache_monocrate::compiler::arduino::libclang_hash() {
         hasher.update(libclang_hash.as_bytes());
     }
     for arg in &options.clang_args {
@@ -98,9 +98,9 @@ pub fn run_ino_convert_cached(
         return restore_cached_ino_output(&cached_cpp, output);
     }
 
-    let generated = zccache_compiler::arduino::generate_ino_cpp(
+    let generated = zccache_monocrate::compiler::arduino::generate_ino_cpp(
         input,
-        &zccache_compiler::arduino::ArduinoConversionOptions {
+        &zccache_monocrate::compiler::arduino::ArduinoConversionOptions {
             clang_args: options.clang_args.clone(),
             inject_arduino_include: options.inject_arduino_include,
         },

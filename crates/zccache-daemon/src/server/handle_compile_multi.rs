@@ -35,7 +35,7 @@ pub(super) enum UnitCacheResult {
 /// compilations where all units share the same flags.
 pub(super) fn check_unit_cache(
     state: &SharedState,
-    compilation: &zccache_compiler::CacheableCompilation,
+    compilation: &zccache_monocrate::compiler::CacheableCompilation,
     cwd_path: &Path,
     key_root: &NormalizedPath,
     system_includes: &[NormalizedPath],
@@ -296,7 +296,7 @@ pub(super) async fn handle_compile_multi(
     state: Arc<SharedState>,
     sid: SessionId,
     compiler: NormalizedPath,
-    compilations: Vec<zccache_compiler::CacheableCompilation>,
+    compilations: Vec<zccache_monocrate::compiler::CacheableCompilation>,
     original_args: Arc<[String]>,
     source_indices: Vec<usize>,
     cwd_path: NormalizedPath,
@@ -317,7 +317,7 @@ pub(super) async fn handle_compile_multi(
     let shared_base: Arc<CompileContext> = {
         let first = &compilations[0];
         let parsed = match first.family {
-            zccache_compiler::CompilerFamily::Msvc => {
+            zccache_monocrate::compiler::CompilerFamily::Msvc => {
                 zccache_depgraph::msvc_args::parse_msvc_args(&first.original_args, &cwd_path)
             }
             _ => zccache_depgraph::args::parse_gnu_args(&first.original_args, &cwd_path),
@@ -503,7 +503,7 @@ pub(super) async fn handle_compile_multi(
         compiler_args.push("-MD".to_string());
     }
 
-    let _rsp_guard = match zccache_compiler::response_file::write_response_file_if_needed(
+    let _rsp_guard = match zccache_monocrate::compiler::response_file::write_response_file_if_needed(
         &compiler_args,
         &state.depfile_tmpdir,
     ) {

@@ -180,7 +180,7 @@ fn request_cache_resolved_inputs_requires_cross_root_shareable_entry() {
 
 #[test]
 fn request_cache_inputs_fresh_since_uses_journal_tracking() {
-    let journal = zccache_fscache::ChangeJournal::new();
+    let journal = zccache_monocrate::fscache::ChangeJournal::new();
     let path: NormalizedPath = "/tmp/request-cache-input.cc".into();
     let clock = journal.current_clock();
 

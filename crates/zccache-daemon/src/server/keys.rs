@@ -146,8 +146,8 @@ pub(super) fn has_ffile_prefix_map_for_old(args: &[String], old: &Path) -> bool 
 
 pub(super) fn compiler_supports_ffile_prefix_map(compiler_path: &Path) -> bool {
     matches!(
-        zccache_compiler::detect_family(&compiler_path.to_string_lossy()),
-        zccache_compiler::CompilerFamily::Clang | zccache_compiler::CompilerFamily::Gcc
+        zccache_monocrate::compiler::detect_family(&compiler_path.to_string_lossy()),
+        zccache_monocrate::compiler::CompilerFamily::Clang | zccache_monocrate::compiler::CompilerFamily::Gcc
     )
 }
 
@@ -423,7 +423,7 @@ pub(super) fn request_cache_resolved_inputs(
 }
 
 pub(super) fn request_cache_inputs_fresh_since(
-    journal: &zccache_fscache::ChangeJournal,
+    journal: &zccache_monocrate::fscache::ChangeJournal,
     paths: &[NormalizedPath],
     since: Clock,
 ) -> bool {
@@ -492,11 +492,11 @@ pub(super) fn request_cache_artifact_matches(
 
 pub(super) fn strict_paths_mode_from_client_env(
     client_env: Option<&[(String, String)]>,
-) -> Result<zccache_compiler::strict_paths::StrictPathsMode, String> {
+) -> Result<zccache_monocrate::compiler::strict_paths::StrictPathsMode, String> {
     let Some(env) = client_env else {
-        return Ok(zccache_compiler::strict_paths::StrictPathsMode::Off);
+        return Ok(zccache_monocrate::compiler::strict_paths::StrictPathsMode::Off);
     };
-    zccache_compiler::strict_paths::StrictPathsMode::from_env_vars(
+    zccache_monocrate::compiler::strict_paths::StrictPathsMode::from_env_vars(
         env.iter()
             .map(|(key, value)| (key.as_str(), value.as_str())),
     )

@@ -43,7 +43,7 @@ pub(super) async fn handle_compile(
         Err(err) => return compile_failure_stderr(format!("zccache: {err}")),
     };
     if let Err(err) =
-        zccache_compiler::strict_paths::validate_args(&expanded_args, strict_paths_mode)
+        zccache_monocrate::compiler::strict_paths::validate_args(&expanded_args, strict_paths_mode)
     {
         let compiler = compiler_path.display().to_string();
         return compile_failure_stderr(err.diagnostic(&compiler, &expanded_args));
@@ -277,10 +277,10 @@ pub(super) async fn handle_compile(
     // ── Phase: expand response files + parse args ─────────────────────
     let t0 = std::time::Instant::now();
     let compiler_str = compiler.to_str().unwrap_or("");
-    let parsed = zccache_compiler::parse_invocation(compiler_str, &effective_args);
+    let parsed = zccache_monocrate::compiler::parse_invocation(compiler_str, &effective_args);
     let compilation = match parsed {
-        zccache_compiler::ParsedInvocation::Cacheable(c) => c,
-        zccache_compiler::ParsedInvocation::NonCacheable { reason } => {
+        zccache_monocrate::compiler::ParsedInvocation::Cacheable(c) => c,
+        zccache_monocrate::compiler::ParsedInvocation::NonCacheable { reason } => {
             state.stats.record_non_cacheable();
             record_session_stat(&state.sessions, &sid, |t| t.record_non_cacheable());
             write_session_log(&state.sessions, &sid, &format!("non-cacheable: {reason}"));
@@ -297,7 +297,7 @@ pub(super) async fn handle_compile(
             )
             .await;
         }
-        zccache_compiler::ParsedInvocation::MultiFile {
+        zccache_monocrate::compiler::ParsedInvocation::MultiFile {
             compilations,
             original_args,
             source_indices,
@@ -858,7 +858,7 @@ pub(super) async fn handle_compile(
     // For MSVC, use /showIncludes to get complete dependency info
     // (equivalent to depfiles for gcc/clang). This enables cache hits
     // for files with computed includes like `#include MACRO`.
-    if compilation.family == zccache_compiler::CompilerFamily::Msvc
+    if compilation.family == zccache_monocrate::compiler::CompilerFamily::Msvc
         && depfile_strategy == DepfileStrategy::Unsupported
     {
         if !dep_flags.has_md {
@@ -877,7 +877,7 @@ pub(super) async fn handle_compile(
         &combined_args
     };
 
-    let _rsp_guard = match zccache_compiler::response_file::write_response_file_if_needed(
+    let _rsp_guard = match zccache_monocrate::compiler::response_file::write_response_file_if_needed(
         rsp_args,
         &state.depfile_tmpdir,
     ) {

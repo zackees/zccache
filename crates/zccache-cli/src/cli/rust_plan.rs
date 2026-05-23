@@ -2,7 +2,7 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use zccache_artifact::{
+use zccache_monocrate::artifact::{
     restore_rust_plan_local, rust_plan_bundle_dir, rust_plan_cache_key, save_rust_plan_local,
     RustArtifactPlanV1, RustPlanError, RustPlanOperation, RustPlanSummary,
 };

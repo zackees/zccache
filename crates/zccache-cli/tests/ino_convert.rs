@@ -3,7 +3,7 @@ use std::thread;
 use std::time::Duration;
 
 fn libclang_available() -> bool {
-    zccache_compiler::arduino::can_load_libclang()
+    zccache_monocrate::compiler::arduino::can_load_libclang()
 }
 
 #[test]

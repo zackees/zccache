@@ -14,7 +14,7 @@ use std::path::Path;
 use std::time::Duration;
 use zccache_monocrate::core::NormalizedPath;
 use zccache_depgraph::{ContextKey, DepGraph};
-use zccache_fscache::CacheSystem;
+use zccache_monocrate::fscache::CacheSystem;
 
 use crate::server::{trim_fast_hit_cache, CachedArtifact, FastHitEntry};
 
@@ -293,7 +293,7 @@ mod tests {
     use crate::server::CachedPayload;
     use std::time::{Instant, SystemTime};
     use zccache_depgraph::CompileContext;
-    use zccache_fscache::{Confidence, FileMetadata};
+    use zccache_monocrate::fscache::{Confidence, FileMetadata};
 
     fn empty_caches() -> (
         CacheSystem,
@@ -342,7 +342,7 @@ mod tests {
         fh.insert(
             make_context_key("/tmp/snap.c"),
             FastHitEntry {
-                clock: zccache_fscache::Clock::ZERO,
+                clock: zccache_monocrate::fscache::Clock::ZERO,
                 artifact_key_hex: String::new(),
                 cached_at: Instant::now(),
             },
@@ -370,7 +370,7 @@ mod tests {
             fh.insert(
                 make_context_key(&format!("/tmp/fh{i}.c")),
                 FastHitEntry {
-                    clock: zccache_fscache::Clock::ZERO,
+                    clock: zccache_monocrate::fscache::Clock::ZERO,
                     artifact_key_hex: String::new(),
                     cached_at: Instant::now(),
                 },
@@ -463,7 +463,7 @@ mod tests {
             fh.insert(
                 make_context_key(&format!("/tmp/inflight{i}.c")),
                 FastHitEntry {
-                    clock: zccache_fscache::Clock::ZERO,
+                    clock: zccache_monocrate::fscache::Clock::ZERO,
                     artifact_key_hex: String::new(),
                     cached_at: Instant::now(),
                 },
@@ -493,7 +493,7 @@ mod tests {
     }
 
     fn make_artifact(payload_size: usize) -> CachedArtifact {
-        use zccache_artifact::ArtifactIndex;
+        use zccache_monocrate::artifact::ArtifactIndex;
         CachedArtifact {
             meta: ArtifactIndex::new(
                 vec!["test.o".to_string()],

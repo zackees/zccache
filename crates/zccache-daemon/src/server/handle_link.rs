@@ -15,8 +15,8 @@ pub(super) async fn handle_link_ephemeral(
     env: Option<Vec<(String, String)>>,
 ) -> Response {
     let lineage = crate::lineage::Lineage::current(Some(client_pid), None);
-    use zccache_compiler::parse_archiver::{parse_archive_invocation, ParsedArchiveInvocation};
-    use zccache_compiler::parse_linker::{parse_linker_invocation, ParsedLinkerInvocation};
+    use zccache_monocrate::compiler::parse_archiver::{parse_archive_invocation, ParsedArchiveInvocation};
+    use zccache_monocrate::compiler::parse_linker::{parse_linker_invocation, ParsedLinkerInvocation};
 
     state.stats.record_link();
     let worktree_root = resolve_worktree_root(cwd, env.as_deref());
@@ -39,7 +39,7 @@ pub(super) async fn handle_link_ephemeral(
     let parsed_tool = match parse_archive_invocation(tool.to_str().unwrap_or(""), args) {
         ParsedArchiveInvocation::Cacheable(c) => ParsedTool {
             non_determinism_hint: match c.family {
-                zccache_compiler::parse_archiver::ArchiverFamily::MsvcLib => "/BREPRO".to_string(),
+                zccache_monocrate::compiler::parse_archiver::ArchiverFamily::MsvcLib => "/BREPRO".to_string(),
                 _ => "D".to_string(),
             },
             input_files: c.input_files,
@@ -53,7 +53,7 @@ pub(super) async fn handle_link_ephemeral(
             match parse_linker_invocation(tool.to_str().unwrap_or(""), args.to_vec()) {
                 ParsedLinkerInvocation::Cacheable(c) => ParsedTool {
                     non_determinism_hint: match c.family {
-                        zccache_compiler::parse_linker::LinkerFamily::MsvcLink => {
+                        zccache_monocrate::compiler::parse_linker::LinkerFamily::MsvcLink => {
                             "/DETERMINISTIC".to_string()
                         }
                         _ => "--build-id=sha1 (avoid --build-id=uuid)".to_string(),
@@ -476,7 +476,7 @@ pub(super) async fn run_tool_passthrough(
     tmp_dir: &Path,
 ) -> Response {
     let _rsp_guard =
-        match zccache_compiler::response_file::write_response_file_if_needed(args, tmp_dir) {
+        match zccache_monocrate::compiler::response_file::write_response_file_if_needed(args, tmp_dir) {
             Ok(guard) => guard,
             Err(e) => {
                 return Response::Error {

@@ -5,7 +5,7 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use zccache_compiler::strict_paths::StrictPathsMode;
+use zccache_monocrate::compiler::strict_paths::StrictPathsMode;
 use zccache_monocrate::core::NormalizedPath;
 
 use super::daemon::{ensure_daemon, which_on_path};
@@ -39,7 +39,7 @@ fn run_passthrough(args: &[String]) -> ExitCode {
 /// preserving their mtime and avoiding unnecessary downstream rebuilds.
 /// After formatting, the new content hash of each file is stored in the cache.
 fn run_rustfmt_cached(rustfmt_path: &Path, args: &[String], cwd: &Path) -> ExitCode {
-    use zccache_compiler::parse_rustfmt::{find_rustfmt_config, parse_rustfmt_invocation};
+    use zccache_monocrate::compiler::parse_rustfmt::{find_rustfmt_config, parse_rustfmt_invocation};
 
     let parsed = match parse_rustfmt_invocation(args) {
         Some(p) => p,
@@ -180,7 +180,7 @@ fn run_rustfmt_on_files(
     rustfmt_path: &Path,
     original_args: &[String],
     files: &[NormalizedPath],
-    parsed: &zccache_compiler::parse_rustfmt::ParsedRustfmt,
+    parsed: &zccache_monocrate::compiler::parse_rustfmt::ParsedRustfmt,
 ) -> Result<i32, std::io::Error> {
     // Reconstruct args: flags + the miss files (not the original file list)
     let mut cmd = std::process::Command::new(rustfmt_path);
@@ -321,13 +321,13 @@ pub(crate) fn run_wrap(
     let _ = std::env::set_current_dir(std::env::temp_dir());
 
     // Check if this is a rustfmt invocation — handle via format cache path
-    if zccache_compiler::detect_family(&args[0]).is_formatter() {
+    if zccache_monocrate::compiler::detect_family(&args[0]).is_formatter() {
         return run_rustfmt_cached(&wrapped_tool, &tool_args, &cwd);
     }
 
     // Check if this is an archiver or linker tool (including gcc -shared)
-    if zccache_compiler::parse_archiver::is_archiver(&args[0])
-        || zccache_compiler::parse_linker::is_link_invocation(&args[0], &tool_args)
+    if zccache_monocrate::compiler::parse_archiver::is_archiver(&args[0])
+        || zccache_monocrate::compiler::parse_linker::is_link_invocation(&args[0], &tool_args)
     {
         return run_async(cmd_link_ephemeral(
             &endpoint,
@@ -338,7 +338,7 @@ pub(crate) fn run_wrap(
         ));
     }
 
-    if let Err(err) = zccache_compiler::strict_paths::validate_args(&tool_args, strict_paths_mode) {
+    if let Err(err) = zccache_monocrate::compiler::strict_paths::validate_args(&tool_args, strict_paths_mode) {
         eprintln!("{}", err.diagnostic(&args[0], &tool_args));
         return ExitCode::FAILURE;
     }

@@ -67,7 +67,7 @@ pub(super) async fn run_compiler_direct(
     tmp_dir: &Path,
 ) -> Response {
     let _rsp_guard =
-        match zccache_compiler::response_file::write_response_file_if_needed(args, tmp_dir) {
+        match zccache_monocrate::compiler::response_file::write_response_file_if_needed(args, tmp_dir) {
             Ok(guard) => guard,
             Err(e) => {
                 return Response::Error {

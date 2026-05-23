@@ -41,7 +41,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
-use zccache_artifact::{ArtifactIndex, ArtifactStore};
+use zccache_monocrate::artifact::{ArtifactIndex, ArtifactStore};
 use zccache_monocrate::core::NormalizedPath;
 use zccache_daemon::DaemonServer;
 

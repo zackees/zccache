@@ -59,7 +59,7 @@ pub(crate) async fn cmd_clear(endpoint: &str) -> ExitCode {
 pub(crate) fn cmd_kv(action: super::args::KvCommands) -> ExitCode {
     use super::args::KvCommands;
     use std::io::{Read, Write};
-    use zccache_artifact::{Key, KvError, KvStore};
+    use zccache_monocrate::artifact::{Key, KvError, KvStore};
 
     fn open_store() -> Result<KvStore, ExitCode> {
         match KvStore::open_default() {
@@ -324,7 +324,7 @@ pub(crate) fn warm_target(
         return Err(format!("no artifact index at {}", index_path.display()));
     }
 
-    let store = zccache_artifact::ArtifactStore::open(index_path)
+    let store = zccache_monocrate::artifact::ArtifactStore::open(index_path)
         .map_err(|e| format!("failed to open artifact index: {e}"))?;
 
     let all_entries = store.load_all();

@@ -16,11 +16,11 @@ fn warm_restores_rust_artifacts_to_correct_paths() {
     std::fs::create_dir_all(&artifact_dir).unwrap();
 
     // Create a fake artifact store with two Rust crates
-    let store = zccache_artifact::ArtifactStore::open(&index_path).unwrap();
+    let store = zccache_monocrate::artifact::ArtifactStore::open(&index_path).unwrap();
 
     // Artifact 1: libserde-abc123.rlib + libserde-abc123.rmeta + serde-abc123.d
     let key1 = "aaaaaaaabbbbbbbb";
-    let idx1 = zccache_artifact::ArtifactIndex::new(
+    let idx1 = zccache_monocrate::artifact::ArtifactIndex::new(
         vec![
             "libserde-abc123.rlib".to_string(),
             "libserde-abc123.rmeta".to_string(),
@@ -39,7 +39,7 @@ fn warm_restores_rust_artifacts_to_correct_paths() {
 
     // Artifact 2: libproc_macro2-def456.rlib
     let key2 = "ccccccccdddddddd";
-    let idx2 = zccache_artifact::ArtifactIndex::new(
+    let idx2 = zccache_monocrate::artifact::ArtifactIndex::new(
         vec!["libproc_macro2-def456.rlib".to_string()],
         vec![200],
         vec![],
@@ -51,7 +51,7 @@ fn warm_restores_rust_artifacts_to_correct_paths() {
 
     // Artifact 3: NOT Rust (C++ object file) — should be filtered out
     let key3 = "eeeeeeeeffffffff";
-    let idx3 = zccache_artifact::ArtifactIndex::new(
+    let idx3 = zccache_monocrate::artifact::ArtifactIndex::new(
         vec!["foo.o".to_string()],
         vec![300],
         vec![],
@@ -129,9 +129,9 @@ fn warm_skips_missing_payloads() {
 
     std::fs::create_dir_all(&artifact_dir).unwrap();
 
-    let store = zccache_artifact::ArtifactStore::open(&index_path).unwrap();
+    let store = zccache_monocrate::artifact::ArtifactStore::open(&index_path).unwrap();
     let key = "1111111122222222";
-    let idx = zccache_artifact::ArtifactIndex::new(
+    let idx = zccache_monocrate::artifact::ArtifactIndex::new(
         vec!["libfoo-xyz.rlib".to_string()],
         vec![100],
         vec![],

@@ -42,7 +42,7 @@ pub(super) struct SharedState {
     /// Written on flush (`Clear`) and shutdown (`Shutdown`); read at
     /// daemon startup so warm-side daemons spawned after `soldr load`
     /// start with their fast path already populated instead of an
-    /// empty `DashMap`. See `zccache_fscache::persistence`.
+    /// empty `DashMap`. See `zccache_monocrate::fscache::persistence`.
     pub(super) metadata_path: NormalizedPath,
     /// Temporary directory for injected depfiles.
     pub(super) depfile_tmpdir: NormalizedPath,

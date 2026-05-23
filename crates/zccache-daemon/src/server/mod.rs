@@ -13,17 +13,17 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify};
-use zccache_artifact::{ArtifactIndex, ArtifactStore};
+use zccache_monocrate::artifact::{ArtifactIndex, ArtifactStore};
 use zccache_monocrate::core::NormalizedPath;
 use zccache_depgraph::{
     CompileContext, ContextKey, DepGraph, DepfileStrategy, SessionId, SessionManager,
     SystemIncludeCache, UserDepFlags,
 };
-use zccache_fscache::{CacheSystem, Clock};
+use zccache_monocrate::fscache::{CacheSystem, Clock};
 use zccache_monocrate::hash::ContentHash;
 use zccache_monocrate::ipc::{IpcConnection, IpcListener};
 use zccache_monocrate::protocol::{ArtifactData, ArtifactOutput, ArtifactPayload, Request, Response};
-use zccache_watcher::{NotifyWatcher, SettleBuffer, SettledEvent};
+use zccache_monocrate::watcher::{NotifyWatcher, SettleBuffer, SettledEvent};
 
 use crate::compile_journal::{extract_outcome, CompileJournal, JournalContext, JournalEntry};
 use crate::fingerprint::FingerprintManager;

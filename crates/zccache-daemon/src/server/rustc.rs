@@ -22,19 +22,19 @@ pub(super) enum BuildContextResult {
 }
 
 pub(super) fn build_compile_context(
-    compilation: &zccache_compiler::CacheableCompilation,
+    compilation: &zccache_monocrate::compiler::CacheableCompilation,
     cwd: &Path,
     system_includes: &[NormalizedPath],
     client_env: &[(String, String)],
     compiler_hash_cache: &CompilerHashCache,
 ) -> BuildContextResult {
-    if compilation.family == zccache_compiler::CompilerFamily::Rustc {
+    if compilation.family == zccache_monocrate::compiler::CompilerFamily::Rustc {
         return build_rustc_compile_context(compilation, cwd, client_env, compiler_hash_cache);
     }
 
     // Dispatch to the correct parser based on compiler family.
     let parsed = match compilation.family {
-        zccache_compiler::CompilerFamily::Msvc => {
+        zccache_monocrate::compiler::CompilerFamily::Msvc => {
             zccache_depgraph::msvc_args::parse_msvc_args(&compilation.original_args, cwd)
         }
         _ => zccache_depgraph::args::parse_gnu_args(&compilation.original_args, cwd),
@@ -64,7 +64,7 @@ pub(super) fn build_compile_context(
 
 /// Build compile context for a Rustc invocation.
 pub(super) fn build_rustc_compile_context(
-    compilation: &zccache_compiler::CacheableCompilation,
+    compilation: &zccache_monocrate::compiler::CacheableCompilation,
     cwd: &Path,
     client_env: &[(String, String)],
     compiler_hash_cache: &CompilerHashCache,
@@ -418,8 +418,8 @@ pub(super) fn rust_args_have_remap_for_old(args: &[String], old: &Path) -> bool 
 }
 
 pub(super) fn compiler_is_rustc_like(compiler_path: &Path) -> bool {
-    zccache_compiler::detect_family(&compiler_path.to_string_lossy())
-        == zccache_compiler::CompilerFamily::Rustc
+    zccache_monocrate::compiler::detect_family(&compiler_path.to_string_lossy())
+        == zccache_monocrate::compiler::CompilerFamily::Rustc
 }
 
 pub(super) fn rustc_request_key_root(

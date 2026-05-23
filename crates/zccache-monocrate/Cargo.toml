@@ -37,6 +37,22 @@ bytes = { workspace = true }
 # ipc + test-support: needs full tokio
 tokio = { workspace = true }
 
+# fscache
+dashmap = { workspace = true }
+rayon = { workspace = true }
+
+# artifact
+redb = { workspace = true }
+tempfile = { workspace = true }
+
+# watcher
+notify = { workspace = true }
+jwalk = { workspace = true }
+globset = "0.4"
+
+# compiler
+clang = { workspace = true }
+
 # test-support (gated)
 tracing-subscriber = { workspace = true, optional = true }
 
@@ -52,7 +68,6 @@ windows-sys = { version = "0.59", features = [
 ] }
 
 [dev-dependencies]
-tempfile = { workspace = true }
 criterion = { version = "0.5", features = ["html_reports"] }
 # Self-dep so monocrate's own integration tests can pull in the gated
 # test_support module without needing a separate workspace member.
@@ -60,6 +75,10 @@ zccache-monocrate = { path = ".", features = ["test-support"] }
 
 [[bench]]
 name = "hashing"
+harness = false
+
+[[bench]]
+name = "scan_metadata"
 harness = false
 
 [[bin]]

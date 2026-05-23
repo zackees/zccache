@@ -96,8 +96,8 @@ pub(super) fn expand_rsp_recursive(
     seen: &mut HashSet<NormalizedPath>,
     dependencies: &mut Vec<RspDependency>,
     depth: usize,
-) -> Result<Vec<String>, zccache_compiler::response_file::ResponseFileError> {
-    use zccache_compiler::response_file::{parse_response_file_content, ResponseFileError};
+) -> Result<Vec<String>, zccache_monocrate::compiler::response_file::ResponseFileError> {
+    use zccache_monocrate::compiler::response_file::{parse_response_file_content, ResponseFileError};
 
     const MAX_RSP_DEPTH: usize = 10;
 

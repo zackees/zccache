@@ -60,7 +60,7 @@ impl DaemonServer {
         // correctness on every subsequent lookup).
         let metadata_path = zccache_monocrate::core::config::metadata_path_from_cache_dir(cache_dir);
         let cache_system =
-            match zccache_fscache::MetadataCache::load_from_disk(metadata_path.as_path()) {
+            match zccache_monocrate::fscache::MetadataCache::load_from_disk(metadata_path.as_path()) {
                 Ok(metadata) => {
                     let loaded = metadata.len();
                     if loaded > 0 {

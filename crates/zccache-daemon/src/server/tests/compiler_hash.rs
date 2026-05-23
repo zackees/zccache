@@ -80,9 +80,9 @@ fn rustc_context_build_reuses_compiler_hash_cache() {
         "-o".into(),
         output.to_string_lossy().into_owned(),
     ];
-    let compilation = zccache_compiler::CacheableCompilation {
+    let compilation = zccache_monocrate::compiler::CacheableCompilation {
         compiler: compiler.clone().into(),
-        family: zccache_compiler::CompilerFamily::Rustc,
+        family: zccache_monocrate::compiler::CompilerFamily::Rustc,
         source_file: source.clone().into(),
         output_file: output.into(),
         original_args: std::sync::Arc::from(args),

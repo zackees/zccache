@@ -7,11 +7,8 @@ members = [
     "crates/zccache-download-client",
     "crates/zccache-download-daemon",
     "crates/zccache-download-cli",
-    "crates/zccache-fscache",
-    "crates/zccache-artifact",
     "crates/zccache-depgraph",
     "crates/zccache-watcher",
-    "crates/zccache-compiler",
     "crates/zccache-daemon",
     "crates/zccache-cli",
     "crates/zccache-ci",
@@ -72,11 +69,8 @@ zccache-download-protocol = { path = "crates/zccache-download-protocol" }
 zccache-download = { path = "crates/zccache-download" }
 zccache-download-client = { path = "crates/zccache-download-client" }
 zccache-download-daemon = { path = "crates/zccache-download-daemon" }
-zccache-fscache = { path = "crates/zccache-fscache" }
-zccache-artifact = { path = "crates/zccache-artifact" }
 zccache-depgraph = { path = "crates/zccache-depgraph" }
 zccache-watcher = { path = "crates/zccache-watcher" }
-zccache-compiler = { path = "crates/zccache-compiler" }
 zccache-daemon = { path = "crates/zccache-daemon" }
 zccache-cli = { path = "crates/zccache-cli" }
 zccache-fingerprint = { path = "crates/zccache-fingerprint" }

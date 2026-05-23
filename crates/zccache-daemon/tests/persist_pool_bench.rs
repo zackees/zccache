@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tempfile::TempDir;
-use zccache_artifact::{ArtifactIndex, ArtifactStore};
+use zccache_monocrate::artifact::{ArtifactIndex, ArtifactStore};
 
 /// One synthetic "compile output": a cache key + one or more payload blobs.
 /// Mirrors `PersistJob` in server.rs.
