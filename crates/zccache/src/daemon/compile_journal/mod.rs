@@ -206,6 +206,14 @@ impl JournalEntry {
     /// `session-start --profile`. Pure transformation - no I/O.
     /// `spans` is owned by the compile handler; passing `None`
     /// emits a record without `self_profile_ns`.
+    ///
+    /// Issue #340: emits an empty `MissDiff` for every miss outcome under
+    /// `--profile` so consumers see the field consistently. Populating the
+    /// `changed_files` / `changed_flags` / `changed_deps` arrays requires a
+    /// `(crate_name, crate_type) -> prior_context` index that doesn't exist
+    /// in the depgraph today — tracked as a follow-up. The presence of an
+    /// empty `MissDiff` is the distinguishing signal from
+    /// `--profile`-off entries (where the field is omitted entirely).
     #[must_use]
     pub fn with_profile_fields(mut self, spans: Option<SelfProfileSpans>) -> Self {
         let derived_name = derive_crate_name(&self.args);
@@ -214,6 +222,9 @@ impl JournalEntry {
         self.crate_type = derived_type.map(str::to_string);
         self.crate_name = derived_name;
         self.self_profile_ns = spans.map(SelfProfileSpans::finish);
+        if matches!(self.outcome, "miss" | "link_miss") {
+            self.miss_diff = Some(MissDiff::default());
+        }
         self
     }
 }

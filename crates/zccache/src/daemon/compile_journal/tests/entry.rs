@@ -393,6 +393,38 @@ fn with_profile_fields_threads_self_profile_spans() {
 }
 
 #[test]
+fn with_profile_fields_emits_empty_miss_diff_on_miss() {
+    // Issue #340 acceptance criterion: a `--profile` miss must always include
+    // a `miss_diff` object, even when no prior context is available to diff
+    // against (first-seen miss). The empty-arrays form is the distinguishing
+    // signal between "diff was computed but nothing changed" and "diff was
+    // not computed because --profile is off" (the latter omits the field).
+    let ctx = make_ctx(vec!["--crate-name", "x", "--crate-type", "lib"]);
+    let entry = JournalEntry::new(ctx, "miss", 0, 1_234, Some(miss_reason::UNKNOWN))
+        .with_profile_fields(None);
+    let diff = entry.miss_diff.as_ref().expect("miss_diff must be Some");
+    assert!(diff.changed_files.is_empty());
+    assert!(diff.changed_flags.is_empty());
+    assert!(diff.changed_deps.is_empty());
+}
+
+#[test]
+fn with_profile_fields_emits_empty_miss_diff_on_link_miss() {
+    let ctx = make_ctx(vec!["--crate-name", "x", "--crate-type", "lib"]);
+    let entry = JournalEntry::new(ctx, "link_miss", 0, 1_234, Some(miss_reason::UNKNOWN))
+        .with_profile_fields(None);
+    assert!(entry.miss_diff.is_some());
+}
+
+#[test]
+fn with_profile_fields_omits_miss_diff_on_hit() {
+    // Hits never carry miss_diff regardless of --profile state.
+    let ctx = make_ctx(vec!["--crate-name", "x", "--crate-type", "lib"]);
+    let entry = JournalEntry::new(ctx, "hit", 0, 1_234, None).with_profile_fields(None);
+    assert!(entry.miss_diff.is_none());
+}
+
+#[test]
 fn legacy_entry_without_with_profile_fields_omits_all_new_fields() {
     // Issue #256 acceptance criterion: when --profile is OFF the
     // journal record must serialize without crate_name, crate_type,
