@@ -72,7 +72,7 @@ lzma-rs = { workspace = true }
 sevenz-rust = { workspace = true }
 
 # daemon
-running-process-core = { workspace = true }
+running-process = { workspace = true }
 filetime = { workspace = true }
 sysinfo = "0.33"
 sadness-generator = "0.6"
