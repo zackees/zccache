@@ -21,9 +21,22 @@ DYNAMIC_VERSION_PYPROJECTS = (
     ROOT / "crates" / "zccache-watcher" / "pyproject.toml",
     ROOT / "crates" / "zccache-fingerprint" / "pyproject.toml",
 )
-INTERNAL_CRATE_PREFIX = "zccache-"
+# Names whose workspace dep entries the release flow stamps with the
+# exact `=<workspace.package.version>` pin before `cargo publish`. After
+# the Wave 7 monocrate rename (`zccache-monocrate` -> `zccache`) the umbrella
+# crate name no longer matches the previous `startswith("zccache-")` filter,
+# so the publish flow silently skipped stamping `zccache` and crates.io
+# rejected the resulting path-only dep with
+# "all dependencies must have a version requirement specified". The set
+# is sourced from RUST_PUBLISH_ORDER so any new internal crate flows in
+# automatically.
+INTERNAL_CRATE_NAMES = frozenset(RUST_PUBLISH_ORDER)
+# Matches `<name> = { <body> }` where `<name>` is the umbrella `zccache`
+# *or* any `zccache-<suffix>` workspace member. Same rationale as the set
+# above: the umbrella crate is no longer hyphen-suffixed and was being
+# excluded by the previous regex.
 WORKSPACE_DEPENDENCY_RE = re.compile(
-    r"^(?P<name>zccache-[A-Za-z0-9_-]+)\s*=\s*\{\s*(?P<body>[^{}\n]*)\s*\}\s*$",
+    r"^(?P<name>zccache(?:-[A-Za-z0-9_-]+)?)\s*=\s*\{\s*(?P<body>[^{}\n]*)\s*\}\s*$",
     re.MULTILINE,
 )
 
@@ -60,7 +73,7 @@ def _internal_workspace_dependencies(
     return {
         name: spec
         for name, spec in workspace_deps.items()
-        if name.startswith(INTERNAL_CRATE_PREFIX)
+        if name in INTERNAL_CRATE_NAMES
         and isinstance(spec, dict)
         and "path" in spec
     }
