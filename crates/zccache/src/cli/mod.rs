@@ -161,7 +161,12 @@ fn write_file_atomically(path: &Path, data: &[u8]) -> Result<(), std::io::Error>
     }
 }
 
-fn resolve_endpoint(explicit: Option<&str>) -> String {
+/// Expose the daemon endpoint resolver as `pub` so the thin `zccache-cli`
+/// pyo3 crate (which lives in a sibling workspace member) can hand it
+/// to Python callers without round-tripping through a CLI subcommand.
+/// Marked `pub` rather than `pub(crate)` because `zccache-cli` is a
+/// separate crate per the Wave 7 monocrate split.
+pub fn resolve_endpoint(explicit: Option<&str>) -> String {
     if let Some(ep) = explicit {
         return ep.to_string();
     }
