@@ -55,10 +55,16 @@ rkyv = { version = "0.7", features = ["validation"] }
 tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms"] }
 mimalloc = "0.1"
 running-process-core = "3.3"
-zccache = { path = "crates/zccache" }
-zccache-watcher = { path = "crates/zccache-watcher" }
-zccache-cli = { path = "crates/zccache-cli" }
-zccache-fingerprint = { path = "crates/zccache-fingerprint" }
+# `version` is required alongside `path` for crates.io publishing:
+# `cargo publish` rejects path-only intra-workspace deps with
+# "all dependencies must have a version requirement specified".
+# Local builds keep using `path` (cargo prefers it when both are set);
+# the version is what gets baked into the published Cargo.toml.
+# Must track [workspace.package].version above.
+zccache = { path = "crates/zccache", version = "1.9.1" }
+zccache-watcher = { path = "crates/zccache-watcher", version = "1.9.1" }
+zccache-cli = { path = "crates/zccache-cli", version = "1.9.1" }
+zccache-fingerprint = { path = "crates/zccache-fingerprint", version = "1.9.1" }
 
 # Vendored notify with fixes for Windows ReadDirectoryChangesW:
 # 1. Detect buffer overflow (bytes_written == 0) and report as error
