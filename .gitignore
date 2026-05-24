@@ -56,3 +56,5 @@ build/
 uv.lock
 .pytest_cache/
 POST_HOOK_FAILURE_*.txt
+
+local-notes.md

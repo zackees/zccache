@@ -159,7 +159,13 @@ runs:
           export PYO3_CROSS_PYTHON_IMPLEMENTATION=CPython
         fi
 
-        cargo build --release --target ${{ inputs.target }} -p zccache --bin zccache --features python --lib
+        # The Python extension cdylibs live in their own thin pyo3 crates
+        # (zccache-cli / zccache-watcher / zccache-fingerprint) per the Wave 7
+        # monocrate split. The umbrella `zccache` rlib intentionally does NOT
+        # carry the `python` feature, so `-p zccache --features python` is a
+        # workflow-only build-target bug that latently broke the release path.
+        # Surfaced when 1.9.1 became the first version bump after that split.
+        cargo build --release --target ${{ inputs.target }} -p zccache-cli --features python --lib
         cargo build --release --target ${{ inputs.target }} -p zccache-watcher --features python --lib
         cargo build --release --target ${{ inputs.target }} -p zccache-fingerprint --features python --lib
 
