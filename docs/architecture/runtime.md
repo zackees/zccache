@@ -104,6 +104,46 @@ When in doubt, zccache assumes the file has changed and re-verifies. Specific po
 
 ---
 
+## Generic tool exec (`zccache exec`)
+
+Issue #272: the `Request::GenericToolExec` handler lets arbitrary tools — linters, codegen, formatters, ad-hoc analyzers — use the daemon's artifact cache without zccache having to know their CLI. The caller declares every input (`input_files`, `input_env`, `input_extra`) and every captured output (`output_files`, `output_streams`); on a hit the tool process is NOT spawned and the cached stdout/stderr/exit-code/output-files are replayed.
+
+Source: `crates/zccache/src/daemon/server/handle_exec.rs` + `crates/zccache/src/cli/commands/exec.rs`.
+
+Cache-key composition has two layers, both domain-separated:
+
+**Primary key** (domain tag `zccache-exec-key-v2`) — everything known before the tool runs:
+- tool identity hash (caller `--tool-hash` override or daemon blake3 of the binary cached by `(path, mtime, size)`)
+- args in argv order, after `--key-args-filter` regex drops (filtered args still reach the tool's argv)
+- sorted (name=value) env subset declared via `--input-env`
+- cwd (when `cwd_in_key=true`; suppressible via `--no-cwd-in-key`)
+- sorted (path, content-hash) input file pairs (content via the two-layer fingerprint)
+- sorted (path, content-hash) **Path A** transitive headers — every file reached from `--include-scan` seeds resolved against `--include-dir` / `--system-include` / `--iquote-dir` using the existing `depgraph::scanner`
+- declared output_file names (so changing the capture set invalidates)
+- `input_extra` opaque bytes
+
+**Full key** (domain tag `zccache-exec-full-key-v2`) — extends the primary with Path B depfile-derived deps:
+- **First invocation**: full = primary; tool runs, the emitted `--depfile` is parsed, each listed file's content-hash is recorded in a `<primary>.deps` sidecar alongside the artifact.
+- **Subsequent invocations**: the sidecar is read before lookup, dep contents are re-hashed (via two-layer), and the full key is composed; lookup happens under the full key. Stale sidecars (referencing vanished files) force a fresh miss; a non-zero tool exit skips writing the sidecar so the next call cleanly bootstraps.
+
+Cache policies (`ExecCachePolicy`):
+- `Normal` (default) — look up + store
+- `ReadOnly` — look up, never store
+- `Bypass` (`--no-cache`) — never consult, never store
+- `--non-deterministic` forces a passthrough regardless of policy
+
+The daemon runs the tool with `env_clear()` and only the declared env subset, so the cache key is the exact functional input of the run. Concurrent callers with the same full key coalesce on `state.in_flight_exec` — the first inserter spawns the tool; the rest wait on a shared `tokio::sync::Notify` and re-attempt the cache lookup once it fires, guaranteeing exactly one tool spawn per herd.
+
+**Measured warm-hit latency**: ~190 µs / request on Windows NTFS (criterion `benches/exec.rs::exec_warm_hit`), versus ~15 ms / cold-miss request (dominated by tool spawn cost). The IPC roundtrip + cache-key compose + artifact-replay path lands well under the issue's "sub-millisecond" warm-hit target.
+
+The integration suite covering this handler spans two files:
+- `tests/daemon_generic_exec_test.rs` (12 tests): baseline shape — warm hit, input change, mtime touch, env, cwd, no-cache, output-file capture/restore, daemon-restart persistence, output-stream toggles.
+- `tests/daemon_generic_exec_advanced_test.rs` (15 tests): Path A (3), Path B (4), hybrid A+B, non-determinism, key-args filter, concurrent coalescing, tool-binary hash override, tool-touch with content unchanged, tar-restore with normalized mtimes, missing-input diagnostic.
+
+The test fixture is the `exec_test_tool` binary (built under `--features test-support`); the criterion benchmark is `benches/exec.rs` (`exec_warm_hit`, `exec_cold_miss`, `exec_one_input_changed`).
+
+---
+
 ## Crash Recovery
 
 ### Daemon Crash Recovery

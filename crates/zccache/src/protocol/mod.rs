@@ -11,11 +11,17 @@ pub use messages::*;
 /// new/removed/reordered enum variants or struct field changes.
 /// Patch releases that don't change the protocol keep the same version.
 ///
-/// v9 (current): `SessionStats` gained `phase_profile: Option<PhaseProfileSummary>`
-///                so per-session aggregate phase timing reaches clients.
+/// v11 (current): `Request::GenericToolExec` gained Path A (include scan)
+///                  + Path B (depfile) + `non_deterministic` +
+///                  `key_args_filter` fields completing issue #272.
+/// v10: added `Request::GenericToolExec` / `Response::GenericToolExecResult`
+///      for arbitrary-tool caching (issue #272). New protocol types
+///      `ExecOutputStreams` and `ExecCachePolicy`.
+/// v9: `SessionStats` gained `phase_profile: Option<PhaseProfileSummary>`
+///     so per-session aggregate phase timing reaches clients.
 /// v8: `Compile` / `CompileEphemeral` gained `stdin: Vec<u8>` and
 ///     `ArtifactPayload` replaced `ArtifactOutput.data: Arc<Vec<u8>>`.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 use bytes::{Buf, BufMut, BytesMut};
 

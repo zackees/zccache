@@ -343,6 +343,85 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         action: DefenderExclusionsCommands,
     },
+    /// Issue #272: cache an arbitrary tool's invocation through the daemon.
+    ///
+    /// Inputs are explicit: declare every file/env var the tool reads so the
+    /// cache key reflects them. On a hit the tool is NOT spawned; cached
+    /// stdout/stderr/exit-code and `--output-file` paths are replayed.
+    ///
+    /// Example:
+    ///   zccache exec --input-file src/foo.cpp \
+    ///                --input-env LINT_VER \
+    ///                --output-file report.json \
+    ///                -- fastled-lint src/foo.cpp --json
+    Exec {
+        /// Repeatable: declare a file whose content feeds the cache key.
+        #[arg(long = "input-file", value_name = "PATH")]
+        input_file: Vec<String>,
+        /// Repeatable: env var name whose *value* feeds the cache key.
+        /// The current process env is queried for the value at request time.
+        #[arg(long = "input-env", value_name = "NAME")]
+        input_env: Vec<String>,
+        /// Opaque bytes mixed into the cache key (caller-defined namespacing,
+        /// e.g. a tool config version).
+        #[arg(long = "input-extra", value_name = "BYTES")]
+        input_extra: Option<String>,
+        /// Capture stdout and include it in the cache. Default: true.
+        #[arg(long = "output-stdout", default_value_t = true)]
+        output_stdout: bool,
+        /// Capture stderr and include it in the cache. Default: true.
+        #[arg(long = "output-stderr", default_value_t = true)]
+        output_stderr: bool,
+        /// Repeatable: file the tool writes; snapshot post-run, restore on hit.
+        #[arg(long = "output-file", value_name = "PATH")]
+        output_file: Vec<String>,
+        /// Caller-supplied tool identity hash (hex). When omitted the daemon
+        /// hashes the resolved tool binary (cached by mtime+size).
+        #[arg(long = "tool-hash", value_name = "HEX")]
+        tool_hash: Option<String>,
+        /// Bypass the cache entirely — do not look up, do not store.
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        /// Do not include the CWD in the cache key. Useful for tools whose
+        /// output is path-independent.
+        #[arg(long = "no-cwd-in-key")]
+        no_cwd_in_key: bool,
+        /// IPC endpoint (default: platform-specific).
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Path A: scan this C/C++-style file for `#include` directives and
+        /// mix every transitively-resolved header's content into the key.
+        /// Repeatable.
+        #[arg(long = "include-scan", value_name = "PATH")]
+        include_scan: Vec<String>,
+        /// `-I` directory used while resolving `--include-scan`. Repeatable.
+        #[arg(long = "include-dir", value_name = "DIR")]
+        include_dir: Vec<String>,
+        /// `-isystem` directory used while resolving `--include-scan`.
+        /// Repeatable.
+        #[arg(long = "system-include", value_name = "DIR")]
+        system_include: Vec<String>,
+        /// `-iquote` directory (quoted-only) used while resolving
+        /// `--include-scan`. Repeatable.
+        #[arg(long = "iquote-dir", value_name = "DIR")]
+        iquote_dir: Vec<String>,
+        /// Path B: depfile the tool emits. The daemon parses it on first
+        /// run, stores the dep set, and consults it on subsequent runs.
+        #[arg(long = "depfile", value_name = "PATH")]
+        depfile: Option<String>,
+        /// Treat the run as non-deterministic (no caching). Counterpart to
+        /// the link handler's `D`/`/DETERMINISTIC` warning.
+        #[arg(long = "non-deterministic")]
+        non_deterministic: bool,
+        /// Regex whose matches are dropped from the cache-key arg list (the
+        /// tool still receives them). Repeatable. Useful for runtime-only
+        /// flags like `--verbose` or `--no-color` that don't affect output.
+        #[arg(long = "key-args-filter", value_name = "REGEX")]
+        key_args_filter: Vec<String>,
+        /// Everything after `--` is the tool command and its args.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, last = true)]
+        tool_command: Vec<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -644,6 +723,7 @@ pub(crate) const KNOWN_SUBCOMMANDS: &[&str] = &[
     "symbols",
     "cache-root",
     "defender-exclusions",
+    "exec",
     "help",
     "--help",
     "-h",

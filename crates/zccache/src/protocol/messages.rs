@@ -149,6 +149,67 @@ pub enum Request {
     /// List all cached Rust artifacts with their output paths.
     /// NOTE: Appended at end to preserve bincode variant indices.
     ListRustArtifacts,
+    /// Generic tool exec — cache an arbitrary tool's run by declared inputs.
+    ///
+    /// Issue #272: lets tools without a compiler-style CLI use the daemon's
+    /// artifact cache. Inputs are explicit (`input_files`, `input_env`,
+    /// `input_extra`); on hit the tool process is NOT spawned and the cached
+    /// stdout/stderr/exit code/output files are replayed.
+    ///
+    /// NOTE: Appended at end to preserve bincode variant indices.
+    GenericToolExec {
+        /// Path to the tool executable. Must be absolute (CLI resolves PATH).
+        tool: NormalizedPath,
+        /// Tool arguments (the part after `--` on the CLI).
+        args: Vec<String>,
+        /// Working directory for the tool invocation.
+        cwd: NormalizedPath,
+        /// Selected env vars (name + value pairs). Sorted by the daemon for
+        /// determinism. Only these vars enter the cache key.
+        env: Vec<(String, String)>,
+        /// Input files whose content feeds the cache key.
+        input_files: Vec<NormalizedPath>,
+        /// Opaque caller-supplied bytes mixed into the cache key.
+        input_extra: Arc<Vec<u8>>,
+        /// Output streams to capture and cache.
+        output_streams: ExecOutputStreams,
+        /// Files the tool writes; snapshot post-run, restore on hit.
+        output_files: Vec<NormalizedPath>,
+        /// Caller-supplied tool identity hash. `None` = daemon hashes the
+        /// tool binary itself (cached by `(path, mtime, size)`).
+        tool_hash: Option<[u8; 32]>,
+        /// Cache lookup/store policy.
+        cache_policy: ExecCachePolicy,
+        /// Whether the CWD contributes to the cache key. False ⇒ tool output
+        /// is treated as CWD-independent (callable from any directory).
+        cwd_in_key: bool,
+        /// Path A (#272): C/C++-style files to scan for `#include`
+        /// directives. The daemon walks them transitively using
+        /// `include_dirs` / `system_include_dirs` / `iquote_dirs` and mixes
+        /// every resolved header's content into the cache key.
+        include_scan_files: Vec<NormalizedPath>,
+        /// `-I` user include directories (used for both quoted and angle
+        /// includes during the include scan).
+        include_dirs: Vec<NormalizedPath>,
+        /// `-isystem` directories (system includes, after `-I`).
+        system_include_dirs: Vec<NormalizedPath>,
+        /// `-iquote` directories (quoted-only, before `-I`).
+        iquote_dirs: Vec<NormalizedPath>,
+        /// Path B (#272): make-style depfile the tool emits at this path.
+        /// First invocation: daemon runs the tool, parses the emitted
+        /// depfile, stores the dep set under the primary cache key as a
+        /// `.deps` sidecar. Subsequent invocations: load the sidecar, hash
+        /// each listed dep, compose the *full* key, look up.
+        depfile: Option<NormalizedPath>,
+        /// When true the daemon never caches this run (passthrough only).
+        /// Intended for tools that emit timestamps, PIDs, or other
+        /// non-reproducible content. Implies a forced Bypass.
+        non_deterministic: bool,
+        /// Regex patterns that drop matching args from the cache key (but
+        /// not from the spawned tool's argv). Lets callers exclude purely
+        /// runtime flags like `--verbose` or `--no-color` from the key.
+        key_args_filter: Vec<String>,
+    },
 }
 
 /// A response from daemon to client.
@@ -237,6 +298,23 @@ pub enum Response {
     /// List of cached Rust artifacts.
     /// NOTE: Appended at end to preserve bincode variant indices.
     RustArtifactList { artifacts: Vec<RustArtifactInfo> },
+    /// Result of a `GenericToolExec` request.
+    ///
+    /// NOTE: Appended at end to preserve bincode variant indices.
+    GenericToolExecResult {
+        /// Tool exit code (cached on miss, replayed on hit).
+        exit_code: i32,
+        /// Captured stdout (empty if `output_streams.stdout` was false).
+        stdout: Arc<Vec<u8>>,
+        /// Captured stderr (empty if `output_streams.stderr` was false).
+        stderr: Arc<Vec<u8>>,
+        /// Snapshotted output files keyed by their declared relative path.
+        output_files: Vec<ArtifactOutput>,
+        /// True when the response was served from cache (tool not spawned).
+        cached: bool,
+        /// Cache key, hex-encoded. Useful for diagnostics.
+        cache_key_hex: String,
+    },
 }
 
 /// Daemon status information.
@@ -471,6 +549,42 @@ pub struct ArtifactOutput {
     /// Where the bytes live — inline in the message or on disk for hardlink.
     /// See `ArtifactPayload` for the variant rationale.
     pub payload: ArtifactPayload,
+}
+
+/// Which streams a `GenericToolExec` should capture and replay.
+///
+/// Default is `{ stdout: true, stderr: true }`. The CLI exposes
+/// `--output-stdout` / `--output-stderr` to override.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecOutputStreams {
+    /// Capture and cache stdout.
+    pub stdout: bool,
+    /// Capture and cache stderr.
+    pub stderr: bool,
+}
+
+impl Default for ExecOutputStreams {
+    fn default() -> Self {
+        Self {
+            stdout: true,
+            stderr: true,
+        }
+    }
+}
+
+/// Cache lookup/store policy for `GenericToolExec`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ExecCachePolicy {
+    /// Look up cache; on miss, run the tool and store the result. (default)
+    #[default]
+    Normal,
+    /// Never consult the cache and never store the result; passthrough only.
+    /// Intended for debugging and `--no-cache`.
+    Bypass,
+    /// Look up cache; on miss, run the tool but do NOT store the result.
+    /// Lets callers verify the tool runs deterministically without polluting
+    /// the cache.
+    ReadOnly,
 }
 
 /// Information about a cached Rust compilation artifact.
@@ -871,12 +985,14 @@ mod tests {
 
     // Compile-time check: PROTOCOL_VERSION must be positive.
     const _: () = assert!(super::super::PROTOCOL_VERSION > 0);
-    // Compile-time check: PROTOCOL_VERSION == 9 after SessionStats gained
-    // `phase_profile: Option<PhaseProfileSummary>` (perf observability for
-    // per-session phase aggregates). v8 was the prior pin after
-    // Compile/CompileEphemeral gained `stdin: Vec<u8>` and ArtifactPayload
-    // replaced ArtifactOutput.data: Arc<Vec<u8>> (issue #296 Option B).
-    const _FINGERPRINT_VERSION: () = assert!(super::super::PROTOCOL_VERSION == 9);
+    // Compile-time check: PROTOCOL_VERSION == 11 after `GenericToolExec`
+    // gained Path A (include scan) + Path B (depfile) + non_deterministic
+    // + key_args_filter — fully implementing issue #272. v10 was the prior
+    // pin when `GenericToolExec` was added. v9 was the pin after
+    // SessionStats gained `phase_profile`. v8 was the pin after
+    // Compile/CompileEphemeral gained `stdin` and ArtifactPayload replaced
+    // ArtifactOutput.data: Arc<Vec<u8>> (issue #296 Option B).
+    const _FINGERPRINT_VERSION: () = assert!(super::super::PROTOCOL_VERSION == 11);
 
     #[test]
     fn fingerprint_check_roundtrip() {
@@ -970,6 +1086,85 @@ mod tests {
         });
         // Empty list
         roundtrip(&Response::RustArtifactList { artifacts: vec![] });
+    }
+
+    #[test]
+    fn generic_tool_exec_roundtrip() {
+        let req = Request::GenericToolExec {
+            tool: "/usr/local/bin/fastled-lint".into(),
+            args: vec!["src/foo.cpp".into(), "--json".into()],
+            cwd: "/home/user/project".into(),
+            env: vec![
+                ("PATH".into(), "/usr/bin".into()),
+                ("LINT_VERSION".into(), "1.2.3".into()),
+            ],
+            input_files: vec!["src/foo.cpp".into(), "ci/lint_cpp_rs/rules.json".into()],
+            input_extra: Arc::new(b"namespace-tag".to_vec()),
+            output_streams: ExecOutputStreams::default(),
+            output_files: vec!["report.json".into()],
+            tool_hash: Some([0x42; 32]),
+            cache_policy: ExecCachePolicy::Normal,
+            cwd_in_key: true,
+            include_scan_files: vec!["src/foo.cpp".into()],
+            include_dirs: vec!["src".into(), "include".into()],
+            system_include_dirs: vec!["/usr/include".into()],
+            iquote_dirs: vec!["thirdparty/q".into()],
+            depfile: Some("target/lint/foo.d".into()),
+            non_deterministic: false,
+            key_args_filter: vec!["^--verbose$".into(), "^--no-color$".into()],
+        };
+        roundtrip(&req);
+
+        // Bypass + None tool_hash + empty inputs path.
+        let req_bypass = Request::GenericToolExec {
+            tool: "/bin/true".into(),
+            args: vec![],
+            cwd: ".".into(),
+            env: vec![],
+            input_files: vec![],
+            input_extra: Arc::new(Vec::new()),
+            output_streams: ExecOutputStreams {
+                stdout: true,
+                stderr: false,
+            },
+            output_files: vec![],
+            tool_hash: None,
+            cache_policy: ExecCachePolicy::Bypass,
+            cwd_in_key: false,
+            include_scan_files: vec![],
+            include_dirs: vec![],
+            system_include_dirs: vec![],
+            iquote_dirs: vec![],
+            depfile: None,
+            non_deterministic: true,
+            key_args_filter: vec![],
+        };
+        roundtrip(&req_bypass);
+
+        let resp = Response::GenericToolExecResult {
+            exit_code: 0,
+            stdout: Arc::new(b"linted ok\n".to_vec()),
+            stderr: Arc::new(Vec::new()),
+            output_files: vec![ArtifactOutput {
+                name: "report.json".into(),
+                payload: ArtifactPayload::Bytes(Arc::new(b"{}".to_vec())),
+            }],
+            cached: true,
+            cache_key_hex: "deadbeef".repeat(8),
+        };
+        roundtrip(&resp);
+    }
+
+    #[test]
+    fn exec_output_streams_default_captures_both() {
+        let s = ExecOutputStreams::default();
+        assert!(s.stdout);
+        assert!(s.stderr);
+    }
+
+    #[test]
+    fn exec_cache_policy_default_is_normal() {
+        assert_eq!(ExecCachePolicy::default(), ExecCachePolicy::Normal);
     }
 
     #[test]

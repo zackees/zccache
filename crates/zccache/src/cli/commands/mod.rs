@@ -14,6 +14,7 @@ pub(crate) mod cache_ops;
 pub(crate) mod cargo_registry;
 pub(crate) mod daemon;
 pub(crate) mod download;
+pub(crate) mod exec;
 pub(crate) mod fp;
 pub(crate) mod gha;
 pub(crate) mod rust_plan;
@@ -342,6 +343,45 @@ fn dispatch(command: Commands, global_strict_paths: Option<&str>) -> ExitCode {
             DefenderExclusionsCommands::Add => defender::cmd_add(),
             DefenderExclusionsCommands::Remove => defender::cmd_remove(),
         },
+        Commands::Exec {
+            input_file,
+            input_env,
+            input_extra,
+            output_stdout,
+            output_stderr,
+            output_file,
+            tool_hash,
+            no_cache,
+            no_cwd_in_key,
+            endpoint,
+            include_scan,
+            include_dir,
+            system_include,
+            iquote_dir,
+            depfile,
+            non_deterministic,
+            key_args_filter,
+            tool_command,
+        } => exec::cmd_exec(exec::ExecParams {
+            input_files: input_file,
+            input_env,
+            input_extra,
+            output_stdout,
+            output_stderr,
+            output_files: output_file,
+            tool_hash,
+            no_cache,
+            no_cwd_in_key,
+            endpoint,
+            tool_command,
+            include_scan,
+            include_dir,
+            system_include,
+            iquote_dir,
+            depfile,
+            non_deterministic,
+            key_args_filter,
+        }),
     }
 }
 

@@ -61,6 +61,9 @@ uuid = { version = "1", features = ["v4"] }
 clap = { workspace = true }
 fs2 = { workspace = true }
 
+# exec (issue #272): regex compiles `--key-args-filter` patterns
+regex = { workspace = true }
+
 # download stack
 futures = { workspace = true }
 tokio-util = { workspace = true }
@@ -126,6 +129,11 @@ path = "src/bin/echo_shim.rs"
 required-features = ["test-support"]
 
 [[bin]]
+name = "exec_test_tool"
+path = "src/bin/exec_test_tool.rs"
+required-features = ["test-support"]
+
+[[bin]]
 name = "zccache-fp"
 path = "src/bin/zccache-fp.rs"
 
@@ -177,4 +185,9 @@ harness = false
 [[bench]]
 name = "warm_restore"
 harness = false
+
+[[bench]]
+name = "exec"
+harness = false
+required-features = ["test-support"]
 

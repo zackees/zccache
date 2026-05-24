@@ -127,6 +127,7 @@ impl DaemonServer {
                 fingerprint: FingerprintManager::new(),
                 dep_graph_persisted: AtomicBool::new(false),
                 depgraph_load_warning: Mutex::new(None),
+                in_flight_exec: DashMap::new(),
             }),
         })
     }

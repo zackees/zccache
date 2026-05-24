@@ -357,6 +357,50 @@ pub(super) async fn handle_connection(
                 state.fingerprint.invalidate(&cache_file);
                 (Response::FingerprintAck, None)
             }
+            Request::GenericToolExec {
+                tool,
+                args,
+                cwd,
+                env,
+                input_files,
+                input_extra,
+                output_streams,
+                output_files,
+                tool_hash,
+                cache_policy,
+                cwd_in_key,
+                include_scan_files,
+                include_dirs,
+                system_include_dirs,
+                iquote_dirs,
+                depfile,
+                non_deterministic,
+                key_args_filter,
+            } => {
+                let resp = handle_generic_tool_exec(
+                    &state,
+                    &tool,
+                    &args,
+                    &cwd,
+                    env,
+                    &input_files,
+                    input_extra,
+                    output_streams,
+                    &output_files,
+                    tool_hash,
+                    cache_policy,
+                    cwd_in_key,
+                    &include_scan_files,
+                    &include_dirs,
+                    &system_include_dirs,
+                    &iquote_dirs,
+                    depfile.as_ref().map(|p| p.as_path()),
+                    non_deterministic,
+                    &key_args_filter,
+                )
+                .await;
+                (resp, None)
+            }
             Request::ListRustArtifacts => {
                 let mut artifacts = Vec::new();
                 for entry in state.artifacts.iter() {

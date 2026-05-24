@@ -19,6 +19,7 @@ Architecture docs are split by subsystem. Read only what's relevant to your curr
 | `zccache-symbols` | Crate README — 128-byte release footer, `<dump>.symref` sidecars, `zccache-stamp` CI helper |
 | Perf measurement workflows | [/PERF.md](../PERF.md) — `perf-rust-cluster.yml`, scenarios, gate semantics |
 | Crash dumper (CLI + daemon) | [runtime.md](architecture/runtime.md) (Crash Dumper) — `zccache_core::crash::install` covers both binaries |
+| Generic tool exec (`zccache exec`, issue #272) | [runtime.md § Generic tool exec](architecture/runtime.md#generic-tool-exec-zccache-exec) — `handle_exec.rs` + `cli/commands/exec.rs` |
 | Platform-specific issues | [portability.md](architecture/portability.md) |
 | Compile journal record shape | [journal-schema.md](journal-schema.md) |
 | `ZCCACHE_CACHE_DIR` contract + `zccache cache-root` | [runtime.md § Cache root invariants](architecture/runtime.md#cache-root-invariants) |

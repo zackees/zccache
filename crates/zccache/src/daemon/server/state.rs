@@ -130,4 +130,11 @@ pub(super) struct SharedState {
     /// emitted once per session into the per-session log (`last-session.log`)
     /// at `SessionStart` time so the cold fallback is never silent. Issue #320.
     pub(super) depgraph_load_warning: Mutex<Option<String>>,
+    /// In-flight `Request::GenericToolExec` coalescing map (issue #272).
+    ///
+    /// Concurrent callers with the same exec cache key share a `Notify` here:
+    /// the first caller spawns the tool and inserts; subsequent callers wait
+    /// on the same `Notify` and re-attempt the cache lookup once it fires,
+    /// guaranteeing the tool runs exactly once for the herd.
+    pub(super) in_flight_exec: DashMap<String, Arc<Notify>>,
 }

@@ -76,6 +76,7 @@ mod handle_clear;
 mod handle_compile;
 mod handle_compile_ephemeral;
 mod handle_compile_multi;
+mod handle_exec;
 mod handle_link;
 mod in_flight;
 mod keys;
@@ -104,6 +105,7 @@ use handle_clear::*;
 use handle_compile::handle_compile;
 use handle_compile_ephemeral::*;
 use handle_compile_multi::handle_compile_multi;
+use handle_exec::handle_generic_tool_exec;
 use handle_link::handle_link_ephemeral;
 #[cfg(test)]
 use handle_link::run_post_link_deploy_hook;
