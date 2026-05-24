@@ -1,7 +1,7 @@
 //! Internal CLI dispatch for the `zccache` binary.
 //!
 //! `main.rs` is a thin entry point that hands raw argv to [`run`] below;
-//! this module owns the clap definitions ([`args`]), the dispatch match,
+//! this module owns the clap definitions (`args`), the dispatch match,
 //! and every per-subcommand implementation.
 
 use crate::core::NormalizedPath;

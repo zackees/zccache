@@ -126,6 +126,12 @@ pub fn force_kill_process(pid: u32) -> Result<(), std::io::Error> {
     }
     #[cfg(windows)]
     {
+        // windows-sys defines CloseHandle/OpenProcess/TerminateProcess with
+        // HANDLE/BOOL newtypes; our local extern uses the underlying isize/i32
+        // for ergonomics. Same ABI, different signature in the type-system,
+        // so the linker accepts both but rustc warns. -D warnings on CI
+        // promotes the warn to error.
+        #[allow(clashing_extern_declarations)]
         extern "system" {
             fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
             fn TerminateProcess(handle: isize, exit_code: u32) -> i32;
@@ -167,6 +173,8 @@ pub fn is_process_alive(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
+        // See CloseHandle note in force_kill_process above.
+        #[allow(clashing_extern_declarations)]
         extern "system" {
             fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
             fn CloseHandle(handle: isize) -> i32;
@@ -261,6 +269,8 @@ fn daemon_exe_for_pid(pid: u32) -> Option<NormalizedPath> {
 
 #[cfg(windows)]
 fn daemon_exe_for_pid(pid: u32) -> Option<NormalizedPath> {
+    // See CloseHandle note in force_kill_process above.
+    #[allow(clashing_extern_declarations)]
     extern "system" {
         fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
         fn CloseHandle(handle: isize) -> i32;

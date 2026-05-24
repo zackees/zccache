@@ -1,8 +1,8 @@
 //! Release-build marker and per-crash sidecar primitives.
 //!
-//! See [`crate::marker`] for the 128-byte footer format that
+//! See [`self::marker`] for the 128-byte footer format that
 //! distinguishes a release-built `zccache.exe` from a local dev build,
-//! and [`crate::cache`] for the `<cache>/symbols/<v>-<triple>/` layout
+//! and [`self::cache`] for the `<cache>/symbols/<v>-<triple>/` layout
 //! and the `<dump>.symref` sidecar that points each crash dump at its
 //! shared symbol directory.
 //!
