@@ -1,5 +1,5 @@
-use std::path::Path;
 use crate::core::NormalizedPath;
+use std::path::Path;
 
 use rayon::prelude::*;
 
@@ -174,8 +174,8 @@ impl HashCache {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::scan;
+    use super::*;
     use std::fs;
     use tempfile::TempDir;
 
@@ -414,7 +414,10 @@ mod tests {
         let cache = HashCache::new(cache_dir.path().join("fp.json"));
         let err = cache.mark_success().unwrap_err();
         assert!(
-            matches!(err, super::super::error::FingerprintError::NoPendingData { .. }),
+            matches!(
+                err,
+                super::super::error::FingerprintError::NoPendingData { .. }
+            ),
             "expected NoPendingData, got: {err}"
         );
     }

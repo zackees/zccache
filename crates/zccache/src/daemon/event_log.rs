@@ -14,9 +14,9 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use tokio::sync::mpsc;
 use crate::core::NormalizedPath;
 use crate::depgraph::{SessionId, SessionManager};
+use tokio::sync::mpsc;
 
 /// Open a file in append mode with sharing flags that allow deletion on Windows.
 ///

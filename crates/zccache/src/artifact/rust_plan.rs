@@ -5,10 +5,10 @@ use std::ffi::OsStr;
 use std::path::{Component, Path};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::core::{normalize_for_key, NormalizedPath};
 use rayon::prelude::*;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
-use crate::core::{normalize_for_key, NormalizedPath};
 
 /// Upper bound on save-time worker threads. Beyond this Windows filter-driver
 /// serialization dominates and extra threads stop helping (see issue #177 and

@@ -1,6 +1,6 @@
+use crate::core::NormalizedPath;
 use std::collections::HashSet;
 use std::path::Path;
-use crate::core::NormalizedPath;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 

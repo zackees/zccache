@@ -1,12 +1,12 @@
 //! Session-start, session-end, session-stats subcommands and their JSON helpers.
 
+use crate::core::NormalizedPath;
 use std::path::Path;
 use std::process::ExitCode;
-use crate::core::NormalizedPath;
 
+use super::super::session_end_idempotent;
 use super::daemon::ensure_daemon;
 use super::util::{connect, format_duration_ms, print_json_value};
-use super::super::session_end_idempotent;
 
 pub(crate) async fn cmd_session_start(
     endpoint: &str,

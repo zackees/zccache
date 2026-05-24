@@ -25,13 +25,13 @@
 //!    catches the case where a previous agent turn was force-killed before
 //!    its daemon could be reaped.
 
+use crate::core::NormalizedPath;
 use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
-use crate::core::NormalizedPath;
 
 use wait_timeout::ChildExt;
 

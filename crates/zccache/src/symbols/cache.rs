@@ -6,8 +6,8 @@
 //! all OSes without needing symlinks (Windows symlinks require dev mode
 //! or admin).
 
-use std::path::{Path, PathBuf};
 use crate::core::NormalizedPath;
+use std::path::{Path, PathBuf};
 
 /// Sentinel file written after a successful extract. Its presence
 /// declares the directory "complete and ready to consume." Absence

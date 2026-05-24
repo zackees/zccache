@@ -4,11 +4,11 @@
 //! stat files, verify cached entries, and compute content hashes on demand.
 
 use super::metadata::{Confidence, FileMetadata, MetadataCache};
-use std::path::Path;
-use std::time::Instant;
 use crate::core::NormalizedPath;
 use crate::core::Result;
 use crate::hash::ContentHash;
+use std::path::Path;
+use std::time::Instant;
 
 /// Result of verifying cached metadata against the current filesystem state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,13 +185,13 @@ impl MetadataCache {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::Confidence;
+    use super::*;
+    use crate::core::NormalizedPath;
     use std::fs;
     use std::thread;
     use std::time::Duration;
     use tempfile::TempDir;
-    use crate::core::NormalizedPath;
 
     /// Helper: create a file with given content, return its path.
     fn create_file(dir: &TempDir, name: &str, content: &str) -> NormalizedPath {

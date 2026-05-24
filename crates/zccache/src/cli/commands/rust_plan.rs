@@ -1,13 +1,13 @@
 //! `zccache rust-plan` subcommands and helpers.
 
-use std::path::Path;
-use std::process::ExitCode;
 use crate::artifact::{
     restore_rust_plan_local, rust_plan_bundle_dir, rust_plan_cache_key, save_rust_plan_local,
     RustArtifactPlanV1, RustPlanError, RustPlanOperation, RustPlanSummary,
 };
 use crate::core::NormalizedPath;
 use crate::gha::{GhaCache, GhaError};
+use std::path::Path;
+use std::process::ExitCode;
 
 use super::args::{RustPlanBackendArg, RustPlanCommands};
 use super::session::query_session_stats_json;

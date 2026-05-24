@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use super::util::{connect, format_bytes};
 use super::super::snapshot_fp;
+use super::util::{connect, format_bytes};
 
 pub(crate) async fn cmd_clear(endpoint: &str) -> ExitCode {
     let mut conn = match connect(endpoint).await {
@@ -58,8 +58,8 @@ pub(crate) async fn cmd_clear(endpoint: &str) -> ExitCode {
 
 pub(crate) fn cmd_kv(action: super::args::KvCommands) -> ExitCode {
     use super::args::KvCommands;
-    use std::io::{Read, Write};
     use crate::artifact::{Key, KvError, KvStore};
+    use std::io::{Read, Write};
 
     fn open_store() -> Result<KvStore, ExitCode> {
         match KvStore::open_default() {

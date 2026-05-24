@@ -2,9 +2,9 @@
 //!
 //! Anything here is `pub(crate)` and called from multiple `cli::*` modules.
 
+use crate::core::NormalizedPath;
 use std::path::Path;
 use std::process::ExitCode;
-use crate::core::NormalizedPath;
 
 pub(crate) fn absolute_path(path: &str) -> NormalizedPath {
     let path = Path::new(path);

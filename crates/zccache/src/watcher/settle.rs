@@ -7,10 +7,10 @@
 //! Overflow events bypass coalescing entirely — they clear pending state and
 //! emit immediately, since everything is invalidated.
 
+use crate::core::NormalizedPath;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use crate::core::NormalizedPath;
 
 use super::WatchEvent;
 

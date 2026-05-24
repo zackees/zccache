@@ -4,12 +4,12 @@
 //! token elevation check, and PowerShell subprocess plumbing all live in
 //! `zccache-core` so the daemon's first-run banner can reuse them.
 
-use std::path::PathBuf;
-use std::process::ExitCode;
 use crate::core::defender::{
     add_exclusions, compute_exclusion_paths, is_elevated, query_excluded, remove_exclusions,
     ExclusionStatus,
 };
+use std::path::PathBuf;
+use std::process::ExitCode;
 
 /// Stderr line printed when an unprivileged caller runs `add` or `remove`.
 const REELEVATE_MSG: &str = "zccache defender-exclusions: this command requires administrator \

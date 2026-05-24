@@ -3,10 +3,10 @@
 //! Hosts the dispatch into compile / link / rustfmt / passthrough paths plus
 //! the IPC client helpers for each.
 
-use std::path::Path;
-use std::process::ExitCode;
 use crate::compiler::strict_paths::StrictPathsMode;
 use crate::core::NormalizedPath;
+use std::path::Path;
+use std::process::ExitCode;
 
 use super::daemon::{ensure_daemon, which_on_path};
 use super::util::{connect, exit_code_from_i32, resolve_endpoint, run_async, slurp_stdin_if_piped};

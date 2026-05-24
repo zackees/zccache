@@ -1,7 +1,7 @@
 //! Clang/GCC parsing: -c, multi-file, -x header mode, header units, sticky-mode regressions.
 
-use super::args;
 use super::super::{parse_invocation, CompilerFamily, ParsedInvocation};
+use super::args;
 use crate::core::NormalizedPath;
 
 #[test]

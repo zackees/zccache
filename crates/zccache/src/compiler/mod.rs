@@ -32,8 +32,8 @@ pub mod strict_paths;
 #[cfg(test)]
 mod tests;
 
-use std::sync::Arc;
 use crate::core::NormalizedPath;
+use std::sync::Arc;
 
 pub use detect::detect_family;
 pub use parse::parse_invocation;

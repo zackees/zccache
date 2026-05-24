@@ -6,15 +6,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use dashmap::DashMap;
-use tokio::sync::{watch, Notify, RwLock};
-use tokio_util::sync::CancellationToken;
 use crate::core::NormalizedPath;
 use crate::download::{
     percentage, stable_download_id, DownloadDaemonStatus, DownloadOptions, DownloadPhase,
     DownloadStatus,
 };
 use crate::download_protocol::{Request, Response};
+use dashmap::DashMap;
+use tokio::sync::{watch, Notify, RwLock};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 struct FileLogger {

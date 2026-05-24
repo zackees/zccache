@@ -90,8 +90,8 @@ pub fn parse_compile_commands_json(json: &str) -> Result<Vec<CompileCommand>, se
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use crate::core::NormalizedPath;
+    use std::path::Path;
 
     use super::*;
 

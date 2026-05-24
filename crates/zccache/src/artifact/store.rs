@@ -25,10 +25,10 @@
 //! on the keys that hadn't been flushed — the daemon repopulates them on
 //! next access. Graceful shutdown flushes synchronously.
 
+use crate::core::NormalizedPath;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use crate::core::NormalizedPath;
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};

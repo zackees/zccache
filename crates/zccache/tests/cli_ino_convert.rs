@@ -28,9 +28,12 @@ int helper(int value) {
     )
     .unwrap();
 
-    let first =
-        zccache::cli::run_ino_convert_cached(&ino, &out, &zccache::cli::InoConvertOptions::default())
-            .unwrap();
+    let first = zccache::cli::run_ino_convert_cached(
+        &ino,
+        &out,
+        &zccache::cli::InoConvertOptions::default(),
+    )
+    .unwrap();
     assert!(out.exists());
     assert!(
         !first.cache_hit,
@@ -40,9 +43,12 @@ int helper(int value) {
     let first_mtime = fs::metadata(&out).unwrap().modified().unwrap();
     thread::sleep(Duration::from_millis(1100));
 
-    let second =
-        zccache::cli::run_ino_convert_cached(&ino, &out, &zccache::cli::InoConvertOptions::default())
-            .unwrap();
+    let second = zccache::cli::run_ino_convert_cached(
+        &ino,
+        &out,
+        &zccache::cli::InoConvertOptions::default(),
+    )
+    .unwrap();
     let second_mtime = fs::metadata(&out).unwrap().modified().unwrap();
 
     assert!(second.cache_hit, "second conversion should come from cache");

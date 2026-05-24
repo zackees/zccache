@@ -1,8 +1,8 @@
 //! Protocol message definitions.
 
+use crate::core::NormalizedPath;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use crate::core::NormalizedPath;
 
 /// A request from client to daemon.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -4,6 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::core::NormalizedPath;
 use futures::StreamExt;
 use reqwest::header::{
     ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_LENGTH, ETAG, IF_RANGE, LAST_MODIFIED, RANGE,
@@ -11,7 +12,6 @@ use reqwest::header::{
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
-use crate::core::NormalizedPath;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DownloadOptions {

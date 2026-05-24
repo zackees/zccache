@@ -234,8 +234,10 @@ pub(super) async fn handle_compile(
 
     // Lineage carried into every child spawned for this compile request —
     // compiler, depfile probe, etc. See `super::super::lineage` and issue #7.
-    let lineage =
-        super::super::lineage::Lineage::current(session_client_pid(state, &sid), Some(session_id.into()));
+    let lineage = super::super::lineage::Lineage::current(
+        session_client_pid(state, &sid),
+        Some(session_id.into()),
+    );
 
     // Discover system includes for this compiler (cached per compiler path)
     let t_system_includes = std::time::Instant::now();

@@ -3,8 +3,8 @@
 //! This module owns the parsing entry point for non-rustc compilers.
 //! For rustc, see [`crate::parse_rustc`].
 
-use std::sync::Arc;
 use crate::core::NormalizedPath;
+use std::sync::Arc;
 
 use super::detect::{detect_family, is_source_file, MODULE_EXTENSIONS};
 use super::{parse_msvc, CacheableCompilation, CompilerFamily, ParsedInvocation, SourceMode};

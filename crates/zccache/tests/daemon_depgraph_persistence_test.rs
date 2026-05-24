@@ -111,7 +111,10 @@ async fn fresh_daemon_reports_not_persisted() {
         "fresh daemon must report dep_graph_persisted = false, got: {status:?}",
     );
     assert_eq!(status.dep_graph_disk_size, 0);
-    assert_eq!(status.dep_graph_version, zccache::depgraph::DEPGRAPH_VERSION);
+    assert_eq!(
+        status.dep_graph_version,
+        zccache::depgraph::DEPGRAPH_VERSION
+    );
     // Issue #262 explicitly checked that the (cached, cold, non-cacheable)
     // counters coexist with the persisted state.
     assert_eq!(status.cache_hits, 0);

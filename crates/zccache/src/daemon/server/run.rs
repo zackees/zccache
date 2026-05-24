@@ -190,7 +190,11 @@ impl DaemonServer {
                     let dir = state.artifact_dir.clone();
                     let artifacts = state.artifacts.clone();
                     let result = tokio::task::spawn_blocking(move || {
-                        super::super::eviction::evict_disk_artifacts(&dir, &artifacts, max_cache_size)
+                        super::super::eviction::evict_disk_artifacts(
+                            &dir,
+                            &artifacts,
+                            max_cache_size,
+                        )
                     })
                     .await;
                     if let Ok((freed, removed)) = result {
@@ -208,7 +212,11 @@ impl DaemonServer {
                     let dir = state.artifact_dir.clone();
                     let artifacts = state.artifacts.clone();
                     let result = tokio::task::spawn_blocking(move || {
-                        super::super::eviction::evict_disk_artifacts(&dir, &artifacts, max_cache_size)
+                        super::super::eviction::evict_disk_artifacts(
+                            &dir,
+                            &artifacts,
+                            max_cache_size,
+                        )
                     })
                     .await;
                     if let Ok((freed, removed)) = result {

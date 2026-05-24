@@ -1,6 +1,6 @@
+use crate::core::NormalizedPath;
 use std::collections::BTreeMap;
 use std::path::Path;
-use crate::core::NormalizedPath;
 
 use rayon::prelude::*;
 
@@ -215,8 +215,8 @@ impl TwoLayerCache {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::{persist, scan};
+    use super::*;
     use std::fs;
     use tempfile::TempDir;
 
@@ -439,7 +439,10 @@ mod tests {
         let cache = TwoLayerCache::new(cache_dir.path().join("fp.json"));
         let err = cache.mark_success().unwrap_err();
         assert!(
-            matches!(err, super::super::error::FingerprintError::NoPendingData { .. }),
+            matches!(
+                err,
+                super::super::error::FingerprintError::NoPendingData { .. }
+            ),
             "expected NoPendingData, got: {err}"
         );
     }
@@ -450,7 +453,10 @@ mod tests {
         let cache = TwoLayerCache::new(cache_dir.path().join("fp.json"));
         let err = cache.mark_failure().unwrap_err();
         assert!(
-            matches!(err, super::super::error::FingerprintError::NoPendingData { .. }),
+            matches!(
+                err,
+                super::super::error::FingerprintError::NoPendingData { .. }
+            ),
             "expected NoPendingData, got: {err}"
         );
     }

@@ -3,8 +3,8 @@
 //! Parses `rustfmt` command-line arguments to extract source files,
 //! mode flags, and configuration for cache key computation.
 
-use std::path::Path;
 use crate::core::NormalizedPath;
+use std::path::Path;
 
 /// Parsed rustfmt invocation.
 #[derive(Debug, Clone)]

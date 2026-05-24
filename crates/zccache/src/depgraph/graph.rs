@@ -8,9 +8,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use dashmap::DashMap;
 use crate::core::NormalizedPath;
 use crate::hash::ContentHash;
+use dashmap::DashMap;
 
 use super::context::{
     compute_artifact_key, compute_context_key, ArtifactKey, CompileContext, ContextKey,
@@ -891,8 +891,8 @@ impl Default for DepGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
     use crate::core::NormalizedPath;
+    use std::path::Path;
 
     use super::super::search_paths::IncludeSearchPaths;
 

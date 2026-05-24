@@ -406,7 +406,8 @@ async fn cold_path_stress_profile() {
     eprintln!();
 
     let file_counts = [50];
-    let mut all_results: Vec<(usize, ColdPassResult, zccache::daemon::ProfileSnapshot)> = Vec::new();
+    let mut all_results: Vec<(usize, ColdPassResult, zccache::daemon::ProfileSnapshot)> =
+        Vec::new();
 
     // Single daemon for all sizes — avoids index.redb lock contention.
     // We take profiler snapshots before/after each size to compute per-size averages.

@@ -1,7 +1,7 @@
 //! `zccache cargo-registry` subcommands: save / restore / hash / clean.
 
-use std::process::ExitCode;
 use crate::core::NormalizedPath;
+use std::process::ExitCode;
 
 use super::util::{env_flag_truthy, format_bytes};
 

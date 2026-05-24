@@ -13,9 +13,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::core::NormalizedPath;
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
-use crate::core::NormalizedPath;
 
 /// Windows long-path (`\\?\`) helpers. On non-Windows platforms every entry
 /// point is a no-op pass-through.

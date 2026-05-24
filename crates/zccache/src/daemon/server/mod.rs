@@ -6,13 +6,6 @@
 //! `use ...::*` re-exports) that lets every submodule use `use super::*;` to
 //! see the common type vocabulary.
 
-use dashmap::DashMap;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, Notify};
 use crate::artifact::{ArtifactIndex, ArtifactStore};
 use crate::core::NormalizedPath;
 use crate::depgraph::{
@@ -24,6 +17,13 @@ use crate::hash::ContentHash;
 use crate::ipc::{IpcConnection, IpcListener};
 use crate::protocol::{ArtifactData, ArtifactOutput, ArtifactPayload, Request, Response};
 use crate::watcher::{NotifyWatcher, SettleBuffer, SettledEvent};
+use dashmap::DashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::{Mutex, Notify};
 
 use super::compile_journal::{extract_outcome, CompileJournal, JournalContext, JournalEntry};
 use super::fingerprint::FingerprintManager;

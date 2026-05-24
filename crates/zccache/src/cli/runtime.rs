@@ -6,8 +6,8 @@
 //! (issue #365) to keep that file under the 1.5K-LOC `loc_guard` block
 //! threshold. Re-exported from `cli/mod.rs` so the public path is unchanged.
 
-use std::path::Path;
 use crate::core::NormalizedPath;
+use std::path::Path;
 
 pub fn run_async<T>(
     future: impl std::future::Future<Output = Result<T, String>>,
@@ -51,11 +51,7 @@ async fn check_daemon_version(endpoint: &str) -> VersionCheck {
         Ok(c) => c,
         Err(_) => return VersionCheck::Unreachable,
     };
-    if conn
-        .send(&crate::protocol::Request::Status)
-        .await
-        .is_err()
-    {
+    if conn.send(&crate::protocol::Request::Status).await.is_err() {
         return VersionCheck::CommError;
     }
     match conn.recv::<crate::protocol::Response>().await {
@@ -112,9 +108,7 @@ async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), String> {
 /// Stop a stale daemon that is unreachable or version-incompatible.
 async fn stop_stale_daemon(endpoint: &str) {
     if let Ok(mut conn) = connect_client(endpoint).await {
-        let _ = conn
-            .send(&crate::protocol::Request::Shutdown)
-            .await;
+        let _ = conn.send(&crate::protocol::Request::Shutdown).await;
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 
@@ -152,11 +146,8 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
         VersionCheck::CommError => {
             tracing::info!("cannot communicate with daemon, auto-recovering");
             stop_stale_daemon(endpoint).await;
-            return spawn_and_wait(
-                endpoint,
-                crate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
-            )
-            .await;
+            return spawn_and_wait(endpoint, crate::core::lifecycle::REASON_REPLACED_COMM_ERROR)
+                .await;
         }
         VersionCheck::Unreachable => {}
     }
@@ -197,11 +188,7 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
         ));
     }
 
-    spawn_and_wait(
-        endpoint,
-        crate::core::lifecycle::REASON_INITIAL_START,
-    )
-    .await
+    spawn_and_wait(endpoint, crate::core::lifecycle::REASON_INITIAL_START).await
 }
 
 fn find_daemon_binary() -> Option<NormalizedPath> {

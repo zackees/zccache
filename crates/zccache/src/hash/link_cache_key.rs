@@ -101,8 +101,8 @@ impl LinkCacheKeyBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::hash_bytes;
+    use super::*;
 
     #[test]
     fn link_key_deterministic() {

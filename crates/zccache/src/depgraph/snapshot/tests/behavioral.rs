@@ -6,16 +6,16 @@
 
 use std::time::Duration;
 
-use tempfile::TempDir;
 use crate::core::NormalizedPath;
 use crate::hash::ContentHash;
+use tempfile::TempDir;
 
-use super::{always_fresh, dummy_hash, make_ctx, test_path};
 use super::super::super::context::CompileContext;
 use super::super::super::graph::{CacheVerdict, ContextState, DepGraph};
 use super::super::super::scanner::{IncludeDirective, IncludeKind, ScanResult};
 use super::super::super::search_paths::IncludeSearchPaths;
 use super::super::super::snapshot::{load_from_file, save_to_file, strings_to_paths, HEADER_SIZE};
+use super::{always_fresh, dummy_hash, make_ctx, test_path};
 
 #[test]
 fn gc_trims_old_entries() {

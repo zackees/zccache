@@ -10,8 +10,8 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use dashmap::DashMap;
 use crate::core::NormalizedPath;
+use dashmap::DashMap;
 
 use super::context::ContextKey;
 

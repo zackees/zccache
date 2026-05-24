@@ -4,8 +4,8 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use globset::{Glob, GlobSet, GlobSetBuilder};
 use crate::core::NormalizedPath;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FileState {

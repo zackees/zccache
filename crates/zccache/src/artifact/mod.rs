@@ -22,8 +22,8 @@ pub use rust_plan::{
 };
 pub use store::{ArtifactIndex, ArtifactStore};
 
-use std::path::Path;
 use crate::core::NormalizedPath;
+use std::path::Path;
 
 /// Configuration for the artifact store.
 #[derive(Debug, Clone)]

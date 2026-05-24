@@ -9,10 +9,10 @@
 //! overflow → wait(delay OR build_event) → rescan_entries → loop
 //! ```
 
+use crate::fscache::CacheSystem;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
-use crate::fscache::CacheSystem;
 
 /// Deferred overflow recovery.
 ///
@@ -124,12 +124,12 @@ impl OverflowRecovery {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::sync::Arc;
-    use tempfile::TempDir;
     use crate::core::NormalizedPath;
     use crate::fscache::clock::Clock;
     use crate::fscache::Confidence;
+    use std::fs;
+    use std::sync::Arc;
+    use tempfile::TempDir;
 
     fn create_file(dir: &TempDir, name: &str, content: &str) -> NormalizedPath {
         let path = dir.path().join(name);

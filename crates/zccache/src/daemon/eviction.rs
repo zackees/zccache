@@ -7,14 +7,14 @@
 //! `max_cache_size` by removing the oldest `.meta` + data files from the
 //! artifact directory.
 
+use crate::core::NormalizedPath;
+use crate::depgraph::{ContextKey, DepGraph};
+use crate::fscache::CacheSystem;
 use dashmap::DashMap;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
-use crate::core::NormalizedPath;
-use crate::depgraph::{ContextKey, DepGraph};
-use crate::fscache::CacheSystem;
 
 use super::server::{trim_fast_hit_cache, CachedArtifact, FastHitEntry};
 
@@ -289,11 +289,11 @@ pub(crate) fn evict_disk_artifacts(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::server::CachedPayload;
-    use std::time::{Instant, SystemTime};
+    use super::*;
     use crate::depgraph::CompileContext;
     use crate::fscache::{Confidence, FileMetadata};
+    use std::time::{Instant, SystemTime};
 
     fn empty_caches() -> (
         CacheSystem,

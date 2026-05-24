@@ -183,8 +183,8 @@ fn split_lines_preserving(data: &[u8]) -> Vec<(&[u8], &[u8])> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::depfile::strip_win_prefix;
+    use super::*;
 
     #[test]
     fn parse_basic() {

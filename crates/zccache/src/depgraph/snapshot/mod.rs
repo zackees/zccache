@@ -16,11 +16,11 @@
 use std::path::Path;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use crate::core::NormalizedPath;
+use crate::hash::ContentHash;
 use dashmap::DashMap;
 use rayon::prelude::*;
 use rkyv::{Archive, Deserialize, Serialize};
-use crate::core::NormalizedPath;
-use crate::hash::ContentHash;
 
 use super::context::{ArtifactKey, CompileContext, ContextKey};
 use super::graph::{ContextEntry, ContextState, DepGraph, FileEntry};

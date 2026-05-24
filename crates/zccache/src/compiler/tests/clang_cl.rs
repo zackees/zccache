@@ -1,7 +1,7 @@
 //! clang-cl / cl.exe dispatch into the MSVC parser (issue #261), MSVC-style flags.
 
-use super::args;
 use super::super::{detect_family, parse_invocation, CompilerFamily, ParsedInvocation};
+use super::args;
 use crate::core::NormalizedPath;
 
 #[test]

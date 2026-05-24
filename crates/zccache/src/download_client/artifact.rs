@@ -2,11 +2,11 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
+use crate::download::{canonical_destination, stable_download_id, DownloadOptions, DownloadPhase};
 use reqwest::header::ACCEPT_ENCODING;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
-use crate::download::{canonical_destination, stable_download_id, DownloadOptions, DownloadPhase};
 
 use super::DownloadClient;
 
@@ -1011,9 +1011,9 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    use crate::download_daemon::DownloadDaemon;
     use flate2::write::GzEncoder;
     use flate2::Compression;
-    use crate::download_daemon::DownloadDaemon;
 
     #[derive(Clone)]
     struct TestHttpConfig {

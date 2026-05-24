@@ -29,6 +29,3 @@ pub use hash_cache::{compute_aggregate_hash, HashCache};
 pub use persist::detect_pending_type;
 pub use scan::{walk_files, walk_files_glob, ScannedFile};
 pub use two_layer::TwoLayerCache;
-
-#[cfg(feature = "python")]
-mod python;

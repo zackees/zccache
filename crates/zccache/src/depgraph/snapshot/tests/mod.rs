@@ -3,9 +3,9 @@
 //!
 //! See the directory's `README.md` for the layout overview.
 
-use tempfile::TempDir;
 use crate::core::NormalizedPath;
 use crate::hash::ContentHash;
+use tempfile::TempDir;
 
 use super::super::context::CompileContext;
 use super::super::search_paths::IncludeSearchPaths;

@@ -11,9 +11,9 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
+use crate::core::NormalizedPath;
 use clang::{Clang, Entity, EntityKind, Index};
 use thiserror::Error;
-use crate::core::NormalizedPath;
 
 /// Conversion settings for `.ino` parsing and `.ino.cpp` generation.
 #[derive(Debug, Clone)]

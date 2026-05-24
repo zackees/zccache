@@ -217,8 +217,8 @@ impl Default for CacheSystem {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::metadata::Confidence;
+    use super::*;
     use std::fs;
     use std::thread;
     use std::time::Duration;

@@ -5,16 +5,16 @@
 //! exact byte equality) so a regression points directly at the broken
 //! field. Cross-cutting behavior across save/load lives in `behavioral.rs`.
 
-use tempfile::TempDir;
 use crate::core::NormalizedPath;
 use crate::hash::ContentHash;
+use tempfile::TempDir;
 
-use super::{make_ctx, test_path};
 use super::super::super::context::CompileContext;
 use super::super::super::graph::{ContextState, DepGraph};
 use super::super::super::scanner::{IncludeDirective, IncludeKind, ScanResult};
 use super::super::super::search_paths::IncludeSearchPaths;
 use super::super::super::snapshot::{load_from_file, save_to_file};
+use super::{make_ctx, test_path};
 
 #[test]
 fn empty_graph_roundtrip() {

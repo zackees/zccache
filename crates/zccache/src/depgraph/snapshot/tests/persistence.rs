@@ -5,7 +5,6 @@
 
 use tempfile::TempDir;
 
-use super::{make_ctx, test_path};
 use super::super::super::graph::DepGraph;
 use super::super::super::scanner::ScanResult;
 use super::super::super::snapshot::{
@@ -13,6 +12,7 @@ use super::super::super::snapshot::{
     DEPGRAPH_VERSION,
 };
 use super::super::super::snapshot::{SnapshotError, HEADER_SIZE};
+use super::{make_ctx, test_path};
 
 #[test]
 fn version_mismatch() {

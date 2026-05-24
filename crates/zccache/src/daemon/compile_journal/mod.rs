@@ -18,9 +18,9 @@ use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
 
+use crate::core::NormalizedPath;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
-use crate::core::NormalizedPath;
 
 use super::event_log::{format_timestamp, open_append};
 

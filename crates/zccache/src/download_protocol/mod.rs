@@ -2,9 +2,9 @@
 
 pub mod daemon_mgmt;
 
-use serde::{Deserialize, Serialize};
 use crate::core::NormalizedPath;
 use crate::download::{DownloadDaemonStatus, DownloadOptions, DownloadStatus};
+use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u32 = 1;
 

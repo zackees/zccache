@@ -1,7 +1,7 @@
 //! Daemon lifecycle: start, stop, version probing, ensure-running, binary discovery.
 
-use std::process::ExitCode;
 use crate::core::NormalizedPath;
+use std::process::ExitCode;
 
 use super::util::{connect, resolve_endpoint, run_async};
 
@@ -150,11 +150,8 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
         VersionCheck::CommError => {
             tracing::info!("cannot communicate with daemon, auto-recovering");
             stop_stale_daemon(endpoint).await;
-            return spawn_and_wait(
-                endpoint,
-                crate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
-            )
-            .await;
+            return spawn_and_wait(endpoint, crate::core::lifecycle::REASON_REPLACED_COMM_ERROR)
+                .await;
         }
         VersionCheck::Unreachable => {
             // Fall through to lock-file check / spawn

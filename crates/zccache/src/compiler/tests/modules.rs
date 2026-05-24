@@ -1,7 +1,7 @@
 //! C++20 modules: .cppm/.ixx, -x c++-module, header units, --precompile, GCC -fmodules-ts.
 
-use super::args;
 use super::super::{parse_invocation, ParsedInvocation};
+use super::args;
 use crate::core::NormalizedPath;
 
 // Group A: Source extension recognition (.cppm, .ixx)

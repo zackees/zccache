@@ -1,7 +1,7 @@
+use crate::core::NormalizedPath;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::SystemTime;
-use crate::core::NormalizedPath;
 
 use serde::{Deserialize, Serialize};
 

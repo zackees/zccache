@@ -5,11 +5,11 @@
 //! ask "has this file changed since clock N?" — an O(1) lookup that eliminates
 //! redundant stat calls across concurrent compilations.
 
+use crate::core::NormalizedPath;
 use dashmap::DashMap;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
-use crate::core::NormalizedPath;
 
 /// Monotonically increasing clock tick.
 ///

@@ -4,9 +4,9 @@
 //! this module owns the clap definitions ([`args`]), the dispatch match,
 //! and every per-subcommand implementation.
 
+use crate::core::NormalizedPath;
 use std::path::Path;
 use std::process::ExitCode;
-use crate::core::NormalizedPath;
 
 pub(crate) mod analyze;
 pub(crate) mod args;

@@ -3,9 +3,9 @@
 //! Provides helpers for integration tests, including temp directories,
 //! daemon lifecycle management, and test fixtures.
 
+use crate::core::NormalizedPath;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
-use crate::core::NormalizedPath;
 
 // ─── Tool discovery ─────────────────────────────────────────────────────────
 

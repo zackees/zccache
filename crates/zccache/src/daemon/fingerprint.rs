@@ -4,9 +4,9 @@
 //! `on_batch()` to set watches dirty; CLI queries via IPC get sub-millisecond
 //! answers from the in-memory state.
 
+use crate::core::NormalizedPath;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use crate::core::NormalizedPath;
 
 use dashmap::DashMap;
 

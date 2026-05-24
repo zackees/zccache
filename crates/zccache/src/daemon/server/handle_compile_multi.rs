@@ -528,8 +528,10 @@ pub(super) async fn handle_compile_multi(
         }
     }
 
-    let lineage =
-        super::super::lineage::Lineage::current(session_client_pid(&state, &sid), Some(sid.to_string()));
+    let lineage = super::super::lineage::Lineage::current(
+        session_client_pid(&state, &sid),
+        Some(sid.to_string()),
+    );
     let mut cmd = tokio::process::Command::new(&compiler);
     if let Some(ref rsp) = _rsp_guard {
         cmd.arg(rsp.at_arg()).current_dir(&cwd_path);
@@ -539,7 +541,8 @@ pub(super) async fn handle_compile_multi(
     apply_client_env(&mut cmd, &client_env, &lineage);
     let compiler_priority = CompilePriority::from_client_env(client_env.as_deref());
     let result =
-        super::super::process::tokio_command_output_with_priority(&mut cmd, compiler_priority).await;
+        super::super::process::tokio_command_output_with_priority(&mut cmd, compiler_priority)
+            .await;
 
     let output = match result {
         Ok(o) => o,

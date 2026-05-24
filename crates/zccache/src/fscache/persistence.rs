@@ -50,11 +50,11 @@
 //! create a zero-entry file).
 
 use super::metadata::{Confidence, FileMetadata, MetadataCache};
+use crate::core::NormalizedPath;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::Path;
 use std::time::{Instant, SystemTime};
-use crate::core::NormalizedPath;
 
 /// On-disk format version for the persisted [`MetadataCache`] snapshot.
 ///
@@ -288,8 +288,8 @@ impl PersistIter for MetadataCache {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::metadata::Confidence;
+    use super::*;
     use std::fs;
     use tempfile::TempDir;
 

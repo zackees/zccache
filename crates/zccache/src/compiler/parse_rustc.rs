@@ -3,8 +3,8 @@
 //! Rustc has a completely different invocation model from C/C++ compilers:
 //! crate types, `--emit=` mixed types, host-side proc-macro dylibs, etc.
 
-use std::sync::Arc;
 use crate::core::NormalizedPath;
+use std::sync::Arc;
 
 use super::{CacheableCompilation, CompilerFamily, ParsedInvocation};
 

@@ -1,7 +1,7 @@
 //! `clippy-driver` detection + caching (re-uses rustc parser).
 
-use super::args;
 use super::super::{detect_family, parse_invocation, CompilerFamily, ParsedInvocation};
+use super::args;
 use crate::core::NormalizedPath;
 
 #[test]

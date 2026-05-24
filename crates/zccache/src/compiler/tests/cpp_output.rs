@@ -1,7 +1,7 @@
 //! Default output paths, PCH naming, concatenated -o, unknown-flag preservation, BUG_LINKER repro.
 
-use super::args;
 use super::super::{parse_invocation, ParsedInvocation};
+use super::args;
 use crate::core::NormalizedPath;
 
 // ─── PCH default output tests ─────────────────────────────────────────

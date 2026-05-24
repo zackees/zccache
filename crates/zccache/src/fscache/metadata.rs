@@ -1,9 +1,9 @@
 //! File metadata types and cache implementation.
 
+use crate::core::NormalizedPath;
 use dashmap::DashMap;
 use rayon::prelude::*;
 use std::time::{Duration, Instant, SystemTime};
-use crate::core::NormalizedPath;
 
 /// Confidence level for a cached metadata entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -171,9 +171,9 @@ impl MetadataCache {
         self.entries
             .get(path)
             .and_then(|entry| match entry.confidence {
-                Confidence::High | Confidence::Medium => entry
-                    .content_hash
-                    .map(crate::hash::ContentHash::from_bytes),
+                Confidence::High | Confidence::Medium => {
+                    entry.content_hash.map(crate::hash::ContentHash::from_bytes)
+                }
                 Confidence::Low => None,
             })
     }

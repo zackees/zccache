@@ -645,9 +645,9 @@ pub fn compute_rustc_artifact_key_with_root<P: AsRef<Path> + Ord>(
 mod tests {
     use crate::core::NormalizedPath;
 
-    use super::*;
     use super::super::args::UserDepFlags;
     use super::super::rustc_args::ExternCrate;
+    use super::*;
 
     fn make_context(source: &str, user_dirs: &[&str], defines: &[&str]) -> CompileContext {
         CompileContext {

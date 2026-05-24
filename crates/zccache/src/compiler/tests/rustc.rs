@@ -1,7 +1,7 @@
 //! Rustc invocation parsing: crate types, --emit, --out-dir, proc-macro/bin output naming.
 
-use super::args;
 use super::super::{detect_family, parse_invocation, CompilerFamily, ParsedInvocation};
+use super::args;
 use crate::core::NormalizedPath;
 
 // ─── Rustc detection tests ────────────────────────────────────────────

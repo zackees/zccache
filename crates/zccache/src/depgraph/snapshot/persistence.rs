@@ -4,8 +4,8 @@
 use std::path::Path;
 use std::time::Duration;
 
-use rkyv::Deserialize;
 use crate::core::NormalizedPath;
+use rkyv::Deserialize;
 
 use super::super::graph::DepGraph;
 
