@@ -395,24 +395,27 @@ pub(super) async fn handle_link_ephemeral(
             let cached = CachedArtifact::from_artifact_data(&artifact);
 
             // Persist to disk in background (meta.clone() is cheap — Arc fields only).
+            //
+            // Issue #296: hardlink each `read_targets` source path into the cache
+            // instead of re-writing the in-memory bytes. We still keep the
+            // resident `Bytes` payload in the in-memory cache to serve subsequent
+            // warm hits inline; the disk persist routes through
+            // `persist_artifact_paths` so the cold-miss disk-write count drops
+            // from 2 (compiler + cache) to 1 (compiler + hardlink). Cross-volume
+            // case falls back to `std::fs::copy` — identical to prior semantics.
             {
                 let artifact_dir = state.artifact_dir.clone();
                 let kh = key_hex.clone();
                 let persist_meta = cached.meta.clone();
-                // link-ephemeral always reads outputs into memory above, so
-                // every payload is the `Bytes` variant in practice. The
-                // match keeps us forward-compatible if a `Path` variant
-                // ever reaches this site (materialise by read; degraded but
-                // correct).
-                let payloads: Vec<Arc<Vec<u8>>> = artifact
+                let source_paths: Vec<NormalizedPath> = read_targets
+                    .iter()
+                    .map(|(_, p)| NormalizedPath::from(p.as_path()))
+                    .collect();
+                let payload_size: usize = artifact
                     .outputs
                     .iter()
-                    .filter_map(|o| match &o.payload {
-                        ArtifactPayload::Bytes(b) => Some(Arc::clone(b)),
-                        ArtifactPayload::Path(p) => std::fs::read(p.as_path()).ok().map(Arc::new),
-                    })
-                    .collect();
-                let payload_size: usize = payloads.iter().map(|p| p.len()).sum();
+                    .map(|o| o.payload.size_bytes() as usize)
+                    .sum();
                 state
                     .in_flight_bytes
                     .fetch_add(payload_size, Ordering::Relaxed);
@@ -426,7 +429,7 @@ pub(super) async fn handle_link_ephemeral(
                     let _permit = sem.acquire().await.unwrap();
                     let written = tokio::task::spawn_blocking(move || {
                         let _guard = guard;
-                        let _ = persist_artifact_payloads(&artifact_dir, &kh, &payloads);
+                        let _ = persist_artifact_paths(&artifact_dir, &kh, &source_paths);
                         (kh, persist_meta)
                     })
                     .await;

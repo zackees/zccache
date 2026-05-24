@@ -1293,24 +1293,24 @@ pub(super) async fn handle_compile(
                 let t_persist_enqueue = std::time::Instant::now();
 
                 // Spawn disk persistence to background (meta.clone() is cheap — Arc fields only).
+                //
+                // Issue #296: hardlink the compiler's `output_path` directly into the
+                // cache instead of re-writing the bytes we already have in memory.
+                // `persist_artifact_paths` falls back to `std::fs::copy` on cross-volume,
+                // matching the prior byte-write semantics. The hardlink keeps the cache
+                // file inode identical to the user-visible output until cargo's next
+                // tmp+rename detaches it — at which point the cache copy stays alive on
+                // its own inode.
                 {
                     let artifact_dir = state.artifact_dir.clone();
                     let key_hex = artifact_key_hex.clone();
                     let persist_meta = cached.meta.clone();
-                    // Same Bytes-only-in-practice contract as the link-ephemeral
-                    // site above; match-and-materialise keeps Path-variant
-                    // forward-compatibility correct.
-                    let payloads: Vec<Arc<Vec<u8>>> = artifact
+                    let source_paths: Vec<NormalizedPath> = vec![output_path.clone()];
+                    let payload_size: usize = artifact
                         .outputs
                         .iter()
-                        .filter_map(|o| match &o.payload {
-                            ArtifactPayload::Bytes(b) => Some(Arc::clone(b)),
-                            ArtifactPayload::Path(p) => {
-                                std::fs::read(p.as_path()).ok().map(Arc::new)
-                            }
-                        })
-                        .collect();
-                    let payload_size: usize = payloads.iter().map(|p| p.len()).sum();
+                        .map(|o| o.payload.size_bytes() as usize)
+                        .sum();
                     state
                         .in_flight_bytes
                         .fetch_add(payload_size, Ordering::Relaxed);
@@ -1325,7 +1325,7 @@ pub(super) async fn handle_compile(
                         let written = tokio::task::spawn_blocking(move || {
                             let _guard = guard;
                             if let Err(e) =
-                                persist_artifact_payloads(&artifact_dir, &key_hex, &payloads)
+                                persist_artifact_paths(&artifact_dir, &key_hex, &source_paths)
                             {
                                 tracing::warn!(
                                     key = %key_hex,

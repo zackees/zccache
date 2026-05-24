@@ -12,8 +12,9 @@ from typing import Any
 ROOT = Path(__file__).parent.parent.resolve()
 RUST_PUBLISH_ORDER = [
     "zccache",
-    "zccache-watcher",
+    "zccache-cli",
     "zccache-fingerprint",
+    "zccache-watcher",
 ]
 DYNAMIC_VERSION_PYPROJECTS = (
     ROOT / "pyproject.toml",
