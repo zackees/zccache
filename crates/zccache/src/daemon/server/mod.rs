@@ -25,7 +25,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify};
 
-use super::compile_journal::{extract_outcome, CompileJournal, JournalContext, JournalEntry};
+use super::compile_journal::{
+    extract_outcome, CompileJournal, JournalContext, JournalEntry, SelfProfileSpans,
+};
 use super::fingerprint::FingerprintManager;
 use super::process::CompilePriority;
 use super::stats::{HitPhases, MissPhases, PhaseProfiler, StatsCollector};
