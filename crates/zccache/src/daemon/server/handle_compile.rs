@@ -664,11 +664,16 @@ pub(super) async fn handle_compile(
         }
     }
 
+    // Issue #353: include `key_root` and `path_remap` state in the diag line so
+    // cross-runner cache-miss bisection (two GHA runners hit the same cache via
+    // actions/cache@v4 but see 0% hit rate) can diff the per-runner resolution.
+    // `path_remap=auto_no_git` exposes the silent-fallback case where
+    // `ZCCACHE_PATH_REMAP=auto` was requested but `find_git_root` returned None.
     write_session_log(
         &state.sessions,
         &sid,
         &format!(
-            "[DIAG] depgraph_check: {} -> {} ctx={} verdict={} reason={}",
+            "[DIAG] depgraph_check: {} -> {} ctx={} verdict={} reason={} key_root={} path_remap={}",
             source_path.display(),
             output_path.display(),
             &context_key.hash().to_hex()[..8],
@@ -680,6 +685,8 @@ pub(super) async fn handle_compile(
                 crate::depgraph::CacheVerdict::NeedsPreprocessor => "NeedsPreprocessor",
             },
             diag_reason,
+            default_key_root.display(),
+            diag_path_remap_state(client_env.as_deref(), worktree_root.is_some()),
         ),
     );
     match verdict {

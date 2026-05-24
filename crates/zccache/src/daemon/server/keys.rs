@@ -17,6 +17,26 @@ pub(super) fn path_remap_auto_enabled(client_env: Option<&[(String, String)]>) -
         .is_some_and(|value| value.eq_ignore_ascii_case("auto"))
 }
 
+/// Stringly tag of path-remap state for the depgraph-check diag line.
+/// Issue #353: exposes the silent fallback case where `ZCCACHE_PATH_REMAP=auto`
+/// was requested but `find_git_root` returned None — distinguishing it from
+/// "remap disabled" (off) and "remap firing" (auto) lets cross-runner bisection
+/// catch the case where two runners disagree on whether remap is active.
+pub(super) fn diag_path_remap_state(
+    client_env: Option<&[(String, String)]>,
+    worktree_root_resolved: bool,
+) -> &'static str {
+    if path_remap_auto_enabled(client_env) {
+        if worktree_root_resolved {
+            "auto"
+        } else {
+            "auto_no_git"
+        }
+    } else {
+        "off"
+    }
+}
+
 pub(super) fn resolve_worktree_root(
     cwd: &Path,
     client_env: Option<&[(String, String)]>,
