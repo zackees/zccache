@@ -43,7 +43,7 @@ struct Args {
     /// Idle timeout in seconds (0 = no timeout).
     ///
     /// Default comes from `zccache::core::config::DEFAULT_IDLE_TIMEOUT_SECS`
-    /// (60 minutes), kept as the single source of truth so [`Config::default`]
+    /// (60 minutes), kept as the single source of truth so `Config::default`
     /// and this flag never drift apart.
     ///
     /// Reads `ZCCACHE_IDLE_TIMEOUT_SECS` from the environment when the
