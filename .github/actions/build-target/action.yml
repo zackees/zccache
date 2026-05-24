@@ -121,7 +121,14 @@ runs:
         fi
         cargo build --release --target ${{ inputs.target }} -p zccache --bin zccache
         cargo build --release --target ${{ inputs.target }} -p zccache --bin zccache-daemon
-        cargo build --release --target ${{ inputs.target }} -p zccache-fingerprint
+        # zccache-fp is a bin shipped *inside* the umbrella `zccache` crate
+        # (see crates/zccache/Cargo.toml `[[bin]] name = "zccache-fp"`). The
+        # sibling `zccache-fingerprint` crate is a pyo3 cdylib for the Python
+        # extension and produces no native executable. The staging step below
+        # then `cp`s `target/.../zccache-fp` into `staging/`, which is why
+        # building the wrong target left it complaining `cannot stat
+        # 'target/.../zccache-fp': No such file or directory`.
+        cargo build --release --target ${{ inputs.target }} -p zccache --bin zccache-fp
 
     # Windows DLL load smoke gate (see zccache#269). If the just-built
     # `zccache.exe` cannot complete loader init on this host, `--version`
