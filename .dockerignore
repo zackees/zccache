@@ -1,0 +1,33 @@
+# Keep Docker build contexts lean for Dockerfile.cc-test (issue #391) and
+# any future Linux-build dockerfiles. The build only needs the workspace
+# sources, the manifests, and the rust-toolchain pin — everything else
+# wastes upload time and disk.
+
+# Build outputs
+target/
+dist/
+
+# Local cargo state (rebuilt inside the image)
+.cargo/registry/
+.cargo/git/
+
+# IDE / editor scratch
+.vscode/
+.idea/
+
+# Git internals
+.git/
+.gitignore
+
+# Test scratch + caches
+.soldr/
+.zccache/
+.claude/
+
+# Python venv / wheels (CI scripts use uv inside its own env)
+.venv/
+__pycache__/
+*.pyc
+
+# Node modules — none expected, but defensive
+node_modules/

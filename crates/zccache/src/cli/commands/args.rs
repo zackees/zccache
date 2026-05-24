@@ -422,6 +422,23 @@ pub(crate) enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, last = true)]
         tool_command: Vec<String>,
     },
+    /// Issue #391: cache `cc` (gcc/clang frontend) invocations. Intended for
+    /// `CC="zccache cc"` setups so cc-rs build scripts (libsqlite3-sys etc.)
+    /// route through the daemon. Internally forwards to the existing wrap
+    /// path with the resolved cc binary on PATH; the Gcc compile parser
+    /// handles `-c <input> -o <output>` plus the conservative `-D`/`-I`/`-O`
+    /// flag surface.
+    ///
+    /// Example:
+    ///   CC="zccache cc" cargo build -p libsqlite3-sys
+    ///   zccache cc -c sqlite3.c -o sqlite3.o
+    Cc {
+        /// The cc-style argv passed through to the resolved compiler. Use
+        /// `--` before the tool args if any leading positional looks like a
+        /// clap flag.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -724,6 +741,7 @@ pub(crate) const KNOWN_SUBCOMMANDS: &[&str] = &[
     "cache-root",
     "defender-exclusions",
     "exec",
+    "cc",
     "help",
     "--help",
     "-h",

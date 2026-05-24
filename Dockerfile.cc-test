@@ -1,0 +1,181 @@
+# syntax=docker/dockerfile:1.7
+#
+# Dockerfile.cc-test — issue #391 end-to-end verification.
+#
+# Builds zccache from source on a Linux toolchain, then runs the cc-wrapper
+# scenario the issue calls out: cold-miss / warm-hit on `zccache cc -c foo.c
+# -o foo.o`, plus the cc-rs-equivalent `CC="zccache cc"` flow. The
+# Dockerfile's `RUN` step itself fails the build if any cache-behavior
+# assertion does not hold, so `docker build -f Dockerfile.cc-test .` is the
+# test command.
+#
+# Layout:
+#   - stage `builder`  — compile zccache + zccache-daemon (release binaries)
+#   - stage `tester`   — minimal runtime image with gcc; runs the test script
+#
+# Run locally:
+#   docker build -f Dockerfile.cc-test --progress=plain .
+#
+# The build fails (non-zero exit) iff:
+#   - the second cc invocation is not a daemon hit
+#   - daemon status reports zero compile/hit counters after the run
+#   - the produced .o is missing or empty
+#   - the CC="zccache cc" cargo-style invocation pattern misses both times
+
+ARG RUST_VERSION=1.94.1
+
+# ─── Stage 1: build zccache ─────────────────────────────────────────────
+FROM rust:${RUST_VERSION}-bookworm AS builder
+
+WORKDIR /work
+
+# Copy the workspace sources. We pull the manifests + every crate that
+# `crates/zccache` references (the workspace + its vendored notify + the
+# dylint helper crates). No `.cargo/config.toml` exists at the repo root,
+# so the toolchain pin in `rust-toolchain.toml` is what governs.
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates ./crates
+COPY vendor ./vendor
+COPY dylints ./dylints
+
+# Build the release binaries we exercise: the CLI wrapper and the daemon.
+# A `cargo build --release -p zccache --bin zccache --bin zccache-daemon`
+# captures everything the test path needs.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/work/target \
+    cargo build --release -p zccache --bin zccache --bin zccache-daemon \
+ && mkdir -p /out \
+ && cp target/release/zccache target/release/zccache-daemon /out/
+
+# ─── Stage 2: run the cc-cache test ─────────────────────────────────────
+FROM debian:bookworm-slim AS tester
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        gcc libc6-dev jq ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /out/zccache /out/zccache-daemon /usr/local/bin/
+
+ENV ZCCACHE_CACHE_DIR=/zccache-cache
+ENV ZCCACHE_ENDPOINT=/tmp/zccache-cc-test.sock
+ENV ZCCACHE_LOG=info
+
+WORKDIR /work
+
+# The test script. Embedding it in the Dockerfile keeps the
+# `docker build` self-contained.
+RUN <<'SCRIPT' bash -eu
+set -o pipefail
+
+echo "=== zccache version under test ==="
+zccache --version
+
+echo "=== sanity: zccache cc exists in --help ==="
+zccache --help 2>&1 | grep -E '^\s*cc\s' || {
+    echo "FAIL: 'cc' subcommand not listed in zccache --help"; exit 1;
+}
+
+echo "=== sanity: zccache cc forwards to cc (no args = cc's own error) ==="
+# `zccache cc` with no args invokes the system cc with no inputs. cc
+# itself prints "fatal error: no input files" and exits non-zero —
+# that's the correct passthrough behavior, NOT a zccache crash.
+out=$(zccache cc 2>&1 || true)
+echo "$out"
+echo "$out" | grep -qE "no input files|usage|^zccache:" || {
+    echo "FAIL: 'zccache cc' with no args did not forward cleanly to cc"
+    exit 1
+}
+
+echo "=== set up a tiny C source ==="
+mkdir -p src
+cat > src/hello.c <<'EOF'
+#include <stdio.h>
+int hello(int n) { return n + 42; }
+int main(void) { printf("%d\n", hello(0)); return 0; }
+EOF
+
+echo "=== start daemon explicitly so we can read its status afterwards ==="
+zccache start
+# Give the daemon a moment to bind its socket.
+for i in $(seq 1 50); do
+    if zccache status --json > /dev/null 2>&1; then break; fi
+    sleep 0.1
+done
+
+echo "=== cold-miss: first cc invocation populates the cache ==="
+rm -f src/hello.o
+zccache cc -c src/hello.c -o src/hello.o
+[ -s src/hello.o ] || { echo "FAIL: hello.o missing or empty after cold miss"; exit 1; }
+
+status_after_cold=$(zccache status --json)
+echo "$status_after_cold" | jq '{compilations,cache_hits,cache_misses}'
+cold_total=$(echo "$status_after_cold" | jq -r '.total_compilations')
+cold_misses=$(echo "$status_after_cold" | jq -r '.cache_misses')
+if [ "$cold_total" -lt 1 ] || [ "$cold_misses" -lt 1 ]; then
+    echo "FAIL: daemon stats show no compilations after cold miss"
+    exit 1
+fi
+
+echo "=== warm-hit: second cc invocation must hit the cache ==="
+rm -f src/hello.o
+zccache cc -c src/hello.c -o src/hello.o
+[ -s src/hello.o ] || { echo "FAIL: hello.o missing or empty after warm hit"; exit 1; }
+
+status_after_warm=$(zccache status --json)
+echo "$status_after_warm" | jq '{compilations,cache_hits,cache_misses}'
+warm_hits=$(echo "$status_after_warm" | jq -r '.cache_hits')
+warm_misses=$(echo "$status_after_warm" | jq -r '.cache_misses')
+
+if [ "$warm_hits" -lt 1 ]; then
+    echo "FAIL: zccache cc warm invocation produced no cache hit"
+    echo "  total=$(echo "$status_after_warm" | jq -r '.total_compilations')"
+    echo "  hits=$warm_hits  misses=$warm_misses"
+    exit 1
+fi
+if [ "$warm_misses" -gt "$cold_misses" ]; then
+    echo "FAIL: warm invocation produced a fresh miss (warm_misses=$warm_misses > cold_misses=$cold_misses)"
+    exit 1
+fi
+
+echo "=== invalidate: edit source, expect a miss ==="
+echo "// nudge" >> src/hello.c
+# Bump mtime past the metadata cache's stat-confidence horizon.
+touch -d '+2 seconds' src/hello.c
+rm -f src/hello.o
+zccache cc -c src/hello.c -o src/hello.o
+status_after_edit=$(zccache status --json)
+edit_misses=$(echo "$status_after_edit" | jq -r '.cache_misses')
+if [ "$edit_misses" -le "$warm_misses" ]; then
+    echo "FAIL: editing the source did not produce a cache miss"
+    echo "  before=$warm_misses  after=$edit_misses"
+    exit 1
+fi
+
+echo "=== CC=\"zccache cc\" passthrough (cc-rs style) ==="
+# Mimics what cc-rs does: spawn $CC -c <input> -o <output>.
+# We exec via /bin/sh so the env-var splits correctly.
+rm -f src/hello.o
+CC="zccache cc" /bin/sh -c '$CC -c src/hello.c -o src/hello.o'
+[ -s src/hello.o ] || {
+    echo "FAIL: CC=\"zccache cc\" did not produce hello.o"; exit 1;
+}
+
+# Same content as the prior compile → must hit.
+rm -f src/hello.o
+status_pre=$(zccache status --json | jq -r '.cache_hits')
+CC="zccache cc" /bin/sh -c '$CC -c src/hello.c -o src/hello.o'
+status_post=$(zccache status --json | jq -r '.cache_hits')
+if [ "$status_post" -le "$status_pre" ]; then
+    echo "FAIL: CC=\"zccache cc\" second invocation did not produce a hit"
+    echo "  hits before=$status_pre  after=$status_post"
+    exit 1
+fi
+
+echo "=== shutdown ==="
+zccache stop || true
+
+echo ""
+echo "ALL ASSERTIONS PASSED — zccache cc caches gcc invocations end-to-end."
+SCRIPT

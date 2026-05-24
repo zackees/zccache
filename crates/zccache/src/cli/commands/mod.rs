@@ -343,6 +343,23 @@ fn dispatch(command: Commands, global_strict_paths: Option<&str>) -> ExitCode {
             DefenderExclusionsCommands::Add => defender::cmd_add(),
             DefenderExclusionsCommands::Remove => defender::cmd_remove(),
         },
+        Commands::Cc { args } => {
+            // Build the wrap argv: ["cc", <args...>] and let the existing
+            // dispatcher detect Gcc (cc falls through to Gcc in
+            // `detect_family`), resolve the binary on PATH, and route to
+            // the compile path.
+            let mut wrap_args: Vec<String> = Vec::with_capacity(args.len() + 1);
+            wrap_args.push("cc".to_string());
+            wrap_args.extend(args);
+            let strict_paths = match wrap::parse_optional_strict_paths(global_strict_paths) {
+                Ok(mode) => mode,
+                Err(err) => {
+                    eprintln!("zccache: {err}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            wrap::run_wrap(&wrap_args, strict_paths)
+        }
         Commands::Exec {
             input_file,
             input_env,

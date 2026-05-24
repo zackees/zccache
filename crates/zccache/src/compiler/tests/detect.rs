@@ -11,6 +11,18 @@ fn detect_clang_family() {
 }
 
 #[test]
+fn detect_bare_cc_falls_through_to_gcc() {
+    // Issue #391: the `zccache cc` subcommand routes invocations through
+    // the existing wrap path, which relies on `detect_family("cc")` to
+    // classify bare `cc` as a Gcc-style frontend. cc-rs build scripts
+    // (libsqlite3-sys etc.) spawn whatever `$CC` points to, often the
+    // platform's `cc` symlink — we must classify it.
+    assert_eq!(detect_family("cc"), CompilerFamily::Gcc);
+    assert_eq!(detect_family("/usr/bin/cc"), CompilerFamily::Gcc);
+    assert_eq!(detect_family("cc.exe"), CompilerFamily::Gcc);
+}
+
+#[test]
 fn detect_emcc_family() {
     assert_eq!(detect_family("emcc"), CompilerFamily::Clang);
     assert_eq!(detect_family("em++"), CompilerFamily::Clang);
