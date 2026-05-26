@@ -54,7 +54,7 @@ BENCHMARK_BASE_COMMAND = [
     "cargo",
     "test",
     "-p",
-    "zccache-daemon",
+    "zccache",
     "--test",
     "perf_bench_test",
 ]

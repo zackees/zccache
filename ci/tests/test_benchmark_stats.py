@@ -191,6 +191,19 @@ def test_parse_benchmark_log_extracts_all_tables():
     assert rust_link[1]["scenario"] == "Workspace staticlib link, Warm"
 
 
+def test_benchmark_command_targets_existing_workspace_package():
+    assert benchmark_stats.BENCHMARK_BASE_COMMAND == [
+        "soldr",
+        "--no-cache",
+        "cargo",
+        "test",
+        "-p",
+        "zccache",
+        "--test",
+        "perf_bench_test",
+    ]
+
+
 def test_parse_benchmark_log_clamps_zero_duration_cells_for_ratios():
     log = """
 ## C Static-Library Link Benchmark: 50 .o inputs, 5 warm trials
