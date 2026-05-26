@@ -54,9 +54,9 @@ fn find_test_tool() -> Option<PathBuf> {
 // ─── Daemon harness ──────────────────────────────────────────────────────
 
 async fn start_daemon(cache_dir: &Path) -> (String, JoinHandle<()>, Arc<Notify>) {
-    std::env::set_var("ZCCACHE_CACHE_DIR", cache_dir);
     let endpoint = zccache::ipc::unique_test_endpoint();
-    let mut server = DaemonServer::bind(&endpoint).expect("bind");
+    let cache_dir = NormalizedPath::from(cache_dir);
+    let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).expect("bind");
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
         server.run(0).await.expect("daemon run");

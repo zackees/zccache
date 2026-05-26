@@ -61,12 +61,12 @@ fn find_test_tool() -> Option<PathBuf> {
 // ─── Daemon harness ──────────────────────────────────────────────────────
 
 /// Start a daemon bound to a unique endpoint with `cache_dir` as its cache
-/// root. The cache dir is honored by `ZCCACHE_CACHE_DIR`; required so the
-/// daemon-restart test can reuse on-disk state across two binds.
+/// root. Passing the cache dir explicitly avoids process-global env races
+/// while the daemon-restart test reuses on-disk state across two binds.
 async fn start_daemon_with_cache(cache_dir: &Path) -> (String, JoinHandle<()>, Arc<Notify>) {
-    std::env::set_var("ZCCACHE_CACHE_DIR", cache_dir);
     let endpoint = zccache::ipc::unique_test_endpoint();
-    let mut server = DaemonServer::bind(&endpoint).expect("bind daemon");
+    let cache_dir = NormalizedPath::from(cache_dir);
+    let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).expect("bind daemon");
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
         server.run(0).await.expect("daemon run");
