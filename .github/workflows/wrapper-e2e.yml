@@ -75,7 +75,13 @@ jobs:
       # `$HOME/.soldr/...`. The `--target-dir` is per-invocation; nothing
       # else in CI relies on it.
       - name: build zccache release binaries
-        run: soldr cargo build --release --target-dir target -p zccache --bin zccache -p zccache --bin zccache-daemon
+        run: |
+          # `soldr-cook` uses cargo-chef, whose recipe build can leave
+          # placeholder local-package binaries in target/release on cold
+          # caches. Clean this package before installing the wrapper that
+          # this workflow is specifically testing.
+          soldr cargo clean -p zccache --target-dir target
+          soldr cargo build --release --target-dir target -p zccache --bin zccache -p zccache --bin zccache-daemon
 
       - name: install binaries on PATH (Unix)
         if: runner.os != 'Windows'
