@@ -77,11 +77,13 @@ uv run python ci/build_dist.py --skip-build
 
 ### Publishing
 
-- **Automation**: `.github/workflows/release.yml` is the only supported release entrypoint. It validates release metadata, fails fast when the current version is already fully published on PyPI/crates.io, builds wheel/release artifacts, publishes PyPI wheels, publishes Rust crates, and creates the GitHub release.
+- **Automation**: `.github/workflows/release-auto.yml` is the only supported release entrypoint. It validates release metadata, fails fast when the current version is already fully published on PyPI/crates.io, builds wheel/release artifacts, publishes PyPI wheels, publishes Rust crates, and creates the GitHub release.
 - **Helper module**: `ci/release_workflow.py` contains workflow-only Python helpers for preflight checks, wheel assembly, and crates.io publish order. It does not dispatch other GitHub workflows.
-- **Tag rule**: Push `1.3.0` or `v1.3.0`; the workflow normalizes the tag and requires it to match `[workspace.package].version` in `Cargo.toml`.
-- **Manual runs**: `Run workflow` may leave `tag` empty. The workflow then uses the current workspace version from the selected branch, prefers an existing matching tag, and fails early if that version already has a published GitHub release.
-- **PyPI setup**: Prefer Trusted Publishing. Configure PyPI to trust repo `zackees/zccache`, workflow `.github/workflows/release.yml`, environment `pypi`.
+- **Three trigger paths**, all converge on the same publish pipeline:
+  1. **Auto on push-to-main** (the everyday path): the `detect-bump` job reads `[workspace.package].version` from `Cargo.toml`, compares it to the prior commit's version, and proceeds iff the version was bumped. Merge a `chore(release): bump … -> X.Y.Z` PR and the release ships on its own.
+  2. **Tag push**: push `1.3.0` or `v1.3.0`; the workflow normalizes the tag and requires it to match `[workspace.package].version` in `Cargo.toml`.
+  3. **`workflow_dispatch`**: optionally accepts a `tag` input. Leave it empty to use the current workspace version from the selected branch; prefers an existing matching tag and fails early if that version is already published.
+- **PyPI setup**: Prefer Trusted Publishing. Configure PyPI to trust repo `zackees/zccache`, workflow `.github/workflows/release-auto.yml`, environment `pypi`.
 - **crates.io setup**: Add GitHub Actions secret `CARGO_REGISTRY_TOKEN` from https://crates.io/me.
 - **Marketplace**: GitHub Marketplace publishing is not API-automated. After the workflow creates the GitHub release, open that release in GitHub, select `Publish this action to the GitHub Marketplace`, choose categories, and publish.
 
@@ -113,6 +115,7 @@ Hooks are in `ci/hooks/` (Python) and `crates/zccache-ci` (Rust):
 
 - **Timing: always use nanoseconds.** All internal timing fields, variables, and phase profiling use `_ns` suffix and `as_nanos()`. Display code converts to human-readable units (ns/us/ms/s). Never use `as_micros()`.
 - **Protocol version bump required on wire format changes.** When changing `Request`, `Response`, or any struct serialized over IPC, bump `PROTOCOL_VERSION` in `zccache-protocol`. See DD-018.
+- **`zccache cc` / `zccache c++` are stable public surface.** These wrapper-mode subcommands (issue #391) are how soldr's default-on `CC`/`CXX` injection routes `cc-rs` build-script work through the managed cache (soldr#310). Treat them like `RUSTC_WRAPPER`: argv shape, exit-code contract, and stdout/stderr behavior are part of the contract.
 - **Zero extra roundtrips.** Never add a separate handshake, version check, or metadata query that requires its own IPC roundtrip. Piggyback on existing messages instead. Example: protocol version is embedded in every message frame, not fetched via a separate Status request. If you need new metadata exchanged between CLI and daemon, add it to the framing layer or to an existing request/response - never introduce a new preliminary exchange.
 - **Avoid gratuitous `clone()`.** Do not clone to placate the borrow checker - restructure code instead. Prefer: moves over clones for single-use values, `&str`/`&Path` over owned types in function signatures that only read, `Arc::clone(&x)` over cloning the inner data then wrapping. Cloning is acceptable when data genuinely needs to exist in two places (e.g., inserting into a map while retaining a copy, or moving into a spawned task). Every `clone()` on a `Vec`, `String`, or `PathBuf` should be justified - if you can't explain why both the original and the copy are needed, eliminate it.
 - **No source file over 1,000 LOC.** Enforced by the `loc_guard.py` PostToolUse hook (warns >1K, blocks >1.5K). The split pattern is "convert `foo.rs` → `foo/mod.rs` + per-domain files alongside, with tests in a `tests/` subdirectory". PRs #355–#363 are the precedents (server.rs, cli/main.rs, perf_bench_test.rs, compiler/lib.rs, server/{tests,mod}.rs, compile_journal.rs, depgraph/snapshot.rs). Re-export `pub` items from `mod.rs` so the public path is unchanged.
