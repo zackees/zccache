@@ -268,7 +268,7 @@ fn daemon_namespace_from_env_value(value: Option<OsString>) -> Option<String> {
     sanitize_daemon_namespace(&value.to_string_lossy())
 }
 
-fn sanitize_daemon_namespace(raw: &str) -> Option<String> {
+pub fn sanitize_daemon_namespace(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;

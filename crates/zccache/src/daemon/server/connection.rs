@@ -63,7 +63,23 @@ pub(super) async fn handle_connection(
             return Ok(());
         };
 
-        tracing::debug!(?request, "received request");
+        match &request {
+            Request::SessionStart {
+                private_daemon: Some(options),
+                ..
+            } => {
+                let private_env_keys: Vec<&str> =
+                    options.env.iter().map(|(key, _)| key.as_str()).collect();
+                tracing::debug!(
+                    private_env_keys = ?private_env_keys,
+                    owner_pids = ?options.owner_pids,
+                    daemon_name = ?options.daemon_name,
+                    endpoint = ?options.endpoint,
+                    "received private session-start request"
+                );
+            }
+            _ => tracing::debug!(?request, "received request"),
+        }
         state.last_activity.store(now_secs(), Ordering::Relaxed);
 
         // Dispatch request and capture journal metadata in the same match
@@ -99,11 +115,13 @@ pub(super) async fn handle_connection(
                     .map(|entry| entry.value().meta.total_size)
                     .sum();
                 let metadata_entries = state.cache_system.metadata().len() as u64;
+                let private_daemon = state.private_daemon.snapshot().await;
                 (
                     Response::Status(crate::protocol::DaemonStatus {
                         version: crate::core::VERSION.to_string(),
                         daemon_namespace: state.daemon_namespace.clone(),
                         endpoint: state.endpoint.clone(),
+                        private_daemon,
                         artifact_count,
                         cache_size_bytes,
                         metadata_entries,
@@ -123,7 +141,7 @@ pub(super) async fn handle_connection(
                         dep_graph_files: dg.file_count as u64,
                         sessions_total: snap.sessions_total,
                         sessions_active: state.sessions.active_count() as u64,
-                        cache_dir: crate::core::config::default_cache_dir(),
+                        cache_dir: state.cache_dir.clone(),
                         dep_graph_version: crate::depgraph::DEPGRAPH_VERSION,
                         dep_graph_disk_size: crate::depgraph::depgraph_file_path()
                             .metadata()
@@ -150,17 +168,21 @@ pub(super) async fn handle_connection(
                 track_stats,
                 journal_path,
                 profile,
+                private_daemon,
             } => {
                 state.stats.record_session();
                 (
                     handle_session_start(
                         &state,
-                        client_pid,
-                        &working_dir,
-                        log_file,
-                        track_stats,
-                        journal_path,
-                        profile,
+                        SessionStartArgs {
+                            client_pid,
+                            working_dir: &working_dir,
+                            log_file,
+                            track_stats,
+                            journal_path,
+                            profile,
+                            private_daemon,
+                        },
                     )
                     .await,
                     None,
@@ -174,11 +196,22 @@ pub(super) async fn handle_connection(
                 env,
                 stdin,
             } => {
+                let parsed_session_id = session_id.parse::<SessionId>().ok();
+                let env = match parsed_session_id {
+                    Some(sid) => merge_session_private_env(&state.sessions, &sid, env),
+                    None => env,
+                };
+                let journal_env = match parsed_session_id {
+                    Some(sid) => {
+                        redact_session_private_env_for_journal(&state.sessions, &sid, &env)
+                    }
+                    None => env.clone(),
+                };
                 let ctx = JournalContext {
                     compiler: compiler.to_string_lossy().into_owned(),
                     args,
                     cwd: cwd.to_string_lossy().into_owned(),
-                    env: env.clone(),
+                    env: journal_env,
                     session_id: Some(session_id),
                 };
                 let resp = handle_compile(
@@ -264,6 +297,12 @@ pub(super) async fn handle_connection(
                     Ok(sid) => {
                         state.session_worktree_roots.remove(&sid);
                         if let Some(session) = state.sessions.end(&sid) {
+                            if !session.owner_pids.is_empty() {
+                                state
+                                    .private_daemon
+                                    .release_session(&session.owner_pids)
+                                    .await;
+                            }
                             // Close the session journal file handle if one was open.
                             if let Some(ref path) = session.journal_path {
                                 state.journal.close_session(path);

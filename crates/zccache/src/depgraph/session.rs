@@ -182,6 +182,10 @@ pub struct SessionConfig {
     /// the daemon populates crate_name, crate_type, output_ext, and
     /// self_profile_ns on every compile-journal line for this session.
     pub profile: bool,
+    /// Private session env overlaid onto compile requests for this session.
+    pub private_env: Vec<(String, String)>,
+    /// Owner PIDs registered for private daemon lifetime ref-counting.
+    pub owner_pids: Vec<u32>,
 }
 
 /// An active session.
@@ -207,6 +211,10 @@ pub struct Session {
     pub journal_path: Option<NormalizedPath>,
     /// Issue #256: extended-journal opt-in. See SessionConfig::profile.
     pub profile: bool,
+    /// Private session env overlaid onto compile requests for this session.
+    pub private_env: Vec<(String, String)>,
+    /// Owner PIDs registered for private daemon lifetime ref-counting.
+    pub owner_pids: Vec<u32>,
 }
 
 /// Manages active sessions.
@@ -252,6 +260,8 @@ impl SessionManager {
             stats_tracker,
             journal_path,
             profile: config.profile,
+            private_env: config.private_env,
+            owner_pids: config.owner_pids,
         };
 
         self.sessions.insert(id, session);
@@ -389,6 +399,8 @@ mod tests {
             track_stats: false,
             journal_path: None,
             profile: false,
+            private_env: Vec::new(),
+            owner_pids: Vec::new(),
         }
     }
 

@@ -137,6 +137,74 @@ async fn test_server_status_reports_explicit_daemon_namespace() {
 }
 
 #[tokio::test]
+#[ignore] // integration-level: starts real daemon with IPC + file watcher
+async fn private_session_start_registers_redacted_status_and_owner_refs() {
+    crate::test_support::test_timeout(async {
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = CacheDirEnvGuard::set_with_namespace(tmp.path(), "soldr-dev");
+        let (endpoint, server_task, shutdown) = start_daemon().await;
+
+        let mut client = crate::ipc::connect(&endpoint).await.unwrap();
+        client
+            .send(&Request::SessionStart {
+                client_pid: std::process::id(),
+                working_dir: tmp.path().into(),
+                log_file: None,
+                track_stats: false,
+                journal_path: None,
+                profile: false,
+                private_daemon: Some(crate::protocol::PrivateDaemonSessionOptions {
+                    daemon_name: Some("soldr-dev".to_string()),
+                    endpoint: Some(endpoint.clone()),
+                    cache_dir: Some(crate::core::config::default_cache_dir()),
+                    owner_pids: vec![std::process::id()],
+                    env: vec![("ZCCACHE_PATH_REMAP".to_string(), "secret".to_string())],
+                }),
+            })
+            .await
+            .unwrap();
+        let session_id = match client.recv().await.unwrap() {
+            Some(Response::SessionStarted { session_id, .. }) => session_id,
+            other => panic!("expected SessionStarted, got: {other:?}"),
+        };
+
+        client.send(&Request::Status).await.unwrap();
+        match client.recv().await.unwrap() {
+            Some(Response::Status(status)) => {
+                assert!(status.private_daemon.enabled);
+                assert_eq!(
+                    status.private_daemon.private_env_keys,
+                    vec!["ZCCACHE_PATH_REMAP"]
+                );
+                assert_eq!(status.private_daemon.owners.len(), 1);
+                assert_eq!(status.private_daemon.owners[0].pid, std::process::id());
+                assert_eq!(status.private_daemon.owners[0].ref_count, 1);
+            }
+            other => panic!("expected Status, got: {other:?}"),
+        }
+
+        client
+            .send(&Request::SessionEnd { session_id })
+            .await
+            .unwrap();
+        let _: Option<Response> = client.recv().await.unwrap();
+
+        client.send(&Request::Status).await.unwrap();
+        match client.recv().await.unwrap() {
+            Some(Response::Status(status)) => {
+                assert!(status.private_daemon.enabled);
+                assert!(status.private_daemon.owners.is_empty());
+            }
+            other => panic!("expected Status, got: {other:?}"),
+        }
+
+        shutdown.notify_one();
+        server_task.await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + compiler
 async fn cli_session_lifecycle() {
     let clang = match crate::test_support::find_clang() {
@@ -168,6 +236,7 @@ async fn cli_session_lifecycle() {
                 track_stats: false,
                 journal_path: None,
                 profile: false,
+                private_daemon: None,
             })
             .await
             .unwrap();
@@ -445,6 +514,7 @@ async fn cli_clear_resets_cache() {
                 track_stats: false,
                 journal_path: None,
                 profile: false,
+                private_daemon: None,
             })
             .await
             .unwrap();
@@ -537,6 +607,7 @@ async fn cli_clear_resets_cache() {
                 track_stats: false,
                 journal_path: None,
                 profile: false,
+                private_daemon: None,
             })
             .await
             .unwrap();
@@ -606,6 +677,7 @@ async fn cli_multi_file_compilation_runs_directly() {
                 track_stats: true,
                 journal_path: None,
                 profile: false,
+                private_daemon: None,
             })
             .await
             .unwrap();

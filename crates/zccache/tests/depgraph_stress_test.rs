@@ -409,6 +409,8 @@ End of search list.
         track_stats: false,
         journal_path: None,
         profile: false,
+        private_env: Vec::new(),
+        owner_pids: Vec::new(),
     });
     assert!(mgr.exists(&session_id));
 
@@ -766,6 +768,8 @@ fn stress_concurrent_session_operations() {
                     track_stats: false,
                     journal_path: None,
                     profile: false,
+                    private_env: Vec::new(),
+                    owner_pids: Vec::new(),
                 });
                 ids.push(id);
                 mgr.touch(&id);

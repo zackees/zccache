@@ -15,6 +15,10 @@ pub(super) struct SharedState {
     pub(super) endpoint: String,
     /// Active daemon/socket namespace label.
     pub(super) daemon_namespace: String,
+    /// Cache root this daemon was created with.
+    pub(super) cache_dir: NormalizedPath,
+    /// Private daemon lifetime/ref-count state.
+    pub(super) private_daemon: PrivateDaemonLifecycle,
     pub(super) sessions: SessionManager,
     pub(super) system_includes: Mutex<SystemIncludeCache>,
     /// Dependency graph: tracks include relationships and cache verdicts.

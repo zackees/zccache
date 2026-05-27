@@ -186,11 +186,33 @@ fn dispatch(command: Commands, global_strict_paths: Option<&str>) -> ExitCode {
             cwd,
             log,
             endpoint,
+            cache_dir,
+            private_daemon,
+            daemon_name,
+            owner_pid,
+            private_env,
             stats,
             journal,
             profile,
         } => {
-            let endpoint = resolve_endpoint(endpoint.as_deref());
+            let cache_dir = cache_dir.map(|p| absolute_path(&p));
+            let private_env = match session::parse_private_env_assignments(&private_env) {
+                Ok(env) => env,
+                Err(err) => {
+                    eprintln!("error: {err}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let mut private_options = session::SessionStartPrivateOptions {
+                cache_dir,
+                private_daemon,
+                daemon_name,
+                owner_pids: owner_pid,
+                private_env,
+            };
+            private_options.ensure_private_identity(endpoint.as_deref());
+            let endpoint =
+                session::resolve_session_start_endpoint(endpoint.as_deref(), &private_options);
             let cwd = cwd
                 .map(NormalizedPath::from)
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_default().into());
@@ -209,6 +231,7 @@ fn dispatch(command: Commands, global_strict_paths: Option<&str>) -> ExitCode {
                 stats,
                 journal,
                 profile,
+                private_options,
             ))
         }
         Commands::SessionEnd {

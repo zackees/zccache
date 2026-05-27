@@ -88,6 +88,8 @@ impl DaemonServer {
             state: Arc::new(SharedState {
                 endpoint: endpoint.to_string(),
                 daemon_namespace: crate::core::config::daemon_namespace_label(),
+                cache_dir: cache_dir.clone(),
+                private_daemon: PrivateDaemonLifecycle::new(),
                 sessions: SessionManager::new(std::time::Duration::from_secs(300)),
                 system_includes: Mutex::new(SystemIncludeCache::new()),
                 dep_graph: DepGraph::new(),

@@ -28,7 +28,7 @@ impl DaemonServer {
             index_writer_handle = Some(tokio::spawn(run_index_writer(rx, store, shutdown)));
         }
 
-        let cache_dir = crate::core::config::default_cache_dir();
+        let cache_dir = self.state.cache_dir.clone();
         let temp_root = std::env::temp_dir();
 
         // Clean up legacy log backup directory (Bug 7).
@@ -92,6 +92,44 @@ impl DaemonServer {
                                 "reason": super::super::lifecycle::REASON_IDLE_TIMEOUT,
                                 "idle_secs": idle,
                                 "idle_timeout_secs": timeout,
+                            }),
+                        );
+                        state.shutdown.notify_one();
+                        break;
+                    }
+                }
+            });
+        }
+
+        // Private daemons are owned by caller-supplied PIDs. Once the last
+        // live owner disappears, shut down even if the normal idle timeout is
+        // disabled or still far in the future.
+        {
+            let state = Arc::clone(&self.state);
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    if !state.private_daemon.is_enabled().await {
+                        continue;
+                    }
+                    let prune = state
+                        .private_daemon
+                        .prune_dead_owner_pids(crate::ipc::is_process_alive)
+                        .await;
+                    if !prune.removed_pids.is_empty() {
+                        tracing::info!(
+                            removed_pids = ?prune.removed_pids,
+                            "private daemon owner PIDs exited"
+                        );
+                    }
+                    if prune.should_shutdown {
+                        tracing::info!("private daemon has no live owner PIDs - shutting down");
+                        super::super::lifecycle::write_event(
+                            "died-private-owner-exit",
+                            serde_json::json!({
+                                "reason": "private-owner-pids-exited",
+                                "uptime_secs": now_secs().saturating_sub(state.start_time),
+                                "removed_pids": prune.removed_pids,
                             }),
                         );
                         state.shutdown.notify_one();

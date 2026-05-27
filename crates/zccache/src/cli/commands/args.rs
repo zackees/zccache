@@ -85,6 +85,21 @@ pub(crate) enum Commands {
         /// IPC endpoint (default: platform-specific).
         #[arg(long)]
         endpoint: Option<String>,
+        /// Cache root for the daemon/session (sets ZCCACHE_CACHE_DIR for daemon spawn).
+        #[arg(long)]
+        cache_dir: Option<String>,
+        /// Opt this session into private daemon lifetime semantics.
+        #[arg(long)]
+        private_daemon: bool,
+        /// Portable private daemon name used to derive socket/pipe and lock names.
+        #[arg(long)]
+        daemon_name: Option<String>,
+        /// Owner PID that keeps a private daemon alive. May be repeated.
+        #[arg(long)]
+        owner_pid: Vec<u32>,
+        /// Private session env var as KEY=VALUE. May be repeated; values are redacted in status.
+        #[arg(long = "private-env", value_name = "KEY=VALUE")]
+        private_env: Vec<String>,
         /// Enable per-session hit/miss statistics tracking.
         #[arg(long)]
         stats: bool,

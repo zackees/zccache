@@ -79,6 +79,7 @@ async fn test_session_start_with_nonexistent_compiler() {
                 track_stats: false,
                 journal_path: None,
                 profile: false,
+                private_daemon: None,
             })
             .await
             .unwrap();
@@ -140,6 +141,7 @@ async fn test_session_start_with_clang_toolchain() {
                 track_stats: false,
                 journal_path: None,
                 profile: false,
+                private_daemon: None,
             })
             .await
             .unwrap();
@@ -167,6 +169,7 @@ async fn test_session_start_with_clang_toolchain() {
                 track_stats: false,
                 journal_path: None,
                 profile: false,
+                private_daemon: None,
             })
             .await
             .unwrap();
@@ -215,6 +218,7 @@ async fn test_full_client_flow() {
                 track_stats: false,
                 journal_path: None,
                 profile: false,
+                private_daemon: None,
             })
             .await
             .unwrap();
@@ -285,6 +289,7 @@ int main() {
                 track_stats: false,
                 journal_path: None,
                 profile: false,
+                private_daemon: None,
             })
             .await
             .unwrap();

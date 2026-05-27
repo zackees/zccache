@@ -2,6 +2,39 @@
 
 use crate::core::NormalizedPath;
 use serde::{Deserialize, Serialize};
+
+/// One owner PID currently keeping a private daemon alive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrivateDaemonOwnerStatus {
+    /// Process ID supplied by the caller.
+    pub pid: u32,
+    /// Number of active sessions/references held by this PID.
+    pub ref_count: u64,
+}
+
+/// Redacted private-daemon diagnostics surfaced through `zccache status`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrivateDaemonStatus {
+    /// True once a session has opted this daemon into private lifetime semantics.
+    pub enabled: bool,
+    /// Owner PID reference counts. Empty for shared/default daemons.
+    pub owners: Vec<PrivateDaemonOwnerStatus>,
+    /// Private session env keys observed by this daemon. Values are never exposed.
+    pub private_env_keys: Vec<String>,
+}
+
+impl PrivateDaemonStatus {
+    /// Shared/default daemon status with no private lifetime metadata.
+    #[must_use]
+    pub fn shared() -> Self {
+        Self {
+            enabled: false,
+            owners: Vec::new(),
+            private_env_keys: Vec::new(),
+        }
+    }
+}
+
 /// Daemon status information.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DaemonStatus {
@@ -12,6 +45,8 @@ pub struct DaemonStatus {
     pub daemon_namespace: String,
     /// IPC endpoint this daemon bound and serves.
     pub endpoint: String,
+    /// Private daemon lifetime diagnostics. Values from private env are redacted.
+    pub private_daemon: PrivateDaemonStatus,
     /// Number of artifacts in cache.
     pub artifact_count: u64,
     /// Total size of cached artifacts in bytes.

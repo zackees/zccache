@@ -283,6 +283,7 @@ pub async fn start_zccache_session(client: &mut ClientConn, working_dir: &str) -
             track_stats: true,
             journal_path: None,
             profile: false,
+            private_daemon: None,
         })
         .await
         .unwrap();

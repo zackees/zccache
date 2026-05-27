@@ -25,8 +25,19 @@ pub(super) async fn handle_compile_ephemeral(
 ) -> Response {
     // 1. Start ephemeral session (inline, no IPC roundtrip)
     state.stats.record_session();
-    let session_resp =
-        handle_session_start(state, client_pid, working_dir, None, false, None, false).await;
+    let session_resp = handle_session_start(
+        state,
+        SessionStartArgs {
+            client_pid,
+            working_dir,
+            log_file: None,
+            track_stats: false,
+            journal_path: None,
+            profile: false,
+            private_daemon: None,
+        },
+    )
+    .await;
     let session_id = match session_resp {
         Response::SessionStarted { session_id, .. } => session_id,
         Response::Error { message } => return Response::Error { message },

@@ -118,6 +118,7 @@ async fn perf_rustc_zccache_vs_sccache() {
         track_stats: true,
         journal_path: None,
         profile: false,
+        private_daemon: None,
     })
     .await
     .unwrap();

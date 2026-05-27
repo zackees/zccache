@@ -88,6 +88,7 @@ async fn start_session_and_capture_log(endpoint: &str, log_file: &std::path::Pat
             track_stats: false,
             journal_path: None,
             profile: false,
+            private_daemon: None,
         })
         .await
         .unwrap();

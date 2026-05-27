@@ -580,6 +580,8 @@ mod tests {
             track_stats: false,
             journal_path: None,
             profile: false,
+            private_env: Vec::new(),
+            owner_pids: Vec::new(),
         });
         let sid_str = sid.to_string();
 

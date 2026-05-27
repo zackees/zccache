@@ -84,6 +84,7 @@ pub fn client_session_start(
             track_stats,
             journal_path,
             profile: false,
+            private_daemon: None,
         })
         .await
         .map_err(|e| format!("failed to send to daemon: {e}"))?;

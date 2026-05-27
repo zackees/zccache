@@ -87,6 +87,7 @@ async fn start_session(client: &mut ClientConn, working_dir: &Path) -> String {
             track_stats: false,
             journal_path: None,
             profile: false,
+            private_daemon: None,
         })
         .await
         .expect("send SessionStart");

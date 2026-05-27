@@ -20,7 +20,29 @@ pub use artifact::{
     ArtifactData, ArtifactOutput, ArtifactPayload, LookupResult, RustArtifactInfo, StoreResult,
 };
 pub use exec::{ExecCachePolicy, ExecOutputStreams};
-pub use status::{DaemonStatus, PhaseProfileSummary, SessionStats};
+pub use status::{
+    DaemonStatus, PhaseProfileSummary, PrivateDaemonOwnerStatus, PrivateDaemonStatus, SessionStats,
+};
+
+/// Private daemon options carried by `SessionStart`.
+///
+/// The daemon is already bound to its endpoint before this request arrives;
+/// these fields let the client assert that it reached the intended private
+/// daemon, register owner PIDs, and attach private session-scoped env.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PrivateDaemonSessionOptions {
+    /// Portable daemon name requested by the client, if one was used.
+    pub daemon_name: Option<String>,
+    /// Endpoint the client intended to reach. Must match daemon status when set.
+    pub endpoint: Option<String>,
+    /// Cache root the client intended to use. Must match daemon status when set.
+    pub cache_dir: Option<NormalizedPath>,
+    /// PIDs that keep this daemon alive. Empty means `client_pid` owns it.
+    pub owner_pids: Vec<u32>,
+    /// Private session env vars. Values are applied to this session and redacted in status.
+    pub env: Vec<(String, String)>,
+}
+
 /// A request from client to daemon.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Request {
@@ -60,6 +82,8 @@ pub enum Request {
         /// of this session. When false, behavior is identical to releases
         /// before the flag existed (no new allocations, no new fields).
         profile: bool,
+        /// Private daemon ownership/env options for soldr-style isolated sessions.
+        private_daemon: Option<PrivateDaemonSessionOptions>,
     },
     /// Compile a source file within an existing session.
     Compile {

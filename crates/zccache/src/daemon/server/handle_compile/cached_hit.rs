@@ -183,6 +183,8 @@ mod tests {
             track_stats: true,
             journal_path: None,
             profile: false,
+            private_env: Vec::new(),
+            owner_pids: Vec::new(),
         });
         let meta = ArtifactIndex::new(
             vec!["output.o".to_string()],

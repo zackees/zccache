@@ -121,6 +121,7 @@ async fn perf_c_zccache_vs_bare() {
             track_stats: true,
             journal_path: None,
             profile: false,
+            private_daemon: None,
         })
         .await
         .unwrap();

@@ -8,6 +8,7 @@ use super::super::args::{Cli, Commands, RustPlanBackendArg, RustPlanCommands};
 use super::super::rust_plan::rust_plan_gha_version;
 use super::super::session::{
     session_stats_error_json, session_stats_json, session_stats_unavailable_json,
+    SessionStartPrivateOptions,
 };
 
 #[test]
@@ -185,6 +186,77 @@ fn session_start_profile_flag_parses_when_set() {
         Some(Commands::SessionStart { profile, .. }) => assert!(profile),
         other => panic!("expected SessionStart, got {other:?}"),
     }
+}
+
+#[test]
+fn session_start_private_daemon_flags_parse() {
+    use clap::Parser;
+    let cli = Cli::try_parse_from([
+        "zccache",
+        "session-start",
+        "--private-daemon",
+        "--daemon-name",
+        "soldr-dev",
+        "--cache-dir",
+        ".zccache-soldr-dev",
+        "--owner-pid",
+        "1234",
+        "--owner-pid",
+        "5678",
+        "--private-env",
+        "ZCCACHE_PATH_REMAP=auto",
+    ])
+    .unwrap();
+    match cli.command {
+        Some(Commands::SessionStart {
+            private_daemon,
+            daemon_name,
+            cache_dir,
+            owner_pid,
+            private_env,
+            ..
+        }) => {
+            assert!(private_daemon);
+            assert_eq!(daemon_name.as_deref(), Some("soldr-dev"));
+            assert_eq!(cache_dir.as_deref(), Some(".zccache-soldr-dev"));
+            assert_eq!(owner_pid, vec![1234, 5678]);
+            assert_eq!(private_env, vec!["ZCCACHE_PATH_REMAP=auto"]);
+        }
+        other => panic!("expected SessionStart, got {other:?}"),
+    }
+}
+
+#[test]
+fn private_env_assignment_parser_rejects_missing_equals() {
+    let raw = vec!["ZCCACHE_PATH_REMAP".to_string()];
+    assert!(super::super::session::parse_private_env_assignments(&raw).is_err());
+}
+
+#[test]
+fn session_start_private_options_generate_private_daemon_identity() {
+    let mut options = SessionStartPrivateOptions {
+        private_daemon: true,
+        ..SessionStartPrivateOptions::default()
+    };
+    options.ensure_private_identity(None);
+
+    assert!(options
+        .daemon_name
+        .as_deref()
+        .is_some_and(|name| name.starts_with("private-")));
+}
+
+#[test]
+fn session_start_explicit_endpoint_generates_non_default_private_identity() {
+    let mut options = SessionStartPrivateOptions {
+        private_env: vec![("ZCCACHE_PATH_REMAP".to_string(), "auto".to_string())],
+        ..SessionStartPrivateOptions::default()
+    };
+    options.ensure_private_identity(Some("127.0.0.1:45454"));
+
+    let daemon_name = options.daemon_name.as_deref().unwrap();
+    assert_ne!(daemon_name, crate::core::config::DEFAULT_DAEMON_NAMESPACE);
+    assert!(daemon_name.starts_with("endpoint-"));
 }
 
 #[test]

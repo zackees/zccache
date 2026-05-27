@@ -67,6 +67,26 @@ pub(crate) async fn cmd_status(endpoint: &str, json: bool) -> ExitCode {
                 println!("cache dir: {}", s.cache_dir.display());
             }
             println!("namespace: {}", s.daemon_namespace);
+            if s.private_daemon.enabled {
+                let owners = if s.private_daemon.owners.is_empty() {
+                    "none".to_string()
+                } else {
+                    s.private_daemon
+                        .owners
+                        .iter()
+                        .map(|owner| format!("{}x{}", owner.pid, owner.ref_count))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                let env_keys = if s.private_daemon.private_env_keys.is_empty() {
+                    "none".to_string()
+                } else {
+                    s.private_daemon.private_env_keys.join(", ")
+                };
+                println!("private daemon: yes");
+                println!("private owners: {owners}");
+                println!("private env keys: {env_keys}");
+            }
             println!();
             println!(
                 "  Compilations:  {} total ({} cached, {} cold, {} non-cacheable)",
@@ -168,6 +188,7 @@ fn print_status_ok_json(endpoint: &str, s: &crate::protocol::DaemonStatus) {
         "status": "ok",
         "endpoint": endpoint,
         "daemon_namespace": s.daemon_namespace,
+        "private_daemon": s.private_daemon,
         "protocol_version": crate::protocol::PROTOCOL_VERSION,
         "hit_rate": hit_rate,
         "link_hit_rate": link_hit_rate,

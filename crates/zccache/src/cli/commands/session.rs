@@ -1,12 +1,119 @@
 //! Session-start, session-end, session-stats subcommands and their JSON helpers.
 
 use crate::core::NormalizedPath;
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::ExitCode;
 
 use super::super::session_end_idempotent;
 use super::daemon::ensure_daemon;
-use super::util::{connect, format_duration_ms, print_json_value};
+use super::util::{connect, format_duration_ms, print_json_value, resolve_endpoint};
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SessionStartPrivateOptions {
+    pub(crate) cache_dir: Option<NormalizedPath>,
+    pub(crate) private_daemon: bool,
+    pub(crate) daemon_name: Option<String>,
+    pub(crate) owner_pids: Vec<u32>,
+    pub(crate) private_env: Vec<(String, String)>,
+}
+
+impl SessionStartPrivateOptions {
+    fn enabled(&self) -> bool {
+        self.private_daemon
+            || self.daemon_name.is_some()
+            || !self.owner_pids.is_empty()
+            || !self.private_env.is_empty()
+    }
+
+    pub(crate) fn ensure_private_identity(&mut self, explicit_endpoint: Option<&str>) {
+        if !self.enabled() || self.daemon_name.is_some() {
+            return;
+        }
+
+        let raw_name = explicit_endpoint
+            .map(|endpoint| format!("endpoint-{endpoint}"))
+            .unwrap_or_else(|| format!("private-{}", std::process::id()));
+        self.daemon_name = crate::core::config::sanitize_daemon_namespace(&raw_name)
+            .or_else(|| Some(format!("private-{}", std::process::id())));
+    }
+}
+
+struct ScopedDaemonEnv {
+    cache_dir: Option<OsString>,
+    daemon_namespace: Option<OsString>,
+}
+
+impl ScopedDaemonEnv {
+    fn apply(options: &SessionStartPrivateOptions) -> Self {
+        let previous = Self {
+            cache_dir: std::env::var_os(crate::core::config::CACHE_DIR_ENV),
+            daemon_namespace: std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV),
+        };
+        if let Some(cache_dir) = options.cache_dir.as_ref() {
+            std::env::set_var(crate::core::config::CACHE_DIR_ENV, cache_dir.as_os_str());
+        }
+        if let Some(name) = options.daemon_name.as_deref() {
+            if let Some(namespace) = crate::core::config::sanitize_daemon_namespace(name) {
+                std::env::set_var(crate::core::config::DAEMON_NAMESPACE_ENV, namespace);
+            }
+        }
+        previous
+    }
+}
+
+impl Drop for ScopedDaemonEnv {
+    fn drop(&mut self) {
+        match &self.cache_dir {
+            Some(value) => std::env::set_var(crate::core::config::CACHE_DIR_ENV, value),
+            None => std::env::remove_var(crate::core::config::CACHE_DIR_ENV),
+        }
+        match &self.daemon_namespace {
+            Some(value) => std::env::set_var(crate::core::config::DAEMON_NAMESPACE_ENV, value),
+            None => std::env::remove_var(crate::core::config::DAEMON_NAMESPACE_ENV),
+        }
+    }
+}
+
+pub(crate) fn resolve_session_start_endpoint(
+    explicit: Option<&str>,
+    options: &SessionStartPrivateOptions,
+) -> String {
+    if let Some(endpoint) = explicit {
+        return endpoint.to_string();
+    }
+    if let Some(name) = options.daemon_name.as_deref() {
+        return crate::ipc::endpoint_for_private_daemon_name(
+            options.cache_dir.as_ref().map(|p| p.as_path()),
+            name,
+        );
+    }
+    if let Some(cache_dir) = options.cache_dir.as_ref() {
+        return crate::ipc::endpoint_for_cache_dir(cache_dir.as_path(), None);
+    }
+    resolve_endpoint(None)
+}
+
+pub(crate) fn parse_private_env_assignments(
+    raw: &[String],
+) -> Result<Vec<(String, String)>, String> {
+    let mut parsed = Vec::with_capacity(raw.len());
+    for assignment in raw {
+        let Some((key, value)) = assignment.split_once('=') else {
+            return Err(format!(
+                "--private-env must be KEY=VALUE, got `{assignment}`"
+            ));
+        };
+        if key.is_empty() {
+            return Err("--private-env key must not be empty".to_string());
+        }
+        if key.contains('\0') || value.contains('\0') {
+            return Err("--private-env must not contain NUL bytes".to_string());
+        }
+        parsed.push((key.to_string(), value.to_string()));
+    }
+    Ok(parsed)
+}
 
 pub(crate) async fn cmd_session_start(
     endpoint: &str,
@@ -15,7 +122,9 @@ pub(crate) async fn cmd_session_start(
     track_stats: bool,
     journal: Option<NormalizedPath>,
     profile: bool,
+    private_options: SessionStartPrivateOptions,
 ) -> ExitCode {
+    let _daemon_env = ScopedDaemonEnv::apply(&private_options);
     if let Err(e) = ensure_daemon(endpoint).await {
         eprintln!("zccache[err][D]: cannot start daemon at {endpoint}: {e}");
         return ExitCode::FAILURE;
@@ -37,6 +146,18 @@ pub(crate) async fn cmd_session_start(
             track_stats,
             journal_path: journal,
             profile,
+            private_daemon: private_options.enabled().then(|| {
+                crate::protocol::PrivateDaemonSessionOptions {
+                    daemon_name: private_options
+                        .daemon_name
+                        .as_deref()
+                        .and_then(crate::core::config::sanitize_daemon_namespace),
+                    endpoint: Some(endpoint.to_string()),
+                    cache_dir: private_options.cache_dir.clone(),
+                    owner_pids: private_options.owner_pids.clone(),
+                    env: private_options.private_env.clone(),
+                }
+            }),
         })
         .await
     {

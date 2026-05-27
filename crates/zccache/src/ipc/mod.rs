@@ -54,7 +54,7 @@ pub fn default_endpoint() -> String {
     }
 }
 
-fn endpoint_for_cache_dir(cache_dir: &std::path::Path, namespace: Option<&str>) -> String {
+pub fn endpoint_for_cache_dir(cache_dir: &std::path::Path, namespace: Option<&str>) -> String {
     #[cfg(unix)]
     {
         cache_dir
@@ -66,6 +66,37 @@ fn endpoint_for_cache_dir(cache_dir: &std::path::Path, namespace: Option<&str>) 
     {
         let suffix = crate::core::stable_path_id(cache_dir);
         pipe_name(&suffix, namespace)
+    }
+}
+
+/// Derive a platform IPC endpoint for a portable private daemon name.
+///
+/// When `cache_dir` is supplied the endpoint is rooted in that cache identity;
+/// otherwise it follows the default runtime/tmp/pipe location while folding
+/// the sanitized daemon name into the endpoint.
+#[must_use]
+pub fn endpoint_for_private_daemon_name(
+    cache_dir: Option<&std::path::Path>,
+    daemon_name: &str,
+) -> String {
+    let namespace = crate::core::config::sanitize_daemon_namespace(daemon_name)
+        .unwrap_or_else(|| crate::core::config::DEV_DAEMON_NAMESPACE.to_string());
+    if let Some(cache_dir) = cache_dir {
+        return endpoint_for_cache_dir(cache_dir, Some(&namespace));
+    }
+
+    #[cfg(unix)]
+    {
+        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+            return format!("{runtime_dir}/zccache/{}", socket_name(Some(&namespace)));
+        }
+        let user = std::env::var("USER").unwrap_or_else(|_| String::from("unknown"));
+        format!("/tmp/zccache-{user}/{}", socket_name(Some(&namespace)))
+    }
+    #[cfg(windows)]
+    {
+        let username = std::env::var("USERNAME").unwrap_or_else(|_| String::from("unknown"));
+        pipe_name(&username, Some(&namespace))
     }
 }
 
@@ -495,6 +526,28 @@ mod tests {
 
         assert_ne!(endpoint_a, endpoint_b);
         assert_ne!(lock_a, lock_b);
+    }
+
+    #[test]
+    fn private_daemon_name_derives_endpoint_from_cache_root() {
+        let root = tempfile::tempdir().unwrap();
+        let cache_dir = root.path().join("zc");
+        let endpoint = endpoint_for_private_daemon_name(Some(&cache_dir), "soldr dev");
+
+        #[cfg(unix)]
+        assert_eq!(
+            endpoint,
+            cache_dir
+                .join("daemon-soldr_dev.sock")
+                .to_string_lossy()
+                .into_owned()
+        );
+        #[cfg(windows)]
+        {
+            assert!(endpoint.starts_with(r"\\.\pipe\zccache-"));
+            assert!(endpoint.ends_with("-soldr_dev"));
+            assert!(endpoint.contains(&crate::core::stable_path_id(&cache_dir)));
+        }
     }
 
     /// On macOS, `daemon_exe_for_pid` must reject a PID whose

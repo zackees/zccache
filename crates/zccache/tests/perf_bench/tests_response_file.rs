@@ -179,6 +179,7 @@ async fn perf_response_file() {
             track_stats: true,
             journal_path: None,
             profile: false,
+            private_daemon: None,
         })
         .await
         .unwrap();

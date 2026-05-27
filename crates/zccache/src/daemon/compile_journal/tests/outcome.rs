@@ -122,7 +122,9 @@ fn test_extract_outcome_link_error() {
 #[test]
 fn test_extract_outcome_all_non_journalable() {
     use crate::core::NormalizedPath;
-    use crate::protocol::{DaemonStatus, LookupResult as LR, SessionStats, StoreResult as SR};
+    use crate::protocol::{
+        DaemonStatus, LookupResult as LR, PrivateDaemonStatus, SessionStats, StoreResult as SR,
+    };
 
     let non_journalable: Vec<Response> = vec![
         Response::Pong,
@@ -131,6 +133,7 @@ fn test_extract_outcome_all_non_journalable() {
             version: String::new(),
             daemon_namespace: crate::core::config::DEFAULT_DAEMON_NAMESPACE.to_string(),
             endpoint: String::new(),
+            private_daemon: PrivateDaemonStatus::shared(),
             artifact_count: 0,
             cache_size_bytes: 0,
             metadata_entries: 0,

@@ -182,6 +182,7 @@ async fn perf_warm_cache_zccache_vs_sccache() {
             track_stats: true,
             journal_path: None,
             profile: false,
+            private_daemon: None,
         })
         .await
         .unwrap();

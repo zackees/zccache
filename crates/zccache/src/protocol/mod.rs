@@ -11,7 +11,9 @@ pub use messages::*;
 /// new/removed/reordered enum variants or struct field changes.
 /// Patch releases that don't change the protocol keep the same version.
 ///
-/// v13 (current): `DaemonStatus` gained `daemon_namespace` and `endpoint`
+/// v14 (current): `SessionStart` gained private daemon options, and
+///                  `DaemonStatus` gained redacted private daemon diagnostics.
+/// v13: `DaemonStatus` gained `daemon_namespace` and `endpoint`
 ///                  for soldr/zccache daemon namespace diagnostics.
 /// v12: `DaemonStatus` and `SessionStats` gained cached-error
 ///                  counters for rustc negative-result caching.
@@ -25,7 +27,7 @@ pub use messages::*;
 ///     so per-session aggregate phase timing reaches clients.
 /// v8: `Compile` / `CompileEphemeral` gained `stdin: Vec<u8>` and
 ///     `ArtifactPayload` replaced `ArtifactOutput.data: Arc<Vec<u8>>`.
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 14;
 
 use bytes::{Buf, BufMut, BytesMut};
 

@@ -186,6 +186,7 @@ async fn build_all_ipc(
             track_stats: true,
             journal_path: None,
             profile: false,
+            private_daemon: None,
         })
         .await
         .unwrap();
@@ -568,6 +569,7 @@ async fn ninja_concurrent_cold_build() {
             track_stats: false,
             journal_path: None,
             profile: false,
+            private_daemon: None,
         })
         .await
         .unwrap();

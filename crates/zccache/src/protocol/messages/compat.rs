@@ -39,6 +39,7 @@ fn sample_daemon_status() -> DaemonStatus {
         version: "1.0.0".to_string(),
         daemon_namespace: "default".to_string(),
         endpoint: "test-endpoint".to_string(),
+        private_daemon: PrivateDaemonStatus::shared(),
         artifact_count: 1,
         cache_size_bytes: 2,
         metadata_entries: 3,
@@ -105,6 +106,7 @@ fn request_variant_indices_are_append_only() {
                 track_stats: true,
                 journal_path: None,
                 profile: false,
+                private_daemon: None,
             },
         ),
         (
@@ -415,6 +417,14 @@ fn daemon_status_expanded_roundtrip() {
         version: env!("CARGO_PKG_VERSION").to_string(),
         daemon_namespace: "soldr-dev".to_string(),
         endpoint: "test://soldr-dev".to_string(),
+        private_daemon: PrivateDaemonStatus {
+            enabled: true,
+            owners: vec![PrivateDaemonOwnerStatus {
+                pid: 1234,
+                ref_count: 2,
+            }],
+            private_env_keys: vec!["ZCCACHE_PATH_REMAP".to_string()],
+        },
         artifact_count: 892,
         cache_size_bytes: 147_000_000,
         metadata_entries: 5430,
@@ -451,6 +461,7 @@ fn session_start_with_track_stats_roundtrip() {
         track_stats: true,
         journal_path: None,
         profile: false,
+        private_daemon: None,
     };
     roundtrip(&req);
 
@@ -461,6 +472,7 @@ fn session_start_with_track_stats_roundtrip() {
         track_stats: false,
         journal_path: None,
         profile: false,
+        private_daemon: None,
     };
     roundtrip(&req_no_stats);
 }
@@ -474,6 +486,7 @@ fn session_start_with_journal_path_roundtrip() {
         track_stats: false,
         journal_path: Some("/tmp/build.jsonl".into()),
         profile: false,
+        private_daemon: None,
     };
     roundtrip(&req);
 
@@ -484,8 +497,29 @@ fn session_start_with_journal_path_roundtrip() {
         track_stats: false,
         journal_path: None,
         profile: false,
+        private_daemon: None,
     };
     roundtrip(&req_no_journal);
+}
+
+#[test]
+fn session_start_with_private_daemon_options_roundtrip() {
+    let req = Request::SessionStart {
+        client_pid: 5678,
+        working_dir: "/home/user/project".into(),
+        log_file: None,
+        track_stats: true,
+        journal_path: Some("/tmp/build.jsonl".into()),
+        profile: true,
+        private_daemon: Some(PrivateDaemonSessionOptions {
+            daemon_name: Some("soldr-dev".to_string()),
+            endpoint: Some("test://soldr-dev".to_string()),
+            cache_dir: Some("/tmp/zccache-soldr-dev".into()),
+            owner_pids: vec![111, 222],
+            env: vec![("ZCCACHE_PATH_REMAP".to_string(), "auto".to_string())],
+        }),
+    };
+    roundtrip(&req);
 }
 
 #[test]
@@ -668,6 +702,7 @@ fn daemon_status_version_field_roundtrips() {
         version: "1.2.3".to_string(),
         daemon_namespace: crate::core::config::DEFAULT_DAEMON_NAMESPACE.to_string(),
         endpoint: String::new(),
+        private_daemon: PrivateDaemonStatus::shared(),
         artifact_count: 0,
         cache_size_bytes: 0,
         metadata_entries: 0,
@@ -697,8 +732,9 @@ fn daemon_status_version_field_roundtrips() {
 
 // Compile-time check: PROTOCOL_VERSION must be positive.
 const _: () = assert!(super::super::PROTOCOL_VERSION > 0);
-// Compile-time check: PROTOCOL_VERSION == 13 after daemon namespace
-// diagnostics were added to DaemonStatus. v12 was the pin after
+// Compile-time check: PROTOCOL_VERSION == 14 after private daemon
+// SessionStart/status diagnostics were added. v13 was the pin after daemon
+// namespace diagnostics were added to DaemonStatus. v12 was the pin after
 // cached-error counters were added for rustc negative-result caching.
 // v11 was the pin after
 // `GenericToolExec` gained Path A (include scan) + Path B (depfile) +
@@ -707,7 +743,7 @@ const _: () = assert!(super::super::PROTOCOL_VERSION > 0);
 // after SessionStats gained `phase_profile`. v8 was the pin after
 // Compile/CompileEphemeral gained `stdin` and ArtifactPayload replaced
 // ArtifactOutput.data: Arc<Vec<u8>> (issue #296 Option B).
-const _FINGERPRINT_VERSION: () = assert!(super::super::PROTOCOL_VERSION == 13);
+const _FINGERPRINT_VERSION: () = assert!(super::super::PROTOCOL_VERSION == 14);
 
 #[test]
 fn fingerprint_check_roundtrip() {

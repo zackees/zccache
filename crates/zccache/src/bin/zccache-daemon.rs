@@ -132,6 +132,14 @@ fn print_status(args: &Args) {
             println!("  status:     running");
             println!("  daemon ns:  {}", status.daemon_namespace);
             println!("  daemon ep:  {}", status.endpoint);
+            println!(
+                "  private:    {}",
+                if status.private_daemon.enabled {
+                    "yes"
+                } else {
+                    "no"
+                }
+            );
             println!("  uptime:     {}s", status.uptime_secs);
             println!("  artifacts:  {}", status.artifact_count);
             println!("  cache size: {} bytes", status.cache_size_bytes);
