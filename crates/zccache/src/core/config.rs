@@ -344,6 +344,12 @@ pub fn depfile_dir() -> NormalizedPath {
     depfile_dir_from_cache_dir(&default_cache_dir())
 }
 
+/// Returns the directory for compressed cargo registry archives.
+#[must_use]
+pub fn cargo_registry_cache_dir() -> NormalizedPath {
+    cargo_registry_cache_dir_from_cache_dir(&default_cache_dir())
+}
+
 /// Remove legacy zccache state left directly under the OS temp directory.
 ///
 /// Older builds stored the full cache root at `%TEMP%/.zccache` and created
@@ -532,6 +538,12 @@ pub fn symbols_cache_dir_from_cache_dir(cache_dir: &NormalizedPath) -> Normalize
     cache_dir.join("symbols")
 }
 
+/// Returns the cargo registry archive cache under an explicit cache root.
+#[must_use]
+pub fn cargo_registry_cache_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
+    cache_dir.join("cargo-registry")
+}
+
 /// Returns the path to the artifact index database.
 #[must_use]
 pub fn index_path() -> NormalizedPath {
@@ -691,7 +703,7 @@ mod tests {
     #[test]
     fn cache_root_invariant_all_subpaths_rooted() {
         let (_temp, cache) = temp_cache_dir();
-        let subs: [(NormalizedPath, &str); 8] = [
+        let subs: [(NormalizedPath, &str); 10] = [
             (artifacts_dir_from_cache_dir(&cache), "artifacts/"),
             (tmp_dir_from_cache_dir(&cache), "tmp/"),
             (depfile_dir_from_cache_dir(&cache), "tmp/depfiles/"),
@@ -699,7 +711,12 @@ mod tests {
             (log_dir_from_cache_dir(&cache), "logs/"),
             (crash_dump_dir_from_cache_dir(&cache), "crashes/"),
             (symbols_cache_dir_from_cache_dir(&cache), "symbols/"),
+            (
+                cargo_registry_cache_dir_from_cache_dir(&cache),
+                "cargo-registry/",
+            ),
             (index_path_from_cache_dir(&cache), "index.bin"),
+            (metadata_path_from_cache_dir(&cache), "metadata.bin"),
         ];
         for (p, label) in &subs {
             assert!(
@@ -808,6 +825,14 @@ mod tests {
         let (_temp, cache) = temp_cache_dir();
         let logs = log_dir_from_cache_dir(&cache);
         assert!(logs.starts_with(&cache));
+    }
+
+    #[test]
+    fn cargo_registry_cache_dir_is_under_cache_dir() {
+        let (_temp, cache) = temp_cache_dir();
+        let dir = cargo_registry_cache_dir_from_cache_dir(&cache);
+        assert!(dir.ends_with("cargo-registry"));
+        assert!(dir.starts_with(&cache));
     }
 
     #[test]

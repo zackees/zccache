@@ -255,6 +255,18 @@ runs:
         # Verify install
         which zccache || { echo "ERROR: zccache not found on PATH"; echo "PATH=$PATH"; exit 1; }
 
+    - name: Resolve zccache cache paths
+      id: zccache-paths
+      shell: bash
+      run: |
+        CACHE_ROOT="$(zccache cache-root)"
+        {
+          echo "cache-root=$CACHE_ROOT"
+          echo "cargo-registry-cache=$CACHE_ROOT/cargo-registry"
+          echo "target-meta-dir=$HOME/.zccache-target-meta"
+          echo "action-state-dir=$HOME/.zccache-action-state"
+        } >> "$GITHUB_OUTPUT"
+
     # --- Layer 1: Restore zccache compilation cache ---
     - name: Restore zccache compilation cache
       id: restore-zccache-native
@@ -264,7 +276,7 @@ runs:
         set +e
         OUTPUT="$(zccache gha-cache restore \
           --key "${{ steps.keys.outputs.compilation-key }}" \
-          --path "$HOME/.zccache" 2>&1)"
+          --path "${{ steps.zccache-paths.outputs.cache-root }}" 2>&1)"
         STATUS=$?
         set -e
         printf '%s\n' "$OUTPUT"
@@ -283,7 +295,7 @@ runs:
       if: steps.cache-backend.outputs.backend == 'native' && inputs.cache-compilation == 'true' && inputs.compilation-restore-fallback == 'true' && steps.restore-zccache-native.outputs.cache-hit != 'true'
       uses: actions/cache/restore@v4
       with:
-        path: ~/.zccache
+        path: ${{ steps.zccache-paths.outputs.cache-root }}
         key: ${{ steps.keys.outputs.compilation-key }}
         restore-keys: ${{ steps.keys.outputs.compilation-restore }}
 
@@ -292,7 +304,7 @@ runs:
       if: steps.cache-backend.outputs.backend != 'native' && inputs.cache-compilation == 'true'
       uses: actions/cache/restore@v4
       with:
-        path: ~/.zccache
+        path: ${{ steps.zccache-paths.outputs.cache-root }}
         key: ${{ steps.keys.outputs.compilation-key }}
         restore-keys: ${{ steps.keys.outputs.compilation-restore }}
 
@@ -305,7 +317,7 @@ runs:
         set +e
         OUTPUT="$(zccache gha-cache restore \
           --key "${{ steps.keys.outputs.registry-key }}" \
-          --path "$HOME/.zccache/cargo-registry" 2>&1)"
+          --path "${{ steps.zccache-paths.outputs.cargo-registry-cache }}" 2>&1)"
         STATUS=$?
         set -e
         printf '%s\n' "$OUTPUT"
@@ -346,7 +358,7 @@ runs:
         set +e
         OUTPUT="$(zccache gha-cache restore \
           --key "${{ steps.keys.outputs.target-key }}" \
-          --path "$HOME/.zccache-target-meta" 2>&1)"
+          --path "${{ steps.zccache-paths.outputs.target-meta-dir }}" 2>&1)"
         STATUS=$?
         set -e
         printf '%s\n' "$OUTPUT"
@@ -365,7 +377,7 @@ runs:
       if: steps.cache-backend.outputs.backend == 'native' && inputs.cache-target == 'true' && inputs.target-restore-fallback == 'true' && steps.restore-target-native.outputs.cache-hit != 'true'
       uses: actions/cache/restore@v4
       with:
-        path: ~/.zccache-target-meta
+        path: ${{ steps.zccache-paths.outputs.target-meta-dir }}
         key: ${{ steps.keys.outputs.target-key }}
         restore-keys: ${{ steps.keys.outputs.target-restore }}
 
@@ -374,7 +386,7 @@ runs:
       if: steps.cache-backend.outputs.backend != 'native' && inputs.cache-target == 'true'
       uses: actions/cache/restore@v4
       with:
-        path: ~/.zccache-target-meta
+        path: ${{ steps.zccache-paths.outputs.target-meta-dir }}
         key: ${{ steps.keys.outputs.target-key }}
         restore-keys: ${{ steps.keys.outputs.target-restore }}
 
@@ -383,7 +395,7 @@ runs:
       shell: bash
       run: |
         TARGET="${{ inputs.target-dir }}"
-        META_TAR="$HOME/.zccache-target-meta/target-meta.tar"
+        META_TAR="${{ steps.zccache-paths.outputs.target-meta-dir }}/target-meta.tar"
         if [ -f "$META_TAR" ]; then
           MAX_BYTES="$(bash "${{ github.action_path }}/action/cleanup/prepare-target-snapshot.sh" --parse-size "${{ inputs.target-snapshot-max-size }}")"
           TAR_BYTES="$(wc -c < "$META_TAR" | tr -d '[:space:]')"
@@ -454,22 +466,23 @@ runs:
       shell: bash
       run: |
         # Write cache keys to a file so the cleanup action can read them
-        mkdir -p ~/.zccache-action-state
-        echo "${{ steps.keys.outputs.compilation-key }}" > ~/.zccache-action-state/compilation-key
-        echo "${{ steps.keys.outputs.registry-key }}" > ~/.zccache-action-state/registry-key
-        echo "${{ steps.keys.outputs.target-key }}" > ~/.zccache-action-state/target-key
-        echo "${{ inputs.save-cache }}" > ~/.zccache-action-state/save-cache
-        echo "${{ inputs.cache-compilation }}" > ~/.zccache-action-state/cache-compilation
-        echo "${{ inputs.cache-cargo-registry }}" > ~/.zccache-action-state/cache-registry
-        echo "${{ inputs.cache-target }}" > ~/.zccache-action-state/cache-target
-        echo "${{ inputs.target-dir }}" > ~/.zccache-action-state/target-dir
-        echo "${{ inputs.target-snapshot-max-size }}" > ~/.zccache-action-state/target-snapshot-max-size
-        echo "${{ inputs.target-snapshot-mode }}" > ~/.zccache-action-state/target-snapshot-mode
-        echo "${{ inputs.target-snapshot-too-large }}" > ~/.zccache-action-state/target-snapshot-too-large
-        echo "${{ inputs.target-prune-incremental }}" > ~/.zccache-action-state/target-prune-incremental
-        echo "${{ inputs.target-prune-build-script-out }}" > ~/.zccache-action-state/target-prune-build-script-out
-        echo "${{ steps.cache-backend.outputs.backend }}" > ~/.zccache-action-state/cache-backend
-        date +%s > ~/.zccache-action-state/target-cache-marker-epoch
+        STATE_DIR="${{ steps.zccache-paths.outputs.action-state-dir }}"
+        mkdir -p "$STATE_DIR"
+        echo "${{ steps.keys.outputs.compilation-key }}" > "$STATE_DIR/compilation-key"
+        echo "${{ steps.keys.outputs.registry-key }}" > "$STATE_DIR/registry-key"
+        echo "${{ steps.keys.outputs.target-key }}" > "$STATE_DIR/target-key"
+        echo "${{ inputs.save-cache }}" > "$STATE_DIR/save-cache"
+        echo "${{ inputs.cache-compilation }}" > "$STATE_DIR/cache-compilation"
+        echo "${{ inputs.cache-cargo-registry }}" > "$STATE_DIR/cache-registry"
+        echo "${{ inputs.cache-target }}" > "$STATE_DIR/cache-target"
+        echo "${{ inputs.target-dir }}" > "$STATE_DIR/target-dir"
+        echo "${{ inputs.target-snapshot-max-size }}" > "$STATE_DIR/target-snapshot-max-size"
+        echo "${{ inputs.target-snapshot-mode }}" > "$STATE_DIR/target-snapshot-mode"
+        echo "${{ inputs.target-snapshot-too-large }}" > "$STATE_DIR/target-snapshot-too-large"
+        echo "${{ inputs.target-prune-incremental }}" > "$STATE_DIR/target-prune-incremental"
+        echo "${{ inputs.target-prune-build-script-out }}" > "$STATE_DIR/target-prune-build-script-out"
+        echo "${{ steps.cache-backend.outputs.backend }}" > "$STATE_DIR/cache-backend"
+        date +%s > "$STATE_DIR/target-cache-marker-epoch"
 
 branding:
   icon: "zap"

@@ -23,13 +23,12 @@ pub(crate) fn resolve_cargo_home(explicit: Option<&str>) -> Result<NormalizedPat
 }
 
 /// Directory where cargo-registry archives are stored.
-pub(crate) fn cargo_registry_cache_dir() -> Result<NormalizedPath, String> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map_err(|_| "cannot determine home directory (set HOME)".to_string())?;
-    Ok(NormalizedPath::from(home)
-        .join(".zccache")
-        .join("cargo-registry"))
+///
+/// This is rooted at the same cache root reported by `zccache cache-root` so
+/// soldr/setup-soldr can redirect the full zccache-owned cache surface with
+/// `ZCCACHE_CACHE_DIR`.
+pub(crate) fn cargo_registry_cache_dir() -> NormalizedPath {
+    crate::core::config::cargo_registry_cache_dir()
 }
 
 pub(crate) fn cmd_cargo_registry_save(key: &str, cargo_home: Option<&str>) -> ExitCode {
@@ -50,13 +49,7 @@ pub(crate) fn cmd_cargo_registry_save(key: &str, cargo_home: Option<&str>) -> Ex
             return ExitCode::FAILURE;
         }
     };
-    let cache_dir = match cargo_registry_cache_dir() {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("zccache cargo-registry save: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let cache_dir = cargo_registry_cache_dir();
     if let Err(e) = std::fs::create_dir_all(&cache_dir) {
         eprintln!(
             "zccache cargo-registry save: failed to create {}: {e}",
@@ -128,13 +121,7 @@ pub(crate) fn cmd_cargo_registry_restore(key: &str, cargo_home: Option<&str>) ->
             return ExitCode::FAILURE;
         }
     };
-    let cache_dir = match cargo_registry_cache_dir() {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("zccache cargo-registry restore: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let cache_dir = cargo_registry_cache_dir();
     let archive_path = cache_dir.join(format!("{key}.tar.gz"));
 
     if !archive_path.exists() {
@@ -183,13 +170,7 @@ pub(crate) fn cmd_cargo_registry_hash(lockfile: &str) -> ExitCode {
 }
 
 pub(crate) fn cmd_cargo_registry_clean() -> ExitCode {
-    let cache_dir = match cargo_registry_cache_dir() {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("zccache cargo-registry clean: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let cache_dir = cargo_registry_cache_dir();
     if cache_dir.exists() {
         let count = match std::fs::read_dir(&cache_dir) {
             Ok(entries) => entries.count(),
@@ -213,4 +194,17 @@ pub(crate) fn cmd_cargo_registry_clean() -> ExitCode {
         println!("no cached archives to clean");
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cargo_registry_command_uses_core_cache_layout() {
+        assert_eq!(
+            cargo_registry_cache_dir(),
+            crate::core::config::cargo_registry_cache_dir()
+        );
+    }
 }

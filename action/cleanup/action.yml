@@ -37,12 +37,31 @@ runs:
       shell: bash
       run: zccache stop 2>/dev/null || true
 
+    - name: Resolve zccache cache paths
+      if: always()
+      id: zccache-paths
+      shell: bash
+      run: |
+        CACHE_ROOT=""
+        if command -v zccache >/dev/null 2>&1; then
+          CACHE_ROOT="$(zccache cache-root 2>/dev/null || true)"
+        fi
+        if [ -z "$CACHE_ROOT" ]; then
+          CACHE_ROOT="${ZCCACHE_CACHE_DIR:-$HOME/.zccache}"
+        fi
+        {
+          echo "cache-root=$CACHE_ROOT"
+          echo "cargo-registry-cache=$CACHE_ROOT/cargo-registry"
+          echo "target-meta-dir=$HOME/.zccache-target-meta"
+          echo "action-state-dir=$HOME/.zccache-action-state"
+        } >> "$GITHUB_OUTPUT"
+
     - name: Read state from setup
       if: always()
       id: state
       shell: bash
       run: |
-        STATE_DIR="$HOME/.zccache-action-state"
+        STATE_DIR="${{ steps.zccache-paths.outputs.action-state-dir }}"
         if [ -d "$STATE_DIR" ]; then
           echo "compilation-key=$(cat "$STATE_DIR/compilation-key" 2>/dev/null || echo '')" >> "$GITHUB_OUTPUT"
           echo "registry-key=$(cat "$STATE_DIR/registry-key" 2>/dev/null || echo '')" >> "$GITHUB_OUTPUT"
@@ -73,13 +92,13 @@ runs:
       run: |
         zccache gha-cache save \
           --key "${{ steps.state.outputs.compilation-key }}" \
-          --path "$HOME/.zccache"
+          --path "${{ steps.zccache-paths.outputs.cache-root }}"
 
     - name: Save zccache compilation cache
       if: always() && steps.state.outputs.save-cache == 'true' && steps.state.outputs.cache-backend != 'native' && steps.state.outputs.cache-compilation == 'true'
       uses: actions/cache/save@v4
       with:
-        path: ~/.zccache
+        path: ${{ steps.zccache-paths.outputs.cache-root }}
         key: ${{ steps.state.outputs.compilation-key }}
 
     - name: Save cargo registry archive
@@ -89,10 +108,10 @@ runs:
         zccache cargo-registry save \
           --key "${{ steps.state.outputs.registry-key }}" \
           --cargo-home "$HOME/.cargo"
-        if [ -f "$HOME/.zccache/cargo-registry/${{ steps.state.outputs.registry-key }}.tar.gz" ]; then
+        if [ -f "${{ steps.zccache-paths.outputs.cargo-registry-cache }}/${{ steps.state.outputs.registry-key }}.tar.gz" ]; then
           zccache gha-cache save \
             --key "${{ steps.state.outputs.registry-key }}" \
-            --path "$HOME/.zccache/cargo-registry"
+            --path "${{ steps.zccache-paths.outputs.cargo-registry-cache }}"
         fi
 
     - name: Save cargo registry cache
@@ -142,16 +161,16 @@ runs:
       run: |
         zccache gha-cache save \
           --key "${{ steps.state.outputs.target-key }}" \
-          --path "$HOME/.zccache-target-meta"
+          --path "${{ steps.zccache-paths.outputs.target-meta-dir }}"
 
     - name: Save cargo target snapshot
       if: always() && steps.state.outputs.save-cache == 'true' && steps.state.outputs.cache-backend != 'native' && steps.state.outputs.cache-target == 'true' && steps.target-snapshot.outputs.snapshot-saved == 'true'
       uses: actions/cache/save@v4
       with:
-        path: ~/.zccache-target-meta
+        path: ${{ steps.zccache-paths.outputs.target-meta-dir }}
         key: ${{ steps.state.outputs.target-key }}
 
     - name: Clean up state
       if: always()
       shell: bash
-      run: rm -rf ~/.zccache-action-state
+      run: rm -rf "${{ steps.zccache-paths.outputs.action-state-dir }}"

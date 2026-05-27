@@ -246,7 +246,7 @@ entrypoints.
 ### Persistent writes — exhaustive table
 
 Every persistent write the daemon and CLI perform lands under the resolved
-cache root via one of the helpers in `zccache_core::config`:
+cache root via one of the helpers in `zccache::core::config`:
 
 | Subpath | Owner | Resolver |
 |---|---|---|
@@ -259,7 +259,9 @@ cache root via one of the helpers in `zccache_core::config`:
 | `logs/compile_journal.jsonl` + per-session `*.jsonl` | daemon — compile decisions | derives from `log_dir_from_cache_dir` |
 | `crashes/crash-*.{txt,dmp}` + `.reported` | daemon — panic & signal dumps | `crash_dump_dir_from_cache_dir` |
 | `symbols/<version>-<triple>/` + `.symref` sidecars next to dumps | CLI — `zccache symbols install` + `symbolicate` | `symbols_cache_dir_from_cache_dir` |
+| `cargo-registry/<key>.tar.gz` | CLI + composite action - compressed cargo registry archive cache used by `zccache cargo-registry` and native GHA cache upload/download | `cargo_registry_cache_dir_from_cache_dir` |
 | `index.bin` (+ sibling tmp) | daemon — bincode artifact index, atomic-rename writes | `index_path_from_cache_dir` |
+| `metadata.bin` (+ sibling tmp) | daemon - persisted metadata cache snapshot | `metadata_path_from_cache_dir` |
 | `ino/<key>.ino.cpp` | CLI — Arduino preprocessor cache | `default_cache_dir().join("ino")` |
 | `kv/<namespace>/<hex>.bin` | CLI — namespaced key/value store | derives from `default_cache_dir` |
 | `daemon[--namespace].lock` | CLI + daemon — PID lock | `lock_file_path` |
@@ -267,13 +269,21 @@ cache root via one of the helpers in `zccache_core::config`:
 
 The cache-root-rooted invariant for the well-known subpaths is asserted in
 the unit test `cache_root_invariant_all_subpaths_rooted` in
-`crates/zccache-core/src/config.rs`.
+`crates/zccache/src/core/config.rs`.
 
 ### Legitimate exceptions (documented and stable)
 
 A small set of writes is intentionally *outside* the cache root. soldr
 excludes these separately if Defender scanning ever becomes an issue:
 
+- **Composite-action target snapshot metadata:** `$HOME/.zccache-target-meta`
+  stores `target-meta.tar` for the optional target snapshot cache layer. This
+  is action-owned rather than daemon/CLI-owned zccache cache state, and the
+  path is kept stable so existing action/cache entries remain compatible.
+- **Composite-action cleanup handoff state:** `$HOME/.zccache-action-state`
+  stores the setup action's cache keys and options until
+  `action/cleanup/action.yml` runs. It is ephemeral action state, removed by
+  cleanup, and not part of the cache root contract.
 - **IPC socket (Unix, no env override):** `$XDG_RUNTIME_DIR/zccache/sock`
   or `/tmp/zccache-$USER/sock`. The socket inode lives in `tmpfs` on Linux
   so it is not a real on-disk write. When `ZCCACHE_CACHE_DIR` is set, the
