@@ -13,7 +13,8 @@ use crate::hash::ContentHash;
 use dashmap::DashMap;
 
 use super::context::{
-    compute_artifact_key, compute_context_key, ArtifactKey, CompileContext, ContextKey,
+    compute_artifact_key, compute_context_key, compute_rustc_artifact_key_with_root, ArtifactKey,
+    CompileContext, ContextKey,
 };
 use super::scanner::{IncludeDirective, ScanResult};
 
@@ -105,6 +106,12 @@ pub struct DepGraph {
     files: DashMap<NormalizedPath, FileEntry>,
     /// Per-context entries: context key â†’ include list + state.
     contexts: DashMap<ContextKey, ContextEntry>,
+    /// Rustc-only extern inputs keyed by context.
+    ///
+    /// These are tracked outside `ContextEntry::resolved_includes` because
+    /// their paths are output-placement state. Their content hashes affect the
+    /// rustc artifact key by crate name, but target-dir path prefixes must not.
+    rustc_externs: DashMap<ContextKey, Vec<(String, NormalizedPath)>>,
     /// Stats counters.
     checks: AtomicU64,
     hits: AtomicU64,
@@ -131,6 +138,20 @@ fn rebase_project_path(
     }
 }
 
+fn collect_rustc_extern_hashes<G>(
+    rustc_externs: &[(String, NormalizedPath)],
+    get_hash: &G,
+) -> Option<Vec<(String, ContentHash)>>
+where
+    G: Fn(&Path) -> Option<ContentHash>,
+{
+    let mut extern_hashes = Vec::with_capacity(rustc_externs.len());
+    for (name, path) in rustc_externs {
+        extern_hashes.push((name.clone(), get_hash(path)?));
+    }
+    Some(extern_hashes)
+}
+
 impl DepGraph {
     /// Create a new empty dependency graph.
     #[must_use]
@@ -138,6 +159,7 @@ impl DepGraph {
         Self {
             files: DashMap::new(),
             contexts: DashMap::new(),
+            rustc_externs: DashMap::new(),
             checks: AtomicU64::new(0),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
@@ -194,6 +216,34 @@ impl DepGraph {
         ctx: CompileContext,
         key_root: Option<NormalizedPath>,
     ) -> ContextRegistration {
+        let registration = self.register_context_entry(key, ctx, key_root);
+        self.rustc_externs.remove(&registration.key);
+        registration
+    }
+
+    /// Register a rustc context with its current `--extern` file inputs.
+    ///
+    /// Rustc context keys already reduce extern path prefixes to filename
+    /// identity. The dependency graph keeps the actual extern paths here only
+    /// for hashing/freshness; artifact keys incorporate them by crate name.
+    pub fn register_rustc_with_key_and_root_result(
+        &self,
+        key: ContextKey,
+        ctx: CompileContext,
+        key_root: Option<NormalizedPath>,
+        externs: Vec<(String, NormalizedPath)>,
+    ) -> ContextRegistration {
+        let registration = self.register_context_entry(key, ctx, key_root);
+        self.rustc_externs.insert(registration.key, externs);
+        registration
+    }
+
+    fn register_context_entry(
+        &self,
+        key: ContextKey,
+        ctx: CompileContext,
+        key_root: Option<NormalizedPath>,
+    ) -> ContextRegistration {
         let mut rebased_from_equivalent_root = false;
         self.contexts
             .entry(key)
@@ -240,6 +290,10 @@ impl DepGraph {
         }
     }
 
+    fn rustc_extern_inputs(&self, key: &ContextKey) -> Option<Vec<(String, NormalizedPath)>> {
+        self.rustc_externs.get(key).map(|externs| externs.clone())
+    }
+
     /// Returns `true` if the context has never been updated (no artifact key).
     /// Used by the server to skip pre-compile hashing on cold contexts where
     /// `check_diagnostic` would return `Cold` without examining any hashes.
@@ -265,6 +319,7 @@ impl DepGraph {
     {
         self.checks.fetch_add(1, Ordering::Relaxed);
 
+        let rustc_externs = self.rustc_extern_inputs(key);
         let mut entry = match self.contexts.get_mut(key) {
             Some(e) => e,
             None => {
@@ -359,7 +414,20 @@ impl DepGraph {
             }
         }
 
-        let artifact_key = compute_artifact_key(key, &mut file_hashes, entry.key_root.as_deref());
+        let artifact_key = if let Some(externs) = rustc_externs.as_deref() {
+            let Some(mut extern_hashes) = collect_rustc_extern_hashes(externs, &get_hash) else {
+                self.misses.fetch_add(1, Ordering::Relaxed);
+                return CacheVerdict::Cold;
+            };
+            compute_rustc_artifact_key_with_root(
+                key,
+                &mut file_hashes,
+                &mut extern_hashes,
+                entry.key_root.as_deref(),
+            )
+        } else {
+            compute_artifact_key(key, &mut file_hashes, entry.key_root.as_deref())
+        };
 
         if source_fresh {
             // Ultra-fast path: nothing changed at all.
@@ -396,6 +464,7 @@ impl DepGraph {
     {
         self.checks.fetch_add(1, Ordering::Relaxed);
 
+        let rustc_externs = self.rustc_extern_inputs(key);
         let mut entry = match self.contexts.get_mut(key) {
             Some(e) => e,
             None => {
@@ -511,7 +580,20 @@ impl DepGraph {
             }
         }
 
-        let artifact_key = compute_artifact_key(key, &mut file_hashes, entry.key_root.as_deref());
+        let artifact_key = if let Some(externs) = rustc_externs.as_deref() {
+            let Some(mut extern_hashes) = collect_rustc_extern_hashes(externs, &get_hash) else {
+                self.misses.fetch_add(1, Ordering::Relaxed);
+                return (CacheVerdict::Cold, "rustc extern hash missing".to_string());
+            };
+            compute_rustc_artifact_key_with_root(
+                key,
+                &mut file_hashes,
+                &mut extern_hashes,
+                entry.key_root.as_deref(),
+            )
+        } else {
+            compute_artifact_key(key, &mut file_hashes, entry.key_root.as_deref())
+        };
 
         if source_fresh {
             if entry.artifact_key == Some(artifact_key) {
@@ -608,6 +690,7 @@ impl DepGraph {
     where
         G: Fn(&Path) -> Option<ContentHash>,
     {
+        let rustc_externs = self.rustc_extern_inputs(key);
         let entry = self.contexts.get(key)?;
 
         if entry.state == ContextState::Cold || entry.has_computed_includes {
@@ -631,7 +714,17 @@ impl DepGraph {
             file_hashes.push((fi.as_path(), get_hash(fi)?));
         }
 
-        let computed = compute_artifact_key(key, &mut file_hashes, entry.key_root.as_deref());
+        let computed = if let Some(externs) = rustc_externs.as_deref() {
+            let mut extern_hashes = collect_rustc_extern_hashes(externs, &get_hash)?;
+            compute_rustc_artifact_key_with_root(
+                key,
+                &mut file_hashes,
+                &mut extern_hashes,
+                entry.key_root.as_deref(),
+            )
+        } else {
+            compute_artifact_key(key, &mut file_hashes, entry.key_root.as_deref())
+        };
 
         if computed == *stored_key {
             self.hits.fetch_add(1, Ordering::Relaxed);
@@ -653,6 +746,7 @@ impl DepGraph {
     where
         G: Fn(&Path) -> Option<ContentHash>,
     {
+        let rustc_externs = self.rustc_extern_inputs(key);
         let mut entry = self.contexts.get_mut(key)?;
 
         // Always update include lists (useful for diagnostics even if hashing fails).
@@ -683,7 +777,17 @@ impl DepGraph {
             }
         }
 
-        let artifact_key = compute_artifact_key(key, &mut file_hashes, entry.key_root.as_deref());
+        let artifact_key = if let Some(externs) = rustc_externs.as_deref() {
+            let mut extern_hashes = collect_rustc_extern_hashes(externs, &get_hash)?;
+            compute_rustc_artifact_key_with_root(
+                key,
+                &mut file_hashes,
+                &mut extern_hashes,
+                entry.key_root.as_deref(),
+            )
+        } else {
+            compute_artifact_key(key, &mut file_hashes, entry.key_root.as_deref())
+        };
 
         // SUCCESS: all hashes computed â€” transition to Warm atomically with artifact key.
         entry.state = ContextState::Warm;
@@ -709,6 +813,8 @@ impl DepGraph {
                 true
             }
         });
+        self.rustc_externs
+            .retain(|key, _| self.contexts.contains_key(key));
 
         // Also trim file entries not referenced by any context.
         let referenced: std::collections::HashSet<NormalizedPath> = self
@@ -735,6 +841,7 @@ impl DepGraph {
     pub fn clear(&self) {
         self.files.clear();
         self.contexts.clear();
+        self.rustc_externs.clear();
         self.checks.store(0, Ordering::Relaxed);
         self.hits.store(0, Ordering::Relaxed);
         self.misses.store(0, Ordering::Relaxed);
@@ -799,6 +906,12 @@ impl DepGraph {
         self.contexts.get(key).map(|e| e.resolved_includes.clone())
     }
 
+    /// Get rustc extern input paths for a context.
+    #[must_use]
+    pub fn get_rustc_externs(&self, key: &ContextKey) -> Option<Vec<(String, NormalizedPath)>> {
+        self.rustc_extern_inputs(key)
+    }
+
     /// Store scanned includes for a file (shared file node).
     pub fn store_file_includes(&self, path: NormalizedPath, includes: Vec<IncludeDirective>) {
         self.files.insert(
@@ -834,6 +947,7 @@ impl DepGraph {
         Self {
             files,
             contexts,
+            rustc_externs: DashMap::new(),
             checks: AtomicU64::new(0),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
@@ -959,6 +1073,64 @@ mod tests {
 
         let verdict = graph.check(&key, always_fresh, dummy_hash);
         assert!(matches!(verdict, CacheVerdict::Hit { .. }));
+    }
+
+    #[test]
+    fn rustc_extern_artifact_key_ignores_target_dir_path_shape() {
+        let graph = DepGraph::new();
+        let ctx = make_ctx("/src/app.rs");
+        let key = ctx.context_key();
+        let source_hash = crate::hash::hash_bytes(b"app");
+        let extern_hash = crate::hash::hash_bytes(b"dep-v1");
+        let extern_a = NormalizedPath::from("/target-main/libdep.rlib");
+        let extern_b = NormalizedPath::from("/target-subagent/libdep.rlib");
+
+        graph.register_rustc_with_key_and_root_result(
+            key,
+            ctx.clone(),
+            None,
+            vec![("dep".to_string(), extern_a.clone())],
+        );
+        let first_key = graph
+            .update(
+                &key,
+                ScanResult {
+                    resolved: Vec::new(),
+                    unresolved: Vec::new(),
+                    has_computed: false,
+                },
+                |path| {
+                    if path == Path::new("/src/app.rs") {
+                        Some(source_hash)
+                    } else if path == extern_a.as_path() {
+                        Some(extern_hash)
+                    } else {
+                        None
+                    }
+                },
+            )
+            .expect("rustc artifact key should be computed");
+
+        graph.register_rustc_with_key_and_root_result(
+            key,
+            ctx,
+            None,
+            vec![("dep".to_string(), extern_b.clone())],
+        );
+        let verdict = graph.check(&key, always_fresh, |path| {
+            if path == Path::new("/src/app.rs") {
+                Some(source_hash)
+            } else if path == extern_b.as_path() {
+                Some(extern_hash)
+            } else {
+                None
+            }
+        });
+
+        match verdict {
+            CacheVerdict::Hit { artifact_key } => assert_eq!(artifact_key, first_key),
+            other => panic!("expected rustc extern path-shape hit, got {other:?}"),
+        }
     }
 
     #[test]

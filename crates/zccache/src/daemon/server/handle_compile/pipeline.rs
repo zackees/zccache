@@ -234,10 +234,16 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 let rustc_key_root =
                     rustc_context_key_root(&rustc_args.remap_path_prefixes, worktree_root.as_ref());
                 let key = rustc_ctx.context_key_with_root(rustc_key_root.as_deref());
-                let registration = state.dep_graph.register_with_key_and_root_result(
+                let rustc_externs = rustc_args
+                    .externs
+                    .iter()
+                    .map(|ext| (ext.name.clone(), ext.path.clone()))
+                    .collect();
+                let registration = state.dep_graph.register_rustc_with_key_and_root_result(
                     key,
                     compat_ctx.clone(),
                     rustc_key_root.clone(),
+                    rustc_externs,
                 );
                 (
                     compat_ctx,
@@ -249,6 +255,16 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             }
         };
     let is_rustc = rustc_args_opt.is_some();
+    let rustc_extern_paths: Vec<NormalizedPath> = rustc_args_opt
+        .as_ref()
+        .map(|rustc_args| {
+            rustc_args
+                .externs
+                .iter()
+                .map(|ext| ext.path.clone())
+                .collect()
+        })
+        .unwrap_or_default();
     let rust_profile_enabled = is_rustc && std::env::var_os(RUST_MISS_PROFILE_ENV).is_some();
     let rust_profile_mode = rustc_args_opt
         .as_ref()
@@ -348,7 +364,10 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 .force_includes
                 .iter()
                 .map(|h| (h, "force_include_hash_fail"));
-            let all_paths: Vec<_> = include_iter.chain(force_iter).collect();
+            let extern_iter = rustc_extern_paths
+                .iter()
+                .map(|h| (h, "rustc_extern_hash_fail"));
+            let all_paths: Vec<_> = include_iter.chain(force_iter).chain(extern_iter).collect();
 
             let results: Vec<_> = all_paths
                 .par_iter()
@@ -753,6 +772,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         let tracked_paths: Vec<NormalizedPath> = std::iter::once(source_path.clone())
             .chain(scan_result.resolved.iter().cloned())
             .chain(ctx.force_includes.iter().cloned())
+            .chain(rustc_extern_paths.iter().cloned())
             .collect();
         let t_register_tracked = std::time::Instant::now();
         state.cache_system.register_tracked(&tracked_paths);
@@ -778,6 +798,11 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                     dirs.insert(parent.into());
                 }
             }
+            for ext in &rustc_extern_paths {
+                if let Some(parent) = ext.parent() {
+                    dirs.insert(parent.into());
+                }
+            }
             dirs.into_iter().collect()
         };
         let dep_dirs_ns = t_dep_dirs.elapsed().as_nanos() as u64;
@@ -789,7 +814,11 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         let mut hash_map: HashMap<NormalizedPath, ContentHash> = HashMap::new();
         {
             use rayon::prelude::*;
-            let header_iter = scan_result.resolved.iter().chain(ctx.force_includes.iter());
+            let header_iter = scan_result
+                .resolved
+                .iter()
+                .chain(ctx.force_includes.iter())
+                .chain(rustc_extern_paths.iter());
             let all_paths: Vec<&NormalizedPath> =
                 std::iter::once(&source_path).chain(header_iter).collect();
 
@@ -821,7 +850,9 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                     &format!(
                         "[DIAG] hash_failures: {} of {} files failed to hash for {}",
                         hash_failures,
-                        1 + scan_result.resolved.len() + ctx.force_includes.len(),
+                        1 + scan_result.resolved.len()
+                            + ctx.force_includes.len()
+                            + rustc_extern_paths.len(),
                         source_path.display(),
                     ),
                 );

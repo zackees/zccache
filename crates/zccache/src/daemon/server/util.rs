@@ -80,6 +80,13 @@ pub(super) fn context_files_fresh(
             }
         }
     }
+    if let Some(externs) = state.dep_graph.get_rustc_externs(context_key) {
+        for (_, path) in &externs {
+            if journal.changed_since(path, since) {
+                return false;
+            }
+        }
+    }
     true
 }
 

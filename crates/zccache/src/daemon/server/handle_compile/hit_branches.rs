@@ -147,6 +147,13 @@ pub(super) fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
     if !state.watcher_active.load(Ordering::Acquire) {
         return None;
     }
+    if worktree_equivalent_context {
+        // Cross-worktree hits may be the first time this daemon has seen the
+        // current root's source paths. Until that root has gone through a
+        // miss path and installed directory watches, keep using the hashed
+        // depgraph path instead of the zero-hash fast-hit cache.
+        return None;
+    }
     let entry = state.fast_hit_cache.get(&context_key)?;
     if !cache_entry_fresh_at(compile_start, entry.cached_at, FAST_HIT_MAX_AGE)
         || !context_files_fresh(state, &context_key, source_path, entry.clock)
@@ -290,34 +297,36 @@ pub(super) fn try_depgraph_cached_hit(probe: DepgraphHitProbe<'_>) -> Option<Res
         },
     })?;
 
-    let input_paths = request_cache_input_paths(state, &context_key, source_path, ctx);
-    state.cache_system.register_tracked(&input_paths);
-    let current_clock = state.cache_system.current_clock();
-    state.fast_hit_cache.insert(
-        context_key,
-        FastHitEntry {
-            clock: current_clock,
-            artifact_key_hex: artifact_key_hex.to_string(),
-            cached_at: Instant::now(),
-        },
-    );
-
-    let rfp = request_fingerprint(
-        compiler_path,
-        effective_args,
-        cwd,
-        request_cache_key_root.as_deref(),
-        client_env,
-    );
-    state.request_cache.insert(
-        rfp,
-        request_cache_entry(
+    if !worktree_equivalent_context {
+        let input_paths = request_cache_input_paths(state, &context_key, source_path, ctx);
+        state.cache_system.register_tracked(&input_paths);
+        let current_clock = state.cache_system.current_clock();
+        state.fast_hit_cache.insert(
             context_key,
-            source_path,
-            output_path,
-            input_paths,
-            request_cache_key_root.as_ref(),
-        ),
-    );
+            FastHitEntry {
+                clock: current_clock,
+                artifact_key_hex: artifact_key_hex.to_string(),
+                cached_at: Instant::now(),
+            },
+        );
+
+        let rfp = request_fingerprint(
+            compiler_path,
+            effective_args,
+            cwd,
+            request_cache_key_root.as_deref(),
+            client_env,
+        );
+        state.request_cache.insert(
+            rfp,
+            request_cache_entry(
+                context_key,
+                source_path,
+                output_path,
+                input_paths,
+                request_cache_key_root.as_ref(),
+            ),
+        );
+    }
     Some(response)
 }

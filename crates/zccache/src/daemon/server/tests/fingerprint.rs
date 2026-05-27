@@ -531,3 +531,56 @@ fn request_fingerprint_ignores_cargo_target_dir() {
          should share the request-level fast path (issue #396)"
     );
 }
+
+#[test]
+fn request_fingerprint_keeps_external_out_dirs_distinct() {
+    let args_a = vec![
+        "--crate-name".to_string(),
+        "dep".to_string(),
+        "--out-dir".to_string(),
+        "/external/agent-a-target".to_string(),
+        "src/dep.rs".to_string(),
+    ];
+    let args_b = vec![
+        "--crate-name".to_string(),
+        "dep".to_string(),
+        "--out-dir".to_string(),
+        "/external/agent-b-target".to_string(),
+        "src/dep.rs".to_string(),
+    ];
+    let env_a = vec![
+        ("CARGO_PKG_VERSION".to_string(), "1.0.0".to_string()),
+        (
+            "CARGO_TARGET_DIR".to_string(),
+            "/external/agent-a-target".to_string(),
+        ),
+    ];
+    let env_b = vec![
+        ("CARGO_PKG_VERSION".to_string(), "1.0.0".to_string()),
+        (
+            "CARGO_TARGET_DIR".to_string(),
+            "/external/agent-b-target".to_string(),
+        ),
+    ];
+
+    let a = request_fingerprint(
+        Path::new("/usr/bin/rustc"),
+        &args_a,
+        Path::new("/workspace"),
+        Some(Path::new("/workspace")),
+        Some(&env_a),
+    );
+    let b = request_fingerprint(
+        Path::new("/usr/bin/rustc"),
+        &args_b,
+        Path::new("/workspace"),
+        Some(Path::new("/workspace")),
+        Some(&env_b),
+    );
+
+    assert_ne!(
+        a, b,
+        "target dirs outside ZCCACHE_WORKTREE_ROOT remain request-key distinct \
+         because their --out-dir paths are not root-relative"
+    );
+}

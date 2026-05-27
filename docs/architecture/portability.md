@@ -66,6 +66,10 @@ cache key. The constant of record is `VOLATILE_CARGO_ENV_VARS` in
 fast-path miss/hit decision does not diverge from the slow-path key
 computation (issue #396). Cargo `--out-dir`, `-L`, and `--extern` directory
 prefixes derived from `CARGO_TARGET_DIR` are already non-cache-key state.
+Target directories outside `ZCCACHE_WORKTREE_ROOT` are intentionally not
+rewritten into root-relative request-key paths; they remain distinct at the
+request-fingerprint layer unless a later depgraph validation proves the
+artifact is safe to reuse.
 
 ## File Identity
 

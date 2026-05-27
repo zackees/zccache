@@ -103,12 +103,14 @@ pub(super) fn build_rustc_compile_context(
 ///
 /// Parses rustc's dep-info file which has multiple rules (one per output target),
 /// all sharing the same dependencies. Extracts the unique set of source file deps.
+/// `--extern` crate files are tracked separately by the dependency graph so
+/// their content, but not target-dir path prefix, participates in artifact keys.
 pub(super) fn scan_rustc_deps(
     rustc_args: &crate::depgraph::RustcParsedArgs,
     source_path: &Path,
     cwd: &Path,
 ) -> crate::depgraph::ScanResult {
-    let mut result = if rustc_args.emit_types.iter().any(|t| t == "dep-info") {
+    let result = if rustc_args.emit_types.iter().any(|t| t == "dep-info") {
         let name = rustc_args.crate_name.as_deref().unwrap_or("unknown");
         let ext_suffix = rustc_args.extra_filename.as_deref().unwrap_or("");
         let dir = rustc_args.out_dir.as_deref().unwrap_or(cwd);
@@ -137,16 +139,6 @@ pub(super) fn scan_rustc_deps(
             has_computed: false,
         }
     };
-
-    // Add extern crate files as resolved dependencies.
-    // Their content hashes will be part of the artifact key,
-    // so changing an extern crate causes a cache miss.
-    for ext in &rustc_args.externs {
-        let dep_path: NormalizedPath = ext.path.clone().into_path_buf().into();
-        if ext.path.exists() && !result.resolved.contains(&dep_path) {
-            result.resolved.push(dep_path);
-        }
-    }
 
     result
 }
