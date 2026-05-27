@@ -758,6 +758,11 @@ The action now treats the two cache layers differently:
 - Target snapshots are disabled by default because Cargo does not garbage collect `target/`. When enabled, the default `target-snapshot-mode: hot` saves Cargo freshness metadata plus target files read or modified during the job instead of archiving the whole tree. Use `target-snapshot-mode: full` only for tightly scoped jobs where the target directory is known to stay bounded.
 - Target snapshot saves prune `target/**/incremental` by default, can optionally prune `target/**/build/*/out`, and skip saving when the pruned snapshot exceeds `target-snapshot-max-size`.
 
+Target snapshots are legacy action-only behavior for `cache-target: true`
+workflows. soldr/setup-soldr integrations should use `zccache rust-plan` for
+target artifact restore/save behavior; see
+`docs/architecture/target-cache.md` for the ownership boundary.
+
 If you want the old fastest-possible behavior for developer CI, opt back in explicitly:
 
 ```yaml

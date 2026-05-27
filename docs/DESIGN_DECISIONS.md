@@ -803,3 +803,25 @@ expected v8, received v7. Run zccache stop first.`
   (`crates/zccache-cli/src/main.rs`). Exceeding it truncates silently
   today; a future fix can either widen the cap or fall back to direct
   compile.
+
+---
+
+## DD-024: Rust-Plan Owns soldr Target Artifacts; Action Target Snapshots Are Legacy
+
+**Context:** zccache has two target artifact paths. The newer `zccache
+rust-plan` path is structured around a versioned Rust build plan from soldr.
+The older composite-action target snapshot path saves a tarball of selected
+`target/` state for workflows that opt into `cache-target: true`.
+
+**Decision:** `zccache rust-plan` is the soldr/setup-soldr target artifact
+interface. The action target snapshot path is legacy action-only behavior kept
+for compatibility. It remains documented and tested, but new soldr-facing
+restore/save behavior must land in rust-plan unless a follow-up issue replaces
+the legacy shell/Python path with a native `zccache target-cache` command.
+
+**Consequences:**
+- soldr and setup-soldr have a single target artifact owner: rust-plan.
+- Action target snapshots keep their existing outputs, skip reasons, size
+  gates, and hot/full modes for compatibility.
+- Bugs in `cache-target: true` remain valid fixes for the legacy action path,
+  but they should not expand that path into a second soldr integration API.

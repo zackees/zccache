@@ -33,6 +33,15 @@ The important boundary is that zccache consumes a structured plan. It validates
 the plan, executes it, and reports what happened. It does not infer the full
 Cargo workspace model by itself.
 
+### Relationship to target snapshots
+
+`zccache rust-plan` is the supported soldr/setup-soldr target artifact
+interface. The optional composite-action target snapshot cache is legacy
+action-only behavior for `cache-target: true` workflows and is documented in
+[target-cache.md](target-cache.md). New soldr-facing target artifact behavior
+belongs in rust-plan unless a follow-up issue explicitly replaces the legacy
+target snapshot action path with a native `zccache target-cache` command.
+
 ### zccache module map
 
 The Rust plan implementation is split by ownership under

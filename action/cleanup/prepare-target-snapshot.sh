@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Legacy action-only target snapshot preparation.
+#
+# This script is intentionally kept for `cache-target: true` compatibility in
+# the zackees/zccache composite action. soldr/setup-soldr target artifact work
+# belongs in `zccache rust-plan`; see docs/architecture/target-cache.md. If a
+# future native `zccache target-cache prepare --json` replaces this script, it
+# must preserve the cleanup action outputs and skip reasons documented there.
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 parse_size_bytes() {

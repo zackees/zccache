@@ -81,6 +81,11 @@ Target snapshots are disabled by default because Cargo does not garbage collect
 leave `cache-target: false`. Enable target snapshots only for jobs where skipping
 Cargo fingerprint work matters enough to spend extra cache and runner disk.
 
+Target snapshots are a legacy action-only compatibility layer. soldr and
+setup-soldr integrations should use `zccache rust-plan` for target artifact
+restore/save behavior; see `../docs/architecture/target-cache.md` for the
+ownership boundary.
+
 ### Restore policy
 
 - `compilation-restore-fallback: true` keeps the speed-first behavior for incremental CI.

@@ -279,7 +279,9 @@ excludes these separately if Defender scanning ever becomes an issue:
 - **Composite-action target snapshot metadata:** `$HOME/.zccache-target-meta`
   stores `target-meta.tar` for the optional target snapshot cache layer. This
   is action-owned rather than daemon/CLI-owned zccache cache state, and the
-  path is kept stable so existing action/cache entries remain compatible.
+  path is kept stable so existing action/cache entries remain compatible. This
+  is legacy action-only behavior, not the soldr target artifact interface; see
+  [target-cache.md](target-cache.md).
 - **Composite-action cleanup handoff state:** `$HOME/.zccache-action-state`
   stores the setup action's cache keys and options until
   `action/cleanup/action.yml` runs. It is ephemeral action state, removed by

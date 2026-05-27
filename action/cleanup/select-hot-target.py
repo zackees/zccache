@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# Legacy action-only hot target selector.
+#
+# This module supports `action/cleanup/prepare-target-snapshot.sh` for
+# `cache-target: true` workflows. New soldr/setup-soldr target artifact behavior
+# belongs in `zccache rust-plan`; see docs/architecture/target-cache.md.
+
 import argparse
 import json
 import os

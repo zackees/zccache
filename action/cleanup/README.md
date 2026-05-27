@@ -26,6 +26,11 @@ The default target snapshot mode is `hot`: cleanup saves Cargo metadata and
 files read or modified after setup using access and modification times. Set
 `target-snapshot-mode: full` in the main action to save the pruned target tree.
 
+This target snapshot path is legacy action-only behavior. It is kept for
+`cache-target: true` compatibility and should not receive new soldr/setup-soldr
+target artifact behavior. The soldr-facing owner is `zccache rust-plan`; see
+`../../docs/architecture/target-cache.md`.
+
 ## Target Snapshot Outputs
 
 When target snapshots are enabled, cleanup exposes:
