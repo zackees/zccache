@@ -33,6 +33,29 @@ The important boundary is that zccache consumes a structured plan. It validates
 the plan, executes it, and reports what happened. It does not infer the full
 Cargo workspace model by itself.
 
+### zccache module map
+
+The Rust plan implementation is split by ownership under
+`crates/zccache/src/artifact/rust_plan/`:
+
+- `rust_plan.rs` is a thin facade that preserves the existing public artifact
+  API and CLI-facing names.
+- `schema.rs` owns the v1 plan schema, schema/cache version validation, JSON
+  and protobuf plan loading, and cache-key defaults.
+- `proto.rs` owns protobuf structs and conversion for plans and bundle
+  manifests.
+- `manifest.rs` owns bundle manifest IO, manifest compatibility checks, and
+  safe relative-path joins.
+- `selection.rs` owns target-file walking inputs, artifact classification, and
+  plan-driven thin/full artifact selection.
+- `local.rs` owns local, delta, and layered save/restore execution.
+- `summary.rs` owns JSON summaries, backend identity fields, and miss
+  classification diagnostics consumed by soldr/setup-soldr.
+- `threads.rs` owns tar/thread-count environment parsing for bundle save
+  operations.
+- `tests.rs` keeps the rust-plan contract tests colocated with the facade while
+  the production responsibilities stay in smaller modules.
+
 ---
 
 ## Plan Inputs
