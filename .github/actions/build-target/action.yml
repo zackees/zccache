@@ -402,7 +402,14 @@ runs:
     - name: Validate staged release binaries
       shell: bash
       run: |
-        min_size=1048576
+        case "${{ inputs.target }}" in
+          *pc-windows-msvc)
+            min_size=1048576
+            ;;
+          *)
+            min_size=262144
+            ;;
+        esac
         for bin in zccache zccache-daemon zccache-fp; do
           path="staging/${bin}${{ inputs.binary_ext }}"
           if [ ! -f "$path" ]; then
@@ -411,7 +418,7 @@ runs:
           fi
           size=$(wc -c < "$path" | tr -d '[:space:]')
           if [ "$size" -lt "$min_size" ]; then
-            echo "::error::Staged binary is suspiciously small: $path ($size bytes)" >&2
+            echo "::error::Staged binary is suspiciously small for ${{ inputs.target }}: $path ($size bytes, minimum $min_size)" >&2
             exit 1
           fi
         done

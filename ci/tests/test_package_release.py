@@ -209,6 +209,15 @@ def test_build_target_can_treat_debug_sidecars_as_optional() -> None:
     assert "::warning::Missing debug sidecars for $TARGET: ${missing[*]}" in action
 
 
+def test_build_target_uses_target_specific_binary_size_floor() -> None:
+    action = _repo_text(".github/actions/build-target/action.yml")
+
+    assert "*pc-windows-msvc)" in action
+    assert "min_size=1048576" in action
+    assert "min_size=262144" in action
+    assert "minimum $min_size" in action
+
+
 def test_release_and_build_workflows_disable_cook_cache_for_cross_targets() -> None:
     cross_targets = {
         "x86_64-unknown-linux-musl",
@@ -223,11 +232,10 @@ def test_release_and_build_workflows_disable_cook_cache_for_cross_targets() -> N
         "x86_64-pc-windows-msvc",
     }
 
-    for workflow_path in (
-        ".github/workflows/build.yml",
-        ".github/workflows/release-auto.yml",
-    ):
-        workflow = _repo_text(workflow_path)
+    build_workflow = _repo_text(".github/workflows/build.yml")
+    release_workflow = _repo_text(".github/workflows/release-auto.yml")
+
+    for workflow in (build_workflow, release_workflow):
         assert "prebuild_deps: ${{ matrix.prebuild_deps || 'soldr-cook' }}" in workflow
         assert (
             "clear_target_after_setup: "
@@ -243,13 +251,26 @@ def test_release_and_build_workflows_disable_cook_cache_for_cross_targets() -> N
             assert "prebuild_deps: none" in block
             assert 'clear_target_after_setup: "true"' in block
 
-        for target in native_targets:
-            block = _matrix_entry(workflow, target)
-            assert "prebuild_deps: none" not in block
-            assert "clear_target_after_setup:" not in block
-
         windows_arm_block = _matrix_entry(workflow, "aarch64-pc-windows-msvc")
         assert 'require_debug_sidecars: "false"' in windows_arm_block
+
+    for target in native_targets:
+        block = _matrix_entry(build_workflow, target)
+        assert "prebuild_deps: none" not in block
+        assert "clear_target_after_setup:" not in block
+
+        release_block = _matrix_entry(release_workflow, target)
+        assert "prebuild_deps: none" not in release_block
+        assert 'clear_target_after_setup: "true"' in release_block
+
+
+def test_release_workflow_restart_attempts_resume_existing_github_release() -> None:
+    workflow = _repo_text(".github/workflows/release-auto.yml")
+
+    assert "RUN_ATTEMPT: ${{ github.run_attempt }}" in workflow
+    assert 'if [ "${RUN_ATTEMPT:-1}" != "1" ]; then' in workflow
+    assert "GitHub Release checkpoint" in workflow
+    assert "overwrite_files: true" in workflow
 
 
 def test_stamp_release_marker_layout_and_append(tmp_path: Path) -> None:

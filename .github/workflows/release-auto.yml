@@ -40,6 +40,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         shell: bash
         run: |
           set -euo pipefail
@@ -77,8 +78,15 @@ jobs:
 
           # Skip if a GitHub release already exists for this version. Prevents
           # double-runs when publish-release creates the tag and re-triggers us.
+          # Rerun attempts are allowed through so an operator can restart after
+          # the GitHub Release checkpoint exists and resume PyPI/crates.io.
           for CANDIDATE in "$NEW_VERSION" "v$NEW_VERSION"; do
             if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$CANDIDATE" >/dev/null 2>&1; then
+              if [ "${RUN_ATTEMPT:-1}" != "1" ]; then
+                echo "release $CANDIDATE already exists, but run attempt $RUN_ATTEMPT is a restart - proceeding"
+                echo "should_release=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
               echo "release $CANDIDATE already exists — skipping"
               echo "should_release=false" >> "$GITHUB_OUTPUT"
               exit 0
@@ -239,6 +247,7 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             binary_ext: ""
+            clear_target_after_setup: "true"
             include_python: "true"
             upload_binaries: "true"
             upload_release: "false"
@@ -257,6 +266,7 @@ jobs:
           - target: x86_64-apple-darwin
             os: macos-14
             binary_ext: ""
+            clear_target_after_setup: "true"
             include_python: "true"
             upload_binaries: "true"
             upload_release: "true"
@@ -273,6 +283,7 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             binary_ext: ".exe"
+            clear_target_after_setup: "true"
             include_python: "true"
             upload_binaries: "true"
             upload_release: "true"
