@@ -84,12 +84,23 @@ async fn test_server_clear_empty() {
 #[ignore] // integration-level: starts real daemon with IPC + file watcher
 async fn test_server_status() {
     crate::test_support::test_timeout(async {
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = CacheDirEnvGuard::set(tmp.path());
         let (endpoint, server_task, shutdown) = start_daemon().await;
 
         let mut client = crate::ipc::connect(&endpoint).await.unwrap();
         client.send(&Request::Status).await.unwrap();
         let resp: Option<Response> = client.recv().await.unwrap();
-        assert!(matches!(resp, Some(Response::Status(_))));
+        match resp {
+            Some(Response::Status(status)) => {
+                assert_eq!(status.endpoint, endpoint);
+                assert_eq!(
+                    status.daemon_namespace,
+                    crate::core::config::DEFAULT_DAEMON_NAMESPACE
+                );
+            }
+            other => panic!("expected Status, got: {other:?}"),
+        }
 
         shutdown.notify_one();
         server_task.await.unwrap();
@@ -100,6 +111,31 @@ async fn test_server_status() {
 // ── CLI session flow tests (IPC-based) ──────────────────────────────
 
 /// Full session lifecycle: start → compile (miss) → compile (hit) → end.
+#[tokio::test]
+#[ignore] // integration-level: starts real daemon with IPC + file watcher
+async fn test_server_status_reports_explicit_daemon_namespace() {
+    crate::test_support::test_timeout(async {
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = CacheDirEnvGuard::set_with_namespace(tmp.path(), "soldr-dev");
+        let (endpoint, server_task, shutdown) = start_daemon().await;
+
+        let mut client = crate::ipc::connect(&endpoint).await.unwrap();
+        client.send(&Request::Status).await.unwrap();
+        let resp: Option<Response> = client.recv().await.unwrap();
+        match resp {
+            Some(Response::Status(status)) => {
+                assert_eq!(status.endpoint, endpoint);
+                assert_eq!(status.daemon_namespace, "soldr-dev");
+            }
+            other => panic!("expected Status, got: {other:?}"),
+        }
+
+        shutdown.notify_one();
+        server_task.await.unwrap();
+    })
+    .await;
+}
+
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + compiler
 async fn cli_session_lifecycle() {

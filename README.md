@@ -294,6 +294,25 @@ daemon state, and the default daemon endpoint. Separate cache roots therefore
 use separate daemon instances unless `ZCCACHE_ENDPOINT` is explicitly set.
 Relative override paths are normalized against the current working directory.
 
+### Daemon namespace override
+
+Set `ZCCACHE_DAEMON_NAMESPACE` to run a second zccache daemon identity against
+the same user account or cache root without sharing the default socket, named
+pipe, lock file, or lifecycle log:
+
+```bash
+export ZCCACHE_DAEMON_NAMESPACE=soldr-dev
+zccache start
+zccache status --json
+```
+
+The unset/default namespace keeps the historical endpoint and path names.
+Non-empty namespace values are sanitized to a path-safe ASCII component. For
+soldr development, use `ZCCACHE_DAEMON_NAMESPACE=dev` or a more specific value
+such as `soldr-dev`. `zccache-daemon-dev` is not a separate shipped binary; it
+is represented by the documented namespace mode so the `zccache` CLI, wrapper
+mode, and direct daemon entrypoint all resolve the same daemon identity.
+
 ### Worktree cache sharing
 
 zccache can share cache entries across sibling Git worktrees when the compile is

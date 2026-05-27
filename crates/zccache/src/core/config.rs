@@ -7,6 +7,22 @@ use std::path::Path;
 /// Environment variable used to override the zccache cache root.
 pub const CACHE_DIR_ENV: &str = "ZCCACHE_CACHE_DIR";
 
+/// Environment variable used to select a daemon/socket namespace.
+///
+/// The default daemon identity remains unchanged when this is unset or empty.
+/// Managed wrappers such as soldr can set a non-empty value (for example
+/// `soldr-dev`) to run a development daemon beside the user's normal daemon
+/// without sharing IPC endpoints, lock files, or lifecycle logs.
+pub const DAEMON_NAMESPACE_ENV: &str = "ZCCACHE_DAEMON_NAMESPACE";
+
+/// Human-readable namespace label reported when no explicit daemon namespace
+/// is configured. This label is diagnostic only; default endpoint/path names
+/// deliberately do not include it so existing users keep the same layout.
+pub const DEFAULT_DAEMON_NAMESPACE: &str = "default";
+
+/// Conventional namespace for zccache daemon development under soldr.
+pub const DEV_DAEMON_NAMESPACE: &str = "dev";
+
 /// Default idle timeout in seconds before the daemon auto-shuts down.
 ///
 /// `3600` = 60 minutes. Single source of truth for both
@@ -227,6 +243,57 @@ fn sanitize_path_component(s: &str) -> String {
         .collect()
 }
 
+/// Returns the active daemon/socket namespace, if explicitly configured.
+///
+/// Values are trimmed and normalized to a path/pipe-safe ASCII component:
+/// alphanumerics plus `-`, `_`, and `.` are preserved; every other character
+/// becomes `_`. Long values retain a readable prefix plus an 8-hex hash to
+/// avoid collisions.
+#[must_use]
+pub fn daemon_namespace() -> Option<String> {
+    daemon_namespace_from_env_value(std::env::var_os(DAEMON_NAMESPACE_ENV))
+}
+
+/// Returns the namespace label to show in diagnostics and status JSON.
+#[must_use]
+pub fn daemon_namespace_label() -> String {
+    daemon_namespace().unwrap_or_else(|| DEFAULT_DAEMON_NAMESPACE.to_string())
+}
+
+fn daemon_namespace_from_env_value(value: Option<OsString>) -> Option<String> {
+    let value = value?;
+    if value.is_empty() {
+        return None;
+    }
+    sanitize_daemon_namespace(&value.to_string_lossy())
+}
+
+fn sanitize_daemon_namespace(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let sanitized: String = trimmed
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.len() <= 32 {
+        return Some(sanitized);
+    }
+    let prefix: String = sanitized.chars().take(32).collect();
+    Some(format!("{prefix}-{}", namespace_short_hash(trimmed)))
+}
+
+fn namespace_short_hash(value: &str) -> String {
+    fnv_short_hash(value.as_bytes())
+}
+
 /// Stable 8-hex-char identifier derived from the home dir's canonical
 /// path. FNV-1a (64-bit) — small, deterministic, no extra dep.
 fn home_dir_short_hash(home: &Path) -> String {
@@ -236,8 +303,12 @@ fn home_dir_short_hash(home: &Path) -> String {
     } else {
         canon.into_owned()
     };
+    fnv_short_hash(canon.as_bytes())
+}
+
+fn fnv_short_hash(bytes: &[u8]) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
-    for b in canon.as_bytes() {
+    for b in bytes {
         h ^= u64::from(*b);
         h = h.wrapping_mul(0x100000001b3);
     }
@@ -990,6 +1061,41 @@ mod tests {
         // Truncates to 32 chars
         let long = "a".repeat(100);
         assert_eq!(sanitize_path_component(&long).len(), 32);
+    }
+
+    #[test]
+    fn daemon_namespace_ignores_unset_or_empty_values() {
+        assert_eq!(daemon_namespace_from_env_value(None), None);
+        assert_eq!(daemon_namespace_from_env_value(Some(OsString::new())), None);
+        assert_eq!(
+            daemon_namespace_from_env_value(Some(OsString::from("   "))),
+            None
+        );
+    }
+
+    #[test]
+    fn daemon_namespace_sanitizes_for_paths_and_pipes() {
+        assert_eq!(
+            daemon_namespace_from_env_value(Some(OsString::from(" soldr dev! "))).as_deref(),
+            Some("soldr_dev_")
+        );
+        assert_eq!(
+            daemon_namespace_from_env_value(Some(OsString::from("soldr-dev_1.2"))).as_deref(),
+            Some("soldr-dev_1.2")
+        );
+    }
+
+    #[test]
+    fn daemon_namespace_keeps_long_values_distinct() {
+        let a =
+            daemon_namespace_from_env_value(Some(OsString::from(format!("{}a", "x".repeat(40)))))
+                .unwrap();
+        let b =
+            daemon_namespace_from_env_value(Some(OsString::from(format!("{}b", "x".repeat(40)))))
+                .unwrap();
+        assert_ne!(a, b);
+        assert!(a.starts_with(&"x".repeat(32)));
+        assert_eq!(a.len(), 41);
     }
 
     #[test]

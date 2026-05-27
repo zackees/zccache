@@ -23,13 +23,21 @@ type PlatformTransport = NamedPipeTransport;
 **Unix (Linux / macOS):**
 - Socket path: `$XDG_RUNTIME_DIR/zccache/sock`
 - Fallback if `$XDG_RUNTIME_DIR` is unset: `/tmp/zccache-{uid}/sock`
-- Lock file: adjacent to socket as `lock`
+- With `ZCCACHE_DAEMON_NAMESPACE=<ns>`: `sock-<ns>`
+- Lock file: adjacent to socket as `daemon.lock` or `daemon-<ns>.lock`
 - Directory created with mode 0700.
 
 **Windows:**
 - Named pipe: `\\.\pipe\zccache-{username}`
-- Lock file: `~/.zccache/daemon.lock`
+- With `ZCCACHE_DAEMON_NAMESPACE=<ns>`: `\\.\pipe\zccache-{username}-<ns>`
+- Lock file: `~/.zccache/daemon.lock` or `~/.zccache/daemon-<ns>.lock`
 - Username obtained via `GetUserNameW`.
+
+When `ZCCACHE_CACHE_DIR` is set, the default compile daemon endpoint is derived
+from that cache root. Unix uses `<cache>/daemon.sock` or
+`<cache>/daemon-<ns>.sock`; Windows uses a stable cache-root ID in the named
+pipe and appends `-<ns>` when a daemon namespace is configured. Explicit
+`ZCCACHE_ENDPOINT` still overrides the derived endpoint.
 
 ## Connection Lifecycle
 

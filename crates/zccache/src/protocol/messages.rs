@@ -322,6 +322,11 @@ pub enum Response {
 pub struct DaemonStatus {
     /// Daemon version (e.g. "1.0.8"). Used by CLI to detect stale daemons.
     pub version: String,
+    /// Active daemon/socket namespace. `default` means no explicit namespace
+    /// was configured and all endpoint/path names use the historical layout.
+    pub daemon_namespace: String,
+    /// IPC endpoint this daemon bound and serves.
+    pub endpoint: String,
     /// Number of artifacts in cache.
     pub artifact_count: u64,
     /// Total size of cached artifacts in bytes.
@@ -718,6 +723,8 @@ mod tests {
     fn daemon_status_expanded_roundtrip() {
         let status = DaemonStatus {
             version: env!("CARGO_PKG_VERSION").to_string(),
+            daemon_namespace: "soldr-dev".to_string(),
+            endpoint: "test://soldr-dev".to_string(),
             artifact_count: 892,
             cache_size_bytes: 147_000_000,
             metadata_entries: 5430,
@@ -969,6 +976,8 @@ mod tests {
     fn daemon_status_version_field_roundtrips() {
         let with_version = DaemonStatus {
             version: "1.2.3".to_string(),
+            daemon_namespace: crate::core::config::DEFAULT_DAEMON_NAMESPACE.to_string(),
+            endpoint: String::new(),
             artifact_count: 0,
             cache_size_bytes: 0,
             metadata_entries: 0,
@@ -998,15 +1007,17 @@ mod tests {
 
     // Compile-time check: PROTOCOL_VERSION must be positive.
     const _: () = assert!(super::super::PROTOCOL_VERSION > 0);
-    // Compile-time check: PROTOCOL_VERSION == 12 after cached-error counters
-    // were added for rustc negative-result caching. v11 was the pin after
+    // Compile-time check: PROTOCOL_VERSION == 13 after daemon namespace
+    // diagnostics were added to DaemonStatus. v12 was the pin after
+    // cached-error counters were added for rustc negative-result caching.
+    // v11 was the pin after
     // `GenericToolExec` gained Path A (include scan) + Path B (depfile) +
     // non_deterministic + key_args_filter, fully implementing issue #272.
     // v10 was the prior pin when `GenericToolExec` was added. v9 was the pin
     // after SessionStats gained `phase_profile`. v8 was the pin after
     // Compile/CompileEphemeral gained `stdin` and ArtifactPayload replaced
     // ArtifactOutput.data: Arc<Vec<u8>> (issue #296 Option B).
-    const _FINGERPRINT_VERSION: () = assert!(super::super::PROTOCOL_VERSION == 12);
+    const _FINGERPRINT_VERSION: () = assert!(super::super::PROTOCOL_VERSION == 13);
 
     #[test]
     fn fingerprint_check_roundtrip() {

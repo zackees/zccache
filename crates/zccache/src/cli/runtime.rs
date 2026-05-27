@@ -91,6 +91,7 @@ async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), String> {
         serde_json::json!({
             "reason": reason,
             "endpoint": endpoint,
+            "daemon_namespace": crate::core::config::daemon_namespace_label(),
             "client_pid": std::process::id(),
         }),
     );
@@ -372,8 +373,12 @@ fn allocate_daemon_spawn_log_path() -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
-    dir.as_path()
-        .join(format!("daemon-spawn-{}-{nanos}.log", std::process::id()))
+    let pid = std::process::id();
+    let file_name = match crate::core::config::daemon_namespace() {
+        Some(namespace) => format!("daemon-spawn-{namespace}-{pid}-{nanos}.log"),
+        None => format!("daemon-spawn-{pid}-{nanos}.log"),
+    };
+    dir.as_path().join(file_name)
 }
 
 /// Default age cutoff for entries swept by [`gc_log_directory`]. Files
@@ -424,7 +429,7 @@ pub fn gc_log_directory_in(dir: &Path, cutoff: std::time::Duration) {
         // untouched between a daemon's `spawn` and `died-*` events.
         // Every other file in `logs/` either rotates often or is a
         // historical artifact safe to discard once old.
-        if name == crate::core::lifecycle::LIVE_LOG_FILENAME {
+        if crate::core::lifecycle::is_live_lifecycle_log_name(&name) {
             continue;
         }
         let file_type = entry.file_type();

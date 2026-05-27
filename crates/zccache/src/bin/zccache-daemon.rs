@@ -114,6 +114,10 @@ fn print_status(args: &Args) {
     println!("zccache-daemon v{}", env!("CARGO_PKG_VERSION"));
     println!();
     println!("  endpoint:   {endpoint}");
+    println!(
+        "  namespace:  {}",
+        zccache::core::config::daemon_namespace_label()
+    );
     println!("  lock file:  {}", zccache::ipc::lock_file_path().display());
     println!();
 
@@ -126,6 +130,8 @@ fn print_status(args: &Args) {
     match rt.block_on(query_daemon_status(&endpoint)) {
         Ok(status) => {
             println!("  status:     running");
+            println!("  daemon ns:  {}", status.daemon_namespace);
+            println!("  daemon ep:  {}", status.endpoint);
             println!("  uptime:     {}s", status.uptime_secs);
             println!("  artifacts:  {}", status.artifact_count);
             println!("  cache size: {} bytes", status.cache_size_bytes);
@@ -185,6 +191,7 @@ fn run_server(args: Args) {
         zccache::daemon::lifecycle::EVENT_SPAWN,
         serde_json::json!({
             "endpoint": &endpoint,
+            "daemon_namespace": zccache::core::config::daemon_namespace_label(),
             "idle_timeout": idle_timeout,
             "version": env!("CARGO_PKG_VERSION"),
         }),

@@ -712,7 +712,47 @@ daemon instances unless an explicit endpoint is supplied.
 
 ---
 
-## DD-022: Wrapper stdin Forwarded over IPC (PROTOCOL_VERSION 7 → 8)
+## DD-022: Daemon Namespace Override for soldr Development
+
+**Context:** soldr developers need to run zccache while developing soldr
+without colliding with the zccache daemon used by normal app builds on the same
+machine. `ZCCACHE_CACHE_DIR` isolates cache roots, but it is too coarse as the
+only daemon identity knob: soldr sometimes needs to choose a socket/daemon name
+without relying on a different cache-root layout.
+
+**Decision:** `ZCCACHE_DAEMON_NAMESPACE` is the supported daemon/socket
+namespace override. When unset or empty, endpoint, lock, and lifecycle-log names
+remain unchanged. When set, the sanitized namespace is appended to the derived
+IPC endpoint, lock file, and lifecycle log:
+
+- Unix runtime sockets: `sock-<namespace>`.
+- Unix cache-root sockets: `daemon-<namespace>.sock`.
+- Windows named pipes: `\\.\pipe\zccache-<base>-<namespace>`.
+- Locks: `daemon-<namespace>.lock`.
+- Lifecycle logs: `daemon-lifecycle-<namespace>.log`.
+
+`DaemonStatus` reports both `daemon_namespace` and `endpoint`, and
+`zccache cache-root --json` reports the namespace plus the derived daemon
+endpoint. That gives soldr a zero-extra-roundtrip verification path.
+
+**`zccache-daemon-dev` decision:** Do not ship a separate dev daemon binary.
+The previous `zccache-daemon-dev` concept is represented by namespace mode:
+callers set `ZCCACHE_DAEMON_NAMESPACE=dev` (or a more specific value such as
+`soldr-dev`) and continue invoking the normal `zccache` / `zccache-daemon`
+entrypoints. This keeps the CLI, wrapper mode, daemon binary, and packaging
+surface aligned.
+
+**Consequences:**
+- Normal users keep the same daemon identity.
+- soldr can run app builds and soldr/zccache development builds side by side
+  without sharing IPC endpoints, lock files, or lifecycle logs.
+- Explicit `ZCCACHE_ENDPOINT` still overrides the derived endpoint; namespace
+  still affects lock and lifecycle names for diagnostics and stale-daemon
+  recovery.
+
+---
+
+## DD-023: Wrapper stdin Forwarded over IPC (PROTOCOL_VERSION 7 → 8)
 
 **Context:** zccache as `RUSTC_WRAPPER` is supposed to be a transparent
 shim — every byte cargo would have piped to `rustc` should reach `rustc`

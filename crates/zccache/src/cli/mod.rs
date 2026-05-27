@@ -971,7 +971,9 @@ mod tests {
         // 60-second cutoff regardless of name.
         for name in [
             "daemon-lifecycle.log",
+            "daemon-lifecycle-soldr-dev.log",
             "daemon-lifecycle.log.1",
+            "daemon-lifecycle-soldr-dev.log.1",
             "daemon-spawn-1234-9999.log",
             "daemon.log",
             "daemon.log.2026-01-01T00-00-00Z",
@@ -987,7 +989,9 @@ mod tests {
 
         for name in [
             "daemon-lifecycle.log",
+            "daemon-lifecycle-soldr-dev.log",
             "daemon-lifecycle.log.1",
+            "daemon-lifecycle-soldr-dev.log.1",
             "daemon-spawn-1234-9999.log",
             "daemon.log",
             "daemon.log.2026-01-01T00-00-00Z",
@@ -1010,7 +1014,9 @@ mod tests {
             std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 60 * 48);
         for name in [
             "daemon-lifecycle.log",
+            "daemon-lifecycle-soldr-dev.log",
             "daemon-lifecycle.log.1",
+            "daemon-lifecycle-soldr-dev.log.1",
             "daemon-spawn-1234-9999.log",
             "daemon.log",
             "daemon.log.2026-01-01T00-00-00Z",
@@ -1030,8 +1036,13 @@ mod tests {
             logs.join("daemon-lifecycle.log").exists(),
             "active lifecycle log must be preserved even when stale"
         );
+        assert!(
+            logs.join("daemon-lifecycle-soldr-dev.log").exists(),
+            "active namespaced lifecycle log must be preserved even when stale"
+        );
         for name in [
             "daemon-lifecycle.log.1",
+            "daemon-lifecycle-soldr-dev.log.1",
             "daemon-spawn-1234-9999.log",
             "daemon.log",
             "daemon.log.2026-01-01T00-00-00Z",

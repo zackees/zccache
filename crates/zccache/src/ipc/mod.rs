@@ -26,44 +26,55 @@ use crate::core::NormalizedPath;
 ///
 /// If `ZCCACHE_CACHE_DIR` is set, the endpoint is derived from that cache root
 /// so independently managed cache roots get independent daemon instances.
+/// If `ZCCACHE_DAEMON_NAMESPACE` is also set, the sanitized namespace is folded
+/// into the endpoint while the unset/default namespace keeps the historical
+/// endpoint unchanged.
 #[must_use]
 pub fn default_endpoint() -> String {
+    let namespace = crate::core::config::daemon_namespace();
     if let Some(cache_dir) = crate::core::config::cache_dir_override() {
-        return endpoint_for_cache_dir(&cache_dir);
+        return endpoint_for_cache_dir(&cache_dir, namespace.as_deref());
     }
 
     #[cfg(unix)]
     {
         if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            return format!("{runtime_dir}/zccache/sock");
+            return format!(
+                "{runtime_dir}/zccache/{}",
+                socket_name(namespace.as_deref())
+            );
         }
         let user = std::env::var("USER").unwrap_or_else(|_| String::from("unknown"));
-        format!("/tmp/zccache-{user}/sock")
+        format!("/tmp/zccache-{user}/{}", socket_name(namespace.as_deref()))
     }
     #[cfg(windows)]
     {
         let username = std::env::var("USERNAME").unwrap_or_else(|_| String::from("unknown"));
-        format!(r"\\.\pipe\zccache-{username}")
+        pipe_name(&username, namespace.as_deref())
     }
 }
 
-fn endpoint_for_cache_dir(cache_dir: &std::path::Path) -> String {
+fn endpoint_for_cache_dir(cache_dir: &std::path::Path, namespace: Option<&str>) -> String {
     #[cfg(unix)]
     {
-        cache_dir.join("daemon.sock").to_string_lossy().into_owned()
+        cache_dir
+            .join(daemon_socket_name(namespace))
+            .to_string_lossy()
+            .into_owned()
     }
     #[cfg(windows)]
     {
         let suffix = crate::core::stable_path_id(cache_dir);
-        format!(r"\\.\pipe\zccache-{suffix}")
+        pipe_name(&suffix, namespace)
     }
 }
 
 /// Returns the path for the daemon lock file.
 #[must_use]
 pub fn lock_file_path() -> NormalizedPath {
+    let namespace = crate::core::config::daemon_namespace();
     if let Some(cache_dir) = crate::core::config::cache_dir_override() {
-        return cache_dir.join("daemon.lock");
+        return cache_dir.join(lock_file_name(namespace.as_deref()));
     }
 
     #[cfg(unix)]
@@ -72,11 +83,42 @@ pub fn lock_file_path() -> NormalizedPath {
         let dir = std::path::Path::new(&endpoint)
             .parent()
             .expect("endpoint should have parent directory");
-        dir.join("daemon.lock").into()
+        dir.join(lock_file_name(namespace.as_deref())).into()
     }
     #[cfg(windows)]
     {
-        crate::core::config::default_cache_dir().join("daemon.lock")
+        crate::core::config::default_cache_dir().join(lock_file_name(namespace.as_deref()))
+    }
+}
+
+#[cfg(unix)]
+fn socket_name(namespace: Option<&str>) -> String {
+    match namespace {
+        Some(ns) => format!("sock-{ns}"),
+        None => "sock".to_string(),
+    }
+}
+
+#[cfg(unix)]
+fn daemon_socket_name(namespace: Option<&str>) -> String {
+    match namespace {
+        Some(ns) => format!("daemon-{ns}.sock"),
+        None => "daemon.sock".to_string(),
+    }
+}
+
+#[cfg(windows)]
+fn pipe_name(base: &str, namespace: Option<&str>) -> String {
+    match namespace {
+        Some(ns) => format!(r"\\.\pipe\zccache-{base}-{ns}"),
+        None => format!(r"\\.\pipe\zccache-{base}"),
+    }
+}
+
+fn lock_file_name(namespace: Option<&str>) -> String {
+    match namespace {
+        Some(ns) => format!("daemon-{ns}.lock"),
+        None => "daemon.lock".to_string(),
     }
 }
 
@@ -336,26 +378,47 @@ mod tests {
 
     struct EnvGuard {
         _lock: MutexGuard<'static, ()>,
-        previous: Option<OsString>,
+        previous_cache_dir: Option<OsString>,
+        previous_namespace: Option<OsString>,
     }
 
     impl EnvGuard {
         fn set_cache_dir(value: &std::path::Path) -> Self {
             let lock = ENV_LOCK.lock().unwrap();
-            let previous = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
+            let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
+            let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
             std::env::set_var(crate::core::config::CACHE_DIR_ENV, value);
+            std::env::remove_var(crate::core::config::DAEMON_NAMESPACE_ENV);
             Self {
                 _lock: lock,
-                previous,
+                previous_cache_dir,
+                previous_namespace,
+            }
+        }
+
+        fn set_cache_dir_and_namespace(value: &std::path::Path, namespace: &str) -> Self {
+            let lock = ENV_LOCK.lock().unwrap();
+            let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
+            let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
+            std::env::set_var(crate::core::config::CACHE_DIR_ENV, value);
+            std::env::set_var(crate::core::config::DAEMON_NAMESPACE_ENV, namespace);
+            Self {
+                _lock: lock,
+                previous_cache_dir,
+                previous_namespace,
             }
         }
     }
 
     impl Drop for EnvGuard {
         fn drop(&mut self) {
-            match &self.previous {
+            match &self.previous_cache_dir {
                 Some(value) => std::env::set_var(crate::core::config::CACHE_DIR_ENV, value),
                 None => std::env::remove_var(crate::core::config::CACHE_DIR_ENV),
+            }
+            match &self.previous_namespace {
+                Some(value) => std::env::set_var(crate::core::config::DAEMON_NAMESPACE_ENV, value),
+                None => std::env::remove_var(crate::core::config::DAEMON_NAMESPACE_ENV),
             }
         }
     }
@@ -385,7 +448,53 @@ mod tests {
     fn different_cache_roots_get_different_endpoints() {
         let a = NormalizedPath::from("/tmp/zccache-a");
         let b = NormalizedPath::from("/tmp/zccache-b");
-        assert_ne!(endpoint_for_cache_dir(&a), endpoint_for_cache_dir(&b));
+        assert_ne!(
+            endpoint_for_cache_dir(&a, None),
+            endpoint_for_cache_dir(&b, None)
+        );
+    }
+
+    #[test]
+    fn daemon_namespace_moves_endpoint_and_lock_file() {
+        let root = tempfile::tempdir().unwrap();
+        let cache_dir = root.path().join("zc");
+        let _env = EnvGuard::set_cache_dir_and_namespace(&cache_dir, "soldr-dev");
+
+        let endpoint = default_endpoint();
+        #[cfg(unix)]
+        assert_eq!(
+            endpoint,
+            cache_dir
+                .join("daemon-soldr-dev.sock")
+                .to_string_lossy()
+                .into_owned()
+        );
+        #[cfg(windows)]
+        {
+            assert!(endpoint.starts_with(r"\\.\pipe\zccache-"));
+            assert!(endpoint.ends_with("-soldr-dev"));
+            assert!(endpoint.contains(&crate::core::stable_path_id(&cache_dir)));
+        }
+
+        assert_eq!(lock_file_path(), cache_dir.join("daemon-soldr-dev.lock"));
+    }
+
+    #[test]
+    fn same_cache_root_different_daemon_namespaces_do_not_share_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let cache_dir = root.path().join("zc");
+
+        let (endpoint_a, lock_a) = {
+            let _env = EnvGuard::set_cache_dir_and_namespace(&cache_dir, "soldr-dev-a");
+            (default_endpoint(), lock_file_path())
+        };
+        let (endpoint_b, lock_b) = {
+            let _env = EnvGuard::set_cache_dir_and_namespace(&cache_dir, "soldr-dev-b");
+            (default_endpoint(), lock_file_path())
+        };
+
+        assert_ne!(endpoint_a, endpoint_b);
+        assert_ne!(lock_a, lock_b);
     }
 
     /// On macOS, `daemon_exe_for_pid` must reject a PID whose

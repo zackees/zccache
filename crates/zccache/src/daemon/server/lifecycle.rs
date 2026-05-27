@@ -86,6 +86,8 @@ impl DaemonServer {
             shutdown: Arc::clone(&shutdown),
             index_writer_rx: Some(index_writer_rx),
             state: Arc::new(SharedState {
+                endpoint: endpoint.to_string(),
+                daemon_namespace: crate::core::config::daemon_namespace_label(),
                 sessions: SessionManager::new(std::time::Duration::from_secs(300)),
                 system_includes: Mutex::new(SystemIncludeCache::new()),
                 dep_graph: DepGraph::new(),

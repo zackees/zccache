@@ -215,8 +215,33 @@ persistent write escapes it**. Issue #275 closes that contract.
 | Default | Otherwise | `default:platform_dirs` (`~/.zccache`) |
 
 `zccache cache-root` (default) prints the resolved absolute path; `--json`
-adds the `source` field so wrappers can verify at runtime that their
-redirect was honored.
+adds the `source`, `daemon_namespace`, and derived `daemon_endpoint` fields so
+wrappers can verify at runtime that their redirect and daemon identity were
+honored.
+
+### Daemon namespace rules
+
+`ZCCACHE_DAEMON_NAMESPACE` selects a daemon/socket namespace without changing
+the cache root. This is the soldr development isolation knob: soldr can set
+`ZCCACHE_DAEMON_NAMESPACE=soldr-dev` before invoking zccache so zccache
+development builds do not attach to, replace, or stop the daemon used by normal
+app builds on the same machine.
+
+Unset or empty means the default namespace and keeps all historical names. A
+non-empty value is trimmed, sanitized to an ASCII path component, and folded
+into:
+
+- Unix sockets: `sock-<namespace>` for runtime-dir sockets, or
+  `<cache>/daemon-<namespace>.sock` when `ZCCACHE_CACHE_DIR` is set.
+- Windows named pipes: `\\.\pipe\zccache-<base>-<namespace>`.
+- Lock files: `daemon-<namespace>.lock`.
+- Lifecycle logs: `logs/daemon-lifecycle-<namespace>.log`.
+
+The conventional development namespace is `dev`. The old
+`zccache-daemon-dev` idea is codified as namespace mode rather than a separate
+shipped binary; callers should set `ZCCACHE_DAEMON_NAMESPACE=dev` (or a more
+specific soldr namespace) and then use the normal `zccache` / `zccache-daemon`
+entrypoints.
 
 ### Persistent writes — exhaustive table
 
@@ -230,15 +255,15 @@ cache root via one of the helpers in `zccache_core::config`:
 | `tmp/depfiles/<pid>-<instance>/` | daemon — compiler-injected depfiles and Windows response files (`*.rsp`) | `depfile_dir_from_cache_dir` |
 | `depgraph/depgraph.bin` | daemon — rkyv snapshot of the dep graph | `depgraph_file_path` |
 | `logs/daemon.log[.<ts>]` | daemon — rolling event log | `log_dir_from_cache_dir` |
-| `logs/daemon-lifecycle.log[.1]` | daemon + CLI — JSONL lifecycle events (spawn / shutdown / version mismatch) | `lifecycle::log_file_path` |
+| `logs/daemon-lifecycle[--namespace].log[.1]` | daemon + CLI — JSONL lifecycle events (spawn / shutdown / version mismatch) | `lifecycle::log_file_path` |
 | `logs/compile_journal.jsonl` + per-session `*.jsonl` | daemon — compile decisions | derives from `log_dir_from_cache_dir` |
 | `crashes/crash-*.{txt,dmp}` + `.reported` | daemon — panic & signal dumps | `crash_dump_dir_from_cache_dir` |
 | `symbols/<version>-<triple>/` + `.symref` sidecars next to dumps | CLI — `zccache symbols install` + `symbolicate` | `symbols_cache_dir_from_cache_dir` |
 | `index.bin` (+ sibling tmp) | daemon — bincode artifact index, atomic-rename writes | `index_path_from_cache_dir` |
 | `ino/<key>.ino.cpp` | CLI — Arduino preprocessor cache | `default_cache_dir().join("ino")` |
 | `kv/<namespace>/<hex>.bin` | CLI — namespaced key/value store | derives from `default_cache_dir` |
-| `daemon.lock` | CLI + daemon — PID lock | `lock_file_path` |
-| `daemon.sock` (Unix, only when env override is set) | daemon — IPC socket co-located with the cache root | `default_endpoint` |
+| `daemon[--namespace].lock` | CLI + daemon — PID lock | `lock_file_path` |
+| `daemon[--namespace].sock` (Unix, only when env override is set) | daemon — IPC socket co-located with the cache root | `default_endpoint` |
 
 The cache-root-rooted invariant for the well-known subpaths is asserted in
 the unit test `cache_root_invariant_all_subpaths_rooted` in
@@ -252,11 +277,13 @@ excludes these separately if Defender scanning ever becomes an issue:
 - **IPC socket (Unix, no env override):** `$XDG_RUNTIME_DIR/zccache/sock`
   or `/tmp/zccache-$USER/sock`. The socket inode lives in `tmpfs` on Linux
   so it is not a real on-disk write. When `ZCCACHE_CACHE_DIR` is set, the
-  socket moves into `<cache>/daemon.sock` automatically — see
+  socket moves into `<cache>/daemon.sock` (or
+  `<cache>/daemon-<namespace>.sock`) automatically — see
   `zccache_ipc::endpoint_for_cache_dir`.
 - **Named pipe (Windows):** `\\.\pipe\zccache-<username>` (default) or
-  `\\.\pipe\zccache-<stable-id>` (when `ZCCACHE_CACHE_DIR` is set). Named
-  pipes have no filesystem footprint — nothing for Defender to scan.
+  `\\.\pipe\zccache-<stable-id>` (when `ZCCACHE_CACHE_DIR` is set), with
+  `-<namespace>` appended when `ZCCACHE_DAEMON_NAMESPACE` is set. Named pipes
+  have no filesystem footprint — nothing for Defender to scan.
 - **OS-managed working directory (`std::env::set_current_dir(temp_dir())`):**
   the daemon's `trampoline::release_cwd()` chdirs the process to `$TMPDIR`
   *only* to release the inherited CWD handle. No file is written there.

@@ -129,6 +129,8 @@ fn test_extract_outcome_all_non_journalable() {
         Response::ShuttingDown,
         Response::Status(DaemonStatus {
             version: String::new(),
+            daemon_namespace: crate::core::config::DEFAULT_DAEMON_NAMESPACE.to_string(),
+            endpoint: String::new(),
             artifact_count: 0,
             cache_size_bytes: 0,
             metadata_entries: 0,

@@ -69,6 +69,7 @@ pub(crate) async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), S
         serde_json::json!({
             "reason": reason,
             "endpoint": endpoint,
+            "daemon_namespace": crate::core::config::daemon_namespace_label(),
             "client_pid": std::process::id(),
         }),
     );

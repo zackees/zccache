@@ -23,22 +23,45 @@ mod write_cached;
 /// per-test cache dir so they don't clash with any production daemon
 /// writing the global index blob.
 pub(super) struct CacheDirEnvGuard {
-    previous: Option<std::ffi::OsString>,
+    previous_cache_dir: Option<std::ffi::OsString>,
+    previous_namespace: Option<std::ffi::OsString>,
 }
 
 impl CacheDirEnvGuard {
     pub(super) fn set(path: &Path) -> Self {
-        let previous = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
+        let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
+        let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
         std::env::set_var(crate::core::config::CACHE_DIR_ENV, path);
-        Self { previous }
+        std::env::remove_var(crate::core::config::DAEMON_NAMESPACE_ENV);
+        Self {
+            previous_cache_dir,
+            previous_namespace,
+        }
+    }
+
+    pub(super) fn set_with_namespace(path: &Path, namespace: &str) -> Self {
+        let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
+        let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
+        std::env::set_var(crate::core::config::CACHE_DIR_ENV, path);
+        std::env::set_var(crate::core::config::DAEMON_NAMESPACE_ENV, namespace);
+        Self {
+            previous_cache_dir,
+            previous_namespace,
+        }
     }
 }
 
 impl Drop for CacheDirEnvGuard {
     fn drop(&mut self) {
-        match &self.previous {
+        match &self.previous_cache_dir {
             Some(previous) => std::env::set_var(crate::core::config::CACHE_DIR_ENV, previous),
             None => std::env::remove_var(crate::core::config::CACHE_DIR_ENV),
+        }
+        match &self.previous_namespace {
+            Some(previous) => {
+                std::env::set_var(crate::core::config::DAEMON_NAMESPACE_ENV, previous);
+            }
+            None => std::env::remove_var(crate::core::config::DAEMON_NAMESPACE_ENV),
         }
     }
 }

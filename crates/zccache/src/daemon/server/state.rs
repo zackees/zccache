@@ -10,6 +10,11 @@ use super::*;
 
 /// Shared state accessible by all connection handlers.
 pub(super) struct SharedState {
+    /// IPC endpoint this daemon bound. Reported through `zccache status` so
+    /// wrappers can verify they reached the intended daemon identity.
+    pub(super) endpoint: String,
+    /// Active daemon/socket namespace label.
+    pub(super) daemon_namespace: String,
     pub(super) sessions: SessionManager,
     pub(super) system_includes: Mutex<SystemIncludeCache>,
     /// Dependency graph: tracks include relationships and cache verdicts.

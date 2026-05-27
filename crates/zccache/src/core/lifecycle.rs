@@ -60,6 +60,27 @@ pub const MAX_LOG_SIZE: u64 = 1024 * 1024;
 /// to and avoid clobbering in-flight events.
 pub const LIVE_LOG_FILENAME: &str = "daemon-lifecycle.log";
 
+/// Returns the live lifecycle filename for the active daemon namespace.
+///
+/// The unset/default namespace keeps the historical `daemon-lifecycle.log`
+/// filename. Explicit namespaces use `daemon-lifecycle-<namespace>.log` so
+/// development and app daemons can write lifecycle events independently.
+#[must_use]
+pub fn live_log_filename() -> String {
+    match super::config::daemon_namespace() {
+        Some(namespace) => format!("daemon-lifecycle-{namespace}.log"),
+        None => LIVE_LOG_FILENAME.to_string(),
+    }
+}
+
+/// Returns true when `name` is a live lifecycle log filename that GC must not
+/// remove merely because it is old. Rotated archives still end with `.log.1`
+/// and are intentionally not considered live.
+#[must_use]
+pub fn is_live_lifecycle_log_name(name: &str) -> bool {
+    name == LIVE_LOG_FILENAME || (name.starts_with("daemon-lifecycle-") && name.ends_with(".log"))
+}
+
 /// Append a JSONL line describing a daemon lifecycle event.
 ///
 /// `extra` carries event-specific fields (endpoint, idle_secs,
@@ -93,6 +114,10 @@ fn try_write(event_name: &str, extra: &serde_json::Value) -> std::io::Result<()>
     envelope.insert(
         "pid".to_string(),
         serde_json::Value::from(std::process::id()),
+    );
+    envelope.insert(
+        "daemon_namespace".to_string(),
+        serde_json::Value::from(super::config::daemon_namespace_label()),
     );
     if let serde_json::Value::Object(fields) = extra {
         for (k, v) in fields {
@@ -136,7 +161,7 @@ pub fn log_file_path() -> NormalizedPath {
 /// non-default cache root.
 #[must_use]
 pub fn log_file_path_in(log_dir: &NormalizedPath) -> NormalizedPath {
-    log_dir.join(LIVE_LOG_FILENAME)
+    log_dir.join(live_log_filename())
 }
 
 /// If the live log file exceeds `MAX_LOG_SIZE`, rename it to `.1`
@@ -186,7 +211,8 @@ mod tests {
 
     struct EnvGuard {
         _lock: MutexGuard<'static, ()>,
-        previous: Option<OsString>,
+        previous_cache_dir: Option<OsString>,
+        previous_namespace: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -194,20 +220,42 @@ mod tests {
             let lock = ENV_LOCK
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let previous = std::env::var_os("ZCCACHE_CACHE_DIR");
+            let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
+            let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
             std::env::set_var("ZCCACHE_CACHE_DIR", value);
+            std::env::remove_var(crate::core::config::DAEMON_NAMESPACE_ENV);
             Self {
                 _lock: lock,
-                previous,
+                previous_cache_dir,
+                previous_namespace,
+            }
+        }
+
+        fn set_cache_dir_and_namespace(value: &std::path::Path, namespace: &str) -> Self {
+            let lock = ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
+            let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
+            std::env::set_var(crate::core::config::CACHE_DIR_ENV, value);
+            std::env::set_var(crate::core::config::DAEMON_NAMESPACE_ENV, namespace);
+            Self {
+                _lock: lock,
+                previous_cache_dir,
+                previous_namespace,
             }
         }
     }
 
     impl Drop for EnvGuard {
         fn drop(&mut self) {
-            match &self.previous {
-                Some(value) => std::env::set_var("ZCCACHE_CACHE_DIR", value),
-                None => std::env::remove_var("ZCCACHE_CACHE_DIR"),
+            match &self.previous_cache_dir {
+                Some(value) => std::env::set_var(crate::core::config::CACHE_DIR_ENV, value),
+                None => std::env::remove_var(crate::core::config::CACHE_DIR_ENV),
+            }
+            match &self.previous_namespace {
+                Some(value) => std::env::set_var(crate::core::config::DAEMON_NAMESPACE_ENV, value),
+                None => std::env::remove_var(crate::core::config::DAEMON_NAMESPACE_ENV),
             }
         }
     }
@@ -241,6 +289,30 @@ mod tests {
         assert_eq!(second["event"], EVENT_DIED_IDLE);
         assert_eq!(second["idle_secs"], 3600);
         assert_eq!(second["uptime_secs"], 7200);
+    }
+
+    #[test]
+    fn daemon_namespace_changes_live_lifecycle_log_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _env = EnvGuard::set_cache_dir_and_namespace(tmp.path(), "soldr-dev");
+
+        assert_eq!(live_log_filename(), "daemon-lifecycle-soldr-dev.log");
+        assert_eq!(
+            log_file_path(),
+            tmp.path()
+                .join("logs")
+                .join("daemon-lifecycle-soldr-dev.log")
+        );
+    }
+
+    #[test]
+    fn live_lifecycle_log_name_matches_default_and_namespaced_logs() {
+        assert!(is_live_lifecycle_log_name("daemon-lifecycle.log"));
+        assert!(is_live_lifecycle_log_name("daemon-lifecycle-soldr-dev.log"));
+        assert!(!is_live_lifecycle_log_name("daemon-lifecycle.log.1"));
+        assert!(!is_live_lifecycle_log_name(
+            "daemon-lifecycle-soldr-dev.log.1"
+        ));
     }
 
     #[test]

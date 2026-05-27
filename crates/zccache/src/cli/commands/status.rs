@@ -66,6 +66,7 @@ pub(crate) async fn cmd_status(endpoint: &str, json: bool) -> ExitCode {
             if !s.cache_dir.as_os_str().is_empty() {
                 println!("cache dir: {}", s.cache_dir.display());
             }
+            println!("namespace: {}", s.daemon_namespace);
             println!();
             println!(
                 "  Compilations:  {} total ({} cached, {} cold, {} non-cacheable)",
@@ -166,6 +167,7 @@ fn print_status_ok_json(endpoint: &str, s: &crate::protocol::DaemonStatus) {
     let value = serde_json::json!({
         "status": "ok",
         "endpoint": endpoint,
+        "daemon_namespace": s.daemon_namespace,
         "protocol_version": crate::protocol::PROTOCOL_VERSION,
         "hit_rate": hit_rate,
         "link_hit_rate": link_hit_rate,
@@ -178,6 +180,7 @@ fn print_status_error_json(endpoint: &str, message: &str) {
     let value = serde_json::json!({
         "status": "error",
         "endpoint": endpoint,
+        "daemon_namespace": crate::core::config::daemon_namespace_label(),
         "error": message,
     });
     print_json_value(&value);

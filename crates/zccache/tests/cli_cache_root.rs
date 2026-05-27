@@ -40,6 +40,7 @@ fn run_cache_root(cache_dir: Option<&Path>, json: bool) -> std::process::Output 
         }
     }
     cmd.env_remove("ZCCACHE_COLOCATE");
+    cmd.env_remove("ZCCACHE_DAEMON_NAMESPACE");
     cmd.arg("cache-root");
     if json {
         cmd.arg("--json");
@@ -84,6 +85,11 @@ fn cache_root_env_branch_reports_env_source() {
     assert_eq!(v["source"], "env:ZCCACHE_CACHE_DIR");
     let got = v["cache_root"].as_str().expect("cache_root is a string");
     assert_eq!(Path::new(got), want.as_path());
+    assert_eq!(v["daemon_namespace"], "default");
+    assert!(
+        v["daemon_endpoint"].as_str().is_some(),
+        "daemon_endpoint must be present and stringy"
+    );
 }
 
 #[test]
@@ -102,6 +108,41 @@ fn cache_root_default_branch_reports_default_source_when_env_unset() {
         v["cache_root"].as_str().is_some(),
         "cache_root must be present and stringy"
     );
+    assert_eq!(v["daemon_namespace"], "default");
+}
+
+#[test]
+fn cache_root_json_reports_daemon_namespace_and_derived_endpoint() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let want = temp.path().join("zc");
+    let bin = zccache_bin();
+    let out = Command::new(bin.as_path())
+        .env("ZCCACHE_CACHE_DIR", &want)
+        .env("ZCCACHE_DAEMON_NAMESPACE", "soldr-dev")
+        .env_remove("ZCCACHE_COLOCATE")
+        .arg("cache-root")
+        .arg("--json")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn zccache cache-root");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("--json must emit valid JSON");
+    assert_eq!(v["daemon_namespace"], "soldr-dev");
+    let endpoint = v["daemon_endpoint"]
+        .as_str()
+        .expect("daemon_endpoint is a string");
+    assert!(
+        endpoint.contains("soldr-dev"),
+        "endpoint `{endpoint}` must include namespace"
+    );
 }
 
 #[test]
@@ -113,6 +154,7 @@ fn cache_root_relative_env_path_is_absolute_in_output() {
     let out = Command::new(bin.as_path())
         .env("ZCCACHE_CACHE_DIR", "relative-zc")
         .env_remove("ZCCACHE_COLOCATE")
+        .env_remove("ZCCACHE_DAEMON_NAMESPACE")
         .current_dir(temp.path())
         .arg("cache-root")
         .stdin(Stdio::null())

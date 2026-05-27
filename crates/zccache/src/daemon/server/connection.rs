@@ -102,6 +102,8 @@ pub(super) async fn handle_connection(
                 (
                     Response::Status(crate::protocol::DaemonStatus {
                         version: crate::core::VERSION.to_string(),
+                        daemon_namespace: state.daemon_namespace.clone(),
+                        endpoint: state.endpoint.clone(),
                         artifact_count,
                         cache_size_bytes,
                         metadata_entries,

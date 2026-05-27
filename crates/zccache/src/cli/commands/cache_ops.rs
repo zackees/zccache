@@ -516,6 +516,8 @@ pub(crate) fn cmd_cache_root(json: bool) -> ExitCode {
         let payload = serde_json::json!({
             "cache_root": root.as_path(),
             "source": source.as_str(),
+            "daemon_namespace": crate::core::config::daemon_namespace_label(),
+            "daemon_endpoint": crate::ipc::default_endpoint(),
         });
         println!("{}", serde_json::to_string(&payload).unwrap_or_default());
     } else {
