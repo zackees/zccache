@@ -76,6 +76,11 @@ jobs:
         uses: ./
         with:
           shared-key: test-${{ matrix.target }}
+          # Bootstrap this repair PR from the last known-good GitHub binary
+          # release. The production action still defaults to latest, and the
+          # release workflow now blocks malformed latest assets before PyPI or
+          # crates.io publish.
+          zccache-version: "1.11.4"
 
       - name: Verify RUSTC_WRAPPER is set
         shell: bash

@@ -18,6 +18,9 @@ pub use transport::{
 
 use crate::core::NormalizedPath;
 
+#[cfg(unix)]
+const MAX_PORTABLE_UNIX_SOCKET_PATH_BYTES: usize = 100;
+
 /// Returns the platform-specific default IPC endpoint path.
 ///
 /// - Linux: `$XDG_RUNTIME_DIR/zccache/sock` or `/tmp/zccache-$USER/sock`
@@ -57,8 +60,13 @@ pub fn default_endpoint() -> String {
 pub fn endpoint_for_cache_dir(cache_dir: &std::path::Path, namespace: Option<&str>) -> String {
     #[cfg(unix)]
     {
-        cache_dir
-            .join(daemon_socket_name(namespace))
+        let direct = cache_dir.join(daemon_socket_name(namespace));
+        let direct = direct.to_string_lossy();
+        if direct.as_bytes().len() <= MAX_PORTABLE_UNIX_SOCKET_PATH_BYTES {
+            return direct.into_owned();
+        }
+
+        compact_cache_dir_endpoint(cache_dir, namespace)
             .to_string_lossy()
             .into_owned()
     }
@@ -67,6 +75,18 @@ pub fn endpoint_for_cache_dir(cache_dir: &std::path::Path, namespace: Option<&st
         let suffix = crate::core::stable_path_id(cache_dir);
         pipe_name(&suffix, namespace)
     }
+}
+
+#[cfg(unix)]
+fn compact_cache_dir_endpoint(
+    cache_dir: &std::path::Path,
+    namespace: Option<&str>,
+) -> std::path::PathBuf {
+    let cache_id = crate::core::stable_path_id(cache_dir);
+    std::path::PathBuf::from(format!(
+        "/tmp/zccache-{cache_id}-{}",
+        daemon_socket_name(namespace)
+    ))
 }
 
 /// Derive a platform IPC endpoint for a portable private daemon name.
@@ -548,6 +568,38 @@ mod tests {
             assert!(endpoint.ends_with("-soldr_dev"));
             assert!(endpoint.contains(&crate::core::stable_path_id(&cache_dir)));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_dir_endpoint_falls_back_to_short_unix_socket_path() {
+        let root = tempfile::tempdir().unwrap();
+        let cache_dir = root
+            .path()
+            .join("this")
+            .join("is")
+            .join("a")
+            .join("deep")
+            .join("private")
+            .join("zccache")
+            .join("cache")
+            .join("directory")
+            .join("that")
+            .join("would")
+            .join("exceed")
+            .join("sockaddr_un")
+            .join("path")
+            .join("limits");
+
+        let endpoint = endpoint_for_cache_dir(&cache_dir, Some("soldr-dev"));
+
+        assert!(
+            endpoint.as_bytes().len() <= MAX_PORTABLE_UNIX_SOCKET_PATH_BYTES,
+            "endpoint too long: {endpoint}"
+        );
+        assert!(endpoint.starts_with("/tmp/zccache-"));
+        assert!(endpoint.contains(&crate::core::stable_path_id(&cache_dir)));
+        assert!(endpoint.ends_with("-daemon-soldr-dev.sock"));
     }
 
     /// On macOS, `daemon_exe_for_pid` must reject a PID whose

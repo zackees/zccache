@@ -176,6 +176,43 @@ runs:
         VERSION="${{ inputs.zccache-version }}"
         INSTALLED=false
 
+        path_for_runner() {
+          local dir="$1"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cygpath -w "$dir" 2>/dev/null || printf '%s\n' "$dir"
+          else
+            printf '%s\n' "$dir"
+          fi
+        }
+
+        add_install_dir_to_path() {
+          local dir="$1"
+          echo "$(path_for_runner "$dir")" >> "$GITHUB_PATH"
+          export PATH="$dir:$PATH"
+        }
+
+        validate_zccache_install() {
+          local version_out
+          if ! version_out="$(zccache --version 2>&1)" || ! printf '%s\n' "$version_out" | grep -Eq '^zccache [0-9]'; then
+            echo "::warning::Installed zccache did not report a valid version: ${version_out:-<empty>}"
+            return 1
+          fi
+
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            local rustc_bin probe_out
+            rustc_bin="$(rustup which rustc 2>/dev/null || command -v rustc || true)"
+            if [ -n "$rustc_bin" ]; then
+              if ! probe_out="$(zccache "$rustc_bin" -vV 2>&1)" || ! printf '%s\n' "$probe_out" | grep -q '^host: '; then
+                echo "::warning::Installed zccache failed the Windows RUSTC_WRAPPER probe."
+                printf '%s\n' "$probe_out"
+                zccache stop >/dev/null 2>&1 || true
+                return 1
+              fi
+            fi
+          fi
+          return 0
+        }
+
         # Try binary install on Linux/macOS (requires GitHub Releases to exist)
         if [ "${{ runner.os }}" != "Windows" ]; then
           INSTALL_DIR="$HOME/.local/bin"
@@ -192,12 +229,40 @@ runs:
             if ZCCACHE_INSTALL_VERSION="$VERSION" \
                ZCCACHE_INSTALL_DIR="$INSTALL_DIR" \
                ZCCACHE_NO_MODIFY_PATH=1 \
-                 sh "$INSTALL_SCRIPT" 2>/dev/null; then
-              echo "$INSTALL_DIR" >> "$GITHUB_PATH"
-              export PATH="$INSTALL_DIR:$PATH"
+                  sh "$INSTALL_SCRIPT" 2>/dev/null; then
+              add_install_dir_to_path "$INSTALL_DIR"
               INSTALLED=true
             fi
           fi
+        fi
+
+        # On Windows, prefer the native release zip over the PyPI console
+        # script wrapper. The native exe is required for RUSTC_WRAPPER.
+        if [ "$INSTALLED" = "false" ] && [ "${{ runner.os }}" = "Windows" ]; then
+          INSTALL_DIR="$HOME/.local/bin"
+          export INSTALL_DIR
+          mkdir -p "$INSTALL_DIR"
+          WIN_INSTALL_DIR="$(cygpath -w "$INSTALL_DIR" 2>/dev/null || python -c 'import os; print(os.path.abspath(os.environ["INSTALL_DIR"]))')"
+
+          if [ -f "${{ github.action_path }}/install.ps1" ]; then
+            INSTALL_SCRIPT="${{ github.action_path }}/install.ps1"
+          else
+            INSTALL_SCRIPT="$(mktemp --suffix=.ps1)"
+            curl -fsSL https://raw.githubusercontent.com/zackees/zccache/main/install.ps1 -o "$INSTALL_SCRIPT" 2>/dev/null || true
+          fi
+
+          if [ -f "$INSTALL_SCRIPT" ] && [ -s "$INSTALL_SCRIPT" ]; then
+            if ZCCACHE_INSTALL_VERSION="$VERSION" ZCCACHE_NO_MODIFY_PATH=1 \
+              pwsh -NoProfile -ExecutionPolicy Bypass -File "$INSTALL_SCRIPT" -BinDir "$WIN_INSTALL_DIR"; then
+              add_install_dir_to_path "$INSTALL_DIR"
+              INSTALLED=true
+            fi
+          fi
+        fi
+
+        if [ "$INSTALLED" = "true" ] && ! validate_zccache_install; then
+          echo "::error::Downloaded zccache release binary is not usable"
+          exit 1
         fi
 
         # Try cargo-binstall (downloads pre-built binary, no Python needed)
@@ -209,9 +274,13 @@ runs:
             cargo-binstall "zccache-cli@${VERSION}" --no-confirm --install-path "$INSTALL_DIR" 2>/dev/null && INSTALLED=true
           fi
           if [ "$INSTALLED" = "true" ]; then
-            echo "$INSTALL_DIR" >> "$GITHUB_PATH"
-            export PATH="$INSTALL_DIR:$PATH"
+            add_install_dir_to_path "$INSTALL_DIR"
           fi
+        fi
+
+        if [ "$INSTALLED" = "true" ] && ! validate_zccache_install; then
+          echo "::error::Installed zccache binary is not usable"
+          exit 1
         fi
 
         # Fall back to pip install (works on all platforms)
@@ -243,8 +312,7 @@ runs:
           fi
 
           if [ -n "$FOUND_DIR" ]; then
-            export PATH="$FOUND_DIR:$PATH"
-            echo "$FOUND_DIR" >> "$GITHUB_PATH"
+            add_install_dir_to_path "$FOUND_DIR"
             # Fix executable permissions (macOS PyPI bundles may lose +x)
             if [ "${{ runner.os }}" != "Windows" ]; then
               chmod +x "$FOUND_DIR/zccache" "$FOUND_DIR/zccache-daemon" 2>/dev/null || true
@@ -254,12 +322,19 @@ runs:
 
         # Verify install
         which zccache || { echo "ERROR: zccache not found on PATH"; echo "PATH=$PATH"; exit 1; }
+        if ! validate_zccache_install; then
+          echo "::error::Unable to install a working zccache binary"
+          exit 1
+        fi
 
     - name: Resolve zccache cache paths
       id: zccache-paths
       shell: bash
       run: |
-        CACHE_ROOT="$(zccache cache-root)"
+        CACHE_ROOT="$(zccache cache-root 2>/dev/null || true)"
+        if [ -z "$CACHE_ROOT" ]; then
+          CACHE_ROOT="${ZCCACHE_CACHE_DIR:-$HOME/.zccache}"
+        fi
         {
           echo "cache-root=$CACHE_ROOT"
           echo "cargo-registry-cache=$CACHE_ROOT/cargo-registry"

@@ -125,6 +125,15 @@ runs:
           rm -rf "$TARGET_DIR"
         fi
 
+    - name: Remove stale release binaries
+      shell: bash
+      run: |
+        TARGET_DIR="target/${{ inputs.target }}/release"
+        rm -f \
+          "$TARGET_DIR/zccache${{ inputs.binary_ext }}" \
+          "$TARGET_DIR/zccache-daemon${{ inputs.binary_ext }}" \
+          "$TARGET_DIR/zccache-fp${{ inputs.binary_ext }}"
+
     # Static-link the MSVC C runtime (vcruntime + UCRT) for Windows release
     # binaries. Without `+crt-static` the published `zccache.exe` declares
     # imports against `VCRUNTIME140.dll` and the `api-ms-win-crt-*` UCRT
@@ -237,28 +246,35 @@ runs:
         # ships without embedded debug info on Linux/macOS, so this is mostly
         # belt-and-suspenders. Fall back to plain `strip` when the
         # cross-tool doesn't support the flag.
-        STRIP="${{ inputs.strip }}"
-        if [ -z "$STRIP" ]; then
-          STRIP="strip"
-        fi
-        do_strip() {
-          if "$STRIP" --strip-debug "$1" 2>/dev/null; then
-            return 0
-          fi
-          "$STRIP" "$1" 2>/dev/null || true
-        }
-        if command -v "$STRIP" &> /dev/null; then
-          do_strip staging/zccache${{ inputs.binary_ext }}
-          do_strip staging/zccache-daemon${{ inputs.binary_ext }}
-          do_strip staging/zccache-fp${{ inputs.binary_ext }}
-          if [ "${{ inputs.include_python }}" = "true" ]; then
-            for native in staging/python/zccache/_native.* \
-                          staging/python/zccache/fingerprint/_native.* \
-                          staging/python/zccache/watcher/_native.*; do
-              [ -e "$native" ] && do_strip "$native"
-            done
-          fi
-        fi
+        case "${{ inputs.target }}" in
+          *pc-windows-msvc)
+            echo "Skipping strip for Windows MSVC artifacts"
+            ;;
+          *)
+            STRIP="${{ inputs.strip }}"
+            if [ -z "$STRIP" ]; then
+              STRIP="strip"
+            fi
+            do_strip() {
+              if "$STRIP" --strip-debug "$1" 2>/dev/null; then
+                return 0
+              fi
+              "$STRIP" "$1" 2>/dev/null || true
+            }
+            if command -v "$STRIP" &> /dev/null; then
+              do_strip staging/zccache${{ inputs.binary_ext }}
+              do_strip staging/zccache-daemon${{ inputs.binary_ext }}
+              do_strip staging/zccache-fp${{ inputs.binary_ext }}
+              if [ "${{ inputs.include_python }}" = "true" ]; then
+                for native in staging/python/zccache/_native.* \
+                              staging/python/zccache/fingerprint/_native.* \
+                              staging/python/zccache/watcher/_native.*; do
+                  [ -e "$native" ] && do_strip "$native"
+                done
+              fi
+            fi
+            ;;
+        esac
 
     - name: Stage debug-symbol sidecars
       shell: bash
@@ -382,6 +398,61 @@ runs:
             --triple "${{ inputs.target }}" \
             --timestamp "$NOW"
         done
+
+    - name: Validate staged release binaries
+      shell: bash
+      run: |
+        min_size=1048576
+        for bin in zccache zccache-daemon zccache-fp; do
+          path="staging/${bin}${{ inputs.binary_ext }}"
+          if [ ! -f "$path" ]; then
+            echo "::error::Missing staged binary: $path" >&2
+            exit 1
+          fi
+          size=$(wc -c < "$path" | tr -d '[:space:]')
+          if [ "$size" -lt "$min_size" ]; then
+            echo "::error::Staged binary is suspiciously small: $path ($size bytes)" >&2
+            exit 1
+          fi
+        done
+
+        case "${{ inputs.target }}" in
+          aarch64-pc-windows-msvc|aarch64-unknown-linux-musl|aarch64-unknown-linux-gnu)
+            echo "Skipping staged binary execution check for cross-compiled target ${{ inputs.target }}"
+            exit 0
+            ;;
+        esac
+
+        for bin in zccache zccache-daemon zccache-fp; do
+          path="staging/${bin}${{ inputs.binary_ext }}"
+          version="$("$path" --version)"
+          printf '%s\n' "$version"
+          if ! printf '%s\n' "$version" | grep -Eq "^${bin} [0-9]"; then
+            echo "::error::Staged binary did not report a valid version: $path" >&2
+            exit 1
+          fi
+        done
+
+        smoke_root="${RUNNER_TEMP:-/tmp}/zccache-release-smoke-${{ inputs.target }}"
+        rm -rf "$smoke_root"
+        mkdir -p "$smoke_root"
+        export ZCCACHE_CACHE_DIR="$smoke_root/cache"
+        cleanup() {
+          staging/zccache${{ inputs.binary_ext }} stop >/dev/null 2>&1 || true
+          rm -rf "$smoke_root"
+        }
+        trap cleanup EXIT
+
+        rustc_bin="$(rustup which rustc)"
+        probe="$(staging/zccache${{ inputs.binary_ext }} "$rustc_bin" -vV)"
+        printf '%s\n' "$probe"
+        if ! printf '%s\n' "$probe" | grep -q '^host: '; then
+          echo "::error::zccache RUSTC_WRAPPER smoke did not print rustc host metadata" >&2
+          exit 1
+        fi
+
+        staging/zccache${{ inputs.binary_ext }} start
+        staging/zccache${{ inputs.binary_ext }} status
 
     - name: Package standalone archive
       shell: bash
