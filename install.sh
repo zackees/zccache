@@ -78,25 +78,49 @@ detect_target() {
 resolve_tag() {
     version="$1"
     case "$version" in
-        latest) printf 'latest' ;;
-        v*) printf '%s' "$version" ;;
-        *) printf 'v%s' "$version" ;;
+        latest) resolve_latest_tag ;;
+        *) printf '%s' "$version" ;;
     esac
+}
+
+asset_tag() {
+    tag="$1"
+    case "$tag" in
+        v*) printf '%s' "$tag" ;;
+        *) printf 'v%s' "$tag" ;;
+    esac
+}
+
+release_base_url() {
+    if [ -n "$ZCCACHE_INSTALL_BASE_URL" ]; then
+        printf '%s' "${ZCCACHE_INSTALL_BASE_URL%/}"
+    else
+        printf 'https://github.com/%s/releases' "$ZCCACHE_INSTALL_REPO"
+    fi
+}
+
+resolve_latest_tag() {
+    latest_url="$(release_base_url)/latest"
+    resolved=""
+    if command -v curl >/dev/null 2>&1; then
+        resolved="$(curl -LsS -o /dev/null -w '%{url_effective}' "$latest_url" 2>/dev/null || true)"
+    elif command -v wget >/dev/null 2>&1; then
+        resolved="$(wget -O /dev/null --max-redirect=10 --server-response "$latest_url" 2>&1 \
+            | awk 'tolower($1) == "location:" { loc = $2 } END { gsub(/\r/, "", loc); print loc }')"
+    else
+        die "either curl or wget is required"
+    fi
+    tag="${resolved%/}"
+    tag="${tag##*/}"
+    [ -n "$tag" ] && [ "$tag" != "latest" ] || die "could not resolve latest release tag from $latest_url"
+    printf '%s' "$tag"
 }
 
 asset_url() {
     tag="$1"
     asset="$2"
-    if [ -n "$ZCCACHE_INSTALL_BASE_URL" ]; then
-        base="$ZCCACHE_INSTALL_BASE_URL"
-    else
-        base="https://github.com/$ZCCACHE_INSTALL_REPO/releases"
-    fi
-    if [ "$tag" = "latest" ]; then
-        printf '%s/latest/download/%s' "$base" "$asset"
-    else
-        printf '%s/download/%s/%s' "$base" "$tag" "$asset"
-    fi
+    base="$(release_base_url)"
+    printf '%s/download/%s/%s' "$base" "$tag" "$asset"
 }
 
 download() {
@@ -160,7 +184,8 @@ main() {
 
     target="$(detect_target)"
     tag="$(resolve_tag "$version")"
-    asset="zccache-${tag}-${target}.tar.gz"
+    archive_tag="$(asset_tag "$tag")"
+    asset="zccache-${archive_tag}-${target}.tar.gz"
     url="$(asset_url "$tag" "$asset")"
 
     tmpdir="$(mktemp -d 2>/dev/null || mktemp -d -t zccache-install)"
@@ -171,7 +196,7 @@ main() {
     download "$url" "$archive"
     extract_archive "$archive" "$tmpdir"
 
-    archive_root="$tmpdir/zccache-${tag}-${target}"
+    archive_root="$tmpdir/zccache-${archive_tag}-${target}"
     [ -d "$archive_root" ] || die "archive layout was not recognized"
 
     mkdir -p "$install_dir"

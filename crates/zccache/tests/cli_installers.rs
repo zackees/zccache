@@ -97,6 +97,14 @@ fn serve_connection(mut stream: TcpStream, root: &NormalizedPath) {
     let mut parts = line.split_whitespace();
     let method = parts.next().unwrap_or_default();
     let path = parts.next().unwrap_or("/");
+    if path == "/latest" {
+        let _ = write_redirect(&mut stream, &format!("/tag/{VERSION}"));
+        return;
+    }
+    if path == format!("/tag/{VERSION}") {
+        let _ = write_response(&mut stream, 200, b"release page");
+        return;
+    }
     if method != "GET" {
         let _ = write_response(&mut stream, 405, b"method not allowed");
         return;
@@ -116,6 +124,13 @@ fn serve_connection(mut stream: TcpStream, root: &NormalizedPath) {
     }
 }
 
+fn write_redirect(stream: &mut TcpStream, location: &str) -> std::io::Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+}
+
 fn write_response(stream: &mut TcpStream, status: u16, body: &[u8]) -> std::io::Result<()> {
     let status_text = match status {
         200 => "OK",
@@ -133,23 +148,24 @@ fn write_response(stream: &mut TcpStream, status: u16, body: &[u8]) -> std::io::
 
 #[cfg(unix)]
 fn make_fake_unix_archive(root: &Path, target: &str) -> NormalizedPath {
-    let tag = format!("v{VERSION}");
-    let asset_dir = root.join("download").join(&tag);
-    let archive_root = asset_dir.join(format!("zccache-{tag}-{target}"));
+    let release_tag = VERSION;
+    let archive_tag = format!("v{VERSION}");
+    let asset_dir = root.join("download").join(release_tag);
+    let archive_root = asset_dir.join(format!("zccache-{archive_tag}-{target}"));
     fs::create_dir_all(&archive_root).expect("create archive root");
     write_unix_binary(&archive_root.join("zccache"), "zccache");
     write_unix_binary(&archive_root.join("zccache-daemon"), "zccache-daemon");
     write_unix_binary(&archive_root.join("zccache-fp"), "zccache-fp");
     fs::write(archive_root.join("README.md"), "test archive\n").expect("write readme");
 
-    let archive = asset_dir.join(format!("zccache-{tag}-{target}.tar.gz"));
+    let archive = asset_dir.join(format!("zccache-{archive_tag}-{target}.tar.gz"));
     let status = Command::new("tar")
         .args([
             "-czf",
             archive.to_str().expect("archive path"),
             "-C",
             asset_dir.to_str().expect("asset dir"),
-            &format!("zccache-{tag}-{target}"),
+            &format!("zccache-{archive_tag}-{target}"),
         ])
         .status()
         .expect("run tar");
@@ -171,16 +187,17 @@ fn write_unix_binary(path: &Path, name: &str) {
 
 #[cfg(windows)]
 fn make_fake_windows_archive(root: &Path, target: &str) -> NormalizedPath {
-    let tag = format!("v{VERSION}");
-    let asset_dir = root.join("download").join(&tag);
-    let archive_root = asset_dir.join(format!("zccache-{tag}-{target}"));
+    let release_tag = VERSION;
+    let archive_tag = format!("v{VERSION}");
+    let asset_dir = root.join("download").join(release_tag);
+    let archive_root = asset_dir.join(format!("zccache-{archive_tag}-{target}"));
     fs::create_dir_all(&archive_root).expect("create archive root");
     write_windows_binary(&archive_root.join("zccache.exe"), "zccache");
     write_windows_binary(&archive_root.join("zccache-daemon.exe"), "zccache-daemon");
     write_windows_binary(&archive_root.join("zccache-fp.exe"), "zccache-fp");
     fs::write(archive_root.join("README.md"), "test archive\r\n").expect("write readme");
 
-    let archive = asset_dir.join(format!("zccache-{tag}-{target}.zip"));
+    let archive = asset_dir.join(format!("zccache-{archive_tag}-{target}.zip"));
     write_zip_archive(&archive, &asset_dir, &archive_root);
     NormalizedPath::new(archive)
 }
@@ -363,6 +380,49 @@ fn install_sh_supports_global_mode() {
     assert!(
         !home.join(".profile").exists(),
         "global install should not edit user profile"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn install_sh_resolves_latest_release_tag() {
+    let _guard = installer_test_lock().lock().expect("installer test lock");
+    let temp = TempDir::new().expect("tempdir");
+    let release_root = temp.path().join("release");
+    fs::create_dir_all(&release_root).expect("create release root");
+    let target = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => "x86_64-unknown-linux-musl",
+        ("linux", "aarch64") => "aarch64-unknown-linux-musl",
+        ("macos", "x86_64") => "x86_64-apple-darwin",
+        ("macos", "aarch64") => "aarch64-apple-darwin",
+        other => panic!("unsupported test target: {other:?}"),
+    };
+    let _archive = make_fake_unix_archive(&release_root, target);
+    let server = TestServer::start(release_root.into());
+
+    let home = temp.path().join("home");
+    let install_dir = temp.path().join("bin");
+    fs::create_dir_all(&home).expect("create home");
+
+    let status = Command::new("sh")
+        .arg(workspace_root().join("install.sh"))
+        .args(["--bin-dir", install_dir.to_str().expect("install dir")])
+        .env("HOME", &home)
+        .env("SHELL", "/bin/bash")
+        .env("ZCCACHE_INSTALL_BASE_URL", &server.addr)
+        .env("ZCCACHE_INSTALL_VERSION", "latest")
+        .status()
+        .expect("run install.sh");
+    assert!(status.success(), "install.sh failed with {status}");
+
+    let version = Command::new(install_dir.join("zccache"))
+        .arg("--version")
+        .output()
+        .expect("run installed zccache");
+    assert!(version.status.success(), "installed zccache failed");
+    assert_eq!(
+        String::from_utf8_lossy(&version.stdout).trim(),
+        format!("zccache {VERSION}")
     );
 }
 

@@ -22,9 +22,41 @@ function Get-InstallMode {
 
 function Resolve-VersionTag {
     param([string]$RawVersion)
-    if ($RawVersion -eq "latest") { return "latest" }
-    if ($RawVersion.StartsWith("v")) { return $RawVersion }
-    return "v$RawVersion"
+    if ($RawVersion -eq "latest") { return Get-LatestReleaseTag }
+    return $RawVersion
+}
+
+function Get-AssetTag {
+    param([string]$Tag)
+    if ($Tag.StartsWith("v")) { return $Tag }
+    return "v$Tag"
+}
+
+function Get-ReleaseBaseUrl {
+    if ($env:ZCCACHE_INSTALL_BASE_URL) {
+        return $env:ZCCACHE_INSTALL_BASE_URL.TrimEnd("/")
+    }
+    $repo = if ($env:ZCCACHE_INSTALL_REPO) { $env:ZCCACHE_INSTALL_REPO } else { "zackees/zccache" }
+    return "https://github.com/$repo/releases"
+}
+
+function Get-LatestReleaseTag {
+    $latestUrl = "$(Get-ReleaseBaseUrl)/latest"
+    $response = Invoke-WebRequest -Uri $latestUrl -MaximumRedirection 10
+    $finalUri = $null
+    if ($response.BaseResponse.ResponseUri) {
+        $finalUri = $response.BaseResponse.ResponseUri
+    } elseif ($response.BaseResponse.RequestMessage -and $response.BaseResponse.RequestMessage.RequestUri) {
+        $finalUri = $response.BaseResponse.RequestMessage.RequestUri
+    }
+    if (-not $finalUri) {
+        throw "Could not resolve latest release tag from $latestUrl"
+    }
+    $tag = $finalUri.AbsolutePath.TrimEnd("/").Split("/")[-1]
+    if (-not $tag -or $tag -eq "latest") {
+        throw "Could not resolve latest release tag from $latestUrl"
+    }
+    return $tag
 }
 
 function Get-TargetTriple {
@@ -39,15 +71,7 @@ function Get-TargetTriple {
 
 function Get-AssetUrl {
     param([string]$Tag, [string]$Asset)
-    $baseUrl = if ($env:ZCCACHE_INSTALL_BASE_URL) {
-        $env:ZCCACHE_INSTALL_BASE_URL.TrimEnd("/")
-    } else {
-        $repo = if ($env:ZCCACHE_INSTALL_REPO) { $env:ZCCACHE_INSTALL_REPO } else { "zackees/zccache" }
-        "https://github.com/$repo/releases"
-    }
-    if ($Tag -eq "latest") {
-        return "$baseUrl/latest/download/$Asset"
-    }
+    $baseUrl = Get-ReleaseBaseUrl
     return "$baseUrl/download/$Tag/$Asset"
 }
 
@@ -85,7 +109,8 @@ $installDir = if ($BinDir) {
 
 $tag = Resolve-VersionTag $Version
 $target = Get-TargetTriple
-$asset = "zccache-$tag-$target.zip"
+$archiveTag = Get-AssetTag $tag
+$asset = "zccache-$archiveTag-$target.zip"
 $url = Get-AssetUrl -Tag $tag -Asset $asset
 
 $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("zccache-install-" + [guid]::NewGuid().ToString("N"))
@@ -96,9 +121,9 @@ try {
     New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
     Write-Log "Downloading $url"
     Invoke-WebRequest -Uri $url -OutFile $archivePath
-    Expand-Archive -LiteralPath $archivePath -DestinationPath $extractDir -Force
+    Microsoft.PowerShell.Archive\Expand-Archive -LiteralPath $archivePath -DestinationPath $extractDir -Force
 
-    $archiveRoot = Join-Path $extractDir "zccache-$tag-$target"
+    $archiveRoot = Join-Path $extractDir "zccache-$archiveTag-$target"
     if (-not (Test-Path -LiteralPath $archiveRoot)) {
         throw "Archive layout was not recognized."
     }
