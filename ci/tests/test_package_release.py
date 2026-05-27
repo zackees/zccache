@@ -171,10 +171,47 @@ def test_build_target_stamps_release_binaries_with_python_footer() -> None:
     assert 'soldr cargo build --release --target "$HOST_TARGET"' not in action
 
 
+def test_build_target_compiles_release_artifacts_without_compile_cache() -> None:
+    action = _repo_text(".github/actions/build-target/action.yml")
+
+    assert "cargo_build=(soldr --no-cache cargo build)" in action
+    assert 'cargo_build=(rustup run "$RELEASE_RUST_TOOLCHAIN" cargo build)' in action
+    assert "Release artifacts are distribution outputs" in action
+    assert '"${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache --bin zccache' in action
+    assert '"${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-cli --features python --lib' in action
+
+
+def test_release_workflow_disables_soldr_for_artifact_builds() -> None:
+    release_workflow = _repo_text(".github/workflows/release-auto.yml")
+    action = _repo_text(".github/actions/build-target/action.yml")
+
+    assert 'use_soldr: "false"' in release_workflow
+    assert "if: inputs.use_soldr == 'true'" in action
+    assert "Use setup-soldr for setup and caching" in action
+
+
+def test_build_target_forces_msvc_host_toolchain_for_windows() -> None:
+    action = _repo_text(".github/actions/build-target/action.yml")
+
+    assert "1.94.1-x86_64-pc-windows-msvc" in action
+    assert 'rustup run "$RELEASE_RUST_TOOLCHAIN" rustc -vV' in action
+    assert "Windows release builds must use the MSVC host toolchain" in action
+    assert 'rustup which --toolchain "$RELEASE_RUST_TOOLCHAIN" rustc' in action
+
+
+def test_build_target_smoke_requires_valid_version_output() -> None:
+    action = _repo_text(".github/actions/build-target/action.yml")
+
+    assert 'version="$("$BIN" --version)"' in action
+    assert "Built zccache binary did not report a valid version" in action
+    assert "grep -Eq '^zccache [0-9]'" in action
+
+
 def test_build_target_exposes_cross_cache_controls() -> None:
     action = _repo_text(".github/actions/build-target/action.yml")
 
     assert "prebuild_deps:" in action
+    assert "use_soldr:" in action
     assert "clear_target_after_setup:" in action
     assert "require_debug_sidecars:" in action
     assert "prebuild-deps: ${{ inputs.prebuild_deps }}" in action

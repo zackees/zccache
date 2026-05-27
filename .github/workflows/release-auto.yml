@@ -309,6 +309,7 @@ jobs:
           target: ${{ matrix.target }}
           binary_ext: ${{ matrix.binary_ext }}
           cache_key: release-${{ matrix.target }}
+          use_soldr: "false"
           prebuild_deps: ${{ matrix.prebuild_deps || 'soldr-cook' }}
           clear_target_after_setup: ${{ matrix.clear_target_after_setup || 'false' }}
           require_debug_sidecars: ${{ matrix.require_debug_sidecars || 'true' }}

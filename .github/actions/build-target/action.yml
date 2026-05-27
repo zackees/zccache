@@ -12,6 +12,10 @@ inputs:
   cache_key:
     description: Cache key suffix passed to setup-soldr.
     required: true
+  use_soldr:
+    description: Use setup-soldr for setup and caching. Release builds set this false to avoid post-build cache uploads.
+    required: false
+    default: "true"
   prebuild_deps:
     description: setup-soldr prebuild dependency mode.
     required: false
@@ -68,11 +72,27 @@ runs:
       with:
         python-version: ${{ inputs.python_version }}
 
+    - name: Select Rust toolchain
+      shell: bash
+      run: |
+        echo "RELEASE_RUST_TOOLCHAIN=${{ contains(inputs.target, 'pc-windows-msvc') && '1.94.1-x86_64-pc-windows-msvc' || '1.94.1' }}" >> "$GITHUB_ENV"
+
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: 1.94.1
+        toolchain: ${{ contains(inputs.target, 'pc-windows-msvc') && '1.94.1-x86_64-pc-windows-msvc' || '1.94.1' }}
         targets: ${{ inputs.target }}
+
+    - name: Verify Rust host toolchain
+      shell: bash
+      run: |
+        info="$(rustup run "$RELEASE_RUST_TOOLCHAIN" rustc -vV)"
+        printf '%s\n' "$info"
+        host="$(printf '%s\n' "$info" | awk '/^host: / { print $2 }')"
+        if [[ "${{ inputs.target }}" == *pc-windows-msvc && "$host" != "x86_64-pc-windows-msvc" ]]; then
+          echo "::error::Windows release builds must use the MSVC host toolchain, got: ${host:-<missing>}" >&2
+          exit 1
+        fi
 
     - name: Install musl tools
       if: inputs.target == 'x86_64-unknown-linux-musl'
@@ -107,6 +127,7 @@ runs:
         echo "CC_${TARGET_CC}=${{ inputs.linker }}" >> "$GITHUB_ENV"
 
     - name: Setup soldr build cache
+      if: inputs.use_soldr == 'true'
       uses: zackees/setup-soldr@386201437808bbe52f97b05e531b0276f8e5cebf
       with:
         toolchain: 1.94.1
@@ -153,11 +174,18 @@ runs:
       env:
         PYO3_PYTHON: python
       run: |
+        # Release artifacts are distribution outputs, so they must be compiled
+        # from source instead of being hydrated from a restored compile cache.
+        if [ "${{ inputs.use_soldr }}" = "true" ]; then
+          cargo_build=(soldr --no-cache cargo build)
+        else
+          cargo_build=(rustup run "$RELEASE_RUST_TOOLCHAIN" cargo build)
+        fi
         if [[ "${{ inputs.target }}" == *pc-windows-msvc ]]; then
           export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static"
         fi
-        soldr cargo build --release --target ${{ inputs.target }} -p zccache --bin zccache
-        soldr cargo build --release --target ${{ inputs.target }} -p zccache --bin zccache-daemon
+        "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache --bin zccache
+        "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache --bin zccache-daemon
         # zccache-fp is a bin shipped *inside* the umbrella `zccache` crate
         # (see crates/zccache/Cargo.toml `[[bin]] name = "zccache-fp"`). The
         # sibling `zccache-fingerprint` crate is a pyo3 cdylib for the Python
@@ -165,7 +193,7 @@ runs:
         # then `cp`s `target/.../zccache-fp` into `staging/`, which is why
         # building the wrong target left it complaining `cannot stat
         # 'target/.../zccache-fp': No such file or directory`.
-        soldr cargo build --release --target ${{ inputs.target }} -p zccache --bin zccache-fp
+        "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache --bin zccache-fp
 
     # Windows DLL load smoke gate (see zccache#269). If the just-built
     # `zccache.exe` cannot complete loader init on this host, `--version`
@@ -188,7 +216,12 @@ runs:
         esac
         BIN="target/${{ inputs.target }}/release/zccache${{ inputs.binary_ext }}"
         echo "Smoke test: $BIN --version"
-        "$BIN" --version
+        version="$("$BIN" --version)"
+        printf '%s\n' "$version"
+        if ! printf '%s\n' "$version" | grep -Eq '^zccache [0-9]'; then
+          echo "::error::Built zccache binary did not report a valid version: ${version:-<empty>}" >&2
+          exit 1
+        fi
 
     - name: Build Python extension artifacts
       if: inputs.include_python == 'true'
@@ -196,7 +229,7 @@ runs:
       env:
         PYO3_PYTHON: python
       run: |
-        HOST_TARGET=$(soldr rustc -vV | awk '/^host: / { print $2 }')
+        HOST_TARGET=$(rustup run "$RELEASE_RUST_TOOLCHAIN" rustc -vV | awk '/^host: / { print $2 }')
         if [ "$HOST_TARGET" != "${{ inputs.target }}" ]; then
           export PYO3_CROSS=1
           export PYO3_CROSS_PYTHON_VERSION="${{ inputs.python_version }}"
@@ -209,9 +242,14 @@ runs:
         # carry the `python` feature, so `-p zccache --features python` is a
         # workflow-only build-target bug that latently broke the release path.
         # Surfaced when 1.9.1 became the first version bump after that split.
-        soldr cargo build --release --target ${{ inputs.target }} -p zccache-cli --features python --lib
-        soldr cargo build --release --target ${{ inputs.target }} -p zccache-watcher --features python --lib
-        soldr cargo build --release --target ${{ inputs.target }} -p zccache-fingerprint --features python --lib
+        if [ "${{ inputs.use_soldr }}" = "true" ]; then
+          cargo_build=(soldr --no-cache cargo build)
+        else
+          cargo_build=(rustup run "$RELEASE_RUST_TOOLCHAIN" cargo build)
+        fi
+        "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-cli --features python --lib
+        "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-watcher --features python --lib
+        "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-fingerprint --features python --lib
 
     - name: Stage artifacts
       shell: bash
@@ -450,7 +488,7 @@ runs:
         }
         trap cleanup EXIT
 
-        rustc_bin="$(rustup which rustc)"
+        rustc_bin="$(rustup which --toolchain "$RELEASE_RUST_TOOLCHAIN" rustc)"
         probe="$(staging/zccache${{ inputs.binary_ext }} "$rustc_bin" -vV)"
         printf '%s\n' "$probe"
         if ! printf '%s\n' "$probe" | grep -q '^host: '; then
