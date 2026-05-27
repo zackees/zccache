@@ -2,6 +2,20 @@
 
 Wire protocol: `Request`/`Response` enums, length-prefixed bincode framing.
 
+## Module Layout
+
+`messages/mod.rs` owns the append-only `Request` and `Response` enum order.
+Domain payloads live next to it:
+
+- `messages/status.rs`: daemon status, session stats, phase timing.
+- `messages/artifact.rs`: artifact cache payloads and Rust artifact listings.
+- `messages/exec.rs`: generic tool execution request options.
+- `messages/compat.rs`: bincode roundtrip and variant-index guards.
+
+New protocol payload structs should land in the closest domain module. New
+enum variants must still be appended in `messages/mod.rs` and require a
+`PROTOCOL_VERSION` bump.
+
 ## Request Variants
 
 | Variant | Description |
