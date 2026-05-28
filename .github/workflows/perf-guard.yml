@@ -34,8 +34,6 @@ jobs:
         with:
           zccache-seed-strict: true
           cache: false
-          build-cache: false
-          target-cache: false
           linker: fast
 
       - name: Build perf benchmark binary
@@ -93,8 +91,6 @@ jobs:
         with:
           zccache-seed-strict: true
           cache: false
-          build-cache: false
-          target-cache: false
           linker: fast
 
       - uses: mozilla-actions/sccache-action@v0.0.10

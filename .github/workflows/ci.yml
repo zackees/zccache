@@ -44,7 +44,6 @@ jobs:
           toolchain: 1.94.1
           cache: true
           build-cache: false
-          target-cache: false
           linker: fast
           prebuild-deps: none
       - name: Install Rust components
@@ -67,6 +66,7 @@ jobs:
           cargo-registry-cache: false
           cache-key-suffix: dylint
           linker: fast
+          prebuild-deps: soldr-cook
           dylint-cache: true
           dylint-toolchain: nightly-2026-03-26
           dylint-driver-rev: 4bd91ce7729b74c7ee5664bbb588f7baf30b4a09
@@ -113,6 +113,8 @@ jobs:
           toolchain: 1.94.1
           cache-key-suffix: msrv
           linker: fast
+          prebuild-deps: soldr-cook
+          prebuild-deps-flags: ""
       - name: Check MSRV
         run: soldr cargo check --workspace
 
@@ -130,5 +132,7 @@ jobs:
           cache: true
           cache-key-suffix: docs
           linker: fast
+          prebuild-deps: soldr-cook
+          prebuild-deps-flags: ""
       - name: Build docs
         run: soldr cargo doc --workspace --no-deps

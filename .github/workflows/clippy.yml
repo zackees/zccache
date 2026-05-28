@@ -32,6 +32,8 @@ jobs:
           cache: true
           cache-key-suffix: clippy
           linker: fast
+          prebuild-deps: soldr-cook
+          prebuild-deps-flags: ""
       - name: Install Clippy
         run: soldr rustup component add clippy
       - name: Run Clippy
