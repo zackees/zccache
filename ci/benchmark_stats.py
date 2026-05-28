@@ -315,7 +315,12 @@ def _duration_seconds(value: str) -> float | None:
     number = float(match.group(1))
     unit = match.group(2)
     if number == 0.0:
-        return 0.000001 if unit == "ms" else 0.001
+        # #443: a reading that rounds to 0 is not a real measurement — a cold
+        # (or even warm cache-hit) compile/link is never instant; only a broken
+        # measurement (e.g. timing the IPC send instead of the daemon
+        # round-trip) reads 0.000s. Return None instead of silently inflating
+        # it to a tiny value, so it can't feed an absurd speedup ratio.
+        return None
     if unit == "ms":
         return round(number / 1000.0, 6)
     return round(number, 6)

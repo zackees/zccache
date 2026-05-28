@@ -204,7 +204,11 @@ def test_benchmark_command_targets_existing_workspace_package():
     ]
 
 
-def test_parse_benchmark_log_clamps_zero_duration_cells_for_ratios():
+def test_zero_duration_cells_are_invalid_not_inflated():
+    # #443: a 0.000s reading is a broken measurement — a cold (or even a warm
+    # cache-hit) compile/link is never instant. It must be treated as invalid
+    # (None), not silently inflated into a tiny value that yields an absurd
+    # speedup ratio like the bogus "1797x faster" below.
     log = """
 ## C Static-Library Link Benchmark: 50 .o inputs, 5 warm trials
 
@@ -215,10 +219,11 @@ def test_parse_benchmark_log_clamps_zero_duration_cells_for_ratios():
 
     row = benchmark_stats.parse_benchmark_log(log)[0]
 
-    assert row["zccache_seconds"] == 0.001
-    assert row["zccache_vs_bare_ratio"] == 57.0
-    assert row["zccache_vs_sccache_ratio"] == 57.0
-    assert benchmark_stats._duration_seconds("0.0ms") == 0.000001
+    assert row["zccache_seconds"] is None
+    assert row["zccache_vs_bare_ratio"] is None
+    assert row["zccache_vs_sccache_ratio"] is None
+    assert benchmark_stats._duration_seconds("0.0ms") is None
+    assert benchmark_stats._duration_seconds("0.000s") is None
 
 
 def test_group_results_by_language_returns_expected_buckets():

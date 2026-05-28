@@ -35,8 +35,13 @@ pub async fn run_zccache_link_timed(
         })
         .await
         .unwrap();
+    // #443: capture elapsed AFTER recv() — the daemon performs the actual
+    // link/compile during recv(), so stopping the clock before it timed only
+    // the IPC send (~0.000s) and made every link benchmark report a bogus
+    // 0.000s cold/warm with absurd speedup ratios.
+    let response = client.recv().await.unwrap();
     let elapsed = start.elapsed();
-    match client.recv().await.unwrap() {
+    match response {
         Some(Response::LinkResult {
             exit_code,
             stderr,
@@ -436,8 +441,13 @@ pub async fn run_zccache_rust_final_link_timed(
         })
         .await
         .unwrap();
+    // #443: capture elapsed AFTER recv() — the daemon performs the actual
+    // link/compile during recv(), so stopping the clock before it timed only
+    // the IPC send (~0.000s) and made every link benchmark report a bogus
+    // 0.000s cold/warm with absurd speedup ratios.
+    let response = client.recv().await.unwrap();
     let elapsed = start.elapsed();
-    match client.recv().await.unwrap() {
+    match response {
         Some(Response::CompileResult {
             exit_code,
             stderr,
