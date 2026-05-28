@@ -55,11 +55,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: setup soldr with cook prebuild (Unix)
         if: runner.os != 'Windows'
-        uses: zackees/setup-soldr@v0.9.12
+        uses: zackees/setup-soldr@v0.9.13
         with:
           zccache-seed-strict: true
           cache: true
@@ -70,7 +70,7 @@ jobs:
 
       - name: setup soldr without cook prebuild (Windows)
         if: runner.os == 'Windows'
-        uses: zackees/setup-soldr@v0.9.12
+        uses: zackees/setup-soldr@v0.9.13
         with:
           zccache-seed-strict: true
           cache: true
@@ -210,7 +210,7 @@ jobs:
           Add-Content $env:GITHUB_PATH $installDir
 
       - name: Stop setup-soldr builder cache before wrapper smoke test
-        uses: zackees/setup-soldr/cleanup@v0.9.12
+        uses: zackees/setup-soldr/cleanup@v0.9.13
 
       - name: smoke compile through wrapper (Unix)
         if: runner.os != 'Windows'

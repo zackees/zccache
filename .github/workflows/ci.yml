@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@v0.9.12
+      - uses: zackees/setup-soldr@v0.9.13
         with:
           zccache-seed-strict: true
           toolchain: 1.94.1
@@ -58,7 +58,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@v0.9.12
+      - id: setup-soldr
+        uses: zackees/setup-soldr@v0.9.13
         with:
           zccache-seed-strict: true
           toolchain: 1.94.1
@@ -66,15 +67,22 @@ jobs:
           cargo-registry-cache: false
           cache-key-suffix: dylint
           linker: fast
+          dylint-cache: true
+          dylint-toolchain: nightly-2026-03-26
+          dylint-driver-rev: 4bd91ce7729b74c7ee5664bbb588f7baf30b4a09
+          cargo-dylint-version: 5.0.0
+          dylint-link-version: 5.0.0
       - name: Install Dylint nightly toolchain
         run: soldr rustup toolchain install nightly-2026-03-26 --component llvm-tools-preview --component rust-src --component rustc-dev --profile minimal
       - name: Install stable Rust components
         run: soldr rustup component add rustfmt
       - name: Install Dylint
+        if: steps.setup-soldr.outputs.dylint-cache-hit != 'true'
         run: |
           soldr cargo install cargo-dylint --version 5.0.0 --locked
           soldr cargo install dylint-link --version 5.0.0 --locked
       - name: Build compatible Dylint driver
+        if: steps.setup-soldr.outputs.dylint-cache-hit != 'true'
         run: python3 ci/build_dylint_driver.py
       - name: Check Dylint Library Formatting (ban_std_pathbuf)
         run: soldr cargo fmt --manifest-path dylints/ban_std_pathbuf/Cargo.toml --all -- --check
@@ -98,7 +106,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@v0.9.12
+      - uses: zackees/setup-soldr@v0.9.13
         with:
           zccache-seed-strict: true
           cache: true
@@ -115,7 +123,7 @@ jobs:
       RUSTDOCFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@v0.9.12
+      - uses: zackees/setup-soldr@v0.9.13
         with:
           zccache-seed-strict: true
           toolchain: 1.94.1
