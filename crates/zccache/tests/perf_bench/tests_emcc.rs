@@ -7,6 +7,8 @@
 
 use std::path::Path;
 
+use zccache::protocol::{Request, Response};
+
 use super::common::{
     end_zccache_session, find_empp, find_sccache, fmt_dur, fmt_ratio, median, print_trials,
     print_trials_per, start_daemon, start_zccache_session, NUM_FILES, WARM_TRIALS,
@@ -169,6 +171,13 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
     }
     print_trials("single warm:", &zc_warm_single);
 
+    // #445: reset the cache before the multi-file cold measurement so it is
+    // genuinely cold. Without this, the multi-file "cold" run hits the entries
+    // the single-file scenario just cached (identical deterministic sources),
+    // reporting a warm time (~163x faster) that is impossible for a cold build.
+    // Mirrors the reset tests_cpp.rs already does before its multi cold.
+    client.send(&Request::Clear).await.unwrap();
+    let _ = client.recv::<Response>().await;
     nuke_and_regenerate(zc_dir.path());
     warmup_compiler(&compiler, zc_dir.path());
     let zc_cold_multi =
