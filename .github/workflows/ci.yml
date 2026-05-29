@@ -111,9 +111,7 @@ jobs:
           zccache-seed-strict: true
           cache: true
           toolchain: 1.94.1
-          # diag suffix forces a fresh cold seed so the cold->first-warm
-          # convergence gap can be captured (setup-soldr#236). Revert to "msrv".
-          cache-key-suffix: msrv-diag
+          cache-key-suffix: msrv
           linker: fast
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
@@ -124,16 +122,6 @@ jobs:
           compile-cache-stats: detailed
       - name: Check MSRV
         run: soldr cargo check --workspace
-      - name: Upload zccache journal (diag)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: zccache-journal-msrv
-          path: |
-            ${{ env.ZCCACHE_CACHE_DIR }}/private/*/logs/
-            ${{ env.ZCCACHE_CACHE_DIR }}/logs/
-          if-no-files-found: warn
-          include-hidden-files: true
 
   docs:
     name: Documentation
@@ -147,8 +135,7 @@ jobs:
           zccache-seed-strict: true
           toolchain: 1.94.1
           cache: true
-          # diag suffix forces a fresh cold seed (setup-soldr#236). Revert to "docs".
-          cache-key-suffix: docs-diag
+          cache-key-suffix: docs
           linker: fast
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
@@ -159,13 +146,3 @@ jobs:
           compile-cache-stats: detailed
       - name: Build docs
         run: soldr cargo doc --workspace --no-deps
-      - name: Upload zccache journal (diag)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: zccache-journal-docs
-          path: |
-            ${{ env.ZCCACHE_CACHE_DIR }}/private/*/logs/
-            ${{ env.ZCCACHE_CACHE_DIR }}/logs/
-          if-no-files-found: warn
-          include-hidden-files: true
