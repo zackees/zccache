@@ -49,7 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@v0.9.13
+      - uses: zackees/setup-soldr@v0.9.14
         with:
           zccache-seed-strict: true
           toolchain: 1.94.1
@@ -57,11 +57,15 @@ jobs:
           linker: fast
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
+          # #240: seed the isolated integration SOLDR_CACHE_DIR from the
+          # restored build-cache so the daemon-isolated test phase starts warm.
+          seed-isolated-build-cache: ${{ runner.temp }}/zccache-self-tests/integration
+          verify-compile-cache: warn
       - name: Build integration test binaries
         shell: bash
         run: soldr cargo test --workspace --no-fail-fast --no-run
       - name: Stop setup-soldr builder cache before tests
-        uses: zackees/setup-soldr/cleanup@v0.9.13
+        uses: zackees/setup-soldr/cleanup@v0.9.14
       - name: Test (full workspace)
         shell: bash
         env:

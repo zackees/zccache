@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@v0.9.13
+      - uses: zackees/setup-soldr@v0.9.14
         with:
           zccache-seed-strict: true
           toolchain: 1.94.1
@@ -34,6 +34,7 @@ jobs:
           linker: fast
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
+          verify-compile-cache: warn
       - name: Install Clippy
         run: soldr rustup component add clippy
       - name: Run Clippy

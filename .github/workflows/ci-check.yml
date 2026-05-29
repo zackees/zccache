@@ -17,7 +17,7 @@ jobs:
     runs-on: ${{ inputs.os }}
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@v0.9.13
+      - uses: zackees/setup-soldr@v0.9.14
         with:
           zccache-seed-strict: true
           toolchain: 1.94.1
@@ -26,6 +26,7 @@ jobs:
           linker: fast
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
+          verify-compile-cache: warn
       - name: Check
         shell: bash
         run: |
@@ -41,7 +42,7 @@ jobs:
     runs-on: ${{ inputs.os }}
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@v0.9.13
+      - uses: zackees/setup-soldr@v0.9.14
         with:
           zccache-seed-strict: true
           toolchain: 1.94.1
@@ -50,6 +51,11 @@ jobs:
           linker: fast
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
+          # #240: seed the isolated test SOLDR_CACHE_DIR (per-OS) from the
+          # restored build-cache so the daemon-isolated test phase starts warm
+          # across Linux/macOS/Windows.
+          seed-isolated-build-cache: ${{ runner.temp }}/zccache-self-tests/test-${{ inputs.os }}
+          verify-compile-cache: warn
       # Platform Test runs unit tests in libraries and binaries only — it
       # intentionally does NOT compile the integration test binaries under
       # `crates/*/tests/`. Most of those binaries' tests are #[ignore]'d, but
@@ -60,7 +66,7 @@ jobs:
         shell: bash
         run: soldr cargo test --workspace --lib --bins --no-fail-fast --no-run
       - name: Stop setup-soldr builder cache before tests
-        uses: zackees/setup-soldr/cleanup@v0.9.13
+        uses: zackees/setup-soldr/cleanup@v0.9.14
       - name: Test
         shell: bash
         env:
