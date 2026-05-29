@@ -3697,7 +3697,7 @@ dependencies = [
 
 [[package]]
 name = "zccache"
-version = "1.11.6"
+version = "1.11.7"
 dependencies = [
  "bincode",
  "blake3",
@@ -3750,7 +3750,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-cli"
-version = "1.11.6"
+version = "1.11.7"
 dependencies = [
  "pyo3",
  "pyo3-build-config",
@@ -3759,7 +3759,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-fingerprint"
-version = "1.11.6"
+version = "1.11.7"
 dependencies = [
  "pyo3",
  "pyo3-build-config",
@@ -3768,7 +3768,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-watcher"
-version = "1.11.6"
+version = "1.11.7"
 dependencies = [
  "pyo3",
  "pyo3-build-config",
