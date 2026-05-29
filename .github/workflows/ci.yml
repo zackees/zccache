@@ -111,14 +111,11 @@ jobs:
           zccache-seed-strict: true
           cache: true
           toolchain: 1.94.1
-          # fresh suffix forces a clean cold->warm to verify the soldr 0.7.44
-          # cook fix lands first-party first-warm hits (zccache#448). Revert.
-          cache-key-suffix: msrv-v44
+          cache-key-suffix: msrv
           linker: fast
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
           verify-compile-cache: warn
-          logging: true
       - name: Check MSRV
         run: soldr cargo check --workspace
 
