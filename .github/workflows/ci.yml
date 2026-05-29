@@ -116,6 +116,10 @@ jobs:
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
           verify-compile-cache: warn
+          # Diagnostics: enumerate which compile units miss on warm runs
+          # (setup-soldr#236 warm-path follow-up). Not part of any cache key.
+          logging: true
+          compile-cache-stats: detailed
       - name: Check MSRV
         run: soldr cargo check --workspace
 
@@ -136,5 +140,9 @@ jobs:
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
           verify-compile-cache: warn
+          # Diagnostics: enumerate which compile units miss on warm runs
+          # (setup-soldr#236 warm-path follow-up). Not part of any cache key.
+          logging: true
+          compile-cache-stats: detailed
       - name: Build docs
         run: soldr cargo doc --workspace --no-deps
