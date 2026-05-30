@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: zackees/setup-soldr@v0.9.17
+      - uses: zackees/setup-soldr@v0.9.19
         with:
           zccache-seed-strict: true
           cache: false
