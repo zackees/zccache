@@ -381,9 +381,12 @@ mod tests {
 
     #[test]
     fn mtimes_dont_match_beyond_default_tolerance() {
-        // Drift = 1 s + 1 ns → falls outside the tolerance window.
-        assert!(!mtimes_match(ts(1_000, 0), ts(1_001, 1)));
-        // Multi-second drift — clearly a real change.
+        // Drift = 1.1 s (100 ms past the 1 s boundary). Picked at 100 ms
+        // rather than 1 ns past the boundary because Windows `SystemTime`
+        // uses 100 ns FILETIME resolution — anything finer than 100 ns gets
+        // truncated and the test would compare equal across the boundary.
+        assert!(!mtimes_match(ts(1_000, 0), ts(1_001, 100_000_000)));
+        // Multi-second drift — clearly a real change on every platform.
         assert!(!mtimes_match(ts(1_000, 0), ts(1_002, 0)));
         assert!(!mtimes_match(ts(1_000, 500_000), ts(1_010, 0)));
     }
