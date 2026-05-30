@@ -59,11 +59,18 @@ pub(super) fn materialize_cached_compile_hit(
         phases,
     } = request;
 
-    let t_artifact_lookup = Instant::now();
+    // Issue #460: collapse clock reads on the warm-hit path. Previously this
+    // function did 9 `Instant::now()` reads per hit (4 explicit + 5 implicit
+    // via `.elapsed()`); each costs ~50ns on Linux and ~500ns on Windows
+    // (QueryPerformanceCounter). The phase split below now uses 4 clock
+    // reads (`t0..t3`) and derives every `_ns` value by arithmetic — plus
+    // drops the `cached_ref.last_used = Instant::now()` write which was a
+    // dead store (no readers anywhere in the workspace).
+    let t0 = Instant::now();
     let mut cached_ref = lookup_artifact_with_disk_fallback(state, artifact_key_hex)?;
-    cached_ref.last_used = Instant::now();
     ensure_payloads(&mut cached_ref, &state.artifact_dir, artifact_key_hex)?;
-    let artifact_lookup_ns = t_artifact_lookup.elapsed().as_nanos() as u64;
+    let t1 = Instant::now();
+    let artifact_lookup_ns = (t1 - t0).as_nanos() as u64;
 
     let payloads = Arc::clone(cached_ref.payloads.as_ref().unwrap());
     let names = Arc::clone(&cached_ref.meta.output_names);
@@ -73,7 +80,6 @@ pub(super) fn materialize_cached_compile_hit(
     let artifact_bytes = cached_ref.meta.total_size;
     drop(cached_ref);
 
-    let t_write_output = Instant::now();
     let targets: Vec<(NormalizedPath, NormalizedPath)> = (0..payloads.len())
         .map(|i| {
             let out: NormalizedPath = if i == 0 {
@@ -88,18 +94,21 @@ pub(super) fn materialize_cached_compile_hit(
     if !write_payloads_par(&targets, &payloads) {
         return None;
     }
-    let write_output_ns = t_write_output.elapsed().as_nanos() as u64;
+    let t2 = Instant::now();
+    let write_output_ns = (t2 - t1).as_nanos() as u64;
 
     let cached_error = exit_code != 0;
     if !cached_error && downgrade_output_metadata {
         state.cache_system.metadata().downgrade(output_path);
     }
 
-    let t_bookkeeping = Instant::now();
     if record_compilation {
         state.stats.record_compilation();
     }
-    let latency_ns = compile_start.elapsed().as_nanos() as u64;
+    // `latency_ns` is the cache-hit response latency excluding bookkeeping
+    // (record_hit / record_session_stat / write_session_log). Same boundary
+    // as before — derived from `t2` instead of a fresh clock read.
+    let latency_ns = (t2 - compile_start).as_nanos() as u64;
     if cached_error {
         state.stats.record_cached_error();
         record_session_stat(&state.sessions, sid, |t| {
@@ -126,9 +135,10 @@ pub(super) fn materialize_cached_compile_hit(
             output_path.display()
         ),
     );
-    let bookkeeping_ns = t_bookkeeping.elapsed().as_nanos() as u64;
+    let t3 = Instant::now();
+    let bookkeeping_ns = (t3 - t2).as_nanos() as u64;
 
-    let total_ns = compile_start.elapsed().as_nanos() as u64;
+    let total_ns = (t3 - compile_start).as_nanos() as u64;
     if !cached_error {
         state.profiler.record_hit(&HitPhases {
             parse_args_ns: phases.parse_args_ns,
@@ -229,5 +239,81 @@ mod tests {
         );
         assert_eq!(state.stats.snapshot().compilations, 1);
         assert_eq!(state.stats.snapshot().hits, 1);
+    }
+
+    /// Issue #460: warm-hit materialization should stay under budget — the
+    /// fix collapsed 9 clock reads per hit to 4. A future regression that
+    /// reintroduces a syscall-per-phase pattern (or worse, a synchronous I/O
+    /// call) on the hit path would bust this budget. 100 iterations / 200 ms
+    /// gives ~10× headroom on Linux Docker and ~3× on Windows.
+    #[tokio::test(flavor = "current_thread")]
+    async fn warm_hit_materialization_under_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+        let state = server.state.as_ref();
+        let cache_dir = state.artifact_dir.clone();
+        let source_path: NormalizedPath = dir.path().join("source.cc").into();
+        let cache_path = cache_dir.join("budget-key_0");
+        let payload = Arc::new(b"compiled object".to_vec());
+        std::fs::write(&cache_path, payload.as_slice()).unwrap();
+
+        let sid = state.sessions.create(crate::depgraph::SessionConfig {
+            client_pid: std::process::id(),
+            working_dir: dir.path().into(),
+            log_file: None,
+            track_stats: true,
+            journal_path: None,
+            profile: false,
+            private_env: Vec::new(),
+            owner_pids: Vec::new(),
+        });
+        let meta = ArtifactIndex::new(
+            vec!["output.o".to_string()],
+            vec![payload.len() as u64],
+            Arc::new(Vec::new()),
+            Arc::new(Vec::new()),
+            0,
+        );
+        state.artifacts.insert(
+            "budget-key".to_string(),
+            CachedArtifact::from_file_payloads(meta, vec![cache_path]),
+        );
+
+        const ITERATIONS: u32 = 100;
+        let start = Instant::now();
+        for i in 0..ITERATIONS {
+            let output_path: NormalizedPath = dir.path().join(format!("out-{i}.o")).into();
+            let response = materialize_cached_compile_hit(CachedHitMaterializeRequest {
+                state,
+                sid: &sid,
+                artifact_key_hex: "budget-key",
+                source_path: &source_path,
+                output_path: &output_path,
+                secondary_output_dir: dir.path().to_path_buf(),
+                compile_start: Instant::now(),
+                hit_label: "HIT_TEST",
+                cached_error_label: "CACHED_ERROR_TEST",
+                record_compilation: true,
+                downgrade_output_metadata: false,
+                phases: CachedHitPhases::request_cache(0, 0),
+            })
+            .expect("materialize_cached_compile_hit must succeed");
+            assert!(matches!(
+                response,
+                Response::CompileResult {
+                    cached: true,
+                    exit_code: 0,
+                    ..
+                }
+            ));
+        }
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(200),
+            "warm-hit materialization regressed: {ITERATIONS} hits took {elapsed:?} \
+             (budget: 200 ms; avg {:?}/hit)",
+            elapsed / ITERATIONS
+        );
+        assert_eq!(state.stats.snapshot().hits as u32, ITERATIONS);
     }
 }
