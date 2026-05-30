@@ -44,6 +44,16 @@ Usage::
     uv run python ci/perf_local.py cargo test --release --lib fscache::metadata::tests::mtimes
     uv run python ci/perf_local.py cargo clippy --workspace -- -D warnings
 
+    # Issue #477: dedicated subcommands that bake in the right `docker run`
+    # incantation (named volumes + MSYS_NO_PATHCONV + persistent rustup
+    # state). All run inside the same `zccache-perf-zccache-builder` image:
+    uv run python ci/perf_local.py fmt                          # cargo fmt --all -- --check
+    uv run python ci/perf_local.py fmt --fix                    # cargo fmt --all (rewrites in place)
+    uv run python ci/perf_local.py clippy                       # cargo clippy -p zccache --lib --tests -- -D warnings
+    uv run python ci/perf_local.py clippy --workspace --all-targets   # forward extra args
+    uv run python ci/perf_local.py test [PATTERN]               # cargo test --lib [PATTERN]
+    uv run python ci/perf_local.py shell                        # interactive bash in the builder image
+
 The result table emitted at the end mirrors the rich "Evaluate" step from the
 GHA perf cluster, so you can compare local vs cluster numbers row-for-row.
 """
@@ -85,6 +95,15 @@ VOLUME_TARGET_SOLDR = "zccache-perf-target-soldr"
 VOLUME_TARGET_ZCCACHE = "zccache-perf-target-zccache"
 VOLUME_CARGO_HOME_SOLDR = "zccache-perf-cargo-home-soldr"
 VOLUME_CARGO_HOME_ZCCACHE = "zccache-perf-cargo-home-zccache"
+
+# Issue #477: persistent volume for rustup state (toolchain + installed
+# components). The base zccache-builder image only includes `cargo`; the
+# `fmt` / `clippy` subcommands need `rustfmt` + `clippy-driver` which live
+# in `$RUSTUP_HOME/toolchains/.../bin/`. With this volume mounted at
+# `/root/.rustup`, the one-time `rustup component add` is cached across
+# every subsequent invocation — measured at one ~6 s install on first
+# call, ~50 ms (cached) on every call after.
+VOLUME_RUST_STATE = "zccache-perf-rust-state"
 
 VALID_SCENARIOS = (
     "cold-tar-untar-warm",
@@ -489,6 +508,69 @@ def render_phase_breakdown(phase_profile) -> None:
 # ---------------------------------------------------------------------------
 
 
+def build_zccache_docker_cmd(
+    *,
+    src_mode: str = "ro",
+    entrypoint: str | None = None,
+    cargo_args: list[str] | None = None,
+    bash_script: str | None = None,
+    interactive: bool = False,
+) -> list[str]:
+    """Build the canonical `docker run` invocation for the
+    zccache-builder image (issue #477).
+
+    Wires in the four named volumes (target, CARGO_HOME, rustup state)
+    that make cargo's fingerprint work on Windows + WSL2, plus the
+    `-w /src` working dir so workspace-relative invocations resolve.
+    Pure function: no side effects, returns the argv list. The matching
+    runner in `run_zccache_docker_cmd` is what actually invokes it.
+
+    Exactly one of `entrypoint` / `bash_script` should drive the command:
+    - `entrypoint="cargo"` (or any binary) + `cargo_args=...` → runs that
+      entry directly.
+    - `bash_script="rustup ... && cargo ..."` → runs the script via
+      `/bin/bash -c`. Use this when chaining `rustup component add`
+      ahead of the real command.
+
+    `src_mode="rw"` enables write-back to the host repo (for `cargo fmt`
+    auto-format). Default `"ro"` matches the existing safe pattern.
+    """
+    cmd = ["docker", "run", "--rm"]
+    if interactive:
+        cmd.append("-it")
+    cmd += [
+        "-v", host_volume(REPO_ROOT, "/src", src_mode),
+        "-v", f"{VOLUME_TARGET_ZCCACHE}:/target",
+        "-v", f"{VOLUME_CARGO_HOME_ZCCACHE}:/cargo-home",
+        "-v", f"{VOLUME_RUST_STATE}:/root/.rustup",
+        "-w", "/src",
+    ]
+    if bash_script is not None:
+        cmd += ["--entrypoint", "/bin/bash", IMAGE_ZCCACHE, "-c", bash_script]
+    else:
+        cmd += ["--entrypoint", entrypoint or "cargo", IMAGE_ZCCACHE]
+        if cargo_args:
+            cmd += cargo_args
+    return cmd
+
+
+def run_zccache_docker_cmd(cmd: list[str]) -> int:
+    """Print + run a `docker run` command, returning its exit code.
+    Sets `MSYS_NO_PATHCONV=1` in the child env so Git-Bash on Windows
+    stops translating `/src` to a Windows path."""
+    if not image_exists(IMAGE_ZCCACHE):
+        print(
+            f"[perf-local] image {IMAGE_ZCCACHE} not built yet — "
+            "run `uv run python ci/perf_local.py --skip-soldr-build` first.",
+            file=sys.stderr,
+        )
+        return 2
+    print(f"$ {' '.join(cmd)}", file=sys.stderr, flush=True)
+    env = os.environ.copy()
+    env.setdefault("MSYS_NO_PATHCONV", "1")
+    return subprocess.run(cmd, check=False, env=env).returncode
+
+
 def run_cargo_in_container(cargo_args: list[str]) -> int:
     """Run an arbitrary `cargo` command inside the zccache-builder image
     against the named target / CARGO_HOME volumes. The repo is mounted
@@ -504,24 +586,90 @@ def run_cargo_in_container(cargo_args: list[str]) -> int:
     `cargo X` on the host but you want zccache's daemon to stay
     undisturbed.
     """
-    if not image_exists(IMAGE_ZCCACHE):
-        print(
-            f"[perf-local] image {IMAGE_ZCCACHE} not built yet — "
-            "run `uv run python ci/perf_local.py --skip-soldr-build` first.",
-            file=sys.stderr,
-        )
-        return 2
-    cmd = [
-        "docker", "run", "--rm",
-        "-v", host_volume(REPO_ROOT,           "/src", "ro"),
-        "-v", f"{VOLUME_TARGET_ZCCACHE}:/target",
-        "-v", f"{VOLUME_CARGO_HOME_ZCCACHE}:/cargo-home",
-        "--entrypoint", "cargo",
-        IMAGE_ZCCACHE,
-        *cargo_args,
-    ]
+    cmd = build_zccache_docker_cmd(entrypoint="cargo", cargo_args=cargo_args)
+    return run_zccache_docker_cmd(cmd)
+
+
+# Issue #477: one-line bash that ensures rustfmt + clippy components are
+# installed inside the rustup-state volume. Cached after the first run
+# (the volume persists across container instances). The components are
+# installed for the toolchain pinned in `rust-toolchain.toml` (or the
+# default if no pin file is found at /src).
+_ENSURE_RUSTFMT_CLIPPY = (
+    "rustup component add rustfmt clippy >/dev/null 2>&1 || "
+    "rustup component add rustfmt clippy"
+)
+
+
+def run_fmt(args: list[str]) -> int:
+    """`cargo fmt --all -- --check` by default. Pass `--fix` (or
+    `--write`) to drop the `--check` so rustfmt rewrites files in
+    place; this requires the `/src` mount to be read-write."""
+    fix = any(a in ("--fix", "--write") for a in args)
+    cargo_cmd = "cargo fmt --all" if fix else "cargo fmt --all -- --check"
+    cmd = build_zccache_docker_cmd(
+        src_mode="rw" if fix else "ro",
+        bash_script=f"{_ENSURE_RUSTFMT_CLIPPY} && {cargo_cmd}",
+    )
+    return run_zccache_docker_cmd(cmd)
+
+
+def run_clippy(args: list[str]) -> int:
+    """`cargo clippy -p zccache --lib --tests -- -D warnings` by default.
+    Any extra args after `clippy` are forwarded verbatim, e.g.
+    `clippy --workspace --all-targets`. The `-- -D warnings` tail is
+    always appended unless the caller passed their own `--`."""
+    has_separator = "--" in args
+    cargo_args = ["clippy"]
+    if args:
+        cargo_args += args
+    else:
+        cargo_args += ["-p", "zccache", "--lib", "--tests"]
+    if not has_separator:
+        cargo_args += ["--", "-D", "warnings"]
+    script = f"{_ENSURE_RUSTFMT_CLIPPY} && cargo {' '.join(_shell_quote(a) for a in cargo_args)}"
+    cmd = build_zccache_docker_cmd(bash_script=script)
+    return run_zccache_docker_cmd(cmd)
+
+
+def run_test(args: list[str]) -> int:
+    """`cargo test --lib [PATTERN] [FLAGS...]` inside the container.
+    The first non-flag positional is treated as the pattern; `--release`
+    is recognised and prefixed before the pattern. Use the raw `cargo`
+    subcommand for unusual invocations."""
+    test_args = ["test", "--lib"]
+    if args:
+        test_args += args
+    cmd = build_zccache_docker_cmd(entrypoint="cargo", cargo_args=test_args)
+    return run_zccache_docker_cmd(cmd)
+
+
+def run_shell(args: list[str]) -> int:
+    """Drop into an interactive bash inside the zccache-builder image
+    with all named volumes mounted, the repo bind-mounted read-write,
+    and CWD=/src. Useful for one-off debugging."""
+    cmd = build_zccache_docker_cmd(
+        src_mode="rw",
+        entrypoint="/bin/bash",
+        cargo_args=list(args),
+        interactive=True,
+    )
+    # Skip the image_exists check — the user gets a clean docker error
+    # if the image isn't built yet, which is the right signal here.
     print(f"$ {' '.join(cmd)}", file=sys.stderr, flush=True)
-    return subprocess.run(cmd, check=False).returncode
+    env = os.environ.copy()
+    env.setdefault("MSYS_NO_PATHCONV", "1")
+    return subprocess.run(cmd, check=False, env=env).returncode
+
+
+def _shell_quote(arg: str) -> str:
+    """Minimal quoting for embedding an argv element inside a `bash -c`
+    string. Wraps in single quotes and escapes any embedded single
+    quotes — exactly what `shlex.quote` produces, inlined here so we
+    don't pull in `shlex` for this one call site."""
+    if arg and all(c.isalnum() or c in "@%+=:,./-_" for c in arg):
+        return arg
+    return "'" + arg.replace("'", "'\"'\"'") + "'"
 
 
 def main() -> int:
@@ -529,11 +677,21 @@ def main() -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    # `cargo` subcommand: passes everything after the marker straight to
-    # `cargo` inside the zccache-builder image. Example:
-    #   uv run python ci/perf_local.py cargo test --lib --no-run
-    # Detect this before argparse so flags after `cargo` aren't consumed.
-    if len(sys.argv) >= 2 and sys.argv[1] == "cargo":
+    # Subcommands that dispatch to a single Docker invocation against the
+    # zccache-builder image + named volumes. Detected before argparse so
+    # flags after the subcommand aren't consumed by this script's parser.
+    #
+    # `cargo` is the catch-all (PR #475). The named ones (`fmt`, `clippy`,
+    # `test`, `shell`) bake in the right `docker run` shape (issue #477)
+    # so callers don't have to remember the full incantation.
+    SUBCOMMAND_RUNNERS = {
+        "cargo": run_cargo_in_container,
+        "fmt": run_fmt,
+        "clippy": run_clippy,
+        "test": run_test,
+        "shell": run_shell,
+    }
+    if len(sys.argv) >= 2 and sys.argv[1] in SUBCOMMAND_RUNNERS:
         if not docker_available():
             print(
                 "ERROR: docker is required but not available.\n"
@@ -542,7 +700,8 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
-        return run_cargo_in_container(sys.argv[2:])
+        runner = SUBCOMMAND_RUNNERS[sys.argv[1]]
+        return runner(sys.argv[2:])
 
     parser.add_argument(
         "--scenario",
