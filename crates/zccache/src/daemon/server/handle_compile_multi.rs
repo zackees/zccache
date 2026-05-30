@@ -80,9 +80,32 @@ pub(super) fn check_unit_cache(
         }
     };
     let t_ctx = t0.elapsed();
-    let context_key = state
-        .dep_graph
-        .register_with_root(ctx.clone(), Some(key_root.clone()));
+    // Issue #474: PCH / MSVC compiles take a per-worktree salt so the
+    // resulting cache entry can't be cross-served between sibling
+    // worktrees. Mirror of the single-file gate in
+    // `pipeline.rs::handle_compile_request`.
+    let source_mode_for_key = if matches!(
+        compilation
+            .output_file
+            .as_path()
+            .extension()
+            .and_then(|e| e.to_str()),
+        Some("pch") | Some("gch")
+    ) {
+        crate::compiler::SourceMode::Header
+    } else {
+        crate::compiler::SourceMode::Normal
+    };
+    let worktree_salt = if requires_worktree_in_key(compilation.family, source_mode_for_key) {
+        Some(key_root.as_path())
+    } else {
+        None
+    };
+    let context_key = state.dep_graph.register_with_root_and_salt(
+        ctx.clone(),
+        Some(key_root.clone()),
+        worktree_salt,
+    );
     let t_register = t0.elapsed();
 
     // ── Ultra-fast path: per-file freshness skip ────────────────────

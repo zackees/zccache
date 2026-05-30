@@ -222,12 +222,37 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         &state.compiler_hash_cache,
     );
     let default_key_root = worktree_root.clone().unwrap_or_else(|| cwd_path.clone());
+    // Issue #474: PCH (output ends in .pch / .gch) and MSVC compiles must
+    // get a per-worktree cache key — the compiler embeds absolute paths in
+    // the artifact in a form the `-ffile-prefix-map` family can't scrub.
+    // See `keys::requires_worktree_in_key` for the truth table.
+    let source_mode_for_key = if matches!(
+        compilation
+            .output_file
+            .as_path()
+            .extension()
+            .and_then(|e| e.to_str()),
+        Some("pch") | Some("gch")
+    ) {
+        crate::compiler::SourceMode::Header
+    } else {
+        crate::compiler::SourceMode::Normal
+    };
+    let worktree_salt = if worktree_root.is_some()
+        && requires_worktree_in_key(compilation.family, source_mode_for_key)
+    {
+        Some(default_key_root.as_path())
+    } else {
+        None
+    };
     let (ctx, dep_flags, rustc_args_opt, context_key, worktree_equivalent_context) =
         match build_result {
             BuildContextResult::Cc { ctx, dep_flags } => {
-                let registration = state
-                    .dep_graph
-                    .register_with_root_result(ctx.clone(), Some(default_key_root.clone()));
+                let registration = state.dep_graph.register_with_root_and_salt_result(
+                    ctx.clone(),
+                    Some(default_key_root.clone()),
+                    worktree_salt,
+                );
                 (
                     ctx,
                     dep_flags,

@@ -175,7 +175,7 @@ fn trim_request_validation_cache_uses_its_own_larger_hard_cap_not_request_cache_
     );
     assert_eq!(cache.len(), REQUEST_CACHE_MAX_ENTRIES + 100);
     // Sanity: the new cap really is larger than the old shared one.
-    assert!(REQUEST_VALIDATION_CACHE_MAX_ENTRIES > REQUEST_CACHE_MAX_ENTRIES);
+    const _: () = assert!(REQUEST_VALIDATION_CACHE_MAX_ENTRIES > REQUEST_CACHE_MAX_ENTRIES);
 }
 
 #[test]

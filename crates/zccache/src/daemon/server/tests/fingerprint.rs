@@ -248,6 +248,12 @@ fn request_fingerprint_keeps_malformed_rust_remap_detached_values_distinct() {
 
 #[test]
 fn effective_compile_args_auto_adds_root_and_cwd_maps() {
+    // Issue #474: alongside `-ffile-prefix-map`, the auto-inject now
+    // also emits `-fmacro-prefix-map` and `-fdebug-prefix-map` for both
+    // the worktree root and the cwd. Older clang (< 10) and some gcc
+    // versions don't treat `-ffile-prefix-map` as the umbrella; the
+    // explicit triplet ensures `__FILE__` strings and DWARF debug info
+    // are both scrubbed on every supported toolchain.
     let tmp = tempfile::tempdir().unwrap();
     let root_path = tmp.path().join("workspace");
     let cwd = root_path.join("build");
@@ -264,16 +270,32 @@ fn effective_compile_args_auto_adds_root_and_cwd_maps() {
     );
 
     assert!(effective.contains(&"-c".to_string()));
-    assert!(effective.contains(&format!("-ffile-prefix-map={}=.", root_path.display())));
-    assert!(effective.contains(&format!("-ffile-prefix-map={}=.", cwd.display())));
-    assert_eq!(
-        effective[0],
-        format!("-ffile-prefix-map={}=.", root_path.display())
-    );
-    assert_eq!(
-        effective[1],
-        format!("-ffile-prefix-map={}=.", cwd.display())
-    );
+    for flag in &[
+        "-ffile-prefix-map",
+        "-fmacro-prefix-map",
+        "-fdebug-prefix-map",
+    ] {
+        let root_arg = format!("{flag}={}=.", root_path.display());
+        let cwd_arg = format!("{flag}={}=.", cwd.display());
+        assert!(
+            effective.contains(&root_arg),
+            "expected {root_arg:?} in {effective:?}"
+        );
+        assert!(
+            effective.contains(&cwd_arg),
+            "expected {cwd_arg:?} in {effective:?}"
+        );
+    }
+    // Order invariant: root-mapped flags precede cwd-mapped flags.
+    let root_file_pos = effective
+        .iter()
+        .position(|a| a == &format!("-ffile-prefix-map={}=.", root_path.display()))
+        .unwrap();
+    let cwd_file_pos = effective
+        .iter()
+        .position(|a| a == &format!("-ffile-prefix-map={}=.", cwd.display()))
+        .unwrap();
+    assert!(root_file_pos < cwd_file_pos);
 }
 
 #[test]

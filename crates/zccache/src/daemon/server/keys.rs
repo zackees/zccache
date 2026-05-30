@@ -181,12 +181,17 @@ pub(super) fn same_key_path(left: &Path, right: &Path) -> bool {
     crate::core::path::normalize_for_key(left) == crate::core::path::normalize_for_key(right)
 }
 
-pub(super) fn has_ffile_prefix_map_for_old(args: &[String], old: &Path) -> bool {
+/// Does `args` contain a `<target_flag>=<old>=...` mapping (case- and
+/// path-normalisation aware on the `old` side)? Used by the auto-injection
+/// branch in [`effective_compile_args`] to skip adding redundant
+/// `-ffile-prefix-map` / `-fmacro-prefix-map` / `-fdebug-prefix-map` flags
+/// when the caller already passed one for the same `old` root (issue #474).
+pub(super) fn has_cc_prefix_map_for_old(args: &[String], target_flag: &str, old: &Path) -> bool {
     args.iter().any(|arg| {
         let Some((flag, existing_old, _)) = split_cc_prefix_map_arg(arg) else {
             return false;
         };
-        flag == "-ffile-prefix-map" && same_key_path(Path::new(existing_old), old)
+        flag == target_flag && same_key_path(Path::new(existing_old), old)
     })
 }
 
@@ -195,6 +200,35 @@ pub(super) fn compiler_supports_ffile_prefix_map(compiler_path: &Path) -> bool {
         crate::compiler::detect_family(&compiler_path.to_string_lossy()),
         crate::compiler::CompilerFamily::Clang | crate::compiler::CompilerFamily::Gcc
     )
+}
+
+/// Does this (family, source_mode) pair require the worktree-root to be
+/// folded into the artifact cache key?
+///
+/// Returns `true` for compile invocations whose ARTIFACTS the compiler
+/// embeds absolute paths inside, in a form the `-ffile-prefix-map` family
+/// of flags can't scrub:
+///
+/// * **PCH builds** (`SourceMode::Header` with clang or gcc) — the `.pch` /
+///   `.gch` binary serialises the AST's header-path table; even with
+///   `-ffile-prefix-map` and friends, restoring a fastled9-built PCH into
+///   fastled10 leaves fastled9 paths inside the AST (issue #474).
+/// * **MSVC** (`CompilerFamily::Msvc`) — cl.exe has no `-fmacro-prefix-map`
+///   equivalent. Object files emit absolute paths in debug info and the
+///   `$$PDB` reference, with no compiler-side scrub available.
+///
+/// When this returns `true`, the cache key for the artifact must include
+/// the `worktree_root` (or another stable per-worktree salt) so the cache
+/// entry stays scoped to the worktree that built it. The trade-off is one
+/// cold compile per worktree for the affected unit; everything else
+/// continues to share across worktrees (issue #474 plan, Piece B).
+#[must_use]
+pub fn requires_worktree_in_key(
+    family: crate::compiler::CompilerFamily,
+    source_mode: crate::compiler::SourceMode,
+) -> bool {
+    use crate::compiler::{CompilerFamily, SourceMode};
+    matches!(family, CompilerFamily::Msvc) || matches!(source_mode, SourceMode::Header)
 }
 
 pub(super) fn request_key_root(
@@ -241,21 +275,31 @@ pub(super) fn effective_compile_args(
         return expanded_args.to_vec();
     }
 
-    let mut auto_args = Vec::with_capacity(2);
-    if !has_ffile_prefix_map_for_old(expanded_args, root_path) {
-        auto_args.push(format!(
-            "-ffile-prefix-map={}={}",
-            root_path.to_string_lossy(),
-            "."
-        ));
+    // Inject the three siblings together. Modern clang treats
+    // `-ffile-prefix-map` as the umbrella, but older clang (< 10) and
+    // some gcc versions need `-fmacro-prefix-map` and `-fdebug-prefix-map`
+    // explicitly. Issue #474: without the explicit macro form, `__FILE__`
+    // strings in `.rodata` leak the original-clone path into artifacts
+    // restored to a sibling worktree.
+    const AUTO_PREFIX_MAP_FLAGS: &[&str] = &[
+        "-ffile-prefix-map",
+        "-fmacro-prefix-map",
+        "-fdebug-prefix-map",
+    ];
+
+    let mut auto_args = Vec::with_capacity(AUTO_PREFIX_MAP_FLAGS.len() * 2);
+    for flag in AUTO_PREFIX_MAP_FLAGS {
+        if !has_cc_prefix_map_for_old(expanded_args, flag, root_path) {
+            auto_args.push(format!("{}={}=.", flag, root_path.to_string_lossy()));
+        }
     }
 
-    if !same_key_path(root_path, cwd) && !has_ffile_prefix_map_for_old(expanded_args, cwd) {
-        auto_args.push(format!(
-            "-ffile-prefix-map={}={}",
-            cwd.to_string_lossy(),
-            "."
-        ));
+    if !same_key_path(root_path, cwd) {
+        for flag in AUTO_PREFIX_MAP_FLAGS {
+            if !has_cc_prefix_map_for_old(expanded_args, flag, cwd) {
+                auto_args.push(format!("{}={}=.", flag, cwd.to_string_lossy()));
+            }
+        }
     }
 
     if auto_args.is_empty() {

@@ -180,8 +180,8 @@ fn context_key_ignores_workspace_root_when_key_root_is_stable() {
         &["DEBUG"],
     );
 
-    let key_a = compute_context_key(&ctx_a, Some(Path::new("/workspace-a")));
-    let key_b = compute_context_key(&ctx_b, Some(Path::new("/workspace-b")));
+    let key_a = compute_context_key(&ctx_a, Some(Path::new("/workspace-a")), None);
+    let key_b = compute_context_key(&ctx_b, Some(Path::new("/workspace-b")), None);
 
     assert_eq!(key_a, key_b);
 }
@@ -194,8 +194,8 @@ fn cxx_context_key_with_root_normalizes_file_prefix_map_roots() {
     ctx_b.flags = vec!["-ffile-prefix-map=/workspace-b=.".to_string()];
 
     assert_eq!(
-        compute_context_key(&ctx_a, Some(Path::new("/workspace-a"))),
-        compute_context_key(&ctx_b, Some(Path::new("/workspace-b"))),
+        compute_context_key(&ctx_a, Some(Path::new("/workspace-a")), None),
+        compute_context_key(&ctx_b, Some(Path::new("/workspace-b")), None),
         "equivalent file-prefix-map old prefixes under the key root should match"
     );
 }
@@ -208,8 +208,8 @@ fn cxx_context_key_with_root_preserves_file_prefix_map_new_prefixes() {
     ctx_b.flags = vec!["-ffile-prefix-map=/workspace-b=/src".to_string()];
 
     assert_ne!(
-        compute_context_key(&ctx_a, Some(Path::new("/workspace-a"))),
-        compute_context_key(&ctx_b, Some(Path::new("/workspace-b"))),
+        compute_context_key(&ctx_a, Some(Path::new("/workspace-a")), None),
+        compute_context_key(&ctx_b, Some(Path::new("/workspace-b")), None),
         "different file-prefix-map new prefixes should remain key-significant"
     );
 }
@@ -222,8 +222,8 @@ fn cxx_context_key_with_root_keeps_external_file_prefix_map_old_prefixes_distinc
     ctx_b.flags = vec!["-ffile-prefix-map=/external-b=.".to_string()];
 
     assert_ne!(
-        compute_context_key(&ctx_a, Some(Path::new("/workspace-a"))),
-        compute_context_key(&ctx_b, Some(Path::new("/workspace-b"))),
+        compute_context_key(&ctx_a, Some(Path::new("/workspace-a")), None),
+        compute_context_key(&ctx_b, Some(Path::new("/workspace-b")), None),
         "file-prefix-map old prefixes outside the key root should keep absolute identity"
     );
 }
@@ -246,8 +246,8 @@ fn cxx_context_key_with_root_normalizes_prefix_maps_in_unknown_flags() {
     ];
 
     assert_eq!(
-        compute_context_key(&ctx_a, Some(Path::new("/workspace-a"))),
-        compute_context_key(&ctx_b, Some(Path::new("/workspace-b"))),
+        compute_context_key(&ctx_a, Some(Path::new("/workspace-a")), None),
+        compute_context_key(&ctx_b, Some(Path::new("/workspace-b")), None),
         "C/C++ prefix-map flags should normalize under unknown_flags"
     );
 }
@@ -255,7 +255,7 @@ fn cxx_context_key_with_root_normalizes_prefix_maps_in_unknown_flags() {
 #[test]
 fn artifact_key_ignores_workspace_root_when_key_root_is_stable() {
     let ctx = make_context("/workspace-a/src/main.cpp", &["/workspace-a/include"], &[]);
-    let key = compute_context_key(&ctx, Some(Path::new("/workspace-a")));
+    let key = compute_context_key(&ctx, Some(Path::new("/workspace-a")), None);
     let mut hashes_a = vec![
         (
             NormalizedPath::from("/workspace-a/include/foo.h"),

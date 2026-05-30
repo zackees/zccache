@@ -11,6 +11,7 @@ mod compiler_hash;
 mod fingerprint;
 mod link_cache;
 mod pack;
+mod path_remap;
 mod pch;
 mod post_link_hook;
 mod server_ipc;

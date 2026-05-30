@@ -115,10 +115,12 @@ impl CompileContext {
     /// Compute the context key.
     ///
     /// Includes: source file path, include dirs (in order), sorted defines,
-    /// sorted flags, unknown flags, force includes.
+    /// sorted flags, unknown flags, force includes. Passes `None` for both
+    /// `key_root` and `worktree_salt` — callers that need either should call
+    /// [`compute_context_key`] directly.
     #[must_use]
     pub fn context_key(&self) -> ContextKey {
-        compute_context_key(self, None)
+        compute_context_key(self, None, None)
     }
 }
 
@@ -191,11 +193,40 @@ fn normalize_cxx_prefix_map_flag_for_key(flag: &str, key_root: Option<&Path>) ->
 ///
 /// When `key_root` is provided, paths under that root are hashed relative to it
 /// so equivalent workspaces can share cache keys across root-directory renames.
+///
+/// When `worktree_salt` is provided, its byte representation is folded into the
+/// hash so the resulting key is unique to that worktree. This is the
+/// correctness escape hatch for compile modes whose artifacts the compiler
+/// embeds absolute paths inside in a form the `-ffile-prefix-map` family of
+/// flags can't scrub:
+///
+/// * PCH builds (`-x c++-header` / `-x c-header`) — the `.pch`/`.gch` binary
+///   serialises the AST's header-path table.
+/// * MSVC compiles — `cl.exe` has no `-fmacro-prefix-map` equivalent.
+///
+/// See `crate::daemon::server::keys::requires_worktree_in_key` for the
+/// truth table and issue #474 for the cross-clone leak this guards against.
+/// All other callers (rustc, clang/gcc non-PCH) pass `None` and continue to
+/// share cache entries across worktrees of the same commit.
 #[must_use]
-pub fn compute_context_key(ctx: &CompileContext, key_root: Option<&Path>) -> ContextKey {
+pub fn compute_context_key(
+    ctx: &CompileContext,
+    key_root: Option<&Path>,
+    worktree_salt: Option<&Path>,
+) -> ContextKey {
     let mut hasher = blake3::Hasher::new();
 
     hasher.update(b"zccache-context-key-v1\0");
+
+    if let Some(salt) = worktree_salt {
+        // Domain-tagged so the salt can't collide with any future hash
+        // input that happens to start with the same bytes. `None` is the
+        // common case and writes no bytes — keys produced with no salt
+        // are byte-identical to pre-#474 keys.
+        hasher.update(b"worktree-salt\0");
+        hasher.update(crate::core::path::normalize_for_key(salt).as_bytes());
+        hasher.update(b"\0");
+    }
 
     hasher.update(normalize_key_path(&ctx.source_file, key_root).as_bytes());
     hasher.update(b"\0");

@@ -62,7 +62,7 @@ pub fn endpoint_for_cache_dir(cache_dir: &std::path::Path, namespace: Option<&st
     {
         let direct = cache_dir.join(daemon_socket_name(namespace));
         let direct = direct.to_string_lossy();
-        if direct.as_bytes().len() <= MAX_PORTABLE_UNIX_SOCKET_PATH_BYTES {
+        if direct.len() <= MAX_PORTABLE_UNIX_SOCKET_PATH_BYTES {
             return direct.into_owned();
         }
 
@@ -594,7 +594,7 @@ mod tests {
         let endpoint = endpoint_for_cache_dir(&cache_dir, Some("soldr-dev"));
 
         assert!(
-            endpoint.as_bytes().len() <= MAX_PORTABLE_UNIX_SOCKET_PATH_BYTES,
+            endpoint.len() <= MAX_PORTABLE_UNIX_SOCKET_PATH_BYTES,
             "endpoint too long: {endpoint}"
         );
         assert!(endpoint.starts_with("/tmp/zccache-"));

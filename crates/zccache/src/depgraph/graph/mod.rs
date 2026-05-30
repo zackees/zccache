@@ -244,6 +244,20 @@ impl DepGraph {
 
     /// Register a compilation context with an optional key root used to
     /// normalize project-local paths across workspace renames.
+    /// Variant of [`Self::register_with_root`] that folds an optional
+    /// `worktree_salt` into the context key (issue #474). Used by the
+    /// multi-file compile path when `keys::requires_worktree_in_key` is
+    /// true for the unit. Returns only the resulting [`ContextKey`].
+    pub fn register_with_root_and_salt(
+        &self,
+        ctx: CompileContext,
+        key_root: Option<NormalizedPath>,
+        worktree_salt: Option<&Path>,
+    ) -> ContextKey {
+        self.register_with_root_and_salt_result(ctx, key_root, worktree_salt)
+            .key
+    }
+
     pub fn register_with_root(
         &self,
         ctx: CompileContext,
@@ -257,7 +271,22 @@ impl DepGraph {
         ctx: CompileContext,
         key_root: Option<NormalizedPath>,
     ) -> ContextRegistration {
-        let key = compute_context_key(&ctx, key_root.as_deref());
+        self.register_with_root_and_salt_result(ctx, key_root, None)
+    }
+
+    /// Issue #474: variant of [`Self::register_with_root_result`] that folds an
+    /// optional `worktree_salt` into the context key. Used by the C/C++
+    /// compile pipeline when `keys::requires_worktree_in_key` returns true
+    /// (PCH builds + MSVC), so the resulting cache entry is scoped to one
+    /// worktree and can't be served to a sibling clone whose embedded
+    /// paths would diverge from the artifact's.
+    pub fn register_with_root_and_salt_result(
+        &self,
+        ctx: CompileContext,
+        key_root: Option<NormalizedPath>,
+        worktree_salt: Option<&Path>,
+    ) -> ContextRegistration {
+        let key = compute_context_key(&ctx, key_root.as_deref(), worktree_salt);
         self.register_with_key_and_root_result(key, ctx, key_root)
     }
 
