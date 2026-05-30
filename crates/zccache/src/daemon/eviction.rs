@@ -30,6 +30,11 @@ const DEPGRAPH_CONTEXT_BYTES: usize = 2048;
 const FAST_HIT_ENTRY_BYTES: usize = 200;
 /// Estimated fixed overhead per cached artifact entry (excludes payload).
 const ARTIFACT_OVERHEAD_BYTES: usize = 200;
+/// Max age preserved by the fast-hit cache when a budget-pressure trim
+/// fires. Set small (5 s) so the trim still reclaims the bulk of the
+/// cache, but recently-cached entries — including those being filled
+/// in-flight when the trim races — survive. (#454)
+const FAST_HIT_BUDGET_TRIM_MAX_AGE: Duration = Duration::from_secs(5);
 
 /// Snapshot of estimated memory usage across all in-memory caches.
 #[derive(Debug, Clone)]
@@ -136,8 +141,17 @@ pub(crate) fn evict_to_budget(
     let mut total_items: usize = 0;
 
     // Priority 1: fast-hit cache (cheapest to lose).
+    //
+    // #454: pass a small TTL rather than `Duration::ZERO`. ZERO trims any
+    // entry older than "now", which during async in-flight populate can
+    // wipe entries that were JUST cached — a request being filled races
+    // against its own result when a budget-pressure check fires at the
+    // wrong instant. Keeping the most-recent few seconds of entries costs
+    // at most a handful of FAST_HIT_ENTRY_BYTES (well inside the 10 %
+    // slack we already give the budget) and saves the corresponding
+    // cold re-hits during build surges.
     if to_free > 0 && snap.fast_hit_entries > 0 {
-        let removed = trim_fast_hit_cache(fast_hit_cache, Duration::ZERO);
+        let removed = trim_fast_hit_cache(fast_hit_cache, FAST_HIT_BUDGET_TRIM_MAX_AGE);
         let freed = (removed * FAST_HIT_ENTRY_BYTES) as u64;
         total_freed += freed;
         total_items += removed;
@@ -365,14 +379,18 @@ mod tests {
     fn evict_fast_hit_first() {
         let (cs, dg, fh, art) = empty_caches();
 
-        // Add enough fast-hit entries to exceed a tiny budget.
+        // Add enough fast-hit entries to exceed a tiny budget. Aged past
+        // FAST_HIT_BUDGET_TRIM_MAX_AGE (5 s) so the budget-pressure trim
+        // can wipe them — recent entries are intentionally preserved by
+        // #454; see `evict_fast_hit_preserves_recent_entries` below.
+        let aged = Instant::now() - Duration::from_secs(60);
         for i in 0..100 {
             fh.insert(
                 make_context_key(&format!("/tmp/fh{i}.c")),
                 FastHitEntry {
                     clock: crate::fscache::Clock::ZERO,
                     artifact_key_hex: String::new(),
-                    cached_at: Instant::now(),
+                    cached_at: aged,
                 },
             );
         }
@@ -382,6 +400,51 @@ mod tests {
         assert!(freed > 0);
         assert_eq!(items, 100); // All fast-hit entries evicted.
         assert!(fh.is_empty());
+    }
+
+    #[test]
+    fn evict_fast_hit_preserves_recent_entries() {
+        // #454: the budget-pressure trim should keep entries cached within
+        // the last FAST_HIT_BUDGET_TRIM_MAX_AGE (5 s) so a populate that
+        // races with the trim isn't wiped immediately after it landed.
+        let (cs, dg, fh, art) = empty_caches();
+
+        let aged = Instant::now() - Duration::from_secs(60);
+        let recent = Instant::now();
+        // 50 old entries (should be wiped) + 50 fresh entries (should survive).
+        for i in 0..50 {
+            fh.insert(
+                make_context_key(&format!("/tmp/old{i}.c")),
+                FastHitEntry {
+                    clock: crate::fscache::Clock::ZERO,
+                    artifact_key_hex: String::new(),
+                    cached_at: aged,
+                },
+            );
+        }
+        for i in 0..50 {
+            fh.insert(
+                make_context_key(&format!("/tmp/new{i}.c")),
+                FastHitEntry {
+                    clock: crate::fscache::Clock::ZERO,
+                    artifact_key_hex: String::new(),
+                    cached_at: recent,
+                },
+            );
+        }
+
+        let budget = 1000; // Tiny budget — guarantees the fast-hit trim fires.
+        let (_freed, items) = evict_to_budget(budget, &cs, &dg, &fh, &art, 0);
+
+        assert_eq!(items, 50, "only the 50 aged entries should evict");
+        assert_eq!(fh.len(), 50, "the 50 recent entries must survive");
+        // Confirm the survivors are the recent ones.
+        for i in 0..50 {
+            assert!(
+                fh.contains_key(&make_context_key(&format!("/tmp/new{i}.c"))),
+                "recent entry /tmp/new{i}.c should survive the budget-pressure trim",
+            );
+        }
     }
 
     #[test]
@@ -459,13 +522,17 @@ mod tests {
         let (cs, dg, fh, art) = empty_caches();
 
         // Add fast-hit entries worth 100 * 200 = 20_000 bytes estimated.
+        // Aged past FAST_HIT_BUDGET_TRIM_MAX_AGE so the budget-pressure
+        // trim is allowed to wipe them — recent entries are intentionally
+        // preserved by #454.
+        let aged = Instant::now() - Duration::from_secs(60);
         for i in 0..100 {
             fh.insert(
                 make_context_key(&format!("/tmp/inflight{i}.c")),
                 FastHitEntry {
                     clock: crate::fscache::Clock::ZERO,
                     artifact_key_hex: String::new(),
-                    cached_at: Instant::now(),
+                    cached_at: aged,
                 },
             );
         }
