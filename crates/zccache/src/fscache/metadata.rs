@@ -3,7 +3,70 @@
 use crate::core::NormalizedPath;
 use dashmap::DashMap;
 use rayon::prelude::*;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
+
+// ── mtime drift tolerance (issue #469) ──────────────────────────────────────
+
+/// Default tolerated mtime drift, in nanoseconds, when comparing a cached
+/// metadata entry against a fresh `stat()` (`get_cached_hash_if_stat_valid`).
+///
+/// Set to 1 full second so archive-extraction truncation (tar / zstd-tar /
+/// soldr-save-load all flatten sub-second nanos to 0) and FAT32-style 2-sec
+/// granularity drift are both absorbed. Two real content changes inside a
+/// 1-second window are rare in normal builds; the journal + watcher catch
+/// them via mtime-independent paths.
+///
+/// Override at daemon startup via `ZCCACHE_MTIME_TOLERANCE_NS`:
+/// - `0` → strict byte-equal mtime match (pre-issue-#469 behavior).
+/// - any positive integer → tolerance window in nanoseconds.
+pub const DEFAULT_MTIME_TOLERANCE_NS: u64 = 1_000_000_000;
+
+/// Env var that overrides [`DEFAULT_MTIME_TOLERANCE_NS`]. Read once on first
+/// access; subsequent changes during daemon lifetime are ignored.
+pub const MTIME_TOLERANCE_ENV: &str = "ZCCACHE_MTIME_TOLERANCE_NS";
+
+/// Resolve the active tolerance, caching the result. The env probe is done
+/// exactly once per daemon process — no per-hit syscall overhead.
+fn mtime_tolerance_ns() -> u64 {
+    static CACHED: OnceLock<u64> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var(MTIME_TOLERANCE_ENV)
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_MTIME_TOLERANCE_NS)
+    })
+}
+
+/// Compare two mtimes with the configured drift tolerance.
+///
+/// Match if:
+/// - The two values are byte-equal (no truncation happened), OR
+/// - `|a - b| <= mtime_tolerance_ns()`.
+///
+/// Setting the tolerance to `0` (via `ZCCACHE_MTIME_TOLERANCE_NS=0`)
+/// disables the second branch entirely and restores strict byte-equal
+/// semantics — useful for diagnosing watcher bugs.
+fn mtimes_match(a: SystemTime, b: SystemTime) -> bool {
+    if a == b {
+        return true;
+    }
+    let tolerance_ns = mtime_tolerance_ns();
+    if tolerance_ns == 0 {
+        return false;
+    }
+    let (a_secs, a_nanos) = mtime_components(a);
+    let (b_secs, b_nanos) = mtime_components(b);
+    let a_total = (a_secs as u128) * 1_000_000_000 + (a_nanos as u128);
+    let b_total = (b_secs as u128) * 1_000_000_000 + (b_nanos as u128);
+    a_total.abs_diff(b_total) <= tolerance_ns as u128
+}
+
+fn mtime_components(t: SystemTime) -> (u64, u32) {
+    t.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| (d.as_secs(), d.subsec_nanos()))
+        .unwrap_or((0, 0))
+}
 
 /// Confidence level for a cached metadata entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -205,7 +268,7 @@ impl MetadataCache {
         let fs_meta = std::fs::metadata(path).ok()?;
         let mtime = fs_meta.modified().ok()?;
         let size = fs_meta.len();
-        if entry.mtime == mtime && entry.size == size {
+        if mtimes_match(entry.mtime, mtime) && entry.size == size {
             Some(hash)
         } else {
             None
@@ -277,6 +340,61 @@ impl Default for MetadataCache {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    // ── mtime tolerance (issue #469) ─────────────────────────────────────
+
+    fn ts(secs: u64, nanos: u32) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::new(secs, nanos)
+    }
+
+    #[test]
+    fn default_mtime_tolerance_is_one_second() {
+        // Lock in the documented default. The constant is `pub` so consumers
+        // and tests both depend on this being 1_000_000_000 ns.
+        assert_eq!(DEFAULT_MTIME_TOLERANCE_NS, 1_000_000_000);
+    }
+
+    #[test]
+    fn mtimes_match_byte_equal() {
+        assert!(mtimes_match(ts(1_000, 0), ts(1_000, 0)));
+        assert!(mtimes_match(ts(1_000, 500_000), ts(1_000, 500_000)));
+    }
+
+    #[test]
+    fn mtimes_match_archive_truncation_one_side_zero() {
+        // Cached side has sub-second precision; archive-restored side lost
+        // it. Drift is ~141 ms, well within the 1 s default tolerance.
+        assert!(mtimes_match(ts(1_000, 141_490_982), ts(1_000, 0)));
+        // Symmetric — either side can be the truncated one.
+        assert!(mtimes_match(ts(1_000, 0), ts(1_000, 141_490_982)));
+    }
+
+    #[test]
+    fn mtimes_match_within_default_tolerance_window() {
+        // Drift = 500 ms (half the 1 s tolerance) → match.
+        assert!(mtimes_match(ts(1_000, 0), ts(1_000, 500_000_000)));
+        // Drift = 999 ms — just inside the boundary.
+        assert!(mtimes_match(ts(1_000, 0), ts(1_000, 999_999_999)));
+        // Equal to the tolerance boundary — `<=` accepts.
+        assert!(mtimes_match(ts(1_000, 0), ts(1_001, 0)));
+    }
+
+    #[test]
+    fn mtimes_dont_match_beyond_default_tolerance() {
+        // Drift = 1 s + 1 ns → falls outside the tolerance window.
+        assert!(!mtimes_match(ts(1_000, 0), ts(1_001, 1)));
+        // Multi-second drift — clearly a real change.
+        assert!(!mtimes_match(ts(1_000, 0), ts(1_002, 0)));
+        assert!(!mtimes_match(ts(1_000, 500_000), ts(1_010, 0)));
+    }
+
+    #[test]
+    fn mtimes_match_pre_epoch_safe() {
+        // Pre-UNIX-EPOCH times resolve to (0, 0) via mtime_components — should
+        // not panic, should compare equal to other pre-epoch values.
+        let pre = SystemTime::UNIX_EPOCH - Duration::from_secs(1);
+        assert!(mtimes_match(pre, pre));
+    }
 
     #[test]
     fn insert_and_get() {
