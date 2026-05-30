@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -219,6 +220,15 @@ def run_scenario(layout: dict[str, Path], scenario: str, fixture: str) -> Path:
 
     print(f"[perf-local] running scenario {scenario} x {fixture} -> {results_dir}")
     start = time.monotonic()
+    # Pass any ZCCACHE_* env through to the container so the daemon's
+    # env-gated instrumentation (e.g. ZCCACHE_HIT_TRACE=1 for the sub-phase
+    # dump from issue #468) reaches the in-container daemon process.
+    pass_through_env = [
+        (k, v) for k, v in os.environ.items() if k.startswith("ZCCACHE_")
+    ]
+    env_flags: list[str] = []
+    for k, v in pass_through_env:
+        env_flags.extend(["-e", f"{k}={v}"])
     run([
         "docker", "run", "--rm",
         "-v", host_volume(soldr_bin,              "/usr/local/bin/soldr", "ro"),
@@ -227,6 +237,7 @@ def run_scenario(layout: dict[str, Path], scenario: str, fixture: str) -> Path:
         "-v", host_volume(results_dir,            "/results"),
         "-e", f"SCENARIO={scenario}",
         "-e", f"FIXTURE={fixture}",
+        *env_flags,
         IMAGE_RUNNER,
     ])
     elapsed = time.monotonic() - start

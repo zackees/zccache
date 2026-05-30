@@ -327,6 +327,11 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
     let context_is_cold = state.dep_graph.is_cold(&context_key);
 
     // ── Phase: hash source ───────────────────────────────────────────
+    // Issue #468: env-gated sub-phase trace. When ZCCACHE_HIT_TRACE=1, the
+    // daemon dumps per-compile sub-phase counts to stderr so the perf
+    // harness can break down the dominant "metadata cache (source+hdrs)"
+    // phase into source vs headers vs metadata-hit-rate components.
+    let hit_trace = std::env::var_os("ZCCACHE_HIT_TRACE").is_some();
     let t2 = std::time::Instant::now();
     let mut hash_map: HashMap<NormalizedPath, ContentHash> = HashMap::new();
     if !context_is_cold {
@@ -363,6 +368,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
     let verdict;
     let diag_reason;
 
+    let mut hit_trace_headers_count: usize = 0;
     if context_is_cold {
         // Cold context — skip hashing and depgraph check entirely.
         hash_headers_ns = 0;
@@ -385,6 +391,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 .iter()
                 .map(|h| (h, "rustc_extern_hash_fail"));
             let all_paths: Vec<_> = include_iter.chain(force_iter).chain(extern_iter).collect();
+            hit_trace_headers_count = all_paths.len();
 
             let results: Vec<_> = all_paths
                 .par_iter()
@@ -412,6 +419,23 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             }
         }
         hash_headers_ns = t3.elapsed().as_nanos() as u64;
+
+        // Issue #468: ZCCACHE_HIT_TRACE=1 dumps per-compile sub-phase breakdown
+        // so the perf harness can decompose the dominant metadata-cache phase.
+        // Format is a single line per compile, easy to grep/awk over a session.
+        if hit_trace {
+            let hdr_avg_us =
+                if hit_trace_headers_count > 0 { hash_headers_ns / hit_trace_headers_count as u64 / 1_000 } else { 0 };
+            eprintln!(
+                "ZCCACHE_HIT_TRACE source_us={} headers_count={} headers_us={} hdr_avg_us={} \
+                 source_path={}",
+                hash_source_ns / 1_000,
+                hit_trace_headers_count,
+                hash_headers_ns / 1_000,
+                hdr_avg_us,
+                source_path.display()
+            );
+        }
 
         // ── Phase: depgraph check ────────────────────────────────────
         // Fast path: recompute artifact key from fresh hashes and compare
