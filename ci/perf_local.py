@@ -12,9 +12,24 @@ Three Docker images (see `ci/docker/README.md`) collaborate:
    binary dirs + the zccache source for `perf/scenarios/`, runs the
    scenario, writes result.json + cache reports back to host.
 
-Persistent `.perf-local/target/{soldr,zccache}/` dirs let cargo incremental
-do its job across runs. First run is a full build (~5-8 min); subsequent
-runs after a source edit are seconds.
+Build state — cargo `/target` and `CARGO_HOME` — lives in named Docker
+volumes (`zccache-perf-target-{soldr,zccache}` and
+`zccache-perf-cargo-home-{soldr,zccache}`), NOT host bind mounts.
+Rationale: with bind mounts on Windows hosts, the WSL2 9P translation
+rewrites file mtimes per container start, defeating cargo's incremental
+fingerprint check — measured at 4–6 min per "no-op" rebuild. Named
+volumes live on Linux-native ext4 inside Docker's VFS and give cargo
+a stable filesystem; the same no-op rebuild is 1–3 s.
+
+First run is a full cold build (~5–8 min). Subsequent runs after a
+source edit are seconds. Wipe a volume with `docker volume rm
+zccache-perf-target-zccache` to force a clean start.
+
+Migrating from the older host-bind-mount layout: the previous
+`.perf-local/target/{soldr,zccache}/` and `.perf-local/cargo-home/`
+host directories are now unused. They can be deleted to reclaim disk:
+`rm -rf .perf-local/target .perf-local/cargo-home` — the named Docker
+volumes contain the live build state going forward.
 
 Usage::
 
@@ -22,6 +37,12 @@ Usage::
     uv run python ci/perf_local.py --scenario worktree-share
     uv run python ci/perf_local.py --scenario cold-tar-untar-warm --fixture sqlite-link
     uv run python ci/perf_local.py --rebuild-images               # force docker build of all 3 images
+
+    # Ad-hoc cargo in the same warmed target/ volume — much faster than
+    # `soldr cargo` on the host because the daemon is undisturbed:
+    uv run python ci/perf_local.py cargo test --lib --no-run
+    uv run python ci/perf_local.py cargo test --release --lib fscache::metadata::tests::mtimes
+    uv run python ci/perf_local.py cargo clippy --workspace -- -D warnings
 
 The result table emitted at the end mirrors the rich "Evaluate" step from the
 GHA perf cluster, so you can compare local vs cluster numbers row-for-row.
@@ -48,6 +69,22 @@ SOLDR_REF = "main"
 IMAGE_SOLDR = "zccache-perf-soldr-builder"
 IMAGE_ZCCACHE = "zccache-perf-zccache-builder"
 IMAGE_RUNNER = "zccache-perf-runner"
+
+# Named Docker volumes for cargo target + CARGO_HOME. Using Docker-managed
+# volumes (Linux-native ext4 under the WSL2 backend on Windows hosts)
+# instead of host bind mounts gives cargo a stable, fast filesystem for
+# the fingerprint check. With bind mounts on Windows, the 9P translation
+# layer rewrites mtimes per container start, defeating cargo's
+# incremental — measured at 4–6 min per "no-op" rebuild. With named
+# volumes, the same rebuild is seconds.
+#
+# Volumes are auto-created on first reference. They persist across
+# container runs (and across `docker system prune`, since they have
+# explicit names). Wipe explicitly with `docker volume rm` if needed.
+VOLUME_TARGET_SOLDR = "zccache-perf-target-soldr"
+VOLUME_TARGET_ZCCACHE = "zccache-perf-target-zccache"
+VOLUME_CARGO_HOME_SOLDR = "zccache-perf-cargo-home-soldr"
+VOLUME_CARGO_HOME_ZCCACHE = "zccache-perf-cargo-home-zccache"
 
 VALID_SCENARIOS = (
     "cold-tar-untar-warm",
@@ -145,18 +182,13 @@ def ensure_soldr_source() -> Path:
 
 
 def ensure_volume_dirs() -> dict[str, Path]:
-    """Create the .perf-local/ volume tree, return a name->path map."""
+    """Create the host-side `.perf-local/` directories (binaries + soldr-src
+    + results). Build state — /target and CARGO_HOME — lives in named
+    Docker volumes (see `VOLUME_*` constants) instead of host bind mounts;
+    we keep host directories only for things that need to be visible from
+    the host file system."""
     layout = {
         "soldr_src":         PERF_LOCAL / "soldr-src",
-        "target_soldr":      PERF_LOCAL / "target" / "soldr",
-        "target_zccache":    PERF_LOCAL / "target" / "zccache",
-        # CARGO_HOME volumes. The Dockerfiles set `ENV CARGO_HOME=/cargo-home`
-        # so cargo's registry index + crate sources land here. Without a
-        # host-side mount, every container starts with an empty CARGO_HOME
-        # and re-fetches ~175 MiB to revalidate fingerprints — measured at
-        # +28s per no-op build. Persisting it cuts no-op builds to seconds.
-        "cargo_home_soldr":   PERF_LOCAL / "cargo-home" / "soldr",
-        "cargo_home_zccache": PERF_LOCAL / "cargo-home" / "zccache",
         "bin_soldr":         PERF_LOCAL / "binaries" / "soldr",
         "bin_zccache":       PERF_LOCAL / "binaries" / "zccache",
         "results":           PERF_LOCAL / "results",
@@ -183,8 +215,8 @@ def run_soldr_builder(layout: dict[str, Path]) -> None:
     run([
         "docker", "run", "--rm",
         "-v", host_volume(layout["soldr_src"],        "/src", "ro"),
-        "-v", host_volume(layout["target_soldr"],     "/target"),
-        "-v", host_volume(layout["cargo_home_soldr"], "/cargo-home"),
+        "-v", f"{VOLUME_TARGET_SOLDR}:/target",
+        "-v", f"{VOLUME_CARGO_HOME_SOLDR}:/cargo-home",
         "-v", host_volume(layout["bin_soldr"],        "/out"),
         IMAGE_SOLDR,
     ])
@@ -195,8 +227,8 @@ def run_zccache_builder(layout: dict[str, Path]) -> None:
     run([
         "docker", "run", "--rm",
         "-v", host_volume(REPO_ROOT,                    "/src", "ro"),
-        "-v", host_volume(layout["target_zccache"],     "/target"),
-        "-v", host_volume(layout["cargo_home_zccache"], "/cargo-home"),
+        "-v", f"{VOLUME_TARGET_ZCCACHE}:/target",
+        "-v", f"{VOLUME_CARGO_HOME_ZCCACHE}:/cargo-home",
         "-v", host_volume(layout["bin_zccache"],        "/out"),
         IMAGE_ZCCACHE,
     ])
@@ -457,11 +489,61 @@ def render_phase_breakdown(phase_profile) -> None:
 # ---------------------------------------------------------------------------
 
 
+def run_cargo_in_container(cargo_args: list[str]) -> int:
+    """Run an arbitrary `cargo` command inside the zccache-builder image
+    against the named target / CARGO_HOME volumes. The repo is mounted
+    read-only at /src; cargo's working directory is /src so workspace-
+    relative invocations work transparently.
+
+    The named volumes give cargo a stable, fast Linux-native fs for its
+    fingerprint check — much faster than the previous host-bind-mount
+    layout where the WSL2 9P translation rewrote mtimes per container
+    start and forced repeat rebuilds.
+
+    Use this for unit tests, clippy, doc — anything where you'd run
+    `cargo X` on the host but you want zccache's daemon to stay
+    undisturbed.
+    """
+    if not image_exists(IMAGE_ZCCACHE):
+        print(
+            f"[perf-local] image {IMAGE_ZCCACHE} not built yet — "
+            "run `uv run python ci/perf_local.py --skip-soldr-build` first.",
+            file=sys.stderr,
+        )
+        return 2
+    cmd = [
+        "docker", "run", "--rm",
+        "-v", host_volume(REPO_ROOT,           "/src", "ro"),
+        "-v", f"{VOLUME_TARGET_ZCCACHE}:/target",
+        "-v", f"{VOLUME_CARGO_HOME_ZCCACHE}:/cargo-home",
+        "--entrypoint", "cargo",
+        IMAGE_ZCCACHE,
+        *cargo_args,
+    ]
+    print(f"$ {' '.join(cmd)}", file=sys.stderr, flush=True)
+    return subprocess.run(cmd, check=False).returncode
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    # `cargo` subcommand: passes everything after the marker straight to
+    # `cargo` inside the zccache-builder image. Example:
+    #   uv run python ci/perf_local.py cargo test --lib --no-run
+    # Detect this before argparse so flags after `cargo` aren't consumed.
+    if len(sys.argv) >= 2 and sys.argv[1] == "cargo":
+        if not docker_available():
+            print(
+                "ERROR: docker is required but not available.\n"
+                "  - Is Docker Desktop running?\n"
+                "  - Is `docker` on PATH?\n",
+                file=sys.stderr,
+            )
+            return 2
+        return run_cargo_in_container(sys.argv[2:])
+
     parser.add_argument(
         "--scenario",
         choices=VALID_SCENARIOS,
