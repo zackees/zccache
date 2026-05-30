@@ -152,6 +152,50 @@ fn trim_request_validation_cache_removes_old_entries() {
 }
 
 #[test]
+fn trim_request_validation_cache_uses_its_own_larger_hard_cap_not_request_cache_max() {
+    // #453: validation cache should have its own bound separate from the
+    // request cache, sized larger (lighter per-entry → can hold more).
+    // Filling it with REQUEST_CACHE_MAX_ENTRIES + 100 entries (4196) must
+    // NOT trigger the hard-cap clear, because the validation cap is 8192.
+    let cache = DashMap::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let now = std::time::Instant::now();
+    for i in 0..(REQUEST_CACHE_MAX_ENTRIES + 100) {
+        cache.insert(
+            test_request_validation_key(i, &tmp.path().join(format!("root-{i}"))),
+            test_request_validation_entry(now),
+        );
+    }
+
+    let removed = trim_request_validation_cache_at(&cache, EPHEMERAL_CACHE_MAX_AGE, now);
+
+    assert_eq!(removed, 0, "validation cap is 8192, holding 4196 must not evict");
+    assert_eq!(cache.len(), REQUEST_CACHE_MAX_ENTRIES + 100);
+    // Sanity: the new cap really is larger than the old shared one.
+    assert!(REQUEST_VALIDATION_CACHE_MAX_ENTRIES > REQUEST_CACHE_MAX_ENTRIES);
+}
+
+#[test]
+fn trim_request_validation_cache_clears_when_over_validation_hard_cap() {
+    // #453: when filled past the validation-specific cap (8192), the cache
+    // is wiped just like request_cache is past its own cap.
+    let cache = DashMap::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let now = std::time::Instant::now();
+    for i in 0..=REQUEST_VALIDATION_CACHE_MAX_ENTRIES {
+        cache.insert(
+            test_request_validation_key(i, &tmp.path().join(format!("root-{i}"))),
+            test_request_validation_entry(now),
+        );
+    }
+
+    let removed = trim_request_validation_cache_at(&cache, EPHEMERAL_CACHE_MAX_AGE, now);
+
+    assert_eq!(removed, REQUEST_VALIDATION_CACHE_MAX_ENTRIES + 1);
+    assert!(cache.is_empty());
+}
+
+#[test]
 fn request_cache_resolved_inputs_requires_cross_root_shareable_entry() {
     let tmp = tempfile::tempdir().unwrap();
     let root_a = tmp.path().join("workspace-a");

@@ -93,7 +93,7 @@ pub(super) fn trim_request_validation_cache_at(
             true
         }
     });
-    if cache.len() > REQUEST_CACHE_MAX_ENTRIES {
+    if cache.len() > REQUEST_VALIDATION_CACHE_MAX_ENTRIES {
         let remaining = cache.len();
         cache.clear();
         removed += remaining;

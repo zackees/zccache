@@ -50,6 +50,12 @@ pub(crate) struct FastHitEntry {
 const FAST_HIT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(60);
 const EPHEMERAL_CACHE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(300);
 const REQUEST_CACHE_MAX_ENTRIES: usize = 4096;
+/// Validation-cache entries are lightweight (~200 bytes: ContentHash + root +
+/// artifact_key hex + clock) vs request_cache's parsed invocation metadata
+/// (multiple KiB per entry). Sized 2× the request cache so sibling-build /
+/// multi-root scenarios don't evict good validation entries while the request
+/// cache is still sparse. Memory cost at the cap: ~1.6 MiB. (#453)
+const REQUEST_VALIDATION_CACHE_MAX_ENTRIES: usize = 8192;
 const RSP_CACHE_MAX_ENTRIES: usize = 1024;
 const RUST_MISS_PROFILE_ENV: &str = "ZCCACHE_PROFILE_RUST_MISS";
 const WORKTREE_ROOT_ENV: &str = "ZCCACHE_WORKTREE_ROOT";
