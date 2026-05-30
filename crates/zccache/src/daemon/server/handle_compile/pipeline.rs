@@ -96,8 +96,21 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         Some(session_id.into()),
     );
 
+    // Issue #461: the timed phases below feed only `RustMissProfile`, which is
+    // emitted only when `ZCCACHE_PROFILE_RUST_MISS` is set. Decide once here
+    // whether to capture phase boundaries — otherwise we pay 4 unconditional
+    // clock reads (~50ns Linux / ~500ns Windows each) on EVERY request,
+    // including warm hits that never reach the miss emitter. Cheap env var
+    // probe is ~50ns; tied here for amortization across the rest of the
+    // function. Note this is broader than `rust_profile_enabled` at line 268
+    // (which also requires `is_rustc`); allowing the env-only check to gate
+    // these early phases costs at most a handful of bytes when a non-rustc
+    // compile happens with the env set — acceptable since that's the rare
+    // diagnostic path.
+    let want_rust_miss_profile = std::env::var_os(RUST_MISS_PROFILE_ENV).is_some();
+
     // Discover system includes for this compiler (cached per compiler path)
-    let t_system_includes = std::time::Instant::now();
+    let t_system_includes = want_rust_miss_profile.then(std::time::Instant::now);
     let compiler_priority = CompilePriority::from_client_env(client_env.as_deref());
     let system_includes = {
         let mut cache = state.system_includes.lock().await;
@@ -127,12 +140,16 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             })
             .to_vec()
     };
-    let system_includes_ns = t_system_includes.elapsed().as_nanos() as u64;
+    let system_includes_ns = t_system_includes
+        .map(|t| t.elapsed().as_nanos() as u64)
+        .unwrap_or(0);
 
     // Watch system include directories
-    let t_system_watch = std::time::Instant::now();
+    let t_system_watch = want_rust_miss_profile.then(std::time::Instant::now);
     watch_directories(state, &system_includes).await;
-    let system_watch_ns = t_system_watch.elapsed().as_nanos() as u64;
+    let system_watch_ns = t_system_watch
+        .map(|t| t.elapsed().as_nanos() as u64)
+        .unwrap_or(0);
 
     state.sessions.touch(&sid);
 
