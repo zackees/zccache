@@ -12,6 +12,7 @@ mod entry;
 mod journal_file;
 mod miss_reason;
 mod outcome;
+mod perf;
 
 /// Poll `path` until it contains at least `expected` lines, or up to ~5 s.
 /// The journal writer is a background thread that flushes asynchronously,

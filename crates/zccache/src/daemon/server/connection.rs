@@ -473,45 +473,76 @@ pub(super) async fn handle_connection(
             }
         };
 
-        // Log to compile journal for journalable requests.
-        if let Some(ctx) = journal_ctx {
-            if let Some((outcome, exit_code, miss_reason)) = extract_outcome(&response) {
-                let miss_reason = compile_miss_reason(&ctx, outcome, miss_reason);
-                let latency_ns = journal_start.elapsed().as_nanos();
-                // Look up session journal path + extended-journal opt-in
-                // in the same query so the session map is touched once.
-                let (session_journal_path, profile_on) = ctx
-                    .session_id
-                    .as_ref()
-                    .and_then(|sid| sid.parse::<SessionId>().ok())
-                    .and_then(|parsed| state.sessions.get(&parsed))
-                    .map(|s| (s.journal_path.clone(), s.profile))
-                    .unwrap_or((None, false));
-                let entry = JournalEntry::new(ctx, outcome, exit_code, latency_ns, miss_reason);
-                // Issue #256: extended-journal fields are populated only
-                // for sessions that opted in via session-start --profile.
-                //
-                // Issue #339: derive per-phase `self_profile_ns` from the
-                // total latency. The split is an approximation — real per-
-                // phase plumbing through `handle_compile` would require
-                // threading a `&mut SelfProfileSpans` through every early-
-                // return site (100+ in the single-file compile path) or
-                // restructuring `handle_compile` to return a tuple. The
-                // approximation is honest in that its bucket totals sum to
-                // the wall-clock latency (acceptance #3) and every bucket
-                // the schema lists for the relevant outcome is non-zero
-                // (acceptance #1). A v2 follow-up can swap this for the
-                // genuine per-site spans.
-                let entry = if profile_on {
-                    entry.with_profile_fields(derive_approx_spans(outcome, latency_ns))
-                } else {
-                    entry
-                };
-                state.journal.log(&entry, session_journal_path.as_deref());
-            }
+        // Capture journal metadata BEFORE conn.send so the client unblocks
+        // as soon as the response is on the wire. Issue #459: the journal
+        // build (JournalEntry::new + format_timestamp + serde_json::to_string)
+        // is ~2–4 µs of work on Windows that the client used to wait on —
+        // sccache doesn't pay this on the warm path. `latency_ns` is computed
+        // here so it still reflects pre-send dispatch time, not socket-write
+        // latency.
+        let journal_payload = journal_ctx.and_then(|ctx| {
+            let (outcome, exit_code, miss_reason) = extract_outcome(&response)?;
+            let miss_reason = compile_miss_reason(&ctx, outcome, miss_reason);
+            let latency_ns = journal_start.elapsed().as_nanos();
+            // Look up session journal path + extended-journal opt-in in the
+            // same query so the session map is touched once.
+            let (session_journal_path, profile_on) = ctx
+                .session_id
+                .as_ref()
+                .and_then(|sid| sid.parse::<SessionId>().ok())
+                .and_then(|parsed| state.sessions.get(&parsed))
+                .map(|s| (s.journal_path.clone(), s.profile))
+                .unwrap_or((None, false));
+            Some((
+                ctx,
+                outcome,
+                exit_code,
+                latency_ns,
+                miss_reason,
+                session_journal_path,
+                profile_on,
+            ))
+        });
+
+        // Send the response BEFORE logging the journal entry. Errors from
+        // the send are captured and propagated after the journal block so
+        // the entry is recorded even if the client disconnected mid-reply.
+        let send_result = conn.send(&response).await;
+
+        if let Some((
+            ctx,
+            outcome,
+            exit_code,
+            latency_ns,
+            miss_reason,
+            session_journal_path,
+            profile_on,
+        )) = journal_payload
+        {
+            let entry = JournalEntry::new(ctx, outcome, exit_code, latency_ns, miss_reason);
+            // Issue #256: extended-journal fields are populated only
+            // for sessions that opted in via session-start --profile.
+            //
+            // Issue #339: derive per-phase `self_profile_ns` from the
+            // total latency. The split is an approximation — real per-
+            // phase plumbing through `handle_compile` would require
+            // threading a `&mut SelfProfileSpans` through every early-
+            // return site (100+ in the single-file compile path) or
+            // restructuring `handle_compile` to return a tuple. The
+            // approximation is honest in that its bucket totals sum to
+            // the wall-clock latency (acceptance #3) and every bucket
+            // the schema lists for the relevant outcome is non-zero
+            // (acceptance #1). A v2 follow-up can swap this for the
+            // genuine per-site spans.
+            let entry = if profile_on {
+                entry.with_profile_fields(derive_approx_spans(outcome, latency_ns))
+            } else {
+                entry
+            };
+            state.journal.log(&entry, session_journal_path.as_deref());
         }
 
-        conn.send(&response).await?;
+        send_result?;
     }
 }
 
