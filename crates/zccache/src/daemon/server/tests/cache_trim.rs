@@ -169,7 +169,10 @@ fn trim_request_validation_cache_uses_its_own_larger_hard_cap_not_request_cache_
 
     let removed = trim_request_validation_cache_at(&cache, EPHEMERAL_CACHE_MAX_AGE, now);
 
-    assert_eq!(removed, 0, "validation cap is 8192, holding 4196 must not evict");
+    assert_eq!(
+        removed, 0,
+        "validation cap is 8192, holding 4196 must not evict"
+    );
     assert_eq!(cache.len(), REQUEST_CACHE_MAX_ENTRIES + 100);
     // Sanity: the new cap really is larger than the old shared one.
     assert!(REQUEST_VALIDATION_CACHE_MAX_ENTRIES > REQUEST_CACHE_MAX_ENTRIES);
