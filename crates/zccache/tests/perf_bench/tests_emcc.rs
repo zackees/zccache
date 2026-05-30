@@ -7,6 +7,8 @@
 
 use std::path::Path;
 
+use zccache::protocol::{Request, Response};
+
 use super::common::{
     end_zccache_session, find_empp, find_sccache, fmt_dur, fmt_ratio, median, print_trials,
     print_trials_per, start_daemon, start_zccache_session, NUM_FILES, WARM_TRIALS,
@@ -169,6 +171,14 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
     }
     print_trials("single warm:", &zc_warm_single);
 
+    // #445: reset the cache before the multi-cold measurement. Without
+    // this, `nuke_and_regenerate` only rewrites the (deterministic)
+    // sources, so the content-addressed entries from the single-file
+    // phase still hit and the "cold" measurement reports an impossible
+    // warm-hit time. The C++ benchmark (`tests_cpp.rs`) does this
+    // correctly; this brings emcc in line.
+    client.send(&Request::Clear).await.unwrap();
+    let _ = client.recv::<Response>().await;
     nuke_and_regenerate(zc_dir.path());
     warmup_compiler(&compiler, zc_dir.path());
     let zc_cold_multi =
