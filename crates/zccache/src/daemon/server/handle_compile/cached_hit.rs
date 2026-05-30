@@ -32,7 +32,7 @@ pub(super) struct CachedHitMaterializeRequest<'a> {
     pub(super) artifact_key_hex: &'a str,
     pub(super) source_path: &'a NormalizedPath,
     pub(super) output_path: &'a NormalizedPath,
-    pub(super) secondary_output_dir: PathBuf,
+    pub(super) secondary_output_dir: NormalizedPath,
     pub(super) compile_start: Instant,
     pub(super) hit_label: &'static str,
     pub(super) cached_error_label: &'static str,
@@ -85,7 +85,7 @@ pub(super) fn materialize_cached_compile_hit(
             let out: NormalizedPath = if i == 0 {
                 output_path.clone()
             } else {
-                secondary_output_dir.join(&names[i]).into()
+                secondary_output_dir.join(&names[i])
             };
             let cache_file = state.artifact_dir.join(format!("{artifact_key_hex}_{i}"));
             (out, cache_file)
@@ -214,7 +214,7 @@ mod tests {
             artifact_key_hex: "artifact-key",
             source_path: &source_path,
             output_path: &output_path,
-            secondary_output_dir: dir.path().to_path_buf(),
+            secondary_output_dir: dir.path().into(),
             compile_start: Instant::now(),
             hit_label: "HIT_TEST",
             cached_error_label: "CACHED_ERROR_TEST",
@@ -291,7 +291,7 @@ mod tests {
                 artifact_key_hex: "budget-key",
                 source_path: &source_path,
                 output_path: &output_path,
-                secondary_output_dir: dir.path().to_path_buf(),
+                secondary_output_dir: dir.path().into(),
                 compile_start: Instant::now(),
                 hit_label: "HIT_TEST",
                 cached_error_label: "CACHED_ERROR_TEST",

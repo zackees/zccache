@@ -67,8 +67,6 @@ pub fn endpoint_for_cache_dir(cache_dir: &std::path::Path, namespace: Option<&st
         }
 
         compact_cache_dir_endpoint(cache_dir, namespace)
-            .to_string_lossy()
-            .into_owned()
     }
     #[cfg(windows)]
     {
@@ -78,15 +76,13 @@ pub fn endpoint_for_cache_dir(cache_dir: &std::path::Path, namespace: Option<&st
 }
 
 #[cfg(unix)]
-fn compact_cache_dir_endpoint(
-    cache_dir: &std::path::Path,
-    namespace: Option<&str>,
-) -> std::path::PathBuf {
+fn compact_cache_dir_endpoint(cache_dir: &std::path::Path, namespace: Option<&str>) -> String {
+    // Endpoint is a Unix socket path; return it as a `String` directly so
+    // we don't round-trip through `PathBuf` only to immediately convert
+    // back via `to_string_lossy`. The previous shape was the only
+    // `ban_std_pathbuf` lint hit in this file.
     let cache_id = crate::core::stable_path_id(cache_dir);
-    std::path::PathBuf::from(format!(
-        "/tmp/zccache-{cache_id}-{}",
-        daemon_socket_name(namespace)
-    ))
+    format!("/tmp/zccache-{cache_id}-{}", daemon_socket_name(namespace))
 }
 
 /// Derive a platform IPC endpoint for a portable private daemon name.

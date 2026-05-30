@@ -93,7 +93,7 @@ pub(super) fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Option<R
         artifact_key_hex,
         source_path: &source_path,
         output_path: &output_path,
-        secondary_output_dir: output_path.parent().unwrap_or(cwd).to_path_buf(),
+        secondary_output_dir: output_path.parent().unwrap_or(cwd).into(),
         compile_start,
         hit_label,
         cached_error_label: "CACHED_ERROR_REQUEST",
@@ -162,9 +162,9 @@ pub(super) fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
     }
 
     let secondary_output_dir = if is_rustc {
-        output_path.parent().unwrap_or(cwd_path).to_path_buf()
+        output_path.parent().unwrap_or(cwd_path).into()
     } else {
-        cwd_path.clone().to_path_buf()
+        cwd_path.clone()
     };
     let hit_label = if worktree_equivalent_context {
         "HIT_WORKTREE_FAST"
@@ -265,9 +265,9 @@ pub(super) fn try_depgraph_cached_hit(probe: DepgraphHitProbe<'_>) -> Option<Res
     } = probe;
 
     let secondary_output_dir = if is_rustc {
-        output_path.parent().unwrap_or(cwd_path).to_path_buf()
+        output_path.parent().unwrap_or(cwd_path).into()
     } else {
-        cwd_path.clone().to_path_buf()
+        cwd_path.clone()
     };
     let hit_label = if worktree_equivalent_context {
         "HIT_WORKTREE"
