@@ -61,6 +61,13 @@ jobs:
           # restored build-cache so the daemon-isolated test phase starts warm.
           seed-isolated-build-cache: ${{ runner.temp }}/zccache-self-tests/integration
           verify-compile-cache: warn
+          # zackees/setup-soldr#282: this job restored 5,454 cook artifacts
+          # but produced hit_rate=0.0% on the subsequent compile. logging:true
+          # emits the [compile_journal] block in the post step (miss_reasons
+          # histogram + slowest_misses with per-record miss_diff). Confirmed
+          # zero key-impact (setup-soldr#247), so enabling it does NOT cold
+          # any cache layer. Remove once #282 is root-caused.
+          logging: true
       - name: Build integration test binaries
         shell: bash
         run: soldr cargo test --workspace --no-fail-fast --no-run
