@@ -17,7 +17,7 @@ jobs:
     runs-on: ${{ inputs.os }}
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@v0.9.20
+      - uses: zackees/setup-soldr@v0.9.21
         with:
           zccache-seed-strict: true
           toolchain: 1.94.1
@@ -42,7 +42,7 @@ jobs:
     runs-on: ${{ inputs.os }}
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@v0.9.20
+      - uses: zackees/setup-soldr@v0.9.21
         with:
           zccache-seed-strict: true
           toolchain: 1.94.1
@@ -66,7 +66,7 @@ jobs:
         shell: bash
         run: soldr cargo test --workspace --lib --bins --no-fail-fast --no-run
       - name: Stop setup-soldr builder cache before tests
-        uses: zackees/setup-soldr/cleanup@v0.9.20
+        uses: zackees/setup-soldr/cleanup@v0.9.21
       - name: Test
         shell: bash
         env:
