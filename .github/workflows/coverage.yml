@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@v0.9.27
+      - uses: zackees/setup-soldr@v0.9.28
         with:
           zccache-seed-strict: true
           toolchain: 1.94.1
@@ -42,7 +42,7 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Stop setup-soldr builder cache before coverage tests
-        uses: zackees/setup-soldr/cleanup@v0.9.27
+        uses: zackees/setup-soldr/cleanup@v0.9.28
       - name: Generate coverage
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/coverage
