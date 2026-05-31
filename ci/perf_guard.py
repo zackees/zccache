@@ -206,6 +206,12 @@ def _benchmark_env(cache_dir: Path, language: str | None) -> dict[str, str]:
     env["ZCCACHE_COMPILE_PRIORITY"] = "auto"
     if language == "rust":
         env["ZCCACHE_PROFILE_RUST_MISS"] = "1"
+    elif language in ("c", "c++", "emscripten"):
+        # Issue #535: emit the non-rustc cold-miss profile for
+        # c-static-library-link / cpp-driver-link / emscripten-link
+        # cold rows so perf-guard logs include phase data the same way
+        # the rust language path already does.
+        env["ZCCACHE_PROFILE_CC_MISS"] = "1"
     env.pop("RUSTC_WRAPPER", None)
     return env
 

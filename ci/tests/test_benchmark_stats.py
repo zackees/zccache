@@ -191,6 +191,18 @@ def test_parse_benchmark_log_extracts_all_tables():
     assert rust_link[1]["scenario"] == "Workspace staticlib link, Warm"
 
 
+def test_benchmark_env_enables_cc_miss_profile(tmp_path, monkeypatch):
+    # Issue #535: the non-rust cold-miss profile (`zccache_cc_miss_profile`
+    # in `handle_compile/miss_profile.rs`) must be set in the published-log
+    # bench env so c-static-library-link / cpp-driver-link / emscripten
+    # cold rows carry phase data — the prerequisite for the #535 perf fix.
+    monkeypatch.setenv("RUSTC_WRAPPER", "sccache")
+
+    env = benchmark_stats.benchmark_env(tmp_path)
+
+    assert env["ZCCACHE_PROFILE_CC_MISS"] == "1"
+
+
 def test_benchmark_env_enables_rust_miss_profile(tmp_path, monkeypatch):
     # Issue #517: benchmark-stats publishes one log per run to the
     # `benchmark-stats` branch. The log must include `zccache_rust_miss_profile`

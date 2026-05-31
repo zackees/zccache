@@ -6,7 +6,9 @@ use super::hit_branches::{
     try_depgraph_cached_hit, try_fast_hit, try_request_cache_hit, DepgraphHitProbe, FastHitProbe,
     RequestCacheHitProbe,
 };
-use super::miss_profile::{emit_rust_miss_profile, RustMissProfile};
+use super::miss_profile::{
+    emit_cc_miss_profile, emit_rust_miss_profile, CcMissProfile, RustMissProfile,
+};
 use super::miss_store::{store_miss_artifact, MissArtifactStoreRequest, MissArtifactStoreStats};
 use super::request::CompileRequest;
 
@@ -1047,6 +1049,38 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         // Defer expensive watch_directories to background — canonicalize()
         // on Windows costs ~1-5ms per directory. This doesn't affect cache
         // correctness; it only delays watcher-based invalidation setup.
+        // Issue #535: emit a non-rustc cold-miss profile when
+        // `ZCCACHE_PROFILE_CC_MISS` is set. Lets the benchmark-stats log
+        // carry phase data for c-static-library-link / cpp-driver-link
+        // cold rows, the next perf targets after #517 closed.
+        if !is_rustc && std::env::var_os(CC_MISS_PROFILE_ENV).is_some() {
+            emit_cc_miss_profile(CcMissProfile {
+                family: match compilation.family {
+                    crate::compiler::CompilerFamily::Gcc => "gcc",
+                    crate::compiler::CompilerFamily::Clang => "clang",
+                    crate::compiler::CompilerFamily::Msvc => "msvc",
+                    // Rust handled above; Rustfmt is a non-cacheable formatter.
+                    crate::compiler::CompilerFamily::Rustc => "rustc",
+                    crate::compiler::CompilerFamily::Rustfmt => "rustfmt",
+                },
+                compiler_priority_decision,
+                total_ns,
+                pre_exec_ns,
+                system_includes_ns,
+                system_watch_ns,
+                parse_args_ns,
+                build_context_ns,
+                break_outputs_ns,
+                compiler_process_ns,
+                post_exec_ns,
+                include_scan_ns,
+                register_tracked_ns,
+                dep_dirs_ns,
+                hash_all_ns,
+                artifact_store_ns,
+            });
+        }
+
         if rust_profile_enabled {
             emit_rust_miss_profile(RustMissProfile {
                 mode: rust_profile_mode,

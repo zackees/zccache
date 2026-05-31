@@ -610,3 +610,20 @@ def test_benchmark_env_does_not_enable_rust_profile_for_other_languages(tmp_path
 
     assert env["ZCCACHE_COMPILE_PRIORITY"] == "auto"
     assert "ZCCACHE_PROFILE_RUST_MISS" not in env
+
+
+def test_benchmark_env_enables_cc_profile_for_cc_languages(tmp_path):
+    # Issue #535: the C/C++ / emscripten language paths must opt into the
+    # non-rustc cold-miss profile so perf-guard logs include phase data
+    # for c-static-library-link / cpp-driver-link / emscripten-link cold
+    # rows — the prerequisite for extending #533's overlap pattern.
+    for lang in ("c", "c++", "emscripten"):
+        env = perf_guard._benchmark_env(tmp_path, lang)
+        assert env.get("ZCCACHE_PROFILE_CC_MISS") == "1", lang
+        # And the rust profile must NOT be set for these languages.
+        assert "ZCCACHE_PROFILE_RUST_MISS" not in env, lang
+
+
+def test_benchmark_env_does_not_enable_cc_profile_for_rust(tmp_path):
+    env = perf_guard._benchmark_env(tmp_path, "rust")
+    assert "ZCCACHE_PROFILE_CC_MISS" not in env

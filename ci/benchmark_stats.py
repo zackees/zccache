@@ -280,6 +280,12 @@ def benchmark_env(cache_dir: Path) -> dict[str, str]:
     env = os.environ.copy()
     env["ZCCACHE_CACHE_DIR"] = str(cache_dir)
     env["ZCCACHE_PROFILE_RUST_MISS"] = "1"
+    # Issue #535: emit the non-rustc cold-miss profile too. The daemon
+    # gates on this env independently of the rust one, so both the
+    # `zccache_rust_miss_profile` and `zccache_cc_miss_profile` lines
+    # land in the published bench log — letting future investigations
+    # read C/C++ link-path phase data without re-running the bench.
+    env["ZCCACHE_PROFILE_CC_MISS"] = "1"
     env.pop("RUSTC_WRAPPER", None)
     return env
 
