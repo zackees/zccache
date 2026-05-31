@@ -37,14 +37,6 @@ jobs:
           # build-cache so the daemon-isolated llvm-cov phase starts warm.
           seed-isolated-build-cache: ${{ runner.temp }}/zccache-self-tests/coverage
           verify-compile-cache: warn
-          # zackees/setup-soldr#293: cook phase on Coverage burns ~5 min
-          # re-Compiling everything despite cook-cache exact-hit. 8 modified
-          # source files cascade-invalidate cook; we need miss_diff data
-          # to name them. logging:true emits the [compile_journal] block
-          # without perturbing any cache keys (confirmed setup-soldr#247).
-          # Mirrors what zccache#491 did for Integration. Revert once #293
-          # is root-caused.
-          logging: true
       - name: Install Rust coverage component
         run: soldr rustup component add llvm-tools-preview
       - name: Install cargo-llvm-cov
