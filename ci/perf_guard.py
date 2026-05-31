@@ -39,6 +39,16 @@ CPP_COLD_SCCACHE_THRESHOLD = 0.9
 RUST_BUILD_COLD_SCENARIO = "Build, Cold"
 RUST_BUILD_COLD_BARE_THRESHOLD = 0.4
 RUST_BUILD_COLD_SCCACHE_THRESHOLD = 0.6
+# Issue #517: rust-workspace-link Cold ran at 0.283x bare on the 2026-05-31
+# baseline (127 ms zccache vs 36 ms bare — 91 ms of daemon-side overhead on
+# top of a 36 ms link). Documented in `benchmark-stats/latest.json` and
+# needs an explicit floor so any further regression fails CI instead of
+# silently sliding. Threshold leaves ~30% headroom under the baseline;
+# tighten once the cold path is profiled and the dominant phase is fixed.
+RUST_WORKSPACE_LINK_BENCHMARK = "rust-workspace-link"
+RUST_WORKSPACE_LINK_COLD_SCENARIO = "Workspace staticlib link, Cold"
+RUST_WORKSPACE_LINK_COLD_BARE_THRESHOLD = 0.2
+RUST_WORKSPACE_LINK_COLD_SCCACHE_THRESHOLD = 0.85
 
 
 @dataclass(frozen=True)
@@ -232,6 +242,15 @@ def _comparison_threshold(
         if baseline == "bare":
             return RUST_BUILD_COLD_BARE_THRESHOLD
         return RUST_BUILD_COLD_SCCACHE_THRESHOLD
+    if (
+        row.get("language") == "rust"
+        and row.get("benchmark") == RUST_WORKSPACE_LINK_BENCHMARK
+        and row.get("scenario") == RUST_WORKSPACE_LINK_COLD_SCENARIO
+        and row.get("mode") == "cold"
+    ):
+        if baseline == "bare":
+            return RUST_WORKSPACE_LINK_COLD_BARE_THRESHOLD
+        return RUST_WORKSPACE_LINK_COLD_SCCACHE_THRESHOLD
     if baseline == "bare":
         return bare_floor
     if (

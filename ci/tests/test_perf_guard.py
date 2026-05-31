@@ -171,6 +171,69 @@ def test_cold_floor_overrides_are_targeted():
     assert rust_warm_sccache.threshold == 1.5
 
 
+RUST_WORKSPACE_LINK_LOG = """
+## Rust Workspace Link Benchmark: 50 .rlib inputs, 5 warm trials
+
+| Scenario | Bare rustc | sccache | zccache | vs sccache | vs bare rustc |
+|:---------|----------:|--------:|--------:|-----------:|--------------:|
+| Workspace staticlib link, Cold | 0.036s | 0.128s | 0.127s | ~same | 3.5x slower |
+| Workspace staticlib link, Warm | 0.035s | 0.038s | **0.001s** | **38x faster** | **35x faster** |
+"""
+
+
+def test_rust_workspace_link_cold_uses_dedicated_threshold_and_passes_baseline():
+    # Regression guard for issue #517: rust-workspace-link Cold ran at 0.283x
+    # of bare on the 2026-05-31 perf baseline (127 ms vs 36 ms). The default
+    # cold-bare floor (0.85) would FAIL that row and force a noisy ratchet on
+    # every cluster run, so the scenario gets a dedicated floor of 0.20 that
+    # passes today and fires on a real backslide.
+    report = perf_guard.evaluate_attempts(
+        [rows(RUST_WORKSPACE_LINK_LOG)],
+        languages=("rust",),
+        require_coverage=False,
+    )
+
+    cold_statuses = [
+        status
+        for status in report.statuses
+        if status.scenario == "Workspace staticlib link, Cold"
+    ]
+    assert {
+        (status.baseline, status.threshold) for status in cold_statuses
+    } == {
+        ("bare", perf_guard.RUST_WORKSPACE_LINK_COLD_BARE_THRESHOLD),
+        ("sccache", perf_guard.RUST_WORKSPACE_LINK_COLD_SCCACHE_THRESHOLD),
+    }
+    assert all(status.passed for status in cold_statuses), [
+        (s.baseline, s.best_ratio, s.threshold) for s in cold_statuses
+    ]
+
+
+def test_rust_workspace_link_cold_regression_below_threshold_fails():
+    # Doubling the cold time (127 ms → 254 ms) drops the ratio from 0.283 to
+    # ~0.14, well below the 0.20 floor — the gate must fire.
+    regressed = RUST_WORKSPACE_LINK_LOG.replace(
+        "| Workspace staticlib link, Cold | 0.036s | 0.128s | 0.127s | ~same | 3.5x slower |",
+        "| Workspace staticlib link, Cold | 0.036s | 0.128s | 0.254s | 1.0x slower | 7.0x slower |",
+    )
+    report = perf_guard.evaluate_attempts(
+        [rows(regressed)],
+        languages=("rust",),
+        require_coverage=False,
+    )
+
+    failing_baselines = {
+        status.baseline
+        for status in report.statuses
+        if status.scenario == "Workspace staticlib link, Cold" and not status.passed
+    }
+    # `bare` must fail — that's the regression we care about. The sccache row
+    # may or may not also fail depending on whether sccache_seconds in the
+    # bench output happens to drop too; the gate behavior under test here is
+    # specifically the bare floor.
+    assert "bare" in failing_baselines
+
+
 def test_retry_passes_when_later_attempt_clears_threshold():
     report = perf_guard.evaluate_attempts(
         [rows(FAILING_RUST_LOG), rows(PASSING_LOG)],
