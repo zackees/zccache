@@ -59,6 +59,24 @@ impl DaemonServer {
         // `MetadataCache::lookup` stat-verify safety net still guards
         // correctness on every subsequent lookup).
         let metadata_path = crate::core::config::metadata_path_from_cache_dir(cache_dir);
+        let compiler_hash_cache_path =
+            crate::core::config::compiler_hash_cache_path_from_cache_dir(cache_dir);
+        // Issue #517: hashing rustc's ~150 MB binary on the cold path
+        // costs ~50-60 ms per first-after-restart compile. Loading the
+        // (path, mtime, size, hash) snapshot from a prior daemon makes
+        // that first compile near-instant — the stat-verify in
+        // `get_or_hash` keeps correctness if the binary changed since.
+        let compiler_hash_cache =
+            match CompilerHashCache::load_from_disk(compiler_hash_cache_path.as_path()) {
+                Ok(cache) => cache,
+                Err(e) => {
+                    tracing::warn!(
+                        path = %compiler_hash_cache_path.display(),
+                        "failed to load compiler hash cache, starting empty: {e}"
+                    );
+                    CompilerHashCache::new()
+                }
+            };
         let cache_system =
             match crate::fscache::MetadataCache::load_from_disk(metadata_path.as_path()) {
                 Ok(metadata) => {
@@ -104,6 +122,7 @@ impl DaemonServer {
                 profiler: PhaseProfiler::new(),
                 artifact_dir,
                 metadata_path,
+                compiler_hash_cache_path,
                 depfile_tmpdir: {
                     let dir = crate::core::config::depfile_dir_from_cache_dir(cache_dir)
                         .join(format!("{}-{instance}", std::process::id()));
@@ -116,7 +135,7 @@ impl DaemonServer {
                 request_cache: DashMap::new(),
                 session_worktree_roots: DashMap::new(),
                 request_validation_cache: DashMap::new(),
-                compiler_hash_cache: CompilerHashCache::new(),
+                compiler_hash_cache,
                 watched_raw_dirs: DashMap::new(),
                 pch_source_map: DashMap::new(),
                 journal: CompileJournal::new(crate::core::config::log_dir_from_cache_dir(

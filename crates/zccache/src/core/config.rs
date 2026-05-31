@@ -611,6 +611,19 @@ pub fn metadata_path_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPat
     cache_dir.join("metadata.bin")
 }
 
+/// Returns the on-disk path for the persisted compiler-binary hash cache.
+///
+/// Issue #517: hashing a 150 MB rustc binary on the cold path costs
+/// ~50-60 ms per first-after-restart compile, the dominant phase of the
+/// `rust-workspace-link Cold` overhead. This snapshot survives daemon
+/// restart so subsequent daemons start with the rustc hash already
+/// cached. Sibling of `metadata.bin` / `index.bin` so the soldr save /
+/// load pipeline already bundles it.
+#[must_use]
+pub fn compiler_hash_cache_path_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
+    cache_dir.join("compiler_hash.bin")
+}
+
 fn crash_dump_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
     cache_dir.join("crashes")
 }

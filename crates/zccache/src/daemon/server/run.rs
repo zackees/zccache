@@ -424,6 +424,20 @@ impl DaemonServer {
                         ),
                     }
 
+                    // Issue #517: persist the compiler-binary hash cache
+                    // so the next daemon does not pay the ~50-60 ms cold
+                    // blake3 over rustc on its first compile.
+                    if let Err(e) = self
+                        .state
+                        .compiler_hash_cache
+                        .save_to_disk(self.state.compiler_hash_cache_path.as_path())
+                    {
+                        tracing::warn!(
+                            path = %self.state.compiler_hash_cache_path.display(),
+                            "compiler hash cache save failed: {e}"
+                        );
+                    }
+
                     // Clean up our own depfile temp directory.
                     let _ = std::fs::remove_dir_all(&self.state.depfile_tmpdir);
 

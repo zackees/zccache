@@ -53,6 +53,12 @@ pub(super) struct SharedState {
     /// start with their fast path already populated instead of an
     /// empty `DashMap`. See `crate::fscache::persistence`.
     pub(super) metadata_path: NormalizedPath,
+    /// Path used by [`CompilerHashCache`] for persistent (path, mtime, size,
+    /// hash) snapshots. Issue #517 — eliminates the ~50-60 ms cold-path
+    /// blake3 of the rustc binary on every first-after-restart compile.
+    /// Loaded by `Lifecycle::new`, written on shutdown alongside
+    /// `metadata.bin`.
+    pub(super) compiler_hash_cache_path: NormalizedPath,
     /// Temporary directory for injected depfiles.
     pub(super) depfile_tmpdir: NormalizedPath,
     /// Ultra-fast hit cache: context_key → (clock, artifact_key_hex, timestamp).
