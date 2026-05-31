@@ -210,3 +210,49 @@ fn write_atomic_durable(tmp: &Path, target: &Path, bytes: &[u8]) -> std::io::Res
     }
     Ok(())
 }
+
+/// Env vars that name compiler executables. Issue #517 Option 2: warm the
+/// hash cache for these on daemon startup so the very first compile
+/// request — even on a fresh-checkout runner with no `compiler_hash.bin`
+/// from a prior daemon — does NOT pay the ~50-60 ms cold blake3.
+///
+/// The list is intentionally minimal. We don't probe `$PATH` or scan for
+/// rustup toolchains because:
+/// - false positives (e.g. hashing `/usr/bin/cc` on a runner that only
+///   uses `clang++`) cost wall-clock with no later benefit.
+/// - the daemon may not have permission to stat arbitrary `PATH` entries.
+///
+/// If the user's invocations use a compiler whose path is not in any of
+/// these env vars, the regular synchronous hash path in `get_or_hash`
+/// still works — pre-hashing is purely an optimization, never a
+/// correctness gate.
+pub(super) const PREHASH_ENV_VARS: &[&str] = &["RUSTC", "CC", "CXX"];
+
+/// Pre-hash the given paths into `cache` in the background. Failures
+/// (path missing, stat error, hash error) are silently ignored — each
+/// per-path failure just means the next real request for that compiler
+/// pays the normal hash cost, the same as before this optimisation.
+///
+/// Caller is expected to wrap this in `tokio::task::spawn_blocking` so
+/// the blake3 over multi-MB binaries does not block the async runtime.
+pub(super) fn prehash_paths(cache: &CompilerHashCache, paths: &[std::path::PathBuf]) -> usize {
+    let mut hashed = 0;
+    for path in paths {
+        if cache.get_or_hash(path).is_some() {
+            hashed += 1;
+        }
+    }
+    hashed
+}
+
+/// Read [`PREHASH_ENV_VARS`] from the process environment and return any
+/// non-empty values as paths. Order is preserved so callers can rely on
+/// `RUSTC` being warmed before `CC` etc. when iterated.
+pub(super) fn prehash_candidates_from_env() -> Vec<std::path::PathBuf> {
+    PREHASH_ENV_VARS
+        .iter()
+        .filter_map(std::env::var_os)
+        .filter(|val| !val.is_empty())
+        .map(std::path::PathBuf::from)
+        .collect()
+}

@@ -71,6 +71,33 @@ impl DaemonServer {
 
         self.start_watcher_pipeline().await;
 
+        // Issue #517 Option 2: warm the CompilerHashCache for paths named
+        // by `RUSTC` / `CC` / `CXX` in the daemon environment, in the
+        // background, on a blocking thread. On a fresh-checkout runner the
+        // persisted `compiler_hash.bin` (#525) doesn't exist yet — without
+        // this, the very first compile pays the ~50-60 ms cold blake3 of
+        // the rustc binary on the request critical path. By racing the
+        // hash against the first request, that cost is usually paid
+        // off-thread before any compile arrives. Failures are silent: a
+        // missing path or stat error just leaves the cache empty for that
+        // entry and the regular synchronous hash kicks in on first use.
+        {
+            let state = Arc::clone(&self.state);
+            let candidates = prehash_candidates_from_env();
+            if !candidates.is_empty() {
+                tokio::task::spawn_blocking(move || {
+                    let start = std::time::Instant::now();
+                    let hashed = prehash_paths(&state.compiler_hash_cache, &candidates);
+                    tracing::info!(
+                        elapsed_ms = start.elapsed().as_millis() as u64,
+                        candidates = candidates.len(),
+                        hashed,
+                        "compiler hash cache warmed from env"
+                    );
+                });
+            }
+        }
+
         // Start idle watchdog if timeout is configured.
         if idle_timeout_secs > 0 {
             let state = Arc::clone(&self.state);
