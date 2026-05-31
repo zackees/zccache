@@ -442,6 +442,26 @@ jobs:
           print-hash: true
           skip-existing: true
 
+      # Issue #483: pypa/gh-action-pypi-publish uploads wheels
+      # sequentially, so downstream `uv sync` running mid-upload can
+      # cache a partial wheel set and refuse to install. Poll the PyPI
+      # JSON API until every wheel we just uploaded is visible before
+      # this job returns success.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Verify all wheels visible on PyPI
+        run: |
+          python -m ci.release_workflow verify-pypi \
+            --project zccache \
+            --version "${{ needs.preflight.outputs.version }}" \
+            --wheels-dir dist/wheels \
+            --timeout-s 300 \
+            --poll-interval-s 5
+
   publish-crates:
     name: Publish crates.io
     runs-on: ubuntu-latest

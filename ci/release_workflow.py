@@ -630,6 +630,133 @@ def command_publish_crates(_: argparse.Namespace) -> None:
     publish_rust_crates(version, existing_crates)
 
 
+# ── Issue #483: post-publish PyPI verification ──────────────────────────────
+
+
+PYPI_JSON_URL_TEMPLATE = "https://pypi.org/pypi/{project}/{version}/json"
+
+
+def fetch_pypi_release_filenames(
+    project: str,
+    version: str,
+    *,
+    fetch=None,
+) -> set[str]:
+    """Return the set of file basenames PyPI currently lists for
+    ``<project>==<version>``. Returns an empty set on 404 (the release
+    isn't visible yet — caller treats that as "keep polling"). Re-raises
+    any other HTTP / network error so transient infra failures are loud,
+    not silently swallowed as missing-wheel false positives.
+
+    The ``fetch`` parameter exists so tests can inject a deterministic
+    in-memory response without touching the network. Default is a thin
+    `urllib.request.urlopen` wrapper.
+    """
+    if fetch is None:
+        def _default_fetch(url: str) -> bytes:
+            req = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return resp.read()
+        fetch = _default_fetch
+
+    url = PYPI_JSON_URL_TEMPLATE.format(project=project, version=version)
+    try:
+        body = fetch(url)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return set()
+        raise
+    data = json.loads(body)
+    return {f["filename"] for f in data.get("urls", [])}
+
+
+def verify_pypi_publish(
+    project: str,
+    version: str,
+    expected_wheels: list[str],
+    *,
+    timeout_s: float = 300.0,
+    poll_interval_s: float = 5.0,
+    fetch=None,
+    clock=None,
+    sleep=None,
+) -> None:
+    """Poll PyPI's release JSON until every name in ``expected_wheels``
+    is visible — closing the upload-race window where downstream
+    `uv sync` would otherwise cache a partial wheel set
+    (issue #483).
+
+    Raises :class:`RuntimeError` after ``timeout_s`` if any wheel is
+    still missing. Polls every ``poll_interval_s``. The ``fetch``,
+    ``clock``, ``sleep`` parameters exist for tests; production uses
+    the stdlib defaults.
+
+    No-op when ``expected_wheels`` is empty — release_auto's wheel
+    pipeline always produces at least one wheel for a non-empty
+    release, so an empty list means caller misconfiguration and the
+    pre-check below surfaces it before we hit PyPI.
+    """
+    if not expected_wheels:
+        raise SystemExit("ERROR: verify-pypi called with no expected wheels")
+    if clock is None:
+        clock = time.monotonic
+    if sleep is None:
+        sleep = time.sleep
+
+    expected = set(expected_wheels)
+    deadline = clock() + timeout_s
+    last_seen: set[str] = set()
+    attempt = 0
+    while True:
+        attempt += 1
+        seen = fetch_pypi_release_filenames(project, version, fetch=fetch)
+        last_seen = seen
+        missing = expected - seen
+        if not missing:
+            log(
+                f"verify-pypi: all {len(expected)} wheels visible for "
+                f"{project}=={version} (attempt {attempt})"
+            )
+            return
+        # One-line progress: count of missing, plus the first few names
+        # so log readers can spot which one's lagging.
+        preview = ", ".join(sorted(missing)[:3])
+        if len(missing) > 3:
+            preview += f", … ({len(missing) - 3} more)"
+        log(
+            f"verify-pypi: attempt {attempt} — {len(seen)}/{len(expected)} "
+            f"wheels visible, waiting for: {preview}"
+        )
+        if clock() >= deadline:
+            raise RuntimeError(
+                f"verify-pypi: timed out after {timeout_s:.0f}s waiting for "
+                f"{project}=={version} on PyPI. "
+                f"Seen {len(last_seen)}/{len(expected)} wheels. "
+                f"Missing: {sorted(expected - last_seen)}"
+            )
+        sleep(poll_interval_s)
+
+
+def command_verify_pypi(args: argparse.Namespace) -> None:
+    wheels_dir = Path(args.wheels_dir).expanduser().resolve()
+    if not wheels_dir.is_dir():
+        raise SystemExit(f"ERROR: wheels directory does not exist: {wheels_dir}")
+    expected = sorted(p.name for p in wheels_dir.glob("*.whl"))
+    if not expected:
+        raise SystemExit(f"ERROR: no *.whl files found in {wheels_dir}")
+    log(
+        f"verify-pypi: checking PyPI for {len(expected)} wheel(s) of "
+        f"{args.project}=={args.version}"
+    )
+    verify_pypi_publish(
+        args.project,
+        args.version,
+        expected,
+        timeout_s=args.timeout_s,
+        poll_interval_s=args.poll_interval_s,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Workflow-only release helpers for zccache."
@@ -658,6 +785,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="Publish workspace crates in dependency order, skipping existing versions.",
     )
     crates_parser.set_defaults(func=command_publish_crates)
+
+    verify_parser = subparsers.add_parser(
+        "verify-pypi",
+        help=(
+            "Poll PyPI until every wheel in --wheels-dir is visible for "
+            "the given project/version. Closes the sequential-upload "
+            "race window where downstream `uv sync` would otherwise "
+            "cache a partial wheel set (issue #483)."
+        ),
+    )
+    verify_parser.add_argument("--project", required=True, help="PyPI project name, e.g. zccache.")
+    verify_parser.add_argument(
+        "--version",
+        required=True,
+        help="Version string that was just published, e.g. 1.11.7.",
+    )
+    verify_parser.add_argument(
+        "--wheels-dir",
+        required=True,
+        help="Local directory whose *.whl filenames define the expected set on PyPI.",
+    )
+    verify_parser.add_argument(
+        "--timeout-s",
+        type=float,
+        default=300.0,
+        help="Maximum total wait in seconds (default: 300).",
+    )
+    verify_parser.add_argument(
+        "--poll-interval-s",
+        type=float,
+        default=5.0,
+        help="Sleep between poll attempts in seconds (default: 5).",
+    )
+    verify_parser.set_defaults(func=command_verify_pypi)
 
     return parser
 
