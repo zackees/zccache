@@ -12,7 +12,7 @@
 //! Stop hook tear-down, soldr-driven daemon recycle) does not refill it
 //! from zero. The stored `(path, mtime, size, hash)` quad is exactly the
 //! in-memory shape; correctness on load relies on the same stat-verify
-//! that the in-memory `get_or_hash` already enforces — a (mtime, size)
+//! that the in-memory `get_or_hash_with` already enforces — a (mtime, size)
 //! mismatch silently downgrades the loaded entry to a re-hash, so a stale
 //! snapshot cannot poison the cache key.
 
@@ -56,10 +56,6 @@ impl CompilerHashCache {
         self.entries.len()
     }
 
-    pub(super) fn get_or_hash(&self, path: &Path) -> Option<ContentHash> {
-        self.get_or_hash_with(path, |path| crate::hash::hash_file(path).ok())
-    }
-
     pub(super) fn get_or_hash_with<F>(&self, path: &Path, hasher: F) -> Option<ContentHash>
     where
         F: FnOnce(&Path) -> Option<ContentHash>,
@@ -92,7 +88,7 @@ impl CompilerHashCache {
     ///
     /// Atomic on success: writes to `<path>.tmp-<pid>`, then renames over
     /// `path`. Empty snapshots short-circuit without touching disk. Stale
-    /// entries on disk are harmless: `get_or_hash` re-stats every key
+    /// entries on disk are harmless: `get_or_hash_with` re-stats every key
     /// before trusting the hash, so a mismatch silently downgrades to a
     /// re-hash. See module-level doc.
     ///
@@ -152,7 +148,7 @@ impl CompilerHashCache {
     /// Returns an empty cache when the file is absent (first run). Any
     /// other I/O error, bincode decode failure, or version mismatch is
     /// surfaced as `Err`; the daemon caller is expected to log and start
-    /// empty. Stat-verification at the `get_or_hash` call site re-checks
+    /// empty. Stat-verification at the `get_or_hash_with` call site re-checks
     /// every loaded entry before use, so a stale on-disk snapshot cannot
     /// produce an incorrect cache key.
     ///
@@ -209,4 +205,26 @@ fn write_atomic_durable(tmp: &Path, target: &Path, bytes: &[u8]) -> std::io::Res
         }
     }
     Ok(())
+}
+
+/// Compute a content hash that uniquely identifies a rustc /
+/// clippy-driver / rustfmt build, preferring `<compiler> -vV` output
+/// over a full blake3 over the binary. `-vV` prints the toolchain
+/// version + commit hash + LLVM version + host triple — all the bits
+/// the cache key must vary on — and runs in ~10 ms vs ~50-60 ms for
+/// the ~150 MB binary blake3 (issue #517).
+///
+/// Falls back to the file-content hash on spawn failure, non-zero
+/// exit, or empty stdout so cache keys are still well-defined for
+/// stubbed binaries (unit tests) or broken toolchains.
+pub(super) fn hash_rustc_identity(path: &Path) -> Option<ContentHash> {
+    match std::process::Command::new(path).arg("-vV").output() {
+        Ok(output) if output.status.success() && !output.stdout.is_empty() => {
+            Some(crate::hash::hash_bytes(&output.stdout))
+        }
+        // Spawn error, non-zero exit, or empty stdout — fall through to
+        // the file-content hash so cache keys stay well-defined for
+        // stubbed binaries (unit tests) and broken toolchains.
+        _ => crate::hash::hash_file(path).ok(),
+    }
 }

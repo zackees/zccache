@@ -107,6 +107,51 @@ fn rustc_context_build_reuses_compiler_hash_cache() {
     assert_eq!(cache.len(), 1);
 }
 
+// ── Issue #517 Option 3: rustc -vV identity instead of binary hash ─────
+
+/// `hash_rustc_identity` against a real rustc on PATH. Skips on hosts
+/// without rustc (e.g. minimal CI containers); the assertion only
+/// fires when we can compare against a known-good `-vV` output.
+#[test]
+fn hash_rustc_identity_matches_rustc_vv_output_when_rustc_available() {
+    let Some(rustc) = crate::test_support::find_rustc() else {
+        eprintln!("SKIP: rustc not found on PATH");
+        return;
+    };
+
+    let identity = hash_rustc_identity(rustc.as_path()).expect("rustc -vV must produce a hash");
+
+    // Recompute the expected hash from rustc's own -vV output. If
+    // production code matches, identity == expected.
+    let output = std::process::Command::new(rustc.as_path())
+        .arg("-vV")
+        .output()
+        .expect("rustc -vV must spawn");
+    assert!(output.status.success());
+    let expected = crate::hash::hash_bytes(&output.stdout);
+
+    assert_eq!(identity, expected);
+    // And it must NOT match the full-binary hash — that's the whole
+    // point: the version-string hash is the cheaper alternative.
+    let binary_hash = crate::hash::hash_file(rustc.as_path()).ok();
+    assert_ne!(Some(identity), binary_hash);
+}
+
+/// Stubbed binary that can't be spawned falls back to the file-content
+/// hash so cache keys remain well-defined for tests and broken
+/// toolchains.
+#[test]
+fn hash_rustc_identity_falls_back_to_file_hash_when_spawn_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let fake_rustc = tmp.path().join("not-actually-rustc");
+    std::fs::write(&fake_rustc, b"").unwrap();
+
+    let identity = hash_rustc_identity(&fake_rustc);
+    let file_hash = crate::hash::hash_file(&fake_rustc).ok();
+
+    assert_eq!(identity, file_hash);
+}
+
 // ── Issue #517: persisted compiler hash cache ───────────────────────────
 
 #[test]

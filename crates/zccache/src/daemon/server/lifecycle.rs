@@ -65,7 +65,7 @@ impl DaemonServer {
         // costs ~50-60 ms per first-after-restart compile. Loading the
         // (path, mtime, size, hash) snapshot from a prior daemon makes
         // that first compile near-instant — the stat-verify in
-        // `get_or_hash` keeps correctness if the binary changed since.
+        // `get_or_hash_with` keeps correctness if the binary changed since.
         let compiler_hash_cache =
             match CompilerHashCache::load_from_disk(compiler_hash_cache_path.as_path()) {
                 Ok(cache) => cache,

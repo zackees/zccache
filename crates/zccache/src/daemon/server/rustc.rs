@@ -71,9 +71,18 @@ pub(super) fn build_rustc_compile_context(
 ) -> BuildContextResult {
     let rustc_args = crate::depgraph::parse_rustc_args(&compilation.original_args, cwd);
 
-    // Hash the rustc binary for compiler version identity.
-    // Different rustc versions produce different output for the same source.
-    let compiler_hash = compiler_hash_cache.get_or_hash(&compilation.compiler);
+    // Compiler identity for the cache key. Different rustc versions
+    // produce different output for the same source, so the identity
+    // hash must vary with the toolchain build.
+    //
+    // Issue #517: prefer `rustc -vV` output (~10 ms spawn) over a full
+    // blake3 over the ~150 MB binary (~50-60 ms on Linux). The cache
+    // is still keyed by the binary's (path, mtime, size); only the
+    // identity bytes that get hashed change. Failure falls through to
+    // the binary hash so cache keys stay well-defined for stub
+    // binaries (unit tests) and broken toolchains.
+    let compiler_hash =
+        compiler_hash_cache.get_or_hash_with(&compilation.compiler, hash_rustc_identity);
 
     let rustc_ctx = crate::depgraph::RustcCompileContext::from_parsed_args(
         &rustc_args,
