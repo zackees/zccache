@@ -191,6 +191,24 @@ def test_parse_benchmark_log_extracts_all_tables():
     assert rust_link[1]["scenario"] == "Workspace staticlib link, Warm"
 
 
+def test_benchmark_env_enables_rust_miss_profile(tmp_path, monkeypatch):
+    # Issue #517: benchmark-stats publishes one log per run to the
+    # `benchmark-stats` branch. The log must include `zccache_rust_miss_profile`
+    # lines so future perf investigations can read the cold-path phase
+    # breakdown directly from the published artifact, without having to
+    # re-run the bench manually. `ZCCACHE_PROFILE_RUST_MISS` is the env knob
+    # the daemon already keys on (see `RUST_MISS_PROFILE_ENV` in
+    # `handle_compile/pipeline.rs`). Mirrors what `perf_guard._benchmark_env`
+    # has been doing all along.
+    monkeypatch.setenv("RUSTC_WRAPPER", "sccache")
+
+    env = benchmark_stats.benchmark_env(tmp_path)
+
+    assert env["ZCCACHE_CACHE_DIR"] == str(tmp_path)
+    assert env["ZCCACHE_PROFILE_RUST_MISS"] == "1"
+    assert "RUSTC_WRAPPER" not in env
+
+
 def test_benchmark_command_targets_existing_workspace_package():
     assert benchmark_stats.BENCHMARK_BASE_COMMAND == [
         "soldr",

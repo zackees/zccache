@@ -268,11 +268,25 @@ def collect_metadata() -> dict[str, Any]:
     }
 
 
-def run_benchmarks(log_path: Path) -> str:
-    cache_dir = Path(tempfile.mkdtemp(prefix="zccache-benchmark-cache-"))
+def benchmark_env(cache_dir: Path) -> dict[str, str]:
+    """Env used by `run_benchmarks` to invoke the bench binary.
+
+    Mirrors `ci.perf_guard._benchmark_env` for the rust-relevant bits so the
+    nightly benchmark-stats run captures the same per-phase
+    `zccache_rust_miss_profile` lines perf_guard already emits — issue #517
+    needs that breakdown in the published bench log to identify which phase
+    of the rust-workspace-link Cold path owns the 91 ms of overhead.
+    """
     env = os.environ.copy()
     env["ZCCACHE_CACHE_DIR"] = str(cache_dir)
+    env["ZCCACHE_PROFILE_RUST_MISS"] = "1"
     env.pop("RUSTC_WRAPPER", None)
+    return env
+
+
+def run_benchmarks(log_path: Path) -> str:
+    cache_dir = Path(tempfile.mkdtemp(prefix="zccache-benchmark-cache-"))
+    env = benchmark_env(cache_dir)
 
     try:
         result = subprocess.run(
