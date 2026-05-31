@@ -779,10 +779,18 @@ pub(crate) enum RustPlanBackendArg {
 }
 
 /// Known subcommand names for auto-detect.
+///
+/// MUST stay in sync with the `Commands` enum below — any name added to
+/// the enum without being listed here gets routed into wrap mode (the
+/// `mod.rs` auto-detect path) and surfaces as "daemon error: failed to
+/// run compiler: program not found" instead of dispatching normally. The
+/// `known_subcommands_matches_clap_enum` test in
+/// `cli/commands/tests/args_parsing.rs` enforces this contract.
 pub(crate) const KNOWN_SUBCOMMANDS: &[&str] = &[
     "start",
     "stop",
     "status",
+    "analyze",
     "clear",
     "wrap",
     "inspect",
@@ -796,6 +804,7 @@ pub(crate) const KNOWN_SUBCOMMANDS: &[&str] = &[
     "cargo-registry",
     "gha-cache",
     "rust-plan",
+    "kv",
     "warm",
     "snapshot-bytes",
     "snapshot-fp-record",

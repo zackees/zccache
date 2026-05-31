@@ -4,7 +4,7 @@
 //! — adding/renaming a flag should require touching one of the assertions
 //! here.
 
-use super::super::args::{Cli, Commands, RustPlanBackendArg, RustPlanCommands};
+use super::super::args::{Cli, Commands, RustPlanBackendArg, RustPlanCommands, KNOWN_SUBCOMMANDS};
 use super::super::rust_plan::rust_plan_gha_version;
 use super::super::session::{
     session_stats_error_json, session_stats_json, session_stats_unavailable_json,
@@ -331,4 +331,49 @@ fn rust_plan_gha_version_is_stable_for_backend_diagnostics() {
     let key = "rust-plan-v1-test";
     assert_eq!(rust_plan_gha_version(key), rust_plan_gha_version(key));
     assert_ne!(rust_plan_gha_version(key), rust_plan_gha_version("other"));
+}
+
+/// Locks the auto-detect contract: every name in the `Commands` clap enum
+/// MUST be listed in `KNOWN_SUBCOMMANDS`, otherwise `mod.rs::run` treats
+/// the subcommand as a compiler invocation and surfaces "daemon error:
+/// failed to run compiler: program not found" instead of dispatching. This
+/// drift previously hid `zccache analyze` and `zccache kv` for users.
+#[test]
+fn known_subcommands_matches_clap_enum() {
+    use clap::CommandFactory;
+    let cmd = Cli::command();
+    let clap_subs: std::collections::BTreeSet<String> = cmd
+        .get_subcommands()
+        .map(|s| s.get_name().to_string())
+        .collect();
+    let known: std::collections::BTreeSet<String> = KNOWN_SUBCOMMANDS
+        .iter()
+        .filter(|s| !s.starts_with('-'))
+        // `help` is a clap-managed meta-subcommand that doesn't appear in the
+        // `Commands` enum but is still a valid invocation we want auto-detect
+        // to recognize, so keep it in KNOWN_SUBCOMMANDS without requiring it
+        // in the enum.
+        .filter(|s| **s != "help")
+        .map(|s| s.to_string())
+        .collect();
+
+    let missing: Vec<&String> = clap_subs.difference(&known).collect();
+    assert!(
+        missing.is_empty(),
+        "KNOWN_SUBCOMMANDS is missing {} clap subcommand(s): {:?}. \
+         Without these entries, `zccache <name>` falls through to wrap mode \
+         and fails with 'failed to run compiler: program not found'. Add them \
+         to KNOWN_SUBCOMMANDS in args.rs.",
+        missing.len(),
+        missing,
+    );
+
+    let stale: Vec<&String> = known.difference(&clap_subs).collect();
+    assert!(
+        stale.is_empty(),
+        "KNOWN_SUBCOMMANDS lists {} name(s) not in the clap Commands enum: {:?}. \
+         Either re-add the subcommand or drop the stale entry.",
+        stale.len(),
+        stale,
+    );
 }
