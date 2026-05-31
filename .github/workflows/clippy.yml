@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@v0.9.32
+      - uses: zackees/setup-soldr@v0.9.33
         with:
           zccache-seed-strict: true
           toolchain: 1.94.1
