@@ -55,6 +55,15 @@ jobs:
       - name: Install Rust components
         run: soldr rustup component add rustfmt
       - name: Check formatting
+        # SOLDR_NO_AUTO_COMPONENT=1 disables soldr's per-cargo-subcommand
+        # auto-bootstrap (which races with the explicit `rustup component
+        # add rustfmt` step above and fails on the solo-toolchain-cache
+        # restore path with "the 'cargo-fmt' binary is not applicable to
+        # the '1.94.1-x86_64-unknown-linux-gnu' toolchain"). The component
+        # is already installed by the previous step; we don't need soldr
+        # to install it again.
+        env:
+          SOLDR_NO_AUTO_COMPONENT: "1"
         run: soldr cargo fmt --all -- --check
 
   dylint:
