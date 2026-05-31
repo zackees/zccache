@@ -250,14 +250,52 @@ pub(super) fn replace_artifact_cache_file(
     tmp_path: &Path,
     cache_path: &Path,
 ) -> std::io::Result<()> {
-    match std::fs::rename(tmp_path, cache_path) {
+    av_scan_retry(|| match std::fs::rename(tmp_path, cache_path) {
         Ok(()) => Ok(()),
         Err(_) if cache_path.exists() => {
             std::fs::remove_file(cache_path)?;
             std::fs::rename(tmp_path, cache_path)
         }
         Err(err) => Err(err),
+    })
+}
+
+// ── Windows AV-scanner retry (issue #490) ──────────────────────────────────
+//
+// Defender / EDR tools open just-written files for an inline scan with a
+// restrictive share mode and no `FILE_SHARE_DELETE`, so any `MoveFileExW` /
+// `DeleteFileW` against the target during the scan window fails with
+// `ERROR_ACCESS_DENIED` (5) or `ERROR_SHARING_VIOLATION` (32). The scan window
+// is short — typically tens to a few hundred milliseconds — so a bounded
+// back-off retry absorbs the race without papering over real ACL failures
+// (those persist past the budget and surface to the caller unchanged).
+
+#[cfg(windows)]
+const AV_SCAN_RETRY_DELAYS_MS: &[u64] = &[50, 100, 250, 500];
+
+#[cfg(windows)]
+fn is_av_scan_transient(err: &std::io::Error) -> bool {
+    if matches!(err.kind(), std::io::ErrorKind::PermissionDenied) {
+        return true;
     }
+    matches!(err.raw_os_error(), Some(5) | Some(32))
+}
+
+#[cfg(windows)]
+fn av_scan_retry<T, F>(mut op: F) -> std::io::Result<T>
+where
+    F: FnMut() -> std::io::Result<T>,
+{
+    for &delay in AV_SCAN_RETRY_DELAYS_MS {
+        match op() {
+            Ok(value) => return Ok(value),
+            Err(err) if is_av_scan_transient(&err) => {
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    op()
 }
 
 /// Write cached output to disk. Optimized syscall sequence:

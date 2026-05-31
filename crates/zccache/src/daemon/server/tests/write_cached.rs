@@ -274,3 +274,87 @@ fn write_cached_output_fallback_has_fresh_mtime() {
         "fallback path should produce fresh mtime — {diff}s old"
     );
 }
+
+// ── Issue #490: AV-scanner rename race ─────────────────────────────
+//
+// On Windows, Defender (MsMpEng) opens just-written files for an inline scan
+// with `FILE_SHARE_READ` only — no `FILE_SHARE_DELETE`. While that handle is
+// live, `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` and `DeleteFileW` against the
+// target file return `ERROR_ACCESS_DENIED` (raw OS error 5) or
+// `ERROR_SHARING_VIOLATION` (32). The scan window is short — typically tens to
+// hundreds of milliseconds — so a bounded retry absorbs it.
+//
+// This test simulates the scanner by holding the rename destination open with
+// the same restrictive share mode from a separate thread that releases the
+// handle shortly. The pre-fix code path fails immediately at the first
+// `remove_file` call inside `replace_artifact_cache_file`; the retry must
+// outlive the held handle.
+
+#[cfg(windows)]
+#[test]
+fn replace_artifact_cache_file_retries_through_av_scanner_lock() {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("output.obj");
+    let tmp = dir.path().join("output.obj.tmp");
+
+    std::fs::write(&target, b"OLD").unwrap();
+    std::fs::write(&tmp, b"NEW").unwrap();
+
+    // FILE_SHARE_READ (0x1) only — no SHARE_WRITE, no SHARE_DELETE.
+    // This is the exact share mode Defender uses during real-time inline
+    // scans, which is why ninja's subsequent remove fails in the wild.
+    let handle = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0x1)
+        .open(&target)
+        .expect("open lock handle");
+
+    let released = Arc::new(AtomicBool::new(false));
+    let released_clone = Arc::clone(&released);
+    let worker = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(150));
+        drop(handle);
+        released_clone.store(true, Ordering::SeqCst);
+    });
+
+    // Without the retry, this fails immediately at the inner remove_file with
+    // ERROR_ACCESS_DENIED. With the retry, the closure retries past the
+    // 150 ms hold and succeeds.
+    replace_artifact_cache_file(&tmp, &target).expect("replace must absorb the simulated AV lock");
+
+    worker.join().unwrap();
+    assert!(
+        released.load(Ordering::SeqCst),
+        "worker must have released the lock before the call returned",
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"NEW");
+}
+
+// Negative guard: a NotFound (or any other non-transient) error must surface
+// immediately rather than burning the retry budget. Without this assertion,
+// a misclassified `ErrorKind` could silently inflate every cache-store
+// failure path by ~1 s.
+#[cfg(windows)]
+#[test]
+fn replace_artifact_cache_file_does_not_retry_non_transient_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("output.obj");
+    let tmp = dir.path().join("missing.obj.tmp"); // tmp does NOT exist
+
+    // Neither file exists; rename returns ENOENT/NotFound — not a share
+    // violation. The call must fail promptly, not after the full budget.
+    let start = std::time::Instant::now();
+    let err = replace_artifact_cache_file(&tmp, &target).expect_err("must propagate NotFound");
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < std::time::Duration::from_millis(45),
+        "non-transient errors must not enter the retry sleep — took {elapsed:?}"
+    );
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+}
