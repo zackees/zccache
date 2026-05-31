@@ -77,6 +77,23 @@ impl CompilerFamily {
     pub fn is_formatter(&self) -> bool {
         matches!(self, CompilerFamily::Rustfmt)
     }
+
+    /// Whether the daemon should probe this compiler for system include
+    /// paths on first use (via `depgraph::discovery_args()`).
+    ///
+    /// True for C/C++ family compilers (Gcc, Clang, Msvc) — the discovery
+    /// args (`-v -E -x c++ NUL`) are C/C++-preprocessor flags. False for
+    /// the rust toolchain (Rustc, Rustfmt) because (a) rust has no concept
+    /// of system include paths and (b) rustc rejects the C/C++ flags and
+    /// the spawn cost is wasted ~30-50 ms on every first-after-clear
+    /// invocation. See issue #517.
+    #[must_use]
+    pub fn needs_system_include_discovery(&self) -> bool {
+        matches!(
+            self,
+            CompilerFamily::Gcc | CompilerFamily::Clang | CompilerFamily::Msvc,
+        )
+    }
 }
 
 /// The result of parsing a compiler invocation.

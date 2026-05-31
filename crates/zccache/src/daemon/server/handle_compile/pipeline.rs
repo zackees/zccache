@@ -109,10 +109,23 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
     // diagnostic path.
     let want_rust_miss_profile = std::env::var_os(RUST_MISS_PROFILE_ENV).is_some();
 
-    // Discover system includes for this compiler (cached per compiler path)
+    // Discover system includes for this compiler (cached per compiler path).
+    //
+    // Issue #517: skip discovery entirely for the rust toolchain. The
+    // discovery args (`-v -E -x c++ NUL`) are C/C++-preprocessor flags;
+    // rustc / clippy-driver / rustfmt do not understand them and do not have
+    // a notion of system includes anyway. Spawning rustc just to capture an
+    // error contributes ~30-50 ms (Linux) on every first-after-clear rust
+    // compile, which is the dominant share of the 91 ms `rust-workspace-link
+    // Cold` overhead measured in `benchmark-stats/latest.json`. Short-circuit
+    // to an empty include list — `watch_directories(&[])` is a fast no-op.
     let t_system_includes = want_rust_miss_profile.then(std::time::Instant::now);
     let compiler_priority = CompilePriority::from_client_env(client_env.as_deref());
-    let system_includes = {
+    let needs_discovery = crate::compiler::detect_family(&compiler.to_string_lossy())
+        .needs_system_include_discovery();
+    let system_includes = if !needs_discovery {
+        Vec::new()
+    } else {
         let mut cache = state.system_includes.lock().await;
         let lineage_for_probe = lineage.clone();
         cache

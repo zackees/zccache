@@ -28,6 +28,19 @@ fn rustc_no_pch_extension() {
     assert_eq!(CompilerFamily::Rustc.pch_extension(), None);
 }
 
+// Issue #517: the system-include discovery probe spawns the compiler with
+// C/C++ preprocessor flags (`-v -E -x c++ NUL`). Doing that for rustc on
+// the cold path adds ~30-50 ms per first-after-clear compile while
+// returning no useful data — rust has no concept of system includes.
+#[test]
+fn needs_system_include_discovery_truth_table() {
+    assert!(CompilerFamily::Gcc.needs_system_include_discovery());
+    assert!(CompilerFamily::Clang.needs_system_include_discovery());
+    assert!(CompilerFamily::Msvc.needs_system_include_discovery());
+    assert!(!CompilerFamily::Rustc.needs_system_include_discovery());
+    assert!(!CompilerFamily::Rustfmt.needs_system_include_discovery());
+}
+
 // ─── Rustc cacheability tests ─────────────────────────────────────────
 
 #[test]
