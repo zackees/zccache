@@ -683,6 +683,42 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
     let compiler_priority =
         CompilePriority::from_client_env_for_link_like(client_env.as_deref(), is_link_like);
     let compiler_priority_decision = compiler_priority.resolve_for_current_load();
+
+    // Issue #532: kick off hashing of pre-known inputs (source +
+    // rustc_extern_paths) on a blocking thread, in parallel with the
+    // rustc spawn. The 50-rlib externs of a workspace link dominate
+    // hash_all_ns (~64 ms on a 4-core CI runner); overlapping them with
+    // the ~38 ms rustc exec hides most of that cost. Late-arriving
+    // include paths (from rustc's dep-info) are hashed post-compile and
+    // merged with the pre-hash result. Skip for non-rustc compilers —
+    // they don't have a known-ahead extern list, and their cold hash_all
+    // is small anyway.
+    let pre_hash_task: Option<tokio::task::JoinHandle<HashMap<NormalizedPath, ContentHash>>> =
+        if is_rustc && !rustc_extern_paths.is_empty() {
+            let pre_state = Arc::clone(state_arc);
+            let pre_source = source_path.clone();
+            let pre_externs = rustc_extern_paths.clone();
+            let pre_clock = snap_clock;
+            Some(tokio::task::spawn_blocking(move || {
+                use rayon::prelude::*;
+                let all_paths: Vec<&NormalizedPath> = std::iter::once(&pre_source)
+                    .chain(pre_externs.iter())
+                    .collect();
+                all_paths
+                    .par_iter()
+                    .filter_map(|path| {
+                        let hash_path = resolve_pch_source(path, &pre_state.pch_source_map)
+                            .unwrap_or_else(|| (*path).clone());
+                        hash_file(&pre_state.cache_system, &hash_path, pre_clock)
+                            .ok()
+                            .map(|h| ((*path).clone(), h))
+                    })
+                    .collect()
+            }))
+        } else {
+            None
+        };
+
     let result = crate::daemon::process::tokio_command_output_with_priority(
         &mut cmd,
         compiler_priority_decision.effective,
@@ -897,21 +933,39 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         let dep_dirs_ns = t_dep_dirs.elapsed().as_nanos() as u64;
 
         // ── Phase: hash all files (parallel) ─────────────────────────
-        // Hash source + resolved headers + force-includes using rayon
-        // parallel iteration, matching the hit path's parallel strategy.
+        // Hash source + resolved headers + force-includes + rustc externs
+        // using rayon parallel iteration. Issue #532: for rustc, the
+        // source + extern paths were already kicked off pre-compile via
+        // `pre_hash_task`; join here and then only hash the late-arriving
+        // includes (scan_result.resolved + force_includes), which are
+        // typically empty for workspace link.
         let t_hash = std::time::Instant::now();
-        let mut hash_map: HashMap<NormalizedPath, ContentHash> = HashMap::new();
+        let mut hash_map: HashMap<NormalizedPath, ContentHash> = match pre_hash_task {
+            Some(task) => task.await.unwrap_or_default(),
+            None => HashMap::new(),
+        };
+        let pre_hashed_count = hash_map.len();
         {
             use rayon::prelude::*;
-            let header_iter = scan_result
-                .resolved
-                .iter()
-                .chain(ctx.force_includes.iter())
-                .chain(rustc_extern_paths.iter());
-            let all_paths: Vec<&NormalizedPath> =
-                std::iter::once(&source_path).chain(header_iter).collect();
+            // Build the post-compile path list. When pre_hash_task ran,
+            // we skip source + externs (already hashed). Otherwise hash
+            // everything as before (C/C++ fallback).
+            let post_paths: Vec<&NormalizedPath> = if pre_hashed_count > 0 {
+                scan_result
+                    .resolved
+                    .iter()
+                    .chain(ctx.force_includes.iter())
+                    .filter(|p| !hash_map.contains_key(*p))
+                    .collect()
+            } else {
+                std::iter::once(&source_path)
+                    .chain(scan_result.resolved.iter())
+                    .chain(ctx.force_includes.iter())
+                    .chain(rustc_extern_paths.iter())
+                    .collect()
+            };
 
-            let results: Vec<_> = all_paths
+            let results: Vec<_> = post_paths
                 .par_iter()
                 .map(|path| {
                     let hash_path = resolve_pch_source(path, &state.pch_source_map)
