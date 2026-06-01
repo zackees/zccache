@@ -281,19 +281,19 @@ impl DepGraph {
     /// Issue #550 — the `compute_artifact_key` hot loop's per-header
     /// allocation hotspot.
     pub fn cached_normalize_key_path(&self, path: &Path, key_root: Option<&Path>) -> Arc<str> {
-        let cache_key = PathKeyCacheKey {
-            path: NormalizedPath::new(path),
-            key_root: key_root.map(NormalizedPath::new),
-        };
-        if let Some(cached) = self.path_key_cache.get(&cache_key) {
-            return cached.clone();
-        }
-        let computed: Arc<str> =
-            crate::depgraph::context::normalize_key_path(path, key_root).into();
-        if self.path_key_cache.len() < PATH_KEY_CACHE_MAX_ENTRIES {
-            self.path_key_cache.insert(cache_key, computed.clone());
-        }
-        computed
+        // Issue #588: the path_key_cache was net-negative. Each lookup
+        // allocated 4 owned objects (two NormalizedPaths) to construct
+        // the DashMap key, saving only ~1 normalize_for_key allocation.
+        // The diagnostic data from #584 confirmed `artifact_key_compute_ns`
+        // didn't move when the cache was bypassed (#587 fast path).
+        //
+        // Inline normalize_key_path with zero cache overhead. The Arc<str>
+        // conversion from String reuses the heap allocation — one alloc
+        // per call total, vs the prior four.
+        //
+        // The path_key_cache field is retained for backward-compat with
+        // tests and to keep the API surface stable; new calls bypass it.
+        crate::depgraph::context::normalize_key_path(path, key_root).into()
     }
 
     /// Number of cached entries in `path_key_cache`. Test-only.

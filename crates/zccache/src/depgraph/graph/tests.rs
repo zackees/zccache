@@ -748,26 +748,27 @@ fn trim_preserves_force_include_files() {
     assert_eq!(graph.stats().file_count, 2);
 }
 
-// ── Issue #550: cached normalize_key_path ───────────────────────────────
+// ── Issue #550 / #588: normalize_key_path semantic contract ─────────────
+//
+// The DashMap-based path_key_cache was bypassed in #588 after the #584
+// sub-phase diagnostic showed it was net-negative (4 allocations to
+// construct the lookup key vs ~1 normalize_for_key call saved on hit).
+// These tests assert the SEMANTIC contract: same input → same bytes,
+// different inputs → different bytes. The pointer-equality / cache-len
+// assertions from #550 are no longer applicable.
 
 #[test]
-fn cached_normalize_key_path_returns_same_arc_on_repeated_lookups() {
+fn cached_normalize_key_path_returns_same_bytes_on_repeated_lookups() {
     use std::path::Path;
     let graph = DepGraph::new();
     let header = Path::new("/usr/include/c++/13/iostream");
     let root: Option<&Path> = None;
 
-    assert_eq!(graph.path_key_cache_len(), 0);
     let first = graph.cached_normalize_key_path(header, root);
-    assert_eq!(graph.path_key_cache_len(), 1);
-
     let second = graph.cached_normalize_key_path(header, root);
-    assert_eq!(graph.path_key_cache_len(), 1, "second call must not insert");
-
-    // Arc pointer equality — same underlying allocation.
-    assert!(
-        std::sync::Arc::ptr_eq(&first, &second),
-        "cache must hand back the same Arc<str> on the second lookup",
+    assert_eq!(
+        &*first, &*second,
+        "repeated lookups must return byte-identical normalized form",
     );
     assert_eq!(&*first, "/usr/include/c++/13/iostream");
 }
@@ -781,38 +782,21 @@ fn cached_normalize_key_path_distinguishes_by_key_root() {
     let no_root = graph.cached_normalize_key_path(header, None);
     let workspace_root = graph.cached_normalize_key_path(header, Some(Path::new("/workspace")));
 
-    // Different key_root → different cache entries → typically different value.
-    assert_eq!(graph.path_key_cache_len(), 2);
     assert_ne!(
         &*no_root, &*workspace_root,
         "absolute path and project-relative path must differ",
     );
 }
 
+// ── Issue #561 / #588: context-key normalization is deterministic ───
+//
+// Originally tested cache population/reuse via `path_key_cache_len`;
+// after #588 bypassed the cache (it was net-negative), the meaningful
+// invariant is just: repeated `register_with_root_and_salt_result`
+// with the same CompileContext produces the same ContextKey.
+
 #[test]
-fn cached_normalize_key_path_cache_clears_with_depgraph() {
-    use std::path::Path;
-    let graph = DepGraph::new();
-    let _ = graph.cached_normalize_key_path(Path::new("/usr/include/string"), None);
-    let _ = graph.cached_normalize_key_path(Path::new("/usr/include/vector"), None);
-    assert_eq!(graph.path_key_cache_len(), 2);
-
-    graph.clear();
-    assert_eq!(
-        graph.path_key_cache_len(),
-        0,
-        "DepGraph::clear must wipe the path key cache (issue #550 invalidation contract)",
-    );
-}
-
-// ── Issue #561: context-key path normalization goes through cache ───
-
-/// `compute_context_key` invoked through DepGraph::register_with_root_and_salt_result
-/// must populate `path_key_cache` for the source + every include dir +
-/// every force-include. Calling register again with the same CompileContext
-/// must NOT add new cache entries — every path-normalization hits the cache.
-#[test]
-fn register_context_populates_and_reuses_path_key_cache() {
+fn register_context_produces_deterministic_key() {
     let graph = DepGraph::new();
 
     let mut include_search = IncludeSearchPaths::default();
@@ -835,27 +819,11 @@ fn register_context_populates_and_reuses_path_key_cache() {
         unknown_flags: Vec::new(),
     };
 
-    assert_eq!(graph.path_key_cache_len(), 0);
     let first = graph.register_with_root_and_salt_result(ctx.clone(), None, None);
-
-    // 1 source + 1 user dir + 2 system dirs + 1 force-include = 5
-    // distinct paths normalized through the cache.
-    let after_first = graph.path_key_cache_len();
-    assert!(
-        after_first >= 5,
-        "first register must populate cache (got len={after_first}, expected >= 5)",
-    );
-
     let second = graph.register_with_root_and_salt_result(ctx, None, None);
     assert_eq!(
-        graph.path_key_cache_len(),
-        after_first,
-        "second register with identical context must hit the cache, not grow it",
-    );
-
-    assert_eq!(
         first.key, second.key,
-        "context_key must be deterministic across cached and uncached normalize paths",
+        "context_key must be deterministic across repeated registers",
     );
 }
 
