@@ -11,6 +11,7 @@
 //!   `rustc` (rustc tests).
 
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::core::path::normalize_for_key;
 use crate::core::NormalizedPath;
@@ -141,7 +142,7 @@ fn extern_path_key(path: &str) -> &str {
         .unwrap_or(path)
 }
 
-fn normalize_key_path(path: &Path, key_root: Option<&Path>) -> String {
+pub fn normalize_key_path(path: &Path, key_root: Option<&Path>) -> String {
     if let Some(root) = key_root {
         if let Ok(stripped) = path.strip_prefix(root) {
             return normalize_for_key(stripped);
@@ -294,6 +295,27 @@ pub fn compute_artifact_key<P: AsRef<Path> + Ord>(
     file_hashes: &mut [(P, ContentHash)],
     key_root: Option<&Path>,
 ) -> ArtifactKey {
+    compute_artifact_key_with(context_key, file_hashes, key_root, |path, key_root| {
+        normalize_key_path(path, key_root).into()
+    })
+}
+
+/// Like [`compute_artifact_key`] but the per-header path normalization
+/// is delegated to a caller-supplied closure. The daemon plumbs in a
+/// closure that consults `DepGraph::cached_normalize_key_path` so the
+/// per-compile allocations amortize across the daemon's lifetime
+/// (issue #550). The closure is `FnMut` only because the impl forwards
+/// it through the iterator; in practice it's a `Fn`-shaped lookup.
+pub fn compute_artifact_key_with<P, F>(
+    context_key: &ContextKey,
+    file_hashes: &mut [(P, ContentHash)],
+    key_root: Option<&Path>,
+    mut normalize: F,
+) -> ArtifactKey
+where
+    P: AsRef<Path> + Ord,
+    F: FnMut(&Path, Option<&Path>) -> Arc<str>,
+{
     // Sort by path for determinism.
     file_hashes.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -303,8 +325,8 @@ pub fn compute_artifact_key<P: AsRef<Path> + Ord>(
     hasher.update(b"\0");
 
     for (path, hash) in file_hashes.iter() {
-        let path = normalize_key_path(path.as_ref(), key_root);
-        hasher.update(path.as_bytes());
+        let path_key = normalize(path.as_ref(), key_root);
+        hasher.update(path_key.as_bytes());
         hasher.update(b"\0");
         hasher.update(hash.as_bytes());
         hasher.update(b"\0");
@@ -659,10 +681,34 @@ pub fn compute_rustc_artifact_key_with_root<P: AsRef<Path> + Ord>(
     extern_hashes: &mut [(String, ContentHash)],
     key_root: Option<&Path>,
 ) -> ArtifactKey {
+    compute_rustc_artifact_key_with_root_with(
+        context_key,
+        file_hashes,
+        extern_hashes,
+        key_root,
+        |path, key_root| normalize_key_path(path, key_root).into(),
+    )
+}
+
+/// Like [`compute_rustc_artifact_key_with_root`] but the per-header path
+/// normalization is delegated to a caller-supplied closure. Used by the
+/// daemon's rustc miss/update paths to consult
+/// `DepGraph::cached_normalize_key_path` for the per-header allocation
+/// amortization (issue #550).
+pub fn compute_rustc_artifact_key_with_root_with<P, F>(
+    context_key: &ContextKey,
+    file_hashes: &mut [(P, ContentHash)],
+    extern_hashes: &mut [(String, ContentHash)],
+    key_root: Option<&Path>,
+    mut normalize: F,
+) -> ArtifactKey
+where
+    P: AsRef<Path> + Ord,
+    F: FnMut(&Path, Option<&Path>) -> Arc<str>,
+{
     if key_root.is_some() {
         file_hashes.sort_by(|a, b| {
-            normalize_key_path(a.0.as_ref(), key_root)
-                .cmp(&normalize_key_path(b.0.as_ref(), key_root))
+            normalize(a.0.as_ref(), key_root).cmp(&normalize(b.0.as_ref(), key_root))
         });
     } else {
         file_hashes.sort_by(|a, b| a.0.cmp(&b.0));
@@ -676,8 +722,8 @@ pub fn compute_rustc_artifact_key_with_root<P: AsRef<Path> + Ord>(
 
     // Source + dependency file hashes.
     for (path, hash) in file_hashes.iter() {
-        let path = normalize_key_path(path.as_ref(), key_root);
-        hasher.update(path.as_bytes());
+        let path_key = normalize(path.as_ref(), key_root);
+        hasher.update(path_key.as_bytes());
         hasher.update(b"\0");
         hasher.update(hash.as_bytes());
         hasher.update(b"\0");

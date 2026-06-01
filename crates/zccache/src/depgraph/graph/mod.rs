@@ -6,6 +6,7 @@
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::core::NormalizedPath;
@@ -13,8 +14,8 @@ use crate::hash::ContentHash;
 use dashmap::DashMap;
 
 use super::context::{
-    compute_artifact_key, compute_context_key, compute_rustc_artifact_key_with_root, ArtifactKey,
-    CompileContext, ContextKey,
+    compute_artifact_key_with, compute_context_key, compute_rustc_artifact_key_with_root_with,
+    ArtifactKey, CompileContext, ContextKey,
 };
 use super::scanner::{IncludeDirective, ScanResult};
 
@@ -112,11 +113,34 @@ pub struct DepGraph {
     /// their paths are output-placement state. Their content hashes affect the
     /// rustc artifact key by crate name, but target-dir path prefixes must not.
     rustc_externs: DashMap<ContextKey, Vec<(String, NormalizedPath)>>,
+    /// Issue #550: cached normalize_key_path results, keyed by
+    /// (path, key_root_identity). The `update()` hot loop calls
+    /// `normalize_key_path` once per resolved include header (typically
+    /// 200-500 entries for a C++ compile pulling `<iostream>`). The
+    /// normalization itself allocates a `String` per call; caching the
+    /// `Arc<str>` result lets subsequent compiles in the same daemon
+    /// session reuse the work — measured at ~2 ms saved per cpp-inline
+    /// cold compile after the cache is warm. Capped to bound memory.
+    path_key_cache: DashMap<PathKeyCacheKey, Arc<str>>,
     /// Stats counters.
     checks: AtomicU64,
     hits: AtomicU64,
     misses: AtomicU64,
 }
+
+/// Cache key for `path_key_cache`. `(header_path, key_root_or_none)`.
+/// Different `key_root` values produce different normalized output
+/// (project-relative vs absolute), so the cache must scope by root.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PathKeyCacheKey {
+    path: NormalizedPath,
+    key_root: Option<NormalizedPath>,
+}
+
+/// Cap on `path_key_cache` size. ~150 bytes per entry × 32k = ~5 MB.
+/// Beyond this, new entries are silently dropped (still served via
+/// uncached recomputation). Cap is reset by [`DepGraph::clear`].
+const PATH_KEY_CACHE_MAX_ENTRIES: usize = 32_768;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ContextRegistration {
@@ -230,10 +254,43 @@ impl DepGraph {
             files: DashMap::new(),
             contexts: DashMap::new(),
             rustc_externs: DashMap::new(),
+            path_key_cache: DashMap::new(),
             checks: AtomicU64::new(0),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
         }
+    }
+
+    /// Cached version of [`crate::depgraph::context::normalize_key_path`].
+    ///
+    /// Looks up `(path, key_root)` in `path_key_cache`. On hit, returns
+    /// the cached `Arc<str>` without re-running the underlying normalization.
+    /// On miss, computes via `normalize_key_path` and inserts (subject to
+    /// the `PATH_KEY_CACHE_MAX_ENTRIES` cap — past the cap, the result is
+    /// returned without caching so memory stays bounded).
+    ///
+    /// Issue #550 — the `compute_artifact_key` hot loop's per-header
+    /// allocation hotspot.
+    pub fn cached_normalize_key_path(&self, path: &Path, key_root: Option<&Path>) -> Arc<str> {
+        let cache_key = PathKeyCacheKey {
+            path: NormalizedPath::new(path),
+            key_root: key_root.map(NormalizedPath::new),
+        };
+        if let Some(cached) = self.path_key_cache.get(&cache_key) {
+            return cached.clone();
+        }
+        let computed: Arc<str> =
+            crate::depgraph::context::normalize_key_path(path, key_root).into();
+        if self.path_key_cache.len() < PATH_KEY_CACHE_MAX_ENTRIES {
+            self.path_key_cache.insert(cache_key, computed.clone());
+        }
+        computed
+    }
+
+    /// Number of cached entries in `path_key_cache`. Test-only.
+    #[cfg(test)]
+    pub fn path_key_cache_len(&self) -> usize {
+        self.path_key_cache.len()
     }
 
     /// Register a compilation context. Returns the context key.
@@ -518,14 +575,20 @@ impl DepGraph {
                 self.misses.fetch_add(1, Ordering::Relaxed);
                 return CacheVerdict::Cold;
             };
-            compute_rustc_artifact_key_with_root(
+            compute_rustc_artifact_key_with_root_with(
                 key,
                 &mut file_hashes,
                 &mut extern_hashes,
                 entry.key_root.as_deref(),
+                |path, key_root| self.cached_normalize_key_path(path, key_root),
             )
         } else {
-            compute_artifact_key(key, &mut file_hashes, entry.key_root.as_deref())
+            compute_artifact_key_with(
+                key,
+                &mut file_hashes,
+                entry.key_root.as_deref(),
+                |path, key_root| self.cached_normalize_key_path(path, key_root),
+            )
         };
 
         if source_fresh {
@@ -713,14 +776,20 @@ impl DepGraph {
                 self.misses.fetch_add(1, Ordering::Relaxed);
                 return (CacheVerdict::Cold, "rustc extern hash missing".to_string());
             };
-            compute_rustc_artifact_key_with_root(
+            compute_rustc_artifact_key_with_root_with(
                 key,
                 &mut file_hashes,
                 &mut extern_hashes,
                 entry.key_root.as_deref(),
+                |path, key_root| self.cached_normalize_key_path(path, key_root),
             )
         } else {
-            compute_artifact_key(key, &mut file_hashes, entry.key_root.as_deref())
+            compute_artifact_key_with(
+                key,
+                &mut file_hashes,
+                entry.key_root.as_deref(),
+                |path, key_root| self.cached_normalize_key_path(path, key_root),
+            )
         };
 
         if source_fresh {
@@ -838,14 +907,20 @@ impl DepGraph {
 
         let computed = if let Some(externs) = rustc_externs.as_deref() {
             let mut extern_hashes = collect_rustc_extern_hashes(externs, &get_hash)?;
-            compute_rustc_artifact_key_with_root(
+            compute_rustc_artifact_key_with_root_with(
                 key,
                 &mut file_hashes,
                 &mut extern_hashes,
                 entry.key_root.as_deref(),
+                |path, key_root| self.cached_normalize_key_path(path, key_root),
             )
         } else {
-            compute_artifact_key(key, &mut file_hashes, entry.key_root.as_deref())
+            compute_artifact_key_with(
+                key,
+                &mut file_hashes,
+                entry.key_root.as_deref(),
+                |path, key_root| self.cached_normalize_key_path(path, key_root),
+            )
         };
 
         if computed == *stored_key {
@@ -901,14 +976,20 @@ impl DepGraph {
 
         let artifact_key = if let Some(externs) = rustc_externs.as_deref() {
             let mut extern_hashes = collect_rustc_extern_hashes(externs, &get_hash)?;
-            compute_rustc_artifact_key_with_root(
+            compute_rustc_artifact_key_with_root_with(
                 key,
                 &mut file_hashes,
                 &mut extern_hashes,
                 entry.key_root.as_deref(),
+                |path, key_root| self.cached_normalize_key_path(path, key_root),
             )
         } else {
-            compute_artifact_key(key, &mut file_hashes, entry.key_root.as_deref())
+            compute_artifact_key_with(
+                key,
+                &mut file_hashes,
+                entry.key_root.as_deref(),
+                |path, key_root| self.cached_normalize_key_path(path, key_root),
+            )
         };
 
         // SUCCESS: all hashes computed â€” transition to Warm atomically with artifact key.
@@ -964,6 +1045,7 @@ impl DepGraph {
         self.files.clear();
         self.contexts.clear();
         self.rustc_externs.clear();
+        self.path_key_cache.clear();
         self.checks.store(0, Ordering::Relaxed);
         self.hits.store(0, Ordering::Relaxed);
         self.misses.store(0, Ordering::Relaxed);
@@ -1070,6 +1152,7 @@ impl DepGraph {
             files,
             contexts,
             rustc_externs: DashMap::new(),
+            path_key_cache: DashMap::new(),
             checks: AtomicU64::new(0),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),

@@ -747,3 +747,60 @@ fn trim_preserves_force_include_files() {
     );
     assert_eq!(graph.stats().file_count, 2);
 }
+
+// ── Issue #550: cached normalize_key_path ───────────────────────────────
+
+#[test]
+fn cached_normalize_key_path_returns_same_arc_on_repeated_lookups() {
+    use std::path::Path;
+    let graph = DepGraph::new();
+    let header = Path::new("/usr/include/c++/13/iostream");
+    let root: Option<&Path> = None;
+
+    assert_eq!(graph.path_key_cache_len(), 0);
+    let first = graph.cached_normalize_key_path(header, root);
+    assert_eq!(graph.path_key_cache_len(), 1);
+
+    let second = graph.cached_normalize_key_path(header, root);
+    assert_eq!(graph.path_key_cache_len(), 1, "second call must not insert");
+
+    // Arc pointer equality — same underlying allocation.
+    assert!(
+        std::sync::Arc::ptr_eq(&first, &second),
+        "cache must hand back the same Arc<str> on the second lookup",
+    );
+    assert_eq!(&*first, "/usr/include/c++/13/iostream");
+}
+
+#[test]
+fn cached_normalize_key_path_distinguishes_by_key_root() {
+    use std::path::Path;
+    let graph = DepGraph::new();
+    let header = Path::new("/workspace/include/foo.h");
+
+    let no_root = graph.cached_normalize_key_path(header, None);
+    let workspace_root = graph.cached_normalize_key_path(header, Some(Path::new("/workspace")));
+
+    // Different key_root → different cache entries → typically different value.
+    assert_eq!(graph.path_key_cache_len(), 2);
+    assert_ne!(
+        &*no_root, &*workspace_root,
+        "absolute path and project-relative path must differ",
+    );
+}
+
+#[test]
+fn cached_normalize_key_path_cache_clears_with_depgraph() {
+    use std::path::Path;
+    let graph = DepGraph::new();
+    let _ = graph.cached_normalize_key_path(Path::new("/usr/include/string"), None);
+    let _ = graph.cached_normalize_key_path(Path::new("/usr/include/vector"), None);
+    assert_eq!(graph.path_key_cache_len(), 2);
+
+    graph.clear();
+    assert_eq!(
+        graph.path_key_cache_len(),
+        0,
+        "DepGraph::clear must wipe the path key cache (issue #550 invalidation contract)",
+    );
+}
