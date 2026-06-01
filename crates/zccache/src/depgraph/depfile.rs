@@ -13,10 +13,39 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
+
+use dashmap::DashMap;
 
 use super::args::UserDepFlags;
 use super::scanner::ScanResult;
 use crate::core::NormalizedPath;
+
+/// Issue #573: process-wide cache for canonicalize results. The
+/// depfile parser hits `std::fs::canonicalize` (realpath) per header
+/// token; for a cpp compile pulling `<iostream>` that's ~300 syscalls.
+/// System headers (`/usr/include/...`) appear in every cpp compile's
+/// depfile — caching by input path string absorbs the syscall cost
+/// across the daemon's lifetime.
+///
+/// Capped at 64k entries to bound memory (~100 bytes/entry => ~6 MB).
+/// Beyond the cap, new entries fall back to the uncached path.
+fn canonicalize_cache() -> &'static DashMap<String, NormalizedPath> {
+    static CACHE: OnceLock<DashMap<String, NormalizedPath>> = OnceLock::new();
+    CACHE.get_or_init(DashMap::new)
+}
+
+const CANONICALIZE_CACHE_MAX_ENTRIES: usize = 64 * 1024;
+
+#[cfg(test)]
+pub(crate) fn canonicalize_cache_len_for_test() -> usize {
+    canonicalize_cache().len()
+}
+
+#[cfg(test)]
+pub(crate) fn canonicalize_cache_clear_for_test() {
+    canonicalize_cache().clear();
+}
 
 /// Errors that can occur while parsing a `.d` file.
 #[derive(Debug)]
@@ -312,6 +341,16 @@ fn split_and_unescape(deps: &str) -> Vec<String> {
 /// These must be stripped so paths match the format used by the file watcher
 /// (which also strips `\\?\`), ensuring journal/metadata lookups work correctly.
 pub(crate) fn canonicalize_path(path: &Path, cwd: &Path) -> NormalizedPath {
+    // Issue #573: cache by input path string. The same set of system
+    // headers (`/usr/include/...`) appears in every cpp compile's
+    // depfile; without caching, realpath fires per token per compile
+    // (~300 syscalls per cpp compile, ~2.7 ms / mean for include_scan_ns
+    // in the published benchmark-log).
+    let key = path.to_string_lossy().into_owned();
+    let cache = canonicalize_cache();
+    if let Some(cached) = cache.get(&key) {
+        return cached.clone();
+    }
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| {
         if path.is_absolute() {
             path.to_path_buf()
@@ -319,7 +358,13 @@ pub(crate) fn canonicalize_path(path: &Path, cwd: &Path) -> NormalizedPath {
             cwd.join(path)
         }
     });
-    strip_win_prefix(canonical.into())
+    let result = strip_win_prefix(canonical.into());
+    // Bounded insert — once the cache is saturated, new entries are
+    // dropped (still served via uncached recomputation).
+    if cache.len() < CANONICALIZE_CACHE_MAX_ENTRIES {
+        cache.insert(key, result.clone());
+    }
+    result
 }
 
 /// Strip the `\\?\` extended-length prefix on Windows.
@@ -832,6 +877,67 @@ mod tests {
             args[2].contains("bar"),
             "expected 'bar' in path: {}",
             args[2]
+        );
+    }
+
+    /// Process-global lock for cache-state tests. The canonicalize
+    /// cache is a process-wide static, so two tests touching it
+    /// concurrently would race and produce flaky assertions.
+    static CANONICALIZE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Issue #573: `canonicalize_path` caches its results by input
+    /// path string, so subsequent lookups don't re-issue the realpath
+    /// syscall. Verified by calling twice with the same input and
+    /// asserting only one cache entry was created (the second call
+    /// hit the cache). Same canonical output across the two calls.
+    #[test]
+    fn canonicalize_path_caches_results() {
+        let _guard = CANONICALIZE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = TempDir::new().unwrap();
+        let cwd = dir.path();
+        let hdr = touch(cwd, "shared-header.h");
+
+        canonicalize_cache_clear_for_test();
+        assert_eq!(canonicalize_cache_len_for_test(), 0);
+
+        let first = canonicalize_path(&hdr, cwd);
+        assert_eq!(
+            canonicalize_cache_len_for_test(),
+            1,
+            "first call must populate cache"
+        );
+
+        let second = canonicalize_path(&hdr, cwd);
+        assert_eq!(
+            canonicalize_cache_len_for_test(),
+            1,
+            "second call with same input must hit cache, not grow it",
+        );
+        assert_eq!(first, second, "cached canonical output must match");
+    }
+
+    /// Issue #573 regression guard: canonicalize_path cache must
+    /// distinguish entries by input path, not by canonical output.
+    /// Two different input forms of the same file must each get
+    /// their own cache entry (the cache key is the input).
+    #[test]
+    fn canonicalize_path_cache_distinguishes_inputs() {
+        let _guard = CANONICALIZE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = TempDir::new().unwrap();
+        let cwd = dir.path();
+        let _hdr = touch(cwd, "a.h");
+
+        canonicalize_cache_clear_for_test();
+        let _first = canonicalize_path(Path::new("a.h"), cwd);
+        let _second = canonicalize_path(Path::new("./a.h"), cwd);
+        assert_eq!(
+            canonicalize_cache_len_for_test(),
+            2,
+            "different input path strings must produce separate cache entries",
         );
     }
 }
