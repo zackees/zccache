@@ -46,24 +46,20 @@ jobs:
           build-cache: false
           linker: fast
           prebuild-deps: none
-          # setup-soldr#305: enable solo-toolchain-cache so warm runs
-          # restore the rustup-installed toolchain from a tiny long-lived
-          # cache instead of paying ~8s for `rustup toolchain install`
-          # every time. Cache key is (rustc release × components × targets
-          # × soldr version) — invalidates only on real toolchain bumps.
-          solo-toolchain-cache: true
+          # solo-toolchain-cache restores a partial rustup state on warm
+          # runs where rustfmt appears installed in the manifest but
+          # `cargo-fmt` is missing from the toolchain bin/ directory.
+          # Result: `cargo fmt` fails with "the 'cargo-fmt' binary is
+          # not applicable to the '1.94.1-x86_64-unknown-linux-gnu'
+          # toolchain" on every push-to-main since the cache started
+          # landing exact-hits. Disabling the cache for this lightweight
+          # job costs ~8 s per run — cheap insurance vs. losing CI
+          # signal on Formatting. Re-enable once setup-soldr packages
+          # the rustfmt binary into the cached toolchain layout.
+          solo-toolchain-cache: false
       - name: Install Rust components
         run: soldr rustup component add rustfmt
       - name: Check formatting
-        # SOLDR_NO_AUTO_COMPONENT=1 disables soldr's per-cargo-subcommand
-        # auto-bootstrap (which races with the explicit `rustup component
-        # add rustfmt` step above and fails on the solo-toolchain-cache
-        # restore path with "the 'cargo-fmt' binary is not applicable to
-        # the '1.94.1-x86_64-unknown-linux-gnu' toolchain"). The component
-        # is already installed by the previous step; we don't need soldr
-        # to install it again.
-        env:
-          SOLDR_NO_AUTO_COMPONENT: "1"
         run: soldr cargo fmt --all -- --check
 
   dylint:
