@@ -114,6 +114,25 @@ jobs:
         shell: bash
         run: chmod +x perf-guard-bin/perf_bench_test
 
+      # Issue #596: the perf benchmark binary spawns rustc from worker
+      # tempdirs that have no rust-toolchain.toml — without a configured
+      # default in setup-soldr's managed RUSTUP_HOME, rustup's shim
+      # fails with "could not choose a version of rustc to run". Pin
+      # the default to the same toolchain the rest of CI builds with
+      # (sourced from rust-toolchain.toml at repo root) so every rustc
+      # subprocess resolves regardless of CWD.
+      - name: Pin rustup default toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$(awk -F'[="]+' '/^channel/ {print $2; exit}' rust-toolchain.toml)"
+          if [[ -z "$toolchain" ]]; then
+            echo "could not read channel from rust-toolchain.toml" >&2
+            exit 1
+          fi
+          rustup default "$toolchain"
+          rustc --version
+
       # --- Per-test perf guard steps -----------------------------------
       # Each benchmark test gets its own step so the GitHub Actions UI shows
       # per-test timing and failure status. Each step writes its results to
