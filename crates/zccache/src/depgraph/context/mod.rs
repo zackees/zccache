@@ -342,16 +342,32 @@ where
     P: AsRef<Path> + Ord,
     F: FnMut(&Path, Option<&Path>) -> Arc<str>,
 {
-    // Sort by path for determinism.
-    file_hashes.sort_by(|a, b| a.0.cmp(&b.0));
+    // Issue #571: pre-normalize each path once (O(n) via the cached
+    // closure), then sort by the cheap Arc<str> key (O(n log n) byte
+    // compares). The prior path called `NormalizedPath::cmp` inside
+    // `sort_by`, which invoked `normalize_for_key` on BOTH operands of
+    // every comparison — O(n log n) normalizations bypassed the
+    // #553 cache entirely. With ~600 transitive headers per cpp
+    // compile, that was ~10k normalize_for_key calls per miss; this
+    // collapses to ~600 calls (most hit the cache after the first
+    // compile in a session) plus cheap byte compares.
+    //
+    // Hash output is bit-identical to the prior path: the sort order
+    // is determined by the same normalized path-keys, and the blake3
+    // input bytes (path-key, separator, content-hash, separator) are
+    // emitted in the same order.
+    let mut indexed: Vec<(Arc<str>, ContentHash)> = file_hashes
+        .iter()
+        .map(|(p, h)| (normalize(p.as_ref(), key_root), *h))
+        .collect();
+    indexed.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"zccache-artifact-key-v1\0");
     hasher.update(context_key.0.as_bytes());
     hasher.update(b"\0");
 
-    for (path, hash) in file_hashes.iter() {
-        let path_key = normalize(path.as_ref(), key_root);
+    for (path_key, hash) in &indexed {
         hasher.update(path_key.as_bytes());
         hasher.update(b"\0");
         hasher.update(hash.as_bytes());
@@ -732,13 +748,18 @@ where
     P: AsRef<Path> + Ord,
     F: FnMut(&Path, Option<&Path>) -> Arc<str>,
 {
-    if key_root.is_some() {
-        file_hashes.sort_by(|a, b| {
-            normalize(a.0.as_ref(), key_root).cmp(&normalize(b.0.as_ref(), key_root))
-        });
-    } else {
-        file_hashes.sort_by(|a, b| a.0.cmp(&b.0));
-    }
+    // Issue #571: pre-normalize each path once (O(n) via the cached
+    // closure), then sort on the cached Arc<str> keys (O(n log n) byte
+    // compares). The previous shape called `normalize` twice per
+    // sort-comparison AND once per hash-loop entry — 3 calls per
+    // element. With ~600 transitive headers per cpp/rust compile,
+    // this collapses ~10k normalize calls into ~600. Hash output is
+    // bit-identical: same sort order, same blake3 input bytes.
+    let mut indexed: Vec<(Arc<str>, ContentHash)> = file_hashes
+        .iter()
+        .map(|(p, h)| (normalize(p.as_ref(), key_root), *h))
+        .collect();
+    indexed.sort_by(|a, b| a.0.cmp(&b.0));
     extern_hashes.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut hasher = blake3::Hasher::new();
@@ -747,8 +768,7 @@ where
     hasher.update(b"\0");
 
     // Source + dependency file hashes.
-    for (path, hash) in file_hashes.iter() {
-        let path_key = normalize(path.as_ref(), key_root);
+    for (path_key, hash) in &indexed {
         hasher.update(path_key.as_bytes());
         hasher.update(b"\0");
         hasher.update(hash.as_bytes());
