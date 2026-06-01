@@ -148,6 +148,15 @@ pub struct ContextRegistration {
     pub rebased_from_equivalent_root: bool,
 }
 
+/// Issue #582: cached check for `ZCCACHE_PROFILE_CC_MISS` so
+/// `DepGraph::update`'s sub-phase emit doesn't pay an env-lookup
+/// syscall on every call. Read once on first access.
+fn depgraph_update_profile_enabled() -> bool {
+    use std::sync::OnceLock;
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("ZCCACHE_PROFILE_CC_MISS").is_some())
+}
+
 fn rebase_project_path(
     path: &NormalizedPath,
     old_root: Option<&NormalizedPath>,
@@ -953,8 +962,17 @@ impl DepGraph {
     where
         G: Fn(&Path) -> Option<ContentHash>,
     {
+        // Issue #582: emit a `zccache_depgraph_update_breakdown` line when
+        // `ZCCACHE_PROFILE_CC_MISS` is set so the next perf iteration has
+        // sub-phase data for the remaining ~2.4 ms mean `depgraph_update_ns`.
+        // Cached env-check to avoid per-call syscall.
+        let profile_enabled = depgraph_update_profile_enabled();
+        let t_total = profile_enabled.then(Instant::now);
+
+        let t_entry = profile_enabled.then(Instant::now);
         let rustc_externs = self.rustc_extern_inputs(key);
         let mut entry = self.contexts.get_mut(key)?;
+        let entry_get_ns = t_entry.map(|t| t.elapsed().as_nanos() as u64).unwrap_or(0);
 
         // Always update include lists (useful for diagnostics even if hashing fails).
         entry.resolved_includes = scan_result.resolved;
@@ -969,6 +987,7 @@ impl DepGraph {
         //
         // Issue #578: pre-size to avoid the grow-from-zero reallocations
         // (~10 for a typical 600-header cpp compile).
+        let t_file_hashes = profile_enabled.then(Instant::now);
         let mut file_hashes = Vec::with_capacity(
             1 + entry.resolved_includes.len() + entry.context.force_includes.len(),
         );
@@ -988,7 +1007,11 @@ impl DepGraph {
                 None => return None,
             }
         }
+        let file_hashes_build_ns = t_file_hashes
+            .map(|t| t.elapsed().as_nanos() as u64)
+            .unwrap_or(0);
 
+        let t_artifact_key = profile_enabled.then(Instant::now);
         let artifact_key = if let Some(externs) = rustc_externs.as_deref() {
             let mut extern_hashes = collect_rustc_extern_hashes(externs, &get_hash)?;
             compute_rustc_artifact_key_with_root_with(
@@ -1006,11 +1029,34 @@ impl DepGraph {
                 |path, key_root| self.cached_normalize_key_path(path, key_root),
             )
         };
+        let artifact_key_compute_ns = t_artifact_key
+            .map(|t| t.elapsed().as_nanos() as u64)
+            .unwrap_or(0);
 
+        let t_finalize = profile_enabled.then(Instant::now);
         // SUCCESS: all hashes computed â€” transition to Warm atomically with artifact key.
         entry.state = ContextState::Warm;
         entry.artifact_key = Some(artifact_key);
         entry.last_file_hashes = file_hashes;
+        let finalize_ns = t_finalize
+            .map(|t| t.elapsed().as_nanos() as u64)
+            .unwrap_or(0);
+
+        if let Some(t) = t_total {
+            let total_ns = t.elapsed().as_nanos() as u64;
+            let resolved = entry.resolved_includes.len();
+            let force = entry.context.force_includes.len();
+            // Drop the entry guard before printing to avoid holding the
+            // DashMap write-lock across stderr I/O.
+            drop(entry);
+            eprintln!(
+                "zccache_depgraph_update_breakdown total_ns={total_ns} \
+                 entry_get_ns={entry_get_ns} file_hashes_build_ns={file_hashes_build_ns} \
+                 artifact_key_compute_ns={artifact_key_compute_ns} \
+                 finalize_ns={finalize_ns} resolved_count={resolved} \
+                 force_includes_count={force}"
+            );
+        }
 
         Some(artifact_key)
     }
