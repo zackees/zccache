@@ -1116,6 +1116,13 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 dep_dirs_ns,
                 hash_all_ns,
                 artifact_store_ns,
+                depgraph_update_ns,
+                artifact_build_ns,
+                persist_enqueue_ns,
+                artifact_insert_stats_ns,
+                artifact_index_build_ns,
+                artifact_index_persist_ns,
+                artifact_memory_insert_ns,
             });
         }
 

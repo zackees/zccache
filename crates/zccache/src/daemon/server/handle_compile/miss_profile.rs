@@ -207,6 +207,20 @@ pub(super) struct CcMissProfile<'a> {
     pub(super) dep_dirs_ns: u64,
     pub(super) hash_all_ns: u64,
     pub(super) artifact_store_ns: u64,
+    // Issue #548: artifact_store sub-phases. Same values
+    // `MissArtifactStoreStats` already computes for the rust path;
+    // the cc emit just wires them through. The 7.6 ms / per-compile
+    // `artifact_store_ns` on cpp-inline Single-file Cold (post-#546)
+    // was opaque without these — now we can see whether it's the
+    // depgraph update, the artifact persist, or the index write
+    // dominating.
+    pub(super) depgraph_update_ns: u64,
+    pub(super) artifact_build_ns: u64,
+    pub(super) persist_enqueue_ns: u64,
+    pub(super) artifact_insert_stats_ns: u64,
+    pub(super) artifact_index_build_ns: u64,
+    pub(super) artifact_index_persist_ns: u64,
+    pub(super) artifact_memory_insert_ns: u64,
 }
 
 /// Cold-miss phase profile for `Request::LinkEphemeral` paths
@@ -295,6 +309,13 @@ pub(super) fn emit_cc_miss_profile(profile: CcMissProfile<'_>) {
         dep_dirs_ns,
         hash_all_ns,
         artifact_store_ns,
+        depgraph_update_ns,
+        artifact_build_ns,
+        persist_enqueue_ns,
+        artifact_insert_stats_ns,
+        artifact_index_build_ns,
+        artifact_index_persist_ns,
+        artifact_memory_insert_ns,
     } = profile;
 
     let pre_exec_measured_ns = system_includes_ns
@@ -302,6 +323,16 @@ pub(super) fn emit_cc_miss_profile(profile: CcMissProfile<'_>) {
         .saturating_add(parse_args_ns)
         .saturating_add(build_context_ns);
     let pre_exec_other_ns = pre_exec_ns.saturating_sub(pre_exec_measured_ns);
+    // Sub-phase residual: anything in artifact_store that isn't one
+    // of the measured slices (e.g. the redb commit on the index path).
+    let artifact_store_measured_ns = depgraph_update_ns
+        .saturating_add(artifact_build_ns)
+        .saturating_add(persist_enqueue_ns)
+        .saturating_add(artifact_insert_stats_ns)
+        .saturating_add(artifact_index_build_ns)
+        .saturating_add(artifact_index_persist_ns)
+        .saturating_add(artifact_memory_insert_ns);
+    let artifact_store_other_ns = artifact_store_ns.saturating_sub(artifact_store_measured_ns);
     let accounted_ns = pre_exec_ns
         .saturating_add(break_outputs_ns)
         .saturating_add(compiler_process_ns)
@@ -321,7 +352,11 @@ pub(super) fn emit_cc_miss_profile(profile: CcMissProfile<'_>) {
             "parse_args_ns={} build_context_ns={} pre_exec_other_ns={} ",
             "break_outputs_ns={} compiler_process_ns={} post_exec_ns={} ",
             "include_scan_ns={} register_tracked_ns={} dep_dirs_ns={} ",
-            "hash_all_ns={} artifact_store_ns={} unaccounted_ns={}",
+            "hash_all_ns={} artifact_store_ns={} ",
+            "depgraph_update_ns={} artifact_build_ns={} persist_enqueue_ns={} ",
+            "artifact_insert_stats_ns={} artifact_index_build_ns={} ",
+            "artifact_index_persist_ns={} artifact_memory_insert_ns={} ",
+            "artifact_store_other_ns={} unaccounted_ns={}",
         ),
         family,
         compiler_priority_decision.requested.as_str(),
@@ -341,6 +376,14 @@ pub(super) fn emit_cc_miss_profile(profile: CcMissProfile<'_>) {
         dep_dirs_ns,
         hash_all_ns,
         artifact_store_ns,
+        depgraph_update_ns,
+        artifact_build_ns,
+        persist_enqueue_ns,
+        artifact_insert_stats_ns,
+        artifact_index_build_ns,
+        artifact_index_persist_ns,
+        artifact_memory_insert_ns,
+        artifact_store_other_ns,
         unaccounted_ns,
     );
 }
