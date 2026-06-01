@@ -415,6 +415,26 @@ where
         .all(|((out, cache), payload)| write_one(out.as_ref(), cache.as_ref(), payload))
 }
 
+pub(super) fn write_payloads_par_with_mtime_floor<P, Q, R>(
+    targets: &[(P, Q)],
+    payloads: &[CachedPayload],
+    floor_paths: &[R],
+) -> bool
+where
+    P: AsRef<Path> + Sync,
+    Q: AsRef<Path> + Sync,
+    R: AsRef<Path>,
+{
+    if !write_payloads_par(targets, payloads) {
+        return false;
+    }
+    floor_materialized_outputs_to_input_max(
+        targets.iter().map(|(out, _)| out.as_ref()),
+        floor_paths.iter().map(|path| path.as_ref()),
+    );
+    true
+}
+
 pub(super) fn break_output_hardlink_before_compile(path: &Path) -> std::io::Result<()> {
     match std::fs::metadata(path) {
         Ok(meta) if meta.is_file() => {}
@@ -574,6 +594,43 @@ pub(super) fn touch_mtime(path: &Path) {
         return;
     }
     let _ = floor_artifact_mtime_to_sibling_max(path);
+}
+
+fn floor_materialized_outputs_to_input_max<'a>(
+    output_paths: impl IntoIterator<Item = &'a Path>,
+    input_paths: impl IntoIterator<Item = &'a Path>,
+) {
+    if mtime_floor_disabled() {
+        return;
+    }
+
+    let outputs: Vec<&Path> = output_paths.into_iter().collect();
+    if outputs.is_empty() {
+        return;
+    }
+
+    let mut max_mtime: Option<std::time::SystemTime> = None;
+    for path in outputs.iter().copied().chain(input_paths) {
+        let Ok(mtime) = std::fs::metadata(path).and_then(|metadata| metadata.modified()) else {
+            continue;
+        };
+        if max_mtime.is_none_or(|current| mtime > current) {
+            max_mtime = Some(mtime);
+        }
+    }
+
+    let Some(max_mtime) = max_mtime else {
+        return;
+    };
+    let ft = filetime::FileTime::from_system_time(max_mtime);
+    for path in outputs {
+        let Ok(current) = std::fs::metadata(path).and_then(|metadata| metadata.modified()) else {
+            continue;
+        };
+        if current < max_mtime {
+            let _ = filetime::set_file_mtime(path, ft);
+        }
+    }
 }
 
 fn mtime_floor_disabled() -> bool {
@@ -805,5 +862,48 @@ mod tests {
         assert_eq!(first, epoch_plus(2_000_000));
         assert_eq!(second, first);
         assert_eq!(third, first);
+    }
+
+    #[test]
+    fn batch_floor_bumps_build_script_output_to_extern_mtime() {
+        // Issue #599: build-script binaries live in target/debug/build/*,
+        // while their rustc extern dependencies live in target/debug/deps.
+        // The same-directory floor never saw those extern artifacts.
+        let dir = tempfile::tempdir().unwrap();
+        let build_dir = dir.path().join("target/debug/build/blake3-abc");
+        let deps_dir = dir.path().join("target/debug/deps");
+        std::fs::create_dir_all(&build_dir).unwrap();
+        std::fs::create_dir_all(&deps_dir).unwrap();
+
+        let cache = dir.path().join("cache/build-script-cache");
+        std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+        std::fs::write(&cache, b"build script exe").unwrap();
+        let old_time = filetime::FileTime::from_unix_time(1_000_000, 0);
+        filetime::set_file_mtime(&cache, old_time).unwrap();
+
+        let extern_dep = deps_dir.join("libcc-new.rlib");
+        write_with_mtime(
+            &extern_dep,
+            b"cc rlib",
+            SystemTime::UNIX_EPOCH + Duration::new(2_000_000, 123_456_700),
+        );
+        let dep_mtime = mtime_of(&extern_dep);
+
+        let output = build_dir.join("build-script-build");
+        let targets = vec![(output.clone(), cache.clone())];
+        let payloads = vec![CachedPayload::File(cache.clone().into())];
+        let floor_paths = vec![extern_dep.clone()];
+
+        assert!(write_payloads_par_with_mtime_floor(
+            &targets,
+            &payloads,
+            &floor_paths,
+        ));
+
+        assert_eq!(
+            mtime_of(&output),
+            dep_mtime,
+            "extensionless build-script output must be floored to extern dependency mtime",
+        );
     }
 }

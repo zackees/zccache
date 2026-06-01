@@ -398,6 +398,11 @@ jobs:
           done
           echo ""
           CACHED=${{ needs.zccache-cached.outputs.restored }}
+          WARM_TARGET_LIMIT=$(( (BARE[warm_target] * 13 + 9) / 10 ))
+          if [ "${ZC[warm_target]}" -gt "$WARM_TARGET_LIMIT" ]; then
+            echo "::error::zccache warm-target-intact ${ZC[warm_target]}ms exceeds 1.3x bare ${BARE[warm_target]}ms (limit ${WARM_TARGET_LIMIT}ms)"
+            exit 1
+          fi
           printf "%-30s %8s   %8s   %8sms\n" "Cached target (2nd CI run)" "—" "—" "$CACHED"
           echo ""
           echo "| **Cached target (2nd CI run)** | — | — | **${CACHED}ms** | — | — |" >> "$GITHUB_STEP_SUMMARY"

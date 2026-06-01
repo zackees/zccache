@@ -38,6 +38,7 @@ pub(super) struct CachedHitMaterializeRequest<'a> {
     pub(super) cached_error_label: &'static str,
     pub(super) record_compilation: bool,
     pub(super) downgrade_output_metadata: bool,
+    pub(super) mtime_floor_paths: Vec<NormalizedPath>,
     pub(super) phases: CachedHitPhases,
 }
 
@@ -56,6 +57,7 @@ pub(super) fn materialize_cached_compile_hit(
         cached_error_label,
         record_compilation,
         downgrade_output_metadata,
+        mtime_floor_paths,
         phases,
     } = request;
 
@@ -91,7 +93,7 @@ pub(super) fn materialize_cached_compile_hit(
             (out, cache_file)
         })
         .collect();
-    if !write_payloads_par(&targets, &payloads) {
+    if !write_payloads_par_with_mtime_floor(&targets, &payloads, &mtime_floor_paths) {
         return None;
     }
     let t2 = Instant::now();
@@ -220,6 +222,7 @@ mod tests {
             cached_error_label: "CACHED_ERROR_TEST",
             record_compilation: true,
             downgrade_output_metadata: true,
+            mtime_floor_paths: Vec::new(),
             phases: CachedHitPhases::request_cache(0, 0),
         })
         .unwrap();
@@ -297,6 +300,7 @@ mod tests {
                 cached_error_label: "CACHED_ERROR_TEST",
                 record_compilation: true,
                 downgrade_output_metadata: false,
+                mtime_floor_paths: Vec::new(),
                 phases: CachedHitPhases::request_cache(0, 0),
             })
             .expect("materialize_cached_compile_hit must succeed");

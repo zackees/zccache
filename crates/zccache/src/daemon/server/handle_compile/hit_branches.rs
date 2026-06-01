@@ -55,6 +55,11 @@ pub(super) fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Option<R
     let output_path = req_entry
         .output_path
         .resolve(request_cache_key_root.as_deref());
+    let mtime_floor_paths: Vec<NormalizedPath> = req_entry
+        .input_paths
+        .iter()
+        .map(|path| path.resolve(request_cache_key_root.as_deref()))
+        .collect();
     let same_root = req_entry.root.as_ref() == request_cache_key_root.as_ref();
     let t_cross_root_validate = Instant::now();
     let inputs_match = if same_root {
@@ -99,6 +104,7 @@ pub(super) fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Option<R
         cached_error_label: "CACHED_ERROR_REQUEST",
         record_compilation: true,
         downgrade_output_metadata: false,
+        mtime_floor_paths,
         phases: CachedHitPhases::request_cache(request_cache_lookup_ns, cross_root_validate_ns),
     })
 }
@@ -173,6 +179,7 @@ pub(super) fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
     } else {
         "HIT_FAST"
     };
+    let input_paths = request_cache_input_paths(state, &context_key, source_path, ctx);
     let response = materialize_cached_compile_hit(CachedHitMaterializeRequest {
         state,
         sid,
@@ -185,6 +192,7 @@ pub(super) fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
         cached_error_label: "CACHED_ERROR_FAST",
         record_compilation: false,
         downgrade_output_metadata: true,
+        mtime_floor_paths: input_paths.clone(),
         phases: CachedHitPhases {
             parse_args_ns,
             build_context_ns,
@@ -203,7 +211,6 @@ pub(super) fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
         request_cache_key_root.as_deref(),
         client_env,
     );
-    let input_paths = request_cache_input_paths(state, &context_key, source_path, ctx);
     state.request_cache.insert(
         rfp,
         request_cache_entry(
@@ -279,6 +286,7 @@ pub(super) fn try_depgraph_cached_hit(probe: DepgraphHitProbe<'_>) -> Option<Res
     } else {
         "HIT"
     };
+    let input_paths = request_cache_input_paths(state, &context_key, source_path, ctx);
     let response = materialize_cached_compile_hit(CachedHitMaterializeRequest {
         state,
         sid,
@@ -291,6 +299,7 @@ pub(super) fn try_depgraph_cached_hit(probe: DepgraphHitProbe<'_>) -> Option<Res
         cached_error_label: "CACHED_ERROR",
         record_compilation: false,
         downgrade_output_metadata: true,
+        mtime_floor_paths: input_paths.clone(),
         phases: CachedHitPhases {
             parse_args_ns,
             build_context_ns,
@@ -303,7 +312,6 @@ pub(super) fn try_depgraph_cached_hit(probe: DepgraphHitProbe<'_>) -> Option<Res
     })?;
 
     if !worktree_equivalent_context {
-        let input_paths = request_cache_input_paths(state, &context_key, source_path, ctx);
         state.cache_system.register_tracked(&input_paths);
         let current_clock = state.cache_system.current_clock();
         state.fast_hit_cache.insert(
