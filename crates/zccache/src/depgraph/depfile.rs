@@ -42,11 +42,6 @@ pub(crate) fn canonicalize_cache_len_for_test() -> usize {
     canonicalize_cache().len()
 }
 
-#[cfg(test)]
-pub(crate) fn canonicalize_cache_clear_for_test() {
-    canonicalize_cache().clear();
-}
-
 /// Errors that can occur while parsing a `.d` file.
 #[derive(Debug)]
 pub enum DepfileError {
