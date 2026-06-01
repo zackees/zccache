@@ -1016,19 +1016,18 @@ impl DepGraph {
                 entry.key_root.as_deref(),
                 |path, key_root| self.cached_normalize_key_path(path, key_root),
             )
-        } else if entry.key_root.is_none() {
-            // Issue #585: fast path — when there's no key_root, the
-            // path-key bytes ARE NormalizedPath::key (populated since #576).
-            // Skip the cached_normalize_key_path indirection (which
-            // allocates 4 owned objects per lookup just to build the
-            // DashMap key) and use the in-struct cache directly.
-            crate::depgraph::context::compute_artifact_key_normalized_inplace(key, &mut file_hashes)
         } else {
-            compute_artifact_key_with(
+            // Issue #591: closure-free path for cc/cpp. For paths NOT
+            // under `key_root` (system headers — the common case),
+            // `NormalizedPath::case_key()` is the answer with zero
+            // allocation. For paths under `key_root` we compute fresh
+            // via `normalize_key_path(path, Some(root))`. Handles both
+            // `key_root: None` (was #585's compute_artifact_key_normalized_inplace)
+            // and `key_root: Some` in one shape.
+            crate::depgraph::context::compute_artifact_key_normalized_with_root(
                 key,
-                &mut file_hashes,
+                &file_hashes,
                 entry.key_root.as_deref(),
-                |path, key_root| self.cached_normalize_key_path(path, key_root),
             )
         };
         let artifact_key_compute_ns = t_artifact_key

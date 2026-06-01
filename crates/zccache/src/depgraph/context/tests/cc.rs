@@ -8,8 +8,9 @@ use crate::depgraph::args::{ParsedArgs, UserDepFlags};
 use crate::depgraph::search_paths::IncludeSearchPaths;
 
 use super::super::{
-    compute_artifact_key, compute_artifact_key_normalized_inplace, compute_artifact_key_with,
-    compute_context_key, CompileContext,
+    compute_artifact_key, compute_artifact_key_normalized_inplace,
+    compute_artifact_key_normalized_with_root, compute_artifact_key_with, compute_context_key,
+    CompileContext,
 };
 use super::make_context;
 
@@ -523,5 +524,63 @@ fn compute_artifact_key_normalized_inplace_matches_closure_path() {
         "fast-path and slow-path must produce bit-identical ArtifactKey \
          — any divergence invalidates every cache entry written by the \
          cc/cpp pipeline post-#585",
+    );
+}
+
+/// Issue #591: `compute_artifact_key_normalized_with_root` must produce
+/// the byte-identical ArtifactKey to the closure-based slow path
+/// (`compute_artifact_key_with` with `cached_normalize_key_path`) for
+/// both `key_root: None` AND `key_root: Some`. For paths NOT under
+/// `key_root` (system headers like `/usr/include/...`), the closure
+/// returns `normalize_for_key(path)` — which equals `NormalizedPath::key`
+/// by construction post-#576. The new shape borrows from `np.key`
+/// directly (zero allocation) for those entries and only allocates for
+/// paths actually under the root.
+#[test]
+fn compute_artifact_key_normalized_with_root_matches_closure() {
+    let ctx = make_context("/proj/src/main.cpp", &["/inc"], &[]);
+    let ck = ctx.context_key();
+    let inputs: Vec<(NormalizedPath, crate::hash::ContentHash)> = vec![
+        (
+            NormalizedPath::from("/usr/include/c++/13/iostream"),
+            crate::hash::hash_bytes(b"iostream-content"),
+        ),
+        (
+            NormalizedPath::from("/proj/src/main.cpp"),
+            crate::hash::hash_bytes(b"main-content"),
+        ),
+        (
+            NormalizedPath::from("/proj/include/local.h"),
+            crate::hash::hash_bytes(b"local-content"),
+        ),
+        (
+            NormalizedPath::from("/usr/include/stdio.h"),
+            crate::hash::hash_bytes(b"stdio-content"),
+        ),
+    ];
+
+    // key_root: None — both shapes must produce equal keys.
+    let mut slow1 = inputs.clone();
+    let slow_key_none = compute_artifact_key(&ck, &mut slow1, None);
+    let fast_key_none = compute_artifact_key_normalized_with_root(&ck, &inputs, None);
+    assert_eq!(
+        slow_key_none, fast_key_none,
+        "key_root: None — fast-path must match closure path",
+    );
+
+    // key_root: Some("/proj") — paths under /proj get relative form;
+    // paths under /usr/include use cached key directly. Both shapes
+    // must agree.
+    let mut slow2 = inputs.clone();
+    let slow_key_root = compute_artifact_key(&ck, &mut slow2, Some(std::path::Path::new("/proj")));
+    let fast_key_root = compute_artifact_key_normalized_with_root(
+        &ck,
+        &inputs,
+        Some(std::path::Path::new("/proj")),
+    );
+    assert_eq!(
+        slow_key_root, fast_key_root,
+        "key_root: Some — fast-path must match closure path for mixed \
+         project-local + system-header inputs",
     );
 }

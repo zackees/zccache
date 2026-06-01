@@ -351,22 +351,52 @@ pub fn compute_artifact_key_normalized_inplace(
     context_key: &ContextKey,
     file_hashes: &mut [(crate::core::NormalizedPath, ContentHash)],
 ) -> ArtifactKey {
-    // Sort by NormalizedPath::cmp — which since #576 is a byte compare
-    // on the cached `key` field, no per-comparison normalize_for_key calls.
-    file_hashes.sort_by(|a, b| a.0.cmp(&b.0));
+    compute_artifact_key_normalized_with_root(context_key, file_hashes, None)
+}
+
+/// Issue #591: extension of [`compute_artifact_key_normalized_inplace`]
+/// that also handles `key_root: Some`. For paths NOT under `key_root`
+/// (the common case for system headers), the path-key bytes are just
+/// `NormalizedPath::case_key()` — no allocation. For paths under
+/// `key_root`, we fall back to `normalize_key_path(path, Some(root))`.
+///
+/// Replaces the closure-based slow path through
+/// `compute_artifact_key_with` + `cached_normalize_key_path` which
+/// allocated 1 String per entry even after #590's cache bypass.
+#[must_use]
+pub fn compute_artifact_key_normalized_with_root(
+    context_key: &ContextKey,
+    file_hashes: &[(crate::core::NormalizedPath, ContentHash)],
+    key_root: Option<&Path>,
+) -> ArtifactKey {
+    use std::borrow::Cow;
+
+    // Materialize path-keys: borrow from NormalizedPath::key for paths
+    // not under key_root (zero alloc); compute fresh for project-local.
+    let mut indexed: Vec<(Cow<'_, str>, ContentHash)> = file_hashes
+        .iter()
+        .map(|(np, h)| {
+            let path_key: Cow<'_, str> = match key_root {
+                Some(root) if np.as_path().starts_with(root) => {
+                    Cow::Owned(normalize_key_path(np.as_path(), Some(root)))
+                }
+                _ => Cow::Borrowed(
+                    np.case_key()
+                        .expect("NormalizedPath::key is always populated post-#576"),
+                ),
+            };
+            (path_key, *h)
+        })
+        .collect();
+    indexed.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"zccache-artifact-key-v1\0");
     hasher.update(context_key.0.as_bytes());
     hasher.update(b"\0");
 
-    for (path, hash) in file_hashes.iter() {
-        // Use the cached normalize_for_key bytes directly. Bit-identical
-        // to going through the closure in compute_artifact_key_with.
-        let key = path
-            .case_key()
-            .expect("NormalizedPath::key is always populated post-#576");
-        hasher.update(key.as_bytes());
+    for (path_key, hash) in &indexed {
+        hasher.update(path_key.as_bytes());
         hasher.update(b"\0");
         hasher.update(hash.as_bytes());
         hasher.update(b"\0");
