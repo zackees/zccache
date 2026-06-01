@@ -133,3 +133,108 @@ async fn link_cache_hit_restores_sibling_side_effects() {
         "cache hit should restore the wasm map sidecar"
     );
 }
+
+/// Issue #563: the input-hash loop is parallelized via rayon. `par_iter`
+/// preserves iteration order, so the cache key bytes are identical to
+/// the serial computation. This test asserts:
+///
+/// 1. With 12 unique input files, the first link populates the cache
+///    and the second link with the SAME input order hits.
+/// 2. With the same 12 inputs in REVERSED order, the second link
+///    MISSES — order is part of the cache key, so a reordering must
+///    produce a different key.
+///
+/// If rayon's collect ever stopped preserving order (or my change
+/// inadvertently moved to a Set / unordered structure), case (2) would
+/// degrade to a hit and this test would fail.
+#[tokio::test]
+async fn link_cache_key_preserves_input_order_under_parallel_hashing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let fake_linker = write_fake_linker(tmp.path());
+    let output = tmp.path().join("app.exe");
+
+    // 12 inputs — enough to exercise rayon's work-stealing across
+    // multiple threads on the 4-core CI runner.
+    let mut input_paths: Vec<std::path::PathBuf> = Vec::with_capacity(12);
+    for i in 0..12 {
+        let p = tmp.path().join(format!("input-{i}.o"));
+        std::fs::write(&p, format!("payload-bytes-{i}-{}", "x".repeat(64))).unwrap();
+        input_paths.push(p);
+    }
+
+    let _cache_dir = CacheDirEnvGuard::set(&tmp.path().join("zccache-cache"));
+    let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+
+    let make_args = |inputs: &[std::path::PathBuf]| -> Vec<String> {
+        let mut a = vec!["-o".to_string(), output.to_string_lossy().into_owned()];
+        for p in inputs {
+            a.push(p.to_string_lossy().into_owned());
+        }
+        a
+    };
+
+    // (1) First link with inputs in natural order — populates cache.
+    let first_args = make_args(&input_paths);
+    let first = handle_link_ephemeral(
+        &server.state,
+        std::process::id(),
+        &fake_linker,
+        &first_args,
+        tmp.path(),
+        None,
+    )
+    .await;
+    assert!(
+        matches!(
+            first,
+            Response::LinkResult {
+                cached: false,
+                exit_code: 0,
+                ..
+            }
+        ),
+        "first link must be a miss + 0 exit, got: {first:?}"
+    );
+
+    // (2) Repeat with same order — must hit.
+    let second = handle_link_ephemeral(
+        &server.state,
+        std::process::id(),
+        &fake_linker,
+        &first_args,
+        tmp.path(),
+        None,
+    )
+    .await;
+    assert!(
+        matches!(second, Response::LinkResult { cached: true, exit_code: 0, .. }),
+        "same-order repeat must HIT (parallel hash must preserve input order in cache key), got: {second:?}"
+    );
+
+    // (3) Same inputs, REVERSED order — must miss. If parallel hashing
+    // ever lost order, this would falsely report a hit and corrupt
+    // the cache key invariant.
+    let mut reversed = input_paths.clone();
+    reversed.reverse();
+    let reversed_args = make_args(&reversed);
+    let third = handle_link_ephemeral(
+        &server.state,
+        std::process::id(),
+        &fake_linker,
+        &reversed_args,
+        tmp.path(),
+        None,
+    )
+    .await;
+    assert!(
+        matches!(
+            third,
+            Response::LinkResult {
+                cached: false,
+                exit_code: 0,
+                ..
+            }
+        ),
+        "reversed-order link must MISS (input order is part of the cache key), got: {third:?}"
+    );
+}

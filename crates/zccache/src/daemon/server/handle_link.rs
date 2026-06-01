@@ -158,35 +158,47 @@ pub(super) async fn handle_link_ephemeral(
         key_builder = key_builder.flag(flag);
     }
 
-    for input in parsed_tool
+    // Issue #563: hash all input files in parallel via rayon. The serial
+    // loop was the dominant cold-side cost for `rust-workspace-link Cold`
+    // (50 .rlib files at 5–50 MB each, each requiring a fresh mmap +
+    // blake3 after a `Request::Clear`). `par_iter().collect()` preserves
+    // iteration order, so the cache key bytes are identical to the prior
+    // serial computation. Failure (any input not hashable) routes through
+    // the same `run_tool_passthrough` fallback the serial loop used.
+    let inputs: Vec<&NormalizedPath> = parsed_tool
         .input_files
         .iter()
         .chain(link_key_plan.extra_input_files.iter())
-    {
-        let input_path = if input.is_absolute() {
-            input.clone()
-        } else {
-            cwd_path.join(input).into()
+        .collect();
+    let hash_results: Vec<(NormalizedPath, Option<ContentHash>)> = {
+        use rayon::prelude::*;
+        inputs
+            .par_iter()
+            .map(|input| {
+                let input_path: NormalizedPath = if input.is_absolute() {
+                    (*input).clone()
+                } else {
+                    cwd_path.join(input).into()
+                };
+                let hash = hash_file_via_cache(state, &input_path);
+                (input_path, hash)
+            })
+            .collect()
+    };
+    for (path, hash) in &hash_results {
+        let Some(input_hash) = hash else {
+            tracing::warn!("cannot hash input file {}: skipping cache", path.display());
+            return run_tool_passthrough(
+                tool,
+                args,
+                cwd,
+                env,
+                &lineage,
+                state.depfile_tmpdir.as_path(),
+            )
+            .await;
         };
-        let input_hash = match hash_file_via_cache(state, &input_path) {
-            Some(h) => h,
-            None => {
-                tracing::warn!(
-                    "cannot hash input file {}: skipping cache",
-                    input_path.display()
-                );
-                return run_tool_passthrough(
-                    tool,
-                    args,
-                    cwd,
-                    env,
-                    &lineage,
-                    state.depfile_tmpdir.as_path(),
-                )
-                .await;
-            }
-        };
-        key_builder = key_builder.input(input_hash);
+        key_builder = key_builder.input(*input_hash);
     }
 
     let input_hash_ns = t_input_hash
