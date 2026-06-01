@@ -24,6 +24,16 @@ pub(super) async fn handle_clear(state: &SharedState) -> Response {
     };
 
     // Clear all subsystems.
+    //
+    // Issue #558: `system_includes` and `compiler_hash_cache` are NOT
+    // cleared — they're compiler-environment data keyed by
+    // `(compiler_path, mtime, size)` and self-correcting via stat-verify
+    // on access. Wiping them costs ~44 ms (re-probe via `<compiler> -v
+    // -E`) / ~50–60 ms (re-blake3 the compiler binary) on the next
+    // compile, paying nothing toward the user's intent of clearing
+    // built artifacts. The on-disk persistence (issues #517 and #541)
+    // exists specifically to survive across daemon lifecycle — Clear
+    // is not a stronger lifecycle event than restart.
     state.dep_graph.clear();
     state.cache_system.clear();
     state.fast_hit_cache.clear();
@@ -31,7 +41,6 @@ pub(super) async fn handle_clear(state: &SharedState) -> Response {
     state.request_validation_cache.clear();
     state.rsp_cache.clear();
     state.watched_raw_dirs.clear();
-    state.system_includes.lock().await.clear();
     state.watched_dirs.lock().await.clear();
 
     // Reset stats and profiler.

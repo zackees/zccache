@@ -247,4 +247,38 @@ impl DaemonServer {
     pub fn test_artifacts_len(&self) -> usize {
         self.state.artifacts.len()
     }
+
+    /// Test-only seam: insert a synthetic system-includes entry for the
+    /// given compiler path. Issue #558 — lets the `handle_clear` test
+    /// pre-populate the cache before sending Clear so the test can
+    /// verify the entry survives.
+    #[doc(hidden)]
+    pub async fn test_insert_system_includes(
+        &self,
+        compiler: crate::core::NormalizedPath,
+        paths: Vec<crate::core::NormalizedPath>,
+    ) {
+        let mut cache = self.state.system_includes.lock().await;
+        cache.insert(compiler, paths);
+    }
+
+    /// Test-only seam: report the number of entries currently in the
+    /// in-memory `state.system_includes` cache. Issue #558 — used to
+    /// assert `handle_clear` preserves compiler-environment data
+    /// (consistent with `compiler_hash_cache` which is also preserved).
+    #[doc(hidden)]
+    #[must_use]
+    pub async fn test_system_includes_len(&self) -> usize {
+        self.state.system_includes.lock().await.len()
+    }
+
+    /// Test-only seam: borrow the `SharedState` so tests can invoke
+    /// the request handlers directly (e.g. `handle_clear`) without
+    /// standing up the full IPC machinery. Issue #558.
+    #[doc(hidden)]
+    #[cfg(test)]
+    #[must_use]
+    pub(super) fn test_state(&self) -> &SharedState {
+        &self.state
+    }
 }

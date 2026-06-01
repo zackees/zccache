@@ -6,6 +6,7 @@
 use std::path::Path;
 
 mod cache_trim;
+mod clear_handler;
 mod client_env;
 mod compiler_hash;
 mod fingerprint;
