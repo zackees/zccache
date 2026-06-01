@@ -87,6 +87,89 @@ pub fn discovery_args() -> Vec<&'static str> {
     }
 }
 
+/// Build the **fast** clang-family discovery command arguments.
+///
+/// Issue #541 option (B): `clang -###` makes clang print the `-cc1`
+/// command-line it WOULD execute, then exit without spawning cc1. The
+/// printed line includes `-internal-isystem` / `-internal-externc-isystem`
+/// flags pointing at every system include path the driver would have
+/// passed to the real preprocessor. Wall-clock: ~3-5 ms vs the ~30-50 ms
+/// of the full `-v -E` discovery.
+///
+/// Only safe for clang-family compilers (clang, clang++, em++,
+/// clang-cl). Gcc accepts `-###` but emits a different format that
+/// doesn't include the per-path `-internal-isystem` flags this parser
+/// expects. Use [`discovery_args`] (the slow path) for gcc/MSVC.
+#[must_use]
+pub fn discovery_args_fast() -> Vec<&'static str> {
+    if cfg!(windows) {
+        vec!["-###", "-E", "-x", "c++", "NUL"]
+    } else {
+        vec!["-###", "-E", "-x", "c++", "/dev/null"]
+    }
+}
+
+/// Parse the `-cc1` line from clang's `-###` output and extract every
+/// `-internal-isystem` / `-internal-externc-isystem` path.
+///
+/// The driver prints exactly one line per invocation that looks like:
+///
+/// ```text
+///  "/usr/lib/llvm-18/bin/clang-18" "-cc1" "-triple" "x86_64-pc-linux-gnu" "-E" \
+///    "-internal-isystem" "/usr/lib/llvm-18/lib/clang/18/include" \
+///    "-internal-isystem" "/usr/local/include" \
+///    "-internal-externc-isystem" "/usr/include/x86_64-linux-gnu" \
+///    "-internal-externc-isystem" "/usr/include" ...
+/// ```
+///
+/// Tokens are double-quoted; spaces inside paths are preserved by the
+/// quoting. The tokenizer splits on `"` and reads odd-indexed segments
+/// (the actual argument values, alternating with single-space gaps).
+///
+/// Returns the include paths in driver-emitted order (which matches
+/// clang's actual `#include <...>` search order — the first `-cc1`
+/// invocation's order is canonical).
+#[must_use]
+pub fn parse_cc1_system_include_output(output: &str) -> Vec<NormalizedPath> {
+    let mut paths = Vec::new();
+    for line in output.lines() {
+        // Cheap shape probe — the cc1 line always contains "-cc1" as a
+        // quoted token. Skip everything else (version banner, "Found
+        // candidate GCC" notes, etc.).
+        if !line.contains("\"-cc1\"") {
+            continue;
+        }
+        let tokens = tokenize_quoted(line);
+        let mut iter = tokens.iter();
+        while let Some(token) = iter.next() {
+            if *token == "-internal-isystem" || *token == "-internal-externc-isystem" {
+                if let Some(path) = iter.next() {
+                    if !path.is_empty() {
+                        paths.push(NormalizedPath::new(*path));
+                    }
+                }
+            }
+        }
+        // Only the first cc1 line — multi-arch / multi-tu drivers may
+        // emit several but the include search order is identical.
+        if !paths.is_empty() {
+            break;
+        }
+    }
+    paths
+}
+
+/// Split a `-###`-style quoted command line on `"` and return the
+/// odd-indexed segments (the actual argument values). Empty even-index
+/// segments are the inter-quote whitespace; even-index non-empty
+/// segments would indicate malformed quoting and are dropped.
+fn tokenize_quoted(line: &str) -> Vec<&str> {
+    line.split('"')
+        .enumerate()
+        .filter_map(|(i, s)| if i % 2 == 1 { Some(s) } else { None })
+        .collect()
+}
+
 /// On-disk format version for the persisted `SystemIncludeCache` snapshot.
 ///
 /// Bump on any layout change so the loader rejects older / newer snapshots
@@ -525,5 +608,78 @@ End of search list.
     #[test]
     fn discovery_args_returns_nonempty() {
         assert!(!discovery_args().is_empty());
+    }
+
+    #[test]
+    fn discovery_args_fast_contains_triple_hash() {
+        // Sanity: the fast path uses `-###` so clang prints the cc1
+        // command without spawning the real preprocessor.
+        assert!(discovery_args_fast().contains(&"-###"));
+        assert!(discovery_args_fast().contains(&"-E"));
+        assert!(discovery_args_fast().contains(&"-x"));
+        assert!(discovery_args_fast().contains(&"c++"));
+    }
+
+    #[test]
+    fn parse_cc1_output_extracts_internal_isystem_paths() {
+        // Realistic clang 18 -### output on Ubuntu 24.04. The cc1 line
+        // is at the bottom, all args quoted with double quotes.
+        let output = r#"clang version 18.1.3 (1ubuntu1)
+Target: x86_64-pc-linux-gnu
+Thread model: posix
+InstalledDir: /usr/bin
+Found candidate GCC installation: /usr/lib/gcc/x86_64-linux-gnu/13
+Selected GCC installation: /usr/lib/gcc/x86_64-linux-gnu/13
+Candidate multilib: .;@m64
+Selected multilib: .;@m64
+ "/usr/lib/llvm-18/bin/clang-18" "-cc1" "-triple" "x86_64-pc-linux-gnu" "-E" "-disable-free" "-disable-llvm-verifier" "-main-file-name" "null" "-mrelocation-model" "pic" "-pic-level" "2" "-mframe-pointer=all" "-fmath-errno" "-ffp-contract=on" "-fno-rounding-math" "-mconstructor-aliases" "-funwind-tables=2" "-target-cpu" "x86-64" "-debugger-tuning=gdb" "-fcoverage-compilation-dir=/tmp" "-resource-dir" "/usr/lib/llvm-18/lib/clang/18" "-internal-isystem" "/usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/c++/13" "-internal-isystem" "/usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/x86_64-linux-gnu/c++/13" "-internal-isystem" "/usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/c++/13/backward" "-internal-isystem" "/usr/lib/llvm-18/lib/clang/18/include" "-internal-isystem" "/usr/local/include" "-internal-externc-isystem" "/usr/include/x86_64-linux-gnu" "-internal-externc-isystem" "/include" "-internal-externc-isystem" "/usr/include" "-fdeprecated-macro" "-ferror-limit" "19" "-fgnuc-version=4.2.1" "-fcxx-exceptions" "-fexceptions" "-fcolor-diagnostics" "-target-feature" "+cx8" "-target-feature" "+fxsr" "-target-feature" "+mmx" "-target-feature" "+sse" "-target-feature" "+sse2" "-target-feature" "+x87" "-faddrsig" "-D__GCC_HAVE_DWARF2_CFI_ASM=1" "-o" "-" "-x" "c++" "/dev/null"
+"#;
+
+        let paths = parse_cc1_system_include_output(output);
+        assert_eq!(
+            paths.len(),
+            8,
+            "expected 5 isystem + 3 externc-isystem entries, got {paths:?}",
+        );
+        // First captures must include the GCC C++ headers (driver
+        // canonical-order):
+        assert_eq!(
+            paths[0],
+            NormalizedPath::new(
+                "/usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/c++/13"
+            ),
+        );
+        // Last must be /usr/include (the catch-all):
+        assert_eq!(paths[7], NormalizedPath::new("/usr/include"));
+    }
+
+    #[test]
+    fn parse_cc1_output_empty_when_no_cc1_line() {
+        // Output without a cc1 line (e.g. gcc -### or a compiler that
+        // doesn't support `-###`) must yield an empty path list so the
+        // caller can fall back to the slow `-v -E` discovery.
+        let output = "gcc version 13.2.0 (Ubuntu 13.2.0-23ubuntu4)\nCOLLECT_GCC_OPTIONS='-### -E -x c++' '-mtune=generic' '-march=x86-64'\n";
+        let paths = parse_cc1_system_include_output(output);
+        assert!(paths.is_empty(), "expected empty, got {paths:?}");
+    }
+
+    #[test]
+    fn parse_cc1_output_handles_paths_with_spaces() {
+        // Driver quoting preserves spaces inside paths — the tokenizer
+        // must read the whole quoted segment as one token.
+        let output =
+            "\"/usr/bin/clang\" \"-cc1\" \"-E\" \"-internal-isystem\" \"/opt/Custom Include Path/v1\" \"-x\" \"c++\" \"/dev/null\"\n";
+        let paths = parse_cc1_system_include_output(output);
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0], NormalizedPath::new("/opt/Custom Include Path/v1"));
+    }
+
+    #[test]
+    fn parse_cc1_output_skips_isystem_when_value_missing() {
+        // Truncated cc1 line — the -internal-isystem flag with no value
+        // following must not panic and must not produce an entry.
+        let output = "\"/usr/bin/clang\" \"-cc1\" \"-internal-isystem\"\n";
+        let paths = parse_cc1_system_include_output(output);
+        assert!(paths.is_empty());
     }
 }

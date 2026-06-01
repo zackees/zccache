@@ -37,5 +37,8 @@ pub use snapshot::{
     classify_load, depgraph_file_path, load_from_file, save_to_file, DepGraphLoadOutcome,
     SnapshotError, DEPGRAPH_VERSION,
 };
-pub use system_includes::{discovery_args, parse_system_include_output, SystemIncludeCache};
+pub use system_includes::{
+    discovery_args, discovery_args_fast, parse_cc1_system_include_output,
+    parse_system_include_output, SystemIncludeCache,
+};
 pub use watcher_support::WatchSet;
