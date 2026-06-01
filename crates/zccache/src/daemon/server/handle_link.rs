@@ -110,10 +110,56 @@ pub(super) async fn handle_link_ephemeral(
         0
     };
 
-    // 3. Hash the tool binary
+    // 3+4. Hash tool binary and input files concurrently via rayon::join
+    // (issue #566). Both phases are CPU-bound blake3 work over mmap'd
+    // files. Before this overlap, they ran strictly sequentially —
+    // `tool_hash` (~150 MB rustc binary, 10–20 ms) blocked the start of
+    // input hashing (50 .rlibs in parallel via #564, also 5–15 ms wall).
+    // `rayon::join` reduces the combined wall-clock to ~max(tool_hash,
+    // input_hashes) instead of the prior sum.
     let tool_path = std::path::Path::new(tool);
-    let t_tool_hash = profile_enabled.then(std::time::Instant::now);
-    let tool_hash = match hash_file_via_cache(state, tool_path) {
+    let cwd_path = std::path::Path::new(cwd);
+
+    let link_key_plan = build_link_path_remap_key_plan(
+        &parsed_tool.cache_relevant_flags,
+        cwd_path,
+        link_path_remap_key_root,
+    );
+
+    let inputs: Vec<&NormalizedPath> = parsed_tool
+        .input_files
+        .iter()
+        .chain(link_key_plan.extra_input_files.iter())
+        .collect();
+
+    let t_hash = profile_enabled.then(std::time::Instant::now);
+    let (tool_hash_opt, hash_results) = rayon::join(
+        || hash_file_via_cache(state, tool_path),
+        || -> Vec<(NormalizedPath, Option<ContentHash>)> {
+            use rayon::prelude::*;
+            inputs
+                .par_iter()
+                .map(|input| {
+                    let input_path: NormalizedPath = if input.is_absolute() {
+                        (*input).clone()
+                    } else {
+                        cwd_path.join(input).into()
+                    };
+                    let hash = hash_file_via_cache(state, &input_path);
+                    (input_path, hash)
+                })
+                .collect()
+        },
+    );
+    // Combined wall-clock budget for the overlapped phases. Reported as
+    // both tool_hash_ns and input_hash_ns in the LinkMissProfile for now
+    // — they're indistinguishable post-overlap. A future diagnostic
+    // change can split them via per-closure timers if needed.
+    let combined_hash_ns = t_hash.map(|t| t.elapsed().as_nanos() as u64).unwrap_or(0);
+    let tool_hash_ns = combined_hash_ns;
+    let input_hash_ns = combined_hash_ns;
+
+    let tool_hash = match tool_hash_opt {
         Some(h) => h,
         None => {
             tracing::warn!("cannot hash tool {}", tool.display());
@@ -129,18 +175,6 @@ pub(super) async fn handle_link_ephemeral(
         }
     };
 
-    let tool_hash_ns = t_tool_hash
-        .map(|t| t.elapsed().as_nanos() as u64)
-        .unwrap_or(0);
-
-    // 4. Hash all input files
-    let cwd_path = std::path::Path::new(cwd);
-    let t_input_hash = profile_enabled.then(std::time::Instant::now);
-    let link_key_plan = build_link_path_remap_key_plan(
-        &parsed_tool.cache_relevant_flags,
-        cwd_path,
-        link_path_remap_key_root,
-    );
     let mut key_builder = crate::hash::link_cache_key::LinkCacheKeyBuilder::new().tool(tool_hash);
 
     if link_path_remap_key_root.is_some() {
@@ -158,33 +192,6 @@ pub(super) async fn handle_link_ephemeral(
         key_builder = key_builder.flag(flag);
     }
 
-    // Issue #563: hash all input files in parallel via rayon. The serial
-    // loop was the dominant cold-side cost for `rust-workspace-link Cold`
-    // (50 .rlib files at 5–50 MB each, each requiring a fresh mmap +
-    // blake3 after a `Request::Clear`). `par_iter().collect()` preserves
-    // iteration order, so the cache key bytes are identical to the prior
-    // serial computation. Failure (any input not hashable) routes through
-    // the same `run_tool_passthrough` fallback the serial loop used.
-    let inputs: Vec<&NormalizedPath> = parsed_tool
-        .input_files
-        .iter()
-        .chain(link_key_plan.extra_input_files.iter())
-        .collect();
-    let hash_results: Vec<(NormalizedPath, Option<ContentHash>)> = {
-        use rayon::prelude::*;
-        inputs
-            .par_iter()
-            .map(|input| {
-                let input_path: NormalizedPath = if input.is_absolute() {
-                    (*input).clone()
-                } else {
-                    cwd_path.join(input).into()
-                };
-                let hash = hash_file_via_cache(state, &input_path);
-                (input_path, hash)
-            })
-            .collect()
-    };
     for (path, hash) in &hash_results {
         let Some(input_hash) = hash else {
             tracing::warn!("cannot hash input file {}: skipping cache", path.display());
@@ -200,10 +207,6 @@ pub(super) async fn handle_link_ephemeral(
         };
         key_builder = key_builder.input(*input_hash);
     }
-
-    let input_hash_ns = t_input_hash
-        .map(|t| t.elapsed().as_nanos() as u64)
-        .unwrap_or(0);
     let input_count = parsed_tool.input_files.len() + link_key_plan.extra_input_files.len();
     let cache_key = key_builder.build();
     let key_hex = cache_key.to_hex();
