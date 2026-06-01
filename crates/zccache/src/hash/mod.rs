@@ -131,10 +131,10 @@ const RAYON_HASH_THRESHOLD_BYTES: u64 = 128 * 1024;
 /// files recently read (e.g., during compilation) are hashed from memory,
 /// not disk. Falls back to buffered reading for empty files.
 ///
-/// Files at or above [`RAYON_HASH_THRESHOLD_BYTES`] use blake3's
-/// rayon-parallel hashing path (issue #556) — the cold compiler-binary
-/// hash (clang++ ~80-120 MB on Linux) dominates the first-after-daemon-start
-/// cc/cpp link overhead before `CompilerHashCache` memoizes the result.
+/// Files at or above 128 KB use blake3's rayon-parallel hashing path
+/// (issue #556) — the cold compiler-binary hash (clang++ ~80-120 MB on
+/// Linux) dominates the first-after-daemon-start cc/cpp link overhead
+/// before `CompilerHashCache` memoizes the result.
 ///
 /// # Errors
 ///
