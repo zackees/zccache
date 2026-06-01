@@ -255,7 +255,16 @@ pub fn normalize_for_key(path: &Path) -> String {
 
     #[cfg(not(any(windows, target_os = "macos")))]
     {
-        normalized.to_string_lossy().into_owned()
+        // Issue #550: zero-copy `OsString::into_string()` when the path is
+        // valid UTF-8 (always true for the C/C++ headers in the hot
+        // `compute_artifact_key` loop). Falls back to lossy conversion if
+        // not — preserves prior `to_string_lossy().into_owned()` behavior.
+        // Saves one `String` allocation per call on Linux (~500 alloc/dealloc
+        // pairs per cpp-inline cold compile of `<iostream>`-bearing files).
+        normalized
+            .into_os_string()
+            .into_string()
+            .unwrap_or_else(|os| os.to_string_lossy().into_owned())
     }
 }
 
