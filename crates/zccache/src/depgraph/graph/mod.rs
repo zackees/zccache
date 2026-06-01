@@ -137,11 +137,6 @@ struct PathKeyCacheKey {
     key_root: Option<NormalizedPath>,
 }
 
-/// Cap on `path_key_cache` size. ~150 bytes per entry × 32k = ~5 MB.
-/// Beyond this, new entries are silently dropped (still served via
-/// uncached recomputation). Cap is reset by [`DepGraph::clear`].
-const PATH_KEY_CACHE_MAX_ENTRIES: usize = 32_768;
-
 #[derive(Debug, Clone, Copy)]
 pub struct ContextRegistration {
     pub key: ContextKey,
