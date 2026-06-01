@@ -428,9 +428,11 @@ where
     if !write_payloads_par(targets, payloads) {
         return false;
     }
+    let batch_floor = std::time::SystemTime::now();
     floor_materialized_outputs_to_input_max(
         targets.iter().map(|(out, _)| out.as_ref()),
         floor_paths.iter().map(|path| path.as_ref()),
+        batch_floor,
     );
     true
 }
@@ -599,6 +601,7 @@ pub(super) fn touch_mtime(path: &Path) {
 fn floor_materialized_outputs_to_input_max<'a>(
     output_paths: impl IntoIterator<Item = &'a Path>,
     input_paths: impl IntoIterator<Item = &'a Path>,
+    minimum_mtime: std::time::SystemTime,
 ) {
     if mtime_floor_disabled() {
         return;
@@ -609,19 +612,16 @@ fn floor_materialized_outputs_to_input_max<'a>(
         return;
     }
 
-    let mut max_mtime: Option<std::time::SystemTime> = None;
+    let mut max_mtime = minimum_mtime;
     for path in outputs.iter().copied().chain(input_paths) {
         let Ok(mtime) = std::fs::metadata(path).and_then(|metadata| metadata.modified()) else {
             continue;
         };
-        if max_mtime.is_none_or(|current| mtime > current) {
-            max_mtime = Some(mtime);
+        if mtime > max_mtime {
+            max_mtime = mtime;
         }
     }
 
-    let Some(max_mtime) = max_mtime else {
-        return;
-    };
     let ft = filetime::FileTime::from_system_time(max_mtime);
     for path in outputs {
         let Ok(current) = std::fs::metadata(path).and_then(|metadata| metadata.modified()) else {
@@ -900,10 +900,44 @@ mod tests {
             &floor_paths,
         ));
 
-        assert_eq!(
-            mtime_of(&output),
-            dep_mtime,
-            "extensionless build-script output must be floored to extern dependency mtime",
+        let output_mtime = mtime_of(&output);
+        assert!(
+            output_mtime >= dep_mtime,
+            "extensionless build-script output must be at least as new as extern dependency; \
+             output={output_mtime:?}, dep={dep_mtime:?}",
+        );
+    }
+
+    #[test]
+    fn batch_floor_freshens_materialized_outputs_without_floor_paths() {
+        // Issue #599: a compile cache hit is still a rustc invocation from
+        // Cargo's perspective. If zccache hardlinks an old cache artifact and
+        // preserves that old mtime, Cargo records stale output mtimes and the
+        // next no-op build recompiles the graph. The batch materializer uses
+        // one fresh floor for all outputs from that hit.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache/libcrate-cache.rlib");
+        std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+        std::fs::write(&cache, b"rlib").unwrap();
+        let old_mtime = epoch_plus(1_000_000);
+        filetime::set_file_mtime(&cache, filetime::FileTime::from_system_time(old_mtime)).unwrap();
+
+        let output = dir.path().join("target/debug/deps/libcrate.rlib");
+        let targets = vec![(output.clone(), cache.clone())];
+        let payloads = vec![CachedPayload::File(cache.clone().into())];
+        let floor_paths: Vec<PathBuf> = Vec::new();
+
+        assert!(write_payloads_par_with_mtime_floor(
+            &targets,
+            &payloads,
+            &floor_paths,
+        ));
+
+        let output_mtime = mtime_of(&output);
+        assert!(
+            output_mtime > old_mtime,
+            "compile-hit output must not inherit the stale cache mtime; \
+             output={output_mtime:?}, old_cache={old_mtime:?}",
         );
     }
 }

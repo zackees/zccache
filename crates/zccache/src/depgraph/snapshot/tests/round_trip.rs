@@ -190,6 +190,42 @@ fn artifact_key_some_roundtrip() {
     );
 }
 
+#[test]
+fn rustc_externs_roundtrip() {
+    let dir = TempDir::new().unwrap();
+    let path = test_path(&dir);
+    let graph = DepGraph::new();
+
+    let ctx = make_ctx("/src/app.rs");
+    let key = ctx.context_key();
+    let externs = vec![
+        (
+            "dep".to_string(),
+            NormalizedPath::from("/target/debug/deps/libdep.rlib"),
+        ),
+        (
+            "cc".to_string(),
+            NormalizedPath::from("/target/debug/deps/libcc.rlib"),
+        ),
+    ];
+
+    graph.register_rustc_with_key_and_root_result(key, ctx, None, externs.clone());
+    graph.update(
+        &key,
+        ScanResult {
+            resolved: Vec::new(),
+            unresolved: Vec::new(),
+            has_computed: false,
+        },
+        super::dummy_hash,
+    );
+
+    save_to_file(&graph, &path).unwrap();
+    let loaded = load_from_file(&path).unwrap();
+
+    assert_eq!(loaded.get_rustc_externs(&key), Some(externs));
+}
+
 /// Artifact key=None (Cold context) must roundtrip as None.
 #[test]
 fn artifact_key_none_roundtrip() {

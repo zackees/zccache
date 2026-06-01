@@ -174,7 +174,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn target_paths_keep_cache_mtime_through_shared_materializer() {
+    async fn target_paths_get_fresh_mtime_through_shared_materializer() {
         let dir = tempfile::tempdir().unwrap();
         let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
         let state = server.state.as_ref();
@@ -236,9 +236,11 @@ mod tests {
             }
         ));
         assert_eq!(std::fs::read(&output_path).unwrap(), payload.as_slice());
-        assert_eq!(
-            file_time(&output_path).unix_seconds(),
-            old_time.unix_seconds()
+        let output_time = file_time(&output_path);
+        assert!(
+            output_time.unix_seconds() > old_time.unix_seconds(),
+            "compile-hit output must be fresher than stale cache artifact; \
+             output={output_time:?}, cache={old_time:?}",
         );
         assert_eq!(state.stats.snapshot().compilations, 1);
         assert_eq!(state.stats.snapshot().hits, 1);

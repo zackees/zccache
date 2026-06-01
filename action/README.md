@@ -41,7 +41,7 @@ steps:
 | `target-restore-fallback` | `false` | Allow prefix fallback for target snapshot restores |
 | `target-dir` | `target` | Path to the cargo target directory |
 | `shared-key` | `""` | Extra cache key for matrix isolation |
-| `zccache-version` | `latest` | PyPI version to install |
+| `zccache-version` | `latest` | Version to install; use `source` to build the checked-out repo |
 | `save-cache` | `true` | Set `false` for PR builds (restore-only) |
 
 ## Outputs

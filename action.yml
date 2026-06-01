@@ -84,7 +84,8 @@ inputs:
   zccache-version:
     description: >
       Version of zccache to install.
-      Use "latest" for the newest release, or a specific version like "1.2.5".
+      Use "latest" for the newest release, a specific version like "1.2.5",
+      or "source" to build the checked-out repository version.
     required: false
     default: "latest"
   save-cache:
@@ -213,8 +214,32 @@ runs:
           return 0
         }
 
+        if [ "$VERSION" = "source" ] || [ "$VERSION" = "local" ]; then
+          INSTALL_DIR="$HOME/.local/bin"
+          BUILD_DIR="${RUNNER_TEMP:-/tmp}/zccache-action-source-build"
+          mkdir -p "$INSTALL_DIR"
+          rm -rf "$BUILD_DIR"
+
+          cargo build --release --target-dir "$BUILD_DIR" \
+            -p zccache \
+            --bin zccache \
+            --bin zccache-daemon \
+            --bin zccache-fp
+
+          BIN_EXT=""
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            BIN_EXT=".exe"
+          fi
+          cp "$BUILD_DIR/release/zccache${BIN_EXT}" "$INSTALL_DIR/"
+          cp "$BUILD_DIR/release/zccache-daemon${BIN_EXT}" "$INSTALL_DIR/"
+          cp "$BUILD_DIR/release/zccache-fp${BIN_EXT}" "$INSTALL_DIR/"
+          chmod +x "$INSTALL_DIR/zccache"* 2>/dev/null || true
+          add_install_dir_to_path "$INSTALL_DIR"
+          INSTALLED=true
+        fi
+
         # Try binary install on Linux/macOS (requires GitHub Releases to exist)
-        if [ "${{ runner.os }}" != "Windows" ]; then
+        if [ "$INSTALLED" = "false" ] && [ "${{ runner.os }}" != "Windows" ]; then
           INSTALL_DIR="$HOME/.local/bin"
           mkdir -p "$INSTALL_DIR"
 

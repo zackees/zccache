@@ -1205,15 +1205,16 @@ impl DepGraph {
         self.files.iter()
     }
 
-    /// Construct a `DepGraph` from pre-built maps (for deserialization).
-    pub(crate) fn from_maps(
+    /// Construct a `DepGraph` from pre-built maps, including rustc extern inputs.
+    pub(crate) fn from_maps_with_rustc_externs(
         files: DashMap<NormalizedPath, FileEntry>,
         contexts: DashMap<ContextKey, ContextEntry>,
+        rustc_externs: DashMap<ContextKey, Vec<(String, NormalizedPath)>>,
     ) -> Self {
         Self {
             files,
             contexts,
-            rustc_externs: DashMap::new(),
+            rustc_externs,
             path_key_cache: DashMap::new(),
             checks: AtomicU64::new(0),
             hits: AtomicU64::new(0),

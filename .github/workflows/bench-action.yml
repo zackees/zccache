@@ -179,6 +179,7 @@ jobs:
         with:
           shared-key: bench
           cache-target: "true"
+          zccache-version: source
 
       - name: "Cold build"
         id: cold
@@ -249,6 +250,7 @@ jobs:
         with:
           shared-key: bench
           cache-target: "true"
+          zccache-version: source
 
       - name: "Diagnostics: target restore status"
         shell: bash
