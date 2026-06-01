@@ -108,6 +108,15 @@ jobs:
   msrv:
     name: MSRV (1.94.1)
     runs-on: ubuntu-latest
+    # setup-soldr#347: opt this job into post-step cache eviction.
+    # actions: write is required for cache.deleteActionsCacheById.
+    # contents: read is needed for actions/checkout. Scoping to this
+    # one job (vs workflow-level) keeps the permission narrow — only
+    # MSRV is the smoke-test surface; other jobs use default
+    # permissions and `cache-eviction-policy: disabled` (the default).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v6
       - uses: zackees/setup-soldr@v0.9.47
@@ -122,6 +131,13 @@ jobs:
           verify-compile-cache: warn
           # setup-soldr#305: see Formatting job comment above.
           solo-toolchain-cache: true
+          # setup-soldr#347 smoke test: have the post-step prune
+          # the oldest non-foundation entries when repo cache > 8 GB.
+          # Foundation prefixes (solo-toolchain, cargo-registry,
+          # soldr-mini, setup-cache) are never touched. This lets the
+          # eviction policy do the work the cache-cleanup.yml workflow
+          # previously handled, but in-band per CI run.
+          cache-eviction-policy: protect-foundations
       - name: Check MSRV
         run: soldr cargo check --workspace
 
