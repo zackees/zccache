@@ -804,3 +804,95 @@ fn cached_normalize_key_path_cache_clears_with_depgraph() {
         "DepGraph::clear must wipe the path key cache (issue #550 invalidation contract)",
     );
 }
+
+// ── Issue #561: context-key path normalization goes through cache ───
+
+/// `compute_context_key` invoked through DepGraph::register_with_root_and_salt_result
+/// must populate `path_key_cache` for the source + every include dir +
+/// every force-include. Calling register again with the same CompileContext
+/// must NOT add new cache entries — every path-normalization hits the cache.
+#[test]
+fn register_context_populates_and_reuses_path_key_cache() {
+    let graph = DepGraph::new();
+
+    let mut include_search = IncludeSearchPaths::default();
+    include_search
+        .user
+        .push(NormalizedPath::from("/proj/include"));
+    include_search
+        .system
+        .push(NormalizedPath::from("/usr/include"));
+    include_search
+        .system
+        .push(NormalizedPath::from("/usr/include/c++/13"));
+
+    let ctx = CompileContext {
+        source_file: NormalizedPath::from("/proj/src/unit.cpp"),
+        include_search,
+        defines: vec!["-DFOO=1".to_string()],
+        flags: vec!["-O2".to_string()],
+        force_includes: vec![NormalizedPath::from("/proj/include/prefix.h")],
+        unknown_flags: Vec::new(),
+    };
+
+    assert_eq!(graph.path_key_cache_len(), 0);
+    let first = graph.register_with_root_and_salt_result(ctx.clone(), None, None);
+
+    // 1 source + 1 user dir + 2 system dirs + 1 force-include = 5
+    // distinct paths normalized through the cache.
+    let after_first = graph.path_key_cache_len();
+    assert!(
+        after_first >= 5,
+        "first register must populate cache (got len={after_first}, expected >= 5)",
+    );
+
+    let second = graph.register_with_root_and_salt_result(ctx, None, None);
+    assert_eq!(
+        graph.path_key_cache_len(),
+        after_first,
+        "second register with identical context must hit the cache, not grow it",
+    );
+
+    assert_eq!(
+        first.key, second.key,
+        "context_key must be deterministic across cached and uncached normalize paths",
+    );
+}
+
+/// Regression: the cached normalizer must produce the same ContextKey
+/// as the uncached `compute_context_key` free function. Different
+/// allocator behavior or Arc<str> vs String paths must not perturb the
+/// blake3 input bytes.
+#[test]
+fn cached_context_key_matches_uncached_for_identical_inputs() {
+    use crate::depgraph::context::compute_context_key;
+
+    let mut include_search = IncludeSearchPaths::default();
+    include_search
+        .user
+        .push(NormalizedPath::from("/proj/include"));
+    include_search
+        .system
+        .push(NormalizedPath::from("/usr/include"));
+
+    let ctx = CompileContext {
+        source_file: NormalizedPath::from("/proj/src/unit.cpp"),
+        include_search,
+        defines: vec!["-DFOO=1".to_string()],
+        flags: vec!["-O2".to_string()],
+        force_includes: vec![NormalizedPath::from("/proj/include/prefix.h")],
+        unknown_flags: Vec::new(),
+    };
+
+    let uncached = compute_context_key(&ctx, None, None);
+    let graph = DepGraph::new();
+    let cached = graph
+        .register_with_root_and_salt_result(ctx, None, None)
+        .key;
+
+    assert_eq!(
+        uncached, cached,
+        "cached normalizer must produce byte-identical context_key bytes \
+         — divergence would invalidate every existing cache entry",
+    );
+}

@@ -14,7 +14,7 @@ use crate::hash::ContentHash;
 use dashmap::DashMap;
 
 use super::context::{
-    compute_artifact_key_with, compute_context_key, compute_rustc_artifact_key_with_root_with,
+    compute_artifact_key_with, compute_context_key_with, compute_rustc_artifact_key_with_root_with,
     ArtifactKey, CompileContext, ContextKey,
 };
 use super::scanner::{IncludeDirective, ScanResult};
@@ -343,7 +343,10 @@ impl DepGraph {
         key_root: Option<NormalizedPath>,
         worktree_salt: Option<&Path>,
     ) -> ContextRegistration {
-        let key = compute_context_key(&ctx, key_root.as_deref(), worktree_salt);
+        let key =
+            compute_context_key_with(&ctx, key_root.as_deref(), worktree_salt, |path, root| {
+                self.cached_normalize_key_path(path, root)
+            });
         self.register_with_key_and_root_result(key, ctx, key_root)
     }
 

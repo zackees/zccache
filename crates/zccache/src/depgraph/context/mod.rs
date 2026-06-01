@@ -215,6 +215,32 @@ pub fn compute_context_key(
     key_root: Option<&Path>,
     worktree_salt: Option<&Path>,
 ) -> ContextKey {
+    compute_context_key_with(ctx, key_root, worktree_salt, |path, root| {
+        normalize_key_path(path, root).into()
+    })
+}
+
+/// Sibling of [`compute_context_key`] that accepts an injectable path
+/// normalizer. Issue #561 — lets `DepGraph::register_context` thread its
+/// `path_key_cache` (added by #553) through every `normalize_key_path`
+/// call, amortizing the per-compile ~50 String allocations across
+/// sequential compiles that share the same include / force-include set
+/// (the cpp-inline Single-file Cold benchmark's 50 sequential
+/// invocations are the dominant beneficiary).
+///
+/// The default `compute_context_key` delegates with
+/// `|p, r| normalize_key_path(p, r).into()` so callers without a
+/// `DepGraph` are unaffected.
+#[must_use]
+pub fn compute_context_key_with<F>(
+    ctx: &CompileContext,
+    key_root: Option<&Path>,
+    worktree_salt: Option<&Path>,
+    mut normalize: F,
+) -> ContextKey
+where
+    F: FnMut(&Path, Option<&Path>) -> Arc<str>,
+{
     let mut hasher = blake3::Hasher::new();
 
     hasher.update(b"zccache-context-key-v1\0");
@@ -229,30 +255,30 @@ pub fn compute_context_key(
         hasher.update(b"\0");
     }
 
-    hasher.update(normalize_key_path(&ctx.source_file, key_root).as_bytes());
+    hasher.update(normalize(ctx.source_file.as_ref(), key_root).as_bytes());
     hasher.update(b"\0");
 
     hasher.update(b"iquote\0");
     for dir in &ctx.include_search.iquote {
-        hasher.update(normalize_key_path(dir, key_root).as_bytes());
+        hasher.update(normalize(dir.as_ref(), key_root).as_bytes());
         hasher.update(b"\0");
     }
 
     hasher.update(b"user\0");
     for dir in &ctx.include_search.user {
-        hasher.update(normalize_key_path(dir, key_root).as_bytes());
+        hasher.update(normalize(dir.as_ref(), key_root).as_bytes());
         hasher.update(b"\0");
     }
 
     hasher.update(b"system\0");
     for dir in &ctx.include_search.system {
-        hasher.update(normalize_key_path(dir, key_root).as_bytes());
+        hasher.update(normalize(dir.as_ref(), key_root).as_bytes());
         hasher.update(b"\0");
     }
 
     hasher.update(b"after\0");
     for dir in &ctx.include_search.after {
-        hasher.update(normalize_key_path(dir, key_root).as_bytes());
+        hasher.update(normalize(dir.as_ref(), key_root).as_bytes());
         hasher.update(b"\0");
     }
 
@@ -271,7 +297,7 @@ pub fn compute_context_key(
 
     hasher.update(b"force-include\0");
     for fi in &ctx.force_includes {
-        hasher.update(normalize_key_path(fi, key_root).as_bytes());
+        hasher.update(normalize(fi.as_ref(), key_root).as_bytes());
         hasher.update(b"\0");
     }
 
