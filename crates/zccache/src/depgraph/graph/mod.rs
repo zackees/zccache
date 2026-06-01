@@ -546,7 +546,11 @@ impl DepGraph {
         }
 
         // All headers fresh. Compute artifact key (using &Path to avoid NormalizedPath clones).
-        let mut file_hashes: Vec<(&Path, ContentHash)> = Vec::new();
+        // Issue #578: pre-size to avoid the ~10 reallocations that grow-from-zero
+        // triggers for a typical 600-header cpp compile.
+        let mut file_hashes: Vec<(&Path, ContentHash)> = Vec::with_capacity(
+            1 + entry.resolved_includes.len() + entry.context.force_includes.len(),
+        );
 
         if let Some(h) = get_hash(&entry.context.source_file) {
             file_hashes.push((&entry.context.source_file, h));
@@ -735,7 +739,10 @@ impl DepGraph {
         }
 
         // All headers fresh. Compute artifact key.
-        let mut file_hashes = Vec::new();
+        // Issue #578: pre-size to avoid grow-from-zero reallocations.
+        let mut file_hashes = Vec::with_capacity(
+            1 + entry.resolved_includes.len() + entry.context.force_includes.len(),
+        );
 
         if let Some(h) = get_hash(&entry.context.source_file) {
             file_hashes.push((entry.context.source_file.clone(), h));
@@ -959,7 +966,12 @@ impl DepGraph {
         // Compute artifact key â€” if any file is missing a hash, leave state
         // unchanged (Cold stays Cold) so check() doesn't see a Warm context
         // with no artifact key.
-        let mut file_hashes = Vec::new();
+        //
+        // Issue #578: pre-size to avoid the grow-from-zero reallocations
+        // (~10 for a typical 600-header cpp compile).
+        let mut file_hashes = Vec::with_capacity(
+            1 + entry.resolved_includes.len() + entry.context.force_includes.len(),
+        );
         let source_hash = get_hash(&entry.context.source_file)?;
         file_hashes.push((entry.context.source_file.clone(), source_hash));
 

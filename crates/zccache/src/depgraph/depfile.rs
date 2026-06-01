@@ -99,8 +99,11 @@ pub fn parse_depfile(content: &str, source: &Path, cwd: &Path) -> Result<ScanRes
     // Step 5-7: Resolve paths, filter source, deduplicate.
     let source_canonical = canonicalize_path(source, cwd);
 
-    let mut seen = HashSet::new();
-    let mut resolved = Vec::new();
+    // Issue #578: pre-size both collections to the (over-)bound `tokens.len()`.
+    // After dedup + source filter, actual `resolved.len()` ≤ tokens.len();
+    // pre-sizing eliminates the grow-from-zero reallocations.
+    let mut seen = HashSet::with_capacity(tokens.len());
+    let mut resolved = Vec::with_capacity(tokens.len());
 
     for token in tokens {
         if token.is_empty() {
