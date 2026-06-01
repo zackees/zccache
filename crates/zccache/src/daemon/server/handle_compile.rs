@@ -15,6 +15,12 @@ mod request;
 use super::*;
 use request::CompileRequest;
 
+// Re-export the link miss profile so `handle_link` can emit phase data
+// without owning a copy of the struct. Issue #535 — the ephemeral link
+// path needs the same per-phase counters the compile path already
+// emits, gated on the same `ZCCACHE_PROFILE_CC_MISS` env.
+pub(super) use miss_profile::{emit_link_miss_profile, LinkMissProfile};
+
 pub(super) async fn handle_compile(
     state_arc: &Arc<SharedState>,
     session_id: &str,

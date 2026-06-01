@@ -209,6 +209,74 @@ pub(super) struct CcMissProfile<'a> {
     pub(super) artifact_store_ns: u64,
 }
 
+/// Cold-miss phase profile for `Request::LinkEphemeral` paths
+/// (`handle_link_ephemeral` — ar / clang++ link / driver-link).
+///
+/// Distinct from `CcMissProfile` because link/archive operations don't
+/// have system-include discovery, dep-info scanning, or a
+/// CompileContext — the dominant phases are tool-hash, input-hash,
+/// the tool spawn, and the output read for cache storage. Issue #535
+/// needs this to confirm whether `c-static-library-link Cold` /
+/// `cpp-driver-link Cold` overhead lives in input hashing (the #533
+/// overlap target) or somewhere else.
+pub(in crate::daemon::server) struct LinkMissProfile<'a> {
+    pub(in crate::daemon::server) family: &'a str,
+    pub(in crate::daemon::server) input_count: usize,
+    pub(in crate::daemon::server) total_ns: u64,
+    pub(in crate::daemon::server) parse_args_ns: u64,
+    pub(in crate::daemon::server) tool_hash_ns: u64,
+    pub(in crate::daemon::server) input_hash_ns: u64,
+    pub(in crate::daemon::server) cache_lookup_ns: u64,
+    pub(in crate::daemon::server) compiler_process_ns: u64,
+    pub(in crate::daemon::server) output_read_ns: u64,
+    pub(in crate::daemon::server) artifact_store_ns: u64,
+}
+
+pub(in crate::daemon::server) fn emit_link_miss_profile(profile: LinkMissProfile<'_>) {
+    let LinkMissProfile {
+        family,
+        input_count,
+        total_ns,
+        parse_args_ns,
+        tool_hash_ns,
+        input_hash_ns,
+        cache_lookup_ns,
+        compiler_process_ns,
+        output_read_ns,
+        artifact_store_ns,
+    } = profile;
+
+    let accounted_ns = parse_args_ns
+        .saturating_add(tool_hash_ns)
+        .saturating_add(input_hash_ns)
+        .saturating_add(cache_lookup_ns)
+        .saturating_add(compiler_process_ns)
+        .saturating_add(output_read_ns)
+        .saturating_add(artifact_store_ns);
+    let unaccounted_ns = total_ns.saturating_sub(accounted_ns);
+
+    eprintln!(
+        concat!(
+            "zccache_link_miss_profile ",
+            "family={} input_count={} total_ns={} parse_args_ns={} ",
+            "tool_hash_ns={} input_hash_ns={} cache_lookup_ns={} ",
+            "compiler_process_ns={} output_read_ns={} ",
+            "artifact_store_ns={} unaccounted_ns={}",
+        ),
+        family,
+        input_count,
+        total_ns,
+        parse_args_ns,
+        tool_hash_ns,
+        input_hash_ns,
+        cache_lookup_ns,
+        compiler_process_ns,
+        output_read_ns,
+        artifact_store_ns,
+        unaccounted_ns,
+    );
+}
+
 pub(super) fn emit_cc_miss_profile(profile: CcMissProfile<'_>) {
     let CcMissProfile {
         family,

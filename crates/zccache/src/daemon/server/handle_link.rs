@@ -14,6 +14,11 @@ pub(super) async fn handle_link_ephemeral(
     cwd: &Path,
     env: Option<Vec<(String, String)>>,
 ) -> Response {
+    // Issue #535: collect phase counters when `ZCCACHE_PROFILE_CC_MISS` is set
+    // so the bench / perf-guard logs carry breakdown data for cold link/
+    // archive operations (c-static-library-link, cpp-driver-link).
+    let profile_enabled = std::env::var_os(CC_MISS_PROFILE_ENV).is_some();
+    let link_start = std::time::Instant::now();
     let lineage = super::super::lineage::Lineage::current(Some(client_pid), None);
     use crate::compiler::parse_archiver::{parse_archive_invocation, ParsedArchiveInvocation};
     use crate::compiler::parse_linker::{parse_linker_invocation, ParsedLinkerInvocation};
@@ -99,8 +104,15 @@ pub(super) async fn handle_link_ephemeral(
         None
     };
 
+    let parse_args_ns = if profile_enabled {
+        link_start.elapsed().as_nanos() as u64
+    } else {
+        0
+    };
+
     // 3. Hash the tool binary
     let tool_path = std::path::Path::new(tool);
+    let t_tool_hash = profile_enabled.then(std::time::Instant::now);
     let tool_hash = match hash_file_via_cache(state, tool_path) {
         Some(h) => h,
         None => {
@@ -117,8 +129,13 @@ pub(super) async fn handle_link_ephemeral(
         }
     };
 
+    let tool_hash_ns = t_tool_hash
+        .map(|t| t.elapsed().as_nanos() as u64)
+        .unwrap_or(0);
+
     // 4. Hash all input files
     let cwd_path = std::path::Path::new(cwd);
+    let t_input_hash = profile_enabled.then(std::time::Instant::now);
     let link_key_plan = build_link_path_remap_key_plan(
         &parsed_tool.cache_relevant_flags,
         cwd_path,
@@ -172,10 +189,15 @@ pub(super) async fn handle_link_ephemeral(
         key_builder = key_builder.input(input_hash);
     }
 
+    let input_hash_ns = t_input_hash
+        .map(|t| t.elapsed().as_nanos() as u64)
+        .unwrap_or(0);
+    let input_count = parsed_tool.input_files.len() + link_key_plan.extra_input_files.len();
     let cache_key = key_builder.build();
     let key_hex = cache_key.to_hex();
 
     // 5. Cache lookup
+    let t_cache_lookup = profile_enabled.then(std::time::Instant::now);
     if let Some(mut entry) = lookup_artifact_with_disk_fallback(state, &key_hex) {
         entry.last_used = std::time::Instant::now();
         // Load payloads from disk if not already loaded.
@@ -236,6 +258,10 @@ pub(super) async fn handle_link_ephemeral(
         // Payloads missing — treat as cache miss, fall through
     }
 
+    let cache_lookup_ns = t_cache_lookup
+        .map(|t| t.elapsed().as_nanos() as u64)
+        .unwrap_or(0);
+
     // 6. Cache miss — run the real tool
     tracing::debug!(%key_hex, "link cache miss");
     state.stats.record_link_miss();
@@ -265,6 +291,7 @@ pub(super) async fn handle_link_ephemeral(
     // Clone env for the hook (we need to re-use it; passthrough consumes env).
     let env_for_hook = env.clone();
 
+    let t_compiler_process = profile_enabled.then(std::time::Instant::now);
     let result = run_tool_passthrough(
         tool,
         args,
@@ -274,6 +301,10 @@ pub(super) async fn handle_link_ephemeral(
         state.depfile_tmpdir.as_path(),
     )
     .await;
+
+    let compiler_process_ns = t_compiler_process
+        .map(|t| t.elapsed().as_nanos() as u64)
+        .unwrap_or(0);
 
     // 6b. Invoke optional post-link deploy command on successful link.
     // This handles the case where the compiler driver does NOT auto-deploy
@@ -444,7 +475,7 @@ pub(super) async fn handle_link_ephemeral(
         }
     }
 
-    match (result, nd_warning) {
+    let final_response = match (result, nd_warning) {
         (
             Response::LinkResult {
                 exit_code,
@@ -462,7 +493,36 @@ pub(super) async fn handle_link_ephemeral(
             warning,
         },
         (result, _) => result,
+    };
+
+    if profile_enabled {
+        let total_ns = link_start.elapsed().as_nanos() as u64;
+        // Tool-family label derived from the original parse — keep it
+        // short for grep/awk friendliness in published bench logs.
+        let family = tool
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("link")
+            .to_string();
+        super::handle_compile::emit_link_miss_profile(super::handle_compile::LinkMissProfile {
+            family: family.as_str(),
+            input_count,
+            total_ns,
+            parse_args_ns,
+            tool_hash_ns,
+            input_hash_ns,
+            cache_lookup_ns,
+            compiler_process_ns,
+            // output_read_ns + artifact_store_ns are not measured today —
+            // the cache populate runs in a background spawn after we
+            // return. Tracked as zero here so the published line stays
+            // parseable; a follow-up can plumb them through if needed.
+            output_read_ns: 0,
+            artifact_store_ns: 0,
+        });
     }
+
+    final_response
 }
 /// Run a tool directly (passthrough) and return a LinkResult response.
 ///
