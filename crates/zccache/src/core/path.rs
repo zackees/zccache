@@ -429,7 +429,11 @@ mod tests {
         a.hash(&mut h1);
         let mut h2 = DefaultHasher::new();
         b.hash(&mut h2);
-        assert_eq!(h1.finish(), h2.finish(), "equal NormalizedPaths must hash identically");
+        assert_eq!(
+            h1.finish(),
+            h2.finish(),
+            "equal NormalizedPaths must hash identically"
+        );
 
         let mut h3 = DefaultHasher::new();
         c.hash(&mut h3);
