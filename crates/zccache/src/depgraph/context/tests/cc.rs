@@ -8,7 +8,8 @@ use crate::depgraph::args::{ParsedArgs, UserDepFlags};
 use crate::depgraph::search_paths::IncludeSearchPaths;
 
 use super::super::{
-    compute_artifact_key, compute_artifact_key_with, compute_context_key, CompileContext,
+    compute_artifact_key, compute_artifact_key_normalized_inplace, compute_artifact_key_with,
+    compute_context_key, CompileContext,
 };
 use super::make_context;
 
@@ -477,5 +478,50 @@ fn compute_artifact_key_with_byte_identical_to_prior_shape() {
     assert_eq!(
         key1, key2,
         "input order must not perturb the artifact key (sort is the determinizer)"
+    );
+}
+
+/// Issue #585: the fast-path
+/// `compute_artifact_key_normalized_inplace` must produce the
+/// byte-identical ArtifactKey to the closure-based slow path for the
+/// same inputs when `key_root` is None. A divergence would silently
+/// invalidate every cache entry written by the cc/cpp pipeline.
+#[test]
+fn compute_artifact_key_normalized_inplace_matches_closure_path() {
+    let ctx = make_context("/src/main.cpp", &["/inc"], &["DEBUG"]);
+    let ck = ctx.context_key();
+    let inputs: Vec<(NormalizedPath, crate::hash::ContentHash)> = vec![
+        (
+            NormalizedPath::from("/inc/zlast.h"),
+            crate::hash::hash_bytes(b"zlast content"),
+        ),
+        (
+            NormalizedPath::from("/inc/amid.h"),
+            crate::hash::hash_bytes(b"amid content"),
+        ),
+        (
+            NormalizedPath::from("/inc/mfirst.h"),
+            crate::hash::hash_bytes(b"mfirst content"),
+        ),
+        (
+            NormalizedPath::from("/src/main.cpp"),
+            crate::hash::hash_bytes(b"source"),
+        ),
+    ];
+
+    // Slow path via compute_artifact_key_with (which goes through a
+    // closure). This is what the previous code path produced.
+    let mut slow_inputs = inputs.clone();
+    let slow_key = compute_artifact_key(&ck, &mut slow_inputs, None);
+
+    // Fast path: in-place sort + hash with NormalizedPath::key bytes.
+    let mut fast_inputs = inputs;
+    let fast_key = compute_artifact_key_normalized_inplace(&ck, &mut fast_inputs);
+
+    assert_eq!(
+        slow_key, fast_key,
+        "fast-path and slow-path must produce bit-identical ArtifactKey \
+         — any divergence invalidates every cache entry written by the \
+         cc/cpp pipeline post-#585",
     );
 }

@@ -332,6 +332,49 @@ pub fn compute_artifact_key<P: AsRef<Path> + Ord>(
 /// per-compile allocations amortize across the daemon's lifetime
 /// (issue #550). The closure is `FnMut` only because the impl forwards
 /// it through the iterator; in practice it's a `Fn`-shaped lookup.
+/// Fast-path variant of [`compute_artifact_key_with`] for the common case
+/// where the caller already holds owned [`NormalizedPath`] values and has
+/// no `key_root` (the cc/cpp compile path without `-ffile-prefix-map`).
+///
+/// Issue #585: post-#576 each [`NormalizedPath`] caches its
+/// `normalize_for_key` result in the struct's `key` field. With no
+/// `key_root`, that cached key IS the bytes we want to hash — no
+/// allocation, no DashMap lookup, no closure call. The previous shape
+/// went through `cached_normalize_key_path` which allocated 4 owned
+/// objects per lookup just to construct the `DashMap` key.
+///
+/// Output is bit-identical to `compute_artifact_key_with` when called
+/// with `key_root: None` and a closure that returns
+/// `normalize_for_key(path).into()`.
+#[must_use]
+pub fn compute_artifact_key_normalized_inplace(
+    context_key: &ContextKey,
+    file_hashes: &mut [(crate::core::NormalizedPath, ContentHash)],
+) -> ArtifactKey {
+    // Sort by NormalizedPath::cmp — which since #576 is a byte compare
+    // on the cached `key` field, no per-comparison normalize_for_key calls.
+    file_hashes.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"zccache-artifact-key-v1\0");
+    hasher.update(context_key.0.as_bytes());
+    hasher.update(b"\0");
+
+    for (path, hash) in file_hashes.iter() {
+        // Use the cached normalize_for_key bytes directly. Bit-identical
+        // to going through the closure in compute_artifact_key_with.
+        let key = path
+            .case_key()
+            .expect("NormalizedPath::key is always populated post-#576");
+        hasher.update(key.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(hash.as_bytes());
+        hasher.update(b"\0");
+    }
+
+    ArtifactKey(ContentHash::from_bytes(*hasher.finalize().as_bytes()))
+}
+
 pub fn compute_artifact_key_with<P, F>(
     context_key: &ContextKey,
     file_hashes: &mut [(P, ContentHash)],
