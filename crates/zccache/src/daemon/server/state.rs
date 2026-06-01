@@ -59,6 +59,12 @@ pub(super) struct SharedState {
     /// Loaded by `Lifecycle::new`, written on shutdown alongside
     /// `metadata.bin`.
     pub(super) compiler_hash_cache_path: NormalizedPath,
+    /// Path used by [`SystemIncludeCache`] for persistent `(compiler_path,
+    /// mtime, size) -> include_paths` snapshots. Issue #541 — saves the
+    /// ~30-50 ms `<compiler> -v -E -x c++ NUL` spawn on every
+    /// first-after-restart C/C++ compile. Loaded by `Lifecycle::new`,
+    /// written on graceful shutdown alongside `metadata.bin`.
+    pub(super) system_includes_cache_path: NormalizedPath,
     /// Temporary directory for injected depfiles.
     pub(super) depfile_tmpdir: NormalizedPath,
     /// Ultra-fast hit cache: context_key → (clock, artifact_key_hex, timestamp).

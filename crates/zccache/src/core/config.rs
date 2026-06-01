@@ -624,6 +624,19 @@ pub fn compiler_hash_cache_path_from_cache_dir(cache_dir: &NormalizedPath) -> No
     cache_dir.join("compiler_hash.bin")
 }
 
+/// Returns the on-disk path for the persisted `SystemIncludeCache` snapshot.
+///
+/// Issue #541: spawning `<compiler> -v -E -x c++ NUL` to discover system
+/// include paths costs ~30-50 ms per first-after-restart C/C++ compile.
+/// This snapshot persists `(compiler_path, mtime, size) -> include_paths`
+/// across daemon restarts so the next daemon starts with discovery
+/// already cached. Sibling of `metadata.bin` / `compiler_hash.bin` so the
+/// soldr save / load pipeline already bundles it.
+#[must_use]
+pub fn system_includes_cache_path_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
+    cache_dir.join("system_includes.bin")
+}
+
 fn crash_dump_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
     cache_dir.join("crashes")
 }

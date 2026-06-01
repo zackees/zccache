@@ -438,6 +438,22 @@ impl DaemonServer {
                         );
                     }
 
+                    // Issue #541: persist the C/C++ system include paths
+                    // so the next daemon does not pay the ~30-50 ms
+                    // `<compiler> -v -E -x c++ NUL` spawn on its first
+                    // C/C++ compile.
+                    {
+                        let includes = self.state.system_includes.lock().await;
+                        if let Err(e) = includes
+                            .save_to_disk(self.state.system_includes_cache_path.as_path())
+                        {
+                            tracing::warn!(
+                                path = %self.state.system_includes_cache_path.display(),
+                                "system include cache save failed: {e}"
+                            );
+                        }
+                    }
+
                     // Clean up our own depfile temp directory.
                     let _ = std::fs::remove_dir_all(&self.state.depfile_tmpdir);
 

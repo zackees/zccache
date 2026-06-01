@@ -61,6 +61,25 @@ impl DaemonServer {
         let metadata_path = crate::core::config::metadata_path_from_cache_dir(cache_dir);
         let compiler_hash_cache_path =
             crate::core::config::compiler_hash_cache_path_from_cache_dir(cache_dir);
+        let system_includes_cache_path =
+            crate::core::config::system_includes_cache_path_from_cache_dir(cache_dir);
+        // Issue #541: persist the discovered C/C++ system include paths
+        // across daemon restarts so the next daemon does not pay the
+        // ~30-50 ms `<compiler> -v -E -x c++ NUL` spawn on its first
+        // C/C++ compile. Stat-verify on lookup catches in-place compiler
+        // upgrades, so a stale snapshot is harmless.
+        let system_includes_loaded = match crate::depgraph::SystemIncludeCache::load_from_disk(
+            system_includes_cache_path.as_path(),
+        ) {
+            Ok(cache) => cache,
+            Err(e) => {
+                tracing::warn!(
+                    path = %system_includes_cache_path.display(),
+                    "failed to load system include cache, starting empty: {e}"
+                );
+                crate::depgraph::SystemIncludeCache::new()
+            }
+        };
         // Issue #517: hashing rustc's ~150 MB binary on the cold path
         // costs ~50-60 ms per first-after-restart compile. Loading the
         // (path, mtime, size, hash) snapshot from a prior daemon makes
@@ -109,7 +128,8 @@ impl DaemonServer {
                 cache_dir: cache_dir.clone(),
                 private_daemon: PrivateDaemonLifecycle::new(),
                 sessions: SessionManager::new(std::time::Duration::from_secs(300)),
-                system_includes: Mutex::new(SystemIncludeCache::new()),
+                system_includes: Mutex::new(system_includes_loaded),
+                system_includes_cache_path,
                 dep_graph: DepGraph::new(),
                 artifacts,
                 cache_system,
