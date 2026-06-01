@@ -18,13 +18,20 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub struct NormalizedPath {
     /// The original path, normalized but preserving original casing.
     path: PathBuf,
-    /// Lowercased version for case-insensitive comparison, if applicable.
-    case_key: Option<String>,
+    /// Pre-computed `normalize_for_key` result. Always populated post-#575
+    /// so `Hash`/`Ord`/`PartialEq` can compare on the cached bytes instead
+    /// of re-running `normalize_for_key` (which allocates a `String` per
+    /// call) on every operation. The field was previously called
+    /// `case_key` and was populated only on Windows/macOS; on Linux it
+    /// was `None`. That left every DashMap lookup paying 2–4
+    /// `normalize_for_key` allocations per hit, capping the realizable
+    /// speedup of the #553 path_key_cache.
+    key: String,
 }
 
 impl PartialEq for NormalizedPath {
     fn eq(&self, other: &Self) -> bool {
-        normalize_for_key(&self.path) == normalize_for_key(&other.path)
+        self.key == other.key
     }
 }
 
@@ -80,7 +87,7 @@ impl Eq for NormalizedPath {}
 
 impl Hash for NormalizedPath {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        normalize_for_key(&self.path).hash(state);
+        self.key.hash(state);
     }
 }
 
@@ -92,22 +99,23 @@ impl PartialOrd for NormalizedPath {
 
 impl Ord for NormalizedPath {
     fn cmp(&self, other: &Self) -> Ordering {
-        normalize_for_key(&self.path).cmp(&normalize_for_key(&other.path))
+        self.key.cmp(&other.key)
     }
 }
 
 impl NormalizedPath {
     /// Create a new normalized path.
     ///
-    /// On Windows, this also computes a lowercase key for case-insensitive matching.
+    /// Issue #575: precompute the `normalize_for_key` result and store
+    /// it inside the struct. Subsequent `Hash`/`Ord`/`PartialEq`
+    /// operations compare on the cached bytes — no per-operation
+    /// allocation. Previously the field was only populated on
+    /// Windows/macOS for case-folded comparison; the Hash/Ord/Eq impls
+    /// ignored it and re-ran `normalize_for_key` unconditionally.
     pub fn new(path: impl AsRef<Path>) -> Self {
         let path = normalize(path.as_ref());
-        let case_key = if cfg!(windows) || cfg!(target_os = "macos") {
-            Some(normalize_for_key(&path))
-        } else {
-            None
-        };
-        Self { path, case_key }
+        let key = normalize_for_key(&path);
+        Self { path, key }
     }
 
     /// Returns the underlying path.
@@ -116,10 +124,12 @@ impl NormalizedPath {
         &self.path
     }
 
-    /// Returns the case-insensitive comparison key, if applicable.
+    /// Returns the comparison key (normalize_for_key result). Always
+    /// populated post-#575 — case-folded on case-insensitive platforms,
+    /// the slash-normalized canonical string elsewhere.
     #[must_use]
     pub fn case_key(&self) -> Option<&str> {
-        self.case_key.as_deref()
+        Some(&self.key)
     }
 
     /// Convert back to an owned normalized `PathBuf`.
@@ -398,5 +408,59 @@ mod tests {
         let path = Path::new("a/./b/../cache");
         assert_eq!(stable_path_id(path), stable_path_id(path));
         assert_eq!(stable_path_id(path).len(), 16);
+    }
+
+    /// Issue #575: `NormalizedPath` caches its `normalize_for_key`
+    /// result internally so `Hash`/`Ord`/`PartialEq` don't allocate
+    /// on every call. Two equal NormalizedPaths must hash to the
+    /// same value, and two different NormalizedPaths must not — the
+    /// cached `key` field is the equivalence-class identifier.
+    #[test]
+    fn normalized_path_hash_uses_cached_key() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hash;
+
+        let a = NormalizedPath::new("/usr/include/c++/13/iostream");
+        let b = NormalizedPath::new("/usr/include/c++/13/iostream");
+        let c = NormalizedPath::new("/usr/include/c++/13/string");
+
+        // Hash stability across calls.
+        let mut h1 = DefaultHasher::new();
+        a.hash(&mut h1);
+        let mut h2 = DefaultHasher::new();
+        b.hash(&mut h2);
+        assert_eq!(h1.finish(), h2.finish(), "equal NormalizedPaths must hash identically");
+
+        let mut h3 = DefaultHasher::new();
+        c.hash(&mut h3);
+        assert_ne!(
+            h1.finish(),
+            h3.finish(),
+            "different NormalizedPaths must hash differently (cached key drives Hash)",
+        );
+    }
+
+    /// `NormalizedPath` use as DashMap key — the central correctness
+    /// path. Insert, get, and contains_key all rely on the same
+    /// Hash + Eq invariants. This exercises a few thousand lookups
+    /// to catch any regression in the cached-key shape.
+    #[test]
+    fn normalized_path_works_as_dashmap_key() {
+        use dashmap::DashMap;
+
+        let map: DashMap<NormalizedPath, u32> = DashMap::new();
+        for i in 0..1000 {
+            map.insert(NormalizedPath::new(format!("/inc/h{i:04}.h")), i);
+        }
+        // Lookup each entry via a freshly-constructed NormalizedPath:
+        // ensures Hash + Eq agree across separate Construct calls.
+        for i in 0..1000 {
+            let key = NormalizedPath::new(format!("/inc/h{i:04}.h"));
+            assert_eq!(
+                map.get(&key).map(|v| *v),
+                Some(i),
+                "DashMap::get must find entry for equivalent NormalizedPath",
+            );
+        }
     }
 }
