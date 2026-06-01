@@ -133,19 +133,26 @@ pub fn discovery_args_fast() -> Vec<&'static str> {
 pub fn parse_cc1_system_include_output(output: &str) -> Vec<NormalizedPath> {
     let mut paths = Vec::new();
     for line in output.lines() {
-        // Cheap shape probe — the cc1 line always contains "-cc1" as a
-        // quoted token. Skip everything else (version banner, "Found
-        // candidate GCC" notes, etc.).
-        if !line.contains("\"-cc1\"") {
+        // Cheap shape probe — the cc1 line contains `-cc1` either as a
+        // quoted token (clang on macOS / Windows) or as a bare argument
+        // (clang on most Linux builds — issue #544). Both forms have
+        // `-cc1` as a standalone whitespace-or-quote-bounded token, so
+        // a substring match catches both.
+        if !line.contains("-cc1") {
             continue;
         }
-        let tokens = tokenize_quoted(line);
+        let tokens = tokenize_command_line(line);
+        // Reject lines that don't actually have `-cc1` as a TOKEN
+        // (e.g. a comment that happens to contain the string "-cc1").
+        if !tokens.iter().any(|t| t == "-cc1") {
+            continue;
+        }
         let mut iter = tokens.iter();
         while let Some(token) = iter.next() {
-            if *token == "-internal-isystem" || *token == "-internal-externc-isystem" {
+            if token == "-internal-isystem" || token == "-internal-externc-isystem" {
                 if let Some(path) = iter.next() {
                     if !path.is_empty() {
-                        paths.push(NormalizedPath::new(*path));
+                        paths.push(NormalizedPath::new(path));
                     }
                 }
             }
@@ -159,15 +166,36 @@ pub fn parse_cc1_system_include_output(output: &str) -> Vec<NormalizedPath> {
     paths
 }
 
-/// Split a `-###`-style quoted command line on `"` and return the
-/// odd-indexed segments (the actual argument values). Empty even-index
-/// segments are the inter-quote whitespace; even-index non-empty
-/// segments would indicate malformed quoting and are dropped.
-fn tokenize_quoted(line: &str) -> Vec<&str> {
-    line.split('"')
-        .enumerate()
-        .filter_map(|(i, s)| if i % 2 == 1 { Some(s) } else { None })
-        .collect()
+/// Tokenize a clang `-###` command line, handling both `"quoted"` and
+/// bare whitespace-separated arguments.
+///
+/// Some clang builds quote every arg (`"/path/to/clang" "-cc1" "-E" …`),
+/// others quote only the binary path with bare args after
+/// (`"/path/to/clang" -cc1 -E …`). The previous parser split strictly
+/// on `"` and missed the bare-arg form — issue #544.
+///
+/// Empty tokens are dropped. Quotes inside a quoted segment preserve
+/// the space-containing path as one token; backslash escapes are NOT
+/// supported (clang doesn't emit them in `-###` output).
+fn tokenize_command_line(line: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_quote = false;
+    for c in line.chars() {
+        if c == '"' {
+            in_quote = !in_quote;
+        } else if c.is_whitespace() && !in_quote {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(c);
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
 }
 
 /// On-disk format version for the persisted `SystemIncludeCache` snapshot.
@@ -661,6 +689,36 @@ Selected multilib: .;@m64
         let output = "gcc version 13.2.0 (Ubuntu 13.2.0-23ubuntu4)\nCOLLECT_GCC_OPTIONS='-### -E -x c++' '-mtune=generic' '-march=x86-64'\n";
         let paths = parse_cc1_system_include_output(output);
         assert!(paths.is_empty(), "expected empty, got {paths:?}");
+    }
+
+    #[test]
+    fn parse_cc1_output_handles_bare_unquoted_args() {
+        // Issue #544: Linux Ubuntu clang-18 emits `-###` output with
+        // only the binary path quoted; individual args are bare. The
+        // parser previously matched only `"-cc1"` (quoted) and missed
+        // this entire format, falling back to the slow `-v -E` probe.
+        // Sample lifted from /usr/bin/clang-18 -### -E -x c++ /dev/null
+        // on Ubuntu 24.04 (the perf-cluster runner image).
+        let output = r#"clang version 18.1.3 (1ubuntu1)
+Target: x86_64-pc-linux-gnu
+Thread model: posix
+InstalledDir: /usr/bin
+ "/usr/lib/llvm-18/bin/clang-18" -cc1 -triple x86_64-pc-linux-gnu -E -disable-free -main-file-name null -mrelocation-model pic -pic-level 2 -mframe-pointer=all -fmath-errno -ffp-contract=on -fno-rounding-math -mconstructor-aliases -funwind-tables=2 -target-cpu x86-64 -debugger-tuning=gdb -resource-dir /usr/lib/llvm-18/lib/clang/18 -internal-isystem /usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/c++/13 -internal-isystem /usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/x86_64-linux-gnu/c++/13 -internal-isystem /usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/c++/13/backward -internal-isystem /usr/lib/llvm-18/lib/clang/18/include -internal-isystem /usr/local/include -internal-externc-isystem /usr/include/x86_64-linux-gnu -internal-externc-isystem /include -internal-externc-isystem /usr/include -fdeprecated-macro -fcolor-diagnostics -o - -x c++ /dev/null
+"#;
+
+        let paths = parse_cc1_system_include_output(output);
+        assert_eq!(
+            paths.len(),
+            8,
+            "expected 5 isystem + 3 externc-isystem from bare-arg output, got {paths:?}",
+        );
+        assert_eq!(
+            paths[0],
+            NormalizedPath::new(
+                "/usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/c++/13"
+            ),
+        );
+        assert_eq!(paths[7], NormalizedPath::new("/usr/include"));
     }
 
     #[test]
