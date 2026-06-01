@@ -120,11 +120,21 @@ pub fn hash_reader<R: Read>(mut reader: R) -> std::io::Result<ContentHash> {
     Ok(ContentHash(*hasher.finalize().as_bytes()))
 }
 
+/// Files at or above this size use blake3's rayon-parallel path; smaller
+/// files stay single-threaded because rayon's task-spawn overhead is
+/// larger than the work below this point. Issue #556.
+const RAYON_HASH_THRESHOLD_BYTES: u64 = 128 * 1024;
+
 /// Hash the contents of a file using memory mapping.
 ///
 /// Uses `memmap2` for zero-copy file access. The OS page cache ensures
 /// files recently read (e.g., during compilation) are hashed from memory,
 /// not disk. Falls back to buffered reading for empty files.
+///
+/// Files at or above [`RAYON_HASH_THRESHOLD_BYTES`] use blake3's
+/// rayon-parallel hashing path (issue #556) — the cold compiler-binary
+/// hash (clang++ ~80-120 MB on Linux) dominates the first-after-daemon-start
+/// cc/cpp link overhead before `CompilerHashCache` memoizes the result.
 ///
 /// # Errors
 ///
@@ -146,6 +156,14 @@ pub fn hash_file(path: &Path) -> std::io::Result<ContentHash> {
     // SAFETY: The caller (MetadataCache::hash_and_insert) stats before and
     // after hashing to detect concurrent modification.
     let mmap = unsafe { memmap2::Mmap::map(&file)? };
+    if meta.len() >= RAYON_HASH_THRESHOLD_BYTES {
+        // Issue #556: blake3's rayon-parallel path. ~4x speedup on a
+        // 4-core CI runner for a 100 MB clang++ binary (cold compiler
+        // hash, first-after-daemon-start cc/cpp link overhead).
+        let mut hasher = blake3::Hasher::new();
+        hasher.update_rayon(&mmap);
+        return Ok(ContentHash(*hasher.finalize().as_bytes()));
+    }
     Ok(hash_bytes(&mmap))
 }
 
@@ -216,5 +234,35 @@ mod tests {
         let h = hash_bytes(b"test");
         // 2 levels of 17 bytes each = 34 bytes > 32 hash bytes.
         let _ = h.shard_prefix(2, 17);
+    }
+
+    /// Issue #556: rayon-parallel path produces bit-identical output
+    /// to the single-threaded path. Files above the threshold take
+    /// the parallel branch; below stay on the single-thread branch.
+    /// Both must hash to the same value as `blake3::hash` of the same
+    /// bytes — a mismatch would silently churn every cache key.
+    #[test]
+    fn hash_file_rayon_path_matches_single_threaded() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        // 256 KB — comfortably above RAYON_HASH_THRESHOLD_BYTES (128 KB).
+        let payload: Vec<u8> = (0..(256 * 1024)).map(|i| (i % 251) as u8).collect();
+        std::fs::write(tmp.path(), &payload).unwrap();
+        let via_file = hash_file(tmp.path()).unwrap();
+        let via_bytes = hash_bytes(&payload);
+        assert_eq!(
+            via_file, via_bytes,
+            "rayon path must match single-threaded blake3 for the same bytes"
+        );
+    }
+
+    #[test]
+    fn hash_file_below_threshold_matches_single_threaded() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        // 4 KB — well below the threshold, exercises the unchanged path.
+        let payload: Vec<u8> = (0..4096).map(|i| (i % 251) as u8).collect();
+        std::fs::write(tmp.path(), &payload).unwrap();
+        let via_file = hash_file(tmp.path()).unwrap();
+        let via_bytes = hash_bytes(&payload);
+        assert_eq!(via_file, via_bytes);
     }
 }

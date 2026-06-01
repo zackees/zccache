@@ -24,7 +24,7 @@ homepage = "https://github.com/zackees/zccache"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive", "rc"] }
 bincode = "1"
-blake3 = { version = "1", features = ["pure"] }
+blake3 = { version = "1", features = ["pure", "rayon"] }
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
