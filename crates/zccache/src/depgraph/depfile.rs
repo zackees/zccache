@@ -880,39 +880,31 @@ mod tests {
         );
     }
 
-    /// Process-global lock for cache-state tests. The canonicalize
-    /// cache is a process-wide static, so two tests touching it
-    /// concurrently would race and produce flaky assertions.
-    static CANONICALIZE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// Issue #573: `canonicalize_path` caches its results by input
     /// path string, so subsequent lookups don't re-issue the realpath
-    /// syscall. Verified by calling twice with the same input and
-    /// asserting only one cache entry was created (the second call
-    /// hit the cache). Same canonical output across the two calls.
+    /// syscall. Verified via cache-length deltas instead of absolute
+    /// counts — other tests in this file populate the global cache
+    /// concurrently, so we can't assume it starts empty. The unique
+    /// `TempDir` paths used here guarantee no other test contributes
+    /// entries that share our keys.
     #[test]
     fn canonicalize_path_caches_results() {
-        let _guard = CANONICALIZE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let dir = TempDir::new().unwrap();
         let cwd = dir.path();
-        let hdr = touch(cwd, "shared-header.h");
+        let hdr = touch(cwd, "shared-header-573a.h");
 
-        canonicalize_cache_clear_for_test();
-        assert_eq!(canonicalize_cache_len_for_test(), 0);
-
+        let before = canonicalize_cache_len_for_test();
         let first = canonicalize_path(&hdr, cwd);
-        assert_eq!(
-            canonicalize_cache_len_for_test(),
-            1,
-            "first call must populate cache"
+        let after_first = canonicalize_cache_len_for_test();
+        assert!(
+            after_first > before,
+            "first call must populate cache (before={before}, after={after_first})",
         );
 
         let second = canonicalize_path(&hdr, cwd);
+        let after_second = canonicalize_cache_len_for_test();
         assert_eq!(
-            canonicalize_cache_len_for_test(),
-            1,
+            after_second, after_first,
             "second call with same input must hit cache, not grow it",
         );
         assert_eq!(first, second, "cached canonical output must match");
@@ -920,24 +912,33 @@ mod tests {
 
     /// Issue #573 regression guard: canonicalize_path cache must
     /// distinguish entries by input path, not by canonical output.
-    /// Two different input forms of the same file must each get
-    /// their own cache entry (the cache key is the input).
+    /// Two different input forms of the same file each get their
+    /// own cache entry. Uses unique per-tempdir absolute paths plus
+    /// a relative variant so the two inputs differ as strings but
+    /// resolve to the same file.
     #[test]
     fn canonicalize_path_cache_distinguishes_inputs() {
-        let _guard = CANONICALIZE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let dir = TempDir::new().unwrap();
         let cwd = dir.path();
-        let _hdr = touch(cwd, "a.h");
+        let hdr = touch(cwd, "distinct-573b.h");
+        // Two inputs that differ as strings but resolve to the same file:
+        // (1) the absolute path, (2) the absolute path with a redundant
+        // `./` component. Using absolute forms avoids any chance of
+        // other test workloads having pre-populated the cache with the
+        // same key (relative paths like `"a.h"` would collide).
+        let abs_input = hdr.clone();
+        let mut redundant_input = cwd.to_path_buf();
+        redundant_input.push(".");
+        redundant_input.push("distinct-573b.h");
 
-        canonicalize_cache_clear_for_test();
-        let _first = canonicalize_path(Path::new("a.h"), cwd);
-        let _second = canonicalize_path(Path::new("./a.h"), cwd);
-        assert_eq!(
-            canonicalize_cache_len_for_test(),
-            2,
-            "different input path strings must produce separate cache entries",
+        let before = canonicalize_cache_len_for_test();
+        let _first = canonicalize_path(&abs_input, cwd);
+        let _second = canonicalize_path(&redundant_input, cwd);
+        let after = canonicalize_cache_len_for_test();
+        assert!(
+            after >= before + 2,
+            "different input path strings must produce separate cache entries \
+             (before={before}, after={after}, expected delta >= 2)",
         );
     }
 }
