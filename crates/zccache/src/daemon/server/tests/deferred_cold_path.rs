@@ -241,3 +241,105 @@ async fn distinct_sources_have_distinct_cached_outputs() {
         "warm b.o must match its own cold-miss content (no cross-key contamination)"
     );
 }
+
+/// Concurrent compile requests for the same source must each observe content
+/// derived from that source — never content from a different source.
+///
+/// This exercises the race window between `store_miss_artifact` completing and
+/// the in-memory cache becoming visible to subsequent lookups. Today
+/// (synchronous-store path) every concurrent task either sees the entry
+/// already inserted or recompiles from scratch — both produce the same bytes
+/// because the fake cc is deterministic-per-source. When #610's
+/// deferred-write path lands, the race window widens; this test catches any
+/// wrong-hit returning bytes derived from a different cache key's source.
+///
+/// Each task uses its own output path so concurrent writes don't clobber
+/// each other; the *content* assertion is the invariant under test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_lookups_after_cold_miss_return_consistent_content() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = CacheDirEnvGuard::set(&tmp.path().join("zccache-cache"));
+    let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+    let state = std::sync::Arc::clone(&server.state);
+
+    let cc = write_fake_cc(tmp.path());
+    let src = tmp.path().join("shared.c");
+    std::fs::write(&src, b"int shared(void) { return 7; }\n").unwrap();
+    let cold_out = tmp.path().join("shared.o");
+
+    // Cold miss seeds the cache.
+    let cold_args = vec![
+        "-c".to_string(),
+        src.to_string_lossy().into_owned(),
+        "-o".to_string(),
+        cold_out.to_string_lossy().into_owned(),
+    ];
+    let cold_resp = handle_compile_ephemeral(
+        &state,
+        std::process::id(),
+        tmp.path(),
+        &cc,
+        &cold_args,
+        tmp.path(),
+        None,
+        Vec::new(),
+    )
+    .await;
+    match cold_resp {
+        Response::CompileResult { exit_code, .. } => assert_eq!(exit_code, 0),
+        other => panic!("expected CompileResult on cold path, got {other:?}"),
+    }
+    let expected = std::fs::read(&cold_out).expect("cold output present");
+
+    // 16 concurrent lookups for the SAME source, each writing to its own
+    // output path so per-task disk writes don't collide. Every task should
+    // either hit the cache or recompile to the same deterministic bytes.
+    const N: usize = 16;
+    let mut handles = Vec::with_capacity(N);
+    for i in 0..N {
+        let state = std::sync::Arc::clone(&state);
+        let cc = cc.clone();
+        let src = src.clone();
+        let cwd = tmp.path().to_path_buf();
+        let out_path = tmp.path().join(format!("shared_{i}.o"));
+        let task_args = vec![
+            "-c".to_string(),
+            src.to_string_lossy().into_owned(),
+            "-o".to_string(),
+            out_path.to_string_lossy().into_owned(),
+        ];
+        handles.push(tokio::spawn(async move {
+            let resp = handle_compile_ephemeral(
+                &state,
+                std::process::id(),
+                &cwd,
+                &cc,
+                &task_args,
+                &cwd,
+                None,
+                Vec::new(),
+            )
+            .await;
+            match resp {
+                Response::CompileResult { exit_code, .. } => {
+                    assert_eq!(exit_code, 0, "task {i} must succeed");
+                }
+                other => panic!("task {i}: expected CompileResult, got {other:?}"),
+            }
+            std::fs::read(&out_path).unwrap_or_else(|e| panic!("task {i}: read {out_path:?}: {e}"))
+        }));
+    }
+
+    // Note: per-task output path differs only by filename — the fake cc
+    // produces bytes derived from the SOURCE path, not the output path,
+    // so every task's bytes must match `expected` regardless of whether
+    // it hit the cache or recompiled. A wrong-hit would surface as bytes
+    // matching some other key's source.
+    for (i, h) in handles.into_iter().enumerate() {
+        let got = h.await.unwrap_or_else(|e| panic!("task {i} join: {e}"));
+        assert_eq!(
+            got, expected,
+            "task {i}: content must match cold-miss output byte-for-byte (wrong-hit detected)"
+        );
+    }
+}
