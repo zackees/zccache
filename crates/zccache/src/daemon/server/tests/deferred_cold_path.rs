@@ -213,7 +213,7 @@ async fn distinct_sources_have_distinct_cached_outputs() {
     // surface as content from the wrong source appearing in the warm output.
     std::fs::remove_file(&out_a).ok();
     std::fs::remove_file(&out_b).ok();
-    for (args, expected) in [(&args_a, &bytes_a), (&args_b, &bytes_b)] {
+    for (args, _expected) in [(&args_a, &bytes_a), (&args_b, &bytes_b)] {
         let resp = handle_compile_ephemeral(
             &server.state,
             std::process::id(),
