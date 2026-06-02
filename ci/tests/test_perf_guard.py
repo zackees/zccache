@@ -334,6 +334,33 @@ def test_report_marks_failed_rows():
     assert "#### Passed checks" in markdown
 
 
+def test_report_passes_warm_row_that_display_rounded_to_zero():
+    log = """
+## C++ Driver-Link Benchmark: 50 .cpp objects, 5 warm trials
+
+| Scenario | Bare clang++ | sccache | zccache | vs sccache | vs Bare clang++ |
+|:---------|----------:|--------:|--------:|-----------:|--------------:|
+| Driver link, Warm | 0.042s | 0.046s | **0.000s** | **94x faster** | **87x faster** |
+"""
+    report = perf_guard.evaluate_attempts(
+        [rows(log)],
+        languages=("c++",),
+        require_coverage=False,
+    )
+    markdown = perf_guard.format_report(report, 1.5, 1.5)
+
+    assert report.passed
+    assert "n/a" not in markdown
+    assert (
+        "| PASS | c++ | C++ driver link | Driver link, Warm | Bare clang++ | "
+        "0.5ms | 42.0ms | 87.000x | 1.50x | 1 | 1 |"
+    ) in markdown
+    assert (
+        "| PASS | c++ | C++ driver link | Driver link, Warm | sccache | "
+        "0.5ms | 46.0ms | 94.000x | 1.50x | 1 | 1 |"
+    ) in markdown
+
+
 def test_benchmark_summary_lists_passes_and_failures():
     report = perf_guard.evaluate_attempts([rows(FAILING_SCCACHE_LOG)], threshold=1.5)
 

@@ -256,6 +256,39 @@ def test_zero_duration_cells_are_invalid_not_inflated():
     assert benchmark_stats._duration_seconds("0.000s") is None
 
 
+def test_warm_display_rounded_zero_duration_uses_reported_ratios():
+    log = """
+## C++ Driver-Link Benchmark: 50 .cpp objects, 5 warm trials
+
+| Scenario | Bare clang++ | sccache | zccache | vs sccache | vs Bare clang++ |
+|:---------|----------:|--------:|--------:|-----------:|--------------:|
+| Driver link, Warm | 0.042s | 0.046s | **0.000s** | **94x faster** | **87x faster** |
+"""
+
+    row = benchmark_stats.parse_benchmark_log(log)[0]
+
+    expected_duration = round(((0.046 / 94.0) + (0.042 / 87.0)) / 2.0, 6)
+    assert row["zccache_seconds"] == pytest.approx(expected_duration)
+    assert row["zccache_vs_sccache_ratio"] == 94.0
+    assert row["zccache_vs_bare_ratio"] == 87.0
+
+
+def test_absurd_warm_display_rounded_zero_stays_invalid():
+    log = """
+## C Static-Library Link Benchmark: 50 .o inputs, 5 warm trials
+
+| Scenario | Bare ar | sccache | zccache | vs sccache | vs Bare ar |
+|:---------|----------:|--------:|--------:|-----------:|--------------:|
+| Static archive, Warm | 0.057s | 0.057s | 0.000s | 1797x faster | 1797x faster |
+"""
+
+    row = benchmark_stats.parse_benchmark_log(log)[0]
+
+    assert row["zccache_seconds"] is None
+    assert row["zccache_vs_bare_ratio"] is None
+    assert row["zccache_vs_sccache_ratio"] is None
+
+
 def test_group_results_by_language_returns_expected_buckets():
     rows = benchmark_stats.parse_benchmark_log(SAMPLE_LOG)
 

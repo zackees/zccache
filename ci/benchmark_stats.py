@@ -48,6 +48,10 @@ RATIO_COLORS = {
     "slower": "#f85149",
     "neutral": "#8b949e",
 }
+# Display-rounded zeroes above this speedup are still suspicious enough to
+# treat as missing data. This preserves the #443 guard against broken timing
+# while allowing legitimate sub-millisecond warm cache hits such as 87x-96x.
+MAX_DISPLAY_ROUNDED_ZERO_RATIO = 1000.0
 BENCHMARK_BASE_COMMAND = [
     "soldr",
     "--no-cache",
@@ -346,6 +350,50 @@ def _duration_seconds(value: str) -> float | None:
     return round(number, 6)
 
 
+def _ratio_from_text(value: str) -> float | None:
+    text = _clean_cell(value)
+    if text == "~same":
+        return 1.0
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)x\s+(faster|slower)", text)
+    if match is None:
+        return None
+    number = float(match.group(1))
+    if number <= 0:
+        return None
+    if match.group(2) == "slower":
+        return round(1.0 / number, 3)
+    return round(number, 3)
+
+
+def _is_display_rounded_zero(value: str) -> bool:
+    text = _clean_cell(value)
+    match = re.fullmatch(r"0+(?:\.0+)?\s*(ms|s)", text)
+    return match is not None
+
+
+def _duration_from_display_rounded_zero(
+    mode: str,
+    zccache_cell: str,
+    comparisons: tuple[tuple[float | None, str], ...],
+) -> float | None:
+    if mode != "warm" or not _is_display_rounded_zero(zccache_cell):
+        return None
+
+    candidates: list[float] = []
+    for baseline_seconds, ratio_text in comparisons:
+        ratio = _ratio_from_text(ratio_text)
+        if ratio is None or ratio <= 1.0:
+            continue
+        if ratio > MAX_DISPLAY_ROUNDED_ZERO_RATIO:
+            return None
+        if baseline_seconds is not None:
+            candidates.append(baseline_seconds / ratio)
+
+    if not candidates:
+        return None
+    return round(sum(candidates) / len(candidates), 6)
+
+
 def _ratio(baseline: float | None, candidate: float | None) -> float | None:
     if baseline is None or candidate is None or candidate <= 0:
         return None
@@ -374,6 +422,21 @@ def parse_benchmark_log(text: str) -> list[dict[str, Any]]:
             zccache_seconds = _duration_seconds(cells[3])
             scenario = cells[0]
             mode = "warm" if "warm" in scenario.lower() else "cold"
+            zccache_rounded_to_zero = zccache_seconds is None and _is_display_rounded_zero(
+                cells[3]
+            )
+            if zccache_rounded_to_zero:
+                zccache_seconds = _duration_from_display_rounded_zero(
+                    mode,
+                    cells[3],
+                    ((sccache_seconds, cells[4]), (bare_seconds, cells[5])),
+                )
+
+            sccache_ratio = _ratio(sccache_seconds, zccache_seconds)
+            bare_ratio = _ratio(bare_seconds, zccache_seconds)
+            if zccache_seconds is not None and zccache_rounded_to_zero:
+                sccache_ratio = _ratio_from_text(cells[4]) or sccache_ratio
+                bare_ratio = _ratio_from_text(cells[5]) or bare_ratio
             result = {
                 "benchmark": current["id"],
                 "benchmark_label": current["label"],
@@ -384,8 +447,8 @@ def parse_benchmark_log(text: str) -> list[dict[str, Any]]:
                 "bare_seconds": bare_seconds,
                 "sccache_seconds": sccache_seconds,
                 "zccache_seconds": zccache_seconds,
-                "zccache_vs_sccache_ratio": _ratio(sccache_seconds, zccache_seconds),
-                "zccache_vs_bare_ratio": _ratio(bare_seconds, zccache_seconds),
+                "zccache_vs_sccache_ratio": sccache_ratio,
+                "zccache_vs_bare_ratio": bare_ratio,
                 "vs_sccache_text": cells[4],
                 "vs_bare_text": cells[5],
             }
