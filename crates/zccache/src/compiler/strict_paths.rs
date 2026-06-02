@@ -2,6 +2,24 @@
 //!
 //! This catches include/force-include path spellings that can make compilers
 //! see one physical header through multiple raw path strings.
+//!
+//! ## Canonical failure this guards against (Windows / clang / PCH)
+//!
+//! On Windows, a header reached both via a PCH and via a direct `#include`
+//! can be passed to clang under two mixed-separator spellings —
+//! `src\fl/stl/cstdio.h` from one site, `src/fl/stl/cstdio.h` from another.
+//! Clang treats those as distinct paths inside its dedup map, so
+//! `#pragma once` no longer dedupes across the PCH boundary and the user
+//! sees `error: redefinition of …` with an "included multiple times" note
+//! that quotes the SAME-looking path on both sides. See issue #619 for the
+//! worked example on FastLED.
+//!
+//! Enabling `StrictPathsMode::Consistent` (set
+//! `ZCCACHE_STRICT_PATHS=consistent` or pass `--strict-paths=consistent`)
+//! makes zccache reject mixed-separator `-I` / `-include` flags at the
+//! compile-command level — before the spelling drift reaches clang
+//! internals where the symptom is much harder to diagnose. The mode is
+//! OFF by default so existing builds don't fail without warning.
 
 use std::fmt;
 

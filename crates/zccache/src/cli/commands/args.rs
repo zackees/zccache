@@ -17,6 +17,17 @@ pub(crate) struct Cli {
     pub show_stats: bool,
 
     /// Validate compiler path flag spelling: off, consistent, or absolute.
+    ///
+    /// On Windows, header paths reaching the compiler through both a PCH
+    /// and a direct `#include` can be spelled with mixed separators
+    /// (e.g. `src\fl/stl/cstdio.h`) — clang then sees one physical file
+    /// as two paths and `#pragma once` fails to dedupe across the PCH
+    /// boundary. Symptom: `error: redefinition of 'X'` with an
+    /// "included multiple times" note that quotes the SAME path on both
+    /// sides. Set `--strict-paths=consistent` (or
+    /// `ZCCACHE_STRICT_PATHS=consistent`) to catch the spelling drift at
+    /// the compile-command level before it reaches clang internals. See
+    /// #619 for the worked example.
     #[arg(
         long,
         value_name = "MODE",
@@ -142,6 +153,10 @@ pub(crate) enum Commands {
     /// Wrap a compiler invocation (explicit mode).
     Wrap {
         /// Validate compiler path flag spelling: off, consistent, or absolute.
+        ///
+        /// On Windows, mixed-separator include paths can defeat clang's
+        /// `#pragma once` dedup across PCH/consumer-TU boundaries — see
+        /// #619 and the global `--strict-paths` help above.
         #[arg(
             long,
             value_name = "MODE",
