@@ -39,6 +39,12 @@ pub(super) async fn handle_link_ephemeral(
         cache_relevant_flags: Vec<String>,
         non_deterministic: bool,
         non_determinism_hint: String,
+        // True iff parsed as a pure archiver invocation (ar, lib, llvm-ar).
+        // Archive tools only bundle their declared inputs into the output
+        // archive — they never deploy runtime DLLs, PDBs, or other side-effect
+        // files alongside the output. The pre-link `snapshot_directory` and
+        // post-link `detect_side_effects` work is wasted for archive cold-misses.
+        is_archive: bool,
     }
 
     let parsed_tool = match parse_archive_invocation(tool.to_str().unwrap_or(""), args) {
@@ -52,6 +58,7 @@ pub(super) async fn handle_link_ephemeral(
             secondary_outputs: Vec::new(),
             cache_relevant_flags: c.cache_relevant_flags,
             non_deterministic: c.non_deterministic,
+            is_archive: true,
         },
         ParsedArchiveInvocation::NonCacheable { reason: ar_reason } => {
             // Try linker parser
@@ -68,6 +75,7 @@ pub(super) async fn handle_link_ephemeral(
                     secondary_outputs: c.secondary_outputs,
                     cache_relevant_flags: c.cache_relevant_flags,
                     non_deterministic: c.non_deterministic,
+                    is_archive: false,
                 },
                 ParsedLinkerInvocation::NonCacheable {
                     reason: link_reason,
@@ -291,7 +299,16 @@ pub(super) async fn handle_link_ephemeral(
 
     // Snapshot the output directory before the link so we can detect
     // side-effect files (e.g., runtime DLLs deployed by compiler wrappers).
-    let dir_snapshot = super::super::side_effect::snapshot_directory(output_dir);
+    // Issue #605 pass 1: archive tools (ar, lib, llvm-ar) only bundle their
+    // declared inputs into the output archive; they never deploy sibling
+    // side-effect files. Skip both pre-link snapshot and post-link rescan
+    // for archives — saves a `read_dir` + per-entry `stat` on every archive
+    // cold-miss.
+    let dir_snapshot = if parsed_tool.is_archive {
+        super::super::side_effect::DirSnapshot::default()
+    } else {
+        super::super::side_effect::snapshot_directory(output_dir)
+    };
 
     // Extract post-link deploy command from env (if any) BEFORE we consume
     // `env` in the passthrough call. See run_post_link_deploy_hook for rationale.
@@ -359,13 +376,19 @@ pub(super) async fn handle_link_ephemeral(
                         .filter_map(|s| s.file_name().map(|n| n.to_os_string())),
                 )
                 .collect();
-        let side_effects = super::super::side_effect::detect_side_effects(
-            &dir_snapshot,
-            output_dir,
-            &primary_name_os,
-            &already_captured,
-        )
-        .unwrap_or_default();
+        // Issue #605 pass 1: matches the pre-link snapshot skip above —
+        // archives have no side-effect files to detect.
+        let side_effects = if parsed_tool.is_archive {
+            Vec::new()
+        } else {
+            super::super::side_effect::detect_side_effects(
+                &dir_snapshot,
+                output_dir,
+                &primary_name_os,
+                &already_captured,
+            )
+            .unwrap_or_default()
+        };
 
         let mut read_targets: Vec<(String, std::path::PathBuf)> =
             Vec::with_capacity(1 + parsed_tool.secondary_outputs.len() + side_effects.len());
