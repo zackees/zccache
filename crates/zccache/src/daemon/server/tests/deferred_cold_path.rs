@@ -465,3 +465,103 @@ cat "$src" >> "$out"
         "v1 and v2 bytes must differ — source edit between compiles must invalidate the cache key"
     );
 }
+
+/// Daemon crash mid-flight must never surface wrong content to a post-restart
+/// lookup. The lookup either hits with correct content (artifact + index were
+/// already durable before the crash) or misses and recompiles to the same
+/// deterministic bytes (artifact and/or index were lost). It never returns
+/// content from a different cache key.
+///
+/// This is the canonical crash-recovery invariant from #610: under the
+/// deferred-write path, the response leaves the daemon BEFORE the in-memory
+/// cache becomes visible and BEFORE the WAL flush. If a crash lands inside
+/// that window, the next daemon's `load_all()` from the on-disk index plus
+/// content-addressed artifact directory must recover any committed entry,
+/// and reject any uncommitted one without surfacing wrong content.
+///
+/// The test simulates the crash by **dropping** the `DaemonServer` (no
+/// graceful shutdown — no shutdown notify, no final WAL flush, no in-flight
+/// task drain) and binding a fresh server to the same cache root. Both
+/// daemons share the cache root via `ZCCACHE_CACHE_DIR` (set by
+/// `CacheDirEnvGuard`), so the second daemon reads whatever the first
+/// daemon managed to persist before the abrupt drop.
+#[tokio::test]
+async fn crash_mid_flight_recovery_never_surfaces_wrong_content() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_root = tmp.path().join("zccache-cache");
+    let _guard = CacheDirEnvGuard::set(&cache_root);
+
+    let cc = write_fake_cc(tmp.path());
+    let src = tmp.path().join("crashy.c");
+    std::fs::write(&src, b"int crashy(void) { return 9; }\n").unwrap();
+    let out = tmp.path().join("crashy.o");
+    let args = vec![
+        "-c".to_string(),
+        src.to_string_lossy().into_owned(),
+        "-o".to_string(),
+        out.to_string_lossy().into_owned(),
+    ];
+
+    // First daemon: do the cold-miss compile and capture the canonical bytes
+    // for `crashy.c`. The fake cc shim derives bytes from the source path —
+    // so any post-restart lookup that returns different bytes would be
+    // surfacing content from a different cache key, the wrong-hit we must
+    // never see.
+    let expected = {
+        let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+        let resp = handle_compile_ephemeral(
+            &server.state,
+            std::process::id(),
+            tmp.path(),
+            &cc,
+            &args,
+            tmp.path(),
+            None,
+            Vec::new(),
+        )
+        .await;
+        match resp {
+            Response::CompileResult { exit_code, .. } => assert_eq!(exit_code, 0),
+            other => panic!("expected CompileResult on cold path, got {other:?}"),
+        }
+        std::fs::read(&out).expect("cold output present")
+        // `server` drops here — no graceful shutdown, no final WAL flush.
+        // Any uncommitted entries are lost on purpose. This is the "crash".
+    };
+
+    // Drop the cold-miss output file so any post-restart compile must
+    // materialize fresh bytes (either from cache or by recompiling).
+    std::fs::remove_file(&out).ok();
+
+    // Second daemon: same cache root, fresh process state. `load_all()` may
+    // or may not have seen the first daemon's writes depending on whether
+    // the artifact persist + WAL flush completed before the drop.
+    let server2 = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+    let resp = handle_compile_ephemeral(
+        &server2.state,
+        std::process::id(),
+        tmp.path(),
+        &cc,
+        &args,
+        tmp.path(),
+        None,
+        Vec::new(),
+    )
+    .await;
+    match resp {
+        Response::CompileResult { exit_code, .. } => assert_eq!(exit_code, 0),
+        other => panic!("expected CompileResult on post-crash path, got {other:?}"),
+    }
+    let got = std::fs::read(&out).expect("post-crash output present");
+
+    // Core invariant: the post-restart compile, whether it hit recovered
+    // cache state or recompiled from scratch, must produce content that
+    // matches the original cold-miss bytes. A wrong-hit returning content
+    // from a different cache key fails here.
+    assert_eq!(
+        got, expected,
+        "post-restart content must match the original cold-miss bytes — \
+         whether the cache was recovered or rebuilt is implementation \
+         detail; the only invariant is correctness"
+    );
+}
