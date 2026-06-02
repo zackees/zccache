@@ -9,6 +9,7 @@ mod cache_trim;
 mod clear_handler;
 mod client_env;
 mod compiler_hash;
+mod deferred_cold_path;
 mod fingerprint;
 mod link_cache;
 mod pack;
