@@ -343,3 +343,128 @@ async fn concurrent_lookups_after_cold_miss_return_consistent_content() {
         );
     }
 }
+
+/// After a source is modified, the next compile must reflect the NEW content,
+/// even if a deferred-write task for the OLD content is still in flight.
+///
+/// This guards the worst-case shape of a defer-vs-invalidation race: the
+/// daemon takes a cold-miss for foo.c@v1, returns to the wrapper, and starts
+/// publishing the artifact in the background. Before the publish lands, the
+/// source is edited (foo.c@v2). A subsequent lookup must either (a) miss
+/// because v1's publish hasn't completed and v2's content hash differs from
+/// v1's cache key (so v1's entry, even if visible, would not match v2's
+/// lookup key), or (b) hit v2 after v2 is compiled and published. In no
+/// circumstance may the lookup return v1's bytes when v2 is the source.
+///
+/// The fake cc shim emits source-content-derived bytes via the source path,
+/// but the cache key is derived from source CONTENT hash. Editing the source
+/// changes the content hash → new cache key → no collision with the v1
+/// entry. So the v1 artifact, even if still published in the background,
+/// is unreachable via the v2 lookup key.
+#[tokio::test]
+async fn source_edit_invalidates_cached_artifact() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = CacheDirEnvGuard::set(&tmp.path().join("zccache-cache"));
+    let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+
+    // Custom fake cc that echoes source CONTENT into the output, so we can
+    // verify the cached bytes reflect the current source content. The
+    // default `write_fake_cc` echoes the source PATH; here we want content.
+    let cc = tmp.path().join("cc-echo-content");
+    std::fs::write(
+        &cc,
+        r#"#!/bin/sh
+src=
+out=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -c) shift; src=$1 ;;
+        -o) shift; out=$1 ;;
+    esac
+    shift || true
+done
+if [ -z "$src" ] || [ -z "$out" ]; then exit 2; fi
+# Echo the SOURCE CONTENT into the object — distinct source contents
+# produce distinct object bytes.
+printf 'src-content:' > "$out"
+cat "$src" >> "$out"
+"#,
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&cc).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&cc, perms).unwrap();
+
+    let src = tmp.path().join("evolving.c");
+    let out = tmp.path().join("evolving.o");
+    let args = vec![
+        "-c".to_string(),
+        src.to_string_lossy().into_owned(),
+        "-o".to_string(),
+        out.to_string_lossy().into_owned(),
+    ];
+
+    // v1: write source, compile, capture bytes.
+    std::fs::write(&src, b"int v(void) { return 1; }\n").unwrap();
+    let v1_resp = handle_compile_ephemeral(
+        &server.state,
+        std::process::id(),
+        tmp.path(),
+        &cc,
+        &args,
+        tmp.path(),
+        None,
+        Vec::new(),
+    )
+    .await;
+    match v1_resp {
+        Response::CompileResult { exit_code, .. } => assert_eq!(exit_code, 0),
+        other => panic!("expected CompileResult, got {other:?}"),
+    }
+    let v1_bytes = std::fs::read(&out).expect("v1 output");
+    assert!(
+        v1_bytes.starts_with(b"src-content:int v(void) { return 1; }"),
+        "v1 bytes must encode v1 source content, got: {:?}",
+        String::from_utf8_lossy(&v1_bytes[..v1_bytes.len().min(80)])
+    );
+
+    // Modify source. Bump mtime to defeat any stat-based fast paths.
+    std::fs::write(&src, b"int v(void) { return 2; }\n").unwrap();
+    let later = filetime::FileTime::from_unix_time(
+        filetime::FileTime::now().unix_seconds() + 5,
+        0,
+    );
+    filetime::set_file_mtime(&src, later).expect("set mtime forward");
+
+    std::fs::remove_file(&out).ok();
+    let v2_resp = handle_compile_ephemeral(
+        &server.state,
+        std::process::id(),
+        tmp.path(),
+        &cc,
+        &args,
+        tmp.path(),
+        None,
+        Vec::new(),
+    )
+    .await;
+    match v2_resp {
+        Response::CompileResult { exit_code, .. } => assert_eq!(exit_code, 0),
+        other => panic!("expected CompileResult, got {other:?}"),
+    }
+    let v2_bytes = std::fs::read(&out).expect("v2 output");
+
+    // Critical invariant: the v2 compile must reflect v2's source content,
+    // not v1's. Whether the daemon's defer for v1 is still in flight or not,
+    // the v2 lookup key is different (source-hash-based) so v1's entry
+    // cannot satisfy v2.
+    assert!(
+        v2_bytes.starts_with(b"src-content:int v(void) { return 2; }"),
+        "v2 bytes must encode v2 source content (cache invalidation broken), got: {:?}",
+        String::from_utf8_lossy(&v2_bytes[..v2_bytes.len().min(80)])
+    );
+    assert_ne!(
+        v1_bytes, v2_bytes,
+        "v1 and v2 bytes must differ — source edit between compiles must invalidate the cache key"
+    );
+}
