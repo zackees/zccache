@@ -38,6 +38,6 @@ Feature documentation belongs in the **subsystem doc that owns the feature**, no
 
 ## Other docs
 
-- **[DESIGN_DECISIONS.md](DESIGN_DECISIONS.md)** — 15 ADR-style decisions with rationale
+- **[DESIGN_DECISIONS.md](DESIGN_DECISIONS.md)** — 25 ADR-style decisions with rationale
 - **[ROADMAP.md](ROADMAP.md)** — 7 implementation phases
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — Index of all architecture documents

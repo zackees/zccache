@@ -825,3 +825,107 @@ the legacy shell/Python path with a native `zccache target-cache` command.
   gates, and hot/full modes for compatibility.
 - Bugs in `cache-target: true` remain valid fixes for the legacy action path,
   but they should not expand that path into a second soldr integration API.
+
+---
+
+## DD-025: Conditional Relaxation of DD-015 for Deferred-Work Optimizations
+
+**Context:** DD-015 ("Conservative Correctness Bias") is the default safety
+net. It rules out any optimization that *might* produce a wrong cache hit. In
+practice this also rules out a class of deferred-work optimizations that are
+correct under eventual consistency but not under strict immediate consistency:
+moving index updates, hardlinks, or stat refreshes onto a background worker so
+the cold-path response leaves before the cache state has been published. These
+optimizations are the only way to drive the per-miss daemon overhead below
+~6 ms — the measured floor in `benchmark-log` aggregates after pass 1 of
+issue #605.
+
+**Decision:** DD-015 remains the default. An individual optimization may
+relax it — i.e., publish results to a caller before the cache state is fully
+consistent — only when **all** of the following are true. Each is an
+independent justification; the relaxation is licensed by the **plurality**, not
+by any single one:
+
+1. **A named sync point exists.** There is one concrete location in code
+   (function, channel sink, or task boundary) where the deferred work is
+   guaranteed to land before any caller can observe a wrong hit. The sync
+   point must be reachable from every public lookup path that could
+   otherwise race with the deferred write — e.g., `lookup()` blocks on a
+   `pending_writes` registry before falling back to "miss," or the background
+   task completes within a bounded interval before any cross-process consumer
+   could observe inconsistency.
+
+2. **The failure mode is a miss, never a wrong hit.** If the deferral races
+   with a lookup and the lookup loses, the observable outcome is one extra
+   compilation. DD-015's asymmetry (bounded miss cost, unbounded wrong-hit
+   cost) remains intact.
+
+3. **The blast radius is bounded.** A specific upper bound on how stale the
+   cache can be (in time, in number of in-flight writes, or in cache-entry
+   count) must be documented at the deferral site. Crash recovery (DD-008,
+   DD-010, DD-017) brings the system back to a known-consistent state within
+   that bound.
+
+4. **Adversarial tests exist before the optimization lands.** A unit/
+   integration test deliberately exercises the race window: spawn a deferred
+   write, immediately issue concurrent lookups, drive cross-thread / cross-
+   process contention, kill the daemon mid-flight, and assert the observable
+   outcomes are always either "correct hit" or "miss" — **never** "wrong
+   hit." Tests must run under both Loom (where applicable) and miri or
+   thread-sanitizer for the relevant module. The PR description must link to
+   the adversarial tests by name.
+
+5. **The win is measurable in the benchmark suite, not just modeled.** The
+   PR includes the before/after `latest.json` deltas (post-merge) showing the
+   target scenario improved by at least 2× the noise floor of the affected
+   scenario. Modeled wins ("this saves 1.8 ms per miss") are not sufficient
+   on their own — DD-005's "0.3% of cold-miss time" lesson is that intuition
+   about cold-path costs is often wrong.
+
+**Rationale:**
+- A single "is it safe?" question is too coarse. The right question is "does
+  the plurality of safeguards raise the *effective* correctness threshold
+  back to the DD-015 bar?" Each of the five conditions on its own is
+  insufficient; the conjunction is the bar.
+- Deferred-work patterns are well-known (write-ahead logs, eventually-
+  consistent caches, optimistic concurrency control). DD-015 must not be
+  read to forbid them in absolute terms — it must be read as forbidding them
+  **unsupervised**.
+- The bench-suite gate (condition 5) prevents speculative refactors that
+  pass tests but don't move the needle. Cold-path engineering has a long
+  history of plausible-but-zero-impact changes; the bench is the ground
+  truth.
+
+**How this interacts with other DDs:**
+- **DD-003 (watcher-assisted, not -dependent)** is the canonical existing
+  example of this pattern: watchers update *confidence*, not truth. They
+  defer; stat is the sync point; failure mode is a miss; adversarial tests
+  in `crates/zccache-watcher/tests/` exercise overflow and dropped events.
+  DD-003 is grandfathered as DD-025-compliant.
+- **DD-013 (LRU eviction)** uses batched `access_log` writes with a 5-second
+  flush window. The same template applies: the writes are deferred, the
+  flush is the sync point, the failure mode is a slightly-incorrect access
+  time (which only affects eviction order, not hit correctness).
+- **DD-005's content-hash ground truth** is unaffected: hashes are still the
+  cache key. Only the *publishing* of a known artifact may be deferred —
+  the artifact's identity remains content-bound.
+
+**Alternatives Considered:**
+| Alternative | Why not |
+|-------------|---------|
+| Keep DD-015 strict, accept the 6 ms/miss floor | Concedes the cold path remains 2-14× behind sccache on small-archive scenarios. The user-visible 300-600 ms overhead per trial is the cost of strict immediacy when the plurality of safeguards would protect correctness anyway. |
+| Single-knob "performance mode" env var | Forks the contract. Two code paths to test. Users who hit a wrong hit in performance mode will distrust the cache in default mode too. The contract must be one cache with one set of guarantees per code path, not a knob. |
+| Trust the optimization author's judgment | The DD-015 asymmetry is so severe (one wrong hit destroys trust) that judgment alone is not sufficient. The conditions exist precisely to externalize the safety case so it can be reviewed. |
+
+**Consequences:**
+- A new section "Deferred work and sync points" should appear in each
+  subsystem doc (`runtime.md`, `metadata-cache.md`, `artifact-store.md`) the
+  first time a DD-025-compliant deferral is introduced there. The section
+  documents the sync point, the bound, and links to the adversarial tests.
+- PR template (or an explicit checklist in the PR body) should require all
+  five conditions to be addressed for any change tagged
+  `cold-path-optimization` / `defer-work`.
+- The `cold-path-optimization` ledger (issue #605) is the workbench for
+  vetting DD-025 candidates before they become PRs.
+- The legacy/default cache paths remain DD-015-strict. DD-025 is an
+  opt-in *for individual optimization sites*, not a global policy shift.
