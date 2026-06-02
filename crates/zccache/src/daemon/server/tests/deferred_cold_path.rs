@@ -430,10 +430,7 @@ cat "$src" >> "$out"
 
     // Modify source. Bump mtime to defeat any stat-based fast paths.
     std::fs::write(&src, b"int v(void) { return 2; }\n").unwrap();
-    let later = filetime::FileTime::from_unix_time(
-        filetime::FileTime::now().unix_seconds() + 5,
-        0,
-    );
+    let later = filetime::FileTime::from_unix_time(filetime::FileTime::now().unix_seconds() + 5, 0);
     filetime::set_file_mtime(&src, later).expect("set mtime forward");
 
     std::fs::remove_file(&out).ok();
