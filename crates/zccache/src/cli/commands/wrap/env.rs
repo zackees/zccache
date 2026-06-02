@@ -40,10 +40,33 @@ pub(super) fn effective_strict_paths_mode(
 
     match std::env::var("ZCCACHE_STRICT_PATHS") {
         Ok(value) => StrictPathsMode::parse(&value).map_err(|err| err.to_string()),
-        Err(std::env::VarError::NotPresent) => Ok(StrictPathsMode::Off),
+        Err(std::env::VarError::NotPresent) => Ok(windows_pch_guard_default()),
         Err(std::env::VarError::NotUnicode(_)) => {
             Err("ZCCACHE_STRICT_PATHS is not valid Unicode".to_string())
         }
+    }
+}
+
+/// Issue #619: Windows-only opt-in. When `ZCCACHE_WINDOWS_PCH_GUARD=1` and
+/// `ZCCACHE_STRICT_PATHS` is unset, default to `Consistent` mode so the
+/// mixed-separator `-I` / `-include` patterns that defeat clang's
+/// `#pragma once` dedup across PCH boundaries get rejected at the
+/// compile-command level. Off-by-default on Windows for backward compat;
+/// the env var is the safe opt-in path until consistent-on-Windows
+/// proves out in the field.
+fn windows_pch_guard_default() -> StrictPathsMode {
+    let guard_value = std::env::var("ZCCACHE_WINDOWS_PCH_GUARD").ok();
+    windows_pch_guard_default_for(cfg!(target_os = "windows"), guard_value.as_deref())
+}
+
+/// Pure helper for `windows_pch_guard_default` — separated so unit tests
+/// don't have to mutate process env (which races under cargo's
+/// parallel-test default).
+fn windows_pch_guard_default_for(is_windows: bool, guard_value: Option<&str>) -> StrictPathsMode {
+    if is_windows && matches!(guard_value, Some("1" | "true" | "yes" | "on")) {
+        StrictPathsMode::Consistent
+    } else {
+        StrictPathsMode::Off
     }
 }
 
@@ -101,5 +124,49 @@ mod tests {
                 .map(|(_, value)| value.as_str()),
             Some("absolute")
         );
+    }
+
+    #[test]
+    fn windows_pch_guard_default_off_when_not_windows() {
+        // Linux/macOS never auto-enable the guard, regardless of env value.
+        assert_eq!(
+            windows_pch_guard_default_for(false, Some("1")),
+            StrictPathsMode::Off
+        );
+        assert_eq!(
+            windows_pch_guard_default_for(false, None),
+            StrictPathsMode::Off
+        );
+    }
+
+    #[test]
+    fn windows_pch_guard_default_off_when_env_unset_or_falsy() {
+        assert_eq!(
+            windows_pch_guard_default_for(true, None),
+            StrictPathsMode::Off
+        );
+        assert_eq!(
+            windows_pch_guard_default_for(true, Some("0")),
+            StrictPathsMode::Off
+        );
+        assert_eq!(
+            windows_pch_guard_default_for(true, Some("")),
+            StrictPathsMode::Off
+        );
+        assert_eq!(
+            windows_pch_guard_default_for(true, Some("garbage")),
+            StrictPathsMode::Off
+        );
+    }
+
+    #[test]
+    fn windows_pch_guard_default_consistent_when_windows_and_opt_in() {
+        for truthy in ["1", "true", "yes", "on"] {
+            assert_eq!(
+                windows_pch_guard_default_for(true, Some(truthy)),
+                StrictPathsMode::Consistent,
+                "ZCCACHE_WINDOWS_PCH_GUARD={truthy} on Windows should enable Consistent"
+            );
+        }
     }
 }
