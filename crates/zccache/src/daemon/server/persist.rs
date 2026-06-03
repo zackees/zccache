@@ -304,16 +304,21 @@ where
 /// 3. Remove existing output and retry hardlink (2 syscalls)
 /// 4. Fall back to fs::write from memory (1 syscall)
 ///
-/// After writing, [`touch_mtime`] is called on the output. **It does NOT
-/// stamp `now()`** — that was the pre-iter7 design which caused cargo's
-/// incremental fingerprint to mark hardlinked artifacts as "externally
-/// modified" and invalidate the downstream graph (measured 5.9 ms → 2.8 ms
-/// per-hit overhead delta + a `bin`-cell recompile cascade in the
-/// cold-tar-untar-warm scenario). Instead, `touch_mtime` floors the
-/// artifact's mtime UP to the max of its sibling artifacts in the same
-/// directory — preserving the cache file's mtime in isolation, and only
-/// bumping when needed to keep cargo's "dep_mtime ≤ my_mtime" invariant
-/// (issues #466 / #467). See [`touch_mtime`] for the full rationale.
+/// **Mtime policy**: the output inherits the cache file's stored mtime by
+/// default. We deliberately do NOT stamp `now()` — that was the pre-iter7
+/// behaviour and it caused cargo's incremental fingerprint to mark
+/// hardlinked artifacts as "externally modified", invalidating the
+/// downstream graph (measured 5.9 ms → 2.8 ms per-hit + recovery of the
+/// `bin`-cell recompile cascade in the cold-tar-untar-warm scenario).
+/// Preservation is also the cheapest possible policy: zero extra syscalls.
+///
+/// The only exception is the sibling-floor refinement in [`touch_mtime`],
+/// which bumps the artifact's mtime UP **only when** an existing sibling
+/// artifact in the same directory already has a higher mtime — required to
+/// keep cargo's "dep_mtime ≤ my_mtime" check from misfiring on
+/// out-of-order materialization (issues #466 / #467). In isolation (no
+/// siblings, or all siblings older), the floor is a no-op and the cache
+/// mtime is preserved verbatim — the fast path.
 ///
 /// The hardlink-first order optimizes for the rebuild scenario where outputs
 /// don't exist yet (1 syscall). For incremental builds where outputs exist
@@ -559,42 +564,48 @@ pub(super) fn hard_link_count(path: &Path) -> std::io::Result<u64> {
     }
 }
 
-/// Floor the materialized artifact's mtime to the max of its sibling
-/// compilation artifacts (`*.rlib` / `*.rmeta` / `*.so` / `*.dylib` /
-/// `*.dll` / `*.exe` / `*.a` / `*.lib`) in the same directory.
+/// **Preserve** the cache file's stored mtime on the materialized artifact
+/// by default, only bumping UP to the max of existing sibling compilation
+/// artifacts (`*.rlib` / `*.rmeta` / `*.so` / `*.dylib` / `*.dll` /
+/// `*.exe` / `*.a` / `*.lib`) in the same directory when that is needed
+/// to satisfy cargo's "dep_mtime ≤ my_mtime" fingerprint invariant.
+/// Preservation is the fast path. The floor is a corrective.
 ///
-/// **Why** (issues #466 / #467): cargo's `Fingerprint::check_filesystem`
-/// emits `FsStatusOutdated::StaleDependency` when any dep's artifact
-/// mtime is strictly greater than the dependent's artifact mtime
-/// (`dep_mtime > my_mtime → stale`). When zccache hardlinks a cache hit
-/// into `target/debug/deps/`, the artifact inherits the cache file's
-/// preserved mtime (iter7 invariant). But cache files for transitively-
+/// **Why preservation is the default** (iter7): stamping `now()` made
+/// cargo treat hardlinked cache hits as "externally modified", invalidating
+/// the downstream graph and paying re-link / re-fingerprint cost that
+/// fully cancelled the cache savings. Measured 5.9 ms → 2.8 ms per-hit
+/// + recovery of the `bin`-cell recompile cascade (cold-tar-untar-warm,
+/// warm 11.6 s → 9.8 s). Preservation is also the cheapest policy.
+///
+/// **Why the floor exception exists** (issues #466 / #467): cargo's
+/// `Fingerprint::check_filesystem` emits `FsStatusOutdated::StaleDependency`
+/// when any dep's artifact mtime is strictly greater than the dependent's
+/// (`dep_mtime > my_mtime → stale`). Cache files for transitively-
 /// dependent crates are not guaranteed to have correctly-ordered mtimes:
 /// archive truncation, parallel cache stores, and out-of-order
 /// re-materialization all break the dep-before-dependent invariant. The
 /// GH bench measured this as 31 crates recompiling on every "warm with
-/// target intact" build, taking ~3 s vs sccache's 215 ms baseline.
-///
-/// **Why this is safe vs iter7's no-op** (the previous design): the
-/// floor only ever INCREASES the artifact mtime, and only to a value
-/// derived from existing siblings in the same directory. iter7's
-/// concern was stamping `now()` — a value that changes between builds
-/// and triggers cargo's "externally modified" check. Flooring to a
-/// stable sibling-derived value avoids that:
-/// 1. On the next cache hit for the same artifact, the hardlink/
-///    same-file fast path returns early without re-flooring.
-/// 2. Even if we re-floor, sibling mtimes only ever grow (cache hits
+/// target intact" build, taking ~3 s vs sccache's 215 ms baseline. The
+/// floor closes that gap without re-introducing the iter7 regression
+/// because it only ever increases mtime to a *stable sibling-derived
+/// value* (not `now()`), and the value is idempotent across rebuilds:
+/// 1. The next hit on the same artifact takes the hardlink / same-file
+///    fast path and returns without re-flooring.
+/// 2. If we do re-floor, sibling mtimes only ever grow (cache hits
 ///    materialise with their cache mtime; the floor floors UP from
-///    there), so the value is idempotent across repeat builds.
+///    there), so the value converges.
+///
+/// **Cost**: in isolation (no siblings, or all siblings older than the
+/// cache mtime), the floor is a pure no-op after one `read_dir` + N
+/// stats — ~50 µs on a `target/debug/deps/` with 300 entries. When the
+/// floor actually bumps, the amortised cost is hidden behind the cargo
+/// recompilation it prevents (~3 s saved for 50 µs of stat work).
 ///
 /// Disable via `ZCCACHE_DISABLE_MTIME_FLOOR=1` if the floor causes
-/// problems with a specific build system.
-///
-/// **Cost**: one `read_dir` + N stats per materialization. Measured at
-/// ~50 µs per hit on a `target/debug/deps/` with 300 entries (Linux,
-/// release build). Amortised cost is hidden behind the cargo
-/// recompilation this prevents — preventing a ~3 s recompile is worth
-/// 50 µs of stat work.
+/// problems with a specific build system (this also disables the
+/// preservation guarantee's enforcement, so the cache file's mtime is
+/// what survives — still not `now()`).
 pub(super) fn touch_mtime(path: &Path) {
     if mtime_floor_disabled() {
         return;
