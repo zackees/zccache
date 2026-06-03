@@ -67,6 +67,7 @@ pub(crate) fn run_wrap(
             cwd.into(),
             client_env,
         )),
+        WrapperRoute::ProbeBypass => passthrough::run_passthrough(args),
         WrapperRoute::Compile => run_compile_route(
             &endpoint,
             &args[0],
