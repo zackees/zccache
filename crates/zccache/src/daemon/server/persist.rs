@@ -171,20 +171,38 @@ pub(super) fn persist_artifact_paths(
     key_hex: &str,
     sources: &[NormalizedPath],
 ) -> std::io::Result<()> {
+    persist_artifact_paths_with_stats(artifact_dir, key_hex, sources).map(|_| ())
+}
+
+/// Same as `persist_artifact_paths`, plus aggregate hardlink/copy/copy-bytes
+/// stats summed across every source. Lets the rustc miss path use the same
+/// serial-vs-rayon threshold without re-implementing the loop. Pack mode
+/// returns default stats — its single packed write doesn't yield per-source
+/// hardlink/copy attribution.
+pub(super) fn persist_artifact_paths_with_stats(
+    artifact_dir: &Path,
+    key_hex: &str,
+    sources: &[NormalizedPath],
+) -> std::io::Result<PersistArtifactFileStats> {
     if pack_mode_enabled() {
         let bytes: Vec<Arc<Vec<u8>>> = sources
             .iter()
             .map(|p| std::fs::read(p.as_path()).map(Arc::new))
             .collect::<std::io::Result<_>>()?;
         let pack = build_pack(&bytes);
-        return persist_artifact_output(&pack_path_for(artifact_dir, key_hex), &pack);
+        persist_artifact_output(&pack_path_for(artifact_dir, key_hex), &pack)?;
+        return Ok(PersistArtifactFileStats::default());
     }
     if sources.len() < PAR_WRITE_THRESHOLD {
+        let mut stats = PersistArtifactFileStats::default();
         for (i, source) in sources.iter().enumerate() {
             let cache_path = artifact_dir.join(format!("{key_hex}_{i}"));
-            persist_artifact_file(&cache_path, source.as_path())?;
+            let one = persist_artifact_file(&cache_path, source.as_path())?;
+            stats.hardlink_count += one.hardlink_count;
+            stats.copy_count += one.copy_count;
+            stats.copy_bytes += one.copy_bytes;
         }
-        return Ok(());
+        return Ok(stats);
     }
     use rayon::prelude::*;
     sources
@@ -192,9 +210,19 @@ pub(super) fn persist_artifact_paths(
         .enumerate()
         .map(|(i, source)| {
             let cache_path = artifact_dir.join(format!("{key_hex}_{i}"));
-            persist_artifact_file(&cache_path, source.as_path()).map(|_| ())
+            persist_artifact_file(&cache_path, source.as_path())
         })
-        .reduce(|| Ok(()), |a, b| a.and(b))
+        .reduce(
+            || Ok(PersistArtifactFileStats::default()),
+            |a, b| match (a, b) {
+                (Ok(x), Ok(y)) => Ok(PersistArtifactFileStats {
+                    hardlink_count: x.hardlink_count + y.hardlink_count,
+                    copy_count: x.copy_count + y.copy_count,
+                    copy_bytes: x.copy_bytes + y.copy_bytes,
+                }),
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            },
+        )
 }
 
 #[derive(Clone, Copy, Debug, Default)]

@@ -155,25 +155,30 @@ fn store_rustc_outputs(
         .collect();
     stats.artifact_meta_build_ns = t_artifact_meta_build.elapsed().as_nanos() as u64;
 
+    // Delegate to the shared `persist_artifact_paths_with_stats` helper so
+    // multi-output rustc misses (rlib + rmeta + dep-info + ...) pick up the
+    // same rayon-vs-serial threshold the C/C++ async persist path already
+    // uses, instead of an inline serial loop here. The helper hardlinks
+    // each `output.path` (which rustc just wrote into `target/...`) into
+    // the cache dir as `{key_hex}_{i}`; the source-vs-cache file ordering
+    // is preserved by giving it `output.path`s in the same order as
+    // `payload_paths`.
+    let source_paths: Vec<NormalizedPath> = all_outputs
+        .iter()
+        .map(|output| output.path.clone())
+        .collect();
     let mut snapshot_ok = true;
     let t_rust_snapshot = Instant::now();
-    for (output, cache_path) in all_outputs.iter().zip(payload_paths.iter()) {
-        match persist_artifact_file(cache_path, &output.path) {
-            Ok(snapshot_stats) => {
-                stats.rust_snapshot_hardlink_count += snapshot_stats.hardlink_count;
-                stats.rust_snapshot_copy_count += snapshot_stats.copy_count;
-                stats.rust_snapshot_copy_bytes += snapshot_stats.copy_bytes;
-            }
-            Err(e) => {
-                stats.rust_snapshot_error_count += 1;
-                snapshot_ok = false;
-                tracing::warn!(
-                    source = %output.path.display(),
-                    cache = %cache_path.display(),
-                    "failed to snapshot rustc output: {e}"
-                );
-                break;
-            }
+    match persist_artifact_paths_with_stats(&state.artifact_dir, artifact_key_hex, &source_paths) {
+        Ok(snapshot_stats) => {
+            stats.rust_snapshot_hardlink_count = snapshot_stats.hardlink_count;
+            stats.rust_snapshot_copy_count = snapshot_stats.copy_count;
+            stats.rust_snapshot_copy_bytes = snapshot_stats.copy_bytes;
+        }
+        Err(e) => {
+            stats.rust_snapshot_error_count = all_outputs.len() as u64;
+            snapshot_ok = false;
+            tracing::warn!("failed to snapshot rustc outputs for {artifact_key_hex}: {e}");
         }
     }
     stats.rust_snapshot_ns = t_rust_snapshot.elapsed().as_nanos() as u64;
