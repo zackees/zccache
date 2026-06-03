@@ -304,12 +304,16 @@ where
 /// 3. Remove existing output and retry hardlink (2 syscalls)
 /// 4. Fall back to fs::write from memory (1 syscall)
 ///
-/// After writing, the output's mtime is set to the current time. This is
-/// critical for build system compatibility: cargo, make, and ninja use mtime
-/// to determine if an output is fresh relative to its dependencies. Without
-/// this, hardlinked outputs inherit the cache file's old mtime, causing
-/// build systems to consider them stale and triggering unnecessary rebuilds.
-/// See issue #15 for the full root cause analysis.
+/// After writing, [`touch_mtime`] is called on the output. **It does NOT
+/// stamp `now()`** — that was the pre-iter7 design which caused cargo's
+/// incremental fingerprint to mark hardlinked artifacts as "externally
+/// modified" and invalidate the downstream graph (measured 5.9 ms → 2.8 ms
+/// per-hit overhead delta + a `bin`-cell recompile cascade in the
+/// cold-tar-untar-warm scenario). Instead, `touch_mtime` floors the
+/// artifact's mtime UP to the max of its sibling artifacts in the same
+/// directory — preserving the cache file's mtime in isolation, and only
+/// bumping when needed to keep cargo's "dep_mtime ≤ my_mtime" invariant
+/// (issues #466 / #467). See [`touch_mtime`] for the full rationale.
 ///
 /// The hardlink-first order optimizes for the rebuild scenario where outputs
 /// don't exist yet (1 syscall). For incremental builds where outputs exist
