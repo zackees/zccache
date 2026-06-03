@@ -574,8 +574,8 @@ pub(super) fn hard_link_count(path: &Path) -> std::io::Result<u64> {
 /// **Why preservation is the default** (iter7): stamping `now()` made
 /// cargo treat hardlinked cache hits as "externally modified", invalidating
 /// the downstream graph and paying re-link / re-fingerprint cost that
-/// fully cancelled the cache savings. Measured 5.9 ms → 2.8 ms per-hit
-/// + recovery of the `bin`-cell recompile cascade (cold-tar-untar-warm,
+/// fully cancelled the cache savings. Measured 5.9 ms → 2.8 ms per-hit,
+/// and recovery of the `bin`-cell recompile cascade (cold-tar-untar-warm,
 /// warm 11.6 s → 9.8 s). Preservation is also the cheapest policy.
 ///
 /// **Why the floor exception exists** (issues #466 / #467): cargo's
