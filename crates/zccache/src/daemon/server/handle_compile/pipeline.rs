@@ -9,7 +9,9 @@ use super::hit_branches::{
 use super::miss_profile::{
     emit_cc_miss_profile, emit_rust_miss_profile, CcMissProfile, RustMissProfile,
 };
-use super::miss_store::{store_miss_artifact, MissArtifactStoreRequest, MissArtifactStoreStats};
+use super::miss_store::{
+    store_miss_artifact, DepfileCapture, MissArtifactStoreRequest, MissArtifactStoreStats,
+};
 use super::request::CompileRequest;
 
 /// Handle a Compile request: parse args, check depgraph, run compiler or return cached.
@@ -938,6 +940,32 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         };
         let include_scan_ns = t_scan.elapsed().as_nanos() as u64;
 
+        // Issue #643: capture the compiler-emitted depfile bytes for
+        // `UserSpecified` / `UserDefault` so the hit path can restore
+        // them. Without this, ninja's `deps = gcc` mode that just ran
+        // (the first build) records the headers fine, but every cache-
+        // hit replay leaves the `.d` file absent — ninja then parses an
+        // empty depfile, records `#deps 0` for the target, and stops
+        // triggering rebuilds on transitive header changes (silent
+        // stale-build cascade ending in `undefined symbol` link errors
+        // hours later). Rustc has its own `.d` capture via
+        // `rustc_all_outputs`; `Injected` was a zccache-internal request
+        // (user never asked for the depfile on disk) and was already
+        // unlinked in the scan_result block above.
+        let depfile_capture_for_cache: Option<DepfileCapture> = if is_rustc {
+            None
+        } else {
+            match &depfile_strategy {
+                DepfileStrategy::UserSpecified { path } | DepfileStrategy::UserDefault { path } => {
+                    std::fs::read(path).ok().and_then(|bytes| {
+                        let name = path.file_name()?.to_string_lossy().into_owned();
+                        Some(DepfileCapture { bytes, name })
+                    })
+                }
+                _ => None,
+            }
+        };
+
         // Register scanned paths for zero-syscall fast path on future hits.
         let tracked_paths: Vec<NormalizedPath> = std::iter::once(source_path.clone())
             .chain(scan_result.resolved.iter().cloned())
@@ -1077,6 +1105,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             stderr: &stderr,
             exit_code,
             compile_start,
+            depfile_capture: depfile_capture_for_cache,
         });
 
         // Record miss phase profile

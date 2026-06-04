@@ -16,6 +16,31 @@ pub(super) struct MissArtifactStoreRequest<'a> {
     pub(super) stderr: &'a Arc<Vec<u8>>,
     pub(super) exit_code: i32,
     pub(super) compile_start: Instant,
+    /// Issue #643: when the user requested a depfile via `-MD -MF <path>`
+    /// (or `-MD` with the default `<output>.d`), the wrapper-mode
+    /// pipeline reads the compiler-emitted depfile bytes BEFORE any
+    /// cleanup so they can be cached alongside the primary `.obj`. The
+    /// hit path then restores these bytes to the current request's
+    /// depfile destination (which can differ from the path the bytes
+    /// were originally written to — the depfile contents are
+    /// path-agnostic because the cache key already encodes `-MQ`).
+    ///
+    /// `None` for: rustc compiles (the rustc miss path already captures
+    /// the `.d` as part of `rustc_all_outputs`), MSVC `/showIncludes`
+    /// (no on-disk depfile), and the `Injected` strategy (zccache asked
+    /// for the depfile internally; the user never requested it on disk).
+    pub(super) depfile_capture: Option<DepfileCapture>,
+}
+
+/// Cached depfile alongside the primary compile output. See
+/// [`MissArtifactStoreRequest::depfile_capture`] for the rationale (#643).
+pub(super) struct DepfileCapture {
+    /// Raw bytes the compiler emitted into the depfile.
+    pub(super) bytes: Vec<u8>,
+    /// Name to store under in the cached artifact. The hit path uses
+    /// this to recognise the depfile entry; it is NOT the destination
+    /// path (that comes from the current request, not the cached one).
+    pub(super) name: String,
 }
 
 #[derive(Default)]
@@ -51,6 +76,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
         stderr,
         exit_code,
         compile_start,
+        depfile_capture,
     } = request;
     let state = state_arc.as_ref();
     let t_store = Instant::now();
@@ -106,6 +132,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
                 source_path,
                 output_path,
                 output_data,
+                depfile_capture,
                 &artifact_key_hex,
                 stdout,
                 stderr,
@@ -257,6 +284,7 @@ fn store_single_output(
     source_path: &NormalizedPath,
     output_path: &NormalizedPath,
     output_data: Vec<u8>,
+    depfile_capture: Option<DepfileCapture>,
     artifact_key_hex: &str,
     stdout: &Arc<Vec<u8>>,
     stderr: &Arc<Vec<u8>>,
@@ -266,15 +294,27 @@ fn store_single_output(
     t_artifact_build: Instant,
 ) {
     let state = state_arc.as_ref();
+    // Issue #643: when the wrapper captured the user's depfile bytes,
+    // append a second `ArtifactOutput` so cache hits can restore it.
+    // The cached artifact's output ordering is invariant: index 0 is
+    // always the primary `.obj`; the optional depfile is index 1.
+    let mut outputs = Vec::with_capacity(1 + usize::from(depfile_capture.is_some()));
+    outputs.push(ArtifactOutput {
+        name: output_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+        payload: ArtifactPayload::Bytes(Arc::new(output_data)),
+    });
+    if let Some(dep) = depfile_capture {
+        outputs.push(ArtifactOutput {
+            name: dep.name,
+            payload: ArtifactPayload::Bytes(Arc::new(dep.bytes)),
+        });
+    }
     let artifact = ArtifactData {
-        outputs: vec![ArtifactOutput {
-            name: output_path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
-            payload: ArtifactPayload::Bytes(Arc::new(output_data)),
-        }],
+        outputs,
         stdout: Arc::clone(stdout),
         stderr: Arc::clone(stderr),
         exit_code,
@@ -292,6 +332,14 @@ fn store_single_output(
     let artifact_dir = state.artifact_dir.clone();
     let key_hex = artifact_key_hex.to_string();
     let persist_meta = cached.meta.clone();
+    // Persist source paths: when there is no depfile, just the primary
+    // output. When there is one, the depfile bytes were owned by the
+    // capture and have already been moved into the artifact outputs;
+    // they have no on-disk source path of their own. The persist layer
+    // walks `source_paths` and falls back to in-memory payload bytes
+    // when a path is absent — so passing only the primary output here
+    // is correct and the secondary depfile entry is materialised from
+    // its `ArtifactPayload::Bytes` on hit.
     let source_paths: Vec<NormalizedPath> = vec![output_path.clone()];
     let payload_size: usize = artifact
         .outputs

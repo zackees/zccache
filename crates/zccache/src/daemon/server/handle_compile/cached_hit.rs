@@ -40,6 +40,21 @@ pub(super) struct CachedHitMaterializeRequest<'a> {
     pub(super) downgrade_output_metadata: bool,
     pub(super) mtime_floor_paths: Vec<NormalizedPath>,
     pub(super) phases: CachedHitPhases,
+    /// Issue #643: when set, indicates the current request has a
+    /// user-owned depfile (UserSpecified `-MF <path>` or UserDefault
+    /// `-MD` with `<output>.d`). The hit path looks for a secondary
+    /// payload in the cached artifact whose name doesn't match the
+    /// output filename and writes it to this destination.
+    ///
+    /// `None` for: rustc hits (rustc's secondary outputs are colocated
+    /// with the primary so the existing `secondary_output_dir.join(name)`
+    /// logic restores them correctly), C/C++ hits where the user did
+    /// not request a depfile, MSVC `/showIncludes` hits (no on-disk
+    /// depfile), and request-level fast-hits that pre-date a cached
+    /// artifact predating this feature (any secondary payload is
+    /// quietly skipped — the depfile gap reappears for that one
+    /// invocation, but the next miss repopulates it).
+    pub(super) depfile_dest_path: Option<NormalizedPath>,
 }
 
 pub(super) fn materialize_cached_compile_hit(
@@ -59,6 +74,7 @@ pub(super) fn materialize_cached_compile_hit(
         downgrade_output_metadata,
         mtime_floor_paths,
         phases,
+        depfile_dest_path,
     } = request;
 
     // Issue #460: collapse clock reads on the warm-hit path. Previously this
@@ -82,10 +98,30 @@ pub(super) fn materialize_cached_compile_hit(
     let artifact_bytes = cached_ref.meta.total_size;
     drop(cached_ref);
 
+    // Issue #643: redirect a single secondary payload (the cached depfile)
+    // to the current request's depfile destination — the bytes are
+    // path-agnostic, but the destination is request-specific. Rustc hits
+    // pass `None` for `depfile_dest_path` and the existing
+    // `secondary_output_dir.join(name)` fallback continues to colocate
+    // rustc's secondary outputs alongside the primary `.rmeta`/`.rlib`,
+    // which is where rustc itself would have placed them.
     let targets: Vec<(NormalizedPath, NormalizedPath)> = (0..payloads.len())
         .map(|i| {
             let out: NormalizedPath = if i == 0 {
                 output_path.clone()
+            } else if let Some(ref dep_dest) = depfile_dest_path {
+                if payloads.len() == 2 {
+                    // Exactly one secondary payload + a depfile destination
+                    // → that secondary IS the cached depfile.
+                    dep_dest.clone()
+                } else {
+                    // Multiple secondaries (rustc shape): the depfile
+                    // destination only applies to one. Fall back to the
+                    // colocate-with-primary heuristic and leave per-entry
+                    // depfile routing for the rustc family (not affected
+                    // by #643 since rustc captures its `.d` itself).
+                    secondary_output_dir.join(&names[i])
+                }
             } else {
                 secondary_output_dir.join(&names[i])
             };
@@ -173,6 +209,114 @@ mod tests {
         filetime::FileTime::from_last_modification_time(&std::fs::metadata(path).unwrap())
     }
 
+    /// Issue #643 regression guard. When a cached artifact carries a
+    /// secondary payload (the compiler-emitted depfile bytes) AND the
+    /// hit-path request supplies a `depfile_dest_path`, the secondary
+    /// must materialise at that destination — NOT at
+    /// `secondary_output_dir.join(name)`. Without this redirect, a
+    /// `clang -MD -MF /some/path/foo.d` invocation that hit the cache
+    /// would leave `/some/path/foo.d` absent, ninja would record
+    /// `#deps 0` for the target, and silent stale builds would follow.
+    #[tokio::test(flavor = "current_thread")]
+    async fn cached_depfile_restored_at_request_destination_643() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+        let state = server.state.as_ref();
+        let cache_dir = state.artifact_dir.clone();
+        let source_path: NormalizedPath = dir.path().join("source.cc").into();
+        let output_path: NormalizedPath = dir.path().join("output.o").into();
+        // Deliberately place the depfile destination in a sibling
+        // directory so a same-dir colocation heuristic would not
+        // accidentally restore it correctly — the redirect path has
+        // to actually be honoured.
+        let depfile_dir = dir.path().join("sibling");
+        std::fs::create_dir_all(&depfile_dir).unwrap();
+        let depfile_dest: NormalizedPath = depfile_dir.join("output.d").into();
+
+        let obj_payload = Arc::new(b"compiled object".to_vec());
+        let dep_bytes = b"output.o: source.cc /usr/include/stdio.h\n".to_vec();
+        let dep_payload = Arc::new(dep_bytes.clone());
+
+        let obj_cache_path = cache_dir.join("artifact-key_0");
+        let dep_cache_path = cache_dir.join("artifact-key_1");
+        std::fs::write(&obj_cache_path, obj_payload.as_slice()).unwrap();
+        std::fs::write(&dep_cache_path, dep_payload.as_slice()).unwrap();
+
+        let sid = state.sessions.create(crate::depgraph::SessionConfig {
+            client_pid: std::process::id(),
+            working_dir: dir.path().into(),
+            log_file: None,
+            track_stats: true,
+            journal_path: None,
+            profile: false,
+            private_env: Vec::new(),
+            owner_pids: Vec::new(),
+        });
+        let meta = ArtifactIndex::new(
+            vec!["output.o".to_string(), "output.d".to_string()],
+            vec![obj_payload.len() as u64, dep_payload.len() as u64],
+            Arc::new(Vec::new()),
+            Arc::new(Vec::new()),
+            0,
+        );
+        state.artifacts.insert(
+            "artifact-key".to_string(),
+            CachedArtifact::from_file_payloads(meta, vec![obj_cache_path, dep_cache_path]),
+        );
+
+        let response = materialize_cached_compile_hit(CachedHitMaterializeRequest {
+            state,
+            sid: &sid,
+            artifact_key_hex: "artifact-key",
+            source_path: &source_path,
+            output_path: &output_path,
+            secondary_output_dir: dir.path().into(),
+            compile_start: Instant::now(),
+            hit_label: "HIT_TEST",
+            cached_error_label: "CACHED_ERROR_TEST",
+            record_compilation: true,
+            downgrade_output_metadata: false,
+            mtime_floor_paths: Vec::new(),
+            phases: CachedHitPhases::request_cache(0, 0),
+            depfile_dest_path: Some(depfile_dest.clone()),
+        })
+        .expect("materialize_cached_compile_hit must succeed");
+
+        assert!(matches!(
+            response,
+            Response::CompileResult {
+                cached: true,
+                exit_code: 0,
+                ..
+            }
+        ));
+        // Primary `.obj` landed at the request's output_path.
+        assert_eq!(
+            std::fs::read(output_path.as_path()).unwrap(),
+            obj_payload.as_slice(),
+            "primary output (.obj) must materialize at output_path"
+        );
+        // Crucial assertion: the depfile bytes landed at the
+        // *destination* path supplied by the request, NOT at
+        // `secondary_output_dir.join(\"output.d\")` (== dir/output.d).
+        assert!(
+            depfile_dest.exists(),
+            "#643: cached depfile must be restored at depfile_dest_path = {}",
+            depfile_dest.display(),
+        );
+        assert_eq!(
+            std::fs::read(depfile_dest.as_path()).unwrap(),
+            dep_bytes.as_slice(),
+            "#643: depfile content must match the cached bytes",
+        );
+        let stale_path = dir.path().join("output.d");
+        assert!(
+            !stale_path.exists(),
+            "#643: depfile MUST NOT be written to secondary_output_dir.join(name) \
+             when depfile_dest_path is set — that's the bug shape that broke ninja deps",
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn target_paths_get_fresh_mtime_through_shared_materializer() {
         let dir = tempfile::tempdir().unwrap();
@@ -224,6 +368,7 @@ mod tests {
             downgrade_output_metadata: true,
             mtime_floor_paths: Vec::new(),
             phases: CachedHitPhases::request_cache(0, 0),
+            depfile_dest_path: None,
         })
         .unwrap();
 
@@ -304,6 +449,7 @@ mod tests {
                 downgrade_output_metadata: false,
                 mtime_floor_paths: Vec::new(),
                 phases: CachedHitPhases::request_cache(0, 0),
+                depfile_dest_path: None,
             })
             .expect("materialize_cached_compile_hit must succeed");
             assert!(matches!(

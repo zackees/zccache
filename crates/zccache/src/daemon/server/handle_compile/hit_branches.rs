@@ -106,6 +106,10 @@ pub(super) fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Option<R
         downgrade_output_metadata: false,
         mtime_floor_paths,
         phases: CachedHitPhases::request_cache(request_cache_lookup_ns, cross_root_validate_ns),
+        // #643 follow-up: request_cache entries don't yet record the
+        // user's `-MF`/`-MD` destination, so we can't restore the
+        // depfile on this path. Tracked in #644.
+        depfile_dest_path: None,
     })
 }
 
@@ -202,6 +206,9 @@ pub(super) fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
             request_cache_lookup_ns: 0,
             cross_root_validate_ns: 0,
         },
+        // #643 follow-up — see same comment on try_request_cache_hit
+        // above. Tracked in #644.
+        depfile_dest_path: None,
     })?;
 
     let rfp = request_fingerprint(
@@ -309,6 +316,9 @@ pub(super) fn try_depgraph_cached_hit(probe: DepgraphHitProbe<'_>) -> Option<Res
             request_cache_lookup_ns: 0,
             cross_root_validate_ns: 0,
         },
+        // #643 follow-up — depgraph cached hit path doesn't yet thread
+        // the user's `-MF`/`-MD` destination through. Tracked in #644.
+        depfile_dest_path: None,
     })?;
 
     if !worktree_equivalent_context {
