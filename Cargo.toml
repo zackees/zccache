@@ -30,6 +30,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 clap = { version = "4", features = ["derive", "env"] }
 dashmap = "6"
+arc-swap = "1"
 redb = "2"
 clang = { version = "2", features = ["runtime"] }
 notify = "7"

@@ -107,7 +107,7 @@ pub(super) async fn handle_connection(
             }
             Request::Status => {
                 let snap = state.stats.snapshot();
-                let dg = state.dep_graph.stats();
+                let dg = state.dep_graph.load().stats();
                 let artifact_count = state.artifacts.len() as u64;
                 let cache_size_bytes: u64 = state
                     .artifacts

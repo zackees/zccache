@@ -69,7 +69,10 @@ pub(super) fn maybe_store_rustc_error_artifact(
         let path = NormalizedPath::new(p);
         hash_map.get(&path).copied()
     };
-    let artifact_key = state.dep_graph.update(context_key, scan_result, get_hash)?;
+    let artifact_key = state
+        .dep_graph
+        .load()
+        .update(context_key, scan_result, get_hash)?;
     let artifact_key_hex = artifact_key.hash().to_hex();
     let meta = ArtifactIndex::new(
         Vec::new(),

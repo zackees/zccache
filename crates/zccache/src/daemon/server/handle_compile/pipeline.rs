@@ -306,7 +306,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
     let (ctx, dep_flags, rustc_args_opt, context_key, worktree_equivalent_context) =
         match build_result {
             BuildContextResult::Cc { ctx, dep_flags } => {
-                let registration = state.dep_graph.register_with_root_and_salt_result(
+                let registration = state.dep_graph.load().register_with_root_and_salt_result(
                     ctx.clone(),
                     Some(default_key_root.clone()),
                     worktree_salt,
@@ -339,12 +339,15 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                     .iter()
                     .map(|ext| (ext.name.clone(), ext.path.clone()))
                     .collect();
-                let registration = state.dep_graph.register_rustc_with_key_and_root_result(
-                    key,
-                    compat_ctx.clone(),
-                    rustc_key_root.clone(),
-                    rustc_externs,
-                );
+                let registration = state
+                    .dep_graph
+                    .load()
+                    .register_rustc_with_key_and_root_result(
+                        key,
+                        compat_ctx.clone(),
+                        rustc_key_root.clone(),
+                        rustc_externs,
+                    );
                 (
                     compat_ctx,
                     UserDepFlags::default(),
@@ -408,7 +411,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
     // Skip pre-compile hashing for cold contexts — the depgraph would
     // return Cold without examining any hashes, so the work is wasted.
     // Jump straight to compiler exec.
-    let context_is_cold = state.dep_graph.is_cold(&context_key);
+    let context_is_cold = state.dep_graph.load().is_cold(&context_key);
 
     // ── Phase: hash source ───────────────────────────────────────────
     // Issue #468: env-gated sub-phase trace. When ZCCACHE_HIT_TRACE=1, the
@@ -463,7 +466,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         let headers_count: usize;
         {
             use rayon::prelude::*;
-            let includes = state.dep_graph.get_includes(&context_key);
+            let includes = state.dep_graph.load().get_includes(&context_key);
             let include_iter = includes
                 .iter()
                 .flat_map(|v| v.iter().map(|h| (h, "header_hash_fail")));
@@ -528,7 +531,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         // Fast path: recompute artifact key from fresh hashes and compare
         // with the stored key.  Skips redundant journal freshness checks
         // and path clones that check_diagnostic performs.
-        if let Some(artifact_key) = state.dep_graph.try_fast_hit(&context_key, |p| {
+        if let Some(artifact_key) = state.dep_graph.load().try_fast_hit(&context_key, |p| {
             let path = NormalizedPath::new(p);
             hash_map.get(&path).copied()
         }) {
@@ -551,6 +554,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 };
                 state
                     .dep_graph
+                    .load()
                     .check_diagnostic(&context_key, is_fresh, get_hash)
             };
             depgraph_check_ns = t4.elapsed().as_nanos() as u64;

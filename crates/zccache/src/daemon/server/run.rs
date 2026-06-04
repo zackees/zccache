@@ -198,14 +198,16 @@ impl DaemonServer {
                             "trimmed ephemeral daemon caches"
                         );
                     }
+                    let dep_graph_guard = state.dep_graph.load();
                     let (freed, items) = super::super::eviction::evict_to_budget(
                         budget,
                         &state.cache_system,
-                        &state.dep_graph,
+                        &dep_graph_guard,
                         &state.fast_hit_cache,
                         &state.artifacts,
                         state.in_flight_bytes.load(Ordering::Relaxed),
                     );
+                    drop(dep_graph_guard);
                     if items > 0 {
                         tracing::info!(
                             freed_bytes = freed,
@@ -280,7 +282,8 @@ impl DaemonServer {
                     if let Some(parent) = path.parent() {
                         std::fs::create_dir_all(parent).ok();
                     }
-                    match crate::depgraph::save_to_file(&state.dep_graph, &path) {
+                    let dg = state.dep_graph.load();
+                    match crate::depgraph::save_to_file(&dg, &path) {
                         Ok(()) => {
                             state.dep_graph_persisted.store(true, Ordering::Release);
                             tracing::debug!("periodic depgraph save");
@@ -370,10 +373,10 @@ impl DaemonServer {
                     if let Some(parent) = path.parent() {
                         std::fs::create_dir_all(parent).ok();
                     }
-                    let (cold_ctxs, warm_ctxs, stale_ctxs) =
-                        self.state.dep_graph.state_breakdown();
-                    let ctxs_with_key = self.state.dep_graph.contexts_with_artifact_key();
-                    match crate::depgraph::save_to_file(&self.state.dep_graph, &path) {
+                    let dg = self.state.dep_graph.load();
+                    let (cold_ctxs, warm_ctxs, stale_ctxs) = dg.state_breakdown();
+                    let ctxs_with_key = dg.contexts_with_artifact_key();
+                    match crate::depgraph::save_to_file(&dg, &path) {
                         Ok(()) => {
                             self.state
                                 .dep_graph_persisted

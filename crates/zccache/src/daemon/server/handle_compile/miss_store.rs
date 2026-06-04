@@ -60,7 +60,10 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
     };
     let include_count = scan_result.resolved.len();
     let t_depgraph_update = Instant::now();
-    let artifact_key_result = state.dep_graph.update(context_key, scan_result, get_hash);
+    let artifact_key_result = state
+        .dep_graph
+        .load()
+        .update(context_key, scan_result, get_hash);
     let mut stats = MissArtifactStoreStats {
         depgraph_update_ns: t_depgraph_update.elapsed().as_nanos() as u64,
         ..MissArtifactStoreStats::default()

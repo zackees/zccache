@@ -442,10 +442,10 @@ pub(super) fn request_cache_input_paths(
 ) -> Vec<NormalizedPath> {
     let mut paths = Vec::new();
     paths.push(source_path.clone());
-    if let Some(includes) = state.dep_graph.get_includes(context_key) {
+    if let Some(includes) = state.dep_graph.load().get_includes(context_key) {
         paths.extend(includes.iter().cloned());
     }
-    if let Some(externs) = state.dep_graph.get_rustc_externs(context_key) {
+    if let Some(externs) = state.dep_graph.load().get_rustc_externs(context_key) {
         paths.extend(externs.into_iter().map(|(_, path)| path));
     }
     paths.extend(ctx.force_includes.iter().cloned());

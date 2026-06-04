@@ -12,7 +12,7 @@ pub(super) async fn handle_clear(state: &SharedState) -> Response {
         count
     };
     let metadata_cleared = state.cache_system.metadata().len() as u64;
-    let dep_graph_contexts_cleared = state.dep_graph.stats().context_count as u64;
+    let dep_graph_contexts_cleared = state.dep_graph.load().stats().context_count as u64;
 
     // Calculate on-disk artifact size before deleting.
     let on_disk_bytes_freed = match std::fs::read_dir(&state.artifact_dir) {
@@ -34,7 +34,7 @@ pub(super) async fn handle_clear(state: &SharedState) -> Response {
     // built artifacts. The on-disk persistence (issues #517 and #541)
     // exists specifically to survive across daemon lifecycle — Clear
     // is not a stronger lifecycle event than restart.
-    state.dep_graph.clear();
+    state.dep_graph.load().clear();
     state.cache_system.clear();
     state.fast_hit_cache.clear();
     state.request_cache.clear();

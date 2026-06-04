@@ -40,6 +40,13 @@ tokio = { workspace = true }
 
 # fscache
 dashmap = { workspace = true }
+# arc-swap: atomic pointer swap used by `daemon::server::state::SharedState`
+# to swap `dep_graph: ArcSwap<Arc<DepGraph>>` from the empty-default to the
+# disk-loaded graph after `DaemonServer::bind` returns. Removes the prior
+# `Arc::get_mut` constraint on `DaemonServer::set_dep_graph`, which is
+# the foundation for the deferred-depgraph-load that closes the #637 /
+# #640 first-wave herd window.
+arc-swap = { workspace = true }
 rayon = { workspace = true }
 
 # artifact

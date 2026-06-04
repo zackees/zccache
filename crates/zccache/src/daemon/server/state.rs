@@ -22,7 +22,23 @@ pub(super) struct SharedState {
     pub(super) sessions: SessionManager,
     pub(super) system_includes: Mutex<SystemIncludeCache>,
     /// Dependency graph: tracks include relationships and cache verdicts.
-    pub(super) dep_graph: DepGraph,
+    ///
+    /// **Wrapped in `ArcSwap` per #640** so that the on-disk-loaded graph
+    /// can be installed *after* `DaemonServer::bind` has handed out
+    /// `Arc<SharedState>` clones to spawned tasks — a constraint the prior
+    /// `Arc::get_mut`-based `set_dep_graph` could not satisfy. The initial
+    /// value is `Arc::new(DepGraph::default())`; the first
+    /// [`DaemonServer::set_dep_graph`] call atomically swaps in the loaded
+    /// graph. Subsequent calls also swap (no one-shot constraint).
+    ///
+    /// All reader access is `state.dep_graph.load().method(...)`. The
+    /// `Guard<Arc<DepGraph>>` returned by `.load()` derefs to `&DepGraph`,
+    /// so existing method calls work unchanged once the `.load()` is
+    /// inserted. Cache that guard in a local when multiple methods on the
+    /// same graph snapshot are needed in one logical operation, so a
+    /// concurrent swap can't split the operation across two graph
+    /// generations.
+    pub(super) dep_graph: arc_swap::ArcSwap<crate::depgraph::DepGraph>,
     /// In-memory artifact cache: artifact_key_hex → artifact data.
     pub(super) artifacts: DashMap<String, CachedArtifact>,
     /// Metadata cache + change journal. The watcher feeds file-change events

@@ -101,7 +101,7 @@ pub(super) fn check_unit_cache(
     } else {
         None
     };
-    let context_key = state.dep_graph.register_with_root_and_salt(
+    let context_key = state.dep_graph.load().register_with_root_and_salt(
         ctx.clone(),
         Some(key_root.clone()),
         worktree_salt,
@@ -196,7 +196,7 @@ pub(super) fn check_unit_cache(
     hash_map.insert(source_path.clone(), source_hash);
     {
         use rayon::prelude::*;
-        let includes = state.dep_graph.get_includes(&context_key);
+        let includes = state.dep_graph.load().get_includes(&context_key);
         let include_iter = includes.iter().flat_map(|v| v.iter());
         let all_paths: Vec<&NormalizedPath> =
             include_iter.chain(ctx.force_includes.iter()).collect();
@@ -227,7 +227,10 @@ pub(super) fn check_unit_cache(
             let path = NormalizedPath::new(p);
             hash_map.get(&path).copied()
         };
-        state.dep_graph.check(&context_key, is_fresh, get_hash)
+        state
+            .dep_graph
+            .load()
+            .check(&context_key, is_fresh, get_hash)
     };
     let t_depgraph = t0.elapsed();
 
@@ -722,9 +725,11 @@ pub(super) async fn handle_compile_multi(
                 let path = NormalizedPath::new(p);
                 hash_map.get(&path).copied()
             };
-            let update_result = state_task
-                .dep_graph
-                .update(&context_key, scan_result, get_hash);
+            let update_result =
+                state_task
+                    .dep_graph
+                    .load()
+                    .update(&context_key, scan_result, get_hash);
 
             if let Some(artifact_key) = update_result {
                 let output_name = output_path

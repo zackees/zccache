@@ -73,14 +73,14 @@ pub(super) fn context_files_fresh(
     if journal.changed_since(&source_path.into(), since) {
         return false;
     }
-    if let Some(includes) = state.dep_graph.get_includes(context_key) {
+    if let Some(includes) = state.dep_graph.load().get_includes(context_key) {
         for header in &includes {
             if journal.changed_since(header, since) {
                 return false;
             }
         }
     }
-    if let Some(externs) = state.dep_graph.get_rustc_externs(context_key) {
+    if let Some(externs) = state.dep_graph.load().get_rustc_externs(context_key) {
         for (_, path) in &externs {
             if journal.changed_since(path, since) {
                 return false;

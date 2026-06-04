@@ -130,7 +130,7 @@ impl DaemonServer {
                 sessions: SessionManager::new(std::time::Duration::from_secs(300)),
                 system_includes: Mutex::new(system_includes_loaded),
                 system_includes_cache_path,
-                dep_graph: DepGraph::new(),
+                dep_graph: arc_swap::ArcSwap::from_pointee(DepGraph::new()),
                 artifacts,
                 cache_system,
                 watcher: Mutex::new(None),
@@ -183,13 +183,19 @@ impl DaemonServer {
 
     /// Replace the dependency graph with a pre-loaded one.
     ///
-    /// Must be called before `run()` (while this is the only Arc holder).
+    /// **Pre-#640**: this required `&mut self` and `Arc::get_mut` —
+    /// constraints that locked the call to BEFORE `run()` and prevented
+    /// post-bind injection from a background task. The field is now
+    /// `ArcSwap<Arc<DepGraph>>` so atomic replacement is safe at any
+    /// time, including from a `tokio::task::spawn_blocking` started
+    /// after `run()`.
+    ///
     /// Marks the graph as persisted because it was restored from disk.
-    pub fn set_dep_graph(&mut self, graph: crate::depgraph::DepGraph) {
-        let state =
-            Arc::get_mut(&mut self.state).expect("set_dep_graph must be called before run()");
-        state.dep_graph = graph;
-        state.dep_graph_persisted.store(true, Ordering::Release);
+    pub fn set_dep_graph(&self, graph: crate::depgraph::DepGraph) {
+        self.state.dep_graph.store(std::sync::Arc::new(graph));
+        self.state
+            .dep_graph_persisted
+            .store(true, Ordering::Release);
     }
 
     /// Record a load-time depgraph warning to mirror into per-session logs.
