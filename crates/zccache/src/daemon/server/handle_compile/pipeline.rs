@@ -679,6 +679,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
     let _rsp_guard = match crate::compiler::response_file::write_response_file_if_needed(
         rsp_args,
         &state.depfile_tmpdir,
+        compilation.family,
     ) {
         Ok(guard) => guard,
         Err(e) => {

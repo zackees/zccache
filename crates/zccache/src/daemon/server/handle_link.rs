@@ -576,15 +576,24 @@ pub(super) async fn run_tool_passthrough(
     lineage: &super::super::lineage::Lineage,
     tmp_dir: &Path,
 ) -> Response {
-    let _rsp_guard =
-        match crate::compiler::response_file::write_response_file_if_needed(args, tmp_dir) {
-            Ok(guard) => guard,
-            Err(e) => {
-                return Response::Error {
-                    message: format!("failed to write response file for {}: {e}", tool.display()),
-                };
-            }
-        };
+    // Family hint controls response-file dialect (#634); detect from
+    // the tool path. Rustc driver linking can land here too (cargo's
+    // `--crate-type bin` link step shells out to rustc, which uses
+    // file.lines() to parse @rsp). `detect_family` falls back to Gcc
+    // for unknown names, which matches the historical behaviour.
+    let family_hint = crate::compiler::detect_family(&tool.to_string_lossy());
+    let _rsp_guard = match crate::compiler::response_file::write_response_file_if_needed(
+        args,
+        tmp_dir,
+        family_hint,
+    ) {
+        Ok(guard) => guard,
+        Err(e) => {
+            return Response::Error {
+                message: format!("failed to write response file for {}: {e}", tool.display()),
+            };
+        }
+    };
 
     let mut cmd = std::process::Command::new(tool);
     if let Some(ref rsp) = _rsp_guard {

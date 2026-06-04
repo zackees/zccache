@@ -1410,9 +1410,10 @@ fn windows_fbuild_shape_roundtrips_through_spill_rsp() {
         format!("@{}", includes.display()),
     ]);
 
-    let rsp = write_response_file_if_needed(&args, dir.path())
-        .unwrap()
-        .expect("spill rsp should be written");
+    let rsp =
+        write_response_file_if_needed(&args, dir.path(), zccache::compiler::CompilerFamily::Clang)
+            .unwrap()
+            .expect("spill rsp should be written");
     let written = std::fs::read_to_string(&rsp.path).unwrap();
     let reparsed = parse_response_file_content(&written);
 
@@ -1435,9 +1436,10 @@ fn windows_fbuild_shape_preserves_expanded_argv_semantics() {
 
     let dir = tempfile::tempdir().unwrap();
     let args = force_spill_args_owned(original.clone());
-    let rsp = write_response_file_if_needed(&args, dir.path())
-        .unwrap()
-        .expect("spill rsp should be written");
+    let rsp =
+        write_response_file_if_needed(&args, dir.path(), zccache::compiler::CompilerFamily::Clang)
+            .unwrap()
+            .expect("spill rsp should be written");
     let written = std::fs::read_to_string(&rsp.path).unwrap();
     let reparsed = parse_response_file_content(&written);
 

@@ -529,6 +529,7 @@ pub(super) async fn handle_compile_multi(
     let _rsp_guard = match crate::compiler::response_file::write_response_file_if_needed(
         &compiler_args,
         &state.depfile_tmpdir,
+        compilations[0].family,
     ) {
         Ok(guard) => guard,
         Err(e) => {

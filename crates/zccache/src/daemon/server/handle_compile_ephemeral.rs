@@ -77,15 +77,25 @@ pub(super) async fn run_compiler_direct(
     stdin_bytes: &[u8],
     tmp_dir: &Path,
 ) -> Response {
-    let _rsp_guard =
-        match crate::compiler::response_file::write_response_file_if_needed(args, tmp_dir) {
-            Ok(guard) => guard,
-            Err(e) => {
-                return Response::Error {
-                    message: format!("failed to write response file: {e}"),
-                };
-            }
-        };
+    // Family hint controls response-file dialect (#634): rustc reads
+    // response files line-by-line with no quote handling, so the
+    // GCC-style single-quote wrapping mangles structured args like
+    // `--check-cfg cfg(feature, values("a","b"))`. Detect from the
+    // compiler path; `detect_family` falls back to Gcc for unknown
+    // names, which matches the historical behaviour.
+    let family_hint = crate::compiler::detect_family(&compiler.to_string_lossy());
+    let _rsp_guard = match crate::compiler::response_file::write_response_file_if_needed(
+        args,
+        tmp_dir,
+        family_hint,
+    ) {
+        Ok(guard) => guard,
+        Err(e) => {
+            return Response::Error {
+                message: format!("failed to write response file: {e}"),
+            };
+        }
+    };
 
     let lineage = super::super::lineage::Lineage::current(
         sessions.get(sid).map(|s| s.client_pid),

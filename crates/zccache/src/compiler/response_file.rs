@@ -264,9 +264,50 @@ fn format_rsp_argument(arg: &str) -> Option<String> {
     None
 }
 
+/// Format args for a response file that **rustc** will read.
+///
+/// Rustc's response-file parser at
+/// `compiler/rustc_driver_impl/src/args.rs` is simply
+/// `contents.lines().for_each(|arg| ...)` — every line becomes one argv
+/// element verbatim, with **no quote handling at all**. That means the
+/// GCC/Clang-style single-quote wrapping (`'arg'`) used by
+/// [`format_rsp_argument`] would leak the literal `'` characters into
+/// the argument value and break parsing of structured options like
+/// `--check-cfg "cfg(feature, values(\"...\", \"...\"))"` (issue #634:
+/// rustc reported "multiple input filenames provided" when zccache
+/// spilled a long web-sys cargo invocation through the GCC-style
+/// formatter and the cfg expression got mangled).
+///
+/// For rustc, the safe shape is: **one arg per line, no quoting, no
+/// escaping** — provided no argument contains a newline. Newline-bearing
+/// args cannot be represented in rustc's line-oriented format; we
+/// return `None` and the caller falls back to passing the args directly
+/// on the command line.
+#[cfg(any(windows, test))]
+fn format_rsp_content_rustc(args: &[String]) -> Option<String> {
+    let estimated_len: usize = args.iter().map(|a| a.len() + 1).sum();
+    let mut content = String::with_capacity(estimated_len);
+    for arg in args {
+        if arg.contains('\n') || arg.contains('\r') {
+            return None;
+        }
+        content.push_str(arg);
+        content.push('\n');
+    }
+    Some(content)
+}
+
 /// If the total length of `args` exceeds the Windows command-line limit, write
 /// them to a temporary `.rsp` file and return a single `@path` argument.
 /// Otherwise return `None` (caller should pass args directly).
+///
+/// `family_hint` selects the response-file dialect:
+///
+/// - [`CompilerFamily::Rustc`] uses rustc's line-oriented format (one arg
+///   per line, no quoting). Required because rustc does not unquote
+///   `'..."..."...'`-style values from response files; see #634.
+/// - All other families use the GCC/Clang/MSVC-compatible single- or
+///   double-quoted format produced by [`format_rsp_argument`].
 ///
 /// The returned [`TempResponseFile`] keeps the temporary file alive via RAII.
 /// Drop it after the compiler process finishes.
@@ -274,6 +315,7 @@ fn format_rsp_argument(arg: &str) -> Option<String> {
 pub fn write_response_file_if_needed(
     args: &[String],
     tmp_dir: &Path,
+    family_hint: crate::compiler::CompilerFamily,
 ) -> std::io::Result<Option<TempResponseFile>> {
     let estimated_len: usize = args.iter().map(|a| a.len() + 3).sum();
     if estimated_len < MAX_CMDLINE_LEN {
@@ -283,7 +325,11 @@ pub fn write_response_file_if_needed(
     let id = RSP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let rsp_path =
         NormalizedPath::new(tmp_dir.join(format!("zccache_{}_{}.rsp", std::process::id(), id)));
-    let Some(content) = format_rsp_content_if_safe(args) else {
+    let content = match family_hint {
+        crate::compiler::CompilerFamily::Rustc => format_rsp_content_rustc(args),
+        _ => format_rsp_content_if_safe(args),
+    };
+    let Some(content) = content else {
         return Ok(None);
     };
     std::fs::write(&rsp_path, content)?;
@@ -296,6 +342,7 @@ pub fn write_response_file_if_needed(
 pub fn write_response_file_if_needed(
     _args: &[String],
     _tmp_dir: &Path,
+    _family_hint: crate::compiler::CompilerFamily,
 ) -> std::io::Result<Option<TempResponseFile>> {
     Ok(None)
 }
@@ -833,6 +880,69 @@ mod tests {
             "'-DVALUE=\"C:\\Program Files\\SDK\\include\"'\n'C:\\work tree\\main.c'\n"
         );
         assert_eq!(parse_response_file_content(&content), args);
+    }
+
+    // ── #634: rustc response-file dialect ─────────────────────────────
+
+    /// rustc's response-file parser is `file.lines().for_each(|arg|...)`
+    /// — every line is one argv element, no quote handling. The rustc
+    /// format function must therefore write each arg literally, on its
+    /// own line.
+    #[test]
+    fn format_rsp_content_rustc_writes_args_literally() {
+        let args = s(&["--crate-name", "web_sys", "--edition=2021"]);
+        let content = format_rsp_content_rustc(&args).unwrap();
+        assert_eq!(content, "--crate-name\nweb_sys\n--edition=2021\n");
+    }
+
+    /// Regression guard for #634: the cargo `--check-cfg` value for
+    /// web-sys is a structured expression containing whitespace, commas,
+    /// parens, and embedded double quotes. The GCC-style formatter
+    /// wraps it in single quotes (`'cfg(feature, values(\"a\", ...))'`)
+    /// which rustc reads literally and chokes on. The rustc formatter
+    /// must NOT add quoting characters.
+    #[test]
+    fn format_rsp_content_rustc_preserves_check_cfg_with_embedded_quotes() {
+        let check_cfg = r#"cfg(feature, values("AbortController", "AbortSignal"))"#;
+        let args = s(&["--check-cfg", check_cfg]);
+        let content = format_rsp_content_rustc(&args).unwrap();
+        // No leading/trailing quote characters were added to either line.
+        assert_eq!(
+            content,
+            "--check-cfg\ncfg(feature, values(\"AbortController\", \"AbortSignal\"))\n"
+        );
+        // Round-trip: rustc's `lines()` parse recovers exactly the
+        // original argv. We model rustc's parser as `lines()` here.
+        let recovered: Vec<String> = content.lines().map(str::to_string).collect();
+        assert_eq!(recovered, args);
+    }
+
+    /// Newlines cannot be represented in rustc's line-oriented format;
+    /// the formatter must refuse so the caller can fall back to
+    /// passing args directly on the command line.
+    #[test]
+    fn format_rsp_content_rustc_refuses_args_with_newline() {
+        let args = s(&["--foo", "value-with-\n-newline"]);
+        assert!(format_rsp_content_rustc(&args).is_none());
+
+        let args_cr = s(&["--foo", "value-with-\r-cr"]);
+        assert!(format_rsp_content_rustc(&args_cr).is_none());
+    }
+
+    /// Contrast with the GCC-style formatter: the same `--check-cfg`
+    /// arg gets wrapped in single quotes, which is exactly the bug
+    /// shape from #634 when fed to rustc.
+    #[test]
+    fn format_rsp_content_gcc_style_wraps_in_single_quotes() {
+        let check_cfg = r#"cfg(feature, values("AbortController"))"#;
+        let args = s(&["--check-cfg", check_cfg]);
+        let content = format_rsp_content_if_safe(&args).unwrap();
+        // GCC-style: the value got wrapped in single quotes. rustc would
+        // see the leading `'` as part of the value and choke.
+        assert!(
+            content.contains("'cfg(feature, values(\"AbortController\"))'"),
+            "GCC-style format wraps in single quotes; got: {content:?}"
+        );
     }
 
     #[test]
