@@ -84,7 +84,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
         let t_artifact_build = Instant::now();
         if let Some(all_outputs) = rustc_all_outputs {
             store_rustc_outputs(
-                state,
+                state_arc,
                 sid,
                 source_path,
                 all_outputs,
@@ -134,7 +134,7 @@ fn record_pch_source_mapping(
 
 #[allow(clippy::too_many_arguments)]
 fn store_rustc_outputs(
-    state: &SharedState,
+    state_arc: &Arc<SharedState>,
     sid: &SessionId,
     source_path: &NormalizedPath,
     all_outputs: &[RustcOutputFile],
@@ -146,70 +146,106 @@ fn store_rustc_outputs(
     stats: &mut MissArtifactStoreStats,
     t_artifact_build: Instant,
 ) {
+    let state = state_arc.as_ref();
     let t_artifact_meta_build = Instant::now();
     let artifact_bytes: u64 = all_outputs.iter().map(|o| o.size).sum();
     let output_names: Vec<String> = all_outputs.iter().map(|o| o.name.clone()).collect();
     let output_sizes: Vec<u64> = all_outputs.iter().map(|o| o.size).collect();
-    let payload_paths: Vec<NormalizedPath> = (0..all_outputs.len())
-        .map(|i| state.artifact_dir.join(format!("{artifact_key_hex}_{i}")))
-        .collect();
-    stats.artifact_meta_build_ns = t_artifact_meta_build.elapsed().as_nanos() as u64;
-
-    // Delegate to the shared `persist_artifact_paths_with_stats` helper so
-    // multi-output rustc misses (rlib + rmeta + dep-info + ...) pick up the
-    // same rayon-vs-serial threshold the C/C++ async persist path already
-    // uses, instead of an inline serial loop here. The helper hardlinks
-    // each `output.path` (which rustc just wrote into `target/...`) into
-    // the cache dir as `{key_hex}_{i}`; the source-vs-cache file ordering
-    // is preserved by giving it `output.path`s in the same order as
-    // `payload_paths`.
     let source_paths: Vec<NormalizedPath> = all_outputs
         .iter()
         .map(|output| output.path.clone())
         .collect();
-    let mut snapshot_ok = true;
-    let t_rust_snapshot = Instant::now();
-    match persist_artifact_paths_with_stats(&state.artifact_dir, artifact_key_hex, &source_paths) {
-        Ok(snapshot_stats) => {
-            stats.rust_snapshot_hardlink_count = snapshot_stats.hardlink_count;
-            stats.rust_snapshot_copy_count = snapshot_stats.copy_count;
-            stats.rust_snapshot_copy_bytes = snapshot_stats.copy_bytes;
-        }
-        Err(e) => {
-            stats.rust_snapshot_error_count = all_outputs.len() as u64;
-            snapshot_ok = false;
-            tracing::warn!("failed to snapshot rustc outputs for {artifact_key_hex}: {e}");
-        }
-    }
-    stats.rust_snapshot_ns = t_rust_snapshot.elapsed().as_nanos() as u64;
+    stats.artifact_meta_build_ns = t_artifact_meta_build.elapsed().as_nanos() as u64;
+
+    // Issue #632: move the rust miss persist OFF the daemon's
+    // response-return critical path. Insert a `PendingFile` artifact
+    // into the in-memory store immediately so the CLI gets its response
+    // as soon as the protocol layer can serialize it; spawn the
+    // hardlink + atomic-rename + index-writer work on the daemon's
+    // existing persist semaphore + blocking pool. A hit lookup that
+    // arrives during the persist window finds `PendingFile` and falls
+    // back to `output.path` (the rustc-output path under `target/`);
+    // once `persist_artifact_paths_with_stats` completes, both paths
+    // are the same inode and the cache_path fast path takes over.
+    //
+    // Mirrors the `store_single_output` tokio::spawn pattern (C/C++
+    // miss path), but uses on-disk source paths instead of in-memory
+    // bytes (rustc outputs can be tens of MB; reading them just to
+    // re-write them would re-introduce the foreground read this whole
+    // module is structured to avoid).
+    let t_artifact_index_build = Instant::now();
+    let meta = ArtifactIndex::new(
+        output_names,
+        output_sizes,
+        Arc::clone(stdout),
+        Arc::clone(stderr),
+        exit_code,
+    );
+    stats.artifact_index_build_ns = t_artifact_index_build.elapsed().as_nanos() as u64;
     stats.artifact_build_ns = t_artifact_build.elapsed().as_nanos() as u64;
 
+    let t_persist_enqueue = Instant::now();
+    let artifact_dir = state.artifact_dir.clone();
+    let key_hex = artifact_key_hex.to_string();
+    let persist_meta = meta.clone();
+    let persist_source_paths = source_paths.clone();
+    let sem = Arc::clone(&state.persist_semaphore);
+    let state_ref = Arc::clone(state_arc);
+    let key_for_warn = key_hex.clone();
+    tokio::spawn(async move {
+        let _permit = sem.acquire().await.unwrap();
+        let written = tokio::task::spawn_blocking(move || {
+            let persist_result = persist_artifact_paths_with_stats(
+                &artifact_dir,
+                &key_hex,
+                &persist_source_paths,
+            );
+            (key_hex, persist_meta, persist_result)
+        })
+        .await;
+        match written {
+            Ok((key_hex, meta, Ok(_snapshot_stats))) => {
+                let _ = state_ref.index_writer_tx.send((key_hex, meta));
+            }
+            Ok((key_hex, _meta, Err(e))) => {
+                tracing::warn!(
+                    key = %key_hex,
+                    "failed to persist rustc artifact outputs: {e}"
+                );
+                // Drop the in-memory entry so subsequent hits don't
+                // chase a half-persisted artifact whose `source_path`
+                // fallback may already be stale (cargo clean / target
+                // wipe). The next compile re-misses cleanly.
+                state_ref.artifacts.remove(&key_hex);
+            }
+            Err(join_err) => {
+                tracing::warn!(
+                    key = %key_for_warn,
+                    "rustc artifact persist task aborted: {join_err}"
+                );
+                state_ref.artifacts.remove(&key_for_warn);
+            }
+        }
+    });
+    stats.persist_enqueue_ns = t_persist_enqueue.elapsed().as_nanos() as u64;
+    // The synchronous-snapshot stats fields are zero in async mode —
+    // the per-file hardlink/copy counters are now produced inside the
+    // spawned task and not observable on the request path. Leave them
+    // at default so RustMissProfile readers see "persist work moved
+    // off critical path" rather than stale per-call counts.
+    stats.rust_snapshot_ns = 0;
+
     let t_artifact_insert_stats = Instant::now();
-    if snapshot_ok {
-        let t_artifact_index_build = Instant::now();
-        let meta = ArtifactIndex::new(
-            output_names,
-            output_sizes,
-            Arc::clone(stdout),
-            Arc::clone(stderr),
-            exit_code,
-        );
-        stats.artifact_index_build_ns = t_artifact_index_build.elapsed().as_nanos() as u64;
-        let t_artifact_index_persist = Instant::now();
-        state.artifact_store.insert(artifact_key_hex, &meta);
-        stats.artifact_index_persist_ns = t_artifact_index_persist.elapsed().as_nanos() as u64;
-        let t_artifact_memory_insert = Instant::now();
-        let cached = CachedArtifact::from_file_payloads(meta, payload_paths);
-        state.artifacts.insert(artifact_key_hex.to_string(), cached);
-        stats.artifact_memory_insert_ns = t_artifact_memory_insert.elapsed().as_nanos() as u64;
-    }
+    let t_artifact_memory_insert = Instant::now();
+    let cached = CachedArtifact::from_pending_payloads(meta, source_paths);
+    state.artifacts.insert(artifact_key_hex.to_string(), cached);
+    stats.artifact_memory_insert_ns = t_artifact_memory_insert.elapsed().as_nanos() as u64;
 
     let latency_ns = compile_start.elapsed().as_nanos() as u64;
-    let recorded_bytes = if snapshot_ok { artifact_bytes } else { 0 };
-    state.stats.record_miss(latency_ns, recorded_bytes);
+    state.stats.record_miss(latency_ns, artifact_bytes);
     let src = source_path.clone();
     record_session_stat(&state.sessions, sid, move |t| {
-        t.record_miss(src, recorded_bytes);
+        t.record_miss(src, artifact_bytes);
     });
     stats.artifact_insert_stats_ns = t_artifact_insert_stats.elapsed().as_nanos() as u64;
 }

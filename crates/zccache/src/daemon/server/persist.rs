@@ -409,6 +409,17 @@ pub(super) fn write_cached_payload(
     match payload {
         CachedPayload::Bytes(data) => write_cached_output(out_path, cache_file, data),
         CachedPayload::File(path) => write_cached_file(out_path, path),
+        CachedPayload::PendingFile { source_path } => {
+            // Try the cache file first; if the async persist hasn't
+            // completed yet, fall back to the rustc-output source path.
+            // Once persist finishes both paths hardlink to the same
+            // inode so subsequent hits see no difference (issue #632).
+            if cache_file.exists() {
+                write_cached_file(out_path, cache_file)
+            } else {
+                write_cached_file(out_path, source_path.as_path())
+            }
+        }
     }
 }
 
