@@ -281,6 +281,59 @@ pub fn is_process_alive(pid: u32) -> bool {
     }
 }
 
+/// Probe whether a daemon is **already serving** at `endpoint`. Returns
+/// `true` iff **all** of the following hold:
+///
+/// 1. The lock file records a PID.
+/// 2. That PID is alive AND its executable is `zccache-daemon` (defends
+///    against recycled PIDs — see [`verify_daemon_pid`]).
+/// 3. We can complete an IPC connect to `endpoint` within `timeout`.
+///
+/// **Why this exists** (issue #640): on Windows, parallel `ninja -jN`
+/// builds create a thundering-herd race where every newly-spawned
+/// daemon pays the 3+ s depgraph-load cost BEFORE attempting to bind
+/// the named pipe. Second-wave daemons (those spawned after a
+/// previous daemon has already won the bind and registered its lock
+/// file) can short-circuit here without paying the load cost — they
+/// see the live PID + working endpoint and exit 0 cleanly. First-wave
+/// daemons (the initial cohort racing for the bind before anyone has
+/// registered) still go through the existing bind error-discrimination
+/// path landed in #639.
+///
+/// The connection returned by `connect` is dropped immediately on a
+/// successful probe — we are only verifying that the other end is
+/// accepting, not exchanging any application-level message. Returning
+/// the connection would make this function harder to use (callers
+/// can't drop it without an explicit shutdown handshake) and the
+/// extra round-trip is wasted work for the common case where the
+/// caller is the daemon itself and is about to exit.
+///
+/// `timeout` caps the worst case. Pick a value that's small relative
+/// to the cost we're avoiding (3+ s depgraph load) but large enough
+/// to absorb normal connect latency under load (typically <50 ms on
+/// a local pipe).
+pub async fn probe_existing_daemon(endpoint: &str, timeout: std::time::Duration) -> bool {
+    let Some(pid) = read_lock_file_pid() else {
+        return false;
+    };
+    // Don't probe ourselves — the post-fork daemon's own PID could be
+    // recorded in the lock file by a sibling racing-init thread under
+    // pathological conditions; treating self as "another daemon" would
+    // be a deadlock.
+    if pid == std::process::id() {
+        return false;
+    }
+    if !verify_daemon_pid(pid) {
+        return false;
+    }
+    match tokio::time::timeout(timeout, crate::ipc::connect(endpoint)).await {
+        Ok(Ok(_conn)) => true,
+        // Connection refused, pipe not yet listening, or any other IPC error:
+        // treat as "no live daemon" and let the caller proceed with full init.
+        Ok(Err(_)) | Err(_) => false,
+    }
+}
+
 /// Returns true if `pid` exists **and** its executable looks like a zccache
 /// daemon. Defends against stale `daemon.lock` files where the recorded PID has
 /// been recycled by an unrelated process — typical when a CI runner restores a
@@ -700,5 +753,54 @@ mod tests {
             assert!(check_running_daemon().is_none());
             assert!(!lock.exists(), "stale lock file should have been removed");
         }
+    }
+
+    // ─── #640 probe_existing_daemon ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn probe_returns_false_when_no_lock_file() {
+        let cache = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set_cache_dir(cache.path());
+        // No lock file written.
+        assert!(!probe_existing_daemon("anything", std::time::Duration::from_millis(50)).await);
+    }
+
+    #[tokio::test]
+    async fn probe_returns_false_when_lock_file_records_self_pid() {
+        let cache = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set_cache_dir(cache.path());
+        // Self-PID early-out: we must NEVER probe our own process —
+        // otherwise a sibling racing-init thread that wrote our PID
+        // into the lock file would cause us to deadlock waiting for
+        // ourselves to accept.
+        write_lock_file(std::process::id()).unwrap();
+        assert!(!probe_existing_daemon("anything", std::time::Duration::from_millis(50)).await);
+    }
+
+    #[tokio::test]
+    async fn probe_returns_false_when_lock_file_pid_is_not_a_daemon() {
+        let cache = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set_cache_dir(cache.path());
+        // PID 1 exists everywhere (init / System) but is definitely not
+        // zccache-daemon, so verify_daemon_pid rejects it. The probe
+        // must short-circuit at the PID-verification step BEFORE
+        // attempting any IPC connect — otherwise we'd waste the
+        // timeout budget on a doomed handshake against init.
+        write_lock_file(1).unwrap();
+        let start = std::time::Instant::now();
+        let result = probe_existing_daemon(
+            "garbage-endpoint-that-could-never-exist",
+            std::time::Duration::from_millis(500),
+        )
+        .await;
+        let elapsed = start.elapsed();
+        assert!(!result);
+        // Short-circuit means we returned faster than the connect
+        // timeout — proves we never attempted the connect.
+        assert!(
+            elapsed < std::time::Duration::from_millis(250),
+            "probe should have short-circuited via verify_daemon_pid, \
+             not waited for the connect timeout — elapsed {elapsed:?}"
+        );
     }
 }

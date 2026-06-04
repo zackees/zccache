@@ -185,6 +185,45 @@ fn run_server(args: Args) {
 
     tracing::info!(%endpoint, idle_timeout, "zccache-daemon starting");
 
+    // ── Issue #640: pre-bind probe to cut second-wave spawn herd ─────────
+    //
+    // Before paying the 3+ s depgraph-load cost, check whether another
+    // daemon is already serving at this endpoint. A short async probe
+    // (timeout: 500 ms) is enough — if it succeeds we know a live
+    // daemon owns the pipe and we can exit cleanly without writing a
+    // spawn event, lock file, or doing any heavy init.
+    //
+    // This DOES NOT help the initial cohort racing for the bind from a
+    // cold start (none of them have written a lock file yet); those
+    // are still caught by the post-bind PermissionDenied → INFO+exit 0
+    // path landed in #639. What it DOES catch is the second wave:
+    // every daemon spawn that fires AFTER one daemon has already
+    // registered its lock file. In the user's #637 repro (277 spawns
+    // over 3 hours, spaced anywhere from 11 ms to ~10 s apart) this
+    // is most of the herd.
+    //
+    // A short-lived tokio runtime hosts the async probe so we don't
+    // need to bring up the full multi-thread runtime before deciding
+    // whether to defer.
+    {
+        let probe_rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to create probe runtime");
+        let existing_daemon = probe_rt.block_on(zccache::ipc::probe_existing_daemon(
+            &endpoint,
+            std::time::Duration::from_millis(500),
+        ));
+        if existing_daemon {
+            tracing::info!(
+                %endpoint,
+                "active daemon already serving — deferring"
+            );
+            // Do NOT remove the lock file — it belongs to the live daemon.
+            std::process::exit(0);
+        }
+    }
+
     // Issue #273: on Windows, warn once on stderr if the cache dir is
     // not on Defender's exclusion list. Non-fatal; no-ops off Windows
     // and when `ZCCACHE_QUIET` is set.
