@@ -161,13 +161,25 @@ fn store_rustc_outputs(
 ) {
     let state = state_arc.as_ref();
     let t_artifact_meta_build = Instant::now();
-    let artifact_bytes: u64 = all_outputs.iter().map(|o| o.size).sum();
-    let output_names: Vec<String> = all_outputs.iter().map(|o| o.name.clone()).collect();
-    let output_sizes: Vec<u64> = all_outputs.iter().map(|o| o.size).collect();
-    let source_paths: Vec<NormalizedPath> = all_outputs
-        .iter()
-        .map(|output| output.path.clone())
-        .collect();
+    // Issue #629: the prior four-pass shape (`.iter().map().sum()`
+    // + three `.iter().map().collect()`s) walks `all_outputs` four
+    // times and allocates three Vecs whose capacity wasn't hinted.
+    // For the typical rustc miss (2 outputs: `.rmeta` + `.rlib`) the
+    // savings are micro, but every µs on the daemon's
+    // response-return critical path stacks against the same-job-seed
+    // warm gap soldr is chasing in #629. Single pass with
+    // `with_capacity` hint and a `saturating_add` accumulator.
+    let n = all_outputs.len();
+    let mut output_names: Vec<String> = Vec::with_capacity(n);
+    let mut output_sizes: Vec<u64> = Vec::with_capacity(n);
+    let mut source_paths: Vec<NormalizedPath> = Vec::with_capacity(n);
+    let mut artifact_bytes: u64 = 0;
+    for output in all_outputs {
+        output_names.push(output.name.clone());
+        output_sizes.push(output.size);
+        source_paths.push(output.path.clone());
+        artifact_bytes = artifact_bytes.saturating_add(output.size);
+    }
     stats.artifact_meta_build_ns = t_artifact_meta_build.elapsed().as_nanos() as u64;
 
     // Issue #632: move the rust miss persist OFF the daemon's
