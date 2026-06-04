@@ -114,13 +114,13 @@ fn is_probe_shape(tool_args: &[String]) -> bool {
             i += 1;
             continue;
         }
-        // Positional source candidate (no leading `-` and no leading `/`
-        // for MSVC flags — though clang on Windows tolerates GNU-style
-        // `-` flags universally).
-        if !arg.starts_with('-') && !arg.starts_with('/') {
-            if is_source_extension(arg) {
-                sources.push(arg.as_str());
-            }
+        // Positional source candidate. We deliberately do NOT exclude
+        // args starting with '/' here — that would reject every absolute
+        // path on Unix (`/tmp/meson-XXX/probe.c`). MSVC-style flags
+        // (`/Fo`, `/c`, etc.) don't have C/C++/ObjC source extensions,
+        // so the extension check downstream is the real filter.
+        if !arg.starts_with('-') && is_source_extension(arg) {
+            sources.push(arg.as_str());
             i += 1;
             continue;
         }
@@ -370,6 +370,29 @@ mod tests {
             assert_eq!(
                 classify_invocation("clang", &args(&[probe_str.as_str(), "-o", "p.exe"]),),
                 WrapperRoute::LinkOrArchive,
+            );
+        });
+    }
+
+    #[test]
+    fn probe_bypass_matches_unix_absolute_source_path() {
+        // Regression guard: meson temp-dir probes on Linux/macOS look
+        // like `/tmp/.tmpXYZ/probe.c` — absolute paths starting with
+        // `/`. An earlier draft of this code excluded args starting
+        // with `/` (intending to skip MSVC `/Fo`-style flags) and
+        // wrongly rejected every Unix probe. The extension check is
+        // the only filter we need.
+        with_bypass_enabled(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let probe = dir.path().join("probe.c");
+            std::fs::write(&probe, b"int main(void) { return 0; }").unwrap();
+            let abs_probe = std::fs::canonicalize(&probe).unwrap();
+            let abs_str = abs_probe.to_string_lossy().into_owned();
+            assert_eq!(
+                classify_invocation("clang", &args(&["-c", abs_str.as_str(), "-o", "probe.o"]),),
+                WrapperRoute::ProbeBypass,
+                "absolute source paths (Unix /tmp/... or Windows C:\\...) must be \
+                 recognised as positional source args, not skipped as MSVC-style flags"
             );
         });
     }
