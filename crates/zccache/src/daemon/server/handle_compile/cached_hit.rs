@@ -33,6 +33,17 @@ pub(super) struct CachedHitMaterializeRequest<'a> {
     pub(super) source_path: &'a NormalizedPath,
     pub(super) output_path: &'a NormalizedPath,
     pub(super) secondary_output_dir: NormalizedPath,
+    /// Issue #643: where the current build wants its depfile restored.
+    ///
+    /// When the user's compile line carries `-MD -MF <path>` (or `-MD` with
+    /// an implicit `<output>.d`) and the cached artifact carries the
+    /// depfile as its second payload, write payloads[1] to this path
+    /// alongside writing payloads[0] to `output_path`. `None` on hits
+    /// from compiles without depfile flags, and on artifacts cached before
+    /// this fix landed (legacy single-output entries are honoured even
+    /// when `Some(_)` is passed).
+    #[allow(dead_code)] // wired but not yet read — see the failing #643 test in this module
+    pub(super) current_depfile_dest: Option<NormalizedPath>,
     pub(super) compile_start: Instant,
     pub(super) hit_label: &'static str,
     pub(super) cached_error_label: &'static str,
@@ -52,6 +63,12 @@ pub(super) fn materialize_cached_compile_hit(
         source_path,
         output_path,
         secondary_output_dir,
+        // Wired in for issue #643 (cache-hit depfile restore). The handler
+        // body intentionally does not use this field yet — the failing test
+        // in this module pins the missing-write behavior so the follow-up
+        // commit can flip it from `None`-equivalent to actually restoring
+        // `payloads[1]` to this destination.
+        current_depfile_dest: _,
         compile_start,
         hit_label,
         cached_error_label,
@@ -217,6 +234,7 @@ mod tests {
             source_path: &source_path,
             output_path: &output_path,
             secondary_output_dir: dir.path().into(),
+            current_depfile_dest: None,
             compile_start: Instant::now(),
             hit_label: "HIT_TEST",
             cached_error_label: "CACHED_ERROR_TEST",
@@ -244,6 +262,192 @@ mod tests {
         );
         assert_eq!(state.stats.snapshot().compilations, 1);
         assert_eq!(state.stats.snapshot().hits, 1);
+    }
+
+    /// Issue #643: when zccache wraps `clang++ -MD -MF <depfile>` the user's
+    /// depfile is part of the build-system's incremental-rebuild contract
+    /// (e.g. `deps = gcc` in ninja). On a cache hit we currently restore
+    /// only the `.obj` — the `.d` is silently absent, the build tool records
+    /// zero dependencies for the object, and from then on it never
+    /// recompiles when included headers change. Result: stale objects and
+    /// mysterious `undefined symbol` link errors after `git pull`.
+    ///
+    /// This test pins the fix: a cached artifact with two payloads (`.obj`
+    /// at index 0, `.d` at index 1) plus an explicit current-build depfile
+    /// destination must restore BOTH files. The cached `name` of the
+    /// depfile output is just an identifier — the real destination on hit
+    /// is supplied by the caller (it comes from the current compile's
+    /// `-MF` argument, not from where the depfile happened to live when
+    /// the cache miss recorded it).
+    #[tokio::test(flavor = "current_thread")]
+    async fn cached_hit_restores_user_depfile_alongside_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+        let state = server.state.as_ref();
+        let cache_dir = state.artifact_dir.clone();
+
+        let source_path: NormalizedPath = dir.path().join("source.cc").into();
+        let output_path: NormalizedPath = dir.path().join("source.o").into();
+        // Critical: the destination depfile path used by *this* build is
+        // not necessarily the cached basename. The caller derives it from
+        // the current invocation's `-MF` (or default `<output>.d`) and
+        // passes it in. Use a different filename to prove the fix routes
+        // bytes by request, not by stored name.
+        let depfile_dest: NormalizedPath = dir.path().join("build/out/source.o.d").into();
+
+        let obj_payload = Arc::new(b"compiled object bytes".to_vec());
+        let dep_payload = Arc::new(
+            b"source.o: source.cc header_a.h header_b.h\n\nheader_a.h:\n\nheader_b.h:\n".to_vec(),
+        );
+        let obj_cache_path = cache_dir.join("depfile-key_0");
+        let dep_cache_path = cache_dir.join("depfile-key_1");
+        std::fs::write(&obj_cache_path, obj_payload.as_slice()).unwrap();
+        std::fs::write(&dep_cache_path, dep_payload.as_slice()).unwrap();
+
+        let sid = state.sessions.create(crate::depgraph::SessionConfig {
+            client_pid: std::process::id(),
+            working_dir: dir.path().into(),
+            log_file: None,
+            track_stats: true,
+            journal_path: None,
+            profile: false,
+            private_env: Vec::new(),
+            owner_pids: Vec::new(),
+        });
+
+        // The cached `name[1]` is the basename from the original miss
+        // (e.g. "source.o.d"). The destination on hit is independent and
+        // comes from the current request.
+        let meta = ArtifactIndex::new(
+            vec!["source.o".to_string(), "source.o.d".to_string()],
+            vec![obj_payload.len() as u64, dep_payload.len() as u64],
+            Arc::new(Vec::new()),
+            Arc::new(Vec::new()),
+            0,
+        );
+        state.artifacts.insert(
+            "depfile-key".to_string(),
+            CachedArtifact::from_file_payloads(meta, vec![obj_cache_path, dep_cache_path]),
+        );
+
+        let response = materialize_cached_compile_hit(CachedHitMaterializeRequest {
+            state,
+            sid: &sid,
+            artifact_key_hex: "depfile-key",
+            source_path: &source_path,
+            output_path: &output_path,
+            secondary_output_dir: dir.path().into(),
+            current_depfile_dest: Some(depfile_dest.clone()),
+            compile_start: Instant::now(),
+            hit_label: "HIT_TEST",
+            cached_error_label: "CACHED_ERROR_TEST",
+            record_compilation: true,
+            downgrade_output_metadata: true,
+            mtime_floor_paths: Vec::new(),
+            phases: CachedHitPhases::request_cache(0, 0),
+        })
+        .expect("materialize_cached_compile_hit must succeed");
+        assert!(matches!(
+            response,
+            Response::CompileResult {
+                cached: true,
+                exit_code: 0,
+                ..
+            }
+        ));
+
+        assert_eq!(
+            std::fs::read(&output_path).unwrap(),
+            obj_payload.as_slice(),
+            "cache hit must restore the object at its destination",
+        );
+        assert!(
+            depfile_dest.as_path().exists(),
+            "cache hit must restore the depfile at the *current* build's -MF \
+             destination ({}), not the cached basename — this is the #643 \
+             stale-incremental-build fix",
+            depfile_dest.display(),
+        );
+        assert_eq!(
+            std::fs::read(depfile_dest.as_path()).unwrap(),
+            dep_payload.as_slice(),
+            "restored depfile bytes must match the cached payload",
+        );
+    }
+
+    /// Legacy contract: a 1-output cached artifact (no depfile recorded
+    /// at miss time, e.g. compiles without `-MD`/`-MF`) must keep working
+    /// even when the current request happens to supply a
+    /// `current_depfile_dest`. The fix must not regress the
+    /// pre-#643-store-format hit path.
+    #[tokio::test(flavor = "current_thread")]
+    async fn cached_hit_object_only_artifact_ignores_depfile_dest() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+        let state = server.state.as_ref();
+        let cache_dir = state.artifact_dir.clone();
+
+        let source_path: NormalizedPath = dir.path().join("source.cc").into();
+        let output_path: NormalizedPath = dir.path().join("source.o").into();
+        let depfile_dest: NormalizedPath = dir.path().join("source.o.d").into();
+
+        let obj_payload = Arc::new(b"object only".to_vec());
+        let cache_path = cache_dir.join("legacy-key_0");
+        std::fs::write(&cache_path, obj_payload.as_slice()).unwrap();
+
+        let sid = state.sessions.create(crate::depgraph::SessionConfig {
+            client_pid: std::process::id(),
+            working_dir: dir.path().into(),
+            log_file: None,
+            track_stats: true,
+            journal_path: None,
+            profile: false,
+            private_env: Vec::new(),
+            owner_pids: Vec::new(),
+        });
+
+        let meta = ArtifactIndex::new(
+            vec!["source.o".to_string()],
+            vec![obj_payload.len() as u64],
+            Arc::new(Vec::new()),
+            Arc::new(Vec::new()),
+            0,
+        );
+        state.artifacts.insert(
+            "legacy-key".to_string(),
+            CachedArtifact::from_file_payloads(meta, vec![cache_path]),
+        );
+
+        let response = materialize_cached_compile_hit(CachedHitMaterializeRequest {
+            state,
+            sid: &sid,
+            artifact_key_hex: "legacy-key",
+            source_path: &source_path,
+            output_path: &output_path,
+            secondary_output_dir: dir.path().into(),
+            current_depfile_dest: Some(depfile_dest.clone()),
+            compile_start: Instant::now(),
+            hit_label: "HIT_TEST",
+            cached_error_label: "CACHED_ERROR_TEST",
+            record_compilation: true,
+            downgrade_output_metadata: false,
+            mtime_floor_paths: Vec::new(),
+            phases: CachedHitPhases::request_cache(0, 0),
+        })
+        .expect("legacy single-output hit must still succeed");
+        assert!(matches!(
+            response,
+            Response::CompileResult {
+                cached: true,
+                exit_code: 0,
+                ..
+            }
+        ));
+        assert_eq!(std::fs::read(&output_path).unwrap(), obj_payload.as_slice());
+        assert!(
+            !depfile_dest.as_path().exists(),
+            "legacy single-output artifact must NOT manufacture a depfile",
+        );
     }
 
     /// Issue #460: warm-hit materialization should stay under budget — the
@@ -297,6 +501,7 @@ mod tests {
                 source_path: &source_path,
                 output_path: &output_path,
                 secondary_output_dir: dir.path().into(),
+                current_depfile_dest: None,
                 compile_start: Instant::now(),
                 hit_label: "HIT_TEST",
                 cached_error_label: "CACHED_ERROR_TEST",
