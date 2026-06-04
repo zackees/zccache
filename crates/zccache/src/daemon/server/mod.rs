@@ -65,6 +65,8 @@ const REQUEST_ROOT_MARKER: &str = "$ZCCACHE_WORKTREE_ROOT";
 const LINK_PATH_REMAP_AUTO_KEY_FLAG: &str = "zccache:path-remap=auto";
 const LINK_PATH_REMAP_ROOT_SPECIFIC_FLAG: &str = "zccache:path-remap=root-specific";
 
+pub use lifecycle::DepGraphSetter;
+
 /// The daemon server that listens for IPC connections.
 pub struct DaemonServer {
     listener: IpcListener,

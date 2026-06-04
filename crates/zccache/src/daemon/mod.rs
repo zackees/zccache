@@ -19,5 +19,5 @@ pub mod stats;
 pub mod trampoline;
 
 pub use event_log::EventLogger;
-pub use server::DaemonServer;
+pub use server::{DaemonServer, DepGraphSetter};
 pub use stats::{PhaseProfiler, ProfileSnapshot, StatsCollector};

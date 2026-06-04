@@ -206,11 +206,25 @@ impl DaemonServer {
     /// session's log file at `SessionStart` so a cold fallback caused by a
     /// stale or corrupt `depgraph.bin` is visible to operators. Issue #320.
     ///
-    /// Must be called before `run()` (while this is the only `Arc` holder).
-    pub fn set_depgraph_load_warning(&mut self, warning: String) {
-        let state = Arc::get_mut(&mut self.state)
-            .expect("set_depgraph_load_warning must be called before run()");
-        *state.depgraph_load_warning.get_mut() = Some(warning);
+    /// **Post-#640**: takes `&self` and uses the field's existing
+    /// `tokio::sync::Mutex` via `blocking_lock` — safe to call from a
+    /// `tokio::task::spawn_blocking` after `run()` has started so the
+    /// daemon can move the depgraph load off the bind critical path.
+    pub fn set_depgraph_load_warning(&self, warning: String) {
+        let mut guard = self.state.depgraph_load_warning.blocking_lock();
+        *guard = Some(warning);
+    }
+
+    /// Hand out an owned handle that can install a loaded depgraph (and
+    /// optional warning) from any thread, at any time during the daemon's
+    /// lifetime. This is the #640 seam for the deferred-depgraph-load —
+    /// the background `spawn_blocking` loader holds a `DepGraphSetter` and
+    /// calls `install()` when the disk load completes; meanwhile
+    /// `server.run()` has been accepting connections from t ≈ 0.
+    pub fn dep_graph_setter(&self) -> DepGraphSetter {
+        DepGraphSetter {
+            state: Arc::clone(&self.state),
+        }
     }
 
     /// Get a snapshot of the phase profiler (for benchmarks).
@@ -286,5 +300,46 @@ impl DaemonServer {
     #[must_use]
     pub(super) fn test_state(&self) -> &SharedState {
         &self.state
+    }
+}
+
+/// Owned handle to install a loaded depgraph on a running [`DaemonServer`].
+///
+/// Holds a clone of the daemon's `Arc<SharedState>`. The setter survives
+/// across `tokio::task::spawn_blocking` boundaries (it is `Send + Sync`),
+/// so `bin/zccache-daemon::run_server` can hand one off to the background
+/// loader BEFORE calling `server.run()`. When the disk load finishes, the
+/// loader calls [`Self::install`] and the daemon's hot-path readers
+/// (`state.dep_graph.load()` at every compile request) atomically pick up
+/// the new graph on their next `.load()`.
+///
+/// Issue #640.
+pub struct DepGraphSetter {
+    state: Arc<SharedState>,
+}
+
+impl DepGraphSetter {
+    /// Atomically install a loaded depgraph (and optional warning).
+    ///
+    /// - `graph = Some(g)` swaps the daemon's empty default with the
+    ///   loaded graph and marks the on-disk snapshot as persisted (so
+    ///   the next clean shutdown doesn't re-save the empty default
+    ///   over the real graph).
+    /// - `graph = None` leaves the empty default in place. Use this
+    ///   for the `Missing` / corrupt-load fallback so the warning
+    ///   still routes into the per-session log via `warning`.
+    /// - `warning` is mirrored into `SessionStart`'s per-session log
+    ///   if `Some` (issue #320).
+    pub fn install(self, graph: Option<crate::depgraph::DepGraph>, warning: Option<String>) {
+        if let Some(graph) = graph {
+            self.state.dep_graph.store(Arc::new(graph));
+            self.state
+                .dep_graph_persisted
+                .store(true, Ordering::Release);
+        }
+        if let Some(warning) = warning {
+            let mut guard = self.state.depgraph_load_warning.blocking_lock();
+            *guard = Some(warning);
+        }
     }
 }

@@ -230,128 +230,39 @@ fn run_server(args: Args) {
     let cache_root = zccache::core::config::default_cache_dir();
     zccache::core::defender::maybe_emit_first_run_banner(cache_root.as_path());
 
-    // Persist a "spawn" lifecycle event to disk. tracing logs go to
-    // stderr which is detached to NUL, so this file-based sink is the
-    // only way an operator (or CI) can correlate daemon lifetime with
-    // surrounding events after the fact.
-    //
-    // Per #637, the spawn record is still written before bind — losers
-    // of the parallel-spawn race exit cleanly at bind time without an
-    // ERROR log, but their spawn-attempt is still recorded here. A
-    // future PR moving the bind earlier (deferred-depgraph-load) would
-    // let us scope this to winners only.
-    zccache::daemon::lifecycle::write_event(
-        zccache::daemon::lifecycle::EVENT_SPAWN,
-        serde_json::json!({
-            "endpoint": &endpoint,
-            "daemon_namespace": zccache::core::config::daemon_namespace_label(),
-            "idle_timeout": idle_timeout,
-            "version": env!("CARGO_PKG_VERSION"),
-        }),
-    );
-
-    // Write lock file so CLI can detect us
-    let pid = std::process::id();
-    if let Err(e) = zccache::ipc::write_lock_file(pid) {
-        tracing::warn!("failed to write lock file: {e}");
-    }
-
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .max_blocking_threads(DAEMON_MAX_BLOCKING_THREADS)
         .build()
         .expect("failed to create tokio runtime");
 
-    // Load dep graph from disk (before entering async block).
-    //
-    // Issue #320: a fresh daemon pointed at a populated cache dir is auto-
-    // classified as warm by loading the persisted graph here. On version
-    // mismatch or corruption the outcome carries a warning that we surface
-    // both on stderr (for operators) and via the daemon server (which forwards
-    // it into per-session logs) so the cold fallback is never silent.
-    //
-    // Future work (#637 follow-up): defer this load to a background task
-    // so the bind can land first without delaying accept-loop start.
-    let path = zccache::depgraph::depgraph_file_path();
-    let (dep_graph, depgraph_load_warning) = if args.no_depgraph_cache {
-        let _ = std::fs::remove_file(&path);
-        tracing::info!("depgraph cache disabled — starting with empty graph");
-        (None, None)
-    } else {
-        let start = std::time::Instant::now();
-        let outcome = zccache::depgraph::classify_load(&path);
-        let warning = outcome.warning(&path);
-        match outcome {
-            zccache::depgraph::DepGraphLoadOutcome::Loaded { graph } => {
-                let stats = graph.stats();
-                let (cold_ctxs, warm_ctxs, stale_ctxs) = graph.state_breakdown();
-                let ctxs_with_key = graph.contexts_with_artifact_key();
-                // State breakdown explains why cold_skip fires after load:
-                // an `is_cold` check only returns false for Warm contexts,
-                // so cold/stale contexts will take the cold_skip branch on
-                // the first warm-side compile and miss regardless of what
-                // the artifact_store knows.
-                tracing::info!(
-                    contexts = stats.context_count,
-                    files = stats.file_count,
-                    cold = cold_ctxs,
-                    warm = warm_ctxs,
-                    stale = stale_ctxs,
-                    with_artifact_key = ctxs_with_key,
-                    elapsed_ms = start.elapsed().as_millis() as u64,
-                    "loaded depgraph from disk"
-                );
-                (Some(graph), None)
-            }
-            zccache::depgraph::DepGraphLoadOutcome::Missing => (None, None),
-            zccache::depgraph::DepGraphLoadOutcome::VersionMismatch {
-                file_version,
-                expected_version,
-            } => {
-                tracing::warn!(
-                    file_version,
-                    expected_version,
-                    "depgraph version mismatch — starting with empty graph"
-                );
-                if let Some(ref w) = warning {
-                    eprintln!("{w}");
-                }
-                (None, warning)
-            }
-            zccache::depgraph::DepGraphLoadOutcome::Corrupt { ref message }
-            | zccache::depgraph::DepGraphLoadOutcome::IoError { ref message } => {
-                tracing::warn!("depgraph load failed: {message} — starting with empty graph");
-                if let Some(ref w) = warning {
-                    eprintln!("{w}");
-                }
-                (None, warning)
-            }
-        }
-    };
+    let no_depgraph_cache = args.no_depgraph_cache;
+    rt.block_on(async move {
+        // ── Issue #640: bind FIRST, then load depgraph in background ─────
+        //
+        // The prior flow loaded the depgraph (3+ s on a populated cache)
+        // BEFORE the bind, so for the entire load window every parallel
+        // `ninja -jN` client whose connect failed ALSO spawned a daemon.
+        // 277 redundant spawns per FastLED build per #637.
+        //
+        // With #642's `ArcSwap<DepGraph>` foundation, `set_dep_graph` is
+        // now `&self` + atomic-swap-safe, so the load can fire from a
+        // `spawn_blocking` AFTER `server.run()` has started the accept
+        // loop. Compile requests arriving during the load window see
+        // the empty default graph and take the cold-path miss
+        // (correct — the cache_system's stat-verify safety net catches
+        // any stale-hit risk; sub-optimal speed for ~3 s and then the
+        // post-load `set_dep_graph` atomically publishes the warm graph
+        // for every subsequent `state.dep_graph.load()`).
+        //
+        // The pre-bind probe (#641) and bind-error race discrimination
+        // (#639) both still fire in their original order — only the
+        // depgraph load itself moves.
 
-    rt.block_on(async {
-        // ── Issue #637: discriminate loser-of-race from real bind failure ──
-        //
-        // Parallel `ninja -jN` builds on Windows produce a spawn race:
-        // multiple newly-launched daemons reach this bind at once, and
-        // only one wins the named pipe. The losers previously logged at
-        // ERROR level ("failed to bind ... Access is denied") and
-        // exited 1, even though "another daemon owns this endpoint" is
-        // a clean, expected outcome — not an error.
-        //
-        // Field measurement from the issue: 277 redundant daemon spawns
-        // produced 276 ERROR entries in `daemon-lifecycle.log`. Now
-        // the losers log at INFO level and exit 0 cleanly, so the
-        // lifecycle log only carries the genuinely-failing daemons (if
-        // any). The 277-daemon herd cause itself needs a follow-up
-        // (deferred-depgraph-load so the bind can land before the slow
-        // init starts; this PR is the safe minimum-blast-radius slice).
-        let mut server = match zccache::daemon::DaemonServer::bind(&endpoint) {
+        // ── Issue #637/#639: discriminate loser-of-race from real bind failure ──
+        let server = match zccache::daemon::DaemonServer::bind(&endpoint) {
             Ok(s) => s,
             Err(e) => {
-                // Windows named-pipe collision surfaces as PermissionDenied
-                // (ERROR_ACCESS_DENIED, the user's repro) or AlreadyExists.
-                // Unix-domain-socket equivalent is AddrInUse.
                 let is_pipe_in_use = matches!(
                     &e,
                     zccache::ipc::IpcError::Io(io_err) if matches!(
@@ -377,18 +288,82 @@ fn run_server(args: Args) {
             }
         };
 
-        // Inject pre-loaded dep graph if we have one.
-        if let Some(graph) = dep_graph {
-            server.set_dep_graph(graph);
+        // Bind won — we are THE daemon. NOW write the spawn event and
+        // lock file (loser-of-race exits at bind above without
+        // polluting either).
+        zccache::daemon::lifecycle::write_event(
+            zccache::daemon::lifecycle::EVENT_SPAWN,
+            serde_json::json!({
+                "endpoint": &endpoint,
+                "daemon_namespace": zccache::core::config::daemon_namespace_label(),
+                "idle_timeout": idle_timeout,
+                "version": env!("CARGO_PKG_VERSION"),
+            }),
+        );
+        let pid = std::process::id();
+        if let Err(e) = zccache::ipc::write_lock_file(pid) {
+            tracing::warn!("failed to write lock file: {e}");
         }
 
-        // Forward any depgraph load warning so SessionStart can mirror it
-        // into the per-session log (`last-session.log`). Without this the
-        // cold fallback after a version-mismatch / corrupt file would be
-        // invisible to operators looking at per-build logs.
-        if let Some(warning) = depgraph_load_warning {
-            server.set_depgraph_load_warning(warning);
-        }
+        // Spawn the depgraph load. Holds a `DepGraphSetter` that survives
+        // the spawn_blocking boundary; on completion atomically installs
+        // the graph + warning via #642's ArcSwap.
+        let setter = server.dep_graph_setter();
+        let depgraph_path = zccache::depgraph::depgraph_file_path();
+        let load_handle = tokio::task::spawn_blocking(move || {
+            if no_depgraph_cache {
+                let _ = std::fs::remove_file(&depgraph_path);
+                tracing::info!("depgraph cache disabled — starting with empty graph");
+                setter.install(None, None);
+                return;
+            }
+            let start = std::time::Instant::now();
+            let outcome = zccache::depgraph::classify_load(&depgraph_path);
+            let warning = outcome.warning(&depgraph_path);
+            match outcome {
+                zccache::depgraph::DepGraphLoadOutcome::Loaded { graph } => {
+                    let stats = graph.stats();
+                    let (cold_ctxs, warm_ctxs, stale_ctxs) = graph.state_breakdown();
+                    let ctxs_with_key = graph.contexts_with_artifact_key();
+                    tracing::info!(
+                        contexts = stats.context_count,
+                        files = stats.file_count,
+                        cold = cold_ctxs,
+                        warm = warm_ctxs,
+                        stale = stale_ctxs,
+                        with_artifact_key = ctxs_with_key,
+                        elapsed_ms = start.elapsed().as_millis() as u64,
+                        "loaded depgraph from disk (background)"
+                    );
+                    setter.install(Some(graph), None);
+                }
+                zccache::depgraph::DepGraphLoadOutcome::Missing => {
+                    setter.install(None, None);
+                }
+                zccache::depgraph::DepGraphLoadOutcome::VersionMismatch {
+                    file_version,
+                    expected_version,
+                } => {
+                    tracing::warn!(
+                        file_version,
+                        expected_version,
+                        "depgraph version mismatch — starting with empty graph"
+                    );
+                    if let Some(ref w) = warning {
+                        eprintln!("{w}");
+                    }
+                    setter.install(None, warning);
+                }
+                zccache::depgraph::DepGraphLoadOutcome::Corrupt { ref message }
+                | zccache::depgraph::DepGraphLoadOutcome::IoError { ref message } => {
+                    tracing::warn!("depgraph load failed: {message} — starting with empty graph");
+                    if let Some(ref w) = warning {
+                        eprintln!("{w}");
+                    }
+                    setter.install(None, warning);
+                }
+            }
+        });
 
         // Wire up Ctrl+C to trigger graceful shutdown
         let shutdown = server.shutdown_handle();
@@ -401,14 +376,22 @@ fn run_server(args: Args) {
 
         tracing::info!(%endpoint, "listening for connections");
 
+        // Take `mut server` here so `server.run(&mut self)` can borrow.
+        let mut server = server;
         if let Err(e) = server.run(idle_timeout).await {
             tracing::error!("server error: {e}");
             zccache::ipc::remove_lock_file();
+            // Best-effort: abort the background load if it hasn't
+            // landed yet. If it has, the swap is harmless.
+            load_handle.abort();
             std::process::exit(1);
         }
 
         tracing::info!("daemon exiting cleanly");
         zccache::ipc::remove_lock_file();
+        // The load may still be running if shutdown came in <3 s after
+        // start; abort is safe (nothing for the swap to corrupt).
+        load_handle.abort();
     });
 }
 
