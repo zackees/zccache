@@ -17,6 +17,7 @@ pub(crate) mod download;
 pub(crate) mod exec;
 pub(crate) mod fp;
 pub(crate) mod gha;
+pub(crate) mod meson_cache;
 pub(crate) mod rust_plan;
 pub(crate) mod session;
 pub(crate) mod status;
@@ -383,6 +384,17 @@ fn dispatch(command: Commands, global_strict_paths: Option<&str>) -> ExitCode {
             };
             wrap::run_wrap(&wrap_args, strict_paths)
         }
+        Commands::Meson { command } => match command {
+            args::MesonCommands::Configure {
+                source_dir,
+                build_dir,
+                meson_bin,
+                input_env,
+                meson_args,
+            } => {
+                meson_cache::cmd_configure(source_dir, build_dir, meson_bin, input_env, meson_args)
+            }
+        },
         Commands::Exec {
             input_file,
             input_env,

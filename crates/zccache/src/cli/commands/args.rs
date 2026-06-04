@@ -469,6 +469,53 @@ pub(crate) enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Meson build-system caching helpers. Issue #627.
+    Meson {
+        #[command(subcommand)]
+        command: MesonCommands,
+    },
+}
+
+/// `zccache meson` subcommands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum MesonCommands {
+    /// Cache-aware `meson setup`. On first invocation runs real meson and
+    /// captures the resulting build directory into the zccache cache; on
+    /// subsequent invocations with the same `meson.build` set, environment,
+    /// and meson version, restores the cached build directory and skips
+    /// invoking meson entirely.
+    ///
+    /// **Same-build-dir restriction** — the build directory path is part of
+    /// the cache key. Build-dir-portable caching would require rewriting
+    /// the absolute paths meson scatters through `meson-info/` and
+    /// `meson-private/` on materialisation; for the common dev-loop case
+    /// (one developer, stable build dir) this is unnecessary. The
+    /// substantially larger fastled-style CI matrix that uses different
+    /// build dirs per platform still benefits because each (source, build,
+    /// host, env) tuple converges to a per-tuple cache entry on its second
+    /// invocation.
+    Configure {
+        /// Project source directory containing the root `meson.build`.
+        #[arg(long = "source-dir", value_name = "DIR")]
+        source_dir: PathBuf,
+        /// Build directory meson will populate.
+        #[arg(long = "build-dir", value_name = "DIR")]
+        build_dir: PathBuf,
+        /// Path to the meson executable. Defaults to `meson` on PATH.
+        #[arg(long = "meson-bin", value_name = "PATH")]
+        meson_bin: Option<PathBuf>,
+        /// Extra environment variable names whose values feed the cache
+        /// key. The current process env is queried at request time.
+        /// Repeatable. Common defaults (CC, CXX, CFLAGS, CXXFLAGS,
+        /// LDFLAGS, PKG_CONFIG_PATH) are always included.
+        #[arg(long = "input-env", value_name = "NAME")]
+        input_env: Vec<String>,
+        /// Extra `meson setup` arguments passed verbatim on a miss. They
+        /// also enter the cache key so different option sets produce
+        /// distinct cache entries.
+        #[arg(trailing_var_arg = true)]
+        meson_args: Vec<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -820,6 +867,7 @@ pub(crate) const KNOWN_SUBCOMMANDS: &[&str] = &[
     "gha-cache",
     "rust-plan",
     "kv",
+    "meson",
     "warm",
     "snapshot-bytes",
     "snapshot-fp-record",

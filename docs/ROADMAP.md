@@ -314,6 +314,38 @@ This document describes the phased implementation plan for **zccache**, a high-p
 
 ---
 
+## Phase 5.5: Build System Configure Cache (`zccache meson configure`)
+
+**Goal:** Skip the meson `setup` (configure) phase on identical inputs. The compile cache (Phase 5) already handles the per-TU step; this addresses the once-per-build-cycle configure cost that the compile cache cannot reach.
+
+**Motivation:** Issue #627. Field measurement on a large FastLED checkout: the configure phase alone is 50 s on a cold run (683 build targets, 1434 ninja rules). The same checkout on a warm cache restores in 8 s — a 6.2× speedup, 42 s saved per build cycle. Multiply by N rebuilds per day × M developers.
+
+**Deliverable (shipped):** `zccache meson configure --source-dir SRC --build-dir BUILD [-- meson-args...]`. Implemented in `crates/zccache/src/cli/commands/meson_cache.rs`.
+
+**Cache key (blake3 with domain tag `"zccache-meson-cache-v1"`):**
+- `[meson.build, meson.options, meson_options.txt]` discovered recursively under source dir, each (relative-path, content) pair sorted
+- `meson --version` output
+- Source-dir + build-dir absolute paths (same-build-dir restriction)
+- Selected env vars (`CC`, `CXX`, `CFLAGS`, `CXXFLAGS`, `LDFLAGS`, `PKG_CONFIG_PATH` always; extras via `--input-env`)
+- Trailing `meson_args` verbatim
+
+**Storage:** flat hand-rolled archive (`[u32 path_len][path][u64 content_len][content]` repeated) at `~/.cache/zccache/meson-configure/<key>/build-dir.tar` plus cached stdout/stderr sidecars.
+
+**Same-build-dir restriction.** Build-dir-portable caching would require rewriting absolute paths meson scatters through `meson-info/` and `meson-private/` — see issue #627 open question 2. The current scope solves the common dev-loop case (stable build dir per developer) and the CI matrix case (each tuple converges to a per-tuple cache entry on its second invocation per platform).
+
+**Failure modes:**
+- Meson exit code != 0 → do NOT cache. A re-run after the fix gives meson a fresh chance.
+- Cache restore I/O error → log warning, fall through to a fresh meson setup. Self-healing.
+
+**Tests:** `crates/zccache/tests/cli_meson_configure_cache.rs` — TDD-pinned MISS → HIT → invalidate-on-meson.build-change.
+
+**Future work (not in v1):**
+- CMake / Bazel equivalents (same shape, different file set)
+- `--reconfigure` interaction — currently we always serve a cache hit if the key matches; meson's own `--reconfigure` decision happens *after* our hit check by definition. If a user relies on meson's reconfigure heuristics outside the meson.build content (e.g. environment-only changes), they should add those vars to `--input-env`.
+- Build-dir-portable mode via on-restore path rewriting
+
+---
+
 ## Phase 6: Correctness Hardening and Benchmarks
 
 **Goals:** Ensure the system is correct under stress, measure performance, and make the system observable and debuggable. This phase turns the MVP into production-quality software.
