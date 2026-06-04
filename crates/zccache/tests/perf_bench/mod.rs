@@ -29,6 +29,7 @@ mod tests_cpp;
 mod tests_emcc;
 mod tests_link;
 mod tests_probe_storm;
+mod tests_probe_storm_wrapper;
 mod tests_response_file;
 mod tests_rust;
 mod tests_sibling_remap;
