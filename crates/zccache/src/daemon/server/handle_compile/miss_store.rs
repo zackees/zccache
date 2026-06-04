@@ -195,11 +195,8 @@ fn store_rustc_outputs(
     tokio::spawn(async move {
         let _permit = sem.acquire().await.unwrap();
         let written = tokio::task::spawn_blocking(move || {
-            let persist_result = persist_artifact_paths_with_stats(
-                &artifact_dir,
-                &key_hex,
-                &persist_source_paths,
-            );
+            let persist_result =
+                persist_artifact_paths_with_stats(&artifact_dir, &key_hex, &persist_source_paths);
             (key_hex, persist_meta, persist_result)
         })
         .await;
