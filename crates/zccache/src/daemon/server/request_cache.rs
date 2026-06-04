@@ -12,6 +12,12 @@ pub(super) struct RequestCacheEntry {
     pub(super) root: Option<NormalizedPath>,
     pub(super) source_path: CachedRequestPath,
     pub(super) output_path: CachedRequestPath,
+    /// Issue #643: where the user wants the depfile written on hit.
+    /// `Some` when the original miss saw `-MD`/`-MF` flags, `None`
+    /// otherwise. Captured as `CachedRequestPath` so cross-worktree
+    /// hits (`cross_root_shareable`) get the destination rebased to
+    /// the current key root just like `source_path` / `output_path`.
+    pub(super) depfile_path: Option<CachedRequestPath>,
     pub(super) input_paths: Vec<CachedRequestPath>,
     pub(super) cross_root_shareable: bool,
     pub(super) cached_at: std::time::Instant,

@@ -11,6 +11,14 @@ pub(super) struct MissArtifactStoreRequest<'a> {
     pub(super) scan_result: crate::depgraph::ScanResult,
     pub(super) hash_map: &'a HashMap<NormalizedPath, ContentHash>,
     pub(super) output_data: Vec<u8>,
+    /// Issue #643: when the user's compile line emitted a depfile that
+    /// downstream build tools depend on (`-MD -MF <path>` or `-MD` with
+    /// the implicit `<output>.d`), the post-compile depfile bytes are
+    /// captured here so the cache hit can restore the depfile alongside
+    /// the object. `None` for compiles without user depfile flags, for
+    /// MSVC `/showIncludes` (parsed from stderr, not on disk), and for
+    /// rustc (separate persist path).
+    pub(super) user_depfile: Option<(NormalizedPath, Vec<u8>)>,
     pub(super) rustc_all_outputs: Option<&'a [RustcOutputFile]>,
     pub(super) stdout: &'a Arc<Vec<u8>>,
     pub(super) stderr: &'a Arc<Vec<u8>>,
@@ -46,6 +54,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
         scan_result,
         hash_map,
         output_data,
+        user_depfile,
         rustc_all_outputs,
         stdout,
         stderr,
@@ -103,6 +112,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
                 source_path,
                 output_path,
                 output_data,
+                user_depfile,
                 &artifact_key_hex,
                 stdout,
                 stderr,
@@ -254,6 +264,7 @@ fn store_single_output(
     source_path: &NormalizedPath,
     output_path: &NormalizedPath,
     output_data: Vec<u8>,
+    user_depfile: Option<(NormalizedPath, Vec<u8>)>,
     artifact_key_hex: &str,
     stdout: &Arc<Vec<u8>>,
     stderr: &Arc<Vec<u8>>,
@@ -263,15 +274,37 @@ fn store_single_output(
     t_artifact_build: Instant,
 ) {
     let state = state_arc.as_ref();
-    let artifact = ArtifactData {
-        outputs: vec![ArtifactOutput {
-            name: output_path
+    // Issue #643: stash the user's depfile as a second output so cache
+    // hits can restore it alongside the object. Only `UserSpecified` /
+    // `UserDefault` strategies reach this site with `Some(_)` — the
+    // pipeline filters out the `Injected` strategy (zccache injected
+    // the file purely for its own depgraph use; the user didn't ask
+    // for it on disk) and MSVC `/showIncludes` (no on-disk depfile to
+    // begin with). The cached `name` is the depfile basename; the
+    // destination on hit is supplied independently by the caller (the
+    // current build's `-MF` value), so artifacts remain reusable
+    // across renamed-output workspaces.
+    let mut outputs = vec![ArtifactOutput {
+        name: output_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+        payload: ArtifactPayload::Bytes(Arc::new(output_data)),
+    }];
+    let depfile_source_path: Option<NormalizedPath> = user_depfile.as_ref().map(|(p, _)| p.clone());
+    if let Some((dep_path, dep_bytes)) = user_depfile {
+        outputs.push(ArtifactOutput {
+            name: dep_path
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned(),
-            payload: ArtifactPayload::Bytes(Arc::new(output_data)),
-        }],
+            payload: ArtifactPayload::Bytes(Arc::new(dep_bytes)),
+        });
+    }
+    let artifact = ArtifactData {
+        outputs,
         stdout: Arc::clone(stdout),
         stderr: Arc::clone(stderr),
         exit_code,
@@ -289,7 +322,10 @@ fn store_single_output(
     let artifact_dir = state.artifact_dir.clone();
     let key_hex = artifact_key_hex.to_string();
     let persist_meta = cached.meta.clone();
-    let source_paths: Vec<NormalizedPath> = vec![output_path.clone()];
+    let mut source_paths: Vec<NormalizedPath> = vec![output_path.clone()];
+    if let Some(dep_path) = depfile_source_path {
+        source_paths.push(dep_path);
+    }
     let payload_size: usize = artifact
         .outputs
         .iter()

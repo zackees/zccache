@@ -4,6 +4,8 @@ use super::super::*;
 use super::cached_hit::{
     materialize_cached_compile_hit, CachedHitMaterializeRequest, CachedHitPhases,
 };
+use crate::depgraph::depfile::user_depfile_destination;
+use crate::depgraph::UserDepFlags;
 
 pub(super) struct RequestCacheHitProbe<'a> {
     pub(super) state: &'a SharedState,
@@ -55,6 +57,15 @@ pub(super) fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Option<R
     let output_path = req_entry
         .output_path
         .resolve(request_cache_key_root.as_deref());
+    // Issue #643: rebase the cached depfile destination to the current
+    // request's key root. For cross-worktree (`HIT_WORKTREE_REQUEST`)
+    // hits, this routes the depfile to worktree B's path even though the
+    // entry was created from worktree A — same semantics as
+    // `source_path` / `output_path`.
+    let current_depfile_dest: Option<NormalizedPath> = req_entry
+        .depfile_path
+        .as_ref()
+        .map(|path| path.resolve(request_cache_key_root.as_deref()));
     let mtime_floor_paths: Vec<NormalizedPath> = req_entry
         .input_paths
         .iter()
@@ -99,7 +110,7 @@ pub(super) fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Option<R
         source_path: &source_path,
         output_path: &output_path,
         secondary_output_dir: output_path.parent().unwrap_or(cwd).into(),
-        current_depfile_dest: None,
+        current_depfile_dest,
         compile_start,
         hit_label,
         cached_error_label: "CACHED_ERROR_REQUEST",
@@ -123,6 +134,11 @@ pub(super) struct FastHitProbe<'a> {
     pub(super) cwd: &'a Path,
     pub(super) request_cache_key_root: &'a Option<NormalizedPath>,
     pub(super) client_env: Option<&'a [(String, String)]>,
+    /// Issue #643: the user's parsed depfile flags. `None` for rustc (which
+    /// uses its own dep-info mechanism); for C/C++ it carries the user's
+    /// `-MD` / `-MF` so the hit can restore the depfile to the current
+    /// build's destination.
+    pub(super) dep_flags: Option<&'a UserDepFlags>,
     pub(super) is_rustc: bool,
     pub(super) worktree_equivalent_context: bool,
     pub(super) worktree_bound: bool,
@@ -145,6 +161,7 @@ pub(super) fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
         cwd,
         request_cache_key_root,
         client_env,
+        dep_flags,
         is_rustc,
         worktree_equivalent_context,
         worktree_bound,
@@ -181,6 +198,8 @@ pub(super) fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
         "HIT_FAST"
     };
     let input_paths = request_cache_input_paths(state, &context_key, source_path, ctx);
+    let current_depfile_dest: Option<NormalizedPath> =
+        dep_flags.and_then(|flags| user_depfile_destination(flags, output_path.as_path()));
     let response = materialize_cached_compile_hit(CachedHitMaterializeRequest {
         state,
         sid,
@@ -188,7 +207,7 @@ pub(super) fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
         source_path,
         output_path,
         secondary_output_dir,
-        current_depfile_dest: None,
+        current_depfile_dest: current_depfile_dest.clone(),
         compile_start,
         hit_label,
         cached_error_label: "CACHED_ERROR_FAST",
@@ -219,6 +238,7 @@ pub(super) fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
             context_key,
             source_path,
             output_path,
+            current_depfile_dest.as_ref(),
             input_paths,
             request_cache_key_root.as_ref(),
             worktree_bound,
@@ -241,6 +261,11 @@ pub(super) struct DepgraphHitProbe<'a> {
     pub(super) cwd: &'a Path,
     pub(super) request_cache_key_root: &'a Option<NormalizedPath>,
     pub(super) client_env: Option<&'a [(String, String)]>,
+    /// Issue #643: the user's parsed depfile flags. `None` for rustc.
+    /// Used to derive `current_depfile_dest` for the cache hit and to
+    /// stamp the request-cache entry so subsequent fast-path hits also
+    /// restore the depfile.
+    pub(super) dep_flags: Option<&'a UserDepFlags>,
     pub(super) is_rustc: bool,
     pub(super) worktree_equivalent_context: bool,
     pub(super) worktree_bound: bool,
@@ -267,6 +292,7 @@ pub(super) fn try_depgraph_cached_hit(probe: DepgraphHitProbe<'_>) -> Option<Res
         cwd,
         request_cache_key_root,
         client_env,
+        dep_flags,
         is_rustc,
         worktree_equivalent_context,
         worktree_bound,
@@ -289,6 +315,8 @@ pub(super) fn try_depgraph_cached_hit(probe: DepgraphHitProbe<'_>) -> Option<Res
         "HIT"
     };
     let input_paths = request_cache_input_paths(state, &context_key, source_path, ctx);
+    let current_depfile_dest: Option<NormalizedPath> =
+        dep_flags.and_then(|flags| user_depfile_destination(flags, output_path.as_path()));
     let response = materialize_cached_compile_hit(CachedHitMaterializeRequest {
         state,
         sid,
@@ -296,7 +324,7 @@ pub(super) fn try_depgraph_cached_hit(probe: DepgraphHitProbe<'_>) -> Option<Res
         source_path,
         output_path,
         secondary_output_dir,
-        current_depfile_dest: None,
+        current_depfile_dest: current_depfile_dest.clone(),
         compile_start,
         hit_label,
         cached_error_label: "CACHED_ERROR",
@@ -339,6 +367,7 @@ pub(super) fn try_depgraph_cached_hit(probe: DepgraphHitProbe<'_>) -> Option<Res
                 context_key,
                 source_path,
                 output_path,
+                current_depfile_dest.as_ref(),
                 input_paths,
                 request_cache_key_root.as_ref(),
                 worktree_bound,

@@ -164,6 +164,35 @@ pub enum DepfileStrategy {
     Unsupported,
 }
 
+/// Where the user wants the depfile written on disk for the current
+/// compile, derived from the user's existing `-MD`/`-MF` flags.
+///
+/// Returns `Some(path)` only when the user explicitly asked for a depfile
+/// — either via `-MF <path>` (`UserSpecified` strategy) or via `-MD` with
+/// the implicit `<output>.d` (`UserDefault` strategy). Returns `None` for
+/// the `Injected` strategy (zccache added the flags purely for its own
+/// depgraph use; the user never asked for the file on disk) and for
+/// compilers that don't support depfiles.
+///
+/// Used on the cache-hit path (issue #643): the cached artifact carries
+/// the original depfile bytes as a second output, and this function tells
+/// the hit-materializer where to write those bytes in the *current*
+/// build. The cached payload's name is just a stored identifier;
+/// the on-disk destination is always derived from the current request.
+#[must_use]
+pub fn user_depfile_destination(
+    dep_flags: &UserDepFlags,
+    output_file: &Path,
+) -> Option<NormalizedPath> {
+    if let Some(ref mf_path) = dep_flags.mf_path {
+        return Some(mf_path.clone());
+    }
+    if dep_flags.has_md {
+        return Some(output_file.with_extension("d").into());
+    }
+    None
+}
+
 /// Determine depfile strategy and return extra args to append to the compiler.
 ///
 /// `supports_depfile`: whether the compiler family supports `-MD -MF`.
@@ -841,6 +870,44 @@ mod tests {
             DepfileStrategy::UserDefault {
                 path: NormalizedPath::from("foo.d")
             }
+        );
+    }
+
+    // ── Issue #643: user_depfile_destination semantics ──────────────────
+
+    #[test]
+    fn user_depfile_destination_returns_mf_path_when_present() {
+        let dep_flags = UserDepFlags {
+            has_md: true,
+            mf_path: Some(NormalizedPath::from("/build/explicit.d")),
+        };
+        assert_eq!(
+            user_depfile_destination(&dep_flags, Path::new("/out/foo.o")),
+            Some(NormalizedPath::from("/build/explicit.d")),
+            "explicit -MF must win over the implicit <output>.d default",
+        );
+    }
+
+    #[test]
+    fn user_depfile_destination_derives_default_from_output_when_md_only() {
+        let dep_flags = UserDepFlags {
+            has_md: true,
+            mf_path: None,
+        };
+        assert_eq!(
+            user_depfile_destination(&dep_flags, Path::new("/out/foo.o")),
+            Some(NormalizedPath::from("/out/foo.d")),
+            "-MD without -MF defaults to <output_stem>.d alongside the object",
+        );
+    }
+
+    #[test]
+    fn user_depfile_destination_none_when_user_has_no_dep_flags() {
+        let dep_flags = UserDepFlags::default();
+        assert_eq!(
+            user_depfile_destination(&dep_flags, Path::new("/out/foo.o")),
+            None,
+            "no user dep flags = injected strategy = not the user's depfile",
         );
     }
 

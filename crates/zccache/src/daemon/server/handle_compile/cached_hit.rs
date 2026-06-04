@@ -42,7 +42,6 @@ pub(super) struct CachedHitMaterializeRequest<'a> {
     /// from compiles without depfile flags, and on artifacts cached before
     /// this fix landed (legacy single-output entries are honoured even
     /// when `Some(_)` is passed).
-    #[allow(dead_code)] // wired but not yet read — see the failing #643 test in this module
     pub(super) current_depfile_dest: Option<NormalizedPath>,
     pub(super) compile_start: Instant,
     pub(super) hit_label: &'static str,
@@ -63,12 +62,7 @@ pub(super) fn materialize_cached_compile_hit(
         source_path,
         output_path,
         secondary_output_dir,
-        // Wired in for issue #643 (cache-hit depfile restore). The handler
-        // body intentionally does not use this field yet — the failing test
-        // in this module pins the missing-write behavior so the follow-up
-        // commit can flip it from `None`-equivalent to actually restoring
-        // `payloads[1]` to this destination.
-        current_depfile_dest: _,
+        current_depfile_dest,
         compile_start,
         hit_label,
         cached_error_label,
@@ -99,10 +93,25 @@ pub(super) fn materialize_cached_compile_hit(
     let artifact_bytes = cached_ref.meta.total_size;
     drop(cached_ref);
 
+    // Issue #643: when the miss path stashed the user's depfile bytes as a
+    // second output and the current request supplies a `-MF` destination,
+    // restore index 1 to *that* destination — not to the cached basename
+    // under `secondary_output_dir`. The two paths are deliberately
+    // independent: the cached name is just a payload identifier (preserved
+    // for legacy / non-depfile multi-output artifacts), while the on-disk
+    // destination must come from the current build's args. Restoring to
+    // the cached path would write a stale-named depfile that no current
+    // build tool is looking for, leaving the user's `-MF` target absent
+    // and reproducing the exact stale-incremental-build bug this fix
+    // closes.
     let targets: Vec<(NormalizedPath, NormalizedPath)> = (0..payloads.len())
         .map(|i| {
             let out: NormalizedPath = if i == 0 {
                 output_path.clone()
+            } else if i == 1 && payloads.len() == 2 {
+                current_depfile_dest
+                    .clone()
+                    .unwrap_or_else(|| secondary_output_dir.join(&names[i]))
             } else {
                 secondary_output_dir.join(&names[i])
             };

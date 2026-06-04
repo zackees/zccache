@@ -393,6 +393,10 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         cwd,
         request_cache_key_root: &request_cache_key_root,
         client_env: client_env.as_deref(),
+        // Issue #643: only the C/C++ path has on-disk depfile contracts
+        // we cache. Rustc emits its own dep-info via a different
+        // mechanism handled by the rustc miss/hit paths.
+        dep_flags: if is_rustc { None } else { Some(&dep_flags) },
         is_rustc,
         worktree_equivalent_context,
         worktree_bound,
@@ -602,6 +606,8 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 cwd,
                 request_cache_key_root: &request_cache_key_root,
                 client_env: client_env.as_deref(),
+                // Issue #643: see `FastHitProbe` site above for rationale.
+                dep_flags: if is_rustc { None } else { Some(&dep_flags) },
                 is_rustc,
                 worktree_equivalent_context,
                 worktree_bound,
@@ -879,7 +885,16 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             });
 
         // ── Phase: include scan (depfile or fallback) ────────────────
+        // Issue #643: while we read the user's depfile to populate the
+        // depgraph, also capture its bytes (only for the `UserSpecified` /
+        // `UserDefault` strategies — `Injected` is a daemon-private file
+        // the user never asked for; MSVC `ShowIncludes` has no on-disk
+        // depfile). Those captured bytes are cached as a second artifact
+        // output so the next hit can write the depfile back to the
+        // *current* build's `-MF` target, even after `git clean` or
+        // worktree-rename — closing the stale-incremental-build bug.
         let t_scan = std::time::Instant::now();
+        let mut user_depfile_capture: Option<(NormalizedPath, Vec<u8>)> = None;
         let scan_result = if is_rustc {
             // Rustc: try to parse the dep-info file if --emit included dep-info.
             // The dep-info file is in --out-dir with crate name and extra-filename.
@@ -890,12 +905,21 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 | DepfileStrategy::UserSpecified { path }
                 | DepfileStrategy::UserDefault { path } => {
                     let cwd_path: NormalizedPath = cwd.into();
+                    let want_capture = matches!(
+                        depfile_strategy,
+                        DepfileStrategy::UserSpecified { .. } | DepfileStrategy::UserDefault { .. }
+                    );
                     match crate::depgraph::depfile::parse_depfile_path(
                         path,
                         &source_path,
                         &cwd_path,
                     ) {
                         Ok(result) => {
+                            if want_capture {
+                                if let Ok(bytes) = std::fs::read(path) {
+                                    user_depfile_capture = Some((path.clone(), bytes));
+                                }
+                            }
                             if matches!(depfile_strategy, DepfileStrategy::Injected { .. }) {
                                 let _ = std::fs::remove_file(path);
                             }
@@ -1068,6 +1092,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             scan_result,
             hash_map: &hash_map,
             output_data,
+            user_depfile: user_depfile_capture,
             rustc_all_outputs: rustc_all_outputs.as_deref(),
             stdout: &stdout,
             stderr: &stderr,

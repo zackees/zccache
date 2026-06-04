@@ -467,6 +467,7 @@ pub(super) fn request_cache_entry(
     context_key: ContextKey,
     source_path: &NormalizedPath,
     output_path: &NormalizedPath,
+    depfile_path: Option<&NormalizedPath>,
     input_paths: Vec<NormalizedPath>,
     key_root: Option<&NormalizedPath>,
     worktree_bound: bool,
@@ -475,14 +476,24 @@ pub(super) fn request_cache_entry(
     let root_path = key_root.map(|root| root.as_path());
     let source_path = CachedRequestPath::capture(source_path, root_path);
     let output_path = CachedRequestPath::capture(output_path, root_path);
+    let depfile_path = depfile_path.map(|path| CachedRequestPath::capture(path, root_path));
     let input_paths: Vec<CachedRequestPath> = input_paths
         .iter()
         .map(|path| CachedRequestPath::capture(path, root_path))
         .collect();
+    // Issue #643: the depfile destination, when present, must also be
+    // root-relative for the cross-worktree fast path to share entries
+    // safely — otherwise a hit in worktree B would write the depfile
+    // back to worktree A's absolute path. When the user supplied an
+    // absolute path that isn't under the key root, fall back to
+    // worktree-bound semantics (`cross_root_shareable = false`).
     let cross_root_shareable = !worktree_bound
         && root.is_some()
         && source_path.is_root_relative()
         && output_path.is_root_relative()
+        && depfile_path
+            .as_ref()
+            .is_none_or(CachedRequestPath::is_root_relative)
         && input_paths.iter().all(CachedRequestPath::is_root_relative);
 
     RequestCacheEntry {
@@ -490,6 +501,7 @@ pub(super) fn request_cache_entry(
         root,
         source_path,
         output_path,
+        depfile_path,
         input_paths,
         cross_root_shareable,
         cached_at: std::time::Instant::now(),
