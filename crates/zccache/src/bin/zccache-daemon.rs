@@ -185,6 +185,66 @@ fn run_server(args: Args) {
 
     tracing::info!(%endpoint, idle_timeout, "zccache-daemon starting");
 
+    // ── Issue #637: bind FIRST, before any slow initialization ─────────
+    //
+    // The named-pipe (Windows) / unix-socket (Linux/macOS) bind is the
+    // ownership-establishing operation. Until we've called it, *no other
+    // daemon knows we exist*; until they've called it, *we don't know
+    // they exist*. So if we waste 3+ seconds loading the depgraph (or
+    // any other slow init) before binding, we create a window in which
+    // every parallel `ninja -jN` client whose connect fails ALSO spawns
+    // a daemon — every one of which then races us for the bind, loses,
+    // and the cycle continues for the build's lifetime.
+    //
+    // Field measurement from the issue: 277 redundant daemon spawns and
+    // 126 `replaced-comm-error` retries during a single 3-hour parallel
+    // FastLED build. With bind-before-load, the redundant spawns lose
+    // the pipe-bind race in microseconds rather than after a 3-second
+    // depgraph load, and the herd collapses to ~2.
+    //
+    // `DaemonServer::bind_with_cache_dir` itself does cheap work
+    // beyond the pipe bind (artifact-store open, metadata-cache load),
+    // but the pipe bind is unconditionally the FIRST operation inside
+    // it — see `daemon::server::lifecycle::bind_with_cache_dir`. So
+    // calling `DaemonServer::bind` early IS the bind-first claim.
+    let mut server = match zccache::daemon::DaemonServer::bind(&endpoint) {
+        Ok(s) => s,
+        Err(e) => {
+            // Discriminate "another daemon owns this endpoint" (clean,
+            // expected race outcome) from "real bind failure" (operator
+            // alert). The Windows named-pipe collision surfaces as
+            // PermissionDenied (ERROR_ACCESS_DENIED, the user's repro)
+            // or AlreadyExists. Unix-domain-socket equivalent is
+            // AddrInUse.
+            let is_pipe_in_use = matches!(
+                &e,
+                zccache::ipc::IpcError::Io(io_err) if matches!(
+                    io_err.kind(),
+                    std::io::ErrorKind::PermissionDenied
+                        | std::io::ErrorKind::AddrInUse
+                        | std::io::ErrorKind::AlreadyExists
+                )
+            );
+            if is_pipe_in_use {
+                // Clean "deferring to existing daemon" outcome — do NOT
+                // write a spawn event or lock file (we never claimed
+                // ownership) and do NOT log at ERROR level (the
+                // operator would otherwise see N-1 spurious "ERROR
+                // failed to bind" entries on every parallel build).
+                tracing::info!(
+                    %endpoint,
+                    error = %e,
+                    "another daemon already owns endpoint — deferring"
+                );
+                std::process::exit(0);
+            }
+            tracing::error!("failed to bind {endpoint}: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // ── Bind won — we are THE daemon. Continue with the slow init. ────
+
     // Issue #273: on Windows, warn once on stderr if the cache dir is
     // not on Defender's exclusion list. Non-fatal; no-ops off Windows
     // and when `ZCCACHE_QUIET` is set.
@@ -194,7 +254,9 @@ fn run_server(args: Args) {
     // Persist a "spawn" lifecycle event to disk. tracing logs go to
     // stderr which is detached to NUL, so this file-based sink is the
     // only way an operator (or CI) can correlate daemon lifetime with
-    // surrounding events after the fact.
+    // surrounding events after the fact. Per #637, this only fires
+    // for the daemon that actually won the bind — losers exit silently
+    // above so the lifecycle log isn't polluted by the herd.
     zccache::daemon::lifecycle::write_event(
         zccache::daemon::lifecycle::EVENT_SPAWN,
         serde_json::json!({
@@ -224,6 +286,9 @@ fn run_server(args: Args) {
     // mismatch or corruption the outcome carries a warning that we surface
     // both on stderr (for operators) and via the daemon server (which forwards
     // it into per-session logs) so the cold fallback is never silent.
+    //
+    // Per #637, this load is now on the winning-daemon-only path — losers
+    // already exited above without paying the 3+ s cost.
     let path = zccache::depgraph::depgraph_file_path();
     let (dep_graph, depgraph_load_warning) = if args.no_depgraph_cache {
         let _ = std::fs::remove_file(&path);
@@ -281,29 +346,20 @@ fn run_server(args: Args) {
         }
     };
 
+    // Inject pre-loaded dep graph if we have one.
+    if let Some(graph) = dep_graph {
+        server.set_dep_graph(graph);
+    }
+
+    // Forward any depgraph load warning so SessionStart can mirror it
+    // into the per-session log (`last-session.log`). Without this the
+    // cold fallback after a version-mismatch / corrupt file would be
+    // invisible to operators looking at per-build logs.
+    if let Some(warning) = depgraph_load_warning {
+        server.set_depgraph_load_warning(warning);
+    }
+
     rt.block_on(async {
-        let mut server = match zccache::daemon::DaemonServer::bind(&endpoint) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("failed to bind {endpoint}: {e}");
-                zccache::ipc::remove_lock_file();
-                std::process::exit(1);
-            }
-        };
-
-        // Inject pre-loaded dep graph if we have one.
-        if let Some(graph) = dep_graph {
-            server.set_dep_graph(graph);
-        }
-
-        // Forward any depgraph load warning so SessionStart can mirror it
-        // into the per-session log (`last-session.log`). Without this the
-        // cold fallback after a version-mismatch / corrupt file would be
-        // invisible to operators looking at per-build logs.
-        if let Some(warning) = depgraph_load_warning {
-            server.set_depgraph_load_warning(warning);
-        }
-
         // Wire up Ctrl+C to trigger graceful shutdown
         let shutdown = server.shutdown_handle();
         tokio::spawn(async move {
