@@ -22,10 +22,8 @@
 //! code paths (selectable via env var during the optimization rollout).
 //!
 //! Future iterations will add:
-//! - Same-key concurrent-lookup race coverage with timing pressure
-//! - Cross-key contention with DashMap shard collision
-//! - Crash-mid-flight (daemon-restart) recovery assertion
-//! - Notify-timeout fall-through to miss
+//! - Notify-timeout fall-through to miss (gated on the PendingCacheWrite
+//!   registry existing — see #610 condition 4)
 //! - Loom + thread-sanitizer harness (separate test target)
 
 #![cfg(unix)] // Test fixtures shell out to /bin/sh; Windows variant deferred.
@@ -564,4 +562,117 @@ async fn crash_mid_flight_recovery_never_surfaces_wrong_content() {
          whether the cache was recovered or rebuilt is implementation \
          detail; the only invariant is correctness"
     );
+}
+
+/// Cross-key contention: N distinct cold-misses run concurrently and each must
+/// receive its own bytes — never another key's bytes.
+///
+/// This is the cross-key counterpart to `concurrent_lookups_after_cold_miss_*`
+/// (which races same-key lookups). Here every task seeds its own previously
+/// unseen artifact key. The DashMap/redb/dep_graph state is therefore being
+/// inserted into from N tasks at once with no shared keys.
+///
+/// Wrong-hit shapes this guards against once #610's deferred-write path lands:
+/// - Pending-write registry keyed wrongly (e.g. by `compiler` instead of by
+///   `(context, source-hash)`) — a lookup for key `K_Y` would block on or
+///   reuse a registry entry left by `K_X`'s in-flight publish, then read
+///   `K_X`'s artifact bytes.
+/// - DashMap shard collision causing two distinct keys to share a shard lock
+///   and one observer reading a half-written entry from the other.
+///
+/// The fake cc shim emits `printf 'object-for:%s\n' "$src"` — bytes encode the
+/// source PATH, so cross-contamination surfaces as `object-for:<other-src>` in
+/// the assert. The assertion is exact-bytes per task, not "any of the N".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn distinct_cold_misses_never_cross_contaminate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = CacheDirEnvGuard::set(&tmp.path().join("zccache-cache"));
+    let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+    let state = std::sync::Arc::clone(&server.state);
+    let cc = write_fake_cc(tmp.path());
+
+    // Per-task: distinct source file, distinct (deterministic) source bytes,
+    // distinct output path. Source content varies so the daemon's content-hash
+    // cache key varies; source path varies so the fake cc's emitted bytes vary
+    // and any cross-contamination is observable.
+    const N: usize = 10;
+    let inputs: Vec<(PathBuf, PathBuf)> = (0..N)
+        .map(|i| {
+            let src = tmp.path().join(format!("cross_{i}.c"));
+            let out = tmp.path().join(format!("cross_{i}.o"));
+            std::fs::write(&src, format!("int cross_{i}(void) {{ return {i}; }}\n")).unwrap();
+            (src, out)
+        })
+        .collect();
+
+    // Pre-compute the expected bytes per task — exactly what the fake cc emits
+    // for that source path. Computing this up-front (no cache involvement)
+    // pins the invariant: every task's output MUST equal this exact value.
+    let expected: Vec<Vec<u8>> = inputs
+        .iter()
+        .map(|(src, _)| format!("object-for:{}\n", src.display()).into_bytes())
+        .collect();
+
+    // Spawn N concurrent cold-misses with distinct keys. Each is the first
+    // time the daemon has seen its cache key, so all N race through the
+    // miss-store path simultaneously.
+    let started = std::time::Instant::now();
+    let mut handles = Vec::with_capacity(N);
+    for (i, (src, out)) in inputs.iter().enumerate() {
+        let state = std::sync::Arc::clone(&state);
+        let cc = cc.clone();
+        let cwd = tmp.path().to_path_buf();
+        let src = src.clone();
+        let out = out.clone();
+        let args = vec![
+            "-c".to_string(),
+            src.to_string_lossy().into_owned(),
+            "-o".to_string(),
+            out.to_string_lossy().into_owned(),
+        ];
+        handles.push(tokio::spawn(async move {
+            let resp = handle_compile_ephemeral(
+                &state,
+                std::process::id(),
+                &cwd,
+                &cc,
+                &args,
+                &cwd,
+                None,
+                Vec::new(),
+            )
+            .await;
+            match resp {
+                Response::CompileResult { exit_code, .. } => {
+                    assert_eq!(exit_code, 0, "task {i} cold-miss must succeed");
+                }
+                other => panic!("task {i}: expected CompileResult, got {other:?}"),
+            }
+            std::fs::read(&out).unwrap_or_else(|e| panic!("task {i}: read {out:?}: {e}"))
+        }));
+    }
+
+    let mut results: Vec<Vec<u8>> = Vec::with_capacity(N);
+    for (i, h) in handles.into_iter().enumerate() {
+        results.push(h.await.unwrap_or_else(|e| panic!("task {i} join: {e}")));
+    }
+
+    // Liveness floor — no task may block forever waiting on another task's
+    // shard lock or pending-write entry. Generous bound; the assertion exists
+    // to catch deadlock under the deferred-write path, not to gate perf.
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(30),
+        "concurrent cold-misses took {elapsed:?} — possible deadlock between tasks"
+    );
+
+    // Wrong-hit invariant: every task's bytes MUST equal that task's expected
+    // bytes. Cross-contamination would surface as `object-for:<other-src>`.
+    for (i, got) in results.iter().enumerate() {
+        assert_eq!(
+            *got, expected[i],
+            "task {i}: content must encode this task's source path, not another's — \
+             cross-key wrong-hit detected (saw bytes derived from a different cache key)"
+        );
+    }
 }
