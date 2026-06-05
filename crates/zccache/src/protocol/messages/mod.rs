@@ -356,4 +356,28 @@ pub enum Response {
         /// Cache key, hex-encoded. Useful for diagnostics.
         cache_key_hex: String,
     },
+    /// Daemon is healthy but under sufficient internal pressure (queue depth,
+    /// lock contention, etc.) that it has chosen not to dispatch this request
+    /// right now. The client should sleep `retry_after_ms` and retry against
+    /// the same daemon — this is **not** a wedge signal, and the existing
+    /// Layer A/B/C wedge-recovery path should not fire on this response.
+    ///
+    /// Lets the daemon express overload in-band rather than letting the
+    /// transport layer alias overload with "daemon dead" via
+    /// `ERROR_PIPE_BUSY` or recv-timeout. See issue tracker for the
+    /// back-pressure design doc.
+    ///
+    /// NOTE: Appended at end to preserve bincode variant indices.
+    Backpressure {
+        /// Daemon's current queue depth at the moment of decision.
+        /// Diagnostic — the client treats this as advisory only.
+        queue_depth: u32,
+        /// How long the client should sleep before retrying, in milliseconds.
+        /// Includes server-side jitter; client may add its own.
+        retry_after_ms: u32,
+        /// Why the daemon back-pressured. Diagnostic — known reasons:
+        /// `"compile_queue_full"`, `"fp_lock_contention"`,
+        /// `"depgraph_lock_contention"`, `"resident_memory_high"`.
+        reason: String,
+    },
 }

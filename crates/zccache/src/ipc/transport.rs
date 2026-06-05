@@ -259,10 +259,24 @@ impl IpcListener {
             use std::collections::VecDeque;
             use tokio::net::windows::named_pipe::ServerOptions;
 
-            let pool_size = std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4)
-                .min(16);
+            // Pool sizing rationale (issue #666 follow-up, application-layer
+            // back-pressure precondition): the pre-existing `.min(16)` cap
+            // made the named-pipe accept queue the dominant bottleneck under
+            // a ninja burst of ~670 parallel TUs. The OS layer would return
+            // `ERROR_PIPE_BUSY` to clients before the daemon ever saw the
+            // request, which aliased "daemon overloaded" with "daemon dead"
+            // at the client. Raising the cap moves the bottleneck inside
+            // the daemon where it can be expressed as an in-band
+            // `Response::Backpressure` reply.
+            let pool_size = std::env::var("ZCCACHE_PIPE_POOL_SIZE")
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or_else(|| {
+                    std::thread::available_parallelism()
+                        .map(|n| n.get().saturating_mul(4))
+                        .unwrap_or(64)
+                        .clamp(16, 128)
+                });
 
             let mut pool = VecDeque::with_capacity(pool_size);
             for i in 0..pool_size {
