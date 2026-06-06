@@ -65,7 +65,7 @@ pub(crate) fn wedge_recv_timeout() -> Option<std::time::Duration> {
 pub use runtime::{
     connect_client, ensure_daemon, gc_daemon_spawn_logs, gc_log_directory, gc_log_directory_in,
     gc_runtime_binaries, gc_runtime_binaries_in, prepare_daemon_exe, prepare_daemon_exe_in,
-    run_async, runtime_binaries_dir, spawn_daemon,
+    run_async, runtime_binaries_dir, spawn_daemon, wait_for_daemon_ready,
 };
 
 pub use crate::download_client::{

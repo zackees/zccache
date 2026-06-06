@@ -100,13 +100,142 @@ async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), String> {
     );
     spawn_daemon(&daemon_bin, endpoint)?;
 
-    for _ in 0..100 {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    wait_for_daemon_ready(endpoint).await
+}
+
+/// Tunables for [`wait_for_daemon_ready_with`]. Defaults match the contract
+/// described in issue #673: keep waiting as long as a daemon process owns
+/// the lockfile, treat absence-of-lockfile as a spawn failure after a short
+/// grace period, and refuse to wait beyond a hard ceiling even with a live
+/// daemon (the daemon may be wedged).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AdaptiveWaitConfig {
+    pub poll_interval: std::time::Duration,
+    pub no_daemon_grace: std::time::Duration,
+    pub hard_ceiling: std::time::Duration,
+}
+
+impl Default for AdaptiveWaitConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval: std::time::Duration::from_millis(100),
+            // Matches the pre-#673 10s budget for the cold-start case where
+            // the spawn itself fails before the daemon ever binds.
+            no_daemon_grace: std::time::Duration::from_secs(10),
+            // Safety net once a daemon has been observed alive. Issue #673
+            // reports individual ERROR_PIPE_BUSY backoffs taking 5+ seconds
+            // on Windows under a 32-deep thundering herd; 60 s gives the
+            // accept queue room to drain before declaring the daemon wedged.
+            hard_ceiling: std::time::Duration::from_secs(60),
+        }
+    }
+}
+
+/// Outcome of one poll of the adaptive ready-wait loop. Factored out so the
+/// timing decisions can be unit-tested without touching the real clock,
+/// filesystem lockfile, or IPC stack.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum WaitTick {
+    /// Daemon is still coming up; sleep another `poll_interval` and try again.
+    Pending,
+    /// A daemon was alive but a hard wall-clock ceiling was hit — declare
+    /// the daemon wedged so the caller can recover.
+    HardCeilingHit { observed_pid: Option<u32> },
+    /// Grace period elapsed without ever observing a daemon lockfile — the
+    /// `spawn_daemon` call most likely failed silently.
+    NoDaemonGracePassed,
+    /// A daemon previously owned the lockfile but it has since vanished —
+    /// the daemon crashed before draining its accept queue.
+    DaemonExited { pid: u32 },
+}
+
+/// Pure decision function: given the wall-clock state and the current /
+/// last-observed daemon lockfile PID, return what the wait loop should do
+/// next. Unit-tested in `mod tests` below; production callers go through
+/// [`wait_for_daemon_ready_with`].
+pub(crate) fn classify_wait_tick(
+    elapsed: std::time::Duration,
+    daemon_pid: Option<u32>,
+    last_observed_pid: Option<u32>,
+    cfg: &AdaptiveWaitConfig,
+) -> WaitTick {
+    if let Some(pid) = daemon_pid {
+        if elapsed >= cfg.hard_ceiling {
+            return WaitTick::HardCeilingHit {
+                observed_pid: Some(pid),
+            };
+        }
+        return WaitTick::Pending;
+    }
+    if let Some(pid) = last_observed_pid {
+        return WaitTick::DaemonExited { pid };
+    }
+    if elapsed >= cfg.no_daemon_grace {
+        return WaitTick::NoDaemonGracePassed;
+    }
+    WaitTick::Pending
+}
+
+/// Poll the daemon endpoint until either the connect succeeds or one of the
+/// failure modes from [`classify_wait_tick`] fires. Used by both
+/// `spawn_and_wait` call sites so they share a single timing contract.
+///
+/// Issue #673: replaces a flat 10 s, 100-iteration loop that expired under
+/// thundering-herd builds even when the daemon was alive and just slow to
+/// drain its Windows named-pipe accept queue.
+pub async fn wait_for_daemon_ready(endpoint: &str) -> Result<(), String> {
+    wait_for_daemon_ready_with(
+        endpoint,
+        crate::ipc::check_running_daemon,
+        AdaptiveWaitConfig::default(),
+    )
+    .await
+}
+
+/// Test seam for [`wait_for_daemon_ready`]: caller injects the lockfile
+/// check and timing config so unit tests can drive the loop without
+/// touching the real daemon-lock file or sleeping for real seconds.
+pub(crate) async fn wait_for_daemon_ready_with(
+    endpoint: &str,
+    daemon_alive_check: impl Fn() -> Option<u32>,
+    cfg: AdaptiveWaitConfig,
+) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    let mut last_observed_pid: Option<u32> = None;
+    loop {
+        tokio::time::sleep(cfg.poll_interval).await;
         if connect_client(endpoint).await.is_ok() {
             return Ok(());
         }
+        let elapsed = start.elapsed();
+        let daemon_pid = daemon_alive_check();
+        if daemon_pid.is_some() {
+            last_observed_pid = daemon_pid;
+        }
+        match classify_wait_tick(elapsed, daemon_pid, last_observed_pid, &cfg) {
+            WaitTick::Pending => continue,
+            WaitTick::HardCeilingHit { observed_pid } => {
+                let pid_str = observed_pid
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                return Err(format!(
+                    "daemon process {pid_str} still not accepting connections after {}s (hard cap)",
+                    cfg.hard_ceiling.as_secs()
+                ));
+            }
+            WaitTick::NoDaemonGracePassed => {
+                return Err(format!(
+                    "no daemon lockfile observed within {}s of spawn (spawn likely failed)",
+                    cfg.no_daemon_grace.as_secs()
+                ));
+            }
+            WaitTick::DaemonExited { pid } => {
+                return Err(format!(
+                    "daemon process {pid} exited before accepting connections"
+                ));
+            }
+        }
     }
-    Err("daemon started but not accepting connections after 10s".to_string())
 }
 
 /// Stop a stale daemon that is unreachable or version-incompatible.
@@ -525,4 +654,124 @@ pub fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
     running_process::spawn_daemon(&mut cmd)
         .map(|_child| ())
         .map_err(|e| format!("failed to spawn daemon (sanitized): {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn cfg(grace_ms: u64, ceiling_ms: u64, poll_ms: u64) -> AdaptiveWaitConfig {
+        AdaptiveWaitConfig {
+            poll_interval: Duration::from_millis(poll_ms),
+            no_daemon_grace: Duration::from_millis(grace_ms),
+            hard_ceiling: Duration::from_millis(ceiling_ms),
+        }
+    }
+
+    // Bogus endpoint that connect_client cannot bind to on either platform.
+    // Unix: a nonexistent socket path. Windows: a nonexistent named pipe.
+    fn dead_endpoint() -> &'static str {
+        if cfg!(windows) {
+            r"\\.\pipe\zccache-test-issue-673-dead"
+        } else {
+            "/tmp/zccache-test-issue-673-dead.sock"
+        }
+    }
+
+    // -- classify_wait_tick (pure decision function) -----------------------
+
+    #[test]
+    fn pending_when_daemon_visible_and_below_hard_ceiling() {
+        let c = cfg(1_000, 5_000, 100);
+        let tick = classify_wait_tick(Duration::from_millis(500), Some(42), Some(42), &c);
+        assert_eq!(tick, WaitTick::Pending);
+    }
+
+    #[test]
+    fn hard_ceiling_hit_only_when_daemon_visible() {
+        let c = cfg(1_000, 5_000, 100);
+        let tick = classify_wait_tick(Duration::from_millis(5_000), Some(42), Some(42), &c);
+        assert_eq!(
+            tick,
+            WaitTick::HardCeilingHit {
+                observed_pid: Some(42)
+            }
+        );
+    }
+
+    #[test]
+    fn daemon_exited_when_previously_observed_then_gone() {
+        let c = cfg(1_000, 5_000, 100);
+        let tick = classify_wait_tick(Duration::from_millis(200), None, Some(42), &c);
+        assert_eq!(tick, WaitTick::DaemonExited { pid: 42 });
+    }
+
+    #[test]
+    fn no_daemon_grace_passed_when_never_observed_and_grace_elapsed() {
+        let c = cfg(1_000, 5_000, 100);
+        let tick = classify_wait_tick(Duration::from_millis(1_000), None, None, &c);
+        assert_eq!(tick, WaitTick::NoDaemonGracePassed);
+    }
+
+    #[test]
+    fn pending_when_never_observed_but_grace_still_running() {
+        let c = cfg(1_000, 5_000, 100);
+        let tick = classify_wait_tick(Duration::from_millis(500), None, None, &c);
+        assert_eq!(tick, WaitTick::Pending);
+    }
+
+    // -- wait_for_daemon_ready_with (drives the loop with mock predicate) --
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn returns_grace_error_when_no_lockfile_ever_observed() {
+        // Tight grace + ceiling so the test resolves in well under a second.
+        let c = cfg(150, 5_000, 25);
+        let err = wait_for_daemon_ready_with(dead_endpoint(), || None, c)
+            .await
+            .expect_err("no-daemon path must fail, not hang");
+        assert!(
+            err.contains("no daemon lockfile observed"),
+            "wrong error: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn returns_hard_ceiling_error_when_daemon_visible_but_unreachable() {
+        // Daemon always-alive (mock returns Some), but no real socket → IPC
+        // connect keeps failing → we hit the hard ceiling.
+        let c = cfg(5_000, 200, 25);
+        let err = wait_for_daemon_ready_with(dead_endpoint(), || Some(12_345), c)
+            .await
+            .expect_err("hard ceiling path must fail, not hang");
+        assert!(err.contains("hard cap"), "wrong error: {err}");
+        assert!(err.contains("12345"), "PID should appear: {err}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn returns_daemon_exited_error_when_lockfile_disappears() {
+        // First poll observes the daemon, every subsequent poll says None.
+        // The loop must exit with DaemonExited, not hit the grace timeout.
+        let polls = Arc::new(AtomicU32::new(0));
+        let c = cfg(10_000, 10_000, 25);
+        let polls_for_check = Arc::clone(&polls);
+        let err = wait_for_daemon_ready_with(
+            dead_endpoint(),
+            move || {
+                let n = polls_for_check.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    Some(99_999)
+                } else {
+                    None
+                }
+            },
+            c,
+        )
+        .await
+        .expect_err("daemon-exit path must fail, not hang");
+        assert!(err.contains("exited"), "wrong error: {err}");
+        assert!(err.contains("99999"), "PID should appear: {err}");
+    }
 }

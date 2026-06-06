@@ -85,13 +85,11 @@ pub(crate) async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), S
     );
     super::super::spawn_daemon(&daemon_bin, endpoint)?;
 
-    for _ in 0..100 {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        if connect(endpoint).await.is_ok() {
-            return Ok(());
-        }
-    }
-    Err("daemon started but not accepting connections after 10s".to_string())
+    // Adaptive wait keyed on the daemon-lifecycle lockfile PID (issue #673):
+    // the previous 100-iteration / 10 s loop expired under thundering-herd
+    // builds while individual ERROR_PIPE_BUSY backoffs were still in flight.
+    // The shared helper polls past 10 s as long as a daemon owns the lockfile.
+    super::super::wait_for_daemon_ready(endpoint).await
 }
 
 /// Stop a stale daemon that is unreachable or version-incompatible.
