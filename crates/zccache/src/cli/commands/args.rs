@@ -4,9 +4,24 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
+/// Environment-variable reference appended to the top-level `--help` output.
+/// Surfaced here so settings that are only readable from `std::env` (i.e. not
+/// modeled as clap flags) are discoverable without grepping the README.
+/// Issue #672 called out `ZCCACHE_PATH_REMAP` as the specific offender; the
+/// other entries are the smaller set users actually flip in practice.
+const ENV_VARS_HELP: &str = "\
+Environment variables:
+  ZCCACHE_PATH_REMAP=auto       Inject compiler path-prefix maps so cached
+                                artifacts are sharable across sibling clones /
+                                worktrees. Opt-in; default is off. See README
+                                'Path remapping' for guarantees and pitfalls.
+  ZCCACHE_STRICT_PATHS=MODE     Same as --strict-paths (off | consistent | absolute).
+  ZCCACHE_CACHE_DIR=PATH        Override the per-user cache root.
+";
+
 /// zccache -- fast local compiler cache.
 #[derive(Debug, Parser)]
-#[command(name = "zccache", version, about)]
+#[command(name = "zccache", version, about, after_help = ENV_VARS_HELP)]
 pub(crate) struct Cli {
     /// Clear the entire artifact cache (same as `zccache clear`).
     #[arg(long)]

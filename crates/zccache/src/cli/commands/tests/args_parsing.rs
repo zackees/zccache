@@ -377,3 +377,26 @@ fn known_subcommands_matches_clap_enum() {
         stale,
     );
 }
+
+/// Lock in that the top-level `--help` output mentions the env vars users
+/// most often need to discover from the CLI. Issue #672 surfaced the gap
+/// for `ZCCACHE_PATH_REMAP` specifically — it has no clap flag, so without
+/// the `after_help` block there is no way to learn about it short of
+/// reading the README.
+#[test]
+fn top_level_help_lists_discoverable_env_vars() {
+    use clap::CommandFactory;
+    let help = Cli::command().render_help().to_string();
+    for var in [
+        "ZCCACHE_PATH_REMAP",
+        "ZCCACHE_STRICT_PATHS",
+        "ZCCACHE_CACHE_DIR",
+    ] {
+        assert!(
+            help.contains(var),
+            "`zccache --help` no longer mentions {var}. \
+             If the env var was renamed or removed, update args.rs::ENV_VARS_HELP; \
+             do not silently drop it (issue #672)."
+        );
+    }
+}
