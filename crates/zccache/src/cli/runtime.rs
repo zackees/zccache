@@ -177,7 +177,8 @@ pub(crate) fn classify_wait_tick(
 }
 
 /// Poll the daemon endpoint until either the connect succeeds or one of the
-/// failure modes from [`classify_wait_tick`] fires. Used by both
+/// adaptive failure modes (no-lockfile grace expired, observed daemon
+/// exited, or hard wall-clock ceiling reached) fires. Used by both
 /// `spawn_and_wait` call sites so they share a single timing contract.
 ///
 /// Issue #673: replaces a flat 10 s, 100-iteration loop that expired under
