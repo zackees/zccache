@@ -91,6 +91,130 @@ The difference comes from **architecture**, not better caching:
 - **Hardlink delivery** — cache hits are served by hardlinking the cached artifact to the output path — a single syscall instead of reading + writing the file contents.
 - **Multi-file fast path** — when a build system passes N source files in one invocation, zccache checks all N against the cache in parallel, serves hits immediately, and batches only the misses into a single compiler process.
 
+### Feature comparison vs sccache
+
+The full matrix lives at [`docs/FEATURE-MATRIX.md`](docs/FEATURE-MATRIX.md) and is generated from [`docs/feature-matrix.yaml`](docs/feature-matrix.yaml) — these tables are auto-rendered, do not edit them by hand.
+
+<!-- BEGIN feature-matrix-headline -->
+| Feature | zccache | sccache |
+|---|:---:|:---:|
+| Link caching (artifact + sibling files) | yes | no |
+| Emscripten (emcc / em++) | yes | no |
+| Multi-file compilation fast path | yes | no |
+| clang-tidy (static analysis results cached) | yes | no |
+| include-what-you-use (IWYU) | yes | no |
+| Persistent daemon with sub-ms IPC | yes | partial |
+| Hardlink delivery on hit | yes | no |
+| ZCCACHE_PATH_REMAP=auto cross-worktree sharing | yes | no |
+| GitHub Actions Cache (native API client) | yes | yes |
+| Per-hit cost | yes | partial |
+<!-- END feature-matrix-headline -->
+
+<details>
+<summary>Full feature comparison (zccache vs sccache)</summary>
+
+See [`docs/FEATURE-MATRIX.md`](docs/FEATURE-MATRIX.md) for the long-form view with notes and evidence columns.
+
+<!-- BEGIN feature-matrix-full -->
+#### Caching scope
+
+| Feature | zccache | sccache |
+|---|:---:|:---:|
+| C/C++ object caching | yes | yes |
+| Link caching (artifact + sibling files) | yes | no |
+| Rust rustc caching (--emit=metadata, --emit=link, extern crate hashing) | yes | yes |
+| Emscripten (emcc / em++) | yes | no |
+| wasm-ld linking | yes | no |
+| CUDA / nvcc | no | yes |
+| MSVC cl.exe / link.exe | partial | yes |
+| Multi-file compilation fast path | yes | no |
+| Response file (.rsp) expansion | yes | partial |
+
+#### Tool coverage
+
+| Feature | zccache | sccache |
+|---|:---:|:---:|
+| clang-tidy (static analysis results cached) | yes | no |
+| include-what-you-use (IWYU) | yes | no |
+| rustfmt | yes | no |
+| clippy | yes | no |
+| cargo check / cargo build | yes | yes |
+
+#### Build system integration
+
+| Feature | zccache | sccache |
+|---|:---:|:---:|
+| Ninja (via CC / CXX launcher) | yes | yes |
+| CMake (CMAKE_C_COMPILER_LAUNCHER) | yes | yes |
+| Meson (native file) | yes | yes |
+| Make | yes | yes |
+| RUSTC_WRAPPER | yes | yes |
+| setuptools-rust / maturin / scikit-build-core | yes | yes |
+
+#### Architecture
+
+| Feature | zccache | sccache |
+|---|:---:|:---:|
+| Persistent daemon with sub-ms IPC | yes | partial |
+| Single-roundtrip IPC (length-prefixed bincode) | yes | no |
+| Hardlink delivery on hit | yes | no |
+| In-memory metadata cache (DashMap) | yes | no |
+| Filesystem watcher (notify-backed) | yes | no |
+| Content-addressed artifact store | yes | yes |
+| Protocol versioning (wire-format bump policy) | yes | partial |
+| Compile journal (JSONL replay log) | yes | no |
+| Session stats / per-build hit rates | yes | partial |
+| Crash dumper (CLI + daemon) | yes | no |
+
+#### Worktree / multi-checkout
+
+| Feature | zccache | sccache |
+|---|:---:|:---:|
+| ZCCACHE_PATH_REMAP=auto cross-worktree sharing | yes | no |
+| C/C++ -ffile-prefix-map injection | yes | no |
+| Rust --remap-path-prefix injection | yes | no |
+| Strict path validation | yes | no |
+
+#### Storage backends
+
+| Feature | zccache | sccache |
+|---|:---:|:---:|
+| Local filesystem | yes | yes |
+| S3 | no | yes |
+| Google Cloud Storage | no | yes |
+| Redis | no | yes |
+| Memcached | no | yes |
+| Azure Blob | no | yes |
+| GitHub Actions Cache (native API client) | yes | yes |
+| Distributed scheduler / build farm | no | yes |
+
+#### Platform / packaging
+
+| Feature | zccache | sccache |
+|---|:---:|:---:|
+| Linux x86_64 | yes | yes |
+| Linux aarch64 | yes | yes |
+| macOS x86_64 | yes | yes |
+| macOS arm64 (Apple Silicon) | yes | yes |
+| Windows x86_64 | yes | yes |
+| Windows arm64 | yes | partial |
+| Windows Defender exclusion helper | yes | no |
+| PyPI wheels | yes | no |
+| crates.io publishing | yes | yes |
+| GitHub Action (composite) | yes | yes |
+| Target snapshot caching + zccache warm backfill | yes | no |
+
+#### Performance posture
+
+| Feature | zccache | sccache |
+|---|:---:|:---:|
+| Per-hit cost | yes | partial |
+| mtime preservation on hits | yes | partial |
+| Compiler child priority (auto-throttle at 95% CPU) | yes | no |
+<!-- END feature-matrix-full -->
+
+</details>
+
 **Broader tool coverage** — zccache supports modes that other compiler caches don't:
 
 | Mode | Description |

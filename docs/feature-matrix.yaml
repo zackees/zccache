@@ -1,0 +1,488 @@
+# Source of truth for the zccache vs sccache feature comparison matrix.
+#
+# Rendered into README.md (headline + full <details>) and docs/FEATURE-MATRIX.md
+# by `ci/render_feature_matrix.py`. Do not edit the generated tables by hand —
+# edit this file and re-run the renderer. CI fails if the rendered outputs are
+# stale relative to this YAML.
+#
+# Schema (per row):
+#   id:       unique kebab-case identifier
+#   category: one of the headings below (free-form string; rendered as section)
+#   feature:  human-readable feature name
+#   zccache:  yes | no | partial
+#   sccache:  yes | no | partial
+#   headline: true to include in the short README headline table (~10 rows)
+#   notes:    short prose explaining the row (optional)
+#   evidence: URL or `README.md#anchor` citation (optional but encouraged,
+#             required for `sccache: no` rows that are not obvious)
+#
+# When uncertain about sccache support, mark `partial` with a `notes:` line
+# describing the uncertainty rather than guessing `no`.
+
+# ---------------------------------------------------------------------------
+# Caching scope
+# ---------------------------------------------------------------------------
+
+- id: cpp-object-caching
+  category: Caching scope
+  feature: C/C++ object caching
+  zccache: yes
+  sccache: yes
+  notes: Core feature of both caches; per-translation-unit `.o` caching.
+  evidence: https://github.com/mozilla/sccache/blob/main/README.md
+
+- id: link-caching
+  category: Caching scope
+  feature: Link caching (artifact + sibling files)
+  zccache: yes
+  sccache: no
+  headline: true
+  notes: zccache snapshots the output dir before the linker, captures sibling .pdb/.wasm/.map/runtime DLLs, restores them on hit.
+  evidence: README.md#link-time-side-effects
+
+- id: rustc-caching
+  category: Caching scope
+  feature: Rust rustc caching (--emit=metadata, --emit=link, extern crate hashing)
+  zccache: yes
+  sccache: yes
+  notes: Both wrap `rustc`. zccache adds extern-crate content hashing for cross-worktree sharing.
+  evidence: https://github.com/mozilla/sccache/blob/main/README.md#rust
+
+- id: emscripten
+  category: Caching scope
+  feature: Emscripten (emcc / em++)
+  zccache: yes
+  sccache: no
+  headline: true
+  notes: zccache caches `emcc`/`em++` end-to-end. sccache's README documents C/C++/Rust/CUDA but not Emscripten.
+  evidence: https://github.com/mozilla/sccache/blob/main/README.md
+
+- id: wasm-ld
+  category: Caching scope
+  feature: wasm-ld linking
+  zccache: yes
+  sccache: no
+  notes: WebAssembly linking cached as part of zccache's link-caching path.
+  evidence: README.md#link-time-side-effects
+
+- id: cuda
+  category: Caching scope
+  feature: CUDA / nvcc
+  zccache: no
+  sccache: yes
+  notes: sccache supports CUDA caching; zccache does not yet (out of current scope).
+  evidence: https://github.com/mozilla/sccache/blob/main/README.md
+
+- id: msvc
+  category: Caching scope
+  feature: MSVC cl.exe / link.exe
+  zccache: partial
+  sccache: yes
+  notes: zccache parses MSVC-style args and supports `clang-cl`; native `cl.exe`/`link.exe` integration is partial. sccache has first-class MSVC support.
+  evidence: https://github.com/mozilla/sccache/blob/main/README.md
+
+- id: multi-file-fast-path
+  category: Caching scope
+  feature: Multi-file compilation fast path
+  zccache: yes
+  sccache: no
+  headline: true
+  notes: "`clang++ -c a.cpp b.cpp c.cpp` — per-file parallel cache lookups, only misses go to the compiler."
+  evidence: README.md
+
+- id: response-files
+  category: Caching scope
+  feature: Response file (.rsp) expansion
+  zccache: yes
+  sccache: partial
+  notes: zccache fully expands nested response files. sccache passes them through but does not deeply normalize them.
+  evidence: README.md
+
+# ---------------------------------------------------------------------------
+# Tool coverage
+# ---------------------------------------------------------------------------
+
+- id: clang-tidy
+  category: Tool coverage
+  feature: clang-tidy (static analysis results cached)
+  zccache: yes
+  sccache: no
+  headline: true
+  notes: Static analysis diagnostics cached per translation unit and replayed on hit.
+  evidence: README.md
+
+- id: iwyu
+  category: Tool coverage
+  feature: include-what-you-use (IWYU)
+  zccache: yes
+  sccache: no
+  headline: true
+  notes: IWYU output cached and replayed per translation unit.
+  evidence: README.md
+
+- id: rustfmt
+  category: Tool coverage
+  feature: rustfmt
+  zccache: yes
+  sccache: no
+  notes: zccache caches rustfmt output. sccache caches rustc only.
+  evidence: https://github.com/mozilla/sccache/blob/main/README.md#rust
+
+- id: clippy
+  category: Tool coverage
+  feature: clippy
+  zccache: yes
+  sccache: no
+  notes: zccache caches clippy lint output. sccache caches rustc but not the lint pass.
+  evidence: https://github.com/mozilla/sccache/blob/main/README.md#rust
+
+- id: cargo-check-build
+  category: Tool coverage
+  feature: cargo check / cargo build
+  zccache: yes
+  sccache: yes
+  notes: Both work as `RUSTC_WRAPPER` for `cargo check`/`cargo build`.
+  evidence: https://github.com/mozilla/sccache/blob/main/README.md#rust
+
+# ---------------------------------------------------------------------------
+# Build system integration
+# ---------------------------------------------------------------------------
+
+- id: ninja
+  category: Build system integration
+  feature: Ninja (via CC / CXX launcher)
+  zccache: yes
+  sccache: yes
+  evidence: https://github.com/mozilla/sccache/blob/main/README.md
+
+- id: cmake-launcher
+  category: Build system integration
+  feature: CMake (CMAKE_C_COMPILER_LAUNCHER)
+  zccache: yes
+  sccache: yes
+  evidence: https://github.com/mozilla/sccache/blob/main/README.md
+
+- id: meson-native-file
+  category: Build system integration
+  feature: Meson (native file)
+  zccache: yes
+  sccache: yes
+
+- id: make
+  category: Build system integration
+  feature: Make
+  zccache: yes
+  sccache: yes
+
+- id: rustc-wrapper
+  category: Build system integration
+  feature: RUSTC_WRAPPER
+  zccache: yes
+  sccache: yes
+  evidence: https://github.com/mozilla/sccache/blob/main/README.md#rust
+
+- id: setuptools-rust-maturin
+  category: Build system integration
+  feature: setuptools-rust / maturin / scikit-build-core
+  zccache: yes
+  sccache: yes
+  notes: Both work via standard `CC`/`CXX`/`RUSTC_WRAPPER` env injection.
+
+# ---------------------------------------------------------------------------
+# Architecture
+# ---------------------------------------------------------------------------
+
+- id: persistent-daemon
+  category: Architecture
+  feature: Persistent daemon with sub-ms IPC
+  zccache: yes
+  sccache: partial
+  headline: true
+  notes: zccache's daemon serves hits in ~1ms over a single IPC roundtrip. sccache has a server, but each call pays ~170ms (spawn + handshake + disk I/O).
+  evidence: README.md#why-is-zccache-so-much-faster-on-warm-hits
+
+- id: single-roundtrip-ipc
+  category: Architecture
+  feature: Single-roundtrip IPC (length-prefixed bincode)
+  zccache: yes
+  sccache: no
+  notes: One length-prefixed bincode message per compile. sccache's protocol uses multiple subprocess invocations per call.
+  evidence: https://github.com/mozilla/sccache/blob/main/README.md
+
+- id: hardlink-delivery
+  category: Architecture
+  feature: Hardlink delivery on hit
+  zccache: yes
+  sccache: no
+  headline: true
+  notes: Cache hits are served by hardlinking the cached artifact to the output path — one syscall. sccache copies bytes back over IPC.
+  evidence: README.md#why-is-zccache-so-much-faster-on-warm-hits
+
+- id: in-memory-metadata-cache
+  category: Architecture
+  feature: In-memory metadata cache (DashMap)
+  zccache: yes
+  sccache: no
+  notes: File sizes, mtimes, and content hashes live in a lock-free DashMap. Cache key computation is a memory lookup.
+  evidence: README.md#why-is-zccache-so-much-faster-on-warm-hits
+
+- id: filesystem-watcher
+  category: Architecture
+  feature: Filesystem watcher (notify-backed)
+  zccache: yes
+  sccache: no
+  notes: Background `notify` watcher tracks file changes in real time, so the daemon already knows whether inputs are dirty before compile is invoked.
+  evidence: README.md#why-is-zccache-so-much-faster-on-warm-hits
+
+- id: content-addressed-store
+  category: Architecture
+  feature: Content-addressed artifact store
+  zccache: yes
+  sccache: yes
+  notes: Both hash-key cache entries by input content.
+  evidence: https://github.com/mozilla/sccache/blob/main/README.md
+
+- id: protocol-versioning
+  category: Architecture
+  feature: Protocol versioning (wire-format bump policy)
+  zccache: yes
+  sccache: partial
+  notes: zccache embeds `PROTOCOL_VERSION` in every IPC frame and bumps it on any wire-format change. sccache versions its server but the policy is less explicit.
+  evidence: https://github.com/mozilla/sccache/blob/main/README.md
+
+- id: compile-journal
+  category: Architecture
+  feature: Compile journal (JSONL replay log)
+  zccache: yes
+  sccache: no
+  notes: Every compile is recorded as JSONL, enabling offline replay and debugging.
+  evidence: docs/journal-schema.md
+
+- id: session-stats
+  category: Architecture
+  feature: Session stats / per-build hit rates
+  zccache: yes
+  sccache: partial
+  notes: sccache exposes lifetime `--show-stats`. zccache adds per-session/per-build hit rates over the daemon connection.
+  evidence: https://github.com/mozilla/sccache/blob/main/README.md
+
+- id: crash-dumper
+  category: Architecture
+  feature: Crash dumper (CLI + daemon)
+  zccache: yes
+  sccache: no
+  notes: "`zccache_core::crash::install` captures structured crash dumps for both binaries."
+  evidence: docs/architecture/runtime.md
+
+# ---------------------------------------------------------------------------
+# Worktree / multi-checkout
+# ---------------------------------------------------------------------------
+
+- id: path-remap-auto
+  category: Worktree / multi-checkout
+  feature: ZCCACHE_PATH_REMAP=auto cross-worktree sharing
+  zccache: yes
+  sccache: no
+  headline: true
+  notes: One cache entry serves every worktree of the same repo. Hashes are computed against a canonical path; absolute paths are remapped on the fly.
+  evidence: README.md
+
+- id: cpp-file-prefix-map
+  category: Worktree / multi-checkout
+  feature: C/C++ -ffile-prefix-map injection
+  zccache: yes
+  sccache: no
+  notes: zccache injects `-ffile-prefix-map` automatically so debug info points at the canonical path, not the worktree path.
+  evidence: README.md
+
+- id: rust-remap-path-prefix
+  category: Worktree / multi-checkout
+  feature: Rust --remap-path-prefix injection
+  zccache: yes
+  sccache: no
+  notes: zccache injects `--remap-path-prefix` so rustc output is worktree-independent.
+  evidence: README.md
+
+- id: strict-paths
+  category: Worktree / multi-checkout
+  feature: Strict path validation
+  zccache: yes
+  sccache: no
+  notes: "`--strict-paths` rejects cache entries with non-canonical paths instead of silently leaking worktree paths."
+  evidence: README.md
+
+# ---------------------------------------------------------------------------
+# Storage backends
+# ---------------------------------------------------------------------------
+
+- id: local-filesystem
+  category: Storage backends
+  feature: Local filesystem
+  zccache: yes
+  sccache: yes
+  notes: Default backend in both caches.
+  evidence: https://github.com/mozilla/sccache/blob/main/README.md
+
+- id: s3
+  category: Storage backends
+  feature: S3
+  zccache: no
+  sccache: yes
+  notes: zccache is local-first by design; remote backends are out of scope today.
+  evidence: https://github.com/mozilla/sccache/blob/main/docs/S3.md
+
+- id: gcs
+  category: Storage backends
+  feature: Google Cloud Storage
+  zccache: no
+  sccache: yes
+  evidence: https://github.com/mozilla/sccache/blob/main/docs/GCS.md
+
+- id: redis
+  category: Storage backends
+  feature: Redis
+  zccache: no
+  sccache: yes
+  evidence: https://github.com/mozilla/sccache/blob/main/docs/Redis.md
+
+- id: memcached
+  category: Storage backends
+  feature: Memcached
+  zccache: no
+  sccache: yes
+  evidence: https://github.com/mozilla/sccache/blob/main/docs/Memcached.md
+
+- id: azure-blob
+  category: Storage backends
+  feature: Azure Blob
+  zccache: no
+  sccache: yes
+  evidence: https://github.com/mozilla/sccache/blob/main/docs/AzureBlobStorage.md
+
+- id: gha-cache
+  category: Storage backends
+  feature: GitHub Actions Cache (native API client)
+  zccache: yes
+  sccache: yes
+  headline: true
+  notes: Both can persist to the GitHub Actions cache (zccache via `zccache-gha`, sccache via `SCCACHE_GHA_ENABLED`).
+  evidence: https://github.com/mozilla/sccache/blob/main/docs/GHA.md
+
+- id: distributed-scheduler
+  category: Storage backends
+  feature: Distributed scheduler / build farm
+  zccache: no
+  sccache: yes
+  notes: sccache has a `dist-server` build farm. zccache focuses on local-first warm-hit latency and does not ship a distributed scheduler.
+  evidence: https://github.com/mozilla/sccache/blob/main/docs/Distributed.md
+
+# ---------------------------------------------------------------------------
+# Platform / packaging
+# ---------------------------------------------------------------------------
+
+- id: linux-x86_64
+  category: Platform / packaging
+  feature: Linux x86_64
+  zccache: yes
+  sccache: yes
+
+- id: linux-aarch64
+  category: Platform / packaging
+  feature: Linux aarch64
+  zccache: yes
+  sccache: yes
+
+- id: macos-x86_64
+  category: Platform / packaging
+  feature: macOS x86_64
+  zccache: yes
+  sccache: yes
+
+- id: macos-arm64
+  category: Platform / packaging
+  feature: macOS arm64 (Apple Silicon)
+  zccache: yes
+  sccache: yes
+
+- id: windows-x86_64
+  category: Platform / packaging
+  feature: Windows x86_64
+  zccache: yes
+  sccache: yes
+
+- id: windows-arm64
+  category: Platform / packaging
+  feature: Windows arm64
+  zccache: yes
+  sccache: partial
+  notes: zccache ships native Windows arm64 wheels and binaries. sccache's release coverage of Windows arm64 is partial.
+  evidence: https://github.com/mozilla/sccache/blob/main/README.md
+
+- id: defender-exclusion-helper
+  category: Platform / packaging
+  feature: Windows Defender exclusion helper
+  zccache: yes
+  sccache: no
+  notes: "`zccache defender-exclusions add` excludes the cache root from Defender real-time scans, recovering minutes of wall-time on Windows."
+  evidence: README.md#windows-defender-exclusions
+
+- id: pypi-wheels
+  category: Platform / packaging
+  feature: PyPI wheels
+  zccache: yes
+  sccache: no
+  notes: zccache ships native wheels per-platform; PyPI is the distribution channel. sccache distributes via crates.io and GitHub releases.
+  evidence: https://github.com/mozilla/sccache/blob/main/README.md
+
+- id: crates-io
+  category: Platform / packaging
+  feature: crates.io publishing
+  zccache: yes
+  sccache: yes
+  notes: Both publish to crates.io (`zccache-cli` / `zccache-daemon` / `zccache-core` vs `sccache`).
+  evidence: https://crates.io/crates/sccache
+
+- id: github-action
+  category: Platform / packaging
+  feature: GitHub Action (composite)
+  zccache: yes
+  sccache: yes
+  notes: zccache ships a composite action that replaces `sccache-action` + `Swatinem/rust-cache`. sccache is wired via `mozilla-actions/sccache-action`.
+  evidence: https://github.com/mozilla-actions/sccache-action
+
+- id: target-snapshot-warm
+  category: Platform / packaging
+  feature: Target snapshot caching + zccache warm backfill
+  zccache: yes
+  sccache: no
+  notes: zccache snapshots `target/` and backfills the daemon cache on restore. sccache leaves target/ caching to `Swatinem/rust-cache`.
+  evidence: README.md
+
+# ---------------------------------------------------------------------------
+# Performance posture
+# ---------------------------------------------------------------------------
+
+- id: per-hit-cost
+  category: Performance posture
+  feature: Per-hit cost
+  zccache: yes
+  sccache: partial
+  headline: true
+  notes: zccache serves hits in ~1ms (in-memory lookup + hardlink). sccache pays ~170ms per call (spawn + hash + IPC + disk I/O).
+  evidence: README.md#why-is-zccache-so-much-faster-on-warm-hits
+
+- id: mtime-preservation
+  category: Performance posture
+  feature: mtime preservation on hits
+  zccache: yes
+  sccache: partial
+  notes: zccache preserves the cached artifact's mtime so cargo's incremental fingerprint doesn't invalidate downstream crates.
+  evidence: CLAUDE.md
+
+- id: compiler-throttle
+  category: Performance posture
+  feature: Compiler child priority (auto-throttle at 95% CPU)
+  zccache: yes
+  sccache: no
+  notes: zccache demotes compiler children when system CPU is saturated, keeping the host responsive during big rebuilds.
+  evidence: README.md
