@@ -142,6 +142,8 @@ def load_rows(path: Path) -> list[Row]:
             isinstance(sccache, str) and sccache in VALID_VALUES,
             f"row '{row_id}': 'sccache' must be one of {sorted(VALID_VALUES)}, got {sccache!r}",
         )
+        assert isinstance(zccache, str)
+        assert isinstance(sccache, str)
 
         headline = bool(entry.get("headline", False))
         notes = entry.get("notes", "") or ""
@@ -306,7 +308,7 @@ def _replace_between_markers(text: str, begin: str, end: str, body: str) -> str:
             "Add the marker pair to README.md before running the renderer."
         )
     replacement = begin + "\n" + body.rstrip() + "\n" + end
-    return pattern.sub(lambda _m: replacement, text, count=1)
+    return pattern.sub(lambda _: replacement, text, count=1)
 
 
 def render_readme(existing_readme: str, rows: list[Row]) -> str:
@@ -339,7 +341,8 @@ def _compare(path: Path, rendered: str) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
+    doc = __doc__ or ""
+    parser = argparse.ArgumentParser(description=doc.split("\n\n", 1)[0])
     parser.add_argument(
         "--check",
         action="store_true",
