@@ -208,6 +208,12 @@ fn request_variant_indices_are_append_only() {
                 key_args_filter: vec![],
             },
         ),
+        (
+            18,
+            Request::ReleaseWorktreeHandles {
+                path: "/tmp/work".into(),
+            },
+        ),
     ];
 
     for (expected, request) in request_cases {
@@ -304,6 +310,23 @@ fn response_variant_indices_are_append_only() {
                 output_files: vec![],
                 cached: false,
                 cache_key_hex: "abc".to_string(),
+            },
+        ),
+        (
+            16,
+            Response::Backpressure {
+                queue_depth: 0,
+                retry_after_ms: 0,
+                reason: "compile_queue_full".to_string(),
+            },
+        ),
+        (
+            17,
+            Response::ReleaseWorktreeHandlesResult {
+                inspected: 0,
+                released: 0,
+                sessions_dropped: vec![],
+                unreleased: vec![],
             },
         ),
     ];
@@ -732,18 +755,19 @@ fn daemon_status_version_field_roundtrips() {
 
 // Compile-time check: PROTOCOL_VERSION must be positive.
 const _: () = assert!(super::super::PROTOCOL_VERSION > 0);
-// Compile-time check: PROTOCOL_VERSION == 14 after private daemon
-// SessionStart/status diagnostics were added. v13 was the pin after daemon
-// namespace diagnostics were added to DaemonStatus. v12 was the pin after
-// cached-error counters were added for rustc negative-result caching.
-// v11 was the pin after
-// `GenericToolExec` gained Path A (include scan) + Path B (depfile) +
-// non_deterministic + key_args_filter, fully implementing issue #272.
-// v10 was the prior pin when `GenericToolExec` was added. v9 was the pin
-// after SessionStats gained `phase_profile`. v8 was the pin after
-// Compile/CompileEphemeral gained `stdin` and ArtifactPayload replaced
-// ArtifactOutput.data: Arc<Vec<u8>> (issue #296 Option B).
-const _FINGERPRINT_VERSION: () = assert!(super::super::PROTOCOL_VERSION == 14);
+// Compile-time check: PROTOCOL_VERSION == 15 after `ReleaseWorktreeHandles`
+// was added for soldr Tier 3 worktree teardown (issue #690). v14 was the
+// pin after private daemon SessionStart/status diagnostics were added.
+// v13 was the pin after daemon namespace diagnostics were added to
+// DaemonStatus. v12 was the pin after cached-error counters were added for
+// rustc negative-result caching. v11 was the pin after `GenericToolExec`
+// gained Path A (include scan) + Path B (depfile) + non_deterministic +
+// key_args_filter, fully implementing issue #272. v10 was the prior pin
+// when `GenericToolExec` was added. v9 was the pin after SessionStats
+// gained `phase_profile`. v8 was the pin after Compile/CompileEphemeral
+// gained `stdin` and ArtifactPayload replaced ArtifactOutput.data:
+// Arc<Vec<u8>> (issue #296 Option B).
+const _FINGERPRINT_VERSION: () = assert!(super::super::PROTOCOL_VERSION == 15);
 
 #[test]
 fn fingerprint_check_roundtrip() {

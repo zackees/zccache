@@ -251,6 +251,21 @@ pub enum Request {
         /// runtime flags like `--verbose` or `--no-color` from the key.
         key_args_filter: Vec<String>,
     },
+    /// Release every daemon-owned handle whose canonical path is under
+    /// `path`, and drop session contexts whose `working_dir` resolves
+    /// there. Issue #690: gives soldr's Tier 3 worktree-teardown fallback
+    /// a deterministic way to break Windows file locks before
+    /// `git worktree remove` / `rmdir`.
+    ///
+    /// The daemon refuses to release its own cache root (`ZCCACHE_CACHE_DIR`)
+    /// or any ancestor of it — that path is shared by every concurrent
+    /// session and is never owned by a worktree.
+    ///
+    /// NOTE: Appended at end to preserve bincode variant indices.
+    ReleaseWorktreeHandles {
+        /// Canonical path prefix to release. Must be absolute.
+        path: NormalizedPath,
+    },
 }
 
 /// A response from daemon to client.
@@ -379,5 +394,28 @@ pub enum Response {
         /// `"compile_queue_full"`, `"fp_lock_contention"`,
         /// `"depgraph_lock_contention"`, `"resident_memory_high"`.
         reason: String,
+    },
+    /// Result of a `ReleaseWorktreeHandles` request (issue #690).
+    ///
+    /// `released == 0` with `unreleased.is_empty()` means the path had no
+    /// daemon-owned handles to release — soldr can proceed with its rmdir.
+    /// A non-empty `unreleased` list signals the daemon could not break a
+    /// specific handle; soldr's caller decides whether to fall back to
+    /// Tier 2 (move-to-trash) or surface a diagnostic.
+    ///
+    /// NOTE: Appended at end to preserve bincode variant indices.
+    ReleaseWorktreeHandlesResult {
+        /// Active sessions inspected against the path prefix.
+        inspected: u32,
+        /// Sessions whose journal handle was closed and state was dropped.
+        released: u32,
+        /// Session IDs that were dropped because their `working_dir`
+        /// resolved under the requested path.
+        sessions_dropped: Vec<String>,
+        /// Paths the daemon could not release. Empty today because the
+        /// daemon holds no long-lived mmap handles; the field exists so
+        /// future code that pins file handles inside a worktree can
+        /// report partial failure without a wire-shape change.
+        unreleased: Vec<NormalizedPath>,
     },
 }

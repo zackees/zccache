@@ -11,7 +11,13 @@ pub use messages::*;
 /// new/removed/reordered enum variants or struct field changes.
 /// Patch releases that don't change the protocol keep the same version.
 ///
-/// v14 (current): `SessionStart` gained private daemon options, and
+/// v15 (current): added `Request::ReleaseWorktreeHandles` /
+///                  `Response::ReleaseWorktreeHandlesResult` so callers
+///                  (soldr Tier 3 worktree teardown, issue #690) can ask
+///                  the daemon to drop sessions and close per-session
+///                  journal handles under a path prefix before the
+///                  worktree is deleted.
+/// v14: `SessionStart` gained private daemon options, and
 ///                  `DaemonStatus` gained redacted private daemon diagnostics.
 /// v13: `DaemonStatus` gained `daemon_namespace` and `endpoint`
 ///                  for soldr/zccache daemon namespace diagnostics.
@@ -27,7 +33,7 @@ pub use messages::*;
 ///     so per-session aggregate phase timing reaches clients.
 /// v8: `Compile` / `CompileEphemeral` gained `stdin: Vec<u8>` and
 ///     `ArtifactPayload` replaced `ArtifactOutput.data: Arc<Vec<u8>>`.
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 
 use bytes::{Buf, BufMut, BytesMut};
 

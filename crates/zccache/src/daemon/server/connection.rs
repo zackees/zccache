@@ -471,6 +471,9 @@ pub(super) async fn handle_connection(
                 }
                 (Response::RustArtifactList { artifacts }, None)
             }
+            Request::ReleaseWorktreeHandles { path } => {
+                (handle_release_worktree_handles(&state, &path).await, None)
+            }
         };
 
         // Capture journal metadata BEFORE conn.send so the client unblocks

@@ -87,6 +87,7 @@ mod handle_compile_ephemeral;
 mod handle_compile_multi;
 mod handle_exec;
 mod handle_link;
+mod handle_release_worktree_handles;
 mod in_flight;
 mod keys;
 mod lifecycle;
@@ -120,6 +121,7 @@ use handle_exec::handle_generic_tool_exec;
 use handle_link::handle_link_ephemeral;
 #[cfg(test)]
 use handle_link::run_post_link_deploy_hook;
+use handle_release_worktree_handles::handle_release_worktree_handles;
 use in_flight::*;
 use keys::*;
 use lifecycle::*;

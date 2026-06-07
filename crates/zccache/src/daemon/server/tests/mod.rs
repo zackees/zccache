@@ -17,6 +17,7 @@ mod path_remap;
 mod pch;
 mod pending_cache_writes;
 mod post_link_hook;
+mod release_worktree_handles;
 mod server_ipc;
 mod write_cached;
 
