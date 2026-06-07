@@ -4,6 +4,7 @@
 //! resolution, rustfmt caching, and IPC request/response handling live in
 //! focused submodules so soldr-facing wrapper changes do not touch every layer.
 
+mod diag;
 mod env;
 mod ipc;
 mod passthrough;
@@ -30,6 +31,8 @@ pub(crate) fn run_wrap(
     args: &[String],
     strict_paths_override: Option<StrictPathsMode>,
 ) -> ExitCode {
+    diag::emit(args);
+
     if args.is_empty() {
         eprintln!("usage: zccache <compiler|tool> <args...>");
         return ExitCode::FAILURE;

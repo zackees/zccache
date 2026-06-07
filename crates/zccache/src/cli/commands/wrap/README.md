@@ -6,6 +6,12 @@ here based on tool family and environment.
 
 ## Files
 
+- **`diag.rs`** — opt-in CWD/argv diagnostic. When `ZCCACHE_DIAG_CWD` is set
+  to any non-empty, non-`0` value, each wrapper invocation emits one
+  tab-separated `ZCCACHE_DIAG_CWD` line to stderr before any CWD mutation,
+  carrying `pid`, `cwd`, `tmp`, `argv0`, and the raw `args`. Used to
+  diagnose cases (issue #683) where the request reaching the daemon carries
+  an unexpected CWD — typically because an outer shim chdir'd before exec.
 - **`env.rs`** — environment policy: `ZCCACHE_DISABLE`, `ZCCACHE_STRICT_PATHS`,
   client-env filtering applied to every IPC request.
 - **`ipc.rs`** — request builders and response handling for `Compile` and

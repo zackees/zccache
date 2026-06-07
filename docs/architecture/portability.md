@@ -79,6 +79,31 @@ artifact is safe to reuse.
 
 If obtaining the file ID fails (e.g., permission denied, network filesystem that doesn't support it), `file_id` is set to `None` and the entry falls back to `(path, mtime, size)` identity only.
 
+## Diagnosing wrapper-CWD anomalies (`ZCCACHE_DIAG_CWD`)
+
+Set `ZCCACHE_DIAG_CWD=1` to make every `zccache` wrapper invocation print one
+tab-separated diagnostic line to stderr **before** the wrapper releases its CWD
+handle to `temp_dir()`. The line is tagged `ZCCACHE_DIAG_CWD` and carries:
+
+- `pid` — the wrapper process ID
+- `cwd` — the result of `std::env::current_dir()` at process entry (this is the
+  value the wrapper will send to the daemon as `Request::Compile.cwd`)
+- `tmp` — `std::env::temp_dir()` (the directory the wrapper will chdir to)
+- `argv0` — the wrapper's own argv[0] path
+- `args` — the wrapped tool + tool args, as the wrapper received them
+
+Useful when the journal shows a cache miss recording a `cwd` that doesn't match
+the directory the build system thinks it invoked the compiler from (issue
+#683). Because the daemon writes the journal `cwd` field straight from
+`Request::Compile.cwd`, this diagnostic captures the truth at the source — if
+the diagnostic line shows the wrong directory, an outer shim/build system has
+already chdir'd before exec'ing `zccache.exe`. If the line shows the *right*
+directory but the journal still shows the wrong one, that points at a daemon
+bug.
+
+The diagnostic is gated, single-line, and writes to stderr — it adds no
+roundtrips and does not affect exit status.
+
 ## Watcher Behavior Differences
 
 - **inotify (Linux):** Per-directory watches. Recursive watching requires registering each subdirectory. The `notify` crate handles this. Watch limit: `/proc/sys/fs/inotify/max_user_watches` (default 8192 or 65536 depending on distro). If exhausted, fall back to polling.
