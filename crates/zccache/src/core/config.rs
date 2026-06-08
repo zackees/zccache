@@ -294,6 +294,38 @@ fn namespace_short_hash(value: &str) -> String {
     fnv_short_hash(value.as_bytes())
 }
 
+/// Sanitize a user-controlled IPC name component for endpoints such as Windows
+/// named pipes. Already-safe ASCII components are returned unchanged so
+/// historical endpoint names remain stable. If any character must be replaced,
+/// append a short hash of the original value so distinct unsafe names do not
+/// collapse to the same pipe name.
+#[must_use]
+pub fn sanitize_ipc_component(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let sanitized: String = trimmed
+        .chars()
+        .map(|c| {
+            if is_safe_ipc_component_char(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized == trimmed {
+        return Some(sanitized);
+    }
+    let prefix: String = sanitized.chars().take(32).collect();
+    Some(format!("{prefix}-{}", fnv_short_hash(trimmed.as_bytes())))
+}
+
+fn is_safe_ipc_component_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'
+}
+
 /// Stable 8-hex-char identifier derived from the home dir's canonical
 /// path. FNV-1a (64-bit) — small, deterministic, no extra dep.
 fn home_dir_short_hash(home: &Path) -> String {
@@ -1147,6 +1179,36 @@ mod tests {
         assert_ne!(a, b);
         assert!(a.starts_with(&"x".repeat(32)));
         assert_eq!(a.len(), 41);
+    }
+
+    #[test]
+    fn sanitize_ipc_component_keeps_safe_values_unchanged() {
+        assert_eq!(
+            sanitize_ipc_component("zackees-dev_1.2").as_deref(),
+            Some("zackees-dev_1.2")
+        );
+    }
+
+    #[test]
+    fn sanitize_ipc_component_replaces_spaces_and_adds_hash() {
+        let component = sanitize_ipc_component("Zach Vorhies").unwrap();
+        assert!(component.starts_with("Zach_Vorhies-"));
+        assert_eq!(component.len(), "Zach_Vorhies-".len() + 8);
+        assert!(component.chars().all(is_safe_ipc_component_char));
+    }
+
+    #[test]
+    fn sanitize_ipc_component_keeps_unsafe_names_distinct() {
+        let spaced = sanitize_ipc_component("Zach Vorhies").unwrap();
+        let slashed = sanitize_ipc_component("Zach/Vorhies").unwrap();
+        assert_ne!(spaced, slashed);
+        assert!(spaced.starts_with("Zach_Vorhies-"));
+        assert!(slashed.starts_with("Zach_Vorhies-"));
+    }
+
+    #[test]
+    fn sanitize_ipc_component_ignores_empty_values() {
+        assert_eq!(sanitize_ipc_component("   "), None);
     }
 
     #[test]

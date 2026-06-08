@@ -156,6 +156,8 @@ fn daemon_socket_name(namespace: Option<&str>) -> String {
 
 #[cfg(windows)]
 fn pipe_name(base: &str, namespace: Option<&str>) -> String {
+    let base = crate::core::config::sanitize_ipc_component(base)
+        .unwrap_or_else(|| String::from("unknown"));
     match namespace {
         Some(ns) => format!(r"\\.\pipe\zccache-{base}-{ns}"),
         None => format!(r"\\.\pipe\zccache-{base}"),
@@ -617,6 +619,20 @@ mod tests {
             assert!(endpoint.ends_with("-soldr_dev"));
             assert!(endpoint.contains(&crate::core::stable_path_id(&cache_dir)));
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pipe_name_keeps_safe_username_endpoint_unchanged() {
+        assert_eq!(pipe_name("zackees", None), r"\\.\pipe\zccache-zackees");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pipe_name_sanitizes_username_spaces() {
+        let endpoint = pipe_name("Zach Vorhies", None);
+        assert!(endpoint.starts_with(r"\\.\pipe\zccache-Zach_Vorhies-"));
+        assert!(!endpoint.contains(' '));
     }
 
     #[cfg(unix)]

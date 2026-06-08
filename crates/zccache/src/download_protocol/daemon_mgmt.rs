@@ -20,6 +20,8 @@ pub fn default_endpoint() -> String {
     #[cfg(windows)]
     {
         let username = std::env::var("USERNAME").unwrap_or_else(|_| String::from("unknown"));
+        let username = crate::core::config::sanitize_ipc_component(&username)
+            .unwrap_or_else(|| String::from("unknown"));
         format!(r"\\.\pipe\zccache-download-{username}")
     }
 }
