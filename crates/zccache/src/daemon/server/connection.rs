@@ -6,6 +6,11 @@ use crate::protocol::{
     DecodedWireMessage,
 };
 
+enum ResponseWire {
+    BincodeV15,
+    ProstV16 { request_id: String },
+}
+
 /// Handle a single client connection.
 pub(super) async fn handle_connection(
     mut conn: IpcConnection,
@@ -68,14 +73,20 @@ pub(super) async fn handle_connection(
         };
         state.last_activity.store(now_secs(), Ordering::Relaxed);
 
-        let request = match request {
-            DecodedWireMessage::BincodeV15(request) => request,
+        let (request, response_wire) = match request {
+            DecodedWireMessage::BincodeV15(request) => (request, ResponseWire::BincodeV15),
             DecodedWireMessage::ProstV16(request) => {
+                let request_id = request.request_id.clone();
                 match wire_prost::supported_control_request_from_prost(request) {
-                    Ok(request) => request,
+                    Ok(request) => (request, ResponseWire::ProstV16 { request_id }),
                     Err(message) => {
                         tracing::warn!("{message}");
-                        conn.send(&Response::Error { message }).await?;
+                        send_response_for_wire(
+                            &mut conn,
+                            &ResponseWire::ProstV16 { request_id },
+                            &Response::Error { message },
+                        )
+                        .await?;
                         continue;
                     }
                 }
@@ -107,7 +118,7 @@ pub(super) async fn handle_connection(
         let (response, journal_ctx): (Response, Option<JournalContext>) = match request {
             Request::Ping => (Response::Pong, None),
             Request::Shutdown => {
-                conn.send(&Response::ShuttingDown).await?;
+                send_response_for_wire(&mut conn, &response_wire, &Response::ShuttingDown).await?;
                 // Record graceful exit alongside the existing "spawn"
                 // event so a single parse of `daemon-lifecycle.log`
                 // reconstructs the daemon's full lifetime. Pairs with
@@ -528,7 +539,7 @@ pub(super) async fn handle_connection(
         // Send the response BEFORE logging the journal entry. Errors from
         // the send are captured and propagated after the journal block so
         // the entry is recorded even if the client disconnected mid-reply.
-        let send_result = conn.send(&response).await;
+        let send_result = send_response_for_wire(&mut conn, &response_wire, &response).await;
 
         if let Some((
             ctx,
@@ -564,6 +575,21 @@ pub(super) async fn handle_connection(
         }
 
         send_result?;
+    }
+}
+
+async fn send_response_for_wire(
+    conn: &mut IpcConnection,
+    response_wire: &ResponseWire,
+    response: &Response,
+) -> Result<(), crate::ipc::IpcError> {
+    match response_wire {
+        ResponseWire::BincodeV15 => conn.send(response).await,
+        ResponseWire::ProstV16 { request_id } => {
+            let response = wire_prost::supported_control_response_to_prost(response, request_id)
+                .map_err(|message| crate::protocol::ProtocolError::Serialization(message))?;
+            conn.send_prost(&response).await
+        }
     }
 }
 
@@ -648,8 +674,12 @@ mod live_ipc_prost_tests {
             let mut client = crate::ipc::connect(&endpoint).await.unwrap();
 
             client.send(&Request::Ping).await.unwrap();
-            let response: Option<Response> = client.recv().await.unwrap();
-            assert_eq!(response, Some(Response::Pong));
+            let response: Option<DecodedWireMessage<Response, pb::Response>> =
+                client.recv_wire().await.unwrap();
+            assert_eq!(
+                response,
+                Some(DecodedWireMessage::BincodeV15(Response::Pong))
+            );
 
             client
                 .send_prost(&prost_request(
@@ -658,9 +688,16 @@ mod live_ipc_prost_tests {
                 ))
                 .await
                 .unwrap();
-            let response: Option<Response> = client.recv().await.unwrap();
+            let response: Option<DecodedWireMessage<Response, pb::Response>> =
+                client.recv_wire().await.unwrap();
             match response {
-                Some(Response::Status(status)) => {
+                Some(DecodedWireMessage::ProstV16(response)) => {
+                    assert_eq!(response.request_id, "prost-status");
+                    let response =
+                        wire_prost::supported_control_response_from_prost(response).unwrap();
+                    let Response::Status(status) = response else {
+                        panic!("expected Status response, got {response:?}");
+                    };
                     assert_eq!(status.endpoint, endpoint);
                 }
                 other => panic!("expected Status response, got {other:?}"),
@@ -673,9 +710,16 @@ mod live_ipc_prost_tests {
                 ))
                 .await
                 .unwrap();
-            let response: Option<Response> = client.recv().await.unwrap();
+            let response: Option<DecodedWireMessage<Response, pb::Response>> =
+                client.recv_wire().await.unwrap();
             match response {
-                Some(Response::Error { message }) => {
+                Some(DecodedWireMessage::ProstV16(response)) => {
+                    assert_eq!(response.request_id, "prost-clear");
+                    let response =
+                        wire_prost::supported_control_response_from_prost(response).unwrap();
+                    let Response::Error { message } = response else {
+                        panic!("expected Error response, got {response:?}");
+                    };
                     assert!(
                         message.contains("unsupported v16 prost request"),
                         "unexpected error message: {message}"
@@ -695,8 +739,17 @@ mod live_ipc_prost_tests {
                 ))
                 .await
                 .unwrap();
-            let response: Option<Response> = client.recv().await.unwrap();
-            assert_eq!(response, Some(Response::Pong));
+            let response: Option<DecodedWireMessage<Response, pb::Response>> =
+                client.recv_wire().await.unwrap();
+            match response {
+                Some(DecodedWireMessage::ProstV16(response)) => {
+                    assert_eq!(response.request_id, "prost-ping");
+                    let response =
+                        wire_prost::supported_control_response_from_prost(response).unwrap();
+                    assert_eq!(response, Response::Pong);
+                }
+                other => panic!("expected prost Pong response, got {other:?}"),
+            }
 
             client
                 .send_prost(&prost_request(
@@ -705,8 +758,17 @@ mod live_ipc_prost_tests {
                 ))
                 .await
                 .unwrap();
-            let response: Option<Response> = client.recv().await.unwrap();
-            assert_eq!(response, Some(Response::ShuttingDown));
+            let response: Option<DecodedWireMessage<Response, pb::Response>> =
+                client.recv_wire().await.unwrap();
+            match response {
+                Some(DecodedWireMessage::ProstV16(response)) => {
+                    assert_eq!(response.request_id, "prost-shutdown");
+                    let response =
+                        wire_prost::supported_control_response_from_prost(response).unwrap();
+                    assert_eq!(response, Response::ShuttingDown);
+                }
+                other => panic!("expected prost ShuttingDown response, got {other:?}"),
+            }
 
             server_task.await.unwrap();
         })

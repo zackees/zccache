@@ -49,7 +49,7 @@ impl DaemonControlRequest {
     }
 }
 
-/// Send a daemon control request and receive the bincode response.
+/// Send a daemon control request and receive its response.
 ///
 /// Only `Ping`, `Status`, and `Shutdown` are eligible for the v16 prost client
 /// path. Unset/`auto` `ZCCACHE_DAEMON_WIRE` prefers prost, then retries the
@@ -131,7 +131,7 @@ async fn send_prost_control(
     let request =
         wire_prost::supported_control_request_to_prost(&request).map_err(IpcError::Endpoint)?;
     conn.send_prost(&request).await?;
-    recv_control_response(&mut conn, recv_timeout).await
+    recv_control_wire_response(&mut conn, recv_timeout).await
 }
 
 async fn recv_control_response(
@@ -141,6 +141,29 @@ async fn recv_control_response(
     match recv_timeout {
         Some(timeout) => conn.recv_with_timeout(timeout).await,
         None => conn.recv().await,
+    }
+}
+
+async fn recv_control_wire_response(
+    conn: &mut ClientConnection,
+    recv_timeout: Option<std::time::Duration>,
+) -> Result<Option<Response>, IpcError> {
+    let response: Option<protocol::DecodedWireMessage<Response, wire_prost::zccache_v1::Response>> =
+        match recv_timeout {
+            Some(timeout) => conn.recv_wire_with_timeout(timeout).await?,
+            None => conn.recv_wire().await?,
+        };
+
+    match response {
+        Some(protocol::DecodedWireMessage::BincodeV15(response)) => Ok(Some(response)),
+        Some(protocol::DecodedWireMessage::ProstV16(response)) => {
+            wire_prost::supported_control_response_from_prost(response)
+                .map(Some)
+                .map_err(|message| {
+                    IpcError::Protocol(protocol::ProtocolError::Deserialization(message))
+                })
+        }
+        None => Ok(None),
     }
 }
 
@@ -722,12 +745,16 @@ mod tests {
                         request.body,
                         Some(crate::protocol::wire_prost::zccache_v1::request::Body::Status(_))
                     ));
+                    let response = Response::Status(test_daemon_status(&expected_endpoint));
+                    let response = wire_prost::supported_control_response_to_prost(
+                        &response,
+                        &request.request_id,
+                    )
+                    .unwrap();
+                    conn.send_prost(&response).await.unwrap();
                 }
                 other => panic!("expected prost status request, got {other:?}"),
             }
-            conn.send(&Response::Status(test_daemon_status(&expected_endpoint)))
-                .await
-                .unwrap();
         });
 
         let response = daemon_control_roundtrip_with_selection(
@@ -742,6 +769,38 @@ mod tests {
         match response {
             Some(Response::Status(status)) => assert_eq!(status.endpoint, endpoint),
             other => panic!("expected Status response, got {other:?}"),
+        }
+
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn daemon_control_roundtrip_bincode_selection_stays_v15_for_status() {
+        let endpoint = unique_test_endpoint();
+        let mut listener = IpcListener::bind(&endpoint).unwrap();
+        let expected_endpoint = endpoint.clone();
+
+        let server = tokio::spawn(async move {
+            let mut conn = listener.accept().await.unwrap();
+            let request: Option<crate::protocol::Request> = conn.recv().await.unwrap();
+            assert_eq!(request, Some(crate::protocol::Request::Status));
+            conn.send(&Response::Status(test_daemon_status(&expected_endpoint)))
+                .await
+                .unwrap();
+        });
+
+        let response = daemon_control_roundtrip_with_selection(
+            &endpoint,
+            DaemonControlRequest::Status,
+            None,
+            wire_prost::ClientWireSelection::BincodeV15,
+        )
+        .await
+        .unwrap();
+
+        match response {
+            Some(Response::Status(status)) => assert_eq!(status.endpoint, endpoint),
+            other => panic!("expected bincode Status response, got {other:?}"),
         }
 
         server.await.unwrap();

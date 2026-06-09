@@ -29,11 +29,13 @@ enum variants must still be appended in `messages/mod.rs` and require a
 `decode_message` helpers emit and accept bincode bodies. `PROST_PROTOCOL_VERSION`
 is `16` for the prost path. The live daemon receive path dispatches both frame
 versions, but only the control-request slice (`Ping`, `Status`, `Shutdown`) is
-converted from prost today. `ZCCACHE_DAEMON_WIRE` is honored for that client
-control slice: unset or `auto` tries prost first and falls back to v15 bincode
-on a clear old-daemon protocol rejection; `bincode` forces the old path.
-Compile, session, cache, fingerprint, and download-daemon requests remain v15
-bincode until their full protobuf conversion lands.
+converted from prost today, and only the matching control-response slice
+(`Pong`, `Status`, `ShuttingDown`, `Error`) is converted back to prost replies.
+`ZCCACHE_DAEMON_WIRE` is honored for that client control slice: unset or `auto`
+tries prost first and falls back to v15 bincode on a clear old-daemon protocol
+rejection; `bincode` forces the old path. Compile, session, cache, fingerprint,
+and download-daemon requests remain v15 bincode until their full protobuf
+conversion lands.
 
 ## Request Variants
 

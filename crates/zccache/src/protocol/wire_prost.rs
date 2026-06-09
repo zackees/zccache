@@ -195,6 +195,191 @@ pub fn supported_control_request_to_prost(
     })
 }
 
+/// Convert the narrow daemon-control response slice from the v16 prost schema
+/// back to the local protocol enum.
+///
+/// # Errors
+///
+/// Returns a clear diagnostic for unsupported response bodies or missing nested
+/// fields in the supported `Status` response body.
+pub fn supported_control_response_from_prost(
+    response: zccache_v1::Response,
+) -> Result<super::Response, String> {
+    use zccache_v1::response::Body;
+
+    match response.body {
+        Some(Body::Pong(_)) => Ok(super::Response::Pong),
+        Some(Body::ShuttingDown(_)) => Ok(super::Response::ShuttingDown),
+        Some(Body::Status(status)) => daemon_status_from_prost(status).map(super::Response::Status),
+        Some(Body::Error(error)) => Ok(super::Response::Error {
+            message: error.message,
+        }),
+        Some(other) => Err(format!(
+            "unsupported v16 prost response body {other:?}; only Pong, Status, ShuttingDown, and \
+             Error are supported before the full zccache prost conversion lands"
+        )),
+        None => Err(
+            "unsupported v16 prost response: missing response body; only Pong, Status, \
+             ShuttingDown, and Error are supported before the full zccache prost conversion lands"
+                .to_string(),
+        ),
+    }
+}
+
+/// Convert the narrow daemon-control response slice to the v16 prost schema.
+///
+/// # Errors
+///
+/// Returns a clear diagnostic when a caller tries to route an unsupported
+/// response through the prost control path.
+pub fn supported_control_response_to_prost(
+    response: &super::Response,
+    request_id: &str,
+) -> Result<zccache_v1::Response, String> {
+    use zccache_v1::response::Body;
+
+    let body = match response {
+        super::Response::Pong => Body::Pong(zccache_v1::Empty {}),
+        super::Response::ShuttingDown => Body::ShuttingDown(zccache_v1::Empty {}),
+        super::Response::Status(status) => Body::Status(daemon_status_to_prost(status)),
+        super::Response::Error { message } => Body::Error(zccache_v1::Error {
+            message: message.clone(),
+        }),
+        other => {
+            return Err(format!(
+                "unsupported v16 prost control response {other:?}; only Pong, Status, \
+                 ShuttingDown, and Error may use the prost control response path before the full \
+                 zccache prost conversion lands"
+            ));
+        }
+    };
+
+    Ok(zccache_v1::Response {
+        body: Some(body),
+        request_id: request_id.to_string(),
+    })
+}
+
+fn daemon_status_to_prost(status: &super::DaemonStatus) -> zccache_v1::DaemonStatus {
+    zccache_v1::DaemonStatus {
+        version: status.version.clone(),
+        daemon_namespace: status.daemon_namespace.clone(),
+        endpoint: status.endpoint.clone(),
+        private_daemon: Some(private_daemon_status_to_prost(&status.private_daemon)),
+        artifact_count: status.artifact_count,
+        cache_size_bytes: status.cache_size_bytes,
+        metadata_entries: status.metadata_entries,
+        uptime_secs: status.uptime_secs,
+        cache_hits: status.cache_hits,
+        cache_misses: status.cache_misses,
+        total_compilations: status.total_compilations,
+        non_cacheable: status.non_cacheable,
+        compile_errors: status.compile_errors,
+        compile_errors_cached: status.compile_errors_cached,
+        time_saved_ms: status.time_saved_ms,
+        total_links: status.total_links,
+        link_hits: status.link_hits,
+        link_misses: status.link_misses,
+        link_non_cacheable: status.link_non_cacheable,
+        dep_graph_contexts: status.dep_graph_contexts,
+        dep_graph_files: status.dep_graph_files,
+        sessions_total: status.sessions_total,
+        sessions_active: status.sessions_active,
+        cache_dir: Some(path_to_prost(&status.cache_dir)),
+        dep_graph_version: status.dep_graph_version,
+        dep_graph_disk_size: status.dep_graph_disk_size,
+        dep_graph_persisted: status.dep_graph_persisted,
+    }
+}
+
+fn daemon_status_from_prost(
+    status: zccache_v1::DaemonStatus,
+) -> Result<super::DaemonStatus, String> {
+    Ok(super::DaemonStatus {
+        version: status.version,
+        daemon_namespace: status.daemon_namespace,
+        endpoint: status.endpoint,
+        private_daemon: private_daemon_status_from_prost(required_prost_field(
+            status.private_daemon,
+            "DaemonStatus.private_daemon",
+        )?),
+        artifact_count: status.artifact_count,
+        cache_size_bytes: status.cache_size_bytes,
+        metadata_entries: status.metadata_entries,
+        uptime_secs: status.uptime_secs,
+        cache_hits: status.cache_hits,
+        cache_misses: status.cache_misses,
+        total_compilations: status.total_compilations,
+        non_cacheable: status.non_cacheable,
+        compile_errors: status.compile_errors,
+        compile_errors_cached: status.compile_errors_cached,
+        time_saved_ms: status.time_saved_ms,
+        total_links: status.total_links,
+        link_hits: status.link_hits,
+        link_misses: status.link_misses,
+        link_non_cacheable: status.link_non_cacheable,
+        dep_graph_contexts: status.dep_graph_contexts,
+        dep_graph_files: status.dep_graph_files,
+        sessions_total: status.sessions_total,
+        sessions_active: status.sessions_active,
+        cache_dir: path_from_prost(required_prost_field(
+            status.cache_dir,
+            "DaemonStatus.cache_dir",
+        )?),
+        dep_graph_version: status.dep_graph_version,
+        dep_graph_disk_size: status.dep_graph_disk_size,
+        dep_graph_persisted: status.dep_graph_persisted,
+    })
+}
+
+fn private_daemon_status_to_prost(
+    status: &super::PrivateDaemonStatus,
+) -> zccache_v1::PrivateDaemonStatus {
+    zccache_v1::PrivateDaemonStatus {
+        enabled: status.enabled,
+        owners: status
+            .owners
+            .iter()
+            .map(|owner| zccache_v1::PrivateDaemonOwnerStatus {
+                pid: owner.pid,
+                ref_count: owner.ref_count,
+            })
+            .collect(),
+        private_env_keys: status.private_env_keys.clone(),
+    }
+}
+
+fn private_daemon_status_from_prost(
+    status: zccache_v1::PrivateDaemonStatus,
+) -> super::PrivateDaemonStatus {
+    super::PrivateDaemonStatus {
+        enabled: status.enabled,
+        owners: status
+            .owners
+            .into_iter()
+            .map(|owner| super::PrivateDaemonOwnerStatus {
+                pid: owner.pid,
+                ref_count: owner.ref_count,
+            })
+            .collect(),
+        private_env_keys: status.private_env_keys,
+    }
+}
+
+fn path_to_prost(path: &crate::core::NormalizedPath) -> zccache_v1::Path {
+    zccache_v1::Path {
+        value: path.as_path().to_string_lossy().into_owned(),
+    }
+}
+
+fn path_from_prost(path: zccache_v1::Path) -> crate::core::NormalizedPath {
+    crate::core::NormalizedPath::from(path.value)
+}
+
+fn required_prost_field<T>(value: Option<T>, field: &str) -> Result<T, String> {
+    value.ok_or_else(|| format!("missing required v16 prost control response field {field}"))
+}
+
 /// Serialize a prost message to the planned v16 length-prefixed frame.
 ///
 /// Format: `[4-byte LE length][4-byte LE protocol version][prost payload]`.
