@@ -12,6 +12,8 @@ bincode or v16 prost without breaking old clients.
 honors `ZCCACHE_DAEMON_WIRE` for `Ping`, `Status`, `Shutdown`, and cache
 `Clear`; unset/`auto` tries v16 prost first and retries v15 bincode when an
 older daemon rejects the frame. The v16 control path accepts either v16 prost
-control replies or v15 bincode replies from compatibility daemons. Compile,
-session, artifact lookup/store, fingerprint, and download-daemon requests still
-use v15 bincode directly.
+control replies or v15 bincode replies from compatibility daemons. The daemon
+also accepts direct v16 prost `ReleaseWorktreeHandles` requests and sends the
+matching v16 prost response, but there is no high-level client selector for
+that path yet. Compile, session, artifact lookup/store, fingerprint,
+generic-tool, and download-daemon requests still use v15 bincode directly.

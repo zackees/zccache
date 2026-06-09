@@ -94,6 +94,40 @@ fn prost_clear_request_and_response_convert_to_protocol_enums() {
 }
 
 #[test]
+fn prost_release_worktree_handles_request_and_response_convert_to_protocol_enums() {
+    let request = zccache::protocol::Request::ReleaseWorktreeHandles {
+        path: "/tmp/worktree".into(),
+    };
+    let prost_request = supported_control_request_to_prost(&request).unwrap();
+    assert_eq!(prost_request.request_id, "control-release-worktree-handles");
+    assert!(matches!(
+        prost_request.body,
+        Some(pb::request::Body::ReleaseWorktreeHandles(_))
+    ));
+    assert_eq!(
+        supported_control_request_from_prost(prost_request).unwrap(),
+        request
+    );
+
+    let response = zccache::protocol::Response::ReleaseWorktreeHandlesResult {
+        inspected: 2,
+        released: 1,
+        sessions_dropped: vec!["session-a".to_string()],
+        unreleased: vec!["/tmp/worktree/locked.obj".into()],
+    };
+    let prost_response = supported_control_response_to_prost(&response, "release-1").unwrap();
+    assert_eq!(prost_response.request_id, "release-1");
+    assert!(matches!(
+        prost_response.body,
+        Some(pb::response::Body::ReleaseWorktreeHandlesResult(_))
+    ));
+    assert_eq!(
+        supported_control_response_from_prost(prost_response).unwrap(),
+        response
+    );
+}
+
+#[test]
 fn generated_frame_envelope_can_carry_opaque_payload() {
     let request = pb::Request {
         body: Some(pb::request::Body::Status(pb::Empty {})),

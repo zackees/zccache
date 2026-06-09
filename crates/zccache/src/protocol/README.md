@@ -28,14 +28,18 @@ enum variants must still be appended in `messages/mod.rs` and require a
 `PROTOCOL_VERSION` remains `15` while the public `encode_message` and
 `decode_message` helpers emit and accept bincode bodies. `PROST_PROTOCOL_VERSION`
 is `16` for the prost path. The live daemon receive path dispatches both frame
-versions, but only the control-request slice (`Ping`, `Status`, `Shutdown`) is
-converted from prost today, and only the matching control-response slice
-(`Pong`, `Status`, `ShuttingDown`, `Error`) is converted back to prost replies.
+versions, but only the control/maintenance request slice (`Ping`, `Status`,
+`Shutdown`, `Clear`, `ReleaseWorktreeHandles`) is converted from prost today,
+and only the matching control/maintenance response slice (`Pong`, `Status`,
+`ShuttingDown`, `Cleared`, `ReleaseWorktreeHandlesResult`, `Error`) is converted
+back to prost replies.
 `ZCCACHE_DAEMON_WIRE` is honored for that client control slice: unset or `auto`
 tries prost first and falls back to v15 bincode on a clear old-daemon protocol
-rejection; `bincode` forces the old path. Compile, session, cache, fingerprint,
-and download-daemon requests remain v15 bincode until their full protobuf
-conversion lands.
+rejection; `bincode` forces the old path. The live daemon can accept a direct
+v16 prost `ReleaseWorktreeHandles` request, but the high-level client selector
+does not route it yet. Compile, session, artifact lookup/store, fingerprint,
+generic-tool, and download-daemon requests remain v15 bincode until their full
+protobuf conversion lands.
 
 ## Request Variants
 
@@ -52,6 +56,7 @@ conversion lands.
 | `LinkEphemeral` | Single-roundtrip link/archive |
 | `Lookup` / `Store` | Direct artifact cache access |
 | `Clear` | Wipe all caches |
+| `ReleaseWorktreeHandles` | Drop session-owned handles under a worktree path |
 
 ## Response Variants
 
@@ -67,3 +72,4 @@ conversion lands.
 | `LinkResult` | Same as `CompileResult` plus optional `warning` |
 | `Error { message }` | Error string |
 | `Cleared` | Counts of artifacts/metadata/contexts removed |
+| `ReleaseWorktreeHandlesResult` | Worktree-handle release counts and unreleased paths |

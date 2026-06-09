@@ -724,6 +724,42 @@ mod live_ipc_prost_tests {
                 other => panic!("expected Cleared response, got {other:?}"),
             }
 
+            let release_path = temp.path().join("orphan-worktree");
+            client
+                .send_prost(&prost_request(
+                    "prost-release-worktree",
+                    pb::request::Body::ReleaseWorktreeHandles(pb::ReleaseWorktreeHandles {
+                        path: Some(pb::Path {
+                            value: release_path.to_string_lossy().into_owned(),
+                        }),
+                    }),
+                ))
+                .await
+                .unwrap();
+            let response: Option<DecodedWireMessage<Response, pb::Response>> =
+                client.recv_wire().await.unwrap();
+            match response {
+                Some(DecodedWireMessage::ProstV16(response)) => {
+                    assert_eq!(response.request_id, "prost-release-worktree");
+                    let response =
+                        wire_prost::supported_control_response_from_prost(response).unwrap();
+                    let Response::ReleaseWorktreeHandlesResult {
+                        inspected,
+                        released,
+                        sessions_dropped,
+                        unreleased,
+                    } = response
+                    else {
+                        panic!("expected ReleaseWorktreeHandlesResult response, got {response:?}");
+                    };
+                    assert_eq!(inspected, 0);
+                    assert_eq!(released, 0);
+                    assert!(sessions_dropped.is_empty());
+                    assert!(unreleased.is_empty());
+                }
+                other => panic!("expected ReleaseWorktreeHandlesResult response, got {other:?}"),
+            }
+
             client
                 .send_prost(&prost_request(
                     "prost-ping",

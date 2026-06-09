@@ -137,8 +137,8 @@ pub fn client_wire_selection_from_env() -> Result<ClientWireSelection, String> {
     client_wire_selection_from_env_value(std::env::var(WIRE_FORMAT_ENV).ok().as_deref())
 }
 
-/// Convert the narrow set of v16 prost daemon-control requests that the live
-/// dispatcher can handle before the full enum conversion lands.
+/// Convert the narrow set of v16 prost daemon-control and maintenance requests
+/// that the live dispatcher can handle before the full enum conversion lands.
 ///
 /// # Errors
 ///
@@ -155,19 +155,28 @@ pub fn supported_control_request_from_prost(
         Some(Body::Status(_)) => Ok(super::Request::Status),
         Some(Body::Shutdown(_)) => Ok(super::Request::Shutdown),
         Some(Body::Clear(_)) => Ok(super::Request::Clear),
+        Some(Body::ReleaseWorktreeHandles(request)) => {
+            Ok(super::Request::ReleaseWorktreeHandles {
+                path: path_from_prost(required_prost_field(
+                    request.path,
+                    "ReleaseWorktreeHandles.path",
+                )?),
+            })
+        }
         Some(other) => Err(format!(
-            "unsupported v16 prost request body {other:?}; only Ping, Status, Shutdown, and Clear \
-             are supported before the full zccache prost conversion lands"
+            "unsupported v16 prost request body {other:?}; only Ping, Status, Shutdown, Clear, \
+             and ReleaseWorktreeHandles are supported before the full zccache prost conversion lands"
         )),
         None => Err(
-            "unsupported v16 prost request: missing request body; only Ping, Status, Shutdown, and Clear \
-             are supported before the full zccache prost conversion lands"
+            "unsupported v16 prost request: missing request body; only Ping, Status, Shutdown, \
+             Clear, and ReleaseWorktreeHandles are supported before the full zccache prost conversion lands"
                 .to_string(),
         ),
     }
 }
 
-/// Convert the narrow daemon-control request slice to the v16 prost schema.
+/// Convert the narrow daemon-control and maintenance request slice to the v16
+/// prost schema.
 ///
 /// # Errors
 ///
@@ -183,10 +192,17 @@ pub fn supported_control_request_to_prost(
         super::Request::Status => ("control-status", Body::Status(zccache_v1::Empty {})),
         super::Request::Shutdown => ("control-shutdown", Body::Shutdown(zccache_v1::Empty {})),
         super::Request::Clear => ("control-clear", Body::Clear(zccache_v1::Empty {})),
+        super::Request::ReleaseWorktreeHandles { path } => (
+            "control-release-worktree-handles",
+            Body::ReleaseWorktreeHandles(zccache_v1::ReleaseWorktreeHandles {
+                path: Some(path_to_prost(path)),
+            }),
+        ),
         other => {
             return Err(format!(
-                "unsupported v16 prost control request {other:?}; only Ping, Status, Shutdown, and Clear \
-                 may select {WIRE_FORMAT_ENV} before the full zccache prost conversion lands"
+                "unsupported v16 prost control request {other:?}; only Ping, Status, Shutdown, \
+                 Clear, and ReleaseWorktreeHandles may select {WIRE_FORMAT_ENV} before the full \
+                 zccache prost conversion lands"
             ));
         }
     };
@@ -197,8 +213,8 @@ pub fn supported_control_request_to_prost(
     })
 }
 
-/// Convert the narrow daemon-control response slice from the v16 prost schema
-/// back to the local protocol enum.
+/// Convert the narrow daemon-control and maintenance response slice from the
+/// v16 prost schema back to the local protocol enum.
 ///
 /// # Errors
 ///
@@ -222,19 +238,30 @@ pub fn supported_control_response_from_prost(
         Some(Body::Error(error)) => Ok(super::Response::Error {
             message: error.message,
         }),
+        Some(Body::ReleaseWorktreeHandlesResult(result)) => {
+            Ok(super::Response::ReleaseWorktreeHandlesResult {
+                inspected: result.inspected,
+                released: result.released,
+                sessions_dropped: result.sessions_dropped,
+                unreleased: result.unreleased.into_iter().map(path_from_prost).collect(),
+            })
+        }
         Some(other) => Err(format!(
             "unsupported v16 prost response body {other:?}; only Pong, Status, ShuttingDown, \
-             Cleared, and Error are supported before the full zccache prost conversion lands"
+             Cleared, Error, and ReleaseWorktreeHandlesResult are supported before the full \
+             zccache prost conversion lands"
         )),
         None => Err(
             "unsupported v16 prost response: missing response body; only Pong, Status, \
-             ShuttingDown, Cleared, and Error are supported before the full zccache prost conversion lands"
+             ShuttingDown, Cleared, Error, and ReleaseWorktreeHandlesResult are supported before the full \
+             zccache prost conversion lands"
                 .to_string(),
         ),
     }
 }
 
-/// Convert the narrow daemon-control response slice to the v16 prost schema.
+/// Convert the narrow daemon-control and maintenance response slice to the v16
+/// prost schema.
 ///
 /// # Errors
 ///
@@ -264,11 +291,22 @@ pub fn supported_control_response_to_prost(
         super::Response::Error { message } => Body::Error(zccache_v1::Error {
             message: message.clone(),
         }),
+        super::Response::ReleaseWorktreeHandlesResult {
+            inspected,
+            released,
+            sessions_dropped,
+            unreleased,
+        } => Body::ReleaseWorktreeHandlesResult(zccache_v1::ReleaseWorktreeHandlesResult {
+            inspected: *inspected,
+            released: *released,
+            sessions_dropped: sessions_dropped.clone(),
+            unreleased: unreleased.iter().map(path_to_prost).collect(),
+        }),
         other => {
             return Err(format!(
                 "unsupported v16 prost control response {other:?}; only Pong, Status, \
-                 ShuttingDown, Cleared, and Error may use the prost control response path before the full \
-                 zccache prost conversion lands"
+                 ShuttingDown, Cleared, Error, and ReleaseWorktreeHandlesResult may use the prost \
+                 control response path before the full zccache prost conversion lands"
             ));
         }
     };
