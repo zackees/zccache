@@ -8,7 +8,8 @@
 
 use std::time::Duration;
 
-use bytes::BytesMut;
+use bytes::{Buf, BytesMut};
+use prost::Message as _;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use super::error::IpcError;
@@ -73,6 +74,25 @@ pub struct IpcClientConnection {
 // ── IpcConnection impl (server-side on Windows, both on Unix) ───────
 
 impl IpcConnection {
+    /// Serve a running-process `BackendHandle` endpoint identity probe.
+    ///
+    /// Returns `true` when this connection was a probe and has been answered.
+    /// Returns `false` after buffering enough bytes to prove the peer is using
+    /// zccache's normal daemon wire; those bytes remain queued for the next
+    /// `recv`/`recv_wire` call.
+    pub async fn try_serve_backend_handle_probe(
+        &mut self,
+        daemon: &running_process::broker::backend_handle::DaemonProcess,
+    ) -> Result<bool, IpcError> {
+        try_serve_backend_handle_probe(
+            &mut self.reader,
+            &mut self.writer,
+            &mut self.read_buf,
+            daemon,
+        )
+        .await
+    }
+
     /// Send a serializable message over the connection.
     pub async fn send<T: serde::Serialize>(&mut self, msg: &T) -> Result<(), IpcError> {
         let buf = crate::protocol::encode_message(msg)?;
@@ -353,6 +373,143 @@ where
     }
     read_buf.extend_from_slice(&tmp[..n]);
     Ok(true)
+}
+
+async fn try_serve_backend_handle_probe<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    read_buf: &mut BytesMut,
+    daemon: &running_process::broker::backend_handle::DaemonProcess,
+) -> Result<bool, IpcError>
+where
+    R: AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    ensure_buffered(reader, read_buf, 8).await?;
+    if read_buf.is_empty() {
+        return Ok(false);
+    }
+
+    let running_process_version = running_process::broker::protocol::ENVELOPE_VERSION;
+    if read_buf[0] != running_process_version {
+        return Ok(false);
+    }
+
+    let zccache_len = u32::from_le_bytes([read_buf[0], read_buf[1], read_buf[2], read_buf[3]]);
+    let zccache_version = u32::from_le_bytes([read_buf[4], read_buf[5], read_buf[6], read_buf[7]]);
+    if zccache_len >= 4
+        && matches!(
+            zccache_version,
+            crate::protocol::BINCODE_PROTOCOL_VERSION | crate::protocol::PROST_PROTOCOL_VERSION
+        )
+    {
+        return Ok(false);
+    }
+
+    let body_len =
+        u32::from_le_bytes([read_buf[1], read_buf[2], read_buf[3], read_buf[4]]) as usize;
+    if body_len > running_process::broker::protocol::MAX_FRAME_BYTES {
+        return Err(IpcError::Endpoint(format!(
+            "running-process BackendHandle probe frame too large: {body_len} bytes"
+        )));
+    }
+    ensure_buffered(reader, read_buf, 5 + body_len).await?;
+
+    read_buf.advance(5);
+    let body = read_buf.split_to(body_len);
+    let frame = running_process::broker::protocol::Frame::decode(body.as_ref())
+        .map_err(|err| IpcError::Endpoint(format!("BackendHandle probe decode failed: {err}")))?;
+    if !is_backend_handle_probe_request(&frame) {
+        return Err(IpcError::Endpoint(
+            "unexpected running-process frame on zccache daemon endpoint".to_string(),
+        ));
+    }
+
+    let response = backend_handle_probe_response(&frame, daemon)?;
+    write_running_process_frame(writer, &response).await?;
+    Ok(true)
+}
+
+async fn ensure_buffered<R>(
+    reader: &mut R,
+    read_buf: &mut BytesMut,
+    min_len: usize,
+) -> Result<(), IpcError>
+where
+    R: AsyncRead + Unpin,
+{
+    while read_buf.len() < min_len {
+        if !read_next_chunk(reader, read_buf).await? {
+            if read_buf.is_empty() {
+                return Ok(());
+            }
+            return Err(IpcError::ConnectionClosed);
+        }
+    }
+    Ok(())
+}
+
+fn is_backend_handle_probe_request(frame: &running_process::broker::protocol::Frame) -> bool {
+    use running_process::broker::backend_lifecycle::probe::BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL;
+    use running_process::broker::protocol::{FrameKind, PayloadEncoding};
+
+    frame.envelope_version == 1
+        && FrameKind::try_from(frame.kind) == Ok(FrameKind::Request)
+        && frame.payload_protocol == BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL
+        && PayloadEncoding::try_from(frame.payload_encoding) == Ok(PayloadEncoding::None)
+        && frame.payload.len() == 32
+}
+
+fn backend_handle_probe_response(
+    request: &running_process::broker::protocol::Frame,
+    daemon: &running_process::broker::backend_handle::DaemonProcess,
+) -> Result<running_process::broker::protocol::Frame, IpcError> {
+    use running_process::broker::backend_lifecycle::probe::BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL;
+    use running_process::broker::protocol::{Frame, FrameKind, PayloadEncoding};
+
+    let mut payload = Vec::with_capacity(32 + 128);
+    payload.extend_from_slice(&request.payload);
+    daemon.to_proto().encode(&mut payload).map_err(|err| {
+        IpcError::Endpoint(format!("BackendHandle identity encode failed: {err}"))
+    })?;
+
+    Ok(Frame {
+        envelope_version: 1,
+        kind: FrameKind::Response as i32,
+        payload_protocol: BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL,
+        payload,
+        request_id: request.request_id,
+        payload_encoding: PayloadEncoding::None as i32,
+        deadline_unix_ms: 0,
+        traceparent: request.traceparent.clone(),
+        tracestate: request.tracestate.clone(),
+    })
+}
+
+async fn write_running_process_frame<W>(
+    writer: &mut W,
+    frame: &running_process::broker::protocol::Frame,
+) -> Result<(), IpcError>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut body = Vec::new();
+    frame.encode(&mut body).map_err(|err| {
+        IpcError::Endpoint(format!("BackendHandle response encode failed: {err}"))
+    })?;
+    if body.len() > running_process::broker::protocol::MAX_FRAME_BYTES {
+        return Err(IpcError::Endpoint(format!(
+            "BackendHandle response frame too large: {} bytes",
+            body.len()
+        )));
+    }
+    writer
+        .write_all(&[running_process::broker::protocol::ENVELOPE_VERSION])
+        .await?;
+    writer.write_all(&(body.len() as u32).to_le_bytes()).await?;
+    writer.write_all(&body).await?;
+    writer.flush().await?;
+    Ok(())
 }
 
 // ── IpcListener ─────────────────────────────────────────────────────
@@ -781,6 +938,66 @@ mod tests {
         let resp: Option<Response> = client.recv().await.unwrap();
         assert_eq!(resp, Some(Response::Pong));
 
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn backend_handle_probe_detector_preserves_zccache_requests() {
+        let endpoint = unique_test_endpoint();
+        let daemon = crate::ipc::current_backend_identity(&endpoint).unwrap();
+        let mut listener = IpcListener::bind(&endpoint).unwrap();
+
+        let server = tokio::spawn(async move {
+            let mut conn = listener.accept().await.unwrap();
+            assert!(!conn.try_serve_backend_handle_probe(&daemon).await.unwrap());
+            let msg: Option<Request> = conn.recv().await.unwrap();
+            assert_eq!(msg, Some(Request::Ping));
+            conn.send(&Response::Pong).await.unwrap();
+        });
+
+        let mut client = connect(&endpoint).await.unwrap();
+        client.send(&Request::Ping).await.unwrap();
+        let resp: Option<Response> = client.recv().await.unwrap();
+        assert_eq!(resp, Some(Response::Pong));
+
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn backend_handle_probe_succeeds_on_direct_endpoint() {
+        let endpoint = unique_test_endpoint();
+        let daemon = crate::ipc::current_backend_identity(&endpoint).unwrap();
+        let probe_endpoint = daemon.ipc_endpoint.clone();
+        let expected_daemon = daemon.clone();
+        let mut listener = IpcListener::bind(&endpoint).unwrap();
+
+        let server = tokio::spawn(async move {
+            let mut conn = listener.accept().await.unwrap();
+            assert!(conn.try_serve_backend_handle_probe(&daemon).await.unwrap());
+        });
+
+        let (service_name, handle_endpoint) = tokio::task::spawn_blocking(move || {
+            let handle =
+                running_process::broker::backend_handle::BackendHandle::probe_with_service(
+                    "zccache",
+                    crate::core::VERSION,
+                    &probe_endpoint,
+                    &expected_daemon,
+                )
+                .unwrap();
+            (
+                handle.service_name.clone(),
+                handle.daemon_process.ipc_endpoint.path.clone(),
+            )
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(service_name, "zccache");
+        assert_eq!(
+            handle_endpoint,
+            crate::ipc::running_process_endpoint(&endpoint).path
+        );
         server.await.unwrap();
     }
 

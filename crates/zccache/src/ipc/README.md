@@ -22,3 +22,14 @@ generic-tool, and download-daemon requests still use v15 bincode directly.
 compatibility harness: a v15-only daemon rejects the first v16 prost control
 frame, returns a v15 bincode mismatch response, and the public auto client
 retries the same control request as v15 bincode.
+
+Minimal running-process adoption is intentionally separate from the full broker
+rollout. The direct zccache daemon now records
+`daemon.running-process.json` beside its lock file and answers the reserved
+`BackendHandle` endpoint probe on the existing IPC endpoint. This lets callers
+verify the current daemon through `running_process::broker::BackendHandle`
+without requiring a `.servicedef`, broker-client routing, default-on rollout,
+or the remaining protobuf message-family conversions. The daemon pre-bind
+probe uses that BackendHandle identity when present and falls back to the
+legacy raw-connect probe for older daemons that have not written the identity
+file yet.

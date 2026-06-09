@@ -30,6 +30,8 @@ impl DaemonServer {
         cache_dir: &crate::core::NormalizedPath,
     ) -> Result<Self, crate::ipc::IpcError> {
         let listener = IpcListener::bind(endpoint)?;
+        let backend_identity = crate::ipc::current_backend_identity(endpoint)
+            .map_err(|err| crate::ipc::IpcError::Endpoint(err.to_string()))?;
         let shutdown = Arc::new(Notify::new());
         let now = now_secs();
         let instance = SERVER_INSTANCE.fetch_add(1, Ordering::Relaxed);
@@ -124,6 +126,7 @@ impl DaemonServer {
             index_writer_rx: Some(index_writer_rx),
             state: Arc::new(SharedState {
                 endpoint: endpoint.to_string(),
+                backend_identity,
                 daemon_namespace: crate::core::config::daemon_namespace_label(),
                 cache_dir: cache_dir.clone(),
                 private_daemon: PrivateDaemonLifecycle::new(),
@@ -180,6 +183,12 @@ impl DaemonServer {
     #[must_use]
     pub fn shutdown_handle(&self) -> Arc<Notify> {
         Arc::clone(&self.shutdown)
+    }
+
+    /// Clone the running-process identity served by this daemon.
+    #[must_use]
+    pub fn backend_identity(&self) -> running_process::broker::backend_handle::DaemonProcess {
+        self.state.backend_identity.clone()
     }
 
     /// Replace the dependency graph with a pre-loaded one.

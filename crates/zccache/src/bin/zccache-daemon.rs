@@ -304,6 +304,9 @@ fn run_server(args: Args) {
         if let Err(e) = zccache::ipc::write_lock_file(pid) {
             tracing::warn!("failed to write lock file: {e}");
         }
+        if let Err(e) = zccache::ipc::write_backend_identity(&server.backend_identity()) {
+            tracing::warn!("failed to write running-process backend identity: {e}");
+        }
 
         // Spawn the depgraph load. Holds a `DepGraphSetter` that survives
         // the spawn_blocking boundary; on completion atomically installs

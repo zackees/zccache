@@ -16,6 +16,14 @@ pub(super) async fn handle_connection(
     mut conn: IpcConnection,
     state: Arc<SharedState>,
 ) -> Result<(), crate::ipc::IpcError> {
+    if conn
+        .try_serve_backend_handle_probe(&state.backend_identity)
+        .await?
+    {
+        state.last_activity.store(now_secs(), Ordering::Relaxed);
+        return Ok(());
+    }
+
     loop {
         let request = match conn.recv_wire::<Request, pb::Request>().await {
             Ok(req) => req,

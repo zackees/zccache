@@ -13,6 +13,9 @@ pub(super) struct SharedState {
     /// IPC endpoint this daemon bound. Reported through `zccache status` so
     /// wrappers can verify they reached the intended daemon identity.
     pub(super) endpoint: String,
+    /// running-process BackendHandle identity served on the same direct
+    /// daemon endpoint for the minimal broker-adoption path.
+    pub(super) backend_identity: running_process::broker::backend_handle::DaemonProcess,
     /// Active daemon/socket namespace label.
     pub(super) daemon_namespace: String,
     /// Cache root this daemon was created with.

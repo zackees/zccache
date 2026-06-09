@@ -365,6 +365,92 @@ pub fn remove_lock_file() {
     let _ = std::fs::remove_file(lock_file_path());
 }
 
+/// Path where the daemon records the identity consumed by
+/// `running_process::broker::backend_handle::BackendHandle`.
+#[must_use]
+pub fn backend_identity_path() -> NormalizedPath {
+    let namespace = crate::core::config::daemon_namespace();
+    if let Some(cache_dir) = crate::core::config::cache_dir_override() {
+        return cache_dir.join(backend_identity_file_name(namespace.as_deref()));
+    }
+    crate::core::config::default_cache_dir().join(backend_identity_file_name(namespace.as_deref()))
+}
+
+fn backend_identity_file_name(namespace: Option<&str>) -> String {
+    match namespace {
+        Some(ns) => format!("daemon-{ns}.running-process.json"),
+        None => "daemon.running-process.json".to_string(),
+    }
+}
+
+/// Convert zccache's direct daemon endpoint to the running-process endpoint
+/// tuple used by `BackendHandle`.
+#[must_use]
+pub fn running_process_endpoint(endpoint: &str) -> running_process::broker::protocol::Endpoint {
+    running_process::broker::protocol::Endpoint {
+        namespace_id: crate::core::config::daemon_namespace_label(),
+        path: running_process_endpoint_path(endpoint),
+    }
+}
+
+#[cfg(windows)]
+fn running_process_endpoint_path(endpoint: &str) -> String {
+    endpoint
+        .strip_prefix(r"\\.\pipe\")
+        .unwrap_or(endpoint)
+        .to_string()
+}
+
+#[cfg(unix)]
+fn running_process_endpoint_path(endpoint: &str) -> String {
+    endpoint.to_string()
+}
+
+/// Build the current process identity that a zccache daemon exposes to
+/// `BackendHandle` probes.
+pub fn current_backend_identity(
+    endpoint: &str,
+) -> Result<
+    running_process::broker::backend_handle::DaemonProcess,
+    running_process::broker::backend_lifecycle::identity::IdentityError,
+> {
+    running_process::broker::backend_handle::DaemonProcess::current_process(
+        running_process_endpoint(endpoint),
+        None,
+    )
+}
+
+/// Persist the daemon identity used by future `BackendHandle` probes.
+pub fn write_backend_identity(
+    daemon: &running_process::broker::backend_handle::DaemonProcess,
+) -> Result<(), std::io::Error> {
+    let path = backend_identity_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_vec_pretty(daemon)
+        .map_err(|err| std::io::Error::other(format!("serialize backend identity: {err}")))?;
+    std::fs::write(path, json)
+}
+
+/// Load and actively verify the daemon identity through `BackendHandle`.
+#[must_use]
+pub fn probe_backend_handle(
+    endpoint: &str,
+) -> Option<running_process::broker::backend_handle::BackendHandle> {
+    let daemon = std::fs::read(backend_identity_path())
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
+    let endpoint = running_process_endpoint(endpoint);
+    running_process::broker::backend_handle::BackendHandle::probe_with_service(
+        "zccache",
+        crate::core::VERSION,
+        &endpoint,
+        &daemon,
+    )
+    .ok()
+}
+
 /// Forcefully terminate a process by PID.
 ///
 /// This is intended as a last-resort escape hatch when the daemon is no longer
@@ -497,6 +583,9 @@ pub async fn probe_existing_daemon(endpoint: &str, timeout: std::time::Duration)
     }
     if !verify_daemon_pid(pid) {
         return false;
+    }
+    if probe_backend_handle(endpoint).is_some() {
+        return true;
     }
     match tokio::time::timeout(timeout, crate::ipc::connect(endpoint)).await {
         Ok(Ok(_conn)) => true,
