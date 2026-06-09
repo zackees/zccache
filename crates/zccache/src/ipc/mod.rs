@@ -451,6 +451,14 @@ pub fn probe_backend_handle(
     .ok()
 }
 
+/// Broker escape hatch shared with the running-process rollout plan.
+pub const RUNNING_PROCESS_DISABLE_ENV: &str = "RUNNING_PROCESS_DISABLE";
+
+#[must_use]
+pub fn running_process_disabled() -> bool {
+    std::env::var(RUNNING_PROCESS_DISABLE_ENV).is_ok_and(|value| value == "1")
+}
+
 /// Forcefully terminate a process by PID.
 ///
 /// This is intended as a last-resort escape hatch when the daemon is no longer
@@ -584,7 +592,9 @@ pub async fn probe_existing_daemon(endpoint: &str, timeout: std::time::Duration)
     if !verify_daemon_pid(pid) {
         return false;
     }
-    if probe_backend_handle(endpoint).is_some() {
+    // RUNNING_PROCESS_DISABLE=1 is the upstream broker rollout escape hatch:
+    // skip the BackendHandle probe but keep the existing direct IPC fallback.
+    if !running_process_disabled() && probe_backend_handle(endpoint).is_some() {
         return true;
     }
     match tokio::time::timeout(timeout, crate::ipc::connect(endpoint)).await {
@@ -741,6 +751,7 @@ mod tests {
         _lock: MutexGuard<'static, ()>,
         previous_cache_dir: Option<OsString>,
         previous_namespace: Option<OsString>,
+        previous_running_process_disable: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -748,12 +759,14 @@ mod tests {
             let lock = ENV_LOCK.lock().unwrap();
             let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
             let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
+            let previous_running_process_disable = std::env::var_os(RUNNING_PROCESS_DISABLE_ENV);
             std::env::set_var(crate::core::config::CACHE_DIR_ENV, value);
             std::env::remove_var(crate::core::config::DAEMON_NAMESPACE_ENV);
             Self {
                 _lock: lock,
                 previous_cache_dir,
                 previous_namespace,
+                previous_running_process_disable,
             }
         }
 
@@ -761,12 +774,28 @@ mod tests {
             let lock = ENV_LOCK.lock().unwrap();
             let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
             let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
+            let previous_running_process_disable = std::env::var_os(RUNNING_PROCESS_DISABLE_ENV);
             std::env::set_var(crate::core::config::CACHE_DIR_ENV, value);
             std::env::set_var(crate::core::config::DAEMON_NAMESPACE_ENV, namespace);
             Self {
                 _lock: lock,
                 previous_cache_dir,
                 previous_namespace,
+                previous_running_process_disable,
+            }
+        }
+
+        fn isolate_running_process_disable() -> Self {
+            let lock = ENV_LOCK.lock().unwrap();
+            let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
+            let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
+            let previous_running_process_disable = std::env::var_os(RUNNING_PROCESS_DISABLE_ENV);
+            std::env::remove_var(RUNNING_PROCESS_DISABLE_ENV);
+            Self {
+                _lock: lock,
+                previous_cache_dir,
+                previous_namespace,
+                previous_running_process_disable,
             }
         }
     }
@@ -780,6 +809,10 @@ mod tests {
             match &self.previous_namespace {
                 Some(value) => std::env::set_var(crate::core::config::DAEMON_NAMESPACE_ENV, value),
                 None => std::env::remove_var(crate::core::config::DAEMON_NAMESPACE_ENV),
+            }
+            match &self.previous_running_process_disable {
+                Some(value) => std::env::set_var(RUNNING_PROCESS_DISABLE_ENV, value),
+                None => std::env::remove_var(RUNNING_PROCESS_DISABLE_ENV),
             }
         }
     }
@@ -1086,6 +1119,19 @@ mod tests {
 
         assert_ne!(endpoint_a, endpoint_b);
         assert_ne!(lock_a, lock_b);
+    }
+
+    #[test]
+    fn running_process_disable_requires_exact_one() {
+        let _env = EnvGuard::isolate_running_process_disable();
+
+        assert!(!running_process_disabled());
+
+        std::env::set_var(RUNNING_PROCESS_DISABLE_ENV, "true");
+        assert!(!running_process_disabled());
+
+        std::env::set_var(RUNNING_PROCESS_DISABLE_ENV, "1");
+        assert!(running_process_disabled());
     }
 
     #[test]

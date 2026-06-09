@@ -32,4 +32,5 @@ without requiring a `.servicedef`, broker-client routing, default-on rollout,
 or the remaining protobuf message-family conversions. The daemon pre-bind
 probe uses that BackendHandle identity when present and falls back to the
 legacy raw-connect probe for older daemons that have not written the identity
-file yet.
+file yet. `RUNNING_PROCESS_DISABLE=1` skips the BackendHandle probe and uses
+that same legacy raw-connect fallback.
