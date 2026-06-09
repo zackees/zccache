@@ -36,6 +36,8 @@ pub enum DaemonControlRequest {
     Status,
     /// Request daemon shutdown.
     Shutdown,
+    /// Clear all caches.
+    Clear,
 }
 
 impl DaemonControlRequest {
@@ -45,18 +47,19 @@ impl DaemonControlRequest {
             Self::Ping => protocol::Request::Ping,
             Self::Status => protocol::Request::Status,
             Self::Shutdown => protocol::Request::Shutdown,
+            Self::Clear => protocol::Request::Clear,
         }
     }
 }
 
 /// Send a daemon control request and receive its response.
 ///
-/// Only `Ping`, `Status`, and `Shutdown` are eligible for the v16 prost client
-/// path. Unset/`auto` `ZCCACHE_DAEMON_WIRE` prefers prost, then retries the
-/// same control request as v15 bincode if an older daemon clearly rejects the
-/// v16 frame or closes the connection after the mismatch. Compile, session,
-/// cache, fingerprint, and download-daemon requests do not route through this
-/// helper and remain v15 bincode.
+/// Only `Ping`, `Status`, `Shutdown`, and `Clear` are eligible for the v16
+/// prost client path. Unset/`auto` `ZCCACHE_DAEMON_WIRE` prefers prost, then
+/// retries the same control request as v15 bincode if an older daemon clearly
+/// rejects the v16 frame or closes the connection after the mismatch. Compile,
+/// session, artifact lookup/store, fingerprint, and download-daemon requests do
+/// not route through this helper and remain v15 bincode.
 ///
 /// # Errors
 ///
@@ -769,6 +772,70 @@ mod tests {
         match response {
             Some(Response::Status(status)) => assert_eq!(status.endpoint, endpoint),
             other => panic!("expected Status response, got {other:?}"),
+        }
+
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn daemon_control_roundtrip_auto_prefers_prost_for_clear() {
+        let endpoint = unique_test_endpoint();
+        let mut listener = IpcListener::bind(&endpoint).unwrap();
+
+        let server = tokio::spawn(async move {
+            let mut conn = listener.accept().await.unwrap();
+            let msg: Option<
+                crate::protocol::DecodedWireMessage<
+                    crate::protocol::Request,
+                    crate::protocol::wire_prost::zccache_v1::Request,
+                >,
+            > = conn.recv_wire().await.unwrap();
+            match msg {
+                Some(crate::protocol::DecodedWireMessage::ProstV16(request)) => {
+                    assert_eq!(request.request_id, "control-clear");
+                    assert!(matches!(
+                        request.body,
+                        Some(crate::protocol::wire_prost::zccache_v1::request::Body::Clear(_))
+                    ));
+                    let response = Response::Cleared {
+                        artifacts_removed: 1,
+                        metadata_cleared: 2,
+                        dep_graph_contexts_cleared: 3,
+                        on_disk_bytes_freed: 4,
+                    };
+                    let response = wire_prost::supported_control_response_to_prost(
+                        &response,
+                        &request.request_id,
+                    )
+                    .unwrap();
+                    conn.send_prost(&response).await.unwrap();
+                }
+                other => panic!("expected prost clear request, got {other:?}"),
+            }
+        });
+
+        let response = daemon_control_roundtrip_with_selection(
+            &endpoint,
+            DaemonControlRequest::Clear,
+            None,
+            wire_prost::ClientWireSelection::Auto,
+        )
+        .await
+        .unwrap();
+
+        match response {
+            Some(Response::Cleared {
+                artifacts_removed,
+                metadata_cleared,
+                dep_graph_contexts_cleared,
+                on_disk_bytes_freed,
+            }) => {
+                assert_eq!(artifacts_removed, 1);
+                assert_eq!(metadata_cleared, 2);
+                assert_eq!(dep_graph_contexts_cleared, 3);
+                assert_eq!(on_disk_bytes_freed, 4);
+            }
+            other => panic!("expected Cleared response, got {other:?}"),
         }
 
         server.await.unwrap();

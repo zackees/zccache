@@ -9,8 +9,9 @@ incoming frames by protocol-version header so a server can accept either v15
 bincode or v16 prost without breaking old clients.
 
 `daemon_control_roundtrip` is the only live client-side selector today. It
-honors `ZCCACHE_DAEMON_WIRE` for `Ping`, `Status`, and `Shutdown`; unset/`auto`
-tries v16 prost first and retries v15 bincode when an older daemon rejects the
-frame. The v16 control path accepts either v16 prost control replies or v15
-bincode replies from compatibility daemons. All non-control zccache daemon
-requests still use v15 bincode directly.
+honors `ZCCACHE_DAEMON_WIRE` for `Ping`, `Status`, `Shutdown`, and cache
+`Clear`; unset/`auto` tries v16 prost first and retries v15 bincode when an
+older daemon rejects the frame. The v16 control path accepts either v16 prost
+control replies or v15 bincode replies from compatibility daemons. Compile,
+session, artifact lookup/store, fingerprint, and download-daemon requests still
+use v15 bincode directly.

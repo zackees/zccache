@@ -154,12 +154,13 @@ pub fn supported_control_request_from_prost(
         Some(Body::Ping(_)) => Ok(super::Request::Ping),
         Some(Body::Status(_)) => Ok(super::Request::Status),
         Some(Body::Shutdown(_)) => Ok(super::Request::Shutdown),
+        Some(Body::Clear(_)) => Ok(super::Request::Clear),
         Some(other) => Err(format!(
-            "unsupported v16 prost request body {other:?}; only Ping, Status, and Shutdown are \
-             supported before the full zccache prost conversion lands"
+            "unsupported v16 prost request body {other:?}; only Ping, Status, Shutdown, and Clear \
+             are supported before the full zccache prost conversion lands"
         )),
         None => Err(
-            "unsupported v16 prost request: missing request body; only Ping, Status, and Shutdown \
+            "unsupported v16 prost request: missing request body; only Ping, Status, Shutdown, and Clear \
              are supported before the full zccache prost conversion lands"
                 .to_string(),
         ),
@@ -181,9 +182,10 @@ pub fn supported_control_request_to_prost(
         super::Request::Ping => ("control-ping", Body::Ping(zccache_v1::Empty {})),
         super::Request::Status => ("control-status", Body::Status(zccache_v1::Empty {})),
         super::Request::Shutdown => ("control-shutdown", Body::Shutdown(zccache_v1::Empty {})),
+        super::Request::Clear => ("control-clear", Body::Clear(zccache_v1::Empty {})),
         other => {
             return Err(format!(
-                "unsupported v16 prost control request {other:?}; only Ping, Status, and Shutdown \
+                "unsupported v16 prost control request {other:?}; only Ping, Status, Shutdown, and Clear \
                  may select {WIRE_FORMAT_ENV} before the full zccache prost conversion lands"
             ));
         }
@@ -211,16 +213,22 @@ pub fn supported_control_response_from_prost(
         Some(Body::Pong(_)) => Ok(super::Response::Pong),
         Some(Body::ShuttingDown(_)) => Ok(super::Response::ShuttingDown),
         Some(Body::Status(status)) => daemon_status_from_prost(status).map(super::Response::Status),
+        Some(Body::Cleared(cleared)) => Ok(super::Response::Cleared {
+            artifacts_removed: cleared.artifacts_removed,
+            metadata_cleared: cleared.metadata_cleared,
+            dep_graph_contexts_cleared: cleared.dep_graph_contexts_cleared,
+            on_disk_bytes_freed: cleared.on_disk_bytes_freed,
+        }),
         Some(Body::Error(error)) => Ok(super::Response::Error {
             message: error.message,
         }),
         Some(other) => Err(format!(
-            "unsupported v16 prost response body {other:?}; only Pong, Status, ShuttingDown, and \
-             Error are supported before the full zccache prost conversion lands"
+            "unsupported v16 prost response body {other:?}; only Pong, Status, ShuttingDown, \
+             Cleared, and Error are supported before the full zccache prost conversion lands"
         )),
         None => Err(
             "unsupported v16 prost response: missing response body; only Pong, Status, \
-             ShuttingDown, and Error are supported before the full zccache prost conversion lands"
+             ShuttingDown, Cleared, and Error are supported before the full zccache prost conversion lands"
                 .to_string(),
         ),
     }
@@ -242,13 +250,24 @@ pub fn supported_control_response_to_prost(
         super::Response::Pong => Body::Pong(zccache_v1::Empty {}),
         super::Response::ShuttingDown => Body::ShuttingDown(zccache_v1::Empty {}),
         super::Response::Status(status) => Body::Status(daemon_status_to_prost(status)),
+        super::Response::Cleared {
+            artifacts_removed,
+            metadata_cleared,
+            dep_graph_contexts_cleared,
+            on_disk_bytes_freed,
+        } => Body::Cleared(zccache_v1::Cleared {
+            artifacts_removed: *artifacts_removed,
+            metadata_cleared: *metadata_cleared,
+            dep_graph_contexts_cleared: *dep_graph_contexts_cleared,
+            on_disk_bytes_freed: *on_disk_bytes_freed,
+        }),
         super::Response::Error { message } => Body::Error(zccache_v1::Error {
             message: message.clone(),
         }),
         other => {
             return Err(format!(
                 "unsupported v16 prost control response {other:?}; only Pong, Status, \
-                 ShuttingDown, and Error may use the prost control response path before the full \
+                 ShuttingDown, Cleared, and Error may use the prost control response path before the full \
                  zccache prost conversion lands"
             ));
         }

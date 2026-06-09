@@ -4,28 +4,27 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use super::super::snapshot_fp;
-use super::util::{connect, format_bytes, LOST_CONNECTION_MSG};
+use super::util::{format_bytes, LOST_CONNECTION_MSG};
 
 pub(crate) async fn cmd_clear(endpoint: &str) -> ExitCode {
-    let mut conn = match connect(endpoint).await {
-        Ok(c) => c,
-        Err(_) => {
+    let recv_result = match crate::ipc::daemon_control_roundtrip(
+        endpoint,
+        crate::ipc::DaemonControlRequest::Clear,
+        None,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(e) if crate::cli::client::is_daemon_unreachable_err(&e) => {
             eprintln!("daemon not running at {endpoint} — nothing to clear");
             return ExitCode::SUCCESS;
         }
-    };
-
-    if let Err(e) = conn.send(&crate::protocol::Request::Clear).await {
-        eprintln!("zccache[err][S]: failed to send to daemon: {e}");
-        return ExitCode::FAILURE;
-    }
-    let recv_result = match conn.recv().await {
-        Ok(r) => r,
         Err(e) => {
             eprintln!("zccache[err][R]: broken connection to daemon: {e}");
             return ExitCode::FAILURE;
         }
     };
+
     match recv_result {
         Some(crate::protocol::Response::Cleared {
             artifacts_removed,

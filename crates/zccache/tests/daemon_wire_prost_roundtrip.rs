@@ -1,7 +1,9 @@
 use bytes::BytesMut;
 use prost::Message;
 use zccache::protocol::wire_prost::{
-    decode_prost_message, encode_prost_message, wire_format_for_protocol_version, zccache_v1 as pb,
+    decode_prost_message, encode_prost_message, supported_control_request_from_prost,
+    supported_control_request_to_prost, supported_control_response_from_prost,
+    supported_control_response_to_prost, wire_format_for_protocol_version, zccache_v1 as pb,
     WireFormat,
 };
 use zccache::protocol::{decode_message, encode_message, PROST_PROTOCOL_VERSION};
@@ -57,6 +59,38 @@ fn prost_response_frame_roundtrips_release_worktree_result() {
         }
         _ => panic!("expected release-worktree response"),
     }
+}
+
+#[test]
+fn prost_clear_request_and_response_convert_to_protocol_enums() {
+    let request = zccache::protocol::Request::Clear;
+    let prost_request = supported_control_request_to_prost(&request).unwrap();
+    assert_eq!(prost_request.request_id, "control-clear");
+    assert!(matches!(
+        prost_request.body,
+        Some(pb::request::Body::Clear(_))
+    ));
+    assert_eq!(
+        supported_control_request_from_prost(prost_request).unwrap(),
+        request
+    );
+
+    let response = zccache::protocol::Response::Cleared {
+        artifacts_removed: 1,
+        metadata_cleared: 2,
+        dep_graph_contexts_cleared: 3,
+        on_disk_bytes_freed: 4,
+    };
+    let prost_response = supported_control_response_to_prost(&response, "clear-1").unwrap();
+    assert_eq!(prost_response.request_id, "clear-1");
+    assert!(matches!(
+        prost_response.body,
+        Some(pb::response::Body::Cleared(_))
+    ));
+    assert_eq!(
+        supported_control_response_from_prost(prost_response).unwrap(),
+        response
+    );
 }
 
 #[test]

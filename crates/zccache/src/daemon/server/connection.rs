@@ -587,7 +587,7 @@ async fn send_response_for_wire(
         ResponseWire::BincodeV15 => conn.send(response).await,
         ResponseWire::ProstV16 { request_id } => {
             let response = wire_prost::supported_control_response_to_prost(response, request_id)
-                .map_err(|message| crate::protocol::ProtocolError::Serialization(message))?;
+                .map_err(crate::protocol::ProtocolError::Serialization)?;
             conn.send_prost(&response).await
         }
     }
@@ -717,19 +717,11 @@ mod live_ipc_prost_tests {
                     assert_eq!(response.request_id, "prost-clear");
                     let response =
                         wire_prost::supported_control_response_from_prost(response).unwrap();
-                    let Response::Error { message } = response else {
-                        panic!("expected Error response, got {response:?}");
+                    let Response::Cleared { .. } = response else {
+                        panic!("expected Cleared response, got {response:?}");
                     };
-                    assert!(
-                        message.contains("unsupported v16 prost request"),
-                        "unexpected error message: {message}"
-                    );
-                    assert!(
-                        message.contains("Ping, Status, and Shutdown"),
-                        "unsupported diagnostic should name the supported slice: {message}"
-                    );
                 }
-                other => panic!("expected Error response, got {other:?}"),
+                other => panic!("expected Cleared response, got {other:?}"),
             }
 
             client
