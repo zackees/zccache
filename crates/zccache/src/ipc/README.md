@@ -17,3 +17,8 @@ also accepts direct v16 prost `ReleaseWorktreeHandles` requests and sends the
 matching v16 prost response, but there is no high-level client selector for
 that path yet. Compile, session, artifact lookup/store, fingerprint,
 generic-tool, and download-daemon requests still use v15 bincode directly.
+
+`tests/daemon_wire_protocol_version.rs` includes the explicit previous-release
+compatibility harness: a v15-only daemon rejects the first v16 prost control
+frame, returns a v15 bincode mismatch response, and the public auto client
+retries the same control request as v15 bincode.
