@@ -99,6 +99,19 @@ pub(crate) enum Commands {
     },
     /// Clear the artifact cache.
     Clear,
+    /// Install the running-process `zccache.servicedef` so the shared
+    /// broker can discover and verify the zccache daemon.
+    #[command(name = "install-servicedef")]
+    InstallServicedef {
+        /// Path to the zccache-daemon binary (default: the binary next to
+        /// this executable, or `zccache-daemon` found on PATH).
+        #[arg(long)]
+        daemon_binary: Option<String>,
+        /// Install into this directory instead of the default
+        /// running-process service-definition directory.
+        #[arg(long)]
+        dir: Option<String>,
+    },
     /// Start a build session. Prints session ID to stdout.
     #[command(name = "session-start")]
     SessionStart {
@@ -893,6 +906,7 @@ pub(crate) const KNOWN_SUBCOMMANDS: &[&str] = &[
     "status",
     "analyze",
     "clear",
+    "install-servicedef",
     "wrap",
     "inspect",
     "session-start",

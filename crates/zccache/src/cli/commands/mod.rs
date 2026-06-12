@@ -19,6 +19,7 @@ pub(crate) mod fp;
 pub(crate) mod gha;
 pub(crate) mod meson_cache;
 pub(crate) mod rust_plan;
+pub(crate) mod service_definition;
 pub(crate) mod session;
 pub(crate) mod status;
 pub(crate) mod symbols;
@@ -124,6 +125,9 @@ fn dispatch(command: Commands, global_strict_paths: Option<&str>) -> ExitCode {
         Commands::Clear => {
             let endpoint = resolve_endpoint(None);
             run_async(cache_ops::cmd_clear(&endpoint))
+        }
+        Commands::InstallServicedef { daemon_binary, dir } => {
+            service_definition::run_install_servicedef(daemon_binary, dir)
         }
         Commands::Ino {
             input,
