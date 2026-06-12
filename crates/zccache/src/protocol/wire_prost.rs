@@ -554,10 +554,7 @@ pub fn request_from_prost(request: zccache_v1::Request) -> Result<super::Request
             session_id: compile.session_id,
             args: compile.args,
             cwd: path_from_prost(required_prost_field(compile.cwd, "Compile.cwd")?),
-            compiler: path_from_prost(required_prost_field(
-                compile.compiler,
-                "Compile.compiler",
-            )?),
+            compiler: path_from_prost(required_prost_field(compile.compiler, "Compile.compiler")?),
             env: optional_env_from_prost(compile.env, compile.env_is_set),
             stdin: compile.stdin,
         }),
@@ -644,14 +641,12 @@ pub fn request_from_prost(request: zccache_v1::Request) -> Result<super::Request
             non_deterministic: exec.non_deterministic,
             key_args_filter: exec.key_args_filter,
         }),
-        Some(Body::ReleaseWorktreeHandles(release)) => {
-            Ok(super::Request::ReleaseWorktreeHandles {
-                path: path_from_prost(required_prost_field(
-                    release.path,
-                    "ReleaseWorktreeHandles.path",
-                )?),
-            })
-        }
+        Some(Body::ReleaseWorktreeHandles(release)) => Ok(super::Request::ReleaseWorktreeHandles {
+            path: path_from_prost(required_prost_field(
+                release.path,
+                "ReleaseWorktreeHandles.path",
+            )?),
+        }),
         None => Err("v16 prost request is missing its request body".to_string()),
     }
 }
@@ -665,9 +660,7 @@ pub fn response_to_prost(response: &super::Response, request_id: &str) -> zccach
         super::Response::Pong => Body::Pong(zccache_v1::Empty {}),
         super::Response::ShuttingDown => Body::ShuttingDown(zccache_v1::Empty {}),
         super::Response::Status(status) => Body::Status(daemon_status_to_prost(status)),
-        super::Response::LookupResult(result) => {
-            Body::LookupResult(lookup_result_to_prost(result))
-        }
+        super::Response::LookupResult(result) => Body::LookupResult(lookup_result_to_prost(result)),
         super::Response::StoreResult(result) => Body::StoreResult(zccache_v1::StoreResult {
             kind: store_result_kind_to_prost(result).into(),
         }),
@@ -888,9 +881,7 @@ fn env_pairs_from_prost(env: Vec<zccache_v1::EnvVar>) -> Vec<(String, String)> {
     env.into_iter().map(|var| (var.name, var.value)).collect()
 }
 
-fn optional_env_to_prost(
-    env: Option<&[(String, String)]>,
-) -> (Vec<zccache_v1::EnvVar>, bool) {
+fn optional_env_to_prost(env: Option<&[(String, String)]>) -> (Vec<zccache_v1::EnvVar>, bool) {
     match env {
         Some(env) => (env_pairs_to_prost(env), true),
         None => (Vec::new(), false),
@@ -938,7 +929,11 @@ fn private_daemon_session_options_from_prost(
 
 fn artifact_data_to_prost(artifact: &super::ArtifactData) -> zccache_v1::ArtifactData {
     zccache_v1::ArtifactData {
-        outputs: artifact.outputs.iter().map(artifact_output_to_prost).collect(),
+        outputs: artifact
+            .outputs
+            .iter()
+            .map(artifact_output_to_prost)
+            .collect(),
         stdout: artifact.stdout.as_ref().clone(),
         stderr: artifact.stderr.as_ref().clone(),
         exit_code: artifact.exit_code,
@@ -1044,7 +1039,9 @@ fn store_result_kind_from_prost(kind: i32) -> Result<super::StoreResult, String>
     }
 }
 
-fn exec_output_streams_to_prost(streams: super::ExecOutputStreams) -> zccache_v1::ExecOutputStreams {
+fn exec_output_streams_to_prost(
+    streams: super::ExecOutputStreams,
+) -> zccache_v1::ExecOutputStreams {
     zccache_v1::ExecOutputStreams {
         stdout: streams.stdout,
         stderr: streams.stderr,
@@ -1083,12 +1080,14 @@ fn exec_cache_policy_from_prost(policy: i32) -> Result<super::ExecCachePolicy, S
 fn tool_hash_from_prost(hash: Option<Vec<u8>>) -> Result<Option<[u8; 32]>, String> {
     match hash {
         None => Ok(None),
-        Some(bytes) => <[u8; 32]>::try_from(bytes.as_slice()).map(Some).map_err(|_| {
-            format!(
-                "invalid v16 prost GenericToolExec.tool_hash length {}; expected 32 bytes",
-                bytes.len()
-            )
-        }),
+        Some(bytes) => <[u8; 32]>::try_from(bytes.as_slice())
+            .map(Some)
+            .map_err(|_| {
+                format!(
+                    "invalid v16 prost GenericToolExec.tool_hash length {}; expected 32 bytes",
+                    bytes.len()
+                )
+            }),
     }
 }
 
@@ -1149,9 +1148,7 @@ fn session_stats_from_prost(stats: zccache_v1::SessionStats) -> super::SessionSt
     }
 }
 
-fn phase_profile_to_prost(
-    profile: &super::PhaseProfileSummary,
-) -> zccache_v1::PhaseProfileSummary {
+fn phase_profile_to_prost(profile: &super::PhaseProfileSummary) -> zccache_v1::PhaseProfileSummary {
     zccache_v1::PhaseProfileSummary {
         hit_count: profile.hit_count,
         miss_count: profile.miss_count,
