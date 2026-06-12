@@ -33,7 +33,7 @@ enum VersionCheck {
 pub async fn connect_client(
     endpoint: &str,
 ) -> Result<crate::ipc::IpcConnection, crate::ipc::IpcError> {
-    let mut conn = crate::ipc::connect(endpoint).await?;
+    let mut conn = crate::ipc::connect_daemon(endpoint).await?;
     conn.set_recv_timeout(crate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
     Ok(conn)
 }
@@ -42,7 +42,7 @@ pub async fn connect_client(
 pub async fn connect_client(
     endpoint: &str,
 ) -> Result<crate::ipc::IpcClientConnection, crate::ipc::IpcError> {
-    let mut conn = crate::ipc::connect(endpoint).await?;
+    let mut conn = crate::ipc::connect_daemon(endpoint).await?;
     conn.set_recv_timeout(crate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
     Ok(conn)
 }

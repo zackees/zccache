@@ -6,9 +6,14 @@
 
 #![allow(clippy::missing_errors_doc)]
 
+pub mod broker;
 pub mod error;
 pub mod transport;
 
+pub use broker::{
+    connect_daemon, connect_daemon_with_route, to_running_process_endpoint, DaemonConnectRoute,
+    ZCCACHE_BROKER_CONNECT_ENV,
+};
 pub use error::IpcError;
 #[cfg(windows)]
 pub use transport::IpcClientConnection;
@@ -113,7 +118,7 @@ async fn daemon_control_roundtrip_with_selection(
 }
 
 async fn connect_control_client(endpoint: &str) -> Result<ClientConnection, IpcError> {
-    let mut conn = connect(endpoint).await?;
+    let mut conn = connect_daemon(endpoint).await?;
     conn.set_recv_timeout(DEFAULT_CLIENT_RECV_TIMEOUT);
     Ok(conn)
 }
@@ -760,13 +765,67 @@ pub fn check_running_daemon() -> Option<u32> {
     }
 }
 
+/// Shared test-only environment-variable coordination for the `ipc` module
+/// tree. Every test that mutates process env vars must hold [`ENV_LOCK`]
+/// (directly or through a guard) so unit tests in sibling modules cannot
+/// race each other's env mutations.
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_env {
     use std::ffi::OsString;
     use std::sync::{Mutex, MutexGuard};
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Guard that sets/unsets a batch of env vars under the shared lock and
+    /// restores the previous values on drop.
+    pub(crate) struct EnvVarGuard {
+        _lock: MutexGuard<'static, ()>,
+        saved: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl EnvVarGuard {
+        pub(crate) fn set_all(vars: &[(&'static str, Option<String>)]) -> Self {
+            let lock = ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let saved = vars
+                .iter()
+                .map(|(key, _)| (*key, std::env::var_os(key)))
+                .collect();
+            for (key, value) in vars {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+            Self { _lock: lock, saved }
+        }
+
+        pub(crate) fn unset_all(keys: &[&'static str]) -> Self {
+            let vars: Vec<(&'static str, Option<String>)> =
+                keys.iter().map(|key| (*key, None)).collect();
+            Self::set_all(&vars)
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_env::ENV_LOCK;
+    use super::*;
+    use std::ffi::OsString;
+    use std::sync::MutexGuard;
 
     struct EnvGuard {
         _lock: MutexGuard<'static, ()>,

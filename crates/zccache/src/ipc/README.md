@@ -34,3 +34,11 @@ probe uses that BackendHandle identity when present and falls back to the
 legacy raw-connect probe for older daemons that have not written the identity
 file yet. `RUNNING_PROCESS_DISABLE=1` skips the BackendHandle probe and uses
 that same legacy raw-connect fallback.
+
+`broker.rs` wires `running_process::broker::client::connect_to_backend` in
+front of the daemon client connect (`connect_daemon`). The lane is opt-in
+(`ZCCACHE_BROKER_CONNECT=1`, or the upstream TEST-ONLY
+`RUNNING_PROCESS_FAKE_BACKEND` seam); `RUNNING_PROCESS_DISABLE=1` bypasses it
+entirely, and any broker-side failure falls back silently to the direct
+connect. The negotiated connection resolves the endpoint only — the data
+connection still uses zccache's tokio transport and wire lanes unchanged.

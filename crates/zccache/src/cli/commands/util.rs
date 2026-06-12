@@ -70,7 +70,7 @@ pub(crate) fn resolve_endpoint(explicit: Option<&str>) -> String {
 pub(crate) async fn connect(
     endpoint: &str,
 ) -> Result<crate::ipc::IpcConnection, crate::ipc::IpcError> {
-    let mut conn = crate::ipc::connect(endpoint).await?;
+    let mut conn = crate::ipc::connect_daemon(endpoint).await?;
     conn.set_recv_timeout(crate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
     Ok(conn)
 }
@@ -79,7 +79,7 @@ pub(crate) async fn connect(
 pub(crate) async fn connect(
     endpoint: &str,
 ) -> Result<crate::ipc::IpcClientConnection, crate::ipc::IpcError> {
-    let mut conn = crate::ipc::connect(endpoint).await?;
+    let mut conn = crate::ipc::connect_daemon(endpoint).await?;
     conn.set_recv_timeout(crate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
     Ok(conn)
 }
