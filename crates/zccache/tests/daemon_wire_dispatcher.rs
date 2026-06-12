@@ -48,7 +48,7 @@ fn dispatcher_decodes_v16_prost_request() {
             assert_eq!(decoded.request_id, "prost-dispatch");
             assert!(matches!(decoded.body, Some(pb::request::Body::Ping(_))));
         }
-        DecodedWireMessage::BincodeV15(_) => panic!("expected prost request"),
+        other => panic!("expected prost request, got {other:?}"),
     }
     assert!(buf.is_empty());
 }

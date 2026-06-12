@@ -4,6 +4,12 @@
 //! so hot-path requests keep their old wire shape. The live daemon dispatcher
 //! can accept v16 prost control requests through the explicit helpers in this
 //! module while the full enum conversion lands incrementally.
+//!
+//! A third wire lane carries zccache prost payloads inside running-process
+//! broker `Frame` envelopes (`[u8 envelope_version=1][u32 LE body_len][Frame]`,
+//! see [`encode_frame_v1_request`] / [`decode_frame_v1_message`]). It is
+//! selected only by an explicit `ZCCACHE_DAEMON_WIRE=frame`; `auto` never
+//! prefers it.
 
 use bytes::{Buf, BufMut, BytesMut};
 use prost::Message;
@@ -15,6 +21,13 @@ pub mod zccache_v1 {
     include!(concat!(env!("OUT_DIR"), "/zccache.v1.rs"));
 }
 
+// Re-export the running-process Frame envelope lane so callers can keep
+// addressing the whole daemon-wire surface through `wire_prost`.
+pub use super::wire_frame::{
+    buffer_starts_running_process_frame, decode_frame_v1_message, encode_frame_v1_request,
+    encode_frame_v1_response, FrameV1Decoded, ZCCACHE_FRAME_PAYLOAD_PROTOCOL,
+};
+
 /// Environment variable reserved for the daemon wire migration fallback.
 pub const WIRE_FORMAT_ENV: &str = "ZCCACHE_DAEMON_WIRE";
 
@@ -25,15 +38,26 @@ pub enum WireFormat {
     BincodeV15,
     /// Planned v16 prost body.
     ProstV16,
+    /// zccache prost payloads inside running-process broker `Frame`
+    /// envelopes: `[u8 envelope_version=1][u32 LE body_len][Frame]` with
+    /// `payload_protocol` = [`ZCCACHE_FRAME_PAYLOAD_PROTOCOL`] and the raw
+    /// prost-encoded `zccache_v1` message as the opaque payload (no inner
+    /// `[len][version]` header).
+    FrameV1,
 }
 
 impl WireFormat {
-    /// Protocol version carried in the existing frame header.
+    /// Protocol version carried in the zccache `[len][version]` frame header.
+    ///
+    /// Returns `None` for [`Self::FrameV1`], which has no inner zccache
+    /// header — it is identified by the running-process envelope byte plus
+    /// the `Frame.payload_protocol` field instead.
     #[must_use]
-    pub const fn protocol_version(self) -> u32 {
+    pub const fn protocol_version(self) -> Option<u32> {
         match self {
-            Self::BincodeV15 => BINCODE_PROTOCOL_VERSION,
-            Self::ProstV16 => PROST_PROTOCOL_VERSION,
+            Self::BincodeV15 => Some(BINCODE_PROTOCOL_VERSION),
+            Self::ProstV16 => Some(PROST_PROTOCOL_VERSION),
+            Self::FrameV1 => None,
         }
     }
 }
@@ -53,6 +77,9 @@ pub enum ClientWireSelection {
     BincodeV15,
     /// Force the v16 prost path.
     ProstV16,
+    /// Force the running-process `Frame` envelope path. Forced-only:
+    /// `Auto` never prefers this lane.
+    FrameV1,
 }
 
 impl ClientWireSelection {
@@ -62,6 +89,7 @@ impl ClientWireSelection {
         match self {
             Self::Auto | Self::ProstV16 => WireFormat::ProstV16,
             Self::BincodeV15 => WireFormat::BincodeV15,
+            Self::FrameV1 => WireFormat::FrameV1,
         }
     }
 
@@ -122,8 +150,9 @@ pub fn client_wire_selection_from_env_value(
         "" | "auto" => Ok(ClientWireSelection::Auto),
         "bincode" | "bincode-v15" | "v15" => Ok(ClientWireSelection::BincodeV15),
         "prost" | "prost-v16" | "v16" => Ok(ClientWireSelection::ProstV16),
+        "frame" | "frame-v1" => Ok(ClientWireSelection::FrameV1),
         other => Err(format!(
-            "invalid {WIRE_FORMAT_ENV}={other:?}; expected auto, bincode, or prost"
+            "invalid {WIRE_FORMAT_ENV}={other:?}; expected auto, bincode, prost, or frame"
         )),
     }
 }
@@ -290,7 +319,8 @@ pub const fn default_request_id(request: &super::Request) -> &'static str {
 ///
 /// The hot wrapper, session, fingerprint, and exec client paths keep their
 /// current v15 bincode default: only an explicit `ZCCACHE_DAEMON_WIRE=prost`
-/// opts them into the v16 prost lane. `auto`/unset intentionally stays
+/// (or `=frame` for the running-process `Frame` envelope lane) opts them out
+/// of bincode. `auto`/unset intentionally stays
 /// bincode here (even though the control slice prefers prost under auto) so
 /// the staged migration does not change default wire selection. Invalid
 /// values also fall back to bincode instead of failing a build.
@@ -298,6 +328,7 @@ pub const fn default_request_id(request: &super::Request) -> &'static str {
 pub fn full_family_wire_format_from_env() -> WireFormat {
     match client_wire_selection_from_env() {
         Ok(ClientWireSelection::ProstV16) => WireFormat::ProstV16,
+        Ok(ClientWireSelection::FrameV1) => WireFormat::FrameV1,
         Ok(ClientWireSelection::Auto | ClientWireSelection::BincodeV15) | Err(_) => {
             WireFormat::BincodeV15
         }
@@ -318,9 +349,10 @@ pub fn response_from_decoded_wire(
 ) -> Result<super::Response, super::ProtocolError> {
     match message {
         super::DecodedWireMessage::BincodeV15(response) => Ok(response),
-        super::DecodedWireMessage::ProstV16(response) => {
-            response_from_prost(response).map_err(super::ProtocolError::Deserialization)
-        }
+        super::DecodedWireMessage::ProstV16(response)
+        | super::DecodedWireMessage::FrameV1 {
+            message: response, ..
+        } => response_from_prost(response).map_err(super::ProtocolError::Deserialization),
     }
 }
 

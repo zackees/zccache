@@ -4,6 +4,7 @@
 //! and provides serialization/deserialization using the active daemon wire.
 
 pub mod messages;
+pub mod wire_frame;
 pub mod wire_prost;
 
 pub use messages::*;
@@ -62,15 +63,26 @@ pub enum DecodedWireMessage<Bincode, Prost> {
     BincodeV15(Bincode),
     /// v16 prost payload.
     ProstV16(Prost),
+    /// Prost payload carried inside a running-process broker `Frame`
+    /// envelope. `request_id` is the frame correlation id the responder
+    /// must echo back.
+    FrameV1 {
+        /// The zccache prost message decoded from `Frame.payload`.
+        message: Prost,
+        /// The `Frame.request_id` to echo in the response frame.
+        request_id: u64,
+    },
 }
 
 impl<Bincode, Prost> DecodedWireMessage<Bincode, Prost> {
-    /// Wire family selected by the frame protocol-version header.
+    /// Wire family selected by the frame protocol-version header (or the
+    /// running-process envelope byte for the `Frame` lane).
     #[must_use]
     pub const fn wire_format(&self) -> wire_prost::WireFormat {
         match self {
             Self::BincodeV15(_) => wire_prost::WireFormat::BincodeV15,
             Self::ProstV16(_) => wire_prost::WireFormat::ProstV16,
+            Self::FrameV1 { .. } => wire_prost::WireFormat::FrameV1,
         }
     }
 }
@@ -150,12 +162,15 @@ pub fn decode_bincode_message<T: serde::de::DeserializeOwned>(
     Ok(Some(msg))
 }
 
-/// Try to decode either a v15 bincode or v16 prost frame from a byte buffer.
+/// Try to decode a v15 bincode frame, a v16 prost frame, or a zccache prost
+/// message carried in a running-process broker `Frame` envelope.
 ///
 /// The live transport still calls [`decode_message`], which keeps today's v15
 /// behavior. This helper is the migration hook for the daemon dispatcher: it
-/// peeks the existing protocol-version header and routes to the compatible
-/// decoder without consuming incomplete or unsupported frames.
+/// peeks the existing protocol-version header (or the running-process
+/// envelope byte, disambiguated exactly like the daemon's BackendHandle probe
+/// detector) and routes to the compatible decoder without consuming
+/// incomplete or unsupported frames.
 ///
 /// # Errors
 ///
@@ -168,6 +183,20 @@ where
     Bincode: serde::de::DeserializeOwned,
     Prost: ProstMessage + Default,
 {
+    match wire_frame::buffer_starts_running_process_frame(buf) {
+        // Empty or ambiguous prefix: wait for more bytes.
+        None => return Ok(None),
+        Some(true) => {
+            return wire_frame::decode_frame_v1_message(buf).map(|decoded| {
+                decoded.map(|frame| DecodedWireMessage::FrameV1 {
+                    message: frame.message,
+                    request_id: frame.request_id,
+                })
+            });
+        }
+        Some(false) => {}
+    }
+
     let Some(version) = peek_frame_protocol_version(buf)? else {
         return Ok(None);
     };
@@ -179,7 +208,9 @@ where
         Some(wire_prost::WireFormat::ProstV16) => {
             wire_prost::decode_prost_message(buf).map(|msg| msg.map(DecodedWireMessage::ProstV16))
         }
-        None => Err(ProtocolError::VersionMismatch {
+        // The Frame lane has no zccache protocol-version header; it is
+        // routed above via the running-process envelope byte.
+        Some(wire_prost::WireFormat::FrameV1) | None => Err(ProtocolError::VersionMismatch {
             expected: PROST_PROTOCOL_VERSION,
             received: version,
         }),

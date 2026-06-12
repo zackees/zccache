@@ -166,13 +166,16 @@ fn bincode_v15_frame_still_roundtrips_on_current_api() {
 #[test]
 fn protocol_version_dispatch_models_v15_and_v16() {
     assert_eq!(
-        wire_format_for_protocol_version(WireFormat::BincodeV15.protocol_version()),
+        wire_format_for_protocol_version(WireFormat::BincodeV15.protocol_version().unwrap()),
         Some(WireFormat::BincodeV15)
     );
     assert_eq!(
-        wire_format_for_protocol_version(WireFormat::ProstV16.protocol_version()),
+        wire_format_for_protocol_version(WireFormat::ProstV16.protocol_version().unwrap()),
         Some(WireFormat::ProstV16)
     );
+    // The Frame lane has no inner zccache protocol-version header; it is
+    // identified by the running-process envelope byte instead.
+    assert_eq!(WireFormat::FrameV1.protocol_version(), None);
     assert_eq!(wire_format_for_protocol_version(99), None);
 }
 
