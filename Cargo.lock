@@ -652,7 +652,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2426,8 +2426,9 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.0.3"
-source = "git+https://github.com/zackees/running-process?rev=e49edf839706f42c655e83a2e8235a482abbc38e#e49edf839706f42c655e83a2e8235a482abbc38e"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b463aaf22bc2a27eb0b7bf347c4aa315075796908f859fbd8bcd469041cfc940"
 dependencies = [
  "anyhow",
  "blake3",

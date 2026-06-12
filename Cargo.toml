@@ -59,7 +59,7 @@ sevenz-rust = "0.6"
 rkyv = { version = "0.7", features = ["validation"] }
 tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms"] }
 mimalloc = "0.1"
-running-process = { git = "https://github.com/zackees/running-process", rev = "e49edf839706f42c655e83a2e8235a482abbc38e", default-features = false, features = ["client"] }
+running-process = { version = "4.1.0", default-features = false, features = ["client"] }
 zccache = { path = "crates/zccache" }
 zccache-watcher = { path = "crates/zccache-watcher" }
 zccache-cli = { path = "crates/zccache-cli" }
