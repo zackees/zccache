@@ -84,6 +84,11 @@ async fn daemon_control_roundtrip_with_selection(
         wire_prost::WireFormat::BincodeV15 => {
             send_bincode_control(endpoint, request, recv_timeout).await
         }
+        // Forced-only lane (`ZCCACHE_DAEMON_WIRE=frame`): no bincode
+        // fallback, the caller asked for the Frame envelope explicitly.
+        wire_prost::WireFormat::FrameV1 => {
+            send_frame_control(endpoint, request, recv_timeout).await
+        }
         wire_prost::WireFormat::ProstV16 => {
             match send_prost_control(endpoint, request, recv_timeout).await {
                 Ok(Some(Response::Error { message }))
@@ -137,6 +142,19 @@ async fn send_prost_control(
     recv_control_wire_response(&mut conn, recv_timeout).await
 }
 
+async fn send_frame_control(
+    endpoint: &str,
+    request: DaemonControlRequest,
+    recv_timeout: Option<std::time::Duration>,
+) -> Result<Option<Response>, IpcError> {
+    let mut conn = connect_control_client(endpoint).await?;
+    let request = request.to_protocol_request();
+    let request =
+        wire_prost::supported_control_request_to_prost(&request).map_err(IpcError::Endpoint)?;
+    conn.send_frame_v1_request(&request).await?;
+    recv_control_wire_response(&mut conn, recv_timeout).await
+}
+
 async fn recv_control_response(
     conn: &mut ClientConnection,
     recv_timeout: Option<std::time::Duration>,
@@ -159,13 +177,16 @@ async fn recv_control_wire_response(
 
     match response {
         Some(protocol::DecodedWireMessage::BincodeV15(response)) => Ok(Some(response)),
-        Some(protocol::DecodedWireMessage::ProstV16(response)) => {
-            wire_prost::supported_control_response_from_prost(response)
-                .map(Some)
-                .map_err(|message| {
-                    IpcError::Protocol(protocol::ProtocolError::Deserialization(message))
-                })
-        }
+        Some(
+            protocol::DecodedWireMessage::ProstV16(response)
+            | protocol::DecodedWireMessage::FrameV1 {
+                message: response, ..
+            },
+        ) => wire_prost::supported_control_response_from_prost(response)
+            .map(Some)
+            .map_err(|message| {
+                IpcError::Protocol(protocol::ProtocolError::Deserialization(message))
+            }),
         None => Ok(None),
     }
 }

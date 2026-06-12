@@ -5,6 +5,15 @@
 //! bincode via `zccache-protocol`. Explicit migration hooks can send v16 prost
 //! frames and receive either v15 bincode or v16 prost frames without changing
 //! the default v15 client/server path.
+//!
+//! A third lane carries zccache prost payloads inside running-process broker
+//! `Frame` envelopes (`[u8 envelope_version=1][u32 LE body_len][Frame]`,
+//! `payload_protocol` =
+//! [`ZCCACHE_FRAME_PAYLOAD_PROTOCOL`](crate::protocol::wire_frame::ZCCACHE_FRAME_PAYLOAD_PROTOCOL)).
+//! It is selected only by an explicit `ZCCACHE_DAEMON_WIRE=frame` and shares
+//! the running-process framing already used by the `BackendHandle` identity
+//! probe; `recv_wire` disambiguates it from v15/v16 the same way
+//! `try_serve_backend_handle_probe` does.
 
 use std::time::Duration;
 
@@ -59,6 +68,9 @@ pub struct IpcConnection {
     /// (today's historical behavior, kept for server-side and other
     /// idle-style readers). Set via `set_recv_timeout`.
     recv_timeout: Option<Duration>,
+    /// Monotonic correlation id for outgoing running-process `Frame`
+    /// envelopes on the FrameV1 lane.
+    next_frame_request_id: u64,
 }
 
 /// Client-side IPC connection (Windows uses a different type).
@@ -69,6 +81,8 @@ pub struct IpcClientConnection {
     read_buf: BytesMut,
     /// Optional default timeout for `recv`. See `IpcConnection::recv_timeout`.
     recv_timeout: Option<Duration>,
+    /// See `IpcConnection::next_frame_request_id`.
+    next_frame_request_id: u64,
 }
 
 // ── IpcConnection impl (server-side on Windows, both on Unix) ───────
@@ -108,6 +122,35 @@ impl IpcConnection {
     /// flips its live protocol policy.
     pub async fn send_prost<M: prost::Message>(&mut self, msg: &M) -> Result<(), IpcError> {
         let buf = crate::protocol::wire_prost::encode_prost_message(msg)?;
+        self.writer.write_all(&buf).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    /// Send a prost message as a running-process `Frame` request envelope.
+    ///
+    /// Returns the frame correlation id assigned to the request so the
+    /// caller can match the daemon's echoed `request_id`.
+    pub async fn send_frame_v1_request<M: prost::Message>(
+        &mut self,
+        msg: &M,
+    ) -> Result<u64, IpcError> {
+        let request_id = self.next_frame_request_id;
+        self.next_frame_request_id = self.next_frame_request_id.wrapping_add(1);
+        let buf = crate::protocol::wire_frame::encode_frame_v1_request(msg, request_id)?;
+        self.writer.write_all(&buf).await?;
+        self.writer.flush().await?;
+        Ok(request_id)
+    }
+
+    /// Send a prost message as a running-process `Frame` response envelope,
+    /// echoing the client's frame correlation id.
+    pub async fn send_frame_v1_response<M: prost::Message>(
+        &mut self,
+        msg: &M,
+        request_id: u64,
+    ) -> Result<(), IpcError> {
+        let buf = crate::protocol::wire_frame::encode_frame_v1_response(msg, request_id)?;
         self.writer.write_all(&buf).await?;
         self.writer.flush().await?;
         Ok(())
@@ -211,11 +254,16 @@ impl IpcConnection {
                 let request = crate::protocol::wire_prost::request_to_prost(request, request_id);
                 self.send_prost(&request).await
             }
+            crate::protocol::wire_prost::WireFormat::FrameV1 => {
+                let request_id = crate::protocol::wire_prost::default_request_id(request);
+                let request = crate::protocol::wire_prost::request_to_prost(request, request_id);
+                self.send_frame_v1_request(&request).await.map(|_| ())
+            }
         }
     }
 
     /// Receive a protocol [`Response`](crate::protocol::Response), accepting
-    /// both v15 bincode and v16 prost frames.
+    /// v15 bincode, v16 prost, and running-process `Frame` envelopes.
     pub async fn recv_response(&mut self) -> Result<Option<crate::protocol::Response>, IpcError> {
         let message = self
             .recv_wire::<crate::protocol::Response, crate::protocol::wire_prost::zccache_v1::Response>()
@@ -274,6 +322,19 @@ impl IpcClientConnection {
         self.writer.write_all(&buf).await?;
         self.writer.flush().await?;
         Ok(())
+    }
+
+    /// See [`IpcConnection::send_frame_v1_request`].
+    pub async fn send_frame_v1_request<M: prost::Message>(
+        &mut self,
+        msg: &M,
+    ) -> Result<u64, IpcError> {
+        let request_id = self.next_frame_request_id;
+        self.next_frame_request_id = self.next_frame_request_id.wrapping_add(1);
+        let buf = crate::protocol::wire_frame::encode_frame_v1_request(msg, request_id)?;
+        self.writer.write_all(&buf).await?;
+        self.writer.flush().await?;
+        Ok(request_id)
     }
 
     /// See [`IpcConnection::set_recv_timeout`].
@@ -361,6 +422,11 @@ impl IpcClientConnection {
                 let request_id = crate::protocol::wire_prost::default_request_id(request);
                 let request = crate::protocol::wire_prost::request_to_prost(request, request_id);
                 self.send_prost(&request).await
+            }
+            crate::protocol::wire_prost::WireFormat::FrameV1 => {
+                let request_id = crate::protocol::wire_prost::default_request_id(request);
+                let request = crate::protocol::wire_prost::request_to_prost(request, request_id);
+                self.send_frame_v1_request(&request).await.map(|_| ())
             }
         }
     }
@@ -510,15 +576,20 @@ where
     }
     ensure_buffered(reader, read_buf, 5 + body_len).await?;
 
-    read_buf.advance(5);
-    let body = read_buf.split_to(body_len);
-    let frame = running_process::broker::protocol::Frame::decode(body.as_ref())
+    // Decode from a peek so non-probe frames (e.g. the zccache FrameV1
+    // request lane, which shares this framing) stay buffered for the
+    // dispatching `recv_wire` decoder.
+    let frame = running_process::broker::protocol::Frame::decode(&read_buf[5..5 + body_len])
         .map_err(|err| IpcError::Endpoint(format!("BackendHandle probe decode failed: {err}")))?;
     if !is_backend_handle_probe_request(&frame) {
+        if frame.payload_protocol == crate::protocol::wire_frame::ZCCACHE_FRAME_PAYLOAD_PROTOCOL {
+            return Ok(false);
+        }
         return Err(IpcError::Endpoint(
             "unexpected running-process frame on zccache daemon endpoint".to_string(),
         ));
     }
+    read_buf.advance(5 + body_len);
 
     let response = backend_handle_probe_response(&frame, daemon)?;
     write_running_process_frame(writer, &response).await?;
@@ -698,6 +769,7 @@ impl IpcListener {
                 writer,
                 read_buf: BytesMut::with_capacity(4096),
                 recv_timeout: None,
+                next_frame_request_id: 1,
             })
         }
         #[cfg(windows)]
@@ -780,6 +852,7 @@ impl IpcListener {
                 writer,
                 read_buf: BytesMut::with_capacity(4096),
                 recv_timeout: None,
+                next_frame_request_id: 1,
             });
         }
     }
@@ -861,6 +934,7 @@ pub async fn connect(endpoint: &str) -> Result<IpcConnection, IpcError> {
         writer,
         read_buf: BytesMut::with_capacity(4096),
         recv_timeout: None,
+        next_frame_request_id: 1,
     })
 }
 
@@ -915,6 +989,7 @@ pub async fn connect(endpoint: &str) -> Result<IpcClientConnection, IpcError> {
         writer,
         read_buf: BytesMut::with_capacity(4096),
         recv_timeout: None,
+        next_frame_request_id: 1,
     })
 }
 

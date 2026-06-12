@@ -8,7 +8,16 @@ use crate::protocol::{
 
 enum ResponseWire {
     BincodeV15,
-    ProstV16 { request_id: String },
+    ProstV16 {
+        request_id: String,
+    },
+    /// running-process `Frame` envelope lane. `frame_request_id` is the
+    /// frame correlation id to echo; `request_id` is the inner zccache
+    /// prost request id echoed in the response body.
+    FrameV1 {
+        frame_request_id: u64,
+        request_id: String,
+    },
 }
 
 /// Handle a single client connection.
@@ -92,6 +101,34 @@ pub(super) async fn handle_connection(
                         send_response_for_wire(
                             &mut conn,
                             &ResponseWire::ProstV16 { request_id },
+                            &Response::Error { message },
+                        )
+                        .await?;
+                        continue;
+                    }
+                }
+            }
+            DecodedWireMessage::FrameV1 {
+                message: request,
+                request_id: frame_request_id,
+            } => {
+                let request_id = request.request_id.clone();
+                match wire_prost::request_from_prost(request) {
+                    Ok(request) => (
+                        request,
+                        ResponseWire::FrameV1 {
+                            frame_request_id,
+                            request_id,
+                        },
+                    ),
+                    Err(message) => {
+                        tracing::warn!("{message}");
+                        send_response_for_wire(
+                            &mut conn,
+                            &ResponseWire::FrameV1 {
+                                frame_request_id,
+                                request_id,
+                            },
                             &Response::Error { message },
                         )
                         .await?;
@@ -596,6 +633,14 @@ async fn send_response_for_wire(
         ResponseWire::ProstV16 { request_id } => {
             let response = wire_prost::response_to_prost(response, request_id);
             conn.send_prost(&response).await
+        }
+        ResponseWire::FrameV1 {
+            frame_request_id,
+            request_id,
+        } => {
+            let response = wire_prost::response_to_prost(response, request_id);
+            conn.send_frame_v1_response(&response, *frame_request_id)
+                .await
         }
     }
 }
