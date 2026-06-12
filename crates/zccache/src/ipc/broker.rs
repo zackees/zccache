@@ -385,6 +385,131 @@ mod tests {
         assert_eq!(server.await.unwrap(), 1);
     }
 
+    /// Sorted-percentile helper matching the convention in
+    /// `tests/daemon_perf_test.rs`.
+    fn percentile_ms(sorted: &[f64], pct: f64) -> f64 {
+        let idx = ((sorted.len() as f64 * pct) as usize).min(sorted.len() - 1);
+        sorted[idx]
+    }
+
+    /// Ping server for the latency evidence test: keeps accepting until it
+    /// has answered `pings` Ping requests, tolerating the broker lane's
+    /// dropped resolution dials in between.
+    fn spawn_counting_ping_server(
+        mut listener: IpcListener,
+        pings: usize,
+    ) -> tokio::task::JoinHandle<usize> {
+        tokio::spawn(async move {
+            let mut answered = 0;
+            while answered < pings {
+                let Ok(mut conn) = listener.accept().await else {
+                    break;
+                };
+                match conn.recv::<Request>().await {
+                    Ok(Some(Request::Ping)) => {
+                        conn.send(&Response::Pong).await.unwrap();
+                        answered += 1;
+                    }
+                    Ok(None) | Err(_) => continue,
+                    Ok(Some(other)) => panic!("unexpected request: {other:?}"),
+                }
+            }
+            answered
+        })
+    }
+
+    /// Measure connect + Ping/Pong round-trip latency for `samples`
+    /// iterations against a fresh listener, returning per-iteration
+    /// milliseconds. `expect_broker` asserts the route per iteration.
+    async fn measure_connect_roundtrip_ms(samples: usize, expect_broker: bool) -> Vec<f64> {
+        let endpoint = unique_test_endpoint();
+        if expect_broker {
+            // Re-point the seam at this run's endpoint (the caller holds
+            // the env lock for the whole measurement).
+            std::env::set_var(
+                RUNNING_PROCESS_FAKE_BACKEND_ENV,
+                to_running_process_endpoint(&endpoint),
+            );
+        }
+        let listener = IpcListener::bind(&endpoint).unwrap();
+        let server = spawn_counting_ping_server(listener, samples);
+
+        let mut samples_ms = Vec::with_capacity(samples);
+        for _ in 0..samples {
+            let start = std::time::Instant::now();
+            let (mut conn, route) = connect_daemon_with_route(&endpoint).await.unwrap();
+            ping_roundtrip(&mut conn).await;
+            samples_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+            drop(conn);
+            match (&route, expect_broker) {
+                (DaemonConnectRoute::Broker { .. }, true) => {}
+                (DaemonConnectRoute::Direct, false) => {}
+                (other, _) => panic!("unexpected route {other:?} (expect_broker={expect_broker})"),
+            }
+        }
+        assert_eq!(server.await.unwrap(), samples);
+        samples_ms
+    }
+
+    /// Hot-path latency evidence for running-process#383 item 2: p50/p99 of
+    /// connect + Ping round-trip over the direct lane vs the broker lane
+    /// (fake-backend seam, which exercises the full lane wiring: env
+    /// dispatch, spawn_blocking resolution, resolution dial, endpoint
+    /// translation, re-dial).
+    ///
+    /// Sanctioned perf shape per PERF.md: a `#[test]` with a generous
+    /// absolute Duration budget; the printed numbers are the evidence
+    /// recorded in the adoption PR.
+    #[tokio::test]
+    async fn broker_lane_connect_latency_p50_p99() {
+        const WARMUP: usize = 5;
+        const SAMPLES: usize = 100;
+
+        let _env = EnvVarGuard::set_all(&[
+            (RUNNING_PROCESS_DISABLE_ENV, None),
+            (RUNNING_PROCESS_FAKE_BACKEND_ENV, None),
+            (ZCCACHE_BROKER_CONNECT_ENV, None),
+        ]);
+
+        // Warmup both lanes (first-connect costs: pipe namespace setup,
+        // thread-pool spinup for spawn_blocking).
+        measure_connect_roundtrip_ms(WARMUP, false).await;
+        let mut direct = measure_connect_roundtrip_ms(SAMPLES, false).await;
+
+        measure_connect_roundtrip_ms(WARMUP, true).await;
+        let mut broker = measure_connect_roundtrip_ms(SAMPLES, true).await;
+        std::env::remove_var(RUNNING_PROCESS_FAKE_BACKEND_ENV);
+
+        direct.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        broker.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let report = |label: &str, sorted: &[f64]| {
+            let p50 = percentile_ms(sorted, 0.50);
+            let p99 = percentile_ms(sorted, 0.99);
+            println!(
+                "  {label:<28} p50={p50:>8.3}ms  p99={p99:>8.3}ms  min={:>8.3}ms  max={:>8.3}ms  (n={})",
+                sorted[0],
+                sorted[sorted.len() - 1],
+                sorted.len()
+            );
+            (p50, p99)
+        };
+        println!("broker lane connect+ping latency (running-process#383 evidence):");
+        let (_direct_p50, direct_p99) = report("direct lane", &direct);
+        let (_broker_p50, broker_p99) = report("broker lane (seam)", &broker);
+
+        // Generous absolute budgets: local IPC connect + one round-trip
+        // must stay well under a second even on loaded CI runners. These
+        // exist to catch order-of-magnitude regressions, not to be tight.
+        assert!(
+            direct_p99 < 1000.0,
+            "direct lane p99 {direct_p99:.3}ms exceeded 1000ms budget"
+        );
+        assert!(
+            broker_p99 < 1000.0,
+            "broker lane p99 {broker_p99:.3}ms exceeded 1000ms budget"
+        );
+    }
+
     #[test]
     fn endpoint_translation_round_trips() {
         let endpoint = unique_test_endpoint();
