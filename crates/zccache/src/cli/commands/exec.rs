@@ -176,12 +176,13 @@ pub(crate) fn cmd_exec(params: ExecParams) -> ExitCode {
             }
         };
 
-        if let Err(e) = conn.send(&request).await {
+        let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
+        if let Err(e) = conn.send_request(&request, wire).await {
             eprintln!("zccache exec: send error: {e}");
             return ExitCode::from(2);
         }
 
-        match conn.recv::<Response>().await {
+        match conn.recv_response().await {
             Ok(Some(Response::GenericToolExecResult {
                 exit_code,
                 stdout,

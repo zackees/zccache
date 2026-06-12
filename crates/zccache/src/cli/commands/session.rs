@@ -140,34 +140,33 @@ pub(crate) async fn cmd_session_start(
         }
     };
 
-    if let Err(e) = conn
-        .send(&crate::protocol::Request::SessionStart {
-            client_pid: std::process::id(),
-            working_dir: cwd.into(),
-            log_file: log.map(NormalizedPath::from),
-            track_stats,
-            journal_path: journal,
-            profile,
-            private_daemon: private_options.enabled().then(|| {
-                crate::protocol::PrivateDaemonSessionOptions {
-                    daemon_name: private_options
-                        .daemon_name
-                        .as_deref()
-                        .and_then(crate::core::config::sanitize_daemon_namespace),
-                    endpoint: Some(endpoint.to_string()),
-                    cache_dir: private_options.cache_dir.clone(),
-                    owner_pids: private_options.owner_pids.clone(),
-                    env: private_options.private_env.clone(),
-                }
-            }),
-        })
-        .await
-    {
+    let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
+    let request = crate::protocol::Request::SessionStart {
+        client_pid: std::process::id(),
+        working_dir: cwd.into(),
+        log_file: log.map(NormalizedPath::from),
+        track_stats,
+        journal_path: journal,
+        profile,
+        private_daemon: private_options.enabled().then(|| {
+            crate::protocol::PrivateDaemonSessionOptions {
+                daemon_name: private_options
+                    .daemon_name
+                    .as_deref()
+                    .and_then(crate::core::config::sanitize_daemon_namespace),
+                endpoint: Some(endpoint.to_string()),
+                cache_dir: private_options.cache_dir.clone(),
+                owner_pids: private_options.owner_pids.clone(),
+                env: private_options.private_env.clone(),
+            }
+        }),
+    };
+    if let Err(e) = conn.send_request(&request, wire).await {
         eprintln!("zccache[err][S]: failed to send to daemon: {e}");
         return ExitCode::FAILURE;
     }
 
-    let recv_result = match conn.recv().await {
+    let recv_result = match conn.recv_response().await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("zccache[err][R]: broken connection to daemon: {e}");
@@ -264,12 +263,11 @@ pub(crate) async fn cmd_session_stats(endpoint: &str, session_id: String, json: 
         }
     };
 
-    if let Err(e) = conn
-        .send(&crate::protocol::Request::SessionStats {
-            session_id: session_id.clone(),
-        })
-        .await
-    {
+    let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
+    let request = crate::protocol::Request::SessionStats {
+        session_id: session_id.clone(),
+    };
+    if let Err(e) = conn.send_request(&request, wire).await {
         let message = format!("zccache: failed to send to daemon: {e}");
         if json {
             print_session_stats_error_json(&session_id, &message);
@@ -279,7 +277,7 @@ pub(crate) async fn cmd_session_stats(endpoint: &str, session_id: String, json: 
         return ExitCode::FAILURE;
     }
 
-    let recv_result = match conn.recv().await {
+    let recv_result = match conn.recv_response().await {
         Ok(r) => r,
         Err(e) => {
             let message = format!("zccache: broken connection to daemon: {e}");
@@ -486,14 +484,16 @@ pub(crate) async fn query_session_stats(
         .await
         .map_err(|err| format!("cannot connect to daemon at {endpoint}: {err}"))?;
 
-    conn.send(&crate::protocol::Request::SessionStats {
+    let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
+    let request = crate::protocol::Request::SessionStats {
         session_id: session_id.to_string(),
-    })
-    .await
-    .map_err(|err| format!("failed to send session stats request: {err}"))?;
+    };
+    conn.send_request(&request, wire)
+        .await
+        .map_err(|err| format!("failed to send session stats request: {err}"))?;
 
     let recv_result = conn
-        .recv()
+        .recv_response()
         .await
         .map_err(|err| format!("broken daemon connection: {err}"))?;
     match recv_result {

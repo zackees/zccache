@@ -80,7 +80,8 @@ pub fn client_session_start(
         let mut conn = connect_client(&endpoint)
             .await
             .map_err(|e| format!("cannot connect to daemon at {endpoint}: {e}"))?;
-        conn.send(&crate::protocol::Request::SessionStart {
+        let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
+        let request = crate::protocol::Request::SessionStart {
             client_pid: std::process::id(),
             working_dir: cwd.into(),
             log_file,
@@ -88,11 +89,12 @@ pub fn client_session_start(
             journal_path,
             profile: false,
             private_daemon: None,
-        })
-        .await
-        .map_err(|e| format!("failed to send to daemon: {e}"))?;
+        };
+        conn.send_request(&request, wire)
+            .await
+            .map_err(|e| format!("failed to send to daemon: {e}"))?;
 
-        match conn.recv::<crate::protocol::Response>().await {
+        match conn.recv_response().await {
             Ok(Some(crate::protocol::Response::SessionStarted {
                 session_id,
                 journal_path,
@@ -218,12 +220,13 @@ pub fn session_end_idempotent(
             }
         };
 
-        conn.send(&crate::protocol::Request::SessionEnd {
+        let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
+        let request = crate::protocol::Request::SessionEnd {
             session_id: session_id.clone(),
-        })
-        .await?;
+        };
+        conn.send_request(&request, wire).await?;
 
-        match conn.recv::<crate::protocol::Response>().await? {
+        match conn.recv_response().await? {
             Some(crate::protocol::Response::SessionEnded { stats }) => Ok(stats),
             Some(crate::protocol::Response::Error { message }) => Err(
                 crate::ipc::IpcError::Endpoint(format!("session-end failed: {message}")),
@@ -246,13 +249,15 @@ pub fn client_session_stats(
         let mut conn = connect_client(&endpoint)
             .await
             .map_err(|e| format!("cannot connect to daemon at {endpoint}: {e}"))?;
-        conn.send(&crate::protocol::Request::SessionStats {
+        let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
+        let request = crate::protocol::Request::SessionStats {
             session_id: session_id.clone(),
-        })
-        .await
-        .map_err(|e| format!("failed to send to daemon: {e}"))?;
+        };
+        conn.send_request(&request, wire)
+            .await
+            .map_err(|e| format!("failed to send to daemon: {e}"))?;
 
-        match conn.recv::<crate::protocol::Response>().await {
+        match conn.recv_response().await {
             Ok(Some(crate::protocol::Response::SessionStatsResult { stats })) => Ok(stats),
             Ok(Some(crate::protocol::Response::Error { message })) => Err(message),
             Ok(None) => Err("lost connection to daemon (no response received)".to_string()),
@@ -292,18 +297,20 @@ pub fn fingerprint_check(
             .await
             .map_err(|e| format!("cannot connect to daemon at {endpoint}: {e}"))?;
 
-        conn.send(&crate::protocol::Request::FingerprintCheck {
+        let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
+        let request = crate::protocol::Request::FingerprintCheck {
             cache_file: cache_file.into(),
             cache_type,
             root: root.into(),
             extensions,
             include_globs,
             exclude,
-        })
-        .await
-        .map_err(|e| format!("failed to send to daemon: {e}"))?;
+        };
+        conn.send_request(&request, wire)
+            .await
+            .map_err(|e| format!("failed to send to daemon: {e}"))?;
 
-        match conn.recv::<crate::protocol::Response>().await {
+        match conn.recv_response().await {
             Ok(Some(crate::protocol::Response::FingerprintCheckResult {
                 decision,
                 reason,
@@ -350,10 +357,11 @@ fn fingerprint_mark(
                 cache_file: cache_file.into(),
             }
         };
-        conn.send(&request)
+        let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
+        conn.send_request(&request, wire)
             .await
             .map_err(|e| format!("failed to send to daemon: {e}"))?;
-        match conn.recv::<crate::protocol::Response>().await {
+        match conn.recv_response().await {
             Ok(Some(crate::protocol::Response::FingerprintAck)) => Ok(()),
             Ok(Some(crate::protocol::Response::Error { message })) => Err(message),
             Ok(None) => Err("lost connection to daemon (no response received)".to_string()),
@@ -371,12 +379,14 @@ pub fn fingerprint_invalidate(endpoint: Option<&str>, cache_file: &Path) -> Resu
         let mut conn = connect_client(&endpoint)
             .await
             .map_err(|e| format!("cannot connect to daemon at {endpoint}: {e}"))?;
-        conn.send(&crate::protocol::Request::FingerprintInvalidate {
+        let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
+        let request = crate::protocol::Request::FingerprintInvalidate {
             cache_file: cache_file.into(),
-        })
-        .await
-        .map_err(|e| format!("failed to send to daemon: {e}"))?;
-        match conn.recv::<crate::protocol::Response>().await {
+        };
+        conn.send_request(&request, wire)
+            .await
+            .map_err(|e| format!("failed to send to daemon: {e}"))?;
+        match conn.recv_response().await {
             Ok(Some(crate::protocol::Response::FingerprintAck)) => Ok(()),
             Ok(Some(crate::protocol::Response::Error { message })) => Err(message),
             Ok(None) => Err("lost connection to daemon (no response received)".to_string()),

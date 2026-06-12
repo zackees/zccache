@@ -37,12 +37,13 @@ pub(crate) async fn cmd_fp_check(
         exclude: exclude.to_vec(),
     };
 
-    if let Err(e) = conn.send(&request).await {
+    let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
+    if let Err(e) = conn.send_request(&request, wire).await {
         eprintln!("zccache fp: send error: {e}");
         return ExitCode::from(2);
     }
 
-    match conn.recv::<crate::protocol::Response>().await {
+    match conn.recv_response().await {
         Ok(Some(crate::protocol::Response::FingerprintCheckResult {
             decision,
             reason,
@@ -103,12 +104,13 @@ pub(crate) async fn cmd_fp_mark(endpoint: &str, cache_file: &Path, success: bool
         }
     };
 
-    if let Err(e) = conn.send(&request).await {
+    let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
+    if let Err(e) = conn.send_request(&request, wire).await {
         eprintln!("zccache fp: send error: {e}");
         return ExitCode::from(2);
     }
 
-    match conn.recv::<crate::protocol::Response>().await {
+    match conn.recv_response().await {
         Ok(Some(crate::protocol::Response::FingerprintAck)) => {
             let label = if success {
                 "mark-success"
@@ -151,12 +153,13 @@ pub(crate) async fn cmd_fp_invalidate(endpoint: &str, cache_file: &Path) -> Exit
         cache_file: cache_file.into(),
     };
 
-    if let Err(e) = conn.send(&request).await {
+    let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
+    if let Err(e) = conn.send_request(&request, wire).await {
         eprintln!("zccache fp: send error: {e}");
         return ExitCode::from(2);
     }
 
-    match conn.recv::<crate::protocol::Response>().await {
+    match conn.recv_response().await {
         Ok(Some(crate::protocol::Response::FingerprintAck)) => {
             eprintln!("zccache fp: invalidated");
             ExitCode::SUCCESS

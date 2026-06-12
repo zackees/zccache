@@ -192,6 +192,48 @@ impl IpcConnection {
         }
     }
 
+    /// Send a protocol [`Request`](crate::protocol::Request) on the selected wire.
+    ///
+    /// `BincodeV15` keeps the legacy [`Self::send`] frame; `ProstV16`
+    /// converts via [`wire_prost::request_to_prost`] using the canonical
+    /// per-family request id and sends a v16 prost frame.
+    ///
+    /// [`wire_prost::request_to_prost`]: crate::protocol::wire_prost::request_to_prost
+    pub async fn send_request(
+        &mut self,
+        request: &crate::protocol::Request,
+        wire: crate::protocol::wire_prost::WireFormat,
+    ) -> Result<(), IpcError> {
+        match wire {
+            crate::protocol::wire_prost::WireFormat::BincodeV15 => self.send(request).await,
+            crate::protocol::wire_prost::WireFormat::ProstV16 => {
+                let request_id = crate::protocol::wire_prost::default_request_id(request);
+                let request = crate::protocol::wire_prost::request_to_prost(request, request_id);
+                self.send_prost(&request).await
+            }
+        }
+    }
+
+    /// Receive a protocol [`Response`](crate::protocol::Response), accepting
+    /// both v15 bincode and v16 prost frames.
+    pub async fn recv_response(&mut self) -> Result<Option<crate::protocol::Response>, IpcError> {
+        let message = self
+            .recv_wire::<crate::protocol::Response, crate::protocol::wire_prost::zccache_v1::Response>()
+            .await?;
+        decode_response_wire(message)
+    }
+
+    /// Like [`Self::recv_response`] but with a per-call timeout override.
+    pub async fn recv_response_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<crate::protocol::Response>, IpcError> {
+        let message = self
+            .recv_wire_with_timeout::<crate::protocol::Response, crate::protocol::wire_prost::zccache_v1::Response>(timeout)
+            .await?;
+        decode_response_wire(message)
+    }
+
     /// The recv read loop, factored out so both `recv` and
     /// `recv_with_timeout` share the same implementation. Always
     /// unbounded — the wrapping methods add the deadline.
@@ -307,6 +349,41 @@ impl IpcClientConnection {
         }
     }
 
+    /// See [`IpcConnection::send_request`].
+    pub async fn send_request(
+        &mut self,
+        request: &crate::protocol::Request,
+        wire: crate::protocol::wire_prost::WireFormat,
+    ) -> Result<(), IpcError> {
+        match wire {
+            crate::protocol::wire_prost::WireFormat::BincodeV15 => self.send(request).await,
+            crate::protocol::wire_prost::WireFormat::ProstV16 => {
+                let request_id = crate::protocol::wire_prost::default_request_id(request);
+                let request = crate::protocol::wire_prost::request_to_prost(request, request_id);
+                self.send_prost(&request).await
+            }
+        }
+    }
+
+    /// See [`IpcConnection::recv_response`].
+    pub async fn recv_response(&mut self) -> Result<Option<crate::protocol::Response>, IpcError> {
+        let message = self
+            .recv_wire::<crate::protocol::Response, crate::protocol::wire_prost::zccache_v1::Response>()
+            .await?;
+        decode_response_wire(message)
+    }
+
+    /// See [`IpcConnection::recv_response_with_timeout`].
+    pub async fn recv_response_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<crate::protocol::Response>, IpcError> {
+        let message = self
+            .recv_wire_with_timeout::<crate::protocol::Response, crate::protocol::wire_prost::zccache_v1::Response>(timeout)
+            .await?;
+        decode_response_wire(message)
+    }
+
     async fn recv_loop<T: serde::de::DeserializeOwned>(&mut self) -> Result<Option<T>, IpcError> {
         recv_bincode_loop(&mut self.reader, &mut self.read_buf).await
     }
@@ -320,6 +397,24 @@ impl IpcClientConnection {
     {
         recv_wire_loop(&mut self.reader, &mut self.read_buf).await
     }
+}
+
+/// Decode a dual-wire response message into the internal [`Response`]
+/// type, mapping prost conversion failures into [`IpcError::Protocol`].
+///
+/// [`Response`]: crate::protocol::Response
+fn decode_response_wire(
+    message: Option<
+        crate::protocol::DecodedWireMessage<
+            crate::protocol::Response,
+            crate::protocol::wire_prost::zccache_v1::Response,
+        >,
+    >,
+) -> Result<Option<crate::protocol::Response>, IpcError> {
+    message
+        .map(crate::protocol::wire_prost::response_from_decoded_wire)
+        .transpose()
+        .map_err(IpcError::Protocol)
 }
 
 async fn recv_bincode_loop<R, T>(

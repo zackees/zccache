@@ -26,17 +26,16 @@ pub(super) async fn cmd_compile(
         }
     };
 
-    if let Err(e) = conn
-        .send(&crate::protocol::Request::Compile {
-            session_id: session_id.to_string(),
-            args: args.clone(),
-            cwd: cwd.clone(),
-            compiler: compiler.clone(),
-            env: Some(client_env.clone()),
-            stdin: stdin_bytes.clone(),
-        })
-        .await
-    {
+    let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
+    let request = crate::protocol::Request::Compile {
+        session_id: session_id.to_string(),
+        args: args.clone(),
+        cwd: cwd.clone(),
+        compiler: compiler.clone(),
+        env: Some(client_env.clone()),
+        stdin: stdin_bytes.clone(),
+    };
+    if let Err(e) = conn.send_request(&request, wire).await {
         eprintln!("zccache[err][S]: failed to send to daemon: {e}");
         return ExitCode::FAILURE;
     }
@@ -118,30 +117,26 @@ trait ConnRecv {
 #[cfg(unix)]
 impl ConnRecv for crate::ipc::IpcConnection {
     async fn recv(&mut self) -> Result<Option<crate::protocol::Response>, crate::ipc::IpcError> {
-        crate::ipc::IpcConnection::recv::<crate::protocol::Response>(self).await
+        crate::ipc::IpcConnection::recv_response(self).await
     }
     async fn recv_with_timeout(
         &mut self,
         timeout: std::time::Duration,
     ) -> Result<Option<crate::protocol::Response>, crate::ipc::IpcError> {
-        crate::ipc::IpcConnection::recv_with_timeout::<crate::protocol::Response>(self, timeout)
-            .await
+        crate::ipc::IpcConnection::recv_response_with_timeout(self, timeout).await
     }
 }
 
 #[cfg(windows)]
 impl ConnRecv for crate::ipc::IpcClientConnection {
     async fn recv(&mut self) -> Result<Option<crate::protocol::Response>, crate::ipc::IpcError> {
-        crate::ipc::IpcClientConnection::recv::<crate::protocol::Response>(self).await
+        crate::ipc::IpcClientConnection::recv_response(self).await
     }
     async fn recv_with_timeout(
         &mut self,
         timeout: std::time::Duration,
     ) -> Result<Option<crate::protocol::Response>, crate::ipc::IpcError> {
-        crate::ipc::IpcClientConnection::recv_with_timeout::<crate::protocol::Response>(
-            self, timeout,
-        )
-        .await
+        crate::ipc::IpcClientConnection::recv_response_with_timeout(self, timeout).await
     }
 }
 
@@ -167,18 +162,17 @@ pub(super) async fn cmd_compile_ephemeral(
     };
 
     let stdin_bytes = slurp_stdin_if_piped();
-    if let Err(e) = conn
-        .send(&crate::protocol::Request::CompileEphemeral {
-            client_pid: std::process::id(),
-            working_dir: cwd.clone(),
-            compiler: compiler.into(),
-            args,
-            cwd,
-            env: Some(client_env),
-            stdin: stdin_bytes,
-        })
-        .await
-    {
+    let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
+    let request = crate::protocol::Request::CompileEphemeral {
+        client_pid: std::process::id(),
+        working_dir: cwd.clone(),
+        compiler: compiler.into(),
+        args,
+        cwd,
+        env: Some(client_env),
+        stdin: stdin_bytes,
+    };
+    if let Err(e) = conn.send_request(&request, wire).await {
         eprintln!("zccache[err][S]: failed to send to daemon: {e}");
         return ExitCode::FAILURE;
     }
@@ -227,16 +221,15 @@ pub(super) async fn cmd_link_ephemeral(
         }
     };
 
-    if let Err(e) = conn
-        .send(&crate::protocol::Request::LinkEphemeral {
-            client_pid: std::process::id(),
-            tool: tool.into(),
-            args,
-            cwd,
-            env: Some(client_env),
-        })
-        .await
-    {
+    let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
+    let request = crate::protocol::Request::LinkEphemeral {
+        client_pid: std::process::id(),
+        tool: tool.into(),
+        args,
+        cwd,
+        env: Some(client_env),
+    };
+    if let Err(e) = conn.send_request(&request, wire).await {
         eprintln!("zccache[err][S]: failed to send to daemon: {e}");
         return ExitCode::FAILURE;
     }

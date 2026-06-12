@@ -85,7 +85,7 @@ pub(super) async fn handle_connection(
             DecodedWireMessage::BincodeV15(request) => (request, ResponseWire::BincodeV15),
             DecodedWireMessage::ProstV16(request) => {
                 let request_id = request.request_id.clone();
-                match wire_prost::supported_control_request_from_prost(request) {
+                match wire_prost::request_from_prost(request) {
                     Ok(request) => (request, ResponseWire::ProstV16 { request_id }),
                     Err(message) => {
                         tracing::warn!("{message}");
@@ -594,8 +594,7 @@ async fn send_response_for_wire(
     match response_wire {
         ResponseWire::BincodeV15 => conn.send(response).await,
         ResponseWire::ProstV16 { request_id } => {
-            let response = wire_prost::supported_control_response_to_prost(response, request_id)
-                .map_err(crate::protocol::ProtocolError::Serialization)?;
+            let response = wire_prost::response_to_prost(response, request_id);
             conn.send_prost(&response).await
         }
     }
