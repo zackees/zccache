@@ -175,3 +175,408 @@ fn protocol_version_dispatch_models_v15_and_v16() {
     );
     assert_eq!(wire_format_for_protocol_version(99), None);
 }
+
+// ── Full message-family round-trips (issue rp#383, staged PR 2) ─────────
+//
+// Every non-control request/response family must survive a
+// prost-conversion round trip exactly, so the v16 lane can carry the
+// full protocol when `ZCCACHE_DAEMON_WIRE=prost` is selected.
+
+mod full_family {
+    use std::sync::Arc;
+    use zccache::protocol::wire_prost::{
+        default_request_id, request_from_prost, request_to_prost, response_from_prost,
+        response_to_prost,
+    };
+    use zccache::protocol::{
+        ArtifactData, ArtifactOutput, ArtifactPayload, ExecCachePolicy, ExecOutputStreams,
+        LookupResult, PhaseProfileSummary, PrivateDaemonSessionOptions, Request, Response,
+        RustArtifactInfo, SessionStats, StoreResult,
+    };
+
+    fn roundtrip_request(request: Request) {
+        let request_id = default_request_id(&request);
+        let prost = request_to_prost(&request, request_id);
+        assert_eq!(prost.request_id, request_id);
+        assert_eq!(request_from_prost(prost).unwrap(), request);
+    }
+
+    fn roundtrip_response(response: Response) {
+        let prost = response_to_prost(&response, "resp-1");
+        assert_eq!(prost.request_id, "resp-1");
+        assert_eq!(response_from_prost(prost).unwrap(), response);
+    }
+
+    fn sample_artifact() -> ArtifactData {
+        ArtifactData {
+            outputs: vec![
+                ArtifactOutput {
+                    name: "foo.o".to_string(),
+                    payload: ArtifactPayload::Bytes(Arc::new(vec![1, 2, 3])),
+                },
+                ArtifactOutput {
+                    name: "foo.d".to_string(),
+                    payload: ArtifactPayload::Path("/tmp/foo.d".into()),
+                },
+            ],
+            stdout: Arc::new(b"out".to_vec()),
+            stderr: Arc::new(b"err".to_vec()),
+            exit_code: 0,
+        }
+    }
+
+    fn sample_stats() -> SessionStats {
+        SessionStats {
+            duration_ms: 1,
+            compilations: 2,
+            hits: 3,
+            misses: 4,
+            non_cacheable: 5,
+            errors: 6,
+            errors_cached: 7,
+            time_saved_ms: 8,
+            unique_sources: 9,
+            bytes_read: 10,
+            bytes_written: 11,
+            phase_profile: Some(PhaseProfileSummary {
+                hit_count: 1,
+                miss_count: 2,
+                parse_args_ns: 3,
+                build_context_ns: 4,
+                hash_source_ns: 5,
+                hash_headers_ns: 6,
+                depgraph_check_ns: 7,
+                request_cache_lookup_ns: 8,
+                cross_root_validate_ns: 9,
+                artifact_lookup_ns: 10,
+                write_output_ns: 11,
+                bookkeeping_ns: 12,
+                total_hit_ns: 13,
+                compiler_exec_ns: 14,
+                include_scan_ns: 15,
+                hash_all_ns: 16,
+                artifact_store_ns: 17,
+                total_miss_ns: 18,
+            }),
+        }
+    }
+
+    #[test]
+    fn compile_request_roundtrips() {
+        roundtrip_request(Request::Compile {
+            session_id: "sess-1".to_string(),
+            args: vec!["-c".to_string(), "hello.cpp".to_string()],
+            cwd: "/src".into(),
+            compiler: "/usr/bin/g++".into(),
+            env: Some(vec![("PATH".to_string(), "/usr/bin".to_string())]),
+            stdin: b"stdin-bytes".to_vec(),
+        });
+        // env: None must be distinguishable from Some(vec![]).
+        roundtrip_request(Request::Compile {
+            session_id: "sess-2".to_string(),
+            args: vec![],
+            cwd: "/src".into(),
+            compiler: "/usr/bin/cc".into(),
+            env: None,
+            stdin: Vec::new(),
+        });
+        roundtrip_request(Request::Compile {
+            session_id: "sess-3".to_string(),
+            args: vec![],
+            cwd: "/src".into(),
+            compiler: "/usr/bin/cc".into(),
+            env: Some(Vec::new()),
+            stdin: Vec::new(),
+        });
+    }
+
+    #[test]
+    fn compile_ephemeral_request_roundtrips() {
+        roundtrip_request(Request::CompileEphemeral {
+            client_pid: 42,
+            working_dir: "/work".into(),
+            compiler: "/usr/bin/clang".into(),
+            args: vec!["-c".to_string(), "a.c".to_string()],
+            cwd: "/work/sub".into(),
+            env: Some(vec![("CC".to_string(), "clang".to_string())]),
+            stdin: vec![9, 8, 7],
+        });
+    }
+
+    #[test]
+    fn link_ephemeral_request_roundtrips() {
+        roundtrip_request(Request::LinkEphemeral {
+            client_pid: 7,
+            tool: "/usr/bin/ar".into(),
+            args: vec!["rcs".to_string(), "libfoo.a".to_string()],
+            cwd: "/work".into(),
+            env: None,
+        });
+    }
+
+    #[test]
+    fn session_request_family_roundtrips() {
+        roundtrip_request(Request::SessionStart {
+            client_pid: 1234,
+            working_dir: "/proj".into(),
+            log_file: Some("/proj/log.txt".into()),
+            track_stats: true,
+            journal_path: Some("/proj/journal.jsonl".into()),
+            profile: true,
+            private_daemon: Some(PrivateDaemonSessionOptions {
+                daemon_name: Some("soldr-dev".to_string()),
+                endpoint: Some("endpoint-1".to_string()),
+                cache_dir: Some("/cache".into()),
+                owner_pids: vec![1, 2, 3],
+                env: vec![("SECRET".to_string(), "value".to_string())],
+            }),
+        });
+        roundtrip_request(Request::SessionStart {
+            client_pid: 1,
+            working_dir: "/proj".into(),
+            log_file: None,
+            track_stats: false,
+            journal_path: None,
+            profile: false,
+            private_daemon: None,
+        });
+        roundtrip_request(Request::SessionEnd {
+            session_id: "sess-1".to_string(),
+        });
+        roundtrip_request(Request::SessionStats {
+            session_id: "sess-1".to_string(),
+        });
+    }
+
+    #[test]
+    fn lookup_and_store_request_roundtrips() {
+        roundtrip_request(Request::Lookup {
+            cache_key: "abc123".to_string(),
+        });
+        roundtrip_request(Request::Store {
+            cache_key: "abc123".to_string(),
+            artifact: sample_artifact(),
+        });
+    }
+
+    #[test]
+    fn fingerprint_request_family_roundtrips() {
+        roundtrip_request(Request::FingerprintCheck {
+            cache_file: "/proj/.cache/lint.json".into(),
+            cache_type: "two-layer".to_string(),
+            root: "/proj".into(),
+            extensions: vec!["rs".to_string()],
+            include_globs: vec!["**/*.rs".to_string()],
+            exclude: vec!["target".to_string()],
+        });
+        roundtrip_request(Request::FingerprintMarkSuccess {
+            cache_file: "/proj/.cache/lint.json".into(),
+        });
+        roundtrip_request(Request::FingerprintMarkFailure {
+            cache_file: "/proj/.cache/lint.json".into(),
+        });
+        roundtrip_request(Request::FingerprintInvalidate {
+            cache_file: "/proj/.cache/lint.json".into(),
+        });
+    }
+
+    #[test]
+    fn list_rust_artifacts_request_roundtrips() {
+        roundtrip_request(Request::ListRustArtifacts);
+    }
+
+    #[test]
+    fn generic_tool_exec_request_roundtrips() {
+        roundtrip_request(Request::GenericToolExec {
+            tool: "/usr/bin/protoc".into(),
+            args: vec!["--version".to_string()],
+            cwd: "/work".into(),
+            env: vec![("LANG".to_string(), "C".to_string())],
+            input_files: vec!["/work/a.proto".into()],
+            input_extra: Arc::new(vec![1, 2, 3, 4]),
+            output_streams: ExecOutputStreams {
+                stdout: true,
+                stderr: false,
+            },
+            output_files: vec!["/work/a.pb.rs".into()],
+            tool_hash: Some([7u8; 32]),
+            cache_policy: ExecCachePolicy::ReadOnly,
+            cwd_in_key: true,
+            include_scan_files: vec!["/work/a.c".into()],
+            include_dirs: vec!["/work/include".into()],
+            system_include_dirs: vec!["/usr/include".into()],
+            iquote_dirs: vec!["/work/quoted".into()],
+            depfile: Some("/work/a.d".into()),
+            non_deterministic: false,
+            key_args_filter: vec!["--verbose".to_string()],
+        });
+        // No tool hash, bypass policy, empty collections.
+        roundtrip_request(Request::GenericToolExec {
+            tool: "/usr/bin/true".into(),
+            args: vec![],
+            cwd: "/".into(),
+            env: vec![],
+            input_files: vec![],
+            input_extra: Arc::new(Vec::new()),
+            output_streams: ExecOutputStreams::default(),
+            output_files: vec![],
+            tool_hash: None,
+            cache_policy: ExecCachePolicy::Bypass,
+            cwd_in_key: false,
+            include_scan_files: vec![],
+            include_dirs: vec![],
+            system_include_dirs: vec![],
+            iquote_dirs: vec![],
+            depfile: None,
+            non_deterministic: true,
+            key_args_filter: vec![],
+        });
+    }
+
+    #[test]
+    fn generic_tool_exec_rejects_bad_tool_hash_length() {
+        let request = Request::GenericToolExec {
+            tool: "/usr/bin/true".into(),
+            args: vec![],
+            cwd: "/".into(),
+            env: vec![],
+            input_files: vec![],
+            input_extra: Arc::new(Vec::new()),
+            output_streams: ExecOutputStreams::default(),
+            output_files: vec![],
+            tool_hash: None,
+            cache_policy: ExecCachePolicy::Normal,
+            cwd_in_key: false,
+            include_scan_files: vec![],
+            include_dirs: vec![],
+            system_include_dirs: vec![],
+            iquote_dirs: vec![],
+            depfile: None,
+            non_deterministic: false,
+            key_args_filter: vec![],
+        };
+        let mut prost = request_to_prost(&request, "generic-tool-exec");
+        match prost.body {
+            Some(zccache::protocol::wire_prost::zccache_v1::request::Body::GenericToolExec(
+                ref mut exec,
+            )) => exec.tool_hash = Some(vec![1, 2, 3]),
+            _ => panic!("expected generic-tool-exec body"),
+        }
+        let err = request_from_prost(prost).unwrap_err();
+        assert!(err.contains("tool_hash"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn compile_result_response_roundtrips() {
+        roundtrip_response(Response::CompileResult {
+            exit_code: 1,
+            stdout: Arc::new(b"warning".to_vec()),
+            stderr: Arc::new(b"error".to_vec()),
+            cached: true,
+        });
+    }
+
+    #[test]
+    fn link_result_response_roundtrips() {
+        roundtrip_response(Response::LinkResult {
+            exit_code: 0,
+            stdout: Arc::new(Vec::new()),
+            stderr: Arc::new(b"link-err".to_vec()),
+            cached: false,
+            warning: Some("non-deterministic archive flags".to_string()),
+        });
+        roundtrip_response(Response::LinkResult {
+            exit_code: 0,
+            stdout: Arc::new(Vec::new()),
+            stderr: Arc::new(Vec::new()),
+            cached: true,
+            warning: None,
+        });
+    }
+
+    #[test]
+    fn session_response_family_roundtrips() {
+        roundtrip_response(Response::SessionStarted {
+            session_id: "sess-1".to_string(),
+            journal_path: Some("/proj/journal.jsonl".into()),
+        });
+        roundtrip_response(Response::SessionEnded {
+            stats: Some(sample_stats()),
+        });
+        roundtrip_response(Response::SessionEnded { stats: None });
+        roundtrip_response(Response::SessionStatsResult {
+            stats: Some(sample_stats()),
+        });
+    }
+
+    #[test]
+    fn lookup_and_store_response_roundtrips() {
+        roundtrip_response(Response::LookupResult(LookupResult::Hit {
+            artifact: sample_artifact(),
+        }));
+        roundtrip_response(Response::LookupResult(LookupResult::Miss));
+        roundtrip_response(Response::StoreResult(StoreResult::Stored));
+        roundtrip_response(Response::StoreResult(StoreResult::AlreadyExists));
+    }
+
+    #[test]
+    fn fingerprint_response_family_roundtrips() {
+        roundtrip_response(Response::FingerprintCheckResult {
+            decision: "run".to_string(),
+            reason: Some("content changed".to_string()),
+            changed_files: vec!["src/main.rs".to_string()],
+        });
+        roundtrip_response(Response::FingerprintAck);
+    }
+
+    #[test]
+    fn rust_artifact_list_response_roundtrips() {
+        roundtrip_response(Response::RustArtifactList {
+            artifacts: vec![RustArtifactInfo {
+                cache_key: "abc".to_string(),
+                output_names: vec!["libfoo.rlib".to_string()],
+                payload_count: 2,
+            }],
+        });
+    }
+
+    #[test]
+    fn generic_tool_exec_response_roundtrips() {
+        roundtrip_response(Response::GenericToolExecResult {
+            exit_code: 0,
+            stdout: Arc::new(b"tool-out".to_vec()),
+            stderr: Arc::new(Vec::new()),
+            output_files: vec![ArtifactOutput {
+                name: "gen.rs".to_string(),
+                payload: ArtifactPayload::Bytes(Arc::new(vec![5, 6])),
+            }],
+            cached: true,
+            cache_key_hex: "deadbeef".to_string(),
+        });
+    }
+
+    #[test]
+    fn backpressure_response_roundtrips() {
+        roundtrip_response(Response::Backpressure {
+            queue_depth: 12,
+            retry_after_ms: 250,
+            reason: "compile_queue_full".to_string(),
+        });
+    }
+
+    #[test]
+    fn control_converters_reject_non_control_families() {
+        use zccache::protocol::wire_prost::{
+            supported_control_request_from_prost, supported_control_response_from_prost,
+        };
+        let request = Request::SessionEnd {
+            session_id: "sess-1".to_string(),
+        };
+        let prost = request_to_prost(&request, "session-end");
+        assert!(supported_control_request_from_prost(prost).is_err());
+
+        let response = Response::FingerprintAck;
+        let prost = response_to_prost(&response, "resp-1");
+        assert!(supported_control_response_from_prost(prost).is_err());
+    }
+}
