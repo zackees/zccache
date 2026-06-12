@@ -836,7 +836,9 @@ mod tests {
 
     impl EnvGuard {
         fn set_cache_dir(value: &std::path::Path) -> Self {
-            let lock = ENV_LOCK.lock().unwrap();
+            let lock = ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
             let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
             let previous_running_process_disable = std::env::var_os(RUNNING_PROCESS_DISABLE_ENV);
@@ -851,7 +853,9 @@ mod tests {
         }
 
         fn set_cache_dir_and_namespace(value: &std::path::Path, namespace: &str) -> Self {
-            let lock = ENV_LOCK.lock().unwrap();
+            let lock = ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
             let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
             let previous_running_process_disable = std::env::var_os(RUNNING_PROCESS_DISABLE_ENV);
@@ -866,7 +870,9 @@ mod tests {
         }
 
         fn isolate_running_process_disable() -> Self {
-            let lock = ENV_LOCK.lock().unwrap();
+            let lock = ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
             let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
             let previous_running_process_disable = std::env::var_os(RUNNING_PROCESS_DISABLE_ENV);

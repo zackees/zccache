@@ -252,33 +252,15 @@ mod tests {
     use crate::ipc::{unique_test_endpoint, IpcListener, RUNNING_PROCESS_DISABLE_ENV};
     use crate::protocol::{Request, Response};
 
-    /// Spawn a ping server that accepts up to `accepts` connections;
-    /// connections that close without sending a request are tolerated
-    /// (the broker lane's resolution dial closes immediately).
-    fn spawn_ping_server(
-        mut listener: IpcListener,
-        accepts: usize,
-    ) -> tokio::task::JoinHandle<usize> {
-        tokio::spawn(async move {
-            let mut answered = 0;
-            for _ in 0..accepts {
-                let Ok(mut conn) = listener.accept().await else {
-                    break;
-                };
-                match conn.recv::<Request>().await {
-                    Ok(Some(Request::Ping)) => {
-                        conn.send(&Response::Pong).await.unwrap();
-                        answered += 1;
-                        break;
-                    }
-                    // Resolution dial dropped without a request — keep
-                    // accepting until the data connection arrives.
-                    Ok(None) | Err(_) => continue,
-                    Ok(Some(other)) => panic!("unexpected request: {other:?}"),
-                }
-            }
-            answered
-        })
+    /// Spawn a ping server that accepts connections until it has answered
+    /// one Ping. The accept loop is unbounded on purpose: the broker
+    /// lane's resolution dial closes immediately, and on loaded Linux
+    /// runners it can surface as extra reset connections, so budgeting a
+    /// fixed number of accepts is racy — the listener must stay alive
+    /// until the data connection's Ping is answered (seen as ECONNRESET
+    /// in CI Integration runs otherwise).
+    fn spawn_ping_server(listener: IpcListener) -> tokio::task::JoinHandle<usize> {
+        spawn_counting_ping_server(listener, 1)
     }
 
     async fn ping_roundtrip(conn: &mut super::ClientConnection) {
@@ -297,7 +279,7 @@ mod tests {
 
         let endpoint = unique_test_endpoint();
         let listener = IpcListener::bind(&endpoint).unwrap();
-        let server = spawn_ping_server(listener, 1);
+        let server = spawn_ping_server(listener);
 
         let (mut conn, route) = connect_daemon_with_route(&endpoint).await.unwrap();
         assert_eq!(route, DaemonConnectRoute::Direct);
@@ -319,9 +301,9 @@ mod tests {
         ]);
 
         let listener = IpcListener::bind(&endpoint).unwrap();
-        // Two accepts: the connect_to_backend resolution dial (dropped) and
-        // the zccache data connection.
-        let server = spawn_ping_server(listener, 2);
+        // The server sees the connect_to_backend resolution dial (dropped)
+        // before the zccache data connection.
+        let server = spawn_ping_server(listener);
 
         let (mut conn, route) = connect_daemon_with_route(&endpoint).await.unwrap();
         match route {
@@ -352,7 +334,7 @@ mod tests {
         ]);
 
         let listener = IpcListener::bind(&endpoint).unwrap();
-        let server = spawn_ping_server(listener, 1);
+        let server = spawn_ping_server(listener);
 
         let (mut conn, route) = connect_daemon_with_route(&endpoint).await.unwrap();
         assert_eq!(route, DaemonConnectRoute::Direct);
@@ -376,7 +358,7 @@ mod tests {
         ]);
 
         let listener = IpcListener::bind(&endpoint).unwrap();
-        let server = spawn_ping_server(listener, 1);
+        let server = spawn_ping_server(listener);
 
         let (mut conn, route) = connect_daemon_with_route(&endpoint).await.unwrap();
         assert_eq!(route, DaemonConnectRoute::Direct);
