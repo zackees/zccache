@@ -112,6 +112,17 @@ pub async fn connect_daemon_with_route(
     Ok((conn, DaemonConnectRoute::Direct))
 }
 
+/// Is the broker lane actually governing connections for this process?
+///
+/// True when the broker lane is requested *and* not disabled by the
+/// `RUNNING_PROCESS_DISABLE=1` escape hatch — i.e. the same precedence
+/// [`connect_daemon_with_route`] applies before resolving a backend. Callers
+/// that need to pick the version-checked FrameV1 wire when the broker carries
+/// the connection (issue #720 Phase 1) consult this.
+pub(crate) fn broker_lane_active() -> bool {
+    !running_process_disabled() && broker_lane_requested()
+}
+
 /// Is the broker lane requested for this process?
 ///
 /// True when the upstream fake-backend test seam is set (non-empty) or the
