@@ -2426,9 +2426,9 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.3.0"
+version = "4.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a216d9a8561599e3aeb48477d7fb404fd852f938808e75e8fad3ad9df2d993e5"
+checksum = "e0fed77f3564a9728493f29f3c48ef8a85d76508de94fc2bcb2baaea05b58c23"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3866,6 +3866,7 @@ dependencies = [
  "fs2",
  "futures",
  "globset",
+ "interprocess",
  "jwalk",
  "libc",
  "lzma-rs",

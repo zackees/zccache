@@ -928,14 +928,27 @@ async fn create_replacement_pipe_with_retry(
 #[cfg(unix)]
 pub async fn connect(endpoint: &str) -> Result<IpcConnection, IpcError> {
     let stream = tokio::net::UnixStream::connect(endpoint).await?;
-    let (reader, writer) = tokio::io::split(stream);
-    Ok(IpcConnection {
-        reader,
-        writer,
-        read_buf: BytesMut::with_capacity(4096),
-        recv_timeout: None,
-        next_frame_request_id: 1,
-    })
+    Ok(IpcConnection::from_unix_stream(stream))
+}
+
+#[cfg(unix)]
+impl IpcConnection {
+    /// Wrap an already-connected `UnixStream` as an `IpcConnection`.
+    ///
+    /// The broker lane uses this to adopt the live socket handed back by
+    /// `running_process::broker::adopt::AsyncBrokerSession::into_backend_io`
+    /// instead of re-dialing the endpoint, so the negotiated connection is
+    /// reused as the data connection.
+    pub fn from_unix_stream(stream: tokio::net::UnixStream) -> Self {
+        let (reader, writer) = tokio::io::split(stream);
+        IpcConnection {
+            reader,
+            writer,
+            read_buf: BytesMut::with_capacity(4096),
+            recv_timeout: None,
+            next_frame_request_id: 1,
+        }
+    }
 }
 
 /// Connect to an IPC endpoint as a client.

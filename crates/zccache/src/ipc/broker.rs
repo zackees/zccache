@@ -20,17 +20,23 @@
 //!    previously-working build fail.
 //! 4. Default — direct connect, byte-for-byte the pre-adoption behavior.
 //!
-//! The negotiated (or seam) connection is consumed for **endpoint
-//! resolution only**; the data connection is then opened with zccache's
-//! own tokio transport so recv timeouts, the Windows named-pipe client
-//! backoff, and the v15/v16/FrameV1 wire lanes keep working unchanged.
-//! Adopting the negotiated `interprocess` stream as the data connection is
-//! deferred until the broker lane becomes the default.
+//! On the production broker lane (Unix), the live negotiated socket handed
+//! back by [`AsyncBrokerSession::into_backend_io`] is **adopted directly** as
+//! the data connection — no re-dial. The adopted socket is byte-identical to a
+//! fresh `connect()` stream (the broker hands back a `backend_pipe` the client
+//! dials itself), so recv timeouts and the v15/v16/FrameV1 wire lanes keep
+//! working unchanged. On Windows `into_backend_io` is unsupported (the
+//! `OwnedHandle` handoff is deferred, running-process #720), so the resolved
+//! endpoint is re-dialed with zccache's own transport (resolve-and-drop). The
+//! TEST-ONLY fake-backend seam also stays resolve-and-drop: it dials a raw
+//! socket with no Hello negotiation, so there is no live session to adopt.
 
 use running_process::broker::adopt::{AdoptError, AsyncBrokerSession, OwnedConnectRequest};
 use running_process::broker::client::{connect_local_socket, BackendConnectionRoute, RefusalKind};
 
 use super::error::IpcError;
+#[cfg(unix)]
+use super::IpcConnection;
 use super::{connect, running_process_disabled, ClientConnection};
 
 /// Upstream TEST-ONLY seam: a non-empty value short-circuits the broker
@@ -87,25 +93,22 @@ pub async fn connect_daemon_with_route(
         return Ok((conn, DaemonConnectRoute::Direct));
     }
 
-    if let Some((resolved, route)) = resolve_backend_endpoint().await {
-        match connect(&resolved).await {
-            Ok(conn) => {
-                return Ok((
-                    conn,
-                    DaemonConnectRoute::Broker {
-                        route,
-                        endpoint: resolved,
-                    },
-                ));
-            }
-            Err(err) => {
-                tracing::debug!(
-                    resolved_endpoint = %resolved,
-                    error = %err,
-                    "broker-resolved endpoint unreachable; falling back to direct connect"
-                );
+    // Fake-backend test seam keeps resolve-and-drop + re-dial: it dials a raw
+    // socket with no Hello negotiation, so there is no live session to adopt.
+    if let Some(seam_endpoint) = fake_backend_endpoint_from_env() {
+        if let Some((resolved, route)) = resolve_fake_backend_seam_async(seam_endpoint).await {
+            if let Some(result) = redial_resolved(route, resolved).await {
+                return Ok(result);
             }
         }
+        let conn = connect(endpoint).await?;
+        return Ok((conn, DaemonConnectRoute::Direct));
+    }
+
+    // Production broker lane: adopt the live negotiated socket as the data
+    // connection (Unix) instead of resolve-and-drop. See the module docs.
+    if let Some(result) = connect_via_broker().await {
+        return Ok(result);
     }
 
     let conn = connect(endpoint).await?;
@@ -124,57 +127,135 @@ fn broker_lane_requested() -> bool {
     std::env::var(ZCCACHE_BROKER_CONNECT_ENV).is_ok_and(|value| value == "1")
 }
 
-/// Run broker resolution and return the resolved endpoint in zccache connect
-/// form plus the broker route.
+/// Negotiate with the shared broker and return a ready data connection.
+///
+/// `AsyncBrokerSession::adopt` is the frozen one-call recipe: it honors
+/// RUNNING_PROCESS_DISABLE=1, runs the Hello negotiation on spawn_blocking,
+/// and hands back the negotiated session. On Unix the live socket is adopted
+/// directly via [`AsyncBrokerSession::into_backend_io`]; on Windows (no
+/// `into_backend_io` yet) the resolved endpoint is re-dialed.
 ///
 /// Returns `None` on any broker-side failure; the caller falls back to the
-/// direct connect. The negotiated session is dropped here (endpoint resolution
-/// only) — see the module docs for why resolution and the data connection are
-/// separate.
-async fn resolve_backend_endpoint() -> Option<(String, BackendConnectionRoute)> {
-    // The fake-backend seam dials the endpoint directly, skipping broker
-    // discovery, Hello negotiation, and version checks entirely — matching the
-    // upstream connect_to_backend seam semantics. Kept on a worker thread
-    // because `connect_local_socket` is a blocking dial.
-    if let Some(seam_endpoint) = fake_backend_endpoint_from_env() {
-        return tokio::task::spawn_blocking(move || resolve_fake_backend_seam(&seam_endpoint))
-            .await
-            .unwrap_or_else(|err| {
-                tracing::debug!(error = %err, "fake-backend seam task failed; using direct connect");
-                None
-            });
-    }
-
+/// direct connect.
+async fn connect_via_broker() -> Option<(ClientConnection, DaemonConnectRoute)> {
     let broker_endpoint = default_broker_endpoint()?;
-    // `AsyncBrokerSession::adopt` is the frozen #433 one-call recipe: it honors
-    // RUNNING_PROCESS_DISABLE=1, runs the Hello negotiation on spawn_blocking,
-    // and hands back the negotiated endpoint + route. We adopt for endpoint
-    // resolution only and drop the session; the data connection is opened with
-    // zccache's own transport (see module docs).
     let request = OwnedConnectRequest::new(
         broker_endpoint,
         "zccache",
         crate::core::VERSION,
         crate::core::VERSION,
     );
-    match AsyncBrokerSession::adopt(request).await {
-        Ok(session) => {
-            let resolved = to_zccache_endpoint(session.endpoint());
-            let route = session.route();
-            // Drop the negotiated frame client; we only needed the endpoint.
-            drop(session);
-            Some((resolved, route))
-        }
-        Err(AdoptError::BrokerDisabled) => {
-            // Belt-and-suspenders: connect_daemon_with_route already checks the
-            // disable hatch before calling us, but adopt re-checks it too.
-            None
-        }
+    let session = match AsyncBrokerSession::adopt(request).await {
+        Ok(session) => session,
+        // Belt-and-suspenders: connect_daemon_with_route already checks the
+        // disable hatch before calling us, but adopt re-checks it too.
+        Err(AdoptError::BrokerDisabled) => return None,
         Err(err) => {
             log_adopt_failure(&err);
+            return None;
+        }
+    };
+
+    let route = session.route();
+    let resolved = to_zccache_endpoint(session.endpoint());
+    adopt_session_connection(session, route, resolved).await
+}
+
+/// Adopt the negotiated session's live socket as the data connection.
+#[cfg(unix)]
+async fn adopt_session_connection(
+    session: AsyncBrokerSession,
+    route: BackendConnectionRoute,
+    resolved: String,
+) -> Option<(ClientConnection, DaemonConnectRoute)> {
+    match session.into_backend_io() {
+        Ok(io) => match unix_connection_from_backend_io(io) {
+            Ok(conn) => Some((
+                conn,
+                DaemonConnectRoute::Broker {
+                    route,
+                    endpoint: resolved,
+                },
+            )),
+            Err(err) => {
+                tracing::debug!(
+                    error = %err,
+                    "adopting broker backend socket failed; re-dialing resolved endpoint"
+                );
+                redial_resolved(route, resolved).await
+            }
+        },
+        Err(err) => {
+            tracing::debug!(
+                error = %err,
+                "into_backend_io declined the live socket; re-dialing resolved endpoint"
+            );
+            redial_resolved(route, resolved).await
+        }
+    }
+}
+
+/// Windows has no `into_backend_io` yet (OwnedHandle handoff deferred,
+/// running-process #720), so keep resolve-and-drop + re-dial.
+#[cfg(windows)]
+async fn adopt_session_connection(
+    session: AsyncBrokerSession,
+    route: BackendConnectionRoute,
+    resolved: String,
+) -> Option<(ClientConnection, DaemonConnectRoute)> {
+    drop(session);
+    redial_resolved(route, resolved).await
+}
+
+/// Wrap the adopted `OwnedFd` as a tokio-backed `IpcConnection`.
+#[cfg(unix)]
+fn unix_connection_from_backend_io(
+    io: running_process::broker::adopt::OwnedBackendIo,
+) -> Result<IpcConnection, IpcError> {
+    let fd = io.into_owned_fd();
+    let std_stream = std::os::unix::net::UnixStream::from(fd);
+    std_stream.set_nonblocking(true)?;
+    let stream = tokio::net::UnixStream::from_std(std_stream)?;
+    Ok(IpcConnection::from_unix_stream(stream))
+}
+
+/// Re-dial a broker-resolved endpoint with zccache's own transport, reporting
+/// the broker route on success. Returns `None` if the endpoint is unreachable.
+async fn redial_resolved(
+    route: BackendConnectionRoute,
+    resolved: String,
+) -> Option<(ClientConnection, DaemonConnectRoute)> {
+    match connect(&resolved).await {
+        Ok(conn) => Some((
+            conn,
+            DaemonConnectRoute::Broker {
+                route,
+                endpoint: resolved,
+            },
+        )),
+        Err(err) => {
+            tracing::debug!(
+                resolved_endpoint = %resolved,
+                error = %err,
+                "broker-resolved endpoint unreachable; falling back to direct connect"
+            );
             None
         }
     }
+}
+
+/// Dial the upstream TEST-ONLY fake-backend seam on a worker thread.
+///
+/// `connect_local_socket` is a blocking dial, so it runs on `spawn_blocking`.
+async fn resolve_fake_backend_seam_async(
+    seam_endpoint: String,
+) -> Option<(String, BackendConnectionRoute)> {
+    tokio::task::spawn_blocking(move || resolve_fake_backend_seam(&seam_endpoint))
+        .await
+        .unwrap_or_else(|err| {
+            tracing::debug!(error = %err, "fake-backend seam task failed; using direct connect");
+            None
+        })
 }
 
 /// Dial the upstream TEST-ONLY fake-backend seam endpoint directly.
