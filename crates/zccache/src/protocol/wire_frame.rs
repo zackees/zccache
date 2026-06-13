@@ -223,3 +223,112 @@ pub fn decode_frame_v1_message<M: Message + Default>(
         request_id: frame.request_id,
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::wire_prost::zccache_v1;
+
+    /// Build a fixed, deterministic zccache `Lookup` request used as the
+    /// golden-bytes fixture. The contents must never change — if a field is
+    /// added/reordered in `zccache_v1`, the frozen bytes below catch it.
+    fn golden_request() -> zccache_v1::Request {
+        zccache_v1::Request {
+            body: Some(zccache_v1::request::Body::Lookup(zccache_v1::Lookup {
+                cache_key: "golden-cache-key".to_string(),
+            })),
+            request_id: "golden-request-id".to_string(),
+        }
+    }
+
+    /// Golden-bytes freeze for the `0x7A63` Frame lane (zackees/running-process#435).
+    ///
+    /// Encodes a fixed request and asserts the EXACT outer envelope bytes
+    /// (`[u8 envelope_version][u32 LE body_len][prost Frame]`). Any change to
+    /// the running-process `Frame` field layout, the zccache payload protocol
+    /// id, or the `zccache_v1` request encoding will break this — which is the
+    /// point: the wire is a frozen contract once consumers depend on it.
+    #[test]
+    fn frame_v1_request_golden_bytes_are_frozen() {
+        let encoded = encode_frame_v1_request(&golden_request(), 0x0102_0304_0506_0708)
+            .expect("encode golden frame");
+
+        // FROZEN: regenerate ONLY with an intentional, documented wire bump.
+        // These bytes were captured from the running-process v1 `Frame` + the
+        // `zccache_v1::Request` encoder; they are the canonical contract.
+        let expected: &[u8] = &[
+            0x01, // outer envelope_version
+            0x3A, 0x00, 0x00, 0x00, // u32 LE body_len = 58
+            // ── prost Frame body ──
+            0x08, 0x01, // field 1 (envelope_version) = 1
+            // field 2 (kind) = Request (0) is the default and is not serialized
+            0x18, 0xE3, 0xF4, 0x01, // field 3 (payload_protocol) = 0x7A63 (31331)
+            0x22, 0x28, // field 4 (payload), len 40
+            // ── inner zccache_v1::Request prost payload ──
+            0x22, 0x12, // field 4 (Lookup body), len 18
+            0x0A, 0x10, // Lookup.cache_key (field 1), len 16
+            b'g', b'o', b'l', b'd', b'e', b'n', b'-', b'c', b'a', b'c', b'h', b'e', b'-', b'k',
+            b'e', b'y', // "golden-cache-key"
+            0xA2, 0x06, 0x11, // Request.request_id (field 100), len 17
+            b'g', b'o', b'l', b'd', b'e', b'n', b'-', b'r', b'e', b'q', b'u', b'e', b's', b't',
+            b'-', b'i', b'd', // "golden-request-id"
+            0x28, 0x88, 0x8E, 0x98, 0xA8, 0xC0, 0xE0, 0x80, 0x81,
+            0x01, // field 5 (Frame.request_id) u64 = 0x0102030405060708
+        ];
+
+        assert_eq!(
+            encoded.as_ref(),
+            expected,
+            "0x7A63 Frame lane golden bytes changed — wire is frozen; \
+             see zackees/running-process#435"
+        );
+    }
+
+    /// The golden bytes must round-trip back to the original request.
+    #[test]
+    fn frame_v1_golden_round_trips() {
+        let request_id = 0x0102_0304_0506_0708;
+        let mut buf =
+            encode_frame_v1_request(&golden_request(), request_id).expect("encode golden frame");
+
+        assert_eq!(buffer_starts_running_process_frame(&buf), Some(true));
+
+        let decoded: FrameV1Decoded<zccache_v1::Request> = decode_frame_v1_message(&mut buf)
+            .expect("decode")
+            .expect("complete frame");
+        assert_eq!(decoded.request_id, request_id);
+        assert_eq!(decoded.message, golden_request());
+    }
+
+    /// A frame whose payload_protocol is not `0x7A63` is rejected before the
+    /// payload is decoded.
+    #[test]
+    fn frame_v1_rejects_foreign_payload_protocol() {
+        use prost::Message as _;
+        use running_process::broker::protocol::{Frame, FrameKind, PayloadEncoding};
+
+        let frame = Frame {
+            envelope_version: 1,
+            kind: FrameKind::Request as i32,
+            payload_protocol: 0x7001, // not the zccache lane
+            payload: golden_request().encode_to_vec(),
+            request_id: 7,
+            payload_encoding: PayloadEncoding::None as i32,
+            deadline_unix_ms: 0,
+            traceparent: String::new(),
+            tracestate: String::new(),
+        };
+        let body = frame.encode_to_vec();
+        let mut buf = BytesMut::new();
+        buf.put_u8(running_process::broker::protocol::ENVELOPE_VERSION);
+        buf.put_u32_le(u32::try_from(body.len()).unwrap());
+        buf.extend_from_slice(&body);
+
+        let err = decode_frame_v1_message::<zccache_v1::Request>(&mut buf)
+            .expect_err("foreign payload protocol must be rejected");
+        assert!(
+            matches!(err, ProtocolError::Deserialization(msg) if msg.contains("payload_protocol")),
+            "expected a payload_protocol rejection"
+        );
+    }
+}

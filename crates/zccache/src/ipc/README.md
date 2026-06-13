@@ -35,10 +35,27 @@ legacy raw-connect probe for older daemons that have not written the identity
 file yet. `RUNNING_PROCESS_DISABLE=1` skips the BackendHandle probe and uses
 that same legacy raw-connect fallback.
 
-`broker.rs` wires `running_process::broker::client::connect_to_backend` in
-front of the daemon client connect (`connect_daemon`). The lane is opt-in
+`broker.rs` wires the frozen
+`running_process::broker::adopt::AsyncBrokerSession::adopt` one-call recipe
+(zackees/running-process#435) in front of the daemon client connect
+(`connect_daemon`). `adopt` runs the Hello negotiation (service_name
+`"zccache"`, protocol min/max = 1, client_lib_name `"running-process"`,
+wanted_version = the zccache daemon version) on a blocking worker and returns
+the broker-selected backend endpoint. The lane is opt-in
 (`ZCCACHE_BROKER_CONNECT=1`, or the upstream TEST-ONLY
-`RUNNING_PROCESS_FAKE_BACKEND` seam); `RUNNING_PROCESS_DISABLE=1` bypasses it
-entirely, and any broker-side failure falls back silently to the direct
-connect. The negotiated connection resolves the endpoint only — the data
-connection still uses zccache's tokio transport and wire lanes unchanged.
+`RUNNING_PROCESS_FAKE_BACKEND` seam, which still dials directly via
+`connect_local_socket`); `RUNNING_PROCESS_DISABLE=1` bypasses it entirely, and
+any broker-side failure falls back silently to the direct connect. Typed
+broker refusals are classified through `RefusalKind` into the local
+`BrokerRefusal` enum (`classify_adopt_error`). The negotiated connection
+resolves the endpoint only — the data connection still uses zccache's tokio
+transport and wire lanes unchanged.
+
+`manifest.rs` publishes the zccache `CacheManifest` into the running-process
+central registry at daemon startup via the frozen `CacheManifestBuilder`
+(zackees/running-process#433), mapping the five zccache cache roots onto the
+v1 `CacheRootKind` taxonomy (artifact→`CacheData`, index→`CacheIndex`,
+log→`CacheLogs`, lock→`CacheLocks`, temp→`CacheTmp`). Publishing is
+best-effort and honors `RUNNING_PROCESS_DISABLE=1`. The companion
+`cli/commands/service_definition.rs` registers the `SHARED_BROKER`
+`ServiceDefinition` through `ServiceDefinitionBuilder::shared_broker`.

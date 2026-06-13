@@ -2426,9 +2426,9 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.1.0"
+version = "4.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b463aaf22bc2a27eb0b7bf347c4aa315075796908f859fbd8bcd469041cfc940"
+checksum = "a216d9a8561599e3aeb48477d7fb404fd852f938808e75e8fad3ad9df2d993e5"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2447,6 +2447,7 @@ dependencies = [
  "sha2",
  "sysinfo 0.30.13",
  "thiserror 2.0.18",
+ "tokio",
  "winapi",
  "windows-sys 0.59.0",
 ]

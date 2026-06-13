@@ -8,13 +8,15 @@
 
 pub mod broker;
 pub mod error;
+pub mod manifest;
 pub mod transport;
 
 pub use broker::{
-    connect_daemon, connect_daemon_with_route, to_running_process_endpoint, DaemonConnectRoute,
-    ZCCACHE_BROKER_CONNECT_ENV,
+    connect_daemon, connect_daemon_with_route, to_running_process_endpoint, BrokerRefusal,
+    DaemonConnectRoute, ZCCACHE_BROKER_CONNECT_ENV,
 };
 pub use error::IpcError;
+pub use manifest::{publish_manifest, publish_manifest_in};
 #[cfg(windows)]
 pub use transport::IpcClientConnection;
 pub use transport::{

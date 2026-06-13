@@ -8,13 +8,9 @@
 //! clients connect — the broker connect lane stays opt-in
 //! (`ZCCACHE_BROKER_CONNECT=1`, see `crate::ipc::broker`).
 
-use prost::Message as _;
-use running_process::broker::protocol::{BrokerIsolation, ServiceDefinition};
-use running_process::broker::server::{
-    ensure_service_definition_dir, service_definition_dir, service_definition_path,
-    validate_service_definition_for_service,
-};
-use std::collections::HashMap;
+use running_process::broker::builders::ServiceDefinitionBuilder;
+use running_process::broker::protocol::ServiceDefinition;
+use running_process::broker::server::service_definition_dir;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -31,6 +27,11 @@ pub(crate) struct InstalledServiceDefinition {
 }
 
 /// Build the zccache daemon service definition for the given daemon binary.
+///
+/// Uses the frozen `ServiceDefinitionBuilder` (zackees/running-process#433):
+/// it defaults the broker-owned boilerplate, validates the absolute binary
+/// path, and produces the same `SHARED_BROKER` definition the daemon answers
+/// `BackendHandle` probes for.
 pub(crate) fn zccache_service_definition(daemon_binary: &Path) -> io::Result<ServiceDefinition> {
     let binary = std::fs::canonicalize(daemon_binary)?;
     let binary_dir = binary.parent().ok_or_else(|| {
@@ -40,27 +41,16 @@ pub(crate) fn zccache_service_definition(daemon_binary: &Path) -> io::Result<Ser
         )
     })?;
 
-    let mut labels = HashMap::new();
-    labels.insert("vendor".to_string(), "zackees".to_string());
-    labels.insert("package".to_string(), "zccache".to_string());
-    labels.insert(
-        "running-process-tracker".to_string(),
-        "zackees/running-process#383".to_string(),
-    );
-
-    let definition = ServiceDefinition {
-        service_name: ZCCACHE_SERVICE_NAME.to_string(),
-        binary_path: binary.display().to_string(),
-        isolation: BrokerIsolation::SharedBroker as i32,
-        explicit_instance: String::new(),
-        per_version_binary_dir: binary_dir.display().to_string(),
-        min_version: crate::core::VERSION.to_string(),
-        version_allow_list: vec![crate::core::VERSION.to_string()],
-        labels,
-    };
-    validate_service_definition_for_service(&definition, ZCCACHE_SERVICE_NAME)
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
-    Ok(definition)
+    ServiceDefinitionBuilder::shared_broker(ZCCACHE_SERVICE_NAME, binary.display().to_string())
+        .per_version_binary_dir(binary_dir.display().to_string())
+        .min_version(crate::core::VERSION)
+        .allow_version(crate::core::VERSION)
+        .label("vendor", "zackees")
+        .label("package", "zccache")
+        .label("consumer", "zccache")
+        .label("running-process-tracker", "zackees/running-process#435")
+        .build()
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))
 }
 
 /// Install the service definition into the default running-process
@@ -78,12 +68,30 @@ pub(crate) fn install_service_definition_to_dir(
     daemon_binary: &Path,
 ) -> io::Result<InstalledServiceDefinition> {
     let service_root = service_root.as_ref();
-    ensure_service_definition_dir(service_root).map_err(|err| io::Error::other(err.to_string()))?;
-    let definition = zccache_service_definition(daemon_binary)?;
-    let path = service_definition_path(service_root, ZCCACHE_SERVICE_NAME)
-        .map_err(|err| io::Error::other(err.to_string()))?;
+    let binary = std::fs::canonicalize(daemon_binary)?;
+    let binary_dir = binary.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zccache-daemon binary path has no parent directory",
+        )
+    })?;
 
-    std::fs::write(&path, definition.encode_to_vec())?;
+    // The builder validates and writes the `.servicedef` atomically into the
+    // service-definition root. Build the definition once for the return value
+    // and once through `install_in` so the persisted bytes are loader-compatible.
+    let definition = zccache_service_definition(daemon_binary)?;
+    let path =
+        ServiceDefinitionBuilder::shared_broker(ZCCACHE_SERVICE_NAME, binary.display().to_string())
+            .per_version_binary_dir(binary_dir.display().to_string())
+            .min_version(crate::core::VERSION)
+            .allow_version(crate::core::VERSION)
+            .label("vendor", "zackees")
+            .label("package", "zccache")
+            .label("consumer", "zccache")
+            .label("running-process-tracker", "zackees/running-process#435")
+            .install_in(service_root)
+            .map_err(|err| io::Error::other(err.to_string()))?;
+
     Ok(InstalledServiceDefinition { path, definition })
 }
 
@@ -129,6 +137,7 @@ pub(crate) fn run_install_servicedef(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use running_process::broker::protocol::BrokerIsolation;
     use running_process::broker::server::ServiceDefinitionLoader;
     use tempfile::TempDir;
 
@@ -158,7 +167,11 @@ mod tests {
                 .labels
                 .get("running-process-tracker")
                 .map(String::as_str),
-            Some("zackees/running-process#383"),
+            Some("zackees/running-process#435"),
+        );
+        assert_eq!(
+            definition.labels.get("consumer").map(String::as_str),
+            Some("zccache"),
         );
     }
 

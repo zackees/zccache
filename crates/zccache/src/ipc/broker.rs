@@ -1,8 +1,11 @@
 //! Broker-mediated connect lane for the daemon client path.
 //!
-//! Wires `running_process::broker::client::connect_to_backend` in front of
-//! zccache's direct IPC connect (upstream tracking:
-//! zackees/running-process#383). Lane selection precedence:
+//! Wires the frozen `running_process::broker::adopt::AsyncBrokerSession::adopt`
+//! one-call recipe (zackees/running-process#433/#435) in front of zccache's
+//! direct IPC connect. `adopt` runs the Hello negotiation (service_name
+//! `"zccache"`, protocol min/max = 1, client_lib_name `"running-process"`,
+//! wanted_version = the zccache daemon version) on a blocking worker and hands
+//! back the broker-selected backend endpoint. Lane selection precedence:
 //!
 //! 1. `RUNNING_PROCESS_DISABLE=1` — the canonical upstream escape hatch.
 //!    The broker lane (including the fake-backend test seam) is bypassed
@@ -24,9 +27,8 @@
 //! Adopting the negotiated `interprocess` stream as the data connection is
 //! deferred until the broker lane becomes the default.
 
-use running_process::broker::client::{
-    connect_local_socket, connect_to_backend, BackendConnectionRoute, ConnectBackendRequest,
-};
+use running_process::broker::adopt::{AdoptError, AsyncBrokerSession, OwnedConnectRequest};
+use running_process::broker::client::{connect_local_socket, BackendConnectionRoute, RefusalKind};
 
 use super::error::IpcError;
 use super::{connect, running_process_disabled, ClientConnection};
@@ -122,62 +124,138 @@ fn broker_lane_requested() -> bool {
     std::env::var(ZCCACHE_BROKER_CONNECT_ENV).is_ok_and(|value| value == "1")
 }
 
-/// Run broker resolution (blocking, on a worker thread) and return the
-/// resolved endpoint in zccache connect form plus the broker route.
+/// Run broker resolution and return the resolved endpoint in zccache connect
+/// form plus the broker route.
 ///
 /// Returns `None` on any broker-side failure; the caller falls back to the
-/// direct connect. The negotiated stream is dropped here — see the module
-/// docs for why endpoint resolution and the data connection are separate.
+/// direct connect. The negotiated session is dropped here (endpoint resolution
+/// only) — see the module docs for why resolution and the data connection are
+/// separate.
 async fn resolve_backend_endpoint() -> Option<(String, BackendConnectionRoute)> {
-    match tokio::task::spawn_blocking(resolve_backend_endpoint_blocking).await {
-        Ok(resolved) => resolved,
+    // The fake-backend seam dials the endpoint directly, skipping broker
+    // discovery, Hello negotiation, and version checks entirely — matching the
+    // upstream connect_to_backend seam semantics. Kept on a worker thread
+    // because `connect_local_socket` is a blocking dial.
+    if let Some(seam_endpoint) = fake_backend_endpoint_from_env() {
+        return tokio::task::spawn_blocking(move || resolve_fake_backend_seam(&seam_endpoint))
+            .await
+            .unwrap_or_else(|err| {
+                tracing::debug!(error = %err, "fake-backend seam task failed; using direct connect");
+                None
+            });
+    }
+
+    let broker_endpoint = default_broker_endpoint()?;
+    // `AsyncBrokerSession::adopt` is the frozen #433 one-call recipe: it honors
+    // RUNNING_PROCESS_DISABLE=1, runs the Hello negotiation on spawn_blocking,
+    // and hands back the negotiated endpoint + route. We adopt for endpoint
+    // resolution only and drop the session; the data connection is opened with
+    // zccache's own transport (see module docs).
+    let request = OwnedConnectRequest::new(
+        broker_endpoint,
+        "zccache",
+        crate::core::VERSION,
+        crate::core::VERSION,
+    );
+    match AsyncBrokerSession::adopt(request).await {
+        Ok(session) => {
+            let resolved = to_zccache_endpoint(session.endpoint());
+            let route = session.route();
+            // Drop the negotiated frame client; we only needed the endpoint.
+            drop(session);
+            Some((resolved, route))
+        }
+        Err(AdoptError::BrokerDisabled) => {
+            // Belt-and-suspenders: connect_daemon_with_route already checks the
+            // disable hatch before calling us, but adopt re-checks it too.
+            None
+        }
         Err(err) => {
-            tracing::debug!(error = %err, "broker negotiation task failed; using direct connect");
+            log_adopt_failure(&err);
             None
         }
     }
 }
 
-fn resolve_backend_endpoint_blocking() -> Option<(String, BackendConnectionRoute)> {
-    // The fake-backend seam dials the endpoint directly, skipping broker
-    // discovery, Hello negotiation, and version checks entirely — matching
-    // the upstream connect_to_backend seam semantics.
-    if let Some(seam_endpoint) = fake_backend_endpoint_from_env() {
-        return match connect_local_socket(&seam_endpoint) {
-            Ok(stream) => {
-                drop(stream);
-                Some((
-                    to_zccache_endpoint(&seam_endpoint),
-                    BackendConnectionRoute::HelloSkip,
-                ))
-            }
-            Err(err) => {
-                tracing::warn!(
-                    endpoint = %seam_endpoint,
-                    error = %err,
-                    "RUNNING_PROCESS_FAKE_BACKEND endpoint unreachable; using direct connect"
-                );
-                None
-            }
-        };
-    }
-
-    let broker_endpoint = default_broker_endpoint()?;
-    let request = ConnectBackendRequest::new(
-        &broker_endpoint,
-        "zccache",
-        crate::core::VERSION,
-        crate::core::VERSION,
-    );
-    match connect_to_backend(request) {
-        Ok(connection) => Some((to_zccache_endpoint(&connection.endpoint), connection.route)),
+/// Dial the upstream TEST-ONLY fake-backend seam endpoint directly.
+fn resolve_fake_backend_seam(seam_endpoint: &str) -> Option<(String, BackendConnectionRoute)> {
+    match connect_local_socket(seam_endpoint) {
+        Ok(stream) => {
+            drop(stream);
+            Some((
+                to_zccache_endpoint(seam_endpoint),
+                BackendConnectionRoute::HelloSkip,
+            ))
+        }
         Err(err) => {
-            tracing::debug!(
+            tracing::warn!(
+                endpoint = %seam_endpoint,
                 error = %err,
-                "running-process broker negotiation failed; using direct connect"
+                "RUNNING_PROCESS_FAKE_BACKEND endpoint unreachable; using direct connect"
             );
             None
         }
+    }
+}
+
+/// Typed classification of a broker refusal, surfaced for diagnostics and for
+/// callers that want to branch on *why* the broker declined rather than always
+/// falling back silently. zccache always falls back to the direct connect on a
+/// refusal (the broker lane must never make a working build fail), but the
+/// classification is logged and exposed for the diagnostics command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BrokerRefusal {
+    /// The requested daemon version is below the registered `min_version`.
+    VersionUnsupported,
+    /// The requested daemon version is explicitly blocked (e.g. yanked).
+    VersionBlocked,
+    /// No `zccache.servicedef` is installed for this broker.
+    ServiceUnknown,
+    /// The broker is rate-limiting this peer.
+    RateLimited,
+    /// The broker is shutting down.
+    ShuttingDown,
+    /// Any other refusal code the broker reported.
+    Other,
+}
+
+impl BrokerRefusal {
+    fn from_kind(kind: RefusalKind) -> Self {
+        match kind {
+            RefusalKind::VersionUnsupported => Self::VersionUnsupported,
+            RefusalKind::VersionBlocked => Self::VersionBlocked,
+            RefusalKind::ServiceUnknown => Self::ServiceUnknown,
+            RefusalKind::RateLimited => Self::RateLimited,
+            RefusalKind::ShuttingDown => Self::ShuttingDown,
+            RefusalKind::Other(_) => Self::Other,
+        }
+    }
+}
+
+/// Classify an `AdoptError`, returning the typed refusal when the broker spoke
+/// and declined, or `None` for a dial/IO failure (broker unreachable).
+#[must_use]
+pub fn classify_adopt_error(err: &AdoptError) -> Option<BrokerRefusal> {
+    match err {
+        AdoptError::Connect(connect_err) => {
+            connect_err.refusal_kind().map(BrokerRefusal::from_kind)
+        }
+        _ => None,
+    }
+}
+
+/// Log a broker adoption failure with its typed refusal classification.
+fn log_adopt_failure(err: &AdoptError) {
+    match classify_adopt_error(err) {
+        Some(refusal) => tracing::debug!(
+            ?refusal,
+            error = %err,
+            "running-process broker refused negotiation; using direct connect"
+        ),
+        None => tracing::debug!(
+            error = %err,
+            "running-process broker negotiation failed (unreachable/dial error); using direct connect"
+        ),
     }
 }
 
@@ -490,6 +568,51 @@ mod tests {
             broker_p99 < 1000.0,
             "broker lane p99 {broker_p99:.3}ms exceeded 1000ms budget"
         );
+    }
+
+    #[test]
+    fn classify_adopt_error_maps_typed_refusals() {
+        use running_process::broker::client::BrokerClientError;
+        use running_process::broker::protocol::ErrorCode;
+
+        let refusal = |code: ErrorCode| {
+            AdoptError::Connect(BrokerClientError::Refused {
+                code,
+                reason: "test".to_string(),
+                retry_after_ms: 0,
+            })
+        };
+
+        assert_eq!(
+            classify_adopt_error(&refusal(ErrorCode::ErrorVersionUnsupported)),
+            Some(BrokerRefusal::VersionUnsupported)
+        );
+        assert_eq!(
+            classify_adopt_error(&refusal(ErrorCode::ErrorVersionBlocked)),
+            Some(BrokerRefusal::VersionBlocked)
+        );
+        assert_eq!(
+            classify_adopt_error(&refusal(ErrorCode::ErrorServiceUnknown)),
+            Some(BrokerRefusal::ServiceUnknown)
+        );
+        assert_eq!(
+            classify_adopt_error(&refusal(ErrorCode::ErrorRateLimited)),
+            Some(BrokerRefusal::RateLimited)
+        );
+        assert_eq!(
+            classify_adopt_error(&refusal(ErrorCode::ErrorShuttingDown)),
+            Some(BrokerRefusal::ShuttingDown)
+        );
+        assert_eq!(
+            classify_adopt_error(&refusal(ErrorCode::ErrorPeerRejected)),
+            Some(BrokerRefusal::Other)
+        );
+    }
+
+    #[test]
+    fn classify_adopt_error_returns_none_for_disabled() {
+        // BrokerDisabled is the escape hatch, not a refusal — no classification.
+        assert_eq!(classify_adopt_error(&AdoptError::BrokerDisabled), None);
     }
 
     #[test]

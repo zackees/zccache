@@ -237,6 +237,9 @@ fn run_server(args: Args) {
         .expect("failed to create tokio runtime");
 
     let no_depgraph_cache = args.no_depgraph_cache;
+    // Cache root for the v1 CacheManifest published after a successful bind
+    // (zackees/running-process#435); cloned so it survives the async move.
+    let manifest_cache_root = cache_root.clone();
     rt.block_on(async move {
         // ── Issue #640: bind FIRST, then load depgraph in background ─────
         //
@@ -306,6 +309,13 @@ fn run_server(args: Args) {
         }
         if let Err(e) = zccache::ipc::write_backend_identity(&server.backend_identity()) {
             tracing::warn!("failed to write running-process backend identity: {e}");
+        }
+        // Publish the v1 CacheManifest so broker peers can discover this
+        // daemon's cache roots (zackees/running-process#435). Best-effort:
+        // a registry write failure is logged inside publish_manifest and
+        // never blocks startup. Skipped under RUNNING_PROCESS_DISABLE=1.
+        if let Some(path) = zccache::ipc::publish_manifest(&manifest_cache_root) {
+            tracing::debug!(manifest = %path.display(), "published running-process cache manifest");
         }
 
         // Spawn the depgraph load. Holds a `DepGraphSetter` that survives
