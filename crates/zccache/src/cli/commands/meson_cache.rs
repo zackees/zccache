@@ -518,18 +518,96 @@ fn restore_from_cache(
     stderr_path: &Path,
     build_abs: &Path,
 ) -> std::io::Result<()> {
-    // Ensure a clean restore destination. If the build dir already has
-    // partial contents (e.g. a previous interrupted miss), wipe so the
-    // restore is bit-identical to the cold-run snapshot.
-    if build_abs.exists() {
-        std::fs::remove_dir_all(build_abs)?;
+    // Issue #749: extract-then-swap (no blanket wipe).
+    //
+    // Pre-#749 we did `remove_dir_all(build_abs)` first, which:
+    //   1. Deleted user-owned files outside the v3 allowlist (e.g.
+    //      FastLED's `meson_native.txt`; see FastLED/FastLED#3048).
+    //   2. Left the destination half-deleted when the wipe itself
+    //      raced an AV/Search-Indexer file lock on Windows
+    //      (`os error 32`, `ERROR_SHARING_VIOLATION`).
+    //
+    // Now: extract every cached entry into a sibling staging dir
+    // first, then per-file rename into place. The destination is only
+    // mutated *after* the whole payload parses cleanly, and the
+    // mutation is restricted to paths the cache actually owns —
+    // anything else in the build dir survives untouched.
+    if !build_abs.exists() {
+        std::fs::create_dir_all(build_abs)?;
     }
-    std::fs::create_dir_all(build_abs)?;
+    let parent = build_abs.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "build_abs has no parent — cannot stage restore",
+        )
+    })?;
+    let nonce = restore_staging_nonce();
+    let staging = parent.join(format!(".zccache-meson-restore-{nonce}"));
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging)?;
 
+    let staged_paths = match extract_payload_into(payload_path, &staging) {
+        Ok(p) => p,
+        Err(e) => {
+            // Extract failed mid-way: discard the staging dir, leave
+            // `build_abs` exactly as it was. Caller's
+            // "falling back to fresh setup" path can now actually
+            // depend on the destination being intact.
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(e);
+        }
+    };
+
+    // Whole archive parsed cleanly. Move each cached entry into the
+    // destination, replacing whatever cached version is currently
+    // there. Non-cached neighbours (user-owned files, prior leftovers
+    // outside the allowlist) are not touched.
+    for rel in &staged_paths {
+        let dest = build_abs.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        // Windows: `rename` over an existing file uses
+        // `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` and replaces
+        // atomically. Unix: same with `rename(2)`. A pre-emptive
+        // remove on Windows guards against the rare case where the
+        // target is read-only and the replace would fail.
+        if dest.exists() {
+            let _ = std::fs::remove_file(&dest);
+        }
+        std::fs::rename(staging.join(rel), &dest).inspect_err(|_| {
+            // Mid-rename failure leaves earlier-renamed files in
+            // their restored state but later ones untouched. That's
+            // strictly better than the pre-fix half-wiped destination
+            // and matches what the caller already handles ("fresh
+            // setup"). Clean up the staging dir on the way out so we
+            // don't leak it.
+            let _ = std::fs::remove_dir_all(&staging);
+        })?;
+    }
+    let _ = std::fs::remove_dir_all(&staging);
+
+    // Replay the cached stdout/stderr so the caller sees the same
+    // operator-facing output a cold run would have produced.
+    if let Ok(bytes) = std::fs::read(stdout_path) {
+        let _ = std::io::Write::write_all(&mut std::io::stdout(), &bytes);
+    }
+    if let Ok(bytes) = std::fs::read(stderr_path) {
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), &bytes);
+    }
+    Ok(())
+}
+
+/// Parse the length-prefixed payload at `payload_path` and write each
+/// `(rel, content)` entry into `staging`. Returns the list of relative
+/// paths actually staged so the caller can rename them into the live
+/// build dir.
+fn extract_payload_into(payload_path: &Path, staging: &Path) -> std::io::Result<Vec<String>> {
+    use std::io::Read;
     let f = std::fs::File::open(payload_path)?;
     let mut reader = std::io::BufReader::new(f);
+    let mut staged = Vec::new();
     loop {
-        use std::io::Read;
         let mut len_buf = [0u8; 4];
         match reader.read_exact(&mut len_buf) {
             Ok(()) => {}
@@ -545,29 +623,33 @@ fn restore_from_cache(
                 format!("non-UTF8 path in archive: {e}"),
             )
         })?;
-
         let mut content_len_buf = [0u8; 8];
         reader.read_exact(&mut content_len_buf)?;
         let content_len = u64::from_le_bytes(content_len_buf) as usize;
         let mut content = vec![0u8; content_len];
         reader.read_exact(&mut content)?;
 
-        let dest = build_abs.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
-        if let Some(parent) = dest.parent() {
+        let staged_path = staging.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Some(parent) = staged_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&dest, &content)?;
+        std::fs::write(&staged_path, &content)?;
+        staged.push(rel);
     }
+    Ok(staged)
+}
 
-    // Replay the cached stdout/stderr so the caller sees the same
-    // operator-facing output a cold run would have produced.
-    if let Ok(bytes) = std::fs::read(stdout_path) {
-        let _ = std::io::Write::write_all(&mut std::io::stdout(), &bytes);
-    }
-    if let Ok(bytes) = std::fs::read(stderr_path) {
-        let _ = std::io::Write::write_all(&mut std::io::stderr(), &bytes);
-    }
-    Ok(())
+/// Per-call nonce for the staging directory so two concurrent restores
+/// against the same parent never collide. PID + a monotonic
+/// `SystemTime` nanos is sufficient — collisions only matter within a
+/// single host's single `restore_from_cache` call window.
+fn restore_staging_nonce() -> String {
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{pid}-{nanos}")
 }
 
 /// Detect meson's no-op-reconfigure signal in stdout (issue #710).
@@ -621,6 +703,129 @@ mod tests {
         assert!(!is_configure_output_dir("examples"));
         assert!(!is_configure_output_dir("subprojects"));
         assert!(!is_configure_output_dir("CMakeFiles"));
+    }
+
+    /// Build a length-prefixed restore payload from a slice of
+    /// `(rel_path, content)` pairs in the same wire format that
+    /// [`archive_dir`] emits and [`restore_from_cache`] consumes.
+    fn write_payload(payload_path: &Path, entries: &[(&str, &[u8])]) {
+        use std::io::Write;
+        let f = std::fs::File::create(payload_path).unwrap();
+        let mut writer = std::io::BufWriter::new(f);
+        for (rel, content) in entries {
+            let rel_bytes = rel.as_bytes();
+            writer
+                .write_all(&(rel_bytes.len() as u32).to_le_bytes())
+                .unwrap();
+            writer.write_all(rel_bytes).unwrap();
+            writer
+                .write_all(&(content.len() as u64).to_le_bytes())
+                .unwrap();
+            writer.write_all(content).unwrap();
+        }
+        writer.flush().unwrap();
+    }
+
+    /// Issue #749 — RED before, GREEN after the targeted-wipe fix.
+    ///
+    /// A user-owned file the caller placed in the build dir before
+    /// calling `zccache meson configure` (e.g. FastLED's
+    /// `meson_native.txt`) MUST survive a successful cache restore.
+    /// The v3 capture allowlist (`is_configure_output`) does not include
+    /// that file, so the pre-fix blanket `remove_dir_all` deleted it
+    /// outright; FastLED/FastLED#3048 is the user-visible symptom.
+    #[test]
+    fn restore_preserves_user_owned_file_outside_allowlist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let build_abs = tmp.path().join("build");
+        std::fs::create_dir_all(&build_abs).unwrap();
+
+        // Caller writes its meson_native.txt into the build dir *before*
+        // invoking the cached configure. This file is NOT in the v3
+        // allowlist (`is_configure_output` returns false for it).
+        let native_file = build_abs.join("meson_native.txt");
+        let native_content = b"[binaries]\nc = 'clang'\n";
+        std::fs::write(&native_file, native_content).unwrap();
+        assert!(!is_configure_output("meson_native.txt"));
+
+        // Payload contains only allowlisted configure outputs.
+        let payload_path = tmp.path().join("payload");
+        let stdout_path = tmp.path().join("stdout.bin");
+        let stderr_path = tmp.path().join("stderr.bin");
+        write_payload(
+            &payload_path,
+            &[
+                ("build.ninja", b"# regenerated by restore"),
+                ("meson-private/coredata.dat", b"\0\0coredata"),
+            ],
+        );
+        std::fs::write(&stdout_path, b"").unwrap();
+        std::fs::write(&stderr_path, b"").unwrap();
+
+        restore_from_cache(&payload_path, &stdout_path, &stderr_path, &build_abs)
+            .expect("restore should succeed");
+
+        // The cached files landed.
+        assert_eq!(
+            std::fs::read(build_abs.join("build.ninja")).unwrap(),
+            b"# regenerated by restore"
+        );
+        assert_eq!(
+            std::fs::read(build_abs.join("meson-private/coredata.dat")).unwrap(),
+            b"\0\0coredata"
+        );
+
+        // The user-owned file is intact. Pre-fix this fails because the
+        // blanket `remove_dir_all(build_abs)` wiped it before extracting.
+        assert!(
+            native_file.exists(),
+            "meson_native.txt was deleted by the restore — FastLED/FastLED#3048"
+        );
+        assert_eq!(std::fs::read(&native_file).unwrap(), native_content);
+    }
+
+    /// Issue #749 — RED before, GREEN after the extract-then-swap fix.
+    ///
+    /// A restore whose payload is corrupt MUST leave the destination in
+    /// its pre-restore state, not a half-restored mix. Pre-fix the
+    /// blanket wipe ran first, so a payload that fails mid-extract left
+    /// the dest empty even though the operation was rolled back at the
+    /// caller's "fall back to fresh setup" level.
+    #[test]
+    fn restore_failure_leaves_destination_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let build_abs = tmp.path().join("build");
+        std::fs::create_dir_all(&build_abs).unwrap();
+        let native_file = build_abs.join("meson_native.txt");
+        let native_content = b"[binaries]\nc = 'clang'\n";
+        std::fs::write(&native_file, native_content).unwrap();
+
+        // Truncated payload: length header announces a path of 16 bytes
+        // but only 4 follow — the extract loop will hit
+        // `UnexpectedEof` deep inside the read and return Err.
+        let payload_path = tmp.path().join("payload");
+        let stdout_path = tmp.path().join("stdout.bin");
+        let stderr_path = tmp.path().join("stderr.bin");
+        let mut bad = Vec::new();
+        bad.extend_from_slice(&16u32.to_le_bytes()); // claims 16-byte path
+        bad.extend_from_slice(b"abcd"); // ...but only 4 bytes
+        std::fs::write(&payload_path, &bad).unwrap();
+        std::fs::write(&stdout_path, b"").unwrap();
+        std::fs::write(&stderr_path, b"").unwrap();
+
+        let result = restore_from_cache(&payload_path, &stdout_path, &stderr_path, &build_abs);
+        assert!(
+            result.is_err(),
+            "truncated payload should surface as Err so the caller can fall back"
+        );
+
+        // Pre-fix this fails because the wipe ran before the extract
+        // error, so the destination is empty.
+        assert!(
+            native_file.exists(),
+            "meson_native.txt must survive a failed restore — FastLED/FastLED#3048 root cause"
+        );
+        assert_eq!(std::fs::read(&native_file).unwrap(), native_content);
     }
 
     #[test]
