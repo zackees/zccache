@@ -514,6 +514,25 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: CacheCommands,
     },
+    /// Ask the daemon to release every session handle under a path
+    /// (#694 Phase 2, builds on #690).
+    ///
+    /// Useful before `git worktree remove` / `rmdir` on Windows where the
+    /// daemon's per-session journal and log handles would otherwise block
+    /// deletion. The daemon refuses to release handles whose target
+    /// overlaps the cache root.
+    #[command(name = "release-handles")]
+    ReleaseHandles {
+        /// Path under which all daemon-held session handles should be released.
+        #[arg(long)]
+        path: PathBuf,
+        /// Emit a JSON summary instead of the plain text summary.
+        #[arg(long)]
+        json: bool,
+        /// IPC endpoint (default: platform-specific).
+        #[arg(long)]
+        endpoint: Option<String>,
+    },
 }
 
 /// `zccache cache` subcommands (#695).
@@ -958,6 +977,7 @@ pub(crate) const KNOWN_SUBCOMMANDS: &[&str] = &[
     "symbols",
     "cache",
     "cache-root",
+    "release-handles",
     "defender-exclusions",
     "exec",
     "cc",

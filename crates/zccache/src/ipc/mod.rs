@@ -59,6 +59,103 @@ impl DaemonControlRequest {
     }
 }
 
+/// Send a `ReleaseWorktreeHandles` request to the daemon and receive its
+/// response. Wraps the wire dispatch the same way [`daemon_control_roundtrip`]
+/// does for the four parameterless control requests, but plumbs the
+/// path-carrying request directly since it cannot be a `Copy` enum variant.
+///
+/// This is the `zccache release-handles --path X` plumbing (#694 Phase 2 — the
+/// standalone CLI surface that ships value to direct-zccache consumers
+/// independently of the router architecture).
+///
+/// # Errors
+///
+/// Returns the IPC error from the selected send/receive path, or an endpoint
+/// error when `ZCCACHE_DAEMON_WIRE` is invalid.
+pub async fn daemon_release_worktree_handles_roundtrip(
+    endpoint: &str,
+    path: std::path::PathBuf,
+    recv_timeout: Option<std::time::Duration>,
+) -> Result<Option<Response>, IpcError> {
+    let selection = wire_prost::client_wire_selection_from_env().map_err(IpcError::Endpoint)?;
+    let request = protocol::Request::ReleaseWorktreeHandles {
+        path: crate::core::NormalizedPath::new(path),
+    };
+
+    if broker::broker_lane_active() {
+        let (mut conn, route) = connect_control_client_with_route(endpoint).await?;
+        if matches!(route, DaemonConnectRoute::Broker { .. }) {
+            let request = wire_prost::supported_control_request_to_prost(&request)
+                .map_err(IpcError::Endpoint)?;
+            conn.send_frame_v1_request(&request).await?;
+            return recv_control_wire_response(&mut conn, recv_timeout).await;
+        }
+        drop(conn);
+    }
+
+    // Mirror the `daemon_control_roundtrip_with_selection` dispatch pattern,
+    // inlined here because `Request::ReleaseWorktreeHandles` carries a path
+    // (and so cannot route through the `Copy` `DaemonControlRequest` enum).
+    match selection.preferred_format() {
+        wire_prost::WireFormat::BincodeV15 => send_bincode(endpoint, &request, recv_timeout).await,
+        wire_prost::WireFormat::FrameV1 => send_frame(endpoint, &request, recv_timeout).await,
+        wire_prost::WireFormat::ProstV16 => {
+            match send_prost(endpoint, &request, recv_timeout).await {
+                Ok(Some(Response::Error { message }))
+                    if selection.allows_bincode_fallback()
+                        && control_wire_mismatch_message(&message) =>
+                {
+                    send_bincode(endpoint, &request, recv_timeout).await
+                }
+                Ok(None) if selection.allows_bincode_fallback() => {
+                    send_bincode(endpoint, &request, recv_timeout).await
+                }
+                Ok(response) => Ok(response),
+                Err(err)
+                    if selection.allows_bincode_fallback() && control_wire_mismatch_error(&err) =>
+                {
+                    send_bincode(endpoint, &request, recv_timeout).await
+                }
+                Err(err) => Err(err),
+            }
+        }
+    }
+}
+
+async fn send_bincode(
+    endpoint: &str,
+    request: &protocol::Request,
+    recv_timeout: Option<std::time::Duration>,
+) -> Result<Option<Response>, IpcError> {
+    let mut conn = connect_control_client(endpoint).await?;
+    conn.send(request).await?;
+    recv_control_response(&mut conn, recv_timeout).await
+}
+
+async fn send_prost(
+    endpoint: &str,
+    request: &protocol::Request,
+    recv_timeout: Option<std::time::Duration>,
+) -> Result<Option<Response>, IpcError> {
+    let mut conn = connect_control_client(endpoint).await?;
+    let prost_req =
+        wire_prost::supported_control_request_to_prost(request).map_err(IpcError::Endpoint)?;
+    conn.send_prost(&prost_req).await?;
+    recv_control_wire_response(&mut conn, recv_timeout).await
+}
+
+async fn send_frame(
+    endpoint: &str,
+    request: &protocol::Request,
+    recv_timeout: Option<std::time::Duration>,
+) -> Result<Option<Response>, IpcError> {
+    let mut conn = connect_control_client(endpoint).await?;
+    let prost_req =
+        wire_prost::supported_control_request_to_prost(request).map_err(IpcError::Endpoint)?;
+    conn.send_frame_v1_request(&prost_req).await?;
+    recv_control_wire_response(&mut conn, recv_timeout).await
+}
+
 /// Send a daemon control request and receive its response.
 ///
 /// Only `Ping`, `Status`, `Shutdown`, and `Clear` are eligible for the v16

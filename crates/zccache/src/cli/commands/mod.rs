@@ -391,6 +391,14 @@ fn dispatch(command: Commands, global_strict_paths: Option<&str>) -> ExitCode {
         Commands::Cache { command } => match command {
             args::CacheCommands::Size { json } => cache_ops::cmd_cache_size(json),
         },
+        Commands::ReleaseHandles {
+            path,
+            json,
+            endpoint,
+        } => {
+            let endpoint = resolve_endpoint(endpoint.as_deref());
+            run_async(cache_ops::cmd_release_handles(&endpoint, path, json))
+        }
         Commands::Meson { command } => match command {
             args::MesonCommands::Configure {
                 source_dir,

@@ -525,6 +525,90 @@ pub(crate) fn cmd_cache_root(json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `zccache release-handles --path X` (#694 Phase 2 / builds on #690).
+///
+/// Wraps the existing `Request::ReleaseWorktreeHandles` daemon-side handler
+/// in a standalone CLI surface so direct-zccache consumers (FastLED CI
+/// teardown, sysadmin scripts, anything that does `git worktree remove` or
+/// `rmdir` before tearing down a path) can break the daemon's session
+/// handles deterministically without going through a router or wrapper.
+///
+/// The daemon refuses to release handles whose target contains the cache
+/// root (`handle_release_worktree_handles` returns `Response::Error`); the
+/// CLI surfaces that as a non-zero exit and a stderr message.
+pub(crate) async fn cmd_release_handles(
+    endpoint: &str,
+    path: PathBuf,
+    json: bool,
+) -> ExitCode {
+    let recv_result = match crate::ipc::daemon_release_worktree_handles_roundtrip(
+        endpoint,
+        path.clone(),
+        None,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(e) if crate::cli::client::is_daemon_unreachable_err(&e) => {
+            eprintln!(
+                "daemon not running at {endpoint} — nothing to release for {}",
+                path.display()
+            );
+            return ExitCode::SUCCESS;
+        }
+        Err(e) => {
+            eprintln!("zccache[err][R]: broken connection to daemon: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match recv_result {
+        Some(crate::protocol::Response::ReleaseWorktreeHandlesResult {
+            inspected,
+            released,
+            sessions_dropped,
+            unreleased,
+        }) => {
+            if json {
+                let payload = serde_json::json!({
+                    "inspected": inspected,
+                    "released": released,
+                    "sessions_dropped": sessions_dropped,
+                    "unreleased": unreleased.iter().map(|p| p.as_path()).collect::<Vec<_>>(),
+                });
+                println!("{}", serde_json::to_string(&payload).unwrap_or_default());
+            } else {
+                println!(
+                    "released {released} of {inspected} session handle(s) under {}",
+                    path.display()
+                );
+                if !sessions_dropped.is_empty() {
+                    println!("  sessions dropped: {}", sessions_dropped.join(", "));
+                }
+                if !unreleased.is_empty() {
+                    println!("  unreleased paths:");
+                    for p in &unreleased {
+                        println!("    {}", p.as_path().display());
+                    }
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Some(crate::protocol::Response::Error { message }) => {
+            eprintln!("zccache release-handles: {message}");
+            ExitCode::FAILURE
+        }
+        None => {
+            eprintln!("{LOST_CONNECTION_MSG}");
+            ExitCode::FAILURE
+        }
+        Some(other) => {
+            eprintln!("zccache[err][U]: unexpected response from daemon: {other:?}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// `zccache cache size` (#695 Phase 1). Walks the resolved cache root and
 /// prints the total bytes of every regular file under it. Hardlinks are
 /// counted once via `snapshot_bytes_walk`'s `(dev, inode)` dedup.
