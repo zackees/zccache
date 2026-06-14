@@ -388,6 +388,9 @@ fn dispatch(command: Commands, global_strict_paths: Option<&str>) -> ExitCode {
             };
             wrap::run_wrap(&wrap_args, strict_paths)
         }
+        Commands::Cache { command } => match command {
+            args::CacheCommands::Size { json } => cache_ops::cmd_cache_size(json),
+        },
         Commands::Meson { command } => match command {
             args::MesonCommands::Configure {
                 source_dir,

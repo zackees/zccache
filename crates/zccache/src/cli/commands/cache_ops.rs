@@ -525,6 +525,38 @@ pub(crate) fn cmd_cache_root(json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `zccache cache size` (#695 Phase 1). Walks the resolved cache root and
+/// prints the total bytes of every regular file under it. Hardlinks are
+/// counted once via `snapshot_bytes_walk`'s `(dev, inode)` dedup.
+///
+/// The walk reuses the same parallel jwalk helper as `snapshot-bytes`, so
+/// it picks up the Windows-Defender mitigation already validated by #189.
+/// `prune_incremental` / `prune_build_script_out` do not apply here — the
+/// zccache cache root has no `target/incremental` / `target/build/*/out`
+/// subtrees, so passing `false`/`false` walks every byte.
+pub(crate) fn cmd_cache_size(json: bool) -> ExitCode {
+    let (root, _) = crate::core::config::resolve_cache_root();
+    let bytes = match snapshot_bytes_walk(root.as_path(), false, false) {
+        Ok(total) => total,
+        Err(err) => {
+            eprintln!("zccache cache size: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let human = format_bytes(bytes);
+    if json {
+        let payload = serde_json::json!({
+            "bytes": bytes,
+            "human": human,
+            "cache_root": root.as_path(),
+        });
+        println!("{}", serde_json::to_string(&payload).unwrap_or_default());
+    } else {
+        println!("{bytes}\t{human}\t{}", root.display());
+    }
+    ExitCode::SUCCESS
+}
+
 /// Parallel walk of `target` summing the bytes of every regular file, with
 /// optional pruning. Uses jwalk for parallel readdir + stat (rayon under the
 /// hood) — on Windows this hides per-file Defender callback latency that

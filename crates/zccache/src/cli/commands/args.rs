@@ -502,6 +502,36 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: MesonCommands,
     },
+    /// Per-version cache directory management (#695).
+    ///
+    /// Phase 1 surface — today's zccache uses a single cache root and these
+    /// commands operate on that root. The same subcommand surface will
+    /// extend to the multi-version `~/.zccache/v-<version>/` layout once
+    /// the router architecture (#694) lands; until then `cache size` is the
+    /// only operation that's meaningful on a single-root cache (`cache list`
+    /// and `cache prune` will activate when per-version directories exist).
+    Cache {
+        #[command(subcommand)]
+        command: CacheCommands,
+    },
+}
+
+/// `zccache cache` subcommands (#695).
+#[derive(Debug, Subcommand)]
+pub(crate) enum CacheCommands {
+    /// Report the total on-disk size of the resolved cache root.
+    ///
+    /// Walks the same root that `zccache cache-root` prints and sums the
+    /// bytes of every regular file under it. Hardlinks are counted once
+    /// (deduplicated by `(dev, inode)` on Unix; on Windows by inode-like
+    /// identity when available). Prints `<bytes>\t<human>\t<root>` on a
+    /// single line by default; use `--json` for a structured emit.
+    Size {
+        /// Emit `{"bytes": N, "human": "X GiB", "cache_root": "<abs>"}` instead of the
+        /// plain line.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// `zccache meson` subcommands.
@@ -926,6 +956,7 @@ pub(crate) const KNOWN_SUBCOMMANDS: &[&str] = &[
     "snapshot-fp-record",
     "snapshot-fp-validate",
     "symbols",
+    "cache",
     "cache-root",
     "defender-exclusions",
     "exec",
