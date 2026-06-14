@@ -110,3 +110,57 @@ fn persist_artifact_paths_falls_back_to_copy_when_source_missing() {
     // Caller's contract is "best effort; on err skip caching."
     assert!(persist_artifact_paths(dir.path(), key, &sources).is_err());
 }
+
+#[test]
+fn persist_artifact_paths_err_includes_diagnostics_for_missing_source() {
+    // Issue #728: WARN at the persist call site has historically been a bare
+    // "failed to persist artifact output: os error 2" with no path context —
+    // we could not tell whether ninja deleted the output mid-flight, whether
+    // the destination dir was wrong, or whether Defender quarantined the
+    // file. The error returned from `persist_artifact_paths` now embeds the
+    // full diagnostic so callers (the daemon WARN sites) surface it without
+    // any extra plumbing.
+    std::env::remove_var("ZCCACHE_PACK_ARTIFACTS");
+    let dir = tempfile::tempdir().unwrap();
+    let key = "diagkey";
+    let missing = dir.path().join("does-not-exist.rlib");
+    let sources = vec![NormalizedPath::from(missing.clone())];
+    let err = persist_artifact_paths(dir.path(), key, &sources).expect_err("expected err");
+    let msg = format!("{err}");
+    assert!(msg.contains("src="), "missing src= field in {msg}");
+    assert!(msg.contains("dst="), "missing dst= field in {msg}");
+    assert!(msg.contains("errno="), "missing errno= field in {msg}");
+    assert!(
+        msg.contains("src_exists_now=false"),
+        "expected src_exists_now=false in {msg}"
+    );
+    assert!(
+        msg.contains("src_size_now=?"),
+        "expected src_size_now=? for missing source in {msg}"
+    );
+}
+
+#[test]
+fn persist_artifact_output_err_includes_dst_diagnostics() {
+    // Counterpart for `persist_artifact_output` (payload writes): payloads
+    // come from RAM so there's no source-path question, but `dst=` and
+    // `errno=` must still be embedded so a write-failure WARN is debuggable.
+    std::env::remove_var("ZCCACHE_PACK_ARTIFACTS");
+    // Cache path under a *file* (not a dir) so create_dir_all fails:
+    // mkdir-ing a path whose parent is a regular file yields NotADirectory
+    // on Linux and InvalidInput on Windows — either way an error path we
+    // can exercise without root.
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"not a directory").unwrap();
+    let cache_path = blocker.join("nested").join("artifact_0");
+    let err = persist_artifact_output(&cache_path, b"bytes").expect_err("expected err");
+    let msg = format!("{err}");
+    assert!(msg.contains("dst="), "missing dst= field in {msg}");
+    assert!(msg.contains("errno="), "missing errno= field in {msg}");
+    // No src= for payload writes — that field is gated on Some(src).
+    assert!(
+        !msg.contains("src="),
+        "payload writes have no source path; src= must not appear in {msg}"
+    );
+}

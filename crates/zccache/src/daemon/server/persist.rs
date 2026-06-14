@@ -13,17 +13,63 @@ pub(super) fn artifact_persist_tmp_path(cache_path: &Path) -> PathBuf {
 
 pub(super) fn persist_artifact_output(cache_path: &Path, payload: &[u8]) -> std::io::Result<()> {
     if let Some(parent) = cache_path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(|e| enrich_persist_err(e, None, cache_path))?;
     }
     let tmp_path = artifact_persist_tmp_path(cache_path);
     let result = (|| {
         std::fs::write(&tmp_path, payload)?;
         replace_artifact_cache_file(&tmp_path, cache_path)
     })();
-    if result.is_err() {
+    if let Err(e) = result {
         let _ = std::fs::remove_file(&tmp_path);
+        return Err(enrich_persist_err(e, None, cache_path));
     }
-    result
+    Ok(())
+}
+
+// Issue #728: failed cache writes used to surface as a bare io::Error with no
+// path context, leaving us unable to tell whether the source file vanished
+// mid-flight (TOCTOU against ninja), whether the destination dir was wrong,
+// or whether Defender quarantined the file. The error returned from
+// `persist_artifact_file` / `persist_artifact_output` now embeds:
+//   src=, dst=, errno=, src_exists_now=, src_size_now=
+// so the WARN at the call site can distinguish those cases without plumbing
+// extra fields through.
+//
+// Pass `src = None` for payload writes (the bytes came from RAM — there is
+// no source file to stat). The `src_exists_now=` / `src_size_now=` fields
+// are then omitted.
+pub(super) fn enrich_persist_err(
+    orig: std::io::Error,
+    src: Option<&Path>,
+    dst: &Path,
+) -> std::io::Error {
+    let errno = orig.raw_os_error();
+    let kind = orig.kind();
+    let mut msg = String::new();
+    if let Some(src) = src {
+        use std::fmt::Write as _;
+        let (exists_now, size_now) = match std::fs::metadata(src) {
+            Ok(meta) => (true, Some(meta.len())),
+            Err(_) => (false, None),
+        };
+        let _ = write!(msg, "src={}", src.display());
+        let _ = write!(msg, " src_exists_now={exists_now}");
+        match size_now {
+            Some(size) => {
+                let _ = write!(msg, " src_size_now={size}");
+            }
+            None => {
+                let _ = write!(msg, " src_size_now=?");
+            }
+        }
+        msg.push(' ');
+    }
+    use std::fmt::Write as _;
+    let _ = write!(msg, "dst={}", dst.display());
+    let _ = write!(msg, " errno={errno:?}");
+    let _ = write!(msg, ": {orig}");
+    std::io::Error::new(kind, msg)
 }
 
 // ─── Artifact-pack format (experimental, env-gated) ───────────────────────────
@@ -237,7 +283,8 @@ pub(super) fn persist_artifact_file(
     source_path: &Path,
 ) -> std::io::Result<PersistArtifactFileStats> {
     if let Some(parent) = cache_path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| enrich_persist_err(e, Some(source_path), cache_path))?;
     }
 
     let tmp_path = artifact_persist_tmp_path(cache_path);
@@ -259,10 +306,13 @@ pub(super) fn persist_artifact_file(
             })
         }
     })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp_path);
+    match result {
+        Ok(stats) => Ok(stats),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            Err(enrich_persist_err(e, Some(source_path), cache_path))
+        }
     }
-    result
 }
 
 #[cfg(not(windows))]

@@ -383,9 +383,21 @@ fn store_single_output(
         let _permit = sem.acquire().await.unwrap();
         let written = tokio::task::spawn_blocking(move || {
             let _guard = guard;
+            // Issue #728: `gap_ms` = wall-clock between
+            // "linker-success-recorded" (immediately before this spawn was
+            // scheduled) and "persist-attempt-started" (now, inside the
+            // blocking task). Captured *before* the persist call so the
+            // measurement excludes the persist work itself; useful for
+            // distinguishing "queue starvation under burst load" from
+            // "src vanished" / errno-N failure modes (the rest of the
+            // diagnostic — src=, dst=, errno=, src_exists_now=,
+            // src_size_now= — is baked into the error by
+            // `persist::enrich_persist_err`).
+            let gap_ms = t_persist_enqueue.elapsed().as_millis() as u64;
             if let Err(e) = persist_artifact_paths(&artifact_dir, &key_hex, &source_paths) {
                 tracing::warn!(
                     key = %key_hex,
+                    gap_ms,
                     "failed to persist artifact output: {e}"
                 );
             }

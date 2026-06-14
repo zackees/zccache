@@ -871,13 +871,20 @@ pub(super) async fn handle_compile_multi(
         };
         let sem = Arc::clone(&state.persist_semaphore);
         let state_ref = Arc::clone(&state);
+        // Issue #728: capture the per-job enqueue Instant so the WARN below
+        // can report `gap_ms` = "linker-success-recorded → persist-attempt-
+        // started" (distinguishes queue starvation under burst load from
+        // src/dst failures already enriched by `persist::enrich_persist_err`).
+        let t_persist_enqueue = std::time::Instant::now();
         tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
             let written = tokio::task::spawn_blocking(move || {
                 let _guard = guard;
+                let gap_ms = t_persist_enqueue.elapsed().as_millis() as u64;
                 if let Err(e) = persist_artifact_payloads(&artifact_dir, &key_hex, &payloads) {
                     tracing::warn!(
                         key = %key_hex,
+                        gap_ms,
                         "failed to persist artifact output: {e}"
                     );
                 }
