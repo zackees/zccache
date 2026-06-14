@@ -96,12 +96,49 @@ pub fn unlock_exe() {
     std::thread::spawn(move || gc_old_files(&parent, &stem));
 }
 
-/// Release the launch-cwd handle by chdir-ing to the OS temp dir. On
-/// Windows a running process holds an implicit kernel handle on its
-/// cwd, so launching the daemon from a project dir blocks deletion of
-/// that dir until the daemon exits. Cheap one-liner, runs on every OS.
+/// Release the launch-cwd handle by chdir-ing to a stable global
+/// directory the daemon owns. On Windows a running process holds an
+/// implicit kernel handle on its cwd, so launching the daemon from a
+/// project dir blocks deletion of that dir until the daemon exits.
+/// Runs on every OS.
+///
+/// Target order:
+///   1. `~/.zccache/` — sibling of the daemon's runtime-binaries and
+///      logs, stable across reboots and outside any user workspace.
+///      Preferred per #747: a path the daemon owns can never be
+///      reconfigured via a stray `TMP` / `TEMP` env override.
+///   2. `std::env::temp_dir()` — fallback when the home directory is
+///      not discoverable (`$HOME` / `%USERPROFILE%` unset) or
+///      chdir into `~/.zccache/` fails for any reason. Best-effort and
+///      safe on every supported platform.
+///
+/// Best-effort; no panic on failure. A failure here is strictly better
+/// than the pre-fix behavior (no chdir at all): the daemon will still
+/// hold the inherited workspace handle, but anything that worked before
+/// still works.
 pub fn release_cwd() {
+    if let Some(stable) = zccache_home_dir() {
+        let _ = std::fs::create_dir_all(&stable);
+        if std::env::set_current_dir(&stable).is_ok() {
+            return;
+        }
+    }
     let _ = std::env::set_current_dir(std::env::temp_dir());
+}
+
+/// `~/.zccache/` resolved from `$HOME` (Unix) or `%USERPROFILE%`
+/// (Windows). Returns `None` if neither env var is set.
+///
+/// Intentionally does NOT consult `ZCCACHE_CACHE_DIR`: that override
+/// can legitimately point into a workspace (perf scenarios use a
+/// project-local cache), and the whole point of [`release_cwd`] is to
+/// chdir OUT of any workspace so its directory handle is released.
+fn zccache_home_dir() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    if home.is_empty() {
+        return None;
+    }
+    Some(std::path::Path::new(&home).join(".zccache"))
 }
 
 /// Detach inherited stdio (stdin/stdout/stderr) by re-opening them to the
@@ -457,5 +494,16 @@ mod tests {
         assert_ne!(std::env::current_dir().unwrap(), tmp_canon);
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn zccache_home_dir_resolves_to_dot_zccache_under_home_or_userprofile() {
+        // Ignores `ZCCACHE_CACHE_DIR` deliberately — see the doc comment
+        // on `zccache_home_dir`. Reads `HOME` / `USERPROFILE` directly.
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .expect("test host must have HOME or USERPROFILE set");
+        let resolved = zccache_home_dir().expect("home discoverable");
+        assert_eq!(resolved, Path::new(&home).join(".zccache"));
     }
 }
