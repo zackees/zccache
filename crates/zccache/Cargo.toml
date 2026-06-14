@@ -118,6 +118,10 @@ interprocess = "2.4.2"
 # Self-dep so zccache's own integration tests can pull in the gated
 # test_support module without needing a separate workspace member.
 zccache = { path = ".", features = ["test-support"] }
+# Enables `#[tokio::test(start_paused = true)]` for deterministic
+# time-dependent unit tests (issue #717). test-util is a dev-only feature
+# so it does not bloat production builds.
+tokio = { workspace = true, features = ["test-util"] }
 
 [build-dependencies]
 prost-build = { workspace = true }

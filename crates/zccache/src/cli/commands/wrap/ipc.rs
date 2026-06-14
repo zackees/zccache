@@ -417,24 +417,36 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn wedge_detection_returns_wedged_on_recv_timeout() {
         // Force a 1 s budget so a wedged daemon surfaces within the test
         // window. Pre-#666 this path inherited the 300 s global default and
         // the whole build paid that wall × N workers.
+        //
+        // Issue #717: `start_paused = true` + `tokio::time::Instant` make the
+        // elapsed measurement deterministic against the configured budget
+        // instead of wall-clock-dependent. Under tokio's paused clock the
+        // fake's `sleep(budget)` auto-advances virtual time the moment no
+        // other tasks are ready, so this test no longer races CI scheduler
+        // jitter on loaded runners.
         std::env::set_var("ZCCACHE_WEDGE_RECV_TIMEOUT_SECS", "1");
         let mut conn = FakeConn {
             behavior: FakeBehavior::TimesOut,
         };
-        let started = std::time::Instant::now();
+        let started = tokio::time::Instant::now();
         let outcome = compile_recv_with_wedge_detection(&mut conn).await;
         let elapsed = started.elapsed();
         std::env::remove_var("ZCCACHE_WEDGE_RECV_TIMEOUT_SECS");
         assert!(matches!(outcome, CompileRecvOutcome::Wedged));
+        // Lower bound: the wedge budget was actually respected (no early
+        // false-positive). Upper bound: fail-fast at the configured budget
+        // with a tight margin for the post-timeout return path. Both bounds
+        // measure tokio-virtual time, not wall clock.
         assert!(
-            elapsed < std::time::Duration::from_secs(3),
-            "wedge detection took {elapsed:?} against a never-responding fake — \
-             issue #666 expects bounded fail-fast at the configured budget"
+            elapsed >= std::time::Duration::from_secs(1)
+                && elapsed < std::time::Duration::from_millis(1100),
+            "wedge detection took {elapsed:?} against a never-responding fake; \
+             issue #666 expects fail-fast at the configured budget"
         );
     }
 
