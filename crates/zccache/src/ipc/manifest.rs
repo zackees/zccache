@@ -89,6 +89,72 @@ pub fn publish_manifest_in(
     build_manifest_builder(cache_dir).publish_in(registry_dir)
 }
 
+/// Install the zccache `ServiceDefinition` into the running-process service-
+/// definition directory at daemon startup (#720 Phase 2).
+///
+/// Best-effort and idempotent — `ServiceDefinitionBuilder::install_in` writes
+/// atomically and overwrites a stale definition of the same service name with
+/// the new one. A registry write failure is logged and ignored, exactly like
+/// the [`publish_manifest`] / `write_backend_identity` siblings.
+/// `RUNNING_PROCESS_DISABLE=1` skips installation entirely so the direct
+/// bincode path stays byte-for-byte the pre-adoption behavior.
+///
+/// Phase 0 of #720 is the version-policy refinement that turns the current
+/// exact-version pin (`min_version = allow_version = CARGO_PKG_VERSION`) into
+/// a real compatibility floor + range; until that decision lands this
+/// function preserves the existing exact-version policy already shipped by
+/// the `zccache install-servicedef` CLI subcommand.
+pub fn publish_service_definition(daemon_binary: &Path) -> Option<PathBuf> {
+    use running_process::broker::builders::ServiceDefinitionBuilder;
+    use running_process::broker::server::service_definition_dir;
+
+    if super::running_process_disabled() {
+        return None;
+    }
+
+    let binary = match std::fs::canonicalize(daemon_binary) {
+        Ok(p) => p,
+        Err(err) => {
+            tracing::warn!(
+                daemon_binary = %daemon_binary.display(),
+                error = %err,
+                "failed to canonicalize zccache-daemon binary for service-definition install"
+            );
+            return None;
+        }
+    };
+    let Some(binary_dir) = binary.parent() else {
+        tracing::warn!(
+            binary = %binary.display(),
+            "zccache-daemon binary has no parent directory; skipping service-definition install"
+        );
+        return None;
+    };
+
+    match ServiceDefinitionBuilder::shared_broker(
+        ZCCACHE_SERVICE_NAME,
+        binary.display().to_string(),
+    )
+    .per_version_binary_dir(binary_dir.display().to_string())
+    .min_version(crate::core::VERSION)
+    .allow_version(crate::core::VERSION)
+    .label("vendor", "zackees")
+    .label("package", "zccache")
+    .label("consumer", "zccache")
+    .label("running-process-tracker", "zackees/running-process#435")
+    .install_in(&service_definition_dir())
+    {
+        Ok(path) => {
+            tracing::debug!(servicedef = %path.display(), "installed running-process service definition");
+            Some(path)
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to install running-process service definition");
+            None
+        }
+    }
+}
+
 fn path_string(path: &NormalizedPath) -> String {
     path.as_path().display().to_string()
 }

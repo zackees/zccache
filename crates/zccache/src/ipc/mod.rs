@@ -16,7 +16,7 @@ pub use broker::{
     DaemonConnectRoute, ZCCACHE_BROKER_CONNECT_ENV,
 };
 pub use error::IpcError;
-pub use manifest::{publish_manifest, publish_manifest_in};
+pub use manifest::{publish_manifest, publish_manifest_in, publish_service_definition};
 #[cfg(windows)]
 pub use transport::IpcClientConnection;
 pub use transport::{

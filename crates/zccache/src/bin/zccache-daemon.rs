@@ -318,6 +318,18 @@ fn run_server(args: Args) {
             tracing::debug!(manifest = %path.display(), "published running-process cache manifest");
         }
 
+        // Install the ServiceDefinition into the running-process service-
+        // definition dir so the shared broker can discover us without the
+        // user running `zccache install-servicedef` manually (#720 Phase 2).
+        // Idempotent + best-effort like publish_manifest above; a write
+        // failure is logged and ignored. Skipped under
+        // RUNNING_PROCESS_DISABLE=1. The version-policy refinement (#720
+        // Phase 0) is the follow-up that turns the current exact-version
+        // pin into a real compatibility floor + range.
+        if let Ok(binary) = std::env::current_exe() {
+            let _ = zccache::ipc::publish_service_definition(&binary);
+        }
+
         // Spawn the depgraph load. Holds a `DepGraphSetter` that survives
         // the spawn_blocking boundary; on completion atomically installs
         // the graph + warning via #642's ArcSwap.
