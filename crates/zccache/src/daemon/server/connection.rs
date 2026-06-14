@@ -169,13 +169,23 @@ pub(super) async fn handle_connection(
                 // reconstructs the daemon's full lifetime. Pairs with
                 // EVENT_DIED_IDLE for unattended exits and the CLI's
                 // EVENT_SPAWN_ATTEMPT for the matching start side.
-                super::super::lifecycle::write_event(
-                    super::super::lifecycle::EVENT_DIED_SHUTDOWN,
-                    serde_json::json!({
-                        "reason": super::super::lifecycle::REASON_GRACEFUL_SHUTDOWN,
-                        "uptime_secs": now_secs().saturating_sub(state.start_time),
-                    }),
-                );
+                //
+                // Under burst load (issue #726) many wedge-detecting clients
+                // race to send Shutdown within a few ms; gate the write with
+                // a CAS so only the first writes — without this, we observed
+                // 25+ duplicate rows for a single death in production logs.
+                if !state
+                    .shutdown_event_logged
+                    .swap(true, std::sync::atomic::Ordering::AcqRel)
+                {
+                    super::super::lifecycle::write_event(
+                        super::super::lifecycle::EVENT_DIED_SHUTDOWN,
+                        serde_json::json!({
+                            "reason": super::super::lifecycle::REASON_GRACEFUL_SHUTDOWN,
+                            "uptime_secs": now_secs().saturating_sub(state.start_time),
+                        }),
+                    );
+                }
                 state.shutdown.notify_one();
                 return Ok(());
             }

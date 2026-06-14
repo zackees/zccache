@@ -170,6 +170,7 @@ impl DaemonServer {
                 index_writer_tx,
                 index_writer_shutdown,
                 artifacts_loaded: AtomicBool::new(false),
+                shutdown_event_logged: AtomicBool::new(false),
                 fingerprint: FingerprintManager::new(),
                 dep_graph_persisted: AtomicBool::new(false),
                 depgraph_load_warning: Mutex::new(None),

@@ -152,6 +152,13 @@ pub(super) struct SharedState {
     pub(super) index_writer_shutdown: Arc<Notify>,
     /// Whether the background artifact loading has completed.
     pub(super) artifacts_loaded: AtomicBool,
+    /// Whether the `died-shutdown` lifecycle event has been written for this
+    /// daemon. Under burst load (issue #726), many wedge-detecting clients
+    /// race to send `Request::Shutdown` within a few milliseconds and each
+    /// connection handler would otherwise write the same event — 25+ duplicate
+    /// rows for a single death observed. Guard the write with a compare-and-swap
+    /// so only the first Shutdown handler logs.
+    pub(super) shutdown_event_logged: AtomicBool,
     /// Fingerprint manager: tracks per-watch dirty state for `zccache fp` commands.
     pub(super) fingerprint: FingerprintManager,
     /// Whether the in-memory dep graph is backed by a persisted snapshot.

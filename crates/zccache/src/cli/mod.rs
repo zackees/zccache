@@ -26,12 +26,19 @@ pub(crate) fn status_probe_timeout() -> std::time::Duration {
 }
 
 /// Default per-call timeout for Compile/Link recv before treating the daemon
-/// as wedged and triggering recovery (issue #666). Ninety seconds covers any
-/// reasonable single-TU compile (FastLED's heaviest unity-ish TU finishes
-/// well under 60 s on the slowest supported Windows runner) while bounding
-/// the per-worker wait when the daemon stops servicing the IPC. The pre-#666
-/// behavior was the 300 s global `DEFAULT_CLIENT_RECV_TIMEOUT`; under a wedge,
-/// every parallel ninja job paid the full window.
+/// as wedged and triggering recovery (issue #666). The pre-#666 behavior was
+/// the 300 s global `DEFAULT_CLIENT_RECV_TIMEOUT`; under a wedge, every
+/// parallel ninja job paid the full window.
+///
+/// Budget was widened from 90 s → 180 s in issue #726. Under FastLED's
+/// `all-with-examples` ninja target (~341 link TUs over a ~150 s wall window),
+/// the 90 s ceiling tripped for *healthy* daemons that were simply bottlenecked
+/// behind the burst — the client then sent `Request::Shutdown`, killed the
+/// daemon mid-work, and triggered a thundering-herd respawn. 180 s preserves
+/// wedge detection (real wedges show up as recv stalls measured in minutes,
+/// not seconds) while leaving headroom for legitimate burst link loads on a
+/// busy daemon. The 300 s pre-#666 behavior is still recoverable via the env
+/// var override.
 ///
 /// On timeout the wrapper force-kills the wedged daemon via
 /// `stop_stale_daemon`, ensures a fresh one is spawned, and retries the
@@ -42,7 +49,7 @@ pub(crate) fn status_probe_timeout() -> std::time::Duration {
 ///
 /// Overridable via `ZCCACHE_WEDGE_RECV_TIMEOUT_SECS`; set to `0` to disable
 /// the wedge detection entirely and keep the historical 300 s behavior.
-const WEDGE_RECV_DEFAULT_SECS: u64 = 90;
+const WEDGE_RECV_DEFAULT_SECS: u64 = 180;
 
 /// Returns the wedge-detection recv timeout for Compile/Link calls. `None`
 /// means "disabled" (the env var was set to `0`). See [`WEDGE_RECV_DEFAULT_SECS`].
