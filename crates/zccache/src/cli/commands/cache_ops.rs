@@ -536,31 +536,24 @@ pub(crate) fn cmd_cache_root(json: bool) -> ExitCode {
 /// The daemon refuses to release handles whose target contains the cache
 /// root (`handle_release_worktree_handles` returns `Response::Error`); the
 /// CLI surfaces that as a non-zero exit and a stderr message.
-pub(crate) async fn cmd_release_handles(
-    endpoint: &str,
-    path: PathBuf,
-    json: bool,
-) -> ExitCode {
-    let recv_result = match crate::ipc::daemon_release_worktree_handles_roundtrip(
-        endpoint,
-        path.clone(),
-        None,
-    )
-    .await
-    {
-        Ok(response) => response,
-        Err(e) if crate::cli::client::is_daemon_unreachable_err(&e) => {
-            eprintln!(
-                "daemon not running at {endpoint} — nothing to release for {}",
-                path.display()
-            );
-            return ExitCode::SUCCESS;
-        }
-        Err(e) => {
-            eprintln!("zccache[err][R]: broken connection to daemon: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+pub(crate) async fn cmd_release_handles(endpoint: &str, path: PathBuf, json: bool) -> ExitCode {
+    let recv_result =
+        match crate::ipc::daemon_release_worktree_handles_roundtrip(endpoint, path.clone(), None)
+            .await
+        {
+            Ok(response) => response,
+            Err(e) if crate::cli::client::is_daemon_unreachable_err(&e) => {
+                eprintln!(
+                    "daemon not running at {endpoint} — nothing to release for {}",
+                    path.display()
+                );
+                return ExitCode::SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("zccache[err][R]: broken connection to daemon: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
 
     match recv_result {
         Some(crate::protocol::Response::ReleaseWorktreeHandlesResult {
