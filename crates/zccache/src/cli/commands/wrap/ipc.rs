@@ -40,7 +40,7 @@ pub(super) async fn cmd_compile(
         return ExitCode::FAILURE;
     }
 
-    match compile_recv_with_wedge_detection(&mut conn).await {
+    match compile_recv_with_wedge_detection(&mut conn, wedge_recv_timeout()).await {
         CompileRecvOutcome::Done(recv_result) => {
             relay_compile_response(recv_result, &mut std::io::stdout(), &mut std::io::stderr())
         }
@@ -81,15 +81,23 @@ enum CompileRecvOutcome {
     Failed(String),
 }
 
-/// Wrap a compile-response recv with the [`wedge_recv_timeout`] budget.
+/// Wrap a compile-response recv with an optional wedge budget.
+///
+/// `budget = Some(d)` enables wedge detection; `budget = None` falls
+/// through to an unbounded recv. Production callers pass
+/// [`wedge_recv_timeout`] so the env knob still works; tests pass an
+/// explicit value so they don't race the process-global env var (#745).
 ///
 /// Returns [`CompileRecvOutcome::Wedged`] only for the specific
 /// `IpcError::Timeout` signal — everything else (graceful close, broken
 /// pipe, protocol error) maps to [`CompileRecvOutcome::Failed`] so the
 /// caller does not respawn the daemon on errors that have nothing to do
 /// with a wedge.
-async fn compile_recv_with_wedge_detection<C: ConnRecv>(conn: &mut C) -> CompileRecvOutcome {
-    match wedge_recv_timeout() {
+async fn compile_recv_with_wedge_detection<C: ConnRecv>(
+    conn: &mut C,
+    budget: Option<std::time::Duration>,
+) -> CompileRecvOutcome {
+    match budget {
         Some(budget) => match conn.recv_with_timeout(budget).await {
             Ok(opt) => CompileRecvOutcome::Done(opt),
             Err(crate::ipc::IpcError::Timeout(_)) => CompileRecvOutcome::Wedged,
@@ -181,7 +189,7 @@ pub(super) async fn cmd_compile_ephemeral(
     // fresh-daemon path (ensure_daemon ran above); if the daemon wedges
     // mid-recv we surface a fast failure (~90 s instead of 300 s) so the
     // build framework's per-job retry budget isn't blown.
-    match compile_recv_with_wedge_detection(&mut conn).await {
+    match compile_recv_with_wedge_detection(&mut conn, wedge_recv_timeout()).await {
         CompileRecvOutcome::Done(recv_result) => {
             relay_compile_response(recv_result, &mut std::io::stdout(), &mut std::io::stderr())
         }
@@ -235,7 +243,7 @@ pub(super) async fn cmd_link_ephemeral(
     }
 
     // Wedge detection only — see `cmd_compile_ephemeral` for the rationale.
-    match compile_recv_with_wedge_detection(&mut conn).await {
+    match compile_recv_with_wedge_detection(&mut conn, wedge_recv_timeout()).await {
         CompileRecvOutcome::Done(recv_result) => {
             relay_link_response(recv_result, &mut std::io::stdout(), &mut std::io::stderr())
         }
@@ -402,15 +410,18 @@ mod tests {
         }
     }
 
+    // Test-only budget: 1 s mirrors the prior env-var convention but is
+    // injected directly so parallel tests can't race the process-global env
+    // (#745). The matching test for the env-var parser lives in
+    // `crate::cli` next to `wedge_recv_timeout`.
+    const TEST_BUDGET: Option<std::time::Duration> = Some(std::time::Duration::from_secs(1));
+
     #[tokio::test]
     async fn wedge_detection_returns_done_on_normal_response() {
-        // Use a short budget so the test stays snappy even if the fake regresses.
-        std::env::set_var("ZCCACHE_WEDGE_RECV_TIMEOUT_SECS", "1");
         let mut conn = FakeConn {
             behavior: FakeBehavior::Ok(crate::protocol::Response::Pong),
         };
-        let outcome = compile_recv_with_wedge_detection(&mut conn).await;
-        std::env::remove_var("ZCCACHE_WEDGE_RECV_TIMEOUT_SECS");
+        let outcome = compile_recv_with_wedge_detection(&mut conn, TEST_BUDGET).await;
         assert!(matches!(
             outcome,
             CompileRecvOutcome::Done(Some(crate::protocol::Response::Pong))
@@ -419,24 +430,23 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn wedge_detection_returns_wedged_on_recv_timeout() {
-        // Force a 1 s budget so a wedged daemon surfaces within the test
-        // window. Pre-#666 this path inherited the 300 s global default and
-        // the whole build paid that wall × N workers.
+        // Pre-#666 this path inherited the 300 s global default and the
+        // whole build paid that wall × N workers.
         //
-        // Issue #717: `start_paused = true` + `tokio::time::Instant` make the
-        // elapsed measurement deterministic against the configured budget
-        // instead of wall-clock-dependent. Under tokio's paused clock the
-        // fake's `sleep(budget)` auto-advances virtual time the moment no
-        // other tasks are ready, so this test no longer races CI scheduler
-        // jitter on loaded runners.
-        std::env::set_var("ZCCACHE_WEDGE_RECV_TIMEOUT_SECS", "1");
+        // Issue #717: `start_paused = true` + `tokio::time::Instant` make
+        // the elapsed measurement deterministic against the configured
+        // budget instead of wall-clock-dependent.
+        //
+        // Issue #745: the budget is now an explicit parameter, so parallel
+        // tests can't race the `ZCCACHE_WEDGE_RECV_TIMEOUT_SECS` env var
+        // out from under each other and accidentally surface the 180 s
+        // default mid-recv.
         let mut conn = FakeConn {
             behavior: FakeBehavior::TimesOut,
         };
         let started = tokio::time::Instant::now();
-        let outcome = compile_recv_with_wedge_detection(&mut conn).await;
+        let outcome = compile_recv_with_wedge_detection(&mut conn, TEST_BUDGET).await;
         let elapsed = started.elapsed();
-        std::env::remove_var("ZCCACHE_WEDGE_RECV_TIMEOUT_SECS");
         assert!(matches!(outcome, CompileRecvOutcome::Wedged));
         // Lower bound: the wedge budget was actually respected (no early
         // false-positive). Upper bound: fail-fast at the configured budget
@@ -455,27 +465,23 @@ mod tests {
         // A non-timeout transport error must NOT trigger the recovery path
         // (force-killing the daemon on every protocol mismatch would be a
         // worse cure than the disease).
-        std::env::set_var("ZCCACHE_WEDGE_RECV_TIMEOUT_SECS", "1");
         let mut conn = FakeConn {
             behavior: FakeBehavior::BrokenPipe,
         };
-        let outcome = compile_recv_with_wedge_detection(&mut conn).await;
-        std::env::remove_var("ZCCACHE_WEDGE_RECV_TIMEOUT_SECS");
+        let outcome = compile_recv_with_wedge_detection(&mut conn, TEST_BUDGET).await;
         assert!(matches!(outcome, CompileRecvOutcome::Failed(_)));
     }
 
     #[tokio::test]
-    async fn wedge_detection_disabled_when_env_is_zero() {
-        // `ZCCACHE_WEDGE_RECV_TIMEOUT_SECS=0` opts back into the pre-#666
-        // unbounded recv (useful for huge LTO links that legitimately
-        // exceed the default budget). The fake's BrokenPipe path returns
-        // immediately so the test doesn't hang.
-        std::env::set_var("ZCCACHE_WEDGE_RECV_TIMEOUT_SECS", "0");
+    async fn wedge_detection_disabled_when_budget_is_none() {
+        // `budget = None` opts back into the pre-#666 unbounded recv
+        // (used in production when `ZCCACHE_WEDGE_RECV_TIMEOUT_SECS=0`).
+        // The fake's BrokenPipe path returns immediately so the test
+        // doesn't hang.
         let mut conn = FakeConn {
             behavior: FakeBehavior::BrokenPipe,
         };
-        let outcome = compile_recv_with_wedge_detection(&mut conn).await;
-        std::env::remove_var("ZCCACHE_WEDGE_RECV_TIMEOUT_SECS");
+        let outcome = compile_recv_with_wedge_detection(&mut conn, None).await;
         // Disabled → falls through to `conn.recv()` unbounded, which the
         // fake reports as a broken pipe. Crucially: not classified as Wedged.
         assert!(matches!(outcome, CompileRecvOutcome::Failed(_)));
