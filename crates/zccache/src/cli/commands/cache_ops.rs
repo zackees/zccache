@@ -557,6 +557,168 @@ pub(crate) fn cmd_cache_size(json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `zccache cache list` (#695 Phase 1). Enumerates per-version cache
+/// directories visible under the resolved cache root and prints each with
+/// its size, last-active time, and status.
+///
+/// **On today's single-root cache** (no router, no multi-version layout) this
+/// prints exactly one row — the resolved root itself, status `current`.
+///
+/// **Once #694 lands** the multi-version `~/.zccache/v-<version>/` layout, this
+/// same code path discovers each `v-*` subdirectory as its own row without
+/// further CLI changes. Last-active comes from a `v-<version>/active.json`
+/// metadata file (written by the per-version daemon on a throttle) when
+/// present, falling back to the cache root mtime when it is not.
+pub(crate) fn cmd_cache_list(json: bool) -> ExitCode {
+    let (root, _) = crate::core::config::resolve_cache_root();
+    let rows = collect_cache_list_rows(root.as_path());
+
+    if json {
+        let payload: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "version": r.version,
+                    "status": r.status,
+                    "size_bytes": r.size_bytes,
+                    "last_active_unix": r.last_active_unix,
+                    "path": r.path,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string(&payload).unwrap_or_default());
+        return ExitCode::SUCCESS;
+    }
+
+    if rows.is_empty() {
+        println!("(no cache directories under {})", root.display());
+        return ExitCode::SUCCESS;
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    println!(
+        "{:<24}  {:<10}  {:>12}  {:<18}  {}",
+        "version", "status", "size", "last-active", "path"
+    );
+    for r in &rows {
+        let last_active = match r.last_active_unix {
+            Some(ts) => format_relative(now, ts),
+            None => "-".to_string(),
+        };
+        println!(
+            "{:<24}  {:<10}  {:>12}  {:<18}  {}",
+            r.version,
+            r.status,
+            format_bytes(r.size_bytes),
+            last_active,
+            r.path
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+/// One row of `zccache cache list` output.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct CacheListRow {
+    pub version: String,
+    pub status: &'static str,
+    pub size_bytes: u64,
+    pub last_active_unix: Option<u64>,
+    pub path: String,
+}
+
+/// Build the rows for `cmd_cache_list`. Today only the resolved cache root
+/// appears (labeled `current`); when `<root>/v-<version>/` directories exist
+/// (router rollout from #694), each is enumerated separately.
+fn collect_cache_list_rows(root: &Path) -> Vec<CacheListRow> {
+    let mut rows: Vec<CacheListRow> = Vec::new();
+
+    // 1. Multi-version directories: `<root>/v-<version>/`. Present after the
+    //    router lands; absent today. The walk is intentionally tolerant of
+    //    a missing root or a root without any `v-*` children.
+    if let Ok(read_dir) = std::fs::read_dir(root) {
+        for entry in read_dir.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("v-") {
+                continue;
+            }
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let version = name.strip_prefix("v-").unwrap_or(&name).to_string();
+            let size_bytes = snapshot_bytes_walk(&path, false, false).unwrap_or(0);
+            let last_active_unix = read_active_json(&path).or_else(|| dir_mtime_unix(&path));
+            rows.push(CacheListRow {
+                version,
+                status: "warm",
+                size_bytes,
+                last_active_unix,
+                path: path.display().to_string(),
+            });
+        }
+    }
+
+    // 2. The legacy single-root cache itself, labeled `current`. Skip when
+    //    the root is unreadable (matches `cmd_cache_size` semantics).
+    if root.exists() {
+        let size_bytes = snapshot_bytes_walk(root, false, false).unwrap_or(0);
+        let last_active_unix = read_active_json(root).or_else(|| dir_mtime_unix(root));
+        rows.push(CacheListRow {
+            version: "(current single-root)".to_string(),
+            status: "current",
+            size_bytes,
+            last_active_unix,
+            path: root.display().to_string(),
+        });
+    }
+
+    rows
+}
+
+/// Read `<dir>/active.json` and return the `last_accepted_ms` field as
+/// Unix seconds, or `None` if the file is missing / malformed. See the
+/// `active.json` schema in #695.
+fn read_active_json(dir: &Path) -> Option<u64> {
+    let bytes = std::fs::read(dir.join("active.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let ms = value.get("last_accepted_ms")?.as_u64()?;
+    Some(ms / 1000)
+}
+
+/// Directory mtime as Unix seconds, or `None` on stat failure.
+fn dir_mtime_unix(dir: &Path) -> Option<u64> {
+    std::fs::metadata(dir)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
+/// Human-readable relative time ("12 min ago", "3 days ago"). Lazy to keep
+/// out of the chrono dep tree; the rounding only needs to match the column
+/// width.
+fn format_relative(now: u64, then: u64) -> String {
+    if then > now {
+        return "in the future".to_string();
+    }
+    let secs = now.saturating_sub(then);
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{} min ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{} hr ago", secs / 3600)
+    } else {
+        format!("{} days ago", secs / 86_400)
+    }
+}
+
 /// Parallel walk of `target` summing the bytes of every regular file, with
 /// optional pruning. Uses jwalk for parallel readdir + stat (rayon under the
 /// hood) — on Windows this hides per-file Defender callback latency that

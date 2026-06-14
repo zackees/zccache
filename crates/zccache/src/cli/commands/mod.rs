@@ -390,6 +390,7 @@ fn dispatch(command: Commands, global_strict_paths: Option<&str>) -> ExitCode {
         }
         Commands::Cache { command } => match command {
             args::CacheCommands::Size { json } => cache_ops::cmd_cache_size(json),
+            args::CacheCommands::List { json } => cache_ops::cmd_cache_list(json),
         },
         Commands::Meson { command } => match command {
             args::MesonCommands::Configure {

@@ -532,6 +532,19 @@ pub(crate) enum CacheCommands {
         #[arg(long)]
         json: bool,
     },
+    /// List per-version cache directories visible under the resolved cache
+    /// root, with last-active time, size, and status (current/warm/cold).
+    ///
+    /// Today's single-root cache reports a single row (the resolved root
+    /// labeled `current`); when the multi-version `~/.zccache/v-<version>/`
+    /// layout from #694 lands, each per-version directory shows up as its
+    /// own row without any further CLI changes.
+    List {
+        /// Emit a JSON array of `{version, status, size_bytes, last_active_unix, path}`
+        /// instead of the plain tabular output.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// `zccache meson` subcommands.
