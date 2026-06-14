@@ -80,6 +80,17 @@ pub(super) async fn handle_clear(state: &SharedState) -> Response {
     // Delete on-disk depgraph snapshot.
     let _ = std::fs::remove_file(crate::depgraph::depgraph_file_path());
 
+    // Purge the CLI-side meson-configure cache (issue #710). The daemon
+    // does not write this directory itself — `zccache meson configure`
+    // (`crates/zccache/src/cli/commands/meson_cache.rs`) does — but it
+    // lives under the same cache root, and a `zccache clear` that left
+    // poisoned v2 snapshots behind would let a stale clang PCH come back
+    // on the next configure-cache hit. Best-effort: silently skip if the
+    // directory does not exist.
+    if let Some(cache_root) = state.artifact_dir.parent() {
+        let _ = std::fs::remove_dir_all(cache_root.join("meson-configure"));
+    }
+
     tracing::info!(
         artifacts_removed,
         metadata_cleared,

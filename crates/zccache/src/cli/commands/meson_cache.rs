@@ -51,7 +51,13 @@ use std::process::{Command, ExitCode};
 
 use crate::core::config;
 
-const KEY_DOMAIN_TAG: &str = "zccache-meson-cache-v2";
+/// Cache-key version. **v3 bump (issue #710)** invalidates v2 entries that
+/// had captured the *entire* build dir (including built `*.pch`, `*.obj`,
+/// downstream tool sidecars), because restoring those into a fresh build
+/// dir produced stale PCHs that silently defeated `#pragma once` dedup and
+/// poisoned every subsequent build. v3 entries are captured under a strict
+/// allowlist (`is_configure_output`) of meson-owned configure outputs only.
+const KEY_DOMAIN_TAG: &str = "zccache-meson-cache-v3";
 
 /// Environment variables whose values always feed the cache key. Set
 /// regardless of `--input-env` so a forgotten extra never silently
@@ -224,6 +230,20 @@ pub(crate) fn cmd_configure(
         // failed config would defeat the whole point: a re-run would
         // restore the failure instead of giving meson a fresh chance.
         return crate::cli::commands::util::exit_code_from_i32(output.status.code().unwrap_or(1));
+    }
+
+    // Skip persist on the "no-op reconfigure" path (issue #710). When meson
+    // prints "Directory already configured." the build dir is the *prior*
+    // build's full tree (object files, PCHs, downstream sidecars), not
+    // something meson produced this invocation. Persisting that state
+    // poisoned future restores. Emit a hint instead and return success.
+    if stdout_contains_already_configured(&output.stdout) {
+        eprintln!(
+            "[zccache-meson] skip persist key={} build_dir={} reason=already-configured (issue #710)",
+            &key_hex[..16],
+            build_abs.display()
+        );
+        return ExitCode::SUCCESS;
     }
 
     if let Err(e) = persist_to_cache(
@@ -434,6 +454,31 @@ fn persist_to_cache(
     Ok(())
 }
 
+/// Strict allowlist of paths relative to the build root that are meson's
+/// own configure outputs (issue #710). Anything else — `*.obj`, `*.pch`,
+/// `.input_hash`, target subdirs, etc. — must not enter the snapshot,
+/// because restoring those into a fresh build dir produces stale-file
+/// poisoning that silently defeats `#pragma once` dedup.
+///
+/// `rel` is forward-slash-normalised.
+fn is_configure_output(rel: &str) -> bool {
+    matches!(rel, "build.ninja" | "compile_commands.json")
+        || rel.starts_with("meson-info/")
+        || rel.starts_with("meson-private/")
+        || rel.starts_with("meson-logs/")
+}
+
+/// Allowlist of directories the archive walker is allowed to recurse into.
+/// Mirrors `is_configure_output` at the directory level so we never read
+/// (let alone capture) entries under `tests/`, `subprojects/<sub>/build/`,
+/// etc.
+fn is_configure_output_dir(rel: &str) -> bool {
+    matches!(rel, "meson-info" | "meson-private" | "meson-logs")
+        || rel.starts_with("meson-info/")
+        || rel.starts_with("meson-private/")
+        || rel.starts_with("meson-logs/")
+}
+
 fn archive_dir(
     root: &Path,
     dir: &Path,
@@ -442,15 +487,20 @@ fn archive_dir(
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_dir() {
-            archive_dir(root, &path, writer)?;
-            continue;
-        }
         let rel = path
             .strip_prefix(root)
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
+        if path.is_dir() {
+            if is_configure_output_dir(&rel) {
+                archive_dir(root, &path, writer)?;
+            }
+            continue;
+        }
+        if !is_configure_output(&rel) {
+            continue;
+        }
         let rel_bytes = rel.as_bytes();
         let content = std::fs::read(&path)?;
         use std::io::Write;
@@ -518,4 +568,166 @@ fn restore_from_cache(
         let _ = std::io::Write::write_all(&mut std::io::stderr(), &bytes);
     }
     Ok(())
+}
+
+/// Detect meson's no-op-reconfigure signal in stdout (issue #710).
+fn stdout_contains_already_configured(stdout: &[u8]) -> bool {
+    const NEEDLE: &[u8] = b"Directory already configured.";
+    stdout.windows(NEEDLE.len()).any(|w| w == NEEDLE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allowlist_keeps_meson_configure_outputs() {
+        assert!(is_configure_output("build.ninja"));
+        assert!(is_configure_output("compile_commands.json"));
+        assert!(is_configure_output("meson-info/intro-targets.json"));
+        assert!(is_configure_output("meson-private/coredata.dat"));
+        assert!(is_configure_output("meson-logs/meson-log.txt"));
+    }
+
+    #[test]
+    fn allowlist_rejects_build_outputs_and_pch_sidecars() {
+        // Issue #710 reproducer paths from the FastLED build dir:
+        assert!(!is_configure_output("tests/test_pch.h.pch"));
+        assert!(!is_configure_output("tests/test_pch.h.pch.input_hash"));
+        assert!(!is_configure_output("tests/test_pch.h.d.cache"));
+        // Generic ninja outputs:
+        assert!(!is_configure_output("tests/foo.obj"));
+        assert!(!is_configure_output("tests/foo.o"));
+        assert!(!is_configure_output("libfastled.a"));
+        assert!(!is_configure_output("libfastled.dll"));
+        assert!(!is_configure_output("libfastled.so"));
+        assert!(!is_configure_output("test_pch.exe"));
+        assert!(!is_configure_output("test_pch.pdb"));
+        // Subdirs that ninja owns:
+        assert!(!is_configure_output("examples/Blink/Blink.dll"));
+        assert!(!is_configure_output("subprojects/lib/whatever.obj"));
+        // Ninja state — not configure output:
+        assert!(!is_configure_output(".ninja_log"));
+        assert!(!is_configure_output(".ninja_deps"));
+    }
+
+    #[test]
+    fn dir_allowlist_lets_walker_skip_target_subdirs() {
+        assert!(is_configure_output_dir("meson-info"));
+        assert!(is_configure_output_dir("meson-private"));
+        assert!(is_configure_output_dir("meson-logs"));
+        assert!(is_configure_output_dir("meson-info/sub"));
+        assert!(!is_configure_output_dir("tests"));
+        assert!(!is_configure_output_dir("examples"));
+        assert!(!is_configure_output_dir("subprojects"));
+        assert!(!is_configure_output_dir("CMakeFiles"));
+    }
+
+    #[test]
+    fn no_op_reconfigure_detected_in_stdout() {
+        let sample =
+            b"The Meson build system\nVersion: 1.6.0\nDirectory already configured.\n\nJust run your build command (e.g. ninja) and Meson will regenerate as necessary.\n";
+        assert!(stdout_contains_already_configured(sample));
+    }
+
+    #[test]
+    fn no_op_detection_does_not_false_positive_on_normal_configure() {
+        let normal = b"The Meson build system\nVersion: 1.6.0\nSource dir: /tmp/src\nBuild dir: /tmp/build\nBuild type: native build\n";
+        assert!(!stdout_contains_already_configured(normal));
+    }
+
+    #[test]
+    fn archive_dir_only_captures_allowlisted_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // Configure outputs that SHOULD be captured:
+        std::fs::write(root.join("build.ninja"), b"# ninja").unwrap();
+        std::fs::write(root.join("compile_commands.json"), b"[]").unwrap();
+        std::fs::create_dir_all(root.join("meson-info")).unwrap();
+        std::fs::write(root.join("meson-info/intro-targets.json"), b"[]").unwrap();
+        std::fs::create_dir_all(root.join("meson-private")).unwrap();
+        std::fs::write(root.join("meson-private/coredata.dat"), b"\0\0").unwrap();
+        std::fs::create_dir_all(root.join("meson-logs")).unwrap();
+        std::fs::write(root.join("meson-logs/meson-log.txt"), b"ok").unwrap();
+
+        // Poison the dir with the actual #710 reproducer files — these
+        // MUST be skipped:
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        std::fs::write(root.join("tests/test_pch.h.pch"), b"STALEPCH").unwrap();
+        std::fs::write(root.join("tests/test_pch.h.pch.input_hash"), b"deadbeef").unwrap();
+        std::fs::write(root.join("tests/test_pch.h.d.cache"), b"depcache").unwrap();
+        std::fs::write(root.join("tests/foo.obj"), b"OBJECTBYTES").unwrap();
+        std::fs::create_dir_all(root.join("examples/Blink")).unwrap();
+        std::fs::write(root.join("examples/Blink/Blink.dll"), b"DLLBYTES").unwrap();
+        std::fs::write(root.join(".ninja_log"), b"log").unwrap();
+
+        let tar_path = tmp.path().join("out.tar");
+        {
+            let f = std::fs::File::create(&tar_path).unwrap();
+            let mut writer = std::io::BufWriter::new(f);
+            archive_dir(root, root, &mut writer).unwrap();
+            std::io::Write::flush(&mut writer).unwrap();
+        }
+
+        // Read back the archive and collect captured rel paths.
+        let mut captured: Vec<String> = Vec::new();
+        let f = std::fs::File::open(&tar_path).unwrap();
+        let mut reader = std::io::BufReader::new(f);
+        loop {
+            use std::io::Read;
+            let mut len_buf = [0u8; 4];
+            match reader.read_exact(&mut len_buf) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) => panic!("read failed: {e}"),
+            }
+            let path_len = u32::from_le_bytes(len_buf) as usize;
+            let mut path_bytes = vec![0u8; path_len];
+            reader.read_exact(&mut path_bytes).unwrap();
+            let rel = String::from_utf8(path_bytes).unwrap();
+            let mut content_len_buf = [0u8; 8];
+            reader.read_exact(&mut content_len_buf).unwrap();
+            let content_len = u64::from_le_bytes(content_len_buf) as usize;
+            let mut content = vec![0u8; content_len];
+            reader.read_exact(&mut content).unwrap();
+            captured.push(rel);
+        }
+        captured.sort();
+
+        // Everything captured must be configure output.
+        for rel in &captured {
+            assert!(
+                is_configure_output(rel),
+                "archive captured a non-configure path: {rel}"
+            );
+        }
+        // None of the #710 poison files made it in.
+        for poison in &[
+            "tests/test_pch.h.pch",
+            "tests/test_pch.h.pch.input_hash",
+            "tests/test_pch.h.d.cache",
+            "tests/foo.obj",
+            "examples/Blink/Blink.dll",
+            ".ninja_log",
+        ] {
+            assert!(
+                !captured.iter().any(|r| r == poison),
+                "archive captured poison file: {poison}"
+            );
+        }
+        // And the real configure outputs made it in.
+        for needed in &[
+            "build.ninja",
+            "compile_commands.json",
+            "meson-info/intro-targets.json",
+            "meson-private/coredata.dat",
+            "meson-logs/meson-log.txt",
+        ] {
+            assert!(
+                captured.iter().any(|r| r == needed),
+                "archive missed required configure output: {needed}"
+            );
+        }
+    }
 }
