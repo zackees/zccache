@@ -1,0 +1,34 @@
+name: Wire stability
+
+# zackees/zccache#693 Phase 1.
+#
+# Fails the PR if a protobuf field has been removed, renumbered, or had
+# its name or type changed against the frozen snapshot at
+# ci/wire_stability_snapshot.txt. Adding new fields is allowed and does
+# not require updating the snapshot. The contract is documented in
+# docs/WIRE_STABILITY.md.
+#
+# Intentionally a small Python-only job (no Rust toolchain, no protoc),
+# so it runs in seconds and never falls behind on cache state.
+
+on:
+  pull_request:
+    paths:
+      - "crates/zccache/proto/**"
+      - "crates/zccache/src/artifact/rust_plan_manifest.proto"
+      - "ci/check_wire_stability.py"
+      - "ci/wire_stability_snapshot.txt"
+      - "docs/WIRE_STABILITY.md"
+      - ".github/workflows/wire-stability.yml"
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    name: Verify wire stability snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
+      - name: Run the wire stability guard
+        run: uv run python ci/check_wire_stability.py
