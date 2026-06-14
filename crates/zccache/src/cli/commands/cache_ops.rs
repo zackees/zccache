@@ -677,8 +677,8 @@ pub(crate) fn cmd_cache_list(json: bool) -> ExitCode {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     println!(
-        "{:<24}  {:<10}  {:>12}  {:<18}  {}",
-        "version", "status", "size", "last-active", "path"
+        "{:<24}  {:<10}  {:>12}  {:<18}  path",
+        "version", "status", "size", "last-active"
     );
     for r in &rows {
         let last_active = match r.last_active_unix {
