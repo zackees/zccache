@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
 
-use super::super::super::wedge_recv_timeout;
+use super::super::super::{link_retry_budget, wedge_recv_timeout};
 use super::super::daemon::{ensure_daemon, stop_stale_daemon};
 use super::super::util::{connect, exit_code_from_i32, slurp_stdin_if_piped, LOST_CONNECTION_MSG};
 
@@ -122,6 +122,45 @@ trait ConnRecv {
     ) -> Result<Option<crate::protocol::Response>, crate::ipc::IpcError>;
 }
 
+/// Drive a link/compile request through bounded retry on transport
+/// failure. The closures are called in sequence:
+///
+///   * `attempt()` performs one full ensure-daemon → connect →
+///     send-request → recv cycle and returns the resulting
+///     [`CompileRecvOutcome`].
+///   * `recover()` is called between attempts on a
+///     [`CompileRecvOutcome::Failed`] outcome. In production this is a
+///     jittered backoff (`retry_backoff_with_jitter`) — NOT a daemon
+///     kill: `ensure_daemon`'s next call already detects a dead
+///     daemon (probe → CommError → stop + respawn) and a parallel
+///     worker may have just spawned a healthy daemon we must not
+///     racingly tear down.
+///
+/// Only [`CompileRecvOutcome::Failed`] triggers retry — wedge has its
+/// own kill-daemon path on the compile arm and is intentionally
+/// fail-fast on the ephemeral arms per #666. Issue #752 (FastLED
+/// `lost connection to daemon` under parallel-link storm).
+async fn link_with_retry<A, AF, R, RF>(
+    mut attempt: A,
+    mut recover: R,
+    max_recoveries: u32,
+) -> CompileRecvOutcome
+where
+    A: FnMut() -> AF,
+    AF: std::future::Future<Output = CompileRecvOutcome>,
+    R: FnMut() -> RF,
+    RF: std::future::Future<Output = ()>,
+{
+    let mut outcome = attempt().await;
+    let mut recoveries_used = 0;
+    while matches!(outcome, CompileRecvOutcome::Failed(_)) && recoveries_used < max_recoveries {
+        recover().await;
+        recoveries_used += 1;
+        outcome = attempt().await;
+    }
+    outcome
+}
+
 #[cfg(unix)]
 impl ConnRecv for crate::ipc::IpcConnection {
     async fn recv(&mut self) -> Result<Option<crate::protocol::Response>, crate::ipc::IpcError> {
@@ -157,20 +196,7 @@ pub(super) async fn cmd_compile_ephemeral(
     cwd: NormalizedPath,
     client_env: Vec<(String, String)>,
 ) -> ExitCode {
-    if let Err(e) = ensure_daemon(endpoint).await {
-        eprintln!("zccache[err][D]: cannot start daemon at {endpoint}: {e}");
-        return ExitCode::FAILURE;
-    }
-    let mut conn = match connect(endpoint).await {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("zccache[err][C]: cannot connect to daemon at {endpoint}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-
     let stdin_bytes = slurp_stdin_if_piped();
-    let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
     let request = crate::protocol::Request::CompileEphemeral {
         client_pid: std::process::id(),
         working_dir: cwd.clone(),
@@ -180,16 +206,21 @@ pub(super) async fn cmd_compile_ephemeral(
         env: Some(client_env),
         stdin: stdin_bytes,
     };
-    if let Err(e) = conn.send_request(&request, wire).await {
-        eprintln!("zccache[err][S]: failed to send to daemon: {e}");
-        return ExitCode::FAILURE;
-    }
 
-    // Wedge detection only — no retry. CompileEphemeral is already on a
-    // fresh-daemon path (ensure_daemon ran above); if the daemon wedges
-    // mid-recv we surface a fast failure (~90 s instead of 300 s) so the
-    // build framework's per-job retry budget isn't blown.
-    match compile_recv_with_wedge_detection(&mut conn, wedge_recv_timeout()).await {
+    // Issue #752: retry once on transport failure
+    // (`lost connection to daemon`). Wedge has its own handling.
+    // Recovery is a small jittered sleep — ensure_daemon's next call
+    // detects + handles a dead daemon (probe -> CommError -> stop +
+    // respawn), so we deliberately do NOT pre-emptively kill here:
+    // a healthy daemon another worker just spawned must survive.
+    let outcome = link_with_retry(
+        || run_ephemeral_attempt(endpoint, &request),
+        retry_backoff_with_jitter,
+        link_retry_budget(),
+    )
+    .await;
+
+    match outcome {
         CompileRecvOutcome::Done(recv_result) => {
             relay_compile_response(recv_result, &mut std::io::stdout(), &mut std::io::stderr())
         }
@@ -198,7 +229,6 @@ pub(super) async fn cmd_compile_ephemeral(
                 "zccache[err][W]: daemon at {endpoint} stopped responding within \
                  the wedge budget; killing it so the next compile starts fresh — issue #666"
             );
-            drop(conn);
             stop_stale_daemon(endpoint).await;
             ExitCode::FAILURE
         }
@@ -217,19 +247,6 @@ pub(super) async fn cmd_link_ephemeral(
     cwd: NormalizedPath,
     client_env: Vec<(String, String)>,
 ) -> ExitCode {
-    if let Err(e) = ensure_daemon(endpoint).await {
-        eprintln!("zccache[err][D]: cannot start daemon at {endpoint}: {e}");
-        return ExitCode::FAILURE;
-    }
-    let mut conn = match connect(endpoint).await {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("zccache[err][C]: cannot connect to daemon at {endpoint}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
     let request = crate::protocol::Request::LinkEphemeral {
         client_pid: std::process::id(),
         tool: tool.into(),
@@ -237,13 +254,18 @@ pub(super) async fn cmd_link_ephemeral(
         cwd,
         env: Some(client_env),
     };
-    if let Err(e) = conn.send_request(&request, wire).await {
-        eprintln!("zccache[err][S]: failed to send to daemon: {e}");
-        return ExitCode::FAILURE;
-    }
 
-    // Wedge detection only — see `cmd_compile_ephemeral` for the rationale.
-    match compile_recv_with_wedge_detection(&mut conn, wedge_recv_timeout()).await {
+    // Issue #752: retry once on transport failure
+    // (`lost connection to daemon`). Wedge has its own handling.
+    // See `cmd_compile_ephemeral` for the recovery-closure rationale.
+    let outcome = link_with_retry(
+        || run_ephemeral_attempt(endpoint, &request),
+        retry_backoff_with_jitter,
+        link_retry_budget(),
+    )
+    .await;
+
+    match outcome {
         CompileRecvOutcome::Done(recv_result) => {
             relay_link_response(recv_result, &mut std::io::stdout(), &mut std::io::stderr())
         }
@@ -253,7 +275,6 @@ pub(super) async fn cmd_link_ephemeral(
                  the wedge budget on a Link; killing it so the next request starts \
                  fresh — issue #666"
             );
-            drop(conn);
             stop_stale_daemon(endpoint).await;
             ExitCode::FAILURE
         }
@@ -262,6 +283,52 @@ pub(super) async fn cmd_link_ephemeral(
             ExitCode::FAILURE
         }
     }
+}
+
+/// Jittered backoff fired between retries on transport failure. 50 –
+/// 250 ms (random sub-window per call) so N parallel workers that all
+/// lost their connection to the same daemon don't fan back in at the
+/// exact same moment and pile a fresh spawn-storm on top of the
+/// failure that started the retry. Caveat noted on #752.
+///
+/// Uses `SystemTime::subsec_nanos()` as the jitter source — fine here
+/// because we only need decorrelation across same-host concurrent
+/// workers, not cryptographic randomness.
+async fn retry_backoff_with_jitter() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let jitter_ms = 50 + u64::from(nanos % 201); // [50, 250]
+    tokio::time::sleep(std::time::Duration::from_millis(jitter_ms)).await;
+}
+
+/// One full ensure-daemon → connect → send → recv cycle. Any pre-recv
+/// failure (daemon spawn error, connect error, send error) is folded
+/// into `Failed` so the retry orchestrator can decide whether to
+/// recover. The recv outcome (`Done`/`Wedged`/`Failed`) is returned
+/// verbatim so the caller can distinguish wedge from transport
+/// failure.
+async fn run_ephemeral_attempt(
+    endpoint: &str,
+    request: &crate::protocol::Request,
+) -> CompileRecvOutcome {
+    if let Err(e) = ensure_daemon(endpoint).await {
+        return CompileRecvOutcome::Failed(format!("cannot start daemon at {endpoint}: {e}"));
+    }
+    let mut conn = match connect(endpoint).await {
+        Ok(c) => c,
+        Err(e) => {
+            return CompileRecvOutcome::Failed(format!(
+                "cannot connect to daemon at {endpoint}: {e}"
+            ))
+        }
+    };
+    let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
+    if let Err(e) = conn.send_request(request, wire).await {
+        return CompileRecvOutcome::Failed(format!("failed to send to daemon: {e}"));
+    }
+    compile_recv_with_wedge_detection(&mut conn, wedge_recv_timeout()).await
 }
 
 fn relay_compile_response<W: Write, E: Write>(
@@ -470,6 +537,147 @@ mod tests {
         };
         let outcome = compile_recv_with_wedge_detection(&mut conn, TEST_BUDGET).await;
         assert!(matches!(outcome, CompileRecvOutcome::Failed(_)));
+    }
+
+    // ── Issue #752: link retry on transport failure ────────────────────
+    //
+    // `cmd_link_ephemeral` / `cmd_compile_ephemeral` used to bail with
+    // `ExitCode::FAILURE` on any `CompileRecvOutcome::Failed` — including
+    // "daemon went away mid-recv" under FastLED's parallel-link storm
+    // (`lost connection to daemon`; FastLED/FastLED#3011). The recovery
+    // the error message itself recommends (`zccache stop` + retry) is
+    // now applied automatically: on a transport-level Failed, kill the
+    // stale daemon, spawn a fresh one (via the caller's recover hook),
+    // and re-run the attempt. Bounded retry — at most `max_recoveries`
+    // recoveries — so a real bug still surfaces.
+
+    #[tokio::test]
+    async fn link_retry_returns_done_when_first_attempt_succeeds() {
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let recoveries = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let outcome = link_with_retry(
+            || {
+                attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async { CompileRecvOutcome::Done(Some(crate::protocol::Response::Pong)) }
+            },
+            || {
+                recoveries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async {}
+            },
+            1,
+        )
+        .await;
+        assert!(matches!(
+            outcome,
+            CompileRecvOutcome::Done(Some(crate::protocol::Response::Pong))
+        ));
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(recoveries.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn link_retry_recovers_after_one_transport_failure() {
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let recoveries = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let outcome = link_with_retry(
+            || {
+                let n = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                async move {
+                    if n == 1 {
+                        CompileRecvOutcome::Failed("lost connection to daemon".to_string())
+                    } else {
+                        CompileRecvOutcome::Done(Some(crate::protocol::Response::Pong))
+                    }
+                }
+            },
+            || {
+                recoveries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async {}
+            },
+            1,
+        )
+        .await;
+        assert!(
+            matches!(
+                outcome,
+                CompileRecvOutcome::Done(Some(crate::protocol::Response::Pong))
+            ),
+            "retry should drive a transport-flaky link to a Done outcome (#752)"
+        );
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(recoveries.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn link_retry_surfaces_failure_after_exhausting_budget() {
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let recoveries = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let outcome = link_with_retry(
+            || {
+                attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async { CompileRecvOutcome::Failed("daemon really gone".to_string()) }
+            },
+            || {
+                recoveries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async {}
+            },
+            1,
+        )
+        .await;
+        assert!(matches!(outcome, CompileRecvOutcome::Failed(_)));
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "exactly the initial attempt plus one retry — no infinite loop"
+        );
+        assert_eq!(recoveries.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn link_retry_does_not_retry_on_wedge() {
+        // Wedge has its own kill-daemon path on the compile arm and is
+        // intentionally fail-fast on the ephemeral arms (per #666).
+        // The retry helper must not turn Wedged into a recovery loop.
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let recoveries = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let outcome = link_with_retry(
+            || {
+                attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async { CompileRecvOutcome::Wedged }
+            },
+            || {
+                recoveries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async {}
+            },
+            5,
+        )
+        .await;
+        assert!(matches!(outcome, CompileRecvOutcome::Wedged));
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(recoveries.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn link_retry_disabled_when_budget_is_zero() {
+        // `link_retry_budget() == 0` (e.g. `ZCCACHE_DISABLE_LINK_RETRY=1`)
+        // opts back into pre-#752 fail-fast behavior.
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let recoveries = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let outcome = link_with_retry(
+            || {
+                attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async { CompileRecvOutcome::Failed("once".to_string()) }
+            },
+            || {
+                recoveries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async {}
+            },
+            0,
+        )
+        .await;
+        assert!(matches!(outcome, CompileRecvOutcome::Failed(_)));
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(recoveries.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

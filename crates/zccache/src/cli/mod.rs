@@ -65,6 +65,27 @@ pub(crate) fn wedge_recv_timeout() -> Option<std::time::Duration> {
     }
 }
 
+/// Default number of retries the link/compile clients apply on a
+/// transport-level recv failure (`lost connection to daemon`). Set to
+/// 1 — a single retry covers the "daemon crashed mid-request, fresh
+/// spawn fixes it" failure FastLED/FastLED#3011 surfaces; two failures
+/// in a row almost certainly mean a real bug worth surfacing.
+const LINK_RETRY_DEFAULT_BUDGET: u32 = 1;
+
+/// Returns the number of automatic retries to attempt on a transport
+/// failure before surfacing it as `ExitCode::FAILURE`. Issue #752.
+///
+/// Override via `ZCCACHE_DISABLE_LINK_RETRY=1` to opt back into the
+/// pre-#752 fail-fast behavior (mirrors the
+/// `ZCCACHE_WEDGE_RECV_TIMEOUT_SECS=0` shape).
+pub(crate) fn link_retry_budget() -> u32 {
+    if std::env::var_os("ZCCACHE_DISABLE_LINK_RETRY").is_some_and(|v| v == "1") {
+        0
+    } else {
+        LINK_RETRY_DEFAULT_BUDGET
+    }
+}
+
 // Re-export daemon-lifecycle helpers moved to `runtime.rs` (issue #365 wave 6)
 // so the public API path is unchanged.
 #[allow(deprecated)]
