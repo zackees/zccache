@@ -50,3 +50,15 @@ crates/zccache/src/symbols/cache.rs
 # fields as PathBuf; the download daemon serializes those over the wire,
 # so the migration is a protocol-shaped change.
 crates/zccache/src/download/mod.rs
+# Added 2026-06-15 — files where new PathBuf usage landed after the
+# previous allowlist snapshot. Track migration in a follow-up so the
+# lint catches *new* violations elsewhere; these files mirror the
+# existing legacy patterns and are out of scope for #762.
+crates/zccache/src/cli/commands/meson_cache.rs
+crates/zccache/src/cli/commands/service_definition.rs
+crates/zccache/src/cli/commands/wrap/diag.rs
+crates/zccache/src/cli/commands/wrap/passthrough.rs
+crates/zccache/src/daemon/server/compiler_hash.rs
+crates/zccache/src/daemon/server/handle_release_worktree_handles.rs
+crates/zccache/src/ipc/manifest.rs
+crates/zccache/src/ipc/mod.rs
