@@ -73,13 +73,24 @@ pub(crate) async fn check_daemon_version(endpoint: &str) -> VersionCheck {
 }
 
 /// Spawn a new daemon and wait for it to become ready.
-pub(crate) async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), String> {
+///
+/// `outbound_pid` is `Some(pid)` when this spawn is the second half of
+/// a takeover orchestrated by `stop_stale_daemon` — the helper emits
+/// the linked `daemon-died{reason: takeover}` + `pipe-handover` pair
+/// once the new daemon's PID has been observed. `None` for a clean
+/// initial-start (no predecessor to record).  Issue #755 acceptance #2.
+pub(crate) async fn spawn_and_wait(
+    endpoint: &str,
+    reason: &str,
+    outbound_pid: Option<u32>,
+) -> Result<(), String> {
     let daemon_bin = find_daemon_binary().ok_or("cannot find zccache-daemon binary")?;
     tracing::debug!(?daemon_bin, %endpoint, reason, "spawning daemon");
     // Record *why* the CLI is about to spawn a daemon so an operator
     // can correlate each CLI decision with the resulting daemon PID
     // by parsing the single `daemon-lifecycle.log`. See zccache#323
     // for the diagnostic gap that motivated this.
+    let meta = crate::core::lifecycle::client_meta(crate::core::VERSION);
     crate::core::lifecycle::write_event(
         crate::core::lifecycle::EVENT_SPAWN_ATTEMPT,
         serde_json::json!({
@@ -87,6 +98,9 @@ pub(crate) async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), S
             "endpoint": endpoint,
             "daemon_namespace": crate::core::config::daemon_namespace_label(),
             "client_pid": std::process::id(),
+            // #755 acceptance #4: see runtime.rs for rationale.
+            "client_version": meta["client_version"],
+            "client_binary_path": meta["client_binary_path"],
         }),
     );
     super::super::spawn_daemon(&daemon_bin, endpoint)?;
@@ -95,14 +109,37 @@ pub(crate) async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), S
     // the previous 100-iteration / 10 s loop expired under thundering-herd
     // builds while individual ERROR_PIPE_BUSY backoffs were still in flight.
     // The shared helper polls past 10 s as long as a daemon owns the lockfile.
-    super::super::wait_for_daemon_ready(endpoint).await
+    super::super::wait_for_daemon_ready(endpoint).await?;
+
+    // #755 acceptance #2: emit linked daemon-died + pipe-handover events
+    // for the takeover case. Best-effort: if we can't read the new
+    // daemon's PID right after `wait_for_daemon_ready` (unlikely but
+    // possible under thundering-herd lockfile contention) we skip the
+    // linkage; the regular `spawn` line still records the new daemon.
+    if let Some(killed_pid) = outbound_pid {
+        if let Some(new_pid) = crate::ipc::check_running_daemon() {
+            crate::core::lifecycle::emit_takeover_lifecycle_events(
+                killed_pid,
+                new_pid,
+                crate::core::VERSION,
+                endpoint,
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Stop a stale daemon that is unreachable or version-incompatible.
 ///
 /// Attempts graceful shutdown via IPC first, then falls back to force-killing
 /// the process via the lock file PID. Waits for the endpoint to be released.
-pub(crate) async fn stop_stale_daemon(endpoint: &str) {
+///
+/// Returns `Some(pid)` with the killed daemon's PID when a force-kill
+/// actually fired — the caller threads this through `spawn_and_wait`
+/// so the linked daemon-died + pipe-handover events get an
+/// `outbound_pid`. `None` means no live daemon was found to kill
+/// (graceful shutdown succeeded, or no daemon was running). #755.
+pub(crate) async fn stop_stale_daemon(endpoint: &str) -> Option<u32> {
     // Try graceful shutdown via IPC.
     let _ = crate::ipc::daemon_control_roundtrip(
         endpoint,
@@ -113,9 +150,10 @@ pub(crate) async fn stop_stale_daemon(endpoint: &str) {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Force-kill via lock file PID if the daemon is still alive
-    if let Some(pid) = crate::ipc::check_running_daemon() {
+    let killed_pid = if let Some(pid) = crate::ipc::check_running_daemon() {
         tracing::debug!(pid, "force-killing stale daemon process");
-        if crate::ipc::force_kill_process(pid).is_ok() {
+        let kill_ok = crate::ipc::force_kill_process(pid).is_ok();
+        if kill_ok {
             for _ in 0..50 {
                 if !crate::ipc::is_process_alive(pid) {
                     break;
@@ -124,10 +162,14 @@ pub(crate) async fn stop_stale_daemon(endpoint: &str) {
             }
         }
         crate::ipc::remove_lock_file();
-    }
+        kill_ok.then_some(pid)
+    } else {
+        None
+    };
 
     // Wait briefly for the endpoint (named pipe / socket) to be fully released
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    killed_pid
 }
 
 /// Ensure the daemon is running **and version-compatible**.
@@ -157,18 +199,23 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                 client_ver = crate::core::VERSION,
                 "daemon is older than client, auto-recovering"
             );
-            stop_stale_daemon(endpoint).await;
+            let killed_pid = stop_stale_daemon(endpoint).await;
             return spawn_and_wait(
                 endpoint,
                 crate::core::lifecycle::REASON_REPLACED_STALE_VERSION,
+                killed_pid,
             )
             .await;
         }
         VersionCheck::CommError => {
             tracing::info!("cannot communicate with daemon, auto-recovering");
-            stop_stale_daemon(endpoint).await;
-            return spawn_and_wait(endpoint, crate::core::lifecycle::REASON_REPLACED_COMM_ERROR)
-                .await;
+            let killed_pid = stop_stale_daemon(endpoint).await;
+            return spawn_and_wait(
+                endpoint,
+                crate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
+                killed_pid,
+            )
+            .await;
         }
         VersionCheck::ClientConfigError(message) => return Err(message),
         VersionCheck::Unreachable => {
@@ -196,10 +243,11 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                         client_ver = crate::core::VERSION,
                         "daemon is older than client during startup, auto-recovering"
                     );
-                    stop_stale_daemon(endpoint).await;
+                    let killed_pid = stop_stale_daemon(endpoint).await;
                     return spawn_and_wait(
                         endpoint,
                         crate::core::lifecycle::REASON_REPLACED_STALE_VERSION,
+                        killed_pid,
                     )
                     .await;
                 }
@@ -207,10 +255,11 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                     tracing::info!(
                         "cannot communicate with daemon during startup, auto-recovering"
                     );
-                    stop_stale_daemon(endpoint).await;
+                    let killed_pid = stop_stale_daemon(endpoint).await;
                     return spawn_and_wait(
                         endpoint,
                         crate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
+                        killed_pid,
                     )
                     .await;
                 }
@@ -224,7 +273,7 @@ pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
     }
 
     // No daemon running — spawn one
-    spawn_and_wait(endpoint, crate::core::lifecycle::REASON_INITIAL_START).await
+    spawn_and_wait(endpoint, crate::core::lifecycle::REASON_INITIAL_START, None).await
 }
 
 /// Find the daemon binary. Looks next to the CLI binary first, then on PATH.

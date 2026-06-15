@@ -294,6 +294,7 @@ fn run_server(args: Args) {
         // Bind won — we are THE daemon. NOW write the spawn event and
         // lock file (loser-of-race exits at bind above without
         // polluting either).
+        let spawn_meta = zccache::daemon::lifecycle::client_meta(env!("CARGO_PKG_VERSION"));
         zccache::daemon::lifecycle::write_event(
             zccache::daemon::lifecycle::EVENT_SPAWN,
             serde_json::json!({
@@ -301,6 +302,11 @@ fn run_server(args: Args) {
                 "daemon_namespace": zccache::core::config::daemon_namespace_label(),
                 "idle_timeout": idle_timeout,
                 "version": env!("CARGO_PKG_VERSION"),
+                // #755 acceptance #4: the daemon binary that bound
+                // this endpoint, so coexisting fbuild-bundled vs.
+                // PyPI installs land distinguishable rows.
+                "client_version": spawn_meta["client_version"],
+                "client_binary_path": spawn_meta["client_binary_path"],
             }),
         );
         let pid = std::process::id();

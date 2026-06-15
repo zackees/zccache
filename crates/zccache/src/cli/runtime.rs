@@ -85,7 +85,11 @@ async fn check_daemon_version(endpoint: &str) -> VersionCheck {
     }
 }
 
-async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), String> {
+async fn spawn_and_wait(
+    endpoint: &str,
+    reason: &str,
+    outbound_pid: Option<u32>,
+) -> Result<(), String> {
     let daemon_bin = find_daemon_binary().ok_or("cannot find zccache-daemon binary")?;
     // Record *why* the CLI is about to spawn a daemon. Pairs with the
     // daemon-side "spawn" event so an operator can correlate each CLI
@@ -94,6 +98,7 @@ async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), String> {
     // replaced-* variants. This is the diagnostic gap zccache#323
     // identified — knowing 5 daemons spawned without knowing why
     // makes the root cause undebuggable.
+    let meta = crate::core::lifecycle::client_meta(crate::core::VERSION);
     crate::core::lifecycle::write_event(
         crate::core::lifecycle::EVENT_SPAWN_ATTEMPT,
         serde_json::json!({
@@ -101,11 +106,32 @@ async fn spawn_and_wait(endpoint: &str, reason: &str) -> Result<(), String> {
             "endpoint": endpoint,
             "daemon_namespace": crate::core::config::daemon_namespace_label(),
             "client_pid": std::process::id(),
+            // #755 acceptance #4: distinguishes fbuild's bundled
+            // binary from a PyPI install when both share an endpoint.
+            "client_version": meta["client_version"],
+            "client_binary_path": meta["client_binary_path"],
         }),
     );
     spawn_daemon(&daemon_bin, endpoint)?;
 
-    wait_for_daemon_ready(endpoint).await
+    wait_for_daemon_ready(endpoint).await?;
+
+    // #755 acceptance #2: emit the linked daemon-died + pipe-handover
+    // pair so the takeover lineage is reconstructable from a single
+    // `grep`. Best-effort — if the new daemon's PID isn't visible
+    // post-ready (lockfile race) we skip; the regular `spawn` line
+    // still records the new daemon's identity.
+    if let Some(killed_pid) = outbound_pid {
+        if let Some(new_pid) = crate::ipc::check_running_daemon() {
+            crate::core::lifecycle::emit_takeover_lifecycle_events(
+                killed_pid,
+                new_pid,
+                crate::core::VERSION,
+                endpoint,
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Tunables for [`wait_for_daemon_ready_with`]. Defaults match the contract
@@ -245,7 +271,7 @@ pub(crate) async fn wait_for_daemon_ready_with(
 }
 
 /// Stop a stale daemon that is unreachable or version-incompatible.
-async fn stop_stale_daemon(endpoint: &str) {
+async fn stop_stale_daemon(endpoint: &str) -> Option<u32> {
     let _ = crate::ipc::daemon_control_roundtrip(
         endpoint,
         crate::ipc::DaemonControlRequest::Shutdown,
@@ -254,8 +280,9 @@ async fn stop_stale_daemon(endpoint: &str) {
     .await;
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    if let Some(pid) = crate::ipc::check_running_daemon() {
-        if crate::ipc::force_kill_process(pid).is_ok() {
+    let killed_pid = if let Some(pid) = crate::ipc::check_running_daemon() {
+        let kill_ok = crate::ipc::force_kill_process(pid).is_ok();
+        if kill_ok {
             for _ in 0..50 {
                 if !crate::ipc::is_process_alive(pid) {
                     break;
@@ -264,9 +291,13 @@ async fn stop_stale_daemon(endpoint: &str) {
             }
         }
         crate::ipc::remove_lock_file();
-    }
+        kill_ok.then_some(pid)
+    } else {
+        None
+    };
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    killed_pid
 }
 
 pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
@@ -278,18 +309,23 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                 client_ver = crate::core::VERSION,
                 "daemon is older than client, auto-recovering"
             );
-            stop_stale_daemon(endpoint).await;
+            let killed_pid = stop_stale_daemon(endpoint).await;
             return spawn_and_wait(
                 endpoint,
                 crate::core::lifecycle::REASON_REPLACED_STALE_VERSION,
+                killed_pid,
             )
             .await;
         }
         VersionCheck::CommError => {
             tracing::info!("cannot communicate with daemon, auto-recovering");
-            stop_stale_daemon(endpoint).await;
-            return spawn_and_wait(endpoint, crate::core::lifecycle::REASON_REPLACED_COMM_ERROR)
-                .await;
+            let killed_pid = stop_stale_daemon(endpoint).await;
+            return spawn_and_wait(
+                endpoint,
+                crate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
+                killed_pid,
+            )
+            .await;
         }
         VersionCheck::ClientConfigError(message) => return Err(message),
         VersionCheck::Unreachable => {}
@@ -308,18 +344,20 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                         client_ver = crate::core::VERSION,
                         "daemon is older than client during startup, auto-recovering"
                     );
-                    stop_stale_daemon(endpoint).await;
+                    let killed_pid = stop_stale_daemon(endpoint).await;
                     return spawn_and_wait(
                         endpoint,
                         crate::core::lifecycle::REASON_REPLACED_STALE_VERSION,
+                        killed_pid,
                     )
                     .await;
                 }
                 VersionCheck::CommError => {
-                    stop_stale_daemon(endpoint).await;
+                    let killed_pid = stop_stale_daemon(endpoint).await;
                     return spawn_and_wait(
                         endpoint,
                         crate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
+                        killed_pid,
                     )
                     .await;
                 }
@@ -332,7 +370,7 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
         ));
     }
 
-    spawn_and_wait(endpoint, crate::core::lifecycle::REASON_INITIAL_START).await
+    spawn_and_wait(endpoint, crate::core::lifecycle::REASON_INITIAL_START, None).await
 }
 
 fn find_daemon_binary() -> Option<NormalizedPath> {

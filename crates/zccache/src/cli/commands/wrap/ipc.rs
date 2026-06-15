@@ -62,6 +62,14 @@ pub(super) async fn cmd_compile(
             cmd_compile_ephemeral(endpoint, compiler.as_path(), args, cwd, client_env).await
         }
         CompileRecvOutcome::Failed(msg) => {
+            // #755 acceptance #3: log the dropout at the point of
+            // failure so dashboards correlate against the spawn-attempt
+            // that follows.
+            emit_client_disconnected_event(
+                endpoint,
+                crate::core::lifecycle::CAUSE_COMM_ERROR,
+                &msg,
+            );
             eprintln!("zccache[err][R]: {msg}");
             ExitCode::FAILURE
         }
@@ -314,21 +322,66 @@ async fn run_ephemeral_attempt(
     request: &crate::protocol::Request,
 ) -> CompileRecvOutcome {
     if let Err(e) = ensure_daemon(endpoint).await {
-        return CompileRecvOutcome::Failed(format!("cannot start daemon at {endpoint}: {e}"));
+        return failed_with_disconnect_event(
+            endpoint,
+            crate::core::lifecycle::CAUSE_COMM_ERROR,
+            format!("cannot start daemon at {endpoint}: {e}"),
+        );
     }
     let mut conn = match connect(endpoint).await {
         Ok(c) => c,
         Err(e) => {
-            return CompileRecvOutcome::Failed(format!(
-                "cannot connect to daemon at {endpoint}: {e}"
-            ))
+            return failed_with_disconnect_event(
+                endpoint,
+                crate::core::lifecycle::CAUSE_COMM_ERROR,
+                format!("cannot connect to daemon at {endpoint}: {e}"),
+            );
         }
     };
     let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
     if let Err(e) = conn.send_request(request, wire).await {
-        return CompileRecvOutcome::Failed(format!("failed to send to daemon: {e}"));
+        return failed_with_disconnect_event(
+            endpoint,
+            crate::core::lifecycle::CAUSE_PIPE_CLOSED_MID_WRITE,
+            format!("failed to send to daemon: {e}"),
+        );
     }
-    compile_recv_with_wedge_detection(&mut conn, wedge_recv_timeout()).await
+    let outcome = compile_recv_with_wedge_detection(&mut conn, wedge_recv_timeout()).await;
+    if let CompileRecvOutcome::Failed(msg) = &outcome {
+        emit_client_disconnected_event(endpoint, crate::core::lifecycle::CAUSE_COMM_ERROR, msg);
+    }
+    outcome
+}
+
+/// Build a `Failed` outcome and emit the matching `client-disconnected`
+/// event in one call so the JSONL row is written at the exact moment
+/// the dropout was observed. #755 acceptance #3.
+fn failed_with_disconnect_event(endpoint: &str, cause: &str, msg: String) -> CompileRecvOutcome {
+    emit_client_disconnected_event(endpoint, cause, &msg);
+    CompileRecvOutcome::Failed(msg)
+}
+
+/// Write a `client-disconnected` JSONL row carrying the client's
+/// version, binary path, the endpoint, the cause classification, and
+/// the underlying transport message. Pre-#755 these dropouts were
+/// only visible one round-trip later as the next
+/// `spawn-attempt`'s `reason: replaced-comm-error` — surfacing them
+/// at the point of failure lets dashboards correlate against the
+/// downstream `daemon-died` / `pipe-handover` events without
+/// inferring causality from timestamps.
+fn emit_client_disconnected_event(endpoint: &str, cause: &str, detail: &str) {
+    let meta = crate::core::lifecycle::client_meta(crate::core::VERSION);
+    crate::core::lifecycle::write_event(
+        crate::core::lifecycle::EVENT_CLIENT_DISCONNECTED,
+        serde_json::json!({
+            "endpoint": endpoint,
+            "client_pid": std::process::id(),
+            "client_version": meta["client_version"],
+            "client_binary_path": meta["client_binary_path"],
+            "cause": cause,
+            "detail": detail,
+        }),
+    );
 }
 
 fn relay_compile_response<W: Write, E: Write>(
