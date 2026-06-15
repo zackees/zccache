@@ -434,7 +434,7 @@ mod tests {
             serde_json::json!({"idle_secs": 3600u64, "uptime_secs": 7200u64}),
         );
 
-        let log_path = tmp.path().join("logs").join("daemon-lifecycle.log");
+        let log_path = log_file_path().as_path().to_path_buf();
         let contents = std::fs::read_to_string(&log_path).expect("log file written");
         let lines: Vec<&str> = contents.lines().collect();
         assert_eq!(lines.len(), 2, "expected two events, got: {contents:?}");
@@ -457,9 +457,12 @@ mod tests {
         let _env = EnvGuard::set_cache_dir_and_namespace(tmp.path(), "soldr-dev");
 
         assert_eq!(live_log_filename(), "daemon-lifecycle-soldr-dev.log");
+        // Issue #761 / #762 Phase 0: cache state lives under
+        // `<root>/v<VERSION>/logs/...`, not `<root>/logs/...`.
         assert_eq!(
             log_file_path(),
             tmp.path()
+                .join(crate::core::config::versioned_subdir())
                 .join("logs")
                 .join("daemon-lifecycle-soldr-dev.log")
         );
@@ -489,8 +492,8 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let _env = EnvGuard::set_cache_dir(tmp.path());
 
-        let log_path = tmp.path().join("logs").join("daemon-lifecycle.log");
-        let archive = tmp.path().join("logs").join("daemon-lifecycle.log.1");
+        let log_path = log_file_path().as_path().to_path_buf();
+        let archive = log_file_path().as_path().with_extension("log.1");
         std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
 
         let padding = vec![b'x'; (MAX_LOG_SIZE + 1024) as usize];
@@ -511,10 +514,7 @@ mod tests {
 
         assert!(archive.exists(), "archive still present");
         assert!(
-            !tmp.path()
-                .join("logs")
-                .join("daemon-lifecycle.log.2")
-                .exists(),
+            !log_file_path().as_path().with_extension("log.2").exists(),
             "no .2 archive — single-rotation policy"
         );
     }
@@ -586,7 +586,7 @@ mod tests {
             }),
         );
 
-        let log_path = tmp.path().join("logs").join("daemon-lifecycle.log");
+        let log_path = log_file_path().as_path().to_path_buf();
         let contents = std::fs::read_to_string(&log_path).expect("log file written");
         let v: serde_json::Value =
             serde_json::from_str(contents.trim()).expect("jsonl line parses");
@@ -617,7 +617,7 @@ mod tests {
 
         emit_takeover_lifecycle_events(1111, 2222, "9.9.9", "\\\\.\\pipe\\test");
 
-        let log_path = tmp.path().join("logs").join("daemon-lifecycle.log");
+        let log_path = log_file_path().as_path().to_path_buf();
         let contents = std::fs::read_to_string(&log_path).expect("log file written");
         let lines: Vec<&str> = contents.lines().collect();
         assert_eq!(lines.len(), 2, "expected daemon-died + pipe-handover");
@@ -656,8 +656,8 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let _env = EnvGuard::set_cache_dir(tmp.path());
 
-        let log_path = tmp.path().join("logs").join("daemon-lifecycle.log");
-        let archive = tmp.path().join("logs").join("daemon-lifecycle.log.1");
+        let log_path = log_file_path().as_path().to_path_buf();
+        let archive = log_file_path().as_path().with_extension("log.1");
 
         write_event(EVENT_SPAWN, serde_json::json!({"only": "event"}));
         write_event(EVENT_SPAWN, serde_json::json!({"another": "event"}));

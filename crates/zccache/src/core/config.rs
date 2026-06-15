@@ -140,6 +140,27 @@ pub fn resolve_cache_root() -> (NormalizedPath, CacheRootSource) {
 }
 
 fn resolve_cache_root_from_env_value(value: Option<OsString>) -> (NormalizedPath, CacheRootSource) {
+    let (root, source) = resolve_cache_root_top_level_from_env_value(value);
+    (root.join(versioned_subdir()), source)
+}
+
+/// Issue #761 / meta #762 — Phase 0: shared cache state is now
+/// per-daemon-version. The top-level root (`~/.zccache/` or whatever
+/// `ZCCACHE_CACHE_DIR` points at) is reserved for advisory cross-version
+/// metadata only (e.g. a `last-version.txt` migration breadcrumb); every
+/// state file the daemon and CLI persistently read/write lives under
+/// `<root>/v<daemon-version>/`. Returns the *top-level* root prior to
+/// the version segment — callers that need to drop a cross-version
+/// marker file at the root use this, everyone else uses
+/// `resolve_cache_root` which appends the version automatically.
+#[must_use]
+pub fn resolve_cache_root_top_level() -> (NormalizedPath, CacheRootSource) {
+    resolve_cache_root_top_level_from_env_value(std::env::var_os(CACHE_DIR_ENV))
+}
+
+fn resolve_cache_root_top_level_from_env_value(
+    value: Option<OsString>,
+) -> (NormalizedPath, CacheRootSource) {
     if let Some(p) = cache_dir_from_env_value(value) {
         return (p, CacheRootSource::Env);
     }
@@ -150,6 +171,16 @@ fn resolve_cache_root_from_env_value(value: Option<OsString>) -> (NormalizedPath
         }
     }
     (home.join(".zccache"), CacheRootSource::Default)
+}
+
+/// The version-suffix path segment appended to every resolved cache
+/// root. Format: `v<VERSION>` (e.g. `v1.12.7`) — leading `v` is
+/// intentional so a future `zccache clear` that prunes `^v\d+\.\d+\.\d+$`
+/// subdirs (#761 Phase 0 follow-up) can match cleanly. Exposed for
+/// tooling that wants to enumerate sibling versions.
+#[must_use]
+pub fn versioned_subdir() -> String {
+    format!("v{}", super::VERSION)
 }
 
 /// True when `ZCCACHE_COLOCATE` is set to a non-empty, non-"0" value.
@@ -710,17 +741,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_cache_dir_ends_with_zccache() {
+    fn default_cache_dir_lives_under_versioned_subdir() {
+        // Issue #761 / #762 Phase 0: every state file is now per-daemon-version.
+        // The default cache dir must end with `<root>/.zccache/v<VERSION>`, not
+        // `<root>/.zccache` directly.
         let dir = default_cache_dir_from_env_value(None);
-        assert!(dir.ends_with(".zccache"));
+        let segs: Vec<String> = dir
+            .as_path()
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            segs.iter().rev().nth(1).map(String::as_str) == Some(".zccache"),
+            "expected `.zccache` directly above the version segment, got components {segs:?}"
+        );
+        let last = segs.last().expect("path has a last segment");
+        assert!(
+            last.starts_with('v'),
+            "version segment must be `v<VERSION>`, got `{last}`"
+        );
+        assert_eq!(last, &versioned_subdir());
     }
 
     #[test]
-    fn resolve_cache_root_env_branch() {
+    fn resolve_cache_root_env_branch_still_versioned() {
+        // Even when the user pins a custom root via ZCCACHE_CACHE_DIR, the
+        // version segment is still appended so two daemon versions sharing one
+        // override root (the soldr/perf-cluster shape) don't trample each other.
         let root = tempfile::tempdir().unwrap();
-        let want = root.path().join("zc");
-        let (dir, src) = resolve_cache_root_from_env_value(Some(want.clone().into_os_string()));
-        assert_eq!(dir, want);
+        let env_value = root.path().join("zc");
+        let (dir, src) =
+            resolve_cache_root_from_env_value(Some(env_value.clone().into_os_string()));
+        assert_eq!(dir, env_value.join(versioned_subdir()));
         assert_eq!(src, CacheRootSource::Env);
         assert_eq!(src.as_str(), "env:ZCCACHE_CACHE_DIR");
     }
@@ -729,7 +781,15 @@ mod tests {
     fn resolve_cache_root_default_branch_when_env_unset() {
         std::env::remove_var(COLOCATE_ENV);
         let (dir, src) = resolve_cache_root_from_env_value(None);
-        assert!(dir.ends_with(".zccache"));
+        // Default path now ends with `v<VERSION>` (see #761 Phase 0); the
+        // `.zccache` segment is now the SECOND-from-last component.
+        assert_eq!(
+            dir.as_path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(""),
+            &versioned_subdir(),
+        );
         assert_eq!(src, CacheRootSource::Default);
         assert_eq!(src.as_str(), "default:platform_dirs");
     }
@@ -739,6 +799,34 @@ mod tests {
         std::env::remove_var(COLOCATE_ENV);
         let (_dir, src) = resolve_cache_root_from_env_value(Some(OsString::new()));
         assert_eq!(src, CacheRootSource::Default);
+    }
+
+    #[test]
+    fn top_level_root_still_unversioned_for_advisory_writes() {
+        // The Phase 0 design reserves the TOP-LEVEL `~/.zccache/` for
+        // cross-version markers (last-version.txt, migration log) — daemons
+        // need a way to address it without picking up their own version
+        // segment. Confirm the new helper hands back the pre-versioning path.
+        let root = tempfile::tempdir().unwrap();
+        let env_value = root.path().join("zc");
+        let (top, _src) =
+            resolve_cache_root_top_level_from_env_value(Some(env_value.clone().into_os_string()));
+        assert_eq!(top, env_value);
+        let (default_top, _) = resolve_cache_root_top_level_from_env_value(None);
+        assert_eq!(
+            default_top
+                .as_path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(""),
+            ".zccache",
+        );
+    }
+
+    #[test]
+    fn versioned_subdir_matches_crate_version() {
+        assert_eq!(versioned_subdir(), format!("v{}", crate::core::VERSION));
+        assert!(versioned_subdir().starts_with('v'));
     }
 
     #[test]
@@ -793,32 +881,34 @@ mod tests {
         let cache_dir =
             default_cache_dir_from_env_value(Some(override_dir.clone().into_os_string()));
 
-        assert_eq!(cache_dir, override_dir);
+        // Issue #761 / #762 Phase 0: the env-overridden root is the *top-level*
+        // unversioned path; the actual cache_dir lives one segment below it
+        // under `v<VERSION>` so a single env-pinned root can host multiple
+        // sibling daemon versions without one overwriting the other's state.
+        let versioned = override_dir.join(versioned_subdir());
+        assert_eq!(cache_dir, versioned);
         assert_eq!(
             artifacts_dir_from_cache_dir(&cache_dir),
-            override_dir.join("artifacts")
+            versioned.join("artifacts")
         );
-        assert_eq!(tmp_dir_from_cache_dir(&cache_dir), override_dir.join("tmp"));
+        assert_eq!(tmp_dir_from_cache_dir(&cache_dir), versioned.join("tmp"));
         assert_eq!(
             depgraph_dir_from_cache_dir(&cache_dir),
-            override_dir.join("depgraph")
+            versioned.join("depgraph")
         );
         assert_eq!(
             index_path_from_cache_dir(&cache_dir),
-            override_dir.join("index.bin")
+            versioned.join("index.bin")
         );
         assert_eq!(
             metadata_path_from_cache_dir(&cache_dir),
-            override_dir.join("metadata.bin")
+            versioned.join("metadata.bin")
         );
         assert_eq!(
             crash_dump_dir_from_cache_dir(&cache_dir),
-            override_dir.join("crashes")
+            versioned.join("crashes")
         );
-        assert_eq!(
-            log_dir_from_cache_dir(&cache_dir),
-            override_dir.join("logs")
-        );
+        assert_eq!(log_dir_from_cache_dir(&cache_dir), versioned.join("logs"));
     }
 
     #[test]
@@ -1219,9 +1309,18 @@ mod tests {
         std::env::remove_var(COLOCATE_ENV);
         assert!(!colocate_enabled());
         let result = default_cache_dir_from_env_value(None);
-        assert!(
-            result.to_string_lossy().ends_with(".zccache"),
-            "got {}",
+        // Issue #761 / #762 Phase 0: the active cache_dir is one segment
+        // below `.zccache` — assert on the parent component instead.
+        let parent_name = result
+            .as_path()
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        assert_eq!(
+            parent_name,
+            ".zccache",
+            "expected parent component `.zccache`, got path {}",
             result.display()
         );
     }

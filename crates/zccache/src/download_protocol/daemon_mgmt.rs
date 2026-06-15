@@ -5,8 +5,13 @@ use crate::core::NormalizedPath;
 
 /// Return the default IPC endpoint for the download daemon.
 pub fn default_endpoint() -> String {
-    if let Some(cache_dir) = crate::core::config::cache_dir_override() {
-        return endpoint_for_cache_dir(&cache_dir);
+    if let Some(top_root) = crate::core::config::cache_dir_override() {
+        // Issue #761 / #762 Phase 0: append `v<VERSION>` so two sibling
+        // daemon versions sharing one env-pinned root don't collide on
+        // the IPC endpoint name. The override returns the unversioned
+        // top-level; the endpoint resolver applies the version segment.
+        let versioned = top_root.join(crate::core::config::versioned_subdir());
+        return endpoint_for_cache_dir(versioned.as_path());
     }
 
     #[cfg(unix)]
@@ -107,11 +112,16 @@ mod tests {
         let cache_dir = root.path().join("zc");
         let _env = EnvGuard::set_cache_dir(&cache_dir);
 
+        // Issue #761 / #762 Phase 0: the env var pins the *top-level* root;
+        // every state file (including this lock file) lives under
+        // `<top-level>/v<VERSION>/`.
+        let versioned = cache_dir.join(crate::core::config::versioned_subdir());
+
         let endpoint = default_endpoint();
         #[cfg(unix)]
         assert_eq!(
             endpoint,
-            cache_dir
+            versioned
                 .join("download-daemon.sock")
                 .to_string_lossy()
                 .into_owned()
@@ -119,9 +129,9 @@ mod tests {
         #[cfg(windows)]
         {
             assert!(endpoint.starts_with(r"\\.\pipe\zccache-download-"));
-            assert!(endpoint.ends_with(&crate::core::stable_path_id(&cache_dir)));
+            assert!(endpoint.ends_with(&crate::core::stable_path_id(&versioned)));
         }
 
-        assert_eq!(lock_file_path(), cache_dir.join("download-daemon.lock"));
+        assert_eq!(lock_file_path(), versioned.join("download-daemon.lock"));
     }
 }
