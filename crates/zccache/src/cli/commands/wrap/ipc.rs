@@ -45,21 +45,45 @@ pub(super) async fn cmd_compile(
             relay_compile_response(recv_result, &mut std::io::stdout(), &mut std::io::stderr())
         }
         CompileRecvOutcome::Wedged => {
-            // Daemon wedged mid-compile (issue #666). Recovery: force-kill
-            // the wedged daemon (releases the IPC endpoint and frees other
-            // workers waiting on `pipe.connect()`), spawn a fresh one, and
-            // retry the compile in ephemeral mode (the new daemon doesn't
-            // have the old session). The fall-through to ephemeral loses
-            // session-stats accounting for this single compile but keeps
-            // the build alive — a much better trade than the pre-#666
-            // 300 s wall × N workers behaviour.
-            eprintln!(
-                "zccache[warn][W]: daemon at {endpoint} appears wedged \
-                 (no response within wedge budget); recovering — issue #666"
-            );
+            // Daemon went past the wedge budget for *this* request. Pre-#753
+            // we always killed it; #726 / FastLED/#3011 showed that under
+            // burst-link load the "wedge" is almost always the daemon
+            // being too busy with other workers' legitimate requests to
+            // service ours in time, and unconditional kill collapses the
+            // whole shared cohort.
+            //
+            // New behaviour (#753): probe the daemon with `Ping` on a
+            // fresh connection within `wedge_probe_budget()`. If it
+            // answers, fall through to the existing ephemeral retry path
+            // WITHOUT killing — the wedge resolves itself when the
+            // burst-load tail clears. If the probe itself fails or
+            // times out, run the pre-#753 kill+respawn recovery.
             drop(conn);
-            stop_stale_daemon(endpoint).await;
-            cmd_compile_ephemeral(endpoint, compiler.as_path(), args, cwd, client_env).await
+            let action = match wedge_probe_budget() {
+                Some(budget) => {
+                    classify_probe_outcome(probe_daemon_responsive(endpoint, budget).await)
+                }
+                None => WedgeAction::EscalateKill, // ZCCACHE_WEDGE_PROBE_BUDGET_MS=0
+            };
+            match action {
+                WedgeAction::DowngradeNoKill => {
+                    eprintln!(
+                        "zccache[warn][W]: daemon at {endpoint} answered probe within \
+                         budget but missed the per-request wedge budget — burst load, \
+                         not a hung daemon. Recovering via ephemeral without killing — \
+                         issue #753"
+                    );
+                    cmd_compile_ephemeral(endpoint, compiler.as_path(), args, cwd, client_env).await
+                }
+                WedgeAction::EscalateKill | WedgeAction::EscalateKillProbeError => {
+                    eprintln!(
+                        "zccache[warn][W]: daemon at {endpoint} appears wedged \
+                         (probe failed within budget); recovering — issue #666"
+                    );
+                    stop_stale_daemon(endpoint).await;
+                    cmd_compile_ephemeral(endpoint, compiler.as_path(), args, cwd, client_env).await
+                }
+            }
         }
         CompileRecvOutcome::Failed(msg) => {
             // #755 acceptance #3: log the dropout at the point of
@@ -167,6 +191,108 @@ where
         outcome = attempt().await;
     }
     outcome
+}
+
+/// Issue #753: outcome of a "is the daemon responsive?" probe sent
+/// just before the wedge guard would `Shutdown` it. The point of the
+/// probe is to distinguish a daemon that is *genuinely wedged* (no
+/// progress, kill it) from one that is *busy processing legitimate
+/// in-flight work* under burst-link load (don't kill it — recover via
+/// the existing ephemeral fall-through instead).
+///
+/// Returned by [`classify_probe_outcome`] from a pure-function input
+/// so the decision matrix is unit-testable without a real daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WedgeAction {
+    /// Probe came back inside its budget — the daemon is alive and
+    /// answering on its IPC endpoint. The wedge on the original
+    /// request must have been triggered by the daemon being too busy
+    /// to respond within the wedge budget, not by it being hung. The
+    /// caller should NOT send `Shutdown` — falling through to the
+    /// existing ephemeral retry path keeps the daemon alive for the
+    /// other workers still queued against it.
+    DowngradeNoKill,
+    /// Probe itself timed out inside its (short) budget. The daemon
+    /// is genuinely wedged — no accept, no dispatch, no response.
+    /// Caller should run the existing kill+respawn recovery.
+    EscalateKill,
+    /// Probe failed with a transport-level error before the budget
+    /// expired (broken pipe, version mismatch, connect refused, …).
+    /// Caller should run the existing kill+respawn recovery: a daemon
+    /// that can't even accept a fresh connection is in worse shape
+    /// than a wedged one.
+    EscalateKillProbeError,
+}
+
+/// Pure-function classifier: maps the result of a `Ping`-budget probe
+/// to a wedge action. Production callers wire `attempt_daemon_ping`
+/// (below) as the probe; tests pass stub outcomes directly. Issue
+/// [#753].
+pub(super) fn classify_probe_outcome(
+    probe: Result<Result<(), crate::ipc::IpcError>, tokio::time::error::Elapsed>,
+) -> WedgeAction {
+    match probe {
+        Ok(Ok(())) => WedgeAction::DowngradeNoKill,
+        Ok(Err(_)) => WedgeAction::EscalateKillProbeError,
+        Err(_) => WedgeAction::EscalateKill,
+    }
+}
+
+/// Send a `Ping` to the daemon on a fresh connection with the given
+/// budget. Returns the nested `Result` shape that
+/// [`classify_probe_outcome`] consumes:
+///
+///   * `Ok(Ok(()))` — Pong returned within the budget.
+///   * `Ok(Err(IpcError))` — transport-level error before the budget
+///     expired (broken pipe, connect refused, version mismatch).
+///   * `Err(Elapsed)` — budget expired with no response, daemon is
+///     genuinely wedged.
+///
+/// Production caller for [`classify_probe_outcome`] in the Wedged
+/// arm. Issue #753.
+async fn probe_daemon_responsive(
+    endpoint: &str,
+    budget: std::time::Duration,
+) -> Result<Result<(), crate::ipc::IpcError>, tokio::time::error::Elapsed> {
+    tokio::time::timeout(budget, async {
+        let mut conn = connect(endpoint).await?;
+        let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
+        conn.send_request(&crate::protocol::Request::Ping, wire)
+            .await?;
+        // We don't need to parse Pong out — receiving any response
+        // within budget is enough to know the daemon is alive and
+        // serving. Drop the connection on the way out.
+        let _ = conn.recv::<crate::protocol::Response>().await?;
+        Ok::<(), crate::ipc::IpcError>(())
+    })
+    .await
+}
+
+/// Default short budget for the probe sent before sending `Shutdown`
+/// in the Wedged arm. Issue #753.
+///
+/// 3 s is long enough that a daemon serving N other workers' link
+/// requests still has a fresh tokio task slot to handle a Ping
+/// (each connection is its own task in the multi-thread runtime), but
+/// short enough that adding a probe doesn't materially extend the
+/// total wedge-detection latency from the user's perspective. Override
+/// with `ZCCACHE_WEDGE_PROBE_BUDGET_MS`. Set to `0` to disable the
+/// probe entirely (pre-#753 unconditional kill behavior — useful for
+/// diagnostic A/B against the fix).
+pub(super) const WEDGE_PROBE_DEFAULT_MS: u64 = 3_000;
+
+/// Returns the probe budget configured for this run. `None` means
+/// "probe disabled — kill unconditionally" (the pre-#753 behavior).
+pub(super) fn wedge_probe_budget() -> Option<std::time::Duration> {
+    let ms = std::env::var("ZCCACHE_WEDGE_PROBE_BUDGET_MS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(WEDGE_PROBE_DEFAULT_MS);
+    if ms == 0 {
+        None
+    } else {
+        Some(std::time::Duration::from_millis(ms))
+    }
 }
 
 #[cfg(unix)]
@@ -731,6 +857,79 @@ mod tests {
         assert!(matches!(outcome, CompileRecvOutcome::Failed(_)));
         assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(recoveries.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    // ── Issue #753: probe-before-kill classifier ──────────────────────
+    //
+    // The wedge guard in `cmd_compile`'s `Wedged` arm used to send
+    // `Shutdown` unconditionally — which #726 / FastLED/#3011 showed
+    // collapses legitimate in-flight work under burst-link load.
+    // `classify_probe_outcome` is the pure-function decision matrix
+    // the new probe-before-kill path consults; tests pass the three
+    // possible probe results directly so the matrix is pinned
+    // without standing up an IPC connection.
+
+    #[test]
+    fn classify_probe_outcome_pong_within_budget_means_no_kill() {
+        // The probe came back inside its budget: daemon is alive and
+        // answering. Don't kill — the original wedge was burst-load
+        // backpressure, not a hung daemon.
+        let probe: Result<Result<(), crate::ipc::IpcError>, tokio::time::error::Elapsed> =
+            Ok(Ok(()));
+        assert_eq!(classify_probe_outcome(probe), WedgeAction::DowngradeNoKill);
+    }
+
+    #[test]
+    fn classify_probe_outcome_probe_error_escalates_to_kill() {
+        // Transport-level error before the budget expired (broken
+        // pipe, version mismatch, connect refused). A daemon that
+        // can't even accept a fresh connection is in worse shape than
+        // a wedged one — escalate to kill.
+        let probe: Result<Result<(), crate::ipc::IpcError>, tokio::time::error::Elapsed> =
+            Ok(Err(crate::ipc::IpcError::ConnectionClosed));
+        assert_eq!(
+            classify_probe_outcome(probe),
+            WedgeAction::EscalateKillProbeError
+        );
+    }
+
+    #[test]
+    fn classify_probe_outcome_probe_timeout_escalates_to_kill() {
+        // Probe itself timed out: daemon isn't even answering Pings,
+        // run the existing kill+respawn recovery.
+        //
+        // Construct an `Elapsed` via a 0-ms timeout that fires
+        // immediately so the test stays deterministic without
+        // depending on tokio runtime timing.
+        let elapsed = {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                tokio::time::timeout(
+                    std::time::Duration::from_nanos(1),
+                    std::future::pending::<()>(),
+                )
+                .await
+                .unwrap_err()
+            })
+        };
+        let probe: Result<Result<(), crate::ipc::IpcError>, tokio::time::error::Elapsed> =
+            Err(elapsed);
+        assert_eq!(classify_probe_outcome(probe), WedgeAction::EscalateKill);
+    }
+
+    #[test]
+    fn wedge_probe_budget_default_is_three_seconds() {
+        // When `ZCCACHE_WEDGE_PROBE_BUDGET_MS` is unset, the budget
+        // falls to the documented default. Read directly via
+        // `WEDGE_PROBE_DEFAULT_MS` so the constant remains the single
+        // source of truth — no env mutation in the test (#745).
+        assert_eq!(
+            WEDGE_PROBE_DEFAULT_MS, 3_000,
+            "schema commits to 3s default — tooling docs reference this number"
+        );
     }
 
     #[tokio::test]
