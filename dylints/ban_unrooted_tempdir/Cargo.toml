@@ -1,6 +1,8 @@
 [package]
 name = "ban_unrooted_tempdir"
-version = "0.1.0"
+# 2026-06-15: bumped to bust the dylint .so cache when allowlist.txt
+# changes — see ban_std_pathbuf for the same workaround rationale.
+version = "0.2.0"
 description = "Ban tempdir/temp_dir calls that aren't rooted under zccache's cache dir"
 edition = "2021"
 publish = false

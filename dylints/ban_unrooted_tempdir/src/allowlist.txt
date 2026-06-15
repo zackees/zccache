@@ -33,3 +33,15 @@ crates/zccache-test-support/src/lib.rs
 # by the compiler subprocess and which deliberately don't live under the
 # user-visible `~/.zccache/` tree. Migrating those is a follow-up.
 crates/zccache/src/daemon/server/run.rs
+
+# diag.rs reads `std::env::temp_dir()` purely to display its value in a
+# diagnostic dump (`zccache wrap --diag`). Nothing is created at the
+# path; if the operator's TMPDIR is misconfigured we want to surface
+# the value as observed, not a normalized rewrite.
+crates/zccache/src/cli/commands/wrap/diag.rs
+
+# Same release_cwd pattern as wrap.rs (which is allowlisted above) —
+# passthrough.rs chdirs to $TMPDIR before invoking the underlying tool
+# so the wrapper's own working directory handle is released. The path
+# is the chdir destination, not a scratch location.
+crates/zccache/src/cli/commands/wrap/passthrough.rs

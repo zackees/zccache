@@ -15,3 +15,10 @@ crates/zccache/src/daemon/process.rs
 # lineage.rs has `#[cfg(test)]` modules that spawn `echo` to validate
 # env-var application. Test-only fixtures.
 crates/zccache/src/daemon/lineage.rs
+
+# compiler_hash.rs probes `rustc -vV` to derive a stable identity hash
+# for cache-key purposes. The discovered output is immediately consumed
+# and the child exits; no caching, output redirection, or job-object
+# semantics from `command_output_with_priority` are required for this
+# one-shot capability probe.
+crates/zccache/src/daemon/server/compiler_hash.rs
