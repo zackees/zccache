@@ -5,7 +5,9 @@
 use super::*;
 use crate::core::NormalizedPath;
 use std::path::Path;
+use std::time::Duration;
 
+use super::super::scanner::ScanResult;
 use super::super::search_paths::IncludeSearchPaths;
 
 fn make_ctx(source: &str) -> CompileContext {

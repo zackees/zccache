@@ -1,0 +1,250 @@
+//! Compiler-exec phase: depfile prep, response file, pre-hash overlap, spawn.
+//!
+//! Runs on the miss path after the depgraph verdict has been logged and the
+//! cached-hit branches have been exhausted. Returns the exec output plus the
+//! per-phase timings consumed by the miss profiles.
+
+use super::super::super::*;
+
+pub(super) struct CompileExecRequest<'a> {
+    pub(super) state_arc: &'a Arc<SharedState>,
+    pub(super) compiler: &'a NormalizedPath,
+    pub(super) effective_args: &'a [String],
+    pub(super) cwd: &'a Path,
+    pub(super) cwd_path: &'a NormalizedPath,
+    pub(super) source_path: &'a NormalizedPath,
+    pub(super) output_path: &'a NormalizedPath,
+    pub(super) compilation: &'a crate::compiler::CacheableCompilation,
+    pub(super) dep_flags: &'a UserDepFlags,
+    pub(super) rustc_args_opt: Option<&'a crate::depgraph::RustcParsedArgs>,
+    pub(super) rustc_extern_paths: &'a [NormalizedPath],
+    pub(super) is_rustc: bool,
+    pub(super) client_env: &'a Option<Vec<(String, String)>>,
+    pub(super) lineage: &'a crate::daemon::lineage::Lineage,
+    pub(super) compile_start: std::time::Instant,
+    pub(super) snap_clock: Clock,
+}
+
+pub(super) struct CompileExecOutcome {
+    pub(super) exit_code: i32,
+    pub(super) stdout: Arc<Vec<u8>>,
+    pub(super) stderr: Arc<Vec<u8>>,
+    pub(super) depfile_strategy: DepfileStrategy,
+    pub(super) show_includes_scan: Option<crate::depgraph::ScanResult>,
+    pub(super) pre_hash_task: Option<tokio::task::JoinHandle<HashMap<NormalizedPath, ContentHash>>>,
+    pub(super) compiler_priority_decision: crate::daemon::process::CompilePriorityDecision,
+    pub(super) pre_exec_ns: u64,
+    pub(super) break_outputs_ns: u64,
+    pub(super) compiler_process_ns: u64,
+    pub(super) compiler_exec_ns: u64,
+    pub(super) compiler_prep_ns: u64,
+    pub(super) post_exec_ns: u64,
+}
+
+pub(super) enum CompileExecResult {
+    Ok(CompileExecOutcome),
+    Error(Response),
+}
+
+/// Prepare depfile/response-file/output-paths, spawn the compiler, and gather
+/// timings. The `pre_hash_task` returned is the rustc-only background hash of
+/// source + externs (issue #532) — `await`ed later in the store phase so its
+/// work overlaps with the compiler process itself.
+pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExecResult {
+    let CompileExecRequest {
+        state_arc,
+        compiler,
+        effective_args,
+        cwd,
+        cwd_path,
+        source_path,
+        output_path,
+        compilation,
+        dep_flags,
+        rustc_args_opt,
+        rustc_extern_paths,
+        is_rustc,
+        client_env,
+        lineage,
+        compile_start,
+        snap_clock,
+    } = req;
+
+    let state = state_arc.as_ref();
+
+    // ── Phase: compiler exec (with depfile injection) ────────────────
+    let pre_exec_ns = compile_start.elapsed().as_nanos() as u64;
+    let t_exec = std::time::Instant::now();
+    let supports_depfile = compilation.family.supports_depfile();
+    let (mut extra_args, mut depfile_strategy) = crate::depgraph::depfile::prepare_depfile(
+        supports_depfile,
+        dep_flags,
+        output_path,
+        &state.depfile_tmpdir,
+    );
+
+    // For MSVC, use /showIncludes to get complete dependency info
+    // (equivalent to depfiles for gcc/clang). This enables cache hits
+    // for files with computed includes like `#include MACRO`.
+    if compilation.family == crate::compiler::CompilerFamily::Msvc
+        && depfile_strategy == DepfileStrategy::Unsupported
+    {
+        if !dep_flags.has_md {
+            extra_args.push("/showIncludes".to_string());
+        }
+        depfile_strategy = DepfileStrategy::ShowIncludes;
+    }
+
+    // Combine expanded_args + extra_args for response-file length check.
+    // Only allocates when extra_args is non-empty.
+    let combined_args;
+    let rsp_args: &[String] = if extra_args.is_empty() {
+        effective_args
+    } else {
+        combined_args = [effective_args, extra_args.as_slice()].concat();
+        &combined_args
+    };
+
+    let _rsp_guard = match crate::compiler::response_file::write_response_file_if_needed(
+        rsp_args,
+        &state.depfile_tmpdir,
+        compilation.family,
+    ) {
+        Ok(guard) => guard,
+        Err(e) => {
+            return CompileExecResult::Error(Response::Error {
+                message: format!("failed to write response file: {e}"),
+            });
+        }
+    };
+
+    let output_paths = if let Some(rustc_args) = rustc_args_opt {
+        rustc_expected_output_paths(rustc_args, output_path, cwd_path)
+    } else {
+        vec![output_path.clone()]
+    };
+    let t_break_outputs = std::time::Instant::now();
+    for path in &output_paths {
+        if let Err(e) = break_output_hardlink_before_compile(path) {
+            return CompileExecResult::Error(Response::Error {
+                message: format!(
+                    "failed to detach hardlinked output before compile {}: {e}",
+                    path.display()
+                ),
+            });
+        }
+    }
+    let break_outputs_ns = t_break_outputs.elapsed().as_nanos() as u64;
+
+    let mut cmd = tokio::process::Command::new(compiler);
+    if let Some(ref rsp) = _rsp_guard {
+        cmd.arg(rsp.at_arg()).current_dir(cwd);
+    } else {
+        cmd.args(effective_args).current_dir(cwd);
+        if !extra_args.is_empty() {
+            cmd.args(&extra_args);
+        }
+    }
+    apply_client_env(&mut cmd, client_env, lineage);
+    let t_compiler_process = std::time::Instant::now();
+    let is_link_like = rustc_args_opt
+        .is_some_and(|rustc_args| rustc_args.emit_types.iter().any(|emit| emit == "link"));
+    let compiler_priority =
+        CompilePriority::from_client_env_for_link_like(client_env.as_deref(), is_link_like);
+    let compiler_priority_decision = compiler_priority.resolve_for_current_load();
+
+    // Issue #532: kick off hashing of pre-known inputs (source +
+    // rustc_extern_paths) on a blocking thread, in parallel with the
+    // rustc spawn. The 50-rlib externs of a workspace link dominate
+    // hash_all_ns (~64 ms on a 4-core CI runner); overlapping them with
+    // the ~38 ms rustc exec hides most of that cost. Late-arriving
+    // include paths (from rustc's dep-info) are hashed post-compile and
+    // merged with the pre-hash result. Skip for non-rustc compilers —
+    // they don't have a known-ahead extern list, and their cold hash_all
+    // is small anyway.
+    let pre_hash_task: Option<tokio::task::JoinHandle<HashMap<NormalizedPath, ContentHash>>> =
+        if is_rustc && !rustc_extern_paths.is_empty() {
+            let pre_state = Arc::clone(state_arc);
+            let pre_source = source_path.clone();
+            let pre_externs: Vec<NormalizedPath> = rustc_extern_paths.to_vec();
+            let pre_clock = snap_clock;
+            Some(tokio::task::spawn_blocking(move || {
+                use rayon::prelude::*;
+                let all_paths: Vec<&NormalizedPath> = std::iter::once(&pre_source)
+                    .chain(pre_externs.iter())
+                    .collect();
+                all_paths
+                    .par_iter()
+                    .filter_map(|path| {
+                        let hash_path = resolve_pch_source(path, &pre_state.pch_source_map)
+                            .unwrap_or_else(|| (*path).clone());
+                        hash_file(&pre_state.cache_system, &hash_path, pre_clock)
+                            .ok()
+                            .map(|h| ((*path).clone(), h))
+                    })
+                    .collect()
+            }))
+        } else {
+            None
+        };
+
+    let result = crate::daemon::process::tokio_command_output_with_priority(
+        &mut cmd,
+        compiler_priority_decision.effective,
+    )
+    .await;
+    let compiler_process_ns = t_compiler_process.elapsed().as_nanos() as u64;
+
+    let output = match result {
+        Ok(o) => o,
+        Err(e) => {
+            return CompileExecResult::Error(Response::Error {
+                message: format!("failed to run compiler: {e}"),
+            });
+        }
+    };
+    let compiler_exec_ns = t_exec.elapsed().as_nanos() as u64;
+    let compiler_prep_ns = compiler_exec_ns.saturating_sub(compiler_process_ns);
+
+    let t_post_exec = std::time::Instant::now();
+    let exit_code = output.status.code().unwrap_or(-1);
+    let stdout = Arc::new(output.stdout);
+
+    // For MSVC /showIncludes: parse dependency info from stderr and
+    // filter out the /showIncludes lines before returning to the client.
+    let (show_includes_scan, stderr_bytes) = if depfile_strategy == DepfileStrategy::ShowIncludes {
+        let (scan, filtered) = crate::depgraph::show_includes::parse_show_includes(
+            &output.stderr,
+            source_path,
+            cwd_path,
+        );
+        (Some(scan), filtered)
+    } else {
+        (None, output.stderr)
+    };
+    let stderr = Arc::new(stderr_bytes);
+    let post_exec_ns = t_post_exec.elapsed().as_nanos() as u64;
+
+    // Drop the response-file guard now that the compiler has exited. The
+    // pre-split function held the guard until end-of-function via `let
+    // _rsp_guard = ...`; keeping it bound to a local in this helper does
+    // the same — the guard drops when `run_compile_exec` returns, which is
+    // before any subsequent post-exec work touches the response file.
+    drop(_rsp_guard);
+
+    CompileExecResult::Ok(CompileExecOutcome {
+        exit_code,
+        stdout,
+        stderr,
+        depfile_strategy,
+        show_includes_scan,
+        pre_hash_task,
+        compiler_priority_decision,
+        pre_exec_ns,
+        break_outputs_ns,
+        compiler_process_ns,
+        compiler_exec_ns,
+        compiler_prep_ns,
+        post_exec_ns,
+    })
+}
