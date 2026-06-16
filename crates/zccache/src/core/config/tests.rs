@@ -61,8 +61,7 @@ fn resolve_cache_root_env_branch_still_versioned() {
     // override root (the soldr/perf-cluster shape) don't trample each other.
     let root = tempfile::tempdir().unwrap();
     let env_value = root.path().join("zc");
-    let (dir, src) =
-        resolve_cache_root_from_env_value(Some(env_value.clone().into_os_string()));
+    let (dir, src) = resolve_cache_root_from_env_value(Some(env_value.clone().into_os_string()));
     assert_eq!(dir, env_value.join(versioned_subdir()));
     assert_eq!(src, CacheRootSource::Env);
     assert_eq!(src.as_str(), "env:ZCCACHE_CACHE_DIR");
@@ -177,8 +176,7 @@ fn cache_root_invariant_all_subpaths_rooted() {
 fn cache_dir_override_uses_non_empty_env_value() {
     let root = tempfile::tempdir().unwrap();
     let override_dir = root.path().join("zc");
-    let cache_dir =
-        default_cache_dir_from_env_value(Some(override_dir.clone().into_os_string()));
+    let cache_dir = default_cache_dir_from_env_value(Some(override_dir.clone().into_os_string()));
 
     // Issue #761 / #762 Phase 0: the env-overridden root is the *top-level*
     // unversioned path; the actual cache_dir lives one segment below it
@@ -396,8 +394,7 @@ fn cleanup_legacy_temp_root_state_skips_current_cache_dir() {
     std::fs::create_dir_all(&current_cache_dir).unwrap();
     std::fs::write(current_cache_dir.join("sentinel"), "keep").unwrap();
 
-    let cleaned =
-        cleanup_legacy_temp_root_state(temp_root.path(), &current_cache_dir, |_| false);
+    let cleaned = cleanup_legacy_temp_root_state(temp_root.path(), &current_cache_dir, |_| false);
 
     assert_eq!(cleaned, 0);
     assert!(current_cache_dir.exists());
@@ -414,8 +411,7 @@ fn cleanup_legacy_temp_root_state_skips_parent_of_current_cache_dir() {
     std::fs::create_dir_all(&current_cache_dir).unwrap();
     std::fs::write(current_cache_dir.join("sentinel"), "keep").unwrap();
 
-    let cleaned =
-        cleanup_legacy_temp_root_state(temp_root.path(), &current_cache_dir, |_| false);
+    let cleaned = cleanup_legacy_temp_root_state(temp_root.path(), &current_cache_dir, |_| false);
 
     assert_eq!(cleaned, 0);
     assert!(current_cache_dir.exists());
@@ -559,12 +555,10 @@ fn daemon_namespace_sanitizes_for_paths_and_pipes() {
 
 #[test]
 fn daemon_namespace_keeps_long_values_distinct() {
-    let a =
-        daemon_namespace_from_env_value(Some(OsString::from(format!("{}a", "x".repeat(40)))))
-            .unwrap();
-    let b =
-        daemon_namespace_from_env_value(Some(OsString::from(format!("{}b", "x".repeat(40)))))
-            .unwrap();
+    let a = daemon_namespace_from_env_value(Some(OsString::from(format!("{}a", "x".repeat(40)))))
+        .unwrap();
+    let b = daemon_namespace_from_env_value(Some(OsString::from(format!("{}b", "x".repeat(40)))))
+        .unwrap();
     assert_ne!(a, b);
     assert!(a.starts_with(&"x".repeat(32)));
     assert_eq!(a.len(), 41);

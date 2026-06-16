@@ -51,7 +51,9 @@ pub(in crate::daemon::server) fn build_pack(payloads: &[Arc<Vec<u8>>]) -> Vec<u8
     buf
 }
 
-pub(in crate::daemon::server) fn parse_pack_header(data: &[u8]) -> std::io::Result<Vec<(u64, u64)>> {
+pub(in crate::daemon::server) fn parse_pack_header(
+    data: &[u8],
+) -> std::io::Result<Vec<(u64, u64)>> {
     if data.len() < 8 || &data[..4] != PACK_MAGIC {
         return Err(std::io::Error::other("not a zccache pack file"));
     }

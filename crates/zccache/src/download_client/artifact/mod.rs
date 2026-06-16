@@ -26,7 +26,9 @@ mod tests;
 
 use archive::{extract_archive, remove_path_if_exists};
 use lock::acquire_fetch_lock;
-use marker::{expanded_marker_matches, expanded_marker_path, write_artifact_marker, write_expanded_marker};
+use marker::{
+    expanded_marker_matches, expanded_marker_path, write_artifact_marker, write_expanded_marker,
+};
 use parts::download_explicit_parts;
 use resolve::{resolve_request, resolve_request_no_create};
 use state::{cleanup_invalid_fetch_state, exists_resolved, validate_artifact};

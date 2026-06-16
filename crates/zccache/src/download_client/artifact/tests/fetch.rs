@@ -504,8 +504,7 @@ fn force_is_rejected_for_existing_artifact_state() {
     let dir = tempfile::tempdir().unwrap();
     let destination = dir.path().join("immutable.bin");
 
-    let _ =
-        fetch_with_retry(&client, FetchRequest::new(server.url.clone(), &destination)).unwrap();
+    let _ = fetch_with_retry(&client, FetchRequest::new(server.url.clone(), &destination)).unwrap();
 
     let mut force = FetchRequest::new(server.url.clone(), &destination);
     force.force = true;

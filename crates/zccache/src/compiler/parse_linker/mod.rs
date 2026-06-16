@@ -17,8 +17,8 @@
 //! [`ParsedLinkerInvocation`], [`CacheableLink`], [`is_linker`],
 //! [`is_link_invocation`], [`parse_linker_invocation`].
 
-pub(crate) mod detect;
 mod compiler_driver;
+pub(crate) mod detect;
 mod gnu_ld;
 mod msvc_link;
 mod types;

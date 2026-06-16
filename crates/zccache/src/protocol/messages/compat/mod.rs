@@ -22,7 +22,9 @@ mod session_stats;
 mod variant_indices;
 
 /// Helper: roundtrip a value through bincode.
-pub(super) fn roundtrip<T: Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
+pub(super) fn roundtrip<
+    T: Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
+>(
     val: &T,
 ) {
     let bytes = bincode::serialize(val).unwrap();

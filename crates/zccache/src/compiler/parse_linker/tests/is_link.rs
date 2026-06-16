@@ -1,7 +1,7 @@
 //! `is_link_invocation` classification tests.
 
-use super::args;
 use super::super::is_link_invocation;
+use super::args;
 
 #[test]
 fn is_link_invocation_direct_linker() {

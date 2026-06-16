@@ -4,13 +4,9 @@
 
 use std::time::Instant;
 
-use super::super::context::{
-    compute_rustc_artifact_key_with_root_with, ArtifactKey, ContextKey,
-};
+use super::super::context::{compute_rustc_artifact_key_with_root_with, ArtifactKey, ContextKey};
 use super::super::scanner::ScanResult;
-use super::{
-    collect_rustc_extern_hashes, depgraph_update_profile_enabled, ContextState, DepGraph,
-};
+use super::{collect_rustc_extern_hashes, depgraph_update_profile_enabled, ContextState, DepGraph};
 use crate::hash::ContentHash;
 
 impl DepGraph {

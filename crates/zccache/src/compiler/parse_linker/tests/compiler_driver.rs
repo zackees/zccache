@@ -1,7 +1,7 @@
 //! Compiler-driver-as-linker tests (`gcc`, `clang`, `emcc`, ...).
 
-use super::args;
 use super::super::{parse_linker_invocation, LinkerFamily, ParsedLinkerInvocation};
+use super::args;
 use crate::core::NormalizedPath;
 
 #[test]
@@ -92,8 +92,7 @@ fn gcc_shared_wl_build_id_uuid_non_deterministic() {
 #[test]
 fn gcc_with_compile_flag_non_cacheable() {
     // gcc -c -shared means compile only (not link), should not be cached as link
-    let result =
-        parse_linker_invocation("gcc", args(&["-c", "-shared", "-o", "foo.o", "foo.c"]));
+    let result = parse_linker_invocation("gcc", args(&["-c", "-shared", "-o", "foo.o", "foo.c"]));
     assert!(matches!(
         result,
         ParsedLinkerInvocation::NonCacheable { .. }

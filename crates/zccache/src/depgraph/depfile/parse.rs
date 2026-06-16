@@ -4,9 +4,9 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use super::super::scanner::ScanResult;
 use super::canonicalize::canonicalize_path;
 use super::error::DepfileError;
-use super::super::scanner::ScanResult;
 
 /// Parse `.d` file content into a [`ScanResult`].
 ///

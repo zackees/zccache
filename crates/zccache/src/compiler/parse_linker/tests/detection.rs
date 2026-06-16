@@ -1,8 +1,8 @@
 //! Detection tests: `detect_family`, `is_linker`, `is_compiler_driver`.
 
-use super::args;
 use super::super::detect::{detect_family, is_compiler_driver};
 use super::super::{is_link_invocation, is_linker, LinkerFamily};
+use super::args;
 
 #[test]
 fn detect_gnu_ld() {

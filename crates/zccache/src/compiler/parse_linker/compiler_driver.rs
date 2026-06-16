@@ -24,10 +24,7 @@ fn is_linker_input(path: &str) -> bool {
 /// The compiler driver passes flags through to the linker internally,
 /// so we treat the full invocation as a link operation. `-shared` is kept as a
 /// cache-relevant flag since it affects output type.
-pub(super) fn parse_compiler_driver_link(
-    tool: &str,
-    args: Vec<String>,
-) -> ParsedLinkerInvocation {
+pub(super) fn parse_compiler_driver_link(tool: &str, args: Vec<String>) -> ParsedLinkerInvocation {
     if args.is_empty() {
         return ParsedLinkerInvocation::NonCacheable {
             reason: "no arguments".to_string(),

@@ -186,7 +186,9 @@ pub(super) fn store_result_kind_to_prost(
     }
 }
 
-pub(super) fn store_result_kind_from_prost(kind: i32) -> Result<crate::protocol::StoreResult, String> {
+pub(super) fn store_result_kind_from_prost(
+    kind: i32,
+) -> Result<crate::protocol::StoreResult, String> {
     match zccache_v1::StoreResultKind::try_from(kind) {
         Ok(zccache_v1::StoreResultKind::Stored) => Ok(crate::protocol::StoreResult::Stored),
         Ok(zccache_v1::StoreResultKind::AlreadyExists) => {

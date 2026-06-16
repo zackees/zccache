@@ -12,7 +12,9 @@ use std::path::Path;
 use zccache::compiler::response_file::{expand_response_files, ResponseFileError};
 
 #[cfg(windows)]
-use zccache::compiler::response_file::{parse_response_file_content, write_response_file_if_needed};
+use zccache::compiler::response_file::{
+    parse_response_file_content, write_response_file_if_needed,
+};
 
 fn s(v: &[&str]) -> Vec<String> {
     v.iter().map(|x| x.to_string()).collect()

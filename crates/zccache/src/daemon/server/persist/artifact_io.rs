@@ -12,7 +12,10 @@ pub(in crate::daemon::server) fn artifact_persist_tmp_path(cache_path: &Path) ->
     cache_path.with_file_name(format!(".{name}.tmp-{}-{counter}", std::process::id()))
 }
 
-pub(in crate::daemon::server) fn persist_artifact_output(cache_path: &Path, payload: &[u8]) -> std::io::Result<()> {
+pub(in crate::daemon::server) fn persist_artifact_output(
+    cache_path: &Path,
+    payload: &[u8],
+) -> std::io::Result<()> {
     if let Some(parent) = cache_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| enrich_persist_err(e, None, cache_path))?;
     }

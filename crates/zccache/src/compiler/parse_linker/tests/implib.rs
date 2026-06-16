@@ -1,7 +1,7 @@
 //! GNU/LLD `--out-implib` secondary-output tests.
 
-use super::args;
 use super::super::{parse_linker_invocation, LinkerFamily, ParsedLinkerInvocation};
+use super::args;
 use crate::core::NormalizedPath;
 
 #[test]

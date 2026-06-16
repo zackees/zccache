@@ -54,8 +54,7 @@ async fn recv_wire_accepts_bincode_request_on_live_ipc() {
 
     let server = tokio::spawn(async move {
         let mut conn = listener.accept().await.unwrap();
-        let msg: Option<DecodedWireMessage<Request, pb::Request>> =
-            conn.recv_wire().await.unwrap();
+        let msg: Option<DecodedWireMessage<Request, pb::Request>> = conn.recv_wire().await.unwrap();
         assert_eq!(msg, Some(DecodedWireMessage::BincodeV15(Request::Ping)));
         conn.send(&Response::Pong).await.unwrap();
     });
@@ -75,8 +74,7 @@ async fn recv_wire_accepts_prost_request_on_live_ipc() {
 
     let server = tokio::spawn(async move {
         let mut conn = listener.accept().await.unwrap();
-        let msg: Option<DecodedWireMessage<Request, pb::Request>> =
-            conn.recv_wire().await.unwrap();
+        let msg: Option<DecodedWireMessage<Request, pb::Request>> = conn.recv_wire().await.unwrap();
         match msg {
             Some(DecodedWireMessage::ProstV16(request)) => {
                 assert_eq!(request.request_id, "live-prost");

@@ -25,9 +25,11 @@ pub fn response_to_prost(
         crate::protocol::Response::LookupResult(result) => {
             Body::LookupResult(lookup_result_to_prost(result))
         }
-        crate::protocol::Response::StoreResult(result) => Body::StoreResult(zccache_v1::StoreResult {
-            kind: store_result_kind_to_prost(result).into(),
-        }),
+        crate::protocol::Response::StoreResult(result) => {
+            Body::StoreResult(zccache_v1::StoreResult {
+                kind: store_result_kind_to_prost(result).into(),
+            })
+        }
         crate::protocol::Response::SessionStarted {
             session_id,
             journal_path,

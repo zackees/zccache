@@ -12,9 +12,8 @@ use std::path::PathBuf;
 mod subcommands;
 
 pub(crate) use subcommands::{
-    CacheCommands, CargoRegistryCommands, DefenderExclusionsCommands, FpCommands,
-    GhaCacheCommands, KvCommands, MesonCommands, RustPlanBackendArg, RustPlanCommands,
-    SymbolsCommands,
+    CacheCommands, CargoRegistryCommands, DefenderExclusionsCommands, FpCommands, GhaCacheCommands,
+    KvCommands, MesonCommands, RustPlanBackendArg, RustPlanCommands, SymbolsCommands,
 };
 
 /// Environment-variable reference appended to the top-level `--help` output.

@@ -4,13 +4,13 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
+use super::super::args::UserDepFlags;
 use super::canonicalize::{canonicalize_cache_len_for_test, canonicalize_path, strip_win_prefix};
 use super::error::DepfileError;
 use super::parse::{
     find_separator_colon, join_continuations, parse_depfile, parse_depfile_path, split_and_unescape,
 };
 use super::strategy::{prepare_depfile, user_depfile_destination, DepfileStrategy};
-use super::super::args::UserDepFlags;
 use crate::core::NormalizedPath;
 
 /// Helper: create a file with empty content inside a temp dir.
@@ -444,8 +444,7 @@ fn strategy_user_mf() {
         has_md: true,
         mf_path: Some(NormalizedPath::from("/build/deps.d")),
     };
-    let (args, strategy) =
-        prepare_depfile(true, &dep_flags, Path::new("foo.o"), Path::new("/tmp"));
+    let (args, strategy) = prepare_depfile(true, &dep_flags, Path::new("foo.o"), Path::new("/tmp"));
     assert!(args.is_empty());
     assert_eq!(
         strategy,
@@ -461,8 +460,7 @@ fn strategy_user_md_no_mf() {
         has_md: true,
         mf_path: None,
     };
-    let (args, strategy) =
-        prepare_depfile(true, &dep_flags, Path::new("foo.o"), Path::new("/tmp"));
+    let (args, strategy) = prepare_depfile(true, &dep_flags, Path::new("foo.o"), Path::new("/tmp"));
     assert!(args.is_empty());
     assert_eq!(
         strategy,
@@ -513,8 +511,7 @@ fn user_depfile_destination_none_when_user_has_no_dep_flags() {
 #[test]
 fn strategy_injected() {
     let dep_flags = UserDepFlags::default();
-    let (args, strategy) =
-        prepare_depfile(true, &dep_flags, Path::new("foo.o"), Path::new("/tmp"));
+    let (args, strategy) = prepare_depfile(true, &dep_flags, Path::new("foo.o"), Path::new("/tmp"));
 
     assert_eq!(args.len(), 3);
     assert_eq!(args[0], "-MD");

@@ -1,15 +1,14 @@
 //! GNU ld / LLD argument-parsing tests.
 
-use super::args;
 use super::super::{parse_linker_invocation, LinkerFamily, ParsedLinkerInvocation};
+use super::args;
 use crate::core::NormalizedPath;
 
 // ─── GNU ld shared library parsing ───────────────────────────────
 
 #[test]
 fn basic_shared_lib() {
-    let result =
-        parse_linker_invocation("ld", args(&["-shared", "-o", "libfoo.so", "a.o", "b.o"]));
+    let result = parse_linker_invocation("ld", args(&["-shared", "-o", "libfoo.so", "a.o", "b.o"]));
     match result {
         ParsedLinkerInvocation::Cacheable(c) => {
             assert_eq!(c.family, LinkerFamily::Ld);
@@ -451,8 +450,7 @@ fn redundant_shared_flags() {
 #[test]
 fn wl_shared_inside_pass_through() {
     // -Wl,-shared inside a -Wl, pass-through should detect shared mode
-    let result =
-        parse_linker_invocation("ld", args(&["-Wl,-shared", "-o", "libfoo.so", "a.o"]));
+    let result = parse_linker_invocation("ld", args(&["-Wl,-shared", "-o", "libfoo.so", "a.o"]));
     match result {
         ParsedLinkerInvocation::Cacheable(c) => {
             assert_eq!(c.output_file, NormalizedPath::new("libfoo.so"));
