@@ -303,11 +303,11 @@ fn format_rsp_content_rustc(args: &[String]) -> Option<String> {
 ///
 /// `family_hint` selects the response-file dialect:
 ///
-/// - [`CompilerFamily::Rustc`] uses rustc's line-oriented format (one arg
+/// - `CompilerFamily::Rustc` uses rustc's line-oriented format (one arg
 ///   per line, no quoting). Required because rustc does not unquote
 ///   `'..."..."...'`-style values from response files; see #634.
 /// - All other families use the GCC/Clang/MSVC-compatible single- or
-///   double-quoted format produced by [`format_rsp_argument`].
+///   double-quoted format produced by `format_rsp_argument`.
 ///
 /// The returned [`TempResponseFile`] keeps the temporary file alive via RAII.
 /// Drop it after the compiler process finishes.

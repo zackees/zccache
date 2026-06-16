@@ -5,10 +5,10 @@
 //! - `contexts`: per-compilation-context entries with resolved include lists
 //!
 //! The implementation is split across several files for the LOC guard:
-//! - [`register`] — context registration (`register*`, `register_context_entry`, `is_cold`).
-//! - [`check`] — verdict computation (`check`, `check_diagnostic`, `try_fast_hit`).
-//! - [`update`] — post-compile include-list + artifact-key recording.
-//! - [`maintenance`] — `trim`, `clear`, stats, accessors, `ingest_compile_commands`.
+//! - `register` — context registration (`register*`, `register_context_entry`, `is_cold`).
+//! - `check` — verdict computation (`check`, `check_diagnostic`, `try_fast_hit`).
+//! - `update` — post-compile include-list + artifact-key recording.
+//! - `maintenance` — `trim`, `clear`, stats, accessors, `ingest_compile_commands`.
 
 mod check;
 mod maintenance;

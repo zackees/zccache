@@ -6,12 +6,12 @@
 //!
 //! The implementation is split across focused submodules:
 //!
-//! - [`types`] (private) — public types ([`LinkerFamily`],
+//! - `types` (private) — public types ([`LinkerFamily`],
 //!   [`ParsedLinkerInvocation`], [`CacheableLink`]).
-//! - [`detect`] (private) — tool-name detection and [`is_link_invocation`].
-//! - [`gnu_ld`] (private) — GNU `ld` / LLVM `lld` argument parser.
-//! - [`msvc_link`] (private) — MSVC `link.exe` argument parser.
-//! - [`compiler_driver`] (private) — `gcc` / `clang` as-linker parser.
+//! - `detect` (private) — tool-name detection and [`is_link_invocation`].
+//! - `gnu_ld` (private) — GNU `ld` / LLVM `lld` argument parser.
+//! - `msvc_link` (private) — MSVC `link.exe` argument parser.
+//! - `compiler_driver` (private) — `gcc` / `clang` as-linker parser.
 //!
 //! Public surface (re-exported here): [`LinkerFamily`],
 //! [`ParsedLinkerInvocation`], [`CacheableLink`], [`is_linker`],
