@@ -67,8 +67,8 @@ pub use paths::{
     tmp_dir, tmp_dir_from_cache_dir,
 };
 pub use resolve::{
-    cache_dir_override, default_cache_dir, resolve_cache_root, resolve_cache_root_top_level,
-    versioned_subdir, CacheRootSource,
+    cache_dir_override, default_cache_dir, effective_cache_root_from_top_level, resolve_cache_root,
+    resolve_cache_root_top_level, versioned_subdir, CacheRootSource,
 };
 
 /// Top-level configuration for zccache.

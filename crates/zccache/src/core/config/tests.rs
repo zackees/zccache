@@ -19,8 +19,9 @@ use super::paths::{
 };
 use super::resolve::{
     cache_dir_from_env_value, colocate_enabled, default_cache_dir_from_env_value,
-    resolve_cache_root_from_env_value, resolve_cache_root_top_level_from_env_value,
-    same_volume_root, sanitize_path_component, versioned_subdir, CacheRootSource,
+    effective_cache_root_from_top_level, resolve_cache_root_from_env_value,
+    resolve_cache_root_top_level_from_env_value, same_volume_root, sanitize_path_component,
+    versioned_subdir, CacheRootSource,
 };
 use super::{Config, COLOCATE_ENV};
 use crate::core::NormalizedPath;
@@ -117,6 +118,14 @@ fn top_level_root_still_unversioned_for_advisory_writes() {
 fn versioned_subdir_matches_crate_version() {
     assert_eq!(versioned_subdir(), format!("v{}", crate::core::VERSION));
     assert!(versioned_subdir().starts_with('v'));
+}
+
+#[test]
+fn effective_cache_root_appends_version_once() {
+    let root = NormalizedPath::from("/tmp/zccache-private-root");
+    let effective = effective_cache_root_from_top_level(&root);
+    assert_eq!(effective, root.join(versioned_subdir()));
+    assert_eq!(effective_cache_root_from_top_level(&effective), effective);
 }
 
 #[test]

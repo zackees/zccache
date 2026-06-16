@@ -31,12 +31,15 @@ pub(super) async fn handle_session_start(
                 }
             }
             if let Some(cache_dir) = options.cache_dir.as_ref() {
-                if cache_dir != &state.cache_dir {
+                let requested_effective =
+                    crate::core::config::effective_cache_root_from_top_level(cache_dir);
+                if requested_effective != state.cache_dir {
                     return Response::Error {
                         message: format!(
-                            "private daemon cache dir mismatch: connected to {}, requested {}",
+                            "private daemon cache dir mismatch: connected effective root {}, requested root {} (effective {})",
                             state.cache_dir.display(),
-                            cache_dir.display()
+                            cache_dir.display(),
+                            requested_effective.display()
                         ),
                     };
                 }

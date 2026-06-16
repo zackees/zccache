@@ -77,7 +77,7 @@ pub(super) fn resolve_cache_root_from_env_value(
     value: Option<OsString>,
 ) -> (NormalizedPath, CacheRootSource) {
     let (root, source) = resolve_cache_root_top_level_from_env_value(value);
-    (root.join(versioned_subdir()), source)
+    (effective_cache_root_from_top_level(&root), source)
 }
 
 /// Issue #761 / meta #762 — Phase 0: shared cache state is now
@@ -117,6 +117,26 @@ pub(super) fn resolve_cache_root_top_level_from_env_value(
 #[must_use]
 pub fn versioned_subdir() -> String {
     format!("v{}", crate::core::VERSION)
+}
+
+/// Convert a user-facing cache root into the effective daemon cache root.
+///
+/// `ZCCACHE_CACHE_DIR` and `--cache-dir` name the top-level root owned by the
+/// caller. The daemon's persistent state lives one segment below that root in
+/// `v<VERSION>`. If the caller already supplied the effective root, leave it
+/// alone so diagnostics, broker manifests, and compatibility paths do not
+/// double-append the version segment.
+#[must_use]
+pub fn effective_cache_root_from_top_level(cache_root: &NormalizedPath) -> NormalizedPath {
+    let version = versioned_subdir();
+    if cache_root
+        .file_name()
+        .and_then(|segment| segment.to_str())
+        .is_some_and(|segment| segment == version)
+    {
+        return cache_root.clone();
+    }
+    cache_root.join(version)
 }
 
 /// True when `ZCCACHE_COLOCATE` is set to a non-empty, non-"0" value.
@@ -241,4 +261,3 @@ fn normalize_cache_dir_override(path: &std::path::Path) -> NormalizedPath {
             .into()
     }
 }
-

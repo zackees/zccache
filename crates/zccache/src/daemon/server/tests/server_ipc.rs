@@ -205,6 +205,45 @@ async fn private_session_start_registers_redacted_status_and_owner_refs() {
 }
 
 #[tokio::test]
+#[ignore] // integration-level: starts real daemon with IPC + file watcher
+async fn private_session_start_accepts_top_level_cache_root() {
+    crate::test_support::test_timeout(async {
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = CacheDirEnvGuard::set_with_namespace(tmp.path(), "soldr-dev-parent-root");
+        let (endpoint, server_task, shutdown) = start_daemon().await;
+
+        let mut client = crate::ipc::connect(&endpoint).await.unwrap();
+        client
+            .send(&Request::SessionStart {
+                client_pid: std::process::id(),
+                working_dir: tmp.path().into(),
+                log_file: None,
+                track_stats: false,
+                journal_path: None,
+                profile: false,
+                private_daemon: Some(crate::protocol::PrivateDaemonSessionOptions {
+                    daemon_name: Some("soldr-dev-parent-root".to_string()),
+                    endpoint: Some(endpoint.clone()),
+                    cache_dir: Some(tmp.path().into()),
+                    owner_pids: vec![std::process::id()],
+                    env: Vec::new(),
+                }),
+            })
+            .await
+            .unwrap();
+
+        match client.recv().await.unwrap() {
+            Some(Response::SessionStarted { .. }) => {}
+            other => panic!("expected SessionStarted for top-level cache root, got: {other:?}"),
+        }
+
+        shutdown.notify_one();
+        server_task.await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + compiler
 async fn cli_session_lifecycle() {
     let clang = match crate::test_support::find_clang() {
