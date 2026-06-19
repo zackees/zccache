@@ -70,6 +70,13 @@ zccache-fingerprint = { path = "crates/zccache-fingerprint" }
 # 2. Report start_read failure (watcher silently dying) as error
 [patch.crates-io]
 notify = { path = "vendor/notify" }
+# Spike for #777: pin to the running-process commit that landed the
+# broker-v2 proto types (zackees/running-process PR #484, slice 1 of
+# zackees/running-process#483). Reproducible for any contributor —
+# no local path required and no dependency on a published crates.io
+# release of that revision. Remove this patch once running-process
+# publishes a version that exposes `broker::protocol_v2`.
+running-process = { git = "https://github.com/zackees/running-process", rev = "cb57d382791d9a64ad0c35d3d617df60600ad6c0" }
 
 [workspace.metadata.dylint]
 libraries = [{ path = "dylints/*" }]
