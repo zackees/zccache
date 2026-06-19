@@ -76,7 +76,7 @@ notify = { path = "vendor/notify" }
 # no local path required and no dependency on a published crates.io
 # release of that revision. Remove this patch once running-process
 # publishes a version that exposes `broker::protocol_v2`.
-running-process = { git = "https://github.com/zackees/running-process", rev = "975e87ee8ebf65829b65781cde0f94a736163642" }
+running-process = { git = "https://github.com/zackees/running-process", rev = "49a356473ef64cbd524f60c718078d61a206eae2" }
 
 [workspace.metadata.dylint]
 libraries = [{ path = "dylints/*" }]
