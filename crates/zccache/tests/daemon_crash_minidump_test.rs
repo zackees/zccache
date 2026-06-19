@@ -25,7 +25,11 @@ use std::time::{Duration, Instant};
 fn run_crash_scenario(mode: &str, expected_label: &str) -> (PathBuf, tempfile::TempDir) {
     let tmp = tempfile::tempdir().expect("create tempdir");
     let cache_dir = tmp.path().join(".zccache");
-    let crash_dir = cache_dir.join("crashes");
+    // Issue #761 / #762 Phase 0: every persistent daemon/CLI subdir lives
+    // under `<cache>/v<VERSION>/` now, including `crashes/`.
+    let crash_dir = cache_dir
+        .join(zccache::core::config::versioned_subdir())
+        .join("crashes");
 
     let bin = env!("CARGO_BIN_EXE_crash-trigger");
     let output = std::process::Command::new(bin)

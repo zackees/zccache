@@ -6,6 +6,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use zccache::core::config::versioned_subdir;
 use zccache::core::NormalizedPath;
 
 fn zccache_bin() -> NormalizedPath {
@@ -53,6 +54,10 @@ fn run_cache_root(cache_dir: Option<&Path>, json: bool) -> std::process::Output 
 
 #[test]
 fn cache_root_default_prints_absolute_path() {
+    // Issue #761 / #762 Phase 0: cache-root prints the effective
+    // (version-namespaced) root that the daemon actually reads/writes
+    // under, so wrappers can compare it to the per-version subdir on
+    // disk without re-joining the version segment themselves.
     let temp = tempfile::tempdir().expect("tempdir");
     let want = temp.path().join("zc");
     let out = run_cache_root(Some(&want), false);
@@ -62,7 +67,7 @@ fn cache_root_default_prints_absolute_path() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let want_str = want.to_string_lossy().to_string();
+    let want_str = want.join(versioned_subdir()).to_string_lossy().to_string();
     assert_eq!(
         stdout, want_str,
         "stdout `{stdout}` should equal `{want_str}`"
@@ -84,7 +89,7 @@ fn cache_root_env_branch_reports_env_source() {
         serde_json::from_str(stdout.trim()).expect("--json must emit valid JSON");
     assert_eq!(v["source"], "env:ZCCACHE_CACHE_DIR");
     let got = v["cache_root"].as_str().expect("cache_root is a string");
-    assert_eq!(Path::new(got), want.as_path());
+    assert_eq!(Path::new(got), want.join(versioned_subdir()).as_path());
     assert_eq!(v["daemon_namespace"], "default");
     assert!(
         v["daemon_endpoint"].as_str().is_some(),
@@ -172,8 +177,16 @@ fn cache_root_relative_env_path_is_absolute_in_output() {
         Path::new(&stdout).is_absolute(),
         "stdout `{stdout}` must be an absolute path"
     );
+    let stdout_path = Path::new(&stdout);
     assert!(
-        stdout.ends_with("relative-zc"),
-        "stdout `{stdout}` should end with the relative override stem"
+        stdout_path.ends_with(versioned_subdir()),
+        "stdout `{stdout}` should end with the version subdir `{}`",
+        versioned_subdir()
+    );
+    let parent = stdout_path.parent().expect("stdout has a parent component");
+    assert!(
+        parent.ends_with("relative-zc"),
+        "stdout's parent `{}` should be the relative override stem",
+        parent.display()
     );
 }

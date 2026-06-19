@@ -277,7 +277,11 @@ async fn rustc_multi_output_hit_survives_cache_restore_without_target_dir() {
             depgraph_path.display(),
         );
 
-        let cache_dir_norm = NormalizedPath::new(&cache_dir);
+        // Issue #761 / #762 Phase 0: `index.bin` lives under
+        // `<cache>/v<VERSION>/index.bin` so `index_path_from_cache_dir`
+        // needs the versioned subdir prepended.
+        let cache_dir_norm =
+            NormalizedPath::new(&cache_dir).join(zccache::core::config::versioned_subdir());
         let index_path = zccache::core::config::index_path_from_cache_dir(&cache_dir_norm);
         let index_len = std::fs::metadata(&index_path)
             .map(|meta| meta.len())
