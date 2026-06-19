@@ -235,7 +235,11 @@ jobs:
           soldr cargo add serde --features derive
           soldr cargo build --verbose 2>&1 | tee build.log
           grep -F 'zccache ' build.log
-          test -d "$ZCCACHE_CACHE_DIR/logs"
+          # Issue #761 / #762 Phase 0: logs live under
+          # `<cache>/v<VERSION>/logs/` now — ask the binary for the
+          # effective root rather than hardcoding the env-var path.
+          effective_root="$(zccache cache-root)"
+          test -d "$effective_root/logs"
 
       - name: smoke compile through wrapper (Windows)
         if: runner.os == 'Windows'
@@ -258,7 +262,11 @@ jobs:
           soldr cargo add serde --features derive
           soldr cargo build --verbose 2>&1 | Tee-Object -FilePath build.log
           if (-not (Select-String -Path build.log -SimpleMatch 'zccache')) { exit 1 }
-          if (-not (Test-Path "$env:ZCCACHE_CACHE_DIR/logs")) { exit 1 }
+          # Issue #761 / #762 Phase 0: logs live under
+          # `<cache>/v<VERSION>/logs/` now — ask the binary for the
+          # effective root rather than hardcoding the env-var path.
+          $effectiveRoot = (& zccache cache-root).Trim()
+          if (-not (Test-Path "$effectiveRoot/logs")) { exit 1 }
 
       - name: Stop isolated wrapper smoke cache
         if: always()

@@ -252,7 +252,11 @@ jobs:
           # Ensure there's something in the cargo registry
           cargo fetch
           ./target/debug/zccache cargo-registry save --key test-roundtrip
-          ARCHIVE="$HOME/.zccache/cargo-registry/test-roundtrip.tar.gz"
+          # Issue #761 / #762 Phase 0: every persistent subdir now lives
+          # under `<cache>/v<VERSION>/`; ask the binary for the effective
+          # root rather than hardcoding `$HOME/.zccache`.
+          CACHE_ROOT="$(./target/debug/zccache cache-root)"
+          ARCHIVE="$CACHE_ROOT/cargo-registry/test-roundtrip.tar.gz"
           if [ ! -f "$ARCHIVE" ]; then
             echo "FAIL: archive not created at $ARCHIVE"
             exit 1
@@ -284,7 +288,8 @@ jobs:
         shell: bash
         run: |
           ./target/debug/zccache cargo-registry clean
-          ARCHIVE="$HOME/.zccache/cargo-registry/test-roundtrip.tar.gz"
+          CACHE_ROOT="$(./target/debug/zccache cache-root)"
+          ARCHIVE="$CACHE_ROOT/cargo-registry/test-roundtrip.tar.gz"
           if [ -f "$ARCHIVE" ]; then
             echo "FAIL: archive still exists after clean"
             exit 1

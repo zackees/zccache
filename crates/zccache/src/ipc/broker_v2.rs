@@ -40,9 +40,21 @@ mod tests {
         let err = connect_v2_broker("0.0.0").expect_err("no broker => Dial error");
         match err {
             BrokerV2Error::Dial { socket_path, .. } => {
+                // The v2 broker uses different endpoint encodings per OS:
+                // Windows pipes name the consumer in the filename
+                // (`rpb-v2-zccache-<key>`), while Unix sockets put every v2
+                // broker file under `.rp-<uid>-broker-v2/` and use a
+                // content-hashed `<hex>.sock`. The universal invariant is
+                // that the path is routed through the v2 broker namespace.
+                let v2_marker = if cfg!(windows) {
+                    "rpb-v2-zccache-"
+                } else {
+                    "broker-v2"
+                };
                 assert!(
-                    socket_path.contains("rpb-v2-zccache-"),
-                    "Dial socket_path should reference the v2 zccache pipe, got: {socket_path}"
+                    socket_path.contains(v2_marker),
+                    "Dial socket_path should reference the v2 broker namespace \
+                     (expected substring `{v2_marker}`), got: {socket_path}"
                 );
             }
             other => panic!("expected BrokerV2Error::Dial, got: {other:?}"),
