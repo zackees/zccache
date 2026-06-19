@@ -3,6 +3,7 @@
 //! avoids re-hashing the compiler binary on every request.
 
 use super::super::*;
+use std::time::SystemTime;
 
 #[test]
 fn compiler_hash_cache_reuses_hash_for_unchanged_compiler() {
@@ -243,4 +244,156 @@ fn compiler_hash_cache_load_rehashes_when_binary_changes_after_save() {
         "stale snapshot must not survive a binary change",
     );
     assert_eq!(hash_calls.load(Ordering::Relaxed), 1);
+}
+
+// ── Issue #784: deferred compiler-hash-cache load ─────────────────────────
+
+/// `bind_with_cache_dir` no longer reads the compiler-hash-cache snapshot
+/// from disk. The cache starts empty regardless of what is on disk; the
+/// daemon binary's `compiler_hash_cache_loader().load_and_install()` does
+/// the merge after the readiness lockfile is written.
+#[tokio::test]
+async fn bind_does_not_load_compiler_hash_cache_from_disk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_dir = crate::core::NormalizedPath::new(tmp.path());
+    let snapshot_path = crate::core::config::compiler_hash_cache_path_from_cache_dir(&cache_dir);
+
+    // Pre-write a snapshot with two entries.
+    let pre = CompilerHashCache::new();
+    let compiler_a = tmp.path().join("rustc-a.exe");
+    let compiler_b = tmp.path().join("rustc-b.exe");
+    std::fs::write(&compiler_a, b"fake rustc a").unwrap();
+    std::fs::write(&compiler_b, b"fake rustc b").unwrap();
+    pre.get_or_hash_with(&compiler_a, |_| Some(ContentHash::from_bytes([0xAA; 32])));
+    pre.get_or_hash_with(&compiler_b, |_| Some(ContentHash::from_bytes([0xBB; 32])));
+    pre.save_to_disk(snapshot_path.as_path()).unwrap();
+    assert!(snapshot_path.as_path().exists());
+
+    // Bind — must NOT read the snapshot (the load is deferred to the
+    // background loader fired post-lockfile by the daemon binary).
+    let endpoint = crate::ipc::unique_test_endpoint();
+    let server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
+    let state = server.test_state();
+    assert_eq!(
+        state.compiler_hash_cache.len(),
+        0,
+        "bind must start with an empty compiler-hash cache",
+    );
+    assert!(
+        !state.compiler_hash_cache_loaded.load(Ordering::Acquire),
+        "the loaded flag must start false until the background loader runs",
+    );
+}
+
+/// The `compiler_hash_cache_loader()` handle reads the snapshot and
+/// merges it into the live cache. Confirms the deferred-load path
+/// reaches functional parity with the old sync-in-bind path.
+#[tokio::test]
+async fn compiler_hash_cache_loader_merges_snapshot_into_live_cache() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_dir = crate::core::NormalizedPath::new(tmp.path());
+    let snapshot_path = crate::core::config::compiler_hash_cache_path_from_cache_dir(&cache_dir);
+
+    let pre = CompilerHashCache::new();
+    let compiler = tmp.path().join("rustc.exe");
+    std::fs::write(&compiler, b"fake rustc").unwrap();
+    pre.get_or_hash_with(&compiler, |_| Some(ContentHash::from_bytes([0x42; 32])));
+    pre.save_to_disk(snapshot_path.as_path()).unwrap();
+
+    let endpoint = crate::ipc::unique_test_endpoint();
+    let server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
+
+    // Run the loader synchronously (it's `spawn_blocking`-safe but
+    // calling it inline in the test is equivalent for observability).
+    server.compiler_hash_cache_loader().load_and_install();
+
+    let state = server.test_state();
+    assert_eq!(
+        state.compiler_hash_cache.len(),
+        1,
+        "loader must merge the persisted entry into the live cache",
+    );
+    assert!(
+        state.compiler_hash_cache_loaded.load(Ordering::Acquire),
+        "loader must set compiler_hash_cache_loaded=true so shutdown save fires",
+    );
+
+    // The loaded entry must short-circuit the hasher on next lookup —
+    // proving the (path, mtime, size) -> hash mapping survived the
+    // bind → loader hop.
+    let hash_calls = AtomicUsize::new(0);
+    let observed = state.compiler_hash_cache.get_or_hash_with(&compiler, |_| {
+        hash_calls.fetch_add(1, Ordering::Relaxed);
+        Some(ContentHash::from_bytes([0x99; 32]))
+    });
+    assert_eq!(observed, Some(ContentHash::from_bytes([0x42; 32])));
+    assert_eq!(
+        hash_calls.load(Ordering::Relaxed),
+        0,
+        "loaded entry must hit, not re-hash",
+    );
+}
+
+/// Missing on-disk snapshot is not an error: the loader logs a warning,
+/// leaves the live cache empty, and still flips the loaded flag so
+/// shutdown save fires (and short-circuits because the cache is empty
+/// per `save_to_disk`'s empty-cache early-exit).
+#[tokio::test]
+async fn compiler_hash_cache_loader_tolerates_missing_snapshot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_dir = crate::core::NormalizedPath::new(tmp.path());
+    let endpoint = crate::ipc::unique_test_endpoint();
+    let server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
+
+    server.compiler_hash_cache_loader().load_and_install();
+
+    let state = server.test_state();
+    assert_eq!(state.compiler_hash_cache.len(), 0);
+    assert!(
+        state.compiler_hash_cache_loaded.load(Ordering::Acquire),
+        "loaded flag flips even when the snapshot was absent",
+    );
+}
+
+/// `merge_from` is `&self`, takes ownership of the loaded cache, and
+/// drains all entries. Documents the contract the deferred loader
+/// relies on.
+#[test]
+fn compiler_hash_cache_merge_from_drains_other() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a = tmp.path().join("a");
+    let b = tmp.path().join("b");
+    std::fs::write(&a, b"a").unwrap();
+    std::fs::write(&b, b"b").unwrap();
+
+    let live = CompilerHashCache::new();
+    let mtime = SystemTime::now();
+    live.entries.insert(
+        crate::core::NormalizedPath::new(&a),
+        CompilerHashEntry {
+            mtime,
+            size: 1,
+            hash: ContentHash::from_bytes([1; 32]),
+        },
+    );
+
+    let loaded = CompilerHashCache::new();
+    loaded.entries.insert(
+        crate::core::NormalizedPath::new(&b),
+        CompilerHashEntry {
+            mtime,
+            size: 1,
+            hash: ContentHash::from_bytes([2; 32]),
+        },
+    );
+
+    live.merge_from(loaded);
+
+    assert_eq!(live.entries.len(), 2);
+    assert!(live
+        .entries
+        .contains_key(&crate::core::NormalizedPath::new(&a)));
+    assert!(live
+        .entries
+        .contains_key(&crate::core::NormalizedPath::new(&b)));
 }

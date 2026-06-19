@@ -438,14 +438,35 @@ impl DaemonServer {
                     // Issue #517: persist the compiler-binary hash cache
                     // so the next daemon does not pay the ~50-60 ms cold
                     // blake3 over rustc on its first compile.
-                    if let Err(e) = self
+                    //
+                    // Issue #784: gate on `compiler_hash_cache_loaded`.
+                    // The disk load now runs in a background
+                    // `spawn_blocking` after the readiness lockfile, so
+                    // an early shutdown (Ctrl+C before the loader
+                    // finishes) could otherwise save a partial snapshot
+                    // over the on-disk file. Skipping the save when the
+                    // load hasn't completed preserves the existing
+                    // snapshot — the in-memory DashMap is still warm
+                    // enough for the in-process compiles that already
+                    // happened.
+                    if self
                         .state
-                        .compiler_hash_cache
-                        .save_to_disk(self.state.compiler_hash_cache_path.as_path())
+                        .compiler_hash_cache_loaded
+                        .load(Ordering::Acquire)
                     {
-                        tracing::warn!(
-                            path = %self.state.compiler_hash_cache_path.display(),
-                            "compiler hash cache save failed: {e}"
+                        if let Err(e) = self
+                            .state
+                            .compiler_hash_cache
+                            .save_to_disk(self.state.compiler_hash_cache_path.as_path())
+                        {
+                            tracing::warn!(
+                                path = %self.state.compiler_hash_cache_path.display(),
+                                "compiler hash cache save failed: {e}"
+                            );
+                        }
+                    } else {
+                        tracing::debug!(
+                            "compiler hash cache load still pending at shutdown — skipping save"
                         );
                     }
 

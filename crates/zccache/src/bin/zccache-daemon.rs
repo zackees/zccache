@@ -396,6 +396,21 @@ fn run_server(args: Args) {
             }
         });
 
+        // Issue #784: move the compiler-hash cache load off the
+        // spawn→lockfile critical path, using the same `spawn_blocking`
+        // shape as the depgraph load above. The loader logs at WARN on
+        // disk failure and leaves the in-memory cache empty; the
+        // stat-verify in `get_or_hash_with` keeps cache-key correctness
+        // either way. Fire-and-forget — the JoinHandle is dropped; if
+        // shutdown fires mid-load, the shutdown save path checks the
+        // `compiler_hash_cache_loaded` flag and skips the write so the
+        // on-disk snapshot is preserved (see `server::run`'s shutdown
+        // arm).
+        let compiler_hash_loader = server.compiler_hash_cache_loader();
+        tokio::task::spawn_blocking(move || {
+            compiler_hash_loader.load_and_install();
+        });
+
         // Wire up Ctrl+C to trigger graceful shutdown
         let shutdown = server.shutdown_handle();
         tokio::spawn(async move {

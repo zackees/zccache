@@ -152,6 +152,15 @@ pub(super) struct SharedState {
     pub(super) index_writer_shutdown: Arc<Notify>,
     /// Whether the background artifact loading has completed.
     pub(super) artifacts_loaded: AtomicBool,
+    /// Whether the background compiler-hash-cache load has completed.
+    ///
+    /// Issue #784: the on-disk snapshot is loaded post-lockfile from a
+    /// `spawn_blocking` task. The shutdown save path checks this before
+    /// calling `save_to_disk` — saving while the load is still pending
+    /// could write a partial snapshot over the persisted file. False
+    /// until the loader's `install()` runs; once true the in-memory
+    /// DashMap is considered canonical for save.
+    pub(super) compiler_hash_cache_loaded: AtomicBool,
     /// Whether the `died-shutdown` lifecycle event has been written for this
     /// daemon. Under burst load (issue #726), many wedge-detecting clients
     /// race to send `Request::Shutdown` within a few milliseconds and each

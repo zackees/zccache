@@ -56,6 +56,22 @@ impl CompilerHashCache {
         self.entries.len()
     }
 
+    /// Drain entries from a freshly loaded `CompilerHashCache` into `self`
+    /// using `DashMap::insert` (which is `&self`).
+    ///
+    /// Issue #784: lets a background `spawn_blocking` task load the on-disk
+    /// snapshot AFTER the daemon has written its readiness lockfile, then
+    /// populate the live cache without holding up bind. Readers during the
+    /// merge window either see no entry (cold-path miss — safe; the next
+    /// call to `get_or_hash_with` re-hashes) or a loaded entry (stat-verify
+    /// at the call site rejects stale (mtime, size) before trusting the
+    /// hash, so a partially-loaded snapshot cannot poison cache keys).
+    pub(super) fn merge_from(&self, other: Self) {
+        for (k, v) in other.entries {
+            self.entries.insert(k, v);
+        }
+    }
+
     pub(super) fn get_or_hash_with<F>(&self, path: &Path, hasher: F) -> Option<ContentHash>
     where
         F: FnOnce(&Path) -> Option<ContentHash>,

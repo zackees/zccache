@@ -21,10 +21,8 @@ fn v2_program_pipe_produces_canonical_zccache_pipe_name() {
 
 #[test]
 fn v2_program_pipe_distinct_pipe_idx_distinct_names() {
-    let name_0 = v2_program_pipe("zccache", "deadbeefcafef00d", 0)
-        .expect("idx=0 valid");
-    let name_7 = v2_program_pipe("zccache", "deadbeefcafef00d", 7)
-        .expect("idx=7 valid");
+    let name_0 = v2_program_pipe("zccache", "deadbeefcafef00d", 0).expect("idx=0 valid");
+    let name_7 = v2_program_pipe("zccache", "deadbeefcafef00d", 7).expect("idx=7 valid");
 
     assert_ne!(name_0, name_7);
     assert!(name_7.ends_with("-7"));

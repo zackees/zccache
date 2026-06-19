@@ -87,17 +87,15 @@ impl DaemonServer {
         // (path, mtime, size, hash) snapshot from a prior daemon makes
         // that first compile near-instant — the stat-verify in
         // `get_or_hash_with` keeps correctness if the binary changed since.
-        let compiler_hash_cache =
-            match CompilerHashCache::load_from_disk(compiler_hash_cache_path.as_path()) {
-                Ok(cache) => cache,
-                Err(e) => {
-                    tracing::warn!(
-                        path = %compiler_hash_cache_path.display(),
-                        "failed to load compiler hash cache, starting empty: {e}"
-                    );
-                    CompilerHashCache::new()
-                }
-            };
+        //
+        // Issue #784: start empty here. The on-disk snapshot is loaded
+        // by `compiler_hash_cache_loader()`'s `install()` in a
+        // `spawn_blocking` AFTER the daemon's readiness lockfile is
+        // written, so the disk read is removed from the spawn→lockfile
+        // critical path. Compile requests arriving during the merge
+        // window take the cold blake3 path — same outcome as before
+        // #517's persistence existed.
+        let compiler_hash_cache = CompilerHashCache::new();
         let cache_system =
             match crate::fscache::MetadataCache::load_from_disk(metadata_path.as_path()) {
                 Ok(metadata) => {
@@ -170,6 +168,7 @@ impl DaemonServer {
                 index_writer_tx,
                 index_writer_shutdown,
                 artifacts_loaded: AtomicBool::new(false),
+                compiler_hash_cache_loaded: AtomicBool::new(false),
                 shutdown_event_logged: AtomicBool::new(false),
                 fingerprint: FingerprintManager::new(),
                 dep_graph_persisted: AtomicBool::new(false),
@@ -235,6 +234,22 @@ impl DaemonServer {
     pub fn dep_graph_setter(&self) -> DepGraphSetter {
         DepGraphSetter {
             state: Arc::clone(&self.state),
+        }
+    }
+
+    /// Hand out a loader that reads the compiler-hash cache from disk and
+    /// installs it into the running state. Issue #784 — moves the load
+    /// out of `bind_with_cache_dir`'s critical path so the readiness
+    /// lockfile fires before any disk I/O.
+    ///
+    /// Designed to be called once, immediately after `write_lock_file`,
+    /// inside a `tokio::task::spawn_blocking`. The handle captures the
+    /// on-disk snapshot path so the daemon binary doesn't need access
+    /// to the (private) `compiler_hash_cache_path` field.
+    pub fn compiler_hash_cache_loader(&self) -> CompilerHashCacheLoader {
+        CompilerHashCacheLoader {
+            state: Arc::clone(&self.state),
+            path: self.state.compiler_hash_cache_path.clone(),
         }
     }
 
@@ -352,5 +367,47 @@ impl DepGraphSetter {
             let mut guard = self.state.depgraph_load_warning.blocking_lock();
             *guard = Some(warning);
         }
+    }
+}
+
+/// Owned handle that loads the on-disk compiler-hash-cache snapshot and
+/// merges it into the running daemon's state.
+///
+/// Issue #784. Mirrors [`DepGraphSetter`]'s role for the depgraph: the
+/// daemon binary holds one across a `spawn_blocking` boundary and calls
+/// [`Self::load_and_install`] once after the readiness lockfile is
+/// written. The merge uses [`CompilerHashCache::merge_from`], which is
+/// `&self`, so concurrent `get_or_hash_with` readers either see no entry
+/// (cold-hash path) or a loaded entry (stat-verify guards correctness).
+pub struct CompilerHashCacheLoader {
+    state: Arc<SharedState>,
+    path: crate::core::NormalizedPath,
+}
+
+impl CompilerHashCacheLoader {
+    /// Load the on-disk compiler-hash-cache snapshot (if any) and merge
+    /// it into the live state.
+    ///
+    /// A missing or corrupt snapshot is logged at WARN and the live
+    /// cache is left empty (the stat-verify safety net in
+    /// `get_or_hash_with` keeps correctness either way). After the
+    /// merge — successful or empty — `compiler_hash_cache_loaded` is
+    /// set so `run.rs`'s shutdown path knows the in-memory state is
+    /// canonical and safe to save.
+    pub fn load_and_install(self) {
+        match CompilerHashCache::load_from_disk(self.path.as_path()) {
+            Ok(loaded) => {
+                self.state.compiler_hash_cache.merge_from(loaded);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %self.path.display(),
+                    "failed to load compiler hash cache, starting empty: {e}"
+                );
+            }
+        }
+        self.state
+            .compiler_hash_cache_loaded
+            .store(true, Ordering::Release);
     }
 }
