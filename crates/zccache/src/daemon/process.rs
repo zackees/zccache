@@ -12,6 +12,57 @@ pub(crate) const COMPILE_PRIORITY_ENV: &str = "ZCCACHE_COMPILE_PRIORITY";
 pub const ZCCACHE_COMPILE_PRIORITY_LINK: &str = "ZCCACHE_COMPILE_PRIORITY_LINK";
 const AUTO_PRIORITY_SATURATED_CPU_PERCENT: f32 = 95.0;
 
+/// Env vars that, when set to a truthy value, indicate the daemon is
+/// running on a CI runner rather than an interactive developer host.
+/// First match wins. Documented in the issue #813 epic.
+const CI_DETECT_ENV_VARS: &[&str] = &[
+    "GITHUB_ACTIONS",
+    "CI",
+    "BUILDKITE",
+    "CIRCLECI",
+    "GITLAB_CI",
+    "TF_BUILD",
+    "TEAMCITY_VERSION",
+    "JENKINS_URL",
+];
+
+/// True when the daemon appears to be running on a CI runner. Inspects
+/// the standard env-var set [`CI_DETECT_ENV_VARS`]. The check is cheap
+/// (a small number of `getenv` calls), safe to call per-resolution.
+///
+/// Returns the name of the detected env var as the second tuple element
+/// when CI is detected, so startup logs can surface the source.
+pub(crate) fn is_ci_host() -> Option<&'static str> {
+    is_ci_host_with_env(|name| std::env::var(name).ok())
+}
+
+/// Testable variant of [`is_ci_host`] that takes an env lookup closure
+/// so tests do not need to mutate the global process env.
+pub(crate) fn is_ci_host_with_env<F>(lookup: F) -> Option<&'static str>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    for &var in CI_DETECT_ENV_VARS {
+        if let Some(value) = lookup(var) {
+            if is_truthy(&value) {
+                return Some(var);
+            }
+        }
+    }
+    None
+}
+
+fn is_truthy(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    !matches!(
+        trimmed.to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off" | "n"
+    )
+}
+
 /// Priority policy for compiler/linker child processes owned by the daemon.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum CompilePriority {
@@ -83,6 +134,22 @@ impl CompilePriority {
         daemon_link_value: Option<&str>,
         daemon_compile_value: Option<&str>,
     ) -> Self {
+        Self::from_client_env_for_link_like_with_daemon_env_ci(
+            env,
+            is_link_like,
+            daemon_link_value,
+            daemon_compile_value,
+            is_ci_host().is_some(),
+        )
+    }
+
+    fn from_client_env_for_link_like_with_daemon_env_ci(
+        env: Option<&[(String, String)]>,
+        is_link_like: bool,
+        daemon_link_value: Option<&str>,
+        daemon_compile_value: Option<&str>,
+        is_ci: bool,
+    ) -> Self {
         if is_link_like {
             if let Some(value) = Self::client_env_value(env, ZCCACHE_COMPILE_PRIORITY_LINK) {
                 return Self::parse_or_warn(value, ZCCACHE_COMPILE_PRIORITY_LINK);
@@ -92,7 +159,11 @@ impl CompilePriority {
                 return Self::parse_or_warn(value, ZCCACHE_COMPILE_PRIORITY_LINK);
             }
 
-            return Self::Normal;
+            // Issue #813 / #810: linker priority is the single biggest UI
+            // win on Windows (link.exe is the worst single-thread hog).
+            // Interactive hosts default to `Low`; CI keeps the historical
+            // `Normal` so dedicated runners don't yield.
+            return if is_ci { Self::Normal } else { Self::Low };
         }
 
         Self::from_client_env_with_daemon_env(env, daemon_compile_value)
@@ -112,12 +183,16 @@ impl CompilePriority {
         let cpu_usage_percent = matches!(self, Self::Auto)
             .then(current_cpu_usage_percent)
             .flatten();
-        self.resolve_with_cpu_usage(cpu_usage_percent)
+        self.resolve_with_cpu_usage_and_ci(cpu_usage_percent, is_ci_host().is_some())
     }
 
-    fn resolve_with_cpu_usage(self, cpu_usage_percent: Option<f32>) -> CompilePriorityDecision {
+    fn resolve_with_cpu_usage_and_ci(
+        self,
+        cpu_usage_percent: Option<f32>,
+        is_ci: bool,
+    ) -> CompilePriorityDecision {
         let effective = match self {
-            Self::Auto => Self::auto_effective_priority(cpu_usage_percent),
+            Self::Auto => Self::auto_effective_priority(cpu_usage_percent, is_ci),
             priority => priority,
         };
         CompilePriorityDecision {
@@ -127,7 +202,23 @@ impl CompilePriority {
         }
     }
 
-    fn auto_effective_priority(cpu_usage_percent: Option<f32>) -> Self {
+    /// Resolves what `Auto` actually means for a given CPU sample + host
+    /// kind. Issue #813 / #810 changed the interactive default from
+    /// `Normal` to `Low` — see the meta for the design discussion.
+    ///
+    /// - **CI host** (any env in [`CI_DETECT_ENV_VARS`] truthy): the
+    ///   historical behavior — `Normal` until system CPU is ≥ 95%, then
+    ///   `Low`. CI runners are dedicated to compilation; no foreground
+    ///   workload to yield to.
+    /// - **Interactive host** (no CI env): always `Low`. The previous
+    ///   "Normal until 95%" heuristic fired too late to deliver the UI
+    ///   responsiveness the env-var was created to enable — the first
+    ///   wave of rustcs (the ones that hurt UI most) all spawned at
+    ///   `Normal` and pushed CPU to 100% before the demotion kicked in.
+    fn auto_effective_priority(cpu_usage_percent: Option<f32>, is_ci: bool) -> Self {
+        if !is_ci {
+            return Self::Low;
+        }
         match cpu_usage_percent {
             Some(cpu) if cpu >= AUTO_PRIORITY_SATURATED_CPU_PERCENT => Self::Low,
             Some(_) | None => Self::Normal,
@@ -611,31 +702,67 @@ mod tests {
     }
 
     #[test]
-    fn auto_priority_uses_normal_until_cpu_is_saturated() {
+    fn ci_auto_priority_uses_normal_until_cpu_is_saturated() {
+        // CI host (is_ci=true) preserves the historical heuristic:
+        // Normal until 95% CPU, then Low. CI runners are dedicated to
+        // compilation; no foreground workload to yield to.
+        let is_ci = true;
         assert_eq!(
-            CompilePriority::auto_effective_priority(None),
+            CompilePriority::auto_effective_priority(None, is_ci),
             CompilePriority::Normal
         );
         assert_eq!(
-            CompilePriority::auto_effective_priority(Some(94.9)),
+            CompilePriority::auto_effective_priority(Some(94.9), is_ci),
             CompilePriority::Normal
         );
         assert_eq!(
-            CompilePriority::auto_effective_priority(Some(95.0)),
+            CompilePriority::auto_effective_priority(Some(95.0), is_ci),
             CompilePriority::Low
         );
         assert_eq!(
-            CompilePriority::auto_effective_priority(Some(100.0)),
+            CompilePriority::auto_effective_priority(Some(100.0), is_ci),
             CompilePriority::Low
         );
     }
 
     #[test]
-    fn auto_priority_decision_records_effective_priority() {
-        let decision = CompilePriority::Auto.resolve_with_cpu_usage(Some(96.0));
+    fn interactive_auto_priority_always_resolves_to_low() {
+        // Issue #813 / #810: interactive hosts default to Low regardless
+        // of current CPU usage — the historical 95% gate fired too late
+        // to deliver the responsiveness the env-var ostensibly enables.
+        let is_ci = false;
+        assert_eq!(
+            CompilePriority::auto_effective_priority(None, is_ci),
+            CompilePriority::Low
+        );
+        assert_eq!(
+            CompilePriority::auto_effective_priority(Some(0.0), is_ci),
+            CompilePriority::Low
+        );
+        assert_eq!(
+            CompilePriority::auto_effective_priority(Some(50.0), is_ci),
+            CompilePriority::Low
+        );
+        assert_eq!(
+            CompilePriority::auto_effective_priority(Some(100.0), is_ci),
+            CompilePriority::Low
+        );
+    }
+
+    #[test]
+    fn auto_priority_decision_records_effective_priority_on_ci() {
+        let decision = CompilePriority::Auto.resolve_with_cpu_usage_and_ci(Some(96.0), true);
         assert_eq!(decision.requested, CompilePriority::Auto);
         assert_eq!(decision.effective, CompilePriority::Low);
         assert_eq!(decision.cpu_usage_percent, Some(96.0));
+    }
+
+    #[test]
+    fn auto_priority_decision_low_on_interactive_regardless_of_cpu() {
+        let decision = CompilePriority::Auto.resolve_with_cpu_usage_and_ci(Some(10.0), false);
+        assert_eq!(decision.requested, CompilePriority::Auto);
+        assert_eq!(decision.effective, CompilePriority::Low);
+        assert_eq!(decision.cpu_usage_percent, Some(10.0));
     }
 
     #[test]
@@ -706,18 +833,77 @@ mod tests {
     }
 
     #[test]
-    fn link_like_compile_priority_defaults_to_normal_without_link_override() {
+    fn link_like_compile_priority_on_ci_defaults_to_normal_without_link_override() {
         let env = vec![(COMPILE_PRIORITY_ENV.to_string(), "idle".to_string())];
 
         assert_eq!(
-            CompilePriority::from_client_env_for_link_like_with_daemon_env(
+            CompilePriority::from_client_env_for_link_like_with_daemon_env_ci(
                 Some(&env),
                 true,
                 None,
-                None
+                None,
+                true, // is_ci
             ),
             CompilePriority::Normal
         );
+    }
+
+    #[test]
+    fn link_like_compile_priority_on_interactive_defaults_to_low_without_link_override() {
+        // Issue #813 / #810: link.exe is the single worst single-thread
+        // hog on Windows MSVC. Interactive hosts demote it to Low so the
+        // late-build link step doesn't lock up the UI.
+        let env = vec![(COMPILE_PRIORITY_ENV.to_string(), "idle".to_string())];
+
+        assert_eq!(
+            CompilePriority::from_client_env_for_link_like_with_daemon_env_ci(
+                Some(&env),
+                true,
+                None,
+                None,
+                false, // interactive
+            ),
+            CompilePriority::Low
+        );
+    }
+
+    #[test]
+    fn is_ci_host_detects_known_env_vars() {
+        let make_lookup = |hit: &'static str| {
+            move |name: &str| {
+                if name == hit {
+                    Some("true".to_string())
+                } else {
+                    None
+                }
+            }
+        };
+        for var in CI_DETECT_ENV_VARS {
+            let detected = is_ci_host_with_env(make_lookup(var));
+            assert_eq!(
+                detected,
+                Some(*var),
+                "is_ci_host_with_env failed to detect {var}",
+            );
+        }
+    }
+
+    #[test]
+    fn is_ci_host_treats_falsy_values_as_interactive() {
+        for falsy in ["0", "false", "FALSE", "no", "off", "n", "", "   "] {
+            let lookup = |_name: &str| Some(falsy.to_string());
+            assert_eq!(
+                is_ci_host_with_env(lookup),
+                None,
+                "value {falsy:?} should NOT be treated as CI",
+            );
+        }
+    }
+
+    #[test]
+    fn is_ci_host_returns_none_when_no_env_set() {
+        let lookup = |_name: &str| None;
+        assert_eq!(is_ci_host_with_env(lookup), None);
     }
 
     #[test]

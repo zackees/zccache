@@ -104,6 +104,23 @@ impl DaemonServer {
         // keys correct either way.
         let cache_system = CacheSystem::new();
 
+        // Issue #813 / #810: log the effective compile-priority default
+        // policy at daemon start so the behaviour is observable without
+        // strace. Interactive hosts default to `Low` for both compile
+        // and link children; CI runners (detected via well-known env
+        // vars) preserve the historical `Normal` default.
+        match crate::daemon::process::is_ci_host() {
+            Some(env_var) => tracing::info!(
+                ci_env = env_var,
+                "[zccache] CI detected via {env_var} — compile/link priority defaults to Normal \
+                 (set ZCCACHE_COMPILE_PRIORITY to override)",
+            ),
+            None => tracing::info!(
+                "[zccache] interactive host — compile/link priority defaults to Low \
+                 (set ZCCACHE_COMPILE_PRIORITY to override)",
+            ),
+        }
+
         Ok(Self {
             listener,
             shutdown: Arc::clone(&shutdown),
