@@ -72,15 +72,15 @@ zccache-fingerprint = { path = "crates/zccache-fingerprint" }
 notify = { path = "vendor/notify" }
 # Cross-repo dev pin per zccache#842 (broker-v2 burn-down): the
 # upstream issues running-process#517 / #518 / #519 are being fixed
-# locally in `.extern-repos/running-process` so zccache can compile +
-# test against the patched copy before upstream cuts a new release.
-# Uses a file:// git URL so running-process keeps its own workspace
-# context (a path-dep would collapse it into zccache's workspace and
-# miss inherited deps like `rusqlite`). Iteration cycle: edit in
-# `.extern-repos/running-process`, commit there, then
-# `soldr cargo update -p running-process` in zccache. Revert to the
-# published version (4.5.6+) once the fixes ship upstream.
-running-process = { git = "file:///C:/Users/niteris/dev/zccache/.extern-repos/running-process" }
+# on the `fix/broker-v2-hardening-rp517-518-519` branch tracked in
+# zackees/running-process PR #520. Pin to a public git+rev on that
+# branch so CI runners (which don't have the maintainer's
+# `.extern-repos/` clone) can fetch the same source. Iteration cycle:
+# edit in `.extern-repos/running-process`, push to the PR branch,
+# bump this `rev` to the new tip, `soldr cargo update -p running-process`
+# in zccache. Revert to the published version (4.5.6+) once
+# running-process PR #520 merges and the next release ships.
+running-process = { git = "https://github.com/zackees/running-process", rev = "ca0a7ad219b16af0b01f1055c2970acc1dca3e2c" }
 
 [workspace.metadata.dylint]
 libraries = [{ path = "dylints/*" }]

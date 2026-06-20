@@ -2445,7 +2445,7 @@ dependencies = [
 [[package]]
 name = "running-process"
 version = "4.5.5"
-source = "git+file:///C:/Users/niteris/dev/zccache/.extern-repos/running-process#baf2d60b73a14e375771231d73a5d9584c7d8b0d"
+source = "git+https://github.com/zackees/running-process?rev=ca0a7ad219b16af0b01f1055c2970acc1dca3e2c#ca0a7ad219b16af0b01f1055c2970acc1dca3e2c"
 dependencies = [
  "anyhow",
  "blake3",
