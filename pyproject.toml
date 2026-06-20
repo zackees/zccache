@@ -7,7 +7,15 @@ requires-python = ">=3.10"
 dependencies = []
 
 [dependency-groups]
-dev = ["pillow>=11.0"]
+dev = [
+    "pillow>=11.0",
+    # Used by `cpp_lint` integration tests to fetch clang-query / IWYU
+    # on demand. The package is small and the install lives under
+    # ~/.clang-tool-chain, so it doesn't pollute the build dir.
+    "clang-tool-chain-bins>=0.1",
+    # Used by tests + the cpp_lint TOML round-trip path.
+    "tomli_w>=1.0; python_version < '3.11'",
+]
 
 [project.scripts]
 run_zccache = "ci.soldr:run_zccache"
@@ -20,11 +28,12 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["ci", "zccache", "zccache.fingerprint", "zccache.watcher"]
+packages = ["ci", "zccache", "zccache.cpp_lint", "zccache.fingerprint", "zccache.watcher"]
 
 [tool.setuptools.package-dir]
 ci = "ci"
 zccache = "python/zccache"
+"zccache.cpp_lint" = "python/zccache/cpp_lint"
 "zccache.fingerprint" = "python/zccache/fingerprint"
 "zccache.watcher" = "python/zccache/watcher"
 

@@ -2,8 +2,21 @@
 
 from __future__ import annotations
 
-from zccache import client, downloader, fingerprint, ino, watcher
+from zccache import client, cpp_lint, downloader, fingerprint, ino, watcher
 from zccache.client import SessionStartResult, SessionStats, ZcCacheClient
+from zccache.cpp_lint import (
+    AstQuery,
+    CacheStatus,
+    IwyuItem,
+    LintInput,
+    LintInputError,
+    MissingClangPolicy,
+    ResultFilter,
+    ResultItem,
+    ResultKind,
+    Summary,
+    cpp_lint as cpp_lint_run,
+)
 from zccache.downloader import (
     DownloadApi,
     DownloadDaemonStatus,
@@ -30,6 +43,8 @@ from zccache.watcher import (
 
 __all__ = [
     "Api",
+    "AstQuery",
+    "CacheStatus",
     "DebouncedFileWatcherProcess",
     "DownloadApi",
     "DownloadDaemonStatus",
@@ -45,11 +60,21 @@ __all__ = [
     "FingerprintManager",
     "FingerprintResult",
     "InoConvertResult",
+    "IwyuItem",
+    "LintInput",
+    "LintInputError",
+    "MissingClangPolicy",
+    "ResultFilter",
+    "ResultItem",
+    "ResultKind",
     "SessionStartResult",
     "SessionStats",
+    "Summary",
     "ZcCacheClient",
     "client",
     "convert_ino",
+    "cpp_lint",
+    "cpp_lint_run",
     "downloader",
     "fingerprint",
     "ino",
