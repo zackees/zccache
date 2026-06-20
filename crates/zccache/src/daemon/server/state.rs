@@ -127,6 +127,14 @@ pub(super) struct SharedState {
     /// Limits concurrent disk persistence tasks to prevent memory pileup
     /// when disk I/O is slow and compilation requests are fast.
     pub(super) persist_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Issue #813 / #816 — global compile-concurrency cap.
+    /// `Some(sem)` enforces an upper bound on the number of compiler
+    /// child processes the daemon will spawn at once across ALL
+    /// clients; cap is `max(1, num_cpus - 1)` on interactive hosts,
+    /// `num_cpus` on CI, overridable via `ZCCACHE_MAX_PARALLEL_COMPILES`.
+    /// `None` when the override is `0` (or `unlimited`) — preserves the
+    /// historical uncapped behavior for users who want it.
+    pub(super) compile_concurrency: Option<Arc<tokio::sync::Semaphore>>,
     /// In-memory artifact index (bincode blob-backed) for fast startup and
     /// persistence. Hot-path reads and writes go through `state.artifacts`;
     /// this store holds the same data and snapshots it to disk periodically.

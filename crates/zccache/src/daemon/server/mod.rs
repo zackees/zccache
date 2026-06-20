@@ -79,6 +79,7 @@ pub struct DaemonServer {
 mod cache_trim;
 mod cached_artifact;
 mod client_env;
+mod compile_concurrency;
 mod compiler_hash;
 mod connection;
 mod handle_clear;

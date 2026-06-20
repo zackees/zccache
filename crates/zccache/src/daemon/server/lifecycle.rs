@@ -112,7 +112,8 @@ impl DaemonServer {
         // strace. Interactive hosts default to `Low` for both compile
         // and link children; CI runners (detected via well-known env
         // vars) preserve the historical `Normal` default.
-        match crate::daemon::process::is_ci_host() {
+        let ci_env = crate::daemon::process::is_ci_host();
+        match ci_env {
             Some(env_var) => tracing::info!(
                 ci_env = env_var,
                 "[zccache] CI detected via {env_var} — compile/link priority defaults to Normal \
@@ -121,6 +122,24 @@ impl DaemonServer {
             None => tracing::info!(
                 "[zccache] interactive host — compile/link priority defaults to Low \
                  (set ZCCACHE_COMPILE_PRIORITY to override)",
+            ),
+        }
+
+        // Issue #813 / #816: global compile-concurrency cap. Wraps all
+        // daemon-spawned compiler children in a tokio semaphore so the
+        // box can't be saturated by M cargo invocations each asking for
+        // num_cpus rustcs (M*N explosion).
+        let compile_concurrency =
+            crate::daemon::server::compile_concurrency::resolve_pool(ci_env.is_some());
+        match &compile_concurrency {
+            Some(sem) => tracing::info!(
+                cap = sem.available_permits(),
+                "[zccache] compile concurrency capped at {} via in-process semaphore \
+                 (set ZCCACHE_MAX_PARALLEL_COMPILES to override; =0 to disable)",
+                sem.available_permits()
+            ),
+            None => tracing::info!(
+                "[zccache] compile concurrency uncapped (ZCCACHE_MAX_PARALLEL_COMPILES=0)",
             ),
         }
 
@@ -170,6 +189,7 @@ impl DaemonServer {
                 )),
                 in_flight_bytes: AtomicUsize::new(0),
                 persist_semaphore: Arc::new(tokio::sync::Semaphore::new(persist_workers_default())),
+                compile_concurrency,
                 artifact_store,
                 index_writer_tx,
                 index_writer_shutdown,

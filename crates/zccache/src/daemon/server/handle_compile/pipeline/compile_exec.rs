@@ -188,12 +188,55 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
             None
         };
 
+    // Issue #813 / #816: acquire a compile-concurrency permit before
+    // spawning the compiler. The semaphore (when present — None means
+    // ZCCACHE_MAX_PARALLEL_COMPILES=0 opt-out) gates total in-flight
+    // compiler children across ALL clients sharing this daemon.
+    // Permit is held for the duration of the spawn + wait; drops on
+    // scope exit, freeing the slot for the next queued request.
+    //
+    // The `compile_start` / `compile_end` log events are deliberately
+    // structured so an integration test (sub-task #817) can parse the
+    // log and assert no two compile intervals overlap when the cap is
+    // 1 (sub-task #5 of the meta).
+    let client_pid = lineage.client_pid.unwrap_or(0);
+    let _permit = if let Some(sem) = state.compile_concurrency.as_ref() {
+        let available_before = sem.available_permits();
+        let permit = Arc::clone(sem).acquire_owned().await.ok();
+        tracing::info!(
+            event = "compile_start",
+            client_pid,
+            available_before,
+            "compile_start client_pid={client_pid} available_before={available_before}",
+        );
+        permit
+    } else {
+        None
+    };
+    let compile_span_start = std::time::Instant::now();
+
     let result = crate::daemon::process::tokio_command_output_with_priority(
         &mut cmd,
         compiler_priority_decision.effective,
     )
     .await;
     let compiler_process_ns = t_compiler_process.elapsed().as_nanos() as u64;
+
+    if state.compile_concurrency.is_some() {
+        let duration_ns = compile_span_start.elapsed().as_nanos() as u64;
+        let exit_code = result
+            .as_ref()
+            .ok()
+            .and_then(|o| o.status.code())
+            .unwrap_or(-1);
+        tracing::info!(
+            event = "compile_end",
+            client_pid,
+            duration_ns,
+            exit_code,
+            "compile_end client_pid={client_pid} duration_ns={duration_ns} exit_code={exit_code}",
+        );
+    }
 
     let output = match result {
         Ok(o) => o,
