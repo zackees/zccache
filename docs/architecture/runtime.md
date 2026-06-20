@@ -167,6 +167,8 @@ On startup, the daemon attempts to load the snapshot:
 - **Success:** the in-memory graph is populated from the file and `DaemonStatus.dep_graph_persisted` reports `true`. CI runs that restore `<cache_dir>` from a cache store skip the cold-seed compile entirely.
 - **Missing file / `VersionMismatch` / corrupt bytes:** a warning is logged and the daemon starts with an empty graph (the pre-fix behavior).
 
+The snapshot load runs in a background blocking task after the IPC endpoint and readiness lockfile are available, so daemon startup stays fast. Compile handlers gate their first depgraph registration/check on that background task completing; otherwise a warm daemon can race the empty default graph and classify the first lookup as `cold_skip` before the persisted graph is installed.
+
 The `dep_graph_persisted` flag is also flipped to `true` when a periodic or shutdown save completes successfully, so a daemon that started cold but has since flushed reports itself as persisted. `zccache status` surfaces this as either `vN, persisted, X.YZ MB on disk` or `vN, not persisted`.
 
 The daemon writes its readiness lock file before the potentially expensive disk

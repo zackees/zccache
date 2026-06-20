@@ -634,3 +634,63 @@ impl MetadataCacheLoader {
             .store(true, Ordering::Release);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_ctx(source: &str) -> crate::depgraph::CompileContext {
+        crate::depgraph::CompileContext {
+            source_file: source.into(),
+            include_search: crate::depgraph::IncludeSearchPaths::default(),
+            defines: Vec::new(),
+            flags: Vec::new(),
+            force_includes: Vec::new(),
+            unknown_flags: Vec::new(),
+        }
+    }
+
+    fn dummy_hash(path: &std::path::Path) -> Option<crate::hash::ContentHash> {
+        Some(crate::hash::hash_bytes(path.to_string_lossy().as_bytes()))
+    }
+
+    #[tokio::test]
+    async fn depgraph_load_gate_waits_until_loaded_graph_is_visible() {
+        let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+        let state = Arc::clone(&server.state);
+        let setter = server.dep_graph_setter();
+
+        let graph = crate::depgraph::DepGraph::new();
+        let ctx = make_ctx("/src/warm.cc");
+        let key = graph.register(ctx);
+        graph.update(
+            &key,
+            crate::depgraph::ScanResult {
+                resolved: Vec::new(),
+                unresolved: Vec::new(),
+                has_computed: false,
+            },
+            dummy_hash,
+        );
+
+        server.mark_dep_graph_load_pending();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            setter.install(Some(graph), None);
+        });
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            state.dep_graph_load_notify.notified(),
+        )
+        .await
+        .expect("depgraph load notify should fire");
+        handle.join().unwrap();
+
+        assert!(
+            !state.dep_graph.load().is_cold(&key),
+            "first compile must see the loaded warm graph instead of the empty default"
+        );
+        assert!(state.dep_graph_persisted.load(Ordering::Acquire));
+    }
+}
