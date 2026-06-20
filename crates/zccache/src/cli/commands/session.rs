@@ -2,6 +2,7 @@
 
 use crate::core::NormalizedPath;
 use std::ffi::OsString;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -364,6 +365,13 @@ pub(crate) fn print_session_stats_human(
     if stats.time_saved_ms > 0 {
         eprintln!("  Time saved: ~{}", format_duration_ms(stats.time_saved_ms));
     }
+    if !crate::core::defender::is_quiet_env() {
+        let depgraph_exists = crate::depgraph::depgraph_file_path().exists();
+        let verbose = summary_verbose_env();
+        for warning in session_summary_warnings(stats, depgraph_exists, verbose) {
+            eprintln!("  {}", warning.render(std::io::stderr().is_terminal()));
+        }
+    }
 }
 
 pub(crate) fn print_session_stats_json(session_id: &str, stats: &crate::protocol::SessionStats) {
@@ -431,6 +439,95 @@ pub(crate) fn session_stats_json(
         "lookup_outcomes": &stats.lookup_outcomes,
         "phase_profile": phase_profile,
     })
+}
+
+const WASTED_DEPGRAPH_HIT_WARN_PCT: f64 = 10.0;
+const COLD_SKIP_WARN_PCT: f64 = 50.0;
+const CATASTROPHIC_HIT_RATE_WARN_PCT: f64 = 5.0;
+const CATASTROPHIC_MIN_COMPILATIONS: u64 = 50;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionSummaryWarning {
+    message: String,
+}
+
+impl SessionSummaryWarning {
+    fn new(message: String) -> Self {
+        Self { message }
+    }
+
+    pub(crate) fn render(&self, color: bool) -> String {
+        if color {
+            format!("\x1b[33mWARNING: {}\x1b[0m", self.message)
+        } else {
+            format!("WARNING: {}", self.message)
+        }
+    }
+}
+
+pub(crate) fn session_summary_warnings(
+    stats: &crate::protocol::SessionStats,
+    depgraph_exists: bool,
+    verbose: bool,
+) -> Vec<SessionSummaryWarning> {
+    let outcomes = &stats.lookup_outcomes;
+    let total_lookups = outcomes
+        .depgraph_hit_artifact_hit
+        .saturating_add(outcomes.depgraph_hit_artifact_miss)
+        .saturating_add(outcomes.depgraph_cold_skip)
+        .saturating_add(outcomes.depgraph_other_miss.values().copied().sum::<u64>());
+    let mut warnings = Vec::new();
+
+    if let Some(pct) = percentage(outcomes.depgraph_hit_artifact_miss, total_lookups) {
+        if pct > WASTED_DEPGRAPH_HIT_WARN_PCT {
+            warnings.push(SessionSummaryWarning::new(format!(
+                "{pct:.1}% of depgraph hits did not produce an artifact fetch; \
+                 the cache is degraded (see #680 / #796 SI-3)"
+            )));
+        }
+    }
+
+    if depgraph_exists {
+        if let Some(pct) = percentage(outcomes.depgraph_cold_skip, total_lookups) {
+            if pct > COLD_SKIP_WARN_PCT {
+                warnings.push(SessionSummaryWarning::new(format!(
+                    "{pct:.1}% of lookups returned cold_skip despite a populated depgraph \
+                     on disk; the warm-cache classifier may be regressed (see #320 / #796 SI-2)"
+                )));
+            }
+        }
+
+        let cacheable = stats.hits.saturating_add(stats.misses);
+        if verbose && stats.compilations > CATASTROPHIC_MIN_COMPILATIONS && cacheable > 0 {
+            let hit_rate = stats.hits as f64 / cacheable as f64 * 100.0;
+            if hit_rate < CATASTROPHIC_HIT_RATE_WARN_PCT {
+                warnings.push(SessionSummaryWarning::new(format!(
+                    "catastrophic hit rate ({hit_rate:.1}%) over {} compilations; \
+                     cache may be silently dead; capture last-session.log and file a bug",
+                    stats.compilations
+                )));
+            }
+        }
+    }
+
+    warnings
+}
+
+fn percentage(part: u64, total: u64) -> Option<f64> {
+    (total > 0).then(|| part as f64 / total as f64 * 100.0)
+}
+
+fn summary_verbose_env() -> bool {
+    std::env::var("ZCCACHE_SUMMARY_VERBOSE")
+        .ok()
+        .as_deref()
+        .is_some_and(|value| {
+            let value = value.trim();
+            !value.is_empty()
+                && value != "0"
+                && !value.eq_ignore_ascii_case("false")
+                && !value.eq_ignore_ascii_case("no")
+        })
 }
 
 pub(crate) fn phase_profile_summary_json(

@@ -8,7 +8,7 @@ use super::super::args::{Cli, Commands, RustPlanBackendArg, RustPlanCommands, KN
 use super::super::rust_plan::rust_plan_gha_version;
 use super::super::session::{
     session_stats_error_json, session_stats_json, session_stats_unavailable_json,
-    SessionStartPrivateOptions,
+    session_summary_warnings, SessionStartPrivateOptions,
 };
 
 #[test]
@@ -156,6 +156,92 @@ fn rust_plan_session_stats_json_separates_compile_cache_stats() {
         json["lookup_outcomes"]["depgraph_other_miss"]["headers_changed"],
         1
     );
+}
+
+#[test]
+fn session_summary_warning_thresholds_detect_degraded_cache() {
+    let mut stats = session_stats_fixture();
+    stats.lookup_outcomes.depgraph_hit_artifact_hit = 80;
+    stats.lookup_outcomes.depgraph_hit_artifact_miss = 20;
+
+    let warnings = session_summary_warnings(&stats, false, false);
+    assert_eq!(warnings.len(), 1);
+    let rendered = warnings[0].render(false);
+    assert!(rendered.starts_with("WARNING: 20.0% of depgraph hits"));
+    assert!(rendered.contains("#680 / #796 SI-3"));
+    assert_eq!(
+        warnings[0].render(true),
+        format!("\x1b[33m{rendered}\x1b[0m")
+    );
+}
+
+#[test]
+fn session_summary_warning_thresholds_detect_cold_skip_with_depgraph() {
+    let mut stats = session_stats_fixture();
+    stats.lookup_outcomes.depgraph_hit_artifact_hit = 10;
+    stats.lookup_outcomes.depgraph_cold_skip = 60;
+    stats.lookup_outcomes.depgraph_other_miss =
+        [("headers_changed".to_string(), 10)].into_iter().collect();
+
+    let warnings = session_summary_warnings(&stats, true, false);
+    assert_eq!(warnings.len(), 1);
+    let rendered = warnings[0].render(false);
+    assert!(rendered.starts_with("WARNING: 75.0% of lookups returned cold_skip"));
+    assert!(rendered.contains("#320 / #796 SI-2"));
+
+    assert!(
+        session_summary_warnings(&stats, false, false).is_empty(),
+        "cold_skip warning requires a populated depgraph on disk"
+    );
+}
+
+#[test]
+fn session_summary_warning_thresholds_gate_catastrophic_hit_rate_on_verbose() {
+    let mut stats = session_stats_fixture();
+    stats.compilations = 80;
+    stats.hits = 2;
+    stats.misses = 78;
+
+    assert!(session_summary_warnings(&stats, true, false).is_empty());
+
+    let warnings = session_summary_warnings(&stats, true, true);
+    assert_eq!(warnings.len(), 1);
+    let rendered = warnings[0].render(false);
+    assert!(rendered.starts_with("WARNING: catastrophic hit rate (2.5%)"));
+    assert!(rendered.contains("over 80 compilations"));
+}
+
+#[test]
+fn session_summary_warning_thresholds_stay_quiet_for_healthy_session() {
+    let mut stats = session_stats_fixture();
+    stats.compilations = 100;
+    stats.hits = 90;
+    stats.misses = 10;
+    stats.lookup_outcomes.depgraph_hit_artifact_hit = 90;
+    stats.lookup_outcomes.depgraph_hit_artifact_miss = 1;
+    stats.lookup_outcomes.depgraph_cold_skip = 2;
+    stats.lookup_outcomes.depgraph_other_miss =
+        [("headers_changed".to_string(), 7)].into_iter().collect();
+
+    assert!(session_summary_warnings(&stats, true, true).is_empty());
+}
+
+fn session_stats_fixture() -> crate::protocol::SessionStats {
+    crate::protocol::SessionStats {
+        duration_ms: 1000,
+        compilations: 10,
+        hits: 7,
+        misses: 3,
+        non_cacheable: 0,
+        errors: 0,
+        errors_cached: 0,
+        time_saved_ms: 0,
+        unique_sources: 8,
+        bytes_read: 0,
+        bytes_written: 0,
+        lookup_outcomes: crate::protocol::LookupOutcomes::default(),
+        phase_profile: None,
+    }
 }
 
 #[test]
