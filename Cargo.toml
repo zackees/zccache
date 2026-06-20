@@ -70,17 +70,15 @@ zccache-fingerprint = { path = "crates/zccache-fingerprint" }
 # 2. Report start_read failure (watcher silently dying) as error
 [patch.crates-io]
 notify = { path = "vendor/notify" }
-# Cross-repo dev pin per zccache#842 (broker-v2 burn-down): the
-# upstream issues running-process#517 / #518 / #519 are being fixed
-# on the `fix/broker-v2-hardening-rp517-518-519` branch tracked in
-# zackees/running-process PR #520. Pin to a public git+rev on that
-# branch so CI runners (which don't have the maintainer's
-# `.extern-repos/` clone) can fetch the same source. Iteration cycle:
-# edit in `.extern-repos/running-process`, push to the PR branch,
-# bump this `rev` to the new tip, `soldr cargo update -p running-process`
-# in zccache. Revert to the published version (4.5.6+) once
-# running-process PR #520 merges and the next release ships.
-running-process = { git = "https://github.com/zackees/running-process", rev = "ca0a7ad219b16af0b01f1055c2970acc1dca3e2c" }
+# Cross-repo dev pin per zccache#842 (broker-v2 burn-down): the upstream
+# issues running-process#517 / #518 / #519 shipped via zackees/running-process
+# PR #520 (squash-merged 2026-06-20). zccache stays on a git+rev pin to
+# running-process `main` until a 4.5.6+ release ships, because the
+# published 4.5.5 line is the pre-#518 `BrokerV2Error::Refused` shape
+# (buried `details: Box<Refused>` instead of top-level `retry_after_ms`)
+# which `BrokerRefusal::from_brokerv2_error` no longer compiles against.
+# Revert to the published version line once running-process cuts 4.5.6+.
+running-process = { git = "https://github.com/zackees/running-process", rev = "502040adb1ce8366d3042edd80c48caac9ff7968" }
 
 [workspace.metadata.dylint]
 libraries = [{ path = "dylints/*" }]
