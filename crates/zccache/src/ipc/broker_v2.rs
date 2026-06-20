@@ -31,11 +31,16 @@ use running_process::broker::client_v2::{self, BrokerV2Error, ClientSession};
 /// otherwise. The opened stream is closed immediately — this is a
 /// liveness probe, not a connection acquisition.
 pub fn probe_local_socket(endpoint: &str) -> std::io::Result<()> {
+    // Aligned with upstream `running_process::broker::server::connection::
+    // local_socket_name`: pass the endpoint string verbatim on both
+    // platforms. The earlier `strip_prefix(r"\\.\pipe\")` on Windows was
+    // a parallel implementation that happened to work today (since
+    // `to_ns_name` accepts both prefixed and bare names) but would rot
+    // if `interprocess` tightened `GenericNamespaced` parsing.
     #[cfg(windows)]
     let name = {
         use interprocess::local_socket::{GenericNamespaced, ToNsName};
-        let bare = endpoint.strip_prefix(r"\\.\pipe\").unwrap_or(endpoint);
-        ToNsName::to_ns_name::<GenericNamespaced>(bare)?
+        ToNsName::to_ns_name::<GenericNamespaced>(endpoint)?
     };
 
     #[cfg(unix)]
