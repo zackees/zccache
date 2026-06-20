@@ -326,19 +326,31 @@ impl BrokerRefusal {
     }
 
     /// Slice 12 of #782: classify a v2 broker error as a `BrokerRefusal`.
+    /// Slice 15 of #500: read the `ErrorCode` off the `Refused` payload
+    /// and map per-variant, matching the v1 `from_kind` resolution.
     ///
     /// Returns `Some(BrokerRefusal)` only when the v2 broker explicitly
     /// declined the Hello — IO / framing / sid errors return `None`
-    /// (the caller falls back to the direct connect path). The v2
-    /// `Refused` payload carries the same `ErrorCode` enum as v1; until
-    /// later slices add a richer error-code mapping, every refusal
-    /// classifies as `BrokerRefusal::Other` and the `details` payload
-    /// is available to callers via the original `BrokerV2Error::Refused`
-    /// variant for logging.
+    /// (the caller falls back to the direct connect path). Unknown
+    /// `ErrorCode` integer values fall back to `BrokerRefusal::Other`
+    /// rather than `None` because the broker DID respond with a
+    /// `Refused` frame — the classification is still a "refusal," just
+    /// one this version of zccache doesn't have a named bucket for.
     pub fn from_brokerv2_error(err: &running_process::broker::client_v2::BrokerV2Error) -> Option<Self> {
+        use running_process::broker::client_v2::BrokerV2Error;
+        use running_process::broker::protocol::ErrorCode;
+
         match err {
-            running_process::broker::client_v2::BrokerV2Error::Refused { .. } => {
-                Some(Self::Other)
+            BrokerV2Error::Refused { details, .. } => {
+                let code = ErrorCode::try_from(details.code).unwrap_or(ErrorCode::Unspecified);
+                Some(match code {
+                    ErrorCode::ErrorVersionUnsupported => Self::VersionUnsupported,
+                    ErrorCode::ErrorVersionBlocked => Self::VersionBlocked,
+                    ErrorCode::ErrorServiceUnknown => Self::ServiceUnknown,
+                    ErrorCode::ErrorRateLimited => Self::RateLimited,
+                    ErrorCode::ErrorShuttingDown => Self::ShuttingDown,
+                    _ => Self::Other,
+                })
             }
             _ => None,
         }
@@ -742,25 +754,67 @@ mod tests {
         }
     }
 
-    /// Slice 12 of #782: `from_brokerv2_error` returns `Some(Other)` for
-    /// a `Refused` payload and `None` for transport-layer errors. The
-    /// fine-grained `ErrorCode` mapping lands in a later slice once
-    /// callers actually use the v2 path.
+    /// Slice 12 of #782: `from_brokerv2_error` returns `Some(...)` for
+    /// a `Refused` payload and `None` for transport-layer errors.
+    /// Slice 15 of #500: each `ErrorCode` variant maps to its named
+    /// `BrokerRefusal` bucket; unknown codes fall through to `Other`.
     #[test]
     fn from_brokerv2_error_classifies_refused_vs_dial() {
         use running_process::broker::client_v2::BrokerV2Error;
-        use running_process::broker::protocol::Refused;
+        use running_process::broker::protocol::{ErrorCode, Refused};
 
-        let refused = BrokerV2Error::Refused {
+        fn refused_with(code: ErrorCode) -> BrokerV2Error {
+            BrokerV2Error::Refused {
+                reason: format!("{code:?}"),
+                details: Box::new(Refused {
+                    code: code as i32,
+                    ..Refused::default()
+                }),
+            }
+        }
+
+        for (code, expected) in [
+            (ErrorCode::ErrorVersionUnsupported, BrokerRefusal::VersionUnsupported),
+            (ErrorCode::ErrorVersionBlocked, BrokerRefusal::VersionBlocked),
+            (ErrorCode::ErrorServiceUnknown, BrokerRefusal::ServiceUnknown),
+            (ErrorCode::ErrorRateLimited, BrokerRefusal::RateLimited),
+            (ErrorCode::ErrorShuttingDown, BrokerRefusal::ShuttingDown),
+            (ErrorCode::ErrorPeerRejected, BrokerRefusal::Other),
+            (ErrorCode::Unspecified, BrokerRefusal::Other),
+        ] {
+            assert_eq!(
+                BrokerRefusal::from_brokerv2_error(&refused_with(code)),
+                Some(expected),
+                "expected {expected:?} for {code:?}"
+            );
+        }
+
+        // Default Refused (code = 0 = ErrorUnspecified) → Other.
+        let default_refused = BrokerV2Error::Refused {
             reason: "test".to_string(),
             details: Box::new(Refused::default()),
         };
         assert_eq!(
-            BrokerRefusal::from_brokerv2_error(&refused),
+            BrokerRefusal::from_brokerv2_error(&default_refused),
             Some(BrokerRefusal::Other),
-            "Refused should classify"
+            "default Refused should classify as Other"
         );
 
+        // Unknown integer code → falls back to Other (still a refusal).
+        let unknown_code = BrokerV2Error::Refused {
+            reason: "future code".to_string(),
+            details: Box::new(Refused {
+                code: 999_999,
+                ..Refused::default()
+            }),
+        };
+        assert_eq!(
+            BrokerRefusal::from_brokerv2_error(&unknown_code),
+            Some(BrokerRefusal::Other),
+            "unknown ErrorCode integer should classify as Other"
+        );
+
+        // Transport errors return None — caller falls back to direct connect.
         let dial = BrokerV2Error::Dial {
             socket_path: "/nowhere".to_string(),
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "no broker"),
