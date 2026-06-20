@@ -91,6 +91,21 @@ pub fn adopt_v2_session(
     Ok(session.into_inner())
 }
 
+/// Slice 14 of #782: v2 counterpart of v1's
+/// `AsyncBrokerSession::into_backend_io`.
+///
+/// Same shape as [`adopt_v2_session`] but drops the `Negotiated` reply
+/// — for callers that only need the raw byte stream after the Hello
+/// completes. Mirrors the v1 convenience overload so v2 call-site
+/// rewrites are mechanical: every `into_backend_io` becomes
+/// `into_backend_io_v2`.
+pub fn into_backend_io_v2(
+    wanted_version: &str,
+) -> Result<interprocess::local_socket::Stream, BrokerV2Error> {
+    let (stream, _negotiated) = adopt_v2_session(wanted_version)?;
+    Ok(stream)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,6 +152,18 @@ mod tests {
     #[test]
     fn adopt_v2_session_no_broker_returns_typed_error() {
         let err = adopt_v2_session("0.0.0").expect_err("no broker => error");
+        match err {
+            BrokerV2Error::Dial { .. } | BrokerV2Error::Sid(_) => {}
+            other => panic!("expected Dial or Sid, got: {other:?}"),
+        }
+    }
+
+    /// Slice 14: `into_backend_io_v2` returns the same typed error
+    /// shape as the underlying `adopt_v2_session` — the convenience
+    /// overload doesn't introduce its own error variants.
+    #[test]
+    fn into_backend_io_v2_no_broker_returns_typed_error() {
+        let err = into_backend_io_v2("0.0.0").expect_err("no broker => error");
         match err {
             BrokerV2Error::Dial { .. } | BrokerV2Error::Sid(_) => {}
             other => panic!("expected Dial or Sid, got: {other:?}"),
