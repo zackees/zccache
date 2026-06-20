@@ -36,6 +36,7 @@ fn protocol_v2_service_definition_round_trips_without_http() {
     let original = ServiceDefinition {
         service_name: "zccache".to_owned(),
         http_server: None,
+        ..Default::default()
     };
 
     let bytes = original.encode_to_vec();
@@ -55,6 +56,7 @@ fn protocol_v2_service_definition_round_trips_with_http_capability() {
             health_path: "/health".to_owned(),
             display_name: "zccache status".to_owned(),
         }),
+        ..Default::default()
     };
 
     let bytes = original.encode_to_vec();
@@ -86,6 +88,7 @@ fn service_definition_decode_tolerates_unknown_future_field() {
     let mut bytes = ServiceDefinition {
         service_name: "zccache".to_owned(),
         http_server: None,
+        ..Default::default()
     }
     .encode_to_vec();
     bytes.extend_from_slice(&[0x9A, 0x06, 10]);
@@ -111,6 +114,7 @@ fn service_definition_decode_rejects_truncated_input() {
             health_path: "/health".to_owned(),
             display_name: "zccache status".to_owned(),
         }),
+        ..Default::default()
     }
     .encode_to_vec();
     bytes.truncate(6);
