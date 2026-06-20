@@ -31,8 +31,15 @@
 //! TEST-ONLY fake-backend seam also stays resolve-and-drop: it dials a raw
 //! socket with no Hello negotiation, so there is no live session to adopt.
 
-use running_process::broker::adopt::{AdoptError, AsyncBrokerSession, OwnedConnectRequest};
-use running_process::broker::client::{BackendConnectionRoute, RefusalKind};
+// Slice 25 of zccache#782: migrated to the `protocol_v2::client_compat`
+// namespace (upstream PR #528). The underlying types remain identical
+// to v1's per the coexistence re-export design — no behaviour change.
+// When client_v2 + the v2 broker scaffold are production-ready the
+// implementation under this namespace flips to v2-native; the
+// consumer side stays unchanged.
+use running_process::broker::protocol_v2::client_compat::{
+    AdoptError, AsyncBrokerSession, BackendConnectionRoute, OwnedConnectRequest, RefusalKind,
+};
 // Slice 11 of zccache#782: the raw-socket reachability probe used by
 // the `RUNNING_PROCESS_FAKE_BACKEND` seam now lives in `ipc::broker_v2`
 // instead of being pulled from `running_process::broker::client`. This
@@ -224,9 +231,12 @@ async fn adopt_session_connection(
 }
 
 /// Wrap the adopted `OwnedFd` as a tokio-backed `IpcConnection`.
+///
+/// Slice 25 of zccache#782: migrated to the `protocol_v2::client_compat`
+/// namespace (upstream PR #529).
 #[cfg(unix)]
 fn unix_connection_from_backend_io(
-    io: running_process::broker::adopt::OwnedBackendIo,
+    io: running_process::broker::protocol_v2::client_compat::OwnedBackendIo,
 ) -> Result<IpcConnection, IpcError> {
     let fd = io.into_owned_fd();
     let std_stream = std::os::unix::net::UnixStream::from(fd);
@@ -387,7 +397,7 @@ impl BrokerRefusal {
 /// the function returns `None` regardless.
 #[must_use]
 pub fn classify_adopt_error(err: &AdoptError) -> Option<BrokerRefusal> {
-    use running_process::broker::client::BrokerClientError;
+    use running_process::broker::protocol_v2::client_compat::BrokerClientError;
     match err {
         AdoptError::Connect(connect_err) => connect_err.refusal_kind().map(|kind| {
             let retry_after_ms = match connect_err {
@@ -728,7 +738,7 @@ mod tests {
 
     #[test]
     fn classify_adopt_error_maps_typed_refusals() {
-        use running_process::broker::client::BrokerClientError;
+        use running_process::broker::protocol_v2::client_compat::BrokerClientError;
         use running_process::broker::protocol::ErrorCode;
 
         let refusal = |code: ErrorCode| {
@@ -849,7 +859,7 @@ mod tests {
     /// Catches the half-done fix where the typed surface drops the hint.
     #[test]
     fn classify_adopt_error_propagates_retry_after_ms_on_v1_rate_limited() {
-        use running_process::broker::client::BrokerClientError;
+        use running_process::broker::protocol_v2::client_compat::BrokerClientError;
         use running_process::broker::protocol::ErrorCode;
 
         let err = AdoptError::Connect(BrokerClientError::Refused {

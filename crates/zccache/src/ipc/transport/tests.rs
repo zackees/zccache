@@ -133,7 +133,7 @@ async fn backend_handle_probe_succeeds_on_direct_endpoint() {
     });
 
     let (service_name, handle_endpoint) = tokio::task::spawn_blocking(move || {
-        let handle = running_process::broker::backend_handle::BackendHandle::probe_with_service(
+        let handle = running_process::broker::protocol_v2::backend_handle::BackendHandle::probe_with_service(
             "zccache",
             crate::core::VERSION,
             &probe_endpoint,

@@ -32,7 +32,7 @@ pub(super) async fn try_serve_backend_handle_probe<R, W>(
     reader: &mut R,
     writer: &mut W,
     read_buf: &mut BytesMut,
-    daemon: &running_process::broker::backend_handle::DaemonProcess,
+    daemon: &running_process::broker::protocol_v2::backend_handle::DaemonProcess,
 ) -> Result<bool, IpcError>
 where
     R: AsyncRead + Unpin,
@@ -89,7 +89,7 @@ where
 }
 
 fn is_backend_handle_probe_request(frame: &running_process::broker::protocol::Frame) -> bool {
-    use running_process::broker::backend_lifecycle::probe::BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL;
+    use running_process::broker::protocol_v2::backend_handle::BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL;
     use running_process::broker::protocol::{FrameKind, PayloadEncoding};
 
     frame.envelope_version == 1
@@ -101,9 +101,9 @@ fn is_backend_handle_probe_request(frame: &running_process::broker::protocol::Fr
 
 fn backend_handle_probe_response(
     request: &running_process::broker::protocol::Frame,
-    daemon: &running_process::broker::backend_handle::DaemonProcess,
+    daemon: &running_process::broker::protocol_v2::backend_handle::DaemonProcess,
 ) -> Result<running_process::broker::protocol::Frame, IpcError> {
-    use running_process::broker::backend_lifecycle::probe::BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL;
+    use running_process::broker::protocol_v2::backend_handle::BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL;
     use running_process::broker::protocol::{Frame, FrameKind, PayloadEncoding};
 
     let mut payload = Vec::with_capacity(32 + 128);

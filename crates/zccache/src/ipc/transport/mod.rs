@@ -97,7 +97,7 @@ impl IpcConnection {
     /// `recv`/`recv_wire` call.
     pub async fn try_serve_backend_handle_probe(
         &mut self,
-        daemon: &running_process::broker::backend_handle::DaemonProcess,
+        daemon: &running_process::broker::protocol_v2::backend_handle::DaemonProcess,
     ) -> Result<bool, IpcError> {
         probe::try_serve_backend_handle_probe(
             &mut self.reader,

@@ -78,7 +78,7 @@ notify = { path = "vendor/notify" }
 # (buried `details: Box<Refused>` instead of top-level `retry_after_ms`)
 # which `BrokerRefusal::from_brokerv2_error` no longer compiles against.
 # Revert to the published version line once running-process cuts 4.5.6+.
-running-process = { git = "https://github.com/zackees/running-process", rev = "d0299b3f4d18465fa36b80dab6939cc39bbff549" }
+running-process = { git = "https://github.com/zackees/running-process", rev = "eb49f1138e4a960f039f7bd5376211073e6dcd84" }
 
 [workspace.metadata.dylint]
 libraries = [{ path = "dylints/*" }]
