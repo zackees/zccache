@@ -324,6 +324,25 @@ impl BrokerRefusal {
             RefusalKind::Other(_) => Self::Other,
         }
     }
+
+    /// Slice 12 of #782: classify a v2 broker error as a `BrokerRefusal`.
+    ///
+    /// Returns `Some(BrokerRefusal)` only when the v2 broker explicitly
+    /// declined the Hello — IO / framing / sid errors return `None`
+    /// (the caller falls back to the direct connect path). The v2
+    /// `Refused` payload carries the same `ErrorCode` enum as v1; until
+    /// later slices add a richer error-code mapping, every refusal
+    /// classifies as `BrokerRefusal::Other` and the `details` payload
+    /// is available to callers via the original `BrokerV2Error::Refused`
+    /// variant for logging.
+    pub fn from_brokerv2_error(err: &running_process::broker::client_v2::BrokerV2Error) -> Option<Self> {
+        match err {
+            running_process::broker::client_v2::BrokerV2Error::Refused { .. } => {
+                Some(Self::Other)
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Classify an `AdoptError`, returning the typed refusal when the broker spoke
@@ -721,5 +740,35 @@ mod tests {
             assert_eq!(to_zccache_endpoint("name"), r"\\.\pipe\name");
             assert_eq!(to_running_process_endpoint(r"\\.\pipe\name"), "name");
         }
+    }
+
+    /// Slice 12 of #782: `from_brokerv2_error` returns `Some(Other)` for
+    /// a `Refused` payload and `None` for transport-layer errors. The
+    /// fine-grained `ErrorCode` mapping lands in a later slice once
+    /// callers actually use the v2 path.
+    #[test]
+    fn from_brokerv2_error_classifies_refused_vs_dial() {
+        use running_process::broker::client_v2::BrokerV2Error;
+        use running_process::broker::protocol::Refused;
+
+        let refused = BrokerV2Error::Refused {
+            reason: "test".to_string(),
+            details: Box::new(Refused::default()),
+        };
+        assert_eq!(
+            BrokerRefusal::from_brokerv2_error(&refused),
+            Some(BrokerRefusal::Other),
+            "Refused should classify"
+        );
+
+        let dial = BrokerV2Error::Dial {
+            socket_path: "/nowhere".to_string(),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "no broker"),
+        };
+        assert_eq!(
+            BrokerRefusal::from_brokerv2_error(&dial),
+            None,
+            "Dial is transport, not a refusal"
+        );
     }
 }
