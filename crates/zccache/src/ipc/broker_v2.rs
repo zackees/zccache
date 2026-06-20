@@ -267,6 +267,42 @@ mod tests {
         assert_eq!(result.expect("fast closure returns Ok"), 42);
     }
 
+    /// Stress test: 100 consecutive `call_with_brokerv2_deadline` calls,
+    /// each closure stalls for 60s while the deadline fires at 10ms.
+    /// Total wall-clock should be much less than 100 × 10ms = 1s if the
+    /// helper threads truly run independently (i.e. each call returns
+    /// on its own thread's deadline, not serialized).
+    ///
+    /// Catches: the round-2 audit's "helper-thread leak amplification"
+    /// concern — under a retry storm, threads must not deadlock on a
+    /// shared mutex / pool, and the parent caller must not block while
+    /// helper threads accumulate. If the helpers truly leaked
+    /// indefinitely without harming the parent, the test still passes
+    /// (correctness, not resource accounting) — pure leak detection
+    /// requires fd/pid inspection which is platform-specific. This
+    /// test pins the wall-clock contract; resource accounting is a
+    /// follow-up (see ledger #842 round-2 finding #1).
+    #[test]
+    fn call_with_brokerv2_deadline_stress_repeated_timeouts() {
+        let start = std::time::Instant::now();
+        for _ in 0..100 {
+            let result: Result<(), BrokerV2Error> =
+                call_with_brokerv2_deadline(Duration::from_millis(10), || {
+                    std::thread::sleep(Duration::from_secs(60));
+                    Ok(())
+                });
+            match result {
+                Err(BrokerV2Error::Io(io)) if io.kind() == std::io::ErrorKind::TimedOut => {}
+                other => panic!("expected Io(TimedOut), got: {other:?}"),
+            }
+        }
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "100 repeated timeouts took {elapsed:?}; expected ~1s (5s budget)"
+        );
+    }
+
     /// `call_with_brokerv2_deadline` returns `BrokerV2Error::Io(TimedOut)`
     /// when the closure outlives the deadline — mirrors upstream
     /// `connect_with_deadline`'s shape. `BrokerRefusal::from_brokerv2_error`
