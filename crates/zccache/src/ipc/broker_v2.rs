@@ -128,10 +128,13 @@ where
 }
 
 /// Run a blocking closure returning `Result<T, BrokerV2Error>` on a
-/// helper thread, bounded by `deadline`. On deadline, synthesizes
-/// `BrokerV2Error::Dial { source: ErrorKind::TimedOut }` so caller
-/// classification (`from_brokerv2_error` returns `None` for `Dial`)
-/// routes to the direct-connect fallback path.
+/// helper thread, bounded by `deadline`. On deadline returns
+/// `BrokerV2Error::Io(ErrorKind::TimedOut)` (mirroring upstream's
+/// `connect_with_deadline` shape after running-process#517 — same
+/// classification: `from_brokerv2_error` returns `None`, caller routes
+/// to direct-connect fallback). Synthesizing `Dial { socket_path:
+/// "<deadline-exceeded>" }` here would break downstream substring
+/// assertions that expect the real v2 broker namespace.
 fn call_with_brokerv2_deadline<T, F>(deadline: Duration, f: F) -> Result<T, BrokerV2Error>
 where
     T: Send + 'static,
@@ -143,13 +146,10 @@ where
     });
     match rx.recv_timeout(deadline) {
         Ok(result) => result,
-        Err(_) => Err(BrokerV2Error::Dial {
-            socket_path: "<deadline-exceeded>".to_string(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("v2 broker call exceeded deadline of {deadline:?}"),
-            ),
-        }),
+        Err(_) => Err(BrokerV2Error::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("v2 broker call exceeded deadline of {deadline:?}"),
+        ))),
     }
 }
 
@@ -267,10 +267,11 @@ mod tests {
         assert_eq!(result.expect("fast closure returns Ok"), 42);
     }
 
-    /// `call_with_brokerv2_deadline` returns `BrokerV2Error::Dial { TimedOut }`
-    /// when the closure outlives the deadline. The `Dial` shape lets
-    /// `BrokerRefusal::from_brokerv2_error` route it as transport
-    /// (returns `None`) so callers fall back to direct connect.
+    /// `call_with_brokerv2_deadline` returns `BrokerV2Error::Io(TimedOut)`
+    /// when the closure outlives the deadline — mirrors upstream
+    /// `connect_with_deadline`'s shape. `BrokerRefusal::from_brokerv2_error`
+    /// routes Io as transport (returns `None`) so callers still fall
+    /// back to direct connect.
     #[test]
     fn call_with_brokerv2_deadline_fires_on_slow_closure() {
         let result: Result<(), BrokerV2Error> =
@@ -279,14 +280,14 @@ mod tests {
                 Ok(())
             });
         match result.expect_err("slow closure must time out") {
-            BrokerV2Error::Dial { socket_path, source } => {
-                assert_eq!(source.kind(), std::io::ErrorKind::TimedOut);
+            BrokerV2Error::Io(io) => {
+                assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
                 assert!(
-                    socket_path.contains("deadline-exceeded"),
-                    "synthetic socket_path should self-document the timeout origin; got {socket_path}"
+                    io.to_string().contains("exceeded deadline"),
+                    "io error message should self-document: {io}"
                 );
             }
-            other => panic!("expected BrokerV2Error::Dial {{ TimedOut }}, got: {other:?}"),
+            other => panic!("expected BrokerV2Error::Io(TimedOut), got: {other:?}"),
         }
     }
 
