@@ -59,7 +59,7 @@ sevenz-rust = "0.6"
 rkyv = { version = "0.7", features = ["validation"] }
 tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms"] }
 mimalloc = "0.1"
-running-process = { version = "4.4.0", default-features = false, features = ["client-async"] }
+running-process = { version = "4.5.5", default-features = false, features = ["client-async"] }
 zccache = { path = "crates/zccache" }
 zccache-watcher = { path = "crates/zccache-watcher" }
 zccache-cli = { path = "crates/zccache-cli" }
@@ -70,13 +70,9 @@ zccache-fingerprint = { path = "crates/zccache-fingerprint" }
 # 2. Report start_read failure (watcher silently dying) as error
 [patch.crates-io]
 notify = { path = "vendor/notify" }
-# Spike for #777: pin to the running-process commit that landed the
-# broker-v2 proto types (zackees/running-process PR #484, slice 1 of
-# zackees/running-process#483). Reproducible for any contributor —
-# no local path required and no dependency on a published crates.io
-# release of that revision. Remove this patch once running-process
-# publishes a version that exposes `broker::protocol_v2`.
-running-process = { git = "https://github.com/zackees/running-process", rev = "e64f6ff5de860499dc66f2e6fbf3536859ff4d1a" }
+# running-process git-rev pin for #777 dropped — broker-v2 proto types
+# (and client_v2 / BrokeredBackend / v2 broker scaffold) are now exposed
+# in the published 4.5.5 release.
 
 [workspace.metadata.dylint]
 libraries = [{ path = "dylints/*" }]
