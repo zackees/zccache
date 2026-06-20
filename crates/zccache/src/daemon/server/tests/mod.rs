@@ -5,6 +5,7 @@
 
 use std::path::Path;
 
+mod artifact_store_deferred;
 mod cache_trim;
 mod clear_handler;
 mod client_env;

@@ -177,6 +177,18 @@ pub(super) struct SharedState {
     /// pending could write a partial snapshot over the on-disk file.
     /// Mirrors `compiler_hash_cache_loaded` above.
     pub(super) system_includes_loaded: AtomicBool,
+    /// Whether the on-disk artifact-index blob has been merged into
+    /// the live `artifact_store`.
+    ///
+    /// Issue #784 phase 2d: `bind_with_cache_dir` constructs the store
+    /// empty; a background `spawn_blocking` calls `load_from_disk`
+    /// after the readiness lockfile. `lookup_artifact_with_disk_fallback`
+    /// (in `util.rs`) also triggers a synchronous `load_from_disk` on
+    /// the first cache-miss in the load window so the existing
+    /// disk-fallback contract holds. Either call site flips this to
+    /// `true` on completion; subsequent misses short-circuit instead
+    /// of re-reading the blob.
+    pub(super) artifact_store_loaded: AtomicBool,
     /// Whether the `died-shutdown` lifecycle event has been written for this
     /// daemon. Under burst load (issue #726), many wedge-detecting clients
     /// race to send `Request::Shutdown` within a few milliseconds and each

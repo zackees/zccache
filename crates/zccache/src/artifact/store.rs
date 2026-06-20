@@ -106,13 +106,59 @@ impl ArtifactStore {
     /// "started empty" was the symptom that hid the cold-tar-untar-warm
     /// 0-hit-rate bug across two perf-cluster runs.
     pub fn open(path: &Path) -> std::io::Result<Self> {
-        let entries = DashMap::new();
+        let store = Self::open_empty(path);
+        store.load_from_disk()?;
+        Ok(store)
+    }
+
+    /// Construct an empty store rooted at `path` without touching disk.
+    ///
+    /// Issue #784 phase 2d: lets `DaemonServer::bind_with_cache_dir`
+    /// build the store in microseconds (no `std::fs::read` of the
+    /// index blob), with the actual entry-loading deferred to a
+    /// background `spawn_blocking` that calls [`Self::load_from_disk`]
+    /// after the readiness lockfile is written. Until the load runs,
+    /// `get` returns `None` for every key — `lookup_artifact_with_disk_fallback`
+    /// (see `daemon::server::util`) triggers a synchronous
+    /// `load_from_disk` on the first cache-miss in that window so the
+    /// disk-fallback contract (perf test
+    /// `perf_artifact_lookup_hits_before_background_load_completes`)
+    /// is preserved.
+    pub fn open_empty(path: &Path) -> Self {
+        Self {
+            path: NormalizedPath::new(path),
+            entries: DashMap::new(),
+        }
+    }
+
+    /// Read the on-disk index blob (if any) and insert every entry
+    /// into the live `DashMap`. Idempotent: re-keys overwrite. Safe
+    /// to call concurrently with request-handler inserts (DashMap
+    /// `insert` is `&self`); safe to call multiple times (a redundant
+    /// second call just re-inserts the same entries with the same
+    /// values).
+    ///
+    /// Issue #784 phase 2d. Called once from `tokio::task::spawn_blocking`
+    /// in the daemon binary after the readiness lockfile is written.
+    /// Also called synchronously by
+    /// `lookup_artifact_with_disk_fallback` on the first cache-miss
+    /// during the load window — the synchronous path makes the
+    /// existing on-disk-fallback test pass without paying the load
+    /// cost at bind time.
+    ///
+    /// # Errors
+    ///
+    /// Returns any `std::fs::read` error other than `NotFound`. A
+    /// missing file and a corrupt blob are both logged and treated
+    /// as "empty" — same shape as the inline path in [`Self::open`].
+    pub fn load_from_disk(&self) -> std::io::Result<()> {
+        let path = self.path.as_path();
         match std::fs::read(path) {
             Ok(bytes) => match bincode::deserialize::<Vec<(String, ArtifactIndex)>>(&bytes) {
                 Ok(rows) => {
                     let count = rows.len();
                     for (k, v) in rows {
-                        entries.insert(k, v);
+                        self.entries.insert(k, v);
                     }
                     if count > 0 {
                         tracing::info!(
@@ -142,10 +188,7 @@ impl ArtifactStore {
             }
             Err(e) => return Err(e),
         };
-        Ok(Self {
-            path: NormalizedPath::new(path),
-            entries,
-        })
+        Ok(())
     }
 
     /// Insert or update an artifact entry. In-memory only.

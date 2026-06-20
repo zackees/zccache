@@ -131,6 +131,26 @@ pub(super) fn lookup_artifact_with_disk_fallback<'a>(
     if let Some(entry) = state.artifacts.get_mut(key_hex) {
         return Some(entry);
     }
+    // Issue #784 phase 2d: the artifact-index blob is no longer read at
+    // bind time — `bind_with_cache_dir` constructs an empty store and a
+    // background `spawn_blocking` calls `load_from_disk`. If a lookup
+    // races ahead of that load, fall through to the disk read on the
+    // spot so this helper's contract ("DashMap miss → on-disk fallback
+    // hit") still holds. Idempotent: the background loader and this
+    // synchronous path can both insert the same entries; DashMap
+    // inserts are last-writer-wins of equivalent values, so the live
+    // store converges. We swap `artifact_store_loaded` to `true`
+    // afterwards so subsequent misses (including from other request
+    // handlers) skip the disk read.
+    if !state
+        .artifact_store_loaded
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        let _ = state.artifact_store.load_from_disk();
+        state
+            .artifact_store_loaded
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
     let meta = state.artifact_store.get(key_hex)?;
     state
         .artifacts

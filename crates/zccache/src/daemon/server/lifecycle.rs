@@ -42,15 +42,18 @@ impl DaemonServer {
         // daemon starts accepting connections immediately (Bug 6 fix).
         let artifacts: DashMap<String, CachedArtifact> = DashMap::new();
 
-        // Open the bincode-backed artifact index for fast startup + persistence.
+        // Issue #784 phase 2d: open the artifact-index store EMPTY
+        // here so the readiness lockfile fires before reading +
+        // decoding the bincode blob. The on-disk entries are merged
+        // into the live `DashMap` by `artifact_store_loader()` in a
+        // `tokio::task::spawn_blocking` after the lockfile. The
+        // existing on-disk-fallback contract in
+        // `util::lookup_artifact_with_disk_fallback` is preserved: if
+        // a DashMap-miss request races ahead of the background load,
+        // it calls `load_from_disk` synchronously on the spot so the
+        // fallback still hits.
         let index_path = crate::core::config::index_path_from_cache_dir(cache_dir);
-        let artifact_store = ArtifactStore::open(&index_path).map_err(|e| {
-            crate::ipc::IpcError::Io(std::io::Error::other(format!(
-                "failed to open artifact index at {}: {e}",
-                index_path.display()
-            )))
-        })?;
-        let artifact_store = Arc::new(artifact_store);
+        let artifact_store = Arc::new(ArtifactStore::open_empty(&index_path));
 
         let (index_writer_tx, index_writer_rx) =
             tokio::sync::mpsc::unbounded_channel::<(String, ArtifactIndex)>();
@@ -157,6 +160,7 @@ impl DaemonServer {
                 compiler_hash_cache_loaded: AtomicBool::new(false),
                 metadata_cache_loaded: AtomicBool::new(false),
                 system_includes_loaded: AtomicBool::new(false),
+                artifact_store_loaded: AtomicBool::new(false),
                 shutdown_event_logged: AtomicBool::new(false),
                 fingerprint: FingerprintManager::new(),
                 dep_graph_persisted: AtomicBool::new(false),
@@ -271,6 +275,25 @@ impl DaemonServer {
         SystemIncludesLoader {
             state: Arc::clone(&self.state),
             path: self.state.system_includes_cache_path.clone(),
+        }
+    }
+
+    /// Hand out a loader that reads the on-disk `index.bin` blob and
+    /// merges its entries into the live `ArtifactStore`. Issue #784
+    /// phase 2d — last of the four #784 deferrals.
+    ///
+    /// Designed to be called once, immediately after `write_lock_file`,
+    /// inside a `tokio::task::spawn_blocking`. The handle holds an
+    /// `Arc<ArtifactStore>` clone so the merge writes hit the same
+    /// `DashMap` request handlers read. If a lookup races ahead of
+    /// this background load,
+    /// `util::lookup_artifact_with_disk_fallback` invokes
+    /// [`ArtifactStore::load_from_disk`] synchronously on the spot —
+    /// idempotent because both call sites do equivalent inserts.
+    pub fn artifact_store_loader(&self) -> ArtifactStoreLoader {
+        ArtifactStoreLoader {
+            state: Arc::clone(&self.state),
+            store: Arc::clone(&self.state.artifact_store),
         }
     }
 
@@ -415,6 +438,44 @@ pub struct CompilerHashCacheLoader {
 pub struct SystemIncludesLoader {
     state: Arc<SharedState>,
     path: crate::core::NormalizedPath,
+}
+
+/// Owned handle that reads the on-disk artifact-index blob and merges
+/// its entries into the running daemon's `ArtifactStore`.
+///
+/// Issue #784 phase 2d. Holds an `Arc<ArtifactStore>` directly so the
+/// merge writes hit the same `DashMap` the request handlers read — no
+/// swap needed (the store was constructed empty at bind time).
+///
+/// Coexists safely with the on-demand `load_from_disk` invocation
+/// inside `util::lookup_artifact_with_disk_fallback`: both call sites
+/// perform identical `DashMap::insert` operations, so a race between
+/// them produces the same converged state. The `artifact_store_loaded`
+/// flag merely prevents redundant disk reads — it is not a load-once
+/// gate.
+pub struct ArtifactStoreLoader {
+    state: Arc<SharedState>,
+    store: Arc<ArtifactStore>,
+}
+
+impl ArtifactStoreLoader {
+    /// Read the on-disk index blob (if any) and insert its entries
+    /// into the live store via [`ArtifactStore::load_from_disk`].
+    ///
+    /// I/O errors are logged at WARN and treated as "empty" — the
+    /// daemon stays running with an empty in-memory index, and the
+    /// next periodic flush will rewrite the file from whatever
+    /// request-handler inserts have landed since. After the load,
+    /// `artifact_store_loaded` is set so subsequent on-demand calls
+    /// from `lookup_artifact_with_disk_fallback` short-circuit.
+    pub fn load_and_install(self) {
+        if let Err(e) = self.store.load_from_disk() {
+            tracing::warn!("artifact index load failed, continuing with empty store: {e}");
+        }
+        self.state
+            .artifact_store_loaded
+            .store(true, Ordering::Release);
+    }
 }
 
 impl SystemIncludesLoader {
