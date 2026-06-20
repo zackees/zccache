@@ -186,12 +186,13 @@ impl DepGraph {
                 return CacheVerdict::HeadersChanged { changed: drifted };
             }
 
-            // No drift detected (e.g., first check after a warm context
-            // with no stored artifact_key, or last_file_hashes empty):
-            // record the new key and hit.
-            entry.artifact_key = Some(artifact_key);
-            self.hits.fetch_add(1, Ordering::Relaxed);
-            CacheVerdict::Hit { artifact_key }
+            // No drift detected, but the stored artifact key did not match.
+            // If the key was cleared because the artifact store could not
+            // serve the payload (#799), do not recreate a depgraph-only hit.
+            // The miss path must recompile and publish a real artifact before
+            // this context can hit again.
+            self.misses.fetch_add(1, Ordering::Relaxed);
+            CacheVerdict::Cold
         } else {
             // Fast path: only source changed, headers all fresh.
             entry.artifact_key = Some(artifact_key);
@@ -405,18 +406,16 @@ impl DepGraph {
                 );
             }
 
-            // No drift detected (e.g., warm context with no previously
-            // stored artifact_key, or `last_file_hashes` empty). Adopt
-            // the new artifact_key and return Hit so a subsequent check
-            // takes the ultra-fast path.
-            entry.artifact_key = Some(artifact_key);
-            self.hits.fetch_add(1, Ordering::Relaxed);
-            let hex = &artifact_key.hash().to_hex()[..8];
-            entry.last_file_hashes = file_hashes;
+            // No drift detected, but the stored artifact key did not match.
+            // If the key was cleared because the artifact store could not
+            // serve the payload (#799), do not recreate a depgraph-only hit.
+            // The miss path must recompile and publish a real artifact before
+            // this context can hit again.
+            self.misses.fetch_add(1, Ordering::Relaxed);
             (
-                CacheVerdict::Hit { artifact_key },
+                CacheVerdict::Cold,
                 format!(
-                    "hit: artifact_key={hex} (first check after update, was={old_hex}, files={file_count})",
+                    "artifact key missing or stale (was={old_hex}, files={file_count}); recompile forced",
                 ),
             )
         } else {

@@ -453,6 +453,9 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             record_session_stat(&state.sessions, &sid, |t| {
                 t.record_depgraph_hit_artifact_miss();
             });
+            let evicted: std::collections::HashSet<String> =
+                std::iter::once(artifact_key_hex.clone()).collect();
+            state.dep_graph.load().invalidate_artifact_keys(&evicted);
             write_session_log(
                 &state.sessions,
                 &sid,

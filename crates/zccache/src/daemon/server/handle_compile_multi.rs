@@ -235,6 +235,7 @@ pub(super) fn check_unit_cache(
     let t_depgraph = t0.elapsed();
 
     // Try to serve from cache
+    let depgraph_claimed_hit = matches!(verdict, crate::depgraph::CacheVerdict::Hit { .. });
     if let crate::depgraph::CacheVerdict::Hit { artifact_key }
     | crate::depgraph::CacheVerdict::SourceChanged { artifact_key } = verdict
     {
@@ -304,6 +305,11 @@ pub(super) fn check_unit_cache(
                     pending_writes: Vec::new(),
                 };
             }
+        }
+        if depgraph_claimed_hit {
+            let evicted: std::collections::HashSet<String> =
+                std::iter::once(artifact_key_hex).collect();
+            state.dep_graph.load().invalidate_artifact_keys(&evicted);
         }
     }
 

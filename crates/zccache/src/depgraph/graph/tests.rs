@@ -159,6 +159,45 @@ fn invalidate_artifact_keys_clears_only_matching() {
 }
 
 #[test]
+fn invalidated_artifact_key_does_not_recreate_hit() {
+    let graph = DepGraph::new();
+    let key = graph.register(make_ctx("/src/stale.c"));
+    let scan = ScanResult {
+        resolved: vec![NormalizedPath::from("/inc/stale.h")],
+        unresolved: Vec::new(),
+        has_computed: false,
+    };
+    let artifact = graph
+        .update(&key, scan.clone(), dummy_hash)
+        .expect("artifact key");
+
+    let first = graph.check(&key, always_fresh, dummy_hash);
+    assert!(
+        matches!(first, CacheVerdict::Hit { .. }),
+        "fixture must start warm"
+    );
+
+    let evicted = [artifact.hash().to_hex().to_string()].into_iter().collect();
+    assert_eq!(graph.invalidate_artifact_keys(&evicted), 1);
+
+    let after_invalidate = graph.check(&key, always_fresh, dummy_hash);
+    assert!(
+        !matches!(after_invalidate, CacheVerdict::Hit { .. }),
+        "issue #799: invalidated depgraph entries must not recreate a hit \
+         without a newly-published artifact"
+    );
+
+    graph
+        .update(&key, scan, dummy_hash)
+        .expect("restored artifact");
+    let after_update = graph.check(&key, always_fresh, dummy_hash);
+    assert!(
+        matches!(after_update, CacheVerdict::Hit { .. }),
+        "a real update should restore normal hit behavior"
+    );
+}
+
+#[test]
 fn rustc_extern_artifact_key_ignores_target_dir_path_shape() {
     let graph = DepGraph::new();
     let ctx = make_ctx("/src/app.rs");
@@ -754,14 +793,12 @@ fn warm_context_with_no_artifact_returns_cold_on_check() {
     );
 
     // check_diagnostic should still produce a valid verdict (not panic).
-    // With all fresh, it should compute an artifact key and return Hit.
-    let (verdict, _reason) = graph.check_diagnostic(&key, always_fresh, dummy_hash);
+    // Missing artifact metadata must not be promoted back into a hit; the
+    // caller needs a real compile to repopulate the artifact store.
+    let (verdict, reason) = graph.check_diagnostic(&key, always_fresh, dummy_hash);
     assert!(
-        matches!(
-            verdict,
-            CacheVerdict::Hit { .. } | CacheVerdict::SourceChanged { .. }
-        ),
-        "warm context with all hashes available should hit, got {verdict:?}"
+        matches!(verdict, CacheVerdict::Cold),
+        "warm context without artifact metadata should be cold, got {verdict:?}: {reason}"
     );
 }
 
