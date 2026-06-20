@@ -64,6 +64,33 @@ pub fn connect_v2_broker(wanted_version: &str) -> Result<ClientSession, BrokerV2
     client_v2::connect("zccache", wanted_version)
 }
 
+/// Slice 13 of #782: v2 adopt path counterpart of v1's
+/// `AsyncBrokerSession::adopt` / `OwnedBackendIo`.
+///
+/// Performs the v2 Hello round-trip and consumes the resulting
+/// `ClientSession` into its raw `(Stream, Negotiated)` parts. zccache's
+/// existing adopt flow can layer its `IpcConnection::from_*_stream`
+/// helpers on top of the returned stream once subsequent slices wire
+/// the call sites over. v1's adopt remains untouched until that
+/// per-call-site migration lands.
+///
+/// `wanted_version` is the daemon version zccache wants (`Hello.wanted_version`).
+/// Errors mirror `client_v2::connect` exactly — no zccache-typed
+/// re-wrapping happens at this layer so callers can pattern-match on
+/// the upstream typed variants.
+pub fn adopt_v2_session(
+    wanted_version: &str,
+) -> Result<
+    (
+        interprocess::local_socket::Stream,
+        running_process::broker::protocol::Negotiated,
+    ),
+    BrokerV2Error,
+> {
+    let session = client_v2::connect("zccache", wanted_version)?;
+    Ok(session.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +126,20 @@ mod tests {
             // a downstream consumer — which is what this smoke test gates.
             BrokerV2Error::Sid(_) => {}
             other => panic!("expected BrokerV2Error::Dial or Sid, got: {other:?}"),
+        }
+    }
+
+    /// Slice 13: `adopt_v2_session` propagates the typed
+    /// `BrokerV2Error` paths from `client_v2::connect` directly —
+    /// no extra wrapping. With no broker running, the result must be
+    /// either `Dial` (transport) or `Sid` (machine-id missing in CI
+    /// containers).
+    #[test]
+    fn adopt_v2_session_no_broker_returns_typed_error() {
+        let err = adopt_v2_session("0.0.0").expect_err("no broker => error");
+        match err {
+            BrokerV2Error::Dial { .. } | BrokerV2Error::Sid(_) => {}
+            other => panic!("expected Dial or Sid, got: {other:?}"),
         }
     }
 
