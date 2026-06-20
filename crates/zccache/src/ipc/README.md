@@ -36,8 +36,10 @@ file yet. `RUNNING_PROCESS_DISABLE=1` skips the BackendHandle probe and uses
 that same legacy raw-connect fallback.
 
 `broker.rs` wires the frozen
-`running_process::broker::adopt::AsyncBrokerSession::adopt` one-call recipe
-(zackees/running-process#435) in front of the daemon client connect
+`AsyncBrokerSession::adopt` one-call recipe (re-exported through
+`running_process::broker::protocol_v2::client_compat` per zccache#782
+slice 25; underlying impl per zackees/running-process#435) in front of
+the daemon client connect
 (`connect_daemon`). `adopt` runs the Hello negotiation (service_name
 `"zccache"`, protocol min/max = 1, client_lib_name `"running-process"`,
 wanted_version = the zccache daemon version) on a blocking worker and returns

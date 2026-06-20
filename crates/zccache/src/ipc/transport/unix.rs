@@ -19,9 +19,12 @@ impl IpcConnection {
     /// Wrap an already-connected `UnixStream` as an `IpcConnection`.
     ///
     /// The broker lane uses this to adopt the live socket handed back by
-    /// `running_process::broker::adopt::AsyncBrokerSession::into_backend_io`
-    /// instead of re-dialing the endpoint, so the negotiated connection is
-    /// reused as the data connection.
+    /// [`AsyncBrokerSession::into_backend_io`] (re-exported through
+    /// `protocol_v2::client_compat` per zccache#782 slice 25) instead of
+    /// re-dialing the endpoint, so the negotiated connection is reused
+    /// as the data connection.
+    ///
+    /// [`AsyncBrokerSession::into_backend_io`]: running_process::broker::protocol_v2::client_compat::AsyncBrokerSession
     pub fn from_unix_stream(stream: tokio::net::UnixStream) -> Self {
         let (reader, writer) = tokio::io::split(stream);
         IpcConnection {

@@ -524,7 +524,7 @@ pub fn remove_lock_file() {
 }
 
 /// Path where the daemon records the identity consumed by
-/// `running_process::broker::backend_handle::BackendHandle`.
+/// [`running_process::broker::protocol_v2::backend_handle::BackendHandle`].
 #[must_use]
 pub fn backend_identity_path() -> NormalizedPath {
     let namespace = crate::core::config::daemon_namespace();

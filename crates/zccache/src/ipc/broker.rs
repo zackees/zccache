@@ -1,8 +1,9 @@
 //! Broker-mediated connect lane for the daemon client path.
 //!
-//! Wires the frozen `running_process::broker::adopt::AsyncBrokerSession::adopt`
-//! one-call recipe (zackees/running-process#433/#435) in front of zccache's
-//! direct IPC connect. `adopt` runs the Hello negotiation (service_name
+//! Wires the frozen [`AsyncBrokerSession::adopt`] one-call recipe
+//! (re-exported through `protocol_v2::client_compat` per zccache#782
+//! slices 25-A/25; underlying impl from running-process#433/#435)
+//! in front of zccache's direct IPC connect. `adopt` runs the Hello negotiation (service_name
 //! `"zccache"`, protocol min/max = 1, client_lib_name `"running-process"`,
 //! wanted_version = the zccache daemon version) on a blocking worker and hands
 //! back the broker-selected backend endpoint. Lane selection precedence:
@@ -42,8 +43,8 @@ use running_process::broker::protocol_v2::client_compat::{
 };
 // Slice 11 of zccache#782: the raw-socket reachability probe used by
 // the `RUNNING_PROCESS_FAKE_BACKEND` seam now lives in `ipc::broker_v2`
-// instead of being pulled from `running_process::broker::client`. This
-// gets one v1 import out of zccache's broker surface.
+// instead of being pulled from the upstream v1 client module. This
+// gets one upstream import out of zccache's broker surface.
 use super::broker_v2::probe_local_socket;
 
 use super::error::IpcError;
@@ -54,9 +55,9 @@ use super::{connect, running_process_disabled, ClientConnection};
 /// Upstream TEST-ONLY seam: a non-empty value short-circuits the broker
 /// negotiation and dials the given running-process endpoint directly.
 ///
-/// Mirrors the `running_process::broker::client` seam contract (the
-/// constant ships upstream after 4.1.0; replace this local copy with the
-/// upstream re-export on the next running-process bump). The canonical
+/// Mirrors the upstream v1-client seam contract (the constant ships
+/// upstream after 4.1.0; replace this local copy with the upstream
+/// re-export on the next running-process bump). The canonical
 /// `RUNNING_PROCESS_DISABLE=1` hatch takes precedence: a disabled broker
 /// ignores the fake seam too. Never set this in production.
 pub const RUNNING_PROCESS_FAKE_BACKEND_ENV: &str = "RUNNING_PROCESS_FAKE_BACKEND";
