@@ -1,6 +1,24 @@
 //! Running-process `BackendHandle` identity probe served on the same
 //! endpoint as the zccache daemon wire. Disambiguates probe frames from
 //! v15/v16 zccache traffic and the FrameV1 zccache lane.
+//!
+//! ## Slice 17 of #500 — v1 envelope retention decision
+//!
+//! This module touches three v1 envelope-layer symbols:
+//!
+//! | Symbol                                            | Decision       | Rationale |
+//! |---------------------------------------------------|----------------|-----------|
+//! | `running_process::broker::protocol::ENVELOPE_VERSION` | **keep on v1** | The probe path itself is a v1 protocol artifact (`BackendHandle` lives on the v1 broker namespace); the v2 broker uses Frame streaming (`OPEN/DATA/CLOSE/…`) instead of the v1 envelope shape. There is no v2 envelope to migrate this to. |
+//! | `running_process::broker::protocol::MAX_FRAME_BYTES`  | **keep on v1** | Same reasoning — this is the cap on the v1 envelope body length; the v2 streaming layer has its own per-stream windowing primitives. |
+//! | `running_process::broker::protocol::Frame`           | **keep on v1** | The probe message is itself a v1 `Frame` payload (kind `FRAME_KIND_REQUEST`, payload protocol `BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL`). Migrating the *probe* to v2 is a separate, larger migration that replaces the whole probe contract with a v2-streaming equivalent (tracked in zccache#782 Phase B). |
+//!
+//! The slice 17 decision is therefore "no code change to envelope
+//! references in this file" — the v1 path stays valid as a parallel
+//! lane per #470's coexistence table; the v2 streaming protocol
+//! replaces it when the backend-handle-probe path itself is migrated
+//! to a v2 control verb in a later phase. This module-level docblock
+//! exists so a future reader doesn't grep for these symbols looking
+//! for a "missing v2 migration" — the decision is documented here.
 
 use bytes::{Buf, BytesMut};
 use prost::Message as _;
