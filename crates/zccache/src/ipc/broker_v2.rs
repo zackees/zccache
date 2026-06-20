@@ -61,6 +61,12 @@ const DEFAULT_V2_BROKER_TIMEOUT: Duration = Duration::from_secs(3);
 /// otherwise. The opened stream is closed immediately — this is a
 /// liveness probe, not a connection acquisition.
 pub fn probe_local_socket(endpoint: &str) -> std::io::Result<()> {
+    if endpoint.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "probe_local_socket: empty endpoint",
+        ));
+    }
     probe_local_socket_with_deadline(endpoint, DEFAULT_PROBE_TIMEOUT)
 }
 
