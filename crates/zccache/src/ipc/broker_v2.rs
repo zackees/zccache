@@ -12,6 +12,16 @@
 //! This slice does **not** remove any v1 caller. v2 ships alongside v1
 //! per the coexistence table in upstream #470; the migration is per-
 //! surface and opt-in until every reference is replaced.
+//!
+//! **Status (issue #844):** [`connect_v2_broker`], [`adopt_v2_session`],
+//! and [`into_backend_io_v2`] have NO production call sites — only the
+//! in-module smoke tests exercise them. They are `#[doc(hidden)]` to
+//! signal "work-in-progress public API; do not consume from outside
+//! the burndown PRs." Remove the `#[doc(hidden)]` markers when the
+//! first real consumer lands (env-gated opt-in `ZCCACHE_BROKER_V2=1`
+//! is the planned first hook, mirroring `ZCCACHE_BROKER_CONNECT`).
+//! Only [`probe_local_socket`] is wired in production today (the
+//! `RUNNING_PROCESS_FAKE_BACKEND` seam in `broker.rs`).
 
 use interprocess::local_socket::traits::Stream as _;
 use interprocess::local_socket::Stream;
@@ -63,6 +73,12 @@ pub fn probe_local_socket(endpoint: &str) -> std::io::Result<()> {
 /// `daemon_version`, so this entry point gives zccache observable
 /// evidence that the v2 path is wired without depending on a fully-built
 /// production broker.
+///
+/// # WIP — no production consumer
+///
+/// `#[doc(hidden)]` per #844: only smoke tests call this. Remove the
+/// marker when the first production caller lands.
+#[doc(hidden)]
 pub fn connect_v2_broker(wanted_version: &str) -> Result<ClientSession, BrokerV2Error> {
     client_v2::connect("zccache", wanted_version)
 }
@@ -81,6 +97,12 @@ pub fn connect_v2_broker(wanted_version: &str) -> Result<ClientSession, BrokerV2
 /// Errors mirror `client_v2::connect` exactly — no zccache-typed
 /// re-wrapping happens at this layer so callers can pattern-match on
 /// the upstream typed variants.
+///
+/// # WIP — no production consumer
+///
+/// `#[doc(hidden)]` per #844: only smoke tests call this. Remove the
+/// marker when the first production caller lands.
+#[doc(hidden)]
 pub fn adopt_v2_session(
     wanted_version: &str,
 ) -> Result<
@@ -102,6 +124,12 @@ pub fn adopt_v2_session(
 /// completes. Mirrors the v1 convenience overload so v2 call-site
 /// rewrites are mechanical: every `into_backend_io` becomes
 /// `into_backend_io_v2`.
+///
+/// # WIP — no production consumer
+///
+/// `#[doc(hidden)]` per #844: only smoke tests call this. Remove the
+/// marker when the first production caller lands.
+#[doc(hidden)]
 pub fn into_backend_io_v2(
     wanted_version: &str,
 ) -> Result<interprocess::local_socket::Stream, BrokerV2Error> {
