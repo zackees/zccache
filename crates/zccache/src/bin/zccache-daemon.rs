@@ -251,12 +251,9 @@ fn run_server(args: Args) {
         // With #642's `ArcSwap<DepGraph>` foundation, `set_dep_graph` is
         // now `&self` + atomic-swap-safe, so the load can fire from a
         // `spawn_blocking` AFTER `server.run()` has started the accept
-        // loop. Compile requests arriving during the load window see
-        // the empty default graph and take the cold-path miss
-        // (correct — the cache_system's stat-verify safety net catches
-        // any stale-hit risk; sub-optimal speed for ~3 s and then the
-        // post-load `set_dep_graph` atomically publishes the warm graph
-        // for every subsequent `state.dep_graph.load()`).
+        // loop. Compile requests arriving during the load window wait
+        // until the persisted graph has been classified and published,
+        // avoiding the fresh-daemon `cold_skip` race fixed in zccache#798.
         //
         // The pre-bind probe (#641) and bind-error race discrimination
         // (#639) both still fire in their original order — only the
@@ -339,6 +336,7 @@ fn run_server(args: Args) {
         // Spawn the depgraph load. Holds a `DepGraphSetter` that survives
         // the spawn_blocking boundary; on completion atomically installs
         // the graph + warning via #642's ArcSwap.
+        server.mark_dep_graph_load_pending();
         let setter = server.dep_graph_setter();
         let depgraph_path = zccache::depgraph::depgraph_file_path();
         let load_handle = tokio::task::spawn_blocking(move || {

@@ -72,6 +72,39 @@ async fn start_daemon_like_zccache_daemon() -> (String, JoinHandle<()>) {
     (endpoint, handle)
 }
 
+async fn start_daemon_with_delayed_background_depgraph_load(
+    delay: std::time::Duration,
+) -> (String, JoinHandle<()>, JoinHandle<()>) {
+    let endpoint = zccache::ipc::unique_test_endpoint();
+    let depgraph_path = depgraph_file_path();
+    let mut server = DaemonServer::bind(&endpoint).expect("bind daemon");
+    server.mark_dep_graph_load_pending();
+    let setter = server.dep_graph_setter();
+
+    let load_handle = tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        let depgraph_load = classify_load(&depgraph_path);
+        let depgraph_warning = depgraph_load.warning(&depgraph_path);
+        match depgraph_load {
+            DepGraphLoadOutcome::Loaded { graph } => {
+                setter.install(Some(graph), depgraph_warning);
+            }
+            DepGraphLoadOutcome::Missing
+            | DepGraphLoadOutcome::VersionMismatch { .. }
+            | DepGraphLoadOutcome::Corrupt { .. }
+            | DepGraphLoadOutcome::IoError { .. } => {
+                setter.install(None, depgraph_warning);
+            }
+        }
+    });
+
+    let handle = tokio::spawn(async move {
+        server.run(0).await.expect("daemon run");
+    });
+
+    (endpoint, handle, load_handle)
+}
+
 async fn connect(endpoint: &str) -> ClientConn {
     zccache::ipc::connect(endpoint)
         .await
@@ -79,11 +112,19 @@ async fn connect(endpoint: &str) -> ClientConn {
 }
 
 async fn start_session(client: &mut ClientConn, working_dir: &Path) -> String {
+    start_session_with_log(client, working_dir, None).await
+}
+
+async fn start_session_with_log(
+    client: &mut ClientConn,
+    working_dir: &Path,
+    log_file: Option<NormalizedPath>,
+) -> String {
     client
         .send(&Request::SessionStart {
             client_pid: std::process::id(),
             working_dir: NormalizedPath::from(working_dir),
-            log_file: None,
+            log_file,
             track_stats: false,
             journal_path: None,
             profile: false,
@@ -333,6 +374,104 @@ async fn rustc_multi_output_hit_survives_cache_restore_without_target_dir() {
             "second compile should be restored from the cache after target/ deletion",
         );
         assert_outputs_exist(&outputs, "cached restore");
+        end_session(&mut client2, session2).await;
+        shutdown_daemon(client2, handle2).await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_compile_waits_for_background_depgraph_load_before_cold_skip() {
+    let rustc = match zccache::test_support::find_rustc() {
+        Some(path) => path,
+        None => {
+            eprintln!("skipping test: rustc not found");
+            return;
+        }
+    };
+
+    zccache::test_support::test_timeout(async move {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache_dir = tmp.path().join("zccache-cache");
+        let project_dir = tmp.path().join("workspace");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+        create_tiny_project(&project_dir);
+        let _cache_env = CacheEnvGuard::new(&cache_dir);
+
+        let args = rustc_multi_output_args();
+        let outputs = expected_outputs(&project_dir);
+
+        let (endpoint1, handle1) = start_daemon_like_zccache_daemon().await;
+        let mut client1 = connect(&endpoint1).await;
+        let session1 = start_session(&mut client1, &project_dir).await;
+        let first = compile_rustc(
+            &mut client1,
+            &session1,
+            rustc.as_path(),
+            &args,
+            &project_dir,
+        )
+        .await;
+        assert_eq!(
+            first.exit_code,
+            0,
+            "first rustc compile failed: {}",
+            String::from_utf8_lossy(&first.stderr),
+        );
+        assert!(!first.cached, "first compile should populate the cache");
+        assert_outputs_exist(&outputs, "first compile");
+        end_session(&mut client1, session1).await;
+        shutdown_daemon(client1, handle1).await;
+
+        let depgraph_path = depgraph_file_path();
+        assert!(
+            depgraph_path.is_file(),
+            "graceful shutdown should flush depgraph to {}",
+            depgraph_path.display(),
+        );
+
+        let (endpoint2, handle2, load_handle) =
+            start_daemon_with_delayed_background_depgraph_load(std::time::Duration::from_secs(3))
+                .await;
+        let mut client2 = connect(&endpoint2).await;
+        let log_path = tmp.path().join("delayed-load-session.log");
+        let session2 =
+            start_session_with_log(
+                &mut client2,
+                &project_dir,
+                Some(NormalizedPath::from(log_path.as_path())),
+            )
+            .await;
+        let second = compile_rustc(
+            &mut client2,
+            &session2,
+            rustc.as_path(),
+            &args,
+            &project_dir,
+        )
+        .await;
+        assert_eq!(
+            second.exit_code,
+            0,
+            "second rustc compile failed: {}\nsession log:\n{}",
+            String::from_utf8_lossy(&second.stderr),
+            std::fs::read_to_string(&log_path).unwrap_or_default(),
+        );
+        let session_log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(
+            session_log.contains("depgraph_load_pending: waiting"),
+            "first compile should observe the pending startup depgraph load; session log:\n{session_log}",
+        );
+        assert!(
+            !session_log.contains("reason=cold_skip"),
+            "first compile after daemon readiness must wait for the persisted depgraph instead of racing into cold_skip; session log:\n{session_log}",
+        );
+        assert!(
+            session_log.contains("verdict=Hit") || session_log.contains("verdict=SourceChanged"),
+            "first compile should consult the loaded depgraph after the wait; session log:\n{session_log}",
+        );
+        assert_outputs_exist(&outputs, "cached restore");
+        load_handle.await.expect("depgraph load task join");
         end_session(&mut client2, session2).await;
         shutdown_daemon(client2, handle2).await;
     })

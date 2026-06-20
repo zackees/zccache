@@ -206,6 +206,16 @@ pub(super) struct SharedState {
     /// CLI can distinguish "persisted graph" from "first-run, not yet flushed"
     /// without inferring it from the on-disk file size.
     pub(super) dep_graph_persisted: AtomicBool,
+    /// Whether startup has finished classifying the persisted depgraph.
+    ///
+    /// `zccache-daemon` marks this false before it moves the disk load onto a
+    /// background thread. Compile requests must not register/check contexts
+    /// against the empty default graph while this is false, otherwise the
+    /// first warm lookup races into the `cold_skip` path even though a valid
+    /// persisted graph is about to be installed. Issue #798.
+    pub(super) dep_graph_load_complete: AtomicBool,
+    /// Wakes compile requests waiting for startup depgraph classification.
+    pub(super) dep_graph_load_notify: Arc<Notify>,
     /// Optional load-time warning to mirror into every session log.
     ///
     /// Populated by `set_depgraph_load_warning` when the daemon's startup load

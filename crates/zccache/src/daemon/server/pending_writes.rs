@@ -140,6 +140,25 @@ pub(super) async fn await_pending(
     true
 }
 
+/// Wait until all currently pending cache writes have completed, bounded by
+/// `timeout`. Used during graceful shutdown before draining the artifact-index
+/// WAL so deferred persist tasks can publish their `(key, ArtifactIndex)` rows.
+pub(super) async fn await_all(pending: &DashMap<String, Arc<Notify>>, timeout: Duration) -> bool {
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    loop {
+        if pending.is_empty() {
+            return true;
+        }
+        tokio::select! {
+            () = tokio::time::sleep(Duration::from_millis(10)) => {}
+            () = &mut deadline => {
+                return pending.is_empty();
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

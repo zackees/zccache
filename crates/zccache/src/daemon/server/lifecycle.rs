@@ -181,6 +181,8 @@ impl DaemonServer {
                 shutdown_event_logged: AtomicBool::new(false),
                 fingerprint: FingerprintManager::new(),
                 dep_graph_persisted: AtomicBool::new(false),
+                dep_graph_load_complete: AtomicBool::new(true),
+                dep_graph_load_notify: Arc::new(Notify::new()),
                 depgraph_load_warning: Mutex::new(None),
                 in_flight_exec: DashMap::new(),
                 pending_cache_writes: DashMap::new(),
@@ -215,6 +217,22 @@ impl DaemonServer {
         self.state
             .dep_graph_persisted
             .store(true, Ordering::Release);
+        self.state
+            .dep_graph_load_complete
+            .store(true, Ordering::Release);
+        self.state.dep_graph_load_notify.notify_waiters();
+    }
+
+    /// Mark startup depgraph classification as pending.
+    ///
+    /// The daemon binary calls this before it offloads `depgraph.bin` loading
+    /// to `spawn_blocking`. Compile handlers use the paired notify to avoid
+    /// making the first warm compile race against the empty default graph.
+    #[doc(hidden)]
+    pub fn mark_dep_graph_load_pending(&self) {
+        self.state
+            .dep_graph_load_complete
+            .store(false, Ordering::Release);
     }
 
     /// Record a load-time depgraph warning to mirror into per-session logs.
@@ -428,6 +446,10 @@ impl DepGraphSetter {
             let mut guard = self.state.depgraph_load_warning.blocking_lock();
             *guard = Some(warning);
         }
+        self.state
+            .dep_graph_load_complete
+            .store(true, Ordering::Release);
+        self.state.dep_graph_load_notify.notify_waiters();
     }
 }
 

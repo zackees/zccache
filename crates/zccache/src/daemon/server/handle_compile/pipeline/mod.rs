@@ -30,6 +30,8 @@ use hash_verify::{hash_and_verify, HashSourceOutcome, HashVerifyInput, HashVerif
 use store_outcome::{store_successful_compile, StoreOutcomeRequest};
 use system_includes::{discover_system_includes, SystemIncludesOutcome};
 
+const DEPGRAPH_STARTUP_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Handle a Compile request: parse args, check depgraph, run compiler or return cached.
 pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response {
     let CompileRequest {
@@ -173,6 +175,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             original_args,
             source_indices,
         } => {
+            wait_for_startup_depgraph_load(state, &sid).await;
             return handle_compile_multi(
                 Arc::clone(state_arc),
                 sid,
@@ -204,6 +207,8 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
     };
 
     // ── Phase: build context + register ──────────────────────────────
+    wait_for_startup_depgraph_load(state, &sid).await;
+
     let t1 = std::time::Instant::now();
     let env_slice = client_env.as_deref().unwrap_or(&[]);
     let build_result = build_compile_context(
@@ -645,5 +650,41 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         stdout,
         stderr,
         cached: false,
+    }
+}
+
+async fn wait_for_startup_depgraph_load(state: &SharedState, sid: &SessionId) {
+    if state.dep_graph_load_complete.load(Ordering::Acquire) {
+        return;
+    }
+
+    write_session_log(
+        &state.sessions,
+        sid,
+        "[DIAG] depgraph_load_pending: waiting before compile context registration",
+    );
+
+    let deadline = tokio::time::sleep(DEPGRAPH_STARTUP_WAIT_TIMEOUT);
+    tokio::pin!(deadline);
+    loop {
+        let notified = state.dep_graph_load_notify.notified();
+        if state.dep_graph_load_complete.load(Ordering::Acquire) {
+            return;
+        }
+        tokio::select! {
+            () = notified => {
+                if state.dep_graph_load_complete.load(Ordering::Acquire) {
+                    return;
+                }
+            }
+            () = &mut deadline => {
+                write_session_log(
+                    &state.sessions,
+                    sid,
+                    "[WARN] depgraph_load_pending: timed out; continuing with current graph",
+                );
+                return;
+            }
+        }
     }
 }

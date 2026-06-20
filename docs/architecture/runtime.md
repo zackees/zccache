@@ -169,6 +169,13 @@ On startup, the daemon attempts to load the snapshot:
 
 The `dep_graph_persisted` flag is also flipped to `true` when a periodic or shutdown save completes successfully, so a daemon that started cold but has since flushed reports itself as persisted. `zccache status` surfaces this as either `vN, persisted, X.YZ MB on disk` or `vN, not persisted`.
 
+The daemon writes its readiness lock file before the potentially expensive disk
+load completes, but compile requests do not register or classify contexts until
+startup depgraph classification has finished. This keeps daemon startup
+observable quickly while preventing the first warm compile from racing against
+the empty default graph and reporting `cold_skip` when a valid persisted graph
+is about to be installed (issue #798).
+
 ### Crash Dumper (shared with CLI)
 
 Both `zccache-cli` and `zccache-daemon` call `zccache_core::crash::install(<bin-stem>)` at the top of `main`. That call wires up:

@@ -326,6 +326,23 @@ impl DaemonServer {
                     // input channels close.
                     *self.state.watcher.lock().await = None;
 
+                    // Deferred rustc/C++ persist tasks publish their durable
+                    // `ArtifactIndex` rows only after the cache files land on
+                    // disk. Wait for those tasks before draining the WAL;
+                    // otherwise shutdown can save a warm depgraph whose
+                    // artifact keys have not reached index.bin yet (#799).
+                    let pending_drained = pending_writes::await_all(
+                        &self.state.pending_cache_writes,
+                        std::time::Duration::from_secs(30),
+                    )
+                    .await;
+                    if !pending_drained {
+                        tracing::warn!(
+                            pending = self.state.pending_cache_writes.len(),
+                            "timed out waiting for pending artifact writes before WAL drain"
+                        );
+                    }
+
                     // Signal the index-writer to drain its WAL to disk, then
                     // wait briefly for it. Without this, unflushed entries are
                     // lost if the runtime aborts before the next interval tick.
