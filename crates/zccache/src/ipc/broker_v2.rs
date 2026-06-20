@@ -23,9 +23,29 @@
 //! Only [`probe_local_socket`] is wired in production today (the
 //! `RUNNING_PROCESS_FAKE_BACKEND` seam in `broker.rs`).
 
+use std::time::Duration;
+
 use interprocess::local_socket::traits::Stream as _;
 use interprocess::local_socket::Stream;
 use running_process::broker::client_v2::{self, BrokerV2Error, ClientSession};
+
+/// Default deadline for the [`probe_local_socket`] liveness check.
+///
+/// This is a probe, not a usage connect — 250ms is generous for any
+/// local-socket dial that is actually going to succeed. If it doesn't
+/// answer within this window the seam is assumed unreachable and the
+/// caller falls back to the direct-connect path (see `broker.rs`).
+const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Default deadline for the v2 broker Hello round-trip (`connect_v2_broker`,
+/// `adopt_v2_session`, `into_backend_io_v2`).
+///
+/// Mirrors v1's 3-second budget for `AsyncBrokerSession::adopt`'s
+/// `await_handoff_ready`. If `client_v2::connect`'s sync read on the
+/// underlying `interprocess::Stream` hangs (upstream has no internal
+/// read deadline; see issue #842 upstream-coordination), this bound
+/// is what saves the caller.
+const DEFAULT_V2_BROKER_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Slice 11 of #782: probe an arbitrary local-socket endpoint for
 /// reachability without going through any broker negotiation.
@@ -41,27 +61,96 @@ use running_process::broker::client_v2::{self, BrokerV2Error, ClientSession};
 /// otherwise. The opened stream is closed immediately — this is a
 /// liveness probe, not a connection acquisition.
 pub fn probe_local_socket(endpoint: &str) -> std::io::Result<()> {
-    // Aligned with upstream `running_process::broker::server::connection::
-    // local_socket_name`: pass the endpoint string verbatim on both
-    // platforms. The earlier `strip_prefix(r"\\.\pipe\")` on Windows was
-    // a parallel implementation that happened to work today (since
-    // `to_ns_name` accepts both prefixed and bare names) but would rot
-    // if `interprocess` tightened `GenericNamespaced` parsing.
-    #[cfg(windows)]
-    let name = {
-        use interprocess::local_socket::{GenericNamespaced, ToNsName};
-        ToNsName::to_ns_name::<GenericNamespaced>(endpoint)?
-    };
+    probe_local_socket_with_deadline(endpoint, DEFAULT_PROBE_TIMEOUT)
+}
 
-    #[cfg(unix)]
-    let name = {
-        use interprocess::local_socket::{GenericFilePath, ToFsName};
-        ToFsName::to_fs_name::<GenericFilePath>(endpoint)?
-    };
+/// Same as [`probe_local_socket`] but with a caller-supplied deadline.
+///
+/// MUST be called from inside `tokio::task::spawn_blocking` if invoked
+/// from an async context — the helper-thread bound prevents an infinite
+/// hang but the *outer* call still occupies the calling thread until
+/// the deadline elapses.
+pub fn probe_local_socket_with_deadline(
+    endpoint: &str,
+    deadline: Duration,
+) -> std::io::Result<()> {
+    let endpoint = endpoint.to_owned();
+    call_with_io_deadline("probe_local_socket", deadline, move || {
+        // Aligned with upstream `running_process::broker::server::connection::
+        // local_socket_name`: pass the endpoint string verbatim on both
+        // platforms. The earlier `strip_prefix(r"\\.\pipe\")` on Windows was
+        // a parallel implementation that happened to work today (since
+        // `to_ns_name` accepts both prefixed and bare names) but would rot
+        // if `interprocess` tightened `GenericNamespaced` parsing.
+        #[cfg(windows)]
+        let name = {
+            use interprocess::local_socket::{GenericNamespaced, ToNsName};
+            ToNsName::to_ns_name::<GenericNamespaced>(endpoint.as_str())?
+        };
 
-    let stream = Stream::connect(name)?;
-    drop(stream);
-    Ok(())
+        #[cfg(unix)]
+        let name = {
+            use interprocess::local_socket::{GenericFilePath, ToFsName};
+            ToFsName::to_fs_name::<GenericFilePath>(endpoint.as_str())?
+        };
+
+        let stream = Stream::connect(name)?;
+        drop(stream);
+        Ok(())
+    })
+}
+
+/// Run a blocking `io::Result<T>`-returning closure on a helper thread,
+/// bounded by `deadline`. On deadline the helper thread is leaked
+/// (there is no portable way to cancel a `Stream::connect` mid-call)
+/// but the calling thread returns promptly with an `ErrorKind::TimedOut`.
+///
+/// Mirrors v1's `await_handoff_ready` pattern (`mpsc::channel` +
+/// `thread::spawn` + `recv_timeout`) — local-socket streams have no
+/// portable read deadline, so the helper-thread approach is the only
+/// way to bound a sync dial / framed read.
+fn call_with_io_deadline<T, F>(label: &'static str, deadline: Duration, f: F) -> std::io::Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> std::io::Result<T> + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    match rx.recv_timeout(deadline) {
+        Ok(result) => result,
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("{label}: exceeded deadline of {deadline:?}"),
+        )),
+    }
+}
+
+/// Run a blocking closure returning `Result<T, BrokerV2Error>` on a
+/// helper thread, bounded by `deadline`. On deadline, synthesizes
+/// `BrokerV2Error::Dial { source: ErrorKind::TimedOut }` so caller
+/// classification (`from_brokerv2_error` returns `None` for `Dial`)
+/// routes to the direct-connect fallback path.
+fn call_with_brokerv2_deadline<T, F>(deadline: Duration, f: F) -> Result<T, BrokerV2Error>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, BrokerV2Error> + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    match rx.recv_timeout(deadline) {
+        Ok(result) => result,
+        Err(_) => Err(BrokerV2Error::Dial {
+            socket_path: "<deadline-exceeded>".to_string(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("v2 broker call exceeded deadline of {deadline:?}"),
+            ),
+        }),
+    }
 }
 
 /// Dial the v2 broker for zccache and return the negotiated session.
@@ -78,9 +167,20 @@ pub fn probe_local_socket(endpoint: &str) -> std::io::Result<()> {
 ///
 /// `#[doc(hidden)]` per #844: only smoke tests call this. Remove the
 /// marker when the first production caller lands.
+///
+/// # Deadline
+///
+/// Bounded by [`DEFAULT_V2_BROKER_TIMEOUT`]. On timeout returns
+/// `BrokerV2Error::Dial { source: ErrorKind::TimedOut }` so the caller
+/// routes through the direct-connect fallback. Upstream's
+/// `client_v2::connect` itself has no internal read deadline (see
+/// #842 upstream-coordination); this wrapper is the defense.
 #[doc(hidden)]
 pub fn connect_v2_broker(wanted_version: &str) -> Result<ClientSession, BrokerV2Error> {
-    client_v2::connect("zccache", wanted_version)
+    let wanted = wanted_version.to_owned();
+    call_with_brokerv2_deadline(DEFAULT_V2_BROKER_TIMEOUT, move || {
+        client_v2::connect("zccache", &wanted)
+    })
 }
 
 /// Slice 13 of #782: v2 adopt path counterpart of v1's
@@ -102,6 +202,10 @@ pub fn connect_v2_broker(wanted_version: &str) -> Result<ClientSession, BrokerV2
 ///
 /// `#[doc(hidden)]` per #844: only smoke tests call this. Remove the
 /// marker when the first production caller lands.
+///
+/// # Deadline
+///
+/// Bounded by [`DEFAULT_V2_BROKER_TIMEOUT`] via [`connect_v2_broker`].
 #[doc(hidden)]
 pub fn adopt_v2_session(
     wanted_version: &str,
@@ -112,7 +216,7 @@ pub fn adopt_v2_session(
     ),
     BrokerV2Error,
 > {
-    let session = client_v2::connect("zccache", wanted_version)?;
+    let session = connect_v2_broker(wanted_version)?;
     Ok(session.into_inner())
 }
 
@@ -140,6 +244,51 @@ pub fn into_backend_io_v2(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `call_with_io_deadline` returns `Err(TimedOut)` when the closure
+    /// outlives the deadline.
+    #[test]
+    fn call_with_io_deadline_fires_on_slow_closure() {
+        let result: std::io::Result<()> =
+            call_with_io_deadline("test", Duration::from_millis(50), || {
+                std::thread::sleep(Duration::from_millis(500));
+                Ok(())
+            });
+        let err = result.expect_err("slow closure must time out");
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(err.to_string().contains("exceeded deadline"));
+    }
+
+    /// `call_with_io_deadline` returns the closure's `Ok` when fast.
+    #[test]
+    fn call_with_io_deadline_passes_through_fast_ok() {
+        let result: std::io::Result<u32> =
+            call_with_io_deadline("test", Duration::from_secs(5), || Ok(42));
+        assert_eq!(result.expect("fast closure returns Ok"), 42);
+    }
+
+    /// `call_with_brokerv2_deadline` returns `BrokerV2Error::Dial { TimedOut }`
+    /// when the closure outlives the deadline. The `Dial` shape lets
+    /// `BrokerRefusal::from_brokerv2_error` route it as transport
+    /// (returns `None`) so callers fall back to direct connect.
+    #[test]
+    fn call_with_brokerv2_deadline_fires_on_slow_closure() {
+        let result: Result<(), BrokerV2Error> =
+            call_with_brokerv2_deadline(Duration::from_millis(50), || {
+                std::thread::sleep(Duration::from_millis(500));
+                Ok(())
+            });
+        match result.expect_err("slow closure must time out") {
+            BrokerV2Error::Dial { socket_path, source } => {
+                assert_eq!(source.kind(), std::io::ErrorKind::TimedOut);
+                assert!(
+                    socket_path.contains("deadline-exceeded"),
+                    "synthetic socket_path should self-document the timeout origin; got {socket_path}"
+                );
+            }
+            other => panic!("expected BrokerV2Error::Dial {{ TimedOut }}, got: {other:?}"),
+        }
+    }
 
     /// Smoke test: with no v2 broker running, `connect_v2_broker` returns
     /// the typed `BrokerV2Error::Dial` path. This is the same shape the
