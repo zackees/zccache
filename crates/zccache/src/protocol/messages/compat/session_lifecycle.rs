@@ -102,6 +102,7 @@ fn session_ended_with_stats_roundtrip() {
         unique_sources: 30,
         bytes_read: 2_000_000,
         bytes_written: 500_000,
+        lookup_outcomes: LookupOutcomes::default(),
         phase_profile: None,
     };
     let resp = Response::SessionEnded { stats: Some(stats) };
@@ -132,6 +133,7 @@ fn session_stats_result_roundtrip() {
         unique_sources: 9,
         bytes_read: 50_000,
         bytes_written: 20_000,
+        lookup_outcomes: LookupOutcomes::default(),
         phase_profile: None,
     };
     roundtrip(&Response::SessionStatsResult { stats: Some(stats) });

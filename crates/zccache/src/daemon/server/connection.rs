@@ -357,6 +357,7 @@ pub(super) async fn handle_connection(
                                     unique_sources: f.unique_sources,
                                     bytes_read: f.bytes_read,
                                     bytes_written: f.bytes_written,
+                                    lookup_outcomes: f.lookup_outcomes.into(),
                                     // Daemon-wide phase totals — see
                                     // PhaseProfileSummary doc for the
                                     // single-vs-multi-session caveat.
@@ -405,6 +406,7 @@ pub(super) async fn handle_connection(
                                     unique_sources: f.unique_sources,
                                     bytes_read: f.bytes_read,
                                     bytes_written: f.bytes_written,
+                                    lookup_outcomes: f.lookup_outcomes.into(),
                                     phase_profile: Some(state.profiler.totals_snapshot().into()),
                                 }
                             });

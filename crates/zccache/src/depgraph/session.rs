@@ -7,13 +7,70 @@
 //! The graph itself survives across sessions â€” sessions are ephemeral
 //! metadata about who is using the graph.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::time::{Duration, Instant};
 
 use crate::core::NormalizedPath;
 use dashmap::DashMap;
 
 use super::context::ContextKey;
+
+/// Per-session depgraph/artifact lookup outcome counters.
+///
+/// These counters intentionally separate the #787 failure shapes that the
+/// top-level hit/miss counters collapse together: real depgraph-backed hits,
+/// depgraph hits whose artifact payload is missing, blanket `cold_skip`
+/// misses, and all other diagnostic miss reasons.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LookupOutcomes {
+    pub depgraph_hit_artifact_hit: u64,
+    pub depgraph_hit_artifact_miss: u64,
+    pub depgraph_cold_skip: u64,
+    pub depgraph_other_miss: BTreeMap<String, u64>,
+}
+
+impl LookupOutcomes {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            depgraph_hit_artifact_hit: 0,
+            depgraph_hit_artifact_miss: 0,
+            depgraph_cold_skip: 0,
+            depgraph_other_miss: BTreeMap::new(),
+        }
+    }
+
+    fn record_other_miss(&mut self, reason: &str) {
+        let key = normalize_lookup_miss_reason(reason);
+        *self.depgraph_other_miss.entry(key).or_insert(0) += 1;
+    }
+}
+
+impl Default for LookupOutcomes {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn normalize_lookup_miss_reason(reason: &str) -> String {
+    let mut out = String::with_capacity(reason.len());
+    let mut last_was_sep = false;
+    for ch in reason.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            last_was_sep = false;
+        } else if !last_was_sep {
+            out.push('_');
+            last_was_sep = true;
+        }
+    }
+    let normalized = out.trim_matches('_').to_string();
+    if normalized.is_empty() {
+        "unknown".to_string()
+    } else {
+        normalized
+    }
+}
 
 /// Per-session statistics tracker. Only allocated when the session opts in.
 #[derive(Debug, Clone)]
@@ -38,6 +95,8 @@ pub struct SessionStatsTracker {
     pub bytes_read: u64,
     /// Artifact bytes stored into cache.
     pub bytes_written: u64,
+    /// Depgraph/artifact lookup outcome breakdown.
+    pub lookup_outcomes: LookupOutcomes,
 }
 
 /// Finalized session statistics (plain data, no sets).
@@ -54,6 +113,7 @@ pub struct FinalizedSessionStats {
     pub unique_sources: u64,
     pub bytes_read: u64,
     pub bytes_written: u64,
+    pub lookup_outcomes: LookupOutcomes,
 }
 
 impl SessionStatsTracker {
@@ -71,6 +131,7 @@ impl SessionStatsTracker {
             sources: HashSet::new(),
             bytes_read: 0,
             bytes_written: 0,
+            lookup_outcomes: LookupOutcomes::new(),
         }
     }
 
@@ -108,6 +169,26 @@ impl SessionStatsTracker {
         self.errors_cached += 1;
     }
 
+    /// Record a depgraph hit that successfully materialized an artifact.
+    pub fn record_depgraph_hit_artifact_hit(&mut self) {
+        self.lookup_outcomes.depgraph_hit_artifact_hit += 1;
+    }
+
+    /// Record a depgraph hit whose artifact payload was absent.
+    pub fn record_depgraph_hit_artifact_miss(&mut self) {
+        self.lookup_outcomes.depgraph_hit_artifact_miss += 1;
+    }
+
+    /// Record a depgraph cold-skip classifier miss.
+    pub fn record_depgraph_cold_skip(&mut self) {
+        self.lookup_outcomes.depgraph_cold_skip += 1;
+    }
+
+    /// Record any other depgraph miss reason.
+    pub fn record_depgraph_other_miss(&mut self, reason: &str) {
+        self.lookup_outcomes.record_other_miss(reason);
+    }
+
     /// Finalize into a plain stats struct given the session's creation time.
     #[must_use]
     pub fn finalize(&self, created_at: Instant) -> FinalizedSessionStats {
@@ -123,6 +204,7 @@ impl SessionStatsTracker {
             unique_sources: self.sources.len() as u64,
             bytes_read: self.bytes_read,
             bytes_written: self.bytes_written,
+            lookup_outcomes: self.lookup_outcomes.clone(),
         }
     }
 }
@@ -594,6 +676,7 @@ mod tests {
         assert_eq!(t.errors_cached, 0);
         assert_eq!(t.bytes_read, 0);
         assert_eq!(t.bytes_written, 0);
+        assert_eq!(t.lookup_outcomes, LookupOutcomes::new());
         assert!(t.sources.is_empty());
     }
 
@@ -651,6 +734,44 @@ mod tests {
         assert_eq!(f.unique_sources, 2);
         assert_eq!(f.bytes_read, 1024);
         assert_eq!(f.bytes_written, 2048);
+    }
+
+    #[test]
+    fn tracker_records_lookup_outcomes_reproducer_mix() {
+        let mut t = SessionStatsTracker::new();
+
+        t.record_depgraph_hit_artifact_hit();
+        t.record_depgraph_hit_artifact_miss();
+        t.record_depgraph_hit_artifact_miss();
+        t.record_depgraph_cold_skip();
+        t.record_depgraph_cold_skip();
+        t.record_depgraph_cold_skip();
+        t.record_depgraph_other_miss("headers changed");
+        t.record_depgraph_other_miss("headers changed");
+        t.record_depgraph_other_miss("source content changed");
+        t.record_depgraph_other_miss("hit: artifact_key=abc (first check after update)");
+
+        let f = t.finalize(Instant::now());
+
+        assert_eq!(f.lookup_outcomes.depgraph_hit_artifact_hit, 1);
+        assert_eq!(f.lookup_outcomes.depgraph_hit_artifact_miss, 2);
+        assert_eq!(f.lookup_outcomes.depgraph_cold_skip, 3);
+        assert_eq!(
+            f.lookup_outcomes.depgraph_other_miss.get("headers_changed"),
+            Some(&2)
+        );
+        assert_eq!(
+            f.lookup_outcomes
+                .depgraph_other_miss
+                .get("source_content_changed"),
+            Some(&1)
+        );
+        assert_eq!(
+            f.lookup_outcomes
+                .depgraph_other_miss
+                .get("hit_artifact_key_abc_first_check_after_update"),
+            Some(&1)
+        );
     }
 
     #[test]

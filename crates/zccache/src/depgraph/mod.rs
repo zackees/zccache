@@ -31,7 +31,8 @@ pub use rustc_args::{parse_rustc_args, ExternCrate, RustcParsedArgs};
 pub use scanner::{IncludeDirective, IncludeKind, ScanResult};
 pub use search_paths::IncludeSearchPaths;
 pub use session::{
-    FinalizedSessionStats, Session, SessionConfig, SessionId, SessionManager, SessionStatsTracker,
+    FinalizedSessionStats, LookupOutcomes, Session, SessionConfig, SessionId, SessionManager,
+    SessionStatsTracker,
 };
 pub use snapshot::{
     classify_load, depgraph_file_path, load_from_file, save_to_file, DepGraphLoadOutcome,

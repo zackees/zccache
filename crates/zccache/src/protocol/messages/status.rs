@@ -2,6 +2,7 @@
 
 use crate::core::NormalizedPath;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// One owner PID currently keeping a private daemon alive.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +126,9 @@ pub struct SessionStats {
     pub bytes_read: u64,
     /// Total artifact bytes stored into cache.
     pub bytes_written: u64,
+    /// Depgraph/artifact lookup outcome breakdown.
+    #[serde(default)]
+    pub lookup_outcomes: LookupOutcomes,
     /// Daemon-wide phase-timing aggregate. `None` from older daemons that
     /// don't populate the field; `Some` from PROTOCOL_VERSION >= 9 daemons.
     ///
@@ -135,6 +139,27 @@ pub struct SessionStats {
     /// totals cross-contaminate — that's acceptable for v1 and revisited if
     /// a real consumer needs per-session isolation.
     pub phase_profile: Option<PhaseProfileSummary>,
+}
+
+/// Per-session depgraph/artifact lookup outcome counters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LookupOutcomes {
+    pub depgraph_hit_artifact_hit: u64,
+    pub depgraph_hit_artifact_miss: u64,
+    pub depgraph_cold_skip: u64,
+    #[serde(default)]
+    pub depgraph_other_miss: BTreeMap<String, u64>,
+}
+
+impl From<crate::depgraph::LookupOutcomes> for LookupOutcomes {
+    fn from(outcomes: crate::depgraph::LookupOutcomes) -> Self {
+        Self {
+            depgraph_hit_artifact_hit: outcomes.depgraph_hit_artifact_hit,
+            depgraph_hit_artifact_miss: outcomes.depgraph_hit_artifact_miss,
+            depgraph_cold_skip: outcomes.depgraph_cold_skip,
+            depgraph_other_miss: outcomes.depgraph_other_miss,
+        }
+    }
 }
 
 /// Aggregate phase-timing totals from the daemon's PhaseProfiler.

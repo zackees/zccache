@@ -193,8 +193,8 @@ mod full_family {
     };
     use zccache::protocol::{
         ArtifactData, ArtifactOutput, ArtifactPayload, ExecCachePolicy, ExecOutputStreams,
-        LookupResult, PhaseProfileSummary, PrivateDaemonSessionOptions, Request, Response,
-        RustArtifactInfo, SessionStats, StoreResult,
+        LookupOutcomes, LookupResult, PhaseProfileSummary, PrivateDaemonSessionOptions, Request,
+        Response, RustArtifactInfo, SessionStats, StoreResult,
     };
 
     fn roundtrip_request(request: Request) {
@@ -241,6 +241,12 @@ mod full_family {
             unique_sources: 9,
             bytes_read: 10,
             bytes_written: 11,
+            lookup_outcomes: LookupOutcomes {
+                depgraph_hit_artifact_hit: 12,
+                depgraph_hit_artifact_miss: 13,
+                depgraph_cold_skip: 14,
+                depgraph_other_miss: [("headers_changed".to_string(), 15)].into_iter().collect(),
+            },
             phase_profile: Some(PhaseProfileSummary {
                 hit_count: 1,
                 miss_count: 2,

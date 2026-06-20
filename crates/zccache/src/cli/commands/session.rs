@@ -428,6 +428,7 @@ pub(crate) fn session_stats_json(
         "bytes_read": stats.bytes_read,
         "bytes_written": stats.bytes_written,
         "hit_rate": hit_rate,
+        "lookup_outcomes": &stats.lookup_outcomes,
         "phase_profile": phase_profile,
     })
 }

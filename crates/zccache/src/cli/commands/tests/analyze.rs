@@ -239,6 +239,7 @@ fn analyze_journal_rejects_session_stats_json() {
         unique_sources: 8,
         bytes_read: 1024,
         bytes_written: 2048,
+        lookup_outcomes: crate::protocol::LookupOutcomes::default(),
         phase_profile: None,
     };
     let stats_json = session_stats_json("session-123", &stats);

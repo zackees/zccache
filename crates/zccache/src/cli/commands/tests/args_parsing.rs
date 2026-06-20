@@ -134,6 +134,12 @@ fn rust_plan_session_stats_json_separates_compile_cache_stats() {
         unique_sources: 8,
         bytes_read: 1024,
         bytes_written: 2048,
+        lookup_outcomes: crate::protocol::LookupOutcomes {
+            depgraph_hit_artifact_hit: 7,
+            depgraph_hit_artifact_miss: 2,
+            depgraph_cold_skip: 3,
+            depgraph_other_miss: [("headers_changed".to_string(), 1)].into_iter().collect(),
+        },
         phase_profile: None,
     };
     let json = session_stats_json("session-123", &stats);
@@ -143,6 +149,13 @@ fn rust_plan_session_stats_json_separates_compile_cache_stats() {
     assert_eq!(json["hits"], 7);
     assert_eq!(json["misses"], 3);
     assert_eq!(json["hit_rate"].as_f64().unwrap(), 0.7);
+    assert_eq!(json["lookup_outcomes"]["depgraph_hit_artifact_hit"], 7);
+    assert_eq!(json["lookup_outcomes"]["depgraph_hit_artifact_miss"], 2);
+    assert_eq!(json["lookup_outcomes"]["depgraph_cold_skip"], 3);
+    assert_eq!(
+        json["lookup_outcomes"]["depgraph_other_miss"]["headers_changed"],
+        1
+    );
 }
 
 #[test]

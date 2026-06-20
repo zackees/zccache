@@ -410,8 +410,51 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         ),
     );
     match verdict {
-        crate::depgraph::CacheVerdict::Hit { artifact_key }
-        | crate::depgraph::CacheVerdict::SourceChanged { artifact_key } => {
+        crate::depgraph::CacheVerdict::Hit { artifact_key } => {
+            let artifact_key_hex = artifact_key.hash().to_hex();
+            if let Some(response) = try_depgraph_cached_hit(DepgraphHitProbe {
+                state,
+                sid: &sid,
+                context_key,
+                artifact_key_hex: &artifact_key_hex,
+                source_path: &source_path,
+                output_path: &output_path,
+                cwd_path: &cwd_path,
+                ctx: &ctx,
+                compiler_path,
+                effective_args: &effective_args,
+                cwd,
+                request_cache_key_root: &request_cache_key_root,
+                client_env: client_env.as_deref(),
+                // Issue #643: see `FastHitProbe` site above for rationale.
+                dep_flags: if is_rustc { None } else { Some(&dep_flags) },
+                is_rustc,
+                worktree_equivalent_context,
+                worktree_bound,
+                compile_start,
+                parse_args_ns,
+                build_context_ns,
+                hash_source_ns,
+                hash_headers_ns,
+                depgraph_check_ns,
+            }) {
+                record_session_stat(&state.sessions, &sid, |t| {
+                    t.record_depgraph_hit_artifact_hit();
+                });
+                return response;
+            }
+            // Artifact key computed but no artifact stored yet, or payload delivery
+            // failed. Fall through to compile.
+            record_session_stat(&state.sessions, &sid, |t| {
+                t.record_depgraph_hit_artifact_miss();
+            });
+            write_session_log(
+                &state.sessions,
+                &sid,
+                &format!("[DIAG] artifact_not_found: key={artifact_key_hex}"),
+            );
+        }
+        crate::depgraph::CacheVerdict::SourceChanged { artifact_key } => {
             let artifact_key_hex = artifact_key.hash().to_hex();
             if let Some(response) = try_depgraph_cached_hit(DepgraphHitProbe {
                 state,
@@ -441,17 +484,30 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             }) {
                 return response;
             }
-            // Artifact key computed but no artifact stored yet, or payload delivery
-            // failed. Fall through to compile.
+            record_session_stat(&state.sessions, &sid, |t| {
+                t.record_depgraph_other_miss(&diag_reason);
+            });
             write_session_log(
                 &state.sessions,
                 &sid,
                 &format!("[DIAG] artifact_not_found: key={artifact_key_hex}"),
             );
         }
-        crate::depgraph::CacheVerdict::Cold
-        | crate::depgraph::CacheVerdict::HeadersChanged { .. }
+        crate::depgraph::CacheVerdict::Cold => {
+            record_session_stat(&state.sessions, &sid, |t| {
+                if diag_reason == "cold_skip" {
+                    t.record_depgraph_cold_skip();
+                } else {
+                    t.record_depgraph_other_miss(&diag_reason);
+                }
+            });
+            // Need to compile and scan includes
+        }
+        crate::depgraph::CacheVerdict::HeadersChanged { .. }
         | crate::depgraph::CacheVerdict::NeedsPreprocessor => {
+            record_session_stat(&state.sessions, &sid, |t| {
+                t.record_depgraph_other_miss(&diag_reason);
+            });
             // Need to compile and scan includes
         }
     }

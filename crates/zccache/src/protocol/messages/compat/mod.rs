@@ -50,6 +50,7 @@ pub(super) fn sample_session_stats() -> SessionStats {
         unique_sources: 9,
         bytes_read: 10,
         bytes_written: 11,
+        lookup_outcomes: LookupOutcomes::default(),
         phase_profile: None,
     }
 }

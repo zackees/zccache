@@ -297,6 +297,7 @@ pub(super) fn session_stats_to_prost(
         bytes_read: stats.bytes_read,
         bytes_written: stats.bytes_written,
         phase_profile: stats.phase_profile.as_ref().map(phase_profile_to_prost),
+        lookup_outcomes: Some(lookup_outcomes_to_prost(&stats.lookup_outcomes)),
     }
 }
 
@@ -316,6 +317,32 @@ pub(super) fn session_stats_from_prost(
         bytes_read: stats.bytes_read,
         bytes_written: stats.bytes_written,
         phase_profile: stats.phase_profile.map(phase_profile_from_prost),
+        lookup_outcomes: stats
+            .lookup_outcomes
+            .map(lookup_outcomes_from_prost)
+            .unwrap_or_default(),
+    }
+}
+
+fn lookup_outcomes_to_prost(
+    outcomes: &crate::protocol::LookupOutcomes,
+) -> zccache_v1::LookupOutcomes {
+    zccache_v1::LookupOutcomes {
+        depgraph_hit_artifact_hit: outcomes.depgraph_hit_artifact_hit,
+        depgraph_hit_artifact_miss: outcomes.depgraph_hit_artifact_miss,
+        depgraph_cold_skip: outcomes.depgraph_cold_skip,
+        depgraph_other_miss: outcomes.depgraph_other_miss.clone().into_iter().collect(),
+    }
+}
+
+fn lookup_outcomes_from_prost(
+    outcomes: zccache_v1::LookupOutcomes,
+) -> crate::protocol::LookupOutcomes {
+    crate::protocol::LookupOutcomes {
+        depgraph_hit_artifact_hit: outcomes.depgraph_hit_artifact_hit,
+        depgraph_hit_artifact_miss: outcomes.depgraph_hit_artifact_miss,
+        depgraph_cold_skip: outcomes.depgraph_cold_skip,
+        depgraph_other_miss: outcomes.depgraph_other_miss.into_iter().collect(),
     }
 }
 

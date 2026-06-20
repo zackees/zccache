@@ -281,6 +281,14 @@ message SessionStats {
   uint64 bytes_read = 10;
   uint64 bytes_written = 11;
   optional PhaseProfileSummary phase_profile = 12;
+  optional LookupOutcomes lookup_outcomes = 13;
+}
+
+message LookupOutcomes {
+  uint64 depgraph_hit_artifact_hit = 1;
+  uint64 depgraph_hit_artifact_miss = 2;
+  uint64 depgraph_cold_skip = 3;
+  map<string, uint64> depgraph_other_miss = 4;
 }
 
 message PhaseProfileSummary {

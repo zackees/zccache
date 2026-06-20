@@ -17,6 +17,7 @@ fn session_stats_roundtrip() {
         unique_sources: 42,
         bytes_read: 1024 * 1024,
         bytes_written: 512 * 1024,
+        lookup_outcomes: LookupOutcomes::default(),
         phase_profile: None,
     };
     roundtrip(&stats);
@@ -36,6 +37,7 @@ fn session_stats_default_zeros() {
         unique_sources: 0,
         bytes_read: 0,
         bytes_written: 0,
+        lookup_outcomes: LookupOutcomes::default(),
         phase_profile: None,
     };
     roundtrip(&stats);
@@ -58,6 +60,17 @@ fn session_stats_with_phase_profile_roundtrip() {
         unique_sources: 115,
         bytes_read: 143_812_577,
         bytes_written: 62_500_000,
+        lookup_outcomes: LookupOutcomes {
+            depgraph_hit_artifact_hit: 103,
+            depgraph_hit_artifact_miss: 2,
+            depgraph_cold_skip: 7,
+            depgraph_other_miss: [
+                ("headers_changed".to_string(), 3),
+                ("source_content_changed".to_string(), 1),
+            ]
+            .into_iter()
+            .collect(),
+        },
         phase_profile: Some(PhaseProfileSummary {
             hit_count: 103,
             miss_count: 12,
@@ -87,6 +100,9 @@ fn session_stats_with_phase_profile_roundtrip() {
     let json = serde_json::to_string(&stats).expect("serialize");
     let decoded: SessionStats = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(stats, decoded);
+    assert_eq!(decoded.lookup_outcomes.depgraph_hit_artifact_hit, 103);
+    assert_eq!(decoded.lookup_outcomes.depgraph_hit_artifact_miss, 2);
+    assert_eq!(decoded.lookup_outcomes.depgraph_cold_skip, 7);
 
     // An old-daemon-style JSON that omits phase_profile must decode to
     // None (back-compat with PROTOCOL_VERSION 8 consumers that haven't
@@ -98,5 +114,6 @@ fn session_stats_with_phase_profile_roundtrip() {
     }"#;
     let decoded: SessionStats = serde_json::from_str(legacy).expect("legacy decode");
     assert!(decoded.phase_profile.is_none());
+    assert_eq!(decoded.lookup_outcomes, LookupOutcomes::default());
     assert_eq!(decoded.errors_cached, 0);
 }

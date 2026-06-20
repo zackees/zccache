@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::protocol::Response;
+use crate::protocol::{LookupOutcomes, Response};
 
 use super::super::{extract_outcome, miss_reason};
 
@@ -184,6 +184,7 @@ fn test_extract_outcome_all_non_journalable() {
                 unique_sources: 0,
                 bytes_read: 0,
                 bytes_written: 0,
+                lookup_outcomes: LookupOutcomes::default(),
                 phase_profile: None,
             }),
         },
