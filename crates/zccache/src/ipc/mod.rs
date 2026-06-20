@@ -543,9 +543,15 @@ fn backend_identity_file_name(namespace: Option<&str>) -> String {
 
 /// Convert zccache's direct daemon endpoint to the running-process endpoint
 /// tuple used by `BackendHandle`.
+///
+/// Slice 24 of zccache#782: migrated to the `protocol_v2::backend_handle`
+/// namespace (upstream PR #527). The underlying type is identical to v1's
+/// per the coexistence re-export design — no behaviour change.
 #[must_use]
-pub fn running_process_endpoint(endpoint: &str) -> running_process::broker::protocol::Endpoint {
-    running_process::broker::protocol::Endpoint {
+pub fn running_process_endpoint(
+    endpoint: &str,
+) -> running_process::broker::protocol_v2::backend_handle::Endpoint {
+    running_process::broker::protocol_v2::backend_handle::Endpoint {
         namespace_id: crate::core::config::daemon_namespace_label(),
         path: running_process_endpoint_path(endpoint),
     }
@@ -566,21 +572,27 @@ fn running_process_endpoint_path(endpoint: &str) -> String {
 
 /// Build the current process identity that a zccache daemon exposes to
 /// `BackendHandle` probes.
+///
+/// Slice 24 of zccache#782: migrated to the `protocol_v2::backend_handle`
+/// namespace.
 pub fn current_backend_identity(
     endpoint: &str,
 ) -> Result<
-    running_process::broker::backend_handle::DaemonProcess,
-    running_process::broker::backend_lifecycle::identity::IdentityError,
+    running_process::broker::protocol_v2::backend_handle::DaemonProcess,
+    running_process::broker::protocol_v2::backend_handle::IdentityError,
 > {
-    running_process::broker::backend_handle::DaemonProcess::current_process(
+    running_process::broker::protocol_v2::backend_handle::DaemonProcess::current_process(
         running_process_endpoint(endpoint),
         None,
     )
 }
 
 /// Persist the daemon identity used by future `BackendHandle` probes.
+///
+/// Slice 24 of zccache#782: migrated to the `protocol_v2::backend_handle`
+/// namespace.
 pub fn write_backend_identity(
-    daemon: &running_process::broker::backend_handle::DaemonProcess,
+    daemon: &running_process::broker::protocol_v2::backend_handle::DaemonProcess,
 ) -> Result<(), std::io::Error> {
     let path = backend_identity_path();
     if let Some(parent) = path.parent() {
@@ -592,15 +604,18 @@ pub fn write_backend_identity(
 }
 
 /// Load and actively verify the daemon identity through `BackendHandle`.
+///
+/// Slice 24 of zccache#782: migrated to the `protocol_v2::backend_handle`
+/// namespace.
 #[must_use]
 pub fn probe_backend_handle(
     endpoint: &str,
-) -> Option<running_process::broker::backend_handle::BackendHandle> {
+) -> Option<running_process::broker::protocol_v2::backend_handle::BackendHandle> {
     let daemon = std::fs::read(backend_identity_path())
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
     let endpoint = running_process_endpoint(endpoint);
-    running_process::broker::backend_handle::BackendHandle::probe_with_service(
+    running_process::broker::protocol_v2::backend_handle::BackendHandle::probe_with_service(
         "zccache",
         crate::core::VERSION,
         &endpoint,

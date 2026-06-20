@@ -218,8 +218,13 @@ impl DaemonServer {
     }
 
     /// Clone the running-process identity served by this daemon.
+    ///
+    /// Slice 24 of zccache#782: migrated to the `protocol_v2::backend_handle`
+    /// namespace.
     #[must_use]
-    pub fn backend_identity(&self) -> running_process::broker::backend_handle::DaemonProcess {
+    pub fn backend_identity(
+        &self,
+    ) -> running_process::broker::protocol_v2::backend_handle::DaemonProcess {
         self.state.backend_identity.clone()
     }
 

@@ -14,8 +14,11 @@ pub(super) struct SharedState {
     /// wrappers can verify they reached the intended daemon identity.
     pub(super) endpoint: String,
     /// running-process BackendHandle identity served on the same direct
-    /// daemon endpoint for the minimal broker-adoption path.
-    pub(super) backend_identity: running_process::broker::backend_handle::DaemonProcess,
+    /// daemon endpoint for the minimal broker-adoption path. Slice 24
+    /// of zccache#782: migrated to the `protocol_v2::backend_handle`
+    /// namespace (upstream re-export of the cross-version-stable type).
+    pub(super) backend_identity:
+        running_process::broker::protocol_v2::backend_handle::DaemonProcess,
     /// Active daemon/socket namespace label.
     pub(super) daemon_namespace: String,
     /// Cache root this daemon was created with.
