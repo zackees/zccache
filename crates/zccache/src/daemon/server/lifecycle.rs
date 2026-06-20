@@ -96,27 +96,16 @@ impl DaemonServer {
         // window take the cold blake3 path — same outcome as before
         // #517's persistence existed.
         let compiler_hash_cache = CompilerHashCache::new();
-        let cache_system =
-            match crate::fscache::MetadataCache::load_from_disk(metadata_path.as_path()) {
-                Ok(metadata) => {
-                    let loaded = metadata.len();
-                    if loaded > 0 {
-                        tracing::info!(
-                            loaded,
-                            path = %metadata_path.display(),
-                            "metadata cache restored from disk"
-                        );
-                    }
-                    CacheSystem::with_metadata(metadata)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        path = %metadata_path.display(),
-                        "failed to load metadata cache, starting empty: {e}"
-                    );
-                    CacheSystem::new()
-                }
-            };
+        // Issue #784 phase 2b: same deferred-load pattern as
+        // `compiler_hash_cache` above — start with an empty
+        // `CacheSystem`; the on-disk `metadata.bin` snapshot is read
+        // by `metadata_cache_loader()`'s `load_and_install()` in a
+        // `spawn_blocking` AFTER the readiness lockfile is written.
+        // Compile requests during the merge window take the cold-path
+        // re-stat / re-hash; the stat-verify safety net in
+        // `MetadataCache::get_cached_hash_if_stat_valid` keeps cache
+        // keys correct either way.
+        let cache_system = CacheSystem::new();
 
         Ok(Self {
             listener,
@@ -169,6 +158,7 @@ impl DaemonServer {
                 index_writer_shutdown,
                 artifacts_loaded: AtomicBool::new(false),
                 compiler_hash_cache_loaded: AtomicBool::new(false),
+                metadata_cache_loaded: AtomicBool::new(false),
                 shutdown_event_logged: AtomicBool::new(false),
                 fingerprint: FingerprintManager::new(),
                 dep_graph_persisted: AtomicBool::new(false),
@@ -250,6 +240,23 @@ impl DaemonServer {
         CompilerHashCacheLoader {
             state: Arc::clone(&self.state),
             path: self.state.compiler_hash_cache_path.clone(),
+        }
+    }
+
+    /// Hand out a loader that reads the on-disk `metadata.bin` snapshot
+    /// and installs it into the running state's `CacheSystem`. Issue
+    /// #784 phase 2b — extends the compiler-hash-cache deferral above
+    /// to the biggest of the four snapshots (the one that scales with
+    /// the cache size).
+    ///
+    /// Designed to be called once, immediately after `write_lock_file`,
+    /// inside a `tokio::task::spawn_blocking`. The handle captures the
+    /// metadata path so the daemon binary doesn't need access to the
+    /// private `metadata_path` field on `SharedState`.
+    pub fn metadata_cache_loader(&self) -> MetadataCacheLoader {
+        MetadataCacheLoader {
+            state: Arc::clone(&self.state),
+            path: self.state.metadata_path.clone(),
         }
     }
 
@@ -408,6 +415,57 @@ impl CompilerHashCacheLoader {
         }
         self.state
             .compiler_hash_cache_loaded
+            .store(true, Ordering::Release);
+    }
+}
+
+/// Owned handle that loads the on-disk `metadata.bin` snapshot and
+/// merges it into the running daemon's `CacheSystem`.
+///
+/// Issue #784 phase 2b. Same shape as [`CompilerHashCacheLoader`] —
+/// the daemon binary holds one across a `spawn_blocking` boundary and
+/// calls [`Self::load_and_install`] once after the readiness lockfile
+/// is written. The merge uses [`crate::fscache::MetadataCache::merge_from`],
+/// which is `&self`, so concurrent `get_cached_hash_if_stat_valid`
+/// readers either see no entry (cold-path miss — re-stat + re-hash)
+/// or a loaded entry (stat-verify guards correctness).
+pub struct MetadataCacheLoader {
+    state: Arc<SharedState>,
+    path: crate::core::NormalizedPath,
+}
+
+impl MetadataCacheLoader {
+    /// Load the on-disk `metadata.bin` snapshot (if any) and merge it
+    /// into the live state.
+    ///
+    /// A missing or corrupt snapshot is logged at WARN and the live
+    /// cache is left empty (the stat-verify safety net in
+    /// `get_cached_hash_if_stat_valid` keeps correctness either way).
+    /// After the merge — successful or empty — `metadata_cache_loaded`
+    /// is set so `run.rs`'s shutdown path knows the in-memory state is
+    /// canonical and safe to save.
+    pub fn load_and_install(self) {
+        match crate::fscache::MetadataCache::load_from_disk(self.path.as_path()) {
+            Ok(loaded) => {
+                let loaded_len = loaded.len();
+                self.state.cache_system.metadata().merge_from(loaded);
+                if loaded_len > 0 {
+                    tracing::info!(
+                        loaded = loaded_len,
+                        path = %self.path.display(),
+                        "metadata cache restored from disk (background)"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %self.path.display(),
+                    "failed to load metadata cache, starting empty: {e}"
+                );
+            }
+        }
+        self.state
+            .metadata_cache_loaded
             .store(true, Ordering::Release);
     }
 }

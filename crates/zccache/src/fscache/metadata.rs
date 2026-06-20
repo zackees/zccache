@@ -223,6 +223,24 @@ impl MetadataCache {
         self.entries.clear();
     }
 
+    /// Drain entries from a freshly loaded `MetadataCache` into `self`
+    /// using `DashMap::insert` (which is `&self`).
+    ///
+    /// Issue #784 phase 2b: lets a background `spawn_blocking` task load
+    /// the on-disk `metadata.bin` snapshot AFTER the daemon has written
+    /// its readiness lockfile, then populate the live cache without
+    /// holding up bind. Readers during the merge window either see no
+    /// entry (cold-path miss — safe; the next call to
+    /// `get_cached_hash_if_stat_valid` re-stats and re-hashes if needed)
+    /// or a loaded entry (the stat-verify safety net at the call site
+    /// rejects a stale `(mtime, size)` before trusting the hash, so a
+    /// partially-loaded snapshot cannot poison cache keys).
+    pub fn merge_from(&self, other: Self) {
+        for (k, v) in other.entries {
+            self.entries.insert(k, v);
+        }
+    }
+
     /// Return a cached content hash if the entry has High or Medium confidence.
     ///
     /// This is the clock-aware fast path: the caller has journal-based

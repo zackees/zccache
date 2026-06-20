@@ -34,9 +34,7 @@ pub fn probe_local_socket(endpoint: &str) -> std::io::Result<()> {
     #[cfg(windows)]
     let name = {
         use interprocess::local_socket::{GenericNamespaced, ToNsName};
-        let bare = endpoint
-            .strip_prefix(r"\\.\pipe\")
-            .unwrap_or(endpoint);
+        let bare = endpoint.strip_prefix(r"\\.\pipe\").unwrap_or(endpoint);
         ToNsName::to_ns_name::<GenericNamespaced>(bare)?
     };
 

@@ -411,6 +411,18 @@ fn run_server(args: Args) {
             compiler_hash_loader.load_and_install();
         });
 
+        // Issue #784 phase 2b: same shape for the on-disk `metadata.bin`
+        // snapshot. This is the biggest of the four #784 deferrals —
+        // load time scales with the number of cached files, so on a
+        // FastLED-scale cache it was the dominant cost between bind and
+        // lockfile. Same shutdown-save gating as the compiler-hash
+        // loader: `metadata_cache_loaded` flag tells `server::run`'s
+        // shutdown arm whether the in-memory state is canonical.
+        let metadata_loader = server.metadata_cache_loader();
+        tokio::task::spawn_blocking(move || {
+            metadata_loader.load_and_install();
+        });
+
         // Wire up Ctrl+C to trigger graceful shutdown
         let shutdown = server.shutdown_handle();
         tokio::spawn(async move {

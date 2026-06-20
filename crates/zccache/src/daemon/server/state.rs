@@ -161,6 +161,14 @@ pub(super) struct SharedState {
     /// until the loader's `install()` runs; once true the in-memory
     /// DashMap is considered canonical for save.
     pub(super) compiler_hash_cache_loaded: AtomicBool,
+    /// Whether the background `metadata.bin` load has completed.
+    ///
+    /// Issue #784 phase 2b: the on-disk metadata cache is loaded
+    /// post-lockfile from a `spawn_blocking` task. The shutdown save
+    /// path in `run.rs` checks this before persisting — saving while
+    /// the load is still pending could write a partial snapshot over
+    /// the on-disk file. Mirrors `compiler_hash_cache_loaded` above.
+    pub(super) metadata_cache_loaded: AtomicBool,
     /// Whether the `died-shutdown` lifecycle event has been written for this
     /// daemon. Under burst load (issue #726), many wedge-detecting clients
     /// race to send `Request::Shutdown` within a few milliseconds and each

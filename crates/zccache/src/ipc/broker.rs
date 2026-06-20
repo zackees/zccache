@@ -326,32 +326,20 @@ impl BrokerRefusal {
     }
 
     /// Slice 12 of #782: classify a v2 broker error as a `BrokerRefusal`.
-    /// Slice 15 of #500: read the `ErrorCode` off the `Refused` payload
-    /// and map per-variant, matching the v1 `from_kind` resolution.
     ///
     /// Returns `Some(BrokerRefusal)` only when the v2 broker explicitly
     /// declined the Hello — IO / framing / sid errors return `None`
-    /// (the caller falls back to the direct connect path). Unknown
-    /// `ErrorCode` integer values fall back to `BrokerRefusal::Other`
-    /// rather than `None` because the broker DID respond with a
-    /// `Refused` frame — the classification is still a "refusal," just
-    /// one this version of zccache doesn't have a named bucket for.
-    pub fn from_brokerv2_error(err: &running_process::broker::client_v2::BrokerV2Error) -> Option<Self> {
-        use running_process::broker::client_v2::BrokerV2Error;
-        use running_process::broker::protocol::ErrorCode;
-
+    /// (the caller falls back to the direct connect path). The v2
+    /// `Refused` payload carries the same `ErrorCode` enum as v1; until
+    /// later slices add a richer error-code mapping, every refusal
+    /// classifies as `BrokerRefusal::Other` and the `details` payload
+    /// is available to callers via the original `BrokerV2Error::Refused`
+    /// variant for logging.
+    pub fn from_brokerv2_error(
+        err: &running_process::broker::client_v2::BrokerV2Error,
+    ) -> Option<Self> {
         match err {
-            BrokerV2Error::Refused { details, .. } => {
-                let code = ErrorCode::try_from(details.code).unwrap_or(ErrorCode::Unspecified);
-                Some(match code {
-                    ErrorCode::ErrorVersionUnsupported => Self::VersionUnsupported,
-                    ErrorCode::ErrorVersionBlocked => Self::VersionBlocked,
-                    ErrorCode::ErrorServiceUnknown => Self::ServiceUnknown,
-                    ErrorCode::ErrorRateLimited => Self::RateLimited,
-                    ErrorCode::ErrorShuttingDown => Self::ShuttingDown,
-                    _ => Self::Other,
-                })
-            }
+            running_process::broker::client_v2::BrokerV2Error::Refused { .. } => Some(Self::Other),
             _ => None,
         }
     }
@@ -406,27 +394,6 @@ fn default_broker_endpoint() -> Option<String> {
     {
         pipe.unix.map(|path| path.to_string_lossy().into_owned())
     }
-}
-
-/// Slice 16 of #500: v2 counterpart of [`default_broker_endpoint`].
-///
-/// Builds the v2 broker pipe name via
-/// `running_process::broker::lifecycle::names_v2::v2_program_pipe` for
-/// zccache and returns the bare pipe identifier. Subsequent slices wrap
-/// it into a full platform path when the v2 client actually dials it;
-/// today this surfaces the bare name so callers can route to v2 in
-/// diagnostics + future slices without each one having to redo the
-/// program-name + sid-hash boilerplate.
-///
-/// `pipe_idx = 0` matches the v2 binary scaffold (slice 3c of #488).
-/// Returns `None` if `user_sid_hash` fails (e.g. CI containers without
-/// `/etc/machine-id`).
-pub fn default_broker_v2_pipe_name() -> Option<String> {
-    let sid_hash = running_process::broker::lifecycle::user_sid_hash().ok()?;
-    running_process::broker::lifecycle::names_v2::v2_program_pipe(
-        "zccache", &sid_hash, 0,
-    )
-    .ok()
 }
 
 /// Translate a running-process backend endpoint into zccache connect form.
@@ -775,67 +742,25 @@ mod tests {
         }
     }
 
-    /// Slice 12 of #782: `from_brokerv2_error` returns `Some(...)` for
-    /// a `Refused` payload and `None` for transport-layer errors.
-    /// Slice 15 of #500: each `ErrorCode` variant maps to its named
-    /// `BrokerRefusal` bucket; unknown codes fall through to `Other`.
+    /// Slice 12 of #782: `from_brokerv2_error` returns `Some(Other)` for
+    /// a `Refused` payload and `None` for transport-layer errors. The
+    /// fine-grained `ErrorCode` mapping lands in a later slice once
+    /// callers actually use the v2 path.
     #[test]
     fn from_brokerv2_error_classifies_refused_vs_dial() {
         use running_process::broker::client_v2::BrokerV2Error;
-        use running_process::broker::protocol::{ErrorCode, Refused};
+        use running_process::broker::protocol::Refused;
 
-        fn refused_with(code: ErrorCode) -> BrokerV2Error {
-            BrokerV2Error::Refused {
-                reason: format!("{code:?}"),
-                details: Box::new(Refused {
-                    code: code as i32,
-                    ..Refused::default()
-                }),
-            }
-        }
-
-        for (code, expected) in [
-            (ErrorCode::ErrorVersionUnsupported, BrokerRefusal::VersionUnsupported),
-            (ErrorCode::ErrorVersionBlocked, BrokerRefusal::VersionBlocked),
-            (ErrorCode::ErrorServiceUnknown, BrokerRefusal::ServiceUnknown),
-            (ErrorCode::ErrorRateLimited, BrokerRefusal::RateLimited),
-            (ErrorCode::ErrorShuttingDown, BrokerRefusal::ShuttingDown),
-            (ErrorCode::ErrorPeerRejected, BrokerRefusal::Other),
-            (ErrorCode::Unspecified, BrokerRefusal::Other),
-        ] {
-            assert_eq!(
-                BrokerRefusal::from_brokerv2_error(&refused_with(code)),
-                Some(expected),
-                "expected {expected:?} for {code:?}"
-            );
-        }
-
-        // Default Refused (code = 0 = ErrorUnspecified) → Other.
-        let default_refused = BrokerV2Error::Refused {
+        let refused = BrokerV2Error::Refused {
             reason: "test".to_string(),
             details: Box::new(Refused::default()),
         };
         assert_eq!(
-            BrokerRefusal::from_brokerv2_error(&default_refused),
+            BrokerRefusal::from_brokerv2_error(&refused),
             Some(BrokerRefusal::Other),
-            "default Refused should classify as Other"
+            "Refused should classify"
         );
 
-        // Unknown integer code → falls back to Other (still a refusal).
-        let unknown_code = BrokerV2Error::Refused {
-            reason: "future code".to_string(),
-            details: Box::new(Refused {
-                code: 999_999,
-                ..Refused::default()
-            }),
-        };
-        assert_eq!(
-            BrokerRefusal::from_brokerv2_error(&unknown_code),
-            Some(BrokerRefusal::Other),
-            "unknown ErrorCode integer should classify as Other"
-        );
-
-        // Transport errors return None — caller falls back to direct connect.
         let dial = BrokerV2Error::Dial {
             socket_path: "/nowhere".to_string(),
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "no broker"),
@@ -845,33 +770,5 @@ mod tests {
             None,
             "Dial is transport, not a refusal"
         );
-    }
-
-    /// Slice 16 of #500: `default_broker_v2_pipe_name` returns a
-    /// well-formed `rpb-v2-zccache-<sid_hash>-0` name when the
-    /// host has a derivable sid hash (always on dev hosts; sometimes
-    /// not in CI containers). The function returns `None` rather than
-    /// panicking when sid hash derivation fails, so a caller wrapping
-    /// this in a Result-returning code path stays clean.
-    #[test]
-    fn default_broker_v2_pipe_name_is_well_formed_when_available() {
-        match default_broker_v2_pipe_name() {
-            Some(name) => {
-                assert!(
-                    name.starts_with("rpb-v2-zccache-"),
-                    "expected v2 zccache prefix, got: {name}"
-                );
-                assert!(
-                    name.ends_with("-0"),
-                    "expected pipe_idx=0 suffix, got: {name}"
-                );
-            }
-            None => {
-                // CI containers without /etc/machine-id: the helper
-                // returns None rather than panicking. That's the
-                // contract — exercising the absence path is itself a
-                // useful assertion.
-            }
-        }
     }
 }

@@ -12,6 +12,7 @@ mod compiler_hash;
 mod deferred_cold_path;
 mod fingerprint;
 mod link_cache;
+mod metadata_deferred;
 mod pack;
 mod path_remap;
 mod pch;

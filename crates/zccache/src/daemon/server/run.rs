@@ -412,27 +412,48 @@ impl DaemonServer {
                     // Failure here is a perf regression, not a
                     // correctness bug — log and move on so shutdown
                     // never hangs on disk I/O.
-                    let meta_start = std::time::Instant::now();
-                    let metadata_entries = self.state.cache_system.metadata().len();
-                    match self
+                    //
+                    // Issue #784 phase 2b: gate on `metadata_cache_loaded`.
+                    // The disk load now runs in a background
+                    // `spawn_blocking` after the readiness lockfile, so
+                    // an early shutdown (Ctrl+C before the loader
+                    // finishes) could otherwise save a partial snapshot
+                    // over the on-disk file. Skipping the save when the
+                    // load hasn't completed preserves the existing
+                    // snapshot — the entries that DID land in-memory
+                    // came from in-process compiles whose verified state
+                    // is still on disk in the prior snapshot.
+                    if self
                         .state
-                        .cache_system
-                        .metadata()
-                        .save_to_disk(self.state.metadata_path.as_path())
+                        .metadata_cache_loaded
+                        .load(Ordering::Acquire)
                     {
-                        Ok(()) => {
-                            if metadata_entries > 0 {
-                                tracing::info!(
-                                    entries = metadata_entries,
-                                    elapsed_ms = meta_start.elapsed().as_millis() as u64,
-                                    "metadata cache persisted"
-                                );
+                        let meta_start = std::time::Instant::now();
+                        let metadata_entries = self.state.cache_system.metadata().len();
+                        match self
+                            .state
+                            .cache_system
+                            .metadata()
+                            .save_to_disk(self.state.metadata_path.as_path())
+                        {
+                            Ok(()) => {
+                                if metadata_entries > 0 {
+                                    tracing::info!(
+                                        entries = metadata_entries,
+                                        elapsed_ms = meta_start.elapsed().as_millis() as u64,
+                                        "metadata cache persisted"
+                                    );
+                                }
                             }
+                            Err(e) => tracing::warn!(
+                                path = %self.state.metadata_path.display(),
+                                "metadata cache save failed: {e}"
+                            ),
                         }
-                        Err(e) => tracing::warn!(
-                            path = %self.state.metadata_path.display(),
-                            "metadata cache save failed: {e}"
-                        ),
+                    } else {
+                        tracing::debug!(
+                            "metadata cache load still pending at shutdown — skipping save"
+                        );
                     }
 
                     // Issue #517: persist the compiler-binary hash cache
