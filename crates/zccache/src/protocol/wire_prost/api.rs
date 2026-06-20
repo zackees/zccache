@@ -161,6 +161,10 @@ pub const fn default_request_id(request: &crate::protocol::Request) -> &'static 
         crate::protocol::Request::FingerprintInvalidate { .. } => "fingerprint-invalidate",
         crate::protocol::Request::ListRustArtifacts => "list-rust-artifacts",
         crate::protocol::Request::GenericToolExec { .. } => "generic-tool-exec",
+        // Issue #838: bincode-only for slice 1; the prost wire lane
+        // refuses these until the wheel-side consumer needs them.
+        crate::protocol::Request::ExecProbe { .. } => "exec-probe",
+        crate::protocol::Request::ExecStore { .. } => "exec-store",
     }
 }
 

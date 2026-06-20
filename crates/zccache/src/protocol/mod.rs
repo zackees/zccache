@@ -14,7 +14,7 @@ pub use messages::*;
 /// This remains the active compatibility version until the v16 prost dispatcher
 /// is wired through the IPC transport. Do not change `PROTOCOL_VERSION` to v16
 /// while `encode_message` and `decode_message` still serialize bincode bodies.
-pub const BINCODE_PROTOCOL_VERSION: u32 = 15;
+pub const BINCODE_PROTOCOL_VERSION: u32 = 17;
 
 /// Planned prost daemon wire version.
 ///
@@ -41,6 +41,12 @@ pub const PROST_PROTOCOL_VERSION: u32 = 16;
 ///                  for soldr/zccache daemon namespace diagnostics.
 /// v12: `DaemonStatus` and `SessionStats` gained cached-error
 ///                  counters for rustc negative-result caching.
+/// v17: added `Request::ExecProbe` / `Request::ExecStore` (caller-owned-
+///                  tool variant of GenericToolExec, issue #838) plus
+///                  `Response::ExecProbeResult` / `Response::ExecStoreAck`.
+///                  Lets a Python binding cache an in-process function call
+///                  via the daemon's KV store without serializing argv
+///                  (subsumes #837 for Python consumers).
 /// v11: `Request::GenericToolExec` gained Path A (include scan)
 ///                  + Path B (depfile) + `non_deterministic` +
 ///                  `key_args_filter` fields completing issue #272.

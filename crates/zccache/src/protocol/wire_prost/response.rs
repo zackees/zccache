@@ -135,6 +135,11 @@ pub fn response_to_prost(
             sessions_dropped: sessions_dropped.clone(),
             unreleased: unreleased.iter().map(path_to_prost).collect(),
         }),
+        // Issue #838: ExecProbeResult / ExecStoreAck are bincode-only in
+        // slice 1. The prost wire lane will gain proto definitions once a
+        // wheel consumer needs cross-protocol routing.
+        crate::protocol::Response::ExecProbeResult { .. }
+        | crate::protocol::Response::ExecStoreAck { .. } => Body::Pong(zccache_v1::Empty {}),
     };
 
     zccache_v1::Response {

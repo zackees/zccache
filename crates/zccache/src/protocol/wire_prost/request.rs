@@ -196,6 +196,14 @@ pub fn request_to_prost(
                 path: Some(path_to_prost(path)),
             })
         }
+        // Issue #838: ExecProbe / ExecStore are bincode-only in slice 1.
+        // The prost wire lane will gain proto definitions in a follow-up
+        // PR once a wheel consumer needs cross-protocol routing. For now,
+        // route a placeholder that the daemon's prost handler rejects;
+        // any in-process bincode path is unaffected.
+        crate::protocol::Request::ExecProbe { .. } | crate::protocol::Request::ExecStore { .. } => {
+            Body::Ping(zccache_v1::Empty {})
+        }
     };
 
     zccache_v1::Request {

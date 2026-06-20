@@ -560,6 +560,28 @@ pub(super) async fn handle_connection(
             Request::ReleaseWorktreeHandles { path } => {
                 (handle_release_worktree_handles(&state, &path).await, None)
             }
+            Request::ExecProbe {
+                name,
+                input_files,
+                input_env,
+                input_extra,
+            } => (
+                super::handle_exec_probe::handle_exec_probe(
+                    &state,
+                    &name,
+                    &input_files,
+                    &input_env,
+                    &input_extra,
+                ),
+                None,
+            ),
+            Request::ExecStore {
+                cache_key_hex,
+                result_bytes,
+            } => (
+                super::handle_exec_probe::handle_exec_store(&state, &cache_key_hex, &result_bytes),
+                None,
+            ),
         };
 
         // Capture journal metadata BEFORE conn.send so the client unblocks

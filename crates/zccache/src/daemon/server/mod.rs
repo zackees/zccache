@@ -87,6 +87,7 @@ mod handle_compile;
 mod handle_compile_ephemeral;
 mod handle_compile_multi;
 mod handle_exec;
+mod handle_exec_probe;
 mod handle_link;
 mod handle_release_worktree_handles;
 mod in_flight;

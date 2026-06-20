@@ -143,6 +143,22 @@ fn request_variant_indices_are_append_only() {
                 path: "/tmp/work".into(),
             },
         ),
+        (
+            19,
+            Request::ExecProbe {
+                name: "rustc-1.94".to_string(),
+                input_files: vec![],
+                input_env: vec![],
+                input_extra: Arc::new(Vec::new()),
+            },
+        ),
+        (
+            20,
+            Request::ExecStore {
+                cache_key_hex: "0".repeat(64),
+                result_bytes: Arc::new(Vec::new()),
+            },
+        ),
     ];
 
     for (expected, request) in request_cases {
@@ -258,6 +274,14 @@ fn response_variant_indices_are_append_only() {
                 unreleased: vec![],
             },
         ),
+        (
+            18,
+            Response::ExecProbeResult {
+                cache_key_hex: "0".repeat(64),
+                cached_bytes: None,
+            },
+        ),
+        (19, Response::ExecStoreAck { stored: true }),
     ];
 
     for (expected, response) in response_cases {

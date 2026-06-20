@@ -14,6 +14,7 @@ mod artifact_payload;
 mod clear;
 mod daemon_status;
 mod ephemeral;
+mod exec_probe;
 mod fingerprint;
 mod generic_exec;
 mod rust_artifacts;
@@ -101,16 +102,18 @@ pub(super) fn sample_artifact() -> ArtifactData {
 
 // Compile-time check: PROTOCOL_VERSION must be positive.
 const _: () = assert!(super::super::PROTOCOL_VERSION > 0);
-// Compile-time check: PROTOCOL_VERSION == 15 after `ReleaseWorktreeHandles`
-// was added for soldr Tier 3 worktree teardown (issue #690). v14 was the
-// pin after private daemon SessionStart/status diagnostics were added.
-// v13 was the pin after daemon namespace diagnostics were added to
-// DaemonStatus. v12 was the pin after cached-error counters were added for
-// rustc negative-result caching. v11 was the pin after `GenericToolExec`
-// gained Path A (include scan) + Path B (depfile) + non_deterministic +
-// key_args_filter, fully implementing issue #272. v10 was the prior pin
-// when `GenericToolExec` was added. v9 was the pin after SessionStats
-// gained `phase_profile`. v8 was the pin after Compile/CompileEphemeral
-// gained `stdin` and ArtifactPayload replaced ArtifactOutput.data:
-// Arc<Vec<u8>> (issue #296 Option B).
-const _FINGERPRINT_VERSION: () = assert!(super::super::PROTOCOL_VERSION == 15);
+// Compile-time check: PROTOCOL_VERSION == 17 after `ExecProbe`/`ExecStore`
+// were added (issue #838 slice 1) for caller-owned tool caching (e.g. the
+// PyO3 `zccache.exec` binding for Python build orchestrators). v15 was
+// the pin after `ReleaseWorktreeHandles` was added for soldr Tier 3
+// worktree teardown (issue #690). v14 was the pin after private daemon
+// SessionStart/status diagnostics were added. v13 was the pin after daemon
+// namespace diagnostics were added to DaemonStatus. v12 was the pin after
+// cached-error counters were added for rustc negative-result caching. v11
+// was the pin after `GenericToolExec` gained Path A (include scan) + Path B
+// (depfile) + non_deterministic + key_args_filter, fully implementing issue
+// #272. v10 was the prior pin when `GenericToolExec` was added. v9 was the
+// pin after SessionStats gained `phase_profile`. v8 was the pin after
+// Compile/CompileEphemeral gained `stdin` and ArtifactPayload replaced
+// ArtifactOutput.data: Arc<Vec<u8>> (issue #296 Option B).
+const _FINGERPRINT_VERSION: () = assert!(super::super::PROTOCOL_VERSION == 17);

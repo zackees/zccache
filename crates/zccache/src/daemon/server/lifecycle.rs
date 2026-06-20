@@ -206,6 +206,7 @@ impl DaemonServer {
                 depgraph_load_warning: Mutex::new(None),
                 in_flight_exec: DashMap::new(),
                 pending_cache_writes: DashMap::new(),
+                exec_cache: DashMap::new(),
             }),
         })
     }
@@ -425,6 +426,16 @@ impl DaemonServer {
     #[must_use]
     pub(super) fn test_state(&self) -> &SharedState {
         &self.state
+    }
+
+    /// Test-only seam: clone the `Arc<SharedState>` so tests can call
+    /// handlers whose signatures want an owned arc (e.g. `handle_exec_probe`).
+    /// Issue #838.
+    #[doc(hidden)]
+    #[cfg(test)]
+    #[must_use]
+    pub(super) fn test_state_arc(&self) -> Arc<SharedState> {
+        Arc::clone(&self.state)
     }
 }
 

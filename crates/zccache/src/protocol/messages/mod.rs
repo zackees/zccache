@@ -267,6 +267,50 @@ pub enum Request {
         /// Canonical path prefix to release. Must be absolute.
         path: NormalizedPath,
     },
+    /// Probe the exec-cache for `(name, input_files, input_env, input_extra)`.
+    ///
+    /// Issue #838: caller-owned-tool variant of `GenericToolExec`. Where
+    /// `GenericToolExec` ships the tool command to the daemon and the daemon
+    /// spawns it, `ExecProbe` lets the caller (typically a Python binding)
+    /// keep ownership of the runner. The daemon's job here is restricted to
+    /// cache-key derivation + lookup; on a miss the caller runs the work
+    /// locally and posts the result via `ExecStore`.
+    ///
+    /// The split exists so a Python consumer can cache an in-process
+    /// function call without paying the subprocess-spawn cost on warm hits,
+    /// and so a 1000-file input list never has to serialize through the
+    /// Windows 32K argv ceiling (cf #837).
+    ///
+    /// NOTE: Appended at end to preserve bincode variant indices.
+    ExecProbe {
+        /// Cache namespace (e.g. `"noexcept_ast"`). Mixed into the key so
+        /// two consumers using the same input set but different semantics
+        /// do not collide.
+        name: String,
+        /// Input files whose content feeds the cache key.
+        input_files: Vec<NormalizedPath>,
+        /// Selected env vars (name, value) that affect the result.
+        input_env: Vec<(String, String)>,
+        /// Opaque caller-supplied bytes mixed into the cache key (runner
+        /// source hash, version tag, args repr — anything that should
+        /// invalidate the cache when it changes).
+        input_extra: Arc<Vec<u8>>,
+    },
+    /// Store a result against a key returned from a prior `ExecProbe` miss.
+    ///
+    /// Issue #838: companion to `ExecProbe`. The caller computes the work,
+    /// then posts the result bytes here; the daemon writes them to its
+    /// persistent KV store so the next `ExecProbe` for the same inputs
+    /// returns the cached bytes without invoking the runner.
+    ///
+    /// NOTE: Appended at end to preserve bincode variant indices.
+    ExecStore {
+        /// 64-char hex cache key returned by the prior `ExecProbeResult`.
+        cache_key_hex: String,
+        /// Bytes to cache. The daemon stores them verbatim; the contract is
+        /// bytes-in / bytes-out (no opinions about JSON / msgpack / etc).
+        result_bytes: Arc<Vec<u8>>,
+    },
 }
 
 /// A response from daemon to client.
@@ -418,5 +462,39 @@ pub enum Response {
         /// future code that pins file handles inside a worktree can
         /// report partial failure without a wire-shape change.
         unreleased: Vec<NormalizedPath>,
+    },
+    /// Result of an `ExecProbe` request (issue #838).
+    ///
+    /// `cached_bytes.is_some()` means the daemon found a stored result for
+    /// the derived key — the caller should return those bytes to its
+    /// consumer without invoking the runner. `cached_bytes.is_none()` means
+    /// the key was not in the cache — the caller runs the work locally and
+    /// then posts the result via `ExecStore { cache_key_hex, ... }`.
+    ///
+    /// `cache_key_hex` is always populated so the caller knows what key to
+    /// store under on miss.
+    ///
+    /// NOTE: Appended at end to preserve bincode variant indices.
+    ExecProbeResult {
+        /// 64-char hex cache key derived from the probe's inputs. Stable
+        /// regardless of hit/miss so the follow-up `ExecStore` references
+        /// it directly.
+        cache_key_hex: String,
+        /// `Some(bytes)` on cache hit; `None` on miss.
+        cached_bytes: Option<Arc<Vec<u8>>>,
+    },
+    /// Acknowledgement of an `ExecStore` request (issue #838).
+    ///
+    /// `stored` is the operational outcome: `true` means the bytes were
+    /// committed to the KV store and a subsequent `ExecProbe` for the same
+    /// inputs will hit. `false` is reserved for back-pressure / quota
+    /// rejections; today the daemon never returns `false`, but the field
+    /// exists so a future eviction policy can refuse a store without a
+    /// wire-shape change.
+    ///
+    /// NOTE: Appended at end to preserve bincode variant indices.
+    ExecStoreAck {
+        /// Operational outcome of the store.
+        stored: bool,
     },
 }
