@@ -17,11 +17,26 @@ fn client_v2_returns_dial_error_when_no_broker_running() {
         .expect_err("no broker running => Dial error");
     match err {
         BrokerV2Error::Dial { socket_path, .. } => {
+            // The v2 broker uses different endpoint encodings per OS:
+            // Windows pipes name the consumer (`rpb-v2-<program>-…`),
+            // Linux abstract namespace likewise, but macOS hashes the bare
+            // pipe name into `$TMPDIR/.rp-<uid>-broker-v2/<hex>.sock`
+            // (104-byte sun_path limit). Universal invariant: the path
+            // is routed through the v2 broker namespace.
+            let v2_marker = if cfg!(target_os = "macos") {
+                "broker-v2"
+            } else {
+                "rpb-v2-zccache-v2-smoke-no-broker-12345-"
+            };
             assert!(
-                socket_path.contains("rpb-v2-zccache-v2-smoke-no-broker-12345-"),
-                "Dial socket_path should reference the v2 pipe namespace, got: {socket_path}"
+                socket_path.contains(v2_marker),
+                "Dial socket_path should reference the v2 broker namespace \
+                 (expected substring `{v2_marker}`), got: {socket_path}"
             );
         }
-        other => panic!("expected BrokerV2Error::Dial, got: {other:?}"),
+        // Sid lookup failure is acceptable in environments without
+        // `/etc/machine-id` (CI containers, restricted launchd contexts).
+        BrokerV2Error::Sid(_) => {}
+        other => panic!("expected BrokerV2Error::Dial or Sid, got: {other:?}"),
     }
 }
