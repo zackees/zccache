@@ -76,10 +76,7 @@ pub fn probe_local_socket(endpoint: &str) -> std::io::Result<()> {
 /// from an async context — the helper-thread bound prevents an infinite
 /// hang but the *outer* call still occupies the calling thread until
 /// the deadline elapses.
-pub fn probe_local_socket_with_deadline(
-    endpoint: &str,
-    deadline: Duration,
-) -> std::io::Result<()> {
+pub fn probe_local_socket_with_deadline(endpoint: &str, deadline: Duration) -> std::io::Result<()> {
     let endpoint = endpoint.to_owned();
     call_with_io_deadline("probe_local_socket", deadline, move || {
         // Aligned with upstream `running_process::broker::server::connection::

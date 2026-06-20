@@ -39,12 +39,16 @@ fn wrap_name(endpoint: &str) -> interprocess::local_socket::Name<'_> {
     #[cfg(windows)]
     {
         use interprocess::local_socket::GenericNamespaced;
-        endpoint.to_ns_name::<GenericNamespaced>().expect("to_ns_name")
+        endpoint
+            .to_ns_name::<GenericNamespaced>()
+            .expect("to_ns_name")
     }
     #[cfg(unix)]
     {
         use interprocess::local_socket::GenericFilePath;
-        endpoint.to_fs_name::<GenericFilePath>().expect("to_fs_name")
+        endpoint
+            .to_fs_name::<GenericFilePath>()
+            .expect("to_fs_name")
     }
 }
 
@@ -98,6 +102,20 @@ fn probe_local_socket_rejects_nul_in_endpoint() {
         "/tmp/zccache-probe\0evil.sock"
     };
     let err = probe_local_socket(bad).expect_err("NUL must be rejected, not panic");
+    let _ = err;
+}
+
+/// P1-4 from #848 (Windows arm): the `\\.\pipe\` prefix on its own is
+/// not a valid endpoint — there's no pipe NAME after the prefix. The
+/// probe must Err (not panic, not block until the deadline, not return
+/// Ok). Pins the contract from a downstream consumer so a future
+/// interprocess relaxation surfaces here. No-op on Unix where the
+/// prefix is meaningless.
+#[cfg(windows)]
+#[test]
+fn probe_local_socket_rejects_pipe_prefix_only() {
+    let err = probe_local_socket(r"\\.\pipe\")
+        .expect_err(r"\\.\pipe\ on its own has no pipe name and must Err");
     let _ = err;
 }
 

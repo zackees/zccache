@@ -391,9 +391,7 @@ pub fn classify_adopt_error(err: &AdoptError) -> Option<BrokerRefusal> {
     match err {
         AdoptError::Connect(connect_err) => connect_err.refusal_kind().map(|kind| {
             let retry_after_ms = match connect_err {
-                BrokerClientError::Refused {
-                    retry_after_ms, ..
-                } => *retry_after_ms,
+                BrokerClientError::Refused { retry_after_ms, .. } => *retry_after_ms,
                 _ => 0,
             };
             BrokerRefusal::from_kind_with_retry(kind, retry_after_ms)
@@ -814,15 +812,11 @@ mod tests {
             Some(BrokerRefusal::VersionUnsupported)
         );
         assert_eq!(
-            BrokerRefusal::from_brokerv2_error(&refused_with_code(
-                ErrorCode::ErrorVersionBlocked
-            )),
+            BrokerRefusal::from_brokerv2_error(&refused_with_code(ErrorCode::ErrorVersionBlocked)),
             Some(BrokerRefusal::VersionBlocked)
         );
         assert_eq!(
-            BrokerRefusal::from_brokerv2_error(&refused_with_code(
-                ErrorCode::ErrorServiceUnknown
-            )),
+            BrokerRefusal::from_brokerv2_error(&refused_with_code(ErrorCode::ErrorServiceUnknown)),
             Some(BrokerRefusal::ServiceUnknown)
         );
         assert_eq!(
