@@ -775,6 +775,7 @@ mod tests {
 
         let refused_with_code = |code: ErrorCode| BrokerV2Error::Refused {
             reason: "test".to_string(),
+            retry_after_ms: 0,
             details: Box::new(Refused {
                 code: code as i32,
                 ..Refused::default()
@@ -819,6 +820,7 @@ mod tests {
         assert_eq!(
             BrokerRefusal::from_brokerv2_error(&BrokerV2Error::Refused {
                 reason: "default".to_string(),
+                retry_after_ms: 0,
                 details: Box::new(Refused::default()), // code = 0 = Unspecified
             }),
             Some(BrokerRefusal::Other)
