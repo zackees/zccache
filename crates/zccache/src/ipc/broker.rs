@@ -408,6 +408,27 @@ fn default_broker_endpoint() -> Option<String> {
     }
 }
 
+/// Slice 16 of #500: v2 counterpart of [`default_broker_endpoint`].
+///
+/// Builds the v2 broker pipe name via
+/// `running_process::broker::lifecycle::names_v2::v2_program_pipe` for
+/// zccache and returns the bare pipe identifier. Subsequent slices wrap
+/// it into a full platform path when the v2 client actually dials it;
+/// today this surfaces the bare name so callers can route to v2 in
+/// diagnostics + future slices without each one having to redo the
+/// program-name + sid-hash boilerplate.
+///
+/// `pipe_idx = 0` matches the v2 binary scaffold (slice 3c of #488).
+/// Returns `None` if `user_sid_hash` fails (e.g. CI containers without
+/// `/etc/machine-id`).
+pub fn default_broker_v2_pipe_name() -> Option<String> {
+    let sid_hash = running_process::broker::lifecycle::user_sid_hash().ok()?;
+    running_process::broker::lifecycle::names_v2::v2_program_pipe(
+        "zccache", &sid_hash, 0,
+    )
+    .ok()
+}
+
 /// Translate a running-process backend endpoint into zccache connect form.
 ///
 /// running-process uses bare pipe names on Windows (`interprocess`
@@ -824,5 +845,33 @@ mod tests {
             None,
             "Dial is transport, not a refusal"
         );
+    }
+
+    /// Slice 16 of #500: `default_broker_v2_pipe_name` returns a
+    /// well-formed `rpb-v2-zccache-<sid_hash>-0` name when the
+    /// host has a derivable sid hash (always on dev hosts; sometimes
+    /// not in CI containers). The function returns `None` rather than
+    /// panicking when sid hash derivation fails, so a caller wrapping
+    /// this in a Result-returning code path stays clean.
+    #[test]
+    fn default_broker_v2_pipe_name_is_well_formed_when_available() {
+        match default_broker_v2_pipe_name() {
+            Some(name) => {
+                assert!(
+                    name.starts_with("rpb-v2-zccache-"),
+                    "expected v2 zccache prefix, got: {name}"
+                );
+                assert!(
+                    name.ends_with("-0"),
+                    "expected pipe_idx=0 suffix, got: {name}"
+                );
+            }
+            None => {
+                // CI containers without /etc/machine-id: the helper
+                // returns None rather than panicking. That's the
+                // contract — exercising the absence path is itself a
+                // useful assertion.
+            }
+        }
     }
 }
