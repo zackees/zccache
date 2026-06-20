@@ -308,6 +308,21 @@ impl SystemIncludeCache {
         self.cache.clear();
     }
 
+    /// Drain entries from a freshly loaded `SystemIncludeCache` into
+    /// `self` using `HashMap::extend`.
+    ///
+    /// Issue #784 phase 2c: lets a background `spawn_blocking` task
+    /// load the on-disk snapshot AFTER the daemon has written its
+    /// readiness lockfile, then populate the live cache without
+    /// holding up bind. Readers during the merge window either see no
+    /// entry (cold-path miss — the next `get_or_discover` re-runs the
+    /// compiler probe) or a loaded entry (stat-verify at the call site
+    /// rejects a stale `(mtime, size)` before trusting the cached
+    /// paths, so a partially-loaded snapshot cannot poison results).
+    pub fn merge_from(&mut self, other: Self) {
+        self.cache.extend(other.cache);
+    }
+
     /// Number of cached entries.
     #[must_use]
     pub fn len(&self) -> usize {

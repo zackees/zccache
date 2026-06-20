@@ -20,6 +20,7 @@ mod pending_cache_writes;
 mod post_link_hook;
 mod release_worktree_handles;
 mod server_ipc;
+mod system_includes_deferred;
 mod write_cached;
 
 /// RAII guard that overrides `ZCCACHE_CACHE_DIR` for the duration of a

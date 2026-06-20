@@ -70,18 +70,15 @@ impl DaemonServer {
         // ~30-50 ms `<compiler> -v -E -x c++ NUL` spawn on its first
         // C/C++ compile. Stat-verify on lookup catches in-place compiler
         // upgrades, so a stale snapshot is harmless.
-        let system_includes_loaded = match crate::depgraph::SystemIncludeCache::load_from_disk(
-            system_includes_cache_path.as_path(),
-        ) {
-            Ok(cache) => cache,
-            Err(e) => {
-                tracing::warn!(
-                    path = %system_includes_cache_path.display(),
-                    "failed to load system include cache, starting empty: {e}"
-                );
-                crate::depgraph::SystemIncludeCache::new()
-            }
-        };
+        //
+        // Issue #784 phase 2c: start empty here. The on-disk snapshot
+        // is loaded by `system_includes_loader()`'s `load_and_install()`
+        // in a `spawn_blocking` AFTER the daemon's readiness lockfile is
+        // written, so the disk read is removed from the spawn→lockfile
+        // critical path. Compile requests arriving during the merge
+        // window pay the cold compiler probe — same outcome as before
+        // #541's persistence existed.
+        let system_includes_loaded = crate::depgraph::SystemIncludeCache::new();
         // Issue #517: hashing rustc's ~150 MB binary on the cold path
         // costs ~50-60 ms per first-after-restart compile. Loading the
         // (path, mtime, size, hash) snapshot from a prior daemon makes
@@ -159,6 +156,7 @@ impl DaemonServer {
                 artifacts_loaded: AtomicBool::new(false),
                 compiler_hash_cache_loaded: AtomicBool::new(false),
                 metadata_cache_loaded: AtomicBool::new(false),
+                system_includes_loaded: AtomicBool::new(false),
                 shutdown_event_logged: AtomicBool::new(false),
                 fingerprint: FingerprintManager::new(),
                 dep_graph_persisted: AtomicBool::new(false),
@@ -257,6 +255,22 @@ impl DaemonServer {
         MetadataCacheLoader {
             state: Arc::clone(&self.state),
             path: self.state.metadata_path.clone(),
+        }
+    }
+
+    /// Hand out a loader that reads the on-disk system-includes snapshot
+    /// and merges it into the live `Mutex<SystemIncludeCache>` on the
+    /// state. Issue #784 phase 2c.
+    ///
+    /// Designed to be called once, immediately after `write_lock_file`,
+    /// inside a `tokio::task::spawn_blocking`. The loader uses
+    /// `blocking_lock()` on the tokio mutex so the brief merge fits
+    /// inside the blocking thread (same shape as
+    /// `set_depgraph_load_warning`).
+    pub fn system_includes_loader(&self) -> SystemIncludesLoader {
+        SystemIncludesLoader {
+            state: Arc::clone(&self.state),
+            path: self.state.system_includes_cache_path.clone(),
         }
     }
 
@@ -389,6 +403,57 @@ impl DepGraphSetter {
 pub struct CompilerHashCacheLoader {
     state: Arc<SharedState>,
     path: crate::core::NormalizedPath,
+}
+
+/// Owned handle that loads the on-disk system-includes snapshot and
+/// merges it into the running daemon's `Mutex<SystemIncludeCache>`.
+///
+/// Issue #784 phase 2c. Same shape as [`CompilerHashCacheLoader`] but
+/// uses `blocking_lock()` to acquire the tokio mutex briefly during
+/// the merge (the `SystemIncludeCache` itself uses `HashMap` with
+/// `&mut self` mutations, so the mutex stays on the live field).
+pub struct SystemIncludesLoader {
+    state: Arc<SharedState>,
+    path: crate::core::NormalizedPath,
+}
+
+impl SystemIncludesLoader {
+    /// Load the on-disk snapshot (if any) and merge it into the live
+    /// cache.
+    ///
+    /// A missing or corrupt snapshot is logged at WARN and the live
+    /// cache is left empty (the stat-verify safety net in
+    /// `SystemIncludeCache::get` / `get_or_discover` keeps correctness
+    /// either way). After the merge — successful or empty —
+    /// `system_includes_loaded` is set so `run.rs`'s shutdown path
+    /// knows the in-memory state is canonical and safe to save.
+    pub fn load_and_install(self) {
+        match crate::depgraph::SystemIncludeCache::load_from_disk(self.path.as_path()) {
+            Ok(loaded) => {
+                let loaded_len = loaded.len();
+                {
+                    let mut live = self.state.system_includes.blocking_lock();
+                    live.merge_from(loaded);
+                }
+                if loaded_len > 0 {
+                    tracing::info!(
+                        loaded = loaded_len,
+                        path = %self.path.display(),
+                        "system include cache restored from disk (background)"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %self.path.display(),
+                    "failed to load system include cache, starting empty: {e}"
+                );
+            }
+        }
+        self.state
+            .system_includes_loaded
+            .store(true, Ordering::Release);
+    }
 }
 
 impl CompilerHashCacheLoader {

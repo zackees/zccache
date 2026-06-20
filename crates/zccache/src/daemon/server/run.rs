@@ -495,6 +495,20 @@ impl DaemonServer {
                     // so the next daemon does not pay the ~30-50 ms
                     // `<compiler> -v -E -x c++ NUL` spawn on its first
                     // C/C++ compile.
+                    //
+                    // Issue #784 phase 2c: gate on `system_includes_loaded`.
+                    // The disk load now runs in a background
+                    // `spawn_blocking` after the readiness lockfile, so
+                    // an early shutdown could otherwise save a partial
+                    // snapshot over the on-disk file. Skipping the save
+                    // when the load hasn't completed preserves the
+                    // existing snapshot — entries that DID land
+                    // in-memory came from in-process compiles whose
+                    // re-probe is cheap.
+                    if self
+                        .state
+                        .system_includes_loaded
+                        .load(Ordering::Acquire)
                     {
                         let includes = self.state.system_includes.lock().await;
                         if let Err(e) = includes
@@ -505,6 +519,10 @@ impl DaemonServer {
                                 "system include cache save failed: {e}"
                             );
                         }
+                    } else {
+                        tracing::debug!(
+                            "system include cache load still pending at shutdown — skipping save"
+                        );
                     }
 
                     // Clean up our own depfile temp directory.

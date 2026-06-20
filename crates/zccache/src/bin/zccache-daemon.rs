@@ -423,6 +423,18 @@ fn run_server(args: Args) {
             metadata_loader.load_and_install();
         });
 
+        // Issue #784 phase 2c: same shape for the on-disk
+        // system-includes snapshot. The loader briefly acquires the
+        // `system_includes: Mutex<...>` via `blocking_lock()` to merge
+        // entries from the loaded cache into the live one. Same
+        // shutdown-save gating as the compiler-hash loader:
+        // `system_includes_loaded` tells `server::run`'s shutdown arm
+        // whether the in-memory state is canonical.
+        let system_includes_loader = server.system_includes_loader();
+        tokio::task::spawn_blocking(move || {
+            system_includes_loader.load_and_install();
+        });
+
         // Wire up Ctrl+C to trigger graceful shutdown
         let shutdown = server.shutdown_handle();
         tokio::spawn(async move {
