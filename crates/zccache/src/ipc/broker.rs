@@ -305,8 +305,10 @@ pub enum BrokerRefusal {
     VersionBlocked,
     /// No `zccache.servicedef` is installed for this broker.
     ServiceUnknown,
-    /// The broker is rate-limiting this peer.
-    RateLimited,
+    /// The broker is rate-limiting this peer. `retry_after_ms` is the
+    /// broker-supplied backoff hint (0 = no hint). Callers can honor it
+    /// directly: `Duration::from_millis(retry_after_ms)`.
+    RateLimited { retry_after_ms: u64 },
     /// The broker is shutting down.
     ShuttingDown,
     /// Any other refusal code the broker reported.
@@ -314,12 +316,15 @@ pub enum BrokerRefusal {
 }
 
 impl BrokerRefusal {
-    fn from_kind(kind: RefusalKind) -> Self {
+    /// Map a v1 `RefusalKind` to a `BrokerRefusal`, threading the
+    /// caller's `retry_after_ms` hint through to the `RateLimited`
+    /// variant. Other variants ignore the hint.
+    fn from_kind_with_retry(kind: RefusalKind, retry_after_ms: u64) -> Self {
         match kind {
             RefusalKind::VersionUnsupported => Self::VersionUnsupported,
             RefusalKind::VersionBlocked => Self::VersionBlocked,
             RefusalKind::ServiceUnknown => Self::ServiceUnknown,
-            RefusalKind::RateLimited => Self::RateLimited,
+            RefusalKind::RateLimited => Self::RateLimited { retry_after_ms },
             RefusalKind::ShuttingDown => Self::ShuttingDown,
             RefusalKind::Other(_) => Self::Other,
         }
@@ -340,24 +345,29 @@ impl BrokerRefusal {
     /// this client predates) fall through to `Other`, matching v1's
     /// forward-compatible behavior.
     ///
-    /// Note: `retry_after_ms` from `details` is not surfaced here —
-    /// v1's `BrokerRefusal` likewise discards it (the wire field is on
-    /// `Refused.retry_after_ms` but `RefusalKind` doesn't carry it).
-    /// Widening `BrokerRefusal::RateLimited` to carry the retry hint
-    /// is a v1+v2 follow-up that touches every refusal call site.
+    /// `retry_after_ms` is threaded through to `RateLimited` from the
+    /// top-level field on `BrokerV2Error::Refused` (added upstream by
+    /// running-process#518). Callers can honor it directly via
+    /// `Duration::from_millis(retry_after_ms)`.
     pub fn from_brokerv2_error(
         err: &running_process::broker::client_v2::BrokerV2Error,
     ) -> Option<Self> {
         use running_process::broker::client_v2::BrokerV2Error;
         use running_process::broker::protocol::ErrorCode;
         match err {
-            BrokerV2Error::Refused { details, .. } => {
+            BrokerV2Error::Refused {
+                details,
+                retry_after_ms,
+                ..
+            } => {
                 let code = ErrorCode::try_from(details.code).unwrap_or(ErrorCode::Unspecified);
                 Some(match code {
                     ErrorCode::ErrorVersionUnsupported => Self::VersionUnsupported,
                     ErrorCode::ErrorVersionBlocked => Self::VersionBlocked,
                     ErrorCode::ErrorServiceUnknown => Self::ServiceUnknown,
-                    ErrorCode::ErrorRateLimited => Self::RateLimited,
+                    ErrorCode::ErrorRateLimited => Self::RateLimited {
+                        retry_after_ms: *retry_after_ms,
+                    },
                     ErrorCode::ErrorShuttingDown => Self::ShuttingDown,
                     _ => Self::Other,
                 })
@@ -369,12 +379,25 @@ impl BrokerRefusal {
 
 /// Classify an `AdoptError`, returning the typed refusal when the broker spoke
 /// and declined, or `None` for a dial/IO failure (broker unreachable).
+///
+/// `retry_after_ms` is threaded through from the underlying
+/// `BrokerClientError::Refused` so `BrokerRefusal::RateLimited` carries
+/// the broker-supplied backoff hint. For non-`Refused` connect errors
+/// (and AdoptError variants that aren't Connect) the hint is 0 and
+/// the function returns `None` regardless.
 #[must_use]
 pub fn classify_adopt_error(err: &AdoptError) -> Option<BrokerRefusal> {
+    use running_process::broker::client::BrokerClientError;
     match err {
-        AdoptError::Connect(connect_err) => {
-            connect_err.refusal_kind().map(BrokerRefusal::from_kind)
-        }
+        AdoptError::Connect(connect_err) => connect_err.refusal_kind().map(|kind| {
+            let retry_after_ms = match connect_err {
+                BrokerClientError::Refused {
+                    retry_after_ms, ..
+                } => *retry_after_ms,
+                _ => 0,
+            };
+            BrokerRefusal::from_kind_with_retry(kind, retry_after_ms)
+        }),
         _ => None,
     }
 }
@@ -732,7 +755,7 @@ mod tests {
         );
         assert_eq!(
             classify_adopt_error(&refusal(ErrorCode::ErrorRateLimited)),
-            Some(BrokerRefusal::RateLimited)
+            Some(BrokerRefusal::RateLimited { retry_after_ms: 0 })
         );
         assert_eq!(
             classify_adopt_error(&refusal(ErrorCode::ErrorShuttingDown)),
@@ -804,7 +827,7 @@ mod tests {
         );
         assert_eq!(
             BrokerRefusal::from_brokerv2_error(&refused_with_code(ErrorCode::ErrorRateLimited)),
-            Some(BrokerRefusal::RateLimited)
+            Some(BrokerRefusal::RateLimited { retry_after_ms: 0 })
         );
         assert_eq!(
             BrokerRefusal::from_brokerv2_error(&refused_with_code(ErrorCode::ErrorShuttingDown)),
@@ -824,6 +847,76 @@ mod tests {
                 details: Box::new(Refused::default()), // code = 0 = Unspecified
             }),
             Some(BrokerRefusal::Other)
+        );
+    }
+
+    /// `retry_after_ms` from the v1 `BrokerClientError::Refused` is
+    /// threaded all the way through to `BrokerRefusal::RateLimited`.
+    /// Catches the half-done fix where the typed surface drops the hint.
+    #[test]
+    fn classify_adopt_error_propagates_retry_after_ms_on_v1_rate_limited() {
+        use running_process::broker::client::BrokerClientError;
+        use running_process::broker::protocol::ErrorCode;
+
+        let err = AdoptError::Connect(BrokerClientError::Refused {
+            code: ErrorCode::ErrorRateLimited,
+            reason: "slow down".to_string(),
+            retry_after_ms: 2500,
+        });
+        assert_eq!(
+            classify_adopt_error(&err),
+            Some(BrokerRefusal::RateLimited {
+                retry_after_ms: 2500
+            })
+        );
+    }
+
+    /// Same property for the v2 path: `retry_after_ms` from the
+    /// top-level `BrokerV2Error::Refused` field reaches
+    /// `BrokerRefusal::RateLimited` unchanged.
+    #[test]
+    fn from_brokerv2_error_propagates_retry_after_ms_on_v2_rate_limited() {
+        use running_process::broker::client_v2::BrokerV2Error;
+        use running_process::broker::protocol::{ErrorCode, Refused};
+
+        let err = BrokerV2Error::Refused {
+            reason: "slow down".to_string(),
+            retry_after_ms: 7777,
+            details: Box::new(Refused {
+                code: ErrorCode::ErrorRateLimited as i32,
+                retry_after_ms: 7777,
+                ..Refused::default()
+            }),
+        };
+        assert_eq!(
+            BrokerRefusal::from_brokerv2_error(&err),
+            Some(BrokerRefusal::RateLimited {
+                retry_after_ms: 7777
+            })
+        );
+    }
+
+    /// Adversarial: a future broker shipping an `ErrorCode` value this
+    /// client predates (e.g. 999) must fall through to `BrokerRefusal::
+    /// Other`, never panic. Locks the forward-compat invariant.
+    #[test]
+    fn from_brokerv2_error_maps_unknown_code_to_other() {
+        use running_process::broker::client_v2::BrokerV2Error;
+        use running_process::broker::protocol::Refused;
+
+        let err = BrokerV2Error::Refused {
+            reason: "future broker code".to_string(),
+            retry_after_ms: 0,
+            details: Box::new(Refused {
+                code: 999,
+                reason: "future broker code".to_string(),
+                ..Refused::default()
+            }),
+        };
+        assert_eq!(
+            BrokerRefusal::from_brokerv2_error(&err),
+            Some(BrokerRefusal::Other),
+            "unknown ErrorCode must classify as Other, not panic"
         );
     }
 
