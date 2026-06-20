@@ -313,6 +313,44 @@ pub fn fmt_dur(d: Duration) -> String {
     format!("{:.3}s", d.as_secs_f64())
 }
 
+pub fn dir_size_bytes(path: &Path) -> u64 {
+    fn walk(path: &Path) -> u64 {
+        let Ok(metadata) = std::fs::symlink_metadata(path) else {
+            return 0;
+        };
+        if metadata.is_file() {
+            return metadata.len();
+        }
+        if !metadata.is_dir() {
+            return 0;
+        }
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return 0;
+        };
+        entries
+            .filter_map(Result::ok)
+            .map(|entry| walk(&entry.path()))
+            .sum()
+    }
+    walk(path)
+}
+
+pub fn fmt_bytes(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+    let bytes_f = bytes as f64;
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes_f < MIB {
+        format!("{:.1} KiB", bytes_f / KIB)
+    } else if bytes_f < GIB {
+        format!("{:.1} MiB", bytes_f / MIB)
+    } else {
+        format!("{:.1} GiB", bytes_f / GIB)
+    }
+}
+
 pub fn print_trials(label: &str, times: &[Duration]) {
     print_trials_per(label, times, None);
 }

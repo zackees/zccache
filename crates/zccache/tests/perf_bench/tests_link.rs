@@ -4,9 +4,10 @@
 use std::path::Path;
 
 use super::common::{
-    bench_exe_name, clear_zccache, end_zccache_session, find_archiver, find_empp, find_sccache,
-    fmt_dur, median, print_trials, start_daemon, start_fresh_sccache, start_zccache_session,
-    stop_sccache, try_run_tool, NUM_FILES, RUSTC_NUM_FILES, RUSTC_WARM_TRIALS, WARM_TRIALS,
+    bench_exe_name, clear_zccache, dir_size_bytes, end_zccache_session, find_archiver, find_empp,
+    find_sccache, fmt_dur, median, print_trials, start_daemon, start_fresh_sccache,
+    start_zccache_session, stop_sccache, try_run_tool, NUM_FILES, RUSTC_NUM_FILES,
+    RUSTC_WARM_TRIALS, WARM_TRIALS,
 };
 use super::link::{
     archive_link_args, clean_rust_final_output, driver_link_args, measure_ephemeral_link_scenario,
@@ -318,78 +319,86 @@ async fn perf_rust_workspace_link() {
     print_trials("warm:", &bare_warm);
     eprintln!();
 
-    let (sccache_cold, sccache_warm) = if let Some(sccache_bin) = find_sccache() {
-        let sc_cache_dir = zccache::test_support::temp_cache_dir().unwrap();
-        let _cache_dir = start_fresh_sccache(&sccache_bin, sc_cache_dir.path());
-        eprintln!("  [2/3] sccache ({})", sccache_bin.display());
-        let cold = match try_run_sccache_rust_final_link_timed(
-            &sccache_bin,
-            Path::new(&rustc),
-            &args,
-            sccache_dir.path(),
-            &output,
-            "sccache Rust cold link",
-        ) {
-            Ok(duration) => duration,
-            Err(error) => {
-                eprintln!(
+    let (sccache_cold, sccache_warm, sccache_cold_cache_bytes, sccache_warm_cache_bytes) =
+        if let Some(sccache_bin) = find_sccache() {
+            let sc_cache_dir = zccache::test_support::temp_cache_dir().unwrap();
+            let _cache_dir = start_fresh_sccache(&sccache_bin, sc_cache_dir.path());
+            eprintln!("  [2/3] sccache ({})", sccache_bin.display());
+            let cold = match try_run_sccache_rust_final_link_timed(
+                &sccache_bin,
+                Path::new(&rustc),
+                &args,
+                sccache_dir.path(),
+                &output,
+                "sccache Rust cold link",
+            ) {
+                Ok(duration) => duration,
+                Err(error) => {
+                    eprintln!(
                     "        sccache Rust link passthrough failed; using direct rustc as no-cache baseline\n        {}",
                     error.lines().next().unwrap_or("unknown failure")
                 );
-                run_rust_final_link_timed(
-                    Path::new(&rustc),
-                    &args,
-                    sccache_dir.path(),
-                    &output,
-                    "direct Rust no-cache cold link",
-                )
-            }
-        };
-        eprintln!("        cold: {}", fmt_dur(cold));
-        let mut passthrough_supported = true;
-        let mut warm = Vec::with_capacity(RUSTC_WARM_TRIALS);
-        for _ in 0..RUSTC_WARM_TRIALS {
-            let duration = if passthrough_supported {
-                match try_run_sccache_rust_final_link_timed(
-                    &sccache_bin,
-                    Path::new(&rustc),
-                    &args,
-                    sccache_dir.path(),
-                    &output,
-                    "sccache Rust warm link",
-                ) {
-                    Ok(duration) => duration,
-                    Err(_) => {
-                        passthrough_supported = false;
-                        run_rust_final_link_timed(
-                            Path::new(&rustc),
-                            &args,
-                            sccache_dir.path(),
-                            &output,
-                            "direct Rust no-cache warm link",
-                        )
-                    }
+                    run_rust_final_link_timed(
+                        Path::new(&rustc),
+                        &args,
+                        sccache_dir.path(),
+                        &output,
+                        "direct Rust no-cache cold link",
+                    )
                 }
-            } else {
-                run_rust_final_link_timed(
-                    Path::new(&rustc),
-                    &args,
-                    sccache_dir.path(),
-                    &output,
-                    "direct Rust no-cache warm link",
-                )
             };
-            warm.push(duration);
-        }
-        print_trials("warm:", &warm);
-        stop_sccache(&sccache_bin);
-        eprintln!();
-        (Some(cold), Some(warm))
-    } else {
-        eprintln!("  [2/3] sccache: not found, skipping");
-        eprintln!();
-        (None, None)
-    };
+            eprintln!("        cold: {}", fmt_dur(cold));
+            let cold_cache_bytes = dir_size_bytes(sc_cache_dir.path());
+            let mut passthrough_supported = true;
+            let mut warm = Vec::with_capacity(RUSTC_WARM_TRIALS);
+            for _ in 0..RUSTC_WARM_TRIALS {
+                let duration = if passthrough_supported {
+                    match try_run_sccache_rust_final_link_timed(
+                        &sccache_bin,
+                        Path::new(&rustc),
+                        &args,
+                        sccache_dir.path(),
+                        &output,
+                        "sccache Rust warm link",
+                    ) {
+                        Ok(duration) => duration,
+                        Err(_) => {
+                            passthrough_supported = false;
+                            run_rust_final_link_timed(
+                                Path::new(&rustc),
+                                &args,
+                                sccache_dir.path(),
+                                &output,
+                                "direct Rust no-cache warm link",
+                            )
+                        }
+                    }
+                } else {
+                    run_rust_final_link_timed(
+                        Path::new(&rustc),
+                        &args,
+                        sccache_dir.path(),
+                        &output,
+                        "direct Rust no-cache warm link",
+                    )
+                };
+                warm.push(duration);
+            }
+            print_trials("warm:", &warm);
+            let warm_cache_bytes = dir_size_bytes(sc_cache_dir.path());
+            stop_sccache(&sccache_bin);
+            eprintln!();
+            (
+                Some(cold),
+                Some(warm),
+                Some(cold_cache_bytes),
+                Some(warm_cache_bytes),
+            )
+        } else {
+            eprintln!("  [2/3] sccache: not found, skipping");
+            eprintln!();
+            (None, None, None, None)
+        };
 
     eprintln!("  [3/3] zccache");
     let _ = run_rust_final_link_timed(
@@ -399,7 +408,7 @@ async fn perf_rust_workspace_link() {
         &output,
         "zccache Rust linker warmup",
     );
-    let (_zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
+    let (zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
     clear_zccache(&mut client).await;
     let zccache_cwd = zccache_dir.path().to_string_lossy().into_owned();
@@ -415,6 +424,7 @@ async fn perf_rust_workspace_link() {
     )
     .await;
     eprintln!("        cold: {}", fmt_dur(zccache_cold));
+    let zccache_cold_cache_bytes = dir_size_bytes(zccache_cache_dir.path());
     let mut zccache_warm = Vec::with_capacity(RUSTC_WARM_TRIALS);
     for _ in 0..RUSTC_WARM_TRIALS {
         zccache_warm.push(
@@ -431,6 +441,7 @@ async fn perf_rust_workspace_link() {
         );
     }
     print_trials("warm:", &zccache_warm);
+    let zccache_warm_cache_bytes = dir_size_bytes(zccache_cache_dir.path());
     end_zccache_session(&mut client, session_id).await;
     shutdown.notify_one();
     server_handle.await.unwrap();
@@ -443,6 +454,10 @@ async fn perf_rust_workspace_link() {
         sccache_warm,
         zccache_cold,
         zccache_warm,
+        sccache_cold_cache_bytes,
+        sccache_warm_cache_bytes,
+        zccache_cold_cache_bytes,
+        zccache_warm_cache_bytes,
     };
     print_link_benchmark_table(
         &format!(

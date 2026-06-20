@@ -7,7 +7,8 @@ use super::c_project::{
     sccache_compile_c_single, warmup_c_compiler, zccache_compile_c_single,
 };
 use super::common::{
-    find_sccache, fmt_dur, fmt_ratio, median, print_trials, start_daemon, NUM_FILES, WARM_TRIALS,
+    dir_size_bytes, find_sccache, fmt_bytes, fmt_dur, fmt_ratio, median, print_trials,
+    start_daemon, NUM_FILES, WARM_TRIALS,
 };
 
 #[tokio::test]
@@ -48,6 +49,8 @@ async fn perf_c_zccache_vs_bare() {
 
     let sccache_cold;
     let sccache_warm;
+    let mut sccache_cold_cache_bytes = None;
+    let mut sccache_warm_cache_bytes = None;
     if let Some(sccache_bin) = find_sccache() {
         let sc_dir = zccache::test_support::temp_cache_dir().unwrap();
         generate_c_project(sc_dir.path());
@@ -78,6 +81,7 @@ async fn perf_c_zccache_vs_bare() {
         let cold = sccache_compile_c_single(&sccache_bin, &compiler, sc_dir.path(), &sources);
         eprintln!("        cold:  {}", fmt_dur(cold));
         sccache_cold = Some(cold);
+        sccache_cold_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
 
         let mut times = Vec::with_capacity(WARM_TRIALS);
         for _ in 0..WARM_TRIALS {
@@ -90,6 +94,7 @@ async fn perf_c_zccache_vs_bare() {
         }
         print_trials("warm:", &times);
         sccache_warm = Some(times);
+        sccache_warm_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
 
         let _ = std::process::Command::new(&sccache_bin)
             .arg("--stop-server")
@@ -110,7 +115,7 @@ async fn perf_c_zccache_vs_bare() {
     let zc_cwd = zc_dir.path().to_string_lossy().into_owned();
 
     eprintln!("  [3/3] zccache");
-    let (_zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
+    let (zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
 
     client
@@ -135,6 +140,7 @@ async fn perf_c_zccache_vs_bare() {
     let zc_cold =
         zccache_compile_c_single(&mut client, &session_id, &compiler, &zc_cwd, &sources).await;
     eprintln!("        cold:  {}", fmt_dur(zc_cold));
+    let zc_cold_cache_bytes = dir_size_bytes(zccache_cache_dir.path());
 
     let mut zc_warm = Vec::with_capacity(WARM_TRIALS);
     for _ in 0..WARM_TRIALS {
@@ -143,6 +149,7 @@ async fn perf_c_zccache_vs_bare() {
         );
     }
     print_trials("warm:", &zc_warm);
+    let zc_warm_cache_bytes = dir_size_bytes(zccache_cache_dir.path());
 
     client
         .send(&Request::SessionEnd {
@@ -161,6 +168,8 @@ async fn perf_c_zccache_vs_bare() {
     let dash = "\u{2014}";
     let sccache_cold_str = sccache_cold.map(fmt_dur);
     let sccache_warm_str = sccache_warm.as_ref().map(|times| fmt_dur(median(times)));
+    let sccache_cold_cache_str = sccache_cold_cache_bytes.map(fmt_bytes);
+    let sccache_warm_cache_str = sccache_warm_cache_bytes.map(fmt_bytes);
     let vs_sccache_cold = sccache_cold.map(|duration| fmt_ratio(duration, zc_cold, false));
     let vs_sccache_warm = sccache_warm
         .as_ref()
@@ -169,21 +178,27 @@ async fn perf_c_zccache_vs_bare() {
     eprintln!();
     eprintln!("## C Benchmark: {NUM_FILES} .c files, {WARM_TRIALS} warm trials");
     eprintln!();
-    eprintln!("| Scenario | Bare clang | sccache | zccache | vs sccache | vs bare clang |");
-    eprintln!("|:---------|----------:|--------:|--------:|-----------:|--------------:|");
+    eprintln!("| Scenario | Bare clang | sccache | zccache | bare cache | sccache cache | zccache cache | vs sccache | vs bare clang |");
+    eprintln!("|:---------|----------:|--------:|--------:|-----------:|--------------:|--------------:|-----------:|--------------:|");
     eprintln!(
-        "| Single-file, Cold | {} | {} | {} | {} | {} |",
+        "| Single-file, Cold | {} | {} | {} | {} | {} | {} | {} | {} |",
         fmt_dur(bl_cold),
         sccache_cold_str.as_deref().unwrap_or(dash),
         fmt_dur(zc_cold),
+        fmt_bytes(0),
+        sccache_cold_cache_str.as_deref().unwrap_or(dash),
+        fmt_bytes(zc_cold_cache_bytes),
         vs_sccache_cold.as_deref().unwrap_or(dash),
         vs_bare_cold,
     );
     eprintln!(
-        "| Single-file, Warm | {} | {} | **{}** | {} | {} |",
+        "| Single-file, Warm | {} | {} | **{}** | {} | {} | {} | {} | {} |",
         fmt_dur(bl_warm),
         sccache_warm_str.as_deref().unwrap_or(dash),
         fmt_dur(zc_warm_med),
+        fmt_bytes(0),
+        sccache_warm_cache_str.as_deref().unwrap_or(dash),
+        fmt_bytes(zc_warm_cache_bytes),
         vs_sccache_warm.as_deref().unwrap_or(dash),
         vs_bare_warm,
     );

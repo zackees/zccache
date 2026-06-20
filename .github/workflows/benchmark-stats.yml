@@ -61,6 +61,11 @@ jobs:
           ZCCACHE_BENCHMARK_RAW_BASE_URL: https://raw.githubusercontent.com/zackees/zccache/benchmark-stats
         run: |
           set -euo pipefail
+          mkdir -p benchmark-stats
+          curl --fail --silent --location --max-time 30 \
+            -o benchmark-stats/history.jsonl \
+            https://raw.githubusercontent.com/zackees/zccache/benchmark-stats/history.jsonl \
+            || : > benchmark-stats/history.jsonl
           python3 -m ci.benchmark_stats --run-benchmarks --output-dir benchmark-stats --log-path benchmark-output/benchmark.log
 
       - name: Upload benchmark stats artifact

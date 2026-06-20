@@ -1,3 +1,4 @@
+import json
 import re
 
 import pytest
@@ -189,6 +190,47 @@ def test_parse_benchmark_log_extracts_all_tables():
     rust_link = [row for row in rows if row["benchmark"] == "rust-workspace-link"]
     assert [row["mode"] for row in rust_link] == ["cold", "warm"]
     assert rust_link[1]["scenario"] == "Workspace staticlib link, Warm"
+    assert all(isinstance(row["bare_cache_bytes"], int) for row in rows)
+    assert all(isinstance(row["sccache_cache_bytes"], int) for row in rows)
+    assert all(isinstance(row["zccache_cache_bytes"], int) for row in rows)
+    assert all(row["cache_bytes_reported"] is False for row in rows)
+
+
+def test_parse_benchmark_log_extracts_cache_bytes_from_new_table_shape():
+    log = """
+## C Benchmark: 50 .c files, 5 warm trials
+
+| Scenario | Bare clang | sccache | zccache | bare cache | sccache cache | zccache cache | vs sccache | vs bare clang |
+|:---------|----------:|--------:|--------:|-----------:|--------------:|--------------:|-----------:|--------------:|
+| Single-file, Cold | 3.000s | 3.200s | 2.000s | 0 B | 12.5 KiB | 2.0 MiB | 1.6x faster | 1.5x faster |
+"""
+
+    row = benchmark_stats.parse_benchmark_log(log)[0]
+
+    assert row["bare_cache_bytes"] == 0
+    assert row["sccache_cache_bytes"] == 12800
+    assert row["zccache_cache_bytes"] == 2 * 1024 * 1024
+    assert row["cache_bytes_reported"] is True
+    assert row["zccache_vs_sccache_ratio"] == 1.6
+    assert row["zccache_vs_bare_ratio"] == 1.5
+
+
+def test_write_outputs_appends_history_with_cache_fields(tmp_path):
+    payload = sample_payload()
+    payload["results"][0]["sccache_cache_bytes"] = 123
+    payload["results"][0]["zccache_cache_bytes"] = 456
+
+    benchmark_stats.write_outputs(payload, tmp_path)
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "history.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(rows) == 1
+    assert rows[0]["sha"] == "abcdef1234567890"
+    assert rows[0]["results"][0]["bare_cache_bytes"] == 0
+    assert rows[0]["results"][0]["sccache_cache_bytes"] == 123
+    assert rows[0]["results"][0]["zccache_cache_bytes"] == 456
 
 
 def test_benchmark_env_enables_cc_miss_profile(tmp_path, monkeypatch):

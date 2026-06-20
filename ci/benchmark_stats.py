@@ -30,6 +30,7 @@ DEFAULT_OUTPUT_DIR = REPO_ROOT / "benchmark-stats"
 DEFAULT_PAGES_URL = "https://zackees.github.io/zccache/"
 DEFAULT_RAW_IMAGE_BASE_URL = "https://raw.githubusercontent.com/zackees/zccache/benchmark-stats"
 BENCHMARK_STATS_BRANCH_URL = "https://github.com/zackees/zccache/tree/benchmark-stats"
+HISTORY_MAX_LINES = 1000
 LANGUAGES = ("c", "c++", "emscripten", "rust")
 LANGUAGE_LABELS = {
     "c": "C",
@@ -350,6 +351,27 @@ def _duration_seconds(value: str) -> float | None:
     return round(number, 6)
 
 
+def _bytes_from_text(value: str) -> int | None:
+    text = _clean_cell(value)
+    if not text or text in {"-", "\u2014", "n/a", "N/A"}:
+        return None
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*(B|KiB|MiB|GiB|KB|MB|GB)", text)
+    if match is None:
+        return None
+    number = float(match.group(1))
+    unit = match.group(2)
+    factors = {
+        "B": 1,
+        "KiB": 1024,
+        "MiB": 1024**2,
+        "GiB": 1024**3,
+        "KB": 1000,
+        "MB": 1000**2,
+        "GB": 1000**3,
+    }
+    return int(round(number * factors[unit]))
+
+
 def _ratio_from_text(value: str) -> float | None:
     text = _clean_cell(value)
     if text == "~same":
@@ -420,6 +442,19 @@ def parse_benchmark_log(text: str) -> list[dict[str, Any]]:
             bare_seconds = _duration_seconds(cells[1])
             sccache_seconds = _duration_seconds(cells[2])
             zccache_seconds = _duration_seconds(cells[3])
+            if len(cells) >= 9:
+                bare_cache_bytes = _bytes_from_text(cells[4])
+                sccache_cache_bytes = _bytes_from_text(cells[5])
+                zccache_cache_bytes = _bytes_from_text(cells[6])
+                vs_sccache_cell = cells[7]
+                vs_bare_cell = cells[8]
+            else:
+                bare_cache_bytes = 0
+                sccache_cache_bytes = 0
+                zccache_cache_bytes = 0
+                vs_sccache_cell = cells[4]
+                vs_bare_cell = cells[5]
+            cache_bytes_reported = len(cells) >= 9
             scenario = cells[0]
             mode = "warm" if "warm" in scenario.lower() else "cold"
             zccache_rounded_to_zero = zccache_seconds is None and _is_display_rounded_zero(
@@ -429,14 +464,14 @@ def parse_benchmark_log(text: str) -> list[dict[str, Any]]:
                 zccache_seconds = _duration_from_display_rounded_zero(
                     mode,
                     cells[3],
-                    ((sccache_seconds, cells[4]), (bare_seconds, cells[5])),
+                    ((sccache_seconds, vs_sccache_cell), (bare_seconds, vs_bare_cell)),
                 )
 
             sccache_ratio = _ratio(sccache_seconds, zccache_seconds)
             bare_ratio = _ratio(bare_seconds, zccache_seconds)
             if zccache_seconds is not None and zccache_rounded_to_zero:
-                sccache_ratio = _ratio_from_text(cells[4]) or sccache_ratio
-                bare_ratio = _ratio_from_text(cells[5]) or bare_ratio
+                sccache_ratio = _ratio_from_text(vs_sccache_cell) or sccache_ratio
+                bare_ratio = _ratio_from_text(vs_bare_cell) or bare_ratio
             result = {
                 "benchmark": current["id"],
                 "benchmark_label": current["label"],
@@ -447,10 +482,14 @@ def parse_benchmark_log(text: str) -> list[dict[str, Any]]:
                 "bare_seconds": bare_seconds,
                 "sccache_seconds": sccache_seconds,
                 "zccache_seconds": zccache_seconds,
+                "bare_cache_bytes": bare_cache_bytes if bare_cache_bytes is not None else 0,
+                "sccache_cache_bytes": sccache_cache_bytes if sccache_cache_bytes is not None else 0,
+                "zccache_cache_bytes": zccache_cache_bytes if zccache_cache_bytes is not None else 0,
+                "cache_bytes_reported": cache_bytes_reported,
                 "zccache_vs_sccache_ratio": sccache_ratio,
                 "zccache_vs_bare_ratio": bare_ratio,
-                "vs_sccache_text": cells[4],
-                "vs_bare_text": cells[5],
+                "vs_sccache_text": vs_sccache_cell,
+                "vs_bare_text": vs_bare_cell,
             }
             results.append(result)
 
@@ -459,6 +498,23 @@ def parse_benchmark_log(text: str) -> list[dict[str, Any]]:
 
 def _format_seconds(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.3f}s"
+
+
+def _format_bytes(value: int | float | None) -> str:
+    if not isinstance(value, (int, float)) or value < 0:
+        return "n/a"
+    units = ("B", "KiB", "MiB", "GiB")
+    amount = float(value)
+    unit = units[0]
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            break
+        amount /= 1024
+    if unit == "B":
+        return f"{int(amount)} B"
+    if amount < 10:
+        return f"{amount:.1f} {unit}"
+    return f"{amount:.0f} {unit}"
 
 
 def _format_ratio(value: float | None) -> str:
@@ -515,11 +571,50 @@ def build_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
 
 def build_payload(results: list[dict[str, Any]], metadata: dict[str, Any]) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "metadata": metadata,
         "summary": build_summary(results),
         "results": results,
     }
+
+
+def build_history_row(payload: dict[str, Any]) -> dict[str, Any]:
+    metadata = payload["metadata"]
+    return {
+        "ts": metadata.get("generated_at"),
+        "sha": metadata.get("git_sha"),
+        "summary": payload.get("summary"),
+        "results": [
+            {
+                "benchmark": row.get("benchmark"),
+                "language": row.get("language"),
+                "scenario": row.get("scenario"),
+                "mode": row.get("mode"),
+                "bare_seconds": row.get("bare_seconds"),
+                "sccache_seconds": row.get("sccache_seconds"),
+                "zccache_seconds": row.get("zccache_seconds"),
+                "bare_cache_bytes": row.get("bare_cache_bytes"),
+                "sccache_cache_bytes": row.get("sccache_cache_bytes"),
+                "zccache_cache_bytes": row.get("zccache_cache_bytes"),
+                "cache_bytes_reported": row.get("cache_bytes_reported"),
+            }
+            for row in payload.get("results", [])
+        ],
+    }
+
+
+def write_history_jsonl(payload: dict[str, Any], output_dir: Path) -> None:
+    history_path = output_dir / "history.jsonl"
+    rows: list[str] = []
+    if history_path.exists():
+        rows = [
+            line
+            for line in history_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    rows = rows[-(HISTORY_MAX_LINES - 1) :]
+    rows.append(json.dumps(build_history_row(payload), separators=(",", ":")))
+    history_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
 
 def _grouped_results(results: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -541,7 +636,7 @@ def render_html(payload: dict[str, Any]) -> str:
     rows_html: list[str] = []
     for group, rows in _grouped_results(payload["results"]).items():
         rows_html.append(
-            "<tr class=\"group\"><th colspan=\"6\">" + escape(group) + "</th></tr>"
+            "<tr class=\"group\"><th colspan=\"9\">" + escape(group) + "</th></tr>"
         )
         for row in rows:
             rows_html.append(
@@ -550,6 +645,9 @@ def render_html(payload: dict[str, Any]) -> str:
                 f"<td>{escape(_format_seconds(row['bare_seconds']))}</td>"
                 f"<td>{escape(_format_seconds(row['sccache_seconds']))}</td>"
                 f"<td class=\"strong\">{escape(_format_seconds(row['zccache_seconds']))}</td>"
+                f"<td>{escape(_format_bytes(row.get('bare_cache_bytes')))}</td>"
+                f"<td>{escape(_format_bytes(row.get('sccache_cache_bytes')))}</td>"
+                f"<td>{escape(_format_bytes(row.get('zccache_cache_bytes')))}</td>"
                 f"<td>{escape(_format_ratio(row['zccache_vs_sccache_ratio']))}</td>"
                 f"<td>{escape(_format_ratio(row['zccache_vs_bare_ratio']))}</td>"
                 "</tr>"
@@ -670,7 +768,8 @@ def render_html(payload: dict[str, Any]) -> str:
         sha {escape((metadata.get('git_sha') or 'n/a')[:12])}{run_link}
       </p>
       <p class="note">
-        Raw machine-readable data: <a href="latest.json">latest.json</a>.
+        Raw machine-readable data: <a href="latest.json">latest.json</a> and
+        <a href="history.jsonl">history.jsonl</a>.
         Per-language README images:
       </p>
       <ul>
@@ -687,6 +786,9 @@ def render_html(payload: dict[str, Any]) -> str:
               <th>Bare compiler</th>
               <th>sccache</th>
               <th>zccache</th>
+              <th>bare cache</th>
+              <th>sccache cache</th>
+              <th>zccache cache</th>
               <th>zccache vs sccache</th>
               <th>zccache vs bare</th>
             </tr>
@@ -876,6 +978,7 @@ def build_combined_image_rows(results: list[dict[str, Any]]) -> list[dict[str, A
                 "compact_scenario": _compact_scenario(scenario_root),
                 "cold": {series: None for series in SERIES_ORDER},
                 "warm": {series: None for series in SERIES_ORDER},
+                "cache_bytes": {series: None for series in SERIES_ORDER},
             }
             groups[key] = combined
             order.append(key)
@@ -886,6 +989,9 @@ def build_combined_image_rows(results: list[dict[str, Any]]) -> list[dict[str, A
             value = row.get(f"{series}_seconds")
             if isinstance(value, (int, float)) and value > 0:
                 combined[mode][series] = float(value)
+            cache_value = row.get(f"{series}_cache_bytes")
+            if isinstance(cache_value, (int, float)) and cache_value >= 0:
+                combined["cache_bytes"][series] = int(cache_value)
     return [groups[key] for key in order]
 
 
@@ -969,7 +1075,7 @@ def render_language_jpg(payload: dict[str, Any], language: str, path: Path) -> N
     footer_h = 56
     legend_h = 40
 
-    bar_row_h = 44
+    bar_row_h = 54
     scenario_label_h = 36
     scenario_gap = 16
     scenario_padding_top = 10
@@ -1169,6 +1275,7 @@ def render_language_jpg(payload: dict[str, Any], language: str, path: Path) -> N
 
             cold_seconds = combined_row["cold"].get(series)
             warm_seconds = combined_row["warm"].get(series)
+            cache_bytes = combined_row["cache_bytes"].get(series)
             pair = SERIES_COLOR_PAIRS[series]
 
             # Series label (use bare_label for the "bare" row)
@@ -1218,7 +1325,7 @@ def render_language_jpg(payload: dict[str, Any], language: str, path: Path) -> N
                         fill=pair["warm"],
                     )
 
-            # Value labels: two compact lines (cold / warm)
+            # Value labels: compact cold / warm / cache stack.
             value_x = bar_area_x1 + 12
             draw_fit(
                 value_x,
@@ -1237,6 +1344,14 @@ def render_language_jpg(payload: dict[str, Any], language: str, path: Path) -> N
                 f"warm {_format_seconds_label(warm_seconds)}",
                 value_font,
                 warm_color,
+                value_label_w - 12,
+            )
+            draw_fit(
+                value_x,
+                row_top + bar_row_h - 15,
+                f"cache {_format_bytes(cache_bytes)}",
+                small_font,
+                "#8b949e",
                 value_label_w - 12,
             )
 
@@ -1301,6 +1416,7 @@ def render_language_jpg(payload: dict[str, Any], language: str, path: Path) -> N
 def write_outputs(payload: dict[str, Any], output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "latest.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    write_history_jsonl(payload, output_dir)
     (output_dir / "index.html").write_text(render_html(payload), encoding="utf-8")
     (output_dir / ".nojekyll").write_text("", encoding="utf-8")
     allowed_images = set(LANGUAGE_IMAGE_FILES.values())

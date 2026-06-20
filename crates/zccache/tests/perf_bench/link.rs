@@ -7,9 +7,10 @@ use std::time::{Duration, Instant};
 use zccache::protocol::{Request, Response};
 
 use super::common::{
-    clean_link_outputs, clear_dir_contents, clear_zccache, find_sccache, fmt_dur, fmt_ratio,
-    median, print_trials, run_tool_timed, start_daemon, start_fresh_sccache, stop_sccache,
-    try_run_sccache_tool_timed, try_run_tool, ClientConn, NUM_FILES, RUSTC_NUM_FILES, WARM_TRIALS,
+    clean_link_outputs, clear_dir_contents, clear_zccache, dir_size_bytes, find_sccache, fmt_bytes,
+    fmt_dur, fmt_ratio, median, print_trials, run_tool_timed, start_daemon, start_fresh_sccache,
+    stop_sccache, try_run_sccache_tool_timed, try_run_tool, ClientConn, NUM_FILES, RUSTC_NUM_FILES,
+    WARM_TRIALS,
 };
 use super::cpp_project::{generate_project, source_names};
 use super::rust_project::{
@@ -73,6 +74,10 @@ pub struct LinkBenchResult {
     pub sccache_warm: Option<Vec<Duration>>,
     pub zccache_cold: Duration,
     pub zccache_warm: Vec<Duration>,
+    pub sccache_cold_cache_bytes: Option<u64>,
+    pub sccache_warm_cache_bytes: Option<u64>,
+    pub zccache_cold_cache_bytes: u64,
+    pub zccache_warm_cache_bytes: u64,
 }
 
 pub async fn measure_ephemeral_link_scenario(
@@ -101,69 +106,77 @@ pub async fn measure_ephemeral_link_scenario(
     print_trials("warm:", &bare_warm);
     eprintln!();
 
-    let (sccache_cold, sccache_warm) = if let Some(sccache_bin) = find_sccache() {
-        let sc_cache_dir = zccache::test_support::temp_cache_dir().unwrap();
-        let _cache_dir = start_fresh_sccache(&sccache_bin, sc_cache_dir.path());
-        eprintln!("  [2/3] sccache ({})", sccache_bin.display());
+    let (sccache_cold, sccache_warm, sccache_cold_cache_bytes, sccache_warm_cache_bytes) =
+        if let Some(sccache_bin) = find_sccache() {
+            let sc_cache_dir = zccache::test_support::temp_cache_dir().unwrap();
+            let _cache_dir = start_fresh_sccache(&sccache_bin, sc_cache_dir.path());
+            eprintln!("  [2/3] sccache ({})", sccache_bin.display());
 
-        clean_link_outputs(sccache_dir, outputs);
-        let cold = match try_run_sccache_tool_timed(
-            &sccache_bin,
-            tool,
-            args,
-            sccache_dir,
-            "sccache cold link",
-        ) {
-            Ok(duration) => duration,
-            Err(error) => {
-                eprintln!(
+            clean_link_outputs(sccache_dir, outputs);
+            let cold = match try_run_sccache_tool_timed(
+                &sccache_bin,
+                tool,
+                args,
+                sccache_dir,
+                "sccache cold link",
+            ) {
+                Ok(duration) => duration,
+                Err(error) => {
+                    eprintln!(
                     "        sccache link passthrough failed; using direct tool as no-cache baseline\n        {}",
                     error.lines().next().unwrap_or("unknown failure")
                 );
-                run_tool_timed(tool, args, sccache_dir, "direct no-cache cold link")
-            }
-        };
-        eprintln!("        cold: {}", fmt_dur(cold));
-
-        let mut passthrough_supported = true;
-        let mut warm = Vec::with_capacity(WARM_TRIALS);
-        for _ in 0..WARM_TRIALS {
-            clean_link_outputs(sccache_dir, outputs);
-            let duration = if passthrough_supported {
-                match try_run_sccache_tool_timed(
-                    &sccache_bin,
-                    tool,
-                    args,
-                    sccache_dir,
-                    "sccache warm link",
-                ) {
-                    Ok(duration) => duration,
-                    Err(_) => {
-                        passthrough_supported = false;
-                        run_tool_timed(tool, args, sccache_dir, "direct no-cache warm link")
-                    }
+                    run_tool_timed(tool, args, sccache_dir, "direct no-cache cold link")
                 }
-            } else {
-                run_tool_timed(tool, args, sccache_dir, "direct no-cache warm link")
             };
-            warm.push(duration);
-        }
-        print_trials("warm:", &warm);
-        stop_sccache(&sccache_bin);
-        eprintln!();
-        (Some(cold), Some(warm))
-    } else {
-        eprintln!("  [2/3] sccache: not found, skipping");
-        eprintln!();
-        (None, None)
-    };
+            eprintln!("        cold: {}", fmt_dur(cold));
+            let cold_cache_bytes = dir_size_bytes(sc_cache_dir.path());
+
+            let mut passthrough_supported = true;
+            let mut warm = Vec::with_capacity(WARM_TRIALS);
+            for _ in 0..WARM_TRIALS {
+                clean_link_outputs(sccache_dir, outputs);
+                let duration = if passthrough_supported {
+                    match try_run_sccache_tool_timed(
+                        &sccache_bin,
+                        tool,
+                        args,
+                        sccache_dir,
+                        "sccache warm link",
+                    ) {
+                        Ok(duration) => duration,
+                        Err(_) => {
+                            passthrough_supported = false;
+                            run_tool_timed(tool, args, sccache_dir, "direct no-cache warm link")
+                        }
+                    }
+                } else {
+                    run_tool_timed(tool, args, sccache_dir, "direct no-cache warm link")
+                };
+                warm.push(duration);
+            }
+            print_trials("warm:", &warm);
+            let warm_cache_bytes = dir_size_bytes(sc_cache_dir.path());
+            stop_sccache(&sccache_bin);
+            eprintln!();
+            (
+                Some(cold),
+                Some(warm),
+                Some(cold_cache_bytes),
+                Some(warm_cache_bytes),
+            )
+        } else {
+            eprintln!("  [2/3] sccache: not found, skipping");
+            eprintln!();
+            (None, None, None, None)
+        };
 
     eprintln!("  [3/3] zccache");
     clean_link_outputs(zccache_dir, outputs);
     let _ = run_tool_timed(tool, args, zccache_dir, "zccache linker warmup");
     clean_link_outputs(zccache_dir, outputs);
 
-    let (_zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
+    let (zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
     clear_zccache(&mut client).await;
 
@@ -177,6 +190,7 @@ pub async fn measure_ephemeral_link_scenario(
     )
     .await;
     eprintln!("        cold: {}", fmt_dur(zccache_cold));
+    let zccache_cold_cache_bytes = dir_size_bytes(zccache_cache_dir.path());
     let mut zccache_warm = Vec::with_capacity(WARM_TRIALS);
     for _ in 0..WARM_TRIALS {
         clean_link_outputs(zccache_dir, outputs);
@@ -193,6 +207,7 @@ pub async fn measure_ephemeral_link_scenario(
         );
     }
     print_trials("warm:", &zccache_warm);
+    let zccache_warm_cache_bytes = dir_size_bytes(zccache_cache_dir.path());
     shutdown.notify_one();
     server_handle.await.unwrap();
     eprintln!();
@@ -205,6 +220,10 @@ pub async fn measure_ephemeral_link_scenario(
         sccache_warm,
         zccache_cold,
         zccache_warm,
+        sccache_cold_cache_bytes,
+        sccache_warm_cache_bytes,
+        zccache_cold_cache_bytes,
+        zccache_warm_cache_bytes,
     }
 }
 
@@ -213,20 +232,24 @@ pub fn print_link_benchmark_table(title: &str, bare_label: &str, results: &[Link
     eprintln!();
     eprintln!("{title}");
     eprintln!();
-    eprintln!("| Scenario | {bare_label} | sccache | zccache | vs sccache | vs {bare_label} |");
-    eprintln!("|:---------|----------:|--------:|--------:|-----------:|--------------:|");
+    eprintln!("| Scenario | {bare_label} | sccache | zccache | bare cache | sccache cache | zccache cache | vs sccache | vs {bare_label} |");
+    eprintln!("|:---------|----------:|--------:|--------:|-----------:|--------------:|--------------:|-----------:|--------------:|");
     for result in results {
         let cold_sccache = result.sccache_cold.map(fmt_dur);
+        let cold_sccache_cache = result.sccache_cold_cache_bytes.map(fmt_bytes);
         let cold_vs_sccache = result
             .sccache_cold
             .map(|duration| fmt_ratio(duration, result.zccache_cold, false));
         let cold_vs_bare = fmt_ratio(result.bare_cold, result.zccache_cold, false);
         eprintln!(
-            "| {}, Cold | {} | {} | {} | {} | {} |",
+            "| {}, Cold | {} | {} | {} | {} | {} | {} | {} | {} |",
             result.scenario,
             fmt_dur(result.bare_cold),
             cold_sccache.as_deref().unwrap_or(dash),
             fmt_dur(result.zccache_cold),
+            fmt_bytes(0),
+            cold_sccache_cache.as_deref().unwrap_or(dash),
+            fmt_bytes(result.zccache_cold_cache_bytes),
             cold_vs_sccache.as_deref().unwrap_or(dash),
             cold_vs_bare,
         );
@@ -236,17 +259,21 @@ pub fn print_link_benchmark_table(title: &str, bare_label: &str, results: &[Link
             .sccache_warm
             .as_ref()
             .map(|times| fmt_dur(median(times)));
+        let warm_sccache_cache = result.sccache_warm_cache_bytes.map(fmt_bytes);
         let warm_vs_sccache = result
             .sccache_warm
             .as_ref()
             .map(|times| fmt_ratio(median(times), zccache_warm, true));
         let warm_vs_bare = fmt_ratio(result.bare_warm, zccache_warm, true);
         eprintln!(
-            "| {}, Warm | {} | {} | **{}** | {} | {} |",
+            "| {}, Warm | {} | {} | **{}** | {} | {} | {} | {} | {} |",
             result.scenario,
             fmt_dur(result.bare_warm),
             warm_sccache.as_deref().unwrap_or(dash),
             fmt_dur(zccache_warm),
+            fmt_bytes(0),
+            warm_sccache_cache.as_deref().unwrap_or(dash),
+            fmt_bytes(result.zccache_warm_cache_bytes),
             warm_vs_sccache.as_deref().unwrap_or(dash),
             warm_vs_bare,
         );
