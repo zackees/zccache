@@ -325,21 +325,43 @@ impl BrokerRefusal {
         }
     }
 
-    /// Slice 12 of #782: classify a v2 broker error as a `BrokerRefusal`.
+    /// Classify a v2 broker error as a `BrokerRefusal`.
     ///
     /// Returns `Some(BrokerRefusal)` only when the v2 broker explicitly
     /// declined the Hello — IO / framing / sid errors return `None`
-    /// (the caller falls back to the direct connect path). The v2
-    /// `Refused` payload carries the same `ErrorCode` enum as v1; until
-    /// later slices add a richer error-code mapping, every refusal
-    /// classifies as `BrokerRefusal::Other` and the `details` payload
-    /// is available to callers via the original `BrokerV2Error::Refused`
-    /// variant for logging.
+    /// (the caller falls back to the direct connect path). Mirrors v1's
+    /// `RefusalKind::from_code` mapping so the v2 path preserves the
+    /// same diagnostic granularity that `soldr doctor` and the
+    /// connect-route logs depend on (rate-limit / version-pin /
+    /// shutdown all surface distinctly instead of collapsing to
+    /// `Other`).
+    ///
+    /// Unknown codes (including a future broker shipping a wire code
+    /// this client predates) fall through to `Other`, matching v1's
+    /// forward-compatible behavior.
+    ///
+    /// Note: `retry_after_ms` from `details` is not surfaced here —
+    /// v1's `BrokerRefusal` likewise discards it (the wire field is on
+    /// `Refused.retry_after_ms` but `RefusalKind` doesn't carry it).
+    /// Widening `BrokerRefusal::RateLimited` to carry the retry hint
+    /// is a v1+v2 follow-up that touches every refusal call site.
     pub fn from_brokerv2_error(
         err: &running_process::broker::client_v2::BrokerV2Error,
     ) -> Option<Self> {
+        use running_process::broker::client_v2::BrokerV2Error;
+        use running_process::broker::protocol::ErrorCode;
         match err {
-            running_process::broker::client_v2::BrokerV2Error::Refused { .. } => Some(Self::Other),
+            BrokerV2Error::Refused { details, .. } => {
+                let code = ErrorCode::try_from(details.code).unwrap_or(ErrorCode::Unspecified);
+                Some(match code {
+                    ErrorCode::ErrorVersionUnsupported => Self::VersionUnsupported,
+                    ErrorCode::ErrorVersionBlocked => Self::VersionBlocked,
+                    ErrorCode::ErrorServiceUnknown => Self::ServiceUnknown,
+                    ErrorCode::ErrorRateLimited => Self::RateLimited,
+                    ErrorCode::ErrorShuttingDown => Self::ShuttingDown,
+                    _ => Self::Other,
+                })
+            }
             _ => None,
         }
     }
@@ -742,33 +764,89 @@ mod tests {
         }
     }
 
-    /// Slice 12 of #782: `from_brokerv2_error` returns `Some(Other)` for
-    /// a `Refused` payload and `None` for transport-layer errors. The
-    /// fine-grained `ErrorCode` mapping lands in a later slice once
-    /// callers actually use the v2 path.
+    /// `from_brokerv2_error` mirrors v1's `RefusalKind::from_code`
+    /// mapping: each `ErrorCode` variant routes to the matching
+    /// `BrokerRefusal`. Defaults (Unspecified) and unrecognized codes
+    /// land on `Other`. Transport-layer errors return `None`.
     #[test]
-    fn from_brokerv2_error_classifies_refused_vs_dial() {
+    fn from_brokerv2_error_classifies_refused_codes() {
         use running_process::broker::client_v2::BrokerV2Error;
-        use running_process::broker::protocol::Refused;
+        use running_process::broker::protocol::{ErrorCode, Refused};
 
-        let refused = BrokerV2Error::Refused {
+        let refused_with_code = |code: ErrorCode| BrokerV2Error::Refused {
             reason: "test".to_string(),
-            details: Box::new(Refused::default()),
+            details: Box::new(Refused {
+                code: code as i32,
+                ..Refused::default()
+            }),
         };
+
+        // Mirror the v1 mapping matrix exhaustively — same cases as
+        // `classify_adopt_error_maps_typed_refusals`.
         assert_eq!(
-            BrokerRefusal::from_brokerv2_error(&refused),
-            Some(BrokerRefusal::Other),
-            "Refused should classify"
+            BrokerRefusal::from_brokerv2_error(&refused_with_code(
+                ErrorCode::ErrorVersionUnsupported
+            )),
+            Some(BrokerRefusal::VersionUnsupported)
         );
+        assert_eq!(
+            BrokerRefusal::from_brokerv2_error(&refused_with_code(
+                ErrorCode::ErrorVersionBlocked
+            )),
+            Some(BrokerRefusal::VersionBlocked)
+        );
+        assert_eq!(
+            BrokerRefusal::from_brokerv2_error(&refused_with_code(
+                ErrorCode::ErrorServiceUnknown
+            )),
+            Some(BrokerRefusal::ServiceUnknown)
+        );
+        assert_eq!(
+            BrokerRefusal::from_brokerv2_error(&refused_with_code(ErrorCode::ErrorRateLimited)),
+            Some(BrokerRefusal::RateLimited)
+        );
+        assert_eq!(
+            BrokerRefusal::from_brokerv2_error(&refused_with_code(ErrorCode::ErrorShuttingDown)),
+            Some(BrokerRefusal::ShuttingDown)
+        );
+        // Anything outside the named set (PeerRejected, Unspecified, etc.)
+        // falls through to `Other` — matches v1's forward-compatible
+        // behavior so a future broker code does not silently misclassify.
+        assert_eq!(
+            BrokerRefusal::from_brokerv2_error(&refused_with_code(ErrorCode::ErrorPeerRejected)),
+            Some(BrokerRefusal::Other)
+        );
+        assert_eq!(
+            BrokerRefusal::from_brokerv2_error(&BrokerV2Error::Refused {
+                reason: "default".to_string(),
+                details: Box::new(Refused::default()), // code = 0 = Unspecified
+            }),
+            Some(BrokerRefusal::Other)
+        );
+    }
+
+    /// Non-`Refused` `BrokerV2Error` variants are transport / framing /
+    /// sid failures — they MUST classify as `None` so callers fall back
+    /// to the direct-connect path. Locks the contract against a future
+    /// upstream that adds e.g. a `RefusedSoft` variant being silently
+    /// treated as transport.
+    #[test]
+    fn from_brokerv2_error_classifies_transport_variants_as_none() {
+        use running_process::broker::client_v2::BrokerV2Error;
 
         let dial = BrokerV2Error::Dial {
             socket_path: "/nowhere".to_string(),
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "no broker"),
         };
-        assert_eq!(
-            BrokerRefusal::from_brokerv2_error(&dial),
-            None,
-            "Dial is transport, not a refusal"
-        );
+        assert_eq!(BrokerRefusal::from_brokerv2_error(&dial), None);
+
+        let io = BrokerV2Error::Io(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "pipe died",
+        ));
+        assert_eq!(BrokerRefusal::from_brokerv2_error(&io), None);
+
+        let missing = BrokerV2Error::MissingResult;
+        assert_eq!(BrokerRefusal::from_brokerv2_error(&missing), None);
     }
 }
