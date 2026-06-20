@@ -1,8 +1,9 @@
 //! Sibling-workspace `ZCCACHE_PATH_REMAP=auto` benchmarks (C++ and Rust).
 
 use super::common::{
-    end_zccache_session, find_sccache, fmt_dur, fmt_ratio, median, print_trials_per, start_daemon,
-    start_zccache_session, NUM_FILES, RUSTC_NUM_FILES, RUSTC_WARM_TRIALS, WARM_TRIALS,
+    dir_size_bytes, end_zccache_session, find_sccache, fmt_bytes, fmt_dur, fmt_ratio, median,
+    print_trials_per, start_daemon, start_zccache_session, NUM_FILES, RUSTC_NUM_FILES,
+    RUSTC_WARM_TRIALS, WARM_TRIALS,
 };
 use super::rust_project::{
     generate_rust_project, run_rustc_batch, run_sccache_rustc_batch,
@@ -57,22 +58,27 @@ async fn perf_cpp_sibling_remap_warm() {
         "## C++ Sibling-Workspace Remap Benchmark: {NUM_FILES} .cpp files, {WARM_TRIALS} warm trials"
     );
     eprintln!();
-    eprintln!("| Scenario | Bare clang | sccache | zccache | vs sccache | vs bare clang |");
-    eprintln!("|:---------|----------:|--------:|--------:|-----------:|--------------:|");
+    eprintln!("| Scenario | Bare clang | sccache | zccache | bare cache | sccache cache | zccache cache | vs sccache | vs bare clang |");
+    eprintln!("|:---------|----------:|--------:|--------:|-----------:|--------------:|--------------:|-----------:|--------------:|");
     for result in &results {
         let zc_warm_med = median(&result.zccache_warm);
         let sccache_warm_str = result.sccache_warm.as_ref().map(|t| fmt_dur(median(t)));
+        let sccache_cache_str = result.sccache_cache_bytes.map(fmt_bytes);
+        let zccache_cache_str = fmt_bytes(result.zccache_cache_bytes);
         let vs_sccache = result
             .sccache_warm
             .as_ref()
             .map(|t| fmt_ratio(median(t), zc_warm_med, true));
         let vs_bare = fmt_ratio(result.bare_warm, zc_warm_med, true);
         eprintln!(
-            "| {} | {} | {} | **{}** | {} | {} |",
+            "| {} | {} | {} | **{}** | {} | {} | {} | {} | {} |",
             result.scenario,
             fmt_dur(result.bare_warm),
             sccache_warm_str.as_deref().unwrap_or(dash),
             fmt_dur(zc_warm_med),
+            fmt_bytes(0),
+            sccache_cache_str.as_deref().unwrap_or(dash),
+            zccache_cache_str,
             vs_sccache.as_deref().unwrap_or(dash),
             vs_bare,
         );
@@ -132,6 +138,7 @@ async fn perf_rustc_sibling_remap_warm() {
     eprintln!();
 
     // ── sccache warm in workspace B ────────────────────────────────────
+    let mut sccache_cache_bytes = None;
     let sccache_warm = if let Some(scc_bin) = find_sccache() {
         let scd = zccache::test_support::temp_cache_dir().unwrap();
         let scd_s = scd.path().to_string_lossy().into_owned();
@@ -161,6 +168,7 @@ async fn perf_rustc_sibling_remap_warm() {
             ));
         }
         print_trials_per("warm:", &warm, Some(RUSTC_NUM_FILES));
+        sccache_cache_bytes = Some(dir_size_bytes(scd.path()));
         let _ = std::process::Command::new(&scc_bin)
             .arg("--stop-server")
             .stdout(std::process::Stdio::null())
@@ -176,7 +184,7 @@ async fn perf_rustc_sibling_remap_warm() {
 
     // ── zccache primed from workspace A, warm in workspace B ───────────
     eprintln!("  [3/3] zccache (prime: workspace A, warm: workspace B, remap=auto)");
-    let (_zccache_cache_dir, ep, sh, sd) = start_daemon().await;
+    let (zccache_cache_dir, ep, sh, sd) = start_daemon().await;
     let mut cl = zccache::ipc::connect(&ep).await.unwrap();
     let workspace_a_str = workspace_a.to_string_lossy().into_owned();
     let workspace_b_str = workspace_b.to_string_lossy().into_owned();
@@ -223,6 +231,7 @@ async fn perf_rustc_sibling_remap_warm() {
         );
     }
     print_trials_per("warm:", &zc_warm, Some(RUSTC_NUM_FILES));
+    let zccache_cache_bytes = dir_size_bytes(zccache_cache_dir.path());
 
     end_zccache_session(&mut cl, session_b).await;
     sd.notify_one();
@@ -233,6 +242,8 @@ async fn perf_rustc_sibling_remap_warm() {
     let bl_med = median(&bl_warm);
     let zc_med = median(&zc_warm);
     let sccache_warm_str = sccache_warm.as_ref().map(|t| fmt_dur(median(t)));
+    let sccache_cache_str = sccache_cache_bytes.map(fmt_bytes);
+    let zccache_cache_str = fmt_bytes(zccache_cache_bytes);
     let vs_sccache = sccache_warm
         .as_ref()
         .map(|t| fmt_ratio(median(t), zc_med, true));
@@ -243,13 +254,16 @@ async fn perf_rustc_sibling_remap_warm() {
         "## Rust Sibling-Workspace Remap Benchmark: {RUSTC_NUM_FILES} .rs files, {RUSTC_WARM_TRIALS} warm trials"
     );
     eprintln!();
-    eprintln!("| Scenario | Bare rustc | sccache | zccache | vs sccache | vs bare rustc |");
-    eprintln!("|:---------|----------:|--------:|--------:|-----------:|--------------:|");
+    eprintln!("| Scenario | Bare rustc | sccache | zccache | bare cache | sccache cache | zccache cache | vs sccache | vs bare rustc |");
+    eprintln!("|:---------|----------:|--------:|--------:|-----------:|--------------:|--------------:|-----------:|--------------:|");
     eprintln!(
-        "| Sibling-workspace, Warm | {} | {} | **{}** | {} | {} |",
+        "| Sibling-workspace, Warm | {} | {} | **{}** | {} | {} | {} | {} | {} |",
         fmt_dur(bl_med),
         sccache_warm_str.as_deref().unwrap_or(dash),
         fmt_dur(zc_med),
+        fmt_bytes(0),
+        sccache_cache_str.as_deref().unwrap_or(dash),
+        zccache_cache_str,
         vs_sccache.as_deref().unwrap_or(dash),
         vs_bare,
     );

@@ -10,8 +10,9 @@ use std::path::Path;
 use zccache::protocol::{Request, Response};
 
 use super::common::{
-    end_zccache_session, find_empp, find_sccache, fmt_dur, fmt_ratio, median, print_trials,
-    print_trials_per, start_daemon, start_zccache_session, NUM_FILES, WARM_TRIALS,
+    dir_size_bytes, end_zccache_session, find_empp, find_sccache, fmt_bytes, fmt_dur, fmt_ratio,
+    median, print_trials, print_trials_per, start_daemon, start_zccache_session, NUM_FILES,
+    WARM_TRIALS,
 };
 use super::cpp_project::{
     baseline_multi, baseline_single, generate_project, nuke_and_regenerate, sccache_compile_multi,
@@ -69,6 +70,7 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
     let sccache_warm_single;
     let sccache_cold_multi;
     let sccache_warm_multi;
+    let mut sccache_cache_bytes = None;
     if let Some(sccache_bin) = find_sccache() {
         let sc_dir = zccache::test_support::temp_cache_dir().unwrap();
         generate_project(sc_dir.path());
@@ -132,6 +134,7 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
         }
         print_trials("multi warm:", &warm);
         sccache_warm_multi = Some(warm);
+        sccache_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
 
         let _ = std::process::Command::new(&sccache_bin)
             .arg("--stop-server")
@@ -154,7 +157,7 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
     let zc_cwd = zc_dir.path().to_string_lossy().into_owned();
 
     eprintln!("  [3/3] zccache em++");
-    let (_zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
+    let (zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
     let session_id = start_zccache_session(&mut client, &zc_cwd).await;
 
@@ -191,6 +194,7 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
         );
     }
     print_trials("multi warm:", &zc_warm_multi);
+    let zccache_cache_bytes = dir_size_bytes(zccache_cache_dir.path());
 
     end_zccache_session(&mut client, session_id).await;
     shutdown.notify_one();
@@ -204,6 +208,8 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
     let sc_warm_multi_str = sccache_warm_multi.as_ref().map(|t| fmt_dur(median(t)));
     let sc_cold_single_str = sccache_cold_single.map(fmt_dur);
     let sc_cold_multi_str = sccache_cold_multi.map(fmt_dur);
+    let sccache_cache_str = sccache_cache_bytes.map(fmt_bytes);
+    let zccache_cache_str = fmt_bytes(zccache_cache_bytes);
     let vs_sccache_cold_single = sccache_cold_single.map(|d| fmt_ratio(d, zc_cold_single, false));
     let vs_sccache_cold_multi = sccache_cold_multi.map(|d| fmt_ratio(d, zc_cold_multi, false));
     let vs_sccache_warm_single = sccache_warm_single
@@ -216,37 +222,49 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
     eprintln!();
     eprintln!("## Emscripten Benchmark: {NUM_FILES} .cpp files, {WARM_TRIALS} warm trials");
     eprintln!();
-    eprintln!("| Scenario | Bare em++ | sccache | zccache | vs sccache | vs bare em++ |");
-    eprintln!("|:---------|---------:|--------:|--------:|-----------:|-------------:|");
+    eprintln!("| Scenario | Bare em++ | sccache | zccache | bare cache | sccache cache | zccache cache | vs sccache | vs bare em++ |");
+    eprintln!("|:---------|---------:|--------:|--------:|-----------:|--------------:|--------------:|-----------:|-------------:|");
     eprintln!(
-        "| Single-file, Cold | {} | {} | {} | {} | {} |",
+        "| Single-file, Cold | {} | {} | {} | {} | {} | {} | {} | {} |",
         fmt_dur(bl_cold_single),
         sc_cold_single_str.as_deref().unwrap_or(dash),
         fmt_dur(zc_cold_single),
+        fmt_bytes(0),
+        sccache_cache_str.as_deref().unwrap_or(dash),
+        zccache_cache_str,
         vs_sccache_cold_single.as_deref().unwrap_or(dash),
         fmt_ratio(bl_cold_single, zc_cold_single, false),
     );
     eprintln!(
-        "| Single-file, Warm | {} | {} | **{}** | {} | {} |",
+        "| Single-file, Warm | {} | {} | **{}** | {} | {} | {} | {} | {} |",
         fmt_dur(bl_warm_single),
         sc_warm_single_str.as_deref().unwrap_or(dash),
         fmt_dur(zc_single_med),
+        fmt_bytes(0),
+        sccache_cache_str.as_deref().unwrap_or(dash),
+        zccache_cache_str,
         vs_sccache_warm_single.as_deref().unwrap_or(dash),
         fmt_ratio(bl_warm_single, zc_single_med, true),
     );
     eprintln!(
-        "| Multi-file, Cold | {} | {} | {} | {} | {} |",
+        "| Multi-file, Cold | {} | {} | {} | {} | {} | {} | {} | {} |",
         fmt_dur(bl_cold_multi),
         sc_cold_multi_str.as_deref().unwrap_or(dash),
         fmt_dur(zc_cold_multi),
+        fmt_bytes(0),
+        sccache_cache_str.as_deref().unwrap_or(dash),
+        zccache_cache_str,
         vs_sccache_cold_multi.as_deref().unwrap_or(dash),
         fmt_ratio(bl_cold_multi, zc_cold_multi, false),
     );
     eprintln!(
-        "| Multi-file, Warm | {} | {} | **{}** | {} | {} |",
+        "| Multi-file, Warm | {} | {} | **{}** | {} | {} | {} | {} | {} |",
         fmt_dur(bl_warm_multi),
         sc_warm_multi_str.as_deref().unwrap_or(dash),
         fmt_dur(zc_multi_med),
+        fmt_bytes(0),
+        sccache_cache_str.as_deref().unwrap_or(dash),
+        zccache_cache_str,
         vs_sccache_warm_multi.as_deref().unwrap_or(dash),
         fmt_ratio(bl_warm_multi, zc_multi_med, true),
     );
@@ -301,6 +319,7 @@ async fn perf_emcc_sibling_remap_warm() {
     eprintln!();
 
     // ── sccache em++ warm in workspace B ──────────────────────────────
+    let mut sccache_cache_bytes = None;
     let sccache_warm = if let Some(sccache_bin) = find_sccache() {
         let sc_cache_dir = zccache::test_support::temp_cache_dir().unwrap();
         let sc_cache_str = sc_cache_dir.path().to_string_lossy().into_owned();
@@ -329,6 +348,7 @@ async fn perf_emcc_sibling_remap_warm() {
             ));
         }
         print_trials_per("warm:", &warm, Some(NUM_FILES));
+        sccache_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
         let _ = std::process::Command::new(&sccache_bin)
             .arg("--stop-server")
             .stdout(std::process::Stdio::null())
@@ -344,7 +364,7 @@ async fn perf_emcc_sibling_remap_warm() {
 
     // ── zccache primed from workspace A, warm in workspace B ──────────
     eprintln!("  [3/3] zccache em++ (prime: workspace A, warm: workspace B, remap=auto)");
-    let (_zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
+    let (zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
 
     let workspace_a_str = workspace_a.to_string_lossy().into_owned();
@@ -387,6 +407,7 @@ async fn perf_emcc_sibling_remap_warm() {
         );
     }
     print_trials_per("warm:", &zc_warm, Some(NUM_FILES));
+    let zccache_cache_bytes = dir_size_bytes(zccache_cache_dir.path());
 
     end_zccache_session(&mut client, session_b).await;
     shutdown.notify_one();
@@ -397,6 +418,8 @@ async fn perf_emcc_sibling_remap_warm() {
     let bl_warm_med = median(&bl_warm);
     let zc_warm_med = median(&zc_warm);
     let sccache_warm_str = sccache_warm.as_ref().map(|t| fmt_dur(median(t)));
+    let sccache_cache_str = sccache_cache_bytes.map(fmt_bytes);
+    let zccache_cache_str = fmt_bytes(zccache_cache_bytes);
     let vs_sccache = sccache_warm
         .as_ref()
         .map(|t| fmt_ratio(median(t), zc_warm_med, true));
@@ -407,13 +430,16 @@ async fn perf_emcc_sibling_remap_warm() {
         "## Emscripten Sibling-Workspace Remap Benchmark: {NUM_FILES} .cpp files, {WARM_TRIALS} warm trials"
     );
     eprintln!();
-    eprintln!("| Scenario | Bare em++ | sccache | zccache | vs sccache | vs bare em++ |");
-    eprintln!("|:---------|---------:|--------:|--------:|-----------:|-------------:|");
+    eprintln!("| Scenario | Bare em++ | sccache | zccache | bare cache | sccache cache | zccache cache | vs sccache | vs bare em++ |");
+    eprintln!("|:---------|---------:|--------:|--------:|-----------:|--------------:|--------------:|-----------:|-------------:|");
     eprintln!(
-        "| Sibling-workspace, Warm | {} | {} | **{}** | {} | {} |",
+        "| Sibling-workspace, Warm | {} | {} | **{}** | {} | {} | {} | {} | {} |",
         fmt_dur(bl_warm_med),
         sccache_warm_str.as_deref().unwrap_or(dash),
         fmt_dur(zc_warm_med),
+        fmt_bytes(0),
+        sccache_cache_str.as_deref().unwrap_or(dash),
+        zccache_cache_str,
         vs_sccache.as_deref().unwrap_or(dash),
         vs_bare,
     );

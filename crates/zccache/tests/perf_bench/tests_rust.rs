@@ -4,8 +4,8 @@ use std::time::Duration;
 use zccache::protocol::{Request, Response};
 
 use super::common::{
-    find_sccache, fmt_dur, fmt_ratio, median, print_trials, start_daemon, RUSTC_NUM_FILES,
-    RUSTC_WARM_TRIALS,
+    dir_size_bytes, find_sccache, fmt_bytes, fmt_dur, fmt_ratio, median, print_trials,
+    start_daemon, RUSTC_NUM_FILES, RUSTC_WARM_TRIALS,
 };
 use super::rust_project::{
     generate_rust_project, run_rustc_batch, run_sccache_rustc_batch, run_zccache_rustc_batch,
@@ -54,6 +54,7 @@ async fn perf_rustc_zccache_vs_sccache() {
 
     let build_sc_cold;
     let build_sc_warm;
+    let mut build_sccache_cache_bytes = None;
     if let Some(ref scc_bin) = find_sccache() {
         let sd = zccache::test_support::temp_cache_dir().unwrap();
         generate_rust_project(sd.path());
@@ -92,6 +93,7 @@ async fn perf_rustc_zccache_vs_sccache() {
         }
         print_trials("warm:", &t);
         build_sc_warm = Some(t);
+        build_sccache_cache_bytes = Some(dir_size_bytes(scd.path()));
         let _ = std::process::Command::new(scc_bin)
             .arg("--stop-server")
             .stdout(std::process::Stdio::null())
@@ -109,7 +111,7 @@ async fn perf_rustc_zccache_vs_sccache() {
     generate_rust_project(zd.path());
     let zc = zd.path().to_string_lossy().into_owned();
     eprintln!("  [3/3] zccache");
-    let (_zccache_cache_dir, ep, sh, sd) = start_daemon().await;
+    let (zccache_cache_dir, ep, sh, sd) = start_daemon().await;
     let mut cl = zccache::ipc::connect(&ep).await.unwrap();
     cl.send(&Request::SessionStart {
         client_pid: std::process::id(),
@@ -136,6 +138,7 @@ async fn perf_rustc_zccache_vs_sccache() {
             .push(run_zccache_rustc_batch(&mut cl, &sid, &rc, &zc, &srcs, rustc_args_for).await);
     }
     print_trials("warm:", &build_zc_warm);
+    let build_zccache_cache_bytes = dir_size_bytes(zccache_cache_dir.path());
     eprintln!();
 
     // ─── Check mode (--emit=dep-info,metadata) ──────────────────────────
@@ -155,6 +158,7 @@ async fn perf_rustc_zccache_vs_sccache() {
 
     let check_sc_cold;
     let check_sc_warm;
+    let mut check_sccache_cache_bytes = None;
     if let Some(ref scc_bin) = find_sccache() {
         let sd = zccache::test_support::temp_cache_dir().unwrap();
         generate_rust_project(sd.path());
@@ -193,6 +197,7 @@ async fn perf_rustc_zccache_vs_sccache() {
         }
         print_trials("warm:", &t);
         check_sc_warm = Some(t);
+        check_sccache_cache_bytes = Some(dir_size_bytes(scd.path()));
         let _ = std::process::Command::new(scc_bin)
             .arg("--stop-server")
             .stdout(std::process::Stdio::null())
@@ -222,6 +227,7 @@ async fn perf_rustc_zccache_vs_sccache() {
         );
     }
     print_trials("warm:", &check_zc_warm);
+    let check_zccache_cache_bytes = dir_size_bytes(zccache_cache_dir.path());
 
     cl.send(&Request::SessionEnd { session_id: sid })
         .await
@@ -242,13 +248,22 @@ async fn perf_rustc_zccache_vs_sccache() {
     eprintln!();
     eprintln!("## Rust Benchmark: {RUSTC_NUM_FILES} .rs files, {RUSTC_WARM_TRIALS} warm trials");
     eprintln!();
-    eprintln!("| Scenario | Bare rustc | sccache | zccache | vs sccache | vs bare rustc |");
-    eprintln!("|:---------|----------:|--------:|--------:|-----------:|--------------:|");
+    eprintln!("| Scenario | Bare rustc | sccache | zccache | bare cache | sccache cache | zccache cache | vs sccache | vs bare rustc |");
+    eprintln!("|:---------|----------:|--------:|--------:|-----------:|--------------:|--------------:|-----------:|--------------:|");
 
     // Helper closure for table rows
-    let row = |label: &str, bl: Duration, sc: Option<Duration>, zc: Duration, bold: bool| {
+    let row = |label: &str,
+               bl: Duration,
+               sc: Option<Duration>,
+               zc: Duration,
+               sccache_cache_bytes: Option<u64>,
+               zccache_cache_bytes: u64,
+               bold: bool| {
         let sc_s = sc.map(fmt_dur);
         let sc_str = sc_s.as_deref().unwrap_or(dash);
+        let sc_cache_s = sccache_cache_bytes.map(fmt_bytes);
+        let sc_cache_str = sc_cache_s.as_deref().unwrap_or(dash);
+        let zc_cache_str = fmt_bytes(zccache_cache_bytes);
         let vs_sc = sc.map(|s| fmt_ratio(s, zc, bold));
         let vs_bl = fmt_ratio(bl, zc, bold);
         let zc_fmt = if bold {
@@ -257,11 +272,14 @@ async fn perf_rustc_zccache_vs_sccache() {
             fmt_dur(zc)
         };
         eprintln!(
-            "| {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             label,
             fmt_dur(bl),
             sc_str,
             zc_fmt,
+            fmt_bytes(0),
+            sc_cache_str,
+            zc_cache_str,
             vs_sc.as_deref().unwrap_or(dash),
             vs_bl
         );
@@ -272,6 +290,8 @@ async fn perf_rustc_zccache_vs_sccache() {
         build_bl_cold,
         build_sc_cold,
         build_zc_cold,
+        build_sccache_cache_bytes,
+        build_zccache_cache_bytes,
         false,
     );
     row(
@@ -279,6 +299,8 @@ async fn perf_rustc_zccache_vs_sccache() {
         build_bl_warm,
         build_sc_warm.as_ref().map(|t| median(t)),
         build_zm,
+        build_sccache_cache_bytes,
+        build_zccache_cache_bytes,
         true,
     );
     row(
@@ -286,6 +308,8 @@ async fn perf_rustc_zccache_vs_sccache() {
         check_bl_cold,
         check_sc_cold,
         check_zc_cold,
+        check_sccache_cache_bytes,
+        check_zccache_cache_bytes,
         false,
     );
     row(
@@ -293,6 +317,8 @@ async fn perf_rustc_zccache_vs_sccache() {
         check_bl_warm,
         check_sc_warm.as_ref().map(|t| median(t)),
         check_zm,
+        check_sccache_cache_bytes,
+        check_zccache_cache_bytes,
         true,
     );
 

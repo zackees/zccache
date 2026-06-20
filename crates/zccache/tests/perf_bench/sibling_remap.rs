@@ -13,8 +13,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use super::common::{
-    end_zccache_session, find_sccache, print_trials_per, start_daemon, start_zccache_session,
-    NUM_FILES, WARM_TRIALS,
+    dir_size_bytes, end_zccache_session, find_sccache, print_trials_per, start_daemon,
+    start_zccache_session, NUM_FILES, WARM_TRIALS,
 };
 use super::cpp_project::{
     absolute_cpp_source_names, baseline_single, generate_project, generate_project_with_file_tags,
@@ -44,6 +44,8 @@ pub struct CppSiblingRemapResult {
     pub bare_warm: Duration,
     pub sccache_warm: Option<Vec<Duration>>,
     pub zccache_warm: Vec<Duration>,
+    pub sccache_cache_bytes: Option<u64>,
+    pub zccache_cache_bytes: u64,
 }
 
 pub async fn measure_cpp_sibling_remap_mode(
@@ -91,6 +93,7 @@ pub async fn measure_cpp_sibling_remap_mode(
     print_trials_per("warm:", &bl_warm, Some(NUM_FILES));
     eprintln!();
 
+    let mut sccache_cache_bytes = None;
     let sccache_warm = if let Some(sccache_bin) = find_sccache() {
         let sc_cache_dir = zccache::test_support::temp_cache_dir().unwrap();
         let sc_cache_str = sc_cache_dir.path().to_string_lossy().into_owned();
@@ -125,6 +128,7 @@ pub async fn measure_cpp_sibling_remap_mode(
             ));
         }
         print_trials_per("warm:", &warm, Some(NUM_FILES));
+        sccache_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
         let _ = std::process::Command::new(&sccache_bin)
             .arg("--stop-server")
             .stdout(std::process::Stdio::null())
@@ -139,7 +143,7 @@ pub async fn measure_cpp_sibling_remap_mode(
     };
 
     eprintln!("  [3/3] zccache (prime: workspace A, warm: workspace B, remap=auto)");
-    let (_zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
+    let (zccache_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
 
     let workspace_a_str = workspace_a.to_string_lossy().into_owned();
@@ -174,6 +178,7 @@ pub async fn measure_cpp_sibling_remap_mode(
         );
     }
     print_trials_per("warm:", &zc_warm, Some(NUM_FILES));
+    let zccache_cache_bytes = dir_size_bytes(zccache_cache_dir.path());
 
     end_zccache_session(&mut client, session_b).await;
     shutdown.notify_one();
@@ -185,5 +190,7 @@ pub async fn measure_cpp_sibling_remap_mode(
         bare_warm: super::common::median(&bl_warm),
         sccache_warm,
         zccache_warm: zc_warm,
+        sccache_cache_bytes,
+        zccache_cache_bytes,
     }
 }
