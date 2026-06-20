@@ -84,6 +84,13 @@ sevenz-rust = { workspace = true }
 
 # daemon
 running-process = { workspace = true }
+# Slice 11 of #782: promote `interprocess` from dev-dependencies to a
+# regular dependency so `ipc::broker_v2::probe_local_socket` can use
+# the local-socket Stream::connect primitive without pulling
+# `running_process::broker::client::connect_local_socket` (the v1 path).
+# The version is already locked transitively via running-process; making
+# it explicit in [dependencies] does not add a new resolved crate.
+interprocess = "2.4.2"
 filetime = { workspace = true }
 sysinfo = "0.33"
 sadness-generator = "0.6"

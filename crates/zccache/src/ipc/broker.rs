@@ -32,7 +32,12 @@
 //! socket with no Hello negotiation, so there is no live session to adopt.
 
 use running_process::broker::adopt::{AdoptError, AsyncBrokerSession, OwnedConnectRequest};
-use running_process::broker::client::{connect_local_socket, BackendConnectionRoute, RefusalKind};
+use running_process::broker::client::{BackendConnectionRoute, RefusalKind};
+// Slice 11 of zccache#782: the raw-socket reachability probe used by
+// the `RUNNING_PROCESS_FAKE_BACKEND` seam now lives in `ipc::broker_v2`
+// instead of being pulled from `running_process::broker::client`. This
+// gets one v1 import out of zccache's broker surface.
+use super::broker_v2::probe_local_socket;
 
 use super::error::IpcError;
 #[cfg(unix)]
@@ -271,14 +276,11 @@ async fn resolve_fake_backend_seam_async(
 
 /// Dial the upstream TEST-ONLY fake-backend seam endpoint directly.
 fn resolve_fake_backend_seam(seam_endpoint: &str) -> Option<(String, BackendConnectionRoute)> {
-    match connect_local_socket(seam_endpoint) {
-        Ok(stream) => {
-            drop(stream);
-            Some((
-                to_zccache_endpoint(seam_endpoint),
-                BackendConnectionRoute::HelloSkip,
-            ))
-        }
+    match probe_local_socket(seam_endpoint) {
+        Ok(()) => Some((
+            to_zccache_endpoint(seam_endpoint),
+            BackendConnectionRoute::HelloSkip,
+        )),
         Err(err) => {
             tracing::warn!(
                 endpoint = %seam_endpoint,

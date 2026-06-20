@@ -13,7 +13,43 @@
 //! per the coexistence table in upstream #470; the migration is per-
 //! surface and opt-in until every reference is replaced.
 
+use interprocess::local_socket::traits::Stream as _;
+use interprocess::local_socket::Stream;
 use running_process::broker::client_v2::{self, BrokerV2Error, ClientSession};
+
+/// Slice 11 of #782: probe an arbitrary local-socket endpoint for
+/// reachability without going through any broker negotiation.
+///
+/// Used by zccache's `RUNNING_PROCESS_FAKE_BACKEND` seam (a test-only
+/// shortcut that bypasses the broker entirely — see #380 upstream).
+/// The v1 path imported `connect_local_socket` from
+/// `running_process::broker::client`; v2 owns the same primitive
+/// locally so the migration stops pulling v1 broker types for what is
+/// really just a `Stream::connect` call.
+///
+/// Returns `Ok(())` when the endpoint is reachable, `Err(io::Error)`
+/// otherwise. The opened stream is closed immediately — this is a
+/// liveness probe, not a connection acquisition.
+pub fn probe_local_socket(endpoint: &str) -> std::io::Result<()> {
+    #[cfg(windows)]
+    let name = {
+        use interprocess::local_socket::{GenericNamespaced, ToNsName};
+        let bare = endpoint
+            .strip_prefix(r"\\.\pipe\")
+            .unwrap_or(endpoint);
+        ToNsName::to_ns_name::<GenericNamespaced>(bare)?
+    };
+
+    #[cfg(unix)]
+    let name = {
+        use interprocess::local_socket::{GenericFilePath, ToFsName};
+        ToFsName::to_fs_name::<GenericFilePath>(endpoint)?
+    };
+
+    let stream = Stream::connect(name)?;
+    drop(stream);
+    Ok(())
+}
 
 /// Dial the v2 broker for zccache and return the negotiated session.
 ///
@@ -57,7 +93,30 @@ mod tests {
                      (expected substring `{v2_marker}`), got: {socket_path}"
                 );
             }
-            other => panic!("expected BrokerV2Error::Dial, got: {other:?}"),
+            // Sid lookup failure is acceptable in environments without
+            // `/etc/machine-id` (CI containers, restricted launchd contexts).
+            // Either path proves the v2 client surface is callable from
+            // a downstream consumer — which is what this smoke test gates.
+            BrokerV2Error::Sid(_) => {}
+            other => panic!("expected BrokerV2Error::Dial or Sid, got: {other:?}"),
         }
+    }
+
+    /// Slice 11: `probe_local_socket` returns `Err` when nothing is
+    /// listening on the given endpoint. Same shape the v1
+    /// `connect_local_socket` returned, but now owned by the v2 module
+    /// — no more import from `running_process::broker::client`.
+    #[test]
+    fn probe_local_socket_no_listener_returns_err() {
+        let endpoint = if cfg!(windows) {
+            r"\\.\pipe\zccache-slice11-probe-no-listener"
+        } else {
+            "/tmp/zccache-slice11-probe-no-listener.sock"
+        };
+        let err = probe_local_socket(endpoint).expect_err("no listener => Err");
+        assert!(
+            !err.to_string().is_empty(),
+            "io error should carry a message"
+        );
     }
 }
