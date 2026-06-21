@@ -2,10 +2,10 @@
 //!
 //! Sweeps every consumer-facing slice that landed in zccache#782's
 //! v1→v2 migration (slices 21, 23, 24, 25) — the ServiceDefinition
-//! + CacheManifest dual-write paths, the `protocol_v2::backend_handle`
-//! namespace, the `probe_local_socket` reachability seam, and the
-//! v2 pipe namer — and pounds on each one concurrently with
-//! adversarial inputs.
+//! and CacheManifest dual-write paths, the `protocol_v2::backend_handle`
+//! namespace, the `probe_local_socket` reachability seam, and the v2
+//! pipe namer — and pounds on each one concurrently with adversarial
+//! inputs.
 //!
 //! Why this exists: criterion #3 of zccache#782's goal demands
 //! "rock stable through stress and adversarial tests with the v2

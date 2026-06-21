@@ -59,7 +59,7 @@ sevenz-rust = "0.6"
 rkyv = { version = "0.7", features = ["validation"] }
 tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms"] }
 mimalloc = "0.1"
-running-process = { version = "4.5.6", default-features = false, features = ["client-async"] }
+running-process = { version = "4.5.7", default-features = false, features = ["client-async"] }
 zccache = { path = "crates/zccache" }
 zccache-watcher = { path = "crates/zccache-watcher" }
 zccache-cli = { path = "crates/zccache-cli" }
@@ -70,15 +70,6 @@ zccache-fingerprint = { path = "crates/zccache-fingerprint" }
 # 2. Report start_read failure (watcher silently dying) as error
 [patch.crates-io]
 notify = { path = "vendor/notify" }
-# Cross-repo dev pin per zccache#842 + #782 (broker-v2 burn-down):
-# pre-publication of running-process 4.5.6 to crates.io, the v2 broker
-# surface zccache#782 slices 21-25 depend on lives on running-process
-# `main`. The `[workspace.dependencies]` line above is already bumped to
-# `4.5.6`; the patch entry pins to the matching git+rev so cargo can
-# resolve the constraint until 4.5.6 publishes to crates.io.
-# Slice 27 of zccache#782 removes this patch entry once the published
-# 4.5.6 is available.
-running-process = { git = "https://github.com/zackees/running-process", rev = "eb49f1138e4a960f039f7bd5376211073e6dcd84" }
 
 [workspace.metadata.dylint]
 libraries = [{ path = "dylints/*" }]
