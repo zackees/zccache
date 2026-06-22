@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run python ci/hooks/tool_guard.py",
+            "command": "uv run --no-project python ci/hooks/tool_guard.py",
             "timeout": 5
           }
         ]
@@ -18,12 +18,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run python ci/hooks/readme_guard.py",
+            "command": "uv run --no-project python ci/hooks/readme_guard.py",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "uv run python ci/hooks/loc_guard.py",
+            "command": "uv run --no-project python ci/hooks/loc_guard.py",
             "timeout": 5
           }
         ]
@@ -34,7 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run python ci/hooks/check-on-start.py",
+            "command": "uv run --no-project python ci/hooks/check-on-start.py",
             "timeout": 15
           }
         ]

@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run python ci/hooks/tool_guard.py",
+            "command": "uv run --no-project python ci/hooks/tool_guard.py",
             "timeout": 5
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run python ci/hooks/tool_guard.py",
+            "command": "uv run --no-project python ci/hooks/tool_guard.py",
             "timeout": 5
           }
         ]
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run python ci/hooks/tool_guard.py",
+            "command": "uv run --no-project python ci/hooks/tool_guard.py",
             "timeout": 5
           }
         ]
@@ -36,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run python ci/hooks/tool_guard.py",
+            "command": "uv run --no-project python ci/hooks/tool_guard.py",
             "timeout": 5
           }
         ]
@@ -46,7 +46,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run python ci/hooks/tool_guard.py",
+            "command": "uv run --no-project python ci/hooks/tool_guard.py",
             "timeout": 5
           }
         ]
