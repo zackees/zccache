@@ -18,6 +18,156 @@ use super::{
 };
 
 impl DepGraph {
+    pub fn check_rustc_metadata_compat_diagnostic<F, G>(
+        &self,
+        compat_key: &ContextKey,
+        current_externs: &[(String, NormalizedPath)],
+        is_fresh: F,
+        get_hash: G,
+    ) -> (CacheVerdict, String, Option<ContextKey>)
+    where
+        F: Fn(&Path) -> bool,
+        G: Fn(&Path) -> Option<ContentHash>,
+    {
+        let Some(actual_key) = self
+            .rustc_check_metadata_compat
+            .get(compat_key)
+            .map(|entry| *entry)
+        else {
+            return (
+                CacheVerdict::Cold,
+                "rustc metadata compatibility alias not registered".to_string(),
+                None,
+            );
+        };
+
+        let Some(candidate_externs) = self.rustc_extern_inputs(&actual_key) else {
+            return (
+                CacheVerdict::Cold,
+                "rustc metadata compatibility candidate has no extern inputs".to_string(),
+                Some(actual_key),
+            );
+        };
+
+        let entry = match self.contexts.get(&actual_key) {
+            Some(e) => e,
+            None => {
+                return (
+                    CacheVerdict::Cold,
+                    "rustc metadata compatibility candidate context missing".to_string(),
+                    Some(actual_key),
+                );
+            }
+        };
+
+        if entry.state == ContextState::Cold {
+            return (
+                CacheVerdict::Cold,
+                "rustc metadata compatibility candidate is cold".to_string(),
+                Some(actual_key),
+            );
+        }
+        if entry.has_computed_includes {
+            return (
+                CacheVerdict::NeedsPreprocessor,
+                "rustc metadata compatibility candidate needs preprocessor".to_string(),
+                Some(actual_key),
+            );
+        }
+        let Some(artifact_key) = entry.artifact_key else {
+            return (
+                CacheVerdict::Cold,
+                "rustc metadata compatibility candidate has no artifact key".to_string(),
+                Some(actual_key),
+            );
+        };
+
+        let fresh_or_hash_match = |path: &NormalizedPath| -> bool {
+            if is_fresh(path) {
+                return true;
+            }
+            let current = match get_hash(path) {
+                Some(h) => h,
+                None => return false,
+            };
+            entry
+                .last_file_hashes
+                .iter()
+                .any(|(p, h)| p == path && *h == current)
+        };
+
+        if !fresh_or_hash_match(&entry.context.source_file) {
+            return (
+                CacheVerdict::HeadersChanged {
+                    changed: vec![entry.context.source_file.clone()],
+                },
+                "rustc metadata compatibility source changed".to_string(),
+                Some(actual_key),
+            );
+        }
+        for header in &entry.resolved_includes {
+            if !fresh_or_hash_match(header) {
+                return (
+                    CacheVerdict::HeadersChanged {
+                        changed: vec![header.clone()],
+                    },
+                    format!(
+                        "rustc metadata compatibility header changed: {}",
+                        header.display()
+                    ),
+                    Some(actual_key),
+                );
+            }
+        }
+        for fi in &entry.context.force_includes {
+            if !fresh_or_hash_match(fi) {
+                return (
+                    CacheVerdict::HeadersChanged {
+                        changed: vec![fi.clone()],
+                    },
+                    format!(
+                        "rustc metadata compatibility force-include changed: {}",
+                        fi.display()
+                    ),
+                    Some(actual_key),
+                );
+            }
+        }
+
+        let Some(mut current_hashes) = collect_rustc_extern_hashes(current_externs, &get_hash)
+        else {
+            return (
+                CacheVerdict::Cold,
+                "rustc metadata compatibility current extern hash missing".to_string(),
+                Some(actual_key),
+            );
+        };
+        let Some(mut candidate_hashes) = collect_rustc_extern_hashes(&candidate_externs, &get_hash)
+        else {
+            return (
+                CacheVerdict::Cold,
+                "rustc metadata compatibility candidate extern hash missing".to_string(),
+                Some(actual_key),
+            );
+        };
+        current_hashes.sort_by(|a, b| a.0.cmp(&b.0));
+        candidate_hashes.sort_by(|a, b| a.0.cmp(&b.0));
+        if current_hashes != candidate_hashes {
+            return (
+                CacheVerdict::Cold,
+                "rustc metadata compatibility extern content differs".to_string(),
+                Some(actual_key),
+            );
+        }
+
+        self.hits.fetch_add(1, Ordering::Relaxed);
+        (
+            CacheVerdict::Hit { artifact_key },
+            "rustc metadata compatibility hit".to_string(),
+            Some(actual_key),
+        )
+    }
+
     /// Check if a compilation can use cached output.
     ///
     /// `is_fresh` is called for each file path. It should query Layer 1

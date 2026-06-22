@@ -18,6 +18,9 @@ mod store_outcome;
 mod system_includes;
 
 use super::super::*;
+use super::cached_hit::{
+    materialize_cached_compile_hit, CachedHitMaterializeRequest, CachedHitPhases,
+};
 use super::error_cache::{compile_failure_stderr, maybe_store_rustc_error_artifact};
 use super::hit_branches::{
     try_depgraph_cached_hit, try_fast_hit, try_request_cache_hit, DepgraphHitProbe, FastHitProbe,
@@ -247,60 +250,77 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
     } else {
         None
     };
-    let (ctx, dep_flags, rustc_args_opt, context_key, worktree_equivalent_context) =
-        match build_result {
-            BuildContextResult::Cc { ctx, dep_flags } => {
-                let registration = state.dep_graph.load().register_with_root_and_salt_result(
-                    ctx.clone(),
-                    Some(default_key_root.clone()),
-                    worktree_salt,
+    let (
+        ctx,
+        dep_flags,
+        rustc_args_opt,
+        context_key,
+        rustc_metadata_compat_key,
+        worktree_equivalent_context,
+    ) = match build_result {
+        BuildContextResult::Cc { ctx, dep_flags } => {
+            let registration = state.dep_graph.load().register_with_root_and_salt_result(
+                ctx.clone(),
+                Some(default_key_root.clone()),
+                worktree_salt,
+            );
+            (
+                ctx,
+                dep_flags,
+                None,
+                registration.key,
+                None,
+                registration.rebased_from_equivalent_root,
+            )
+        }
+        BuildContextResult::Rustc {
+            rustc_ctx,
+            compat_ctx,
+            rustc_args,
+        } => {
+            let remap_gate =
+                rust_remap_gate(&rustc_args.remap_path_prefixes, worktree_root.as_ref());
+            write_session_log(
+                &state.sessions,
+                &sid,
+                &format!("[DIAG] {}", remap_gate.as_str()),
+            );
+            let rustc_key_root =
+                rustc_context_key_root(&rustc_args.remap_path_prefixes, worktree_root.as_ref());
+            let key = rustc_ctx.context_key_with_root(rustc_key_root.as_deref());
+            let compat_key =
+                rustc_ctx.check_metadata_compat_key_with_root(rustc_key_root.as_deref());
+            let published_compat_key = rustc_args
+                .emit_types
+                .iter()
+                .any(|emit| emit == "link")
+                .then_some(compat_key)
+                .flatten();
+            let rustc_externs = rustc_args
+                .externs
+                .iter()
+                .map(|ext| (ext.name.clone(), ext.path.clone()))
+                .collect();
+            let registration = state
+                .dep_graph
+                .load()
+                .register_rustc_with_key_and_root_result(
+                    key,
+                    compat_ctx.clone(),
+                    rustc_key_root.clone(),
+                    rustc_externs,
+                    published_compat_key,
                 );
-                (
-                    ctx,
-                    dep_flags,
-                    None,
-                    registration.key,
-                    registration.rebased_from_equivalent_root,
-                )
-            }
-            BuildContextResult::Rustc {
-                rustc_ctx,
+            (
                 compat_ctx,
-                rustc_args,
-            } => {
-                let remap_gate =
-                    rust_remap_gate(&rustc_args.remap_path_prefixes, worktree_root.as_ref());
-                write_session_log(
-                    &state.sessions,
-                    &sid,
-                    &format!("[DIAG] {}", remap_gate.as_str()),
-                );
-                let rustc_key_root =
-                    rustc_context_key_root(&rustc_args.remap_path_prefixes, worktree_root.as_ref());
-                let key = rustc_ctx.context_key_with_root(rustc_key_root.as_deref());
-                let rustc_externs = rustc_args
-                    .externs
-                    .iter()
-                    .map(|ext| (ext.name.clone(), ext.path.clone()))
-                    .collect();
-                let registration = state
-                    .dep_graph
-                    .load()
-                    .register_rustc_with_key_and_root_result(
-                        key,
-                        compat_ctx.clone(),
-                        rustc_key_root.clone(),
-                        rustc_externs,
-                    );
-                (
-                    compat_ctx,
-                    UserDepFlags::default(),
-                    Some(rustc_args),
-                    registration.key,
-                    registration.rebased_from_equivalent_root,
-                )
-            }
-        };
+                UserDepFlags::default(),
+                Some(rustc_args),
+                registration.key,
+                compat_key,
+                registration.rebased_from_equivalent_root,
+            )
+        }
+    };
     let is_rustc = rustc_args_opt.is_some();
     let rustc_extern_paths: Vec<NormalizedPath> = rustc_args_opt
         .as_ref()
@@ -309,6 +329,16 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 .externs
                 .iter()
                 .map(|ext| ext.path.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let rustc_current_externs: Vec<(String, NormalizedPath)> = rustc_args_opt
+        .as_ref()
+        .map(|rustc_args| {
+            rustc_args
+                .externs
+                .iter()
+                .map(|ext| (ext.name.clone(), ext.path.clone()))
                 .collect()
         })
         .unwrap_or_default();
@@ -358,7 +388,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
 
     // ── Slow path: hash + depgraph verify ────────────────────────────
     let HashVerifyOutcome {
-        hash_map: _hash_map,
+        hash_map,
         hash_source_ns,
         hash_headers_ns,
         depgraph_check_ns,
@@ -527,6 +557,121 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
     }
 
     // Cache miss — invalidate fast-hit cache for this context
+    if is_rustc {
+        if let (Some(compat_key), Some(rustc_args)) =
+            (rustc_metadata_compat_key, rustc_args_opt.as_deref())
+        {
+            let check_style_request = !rustc_args.emit_types.iter().any(|emit| emit == "link");
+            if check_style_request {
+                let compat_hash_map = std::cell::RefCell::new(hash_map);
+                let get_hash = |p: &Path| {
+                    let path = NormalizedPath::new(p);
+                    if let Some(hash) = compat_hash_map.borrow().get(&path).copied() {
+                        return Some(hash);
+                    }
+                    let hash = hash_file(&state.cache_system, &path, snap_clock).ok()?;
+                    compat_hash_map.borrow_mut().insert(path, hash);
+                    Some(hash)
+                };
+                let is_fresh = |p: &Path| {
+                    let path = NormalizedPath::new(p);
+                    !state
+                        .cache_system
+                        .journal()
+                        .changed_since(&path, snap_clock)
+                };
+                let (compat_verdict, compat_reason, actual_context_key) = state
+                    .dep_graph
+                    .load()
+                    .check_rustc_metadata_compat_diagnostic(
+                        &compat_key,
+                        &rustc_current_externs,
+                        is_fresh,
+                        get_hash,
+                    );
+                write_session_log(
+                    &state.sessions,
+                    &sid,
+                    &format!(
+                        "[DIAG] rustc_emit_compat_check: {} -> {} compat_ctx={} verdict={} reason={}",
+                        source_path.display(),
+                        output_path.display(),
+                        &compat_key.hash().to_hex()[..8],
+                        match &compat_verdict {
+                            crate::depgraph::CacheVerdict::Hit { .. } => "Hit",
+                            crate::depgraph::CacheVerdict::SourceChanged { .. } => "SourceChanged",
+                            crate::depgraph::CacheVerdict::HeadersChanged { .. } => "HeadersChanged",
+                            crate::depgraph::CacheVerdict::Cold => "Cold",
+                            crate::depgraph::CacheVerdict::NeedsPreprocessor => "NeedsPreprocessor",
+                        },
+                        compat_reason,
+                    ),
+                );
+                if let crate::depgraph::CacheVerdict::Hit { artifact_key } = compat_verdict {
+                    let artifact_key_hex = artifact_key.hash().to_hex();
+                    pending_writes::await_pending(
+                        &state.pending_cache_writes,
+                        &artifact_key_hex,
+                        pending_writes::PENDING_WAIT_TIMEOUT,
+                    )
+                    .await;
+                    let requested_outputs =
+                        rustc_expected_output_paths(rustc_args, output_path.as_path(), cwd);
+                    if let Some(response) =
+                        materialize_cached_compile_hit(CachedHitMaterializeRequest {
+                            state,
+                            sid: &sid,
+                            artifact_key_hex: &artifact_key_hex,
+                            source_path: &source_path,
+                            output_path: &output_path,
+                            secondary_output_dir: output_path
+                                .parent()
+                                .unwrap_or(cwd_path.as_path())
+                                .into(),
+                            current_depfile_dest: None,
+                            compile_start,
+                            hit_label: "HIT_RUSTC_EMIT_COMPAT",
+                            cached_error_label: "CACHED_ERROR_RUSTC_EMIT_COMPAT",
+                            record_compilation: false,
+                            downgrade_output_metadata: true,
+                            mtime_floor_paths: request_cache_input_paths(
+                                state,
+                                actual_context_key.as_ref().unwrap_or(&context_key),
+                                &source_path,
+                                &ctx,
+                            ),
+                            rustc_metadata_compat_outputs: Some(requested_outputs),
+                            phases: CachedHitPhases {
+                                parse_args_ns,
+                                build_context_ns,
+                                hash_source_ns,
+                                hash_headers_ns,
+                                depgraph_check_ns,
+                                request_cache_lookup_ns: 0,
+                                cross_root_validate_ns: 0,
+                            },
+                        })
+                    {
+                        record_session_stat(&state.sessions, &sid, |t| {
+                            t.record_depgraph_hit_artifact_hit();
+                        });
+                        return response;
+                    }
+                    record_session_stat(&state.sessions, &sid, |t| {
+                        t.record_depgraph_hit_artifact_miss();
+                    });
+                    write_session_log(
+                        &state.sessions,
+                        &sid,
+                        &format!(
+                            "[DIAG] rustc_emit_compat_artifact_not_found: key={artifact_key_hex}"
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
     state.fast_hit_cache.remove(&context_key);
 
     // Cache miss — run the compiler

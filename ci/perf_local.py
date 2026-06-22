@@ -106,6 +106,7 @@ VOLUME_CARGO_HOME_ZCCACHE = "zccache-perf-cargo-home-zccache"
 VOLUME_RUST_STATE = "zccache-perf-rust-state"
 
 VALID_SCENARIOS = (
+    "build-then-check",
     "cold-tar-untar-warm",
     "worktree-share",
     "touch-no-change",

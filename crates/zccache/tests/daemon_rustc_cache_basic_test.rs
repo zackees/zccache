@@ -422,6 +422,109 @@ async fn test_rustc_multi_output_cached() {
     .await;
 }
 
+/// Test check-style metadata can reuse a prior build-style metadata+link artifact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore] // integration-level: starts real daemon with IPC + rustc
+async fn test_rustc_check_metadata_hits_build_metadata_link() {
+    let rustc = match zccache::test_support::find_rustc() {
+        Some(p) => p,
+        None => return,
+    };
+
+    zccache::test_support::test_timeout(async move {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("lib.rs");
+        let out_dir = tmp.path().join("deps");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        std::fs::write(&src, "pub fn add(a: i32, b: i32) -> i32 { a + b }\n").unwrap();
+
+        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
+        let session_id = start_session(&mut client).await;
+
+        let rustc_str = rustc.to_string_lossy().to_string();
+        let src_str = src.to_string_lossy().to_string();
+        let out_dir_str = out_dir.to_string_lossy().to_string();
+
+        let build_args = &[
+            "--edition",
+            "2021",
+            "--crate-type",
+            "lib",
+            "--crate-name",
+            "hello",
+            "--emit=dep-info,metadata,link",
+            "-C",
+            "embed-bitcode=no",
+            "-C",
+            "metadata=build123",
+            "-C",
+            "extra-filename=-build123",
+            "--out-dir",
+            &out_dir_str,
+            &src_str,
+        ];
+        let check_args = &[
+            "--edition",
+            "2021",
+            "--crate-type",
+            "lib",
+            "--crate-name",
+            "hello",
+            "--emit=dep-info,metadata",
+            "-C",
+            "embed-bitcode=no",
+            "-C",
+            "metadata=check456",
+            "-C",
+            "extra-filename=-check456",
+            "--out-dir",
+            &out_dir_str,
+            &src_str,
+        ];
+
+        let (exit_code, cached) =
+            compile(&mut client, &session_id, &rustc_str, build_args, tmp.path()).await;
+        assert_eq!(exit_code, 0, "build-style compile should succeed");
+        assert!(!cached, "build-style compile should be a miss");
+
+        let build_rlib = out_dir.join("libhello-build123.rlib");
+        let build_rmeta = out_dir.join("libhello-build123.rmeta");
+        let build_depinfo = out_dir.join("hello-build123.d");
+        assert!(build_rlib.exists());
+        assert!(build_rmeta.exists());
+        assert!(build_depinfo.exists());
+
+        let check_rlib = out_dir.join("libhello-check456.rlib");
+        let check_rmeta = out_dir.join("libhello-check456.rmeta");
+        let check_depinfo = out_dir.join("hello-check456.d");
+        let _ = std::fs::remove_file(&check_rlib);
+        let _ = std::fs::remove_file(&check_rmeta);
+        let _ = std::fs::remove_file(&check_depinfo);
+
+        let (exit_code, cached) =
+            compile(&mut client, &session_id, &rustc_str, check_args, tmp.path()).await;
+        assert_eq!(exit_code, 0, "check-style compile should succeed");
+        assert!(
+            cached,
+            "check-style compile should hit build-style artifact"
+        );
+        assert!(check_rmeta.exists(), "check .rmeta should be materialized");
+        assert!(
+            check_depinfo.exists(),
+            "check dep-info should be materialized"
+        );
+        assert!(
+            !check_rlib.exists(),
+            "compatibility hit must not materialize link output for check"
+        );
+
+        shutdown.notify_one();
+        server_handle.await.unwrap();
+    })
+    .await;
+}
+
 /// Test that changing an extern crate invalidates the cache.
 ///
 /// 1. Compile crate A → libA.rlib

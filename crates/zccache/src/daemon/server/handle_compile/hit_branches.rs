@@ -117,6 +117,7 @@ pub(super) fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Option<R
         record_compilation: true,
         downgrade_output_metadata: false,
         mtime_floor_paths,
+        rustc_metadata_compat_outputs: None,
         phases: CachedHitPhases::request_cache(request_cache_lookup_ns, cross_root_validate_ns),
     })
 }
@@ -235,6 +236,7 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
         record_compilation: false,
         downgrade_output_metadata: true,
         mtime_floor_paths: input_paths.clone(),
+        rustc_metadata_compat_outputs: None,
         phases: CachedHitPhases {
             parse_args_ns,
             build_context_ns,
@@ -352,6 +354,7 @@ pub(super) fn try_depgraph_cached_hit(probe: DepgraphHitProbe<'_>) -> Option<Res
         record_compilation: false,
         downgrade_output_metadata: true,
         mtime_floor_paths: input_paths.clone(),
+        rustc_metadata_compat_outputs: None,
         phases: CachedHitPhases {
             parse_args_ns,
             build_context_ns,

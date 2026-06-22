@@ -772,6 +772,170 @@ impl RustcCompileContext {
 
         ContextKey(ContentHash::from_bytes(*hasher.finalize().as_bytes()))
     }
+
+    /// Compatibility key for reusing build-mode rustc metadata during check.
+    ///
+    /// This is deliberately narrower than the normal rustc context key. It is
+    /// only produced for Cargo's check-style metadata emits and the matching
+    /// build-style metadata+link emits:
+    ///
+    /// - `metadata` <-> `metadata,link`
+    /// - `dep-info,metadata` <-> `dep-info,metadata,link`
+    ///
+    /// Cargo gives check and build units different `-C metadata` /
+    /// `-C extra-filename` values, so those output-placement fields are not
+    /// part of this alias. Correctness is guarded later by source/dependency
+    /// content hashes and by comparing current extern content hashes with the
+    /// candidate build entry's extern content hashes.
+    #[must_use]
+    pub fn check_metadata_compat_key_with_root(
+        &self,
+        key_root: Option<&Path>,
+    ) -> Option<ContextKey> {
+        let normalized_emit = normalized_check_metadata_emit(&self.emit_types)?;
+        if self.crate_types.iter().any(|ct| {
+            matches!(
+                ct.as_str(),
+                "bin" | "proc-macro" | "staticlib" | "dylib" | "cdylib"
+            )
+        }) {
+            return None;
+        }
+
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"zccache-rustc-check-metadata-compat-key-v1\0");
+
+        if let Some(ref ch) = self.compiler_hash {
+            hasher.update(b"compiler\0");
+            hasher.update(ch.as_bytes());
+            hasher.update(b"\0");
+        }
+
+        let source_file = normalize_key_path(&self.source_file, key_root);
+        hasher.update(source_file.as_bytes());
+        hasher.update(b"\0");
+
+        if let Some(ref name) = self.crate_name {
+            hasher.update(b"crate-name\0");
+            hasher.update(name.as_bytes());
+            hasher.update(b"\0");
+        }
+
+        hasher.update(b"crate-types\0");
+        for ct in &self.crate_types {
+            hasher.update(ct.as_bytes());
+            hasher.update(b"\0");
+        }
+
+        if let Some(ref edition) = self.edition {
+            hasher.update(b"edition\0");
+            hasher.update(edition.as_bytes());
+            hasher.update(b"\0");
+        }
+
+        hasher.update(b"emit\0");
+        for et in normalized_emit {
+            hasher.update(et.as_bytes());
+            hasher.update(b"\0");
+        }
+
+        hasher.update(b"cfg\0");
+        for cfg in &self.cfgs {
+            hasher.update(cfg.as_bytes());
+            hasher.update(b"\0");
+        }
+
+        hasher.update(b"check-cfg\0");
+        for cfg in &self.check_cfgs {
+            hasher.update(cfg.as_bytes());
+            hasher.update(b"\0");
+        }
+
+        hasher.update(b"codegen\0");
+        for flag in &self.codegen_flags {
+            hasher.update(flag.as_bytes());
+            hasher.update(b"\0");
+        }
+
+        if let Some(ref target) = self.target {
+            hasher.update(b"target\0");
+            hasher.update(target.as_bytes());
+            hasher.update(b"\0");
+        }
+
+        if let Some(ref cap) = self.cap_lints {
+            hasher.update(b"cap-lints\0");
+            hasher.update(cap.as_bytes());
+            hasher.update(b"\0");
+        }
+
+        // Extern paths carry Cargo's check/build-specific filename suffixes.
+        // The compatibility lookup compares extern content hashes by crate
+        // name, so the alias key only needs the names to preserve dependency
+        // shape without baking in the output suffix.
+        hasher.update(b"externs\0");
+        for (name, _) in &self.extern_crates {
+            hasher.update(name.as_bytes());
+            hasher.update(b"\0");
+        }
+
+        hasher.update(b"lints\0");
+        for flag in &self.lint_flags {
+            hasher.update(flag.as_bytes());
+            hasher.update(b"\0");
+        }
+
+        hasher.update(b"unknown\0");
+        for flag in &self.unknown_flags {
+            hasher.update(flag.as_bytes());
+            hasher.update(b"\0");
+        }
+
+        hasher.update(b"remap\0");
+        if key_root.is_some() {
+            let mut remap_path_prefixes: Vec<String> = self
+                .remap_path_prefixes
+                .iter()
+                .map(|remap| normalize_remap_path_prefix_for_key(remap, key_root))
+                .collect();
+            remap_path_prefixes.sort();
+            for remap in &remap_path_prefixes {
+                hasher.update(remap.as_bytes());
+                hasher.update(b"\0");
+            }
+        } else {
+            for remap in &self.remap_path_prefixes {
+                hasher.update(remap.as_bytes());
+                hasher.update(b"\0");
+            }
+        }
+
+        hasher.update(b"env\0");
+        for (key, val) in &self.env_vars {
+            if VOLATILE_CARGO_ENV_VARS.contains(&key.as_str()) {
+                continue;
+            }
+            hasher.update(key.as_bytes());
+            hasher.update(b"=");
+            hasher.update(val.as_bytes());
+            hasher.update(b"\0");
+        }
+
+        Some(ContextKey(ContentHash::from_bytes(
+            *hasher.finalize().as_bytes(),
+        )))
+    }
+}
+
+fn normalized_check_metadata_emit(emit_types: &[String]) -> Option<&'static [&'static str]> {
+    let has = |needle: &str| emit_types.iter().any(|emit| emit == needle);
+    match emit_types.len() {
+        1 if has("metadata") => Some(&["metadata"]),
+        2 if has("metadata") && has("link") => Some(&["metadata"]),
+        2 if has("dep-info") && has("metadata") => Some(&["dep-info", "metadata"]),
+        3 if has("dep-info") && has("metadata") && has("link") => Some(&["dep-info", "metadata"]),
+        _ => None,
+    }
 }
 
 /// Compute the artifact key for a rustc compilation.

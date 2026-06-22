@@ -49,6 +49,7 @@ pub(super) struct CachedHitMaterializeRequest<'a> {
     pub(super) record_compilation: bool,
     pub(super) downgrade_output_metadata: bool,
     pub(super) mtime_floor_paths: Vec<NormalizedPath>,
+    pub(super) rustc_metadata_compat_outputs: Option<Vec<NormalizedPath>>,
     pub(super) phases: CachedHitPhases,
 }
 
@@ -69,6 +70,7 @@ pub(super) fn materialize_cached_compile_hit(
         record_compilation,
         downgrade_output_metadata,
         mtime_floor_paths,
+        rustc_metadata_compat_outputs,
         phases,
     } = request;
 
@@ -104,22 +106,46 @@ pub(super) fn materialize_cached_compile_hit(
     // build tool is looking for, leaving the user's `-MF` target absent
     // and reproducing the exact stale-incremental-build bug this fix
     // closes.
-    let targets: Vec<(NormalizedPath, NormalizedPath)> = (0..payloads.len())
-        .map(|i| {
-            let out: NormalizedPath = if i == 0 {
-                output_path.clone()
-            } else if i == 1 && payloads.len() == 2 {
-                current_depfile_dest
-                    .clone()
-                    .unwrap_or_else(|| secondary_output_dir.join(&names[i]))
-            } else {
-                secondary_output_dir.join(&names[i])
-            };
-            let cache_file = state.artifact_dir.join(format!("{artifact_key_hex}_{i}"));
-            (out, cache_file)
-        })
-        .collect();
-    if !write_payloads_par_with_mtime_floor(&targets, &payloads, &mtime_floor_paths) {
+    let (targets, payloads_to_write): (Vec<(NormalizedPath, NormalizedPath)>, Vec<CachedPayload>) =
+        if let Some(requested_outputs) = rustc_metadata_compat_outputs {
+            let mut targets = Vec::with_capacity(requested_outputs.len());
+            let mut selected_payloads = Vec::with_capacity(requested_outputs.len());
+            for requested in requested_outputs {
+                let Some(i) = rustc_compat_payload_index_for(&names, &requested) else {
+                    write_session_log(
+                        &state.sessions,
+                        sid,
+                        &format!(
+                            "[DIAG] rustc_emit_compat_missing_output: {}",
+                            requested.display()
+                        ),
+                    );
+                    return None;
+                };
+                let cache_file = state.artifact_dir.join(format!("{artifact_key_hex}_{i}"));
+                targets.push((requested, cache_file));
+                selected_payloads.push(payloads[i].clone());
+            }
+            (targets, selected_payloads)
+        } else {
+            let targets = (0..payloads.len())
+                .map(|i| {
+                    let out: NormalizedPath = if i == 0 {
+                        output_path.clone()
+                    } else if i == 1 && payloads.len() == 2 {
+                        current_depfile_dest
+                            .clone()
+                            .unwrap_or_else(|| secondary_output_dir.join(&names[i]))
+                    } else {
+                        secondary_output_dir.join(&names[i])
+                    };
+                    let cache_file = state.artifact_dir.join(format!("{artifact_key_hex}_{i}"));
+                    (out, cache_file)
+                })
+                .collect();
+            (targets, payloads.iter().cloned().collect())
+        };
+    if !write_payloads_par_with_mtime_floor(&targets, &payloads_to_write, &mtime_floor_paths) {
         return None;
     }
     let t2 = Instant::now();
@@ -191,6 +217,21 @@ pub(super) fn materialize_cached_compile_hit(
     })
 }
 
+fn rustc_compat_payload_index_for(names: &[String], requested: &NormalizedPath) -> Option<usize> {
+    let requested_ext = requested.extension().and_then(|ext| ext.to_str())?;
+    let wanted = match requested_ext {
+        "rmeta" => "rmeta",
+        "d" => "d",
+        _ => return None,
+    };
+    names.iter().position(|name| {
+        std::path::Path::new(name)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            == Some(wanted)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,6 +291,7 @@ mod tests {
             record_compilation: true,
             downgrade_output_metadata: true,
             mtime_floor_paths: Vec::new(),
+            rustc_metadata_compat_outputs: None,
             phases: CachedHitPhases::request_cache(0, 0),
         })
         .unwrap();
@@ -353,6 +395,7 @@ mod tests {
             record_compilation: true,
             downgrade_output_metadata: true,
             mtime_floor_paths: Vec::new(),
+            rustc_metadata_compat_outputs: None,
             phases: CachedHitPhases::request_cache(0, 0),
         })
         .expect("materialize_cached_compile_hit must succeed");
@@ -441,6 +484,7 @@ mod tests {
             record_compilation: true,
             downgrade_output_metadata: false,
             mtime_floor_paths: Vec::new(),
+            rustc_metadata_compat_outputs: None,
             phases: CachedHitPhases::request_cache(0, 0),
         })
         .expect("legacy single-output hit must still succeed");
@@ -517,6 +561,7 @@ mod tests {
                 record_compilation: true,
                 downgrade_output_metadata: false,
                 mtime_floor_paths: Vec::new(),
+                rustc_metadata_compat_outputs: None,
                 phases: CachedHitPhases::request_cache(0, 0),
             })
             .expect("materialize_cached_compile_hit must succeed");

@@ -212,6 +212,7 @@ fn rustc_extern_artifact_key_ignores_target_dir_path_shape() {
         ctx.clone(),
         None,
         vec![("dep".to_string(), extern_a.clone())],
+        None,
     );
     let first_key = graph
         .update(
@@ -238,6 +239,7 @@ fn rustc_extern_artifact_key_ignores_target_dir_path_shape() {
         ctx,
         None,
         vec![("dep".to_string(), extern_b.clone())],
+        None,
     );
     let verdict = graph.check(&key, always_fresh, |path| {
         if path == Path::new("/src/app.rs") {

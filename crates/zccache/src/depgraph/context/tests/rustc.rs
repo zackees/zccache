@@ -221,6 +221,46 @@ fn rustc_extra_filename_affects_key() {
 }
 
 #[test]
+fn rustc_check_metadata_compat_key_matches_build_emit_superset() {
+    let mut check = make_rustc_context("/src/lib.rs", "2021");
+    check.emit_types = vec!["dep-info".to_string(), "metadata".to_string()];
+    check.cargo_metadata = Some("check-metadata".to_string());
+    check.extra_filename = Some("-check".to_string());
+    check.extern_crates = vec![("dep".into(), "/target/check/libdep-check.rmeta".into())];
+
+    let mut build = check.clone();
+    build.emit_types = vec![
+        "dep-info".to_string(),
+        "metadata".to_string(),
+        "link".to_string(),
+    ];
+    build.cargo_metadata = Some("build-metadata".to_string());
+    build.extra_filename = Some("-build".to_string());
+    build.extern_crates = vec![("dep".into(), "/target/build/libdep-build.rmeta".into())];
+
+    assert_ne!(check.context_key(), build.context_key());
+    assert_eq!(
+        check.check_metadata_compat_key_with_root(None),
+        build.check_metadata_compat_key_with_root(None),
+        "check metadata should be able to probe build metadata+link via a separate alias"
+    );
+}
+
+#[test]
+fn rustc_check_metadata_compat_key_rejects_non_metadata_shapes() {
+    let mut ctx = make_rustc_context("/src/lib.rs", "2021");
+    ctx.emit_types = vec!["dep-info".to_string(), "link".to_string()];
+    assert!(ctx.check_metadata_compat_key_with_root(None).is_none());
+
+    ctx.emit_types = vec!["llvm-ir".to_string()];
+    assert!(ctx.check_metadata_compat_key_with_root(None).is_none());
+
+    ctx.emit_types = vec!["dep-info".to_string(), "metadata".to_string()];
+    ctx.crate_types = vec!["proc-macro".to_string()];
+    assert!(ctx.check_metadata_compat_key_with_root(None).is_none());
+}
+
+#[test]
 fn rustc_context_key_differs_from_cc() {
     // The domain separation tags differ, so even identical-looking contexts
     // produce different keys.

@@ -209,7 +209,7 @@ fn rustc_externs_roundtrip() {
         ),
     ];
 
-    graph.register_rustc_with_key_and_root_result(key, ctx, None, externs.clone());
+    graph.register_rustc_with_key_and_root_result(key, ctx, None, externs.clone(), None);
     graph.update(
         &key,
         ScanResult {

@@ -22,8 +22,9 @@ matrix cell in this cluster pins a single failure mode:
 
 | Scenario              | What breaks when this cell turns red                |
 | --------------------- | --------------------------------------------------- |
-| `cold-tar-untar-warm` | cache archive fidelity (tar/untar round-trip)       |
-| `worktree-share`      | `ZCCACHE_PATH_REMAP=auto` injection (issue #352)    |
+| `build-then-check`    | cross-verb build/check cache reuse (soldr#758)       |
+| `cold-tar-untar-warm` | cache archive fidelity (tar/untar round-trip)        |
+| `worktree-share`      | `ZCCACHE_PATH_REMAP=auto` injection (issue #352)     |
 | `touch-no-change`     | mtime/content-hash robustness (soldr save/load #377) |
 
 ## How a worker measures
@@ -78,6 +79,7 @@ perf/
 │   ├── common.sh           # measure::* helpers (rss poller, du, summary)
 │   └── extract.sh          # untar a fixture into $WORKDIR
 ├── scenarios/
+│   ├── build-then-check/run.sh
 │   ├── cold-tar-untar-warm/run.sh
 │   ├── worktree-share/run.sh
 │   └── touch-no-change/run.sh

@@ -109,9 +109,14 @@ impl DepGraph {
         ctx: CompileContext,
         key_root: Option<NormalizedPath>,
         externs: Vec<(String, NormalizedPath)>,
+        check_metadata_compat_key: Option<ContextKey>,
     ) -> ContextRegistration {
         let registration = self.register_context_entry(key, ctx, key_root);
         self.rustc_externs.insert(registration.key, externs);
+        if let Some(compat_key) = check_metadata_compat_key {
+            self.rustc_check_metadata_compat
+                .insert(compat_key, registration.key);
+        }
         registration
     }
 

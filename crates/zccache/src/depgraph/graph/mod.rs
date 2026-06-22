@@ -121,6 +121,12 @@ pub struct DepGraph {
     /// their paths are output-placement state. Their content hashes affect the
     /// rustc artifact key by crate name, but target-dir path prefixes must not.
     pub(super) rustc_externs: DashMap<ContextKey, Vec<(String, NormalizedPath)>>,
+    /// Rustc check/build metadata compatibility alias.
+    ///
+    /// Keyed by `RustcCompileContext::check_metadata_compat_key_with_root`.
+    /// Values are exact build-style context keys that can supply `.rmeta`
+    /// and dep-info outputs to a check-style request.
+    pub(super) rustc_check_metadata_compat: DashMap<ContextKey, ContextKey>,
     /// Issue #550: cached normalize_key_path results, keyed by
     /// (path, key_root_identity). The `update()` hot loop calls
     /// `normalize_key_path` once per resolved include header (typically
@@ -266,6 +272,7 @@ impl DepGraph {
             files: DashMap::new(),
             contexts: DashMap::new(),
             rustc_externs: DashMap::new(),
+            rustc_check_metadata_compat: DashMap::new(),
             path_key_cache: DashMap::new(),
             checks: AtomicU64::new(0),
             hits: AtomicU64::new(0),
@@ -322,6 +329,7 @@ impl DepGraph {
             files,
             contexts,
             rustc_externs,
+            rustc_check_metadata_compat: DashMap::new(),
             path_key_cache: DashMap::new(),
             checks: AtomicU64::new(0),
             hits: AtomicU64::new(0),
