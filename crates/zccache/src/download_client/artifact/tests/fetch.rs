@@ -382,7 +382,7 @@ fn fetch_expands_7z_and_exists_reports_expanded_ready() {
     let cache_path = dir.path().join("cache").join("toolchain.7z");
     let expanded_path = dir.path().join("expanded");
     let mut request = FetchRequest::new(server.url.clone(), &cache_path);
-    request.destination_path_expanded = Some(expanded_path.clone());
+    request.destination_path_expanded = Some(expanded_path.clone().into());
     request.expected_sha256 = Some(sha256_hex(&archive_bytes));
 
     let first = fetch_with_retry(&client, request.clone()).unwrap();
@@ -470,12 +470,12 @@ fn expanded_state_remains_valid_when_expected_sha_is_added_later() {
     let expanded_path = dir.path().join("expanded");
 
     let mut initial = FetchRequest::new(server.url.clone(), &cache_path);
-    initial.destination_path_expanded = Some(expanded_path.clone());
+    initial.destination_path_expanded = Some(expanded_path.clone().into());
     let first = fetch_with_retry(&client, initial).unwrap();
     assert_eq!(first.status, FetchStatus::Expanded);
 
     let mut later = FetchRequest::new(server.url.clone(), &cache_path);
-    later.destination_path_expanded = Some(expanded_path.clone());
+    later.destination_path_expanded = Some(expanded_path.clone().into());
     later.expected_sha256 = Some(first.sha256.clone());
     let second = fetch_with_retry(&client, later.clone()).unwrap();
     assert_eq!(second.status, FetchStatus::AlreadyExpanded);
@@ -540,7 +540,7 @@ fn fetch_rejects_unsafe_zip_entries_end_to_end() {
     let cache_path = dir.path().join("cache").join("unsafe.zip");
     let expanded_path = dir.path().join("expanded");
     let mut request = FetchRequest::new(server.url.clone(), &cache_path);
-    request.destination_path_expanded = Some(expanded_path.clone());
+    request.destination_path_expanded = Some(expanded_path.clone().into());
 
     let err = fetch_with_retry(&client, request).unwrap_err();
     assert!(err.contains("unsafe zip entry"));

@@ -73,20 +73,18 @@ fn zccache_service_definition_v2(
         )
     })?;
 
-    Ok(
-        protocol_v2::ServiceDefinitionBuilder::shared_broker(
-            ZCCACHE_SERVICE_NAME,
-            binary.display().to_string(),
-        )
-        .per_version_binary_dir(binary_dir.display().to_string())
-        .min_version(crate::core::VERSION)
-        .version_allow_list([crate::core::VERSION])
-        .label("vendor", "zackees")
-        .label("package", "zccache")
-        .label("consumer", "zccache")
-        .label("running-process-tracker", "zackees/running-process#435")
-        .build(),
+    Ok(protocol_v2::ServiceDefinitionBuilder::shared_broker(
+        ZCCACHE_SERVICE_NAME,
+        binary.display().to_string(),
     )
+    .per_version_binary_dir(binary_dir.display().to_string())
+    .min_version(crate::core::VERSION)
+    .version_allow_list([crate::core::VERSION])
+    .label("vendor", "zackees")
+    .label("package", "zccache")
+    .label("consumer", "zccache")
+    .label("running-process-tracker", "zackees/running-process#435")
+    .build())
 }
 
 /// Build the zccache daemon service definition for the given daemon binary.

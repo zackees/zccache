@@ -5,10 +5,9 @@
 //! orchestration that ties them together. All `pub` items are re-exported
 //! here so the public path remains `download_client::artifact::<Name>`.
 
-use std::path::PathBuf;
-
 use serde::{Deserialize, Serialize};
 
+use crate::core::NormalizedPath;
 use crate::download::{DownloadOptions, DownloadPhase};
 
 use super::DownloadClient;
@@ -108,8 +107,8 @@ impl From<Vec<String>> for DownloadSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FetchRequest {
     pub source: DownloadSource,
-    pub destination_path: PathBuf,
-    pub destination_path_expanded: Option<PathBuf>,
+    pub destination_path: NormalizedPath,
+    pub destination_path_expanded: Option<NormalizedPath>,
     pub expected_sha256: Option<String>,
     pub archive_format: ArchiveFormat,
     pub wait_mode: WaitMode,
@@ -120,7 +119,10 @@ pub struct FetchRequest {
 
 impl FetchRequest {
     #[must_use]
-    pub fn new(source: impl Into<DownloadSource>, destination_path: impl Into<PathBuf>) -> Self {
+    pub fn new(
+        source: impl Into<DownloadSource>,
+        destination_path: impl Into<NormalizedPath>,
+    ) -> Self {
         Self {
             source: source.into(),
             destination_path: destination_path.into(),
@@ -138,8 +140,8 @@ impl FetchRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FetchResult {
     pub status: FetchStatus,
-    pub cache_path: PathBuf,
-    pub expanded_path: Option<PathBuf>,
+    pub cache_path: NormalizedPath,
+    pub expanded_path: Option<NormalizedPath>,
     pub bytes: Option<u64>,
     pub sha256: String,
 }
@@ -147,8 +149,8 @@ pub struct FetchResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FetchState {
     pub kind: FetchStateKind,
-    pub cache_path: PathBuf,
-    pub expanded_path: Option<PathBuf>,
+    pub cache_path: NormalizedPath,
+    pub expanded_path: Option<NormalizedPath>,
     pub bytes: Option<u64>,
     pub sha256: Option<String>,
     pub reason: Option<String>,

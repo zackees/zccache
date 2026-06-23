@@ -175,7 +175,7 @@ fn main() -> std::process::ExitCode {
                 }
             };
             let mut request = FetchRequest::new(source, destination);
-            request.destination_path_expanded = expanded;
+            request.destination_path_expanded = expanded.map(Into::into);
             request.expected_sha256 = expected_sha256;
             request.archive_format = parse_archive_format(&archive_format);
             request.wait_mode = if no_wait {
@@ -217,7 +217,7 @@ fn main() -> std::process::ExitCode {
                 }
             };
             let mut request = FetchRequest::new(source, destination);
-            request.destination_path_expanded = expanded;
+            request.destination_path_expanded = expanded.map(Into::into);
             request.expected_sha256 = expected_sha256;
             request.archive_format = parse_archive_format(&archive_format);
             match client.exists(&request) {

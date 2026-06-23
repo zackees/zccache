@@ -277,7 +277,7 @@ pub fn build_download_request(params: DownloadParams) -> FetchRequest {
         .archive_path
         .unwrap_or_else(|| infer_download_archive_path(&params.source, params.archive_format));
     let mut request = FetchRequest::new(params.source, archive_path);
-    request.destination_path_expanded = params.unarchive_path;
+    request.destination_path_expanded = params.unarchive_path.map(Into::into);
     request.expected_sha256 = params.expected_sha256;
     request.archive_format = params.archive_format;
     request.wait_mode = params.wait_mode;

@@ -739,8 +739,8 @@ mod tests {
 
     #[test]
     fn classify_adopt_error_maps_typed_refusals() {
-        use running_process::broker::protocol_v2::client_compat::BrokerClientError;
         use running_process::broker::protocol::ErrorCode;
+        use running_process::broker::protocol_v2::client_compat::BrokerClientError;
 
         let refusal = |code: ErrorCode| {
             AdoptError::Connect(BrokerClientError::Refused {
@@ -860,8 +860,8 @@ mod tests {
     /// Catches the half-done fix where the typed surface drops the hint.
     #[test]
     fn classify_adopt_error_propagates_retry_after_ms_on_v1_rate_limited() {
-        use running_process::broker::protocol_v2::client_compat::BrokerClientError;
         use running_process::broker::protocol::ErrorCode;
+        use running_process::broker::protocol_v2::client_compat::BrokerClientError;
 
         let err = AdoptError::Connect(BrokerClientError::Refused {
             code: ErrorCode::ErrorRateLimited,

@@ -89,8 +89,8 @@ where
 }
 
 fn is_backend_handle_probe_request(frame: &running_process::broker::protocol::Frame) -> bool {
-    use running_process::broker::protocol_v2::backend_handle::BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL;
     use running_process::broker::protocol::{FrameKind, PayloadEncoding};
+    use running_process::broker::protocol_v2::backend_handle::BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL;
 
     frame.envelope_version == 1
         && FrameKind::try_from(frame.kind) == Ok(FrameKind::Request)
@@ -103,8 +103,8 @@ fn backend_handle_probe_response(
     request: &running_process::broker::protocol::Frame,
     daemon: &running_process::broker::protocol_v2::backend_handle::DaemonProcess,
 ) -> Result<running_process::broker::protocol::Frame, IpcError> {
-    use running_process::broker::protocol_v2::backend_handle::BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL;
     use running_process::broker::protocol::{Frame, FrameKind, PayloadEncoding};
+    use running_process::broker::protocol_v2::backend_handle::BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL;
 
     let mut payload = Vec::with_capacity(32 + 128);
     payload.extend_from_slice(&request.payload);

@@ -145,7 +145,9 @@ pub fn build_manifest_builder_v2(cache_dir: &NormalizedPath) -> protocol_v2::Cac
         .broker_instance(SHARED_BROKER_INSTANCE)
         .root(
             V2::CacheData,
-            path_string(&crate::core::config::artifacts_dir_from_cache_dir(cache_dir)),
+            path_string(&crate::core::config::artifacts_dir_from_cache_dir(
+                cache_dir,
+            )),
         )
         .root(V2::CacheIndex, path_string(&index_dir))
         .root(V2::CacheLogs, path_string(&log_dir))
@@ -305,8 +307,8 @@ mod tests {
         );
 
         let bytes = std::fs::read(&v2_path).expect("read v2 file");
-        let decoded = protocol_v2::CacheManifest::decode(bytes.as_slice())
-            .expect("v2 CacheManifest decodes");
+        let decoded =
+            protocol_v2::CacheManifest::decode(bytes.as_slice()).expect("v2 CacheManifest decodes");
 
         assert_eq!(decoded.service_name, "zccache");
         assert_eq!(decoded.service_version, crate::core::VERSION);
@@ -333,9 +335,7 @@ mod tests {
     #[test]
     fn v1_and_v2_manifest_roots_agree_on_wire_values() {
         let cache_dir = NormalizedPath::from("/tmp/zccache-manifest-alignment");
-        let v1 = build_manifest_builder(&cache_dir)
-            .build()
-            .expect("seal v1");
+        let v1 = build_manifest_builder(&cache_dir).build().expect("seal v1");
         let v2 = build_manifest_builder_v2(&cache_dir).build();
         assert_eq!(v1.roots.len(), v2.roots.len(), "same root count");
         for (a, b) in v1.roots.iter().zip(v2.roots.iter()) {

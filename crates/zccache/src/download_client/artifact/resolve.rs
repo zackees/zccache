@@ -1,5 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use crate::core::NormalizedPath;
 use crate::download::{canonical_destination, DownloadOptions};
 
 use super::{ArchiveFormat, DownloadSource, FetchRequest, WaitMode};
@@ -7,8 +8,8 @@ use super::{ArchiveFormat, DownloadSource, FetchRequest, WaitMode};
 #[derive(Debug, Clone)]
 pub(super) struct ResolvedFetchRequest {
     pub(super) source: DownloadSource,
-    pub(super) cache_path: PathBuf,
-    pub(super) expanded_path: Option<PathBuf>,
+    pub(super) cache_path: NormalizedPath,
+    pub(super) expanded_path: Option<NormalizedPath>,
     pub(super) expected_sha256: Option<String>,
     pub(super) archive_format: ArchiveFormat,
     pub(super) wait_mode: WaitMode,
@@ -20,9 +21,7 @@ pub(super) struct ResolvedFetchRequest {
 pub(super) fn resolve_request(request: &FetchRequest) -> Result<ResolvedFetchRequest, String> {
     Ok(ResolvedFetchRequest {
         source: normalize_source(request.source.clone())?,
-        cache_path: canonical_destination(&request.destination_path)
-            .map_err(|e| e.to_string())?
-            .into_path_buf(),
+        cache_path: canonical_destination(&request.destination_path).map_err(|e| e.to_string())?,
         expanded_path: request
             .destination_path_expanded
             .as_ref()
@@ -57,7 +56,7 @@ pub(super) fn resolve_request_no_create(
     })
 }
 
-fn normalize_target(path: &Path, create_parent: bool) -> Result<PathBuf, String> {
+fn normalize_target(path: &Path, create_parent: bool) -> Result<NormalizedPath, String> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -76,9 +75,9 @@ fn normalize_target(path: &Path, create_parent: bool) -> Result<PathBuf, String>
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         std::fs::canonicalize(parent).map_err(|e| e.to_string())?
     } else {
-        crate::core::NormalizedPath::new(parent).into_path_buf()
+        NormalizedPath::new(parent).into_path_buf()
     };
-    Ok(canonical_parent.join(file_name))
+    Ok(NormalizedPath::new(canonical_parent.join(file_name)))
 }
 
 fn normalize_sha256(value: String) -> String {

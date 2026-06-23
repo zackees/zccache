@@ -20,8 +20,8 @@ use running_process::broker::protocol_v2::{
     self, BrokerIsolation, CacheManifestBuilder, CacheRootKind, HttpServerCapability,
     ServiceDefinition, ServiceDefinitionBuilder,
 };
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
@@ -54,15 +54,13 @@ fn service_definition_install_64x32_concurrent_writes() {
                     // distinct sub-prefix so no cross-thread collision can
                     // mask an actual concurrency bug.
                     let name = format!("zccache-stress-t{tid:02}n{i:02}");
-                    let path = ServiceDefinitionBuilder::shared_broker(
-                        &name,
-                        format!("/usr/bin/{name}"),
-                    )
-                    .min_version("1.0.0")
-                    .label("env", "stress")
-                    .label("thread", format!("{tid}"))
-                    .install_in(dir.path())
-                    .expect("install_in must succeed under concurrency");
+                    let path =
+                        ServiceDefinitionBuilder::shared_broker(&name, format!("/usr/bin/{name}"))
+                            .min_version("1.0.0")
+                            .label("env", "stress")
+                            .label("thread", format!("{tid}"))
+                            .install_in(dir.path())
+                            .expect("install_in must succeed under concurrency");
                     assert!(path.exists(), "install path must materialize");
                     success.fetch_add(1, Ordering::Relaxed);
                 }
@@ -264,9 +262,7 @@ fn probe_local_socket_rejects_full_adversarial_input_set() {
         "x".repeat(8192),
     ];
     for ep in &bad {
-        let err = probe_local_socket(ep).expect_err(
-            "garbage endpoint must Err",
-        );
+        let err = probe_local_socket(ep).expect_err("garbage endpoint must Err");
         let _ = err;
     }
 }
@@ -283,11 +279,11 @@ fn v2_program_pipe_rejects_every_malformed_sid() {
     let bad_sids = [
         "",
         "x",
-        "deadbeef",                          // 8 chars (too short)
-        "deadbeefcafef00d00",                // 18 chars
-        "deadbeefcafef00g",                  // non-hex 'g'
-        "DEADBEEFCAFEF00D",                  // uppercase (rejected per slice 16 tests)
-        "deadbeefcafef00\0",                 // embedded NUL
+        "deadbeef",           // 8 chars (too short)
+        "deadbeefcafef00d00", // 18 chars
+        "deadbeefcafef00g",   // non-hex 'g'
+        "DEADBEEFCAFEF00D",   // uppercase (rejected per slice 16 tests)
+        "deadbeefcafef00\0",  // embedded NUL
     ];
     for sid in bad_sids {
         for idx in [0u32, 1, 0xDEAD_BEEF, u32::MAX] {
@@ -359,13 +355,11 @@ fn dual_write_servicedef_and_manifest_16x_concurrent() {
                 let dir = tempfile::tempdir().expect("tempdir");
                 let svc = format!("zccache-dual-t{tid:02}");
                 // ServiceDefinition v2 write.
-                let sd_path = ServiceDefinitionBuilder::shared_broker(
-                    &svc,
-                    format!("/usr/bin/{svc}"),
-                )
-                .min_version("1.0.0")
-                .install_in(dir.path())
-                .expect("servicedef install");
+                let sd_path =
+                    ServiceDefinitionBuilder::shared_broker(&svc, format!("/usr/bin/{svc}"))
+                        .min_version("1.0.0")
+                        .install_in(dir.path())
+                        .expect("servicedef install");
                 // CacheManifest v2 write into the SAME dir.
                 let mf_path = CacheManifestBuilder::new(&svc, "1.0.0")
                     .root(CacheRootKind::CacheData, format!("/data/{svc}"))
