@@ -12,6 +12,7 @@ This document is the index for zccache's architecture specification. Each subsys
 | [architecture/metadata-cache.md](architecture/metadata-cache.md) | ~130 | In-memory cache data model, confidence levels, watcher integration |
 | [architecture/artifact-store.md](architecture/artifact-store.md) | ~130 | Disk layout, redb index schema, LRU eviction, corruption detection |
 | [architecture/rust-artifact-plan.md](architecture/rust-artifact-plan.md) | ~120 | Rust plan ownership, thin/full semantics, restore hardening, backends, diagnostics, CLI contract |
+| [architecture/embedded-service.md](architecture/embedded-service.md) | ~250 | Embedded service contract, audit continuity, soldr/fbuild integration design |
 | [architecture/target-cache.md](architecture/target-cache.md) | ~70 | Legacy action target snapshot ownership, outputs, and rust-plan boundary |
 | [architecture/runtime.md](architecture/runtime.md) | ~130 | Concurrency model, correctness guarantees, failure modes, crash recovery |
 | [architecture/portability.md](architecture/portability.md) | ~110 | Platform differences, path handling, file identity, future extensions |
@@ -24,6 +25,7 @@ This document is the index for zccache's architecture specification. Each subsys
 - **File change detection** → [metadata-cache.md](architecture/metadata-cache.md)
 - **Disk cache & eviction** → [artifact-store.md](architecture/artifact-store.md)
 - **soldr target artifact contract** → [rust-artifact-plan.md](architecture/rust-artifact-plan.md)
+- **Embedded soldr/fbuild service integration** → [embedded-service.md](architecture/embedded-service.md)
 - **Legacy action target snapshots** → [target-cache.md](architecture/target-cache.md)
 - **Thread safety & crash safety** → [runtime.md](architecture/runtime.md)
 - **Where zccache writes on disk (`ZCCACHE_CACHE_DIR` contract)** → [runtime.md § Cache root invariants](architecture/runtime.md#cache-root-invariants)

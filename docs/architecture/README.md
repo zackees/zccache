@@ -10,5 +10,6 @@ Detailed design specification for zccache, split by subsystem.
 | [metadata-cache.md](metadata-cache.md) | In-memory cache, confidence model, file watcher integration |
 | [artifact-store.md](artifact-store.md) | Disk layout, redb index, eviction, corruption detection |
 | [rust-artifact-plan.md](rust-artifact-plan.md) | Rust plan ownership, thin/full semantics, backends, diagnostics, CLI contract |
+| [embedded-service.md](embedded-service.md) | Embedded host-daemon API, audit continuity, soldr/fbuild integration contract |
 | [runtime.md](runtime.md) | Concurrency, correctness model, failure modes, crash recovery |
 | [portability.md](portability.md) | Platform differences, path handling, future extensions |
