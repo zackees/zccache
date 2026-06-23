@@ -107,13 +107,25 @@ async fn watch_one_directory(
     state: &SharedState,
     dir: NormalizedPath,
 ) -> crate::core::Result<bool> {
-    tokio::task::block_in_place(|| {
-        let mut watcher_guard = state.watcher.blocking_lock();
-        if let Some(ref mut w) = *watcher_guard {
-            w.watch(&dir)?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    })
+    if tokio::runtime::Handle::current().runtime_flavor()
+        == tokio::runtime::RuntimeFlavor::MultiThread
+    {
+        return tokio::task::block_in_place(|| {
+            let mut watcher_guard = state.watcher.blocking_lock();
+            if let Some(ref mut w) = *watcher_guard {
+                w.watch(&dir)?;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        });
+    }
+
+    let mut watcher_guard = state.watcher.lock().await;
+    if let Some(ref mut w) = *watcher_guard {
+        w.watch(&dir)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }

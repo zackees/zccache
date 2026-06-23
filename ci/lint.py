@@ -19,6 +19,9 @@ from ci.soldr import cargo_command, rust_tool_command, self_build_env
 SCRIPT_DIR = Path(__file__).parent.parent.resolve()
 DYLINT_TOOLCHAIN = "nightly-2026-03-26"
 DYLINT_COMPONENTS = ["llvm-tools-preview", "rust-src", "rustc-dev"]
+DYLINT_WINDOWS_SKIP = (
+    "Skipping Dylint on Windows; the dedicated Dylint CI job runs on Ubuntu."
+)
 
 
 def is_soldr_cargo_command(cmd):
@@ -134,13 +137,16 @@ def ensure_dylint_components():
     return result.returncode
 
 
+def skip_dylint_on_windows():
+    if os.name != "nt":
+        return False
+    print(DYLINT_WINDOWS_SKIP, file=sys.stderr)
+    return True
+
+
 def lint_dylint_only():
     """Run workspace dylint, retrying after alias repair if cargo-dylint misses it."""
-    if os.name == "nt":
-        print(
-            "Skipping workspace dylint on Windows; the dedicated Dylint CI job runs on Ubuntu.",
-            file=sys.stderr,
-        )
+    if skip_dylint_on_windows():
         return 0
 
     if which("cargo-dylint") is None:
@@ -236,21 +242,23 @@ def lint_workspace():
         print("Formatting issues found. Run './lint --fix' to auto-fix.", file=sys.stderr)
         return result.returncode
 
-    for dylint_manifest in (
-        "dylints/ban_std_pathbuf/Cargo.toml",
-        "dylints/ban_unrooted_tempdir/Cargo.toml",
-    ):
-        result = run_cmd(cargo_command(
-            "fmt",
-            "--manifest-path", dylint_manifest,
-            "--all", "--check",
-        ))
-        if result.returncode != 0:
-            print(
-                f"Dylint library formatting issues found in {dylint_manifest}.",
-                file=sys.stderr,
-            )
-            return result.returncode
+    skip_dylint = skip_dylint_on_windows()
+    if not skip_dylint:
+        for dylint_manifest in (
+            "dylints/ban_std_pathbuf/Cargo.toml",
+            "dylints/ban_unrooted_tempdir/Cargo.toml",
+        ):
+            result = run_cmd(cargo_command(
+                "fmt",
+                "--manifest-path", dylint_manifest,
+                "--all", "--check",
+            ))
+            if result.returncode != 0:
+                print(
+                    f"Dylint library formatting issues found in {dylint_manifest}.",
+                    file=sys.stderr,
+                )
+                return result.returncode
 
     result = run_cmd(cargo_command(
         "clippy", "--workspace", "--all-targets",
@@ -259,12 +267,7 @@ def lint_workspace():
     if result.returncode != 0:
         return result.returncode
 
-    if os.name == "nt":
-        print(
-            "Skipping workspace dylint on Windows; the dedicated Dylint CI job runs on Ubuntu.",
-            file=sys.stderr,
-        )
-    else:
+    if not skip_dylint:
         result = lint_dylint_only()
         if result != 0:
             return result

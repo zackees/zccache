@@ -312,6 +312,11 @@ fn p4_symlinked_store_dir() {
 #[test]
 fn p5_readonly_dir_put_fails_io() {
     use std::os::unix::fs::PermissionsExt;
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipping readonly permission test while running as root");
+        return;
+    }
+
     let dir = tempfile::tempdir().unwrap();
     let s = KvStore::open(dir.path()).unwrap();
     // Make `kv/` un-writable so the spill write path fails.
