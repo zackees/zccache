@@ -74,38 +74,78 @@ impl DepGraph {
     /// Returns the number of entries removed.
     pub fn trim(&self, max_age: Duration) -> usize {
         let now = Instant::now();
-        let mut removed = 0;
 
-        self.contexts.retain(|_, entry| {
-            // Use saturating_duration_since to avoid panic if Instant is
-            // non-monotonic (documented edge case on some platforms/VMs).
-            if now.saturating_duration_since(entry.last_accessed) > max_age {
-                removed += 1;
-                false
-            } else {
-                true
-            }
-        });
-        self.rustc_externs
-            .retain(|key, _| self.contexts.contains_key(key));
-
-        // Also trim file entries not referenced by any context.
-        let referenced: std::collections::HashSet<NormalizedPath> = self
+        // Two-pass eviction avoids holding DashMap shard locks while removing
+        // entries. Under burst load `trim(Duration::ZERO)` can evict many
+        // contexts, so keep each shard lock hold to a short read/remove.
+        let expired: Vec<ContextKey> = self
             .contexts
             .iter()
-            .flat_map(
-                |entry: dashmap::mapref::multiple::RefMulti<'_, ContextKey, ContextEntry>| {
-                    let mut paths = entry.value().resolved_includes.clone();
-                    paths.push(entry.value().context.source_file.clone());
-                    for fi in &entry.value().context.force_includes {
-                        paths.push(fi.clone());
-                    }
-                    paths
-                },
-            )
+            .filter_map(|entry| {
+                // Use saturating_duration_since to avoid panic if Instant is
+                // non-monotonic (documented edge case on some platforms/VMs).
+                if now.saturating_duration_since(entry.last_accessed) > max_age {
+                    Some(*entry.key())
+                } else {
+                    None
+                }
+            })
             .collect();
 
-        self.files.retain(|path, _| referenced.contains(path));
+        let mut removed = 0;
+        for key in expired {
+            if self.contexts.remove(&key).is_some() {
+                removed += 1;
+            }
+        }
+
+        let live_contexts: std::collections::HashSet<ContextKey> =
+            self.contexts.iter().map(|entry| *entry.key()).collect();
+        let stale_externs: Vec<ContextKey> = self
+            .rustc_externs
+            .iter()
+            .filter_map(|entry| {
+                if live_contexts.contains(entry.key()) {
+                    None
+                } else {
+                    Some(*entry.key())
+                }
+            })
+            .collect();
+        for key in stale_externs {
+            self.rustc_externs.remove(&key);
+        }
+
+        // Also trim file entries not referenced by any context.
+        let referenced: std::collections::HashSet<NormalizedPath> = self.contexts.iter().fold(
+            std::collections::HashSet::new(),
+            |mut paths, entry: dashmap::mapref::multiple::RefMulti<
+                '_,
+                ContextKey,
+                ContextEntry,
+            >| {
+                let entry = entry.value();
+                paths.extend(entry.resolved_includes.iter().cloned());
+                paths.insert(entry.context.source_file.clone());
+                paths.extend(entry.context.force_includes.iter().cloned());
+                paths
+            },
+        );
+
+        let unreferenced_files: Vec<NormalizedPath> = self
+            .files
+            .iter()
+            .filter_map(|entry| {
+                if referenced.contains(entry.key()) {
+                    None
+                } else {
+                    Some(entry.key().clone())
+                }
+            })
+            .collect();
+        for path in unreferenced_files {
+            self.files.remove(&path);
+        }
 
         removed
     }

@@ -11,12 +11,11 @@ use crate::core::NormalizedPath;
 use crate::depgraph::{ContextKey, DepGraph};
 use crate::fscache::CacheSystem;
 use dashmap::DashMap;
-use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use super::server::{trim_fast_hit_cache, CachedArtifact, FastHitEntry};
+use super::server::{CachedArtifact, FastHitEntry};
 
 /// Estimated bytes per metadata cache entry.
 const METADATA_ENTRY_BYTES: usize = 400;
@@ -35,6 +34,8 @@ const ARTIFACT_OVERHEAD_BYTES: usize = 200;
 /// cache, but recently-cached entries — including those being filled
 /// in-flight when the trim races — survive. (#454)
 const FAST_HIT_BUDGET_TRIM_MAX_AGE: Duration = Duration::from_secs(5);
+const DISK_EVICTION_SCAN_YIELD_EVERY: usize = 512;
+const DISK_EVICTION_DELETE_BATCH_SIZE: usize = 64;
 
 /// Snapshot of estimated memory usage across all in-memory caches.
 #[derive(Debug, Clone)]
@@ -151,7 +152,7 @@ pub(crate) fn evict_to_budget(
     // slack we already give the budget) and saves the corresponding
     // cold re-hits during build surges.
     if to_free > 0 && snap.fast_hit_entries > 0 {
-        let removed = trim_fast_hit_cache(fast_hit_cache, FAST_HIT_BUDGET_TRIM_MAX_AGE);
+        let removed = trim_fast_hit_cache_two_pass(fast_hit_cache, FAST_HIT_BUDGET_TRIM_MAX_AGE);
         let freed = (removed * FAST_HIT_ENTRY_BYTES) as u64;
         total_freed += freed;
         total_items += removed;
@@ -187,6 +188,31 @@ pub(crate) fn evict_to_budget(
     }
 
     (total_freed, total_items)
+}
+
+fn trim_fast_hit_cache_two_pass(
+    cache: &DashMap<ContextKey, FastHitEntry>,
+    max_age: Duration,
+) -> usize {
+    let now = Instant::now();
+    let expired: Vec<ContextKey> = cache
+        .iter()
+        .filter_map(|entry| {
+            if now.saturating_duration_since(entry.value().cached_at) > max_age {
+                Some(entry.key().clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let mut removed = 0;
+    for key in expired {
+        if cache.remove(&key).is_some() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 // ── Disk artifact eviction ──────────────────────────────────────────────
@@ -232,7 +258,11 @@ pub(crate) fn evict_disk_artifacts(
     let mut groups: HashMap<String, DiskArtifact> = HashMap::new();
     let mut total_disk: u64 = 0;
 
-    for entry in entries.flatten() {
+    for (idx, entry) in entries.flatten().enumerate() {
+        if idx > 0 && idx % DISK_EVICTION_SCAN_YIELD_EVERY == 0 {
+            std::thread::yield_now();
+        }
+
         let path = entry.path();
         let Some(fname) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
@@ -297,11 +327,19 @@ pub(crate) fn evict_disk_artifacts(
         to_evict.push(artifact);
     }
 
-    // Delete files in parallel across all evicted artifacts.
-    let all_files: Vec<&NormalizedPath> = to_evict.iter().flat_map(|a| &a.files).collect();
-    all_files.par_iter().for_each(|file| {
-        let _ = std::fs::remove_file(file);
-    });
+    // Keep deletion pressure bounded; this runs inside one spawn_blocking
+    // task, so unbounded parallel fan-out only competes with request-side I/O.
+    let mut deleted_since_yield = 0;
+    for artifact in &to_evict {
+        for file in &artifact.files {
+            let _ = std::fs::remove_file(file);
+            deleted_since_yield += 1;
+            if deleted_since_yield >= DISK_EVICTION_DELETE_BATCH_SIZE {
+                std::thread::yield_now();
+                deleted_since_yield = 0;
+            }
+        }
+    }
 
     // Remove from in-memory DashMap.
     for artifact in &to_evict {

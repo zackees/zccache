@@ -226,54 +226,12 @@ impl DaemonServer {
             let interval_secs = crate::core::config::Config::default().disk_gc_interval_secs;
             tokio::spawn(async move {
                 // Run once immediately at startup to reclaim excess disk from Bug 5.
-                {
-                    let dir = state.artifact_dir.clone();
-                    let artifacts = state.artifacts.clone();
-                    // Issue #680: pass the current depgraph snapshot so
-                    // contexts pointing at evicted artifacts are invalidated
-                    // synchronously. Pre-fix the depgraph kept stale Hit
-                    // pointers and the next compile reported `artifact_not_found`.
-                    let dg = state.dep_graph.load_full();
-                    let result = tokio::task::spawn_blocking(move || {
-                        super::super::eviction::evict_disk_artifacts(
-                            &dir,
-                            &artifacts,
-                            max_cache_size,
-                            Some(&dg),
-                        )
-                    })
-                    .await;
-                    if let Ok((freed, removed)) = result {
-                        if removed > 0 {
-                            tracing::info!(
-                                freed_bytes = freed,
-                                artifacts_removed = removed,
-                                "initial disk GC"
-                            );
-                        }
-                    }
-                }
+                run_disk_gc_pass(Arc::clone(&state), max_cache_size, "initial").await;
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
-                    let dir = state.artifact_dir.clone();
-                    let artifacts = state.artifacts.clone();
-                    let dg = state.dep_graph.load_full();
-                    let result = tokio::task::spawn_blocking(move || {
-                        super::super::eviction::evict_disk_artifacts(
-                            &dir,
-                            &artifacts,
-                            max_cache_size,
-                            Some(&dg),
-                        )
-                    })
-                    .await;
-                    if let Ok((freed, removed)) = result {
-                        if removed > 0 {
-                            tracing::info!(
-                                freed_bytes = freed,
-                                artifacts_removed = removed,
-                                "disk GC"
-                            );
+                    tokio::select! {
+                        () = state.shutdown.notified() => break,
+                        () = tokio::time::sleep(std::time::Duration::from_secs(interval_secs)) => {
+                            run_disk_gc_pass(Arc::clone(&state), max_cache_size, "periodic").await;
                         }
                     }
                 }
@@ -631,5 +589,28 @@ impl DaemonServer {
         });
 
         tracing::info!("file watcher pipeline started");
+    }
+}
+
+async fn run_disk_gc_pass(state: Arc<SharedState>, max_cache_size: u64, pass: &'static str) {
+    let dir = state.artifact_dir.clone();
+    let artifacts = state.artifacts.clone();
+    // Issue #680: pass the current depgraph snapshot so contexts pointing at
+    // evicted artifacts are invalidated synchronously. Pre-fix the depgraph
+    // kept stale Hit pointers and the next compile reported `artifact_not_found`.
+    let dg = state.dep_graph.load_full();
+    let result = tokio::task::spawn_blocking(move || {
+        super::super::eviction::evict_disk_artifacts(&dir, &artifacts, max_cache_size, Some(&dg))
+    })
+    .await;
+    if let Ok((freed, removed)) = result {
+        if removed > 0 {
+            tracing::info!(
+                freed_bytes = freed,
+                artifacts_removed = removed,
+                gc_pass = pass,
+                "disk GC"
+            );
+        }
     }
 }
