@@ -62,3 +62,23 @@ crates/zccache/src/daemon/server/compiler_hash.rs
 crates/zccache/src/daemon/server/handle_release_worktree_handles.rs
 crates/zccache/src/ipc/manifest.rs
 crates/zccache/src/ipc/mod.rs
+# Added 2026-06-23 -- legacy files still visible now that the PathBuf
+# gate runs in CI again after #877. Keep these explicit so new files are
+# still caught while the remaining migrations are tracked separately.
+crates/zccache/src/cli/commands/args/mod.rs
+crates/zccache/src/cli/commands/args/subcommands.rs
+crates/zccache/src/cli/commands/cargo_registry.rs
+crates/zccache/src/cli/commands/tests/analyze.rs
+crates/zccache/src/cli/commands/tests/warm_lockfile.rs
+crates/zccache/src/core/config/resolve.rs
+crates/zccache/src/daemon/server/persist/artifact_io.rs
+crates/zccache/src/daemon/server/persist/pack.rs
+crates/zccache/src/daemon/server/persist/tests.rs
+crates/zccache/src/daemon/server/tests/deferred_cold_path.rs
+crates/zccache/src/daemon/server/tests/link_cache.rs
+crates/zccache/src/depgraph/snapshot/tests/behavioral.rs
+crates/zccache/src/download_client/artifact/archive.rs
+crates/zccache/src/download_client/artifact/hashing.rs
+crates/zccache/src/download_client/artifact/lock.rs
+crates/zccache/src/download_client/artifact/marker.rs
+crates/zccache/src/fscache/verify.rs

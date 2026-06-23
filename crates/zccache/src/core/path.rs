@@ -183,6 +183,12 @@ impl From<PathBuf> for NormalizedPath {
     }
 }
 
+impl From<&PathBuf> for NormalizedPath {
+    fn from(path: &PathBuf) -> Self {
+        Self::new(path)
+    }
+}
+
 impl From<&Path> for NormalizedPath {
     fn from(path: &Path) -> Self {
         Self::new(path)
