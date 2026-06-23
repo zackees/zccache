@@ -585,21 +585,24 @@ impl Drop for InFlightGuardExec {
 }
 
 async fn acquire_in_flight(state: &Arc<SharedState>, key_hex: &str) -> InFlightGuardExec {
-    let notify_arc = match state.in_flight_exec.entry(key_hex.to_string()) {
-        Entry::Occupied(o) => Arc::clone(o.get()),
-        Entry::Vacant(v) => {
-            v.insert(Arc::new(Notify::new()));
-            return InFlightGuardExec {
-                state: Arc::clone(state),
-                key: key_hex.to_string(),
-                outcome: InFlight::Owner,
-            };
+    let key = key_hex.to_string();
+    let notify_arc = {
+        match state.in_flight_exec.entry(key.clone()) {
+            Entry::Occupied(o) => Arc::clone(o.get()),
+            Entry::Vacant(v) => {
+                v.insert(Arc::new(Notify::new()));
+                return InFlightGuardExec {
+                    state: Arc::clone(state),
+                    key,
+                    outcome: InFlight::Owner,
+                };
+            }
         }
     };
     notify_arc.notified().await;
     InFlightGuardExec {
         state: Arc::clone(state),
-        key: key_hex.to_string(),
+        key,
         outcome: InFlight::WokenByPeer,
     }
 }
