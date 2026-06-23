@@ -226,7 +226,7 @@ struct PersistedSystemIncludes {
 /// Avoids re-running the compiler discovery command for the same compiler
 /// across sessions. Entries store a (mtime, size) fingerprint of the
 /// compiler binary; stat-verify on lookup rediscovers if the binary changed.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct SystemIncludeCache {
     cache: HashMap<NormalizedPath, SystemIncludeEntry>,
 }

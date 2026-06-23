@@ -20,6 +20,8 @@ enum ResponseWire {
     },
 }
 
+const SERVER_REQUEST_RECV_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Handle a single client connection.
 pub(super) async fn handle_connection(
     mut conn: IpcConnection,
@@ -34,8 +36,18 @@ pub(super) async fn handle_connection(
     }
 
     loop {
-        let request = match conn.recv_wire::<Request, pb::Request>().await {
+        let request = match conn
+            .recv_wire_with_timeout::<Request, pb::Request>(SERVER_REQUEST_RECV_TIMEOUT)
+            .await
+        {
             Ok(req) => req,
+            Err(crate::ipc::IpcError::Timeout(timeout)) => {
+                tracing::warn!(
+                    timeout_secs = timeout.as_secs(),
+                    "client connection timed out waiting for next request; closing connection"
+                );
+                return Ok(());
+            }
             Err(crate::ipc::IpcError::Protocol(
                 crate::protocol::ProtocolError::VersionMismatch { expected, received },
             )) => {
@@ -186,7 +198,7 @@ pub(super) async fn handle_connection(
                         }),
                     );
                 }
-                state.shutdown.notify_one();
+                state.shutdown.notify_waiters();
                 return Ok(());
             }
             Request::Status => {

@@ -155,6 +155,9 @@ pub enum KvError {
     /// Value exceeded [`MAX_VALUE_BYTES`].
     #[error("value too large: {0} bytes (max {1})")]
     TooLarge(usize, usize),
+    /// Tokio blocking task failed before returning the underlying result.
+    #[error("blocking task join: {0}")]
+    BlockingJoin(String),
 }
 
 impl From<redb::Error> for KvError {
@@ -405,6 +408,18 @@ impl KvStore {
         Ok(value.len())
     }
 
+    /// Async wrapper for [`Self::put`] that runs redb commit/fsync and spill
+    /// file I/O on Tokio's blocking pool.
+    pub async fn put_async(&self, namespace: &str, key: &Key, value: &[u8]) -> KvResult<usize> {
+        let store = self.clone();
+        let namespace = namespace.to_string();
+        let key = *key;
+        let value = value.to_vec();
+        tokio::task::spawn_blocking(move || store.put(&namespace, &key, &value))
+            .await
+            .map_err(|e| KvError::BlockingJoin(e.to_string()))?
+    }
+
     /// Idempotent: missing key returns `Ok(())`.
     pub fn remove(&self, namespace: &str, key: &Key) -> KvResult<()> {
         check_namespace(namespace)?;
@@ -429,6 +444,17 @@ impl KvStore {
             let _ = std::fs::remove_file(&path);
         }
         Ok(())
+    }
+
+    /// Async wrapper for [`Self::remove`] that runs redb commit/fsync and spill
+    /// cleanup on Tokio's blocking pool.
+    pub async fn remove_async(&self, namespace: &str, key: &Key) -> KvResult<()> {
+        let store = self.clone();
+        let namespace = namespace.to_string();
+        let key = *key;
+        tokio::task::spawn_blocking(move || store.remove(&namespace, &key))
+            .await
+            .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
 
     /// Drop every entry under `namespace`. Other namespaces are untouched.
@@ -462,6 +488,16 @@ impl KvStore {
             let _ = std::fs::remove_dir_all(&ns_dir);
         }
         Ok(())
+    }
+
+    /// Async wrapper for [`Self::clear_namespace`] that runs redb commit/fsync
+    /// and namespace spill cleanup on Tokio's blocking pool.
+    pub async fn clear_namespace_async(&self, namespace: &str) -> KvResult<()> {
+        let store = self.clone();
+        let namespace = namespace.to_string();
+        tokio::task::spawn_blocking(move || store.clear_namespace(&namespace))
+            .await
+            .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
 
     /// Sorted by hex-key. Returns `(key, value-len)` pairs.

@@ -116,9 +116,10 @@ enum CompileRecvOutcome {
 /// Wrap a compile-response recv with an optional wedge budget.
 ///
 /// `budget = Some(d)` enables wedge detection; `budget = None` falls
-/// through to an unbounded recv. Production callers pass
-/// [`wedge_recv_timeout`] so the env knob still works; tests pass an
-/// explicit value so they don't race the process-global env var (#745).
+/// back to the IPC layer's 300 s default recv timeout but disables wedge
+/// classification/daemon respawn. Production callers pass [`wedge_recv_timeout`]
+/// so the env knob still works; tests pass an explicit value so they don't race
+/// the process-global env var (#745).
 ///
 /// Returns [`CompileRecvOutcome::Wedged`] only for the specific
 /// `IpcError::Timeout` signal — everything else (graceful close, broken
@@ -135,7 +136,10 @@ async fn compile_recv_with_wedge_detection<C: ConnRecv>(
             Err(crate::ipc::IpcError::Timeout(_)) => CompileRecvOutcome::Wedged,
             Err(e) => CompileRecvOutcome::Failed(format!("broken connection to daemon: {e}")),
         },
-        None => match conn.recv().await {
+        None => match conn
+            .recv_with_timeout(crate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT)
+            .await
+        {
             Ok(opt) => CompileRecvOutcome::Done(opt),
             Err(e) => CompileRecvOutcome::Failed(format!("broken connection to daemon: {e}")),
         },
@@ -932,18 +936,17 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn wedge_detection_disabled_when_budget_is_none() {
-        // `budget = None` opts back into the pre-#666 unbounded recv
-        // (used in production when `ZCCACHE_WEDGE_RECV_TIMEOUT_SECS=0`).
-        // The fake's BrokenPipe path returns immediately so the test
-        // doesn't hang.
+        // `budget = None` opts out of wedge classification/respawn while
+        // keeping the IPC layer's 300 s default recv timeout (used in
+        // production when `ZCCACHE_WEDGE_RECV_TIMEOUT_SECS=0`).
         let mut conn = FakeConn {
-            behavior: FakeBehavior::BrokenPipe,
+            behavior: FakeBehavior::TimesOut,
         };
         let outcome = compile_recv_with_wedge_detection(&mut conn, None).await;
-        // Disabled → falls through to `conn.recv()` unbounded, which the
-        // fake reports as a broken pipe. Crucially: not classified as Wedged.
+        // Disabled means a timeout is surfaced as a normal failure, not a
+        // wedge-triggering respawn.
         assert!(matches!(outcome, CompileRecvOutcome::Failed(_)));
     }
 

@@ -299,6 +299,14 @@ impl ArtifactStore {
         }
         result
     }
+
+    /// Async wrapper for [`Self::flush`] that keeps the durable atomic write
+    /// path off Tokio runtime threads.
+    pub async fn flush_blocking(self: Arc<Self>) -> std::io::Result<()> {
+        tokio::task::spawn_blocking(move || self.flush())
+            .await
+            .map_err(|e| std::io::Error::other(format!("artifact store flush task join: {e}")))?
+    }
 }
 
 /// Atomic, durable write: write to `tmp`, fsync the file, rename to

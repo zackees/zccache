@@ -2,8 +2,10 @@
 
 use std::io;
 use std::process::Output;
-use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
+use std::sync::{
+    atomic::{AtomicBool, AtomicU32, Ordering},
+    OnceLock,
+};
 
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
@@ -282,44 +284,70 @@ impl CompilePriority {
     }
 }
 
+const CPU_USAGE_UNKNOWN_BITS: u32 = u32::MAX;
+
 struct CpuUsageMonitor {
-    system: sysinfo::System,
-    last_refresh: Option<Instant>,
-    last_usage_percent: Option<f32>,
+    sampler_started: AtomicBool,
+    last_usage_percent_bits: AtomicU32,
+}
+
+impl Default for CpuUsageMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CpuUsageMonitor {
     fn new() -> Self {
-        let mut system = sysinfo::System::new();
-        system.refresh_cpu_usage();
         Self {
-            system,
-            last_refresh: Some(Instant::now()),
-            last_usage_percent: None,
+            sampler_started: AtomicBool::new(false),
+            last_usage_percent_bits: AtomicU32::new(CPU_USAGE_UNKNOWN_BITS),
         }
     }
 
-    fn sample(&mut self) -> Option<f32> {
-        let now = Instant::now();
+    fn sample(&'static self) -> Option<f32> {
+        self.ensure_sampler_started();
+        match self.last_usage_percent_bits.load(Ordering::Relaxed) {
+            CPU_USAGE_UNKNOWN_BITS => None,
+            usage_bits => Some(f32::from_bits(usage_bits)),
+        }
+    }
+
+    fn ensure_sampler_started(&'static self) {
         if self
-            .last_refresh
-            .is_some_and(|last| now.duration_since(last) < sysinfo::MINIMUM_CPU_UPDATE_INTERVAL)
+            .sampler_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
         {
-            return self.last_usage_percent;
+            return;
         }
 
-        self.system.refresh_cpu_usage();
-        self.last_refresh = Some(now);
-        let usage = self.system.global_cpu_usage().clamp(0.0, 100.0);
-        self.last_usage_percent = Some(usage);
-        self.last_usage_percent
+        if let Err(error) = std::thread::Builder::new()
+            .name("zccache-cpu-usage-sampler".to_string())
+            .spawn(move || self.run_sampler())
+        {
+            self.sampler_started.store(false, Ordering::Release);
+            tracing::debug!(%error, "failed to start CPU usage sampler");
+        }
+    }
+
+    fn run_sampler(&'static self) {
+        let mut system = sysinfo::System::new();
+        system.refresh_cpu_usage();
+
+        loop {
+            std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+            system.refresh_cpu_usage();
+            let usage = system.global_cpu_usage().clamp(0.0, 100.0);
+            self.last_usage_percent_bits
+                .store(usage.to_bits(), Ordering::Relaxed);
+        }
     }
 }
 
 fn current_cpu_usage_percent() -> Option<f32> {
-    static CPU_USAGE_MONITOR: OnceLock<Mutex<CpuUsageMonitor>> = OnceLock::new();
-    let monitor = CPU_USAGE_MONITOR.get_or_init(|| Mutex::new(CpuUsageMonitor::new()));
-    monitor.lock().ok().and_then(|mut monitor| monitor.sample())
+    static CPU_USAGE_MONITOR: OnceLock<CpuUsageMonitor> = OnceLock::new();
+    CPU_USAGE_MONITOR.get_or_init(CpuUsageMonitor::new).sample()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -363,6 +391,116 @@ pub(crate) fn command_output_with_priority(
     priority: CompilePriority,
 ) -> io::Result<Output> {
     command_output_with_priority_stdin(cmd, priority, None)
+}
+
+/// Wait for a synchronous command after applying compiler child priority,
+/// killing the child and returning `TimedOut` when `timeout` elapses.
+pub(crate) fn command_output_with_priority_timeout(
+    cmd: &mut std::process::Command,
+    priority: CompilePriority,
+    timeout: std::time::Duration,
+) -> io::Result<Output> {
+    let decision = priority.resolve_for_current_load();
+    let priority = decision.effective;
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use std::process::Stdio;
+
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        cmd.creation_flags(child_creation_flags(priority));
+        let child = cmd.spawn()?;
+        assign_child_to_daemon_job(child.as_raw_handle());
+        apply_priority_to_child_windows(child.as_raw_handle(), priority);
+        child_wait_with_output_timeout(child, timeout)
+    }
+
+    #[cfg(unix)]
+    {
+        use std::process::Stdio;
+
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let child = cmd.spawn()?;
+        apply_priority_to_child_unix(child.id(), priority);
+        child_wait_with_output_timeout(child, timeout)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        use std::process::Stdio;
+
+        if priority != CompilePriority::Normal {
+            tracing::debug!(
+                ?priority,
+                "compiler child priority is unsupported on this platform"
+            );
+        }
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let child = cmd.spawn()?;
+        child_wait_with_output_timeout(child, timeout)
+    }
+}
+
+fn child_wait_with_output_timeout(
+    mut child: std::process::Child,
+    timeout: std::time::Duration,
+) -> io::Result<Output> {
+    use std::io::Read;
+    use wait_timeout::ChildExt;
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_reader =
+        stdout.map(|mut pipe| std::thread::spawn(move || -> io::Result<Vec<u8>> {
+            let mut bytes = Vec::new();
+            pipe.read_to_end(&mut bytes)?;
+            Ok(bytes)
+        }));
+    let stderr_reader =
+        stderr.map(|mut pipe| std::thread::spawn(move || -> io::Result<Vec<u8>> {
+            let mut bytes = Vec::new();
+            pipe.read_to_end(&mut bytes)?;
+            Ok(bytes)
+        }));
+
+    let Some(status) = child.wait_timeout(timeout)? else {
+        let _ = child.kill();
+        let _ = child.wait();
+        // Do not join output reader threads on timeout: descendants may still
+        // hold inherited pipe handles open after the parent is killed.
+        let _ = stdout_reader;
+        let _ = stderr_reader;
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("child process timed out after {timeout:?}"),
+        ));
+    };
+
+    let stdout = join_output_reader(stdout_reader)?;
+    let stderr = join_output_reader(stderr_reader)?;
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn join_output_reader(
+    reader: Option<std::thread::JoinHandle<io::Result<Vec<u8>>>>,
+) -> io::Result<Vec<u8>> {
+    match reader {
+        Some(handle) => handle
+            .join()
+            .map_err(|_| io::Error::other("child output reader thread panicked"))?,
+        None => Ok(Vec::new()),
+    }
 }
 
 /// Sync variant that pipes `stdin_bytes` into the child's stdin when the

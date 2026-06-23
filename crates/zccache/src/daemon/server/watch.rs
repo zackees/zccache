@@ -12,10 +12,10 @@ pub(super) async fn watch_directory(state: &SharedState, dir: &Path) {
     watch_directories(state, &[dir.into()]).await;
 }
 
-/// Watch multiple directories in a single batch, acquiring locks once.
+/// Watch multiple directories in a single batch.
 ///
-/// Canonicalizes all paths up front, deduplicates against already-watched set,
-/// then registers all new watches in one lock acquisition.
+/// Canonicalizes all paths up front, reserves unwatched paths under
+/// `watched_dirs`, then registers each new watch independently.
 pub(super) async fn watch_directories(state: &SharedState, dirs: &[NormalizedPath]) {
     if dirs.is_empty() {
         return;
@@ -71,28 +71,49 @@ pub(super) async fn watch_directories(state: &SharedState, dirs: &[NormalizedPat
         return;
     }
 
-    // Single lock acquisition: filter already-watched and register new ones.
+    // Reserve already-watched paths without holding the set lock across
+    // notify's blocking watch registration.
     // Each directory here is the exact parent of a source/header file from
     // depfile scanning — no need to walk children or parents.
-    let mut watched = state.watched_dirs.lock().await;
-    let new_dirs: Vec<NormalizedPath> = canonical
-        .into_iter()
-        .filter(|p| !watched.contains(p))
-        .collect();
+    let new_dirs: Vec<NormalizedPath> = {
+        let mut watched = state.watched_dirs.lock().await;
+        canonical
+            .into_iter()
+            .filter(|p| watched.insert(p.clone()))
+            .collect()
+    };
 
     if new_dirs.is_empty() {
         return;
     }
 
-    let mut watcher_guard = state.watcher.lock().await;
-    if let Some(ref mut w) = *watcher_guard {
-        for dir in new_dirs {
-            if let Err(e) = w.watch(&dir) {
-                tracing::warn!("failed to watch {}: {e}", dir.display());
-                continue;
+    for dir in new_dirs {
+        match watch_one_directory(state, dir.clone()).await {
+            Ok(true) => {
+                tracing::info!("watching directory: {}", dir.display());
             }
-            tracing::info!("watching directory: {}", dir.display());
-            watched.insert(dir);
+            Ok(false) => {
+                state.watched_dirs.lock().await.remove(&dir);
+            }
+            Err(e) => {
+                state.watched_dirs.lock().await.remove(&dir);
+                tracing::warn!("failed to watch {}: {e}", dir.display());
+            }
         }
     }
+}
+
+async fn watch_one_directory(
+    state: &SharedState,
+    dir: NormalizedPath,
+) -> crate::core::Result<bool> {
+    tokio::task::block_in_place(|| {
+        let mut watcher_guard = state.watcher.blocking_lock();
+        if let Some(ref mut w) = *watcher_guard {
+            w.watch(&dir)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    })
 }

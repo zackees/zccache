@@ -6,6 +6,8 @@
 
 use super::super::super::*;
 
+const SYSTEM_INCLUDE_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub(super) struct SystemIncludesOutcome {
     pub(super) includes: Vec<NormalizedPath>,
     pub(super) system_includes_ns: u64,
@@ -48,61 +50,32 @@ pub(super) async fn discover_system_includes(
         // argv. Gcc / Msvc don't emit this format; they keep using
         // the slow path.
         let use_fast = matches!(compiler_family, crate::compiler::CompilerFamily::Clang);
-        let mut cache = state.system_includes.lock().await;
-        let lineage_for_probe = lineage.clone();
-        cache
-            .get_or_discover(compiler, |c| {
-                let disc_args = if use_fast {
-                    crate::depgraph::discovery_args_fast()
-                } else {
-                    crate::depgraph::discovery_args()
-                };
-                let output = {
-                    let mut cmd = std::process::Command::new(c);
-                    cmd.args(&disc_args);
-                    lineage_for_probe.apply_to_sync(&mut cmd, None);
-                    crate::daemon::process::command_output_with_priority(
-                        &mut cmd,
-                        compiler_priority,
-                    )
-                };
-                match output {
-                    Ok(out) => {
-                        let stderr = String::from_utf8_lossy(&out.stderr);
-                        let mut paths = if use_fast {
-                            crate::depgraph::parse_cc1_system_include_output(&stderr)
-                        } else {
-                            crate::depgraph::parse_system_include_output(&stderr)
-                        };
-                        // Defensive fall-through: if the fast probe
-                        // returned no paths (e.g. an older clang that
-                        // doesn't emit `-internal-isystem` flags, or
-                        // the binary detected as Clang turned out to
-                        // be gcc behind a clang symlink), retry with
-                        // the slow `-v -E` discovery. The cache
-                        // memoizes the result either way.
-                        if use_fast && paths.is_empty() {
-                            let slow_args = crate::depgraph::discovery_args();
-                            let mut cmd = std::process::Command::new(c);
-                            cmd.args(&slow_args);
-                            lineage_for_probe.apply_to_sync(&mut cmd, None);
-                            if let Ok(out) = crate::daemon::process::command_output_with_priority(
-                                &mut cmd,
-                                compiler_priority,
-                            ) {
-                                let stderr = String::from_utf8_lossy(&out.stderr);
-                                paths = crate::depgraph::parse_system_include_output(&stderr);
-                            }
-                        }
-                        paths
-                    }
-                    Err(e) => {
-                        tracing::warn!("failed to run compiler for include discovery: {e}");
-                        Vec::new()
-                    }
-                }
-            })
-            .to_vec()
+        let cached = {
+            let cache = state.system_includes.lock().await;
+            cache.get(compiler).map(|paths| paths.to_vec())
+        };
+        if let Some(paths) = cached {
+            paths
+        } else {
+            let discovered = discover_system_include_paths(
+                compiler,
+                lineage,
+                compiler_priority,
+                use_fast,
+            );
+            let mut cache = state.system_includes.lock().await;
+            if let Some(paths) = cache.get(compiler) {
+                paths.to_vec()
+            } else if let Some(discovered) = discovered {
+                cache.insert(compiler.clone(), discovered);
+                cache
+                    .get(compiler)
+                    .map(|paths| paths.to_vec())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        }
     };
     let system_includes_ns = t_system_includes
         .map(|t| t.elapsed().as_nanos() as u64)
@@ -120,4 +93,68 @@ pub(super) async fn discover_system_includes(
         system_includes_ns,
         system_watch_ns,
     }
+}
+
+fn discover_system_include_paths(
+    compiler: &NormalizedPath,
+    lineage: &crate::daemon::lineage::Lineage,
+    compiler_priority: CompilePriority,
+    use_fast: bool,
+) -> Option<Vec<NormalizedPath>> {
+    let disc_args = if use_fast {
+        crate::depgraph::discovery_args_fast()
+    } else {
+        crate::depgraph::discovery_args()
+    };
+    let output = run_discovery_command(compiler, &disc_args, lineage, compiler_priority);
+    match output {
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let mut paths = if use_fast {
+                crate::depgraph::parse_cc1_system_include_output(&stderr)
+            } else {
+                crate::depgraph::parse_system_include_output(&stderr)
+            };
+            // Defensive fall-through: if the fast probe returned no paths
+            // (e.g. an older clang that doesn't emit `-internal-isystem`
+            // flags, or the binary detected as Clang turned out to be gcc
+            // behind a clang symlink), retry with the slow `-v -E`
+            // discovery. The cache memoizes the result either way.
+            if use_fast && paths.is_empty() {
+                let slow_args = crate::depgraph::discovery_args();
+                match run_discovery_command(compiler, &slow_args, lineage, compiler_priority) {
+                    Ok(out) => {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        paths = crate::depgraph::parse_system_include_output(&stderr);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "failed to run fallback compiler for include discovery: {e}"
+                        );
+                    }
+                }
+            }
+            Some(paths)
+        }
+        Err(e) => {
+            tracing::warn!("failed to run compiler for include discovery: {e}");
+            None
+        }
+    }
+}
+
+fn run_discovery_command(
+    compiler: &NormalizedPath,
+    args: &[&str],
+    lineage: &crate::daemon::lineage::Lineage,
+    compiler_priority: CompilePriority,
+) -> std::io::Result<std::process::Output> {
+    let mut cmd = std::process::Command::new(compiler);
+    cmd.args(args);
+    lineage.apply_to_sync(&mut cmd, None);
+    crate::daemon::process::command_output_with_priority_timeout(
+        &mut cmd,
+        compiler_priority,
+        SYSTEM_INCLUDE_DISCOVERY_TIMEOUT,
+    )
 }
