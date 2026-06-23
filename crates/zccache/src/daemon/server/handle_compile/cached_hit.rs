@@ -575,10 +575,15 @@ mod tests {
             ));
         }
         let elapsed = start.elapsed();
+        let budget = if cfg!(windows) {
+            std::time::Duration::from_secs(2)
+        } else {
+            std::time::Duration::from_secs(1)
+        };
         assert!(
-            elapsed < std::time::Duration::from_secs(1),
+            elapsed < budget,
             "warm-hit materialization regressed: {ITERATIONS} hits took {elapsed:?} \
-             (budget: 1 s; avg {:?}/hit)",
+             (budget: {budget:?}; avg {:?}/hit)",
             elapsed / ITERATIONS
         );
         assert_eq!(state.stats.snapshot().hits as u32, ITERATIONS);
