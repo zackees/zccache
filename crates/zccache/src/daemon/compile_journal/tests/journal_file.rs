@@ -27,10 +27,10 @@ fn test_journal_file_write() {
     let entry = JournalEntry::new(ctx, "hit", 0, 5_000_000, None);
     journal.log(&entry, None);
 
-    // Give the background thread time to write.
-    std::thread::sleep(Duration::from_millis(200));
+    let global_path = dir.path().join("compile_journal.jsonl");
+    wait_for_lines(&global_path, 1);
 
-    let content = fs::read_to_string(dir.path().join("compile_journal.jsonl")).unwrap();
+    let content = fs::read_to_string(global_path).unwrap();
     assert!(!content.is_empty(), "journal should have content");
     // Each line should be valid JSON.
     for line in content.lines() {
@@ -76,11 +76,12 @@ fn test_session_journal_file_write() {
     let entry = JournalEntry::new(ctx, "miss", 0, 2_000_000, Some(miss_reason::UNKNOWN));
     journal.log(&entry, Some(&session_path));
 
-    // Give the background thread time to write.
-    std::thread::sleep(Duration::from_millis(200));
+    let global_path = dir.path().join("compile_journal.jsonl");
+    wait_for_lines(&global_path, 1);
+    wait_for_lines(&session_path, 1);
 
     // Global journal should have the entry.
-    let global = fs::read_to_string(dir.path().join("compile_journal.jsonl")).unwrap();
+    let global = fs::read_to_string(global_path).unwrap();
     assert!(!global.is_empty(), "global journal should have content");
 
     // Session journal should also have the entry.
@@ -111,7 +112,7 @@ fn test_close_session_releases_handle() {
     journal.log(&entry, Some(&session_path));
     journal.close_session(&session_path);
 
-    std::thread::sleep(Duration::from_millis(200));
+    wait_for_lines(&session_path, 1);
 
     // File should exist and have content.
     let content = fs::read_to_string(&session_path).unwrap();
@@ -279,7 +280,7 @@ fn test_double_close_session() {
     journal.close_session(&session_path);
     journal.close_session(&session_path);
 
-    std::thread::sleep(Duration::from_millis(200));
+    wait_for_lines(&session_path, 1);
 
     let content = fs::read_to_string(&session_path).unwrap();
     assert_eq!(content.lines().count(), 1);
