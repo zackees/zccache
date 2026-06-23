@@ -7,7 +7,7 @@ use super::metadata::{Confidence, FileMetadata, MetadataCache};
 use crate::core::NormalizedPath;
 use crate::core::Result;
 use crate::hash::ContentHash;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 /// Result of verifying cached metadata against the current filesystem state.
@@ -139,14 +139,14 @@ impl MetadataCache {
     /// Stat the file, hash it, insert at High confidence, return hash.
     fn hash_and_insert(&self, path: &Path) -> Result<ContentHash> {
         let pre_stat = Self::stat_file(path)?;
-        let hash = crate::hash::hash_file(path)?;
+        let hash = hash_file_off_runtime(path)?;
         let post_stat = Self::stat_file(path)?;
 
         // TOCTOU check: if file changed during hashing, retry up to 3 times.
         if pre_stat.mtime != post_stat.mtime || pre_stat.size != post_stat.size {
             for _ in 0..3 {
                 let pre = Self::stat_file(path)?;
-                let h = crate::hash::hash_file(path)?;
+                let h = hash_file_off_runtime(path)?;
                 let post = Self::stat_file(path)?;
                 if pre.mtime == post.mtime && pre.size == post.size {
                     self.insert(
@@ -180,6 +180,31 @@ impl MetadataCache {
             },
         );
         Ok(hash)
+    }
+}
+
+fn hash_file_off_runtime(path: &Path) -> Result<ContentHash> {
+    let path = PathBuf::from(path);
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return Ok(crate::hash::hash_file(&path)?);
+    };
+
+    if matches!(
+        handle.runtime_flavor(),
+        tokio::runtime::RuntimeFlavor::MultiThread
+    ) {
+        tokio::task::block_in_place(|| {
+            handle
+                .block_on(tokio::task::spawn_blocking(move || {
+                    crate::hash::hash_file(&path)
+                }))
+                .map_err(|err| crate::core::Error::Cache {
+                    message: format!("blocking hash task failed: {err}"),
+                })?
+                .map_err(crate::core::Error::Io)
+        })
+    } else {
+        Ok(crate::hash::hash_file(&path)?)
     }
 }
 
