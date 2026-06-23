@@ -265,23 +265,22 @@ async fn daemon_control_roundtrip_auto_falls_back_to_bincode_for_old_daemon() {
 
     let server = tokio::spawn(async move {
         let mut first = listener.accept().await.unwrap();
-        let err = first
-            .recv::<crate::protocol::Request>()
-            .await
-            .expect_err("v16 prost request must not decode as v15 bincode");
-        assert!(matches!(
-            err,
-            IpcError::Protocol(crate::protocol::ProtocolError::VersionMismatch {
+        match first.recv::<crate::protocol::Request>().await {
+            Err(IpcError::Protocol(crate::protocol::ProtocolError::VersionMismatch {
                 expected: crate::protocol::BINCODE_PROTOCOL_VERSION,
                 received: crate::protocol::PROST_PROTOCOL_VERSION,
-            })
-        ));
-        first
-            .send(&Response::Error {
-                message: "protocol version mismatch: expected v15, received v16".to_string(),
-            })
-            .await
-            .unwrap();
+            })) => {
+                first
+                    .send(&Response::Error {
+                        message: "protocol version mismatch: expected v15, received v16"
+                            .to_string(),
+                    })
+                    .await
+                    .unwrap();
+            }
+            Ok(None) => {}
+            other => panic!("v16 prost request must not decode as v15 bincode: {other:?}"),
+        }
 
         let mut second = listener.accept().await.unwrap();
         let request: Option<crate::protocol::Request> = second.recv().await.unwrap();

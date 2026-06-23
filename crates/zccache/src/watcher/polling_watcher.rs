@@ -630,6 +630,12 @@ mod tests {
         }
     }
 
+    fn wait_for_detectable_write() {
+        // NTFS can report one-second mtime granularity on GHA Windows runners.
+        // Sleep past that boundary before mutating files created in the test.
+        std::thread::sleep(Duration::from_millis(1100));
+    }
+
     #[test]
     fn polling_watcher_reports_filtered_changes() {
         let dir = tempdir().unwrap();
@@ -648,6 +654,7 @@ mod tests {
 
         let watcher = PollingWatcher::new(config).unwrap();
         watcher.start().unwrap();
+        wait_for_detectable_write();
         fs::write(root.join("src/watch.cpp"), "b\n").unwrap();
         fs::write(root.join("build/ignore.cpp"), "b\n").unwrap();
 
@@ -683,6 +690,7 @@ mod tests {
             .poll_timeout(Duration::from_millis(200))
             .unwrap()
             .is_none());
+        wait_for_detectable_write();
         fs::write(root.join("watch.cpp"), "c\n").unwrap();
         let batch = wait_for_batch(&watcher);
         watcher.stop().unwrap();
