@@ -457,18 +457,20 @@ fn child_wait_with_output_timeout(
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let stdout_reader =
-        stdout.map(|mut pipe| std::thread::spawn(move || -> io::Result<Vec<u8>> {
+    let stdout_reader = stdout.map(|mut pipe| {
+        std::thread::spawn(move || -> io::Result<Vec<u8>> {
             let mut bytes = Vec::new();
             pipe.read_to_end(&mut bytes)?;
             Ok(bytes)
-        }));
-    let stderr_reader =
-        stderr.map(|mut pipe| std::thread::spawn(move || -> io::Result<Vec<u8>> {
+        })
+    });
+    let stderr_reader = stderr.map(|mut pipe| {
+        std::thread::spawn(move || -> io::Result<Vec<u8>> {
             let mut bytes = Vec::new();
             pipe.read_to_end(&mut bytes)?;
             Ok(bytes)
-        }));
+        })
+    });
 
     let Some(status) = child.wait_timeout(timeout)? else {
         let _ = child.kill();

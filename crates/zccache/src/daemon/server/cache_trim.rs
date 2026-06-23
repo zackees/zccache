@@ -6,14 +6,6 @@
 
 use super::*;
 
-/// Remove fast-hit cache entries older than `max_age`. Returns entries removed.
-pub(crate) fn trim_fast_hit_cache(
-    cache: &DashMap<ContextKey, FastHitEntry>,
-    max_age: Duration,
-) -> usize {
-    trim_fast_hit_cache_at(cache, max_age, Instant::now())
-}
-
 pub(super) fn cache_age_at(now: Instant, cached_at: Instant) -> Duration {
     now.saturating_duration_since(cached_at)
 }
@@ -26,6 +18,7 @@ pub(super) fn cache_entry_fresh_at(now: Instant, cached_at: Instant, max_age: Du
     cache_age_at(now, cached_at) < max_age
 }
 
+#[cfg(test)]
 pub(super) fn trim_fast_hit_cache_at(
     cache: &DashMap<ContextKey, FastHitEntry>,
     max_age: Duration,

@@ -199,6 +199,7 @@ impl DaemonServer {
                 system_includes_loaded: AtomicBool::new(false),
                 artifact_store_loaded: AtomicBool::new(false),
                 shutdown_event_logged: AtomicBool::new(false),
+                shutdown_requested: AtomicBool::new(false),
                 fingerprint: FingerprintManager::new(),
                 dep_graph_persisted: AtomicBool::new(false),
                 dep_graph_load_complete: AtomicBool::new(true),

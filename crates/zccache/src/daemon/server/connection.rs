@@ -198,6 +198,7 @@ pub(super) async fn handle_connection(
                         }),
                     );
                 }
+                state.shutdown_requested.store(true, Ordering::Release);
                 state.shutdown.notify_waiters();
                 return Ok(());
             }

@@ -136,6 +136,13 @@ def ensure_dylint_components():
 
 def lint_dylint_only():
     """Run workspace dylint, retrying after alias repair if cargo-dylint misses it."""
+    if os.name == "nt":
+        print(
+            "Skipping workspace dylint on Windows; the dedicated Dylint CI job runs on Ubuntu.",
+            file=sys.stderr,
+        )
+        return 0
+
     if which("cargo-dylint") is None:
         print(
             "cargo-dylint is required for workspace linting. Install with "

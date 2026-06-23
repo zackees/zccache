@@ -151,7 +151,6 @@ async fn compile_recv_with_wedge_detection<C: ConnRecv>(
 /// pipe/socket. Two impls live below — one for Unix `IpcConnection`, one
 /// for the Windows client-side `IpcClientConnection`.
 trait ConnRecv {
-    async fn recv(&mut self) -> Result<Option<crate::protocol::Response>, crate::ipc::IpcError>;
     async fn recv_with_timeout(
         &mut self,
         timeout: std::time::Duration,
@@ -301,9 +300,6 @@ pub(super) fn wedge_probe_budget() -> Option<std::time::Duration> {
 
 #[cfg(unix)]
 impl ConnRecv for crate::ipc::IpcConnection {
-    async fn recv(&mut self) -> Result<Option<crate::protocol::Response>, crate::ipc::IpcError> {
-        crate::ipc::IpcConnection::recv_response(self).await
-    }
     async fn recv_with_timeout(
         &mut self,
         timeout: std::time::Duration,
@@ -314,9 +310,6 @@ impl ConnRecv for crate::ipc::IpcConnection {
 
 #[cfg(windows)]
 impl ConnRecv for crate::ipc::IpcClientConnection {
-    async fn recv(&mut self) -> Result<Option<crate::protocol::Response>, crate::ipc::IpcError> {
-        crate::ipc::IpcClientConnection::recv_response(self).await
-    }
     async fn recv_with_timeout(
         &mut self,
         timeout: std::time::Duration,
@@ -632,19 +625,6 @@ mod tests {
     }
 
     impl ConnRecv for FakeConn {
-        async fn recv(
-            &mut self,
-        ) -> Result<Option<crate::protocol::Response>, crate::ipc::IpcError> {
-            match &self.behavior {
-                FakeBehavior::Ok(r) => Ok(Some(r.clone())),
-                FakeBehavior::TimesOut => {
-                    // Sleep forever; the outer timeout wrapper handles it.
-                    futures::future::pending::<()>().await;
-                    unreachable!()
-                }
-                FakeBehavior::BrokenPipe => Err(crate::ipc::IpcError::ConnectionClosed),
-            }
-        }
         async fn recv_with_timeout(
             &mut self,
             timeout: std::time::Duration,

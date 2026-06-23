@@ -96,6 +96,7 @@ impl DaemonServer {
                                 "idle_timeout_secs": timeout,
                             }),
                         );
+                        state.shutdown_requested.store(true, Ordering::Release);
                         state.shutdown.notify_waiters();
                         break;
                     }
@@ -134,6 +135,7 @@ impl DaemonServer {
                                 "removed_pids": prune.removed_pids,
                             }),
                         );
+                        state.shutdown_requested.store(true, Ordering::Release);
                         state.shutdown.notify_waiters();
                         break;
                     }
@@ -230,12 +232,14 @@ impl DaemonServer {
                 // Run once immediately at startup to reclaim excess disk from Bug 5.
                 run_disk_gc_pass(Arc::clone(&state), max_cache_size, "initial").await;
                 loop {
-                    tokio::select! {
-                        () = state.shutdown.notified() => break,
-                        () = tokio::time::sleep(std::time::Duration::from_secs(interval_secs)) => {
-                            run_disk_gc_pass(Arc::clone(&state), max_cache_size, "periodic").await;
-                        }
+                    if state.shutdown_requested.load(Ordering::Acquire) {
+                        break;
                     }
+                    tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+                    if state.shutdown_requested.load(Ordering::Acquire) {
+                        break;
+                    }
+                    run_disk_gc_pass(Arc::clone(&state), max_cache_size, "periodic").await;
                 }
             });
         }
@@ -286,6 +290,7 @@ impl DaemonServer {
                     );
                 }
                 () = self.shutdown.notified() => {
+                    self.state.shutdown_requested.store(true, Ordering::Release);
                     tracing::info!("daemon server shutting down");
                     // Drop the watcher to stop the OS thread and close channels.
                     // The settle buffer and consumer tasks will exit when their
@@ -608,11 +613,8 @@ impl DaemonServer {
         // Consumer: feeds settled events into CacheSystem for metadata invalidation.
         let state = Arc::clone(&self.state);
         tokio::spawn(async move {
-            loop {
-                let event = tokio::select! {
-                    event = settled_rx.recv() => event,
-                    () = state.shutdown.notified() => break,
-                };
+            while !state.shutdown_requested.load(Ordering::Acquire) {
+                let event = settled_rx.recv().await;
                 let Some(event) = event else { break };
                 match event {
                     SettledEvent::Batch { changed, removed } => {

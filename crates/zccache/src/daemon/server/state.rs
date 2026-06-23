@@ -207,6 +207,10 @@ pub(super) struct SharedState {
     /// rows for a single death observed. Guard the write with a compare-and-swap
     /// so only the first Shutdown handler logs.
     pub(super) shutdown_event_logged: AtomicBool,
+    /// Latched once any shutdown source fires. Background tasks use this
+    /// instead of consuming the public shutdown Notify, so legacy
+    /// `shutdown_handle().notify_one()` callers still wake the accept loop.
+    pub(super) shutdown_requested: AtomicBool,
     /// Fingerprint manager: tracks per-watch dirty state for `zccache fp` commands.
     pub(super) fingerprint: FingerprintManager,
     /// Whether the in-memory dep graph is backed by a persisted snapshot.

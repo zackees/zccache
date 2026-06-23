@@ -119,11 +119,8 @@ impl DepGraph {
         // Also trim file entries not referenced by any context.
         let referenced: std::collections::HashSet<NormalizedPath> = self.contexts.iter().fold(
             std::collections::HashSet::new(),
-            |mut paths, entry: dashmap::mapref::multiple::RefMulti<
-                '_,
-                ContextKey,
-                ContextEntry,
-            >| {
+            |mut paths,
+             entry: dashmap::mapref::multiple::RefMulti<'_, ContextKey, ContextEntry>| {
                 let entry = entry.value();
                 paths.extend(entry.resolved_includes.iter().cloned());
                 paths.insert(entry.context.source_file.clone());

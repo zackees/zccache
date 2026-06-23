@@ -57,12 +57,8 @@ pub(super) async fn discover_system_includes(
         if let Some(paths) = cached {
             paths
         } else {
-            let discovered = discover_system_include_paths(
-                compiler,
-                lineage,
-                compiler_priority,
-                use_fast,
-            );
+            let discovered =
+                discover_system_include_paths(compiler, lineage, compiler_priority, use_fast);
             let mut cache = state.system_includes.lock().await;
             if let Some(paths) = cache.get(compiler) {
                 paths.to_vec()

@@ -199,7 +199,7 @@ fn trim_fast_hit_cache_two_pass(
         .iter()
         .filter_map(|entry| {
             if now.saturating_duration_since(entry.value().cached_at) > max_age {
-                Some(entry.key().clone())
+                Some(*entry.key())
             } else {
                 None
             }

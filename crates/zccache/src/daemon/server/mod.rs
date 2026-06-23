@@ -108,7 +108,6 @@ mod util;
 mod wal;
 mod watch;
 
-pub(crate) use cache_trim::trim_fast_hit_cache;
 use cache_trim::*;
 use cached_artifact::*;
 pub(crate) use cached_artifact::{CachedArtifact, CachedPayload};
