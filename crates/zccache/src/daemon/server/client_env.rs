@@ -38,6 +38,7 @@ pub(super) fn client_env_var_is_safe_to_replay(key: &str) -> bool {
 }
 
 /// Sync-command counterpart of [`apply_client_env`].
+#[cfg(test)]
 pub(super) fn apply_client_env_sync(
     cmd: &mut std::process::Command,
     client_env: Option<&[(String, String)]>,
