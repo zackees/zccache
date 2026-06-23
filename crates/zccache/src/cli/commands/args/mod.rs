@@ -12,8 +12,9 @@ use std::path::PathBuf;
 mod subcommands;
 
 pub(crate) use subcommands::{
-    CacheCommands, CargoRegistryCommands, DefenderExclusionsCommands, FpCommands, GhaCacheCommands,
-    KvCommands, MesonCommands, RustPlanBackendArg, RustPlanCommands, SymbolsCommands,
+    CacheCommands, CargoRegistryCommands, DaemonCommands, DaemonProfileCommands,
+    DefenderExclusionsCommands, FpCommands, GhaCacheCommands, KvCommands, MesonCommands,
+    RustPlanBackendArg, RustPlanCommands, SymbolsCommands,
 };
 
 /// Environment-variable reference appended to the top-level `--help` output.
@@ -75,6 +76,11 @@ pub(crate) enum Commands {
     /// Stop the daemon.
     #[command(visible_alias = "kill")]
     Stop,
+    /// Daemon lifecycle and profiling helpers.
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommands,
+    },
     /// Show daemon and cache status.
     Status {
         /// Print the daemon status as a JSON document to stdout.
@@ -558,6 +564,7 @@ pub(crate) enum Commands {
 pub(crate) const KNOWN_SUBCOMMANDS: &[&str] = &[
     "start",
     "stop",
+    "daemon",
     "status",
     "analyze",
     "clear",

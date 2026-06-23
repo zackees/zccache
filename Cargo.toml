@@ -22,6 +22,7 @@ homepage = "https://github.com/zackees/zccache"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
+console-subscriber = "0.5"
 serde = { version = "1", features = ["derive", "rc"] }
 bincode = "1"
 blake3 = { version = "1", features = ["pure", "rayon"] }

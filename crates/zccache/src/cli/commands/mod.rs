@@ -33,8 +33,8 @@ use super::{run_ino_convert_cached, InoConvertOptions};
 use super::{ArchiveFormat, DownloadParams, WaitMode};
 
 use args::{
-    CargoRegistryCommands, Cli, Commands, DefenderExclusionsCommands, FpCommands, GhaCacheCommands,
-    SymbolsCommands, KNOWN_SUBCOMMANDS,
+    CargoRegistryCommands, Cli, Commands, DaemonCommands, DaemonProfileCommands,
+    DefenderExclusionsCommands, FpCommands, GhaCacheCommands, SymbolsCommands, KNOWN_SUBCOMMANDS,
 };
 use util::{absolute_path, init_tracing, resolve_endpoint, run_async};
 
@@ -99,6 +99,28 @@ fn dispatch(command: Commands, global_strict_paths: Option<&str>) -> ExitCode {
     match command {
         Commands::Start => daemon::run_start(),
         Commands::Stop => daemon::run_stop(),
+        Commands::Daemon { command } => match command {
+            DaemonCommands::Top {
+                bind,
+                bind_addr,
+                no_open,
+                endpoint,
+            } => {
+                let endpoint = resolve_endpoint(endpoint.as_deref());
+                let bind = bind_addr.as_deref().or(bind.as_deref());
+                run_async(daemon::cmd_profile_start(&endpoint, bind, !no_open))
+            }
+            DaemonCommands::Profile { command } => match command {
+                DaemonProfileCommands::Start {
+                    bind,
+                    open,
+                    endpoint,
+                } => {
+                    let endpoint = resolve_endpoint(endpoint.as_deref());
+                    run_async(daemon::cmd_profile_start(&endpoint, bind.as_deref(), open))
+                }
+            },
+        },
         Commands::Status { json } => {
             let endpoint = resolve_endpoint(None);
             run_async(status::cmd_status(&endpoint, json))

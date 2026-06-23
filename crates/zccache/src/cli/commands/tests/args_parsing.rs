@@ -4,7 +4,10 @@
 //! — adding/renaming a flag should require touching one of the assertions
 //! here.
 
-use super::super::args::{Cli, Commands, RustPlanBackendArg, RustPlanCommands, KNOWN_SUBCOMMANDS};
+use super::super::args::{
+    Cli, Commands, DaemonCommands, DaemonProfileCommands, RustPlanBackendArg, RustPlanCommands,
+    KNOWN_SUBCOMMANDS,
+};
 use super::super::rust_plan::rust_plan_gha_version;
 use super::super::session::{
     session_stats_error_json, session_stats_json, session_stats_unavailable_json,
@@ -284,6 +287,118 @@ fn session_start_profile_flag_parses_when_set() {
     match cli.command {
         Some(Commands::SessionStart { profile, .. }) => assert!(profile),
         other => panic!("expected SessionStart, got {other:?}"),
+    }
+}
+
+#[test]
+fn daemon_top_parses_bind_open_and_endpoint() {
+    use clap::Parser;
+    let cli = Cli::try_parse_from([
+        "zccache",
+        "daemon",
+        "top",
+        "localhost:1234",
+        "--endpoint",
+        "tcp:127.0.0.1:9",
+    ])
+    .unwrap();
+
+    match cli.command {
+        Some(Commands::Daemon {
+            command:
+                DaemonCommands::Top {
+                    bind,
+                    bind_addr,
+                    no_open,
+                    endpoint,
+                },
+        }) => {
+            assert_eq!(bind.as_deref(), Some("localhost:1234"));
+            assert!(bind_addr.is_none());
+            assert!(!no_open);
+            assert_eq!(endpoint.as_deref(), Some("tcp:127.0.0.1:9"));
+        }
+        other => panic!("expected Daemon profile start, got {other:?}"),
+    }
+}
+
+#[test]
+fn daemon_top_parses_no_open_and_long_bind_aliases() {
+    use clap::Parser;
+    let cli =
+        Cli::try_parse_from(["zccache", "daemon", "top", "--bind", "localhost:1234"]).unwrap();
+
+    match cli.command {
+        Some(Commands::Daemon {
+            command:
+                DaemonCommands::Top {
+                    bind,
+                    bind_addr,
+                    no_open,
+                    endpoint,
+                },
+        }) => {
+            assert!(bind.is_none());
+            assert_eq!(bind_addr.as_deref(), Some("localhost:1234"));
+            assert!(!no_open);
+            assert!(endpoint.is_none());
+        }
+        other => panic!("expected Daemon top, got {other:?}"),
+    }
+
+    let cli =
+        Cli::try_parse_from(["zccache", "daemon", "top", "localhost:1234", "--no-open"]).unwrap();
+
+    match cli.command {
+        Some(Commands::Daemon {
+            command:
+                DaemonCommands::Top {
+                    bind,
+                    bind_addr,
+                    no_open,
+                    endpoint,
+                },
+        }) => {
+            assert_eq!(bind.as_deref(), Some("localhost:1234"));
+            assert!(bind_addr.is_none());
+            assert!(no_open);
+            assert!(endpoint.is_none());
+        }
+        other => panic!("expected Daemon top, got {other:?}"),
+    }
+}
+
+#[test]
+fn daemon_profile_start_parses_as_compatibility_alias() {
+    use clap::Parser;
+    let cli = Cli::try_parse_from([
+        "zccache",
+        "daemon",
+        "profile",
+        "start",
+        "--bind",
+        "localhost:1234",
+        "--open",
+    ])
+    .unwrap();
+
+    match cli.command {
+        Some(Commands::Daemon {
+            command:
+                DaemonCommands::Profile {
+                    command:
+                        DaemonProfileCommands::Start {
+                            bind,
+                            open,
+                            endpoint,
+                        },
+                },
+        }) => {
+            assert_eq!(bind.as_deref(), Some("localhost:1234"));
+            assert!(open);
+            assert!(endpoint.is_none());
+        }
+        other => panic!("expected Daemon profile start alias, got {other:?}"),
     }
 }
 

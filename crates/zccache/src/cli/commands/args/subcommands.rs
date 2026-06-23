@@ -8,6 +8,48 @@
 use clap::{Subcommand, ValueEnum};
 use std::path::PathBuf;
 
+/// `zccache daemon` subcommands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum DaemonCommands {
+    /// Restart the daemon with Tokio Console instrumentation enabled.
+    Top {
+        /// Tokio Console bind address, e.g. localhost:1234.
+        bind: Option<String>,
+        /// Tokio Console bind address, e.g. localhost:1234.
+        #[arg(long = "bind")]
+        bind_addr: Option<String>,
+        /// Do not launch the `tokio-console` terminal UI after the daemon is ready.
+        #[arg(long)]
+        no_open: bool,
+        /// IPC endpoint for the zccache daemon itself (default: platform-specific).
+        #[arg(long)]
+        endpoint: Option<String>,
+    },
+    /// Compatibility alias for `zccache daemon top`.
+    #[command(hide = true)]
+    Profile {
+        #[command(subcommand)]
+        command: DaemonProfileCommands,
+    },
+}
+
+/// `zccache daemon profile` subcommands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum DaemonProfileCommands {
+    /// Compatibility alias for `zccache daemon top`.
+    Start {
+        /// Tokio Console bind address, e.g. localhost:1234.
+        #[arg(long)]
+        bind: Option<String>,
+        /// Launch the `tokio-console` terminal UI after the daemon is ready.
+        #[arg(long)]
+        open: bool,
+        /// IPC endpoint for the zccache daemon itself (default: platform-specific).
+        #[arg(long)]
+        endpoint: Option<String>,
+    },
+}
+
 /// `zccache cache` subcommands (#695).
 #[derive(Debug, Subcommand)]
 pub(crate) enum CacheCommands {

@@ -3,7 +3,8 @@
 //! after a clean stop, and the bounded Status-probe (issue #554).
 
 use super::super::daemon::{
-    check_daemon_version, ensure_daemon, wait_for_daemon_teardown, VersionCheck,
+    check_daemon_version, ensure_daemon, profile_env_overrides, tokio_console_bind,
+    wait_for_daemon_teardown, VersionCheck,
 };
 
 // ── Protocol mismatch recovery (issue #27) ──────────────────
@@ -51,6 +52,36 @@ async fn ensure_daemon_auto_recovers_on_comm_error() {
              auto-recovering on protocol mismatch: {msg}"
         );
     }
+}
+
+#[test]
+fn tokio_console_bind_prefers_cli_over_env_over_default() {
+    let old = std::env::var("TOKIO_CONSOLE_BIND").ok();
+    std::env::set_var("TOKIO_CONSOLE_BIND", "localhost:5555");
+
+    assert_eq!(tokio_console_bind(Some("localhost:1234")), "localhost:1234");
+    assert_eq!(tokio_console_bind(None), "localhost:5555");
+
+    match old {
+        Some(value) => std::env::set_var("TOKIO_CONSOLE_BIND", value),
+        None => std::env::remove_var("TOKIO_CONSOLE_BIND"),
+    }
+    assert_eq!(tokio_console_bind(None), "127.0.0.1:6669");
+}
+
+#[test]
+fn profile_env_overrides_enable_tokio_console_profile() {
+    let env = profile_env_overrides("localhost:1234", true);
+
+    assert!(env.contains(&(
+        "ZCCACHE_DAEMON_PROFILE".to_string(),
+        "tokio-console".to_string()
+    )));
+    assert!(env.contains(&(
+        "TOKIO_CONSOLE_BIND".to_string(),
+        "localhost:1234".to_string()
+    )));
+    assert!(env.contains(&("ZCCACHE_TOKIO_CONSOLE_OPEN".to_string(), "1".to_string())));
 }
 
 /// The bounded wait loop must return promptly when the IPC endpoint is

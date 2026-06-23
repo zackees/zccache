@@ -6,6 +6,19 @@ use std::process::ExitCode;
 use super::super::status_probe_timeout;
 use super::util::{connect, resolve_endpoint, run_async, LOST_CONNECTION_MSG};
 
+#[cfg(any(test, feature = "tokio-console"))]
+const DAEMON_PROFILE_ENV: &str = "ZCCACHE_DAEMON_PROFILE";
+#[cfg(any(test, feature = "tokio-console"))]
+const TOKIO_CONSOLE_PROFILE: &str = "tokio-console";
+#[cfg(any(test, feature = "tokio-console"))]
+const TOKIO_CONSOLE_BIND_ENV: &str = "TOKIO_CONSOLE_BIND";
+#[cfg(any(test, feature = "tokio-console"))]
+const TOKIO_CONSOLE_OPEN_ENV: &str = "ZCCACHE_TOKIO_CONSOLE_OPEN";
+#[cfg(any(test, feature = "tokio-console"))]
+const TOKIO_CONSOLE_DEFAULT_BIND: &str = "127.0.0.1:6669";
+#[cfg(feature = "tokio-console")]
+const PROFILE_START_REASON: &str = "tokio-console-profile-start";
+
 pub(crate) enum VersionCheck {
     Ok,
     /// Daemon is newer than client — safe to proceed.
@@ -328,6 +341,127 @@ pub(crate) async fn cmd_start(endpoint: &str) -> ExitCode {
         Err(e) => {
             eprintln!("failed to start daemon: {e}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+pub(crate) async fn cmd_profile_start(endpoint: &str, bind: Option<&str>, open: bool) -> ExitCode {
+    #[cfg(not(feature = "tokio-console"))]
+    {
+        let _ = (endpoint, bind, open);
+        eprintln!(
+            "tokio-console daemon profile is unavailable: this zccache binary was built without \
+             the `tokio-console` feature. Rebuild with \
+             `RUSTFLAGS=\"--cfg tokio_unstable\" cargo build --features tokio-console`."
+        );
+        return ExitCode::FAILURE;
+    }
+
+    #[cfg(feature = "tokio-console")]
+    {
+        let open = open || env_truthy(TOKIO_CONSOLE_OPEN_ENV);
+        let bind = tokio_console_bind(bind);
+        let env = profile_env_overrides(&bind, open);
+        let _guard = ScopedEnv::apply(&env);
+
+        let killed_pid = stop_stale_daemon(endpoint).await;
+        if let Err(e) = spawn_and_wait(endpoint, PROFILE_START_REASON, killed_pid).await {
+            eprintln!("failed to start tokio-console daemon profile: {e}");
+            return ExitCode::FAILURE;
+        }
+        eprintln!("daemon running with tokio-console profile at {bind}");
+
+        if open {
+            if let Err(e) = launch_tokio_console(&bind) {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        }
+
+        ExitCode::SUCCESS
+    }
+}
+
+#[cfg(any(test, feature = "tokio-console"))]
+pub(crate) fn tokio_console_bind(bind: Option<&str>) -> String {
+    bind.map(str::to_string)
+        .or_else(|| std::env::var(TOKIO_CONSOLE_BIND_ENV).ok())
+        .unwrap_or_else(|| TOKIO_CONSOLE_DEFAULT_BIND.to_string())
+}
+
+#[cfg(any(test, feature = "tokio-console"))]
+pub(crate) fn profile_env_overrides(bind: &str, open: bool) -> Vec<(String, String)> {
+    let mut env = vec![
+        (
+            DAEMON_PROFILE_ENV.to_string(),
+            TOKIO_CONSOLE_PROFILE.to_string(),
+        ),
+        (TOKIO_CONSOLE_BIND_ENV.to_string(), bind.to_string()),
+    ];
+    if open {
+        env.push((TOKIO_CONSOLE_OPEN_ENV.to_string(), "1".to_string()));
+    }
+    env
+}
+
+#[cfg(feature = "tokio-console")]
+fn launch_tokio_console(bind: &str) -> Result<(), String> {
+    let mut cmd = std::process::Command::new("tokio-console");
+    #[cfg(windows)]
+    cmd.args(["--lang", "en_US.UTF-8"]);
+    cmd.arg(bind);
+    cmd.spawn()
+        .map(|_| {
+            eprintln!("launched tokio-console {bind}");
+        })
+        .map_err(|e| {
+            format!(
+                "daemon profile is running at {bind}, but failed to launch `tokio-console`: {e}. \
+                 Install it with `cargo install --locked tokio-console` and run `tokio-console {bind}`."
+            )
+        })
+}
+
+#[cfg(feature = "tokio-console")]
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| {
+        let value = value.trim();
+        !value.is_empty()
+            && !matches!(
+                value.to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off" | "n"
+            )
+    })
+}
+
+#[cfg(feature = "tokio-console")]
+struct ScopedEnv {
+    previous: Vec<(String, Option<String>)>,
+}
+
+#[cfg(feature = "tokio-console")]
+impl ScopedEnv {
+    fn apply(overrides: &[(String, String)]) -> Self {
+        let previous = overrides
+            .iter()
+            .map(|(key, value)| {
+                let old = std::env::var(key).ok();
+                std::env::set_var(key, value);
+                (key.clone(), old)
+            })
+            .collect();
+        Self { previous }
+    }
+}
+
+#[cfg(feature = "tokio-console")]
+impl Drop for ScopedEnv {
+    fn drop(&mut self) {
+        for (key, value) in self.previous.iter().rev() {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
         }
     }
 }
