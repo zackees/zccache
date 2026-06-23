@@ -7,7 +7,7 @@ use crate::artifact::{
 };
 use crate::core::NormalizedPath;
 use crate::gha::{GhaCache, GhaError};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 
 use super::args::{RustPlanBackendArg, RustPlanCommands};
@@ -145,8 +145,8 @@ pub(crate) async fn cmd_rust_plan(action: RustPlanCommands) -> ExitCode {
             };
             match restore_rust_plan_layered_local_async(
                 plan.clone(),
-                PathBuf::from(&base_cache_dir),
-                PathBuf::from(&delta_cache_dir),
+                NormalizedPath::from(&base_cache_dir),
+                NormalizedPath::from(&delta_cache_dir),
             )
             .await
             {
@@ -222,8 +222,8 @@ pub(crate) async fn cmd_rust_plan(action: RustPlanCommands) -> ExitCode {
             };
             match save_rust_plan_delta_local_async(
                 plan.clone(),
-                PathBuf::from(&base_cache_dir),
-                PathBuf::from(&delta_cache_dir),
+                NormalizedPath::from(&base_cache_dir),
+                NormalizedPath::from(&delta_cache_dir),
             )
             .await
             {
@@ -281,36 +281,36 @@ where
 
 async fn restore_rust_plan_local_async(
     plan: RustArtifactPlanV1,
-    cache_dir: PathBuf,
+    cache_dir: NormalizedPath,
 ) -> Result<RustPlanSummary, RustPlanError> {
-    run_rust_plan_local_blocking(move || restore_rust_plan_local(&plan, &cache_dir)).await
+    run_rust_plan_local_blocking(move || restore_rust_plan_local(&plan, cache_dir.as_path())).await
 }
 
 async fn save_rust_plan_local_async(
     plan: RustArtifactPlanV1,
-    cache_dir: PathBuf,
+    cache_dir: NormalizedPath,
 ) -> Result<RustPlanSummary, RustPlanError> {
-    run_rust_plan_local_blocking(move || save_rust_plan_local(&plan, &cache_dir)).await
+    run_rust_plan_local_blocking(move || save_rust_plan_local(&plan, cache_dir.as_path())).await
 }
 
 async fn restore_rust_plan_layered_local_async(
     plan: RustArtifactPlanV1,
-    base_cache_dir: PathBuf,
-    delta_cache_dir: PathBuf,
+    base_cache_dir: NormalizedPath,
+    delta_cache_dir: NormalizedPath,
 ) -> Result<RustPlanSummary, RustPlanError> {
     run_rust_plan_local_blocking(move || {
-        restore_rust_plan_layered_local(&plan, &base_cache_dir, &delta_cache_dir)
+        restore_rust_plan_layered_local(&plan, base_cache_dir.as_path(), delta_cache_dir.as_path())
     })
     .await
 }
 
 async fn save_rust_plan_delta_local_async(
     plan: RustArtifactPlanV1,
-    base_cache_dir: PathBuf,
-    delta_cache_dir: PathBuf,
+    base_cache_dir: NormalizedPath,
+    delta_cache_dir: NormalizedPath,
 ) -> Result<RustPlanSummary, RustPlanError> {
     run_rust_plan_local_blocking(move || {
-        save_rust_plan_delta_local(&plan, &base_cache_dir, &delta_cache_dir)
+        save_rust_plan_delta_local(&plan, base_cache_dir.as_path(), delta_cache_dir.as_path())
     })
     .await
 }
@@ -338,7 +338,7 @@ async fn run_rust_plan_restore(
 ) -> Result<RustPlanSummary, RustPlanRuntimeError> {
     match backend {
         RustPlanBackendArg::Local => {
-            restore_rust_plan_local_async(plan.clone(), cache_dir.to_path_buf())
+            restore_rust_plan_local_async(plan.clone(), NormalizedPath::new(cache_dir))
                 .await
                 .map_err(|err| rust_plan_backend_failure(backend, err.to_string()))
         }
@@ -354,7 +354,7 @@ async fn run_rust_plan_save(
 ) -> Result<RustPlanSummary, RustPlanRuntimeError> {
     match backend {
         RustPlanBackendArg::Local => {
-            save_rust_plan_local_async(plan.clone(), cache_dir.to_path_buf())
+            save_rust_plan_local_async(plan.clone(), NormalizedPath::new(cache_dir))
                 .await
                 .map_err(|err| rust_plan_backend_failure(backend, err.to_string()))
         }
@@ -387,9 +387,12 @@ async fn restore_rust_plan_gha(
         .await
         .map_err(rust_plan_gha_error)?
     else {
-        let mut summary = restore_rust_plan_local_async(plan.clone(), cache_dir.to_path_buf())
-            .await
-            .map_err(|err| rust_plan_backend_failure(RustPlanBackendArg::Gha, err.to_string()))?;
+        let mut summary =
+            restore_rust_plan_local_async(plan.clone(), NormalizedPath::new(cache_dir))
+                .await
+                .map_err(|err| {
+                    rust_plan_backend_failure(RustPlanBackendArg::Gha, err.to_string())
+                })?;
         summary.set_backend("gha", Some(cache_key), Some(version));
         summary.record_skip("<gha-cache>", "backend_cache_miss");
         return Ok(summary);

@@ -1,5 +1,6 @@
 //! `zccache gha-cache` subcommands: status / save / restore.
 
+use crate::core::NormalizedPath;
 use crate::gha::{GhaCache, GhaError};
 use std::path::Path;
 use std::process::ExitCode;
@@ -37,7 +38,7 @@ pub(crate) async fn cmd_gha_save(key: &str, path: &str) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let data = match tar_gz_encode_async(src.to_path_buf()).await {
+    let data = match tar_gz_encode_async(NormalizedPath::new(src)).await {
         Ok(d) => d,
         Err(e) => {
             eprintln!("zccache gha-cache save: failed to create archive: {e}");
@@ -94,7 +95,7 @@ pub(crate) async fn cmd_gha_restore(key: &str, path: &str) -> ExitCode {
     }
 
     let restored_bytes = data.len();
-    match tar_gz_decode_async(data, dest.to_path_buf()).await {
+    match tar_gz_decode_async(data, NormalizedPath::new(dest)).await {
         Ok(()) => {
             eprintln!(
                 "zccache gha-cache restore: restored {} bytes for key '{key}' to {path}",

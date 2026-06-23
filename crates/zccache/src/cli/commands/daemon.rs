@@ -354,7 +354,7 @@ pub(crate) async fn cmd_profile_start(endpoint: &str, bind: Option<&str>, open: 
              the `tokio-console` feature. Rebuild with \
              `RUSTFLAGS=\"--cfg tokio_unstable\" cargo build --features tokio-console`."
         );
-        return ExitCode::FAILURE;
+        ExitCode::FAILURE
     }
 
     #[cfg(feature = "tokio-console")]

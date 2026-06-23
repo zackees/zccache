@@ -123,7 +123,7 @@ async fn register_notify_watch(
 ) -> crate::core::Result<bool> {
     let mut watcher_guard = state.watcher.lock().await;
     if let Some(ref mut w) = *watcher_guard {
-        w.watch(&dir)?;
+        w.watch(dir)?;
         Ok(true)
     } else {
         Ok(false)
