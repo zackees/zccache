@@ -1,6 +1,15 @@
 //! Shared tar+gzip helpers used by `gha-cache` and `rust-plan` backends.
 
 use std::path::Path;
+use std::path::PathBuf;
+
+async fn join_io<T>(
+    handle: tokio::task::JoinHandle<Result<T, std::io::Error>>,
+) -> Result<T, std::io::Error> {
+    handle
+        .await
+        .map_err(|err| std::io::Error::other(format!("blocking archive task failed: {err}")))?
+}
 
 /// Create a tar.gz archive from a directory path.
 pub(crate) fn tar_gz_encode(src: &Path) -> Result<Vec<u8>, std::io::Error> {
@@ -21,6 +30,11 @@ pub(crate) fn tar_gz_encode(src: &Path) -> Result<Vec<u8>, std::io::Error> {
     enc.finish()
 }
 
+/// Create a tar.gz archive from a directory path on Tokio's blocking pool.
+pub(crate) async fn tar_gz_encode_async(src: PathBuf) -> Result<Vec<u8>, std::io::Error> {
+    join_io(tokio::task::spawn_blocking(move || tar_gz_encode(&src))).await
+}
+
 /// Extract a tar.gz archive into a destination directory.
 pub(crate) fn tar_gz_decode(data: &[u8], dest: &Path) -> Result<(), std::io::Error> {
     use flate2::read::GzDecoder;
@@ -28,4 +42,15 @@ pub(crate) fn tar_gz_decode(data: &[u8], dest: &Path) -> Result<(), std::io::Err
     let dec = GzDecoder::new(data);
     let mut archive = tar::Archive::new(dec);
     archive.unpack(dest)
+}
+
+/// Extract a tar.gz archive into a destination directory on Tokio's blocking pool.
+pub(crate) async fn tar_gz_decode_async(
+    data: Vec<u8>,
+    dest: PathBuf,
+) -> Result<(), std::io::Error> {
+    join_io(tokio::task::spawn_blocking(move || {
+        tar_gz_decode(&data, &dest)
+    }))
+    .await
 }

@@ -138,8 +138,12 @@ fn lockfile_window_has_no_synchronous_persisted_state_loads() {
     let daemon = source_file("src/bin/zccache-daemon.rs");
     let startup_window = slice_between(
         &daemon,
-        "let server = match zccache::daemon::DaemonServer::bind(&endpoint)",
+        "let bind_result = tokio::task::spawn_blocking(move || {",
         "zccache::ipc::write_lock_file(pid)",
+    );
+    assert!(
+        startup_window.contains("zccache::daemon::DaemonServer::bind(&bind_endpoint)"),
+        "daemon bind-to-lockfile window must include endpoint bind"
     );
     assert_no_sync_loads("daemon bind-to-lockfile", startup_window);
 }

@@ -7,7 +7,7 @@ use crate::artifact::{
 };
 use crate::core::NormalizedPath;
 use crate::gha::{GhaCache, GhaError};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use super::args::{RustPlanBackendArg, RustPlanCommands};
@@ -143,11 +143,13 @@ pub(crate) async fn cmd_rust_plan(action: RustPlanCommands) -> ExitCode {
                 Ok(plan) => plan,
                 Err(code) => return code,
             };
-            match restore_rust_plan_layered_local(
-                &plan,
-                Path::new(&base_cache_dir),
-                Path::new(&delta_cache_dir),
-            ) {
+            match restore_rust_plan_layered_local_async(
+                plan.clone(),
+                PathBuf::from(&base_cache_dir),
+                PathBuf::from(&delta_cache_dir),
+            )
+            .await
+            {
                 Ok(mut summary) => {
                     enrich_rust_plan_summary(
                         &mut summary,
@@ -218,11 +220,13 @@ pub(crate) async fn cmd_rust_plan(action: RustPlanCommands) -> ExitCode {
                 Ok(plan) => plan,
                 Err(code) => return code,
             };
-            match save_rust_plan_delta_local(
-                &plan,
-                Path::new(&base_cache_dir),
-                Path::new(&delta_cache_dir),
-            ) {
+            match save_rust_plan_delta_local_async(
+                plan.clone(),
+                PathBuf::from(&base_cache_dir),
+                PathBuf::from(&delta_cache_dir),
+            )
+            .await
+            {
                 Ok(mut summary) => {
                     enrich_rust_plan_summary(
                         &mut summary,
@@ -263,14 +267,81 @@ fn load_rust_plan_for_cli(
     }
 }
 
+async fn run_rust_plan_local_blocking<F, T>(work: F) -> Result<T, RustPlanError>
+where
+    F: FnOnce() -> Result<T, RustPlanError> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(work).await.map_err(|err| {
+        RustPlanError::Io(std::io::Error::other(format!(
+            "blocking rust-plan task failed: {err}"
+        )))
+    })?
+}
+
+async fn restore_rust_plan_local_async(
+    plan: RustArtifactPlanV1,
+    cache_dir: PathBuf,
+) -> Result<RustPlanSummary, RustPlanError> {
+    run_rust_plan_local_blocking(move || restore_rust_plan_local(&plan, &cache_dir)).await
+}
+
+async fn save_rust_plan_local_async(
+    plan: RustArtifactPlanV1,
+    cache_dir: PathBuf,
+) -> Result<RustPlanSummary, RustPlanError> {
+    run_rust_plan_local_blocking(move || save_rust_plan_local(&plan, &cache_dir)).await
+}
+
+async fn restore_rust_plan_layered_local_async(
+    plan: RustArtifactPlanV1,
+    base_cache_dir: PathBuf,
+    delta_cache_dir: PathBuf,
+) -> Result<RustPlanSummary, RustPlanError> {
+    run_rust_plan_local_blocking(move || {
+        restore_rust_plan_layered_local(&plan, &base_cache_dir, &delta_cache_dir)
+    })
+    .await
+}
+
+async fn save_rust_plan_delta_local_async(
+    plan: RustArtifactPlanV1,
+    base_cache_dir: PathBuf,
+    delta_cache_dir: PathBuf,
+) -> Result<RustPlanSummary, RustPlanError> {
+    run_rust_plan_local_blocking(move || {
+        save_rust_plan_delta_local(&plan, &base_cache_dir, &delta_cache_dir)
+    })
+    .await
+}
+
+async fn run_rust_plan_backend_blocking<F, T>(
+    backend: RustPlanBackendArg,
+    work: F,
+) -> Result<T, RustPlanRuntimeError>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|err| {
+            rust_plan_backend_failure(backend, format!("blocking rust-plan task failed: {err}"))
+        })?
+        .map_err(|err| rust_plan_backend_failure(backend, err))
+}
+
 async fn run_rust_plan_restore(
     plan: &RustArtifactPlanV1,
     cache_dir: &Path,
     backend: RustPlanBackendArg,
 ) -> Result<RustPlanSummary, RustPlanRuntimeError> {
     match backend {
-        RustPlanBackendArg::Local => restore_rust_plan_local(plan, cache_dir)
-            .map_err(|err| rust_plan_backend_failure(backend, err.to_string())),
+        RustPlanBackendArg::Local => {
+            restore_rust_plan_local_async(plan.clone(), cache_dir.to_path_buf())
+                .await
+                .map_err(|err| rust_plan_backend_failure(backend, err.to_string()))
+        }
         RustPlanBackendArg::Gha => restore_rust_plan_gha(plan, cache_dir).await,
         RustPlanBackendArg::Auto => unreachable!("auto backend is resolved before execution"),
     }
@@ -282,8 +353,11 @@ async fn run_rust_plan_save(
     backend: RustPlanBackendArg,
 ) -> Result<RustPlanSummary, RustPlanRuntimeError> {
     match backend {
-        RustPlanBackendArg::Local => save_rust_plan_local(plan, cache_dir)
-            .map_err(|err| rust_plan_backend_failure(backend, err.to_string())),
+        RustPlanBackendArg::Local => {
+            save_rust_plan_local_async(plan.clone(), cache_dir.to_path_buf())
+                .await
+                .map_err(|err| rust_plan_backend_failure(backend, err.to_string()))
+        }
         RustPlanBackendArg::Gha => save_rust_plan_gha(plan, cache_dir).await,
         RustPlanBackendArg::Auto => unreachable!("auto backend is resolved before execution"),
     }
@@ -313,44 +387,49 @@ async fn restore_rust_plan_gha(
         .await
         .map_err(rust_plan_gha_error)?
     else {
-        let mut summary = restore_rust_plan_local(plan, cache_dir)
+        let mut summary = restore_rust_plan_local_async(plan.clone(), cache_dir.to_path_buf())
+            .await
             .map_err(|err| rust_plan_backend_failure(RustPlanBackendArg::Gha, err.to_string()))?;
         summary.set_backend("gha", Some(cache_key), Some(version));
         summary.record_skip("<gha-cache>", "backend_cache_miss");
         return Ok(summary);
     };
 
-    let bundle_dir = rust_plan_bundle_dir(cache_dir, &cache_key);
-    if bundle_dir.exists() {
-        std::fs::remove_dir_all(&bundle_dir)
-            .map_err(|err| rust_plan_backend_failure(RustPlanBackendArg::Gha, err.to_string()))?;
-    }
-    let bundle_parent = bundle_dir.parent().ok_or_else(|| {
-        rust_plan_backend_failure(
-            RustPlanBackendArg::Gha,
-            "invalid rust-plan bundle path".to_string(),
-        )
-    })?;
-    std::fs::create_dir_all(bundle_parent)
-        .map_err(|err| rust_plan_backend_failure(RustPlanBackendArg::Gha, err.to_string()))?;
-    tar_gz_decode(&data, bundle_parent)
-        .map_err(|err| rust_plan_backend_failure(RustPlanBackendArg::Gha, err.to_string()))?;
-    let mut summary = restore_rust_plan_local(plan, cache_dir)
-        .map_err(|err| rust_plan_backend_failure(RustPlanBackendArg::Gha, err.to_string()))?;
-    summary.set_backend("gha", Some(cache_key), Some(version));
-    Ok(summary)
+    let plan = plan.clone();
+    let cache_dir = cache_dir.to_path_buf();
+    run_rust_plan_backend_blocking(RustPlanBackendArg::Gha, move || {
+        let bundle_dir = rust_plan_bundle_dir(&cache_dir, &cache_key);
+        if bundle_dir.exists() {
+            std::fs::remove_dir_all(&bundle_dir).map_err(|err| err.to_string())?;
+        }
+        let bundle_parent = bundle_dir
+            .parent()
+            .ok_or_else(|| "invalid rust-plan bundle path".to_string())?;
+        std::fs::create_dir_all(bundle_parent).map_err(|err| err.to_string())?;
+        tar_gz_decode(&data, bundle_parent).map_err(|err| err.to_string())?;
+        let mut summary =
+            restore_rust_plan_local(&plan, &cache_dir).map_err(|err| err.to_string())?;
+        summary.set_backend("gha", Some(cache_key), Some(version));
+        Ok(summary)
+    })
+    .await
 }
 
 async fn save_rust_plan_gha(
     plan: &RustArtifactPlanV1,
     cache_dir: &Path,
 ) -> Result<RustPlanSummary, RustPlanRuntimeError> {
-    let summary = save_rust_plan_local(plan, cache_dir)
-        .map_err(|err| rust_plan_backend_failure(RustPlanBackendArg::Gha, err.to_string()))?;
+    let plan = plan.clone();
+    let cache_dir = cache_dir.to_path_buf();
+    let (summary, data) = run_rust_plan_backend_blocking(RustPlanBackendArg::Gha, move || {
+        let summary = save_rust_plan_local(&plan, &cache_dir).map_err(|err| err.to_string())?;
+        let cache_key = summary.cache_key.clone();
+        let bundle_dir = rust_plan_bundle_dir(&cache_dir, &cache_key);
+        let data = tar_gz_encode(&bundle_dir).map_err(|err| err.to_string())?;
+        Ok((summary, data))
+    })
+    .await?;
     let cache_key = summary.cache_key.clone();
-    let bundle_dir = rust_plan_bundle_dir(cache_dir, &cache_key);
-    let data = tar_gz_encode(&bundle_dir)
-        .map_err(|err| rust_plan_backend_failure(RustPlanBackendArg::Gha, err.to_string()))?;
     let version = rust_plan_gha_version(&cache_key);
     let cache = GhaCache::from_env().map_err(rust_plan_gha_error)?;
     cache

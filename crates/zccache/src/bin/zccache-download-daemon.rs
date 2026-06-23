@@ -90,10 +90,20 @@ fn run_server(args: Args) {
         .build()
         .expect("failed to create runtime");
     rt.block_on(async move {
-        let mut server = match zccache::download_daemon::DownloadDaemon::bind(&endpoint) {
-            Ok(server) => server,
-            Err(err) => {
+        let bind_endpoint = endpoint.clone();
+        let bind_result = tokio::task::spawn_blocking(move || {
+            zccache::download_daemon::DownloadDaemon::bind(&bind_endpoint)
+        })
+        .await;
+        let mut server = match bind_result {
+            Ok(Ok(server)) => server,
+            Ok(Err(err)) => {
                 eprintln!("failed to bind download daemon at {endpoint}: {err}");
+                daemon_mgmt::remove_lock_file();
+                std::process::exit(1);
+            }
+            Err(err) => {
+                eprintln!("failed to join download daemon bind worker for {endpoint}: {err}");
                 daemon_mgmt::remove_lock_file();
                 std::process::exit(1);
             }

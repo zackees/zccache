@@ -130,11 +130,9 @@ pub(super) async fn flush_wal_to_disk(
     // do the disk write off the runtime thread so the flush doesn't block
     // request handlers.
     store.insert_many(drained);
-    let store = Arc::clone(store);
-    let res = tokio::task::spawn_blocking(move || store.flush()).await;
+    let res = Arc::clone(store).flush_async().await;
     match res {
-        Ok(Ok(())) => tracing::info!(committed = count, "WAL flushed to disk"),
-        Ok(Err(e)) => tracing::warn!(count, "WAL flush to disk failed: {e}"),
-        Err(e) => tracing::warn!(count, "WAL flush task join error: {e}"),
+        Ok(()) => tracing::info!(committed = count, "WAL flushed to disk"),
+        Err(e) => tracing::warn!(count, "WAL flush to disk failed: {e}"),
     }
 }

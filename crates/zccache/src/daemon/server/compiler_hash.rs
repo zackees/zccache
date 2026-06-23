@@ -100,6 +100,39 @@ impl CompilerHashCache {
         Some(hash)
     }
 
+    pub(super) async fn get_or_hash_with_async<F, Fut>(
+        &self,
+        path: &Path,
+        hasher: F,
+    ) -> Option<ContentHash>
+    where
+        F: FnOnce(std::path::PathBuf) -> Fut,
+        Fut: std::future::Future<Output = Option<ContentHash>>,
+    {
+        let metadata = std::fs::metadata(path).ok()?;
+        let mtime = metadata.modified().ok()?;
+        let size = metadata.len();
+        let key = NormalizedPath::new(path);
+
+        if let Some(entry) = self.entries.get(&key) {
+            if entry.mtime == mtime && entry.size == size {
+                return Some(entry.hash);
+            }
+        }
+
+        let hash = hasher(path.to_path_buf()).await?;
+        let post_metadata = std::fs::metadata(path).ok()?;
+        let post_mtime = post_metadata.modified().ok()?;
+        let post_size = post_metadata.len();
+        if post_mtime != mtime || post_size != size {
+            return Some(hash);
+        }
+
+        self.entries
+            .insert(key, CompilerHashEntry { mtime, size, hash });
+        Some(hash)
+    }
+
     /// Persist the cache to `path` as a versioned bincode snapshot.
     ///
     /// Atomic on success: writes to `<path>.tmp-<pid>`, then renames over
@@ -238,9 +271,25 @@ pub(super) fn hash_rustc_identity(path: &Path) -> Option<ContentHash> {
         Ok(output) if output.status.success() && !output.stdout.is_empty() => {
             Some(crate::hash::hash_bytes(&output.stdout))
         }
-        // Spawn error, non-zero exit, or empty stdout — fall through to
+        // Spawn error, non-zero exit, or empty stdout - fall through to
         // the file-content hash so cache keys stay well-defined for
         // stubbed binaries (unit tests) and broken toolchains.
         _ => crate::hash::hash_file(path).ok(),
+    }
+}
+
+pub(super) async fn hash_rustc_identity_async(path: std::path::PathBuf) -> Option<ContentHash> {
+    match tokio::process::Command::new(&path)
+        .arg("-vV")
+        .output()
+        .await
+    {
+        Ok(output) if output.status.success() && !output.stdout.is_empty() => {
+            Some(crate::hash::hash_bytes(&output.stdout))
+        }
+        // Spawn error, non-zero exit, or empty stdout - fall through to
+        // the file-content hash so cache keys stay well-defined for
+        // stubbed binaries (unit tests) and broken toolchains.
+        _ => crate::hash::hash_file(&path).ok(),
     }
 }

@@ -421,6 +421,25 @@ impl IpcListener {
         }
     }
 
+    /// Bind to the given endpoint from an async context.
+    ///
+    /// The synchronous [`Self::bind`] API remains available for tests and
+    /// true sync callers. Async production paths should use this bridge so
+    /// filesystem and named-pipe setup do not run on an executor worker.
+    pub async fn bind_async(endpoint: &str) -> Result<Self, IpcError> {
+        #[cfg(unix)]
+        {
+            let endpoint = endpoint.to_owned();
+            tokio::task::spawn_blocking(move || Self::bind(&endpoint))
+                .await
+                .map_err(join_error_to_ipc)?
+        }
+        #[cfg(windows)]
+        {
+            windows::bind_listener_async(endpoint).await
+        }
+    }
+
     /// Accept a new connection.
     ///
     /// On Unix, returns an `IpcConnection` wrapping a `UnixStream`.
@@ -443,6 +462,13 @@ impl IpcListener {
             self.accept_windows().await
         }
     }
+}
+
+#[cfg(unix)]
+fn join_error_to_ipc(err: tokio::task::JoinError) -> IpcError {
+    IpcError::Io(std::io::Error::other(format!(
+        "async IPC bind worker failed: {err}"
+    )))
 }
 
 /// Generate a unique test endpoint name.

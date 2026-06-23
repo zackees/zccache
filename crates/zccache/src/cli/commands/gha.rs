@@ -4,7 +4,7 @@ use crate::gha::{GhaCache, GhaError};
 use std::path::Path;
 use std::process::ExitCode;
 
-use super::targz::{tar_gz_decode, tar_gz_encode};
+use super::targz::{tar_gz_decode_async, tar_gz_encode_async};
 
 pub(crate) fn cmd_gha_status() -> ExitCode {
     if GhaCache::is_available() {
@@ -37,8 +37,7 @@ pub(crate) async fn cmd_gha_save(key: &str, path: &str) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // Create a tar.gz archive in memory.
-    let data = match tar_gz_encode(src) {
+    let data = match tar_gz_encode_async(src.to_path_buf()).await {
         Ok(d) => d,
         Err(e) => {
             eprintln!("zccache gha-cache save: failed to create archive: {e}");
@@ -89,16 +88,17 @@ pub(crate) async fn cmd_gha_restore(key: &str, path: &str) -> ExitCode {
     };
 
     let dest = Path::new(path);
-    if let Err(e) = std::fs::create_dir_all(dest) {
+    if let Err(e) = tokio::fs::create_dir_all(dest).await {
         eprintln!("zccache gha-cache restore: failed to create directory: {e}");
         return ExitCode::FAILURE;
     }
 
-    match tar_gz_decode(&data, dest) {
+    let restored_bytes = data.len();
+    match tar_gz_decode_async(data, dest.to_path_buf()).await {
         Ok(()) => {
             eprintln!(
                 "zccache gha-cache restore: restored {} bytes for key '{key}' to {path}",
-                data.len()
+                restored_bytes
             );
             ExitCode::SUCCESS
         }

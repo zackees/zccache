@@ -355,6 +355,17 @@ impl KvStore {
         }
     }
 
+    /// Async wrapper for [`Self::get`] that runs redb reads and spill-file I/O
+    /// on Tokio's blocking pool.
+    pub async fn get_async(&self, namespace: &str, key: &Key) -> KvResult<Option<Vec<u8>>> {
+        let store = self.clone();
+        let namespace = namespace.to_string();
+        let key = *key;
+        tokio::task::spawn_blocking(move || store.get(&namespace, &key))
+            .await
+            .map_err(|e| KvError::BlockingJoin(e.to_string()))?
+    }
+
     /// Last-writer-wins. Writes spill side files via tempfile + rename so a
     /// crash mid-write leaves no dangling state in the redb row.
     pub fn put(&self, namespace: &str, key: &Key, value: &[u8]) -> KvResult<usize> {
@@ -525,10 +536,30 @@ impl KvStore {
         Ok(out)
     }
 
+    /// Async wrapper for [`Self::list_namespace`] that keeps redb scans off
+    /// Tokio runtime threads.
+    pub async fn list_namespace_async(&self, namespace: &str) -> KvResult<Vec<(Key, u64)>> {
+        let store = self.clone();
+        let namespace = namespace.to_string();
+        tokio::task::spawn_blocking(move || store.list_namespace(&namespace))
+            .await
+            .map_err(|e| KvError::BlockingJoin(e.to_string()))?
+    }
+
     /// Sum of value lengths in `namespace`. Does not include redb overhead.
     pub fn namespace_bytes(&self, namespace: &str) -> KvResult<u64> {
         let entries = self.list_namespace(namespace)?;
         Ok(entries.iter().map(|(_, l)| *l).sum())
+    }
+
+    /// Async wrapper for [`Self::namespace_bytes`] that keeps redb scans off
+    /// Tokio runtime threads.
+    pub async fn namespace_bytes_async(&self, namespace: &str) -> KvResult<u64> {
+        let store = self.clone();
+        let namespace = namespace.to_string();
+        tokio::task::spawn_blocking(move || store.namespace_bytes(&namespace))
+            .await
+            .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
 
     /// Sum of value lengths across every namespace.
@@ -546,6 +577,15 @@ impl KvStore {
             }
         }
         Ok(total)
+    }
+
+    /// Async wrapper for [`Self::total_bytes`] that keeps redb scans off Tokio
+    /// runtime threads.
+    pub async fn total_bytes_async(&self) -> KvResult<u64> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.total_bytes())
+            .await
+            .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
 
     /// Per-namespace statistics. Returned namespaces are sorted lexically.
@@ -569,6 +609,15 @@ impl KvStore {
             }
         }
         Ok(by_ns.into_iter().collect())
+    }
+
+    /// Async wrapper for [`Self::stats`] that keeps redb scans off Tokio
+    /// runtime threads.
+    pub async fn stats_async(&self) -> KvResult<Vec<(String, u64)>> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.stats())
+            .await
+            .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
 }
 

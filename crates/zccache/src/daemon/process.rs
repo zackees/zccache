@@ -393,118 +393,6 @@ pub(crate) fn command_output_with_priority(
     command_output_with_priority_stdin(cmd, priority, None)
 }
 
-/// Wait for a synchronous command after applying compiler child priority,
-/// killing the child and returning `TimedOut` when `timeout` elapses.
-pub(crate) fn command_output_with_priority_timeout(
-    cmd: &mut std::process::Command,
-    priority: CompilePriority,
-    timeout: std::time::Duration,
-) -> io::Result<Output> {
-    let decision = priority.resolve_for_current_load();
-    let priority = decision.effective;
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        use std::process::Stdio;
-
-        cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        cmd.creation_flags(child_creation_flags(priority));
-        let child = cmd.spawn()?;
-        assign_child_to_daemon_job(child.as_raw_handle());
-        apply_priority_to_child_windows(child.as_raw_handle(), priority);
-        child_wait_with_output_timeout(child, timeout)
-    }
-
-    #[cfg(unix)]
-    {
-        use std::process::Stdio;
-
-        cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        let child = cmd.spawn()?;
-        apply_priority_to_child_unix(child.id(), priority);
-        child_wait_with_output_timeout(child, timeout)
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    {
-        use std::process::Stdio;
-
-        if priority != CompilePriority::Normal {
-            tracing::debug!(
-                ?priority,
-                "compiler child priority is unsupported on this platform"
-            );
-        }
-        cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        let child = cmd.spawn()?;
-        child_wait_with_output_timeout(child, timeout)
-    }
-}
-
-fn child_wait_with_output_timeout(
-    mut child: std::process::Child,
-    timeout: std::time::Duration,
-) -> io::Result<Output> {
-    use std::io::Read;
-    use wait_timeout::ChildExt;
-
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let stdout_reader = stdout.map(|mut pipe| {
-        std::thread::spawn(move || -> io::Result<Vec<u8>> {
-            let mut bytes = Vec::new();
-            pipe.read_to_end(&mut bytes)?;
-            Ok(bytes)
-        })
-    });
-    let stderr_reader = stderr.map(|mut pipe| {
-        std::thread::spawn(move || -> io::Result<Vec<u8>> {
-            let mut bytes = Vec::new();
-            pipe.read_to_end(&mut bytes)?;
-            Ok(bytes)
-        })
-    });
-
-    let Some(status) = child.wait_timeout(timeout)? else {
-        let _ = child.kill();
-        let _ = child.wait();
-        // Do not join output reader threads on timeout: descendants may still
-        // hold inherited pipe handles open after the parent is killed.
-        let _ = stdout_reader;
-        let _ = stderr_reader;
-        return Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            format!("child process timed out after {timeout:?}"),
-        ));
-    };
-
-    let stdout = join_output_reader(stdout_reader)?;
-    let stderr = join_output_reader(stderr_reader)?;
-    Ok(Output {
-        status,
-        stdout,
-        stderr,
-    })
-}
-
-fn join_output_reader(
-    reader: Option<std::thread::JoinHandle<io::Result<Vec<u8>>>>,
-) -> io::Result<Vec<u8>> {
-    match reader {
-        Some(handle) => handle
-            .join()
-            .map_err(|_| io::Error::other("child output reader thread panicked"))?,
-        None => Ok(Vec::new()),
-    }
-}
-
 /// Sync variant that pipes `stdin_bytes` into the child's stdin when the
 /// slice is `Some` and non-empty. `None` or empty = `Stdio::null()` (the
 /// previous behaviour). Use this in the non-cacheable / direct-run path
@@ -593,6 +481,23 @@ pub(crate) async fn tokio_command_output_with_priority(
     tokio_command_output_with_priority_stdin(cmd, priority, None).await
 }
 
+/// Wait for an async command after applying compiler child priority, killing
+/// the child and returning `TimedOut` when `timeout` elapses.
+pub(crate) async fn tokio_command_output_with_priority_timeout(
+    cmd: &mut tokio::process::Command,
+    priority: CompilePriority,
+    timeout: std::time::Duration,
+) -> io::Result<Output> {
+    let wait = tokio_command_output_with_priority_stdin(cmd, priority, None);
+    match tokio::time::timeout(timeout, wait).await {
+        Ok(result) => result,
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("child process timed out after {timeout:?}"),
+        )),
+    }
+}
+
 /// Async variant that pipes `stdin_bytes` into the child's stdin when the
 /// slice is `Some` and non-empty. See [`command_output_with_priority_stdin`].
 pub(crate) async fn tokio_command_output_with_priority_stdin(
@@ -616,6 +521,7 @@ pub(crate) async fn tokio_command_output_with_priority_stdin(
         }
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
+        cmd.kill_on_drop(true);
         cmd.creation_flags(child_creation_flags(priority));
         let mut child = cmd.spawn()?;
         if let Some(handle) = child.raw_handle() {
@@ -643,6 +549,7 @@ pub(crate) async fn tokio_command_output_with_priority_stdin(
         }
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
+        cmd.kill_on_drop(true);
         let mut child = cmd.spawn()?;
         if let Some(pid) = child.id() {
             apply_priority_to_child_unix(pid, priority);

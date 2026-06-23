@@ -58,7 +58,7 @@ pub(super) async fn discover_system_includes(
             paths
         } else {
             let discovered =
-                discover_system_include_paths(compiler, lineage, compiler_priority, use_fast);
+                discover_system_include_paths(compiler, lineage, compiler_priority, use_fast).await;
             let mut cache = state.system_includes.lock().await;
             if let Some(paths) = cache.get(compiler) {
                 paths.to_vec()
@@ -91,7 +91,7 @@ pub(super) async fn discover_system_includes(
     }
 }
 
-fn discover_system_include_paths(
+async fn discover_system_include_paths(
     compiler: &NormalizedPath,
     lineage: &crate::daemon::lineage::Lineage,
     compiler_priority: CompilePriority,
@@ -102,7 +102,7 @@ fn discover_system_include_paths(
     } else {
         crate::depgraph::discovery_args()
     };
-    let output = run_discovery_command(compiler, &disc_args, lineage, compiler_priority);
+    let output = run_discovery_command(compiler, &disc_args, lineage, compiler_priority).await;
     match output {
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
@@ -118,7 +118,8 @@ fn discover_system_include_paths(
             // discovery. The cache memoizes the result either way.
             if use_fast && paths.is_empty() {
                 let slow_args = crate::depgraph::discovery_args();
-                match run_discovery_command(compiler, &slow_args, lineage, compiler_priority) {
+                match run_discovery_command(compiler, &slow_args, lineage, compiler_priority).await
+                {
                     Ok(out) => {
                         let stderr = String::from_utf8_lossy(&out.stderr);
                         paths = crate::depgraph::parse_system_include_output(&stderr);
@@ -139,18 +140,19 @@ fn discover_system_include_paths(
     }
 }
 
-fn run_discovery_command(
+async fn run_discovery_command(
     compiler: &NormalizedPath,
     args: &[&str],
     lineage: &crate::daemon::lineage::Lineage,
     compiler_priority: CompilePriority,
 ) -> std::io::Result<std::process::Output> {
-    let mut cmd = std::process::Command::new(compiler);
+    let mut cmd = tokio::process::Command::new(compiler);
     cmd.args(args);
-    lineage.apply_to_sync(&mut cmd, None);
-    crate::daemon::process::command_output_with_priority_timeout(
+    lineage.apply_to_tokio(&mut cmd, None);
+    crate::daemon::process::tokio_command_output_with_priority_timeout(
         &mut cmd,
         compiler_priority,
         SYSTEM_INCLUDE_DISCOVERY_TIMEOUT,
     )
+    .await
 }

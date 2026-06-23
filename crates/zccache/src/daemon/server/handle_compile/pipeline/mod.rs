@@ -214,13 +214,14 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
 
     let t1 = std::time::Instant::now();
     let env_slice = client_env.as_deref().unwrap_or(&[]);
-    let build_result = build_compile_context(
+    let build_result = build_compile_context_async(
         &compilation,
         &cwd_path,
         &system_includes,
         env_slice,
         &state.compiler_hash_cache,
-    );
+    )
+    .await;
     let default_key_root = worktree_root.clone().unwrap_or_else(|| cwd_path.clone());
     // Issue #474: PCH (output ends in .pch / .gch) and MSVC compiles must
     // get a per-worktree cache key — the compiler embeds absolute paths in
@@ -761,7 +762,6 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             context_key: &context_key,
             source_path: &source_path,
             output_path: &output_path,
-            cwd,
             cwd_path: &cwd_path,
             ctx: &ctx,
             compilation: &compilation,

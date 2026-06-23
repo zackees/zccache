@@ -10,6 +10,7 @@ use super::metadata::MetadataCache;
 use crate::core::NormalizedPath;
 use crate::core::Result;
 use crate::hash::ContentHash;
+use std::sync::Arc;
 
 /// Result of a clock-aware lookup.
 #[derive(Debug, Clone)]
@@ -26,10 +27,10 @@ pub struct ClockLookup {
 /// the same headers. Without the clock, each one would stat-verify
 /// independently. With the clock, the daemon verifies once per batch
 /// and all concurrent clients share that answer.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CacheSystem {
-    metadata: MetadataCache,
-    journal: ChangeJournal,
+    metadata: Arc<MetadataCache>,
+    journal: Arc<ChangeJournal>,
 }
 
 impl CacheSystem {
@@ -37,8 +38,8 @@ impl CacheSystem {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            metadata: MetadataCache::new(),
-            journal: ChangeJournal::new(),
+            metadata: Arc::new(MetadataCache::new()),
+            journal: Arc::new(ChangeJournal::new()),
         }
     }
 
@@ -54,8 +55,8 @@ impl CacheSystem {
     #[must_use]
     pub fn with_metadata(metadata: MetadataCache) -> Self {
         Self {
-            metadata,
-            journal: ChangeJournal::new(),
+            metadata: Arc::new(metadata),
+            journal: Arc::new(ChangeJournal::new()),
         }
     }
 
@@ -106,6 +107,23 @@ impl CacheSystem {
             hash,
             clock: self.journal.current_clock(),
         })
+    }
+
+    /// Async bridge for [`Self::lookup_since`].
+    ///
+    /// The slow path can stat and hash files, so async callers use this named
+    /// edge instead of running filesystem work on Tokio runtime threads.
+    pub async fn lookup_since_async(
+        &self,
+        path: NormalizedPath,
+        since_clock: Clock,
+    ) -> Result<ClockLookup> {
+        let cache = self.clone();
+        tokio::task::spawn_blocking(move || cache.lookup_since(&path, since_clock))
+            .await
+            .map_err(|err| crate::core::Error::Cache {
+                message: format!("cache lookup worker failed: {err}"),
+            })?
     }
 
     /// Apply a settled batch of file changes from the watcher.
@@ -163,6 +181,16 @@ impl CacheSystem {
     /// Returns the number of entries promoted.
     pub fn rescan_entries(&self) -> usize {
         self.metadata.rescan_all()
+    }
+
+    /// Async bridge for [`Self::rescan_entries`].
+    pub async fn rescan_entries_async(&self) -> Result<usize> {
+        let cache = self.clone();
+        tokio::task::spawn_blocking(move || cache.rescan_entries())
+            .await
+            .map_err(|err| crate::core::Error::Cache {
+                message: format!("cache rescan worker failed: {err}"),
+            })
     }
 
     /// Clear all cached metadata and journal state.

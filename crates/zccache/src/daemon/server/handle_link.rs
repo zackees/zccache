@@ -595,7 +595,7 @@ pub(super) async fn run_tool_passthrough(
         }
     };
 
-    let mut cmd = std::process::Command::new(tool);
+    let mut cmd = tokio::process::Command::new(tool);
     if let Some(ref rsp) = _rsp_guard {
         cmd.arg(rsp.at_arg());
     } else {
@@ -603,10 +603,10 @@ pub(super) async fn run_tool_passthrough(
     }
     cmd.current_dir(cwd);
 
-    apply_client_env_sync(&mut cmd, env.as_deref(), lineage);
+    apply_client_env(&mut cmd, &env, lineage);
 
     let priority = CompilePriority::from_client_env(env.as_deref());
-    match super::super::process::command_output_with_priority(&mut cmd, priority) {
+    match super::super::process::tokio_command_output_with_priority(&mut cmd, priority).await {
         Ok(output) => Response::LinkResult {
             exit_code: output.status.code().unwrap_or(1),
             stdout: Arc::new(output.stdout),
@@ -666,7 +666,7 @@ pub(super) async fn run_post_link_deploy_hook(
     };
     let extra_args: Vec<&str> = parts.collect();
 
-    let mut cmd = std::process::Command::new(program);
+    let mut cmd = tokio::process::Command::new(program);
     cmd.args(&extra_args);
     cmd.arg(output_path);
 
@@ -680,7 +680,15 @@ pub(super) async fn run_post_link_deploy_hook(
     // language-specific vars (CLANG_TOOL_CHAIN_*), etc. Spawn-lineage env
     // vars are layered on top so the hook (and anything it spawns) can be
     // attributed back to the daemon.
-    apply_client_env_sync(&mut cmd, env, lineage);
+    if let Some(vars) = env {
+        cmd.env_clear();
+        for (key, val) in vars {
+            if client_env_var_is_safe_to_replay(key) {
+                cmd.env(key, val);
+            }
+        }
+    }
+    lineage.apply_to_tokio(&mut cmd, env);
 
     tracing::debug!(
         program = %program,
@@ -689,7 +697,7 @@ pub(super) async fn run_post_link_deploy_hook(
     );
 
     let priority = CompilePriority::from_client_env(env);
-    match super::super::process::command_output_with_priority(&mut cmd, priority) {
+    match super::super::process::tokio_command_output_with_priority(&mut cmd, priority).await {
         Ok(out) if out.status.success() => {
             tracing::debug!(
                 program = %program,

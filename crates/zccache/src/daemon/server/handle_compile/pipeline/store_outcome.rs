@@ -18,7 +18,6 @@ pub(super) struct StoreOutcomeRequest<'a> {
     pub(super) context_key: &'a ContextKey,
     pub(super) source_path: &'a NormalizedPath,
     pub(super) output_path: &'a NormalizedPath,
-    pub(super) cwd: &'a Path,
     pub(super) cwd_path: &'a NormalizedPath,
     pub(super) ctx: &'a CompileContext,
     pub(super) compilation: &'a crate::compiler::CacheableCompilation,
@@ -52,6 +51,144 @@ pub(super) struct StoreOutcomeRequest<'a> {
     pub(super) break_outputs_ns: u64,
 }
 
+enum CompileOutputCollection {
+    Rustc(Vec<RustcOutputFile>),
+    Bytes(Vec<u8>),
+}
+
+async fn collect_compile_outputs_blocking(
+    is_rustc: bool,
+    rustc_args: Option<crate::depgraph::RustcParsedArgs>,
+    output_path: NormalizedPath,
+    cwd_path: NormalizedPath,
+) -> std::io::Result<CompileOutputCollection> {
+    tokio::task::spawn_blocking(move || {
+        if is_rustc {
+            let Some(rustc_args) = rustc_args else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "missing parsed rustc args for rustc output collection",
+                ));
+            };
+            let outputs = collect_rustc_output_files(&rustc_args, &output_path, &cwd_path);
+            if outputs.is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "rustc primary output was not found",
+                ));
+            }
+            Ok(CompileOutputCollection::Rustc(outputs))
+        } else {
+            std::fs::read(&output_path).map(CompileOutputCollection::Bytes)
+        }
+    })
+    .await
+    .map_err(|e| std::io::Error::other(format!("compile output worker failed: {e}")))?
+}
+
+struct CompileScanRequest {
+    is_rustc: bool,
+    rustc_args: Option<crate::depgraph::RustcParsedArgs>,
+    source_path: NormalizedPath,
+    cwd_path: NormalizedPath,
+    depfile_strategy: DepfileStrategy,
+    show_includes_scan: Option<crate::depgraph::ScanResult>,
+    include_search: crate::depgraph::IncludeSearchPaths,
+}
+
+struct CompileScanCollection {
+    scan_result: crate::depgraph::ScanResult,
+    user_depfile_capture: Option<(NormalizedPath, Vec<u8>)>,
+    depfile_parse_warning: Option<String>,
+}
+
+async fn collect_compile_scan_blocking(req: CompileScanRequest) -> CompileScanCollection {
+    tokio::task::spawn_blocking(move || collect_compile_scan(req))
+        .await
+        .unwrap_or_else(|e| CompileScanCollection {
+            scan_result: crate::depgraph::ScanResult {
+                resolved: Vec::new(),
+                unresolved: vec![format!("compile dependency scan worker failed: {e}")],
+                has_computed: false,
+            },
+            user_depfile_capture: None,
+            depfile_parse_warning: None,
+        })
+}
+
+fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
+    let CompileScanRequest {
+        is_rustc,
+        rustc_args,
+        source_path,
+        cwd_path,
+        depfile_strategy,
+        show_includes_scan,
+        include_search,
+    } = req;
+
+    if is_rustc {
+        let scan_result = rustc_args.as_ref().map_or_else(
+            || crate::depgraph::ScanResult {
+                resolved: Vec::new(),
+                unresolved: vec!["missing parsed rustc args for rustc dependency scan".into()],
+                has_computed: false,
+            },
+            |args| scan_rustc_deps(args, &source_path, &cwd_path),
+        );
+        return CompileScanCollection {
+            scan_result,
+            user_depfile_capture: None,
+            depfile_parse_warning: None,
+        };
+    }
+
+    let mut user_depfile_capture = None;
+    let mut depfile_parse_warning = None;
+    let scan_result = match &depfile_strategy {
+        DepfileStrategy::Injected { path }
+        | DepfileStrategy::UserSpecified { path }
+        | DepfileStrategy::UserDefault { path } => {
+            let want_capture = matches!(
+                depfile_strategy,
+                DepfileStrategy::UserSpecified { .. } | DepfileStrategy::UserDefault { .. }
+            );
+            match crate::depgraph::depfile::parse_depfile_path(path, &source_path, &cwd_path) {
+                Ok(result) => {
+                    if want_capture {
+                        if let Ok(bytes) = std::fs::read(path) {
+                            user_depfile_capture = Some((path.clone(), bytes));
+                        }
+                    }
+                    if matches!(depfile_strategy, DepfileStrategy::Injected { .. }) {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    result
+                }
+                Err(e) => {
+                    depfile_parse_warning = Some(format!("path={} error={e}", path.display()));
+                    if matches!(depfile_strategy, DepfileStrategy::Injected { .. }) {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
+                }
+            }
+        }
+        DepfileStrategy::ShowIncludes => show_includes_scan.unwrap_or_else(|| {
+            crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
+        }),
+        DepfileStrategy::Unsupported => {
+            crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
+        }
+    };
+
+    CompileScanCollection {
+        scan_result,
+        user_depfile_capture,
+        depfile_parse_warning,
+    }
+}
+
 /// Drive the post-compile success path. Returns `Some(Response)` only when an
 /// output-collection failure forces an uncached `CompileResult`; otherwise
 /// returns `None` to signal the orchestrator should respond with the standard
@@ -64,7 +201,6 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         context_key,
         source_path,
         output_path,
-        cwd,
         cwd_path,
         ctx,
         compilation,
@@ -111,10 +247,22 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
     // cache files after the artifact key is known, avoiding foreground
     // reads of .rlib/.rmeta/.d on cold misses.
     let t_collect_outputs = std::time::Instant::now();
-    let (output_data, rustc_all_outputs) = if is_rustc {
-        let all = collect_rustc_output_files(rustc_args_opt.unwrap(), output_path, cwd_path);
-        if all.is_empty() {
-            tracing::warn!("failed to stat output file {}", output_path.display());
+    let rustc_args_owned = rustc_args_opt.cloned();
+    let output_collection = match collect_compile_outputs_blocking(
+        is_rustc,
+        rustc_args_owned.clone(),
+        output_path.clone(),
+        cwd_path.clone(),
+    )
+    .await
+    {
+        Ok(output_collection) => output_collection,
+        Err(e) => {
+            if is_rustc {
+                tracing::warn!("failed to stat output file {}: {e}", output_path.display());
+            } else {
+                tracing::warn!("failed to read output file {}: {e}", output_path.display());
+            }
             return Some(Response::CompileResult {
                 exit_code,
                 stdout: Arc::clone(&stdout),
@@ -122,20 +270,10 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
                 cached: false,
             });
         }
-        (Vec::new(), Some(all))
-    } else {
-        match std::fs::read(output_path) {
-            Ok(data) => (data, None),
-            Err(e) => {
-                tracing::warn!("failed to read output file {}: {e}", output_path.display());
-                return Some(Response::CompileResult {
-                    exit_code,
-                    stdout: Arc::clone(&stdout),
-                    stderr: Arc::clone(&stderr),
-                    cached: false,
-                });
-            }
-        }
+    };
+    let (output_data, rustc_all_outputs) = match output_collection {
+        CompileOutputCollection::Rustc(outputs) => (Vec::new(), Some(outputs)),
+        CompileOutputCollection::Bytes(data) => (data, None),
     };
     let collect_outputs_ns = t_collect_outputs.elapsed().as_nanos() as u64;
     let rust_output_count = rustc_all_outputs.as_ref().map_or(1, Vec::len);
@@ -155,61 +293,29 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
     // *current* build's `-MF` target, even after `git clean` or
     // worktree-rename — closing the stale-incremental-build bug.
     let t_scan = std::time::Instant::now();
-    let mut user_depfile_capture: Option<(NormalizedPath, Vec<u8>)> = None;
-    let scan_result = if is_rustc {
-        // Rustc: try to parse the dep-info file if --emit included dep-info.
-        // The dep-info file is in --out-dir with crate name and extra-filename.
-        scan_rustc_deps(rustc_args_opt.unwrap(), source_path, cwd_path)
-    } else {
-        match &depfile_strategy {
-            DepfileStrategy::Injected { path }
-            | DepfileStrategy::UserSpecified { path }
-            | DepfileStrategy::UserDefault { path } => {
-                let want_capture = matches!(
-                    depfile_strategy,
-                    DepfileStrategy::UserSpecified { .. } | DepfileStrategy::UserDefault { .. }
-                );
-                let scan_cwd: NormalizedPath = cwd.into();
-                match crate::depgraph::depfile::parse_depfile_path(path, source_path, &scan_cwd) {
-                    Ok(result) => {
-                        if want_capture {
-                            if let Ok(bytes) = std::fs::read(path) {
-                                user_depfile_capture = Some((path.clone(), bytes));
-                            }
-                        }
-                        if matches!(depfile_strategy, DepfileStrategy::Injected { .. }) {
-                            let _ = std::fs::remove_file(path);
-                        }
-                        result
-                    }
-                    Err(e) => {
-                        tracing::warn!("depfile parse failed, falling back to scanner: {e}");
-                        write_session_log(
-                            &state.sessions,
-                            sid,
-                            &format!(
-                                "[DIAG] depfile_parse_fail: path={} error={e}",
-                                path.display()
-                            ),
-                        );
-                        if matches!(depfile_strategy, DepfileStrategy::Injected { .. }) {
-                            let _ = std::fs::remove_file(path);
-                        }
-                        crate::depgraph::scanner::scan_recursive(source_path, &ctx.include_search)
-                    }
-                }
-            }
-            DepfileStrategy::ShowIncludes => {
-                // Already parsed from stderr above.
-                show_includes_scan.unwrap_or_else(|| {
-                    crate::depgraph::scanner::scan_recursive(source_path, &ctx.include_search)
-                })
-            }
-            DepfileStrategy::Unsupported => {
-                crate::depgraph::scanner::scan_recursive(source_path, &ctx.include_search)
-            }
-        }
+    let scan_collection = collect_compile_scan_blocking(CompileScanRequest {
+        is_rustc,
+        rustc_args: rustc_args_owned,
+        source_path: source_path.clone(),
+        cwd_path: cwd_path.clone(),
+        depfile_strategy,
+        show_includes_scan,
+        include_search: ctx.include_search.clone(),
+    })
+    .await;
+    if let Some(warning) = &scan_collection.depfile_parse_warning {
+        tracing::warn!("depfile parse failed, falling back to scanner: {warning}");
+        write_session_log(
+            &state.sessions,
+            sid,
+            &format!("[DIAG] depfile_parse_fail: {warning}"),
+        );
     };
+    let CompileScanCollection {
+        scan_result,
+        user_depfile_capture,
+        ..
+    } = scan_collection;
     let include_scan_ns = t_scan.elapsed().as_nanos() as u64;
 
     // Register scanned paths for zero-syscall fast path on future hits.

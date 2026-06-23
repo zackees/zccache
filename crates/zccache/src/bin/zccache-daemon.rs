@@ -260,9 +260,14 @@ fn run_server(args: Args) {
         // depgraph load itself moves.
 
         // ── Issue #637/#639: discriminate loser-of-race from real bind failure ──
-        let server = match zccache::daemon::DaemonServer::bind(&endpoint) {
-            Ok(s) => s,
-            Err(e) => {
+        let bind_endpoint = endpoint.clone();
+        let bind_result = tokio::task::spawn_blocking(move || {
+            zccache::daemon::DaemonServer::bind(&bind_endpoint)
+        })
+        .await;
+        let server = match bind_result {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
                 let is_pipe_in_use = matches!(
                     &e,
                     zccache::ipc::IpcError::Io(io_err) if matches!(
@@ -283,6 +288,11 @@ fn run_server(args: Args) {
                     std::process::exit(0);
                 }
                 tracing::error!("failed to bind {endpoint}: {e}");
+                zccache::ipc::remove_lock_file();
+                std::process::exit(1);
+            }
+            Err(e) => {
+                tracing::error!("failed to join daemon bind worker for {endpoint}: {e}");
                 zccache::ipc::remove_lock_file();
                 std::process::exit(1);
             }

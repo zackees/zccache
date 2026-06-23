@@ -12,6 +12,39 @@ pub(super) async fn watch_directory(state: &SharedState, dir: &Path) {
     watch_directories(state, &[dir.into()]).await;
 }
 
+async fn canonicalize_watch_registration_batch(dirs: Vec<NormalizedPath>) -> Vec<NormalizedPath> {
+    tokio::task::spawn_blocking(move || {
+        dirs.into_iter()
+            .filter_map(|dir| match dir.canonicalize() {
+                Ok(p) => {
+                    #[cfg(windows)]
+                    {
+                        let s = p.to_string_lossy();
+                        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+                            Some(stripped.into())
+                        } else {
+                            Some(p.into())
+                        }
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        Some(p.into())
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!("cannot canonicalize {}: {e}", dir.display());
+                    None
+                }
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_else(|err| {
+        tracing::warn!("watch canonicalization worker failed: {err}");
+        Vec::new()
+    })
+}
+
 /// Watch multiple directories in a single batch.
 ///
 /// Canonicalizes all paths up front, reserves unwatched paths under
@@ -24,47 +57,21 @@ pub(super) async fn watch_directories(state: &SharedState, dirs: &[NormalizedPat
     // Pre-filter: skip dirs we've already processed (by raw path).
     // This avoids expensive canonicalize() syscalls (~1-5ms each on Windows)
     // for directories that are already being watched.
-    let new_raw: Vec<&NormalizedPath> = dirs
+    let new_raw: Vec<NormalizedPath> = dirs
         .iter()
         .filter(|d| !state.watched_raw_dirs.contains_key(*d))
+        .cloned()
         .collect();
     if new_raw.is_empty() {
         return;
     }
 
-    // Canonicalize only new paths (filesystem work, no lock needed).
-    // On Windows, canonicalize() produces \\?\ extended-length paths which
-    // don't match the paths reported by notify's ReadDirectoryChangesW.
-    // Strip the prefix so watched paths match event paths.
-    let canonical: Vec<NormalizedPath> = new_raw
-        .iter()
-        .filter_map(|dir| match dir.canonicalize() {
-            Ok(p) => {
-                #[cfg(windows)]
-                {
-                    let s = p.to_string_lossy();
-                    if let Some(stripped) = s.strip_prefix(r"\\?\") {
-                        Some(stripped.into())
-                    } else {
-                        Some(p.into())
-                    }
-                }
-                #[cfg(not(windows))]
-                {
-                    Some(p.into())
-                }
-            }
-            Err(e) => {
-                tracing::debug!("cannot canonicalize {}: {e}", dir.display());
-                None
-            }
-        })
-        .collect();
+    let canonical = canonicalize_watch_registration_batch(new_raw.clone()).await;
 
     // Mark raw paths as processed (even if canonicalize failed) so we don't
     // retry them on every subsequent call.
     for d in &new_raw {
-        state.watched_raw_dirs.insert((*d).clone(), ());
+        state.watched_raw_dirs.insert(d.clone(), ());
     }
 
     if canonical.is_empty() {
@@ -107,20 +114,13 @@ async fn watch_one_directory(
     state: &SharedState,
     dir: NormalizedPath,
 ) -> crate::core::Result<bool> {
-    if tokio::runtime::Handle::current().runtime_flavor()
-        == tokio::runtime::RuntimeFlavor::MultiThread
-    {
-        return tokio::task::block_in_place(|| {
-            let mut watcher_guard = state.watcher.blocking_lock();
-            if let Some(ref mut w) = *watcher_guard {
-                w.watch(&dir)?;
-                Ok(true)
-            } else {
-                Ok(false)
-            }
-        });
-    }
+    register_notify_watch(state, &dir).await
+}
 
+async fn register_notify_watch(
+    state: &SharedState,
+    dir: &NormalizedPath,
+) -> crate::core::Result<bool> {
     let mut watcher_guard = state.watcher.lock().await;
     if let Some(ref mut w) = *watcher_guard {
         w.watch(&dir)?;

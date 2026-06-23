@@ -6,14 +6,70 @@ use std::time::Duration;
 
 use bytes::BytesMut;
 use tokio::io::{AsyncWriteExt, ReadHalf, WriteHalf};
-use tokio::net::windows::named_pipe::{NamedPipeClient, NamedPipeServer};
+use tokio::net::windows::named_pipe::{NamedPipeClient, NamedPipeServer, ServerOptions};
 
 use crate::ipc::error::IpcError;
 
 use super::framing::{decode_response_wire, recv_bincode_loop, recv_wire_loop};
-use super::{IpcConnection, IpcListener};
+use super::{IpcConnection, IpcListener, ListenerInner};
 
 const WINDOWS_PIPE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+pub(super) async fn bind_listener_async(endpoint: &str) -> Result<IpcListener, IpcError> {
+    use std::collections::VecDeque;
+
+    let pool_size = std::env::var("ZCCACHE_PIPE_POOL_SIZE")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get().saturating_mul(4))
+                .unwrap_or(64)
+                .clamp(16, 128)
+        });
+
+    const FIRST_BIND_ATTEMPTS: u32 = 8;
+    const FIRST_BIND_INITIAL_DELAY_MS: u64 = 20;
+    const FIRST_BIND_MAX_DELAY_MS: u64 = 160;
+
+    let mut pool = VecDeque::with_capacity(pool_size);
+    let first_pipe = {
+        let mut attempt = 0u32;
+        let mut delay_ms = FIRST_BIND_INITIAL_DELAY_MS;
+        loop {
+            match create_pipe_server_async(endpoint, true).await {
+                Ok(p) => break p,
+                Err(e) => {
+                    attempt += 1;
+                    if attempt >= FIRST_BIND_ATTEMPTS {
+                        return Err(e);
+                    }
+                    tracing::warn!(
+                        attempt,
+                        max_attempts = FIRST_BIND_ATTEMPTS,
+                        error = %e,
+                        endpoint = %endpoint,
+                        "first pipe instance bind failed; retrying after async backoff (issue #774)"
+                    );
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    delay_ms = (delay_ms * 2).min(FIRST_BIND_MAX_DELAY_MS);
+                }
+            }
+        }
+    };
+    pool.push_back(first_pipe);
+
+    for _ in 1..pool_size {
+        pool.push_back(create_pipe_server_async(endpoint, false).await?);
+    }
+
+    Ok(IpcListener {
+        inner: ListenerInner {
+            endpoint: endpoint.to_string(),
+            pool,
+        },
+    })
+}
 
 /// Client-side IPC connection (Windows uses a different type).
 pub struct IpcClientConnection {
@@ -225,7 +281,7 @@ impl IpcListener {
                         endpoint = %self.inner.endpoint,
                         "named-pipe pool exhausted — attempting emergency create (issue #666)"
                     );
-                    create_replacement_pipe(&self.inner.endpoint)?
+                    create_replacement_pipe_async(&self.inner.endpoint).await?
                 }
             };
 
@@ -240,7 +296,9 @@ impl IpcListener {
                         error = %e,
                         "named-pipe connect failed - replenishing and retrying"
                     );
-                    if let Ok(replacement) = create_replacement_pipe(&self.inner.endpoint) {
+                    if let Ok(replacement) =
+                        create_replacement_pipe_async(&self.inner.endpoint).await
+                    {
                         self.inner.pool.push_back(replacement);
                     }
                     continue;
@@ -253,7 +311,9 @@ impl IpcListener {
                         timeout = ?WINDOWS_PIPE_CONNECT_TIMEOUT,
                         "named-pipe connect timed out - dropping pipe and retrying"
                     );
-                    if let Ok(replacement) = create_replacement_pipe(&self.inner.endpoint) {
+                    if let Ok(replacement) =
+                        create_replacement_pipe_async(&self.inner.endpoint).await
+                    {
                         self.inner.pool.push_back(replacement);
                     }
                     continue;
@@ -296,13 +356,22 @@ impl IpcListener {
     }
 }
 
-/// Issue #666: synchronous replacement pipe creation. Used by the emergency
-/// path when the pool is fully depleted.
-pub(super) fn create_replacement_pipe(endpoint: &str) -> Result<NamedPipeServer, IpcError> {
-    use tokio::net::windows::named_pipe::ServerOptions;
-    Ok(ServerOptions::new()
-        .first_pipe_instance(false)
-        .create(endpoint)?)
+async fn create_replacement_pipe_async(endpoint: &str) -> Result<NamedPipeServer, IpcError> {
+    create_pipe_server_async(endpoint, false).await
+}
+
+async fn create_pipe_server_async(
+    endpoint: &str,
+    first_pipe_instance: bool,
+) -> Result<NamedPipeServer, IpcError> {
+    let endpoint = endpoint.to_owned();
+    tokio::task::spawn_blocking(move || {
+        Ok(ServerOptions::new()
+            .first_pipe_instance(first_pipe_instance)
+            .create(&endpoint)?)
+    })
+    .await
+    .map_err(join_error_to_ipc)?
 }
 
 /// Issue #666: bounded-backoff retry around replacement creation. Returns
@@ -321,7 +390,7 @@ async fn create_replacement_pipe_with_retry(endpoint: &str) -> Option<NamedPipeS
 
     let mut delay_ms = INITIAL_DELAY_MS;
     for attempt in 0..ATTEMPTS {
-        match create_replacement_pipe(endpoint) {
+        match create_replacement_pipe_async(endpoint).await {
             Ok(p) => return Some(p),
             Err(e) => {
                 tracing::warn!(
@@ -348,8 +417,6 @@ async fn create_replacement_pipe_with_retry(endpoint: &str) -> Option<NamedPipeS
 /// about 5 seconds before giving up. This handles bursts from parallel build
 /// systems that spawn hundreds of concurrent compilations.
 pub async fn connect(endpoint: &str) -> Result<IpcClientConnection, IpcError> {
-    use tokio::net::windows::named_pipe::ClientOptions;
-
     const MAX_PIPE_BUSY_RETRIES: u32 = 50;
     const INITIAL_BACKOFF_MS: u64 = 10;
     const MAX_BACKOFF_MS: u64 = 500;
@@ -358,7 +425,7 @@ pub async fn connect(endpoint: &str) -> Result<IpcClientConnection, IpcError> {
         let mut attempts = 0u32;
         let mut backoff_ms = INITIAL_BACKOFF_MS;
         let client = loop {
-            match ClientOptions::new().open(endpoint) {
+            match open_pipe_client_async(endpoint).await {
                 Ok(client) => break client,
                 Err(e) if e.raw_os_error() == Some(231) => {
                     // ERROR_PIPE_BUSY = 231: all pipe instances are in use.
@@ -406,4 +473,21 @@ pub async fn connect(endpoint: &str) -> Result<IpcClientConnection, IpcError> {
         recv_timeout: None,
         next_frame_request_id: 1,
     })
+}
+
+async fn open_pipe_client_async(endpoint: &str) -> Result<NamedPipeClient, std::io::Error> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+
+    let endpoint = endpoint.to_owned();
+    tokio::task::spawn_blocking(move || ClientOptions::new().open(&endpoint))
+        .await
+        .map_err(|err| {
+            std::io::Error::other(format!("named-pipe client open worker failed: {err}"))
+        })?
+}
+
+fn join_error_to_ipc(err: tokio::task::JoinError) -> IpcError {
+    IpcError::Io(std::io::Error::other(format!(
+        "named-pipe setup worker failed: {err}"
+    )))
 }

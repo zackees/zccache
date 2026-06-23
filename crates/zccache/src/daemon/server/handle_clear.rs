@@ -58,7 +58,7 @@ pub(super) async fn handle_clear(state: &SharedState) -> Response {
 
     // Clear the in-memory artifact index and persist the empty state.
     state.artifact_store.clear();
-    let _ = state.artifact_store.flush();
+    let _ = Arc::clone(&state.artifact_store).flush_async().await;
 
     // Persist the (now empty) metadata cache so the prior on-disk
     // snapshot stays consistent with the live state. Empty snapshots

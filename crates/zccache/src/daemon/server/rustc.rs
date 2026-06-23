@@ -62,6 +62,32 @@ pub(super) fn build_compile_context(
     BuildContextResult::Cc { ctx, dep_flags }
 }
 
+pub(super) async fn build_compile_context_async(
+    compilation: &crate::compiler::CacheableCompilation,
+    cwd: &Path,
+    system_includes: &[NormalizedPath],
+    client_env: &[(String, String)],
+    compiler_hash_cache: &CompilerHashCache,
+) -> BuildContextResult {
+    if compilation.family == crate::compiler::CompilerFamily::Rustc {
+        return build_rustc_compile_context_async(
+            compilation,
+            cwd,
+            client_env,
+            compiler_hash_cache,
+        )
+        .await;
+    }
+
+    build_compile_context(
+        compilation,
+        cwd,
+        system_includes,
+        client_env,
+        compiler_hash_cache,
+    )
+}
+
 /// Build compile context for a Rustc invocation.
 pub(super) fn build_rustc_compile_context(
     compilation: &crate::compiler::CacheableCompilation,
@@ -92,6 +118,40 @@ pub(super) fn build_rustc_compile_context(
 
     // Create a "compatible" CompileContext for dep_graph storage.
     // Only source_file is used by the dep_graph for freshness checks.
+    let compat_ctx = CompileContext {
+        source_file: rustc_args.source_file.clone(),
+        include_search: Default::default(),
+        defines: Vec::new(),
+        flags: Vec::new(),
+        force_includes: Vec::new(),
+        unknown_flags: Vec::new(),
+    };
+
+    BuildContextResult::Rustc {
+        rustc_ctx: Box::new(rustc_ctx),
+        compat_ctx,
+        rustc_args: Box::new(rustc_args),
+    }
+}
+
+pub(super) async fn build_rustc_compile_context_async(
+    compilation: &crate::compiler::CacheableCompilation,
+    cwd: &Path,
+    client_env: &[(String, String)],
+    compiler_hash_cache: &CompilerHashCache,
+) -> BuildContextResult {
+    let rustc_args = crate::depgraph::parse_rustc_args(&compilation.original_args, cwd);
+
+    let compiler_hash = compiler_hash_cache
+        .get_or_hash_with_async(&compilation.compiler, hash_rustc_identity_async)
+        .await;
+
+    let rustc_ctx = crate::depgraph::RustcCompileContext::from_parsed_args(
+        &rustc_args,
+        client_env,
+        compiler_hash,
+    );
+
     let compat_ctx = CompileContext {
         source_file: rustc_args.source_file.clone(),
         include_search: Default::default(),

@@ -361,7 +361,7 @@ impl DaemonServer {
                     let store = Arc::clone(&self.state.artifact_store);
                     let entries = store.len();
                     let flush_start = std::time::Instant::now();
-                    let res = store.flush_blocking().await;
+                    let res = store.flush_async().await;
                     match res {
                         Ok(()) => tracing::info!(
                             entries,

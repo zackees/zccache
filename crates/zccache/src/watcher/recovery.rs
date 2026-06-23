@@ -110,7 +110,13 @@ impl OverflowRecovery {
                 }
             }
 
-            let promoted = cache.rescan_entries();
+            let promoted = match cache.rescan_entries_async().await {
+                Ok(promoted) => promoted,
+                Err(e) => {
+                    tracing::warn!("overflow recovery: rescan failed: {e}");
+                    0
+                }
+            };
             self.pending.store(false, Ordering::Release);
 
             tracing::info!(

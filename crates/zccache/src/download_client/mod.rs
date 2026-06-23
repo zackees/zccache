@@ -147,6 +147,7 @@ async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
     Err("download daemon started but did not accept connections after 10s".to_string())
 }
 
+#[derive(Clone)]
 pub struct DownloadClient {
     endpoint: Option<String>,
 }
@@ -163,47 +164,58 @@ impl DownloadClient {
     }
 
     pub fn start_daemon(&self) -> Result<(), String> {
-        let endpoint = self.resolved_endpoint();
-        run_async(async move { ensure_daemon(&endpoint).await })
+        let client = self.clone();
+        run_async(async move { client.start_daemon_async().await })
     }
 
     pub fn stop_daemon(&self) -> Result<bool, String> {
-        let endpoint = self.resolved_endpoint();
-        run_async(async move {
-            let mut conn = match connect_client(&endpoint).await {
-                Ok(conn) => conn,
-                Err(_) => return Ok(false),
-            };
-            conn.send(&Request::Shutdown)
-                .await
-                .map_err(|e| format!("failed to send shutdown to download daemon: {e}"))?;
-            match conn.recv::<Response>().await {
-                Ok(Some(Response::ShuttingDown)) => Ok(true),
-                Ok(Some(Response::Error { message })) => Err(message),
-                Ok(Some(other)) => Err(format!("unexpected response: {other:?}")),
-                Ok(None) => Err("download daemon closed connection unexpectedly".to_string()),
-                Err(e) => Err(format!("broken connection to download daemon: {e}")),
-            }
-        })
+        let client = self.clone();
+        run_async(async move { client.stop_daemon_async().await })
     }
 
     pub fn daemon_status(&self) -> Result<DownloadDaemonStatus, String> {
+        let client = self.clone();
+        run_async(async move { client.daemon_status_async().await })
+    }
+
+    pub async fn start_daemon_async(&self) -> Result<(), String> {
         let endpoint = self.resolved_endpoint();
-        run_async(async move {
-            let mut conn = connect_client(&endpoint)
-                .await
-                .map_err(|e| format!("download daemon not running at {endpoint}: {e}"))?;
-            conn.send(&Request::Status)
-                .await
-                .map_err(|e| format!("failed to query download daemon: {e}"))?;
-            match conn.recv::<Response>().await {
-                Ok(Some(Response::Status(status))) => Ok(status),
-                Ok(Some(Response::Error { message })) => Err(message),
-                Ok(Some(other)) => Err(format!("unexpected response: {other:?}")),
-                Ok(None) => Err("download daemon closed connection unexpectedly".to_string()),
-                Err(e) => Err(format!("broken connection to download daemon: {e}")),
-            }
-        })
+        ensure_daemon(&endpoint).await
+    }
+
+    pub async fn stop_daemon_async(&self) -> Result<bool, String> {
+        let endpoint = self.resolved_endpoint();
+        let mut conn = match connect_client(&endpoint).await {
+            Ok(conn) => conn,
+            Err(_) => return Ok(false),
+        };
+        conn.send(&Request::Shutdown)
+            .await
+            .map_err(|e| format!("failed to send shutdown to download daemon: {e}"))?;
+        match conn.recv::<Response>().await {
+            Ok(Some(Response::ShuttingDown)) => Ok(true),
+            Ok(Some(Response::Error { message })) => Err(message),
+            Ok(Some(other)) => Err(format!("unexpected response: {other:?}")),
+            Ok(None) => Err("download daemon closed connection unexpectedly".to_string()),
+            Err(e) => Err(format!("broken connection to download daemon: {e}")),
+        }
+    }
+
+    pub async fn daemon_status_async(&self) -> Result<DownloadDaemonStatus, String> {
+        let endpoint = self.resolved_endpoint();
+        let mut conn = connect_client(&endpoint)
+            .await
+            .map_err(|e| format!("download daemon not running at {endpoint}: {e}"))?;
+        conn.send(&Request::Status)
+            .await
+            .map_err(|e| format!("failed to query download daemon: {e}"))?;
+        match conn.recv::<Response>().await {
+            Ok(Some(Response::Status(status))) => Ok(status),
+            Ok(Some(Response::Error { message })) => Err(message),
+            Ok(Some(other)) => Err(format!("unexpected response: {other:?}")),
+            Ok(None) => Err("download daemon closed connection unexpectedly".to_string()),
+            Err(e) => Err(format!("broken connection to download daemon: {e}")),
+        }
     }
 
     pub fn download(
@@ -212,43 +224,88 @@ impl DownloadClient {
         destination: &Path,
         options: DownloadOptions,
     ) -> Result<DownloadHandle, String> {
-        let endpoint = self.resolved_endpoint();
-        let url = url.to_string();
-        let destination = canonical_destination(destination).map_err(|e| e.to_string())?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| format!("failed to create runtime: {e}"))?;
-        let (conn, initiator, download_id) = runtime.block_on(async move {
-            ensure_daemon(&endpoint).await?;
-            let mut conn = connect_client(&endpoint)
-                .await
-                .map_err(|e| format!("cannot connect to download daemon at {endpoint}: {e}"))?;
-            conn.send(&Request::DownloadAttach {
-                url: url.clone(),
-                destination,
-                options,
-            })
-            .await
-            .map_err(|e| format!("failed to send attach request: {e}"))?;
-            match conn.recv::<Response>().await {
-                Ok(Some(Response::DownloadAttached {
-                    download_id,
-                    initiator,
-                    status: _,
-                })) => Ok((conn, initiator, download_id)),
-                Ok(Some(Response::Error { message })) => Err(message),
-                Ok(Some(other)) => Err(format!("unexpected response: {other:?}")),
-                Ok(None) => Err("download daemon closed connection unexpectedly".to_string()),
-                Err(e) => Err(format!("broken connection to download daemon: {e}")),
-            }
-        })?;
+        let async_handle = runtime.block_on(self.download_async(url, destination, options))?;
         Ok(DownloadHandle {
             runtime,
-            conn,
-            initiator,
-            download_id,
+            conn: async_handle.conn,
+            initiator: async_handle.initiator,
+            download_id: async_handle.download_id,
         })
+    }
+
+    pub async fn download_async(
+        &self,
+        url: &str,
+        destination: &Path,
+        options: DownloadOptions,
+    ) -> Result<AsyncDownloadHandle, String> {
+        let endpoint = self.resolved_endpoint();
+        let url = url.to_string();
+        let destination = canonical_destination(destination).map_err(|e| e.to_string())?;
+        ensure_daemon(&endpoint).await?;
+        let mut conn = connect_client(&endpoint)
+            .await
+            .map_err(|e| format!("cannot connect to download daemon at {endpoint}: {e}"))?;
+        conn.send(&Request::DownloadAttach {
+            url: url.clone(),
+            destination,
+            options,
+        })
+        .await
+        .map_err(|e| format!("failed to send attach request: {e}"))?;
+        match conn.recv::<Response>().await {
+            Ok(Some(Response::DownloadAttached {
+                download_id,
+                initiator,
+                status: _,
+            })) => Ok(AsyncDownloadHandle {
+                conn,
+                initiator,
+                download_id,
+            }),
+            Ok(Some(Response::Error { message })) => Err(message),
+            Ok(Some(other)) => Err(format!("unexpected response: {other:?}")),
+            Ok(None) => Err("download daemon closed connection unexpectedly".to_string()),
+            Err(e) => Err(format!("broken connection to download daemon: {e}")),
+        }
+    }
+}
+
+pub struct AsyncDownloadHandle {
+    conn: ClientConn,
+    initiator: bool,
+    download_id: String,
+}
+
+impl AsyncDownloadHandle {
+    #[must_use]
+    pub fn initiator(&self) -> bool {
+        self.initiator
+    }
+
+    #[must_use]
+    pub fn download_id(&self) -> &str {
+        &self.download_id
+    }
+
+    pub async fn status(&mut self) -> Result<DownloadStatus, String> {
+        send_download_command(&mut self.conn, Request::DownloadStatus).await
+    }
+
+    pub async fn wait(&mut self, timeout_ms: Option<u64>) -> Result<DownloadStatus, String> {
+        send_download_command(&mut self.conn, Request::DownloadWait { timeout_ms }).await
+    }
+
+    pub async fn cancel(&mut self) -> Result<DownloadStatus, String> {
+        send_download_command(&mut self.conn, Request::DownloadCancel).await
+    }
+
+    pub fn close(self) -> Result<(), String> {
+        Ok(())
     }
 }
 
@@ -271,61 +328,52 @@ impl DownloadHandle {
     }
 
     pub fn status(&mut self) -> Result<DownloadStatus, String> {
-        self.runtime.block_on(async {
-            self.conn
-                .send(&Request::DownloadStatus)
-                .await
-                .map_err(|e| format!("failed to send status request: {e}"))?;
-            match self.conn.recv::<Response>().await {
-                Ok(Some(Response::DownloadStatusResult { status })) => Ok(status),
-                Ok(Some(Response::DownloadFinished { status })) => Ok(status),
-                Ok(Some(Response::DownloadCancelled { status })) => Ok(status),
-                Ok(Some(Response::Error { message })) => Err(message),
-                Ok(Some(other)) => Err(format!("unexpected response: {other:?}")),
-                Ok(None) => Err("download daemon closed connection unexpectedly".to_string()),
-                Err(e) => Err(format!("broken connection to download daemon: {e}")),
-            }
-        })
+        self.runtime.block_on(send_download_command(
+            &mut self.conn,
+            Request::DownloadStatus,
+        ))
     }
 
     pub fn wait(&mut self, timeout_ms: Option<u64>) -> Result<DownloadStatus, String> {
-        self.runtime.block_on(async {
-            self.conn
-                .send(&Request::DownloadWait { timeout_ms })
-                .await
-                .map_err(|e| format!("failed to send wait request: {e}"))?;
-            match self.conn.recv::<Response>().await {
-                Ok(Some(Response::DownloadStatusResult { status })) => Ok(status),
-                Ok(Some(Response::DownloadFinished { status })) => Ok(status),
-                Ok(Some(Response::DownloadCancelled { status })) => Ok(status),
-                Ok(Some(Response::Error { message })) => Err(message),
-                Ok(Some(other)) => Err(format!("unexpected response: {other:?}")),
-                Ok(None) => Err("download daemon closed connection unexpectedly".to_string()),
-                Err(e) => Err(format!("broken connection to download daemon: {e}")),
-            }
-        })
+        self.runtime.block_on(send_download_command(
+            &mut self.conn,
+            Request::DownloadWait { timeout_ms },
+        ))
     }
 
     pub fn cancel(&mut self) -> Result<DownloadStatus, String> {
-        self.runtime.block_on(async {
-            self.conn
-                .send(&Request::DownloadCancel)
-                .await
-                .map_err(|e| format!("failed to send cancel request: {e}"))?;
-            match self.conn.recv::<Response>().await {
-                Ok(Some(Response::DownloadCancelled { status })) => Ok(status),
-                Ok(Some(Response::DownloadFinished { status })) => Ok(status),
-                Ok(Some(Response::DownloadStatusResult { status })) => Ok(status),
-                Ok(Some(Response::Error { message })) => Err(message),
-                Ok(Some(other)) => Err(format!("unexpected response: {other:?}")),
-                Ok(None) => Err("download daemon closed connection unexpectedly".to_string()),
-                Err(e) => Err(format!("broken connection to download daemon: {e}")),
-            }
-        })
+        self.runtime.block_on(send_download_command(
+            &mut self.conn,
+            Request::DownloadCancel,
+        ))
     }
 
     pub fn close(self) -> Result<(), String> {
         Ok(())
+    }
+}
+
+async fn send_download_command(
+    conn: &mut ClientConn,
+    request: Request,
+) -> Result<DownloadStatus, String> {
+    let action = match &request {
+        Request::DownloadStatus => "status",
+        Request::DownloadWait { .. } => "wait",
+        Request::DownloadCancel => "cancel",
+        _ => "download",
+    };
+    conn.send(&request)
+        .await
+        .map_err(|e| format!("failed to send {action} request: {e}"))?;
+    match conn.recv::<Response>().await {
+        Ok(Some(Response::DownloadStatusResult { status })) => Ok(status),
+        Ok(Some(Response::DownloadFinished { status })) => Ok(status),
+        Ok(Some(Response::DownloadCancelled { status })) => Ok(status),
+        Ok(Some(Response::Error { message })) => Err(message),
+        Ok(Some(other)) => Err(format!("unexpected response: {other:?}")),
+        Ok(None) => Err("download daemon closed connection unexpectedly".to_string()),
+        Err(e) => Err(format!("broken connection to download daemon: {e}")),
     }
 }
 

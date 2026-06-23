@@ -103,6 +103,26 @@ pub fn probe_local_socket_with_deadline(endpoint: &str, deadline: Duration) -> s
     })
 }
 
+/// Async bridge for [`probe_local_socket`].
+///
+/// The underlying local-socket dial is synchronous and can block at the OS
+/// layer. Async production callers should use this wrapper so that work is
+/// charged to Tokio's blocking pool instead of an executor worker.
+pub async fn probe_local_socket_async(endpoint: &str) -> std::io::Result<()> {
+    probe_local_socket_with_deadline_async(endpoint, DEFAULT_PROBE_TIMEOUT).await
+}
+
+/// Async bridge for [`probe_local_socket_with_deadline`].
+pub async fn probe_local_socket_with_deadline_async(
+    endpoint: &str,
+    deadline: Duration,
+) -> std::io::Result<()> {
+    let endpoint = endpoint.to_owned();
+    tokio::task::spawn_blocking(move || probe_local_socket_with_deadline(&endpoint, deadline))
+        .await
+        .map_err(join_error_to_io)?
+}
+
 /// Run a blocking `io::Result<T>`-returning closure on a helper thread,
 /// bounded by `deadline`. On deadline the helper thread is leaked
 /// (there is no portable way to cancel a `Stream::connect` mid-call)
@@ -186,6 +206,18 @@ pub fn connect_v2_broker(wanted_version: &str) -> Result<ClientSession, BrokerV2
     })
 }
 
+/// Async bridge for [`connect_v2_broker`].
+///
+/// This keeps the v2 broker's synchronous Hello round-trip out of async
+/// callers while preserving the existing typed `BrokerV2Error` surface.
+#[doc(hidden)]
+pub async fn connect_v2_broker_async(wanted_version: &str) -> Result<ClientSession, BrokerV2Error> {
+    let wanted = wanted_version.to_owned();
+    tokio::task::spawn_blocking(move || connect_v2_broker(&wanted))
+        .await
+        .map_err(join_error_to_brokerv2)?
+}
+
 /// Slice 13 of #782: v2 adopt path counterpart of v1's
 /// `AsyncBrokerSession::adopt` / `OwnedBackendIo`.
 ///
@@ -223,6 +255,23 @@ pub fn adopt_v2_session(
     Ok(session.into_inner())
 }
 
+/// Async bridge for [`adopt_v2_session`].
+#[doc(hidden)]
+pub async fn adopt_v2_session_async(
+    wanted_version: &str,
+) -> Result<
+    (
+        interprocess::local_socket::Stream,
+        running_process::broker::protocol::Negotiated,
+    ),
+    BrokerV2Error,
+> {
+    let wanted = wanted_version.to_owned();
+    tokio::task::spawn_blocking(move || adopt_v2_session(&wanted))
+        .await
+        .map_err(join_error_to_brokerv2)?
+}
+
 /// Slice 14 of #782: v2 counterpart of v1's
 /// `AsyncBrokerSession::into_backend_io`.
 ///
@@ -242,6 +291,25 @@ pub fn into_backend_io_v2(
 ) -> Result<interprocess::local_socket::Stream, BrokerV2Error> {
     let (stream, _negotiated) = adopt_v2_session(wanted_version)?;
     Ok(stream)
+}
+
+/// Async bridge for [`into_backend_io_v2`].
+#[doc(hidden)]
+pub async fn into_backend_io_v2_async(
+    wanted_version: &str,
+) -> Result<interprocess::local_socket::Stream, BrokerV2Error> {
+    let wanted = wanted_version.to_owned();
+    tokio::task::spawn_blocking(move || into_backend_io_v2(&wanted))
+        .await
+        .map_err(join_error_to_brokerv2)?
+}
+
+fn join_error_to_io(err: tokio::task::JoinError) -> std::io::Error {
+    std::io::Error::other(format!("broker-v2 async bridge worker failed: {err}"))
+}
+
+fn join_error_to_brokerv2(err: tokio::task::JoinError) -> BrokerV2Error {
+    BrokerV2Error::Io(join_error_to_io(err))
 }
 
 #[cfg(test)]
