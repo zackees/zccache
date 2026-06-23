@@ -13,6 +13,8 @@ use crate::ipc::error::IpcError;
 use super::framing::{decode_response_wire, recv_bincode_loop, recv_wire_loop};
 use super::{IpcConnection, IpcListener};
 
+const WINDOWS_PIPE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Client-side IPC connection (Windows uses a different type).
 pub struct IpcClientConnection {
     pub(super) reader: ReadHalf<NamedPipeClient>,
@@ -227,19 +229,35 @@ impl IpcListener {
                 }
             };
 
-            if let Err(e) = pipe.connect().await {
-                // The popped pipe is now dropped. Replenish the pool with a
-                // fresh instance (best-effort) and retry the accept so the
-                // daemon's main loop never sees a transient connect glitch.
-                tracing::warn!(
-                    endpoint = %self.inner.endpoint,
-                    error = %e,
-                    "named-pipe connect failed — replenishing and retrying"
-                );
-                if let Ok(replacement) = create_replacement_pipe(&self.inner.endpoint) {
-                    self.inner.pool.push_back(replacement);
+            match tokio::time::timeout(WINDOWS_PIPE_CONNECT_TIMEOUT, pipe.connect()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    // The popped pipe is now dropped. Replenish the pool with a
+                    // fresh instance (best-effort) and retry the accept so the
+                    // daemon's main loop never sees a transient connect glitch.
+                    tracing::warn!(
+                        endpoint = %self.inner.endpoint,
+                        error = %e,
+                        "named-pipe connect failed - replenishing and retrying"
+                    );
+                    if let Ok(replacement) = create_replacement_pipe(&self.inner.endpoint) {
+                        self.inner.pool.push_back(replacement);
+                    }
+                    continue;
                 }
-                continue;
+                Err(_) => {
+                    // Drop the stalled pipe instance and keep the daemon accept
+                    // loop moving on a fresh best-effort replacement.
+                    tracing::warn!(
+                        endpoint = %self.inner.endpoint,
+                        timeout = ?WINDOWS_PIPE_CONNECT_TIMEOUT,
+                        "named-pipe connect timed out - dropping pipe and retrying"
+                    );
+                    if let Ok(replacement) = create_replacement_pipe(&self.inner.endpoint) {
+                        self.inner.pool.push_back(replacement);
+                    }
+                    continue;
+                }
             }
 
             // Connect succeeded. Try hard to create a replacement before we
@@ -327,7 +345,7 @@ async fn create_replacement_pipe_with_retry(endpoint: &str) -> Option<NamedPipeS
 ///
 /// Uses exponential backoff when the pipe is busy (ERROR_PIPE_BUSY = 231),
 /// starting at 10ms and doubling up to 500ms per attempt, for a total of
-/// ~30 seconds before giving up. This handles bursts from parallel build
+/// about 5 seconds before giving up. This handles bursts from parallel build
 /// systems that spawn hundreds of concurrent compilations.
 pub async fn connect(endpoint: &str) -> Result<IpcClientConnection, IpcError> {
     use tokio::net::windows::named_pipe::ClientOptions;
@@ -336,10 +354,10 @@ pub async fn connect(endpoint: &str) -> Result<IpcClientConnection, IpcError> {
     const INITIAL_BACKOFF_MS: u64 = 10;
     const MAX_BACKOFF_MS: u64 = 500;
 
-    let client = {
+    let client = match tokio::time::timeout(WINDOWS_PIPE_CONNECT_TIMEOUT, async {
         let mut attempts = 0u32;
         let mut backoff_ms = INITIAL_BACKOFF_MS;
-        loop {
+        let client = loop {
             match ClientOptions::new().open(endpoint) {
                 Ok(client) => break client,
                 Err(e) if e.raw_os_error() == Some(231) => {
@@ -364,6 +382,19 @@ pub async fn connect(endpoint: &str) -> Result<IpcClientConnection, IpcError> {
                 }
                 Err(e) => return Err(IpcError::Io(e)),
             }
+        };
+        Ok(client)
+    })
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            return Err(IpcError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "cannot connect to daemon at {endpoint}: connect timed out after {WINDOWS_PIPE_CONNECT_TIMEOUT:?}"
+                ),
+            )));
         }
     };
 
