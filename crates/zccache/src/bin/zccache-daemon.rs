@@ -21,9 +21,7 @@ use zccache::core::NormalizedPath;
 const DAEMON_MAX_BLOCKING_THREADS: usize = 16;
 const DAEMON_PROFILE_ENV: &str = "ZCCACHE_DAEMON_PROFILE";
 const TOKIO_CONSOLE_PROFILE: &str = "tokio-console";
-#[cfg(feature = "tokio-console")]
 const TOKIO_CONSOLE_BIND_ENV: &str = "TOKIO_CONSOLE_BIND";
-#[cfg(feature = "tokio-console")]
 const TOKIO_CONSOLE_DEFAULT_BIND: &str = "127.0.0.1:6669";
 
 /// zccache daemon -- local compiler cache service.
@@ -527,27 +525,24 @@ fn init_tracing(level: &str) {
     let profile = std::env::var(DAEMON_PROFILE_ENV).ok();
     let tokio_console_enabled = profile.as_deref() == Some(TOKIO_CONSOLE_PROFILE);
 
-    #[cfg(feature = "tokio-console")]
-    {
-        if tokio_console_enabled {
-            let bind = std::env::var(TOKIO_CONSOLE_BIND_ENV)
-                .unwrap_or_else(|_| TOKIO_CONSOLE_DEFAULT_BIND.to_string());
-            let console_layer = console_subscriber::spawn();
-            tracing_subscriber::registry()
-                .with(console_layer)
-                .with(
-                    tracing_subscriber::fmt::layer()
-                        .with_target(true)
-                        .with_thread_ids(true)
-                        .with_filter(filter),
-                )
-                .init();
-            tracing::info!(
-                bind,
-                "tokio-console daemon profile enabled; connect with `tokio-console {bind}`"
-            );
-            return;
-        }
+    if tokio_console_enabled {
+        let bind = std::env::var(TOKIO_CONSOLE_BIND_ENV)
+            .unwrap_or_else(|_| TOKIO_CONSOLE_DEFAULT_BIND.to_string());
+        let console_layer = console_subscriber::spawn();
+        tracing_subscriber::registry()
+            .with(console_layer)
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_target(true)
+                    .with_thread_ids(true)
+                    .with_filter(filter),
+            )
+            .init();
+        tracing::info!(
+            bind,
+            "tokio-console daemon profile enabled; connect with `tokio-console {bind}`"
+        );
+        return;
     }
 
     tracing_subscriber::registry()
@@ -558,14 +553,6 @@ fn init_tracing(level: &str) {
                 .with_filter(filter),
         )
         .init();
-
-    #[cfg(not(feature = "tokio-console"))]
-    if tokio_console_enabled {
-        tracing::warn!(
-            profile = TOKIO_CONSOLE_PROFILE,
-            "ZCCACHE_DAEMON_PROFILE requested tokio-console, but this binary was built without the `tokio-console` feature"
-        );
-    }
 
     if let Some(profile) = profile {
         if profile != TOKIO_CONSOLE_PROFILE {

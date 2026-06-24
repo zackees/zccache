@@ -13,10 +13,9 @@ description = "Local-first compiler cache for C/C++/Rust/Emscripten"
 default = []
 # Enables zccache::test_support (dev-only helpers).
 test-support = []
-# Enables zccache-daemon Tokio Console instrumentation. Build with
-# `RUSTFLAGS="--cfg tokio_unstable"` so Tokio emits the runtime tracing
-# events consumed by console-subscriber.
-tokio-console = ["dep:console-subscriber", "tokio/tracing"]
+# Compatibility no-op: Tokio Console support is always compiled in and
+# remains dormant unless the daemon is started with the tokio-console profile.
+tokio-console = []
 
 [dependencies]
 # core
@@ -39,9 +38,10 @@ bincode = { workspace = true }
 bytes = { workspace = true }
 prost = { workspace = true }
 
-# ipc + test-support: needs full tokio
-tokio = { workspace = true }
-console-subscriber = { workspace = true, optional = true }
+# ipc + test-support: needs full tokio. The tracing feature lets Tokio emit
+# runtime telemetry when the workspace is built with `--cfg tokio_unstable`.
+tokio = { workspace = true, features = ["tracing"] }
+console-subscriber = { workspace = true }
 
 # fscache
 dashmap = { workspace = true }

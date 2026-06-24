@@ -25,7 +25,8 @@ Thumbs.db
 .claude/settings.local.json
 
 # Project-local toolchain caches (managed by soldr)
-.cargo/
+**/.cargo/*
+!/.cargo/config.toml
 .rustup/
 
 # zccache cache directory

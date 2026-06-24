@@ -6,17 +6,11 @@ use std::process::ExitCode;
 use super::super::status_probe_timeout;
 use super::util::{connect, resolve_endpoint, run_async, LOST_CONNECTION_MSG};
 
-#[cfg(any(test, feature = "tokio-console"))]
 const DAEMON_PROFILE_ENV: &str = "ZCCACHE_DAEMON_PROFILE";
-#[cfg(any(test, feature = "tokio-console"))]
 const TOKIO_CONSOLE_PROFILE: &str = "tokio-console";
-#[cfg(any(test, feature = "tokio-console"))]
 const TOKIO_CONSOLE_BIND_ENV: &str = "TOKIO_CONSOLE_BIND";
-#[cfg(any(test, feature = "tokio-console"))]
 const TOKIO_CONSOLE_OPEN_ENV: &str = "ZCCACHE_TOKIO_CONSOLE_OPEN";
-#[cfg(any(test, feature = "tokio-console"))]
 const TOKIO_CONSOLE_DEFAULT_BIND: &str = "127.0.0.1:6669";
-#[cfg(feature = "tokio-console")]
 const PROFILE_START_REASON: &str = "tokio-console-profile-start";
 
 pub(crate) enum VersionCheck {
@@ -346,50 +340,34 @@ pub(crate) async fn cmd_start(endpoint: &str) -> ExitCode {
 }
 
 pub(crate) async fn cmd_profile_start(endpoint: &str, bind: Option<&str>, open: bool) -> ExitCode {
-    #[cfg(not(feature = "tokio-console"))]
-    {
-        let _ = (endpoint, bind, open);
-        eprintln!(
-            "tokio-console daemon profile is unavailable: this zccache binary was built without \
-             the `tokio-console` feature. Rebuild with \
-             `RUSTFLAGS=\"--cfg tokio_unstable\" cargo build --features tokio-console`."
-        );
-        ExitCode::FAILURE
+    let open = open || env_truthy(TOKIO_CONSOLE_OPEN_ENV);
+    let bind = tokio_console_bind(bind);
+    let env = profile_env_overrides(&bind, open);
+    let _guard = ScopedEnv::apply(&env);
+
+    let killed_pid = stop_stale_daemon(endpoint).await;
+    if let Err(e) = spawn_and_wait(endpoint, PROFILE_START_REASON, killed_pid).await {
+        eprintln!("failed to start tokio-console daemon profile: {e}");
+        return ExitCode::FAILURE;
     }
+    eprintln!("daemon running with tokio-console profile at {bind}");
 
-    #[cfg(feature = "tokio-console")]
-    {
-        let open = open || env_truthy(TOKIO_CONSOLE_OPEN_ENV);
-        let bind = tokio_console_bind(bind);
-        let env = profile_env_overrides(&bind, open);
-        let _guard = ScopedEnv::apply(&env);
-
-        let killed_pid = stop_stale_daemon(endpoint).await;
-        if let Err(e) = spawn_and_wait(endpoint, PROFILE_START_REASON, killed_pid).await {
-            eprintln!("failed to start tokio-console daemon profile: {e}");
+    if open {
+        if let Err(e) = launch_tokio_console(&bind) {
+            eprintln!("{e}");
             return ExitCode::FAILURE;
         }
-        eprintln!("daemon running with tokio-console profile at {bind}");
-
-        if open {
-            if let Err(e) = launch_tokio_console(&bind) {
-                eprintln!("{e}");
-                return ExitCode::FAILURE;
-            }
-        }
-
-        ExitCode::SUCCESS
     }
+
+    ExitCode::SUCCESS
 }
 
-#[cfg(any(test, feature = "tokio-console"))]
 pub(crate) fn tokio_console_bind(bind: Option<&str>) -> String {
     bind.map(str::to_string)
         .or_else(|| std::env::var(TOKIO_CONSOLE_BIND_ENV).ok())
         .unwrap_or_else(|| TOKIO_CONSOLE_DEFAULT_BIND.to_string())
 }
 
-#[cfg(any(test, feature = "tokio-console"))]
 pub(crate) fn profile_env_overrides(bind: &str, open: bool) -> Vec<(String, String)> {
     let mut env = vec![
         (
@@ -404,7 +382,6 @@ pub(crate) fn profile_env_overrides(bind: &str, open: bool) -> Vec<(String, Stri
     env
 }
 
-#[cfg(feature = "tokio-console")]
 fn launch_tokio_console(bind: &str) -> Result<(), String> {
     let mut cmd = std::process::Command::new("tokio-console");
     #[cfg(windows)]
@@ -422,7 +399,6 @@ fn launch_tokio_console(bind: &str) -> Result<(), String> {
         })
 }
 
-#[cfg(feature = "tokio-console")]
 fn env_truthy(name: &str) -> bool {
     std::env::var(name).is_ok_and(|value| {
         let value = value.trim();
@@ -434,12 +410,10 @@ fn env_truthy(name: &str) -> bool {
     })
 }
 
-#[cfg(feature = "tokio-console")]
 struct ScopedEnv {
     previous: Vec<(String, Option<String>)>,
 }
 
-#[cfg(feature = "tokio-console")]
 impl ScopedEnv {
     fn apply(overrides: &[(String, String)]) -> Self {
         let previous = overrides
@@ -454,7 +428,6 @@ impl ScopedEnv {
     }
 }
 
-#[cfg(feature = "tokio-console")]
 impl Drop for ScopedEnv {
     fn drop(&mut self) {
         for (key, value) in self.previous.iter().rev() {
