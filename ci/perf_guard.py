@@ -36,6 +36,10 @@ CPP_SIBLING_REMAP_NO_FILE_SCENARIO = "Sibling-workspace no __FILE__, Warm"
 CPP_SIBLING_REMAP_WITH_FILE_SCENARIO = "Sibling-workspace with __FILE__, Warm"
 CPP_SIBLING_REMAP_NO_FILE_SCCACHE_THRESHOLD = 1.0
 CPP_COLD_SCCACHE_THRESHOLD = 0.9
+C_STATIC_LIBRARY_LINK_BENCHMARK = "c-static-library-link"
+C_STATIC_LIBRARY_LINK_COLD_SCENARIO = "Static archive, Cold"
+C_STATIC_LIBRARY_LINK_COLD_BARE_THRESHOLD = 0.75
+C_STATIC_LIBRARY_LINK_COLD_SCCACHE_THRESHOLD = 0.75
 RUST_BUILD_COLD_SCENARIO = "Build, Cold"
 RUST_BUILD_COLD_BARE_THRESHOLD = 0.4
 RUST_BUILD_COLD_SCCACHE_THRESHOLD = 0.6
@@ -257,6 +261,15 @@ def _comparison_threshold(
         if baseline == "bare":
             return RUST_WORKSPACE_LINK_COLD_BARE_THRESHOLD
         return RUST_WORKSPACE_LINK_COLD_SCCACHE_THRESHOLD
+    if (
+        row.get("language") == "c"
+        and row.get("benchmark") == C_STATIC_LIBRARY_LINK_BENCHMARK
+        and row.get("scenario") == C_STATIC_LIBRARY_LINK_COLD_SCENARIO
+        and row.get("mode") == "cold"
+    ):
+        if baseline == "bare":
+            return C_STATIC_LIBRARY_LINK_COLD_BARE_THRESHOLD
+        return C_STATIC_LIBRARY_LINK_COLD_SCCACHE_THRESHOLD
     if baseline == "bare":
         return bare_floor
     if (

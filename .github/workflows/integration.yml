@@ -76,6 +76,7 @@ jobs:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/integration
           SOLDR_CACHE_LIFECYCLE: command
           SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
+          SOLDR_TARGET_BLOCK_FREE_GB: "2"
         run: |
           set +e
           unset ZCCACHE_CACHE_DIR

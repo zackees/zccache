@@ -119,6 +119,59 @@ def test_default_cold_thresholds_allow_near_bare_misses():
     ]
 
 
+C_STATIC_LIBRARY_LINK_LOG = """
+## C Static-Library Link Benchmark: 50 .o inputs, 5 warm trials
+
+| Scenario | Bare ar | sccache | zccache | bare cache | sccache cache | zccache cache | vs sccache | vs Bare ar |
+|:---------|----------:|--------:|--------:|-----------:|--------------:|--------------:|-----------:|--------------:|
+| Static archive, Cold | 0.058s | 0.055s | 0.070s | 0 B | 0 B | 189.5 KiB | 1.3x slower | 1.2x slower |
+| Static archive, Warm | 0.056s | 0.056s | **0.001s** | 0 B | 0 B | 193.7 KiB | **56x faster** | **56x faster** |
+"""
+
+
+def test_c_static_library_link_cold_uses_dedicated_threshold_and_passes_baseline():
+    # The cold archive path is dominated by fixed daemon/hash overhead on a
+    # tiny ~60 ms `ar` run. Guard warm-cache speedups tightly, but use a
+    # scenario floor for cold mode so routine runner noise does not fail main.
+    report = perf_guard.evaluate_attempts(
+        [rows(C_STATIC_LIBRARY_LINK_LOG)],
+        languages=("c",),
+        require_coverage=False,
+    )
+
+    cold_statuses = [
+        status for status in report.statuses if status.scenario == "Static archive, Cold"
+    ]
+    assert {
+        (status.baseline, status.best_ratio, status.threshold) for status in cold_statuses
+    } == {
+        ("bare", 0.829, perf_guard.C_STATIC_LIBRARY_LINK_COLD_BARE_THRESHOLD),
+        ("sccache", 0.786, perf_guard.C_STATIC_LIBRARY_LINK_COLD_SCCACHE_THRESHOLD),
+    }
+    assert all(status.passed for status in cold_statuses), [
+        (s.baseline, s.best_ratio, s.threshold) for s in cold_statuses
+    ]
+
+
+def test_c_static_library_link_cold_regression_below_threshold_fails():
+    regressed = C_STATIC_LIBRARY_LINK_LOG.replace(
+        "| Static archive, Cold | 0.058s | 0.055s | 0.070s | 0 B | 0 B | 189.5 KiB | 1.3x slower | 1.2x slower |",
+        "| Static archive, Cold | 0.058s | 0.055s | 0.090s | 0 B | 0 B | 189.5 KiB | 1.6x slower | 1.6x slower |",
+    )
+    report = perf_guard.evaluate_attempts(
+        [rows(regressed)],
+        languages=("c",),
+        require_coverage=False,
+    )
+
+    failing_baselines = {
+        status.baseline
+        for status in report.statuses
+        if status.scenario == "Static archive, Cold" and not status.passed
+    }
+    assert failing_baselines == {"bare", "sccache"}
+
+
 def test_cold_floor_overrides_are_targeted():
     cpp_log = PASSING_LOG.replace(
         "| Single-file, Cold | 6.000s | 7.000s | 4.000s | 1.8x faster | 1.5x faster |",
