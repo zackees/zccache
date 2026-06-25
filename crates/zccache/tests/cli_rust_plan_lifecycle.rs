@@ -99,6 +99,8 @@ fn run_cargo_build(root: &Path, target_dir: &Path, verbose: bool) -> Output {
     let mut cmd = Command::new(cargo_bin());
     cmd.current_dir(root);
     cmd.env("CARGO_TERM_COLOR", "never");
+    cmd.env_remove("RUSTC_WRAPPER");
+    cmd.env_remove("RUSTC_WORKSPACE_WRAPPER");
     let target_dir = target_dir.to_string_lossy().to_string();
     cmd.args(["build", "--target-dir"]);
     cmd.arg(target_dir);
@@ -159,6 +161,13 @@ fn has_file_with_prefix(dir: &Path, prefix: &str, extension: &str) -> bool {
     })
 }
 
+fn has_rust_lib_artifact(dir: &Path, crate_name: &str) -> bool {
+    ["rlib", "rmeta"].into_iter().any(|extension| {
+        has_file_with_prefix(dir, &format!("lib{crate_name}-"), extension)
+            || has_file_with_prefix(dir, &format!("{crate_name}-"), extension)
+    })
+}
+
 fn has_dir_with_prefix(dir: &Path, prefix: &str) -> bool {
     let Ok(entries) = fs::read_dir(dir) else {
         return false;
@@ -172,6 +181,15 @@ fn has_dir_with_prefix(dir: &Path, prefix: &str) -> bool {
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.starts_with(prefix))
     })
+}
+
+fn cargo_profile_dir(target_dir: &Path, target_triple: &str) -> PathBuf {
+    let host_qualified = target_dir.join(target_triple).join("debug");
+    if host_qualified.exists() {
+        host_qualified
+    } else {
+        target_dir.join("debug")
+    }
 }
 
 fn write_workspace(root: &Path) {
@@ -729,19 +747,20 @@ fn rust_plan_lifecycle_keeps_path_dep_fresh_and_rebuilds_workspace_crate() {
     assert!(json_u64(&restore, "restored_file_count") > 0);
     assert!(json_u64(&restore, "restored_bytes") > 0);
 
-    let deps_dir = target_dir.join("debug/deps");
-    let fingerprint_dir = target_dir.join("debug/.fingerprint");
+    let profile_dir = cargo_profile_dir(&target_dir, &plan.target_triple);
+    let deps_dir = profile_dir.join("deps");
+    let fingerprint_dir = profile_dir.join(".fingerprint");
     assert!(
-        has_file_with_prefix(&deps_dir, "liblocal_dep-", "rlib"),
-        "restore should bring back the path dependency rlib"
+        has_rust_lib_artifact(&deps_dir, "local_dep"),
+        "restore should bring back the path dependency library artifact"
     );
     assert!(
         has_dir_with_prefix(&fingerprint_dir, "local_dep-"),
         "restore should bring back the path dependency fingerprint state"
     );
     assert!(
-        !has_file_with_prefix(&deps_dir, "libapp-", "rlib"),
-        "thin restore should not restore the workspace crate rlib"
+        !has_rust_lib_artifact(&deps_dir, "app"),
+        "thin restore should not restore the workspace crate library artifact"
     );
 
     write_file(
@@ -771,7 +790,7 @@ fn rust_plan_lifecycle_keeps_path_dep_fresh_and_rebuilds_workspace_crate() {
         "workspace crate should not stay fresh after source edit\n{rebuild_log}"
     );
     assert!(
-        has_file_with_prefix(&deps_dir, "libapp-", "rlib"),
+        has_rust_lib_artifact(&deps_dir, "app"),
         "rebuild should recreate the workspace crate rlib"
     );
 }

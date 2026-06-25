@@ -87,6 +87,16 @@ async fn compile(
     }
 }
 
+fn full_env_with_overrides(overrides: Vec<(String, String)>) -> Vec<(String, String)> {
+    let mut env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    env.remove("ZCCACHE_WORKTREE_ROOT");
+    env.remove("ZCCACHE_PATH_REMAP");
+    for (key, value) in overrides {
+        env.insert(key, value);
+    }
+    env.into_iter().collect()
+}
+
 /// Convenience harness: daemon + session + temp dir + rustc path.
 struct TestHarness {
     rustc: NormalizedPath,
@@ -174,6 +184,7 @@ impl TestHarness {
     ) -> (i32, bool) {
         let cwd = self.cwd();
         let rc = self.rc();
+        let env = env.map(full_env_with_overrides);
         compile(&mut self.client, &self.session_id, args, &cwd, &rc, env).await
     }
 

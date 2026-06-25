@@ -53,6 +53,21 @@ def main():
         cmd += ["--include-ignored"]
     elif integration:
         cmd += ["--ignored"]
+        cmd += [
+            "--skip",
+            "bench_",
+            "--skip",
+            "perf_",
+            "--skip",
+            "stress_",
+            "--skip",
+            "_stress",
+        ]
+    if not any(
+        arg == "--test-threads" or arg.startswith("--test-threads=")
+        for arg in test_args
+    ):
+        cmd += ["--test-threads=1"]
     cmd += test_args
 
     result = subprocess.run(

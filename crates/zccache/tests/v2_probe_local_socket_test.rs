@@ -140,7 +140,7 @@ fn probe_local_socket_does_not_hold_connection_past_drop() {
     });
     let start = std::time::Instant::now();
     for _ in 0..20 {
-        probe_local_socket(&endpoint).expect("probe ok");
+        probe_with_startup_retry(&endpoint).expect("probe ok");
     }
     let elapsed = start.elapsed();
     assert!(
@@ -149,4 +149,21 @@ fn probe_local_socket_does_not_hold_connection_past_drop() {
     );
     #[cfg(unix)]
     let _ = std::fs::remove_file(&endpoint);
+}
+
+fn probe_with_startup_retry(endpoint: &str) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        match probe_local_socket(endpoint) {
+            Ok(()) => return Ok(()),
+            Err(err)
+                if cfg!(windows)
+                    && err.kind() == std::io::ErrorKind::NotFound
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }

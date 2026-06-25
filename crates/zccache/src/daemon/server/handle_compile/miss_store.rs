@@ -182,22 +182,9 @@ fn store_rustc_outputs(
     }
     stats.artifact_meta_build_ns = t_artifact_meta_build.elapsed().as_nanos() as u64;
 
-    // Issue #632: move the rust miss persist OFF the daemon's
-    // response-return critical path. Insert a `PendingFile` artifact
-    // into the in-memory store immediately so the CLI gets its response
-    // as soon as the protocol layer can serialize it; spawn the
-    // hardlink + atomic-rename + index-writer work on the daemon's
-    // existing persist semaphore + blocking pool. A hit lookup that
-    // arrives during the persist window finds `PendingFile` and falls
-    // back to `output.path` (the rustc-output path under `target/`);
-    // once `persist_artifact_paths_with_stats` completes, both paths
-    // are the same inode and the cache_path fast path takes over.
-    //
-    // Mirrors the `store_single_output` tokio::spawn pattern (C/C++
-    // miss path), but uses on-disk source paths instead of in-memory
-    // bytes (rustc outputs can be tens of MB; reading them just to
-    // re-write them would re-introduce the foreground read this whole
-    // module is structured to avoid).
+    // Rustc outputs are already on disk under target/. Persist them before
+    // publishing the in-memory artifact so depgraph hits never point at a
+    // key whose payload files have not landed yet.
     let t_artifact_index_build = Instant::now();
     let meta = ArtifactIndex::new(
         output_names,
@@ -209,75 +196,44 @@ fn store_rustc_outputs(
     stats.artifact_index_build_ns = t_artifact_index_build.elapsed().as_nanos() as u64;
     stats.artifact_build_ns = t_artifact_build.elapsed().as_nanos() as u64;
 
-    let t_persist_enqueue = Instant::now();
-    let artifact_dir = state.artifact_dir.clone();
-    let key_hex = artifact_key_hex.to_string();
-    let persist_meta = meta.clone();
-    let persist_source_paths = source_paths.clone();
-    let sem = Arc::clone(&state.persist_semaphore);
-    let state_ref = Arc::clone(state_arc);
-    let key_for_warn = key_hex.clone();
-    // Issue #610, DD-025 condition 1: register a pending-write entry
-    // BEFORE spawning so concurrent lookups can observe that the
-    // disk-side publication is in flight and (optionally) wait briefly
-    // for it instead of triggering a recompile-on-race. Completion is
-    // signalled from inside the spawn on both success and failure
-    // paths — a failed persist wakes waiters so they re-attempt the
-    // lookup, miss, and recompile (the DD-025 failure-mode-is-miss
-    // invariant).
-    let completion_key = key_for_warn.clone();
-    let _pending = pending_writes::register(&state.pending_cache_writes, artifact_key_hex);
-    tokio::spawn(async move {
-        let _permit = sem.acquire().await.unwrap();
-        let written = tokio::task::spawn_blocking(move || {
-            let persist_result =
-                persist_artifact_paths_with_stats(&artifact_dir, &key_hex, &persist_source_paths);
-            (key_hex, persist_meta, persist_result)
-        })
-        .await;
-        match written {
-            Ok((key_hex, meta, Ok(_snapshot_stats))) => {
-                let _ = state_ref.index_writer_tx.send((key_hex, meta));
-            }
-            Ok((key_hex, _meta, Err(e))) => {
-                tracing::warn!(
-                    key = %key_hex,
-                    "failed to persist rustc artifact outputs: {e}"
-                );
-                // Drop the in-memory entry so subsequent hits don't
-                // chase a half-persisted artifact whose `source_path`
-                // fallback may already be stale (cargo clean / target
-                // wipe). The next compile re-misses cleanly.
-                state_ref.artifacts.remove(&key_hex);
-            }
-            Err(join_err) => {
-                tracing::warn!(
-                    key = %key_for_warn,
-                    "rustc artifact persist task aborted: {join_err}"
-                );
-                state_ref.artifacts.remove(&key_for_warn);
-            }
+    let t_persist_sync = Instant::now();
+    let sync_persist_result =
+        persist_artifact_paths_with_stats(&state.artifact_dir, artifact_key_hex, &source_paths);
+    stats.rust_snapshot_ns = t_persist_sync.elapsed().as_nanos() as u64;
+    let persisted = match sync_persist_result {
+        Ok(snapshot_stats) => {
+            stats.rust_snapshot_hardlink_count = snapshot_stats.hardlink_count;
+            stats.rust_snapshot_copy_count = snapshot_stats.copy_count;
+            stats.rust_snapshot_copy_bytes = snapshot_stats.copy_bytes;
+            let _ = state
+                .index_writer_tx
+                .send((artifact_key_hex.to_string(), meta.clone()));
+            true
         }
-        // Always complete the pending entry — failure paths wake any
-        // waiters so they re-attempt the lookup, miss, and recompile
-        // (the DD-025 failure-mode-is-miss invariant). JoinError also
-        // routes here because the registry must not retain entries
-        // past the spawn's lifetime.
-        pending_writes::complete(&state_ref.pending_cache_writes, &completion_key);
-    });
-    stats.persist_enqueue_ns = t_persist_enqueue.elapsed().as_nanos() as u64;
-    // The synchronous-snapshot stats fields are zero in async mode —
-    // the per-file hardlink/copy counters are now produced inside the
-    // spawned task and not observable on the request path. Leave them
-    // at default so RustMissProfile readers see "persist work moved
-    // off critical path" rather than stale per-call counts.
-    stats.rust_snapshot_ns = 0;
+        Err(e) => {
+            stats.rust_snapshot_error_count = stats.rust_snapshot_error_count.saturating_add(1);
+            tracing::warn!(
+                key = %artifact_key_hex,
+                "failed to synchronously persist rustc artifact outputs: {e}"
+            );
+            write_session_log(
+                &state.sessions,
+                sid,
+                &format!("[DIAG] rustc_persist_failed: key={artifact_key_hex} error={e}"),
+            );
+            false
+        }
+    };
+
+    stats.persist_enqueue_ns = 0;
 
     let t_artifact_insert_stats = Instant::now();
-    let t_artifact_memory_insert = Instant::now();
-    let cached = CachedArtifact::from_pending_payloads(meta, source_paths);
-    state.artifacts.insert(artifact_key_hex.to_string(), cached);
-    stats.artifact_memory_insert_ns = t_artifact_memory_insert.elapsed().as_nanos() as u64;
+    if persisted {
+        let t_artifact_memory_insert = Instant::now();
+        let cached = CachedArtifact::from_index(meta);
+        state.artifacts.insert(artifact_key_hex.to_string(), cached);
+        stats.artifact_memory_insert_ns = t_artifact_memory_insert.elapsed().as_nanos() as u64;
+    }
 
     let latency_ns = compile_start.elapsed().as_nanos() as u64;
     state.stats.record_miss(latency_ns, artifact_bytes);

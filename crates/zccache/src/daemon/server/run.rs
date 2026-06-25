@@ -150,7 +150,6 @@ impl DaemonServer {
             let state2 = Arc::clone(&self.state);
             tokio::spawn(async move {
                 let artifact_dir = state.artifact_dir.clone();
-                let artifacts = state.artifacts.clone();
                 let state_ref = Arc::clone(&state);
                 let loaded = tokio::task::spawn_blocking(move || {
                     // Load the in-memory index that `ArtifactStore::open` already
@@ -159,7 +158,9 @@ impl DaemonServer {
                     if !entries.is_empty() {
                         let count = entries.len();
                         for (key, meta) in entries {
-                            artifacts.insert(key, CachedArtifact::from_index(meta));
+                            state_ref
+                                .artifacts
+                                .insert(key, CachedArtifact::from_index(meta));
                         }
                         count
                     } else {
@@ -167,7 +168,11 @@ impl DaemonServer {
                         // and the current bincode blob; populate the live store
                         // from them so the first session after upgrade still has
                         // its warm cache.
-                        migrate_meta_files(&artifact_dir, &artifacts, &state_ref.artifact_store)
+                        migrate_meta_files(
+                            &artifact_dir,
+                            &state_ref.artifacts,
+                            &state_ref.artifact_store,
+                        )
                     }
                 })
                 .await

@@ -4,6 +4,30 @@ This document defines the design contract for embedding zccache inside host
 daemons such as soldr and fbuild. It is the design-phase output for
 zccache#903 and the implementation anchor for zccache#904 through zccache#910.
 
+## MVP Status
+
+Issue #903 defines the embedded-service direction and the MVP acceptance
+surface. In the current tree, the first public Rust API is exported as
+`zccache::embedded::ZccacheService`. It is an MVP boundary for host daemons to
+start, inspect, flush, and shut down an in-process zccache engine; soldr/fbuild
+integration and durable event emission are still follow-up work.
+
+The MVP boundary is:
+
+| Area | Status | Notes |
+|---|---|---|
+| Architecture contract | Landed | This document records lifecycle, ownership, audit, and shutdown expectations. |
+| Public Rust API | MVP landed | `zccache::embedded` exports `ZccacheService` and stable config/request/stats types for start, compile, stats, flush, and shutdown. |
+| Durable audit schema | MVP landed | `zccache::audit` exports serializable schema/config/event/finding/manifest types; hot-path emission and fixtures remain follow-up work. |
+| soldr embedded integration | Open | zccache#907 should switch soldr from wrapper/private-daemon use to direct embedded calls once the integration is ready. |
+| fbuild embedded integration | Open | zccache#908 follows the same service contract, adjusted for fbuild's daemon/runtime model. |
+| Vendored hotfix workflow | Open | zccache#909 documents how soldr/fbuild validate vendored zccache fixes before upstreaming. |
+| Operator audit commands | Open | zccache#910 owns `audit capabilities`, `audit run`, and post-run analysis UX. |
+
+Until soldr/fbuild integrations land, tests should stay focused on the public
+Rust service boundary and the durable audit schema, with broader host workload
+validation owned by the integration trackers.
+
 ## Problem
 
 zccache currently works well as a standalone drop-in compiler wrapper, but
@@ -85,8 +109,9 @@ exception.
 
 ## API Sketch
 
-The exact Rust API will be finalized in zccache#905, but the design should
-converge on this shape:
+The exact Rust API will be finalized in zccache#905. The design should
+converge on this shape, while avoiding any requirement that soldr/fbuild depend
+on daemon IPC framing types:
 
 ```rust
 pub struct ZccacheService {
@@ -141,8 +166,24 @@ impl ZccacheService {
 }
 ```
 
-The API should avoid exposing daemon IPC framing types as the primary embedded
-contract. Process modes can be adapters over the same engine.
+### MVP API Acceptance
+
+The first landed API should be small enough for host daemons to validate
+without a real compiler invocation:
+
+- `ZccacheService::start(config)` creates an isolated in-process service rooted
+  under the host-provided cache directory.
+- `stats()` returns a service-level snapshot before any compile request.
+- `flush()` is callable before host audit/report generation.
+- `shutdown(ShutdownMode::Graceful)` releases tasks and reports whether any
+  work was dropped or left unflushed.
+- Host identity and audit configuration are required at construction time, even
+  if early implementations accept a minimal/no-op audit sink.
+
+Compiler execution can remain out of the first source-level test if the compile
+request API or toolchain adapter is still moving. The narrow first test should
+only create a temporary cache root, start `ZccacheService`, query stats, flush,
+and shut down.
 
 ## Lifecycle
 
@@ -214,23 +255,39 @@ events inside the current `tracing` span.
 
 ### Event Shape
 
-The concrete schema belongs to zccache#906. The intended base shape is:
+The concrete Rust schema lives in `crates/zccache/src/audit.rs`. The durable
+event stream uses schema `soldr.audit.v1` and `schema_version: 1`. The base
+shape is:
 
 ```json
 {
   "ts": "2026-06-23T12:00:00.123Z",
   "schema": "soldr.audit.v1",
+  "schema_version": 1,
+  "event_id": "...",
   "run_id": "...",
+  "build_id": "...",
   "trace_id": "...",
   "span_id": "...",
   "parent_span_id": "...",
+  "command_id": "...",
+  "compile_id": "...",
+  "session_id": "...",
   "category": "zccache.compile",
   "event": "compile.finished",
   "level": "info",
+  "mode": "normal",
   "duration_ns": 123456789,
-  "fields": {}
+  "fields": {},
+  "evidence_ids": []
 }
 ```
+
+`build_id`, `command_id`, `compile_id`, `session_id`, `parent_span_id`,
+`duration_ns`, `fields`, and `evidence_ids` are optional or empty when they do
+not apply. Identifiers are strings so hosts can use UUIDs, ULIDs,
+content-addressed IDs, or trace-context-compatible IDs without zccache owning a
+global ID format.
 
 ### Event Categories
 
@@ -366,6 +423,13 @@ An audited run should produce a manifest like:
 
 ```json
 {
+  "schema": "soldr.audit.v1",
+  "schema_version": 1,
+  "run_id": "...",
+  "build_id": "...",
+  "mode": "normal",
+  "started_at": "2026-06-23T12:00:00.000Z",
+  "finished_at": "2026-06-23T12:00:42.000Z",
   "summary": "summary.json",
   "events": "audit.jsonl",
   "zccache_journal": "zccache-journal.jsonl",
@@ -390,6 +454,7 @@ Agent/operator recommendations should be machine-readable:
   "severity": "medium",
   "confidence": 0.82,
   "evidence_event_ids": ["..."],
+  "evidence_artifact_ids": [],
   "estimated_impact": {
     "wall_time_ms": 1200,
     "scope": "this run"

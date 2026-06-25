@@ -70,6 +70,7 @@ pub(super) async fn handle_session_start(
     };
 
     let session_id = state.sessions.create(session_config);
+    state.ended_sessions.remove(&session_id);
     state.session_worktree_roots.insert(
         session_id,
         SessionWorktreeRoot {
@@ -83,7 +84,10 @@ pub(super) async fn handle_session_start(
     // is visible to operators reading `last-session.log`. Issue #320.
     {
         let warning_opt = {
-            let guard = state.depgraph_load_warning.lock().await;
+            let guard = state
+                .depgraph_load_warning
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             guard.clone()
         };
         if let Some(warning) = warning_opt {

@@ -38,6 +38,8 @@ fn find_cli_binary() -> NormalizedPath {
     BUILD_DEBUG_CLI.call_once(|| {
         let status = std::process::Command::new("cargo")
             .args(["build", "-p", "zccache-cli"])
+            .env_remove("RUSTC_WRAPPER")
+            .env_remove("RUSTC_WORKSPACE_WRAPPER")
             .status()
             .expect("failed to run cargo build");
         assert!(status.success(), "cargo build -p zccache-cli failed");
@@ -67,6 +69,7 @@ where
 
 async fn start_daemon(endpoint: &str) -> (JoinHandle<()>, Arc<Notify>) {
     let mut server = DaemonServer::bind(endpoint).unwrap();
+    server.artifact_store_loader().load_and_install();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
         server.run(0).await.unwrap();
@@ -406,37 +409,51 @@ async fn ninja_persistent_artifacts_survive_restart() {
         assert!(!cached, "{name}: cold compile should be a miss");
     }
 
-    // Check that .meta files were written to the persistent artifact dir
-    let artifact_dir = zccache::core::config::default_cache_dir().join("artifacts");
-    let meta_count_before = std::fs::read_dir(&artifact_dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("meta"))
-                .count()
-        })
-        .unwrap_or(0);
-    eprintln!("Before restart: {meta_count_before} .meta files on disk");
+    let status_before_restart = get_status(&endpoint).await;
     assert!(
-        meta_count_before > 0,
-        "should have .meta sidecar files on disk"
+        status_before_restart.artifact_count > 0,
+        "cold build should populate the live artifact index"
     );
 
     // ── Stop daemon ─────────────────────────────────────────────────
     shutdown.notify_one();
     server_handle.await.unwrap();
 
+    let index_path = zccache::core::config::index_path_from_cache_dir(
+        &zccache::core::config::default_cache_dir(),
+    );
+    let index_size = std::fs::metadata(&index_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    let persisted_artifacts = zccache::artifact::ArtifactStore::open(&index_path)
+        .map(|store| store.len())
+        .unwrap_or(0);
+    eprintln!(
+        "Before restart: artifact index {} has {index_size} bytes and {persisted_artifacts} rows",
+        index_path.display()
+    );
+    assert!(index_size > 0, "graceful shutdown should persist index.bin");
+    assert!(
+        persisted_artifacts > 0,
+        "graceful shutdown should persist artifact index rows"
+    );
+
     // ── Restart daemon on same endpoint ─────────────────────────────
     let (server_handle2, shutdown2) = start_daemon(&endpoint).await;
 
-    let status2 = get_status(&endpoint).await;
+    let mut status2 = get_status(&endpoint).await;
+    let restore_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while status2.artifact_count == 0 && std::time::Instant::now() < restore_deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        status2 = get_status(&endpoint).await;
+    }
     eprintln!(
         "After restart: {} artifacts restored",
         status2.artifact_count
     );
     assert!(
         status2.artifact_count > 0,
-        "daemon should restore artifacts from .meta files on restart"
+        "daemon should restore artifacts from index.bin on restart"
     );
 
     // ── Rebuild after restart ───────────────────────────────────────

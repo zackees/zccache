@@ -336,11 +336,6 @@ impl DepGraph {
                 return CacheVerdict::HeadersChanged { changed: drifted };
             }
 
-            // No drift detected, but the stored artifact key did not match.
-            // If the key was cleared because the artifact store could not
-            // serve the payload (#799), do not recreate a depgraph-only hit.
-            // The miss path must recompile and publish a real artifact before
-            // this context can hit again.
             self.misses.fetch_add(1, Ordering::Relaxed);
             CacheVerdict::Cold
         } else {
@@ -556,11 +551,6 @@ impl DepGraph {
                 );
             }
 
-            // No drift detected, but the stored artifact key did not match.
-            // If the key was cleared because the artifact store could not
-            // serve the payload (#799), do not recreate a depgraph-only hit.
-            // The miss path must recompile and publish a real artifact before
-            // this context can hit again.
             self.misses.fetch_add(1, Ordering::Relaxed);
             (
                 CacheVerdict::Cold,

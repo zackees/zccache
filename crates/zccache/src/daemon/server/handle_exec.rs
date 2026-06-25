@@ -740,15 +740,6 @@ async fn try_exec_cache_hit(
                 Ok(b) => Arc::new(b),
                 Err(_) => Arc::new(Vec::new()),
             },
-            // PendingFile is produced by the rust miss path (issue #632)
-            // and shouldn't reach the generic exec route, but keep the
-            // match exhaustive: try the source path the way `File` would.
-            CachedPayload::PendingFile { source_path } => {
-                match std::fs::read(source_path.as_path()) {
-                    Ok(b) => Arc::new(b),
-                    Err(_) => Arc::new(Vec::new()),
-                }
-            }
         };
         response_outputs.push(ArtifactOutput {
             name: abs.to_string_lossy().into_owned(),

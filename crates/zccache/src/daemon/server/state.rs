@@ -108,6 +108,12 @@ pub(super) struct SharedState {
     pub(super) request_cache: DashMap<ContentHash, RequestCacheEntry>,
     /// Session-level worktree-root cache resolved once at SessionStart.
     pub(super) session_worktree_roots: DashMap<SessionId, SessionWorktreeRoot>,
+    /// Session IDs that were explicitly ended in this daemon process.
+    ///
+    /// A never-seen UUID is allowed to compile for wrapper recovery after a
+    /// daemon restart, but an ID that this process already ended should not be
+    /// accepted again.
+    pub(super) ended_sessions: DashMap<SessionId, ()>,
     /// Cross-root request-cache validation: (request fingerprint, root) -> last
     /// verified artifact and journal clock. This lets repeated sibling hits
     /// validate with journal checks instead of re-hashing every input.
@@ -238,7 +244,7 @@ pub(super) struct SharedState {
     /// mismatch, corrupt header, or unexpected I/O error). The string is
     /// emitted once per session into the per-session log (`last-session.log`)
     /// at `SessionStart` time so the cold fallback is never silent. Issue #320.
-    pub(super) depgraph_load_warning: Mutex<Option<String>>,
+    pub(super) depgraph_load_warning: StdMutex<Option<String>>,
     /// In-flight `Request::GenericToolExec` coalescing map (issue #272).
     ///
     /// Concurrent callers with the same exec cache key share a `Notify` here:

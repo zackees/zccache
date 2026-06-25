@@ -300,7 +300,7 @@ pub(super) struct DepgraphHitProbe<'a> {
     pub(super) depgraph_check_ns: u64,
 }
 
-pub(super) fn try_depgraph_cached_hit(probe: DepgraphHitProbe<'_>) -> Option<Response> {
+pub(super) async fn try_depgraph_cached_hit(probe: DepgraphHitProbe<'_>) -> Option<Response> {
     let DepgraphHitProbe {
         state,
         sid,
@@ -340,6 +340,19 @@ pub(super) fn try_depgraph_cached_hit(probe: DepgraphHitProbe<'_>) -> Option<Res
     let input_paths = request_cache_input_paths(state, &context_key, source_path, ctx);
     let current_depfile_dest: Option<NormalizedPath> =
         dep_flags.and_then(|flags| user_depfile_destination(flags, output_path.as_path()));
+
+    // Rustc miss storage publishes a pending in-memory artifact immediately,
+    // then hardlinks/copies the output payloads to the artifact directory on a
+    // background task. If the build removes its just-produced output before
+    // that task completes, a depgraph hit can otherwise fail to materialize
+    // and unnecessarily recompile. The fast-hit path has the same guard.
+    pending_writes::await_pending(
+        &state.pending_cache_writes,
+        artifact_key_hex,
+        pending_writes::PENDING_PAYLOAD_WAIT_TIMEOUT,
+    )
+    .await;
+
     let response = materialize_cached_compile_hit(CachedHitMaterializeRequest {
         state,
         sid,

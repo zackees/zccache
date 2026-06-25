@@ -97,5 +97,6 @@ unrecognized variants the same as `unknown`.
 ## Related
 
 - Issue [#322](https://github.com/zackees/zccache/issues/322) — the consumer-side need that motivated this schema.
+- `crates/zccache/src/audit.rs` — durable embedded audit schema for causal events, findings, and run manifests. The audit event stream may reference this compile journal as evidence via event IDs or artifact paths, but the compile journal remains the cache-specific replay record.
 - `docs/architecture/runtime.md` — where the journal sits in the daemon lifecycle.
 - `docs/DESIGN_DECISIONS.md` — DD-018 on protocol version bumps and IPC roundtrips (no-roundtrip rule applies to live IPC, not to journal records).

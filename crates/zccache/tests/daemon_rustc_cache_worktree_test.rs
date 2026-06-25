@@ -58,6 +58,7 @@ async fn compile_with_env(
     cwd: &std::path::Path,
     env: Option<Vec<(String, String)>>,
 ) -> (i32, bool) {
+    let env = env.map(full_env_with_overrides);
     client
         .send(&Request::Compile {
             session_id: session_id.to_string(),
@@ -77,6 +78,16 @@ async fn compile_with_env(
         Some(Response::Error { message }) => panic!("compile error: {message}"),
         other => panic!("unexpected response: {other:?}"),
     }
+}
+
+fn full_env_with_overrides(overrides: Vec<(String, String)>) -> Vec<(String, String)> {
+    let mut env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    env.remove("ZCCACHE_WORKTREE_ROOT");
+    env.remove("ZCCACHE_PATH_REMAP");
+    for (key, value) in overrides {
+        env.insert(key, value);
+    }
+    env.into_iter().collect()
 }
 
 fn path_remap_auto_env() -> Vec<(String, String)> {

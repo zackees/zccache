@@ -238,6 +238,7 @@ fn adversarial_shared_header_many_contexts() {
     }
 
     // Change shared.h — all 100 contexts should detect it.
+    std::fs::write(&shared_h, "#define SHARED 2\n").unwrap();
     let stale: HashSet<String> = [normalize_for_key(shared_h.as_path())].into();
     let mut changed_count = 0;
     for key in &keys {

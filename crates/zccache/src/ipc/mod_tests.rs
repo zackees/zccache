@@ -117,6 +117,14 @@ fn test_daemon_status(endpoint: &str) -> crate::protocol::DaemonStatus {
 
 #[tokio::test]
 async fn daemon_control_roundtrip_auto_prefers_prost_for_status() {
+    use super::broker::RUNNING_PROCESS_FAKE_BACKEND_ENV;
+    use super::test_env::EnvVarGuard;
+
+    let _env = EnvVarGuard::set_all(&[
+        (RUNNING_PROCESS_DISABLE_ENV, Some("1".to_string())),
+        (RUNNING_PROCESS_FAKE_BACKEND_ENV, None),
+        (ZCCACHE_BROKER_CONNECT_ENV, None),
+    ]);
     let endpoint = unique_test_endpoint();
     let mut listener = IpcListener::bind(&endpoint).unwrap();
     let expected_endpoint = endpoint.clone();
@@ -165,6 +173,14 @@ async fn daemon_control_roundtrip_auto_prefers_prost_for_status() {
 
 #[tokio::test]
 async fn daemon_control_roundtrip_auto_prefers_prost_for_clear() {
+    use super::broker::RUNNING_PROCESS_FAKE_BACKEND_ENV;
+    use super::test_env::EnvVarGuard;
+
+    let _env = EnvVarGuard::set_all(&[
+        (RUNNING_PROCESS_DISABLE_ENV, Some("1".to_string())),
+        (RUNNING_PROCESS_FAKE_BACKEND_ENV, None),
+        (ZCCACHE_BROKER_CONNECT_ENV, None),
+    ]);
     let endpoint = unique_test_endpoint();
     let mut listener = IpcListener::bind(&endpoint).unwrap();
 
@@ -227,6 +243,14 @@ async fn daemon_control_roundtrip_auto_prefers_prost_for_clear() {
 
 #[tokio::test]
 async fn daemon_control_roundtrip_bincode_selection_stays_v15_for_status() {
+    use super::broker::RUNNING_PROCESS_FAKE_BACKEND_ENV;
+    use super::test_env::EnvVarGuard;
+
+    let _env = EnvVarGuard::set_all(&[
+        (RUNNING_PROCESS_DISABLE_ENV, Some("1".to_string())),
+        (RUNNING_PROCESS_FAKE_BACKEND_ENV, None),
+        (ZCCACHE_BROKER_CONNECT_ENV, None),
+    ]);
     let endpoint = unique_test_endpoint();
     let mut listener = IpcListener::bind(&endpoint).unwrap();
     let expected_endpoint = endpoint.clone();

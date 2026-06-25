@@ -15,8 +15,11 @@ static BUILD_CLI_ONCE: Once = Once::new();
 
 fn ensure_cli_built() {
     BUILD_CLI_ONCE.call_once(|| {
-        let status = std::process::Command::new("cargo")
+        let mut cmd = std::process::Command::new("cargo");
+        let status = cmd
             .args(["build", "-p", "zccache-cli"])
+            .env_remove("RUSTC_WRAPPER")
+            .env_remove("RUSTC_WORKSPACE_WRAPPER")
             .status()
             .expect("failed to run cargo build");
         assert!(status.success(), "cargo build -p zccache-cli failed");
@@ -69,6 +72,7 @@ async fn cli_binary_session_round_trip() {
         Some(p) => p,
         None => return,
     };
+    let cli_binary = cli_binary_path();
     zccache::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("cli_test.cpp");
@@ -80,7 +84,6 @@ async fn cli_binary_session_round_trip() {
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
 
-        let cli_binary = cli_binary_path();
         assert!(
             cli_binary.exists(),
             "zccache binary not found at {}",
@@ -179,6 +182,7 @@ async fn cli_binary_ephemeral_session() {
         Some(p) => p,
         None => return,
     };
+    let cli_binary = cli_binary_path();
     zccache::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("ephemeral.cpp");
@@ -188,8 +192,6 @@ async fn cli_binary_ephemeral_session() {
         std::fs::write(&src, "int main() { return 0; }\n").unwrap();
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-
-        let cli_binary = cli_binary_path();
 
         let clang_str = clang.to_string_lossy().into_owned();
         let src_str = src.to_string_lossy().into_owned();
@@ -246,6 +248,7 @@ async fn cli_binary_compiler_override_cpp_session_c_file() {
         Some(p) => p,
         None => return,
     };
+    let cli_binary = cli_binary_path();
     zccache::test_support::test_timeout(async move {
         // Derive clang (C compiler) from clang++ path
         let clang =
@@ -275,8 +278,6 @@ async fn cli_binary_compiler_override_cpp_session_c_file() {
         .unwrap();
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
-
-        let cli_binary = cli_binary_path();
 
         // Start session (compiler-agnostic now)
         let output = std::process::Command::new(&cli_binary)

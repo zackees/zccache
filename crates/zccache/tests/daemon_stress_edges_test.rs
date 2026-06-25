@@ -604,7 +604,7 @@ async fn adversarial_rapid_recompile_cycle() {
         1,
         "expected exactly 1 miss"
     );
-    let hit_count = log_text.matches("[HIT]").count() + log_text.matches("[HIT_FAST]").count();
+    let hit_count = log_text.matches("[HIT").count();
     assert_eq!(hit_count, 20, "expected exactly 20 hits");
     shutdown.notify_one();
     server_handle.await.unwrap();

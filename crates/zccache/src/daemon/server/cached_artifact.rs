@@ -14,13 +14,6 @@ pub(crate) enum CachedPayload {
     Bytes(Arc<Vec<u8>>),
     /// Payload bytes are available in a cache file.
     File(NormalizedPath),
-    /// Payload's cache file is still being written by the async persist
-    /// spawned at miss-time. Hit handlers should serve from `source_path`
-    /// (the rustc-output path under `target/` that hardlinks identically
-    /// to the cache file once persist completes) when the cache file
-    /// doesn't yet exist. See `store_rustc_outputs` in `miss_store.rs`
-    /// (issue #632) for the producer side.
-    PendingFile { source_path: NormalizedPath },
 }
 
 #[derive(Clone)]
@@ -87,32 +80,6 @@ impl CachedArtifact {
                 payloads
                     .into_iter()
                     .map(CachedPayload::File)
-                    .collect::<Vec<_>>(),
-            )),
-            last_used: std::time::Instant::now(),
-        }
-    }
-
-    /// Create from index metadata and rustc-output source paths that an
-    /// async persist task is in the process of hardlinking into the cache
-    /// dir. Hits will fall back to the source path until the cache file
-    /// shows up on disk (after which both paths are the same inode and
-    /// the fast path takes over). See `store_rustc_outputs` for the
-    /// producer side and issue #632 for the design rationale.
-    pub(super) fn from_pending_payloads(
-        meta: ArtifactIndex,
-        source_paths: Vec<NormalizedPath>,
-    ) -> Self {
-        let stdout = Arc::clone(&meta.stdout);
-        let stderr = Arc::clone(&meta.stderr);
-        Self {
-            meta,
-            stdout,
-            stderr,
-            payloads: Some(Arc::from(
-                source_paths
-                    .into_iter()
-                    .map(|source_path| CachedPayload::PendingFile { source_path })
                     .collect::<Vec<_>>(),
             )),
             last_used: std::time::Instant::now(),

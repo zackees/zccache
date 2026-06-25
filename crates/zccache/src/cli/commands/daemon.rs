@@ -151,7 +151,7 @@ pub(crate) async fn stop_stale_daemon(endpoint: &str) -> Option<u32> {
     let _ = crate::ipc::daemon_control_roundtrip(
         endpoint,
         crate::ipc::DaemonControlRequest::Shutdown,
-        None,
+        Some(status_probe_timeout()),
     )
     .await;
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -449,7 +449,8 @@ pub(crate) async fn cmd_stop(endpoint: &str) -> ExitCode {
     {
         Ok(response) => response,
         Err(e) if crate::cli::client::is_daemon_unreachable_err(&e) => {
-            let Some(pid) = crate::ipc::check_running_daemon() else {
+            let raw_lock_pid = crate::ipc::read_lock_file_pid();
+            let Some(pid) = crate::ipc::check_running_daemon().or(raw_lock_pid) else {
                 eprintln!("daemon not running at {endpoint}");
                 // No daemon — but the index file might still be there from a
                 // crashed prior run. Probe once so callers (CI tar) can rely

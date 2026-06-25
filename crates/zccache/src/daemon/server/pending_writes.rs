@@ -69,6 +69,13 @@ use tokio::sync::Notify;
 /// fall through to miss immediately.
 pub(super) const PENDING_WAIT_TIMEOUT: Duration = Duration::from_millis(5);
 
+/// Longer wait used when the depgraph has already proven a cache hit and the
+/// only remaining race is rustc payload publication. This stays within the
+/// documented pending-entry blast radius while avoiding an immediate
+/// recompile if the build removes its just-produced output before the async
+/// persist task has linked/copied the cache payloads.
+pub(super) const PENDING_PAYLOAD_WAIT_TIMEOUT: Duration = Duration::from_millis(50);
+
 /// Informational upper bound on how long a pending entry is expected to
 /// live. Used by adversarial tests to flag leaked entries — not enforced
 /// at runtime (the entry is cleaned up by the spawned task's
@@ -109,7 +116,7 @@ pub(super) fn complete(pending: &DashMap<String, Arc<Notify>>, key: &str) {
 }
 
 /// If a pending cache-write exists for `key`, wait on its `Notify` up
-/// to `timeout` (capped by [`PENDING_WAIT_TIMEOUT`]). Returns `true`
+/// to `timeout` (capped by [`PENDING_PAYLOAD_WAIT_TIMEOUT`]). Returns `true`
 /// if the caller observed (and waited on) a pending entry, `false` if
 /// no pending entry existed.
 ///
@@ -130,9 +137,9 @@ pub(super) async fn await_pending(
     let Some(notify) = pending.get(key).map(|entry| Arc::clone(&entry)) else {
         return false;
     };
-    // Cap the caller's requested timeout at PENDING_WAIT_TIMEOUT so a
-    // mis-specified caller can't extend the registry's blast radius.
-    let capped = timeout.min(PENDING_WAIT_TIMEOUT);
+    // Cap the caller's requested timeout at the pending-entry blast radius so
+    // a mis-specified caller can't extend the registry's scope indefinitely.
+    let capped = timeout.min(PENDING_PAYLOAD_WAIT_TIMEOUT);
     if capped.is_zero() {
         return true;
     }
@@ -242,7 +249,7 @@ mod tests {
         );
     }
 
-    /// Caller-supplied timeouts are capped at `PENDING_WAIT_TIMEOUT` so
+    /// Caller-supplied timeouts are capped at `PENDING_PAYLOAD_WAIT_TIMEOUT` so
     /// a buggy caller can't blow the DD-025 blast-radius bound.
     #[tokio::test]
     async fn await_pending_caps_caller_timeout_at_the_blast_radius_bound() {

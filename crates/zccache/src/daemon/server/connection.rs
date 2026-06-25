@@ -294,34 +294,40 @@ pub(super) async fn handle_connection(
                 stdin,
             } => {
                 let parsed_session_id = session_id.parse::<SessionId>().ok();
-                let env = match parsed_session_id {
-                    Some(sid) => merge_session_private_env(&state.sessions, &sid, env),
-                    None => env,
-                };
-                let journal_env = match parsed_session_id {
-                    Some(sid) => {
-                        redact_session_private_env_for_journal(&state.sessions, &sid, &env)
+                if let Some(sid) = parsed_session_id {
+                    if state.ended_sessions.contains_key(&sid) {
+                        (
+                            Response::Error {
+                                message: format!("unknown session: {session_id}"),
+                            },
+                            None,
+                        )
+                    } else {
+                        compile_response_for_session(
+                            &state,
+                            parsed_session_id,
+                            session_id,
+                            args,
+                            cwd,
+                            compiler,
+                            env,
+                            stdin,
+                        )
+                        .await
                     }
-                    None => env.clone(),
-                };
-                let ctx = JournalContext {
-                    compiler: compiler.to_string_lossy().into_owned(),
-                    args,
-                    cwd: cwd.to_string_lossy().into_owned(),
-                    env: journal_env,
-                    session_id: Some(session_id),
-                };
-                let resp = handle_compile(
-                    &state,
-                    ctx.session_id.as_deref().unwrap(),
-                    &ctx.args,
-                    &cwd,
-                    &compiler,
-                    env,
-                    stdin,
-                )
-                .await;
-                (resp, Some(ctx))
+                } else {
+                    compile_response_for_session(
+                        &state,
+                        parsed_session_id,
+                        session_id,
+                        args,
+                        cwd,
+                        compiler,
+                        env,
+                        stdin,
+                    )
+                    .await
+                }
             }
             Request::CompileEphemeral {
                 client_pid,
@@ -395,6 +401,7 @@ pub(super) async fn handle_connection(
                     Ok(sid) => {
                         state.session_worktree_roots.remove(&sid);
                         if let Some(session) = state.sessions.end(&sid) {
+                            state.ended_sessions.insert(sid, ());
                             if !session.owner_pids.is_empty() {
                                 state
                                     .private_daemon
@@ -668,6 +675,45 @@ pub(super) async fn handle_connection(
 
         send_result?;
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn compile_response_for_session(
+    state: &Arc<SharedState>,
+    parsed_session_id: Option<SessionId>,
+    session_id: String,
+    args: Vec<String>,
+    cwd: NormalizedPath,
+    compiler: NormalizedPath,
+    env: Option<Vec<(String, String)>>,
+    stdin: Vec<u8>,
+) -> (Response, Option<JournalContext>) {
+    let env = match parsed_session_id {
+        Some(sid) => merge_session_private_env(&state.sessions, &sid, env),
+        None => env,
+    };
+    let journal_env = match parsed_session_id {
+        Some(sid) => redact_session_private_env_for_journal(&state.sessions, &sid, &env),
+        None => env.clone(),
+    };
+    let ctx = JournalContext {
+        compiler: compiler.to_string_lossy().into_owned(),
+        args,
+        cwd: cwd.to_string_lossy().into_owned(),
+        env: journal_env,
+        session_id: Some(session_id),
+    };
+    let resp = handle_compile(
+        state,
+        ctx.session_id.as_deref().unwrap(),
+        &ctx.args,
+        &cwd,
+        &compiler,
+        env,
+        stdin,
+    )
+    .await;
+    (resp, Some(ctx))
 }
 
 async fn send_response_for_wire(

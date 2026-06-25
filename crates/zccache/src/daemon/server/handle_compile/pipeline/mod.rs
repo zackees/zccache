@@ -473,7 +473,9 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 hash_source_ns,
                 hash_headers_ns,
                 depgraph_check_ns,
-            }) {
+            })
+            .await
+            {
                 record_session_stat(&state.sessions, &sid, |t| {
                     t.record_depgraph_hit_artifact_hit();
                 });
@@ -526,7 +528,9 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 hash_source_ns,
                 hash_headers_ns,
                 depgraph_check_ns,
-            }) {
+            })
+            .await
+            {
                 return response;
             }
             record_session_stat(&state.sessions, &sid, |t| {

@@ -146,7 +146,9 @@ fn n_serial_wrappers_share_one_daemon() {
     // gets its `died-shutdown` line and we know the file is quiesced.
     stop_daemon(&zccache, cache_dir.path());
 
-    let logs_dir = cache_dir.path().join("logs");
+    let effective_cache_dir =
+        zccache::core::config::effective_cache_root_from_top_level(&cache_dir.path().into());
+    let logs_dir = zccache::core::config::log_dir_from_cache_dir(&effective_cache_dir);
     assert!(
         logs_dir.exists(),
         "logs/ directory must exist after running the wrapper"

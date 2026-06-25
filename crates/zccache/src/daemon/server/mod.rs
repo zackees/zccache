@@ -21,7 +21,7 @@ use dashmap::DashMap;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify};
 
@@ -74,6 +74,42 @@ pub struct DaemonServer {
     state: Arc<SharedState>,
     /// Receiver for the background index-writer task. Taken in `run()`.
     index_writer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<(String, ArtifactIndex)>>,
+}
+
+/// In-process daemon engine used by the public embedded API.
+///
+/// This owns the same [`SharedState`] as the IPC daemon without binding or
+/// accepting an [`IpcListener`].
+pub(crate) struct EmbeddedDaemon {
+    state: Arc<SharedState>,
+    index_writer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<(String, ArtifactIndex)>>,
+    index_writer_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+pub(crate) struct EmbeddedCompileRequest {
+    pub(crate) compiler: PathBuf,
+    pub(crate) args: Vec<String>,
+    pub(crate) cwd: PathBuf,
+    pub(crate) env: Option<Vec<(String, String)>>,
+    pub(crate) stdin: Vec<u8>,
+}
+
+pub(crate) struct EmbeddedCompileResult {
+    pub(crate) exit_code: i32,
+    pub(crate) stdout: Arc<Vec<u8>>,
+    pub(crate) stderr: Arc<Vec<u8>>,
+    pub(crate) cached: bool,
+}
+
+pub(crate) struct EmbeddedStatsSnapshot {
+    pub(crate) status: crate::protocol::DaemonStatus,
+    pub(crate) phase_profile: crate::protocol::PhaseProfileSummary,
+}
+
+pub(crate) struct EmbeddedFlushReport {
+    pub(crate) pending_writes_drained: bool,
+    pub(crate) artifact_entries: u64,
+    pub(crate) metadata_entries: u64,
 }
 
 mod cache_trim;
