@@ -3,8 +3,9 @@
 //! The daemon always links the console subscriber, but it must only start the
 //! console server when explicitly launched with the tokio-console daemon
 //! profile. This test snapshots that process state with a real daemon process:
-//! no TCP listener in normal mode, TCP listener plus profile log in console
-//! mode.
+//! no TCP listener in normal mode, then either a TCP listener plus profile log
+//! in console mode or a clean unavailable warning when the binary was not built
+//! with Tokio's `tokio_unstable` cfg.
 
 use serde_json::json;
 use std::io;
@@ -57,35 +58,51 @@ fn tokio_console_is_compiled_in_but_dormant_until_profile_start() {
         "active",
         Some(active_bind.to_string()),
     );
-    wait_for_log(
+    wait_for_any_log(
         &active.log_file,
-        "tokio-console daemon profile enabled",
+        &[
+            "tokio-console daemon profile enabled",
+            "tokio-console daemon profile requested but unavailable",
+        ],
         Duration::from_secs(10),
     )
-    .expect("profile daemon should log tokio-console activation");
+    .expect("profile daemon should log tokio-console activation or unavailable warning");
 
     let active_tcp_listening = wait_for_tcp(&active_bind, Duration::from_secs(10));
     let active_log = read_log(&active.log_file);
+    let active_enabled = active_log.contains("tokio-console daemon profile enabled");
+    let active_unavailable =
+        active_log.contains("tokio-console daemon profile requested but unavailable");
     let active_snapshot = json!({
         "mode": "active",
         "daemon_pid": active.child.id(),
         "tokio_console_bind": active_bind.to_string(),
         "tokio_console_tcp_listening": active_tcp_listening,
-        "profile_log_present": active_log.contains("tokio-console daemon profile enabled"),
+        "profile_log_present": active_enabled,
+        "profile_unavailable_log_present": active_unavailable,
     });
     println!("tokio-console active snapshot: {active_snapshot}");
 
     active.stop();
 
     assert!(
-        active_tcp_listening,
-        "tokio-console profile did not open listener at {active_bind}; \
+        active_enabled || active_unavailable,
+        "tokio-console profile logged neither activation nor unavailable warning; \
          snapshot={active_snapshot}"
     );
-    assert!(
-        active_log.contains("tokio-console daemon profile enabled"),
-        "tokio-console profile did not log activation; snapshot={active_snapshot}"
-    );
+    if active_enabled {
+        assert!(
+            active_tcp_listening,
+            "tokio-console profile did not open listener at {active_bind}; \
+             snapshot={active_snapshot}"
+        );
+    } else {
+        assert!(
+            !active_tcp_listening,
+            "tokio-console profile reported unavailable but opened listener at {active_bind}; \
+             snapshot={active_snapshot}"
+        );
+    }
 }
 
 struct DaemonProcess {
@@ -183,6 +200,24 @@ fn wait_for_log(log_file: &Path, needle: &str, timeout: Duration) -> io::Result<
             io::ErrorKind::TimedOut,
             format!(
                 "timed out waiting for log line {needle:?}; current log: {}",
+                read_log(log_file)
+            ),
+        ))
+    }
+}
+
+fn wait_for_any_log(log_file: &Path, needles: &[&str], timeout: Duration) -> io::Result<()> {
+    let found = wait_until(timeout, || {
+        let log = read_log(log_file);
+        needles.iter().any(|needle| log.contains(needle))
+    });
+    if found {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "timed out waiting for any log line in {needles:?}; current log: {}",
                 read_log(log_file)
             ),
         ))

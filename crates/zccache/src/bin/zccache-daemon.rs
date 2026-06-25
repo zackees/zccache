@@ -528,20 +528,39 @@ fn init_tracing(level: &str) {
     if tokio_console_enabled {
         let bind = std::env::var(TOKIO_CONSOLE_BIND_ENV)
             .unwrap_or_else(|_| TOKIO_CONSOLE_DEFAULT_BIND.to_string());
-        let console_layer = console_subscriber::spawn();
-        tracing_subscriber::registry()
-            .with(console_layer)
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .with_target(true)
-                    .with_thread_ids(true)
-                    .with_filter(filter),
-            )
-            .init();
-        tracing::info!(
-            bind,
-            "tokio-console daemon profile enabled; connect with `tokio-console {bind}`"
-        );
+        let console_layer = std::panic::catch_unwind(console_subscriber::spawn);
+        match console_layer {
+            Ok(console_layer) => {
+                tracing_subscriber::registry()
+                    .with(console_layer)
+                    .with(
+                        tracing_subscriber::fmt::layer()
+                            .with_target(true)
+                            .with_thread_ids(true)
+                            .with_filter(filter),
+                    )
+                    .init();
+                tracing::info!(
+                    bind,
+                    "tokio-console daemon profile enabled; connect with `tokio-console {bind}`"
+                );
+            }
+            Err(_) => {
+                tracing_subscriber::registry()
+                    .with(
+                        tracing_subscriber::fmt::layer()
+                            .with_target(true)
+                            .with_thread_ids(true)
+                            .with_filter(filter),
+                    )
+                    .init();
+                tracing::warn!(
+                    bind,
+                    "tokio-console daemon profile requested but unavailable; \
+                     rebuild with RUSTFLAGS=\"--cfg tokio_unstable\""
+                );
+            }
+        }
         return;
     }
 
