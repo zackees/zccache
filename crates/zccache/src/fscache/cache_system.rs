@@ -171,10 +171,10 @@ impl CacheSystem {
     /// The slow path can stat and hash files, so async callers use this named
     /// edge instead of running filesystem work on Tokio runtime threads.
     ///
-    /// Acquires a permit from [`hash_semaphore`] before dispatching to
-    /// `spawn_blocking`. Sized so the gate is a memory-pressure backstop,
-    /// not the effective parallelism limit — see the module-level docs on
-    /// [`hash_semaphore`].
+    /// Acquires a permit from the module-private `hash_semaphore` before
+    /// dispatching to `spawn_blocking`. Sized so the gate is a
+    /// memory-pressure backstop, not the effective parallelism limit —
+    /// see the module-level docs.
     pub async fn lookup_since_async(
         &self,
         path: NormalizedPath,
