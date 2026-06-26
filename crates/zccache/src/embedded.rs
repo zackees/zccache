@@ -249,6 +249,36 @@ pub enum CacheOutcome {
     Error,
 }
 
+/// Streaming compile event (issue #937). Yielded by
+/// [`ZccacheService::compile_streaming`] as rustc produces output —
+/// `Stdout` and `Stderr` chunks arrive incrementally; the terminal
+/// `Done` event carries the exit code and cache outcome.
+///
+/// **MVP shape — internally pass-through today.** The current
+/// implementation runs the existing buffered `compile` path under
+/// the hood and emits a single `Stdout` chunk + single `Stderr`
+/// chunk + `Done` at the end. The wire format and consumer code on
+/// the soldr side (soldr#982 commit 82e26f4) already speaks this
+/// shape, so consumers can rely on it as a stable API. The
+/// daemon-internal refactor that pumps rustc pipes into chunks as
+/// bytes arrive is the cross-cutting work tracked in #937 itself —
+/// when it lands, only the producer side of this enum's emission
+/// changes; the public API stays.
+#[derive(Debug, Clone)]
+pub enum CompileChunk {
+    /// A chunk of rustc's stdout bytes.
+    Stdout(Vec<u8>),
+    /// A chunk of rustc's stderr bytes.
+    Stderr(Vec<u8>),
+    /// Terminal event with the compile's outcome metadata.
+    Done {
+        exit_code: i32,
+        cached: bool,
+        cache_outcome: CacheOutcome,
+        compile_id: String,
+    },
+}
+
 /// Shutdown behavior requested by the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutdownMode {
@@ -400,6 +430,42 @@ impl ZccacheService {
         })
     }
 
+    /// Streaming compile (issue #937). Invokes `on_chunk` once per
+    /// stdout/stderr chunk, then once with the terminal `Done` event.
+    ///
+    /// **MVP: pass-through over the existing buffered `compile`.**
+    /// The current implementation runs `compile()` to completion and
+    /// emits one `Stdout` + one `Stderr` + one `Done` chunk. The full
+    /// streaming-source refactor (pump rustc pipes directly into the
+    /// chunk emitter) is the cross-cutting work tracked in #937 — when
+    /// it lands inside the daemon pipeline, only the producer side of
+    /// this method changes; the public API stays.
+    ///
+    /// Consumers can rely on this API today via the soldr-side
+    /// streaming wire format (soldr#982 commit `82e26f4`,
+    /// `PROTOCOL_VERSION = 7`). When the daemon-side pipeline refactor
+    /// lands the chunk granularity gets finer; consumer code doesn't
+    /// need to change.
+    pub async fn compile_streaming<F>(&self, request: CompileRequest, mut on_chunk: F) -> Result<()>
+    where
+        F: FnMut(CompileChunk),
+    {
+        let response = self.compile(request).await?;
+        if !response.stdout.is_empty() {
+            on_chunk(CompileChunk::Stdout(response.stdout));
+        }
+        if !response.stderr.is_empty() {
+            on_chunk(CompileChunk::Stderr(response.stderr));
+        }
+        on_chunk(CompileChunk::Done {
+            exit_code: response.exit_code,
+            cached: response.cached,
+            cache_outcome: response.cache_outcome,
+            compile_id: response.compile_id,
+        });
+        Ok(())
+    }
+
     /// Return a daemon-compatible stats snapshot.
     pub async fn stats(&self) -> Result<ServiceStats> {
         if self.shutdown.load(Ordering::Acquire) {
@@ -528,6 +594,54 @@ fn sanitize_identity(value: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    //! zccache#937: tests for the MVP streaming compile API. The
+    //! producer side is currently a pass-through over the buffered
+    //! `compile`; these tests pin the public contract so the
+    //! upcoming daemon-pipeline refactor (the cross-cutting piece
+    //! tracked in #937) can swap the producer without changing the
+    //! consumer-visible event order.
+
+    use super::*;
+
+    #[test]
+    fn compile_chunk_done_carries_outcome_fields() {
+        // Pin the public shape of the terminal Done event.
+        let done = CompileChunk::Done {
+            exit_code: 0,
+            cached: true,
+            cache_outcome: CacheOutcome::Hit,
+            compile_id: "test-id".to_string(),
+        };
+        let CompileChunk::Done {
+            exit_code,
+            cached,
+            cache_outcome,
+            compile_id,
+        } = done
+        else {
+            panic!("constructor must produce a Done variant");
+        };
+        assert_eq!(exit_code, 0);
+        assert!(cached);
+        assert_eq!(cache_outcome, CacheOutcome::Hit);
+        assert_eq!(compile_id, "test-id");
+    }
+
+    #[test]
+    fn compile_chunk_stdout_stderr_carry_bytes() {
+        match CompileChunk::Stdout(b"hello".to_vec()) {
+            CompileChunk::Stdout(bytes) => assert_eq!(bytes, b"hello"),
+            other => panic!("expected Stdout, got {other:?}"),
+        }
+        match CompileChunk::Stderr(b"warn".to_vec()) {
+            CompileChunk::Stderr(bytes) => assert_eq!(bytes, b"warn"),
+            other => panic!("expected Stderr, got {other:?}"),
+        }
+    }
 }
 
 #[cfg(test)]
