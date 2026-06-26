@@ -49,6 +49,11 @@ pub struct ZccacheService {
     /// `None` preserves the pre-#923 behavior where only
     /// `shutdown(ShutdownMode::Force)` aborts in-flight work.
     cancellation: Option<CancellationToken>,
+    /// RAII handle for the optional host-in-flight counter registration
+    /// (zccache#924). Wrapped in `Arc` so the `Clone` impl on
+    /// `ZccacheService` does not double-register; the slot is cleared
+    /// only when the last clone drops.
+    _host_inflight_guard: Option<Arc<crate::daemon::process::HostInFlightGuard>>,
 }
 
 /// Configuration for [`ZccacheService::start`].
@@ -183,6 +188,29 @@ pub struct RuntimeHooks {
 #[derive(Debug, Clone, Default)]
 pub struct ServiceLimits {
     pub max_parallel_compiles: Option<usize>,
+    /// Optional host-supplied in-flight counter (zccache#924).
+    ///
+    /// When the embedded service runs inside a larger host daemon
+    /// (soldr, fbuild) the host typically owns its own spawn machinery
+    /// for *its* subprocess children — rustc invocations driven
+    /// directly by the host, build tools, etc. zccache's internal
+    /// in-flight counter does not see those spawns, so its `Auto`
+    /// priority decision underestimates the real subprocess pressure
+    /// on the machine: cache-miss compiles get scheduled at `Normal`
+    /// even when the host already has dozens of its own rustc children
+    /// hammering the CPU.
+    ///
+    /// Cloning the host's counter here lets `Auto` add
+    /// `host_in_flight.load(Acquire)` into its pre-increment count
+    /// before deciding `Normal` vs `Low`. The host owns the increment
+    /// / decrement protocol on its side; zccache only reads.
+    ///
+    /// Single-slot contract: only one embedded `ZccacheService` per
+    /// process can register a counter at a time. A second registration
+    /// overwrites the first and logs a `tracing::warn!` so the
+    /// double-register case is debuggable. `None` keeps today's
+    /// behavior — `Auto` consults only zccache's internal counter.
+    pub host_in_flight: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 /// One compile invocation submitted to the embedded service.
@@ -277,10 +305,20 @@ impl ZccacheService {
         let daemon = EmbeddedDaemon::start(endpoint, cache_root, config.runtime.handle.clone())
             .await
             .map_err(|err| EmbeddedError::Start(err.to_string()))?;
+        // zccache#924: register the optional host-in-flight counter so
+        // CompilePriority::Auto sees host-side subprocess pressure when
+        // deciding Normal vs Low. The RAII guard is held on the service
+        // until the last clone drops, then the slot is cleared.
+        let host_inflight_guard = config
+            .limits
+            .host_in_flight
+            .map(crate::daemon::process::register_host_in_flight_counter)
+            .map(Arc::new);
         Ok(Self {
             daemon: Arc::new(daemon),
             shutdown: Arc::new(AtomicBool::new(false)),
             cancellation: config.cancellation,
+            _host_inflight_guard: host_inflight_guard,
         })
     }
 

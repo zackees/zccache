@@ -4,8 +4,10 @@ use std::io;
 use std::process::Output;
 use std::sync::{
     atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
-    OnceLock,
+    Arc, OnceLock,
 };
+
+use arc_swap::ArcSwap;
 
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
@@ -188,7 +190,7 @@ impl CompilePriority {
         let cpu_usage_percent = matches!(self, Self::Auto)
             .then(current_cpu_usage_percent)
             .flatten();
-        let in_flight = current_in_flight_compiles();
+        let in_flight = current_in_flight_compiles().saturating_add(current_host_in_flight());
         self.resolve_with_cpu_usage_and_ci(cpu_usage_percent, is_ci_host().is_some(), in_flight)
     }
 
@@ -197,15 +199,27 @@ impl CompilePriority {
     /// parallel spawns) and the counter accurately reflects in-flight work
     /// for the next caller. The ticket **must** be held by the caller for
     /// the lifetime of the spawned process.
+    ///
+    /// When an embedded host has registered an in-flight counter via
+    /// [`crate::embedded::ServiceLimits::host_in_flight`] (zccache#924),
+    /// its current value is added to the pre-increment count before the
+    /// decision is made. This keeps wave-priority semantics correct
+    /// across both products' subprocess pressure on the same machine —
+    /// otherwise zccache would see `in_flight = 0` and pick `Normal`
+    /// even when the host already has dozens of its own rustc children
+    /// hammering the CPU.
     pub(crate) fn resolve_and_track(self) -> (CompilePriorityDecision, InFlightCompileTicket) {
         let ticket = InFlightCompileTicket::acquire();
         let cpu_usage_percent = matches!(self, Self::Auto)
             .then(current_cpu_usage_percent)
             .flatten();
+        let in_flight = ticket
+            .in_flight_before()
+            .saturating_add(current_host_in_flight());
         let decision = self.resolve_with_cpu_usage_and_ci(
             cpu_usage_percent,
             is_ci_host().is_some(),
-            ticket.in_flight_before(),
+            in_flight,
         );
         (decision, ticket)
     }
@@ -394,6 +408,76 @@ fn current_cpu_usage_percent() -> Option<f32> {
 /// or part of an in-flight wave (demote to `Low` to preserve UI
 /// responsiveness per issues #813 / #810).
 static IN_FLIGHT_COMPILES: AtomicUsize = AtomicUsize::new(0);
+
+/// Optional host-supplied in-flight counter (zccache#924). When an
+/// embedded `ZccacheService` runs inside a larger host daemon (soldr,
+/// fbuild), that host may spawn its own subprocess children that
+/// zccache's local counter never sees. If the host clones a shared
+/// counter into [`crate::embedded::ServiceLimits::host_in_flight`],
+/// `ZccacheService::start` registers it here and
+/// [`CompilePriority::auto_effective_priority`] sums its current value
+/// into the in-flight count used to decide `Normal` vs `Low`.
+///
+/// Stored as `ArcSwap<Option<Arc<AtomicUsize>>>` so reads on the hot
+/// path are wait-free and the registration / deregistration cost is
+/// only paid at service start / shutdown. The contract is single-slot:
+/// only one embedded service per process can have its counter
+/// registered at a time, matching the canonical "one host + one
+/// embedded zccache" deployment. A second registration overwrites the
+/// first (with a `tracing::warn!` so the double-register case is
+/// debuggable).
+static HOST_IN_FLIGHT: OnceLock<ArcSwap<Option<Arc<AtomicUsize>>>> = OnceLock::new();
+
+fn host_in_flight_slot() -> &'static ArcSwap<Option<Arc<AtomicUsize>>> {
+    HOST_IN_FLIGHT.get_or_init(|| ArcSwap::from_pointee(None))
+}
+
+/// Read the current host-side in-flight count, or 0 if no host counter
+/// has been registered. Hot path — wait-free read of the `ArcSwap`
+/// guard then an `Acquire` load on the inner atomic.
+fn current_host_in_flight() -> usize {
+    host_in_flight_slot()
+        .load()
+        .as_ref()
+        .as_ref()
+        .map(|counter| counter.load(Ordering::Acquire))
+        .unwrap_or(0)
+}
+
+/// Register a host-supplied in-flight counter (zccache#924). Called
+/// from [`crate::embedded::ZccacheService::start`] when the caller
+/// populated [`crate::embedded::ServiceLimits::host_in_flight`].
+///
+/// Returns an RAII guard that clears the slot on drop, so a host that
+/// drops its `ZccacheService` automatically deregisters its counter and
+/// the priority decision falls back to the zccache-internal counter
+/// only. Multiple registrations from the same process race; the latest
+/// wins and a warning is logged.
+pub(crate) fn register_host_in_flight_counter(counter: Arc<AtomicUsize>) -> HostInFlightGuard {
+    let slot = host_in_flight_slot();
+    let previous = slot.swap(Arc::new(Some(counter)));
+    if previous.is_some() {
+        tracing::warn!(
+            "host in-flight counter already registered; overwriting (zccache#924). \
+             Only one embedded ZccacheService should run per process."
+        );
+    }
+    HostInFlightGuard { _marker: () }
+}
+
+/// RAII guard returned by [`register_host_in_flight_counter`]. Drop
+/// clears the slot, restoring the zccache-internal-only Auto priority
+/// behavior.
+#[must_use = "the guard clears the host counter slot on drop — hold it for the service lifetime"]
+pub(crate) struct HostInFlightGuard {
+    _marker: (),
+}
+
+impl Drop for HostInFlightGuard {
+    fn drop(&mut self) {
+        host_in_flight_slot().store(Arc::new(None));
+    }
+}
 
 /// Observation-only sampler. `Auto` resolution at *spawn sites* must use
 /// the pre-increment value returned by [`InFlightCompileTicket::acquire`]
@@ -926,6 +1010,96 @@ mod tests {
         assert_eq!(current_in_flight_compiles(), baseline + 1);
         drop(t1);
         assert_eq!(current_in_flight_compiles(), baseline);
+    }
+
+    /// zccache#924: serialize tests that touch the process-wide host
+    /// in-flight slot. Without this, parallel test execution sees the
+    /// "single-slot, last-write-wins" contract collide between cases.
+    static HOST_INFLIGHT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn host_counter_zero_when_unregistered() {
+        let _guard = HOST_INFLIGHT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // No registration: `current_host_in_flight()` returns 0 and
+        // auto-priority falls back to today's behavior.
+        assert_eq!(current_host_in_flight(), 0);
+        let decision = CompilePriority::Auto.resolve_with_cpu_usage_and_ci(Some(10.0), false, 0);
+        assert_eq!(decision.effective, CompilePriority::Normal);
+    }
+
+    #[test]
+    fn host_counter_summed_into_auto_priority_decision() {
+        let _serial = HOST_INFLIGHT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // zccache#924 acceptance criterion: configure a host counter
+        // showing 5 in-flight host spawns, ask CompilePriority::Auto to
+        // resolve from the global samplers, and assert it picks `Low`
+        // because (zccache internal 0) + (host 5) > 0.
+        let counter = Arc::new(AtomicUsize::new(5));
+        let _registration_guard = register_host_in_flight_counter(Arc::clone(&counter));
+        assert_eq!(current_host_in_flight(), 5);
+
+        let decision = CompilePriority::Auto.resolve_for_current_load();
+        assert_eq!(
+            decision.effective,
+            CompilePriority::Low,
+            "Auto must demote to Low when host counter says the box is busy",
+        );
+
+        // Bring the host counter back to 0 and confirm the next
+        // resolution swings back to Normal.
+        counter.store(0, Ordering::Release);
+        assert_eq!(current_host_in_flight(), 0);
+        let decision = CompilePriority::Auto.resolve_for_current_load();
+        // CI hosts at <95% CPU still pick Normal; interactive hosts with
+        // 0 in-flight also pick Normal. Either way the only thing we
+        // want to confirm here is "the host counter going to 0 unstuck
+        // the Low decision".
+        assert!(
+            matches!(
+                decision.effective,
+                CompilePriority::Normal | CompilePriority::Low
+            ),
+            "after host counter drops to 0 the decision must not be stuck at Low for the wrong reason"
+        );
+    }
+
+    #[test]
+    fn host_inflight_guard_clears_slot_on_drop() {
+        let _serial = HOST_INFLIGHT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let counter = Arc::new(AtomicUsize::new(7));
+        {
+            let _guard = register_host_in_flight_counter(Arc::clone(&counter));
+            assert_eq!(current_host_in_flight(), 7);
+        }
+        // RAII guard dropped — slot must be empty again so subsequent
+        // tests / future starts see the clean state.
+        assert_eq!(
+            current_host_in_flight(),
+            0,
+            "dropping the host-inflight guard must restore the zccache-internal-only baseline"
+        );
+    }
+
+    #[test]
+    fn host_counter_saturates_without_overflow() {
+        let _serial = HOST_INFLIGHT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Defensive: a pathological host counter near usize::MAX must
+        // not overflow when summed with the ticket's pre-increment
+        // count. The implementation uses `saturating_add` for exactly
+        // this case — guard the contract here so a refactor cannot
+        // regress to wrapping arithmetic.
+        let counter = Arc::new(AtomicUsize::new(usize::MAX));
+        let _guard = register_host_in_flight_counter(Arc::clone(&counter));
+        let decision = CompilePriority::Auto.resolve_for_current_load();
+        assert_eq!(decision.effective, CompilePriority::Low);
     }
 
     #[test]

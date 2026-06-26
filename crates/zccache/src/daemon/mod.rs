@@ -13,7 +13,7 @@ pub mod fingerprint;
 pub mod jobserver;
 pub mod lifecycle;
 pub mod lineage;
-mod process;
+pub(crate) mod process;
 pub mod server;
 pub mod side_effect;
 pub mod stats;
