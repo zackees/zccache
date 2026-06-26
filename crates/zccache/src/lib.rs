@@ -7,6 +7,10 @@
 
 pub mod artifact;
 pub mod audit;
+/// Issue zccache#926 — durable audit JSONL writer for the embedded
+/// service. Spawned by [`embedded::ZccacheService::start`] when
+/// [`audit::AuditConfig::mode`] > `Off`.
+pub mod audit_writer;
 pub mod ci;
 pub mod cli;
 pub mod compiler;

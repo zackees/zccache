@@ -54,6 +54,12 @@ pub struct ZccacheService {
     /// `ZccacheService` does not double-register; the slot is cleared
     /// only when the last clone drops.
     _host_inflight_guard: Option<Arc<crate::daemon::process::HostInFlightGuard>>,
+    /// Durable audit JSONL writer (zccache#926). Present when the
+    /// `AuditConfig` passed to `start` had `mode > Off`. Held on the
+    /// service so its `Drop` keeps the writer task alive for the
+    /// service's lifetime; flush + shutdown are forwarded from the
+    /// matching `ZccacheService` methods.
+    audit_sink: Option<Arc<crate::audit_writer::AuditSink>>,
 }
 
 /// Configuration for [`ZccacheService::start`].
@@ -314,11 +320,21 @@ impl ZccacheService {
             .host_in_flight
             .map(crate::daemon::process::register_host_in_flight_counter)
             .map(Arc::new);
+        // zccache#926: spawn the durable audit JSONL writer when the
+        // host configured a mode that requires emission. The writer
+        // task runs on the host's tokio runtime via the same
+        // `runtime.handle` plumbing as the rest of the embedded
+        // service so tokio-console attach unity holds.
+        let audit_sink =
+            crate::audit_writer::AuditSink::start(&config.audit, config.runtime.handle.clone())
+                .map_err(|err| EmbeddedError::Start(err.to_string()))?
+                .map(Arc::new);
         Ok(Self {
             daemon: Arc::new(daemon),
             shutdown: Arc::new(AtomicBool::new(false)),
             cancellation: config.cancellation,
             _host_inflight_guard: host_inflight_guard,
+            audit_sink,
         })
     }
 
@@ -421,15 +437,35 @@ impl ZccacheService {
             }
             None => flush_future.await,
         };
+        // zccache#926: drain pending audit events to disk along with
+        // the cache state. Best-effort — a failure to flush the audit
+        // sink does not block the embedded service flush from
+        // succeeding; it only means the host saw a possibly-empty
+        // tail in the JSONL.
+        if let Some(sink) = &self.audit_sink {
+            let _ = sink.flush().await;
+        }
         Ok(FlushReport::from_report(report))
     }
 
     /// Shut down the service and flush relevant persisted state.
+    ///
+    /// `ShutdownMode::Graceful` waits for the durable audit sink to
+    /// drain before returning. `ShutdownMode::Force` does not — the
+    /// host signalled "stop now, lost events are acceptable."
     pub async fn shutdown(self, mode: ShutdownMode) -> Result<ShutdownReport> {
         if self.shutdown.swap(true, Ordering::AcqRel) {
             return Err(EmbeddedError::ShutDown);
         }
         let report = self.daemon.shutdown().await;
+        // zccache#926: shut the audit sink down when going Graceful.
+        // Force skips this so the host can exit quickly under SIGINT
+        // even if the disk is slow.
+        if matches!(mode, ShutdownMode::Graceful) {
+            if let Some(sink) = &self.audit_sink {
+                let _ = sink.shutdown().await;
+            }
+        }
         Ok(ShutdownReport {
             mode,
             flushed: FlushReport::from_report(report),
