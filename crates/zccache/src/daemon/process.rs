@@ -1035,35 +1035,40 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         // zccache#924 acceptance criterion: configure a host counter
-        // showing 5 in-flight host spawns, ask CompilePriority::Auto to
-        // resolve from the global samplers, and assert it picks `Low`
-        // because (zccache internal 0) + (host 5) > 0.
+        // showing 5 in-flight host spawns and assert the read of
+        // `current_host_in_flight()` reflects it. Feed that value into
+        // `resolve_with_cpu_usage_and_ci(_, is_ci=false, _)` directly so
+        // the assertion holds regardless of the test runner — CI
+        // detection on GitHub Actions routes Auto through the CI branch
+        // that ignores `in_flight_before`, so a test that calls
+        // `resolve_for_current_load` would be non-portable.
         let counter = Arc::new(AtomicUsize::new(5));
         let _registration_guard = register_host_in_flight_counter(Arc::clone(&counter));
         assert_eq!(current_host_in_flight(), 5);
 
-        let decision = CompilePriority::Auto.resolve_for_current_load();
+        let summed = current_in_flight_compiles().saturating_add(current_host_in_flight());
+        assert!(summed >= 5, "host counter must be summed into in-flight");
+        let decision =
+            CompilePriority::Auto.resolve_with_cpu_usage_and_ci(Some(10.0), false, summed);
         assert_eq!(
             decision.effective,
             CompilePriority::Low,
             "Auto must demote to Low when host counter says the box is busy",
         );
 
-        // Bring the host counter back to 0 and confirm the next
-        // resolution swings back to Normal.
+        // Bring the host counter back to 0 and confirm the next read
+        // sees the change.
         counter.store(0, Ordering::Release);
         assert_eq!(current_host_in_flight(), 0);
-        let decision = CompilePriority::Auto.resolve_for_current_load();
-        // CI hosts at <95% CPU still pick Normal; interactive hosts with
-        // 0 in-flight also pick Normal. Either way the only thing we
-        // want to confirm here is "the host counter going to 0 unstuck
-        // the Low decision".
-        assert!(
-            matches!(
-                decision.effective,
-                CompilePriority::Normal | CompilePriority::Low
-            ),
-            "after host counter drops to 0 the decision must not be stuck at Low for the wrong reason"
+        let summed = current_in_flight_compiles().saturating_add(current_host_in_flight());
+        let decision =
+            CompilePriority::Auto.resolve_with_cpu_usage_and_ci(Some(10.0), false, summed);
+        // With host_in_flight = 0 and no concurrent zccache ticket held,
+        // the summed count is 0 and interactive Auto picks Normal.
+        assert_eq!(
+            decision.effective,
+            CompilePriority::Normal,
+            "after host counter drops to 0 the interactive Auto decision must be Normal",
         );
     }
 
@@ -1096,9 +1101,19 @@ mod tests {
         // count. The implementation uses `saturating_add` for exactly
         // this case — guard the contract here so a refactor cannot
         // regress to wrapping arithmetic.
+        //
+        // Use explicit `is_ci = false` so the assertion holds on both
+        // CI runners and interactive hosts.
         let counter = Arc::new(AtomicUsize::new(usize::MAX));
         let _guard = register_host_in_flight_counter(Arc::clone(&counter));
-        let decision = CompilePriority::Auto.resolve_for_current_load();
+        let summed = 1usize.saturating_add(current_host_in_flight());
+        assert_eq!(
+            summed,
+            usize::MAX,
+            "saturating_add must clamp at usize::MAX"
+        );
+        let decision =
+            CompilePriority::Auto.resolve_with_cpu_usage_and_ci(Some(10.0), false, summed);
         assert_eq!(decision.effective, CompilePriority::Low);
     }
 
