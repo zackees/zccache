@@ -43,6 +43,7 @@ mod expected_public_api_shape {
             },
             limits: ServiceLimits::default(),
             runtime: RuntimeHooks::default(),
+            cancellation: None,
         })
         .await
         .expect("embedded zccache service starts");
