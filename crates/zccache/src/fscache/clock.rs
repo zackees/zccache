@@ -100,6 +100,10 @@ impl ChangeJournal {
         }
 
         // Append to the ordered journal.
+        #[expect(
+            clippy::expect_used,
+            reason = "RwLock only poisons if another thread panicked mid-write; the journal BTreeMap would be mid-mutation. Failing loudly lets the daemon supervisor restart from a clean state — silently returning empty change-sets would cause wrong cache hits."
+        )]
         let mut journal = self.journal.write().expect("journal lock poisoned");
         journal.insert(clock, changed_paths);
 
@@ -142,6 +146,10 @@ impl ChangeJournal {
     /// for very old clocks if journal entries have been trimmed.
     #[must_use]
     pub fn changes_since(&self, since: Clock) -> Vec<NormalizedPath> {
+        #[expect(
+            clippy::expect_used,
+            reason = "RwLock only poisons if another thread panicked mid-write; returning empty Vec here would mean 'no changes' and cause wrong cache hits — fail loudly so the supervisor can restart"
+        )]
         let journal = self.journal.read().expect("journal lock poisoned");
         let mut result = Vec::new();
         for (_clock, paths) in
@@ -169,7 +177,13 @@ impl ChangeJournal {
     /// Returns the new overflow clock.
     pub fn clear(&self) -> Clock {
         self.last_change.clear();
-        self.journal.write().expect("journal lock poisoned").clear();
+        #[expect(
+            clippy::expect_used,
+            reason = "RwLock only poisons if another thread panicked mid-write; skipping the clear would leave stale entries the new overflow clock cannot compensate for"
+        )]
+        let mut journal = self.journal.write().expect("journal lock poisoned");
+        journal.clear();
+        drop(journal);
         self.mark_overflow()
     }
 

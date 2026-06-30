@@ -226,6 +226,10 @@ pub(super) async fn handle_link_ephemeral(
         // Load payloads from disk if not already loaded.
         let loaded = ensure_payloads(&mut entry, &state.artifact_dir, &key_hex).is_some();
         if loaded {
+            #[expect(
+                clippy::expect_used,
+                reason = "ensure_payloads on the preceding line returned Some, which is the contract guaranteeing entry.payloads is now populated"
+            )]
             let payloads = Arc::clone(
                 entry
                     .payloads
@@ -500,6 +504,10 @@ pub(super) async fn handle_link_ephemeral(
                 let sem = Arc::clone(&state.persist_semaphore);
                 let state_ref = Arc::clone(state);
                 tokio::spawn(async move {
+                    #[expect(
+                        clippy::expect_used,
+                        reason = "persist_semaphore is owned by ServerState for the daemon's lifetime; AcquireError here would be a logic bug (semaphore explicitly closed), not a runtime condition"
+                    )]
                     let _permit = sem
                         .acquire()
                         .await

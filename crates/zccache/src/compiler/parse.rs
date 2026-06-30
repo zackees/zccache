@@ -283,6 +283,10 @@ pub fn parse_invocation(compiler: &str, args: &[String]) -> ParsedInvocation {
     }
 
     // Single source file
+    #[expect(
+        clippy::expect_used,
+        reason = "source_files non-empty: structurally guaranteed by the is_empty() guard earlier in this function and the multi-file early return"
+    )]
     let (source, _, mode) = source_files
         .into_iter()
         .next()

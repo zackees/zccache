@@ -1,3 +1,10 @@
+// Build scripts are allowed to panic on setup failure: cargo surfaces
+// the panic message and fails the build cleanly. Per-site `#[expect]`
+// would add noise for no gain — every expect() in this file encodes a
+// real build-time invariant (TARGET set by cargo, vendored protoc
+// present, protobuf compile succeeds).
+#![allow(clippy::expect_used)]
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     compile_zccache_wire_proto();

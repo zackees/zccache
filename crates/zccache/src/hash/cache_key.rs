@@ -74,6 +74,10 @@ impl CacheKeyBuilder {
         hasher.update(b"zccache-cache-key-v1");
 
         // Compiler identity
+        #[expect(
+            clippy::expect_used,
+            reason = "builder precondition: caller must call .compiler() before .build() — documented in `# Panics`"
+        )]
         let compiler = self.compiler_id.expect("compiler hash is required");
         hasher.update(compiler.as_bytes());
 
@@ -93,6 +97,10 @@ impl CacheKeyBuilder {
         }
 
         // Source hash
+        #[expect(
+            clippy::expect_used,
+            reason = "builder precondition: caller must call .source() before .build() — documented in `# Panics`"
+        )]
         let source = self.source_hash.expect("source hash is required");
         hasher.update(source.as_bytes());
 

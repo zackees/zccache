@@ -76,11 +76,10 @@ pub fn scan_includes_str(source: &str) -> Vec<IncludeDirective> {
                     });
                 }
                 in_block_comment = false;
-                // Could have another block comment start after...
-                if rest.contains("/*") {
-                    let after_end = rest
-                        .find("/*")
-                        .expect("contains check immediately above guarantees Some");
+                // Could have another block comment start after — fuse the
+                // detect-and-locate into one search to drop the expect and
+                // halve the scanner's per-line work on the hot path.
+                if let Some(after_end) = rest.find("/*") {
                     if !rest[..after_end].contains("*/") {
                         in_block_comment = true;
                     }
@@ -202,8 +201,11 @@ pub fn scan_recursive(source: &Path, search: &IncludeSearchPaths) -> ScanResult 
     }
 
     ScanResult {
-        resolved: resolved.into_inner().expect("resolved mutex poisoned"),
-        unresolved: unresolved.into_inner().expect("unresolved mutex poisoned"),
+        // Poison only happens if a rayon worker panicked; recovering the
+        // inner Vec preserves the partial scan output of the surviving
+        // workers, which is what callers want.
+        resolved: resolved.into_inner().unwrap_or_else(|e| e.into_inner()),
+        unresolved: unresolved.into_inner().unwrap_or_else(|e| e.into_inner()),
         has_computed: has_computed.load(Ordering::Relaxed),
     }
 }
@@ -256,13 +258,13 @@ fn scan_one_level(
     if !local_resolved.is_empty() {
         resolved
             .lock()
-            .expect("resolved mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .extend(local_resolved);
     }
     if !local_unresolved.is_empty() {
         unresolved
             .lock()
-            .expect("unresolved mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .extend(local_unresolved);
     }
     if saw_computed {

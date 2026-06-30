@@ -336,6 +336,10 @@ fn store_single_output(
     // misses → recompile; the DD-025 failure-mode-is-miss invariant).
     let _pending = pending_writes::register(&state.pending_cache_writes, artifact_key_hex);
     tokio::spawn(async move {
+        #[expect(
+            clippy::expect_used,
+            reason = "persist_semaphore is owned by ServerState for the daemon's lifetime; AcquireError here would be a logic bug (semaphore explicitly closed), not a runtime condition"
+        )]
         let _permit = sem
             .acquire()
             .await

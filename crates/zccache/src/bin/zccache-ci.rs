@@ -22,6 +22,10 @@ use zccache::ci::{reap_orphan_daemons, resolve_timeout, StageOutcome, StageRunne
 use zccache::core::NormalizedPath;
 
 fn project_root() -> NormalizedPath {
+    #[expect(
+        clippy::expect_used,
+        reason = "ci helper bootstrap: cannot perform any CI operation without a working directory; no useful recovery path"
+    )]
     let current = env::current_dir().expect("cannot determine working directory");
     let mut dir = current.as_path();
     loop {

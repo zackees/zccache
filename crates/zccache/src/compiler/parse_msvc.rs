@@ -378,6 +378,10 @@ pub fn parse_msvc_invocation(
         };
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "source_files non-empty: structurally guaranteed by the is_empty() guard earlier in this function and the multi-file early return"
+    )]
     let (source, _) = source_files
         .into_iter()
         .next()

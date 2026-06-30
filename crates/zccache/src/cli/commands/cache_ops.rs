@@ -823,7 +823,17 @@ pub(crate) fn cmd_snapshot_fp_record(
     profile: &str,
     manifest_path: Option<PathBuf>,
 ) -> ExitCode {
-    let workspace = workspace_root.unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+    let workspace = if let Some(w) = workspace_root {
+        w
+    } else {
+        match std::env::current_dir() {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("zccache snapshot-fp-record: failed to read cwd: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    };
     let manifest = manifest_path.unwrap_or_else(|| target_dir.join(snapshot_fp::MANIFEST_FILENAME));
     match snapshot_fp::record(target_dir, &workspace, &manifest, profile) {
         Ok(stats) => {
@@ -849,7 +859,17 @@ pub(crate) fn cmd_snapshot_fp_validate(
     manifest_path: Option<PathBuf>,
     stamp_seconds_ahead: u64,
 ) -> ExitCode {
-    let workspace = workspace_root.unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+    let workspace = if let Some(w) = workspace_root {
+        w
+    } else {
+        match std::env::current_dir() {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("zccache snapshot-fp-validate: failed to read cwd: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    };
     let manifest = manifest_path.unwrap_or_else(|| target_dir.join(snapshot_fp::MANIFEST_FILENAME));
     match snapshot_fp::validate(
         target_dir,

@@ -85,6 +85,10 @@ fn run_server(args: Args) {
         tracing::warn!("failed to write download daemon lock file: {err}");
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "multi-thread runtime construction with enable_all only fails on OS resource exhaustion (timer/IO driver registration); download daemon cannot proceed by any other means at that point"
+    )]
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

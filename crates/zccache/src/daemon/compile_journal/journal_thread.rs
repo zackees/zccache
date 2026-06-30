@@ -120,6 +120,10 @@ pub(super) fn journal_thread(
                                     tracing::debug!("session journal open error: {e}");
                                     // Return a dummy that will fail writes — we'll
                                     // skip silently via is_err() below.
+                                    #[expect(
+                                        clippy::expect_used,
+                                        reason = "NUL on Windows / /dev/null on Unix must exist; their absence indicates a fundamentally broken host where the daemon cannot recover"
+                                    )]
                                     let fallback = open_append(&path).unwrap_or_else(|_| {
                                         // Last resort: /dev/null equivalent. The HashMap
                                         // entry will be cleaned up on CloseSession.

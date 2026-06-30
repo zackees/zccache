@@ -703,11 +703,15 @@ async fn compile_response_for_session(
         env: journal_env,
         session_id: Some(session_id),
     };
+    #[expect(
+        clippy::expect_used,
+        reason = "ctx.session_id is set to Some(session_id) immediately above (line 704); the Option wrap is purely for the JournalContext return field"
+    )]
     let resp = handle_compile(
         state,
         ctx.session_id
             .as_deref()
-            .expect("session_id set by HandleCtx constructor above"),
+            .expect("session_id set by JournalContext constructor above"),
         &ctx.args,
         &cwd,
         &compiler,

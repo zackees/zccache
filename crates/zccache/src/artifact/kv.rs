@@ -389,6 +389,10 @@ impl KvStore {
                 std::fs::create_dir_all(parent)?;
             }
             // Tempfile + rename so partial writes never become visible.
+            #[expect(
+                clippy::expect_used,
+                reason = "spill_path(namespace, key) joins onto the kv root, so .parent() is structurally guaranteed to be Some"
+            )]
             let dir = path
                 .parent()
                 .expect("spill path always has a parent because we joined kv/<ns>/");

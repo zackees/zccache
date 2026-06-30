@@ -86,7 +86,7 @@ libraries = [{ path = "dylints/*" }]
 unwrap_used        = "deny"
 unwrap_in_result   = "deny"
 panic_in_result_fn = "deny"
-expect_used        = "warn"
+expect_used        = "deny"
 
 # Keep just enough debug info for readable stack traces (function names +
 # source-line numbers) while dropping the DWARF variable/type tables that

@@ -171,12 +171,17 @@ pub async fn download_to_path(
         max_connections,
         min_segment_size,
     ) {
+        #[expect(
+            clippy::expect_used,
+            reason = "should_use_segments(total, ...) returns false when total is None; reaching this branch implies Some(_)"
+        )]
+        let total_bytes = total.expect("segment use requires total");
         download_segmented(SegmentedDownload {
             client: &client,
             url,
             temp_path: &temp_path,
             metadata_dir,
-            total: total.expect("segment use requires total"),
+            total: total_bytes,
             max_connections,
             min_segment_size,
             validator: probe.validator,

@@ -214,7 +214,12 @@ fn format_rsp_content(args: &[String]) -> String {
     let estimated_len: usize = args.iter().map(|a| a.len() + 3).sum();
     let mut content = String::with_capacity(estimated_len);
     for arg in args {
-        content.push_str(&format_rsp_argument(arg).expect("argument should be representable"));
+        #[expect(
+            clippy::expect_used,
+            reason = "test-only path; tests pass arg shapes known to be representable. Production callers use format_rsp_content_if_safe which returns Option."
+        )]
+        let formatted = format_rsp_argument(arg).expect("argument should be representable");
+        content.push_str(&formatted);
         content.push('\n');
     }
     content

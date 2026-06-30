@@ -166,6 +166,10 @@ fn print_status(args: &Args) {
     println!();
 
     // Try to connect and get status from a running daemon
+    #[expect(
+        clippy::expect_used,
+        reason = "current-thread runtime construction with enable_all only fails on OS resource exhaustion; daemon-status query cannot proceed without it"
+    )]
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -250,6 +254,10 @@ fn run_server(args: Args) {
     // need to bring up the full multi-thread runtime before deciding
     // whether to defer.
     {
+        #[expect(
+            clippy::expect_used,
+            reason = "current-thread probe runtime construction with enable_all only fails on OS resource exhaustion; daemon-defer probe cannot proceed without it"
+        )]
         let probe_rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -274,6 +282,10 @@ fn run_server(args: Args) {
     let cache_root = zccache::core::config::default_cache_dir();
     zccache::core::defender::maybe_emit_first_run_banner(cache_root.as_path());
 
+    #[expect(
+        clippy::expect_used,
+        reason = "multi-thread runtime construction with enable_all only fails on OS resource exhaustion; daemon cannot proceed without it"
+    )]
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .max_blocking_threads(daemon_max_blocking_threads())

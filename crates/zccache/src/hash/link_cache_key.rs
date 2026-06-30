@@ -68,6 +68,10 @@ impl LinkCacheKeyBuilder {
         hasher.update(b"zccache-link-key-v1");
 
         // Tool identity
+        #[expect(
+            clippy::expect_used,
+            reason = "builder precondition: caller must call .tool() before .build() — documented in `# Panics`"
+        )]
         let tool = self.tool_id.expect("tool hash is required");
         hasher.update(tool.as_bytes());
 

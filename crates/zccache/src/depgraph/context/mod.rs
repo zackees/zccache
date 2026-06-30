@@ -380,10 +380,16 @@ pub fn compute_artifact_key_normalized_with_root(
                 Some(root) if np.as_path().starts_with(root) => {
                     Cow::Owned(normalize_key_path(np.as_path(), Some(root)))
                 }
-                _ => Cow::Borrowed(
-                    np.case_key()
-                        .expect("NormalizedPath::key is always populated post-#576"),
-                ),
+                _ => {
+                    #[expect(
+                        clippy::expect_used,
+                        reason = "NormalizedPath::case_key() returns Option only as a forward-compat marker; post-#576 it is always Some. Returning a fallback would silently corrupt cache keys, which is catastrophic per CLAUDE.md correctness model."
+                    )]
+                    let key = np
+                        .case_key()
+                        .expect("NormalizedPath::key is always populated post-#576");
+                    Cow::Borrowed(key)
+                }
             };
             (path_key, *h)
         })

@@ -116,11 +116,15 @@ pub(crate) fn slurp_stdin_if_piped() -> Vec<u8> {
 }
 
 pub(crate) fn run_async(future: impl std::future::Future<Output = ExitCode>) -> ExitCode {
-    tokio::runtime::Builder::new_current_thread()
+    #[expect(
+        clippy::expect_used,
+        reason = "current-thread runtime construction with enable_all only fails on OS resource exhaustion (timer/IO driver registration); CLI cannot proceed by any other means at that point"
+    )]
+    let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .expect("failed to create tokio runtime")
-        .block_on(future)
+        .expect("failed to create tokio runtime");
+    rt.block_on(future)
 }
 
 pub(crate) fn format_uptime(secs: u64) -> String {

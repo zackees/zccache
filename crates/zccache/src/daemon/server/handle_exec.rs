@@ -778,6 +778,10 @@ async fn store_exec_artifact(state: &Arc<SharedState>, key_hex: String, artifact
         let state_ref = Arc::clone(state);
         let sem = Arc::clone(&state.persist_semaphore);
         tokio::spawn(async move {
+            #[expect(
+                clippy::expect_used,
+                reason = "persist_semaphore is owned by ServerState for the daemon's lifetime; AcquireError here would be a logic bug (semaphore explicitly closed), not a runtime condition"
+            )]
             let _permit = sem
                 .acquire()
                 .await

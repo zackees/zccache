@@ -34,6 +34,10 @@ impl Version {
 }
 
 /// Return the version of the currently compiled crate.
+#[expect(
+    clippy::expect_used,
+    reason = "CARGO_PKG_VERSION is cargo-validated semver at compile time"
+)]
 pub fn current() -> Version {
     Version::parse(super::VERSION).expect("CARGO_PKG_VERSION is not valid semver")
 }

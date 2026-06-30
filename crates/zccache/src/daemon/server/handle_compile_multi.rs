@@ -129,6 +129,10 @@ pub(super) fn check_unit_cache(
                         ensure_payloads(&mut cached_ref, &state.artifact_dir, artifact_key_hex)
                             .is_some();
                     if loaded {
+                        #[expect(
+                            clippy::expect_used,
+                            reason = "ensure_payloads on the preceding line returned Some, which is the contract guaranteeing cached_ref.payloads is now populated"
+                        )]
                         let payloads = Arc::clone(
                             cached_ref
                                 .payloads
@@ -251,6 +255,10 @@ pub(super) fn check_unit_cache(
             let loaded =
                 ensure_payloads(&mut cached_ref, &state.artifact_dir, &artifact_key_hex).is_some();
             if loaded {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "ensure_payloads on the preceding line returned Some, which is the contract guaranteeing cached_ref.payloads is now populated"
+                )]
                 let payloads = Arc::clone(
                     cached_ref
                         .payloads
@@ -893,6 +901,10 @@ pub(super) async fn handle_compile_multi(
         // src/dst failures already enriched by `persist::enrich_persist_err`).
         let t_persist_enqueue = std::time::Instant::now();
         tokio::spawn(async move {
+            #[expect(
+                clippy::expect_used,
+                reason = "persist_semaphore is owned by ServerState for the daemon's lifetime; AcquireError here would be a logic bug (semaphore explicitly closed), not a runtime condition"
+            )]
             let _permit = sem
                 .acquire()
                 .await
