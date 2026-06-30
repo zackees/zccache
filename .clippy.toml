@@ -1,1 +1,15 @@
 msrv = "1.94.1"
+
+# Workspace clippy config — see #944.
+#
+# The workspace [lints.clippy] policy (Cargo.toml) denies unwrap_used /
+# unwrap_in_result / panic_in_result_fn and warns on expect_used. These
+# knobs keep test code ergonomic by exempting #[cfg(test)] modules,
+# #[test] functions, and const contexts where panicking is the only
+# option at evaluation time.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests  = true
+
+allow-unwrap-in-consts = true
+allow-expect-in-consts = true

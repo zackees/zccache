@@ -78,15 +78,15 @@ libraries = [{ path = "dylints/*" }]
 # The workspace MSRV tracks rust-toolchain.toml. Lint configuration is also
 # enforced via CI clippy flags.
 #
-# [workspace.lints.rust]
-# unsafe_code = "deny"
-# missing_debug_implementations = "warn"
-#
-# [workspace.lints.clippy]
-# all = { level = "warn", priority = -1 }
-# pedantic = { level = "warn", priority = -1 }
-# nursery = { level = "warn", priority = -1 }
-# unwrap_used = "warn"
+# Test ergonomics live in workspace-root `clippy.toml`
+# (`allow-{unwrap,expect,panic}-in-tests = true`), so the deny lints below
+# apply only to non-test code paths. See #944.
+
+[workspace.lints.clippy]
+unwrap_used        = "deny"
+unwrap_in_result   = "deny"
+panic_in_result_fn = "deny"
+expect_used        = "warn"
 
 # Keep just enough debug info for readable stack traces (function names +
 # source-line numbers) while dropping the DWARF variable/type tables that

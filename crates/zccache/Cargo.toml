@@ -222,3 +222,6 @@ harness = false
 name = "exec"
 harness = false
 required-features = ["test-support"]
+
+[lints]
+workspace = true

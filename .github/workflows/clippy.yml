@@ -17,7 +17,12 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
+  # NOTE: -D warnings deliberately omitted (#944). The workspace
+  # [lints.clippy] block in Cargo.toml uses `deny` for the panic-class
+  # lints (unwrap_used / unwrap_in_result / panic_in_result_fn) which
+  # error on their own, and `warn` for expect_used — which is an
+  # intentional documented-invariant escape hatch. Escalating warn → error
+  # here would defeat that. Other workflows keep -D warnings.
 
 jobs:
   clippy:
@@ -40,4 +45,4 @@ jobs:
       - name: Install Clippy
         run: soldr rustup component add clippy
       - name: Run Clippy
-        run: soldr cargo clippy --workspace --all-targets -- -D warnings
+        run: soldr cargo clippy --workspace --all-targets
