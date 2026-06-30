@@ -7,11 +7,11 @@
 //! handles (exe file lock on Windows, implicit cwd handle on all OSes)
 //! via [`zccache::daemon::trampoline`] before entering [`run_server`].
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 #[global_allocator]
 static GLOBAL_WIN: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

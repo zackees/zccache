@@ -1,8 +1,8 @@
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 #[global_allocator]
 static GLOBAL_WIN: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
