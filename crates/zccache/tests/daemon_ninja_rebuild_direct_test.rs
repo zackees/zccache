@@ -19,6 +19,8 @@
 //! Run all:    soldr cargo test -p zccache-daemon --test daemon_ninja_rebuild_direct_test -- --nocapture
 //! Run stress: soldr cargo test -p zccache-daemon --test daemon_ninja_rebuild_direct_test -- --ignored --nocapture
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Once};

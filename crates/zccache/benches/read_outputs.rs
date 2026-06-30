@@ -12,6 +12,8 @@
 //! - N = 5: link with a couple of side-effect DLLs
 //! - N = 10: link saturated with side-effects
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use std::path::PathBuf;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};

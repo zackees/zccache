@@ -98,7 +98,7 @@ pub fn generate_ino_cpp(
     let _guard = LIBCLANG_GUARD
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .expect("libclang parse mutex poisoned");
+        .unwrap_or_else(|p| p.into_inner());
 
     ensure_libclang_env()?;
 

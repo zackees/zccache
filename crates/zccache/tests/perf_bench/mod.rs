@@ -8,6 +8,8 @@
 //! Run with: soldr cargo test -p zccache-daemon --test perf_bench_test -- --nocapture --ignored
 
 // Shared helpers (constants, timing, daemon boot, tool finders, etc.)
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 mod common;
 
 // Project-generation + per-language compile helpers

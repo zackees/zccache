@@ -691,7 +691,7 @@ async fn try_exec_cache_hit(
     if !payloads_loaded {
         return None;
     }
-    let payloads = Arc::clone(entry.payloads.as_ref().unwrap());
+    let payloads = Arc::clone(entry.payloads.as_ref()?);
     drop(entry);
 
     let mut paired: Vec<(NormalizedPath, &CachedPayload)> = Vec::with_capacity(output_files.len());
@@ -778,7 +778,10 @@ async fn store_exec_artifact(state: &Arc<SharedState>, key_hex: String, artifact
         let state_ref = Arc::clone(state);
         let sem = Arc::clone(&state.persist_semaphore);
         tokio::spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
+            let _permit = sem
+                .acquire()
+                .await
+                .expect("persist_semaphore is owned by ServerState and never closed");
             let written = tokio::task::spawn_blocking(move || {
                 let _ = persist_artifact_payloads(&artifact_dir, &key_for_persist, &payloads);
                 (key_for_persist, persist_meta)

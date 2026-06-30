@@ -226,7 +226,12 @@ pub(super) async fn handle_link_ephemeral(
         // Load payloads from disk if not already loaded.
         let loaded = ensure_payloads(&mut entry, &state.artifact_dir, &key_hex).is_some();
         if loaded {
-            let payloads = Arc::clone(entry.payloads.as_ref().unwrap());
+            let payloads = Arc::clone(
+                entry
+                    .payloads
+                    .as_ref()
+                    .expect("ensure_payloads above returned without error"),
+            );
             let names = Arc::clone(&entry.meta.output_names);
             let exit_code = entry.meta.exit_code;
             let stdout = entry.stdout.clone();
@@ -495,7 +500,10 @@ pub(super) async fn handle_link_ephemeral(
                 let sem = Arc::clone(&state.persist_semaphore);
                 let state_ref = Arc::clone(state);
                 tokio::spawn(async move {
-                    let _permit = sem.acquire().await.unwrap();
+                    let _permit = sem
+                        .acquire()
+                        .await
+                        .expect("persist_semaphore is owned by ServerState and never closed");
                     let written = tokio::task::spawn_blocking(move || {
                         let _guard = guard;
                         let _ = persist_artifact_paths(&artifact_dir, &kh, &source_paths);

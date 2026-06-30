@@ -1,5 +1,7 @@
 //! Synthetic C project generation + bare/sccache/zccache C compile helpers.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use std::path::Path;
 use std::time::{Duration, Instant};
 use zccache::protocol::{Request, Response};

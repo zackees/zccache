@@ -13,6 +13,8 @@
 //! The fix: mark stdout/stderr as non-inheritable before spawning the
 //! daemon process on Windows.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use std::process::Command;
 use std::time::{Duration, Instant};
 use zccache::core::NormalizedPath;

@@ -3,6 +3,11 @@
 //! Provides helpers for integration tests, including temp directories,
 //! daemon lifecycle management, and test fixtures.
 
+// Test helpers are functionally test code — same disposition as the workspace
+// `allow-unwrap-in-tests` knob for `#[cfg(test)]` modules. Panicking on
+// setup failure is the correct behavior for a fixture.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use crate::core::NormalizedPath;
 use std::path::Path;
 use std::time::{Duration, SystemTime};

@@ -10,6 +10,8 @@
 //! immediately, before zccache's runtime broker integration starts
 //! depending on the bytes.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use running_process::broker::lifecycle::names_v2::v2_program_pipe;
 
 #[test]

@@ -1,6 +1,8 @@
 //! Link/archive benchmarks: bare / sccache / zccache across C archive,
 //! C++ driver-link, Emscripten link, and Rust workspace staticlib link.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use std::path::Path;
 
 use super::common::{

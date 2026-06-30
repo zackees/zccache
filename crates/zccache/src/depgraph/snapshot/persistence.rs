@@ -206,7 +206,7 @@ pub fn load_from_file(path: &Path) -> Result<DepGraph, SnapshotError> {
 
     let snapshot: DepGraphSnapshot = archived
         .deserialize(&mut rkyv::Infallible)
-        .expect("infallible deserialization");
+        .map_err(|e| SnapshotError::Corrupt(format!("deserialize: {e:?}")))?;
 
     Ok(DepGraph::from_snapshot(snapshot))
 }

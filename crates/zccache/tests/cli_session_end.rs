@@ -8,6 +8,8 @@
 //! a daemon-unreachable error must yield exit 0 with a one-line warning
 //! to stderr.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use std::path::PathBuf;
 use std::process::Command;
 

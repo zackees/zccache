@@ -7,6 +7,8 @@
 //! that the dump path under `<cache>/crashes/` matches the new
 //! `crash-<ts>-zccache-<kind>.txt` naming. See issue #313.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 

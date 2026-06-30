@@ -17,6 +17,8 @@
 //!      generate must classify correctly — including response files,
 //!      mixed `-`/`/` prefixes, and the `/Tc`/`/Tp` source-language flags.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use std::path::Path;
 
 use zccache::compiler::response_file::expand_response_files_in;

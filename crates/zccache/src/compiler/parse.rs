@@ -283,7 +283,10 @@ pub fn parse_invocation(compiler: &str, args: &[String]) -> ParsedInvocation {
     }
 
     // Single source file
-    let (source, _, mode) = source_files.into_iter().next().unwrap();
+    let (source, _, mode) = source_files
+        .into_iter()
+        .next()
+        .expect("source_files non-empty: checked above as `if !source_files.is_empty()`");
     let output =
         output_file.unwrap_or_else(|| default_output(&source, family, mode, has_precompile_flag));
 

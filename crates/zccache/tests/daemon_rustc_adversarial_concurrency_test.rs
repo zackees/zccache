@@ -13,6 +13,8 @@
 //! Run all:    soldr cargo test -p zccache --test daemon_rustc_adversarial_concurrency_test -- --nocapture --ignored --test-threads=1
 //! Run single: soldr cargo test -p zccache --test daemon_rustc_adversarial_concurrency_test -- <test_name> --nocapture --ignored
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use zccache::core::NormalizedPath;
 use zccache::daemon::DaemonServer;
 use zccache::protocol::{Request, Response};

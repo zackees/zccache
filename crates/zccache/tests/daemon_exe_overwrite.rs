@@ -16,6 +16,8 @@
 //!
 //! See issue #134 / PR #135.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 #![cfg(windows)]
 
 use std::process::{Command, Stdio};

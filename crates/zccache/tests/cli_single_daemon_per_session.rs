@@ -23,6 +23,8 @@
 //! Marked `#[ignore]` so the unit-test pass stays sub-second; runs
 //! under `./test --integration` and `./test --full`.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use std::io::Write;
 use std::process::{Command, Stdio};
 

@@ -3,6 +3,8 @@
 //! These tests require GCC or Clang to be installed. Run with:
 //! `soldr cargo test -p zccache-depgraph --test depfile_integration_test -- --ignored`
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use std::process::Command;
 use tempfile::TempDir;
 use zccache::core::NormalizedPath;

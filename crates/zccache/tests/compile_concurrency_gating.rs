@@ -25,6 +25,8 @@
 //! parsing the daemon log file in the `ZCCACHE_MAX_PARALLEL_COMPILES=1`
 //! "60 source files" scenario.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

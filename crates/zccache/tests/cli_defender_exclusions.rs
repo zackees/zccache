@@ -6,6 +6,8 @@
 //! verbs touch real machine state and need an admin shell, so we stay
 //! out of them in CI.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use std::process::Command;
 
 fn zccache_bin() -> &'static str {

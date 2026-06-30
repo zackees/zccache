@@ -9,6 +9,8 @@
 //! See `daemon_stress_edges_test.rs` for path/output/empty-source edge cases and
 //! `daemon_stress_compiler_test.rs` for compiler-override coverage.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use zccache::daemon::DaemonServer;
 use zccache::protocol::{Request, Response};
 

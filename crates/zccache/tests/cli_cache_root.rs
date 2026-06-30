@@ -3,6 +3,8 @@
 //! this to verify at runtime that its `ZCCACHE_CACHE_DIR` redirect was
 //! honored by the binary on PATH.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use std::path::Path;
 use std::process::{Command, Stdio};
 

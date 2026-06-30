@@ -3,6 +3,8 @@
 //! Three-way benchmark measuring compile latency across cache-miss and cache-hit scenarios.
 //! Run with: soldr cargo test -p zccache-daemon --test perf_test -- --nocapture --ignored
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use std::time::Instant;
 use zccache::core::NormalizedPath;
 use zccache::daemon::DaemonServer;

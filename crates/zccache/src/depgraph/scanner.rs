@@ -78,7 +78,9 @@ pub fn scan_includes_str(source: &str) -> Vec<IncludeDirective> {
                 in_block_comment = false;
                 // Could have another block comment start after...
                 if rest.contains("/*") {
-                    let after_end = rest.find("/*").unwrap();
+                    let after_end = rest
+                        .find("/*")
+                        .expect("contains check immediately above guarantees Some");
                     if !rest[..after_end].contains("*/") {
                         in_block_comment = true;
                     }

@@ -11,6 +11,8 @@
 //!
 //! Counts: 100, 1000, 5000 — covers tiny / typical / large repos.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 

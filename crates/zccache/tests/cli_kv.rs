@@ -3,6 +3,8 @@
 //! Each test uses an isolated `ZCCACHE_CACHE_DIR` so it never touches the
 //! user's real cache directory and never collides with other tests.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};

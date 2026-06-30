@@ -7,6 +7,8 @@
 //! in console mode or a clean unavailable warning when the binary was not built
 //! with Tokio's `tokio_unstable` cfg.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use serde_json::json;
 use std::io;
 use std::net::{SocketAddr, TcpListener, TcpStream};

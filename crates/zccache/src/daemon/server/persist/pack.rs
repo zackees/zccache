@@ -65,8 +65,16 @@ pub(in crate::daemon::server) fn parse_pack_header(
     let mut entries = Vec::with_capacity(n);
     for i in 0..n {
         let base = 8 + i * 16;
-        let offset = u64::from_le_bytes(data[base..base + 8].try_into().unwrap());
-        let size = u64::from_le_bytes(data[base + 8..base + 16].try_into().unwrap());
+        let offset = u64::from_le_bytes(
+            data[base..base + 8]
+                .try_into()
+                .map_err(|_| std::io::Error::other("pack offset slice not 8 bytes"))?,
+        );
+        let size = u64::from_le_bytes(
+            data[base + 8..base + 16]
+                .try_into()
+                .map_err(|_| std::io::Error::other("pack size slice not 8 bytes"))?,
+        );
         entries.push((offset, size));
     }
     Ok(entries)

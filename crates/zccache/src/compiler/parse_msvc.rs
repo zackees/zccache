@@ -378,7 +378,10 @@ pub fn parse_msvc_invocation(
         };
     }
 
-    let (source, _) = source_files.into_iter().next().unwrap();
+    let (source, _) = source_files
+        .into_iter()
+        .next()
+        .expect("source_files non-empty: checked above as `if !source_files.is_empty()`");
     let output = output_file.unwrap_or_else(|| msvc_default_output(&source));
 
     ParsedInvocation::Cacheable(CacheableCompilation {

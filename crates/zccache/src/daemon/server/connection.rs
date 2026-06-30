@@ -705,7 +705,9 @@ async fn compile_response_for_session(
     };
     let resp = handle_compile(
         state,
-        ctx.session_id.as_deref().unwrap(),
+        ctx.session_id
+            .as_deref()
+            .expect("session_id set by HandleCtx constructor above"),
         &ctx.args,
         &cwd,
         &compiler,

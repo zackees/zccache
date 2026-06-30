@@ -4,6 +4,8 @@
 //! reader/writer races) are marked `#[ignore]` so they only run under
 //! `./test --full`. Default `./test` and the Stop hook stay fast.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use std::sync::Arc;
 
 use zccache::artifact::kv::{is_valid_namespace, INLINE_THRESHOLD, MAX_VALUE_BYTES};

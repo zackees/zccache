@@ -11,6 +11,8 @@
 //! invariants of which env vars get set; this file verifies the full
 //! spawn-and-receive round trip on the host that supports it.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 #![cfg(unix)]
 
 use zccache::daemon::lineage::{

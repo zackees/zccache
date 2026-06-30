@@ -129,7 +129,12 @@ pub(super) fn check_unit_cache(
                         ensure_payloads(&mut cached_ref, &state.artifact_dir, artifact_key_hex)
                             .is_some();
                     if loaded {
-                        let payloads = Arc::clone(cached_ref.payloads.as_ref().unwrap());
+                        let payloads = Arc::clone(
+                            cached_ref
+                                .payloads
+                                .as_ref()
+                                .expect("ensure_payloads above returned without error"),
+                        );
                         let names = Arc::clone(&cached_ref.meta.output_names);
                         let artifact_bytes: u64 = cached_ref.meta.total_size;
                         let stdout = cached_ref.stdout.clone();
@@ -246,7 +251,12 @@ pub(super) fn check_unit_cache(
             let loaded =
                 ensure_payloads(&mut cached_ref, &state.artifact_dir, &artifact_key_hex).is_some();
             if loaded {
-                let payloads = Arc::clone(cached_ref.payloads.as_ref().unwrap());
+                let payloads = Arc::clone(
+                    cached_ref
+                        .payloads
+                        .as_ref()
+                        .expect("ensure_payloads above returned without error"),
+                );
                 let names = Arc::clone(&cached_ref.meta.output_names);
                 let artifact_bytes: u64 = cached_ref.meta.total_size;
                 let stdout = cached_ref.stdout.clone();
@@ -883,7 +893,10 @@ pub(super) async fn handle_compile_multi(
         // src/dst failures already enriched by `persist::enrich_persist_err`).
         let t_persist_enqueue = std::time::Instant::now();
         tokio::spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
+            let _permit = sem
+                .acquire()
+                .await
+                .expect("persist_semaphore is owned by ServerState and never closed");
             let written = tokio::task::spawn_blocking(move || {
                 let _guard = guard;
                 let gap_ms = t_persist_enqueue.elapsed().as_millis() as u64;

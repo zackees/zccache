@@ -932,7 +932,7 @@ pub(crate) fn snapshot_bytes_walk(
             Err(_) => continue,
         };
         if let Some(key) = file_identity(&meta) {
-            let mut seen_guard = seen.lock().expect("seen mutex poisoned");
+            let mut seen_guard = seen.lock().unwrap_or_else(|p| p.into_inner());
             if !seen_guard.insert(key) {
                 continue;
             }

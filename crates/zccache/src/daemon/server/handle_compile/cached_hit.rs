@@ -87,7 +87,7 @@ pub(super) fn materialize_cached_compile_hit(
     let t1 = Instant::now();
     let artifact_lookup_ns = (t1 - t0).as_nanos() as u64;
 
-    let payloads = Arc::clone(cached_ref.payloads.as_ref().unwrap());
+    let payloads = Arc::clone(cached_ref.payloads.as_ref()?);
     let names = Arc::clone(&cached_ref.meta.output_names);
     let exit_code = cached_ref.meta.exit_code;
     let stdout = cached_ref.stdout.clone();

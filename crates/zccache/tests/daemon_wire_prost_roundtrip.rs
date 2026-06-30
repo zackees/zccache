@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+
 use bytes::BytesMut;
 use prost::Message;
 use zccache::protocol::wire_prost::{
