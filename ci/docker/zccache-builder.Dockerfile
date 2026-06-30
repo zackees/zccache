@@ -23,18 +23,14 @@ FROM rust:1.94.1-slim-bookworm
 
 # Build deps for any cc-rs / pkg-config / C-FFI crates that show up in
 # zccache's transitive graph. Notable consumers:
-#   - tikv-jemalloc-sys: invokes its bundled autogen.sh + make to build
-#     libjemalloc.a from C source (needs build-essential + autoconf;
-#     without them the build.rs panics with "No such file or directory"
-#     when it tries to exec `make`)
 #   - libssl-dev: openssl-sys
 #   - pkg-config: every -sys crate that uses it for system-lib discovery
-# Pin to a specific apt snapshot would be nice but slim-bookworm doesn't
-# expose snapshot pins out-of-box.
+#   - build-essential: cc-rs link step for mimalloc and other -sys crates
+# (autoconf was here for tikv-jemalloc-sys' autogen.sh; dropped now that
+# mimalloc — pure C, no autotools — is the sole allocator.)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         build-essential \
-        autoconf \
         pkg-config \
         libssl-dev \
         ca-certificates \

@@ -108,11 +108,12 @@ wait-timeout = "0.2"
 tracing-subscriber = { workspace = true }
 
 # Global allocator on every target. mimalloc is pure C with no autotools
-# step, so it cross-compiles cleanly from Linux to Windows MSVC and
-# *-apple-darwin (where `tikv-jemalloc-sys`' hidden `$(CC) -MM` autoconf
-# dep-tracking pass drops the `--sysroot` and aborts; see
-# tikv/jemallocator#170). Single allocator across all platforms also
-# simplifies perf analysis — no per-target allocator-behavior delta.
+# step, so it cross-compiles cleanly in every direction. tikv-jemalloc
+# was the previous choice on unix but its bundled autoconf invokes a
+# hidden `$(CC) -MM` dep-tracking pass that silently drops the
+# `--sysroot` flag — broke Linux->*-apple-darwin (and would equally
+# break Windows->Linux); see tikv/jemallocator#170. Using one allocator
+# everywhere also removes a per-platform variable from perf analysis.
 mimalloc = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
