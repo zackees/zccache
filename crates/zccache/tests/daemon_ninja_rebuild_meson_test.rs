@@ -7,7 +7,13 @@
 //!
 //! Run:    soldr cargo test -p zccache-daemon --test daemon_ninja_rebuild_meson_test -- --ignored --nocapture
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use std::sync::{Arc, Once};
 use tokio::sync::Notify;

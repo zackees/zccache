@@ -57,7 +57,13 @@ jobs:
       - name: Install musl-tools
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Add rust target
-        run: rustup target add ${{ inputs.target }}
+        # Route through `soldr rustup` so the target lands in the
+        # setup-soldr-managed RUSTUP_HOME (the same one `soldr cargo`
+        # below uses). Bare `rustup target add` installs into
+        # `/home/runner/.rustup` instead, which soldr ignores —
+        # producing the "can't find crate for `core`" failure that
+        # blocked main pre-fix.
+        run: soldr rustup target add ${{ inputs.target }}
       - name: Check
         shell: bash
         run: |

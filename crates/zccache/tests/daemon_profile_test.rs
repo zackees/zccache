@@ -2,7 +2,13 @@
 //!
 //! Run with: soldr cargo test -p zccache-daemon --test profile_test -- --nocapture --ignored
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use zccache::daemon::DaemonServer;
 use zccache::protocol::{Request, Response};

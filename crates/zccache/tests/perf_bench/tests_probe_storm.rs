@@ -15,7 +15,13 @@
 //! lands with a perf unit test", no perf-cluster row is added yet —
 //! that comes with the fix.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use std::time::{Duration, Instant};
 

@@ -3,7 +3,13 @@
 //! The service-shape test below stays behind `cfg(any())` until the MVP API is
 //! fully wired into durable audit emission and limit enforcement.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 #[test]
 #[ignore = "documentation guard only; embedded public API is not exported yet"]

@@ -39,11 +39,11 @@
 //!
 //! ## Hot-path cost
 //!
-//! - **Off** (env var unset): one [`OnceLock::get_or_init`] miss
+//! - **Off** (env var unset): one [`std::sync::OnceLock::get_or_init`] miss
 //!   resolves to `None`; subsequent calls hit the `None` arm and
 //!   return immediately. Below noise.
-//! - **On**: one [`Instant::elapsed`], one [`format!`], one mutex-guarded
-//!   [`Write::write_all`]. The mutex contention is bounded by the
+//! - **On**: one [`std::time::Instant::elapsed`], one [`format!`], one mutex-guarded
+//!   [`std::io::Write::write_all`]. The mutex contention is bounded by the
 //!   number of sub-phase records per compile (~6 today) times the
 //!   embedded daemon's compile concurrency — fine for diagnostic use,
 //!   not enabled in production.

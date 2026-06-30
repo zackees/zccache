@@ -25,7 +25,13 @@
 //! (`[patch.crates-io]` → local running-process) surfaces breakage at
 //! `cargo check` time rather than at first runtime decode.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use prost::Message;
 use running_process::broker::protocol_v2::{

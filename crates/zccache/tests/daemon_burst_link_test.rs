@@ -33,7 +33,13 @@
 //! issue's `N` parameter). The test no-ops when clang is not on PATH so
 //! it can stay in the default integration set.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use std::time::{Duration, Instant};
 

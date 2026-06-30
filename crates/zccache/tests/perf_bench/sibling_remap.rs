@@ -9,7 +9,13 @@
 //! share across sibling roots). zccache is primed from workspace A, then warm
 //! trials measure compiles in workspace B that should hit the sibling cache.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use std::path::Path;
 use std::time::Duration;

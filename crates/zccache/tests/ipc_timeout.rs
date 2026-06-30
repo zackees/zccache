@@ -12,7 +12,13 @@
 //!    the timeout is reserved for the rare "alive but stuck" failure
 //!    mode.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use std::time::{Duration, Instant};
 

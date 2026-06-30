@@ -24,8 +24,13 @@
 //! `ServiceDefinition` inline and skips the probe, which is the minimal faithful
 //! broker that fronts an external backend socket.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
-
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 #![cfg(unix)]
 
 use std::io;

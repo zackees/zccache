@@ -2,7 +2,13 @@
 //! sccache / zccache, plus the input-preparation helpers used by the
 //! archive, driver-link, emcc-link, and rust-staticlib-link tests.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use std::path::Path;
 use std::time::{Duration, Instant};

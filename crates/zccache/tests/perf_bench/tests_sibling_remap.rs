@@ -1,6 +1,12 @@
 //! Sibling-workspace `ZCCACHE_PATH_REMAP=auto` benchmarks (C++ and Rust).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use super::common::{
     dir_size_bytes, end_zccache_session, find_sccache, fmt_bytes, fmt_dur, fmt_ratio, median,

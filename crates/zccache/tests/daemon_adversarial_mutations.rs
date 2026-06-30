@@ -9,7 +9,13 @@
 //! Run all:    soldr cargo test -p zccache-daemon --test adversarial_mutations -- --nocapture
 //! Run single: soldr cargo test -p zccache-daemon --test adversarial_mutations -- <test_name> --nocapture
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use std::path::Path;
 use zccache::core::NormalizedPath;

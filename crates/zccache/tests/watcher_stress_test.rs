@@ -3,7 +3,13 @@
 //! These tests are `#[ignore]`d so they don't run during normal `cargo test`.
 //! Run with: `soldr cargo test -p zccache-watcher --test stress_test -- --ignored`
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use std::fs;
 use std::sync::Arc;

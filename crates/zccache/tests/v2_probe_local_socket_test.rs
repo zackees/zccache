@@ -13,7 +13,13 @@
 //! against the OS. Without (3) a user-supplied env-var value could
 //! crash the daemon's seam-resolution.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use interprocess::local_socket::traits::Listener as _;
 use interprocess::local_socket::ListenerOptions;

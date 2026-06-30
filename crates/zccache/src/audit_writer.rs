@@ -10,17 +10,17 @@
 //!
 //! ## What this module ships
 //!
-//! - [`AuditSink::start`] — spawn the writer task for a configured
+//! - [`crate::audit_writer::AuditSink::start`] — spawn the writer task for a configured
 //!   [`crate::audit::AuditConfig`]; returns a `AuditSink` handle the
 //!   embedded service holds for its lifetime.
-//! - [`AuditSink::emit`] — non-blocking enqueue of a single event.
+//! - [`crate::audit_writer::AuditSink::emit`] — non-blocking enqueue of a single event.
 //!   Honors [`crate::audit::AuditSinkPolicy`] when the channel is at
 //!   capacity (drop / block / degrade / fail-lossless).
-//! - [`AuditSink::flush`] — drain the queue and `fsync` the file.
+//! - [`crate::audit_writer::AuditSink::flush`] — drain the queue and `fsync` the file.
 //!   Called from [`crate::embedded::ZccacheService::flush`].
-//! - [`AuditSink::shutdown`] — flush, close, await the writer task.
+//! - [`crate::audit_writer::AuditSink::shutdown`] — flush, close, await the writer task.
 //!   Called from [`crate::embedded::ZccacheService::shutdown`].
-//! - [`AuditSink::lost_events`] — diagnostic counter of events dropped
+//! - [`crate::audit_writer::AuditSink::lost_events`] — diagnostic counter of events dropped
 //!   under `DropLowPriority` policy. Surfaced by stats so host
 //!   operators can detect backpressure incidents.
 //!
@@ -32,7 +32,7 @@
 //!   the writer can land + soak under host control before the upstream
 //!   hot-path commits to using it. The audit-schema.md doc enumerates
 //!   the milestone list when that work lands.
-//! - **Summary mode.** [`AuditMode::Summary`] currently degrades to a
+//! - **Summary mode.** [`crate::audit::AuditMode::Summary`] currently degrades to a
 //!   `Normal` writer (no separate accumulator). The summary writer is
 //!   tracked under #910 (operator API) since the consumer is the same.
 //! - **Multi-file rollover.** The writer opens one file for the
@@ -147,12 +147,7 @@ impl AuditSink {
             .ok_or(AuditSinkError::MissingOutputRoot)?;
         let output_root = PathBuf::from(output_root);
         std::fs::create_dir_all(&output_root)?;
-        let path = output_root.join(
-            config
-                .event_log
-                .as_deref()
-                .unwrap_or("audit.jsonl"),
-        );
+        let path = output_root.join(config.event_log.as_deref().unwrap_or("audit.jsonl"));
 
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -353,8 +348,10 @@ mod tests {
         let sink = AuditSink::start(&config, None)
             .expect("start ok")
             .expect("sink present in Normal mode");
-        sink.emit(fixture_event(AuditLevel::Info, 1)).expect("emit ok");
-        sink.emit(fixture_event(AuditLevel::Info, 2)).expect("emit ok");
+        sink.emit(fixture_event(AuditLevel::Info, 1))
+            .expect("emit ok");
+        sink.emit(fixture_event(AuditLevel::Info, 2))
+            .expect("emit ok");
         sink.flush().await.expect("flush ok");
         sink.shutdown().await.expect("shutdown ok");
 
@@ -363,7 +360,8 @@ mod tests {
         let lines: Vec<_> = contents.lines().collect();
         assert_eq!(lines.len(), 2, "two events should produce two JSONL rows");
         for line in lines {
-            let parsed: AuditEvent = serde_json::from_str(line).expect("each line is valid AuditEvent");
+            let parsed: AuditEvent =
+                serde_json::from_str(line).expect("each line is valid AuditEvent");
             assert_eq!(parsed.schema, crate::audit::AUDIT_SCHEMA);
             assert_eq!(parsed.schema_version, crate::audit::AUDIT_SCHEMA_VERSION);
         }

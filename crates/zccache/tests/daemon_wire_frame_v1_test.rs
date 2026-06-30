@@ -14,7 +14,13 @@
 //!    v16 prost, FrameV1, and a running-process `BackendHandle` identity
 //!    probe against the same daemon endpoint.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use bytes::BytesMut;
 use zccache::daemon::DaemonServer;

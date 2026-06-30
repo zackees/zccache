@@ -10,7 +10,13 @@
 //!   `clear_zccache`, `start_fresh_sccache`, `stop_sccache`.
 //! - Reporting helpers: `median`, `fmt_dur`, `print_trials*`, `fmt_ratio`.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use std::path::Path;
 use std::time::{Duration, Instant};

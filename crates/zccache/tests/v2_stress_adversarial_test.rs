@@ -13,7 +13,13 @@
 //! this file pins the *system* contract under concurrency + bad
 //! inputs that a real production load would actually generate.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use prost::Message;
 use running_process::broker::lifecycle::names_v2::v2_program_pipe;

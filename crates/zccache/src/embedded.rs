@@ -679,6 +679,14 @@ mod cancellation_tests {
         token: Option<CancellationToken>,
         instance_id: &str,
     ) -> Result<ZccacheService> {
+        // These tests exercise cancellation/runtime plumbing, not the
+        // audit sink, so disable audit (`AuditMode::Off`) to avoid the
+        // production `output_root` validation introduced after the
+        // tests were written. The audit sink is exercised in
+        // `audit_writer.rs` tests with a proper tempdir-backed
+        // `output_root`.
+        let mut audit = AuditConfig::default();
+        audit.mode = crate::audit::AuditMode::Off;
         ZccacheService::start(ZccacheConfig {
             host: HostIdentity {
                 product: "zccache-test".into(),
@@ -686,7 +694,7 @@ mod cancellation_tests {
                 workspace_id: instance_id.into(),
             },
             cache_root: temp.path().join("zccache").into(),
-            audit: AuditConfig::default(),
+            audit,
             limits: ServiceLimits::default(),
             runtime: RuntimeHooks::default(),
             cancellation: token,
@@ -903,6 +911,11 @@ mod runtime_hooks_tests {
         let landed_clone = Arc::clone(&landed_on_host);
         let host_handle_clone = host_handle.clone();
         let service = host_rt.block_on(async move {
+            // Disable audit (`AuditMode::Off`) so the production
+            // `output_root` validation does not reject this fixture; the
+            // test exercises runtime hooks, not the audit sink.
+            let mut audit = AuditConfig::default();
+            audit.mode = crate::audit::AuditMode::Off;
             ZccacheService::start(ZccacheConfig {
                 host: HostIdentity {
                     product: "zccache-test".into(),
@@ -910,7 +923,7 @@ mod runtime_hooks_tests {
                     workspace_id: "runtime-hooks".into(),
                 },
                 cache_root,
-                audit: AuditConfig::default(),
+                audit,
                 limits: ServiceLimits::default(),
                 runtime: RuntimeHooks {
                     service_name: Some("runtime-hooks-test".into()),

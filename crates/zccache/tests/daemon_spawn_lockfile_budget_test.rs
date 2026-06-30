@@ -6,7 +6,13 @@
 //! Defender plus concurrent builds can push clients into
 //! `no daemon lockfile observed within 10s`.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

@@ -9,7 +9,13 @@
 //! This bench mirrors that syscall sequence and compares a serial loop
 //! against `rayon::par_iter`. Counts: 100 / 1000 / 5000.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use std::path::PathBuf;
 use std::time::SystemTime;

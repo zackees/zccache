@@ -5,7 +5,13 @@
 //! session. Version-mismatch and corrupt files must fall back to cold AND
 //! emit a clear warning visible in the per-session `last-session.log`.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

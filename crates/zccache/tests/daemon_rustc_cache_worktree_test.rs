@@ -6,7 +6,13 @@
 //! Split out from `daemon_rustc_cache_test.rs` so each integration-test
 //! binary stays small.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use zccache::core::NormalizedPath;
 use zccache::daemon::DaemonServer;

@@ -55,7 +55,13 @@
 //! test should pass and the env-var gate can be dropped so it joins
 //! the standard integration suite as a permanent regression test.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

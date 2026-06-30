@@ -7,7 +7,13 @@
 //! variant fires when no broker is listening — the exact behavior zccache's
 //! eventual v1 → v2 migration will pattern-match on.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use running_process::broker::client_v2::{connect, BrokerV2Error};
 

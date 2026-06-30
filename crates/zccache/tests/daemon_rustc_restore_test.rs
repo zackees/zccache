@@ -5,7 +5,13 @@
 //! persisted depgraph so unchanged rustc multi-output args are served from
 //! cache and recreate the missing output tree.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

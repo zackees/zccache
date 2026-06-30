@@ -3,7 +3,13 @@
 //! CI workflow relies on — produced by the stamp binary, consumed by
 //! `read_marker_from_path` in the daemon and CLI.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_in_result)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result
+)]
 
 use std::io::Write;
 use zccache::symbols::marker::{read_marker_from_path, MARKER_SIZE};
