@@ -58,7 +58,6 @@ ruzstd = "0.7"
 lzma-rs = "0.3"
 sevenz-rust = "0.6"
 rkyv = { version = "0.7", features = ["validation"] }
-tikv-jemallocator = { version = "0.7", features = ["unprefixed_malloc_on_supported_platforms"] }
 mimalloc = "0.1"
 running-process = { version = "4.5.7", default-features = false, features = ["client-async"] }
 zccache = { path = "crates/zccache" }

@@ -14,13 +14,8 @@
 //!    the entire command line as a compiler invocation and forwards
 //!    it to the daemon via the session from ZCCACHE_SESSION_ID.
 
-#[cfg(all(unix, not(target_os = "macos")))]
 #[global_allocator]
-static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-
-#[cfg(any(windows, target_os = "macos"))]
-#[global_allocator]
-static GLOBAL_WIN: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::process::ExitCode;
 

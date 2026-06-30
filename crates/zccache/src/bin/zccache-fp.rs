@@ -1,10 +1,5 @@
-#[cfg(all(unix, not(target_os = "macos")))]
 #[global_allocator]
-static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-
-#[cfg(any(windows, target_os = "macos"))]
-#[global_allocator]
-static GLOBAL_WIN: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::path::Path;
 use std::process::ExitCode;
