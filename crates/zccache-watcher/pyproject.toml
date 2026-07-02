@@ -1,6 +1,6 @@
 [build-system]
-requires = ["maturin>=1.7"]
-build-backend = "maturin"
+requires = ["soldr>=0.7.98"]
+build-backend = "soldr"
 
 [project]
 name = "zccache-watcher"
