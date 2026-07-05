@@ -267,7 +267,13 @@ fn write_atomic_durable(tmp: &Path, target: &Path, bytes: &[u8]) -> std::io::Res
 /// exit, or empty stdout so cache keys are still well-defined for
 /// stubbed binaries (unit tests) or broken toolchains.
 pub(super) fn hash_rustc_identity(path: &Path) -> Option<ContentHash> {
-    match std::process::Command::new(path).arg("-vV").output() {
+    let mut cmd = std::process::Command::new(path);
+    cmd.arg("-vV");
+    // Suppress the Windows console window this cold-path probe would
+    // otherwise flash — the daemon runs detached, so a console-subsystem
+    // child spawned without CREATE_NO_WINDOW pops a visible window.
+    crate::daemon::process::suppress_child_console(&mut cmd);
+    match cmd.output() {
         Ok(output) if output.status.success() && !output.stdout.is_empty() => {
             Some(crate::hash::hash_bytes(&output.stdout))
         }
@@ -279,11 +285,11 @@ pub(super) fn hash_rustc_identity(path: &Path) -> Option<ContentHash> {
 }
 
 pub(super) async fn hash_rustc_identity_async(path: std::path::PathBuf) -> Option<ContentHash> {
-    match tokio::process::Command::new(&path)
-        .arg("-vV")
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new(&path);
+    cmd.arg("-vV");
+    // Same CREATE_NO_WINDOW suppression as the sync variant above.
+    crate::daemon::process::suppress_child_console_tokio(&mut cmd);
+    match cmd.output().await {
         Ok(output) if output.status.success() && !output.stdout.is_empty() => {
             Some(crate::hash::hash_bytes(&output.stdout))
         }

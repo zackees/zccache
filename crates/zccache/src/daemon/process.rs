@@ -548,6 +548,37 @@ fn child_creation_flags(_priority: CompilePriority) -> u32 {
     CREATE_NO_WINDOW
 }
 
+/// Apply the daemon's console-suppression creation flag (`CREATE_NO_WINDOW`)
+/// to a child spawned OUTSIDE the priority-aware `command_output_*` helpers.
+///
+/// The compiler-identity probe (`rustc -vV` in [`super::server`]'s
+/// `compiler_hash`) builds a `Command` and calls `.output()` directly, so it
+/// never reached [`child_creation_flags`]. Since the daemon runs detached
+/// (no console), that made every cold-path identity probe flash a console
+/// window on Windows — the exact symptom `child_creation_flags` was added to
+/// fix for the compile path. This routes those probes through the same flag.
+/// No-op on non-Windows.
+pub(crate) fn suppress_child_console(cmd: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(child_creation_flags(CompilePriority::Normal));
+    }
+    #[cfg(not(windows))]
+    let _ = cmd;
+}
+
+/// `tokio::process::Command` variant of [`suppress_child_console`].
+///
+/// `tokio::process::Command::creation_flags` is an inherent method (unlike
+/// `std`'s, which comes from `CommandExt`), so no trait import is needed.
+pub(crate) fn suppress_child_console_tokio(cmd: &mut tokio::process::Command) {
+    #[cfg(windows)]
+    cmd.creation_flags(child_creation_flags(CompilePriority::Normal));
+    #[cfg(not(windows))]
+    let _ = cmd;
+}
+
 /// Wait for a synchronous command after applying a compiler child priority.
 ///
 /// Convenience wrapper that pipes `Stdio::null()` for stdin. Callers that
