@@ -2651,9 +2651,9 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.5.7"
+version = "4.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cc9c5f443f6e2af5fa401ab865b862902b769820da1e3b2b2b9bdab658982f9"
+checksum = "6cfb64bf8432bcd3f842ba48536bb7218d83ac7fe24fd50f62f07a5e01618472"
 dependencies = [
  "anyhow",
  "blake3",
@@ -4208,7 +4208,7 @@ dependencies = [
 
 [[package]]
 name = "zccache"
-version = "1.12.12"
+version = "1.12.13"
 dependencies = [
  "arc-swap",
  "bincode",
@@ -4265,7 +4265,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-cli"
-version = "1.12.12"
+version = "1.12.13"
 dependencies = [
  "pyo3",
  "pyo3-build-config",
@@ -4274,7 +4274,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-fingerprint"
-version = "1.12.12"
+version = "1.12.13"
 dependencies = [
  "pyo3",
  "pyo3-build-config",
@@ -4283,7 +4283,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-watcher"
-version = "1.12.12"
+version = "1.12.13"
 dependencies = [
  "pyo3",
  "pyo3-build-config",
