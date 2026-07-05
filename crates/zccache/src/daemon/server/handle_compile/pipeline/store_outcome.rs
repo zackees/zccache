@@ -385,7 +385,11 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         None => pre_hashed.unwrap_or_default(),
     };
     let pre_hashed_count = hash_map.len();
-    {
+    // #955: run the parallel hash under block_in_place so a large extern
+    // set (the whole workspace, for a consolidated crate) doesn't park the
+    // tokio worker and stall the runtime under concurrent misses. See
+    // process::run_cpu_blocking.
+    crate::daemon::process::run_cpu_blocking(|| {
         use rayon::prelude::*;
         // Build the post-compile path list. When the pre-hash phase
         // populated `hash_map` (either rustc's `pre_hash_task` or the
@@ -441,7 +445,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
                 ),
             );
         }
-    }
+    });
     let hash_all_ns = t_hash.elapsed().as_nanos() as u64;
 
     let MissArtifactStoreStats {
@@ -459,7 +463,11 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         artifact_index_build_ns,
         artifact_index_persist_ns,
         artifact_memory_insert_ns,
-    } = store_miss_artifact(MissArtifactStoreRequest {
+    // #955: the miss persist (a large rustc `.rlib` copy when it can't be
+    // hardlinked cross-volume) is synchronous; run it under block_in_place
+    // so it doesn't park the tokio worker. See process::run_cpu_blocking.
+    } = crate::daemon::process::run_cpu_blocking(|| {
+        store_miss_artifact(MissArtifactStoreRequest {
         state_arc,
         sid,
         context_key,
@@ -474,6 +482,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         stderr: &stderr,
         exit_code,
         compile_start,
+        })
     });
 
     // Record miss phase profile

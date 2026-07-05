@@ -67,6 +67,41 @@ fn is_truthy(value: &str) -> bool {
     )
 }
 
+/// Run a CPU/IO-heavy **synchronous** section without stalling the async
+/// runtime (issue #955 — daemon-side root cause).
+///
+/// The miss-store tail of a full-codegen compile does two size-scaling
+/// synchronous things on the tokio worker thread: a rayon parallel hash of
+/// the source + the whole extern set, and the artifact persist (a large
+/// `.rlib` copy when it can't be hardlinked cross-volume). For the
+/// consolidated `zccache` crate the extern set is the entire workspace, so
+/// each miss parks a worker for a long time. Under several concurrent
+/// `cargo test` invocations this can park *every* worker at once — the
+/// runtime then can't drive the reply I/O for any in-flight compile, so
+/// the daemon "never responds" (0 rustc alive, since rustc already exited)
+/// and the client wedges. That is the #955 wedge.
+///
+/// On the multi-thread daemon runtime, [`tokio::task::block_in_place`] tells
+/// tokio to spin up a replacement worker for the duration of `f`, so the
+/// runtime keeps servicing other compiles' I/O (including sending their
+/// replies) while this section runs. On a current-thread runtime (the
+/// embedded host path) `block_in_place` would panic, so `f` runs inline —
+/// the pre-#955 status quo, no worse than before.
+pub(crate) fn run_cpu_blocking<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let is_multi_thread = matches!(
+        tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()),
+        Ok(tokio::runtime::RuntimeFlavor::MultiThread)
+    );
+    if is_multi_thread {
+        tokio::task::block_in_place(f)
+    } else {
+        f()
+    }
+}
+
 /// Priority policy for compiler/linker child processes owned by the daemon.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum CompilePriority {
@@ -906,6 +941,30 @@ unsafe impl Sync for WindowsJob {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── run_cpu_blocking (#955) ──
+
+    #[test]
+    fn run_cpu_blocking_no_runtime_runs_inline() {
+        // Outside any tokio runtime the section runs inline and returns
+        // the closure's value.
+        assert_eq!(run_cpu_blocking(|| 40 + 2), 42);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_cpu_blocking_multi_thread_ok() {
+        // On the daemon's real (multi-thread) runtime this takes the
+        // block_in_place branch and must still return the value.
+        assert_eq!(run_cpu_blocking(|| "ok"), "ok");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_cpu_blocking_current_thread_does_not_panic() {
+        // Regression guard: block_in_place panics on a current-thread
+        // runtime (the embedded-host path), so run_cpu_blocking MUST fall
+        // back to running inline there rather than aborting the compile.
+        assert_eq!(run_cpu_blocking(|| 123), 123);
+    }
 
     #[test]
     fn parse_compile_priority_values() {
