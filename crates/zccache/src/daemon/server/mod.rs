@@ -65,7 +65,7 @@ const REQUEST_ROOT_MARKER: &str = "$ZCCACHE_WORKTREE_ROOT";
 const LINK_PATH_REMAP_AUTO_KEY_FLAG: &str = "zccache:path-remap=auto";
 const LINK_PATH_REMAP_ROOT_SPECIFIC_FLAG: &str = "zccache:path-remap=root-specific";
 
-pub use lifecycle::DepGraphSetter;
+pub use loaders::DepGraphSetter;
 
 /// The daemon server that listens for IPC connections.
 pub struct DaemonServer {
@@ -118,6 +118,7 @@ mod client_env;
 mod compile_concurrency;
 mod compiler_hash;
 mod connection;
+mod embedded;
 mod handle_clear;
 mod handle_compile;
 mod handle_compile_ephemeral;
@@ -130,6 +131,7 @@ mod in_flight;
 mod keys;
 mod lifecycle;
 mod link_helpers;
+mod loaders;
 mod pch;
 mod pending_writes;
 mod persist;
