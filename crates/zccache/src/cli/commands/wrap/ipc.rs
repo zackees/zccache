@@ -76,12 +76,21 @@ pub(super) async fn cmd_compile(
                     cmd_compile_ephemeral(endpoint, compiler.as_path(), args, cwd, client_env).await
                 }
                 WedgeAction::EscalateKill | WedgeAction::EscalateKillProbeError => {
+                    // The daemon is genuinely wedged: it missed the
+                    // per-request wedge budget AND failed the follow-up
+                    // responsiveness probe. Per the fail-fast policy (#955)
+                    // a *detected* wedge fails IMMEDIATELY — we do not mask
+                    // it with a slow uncached retry/fallback. Kill the
+                    // wedged daemon so the next invocation starts fresh,
+                    // then surface the failure now. (The root-cause daemon
+                    // fix keeps this path from triggering in normal builds.)
                     eprintln!(
-                        "zccache[warn][W]: daemon at {endpoint} appears wedged \
-                         (probe failed within budget); recovering — issue #666"
+                        "zccache[err][W]: daemon at {endpoint} is wedged \
+                         (missed wedge budget + failed probe); killing it and \
+                         failing immediately — issue #955"
                     );
                     stop_stale_daemon(endpoint).await;
-                    cmd_compile_ephemeral(endpoint, compiler.as_path(), args, cwd, client_env).await
+                    ExitCode::FAILURE
                 }
             }
         }
