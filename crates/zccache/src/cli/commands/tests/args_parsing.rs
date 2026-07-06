@@ -8,11 +8,11 @@ use super::super::args::{
     Cli, Commands, DaemonCommands, DaemonProfileCommands, RustPlanBackendArg, RustPlanCommands,
     KNOWN_SUBCOMMANDS,
 };
-use super::super::rust_plan::rust_plan_gha_version;
 use super::super::session::{
     session_stats_error_json, session_stats_json, session_stats_unavailable_json,
     session_summary_warnings, SessionStartPrivateOptions,
 };
+use crate::artifact::rust_plan_gha_version;
 
 #[test]
 fn rust_plan_cli_parses_validate_restore_save() {

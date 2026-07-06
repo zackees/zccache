@@ -14,14 +14,16 @@ pub use kv::{
     is_valid_namespace, Key, KvError, KvResult, KvStore, INLINE_THRESHOLD, MAX_VALUE_BYTES,
 };
 pub use rust_plan::{
-    restore_rust_plan_layered_local, restore_rust_plan_local, rust_plan_bundle_dir,
-    rust_plan_cache_key, save_rust_plan_delta_local, save_rust_plan_local,
-    RustArtifactBundleLayerKind, RustArtifactBundleManifest, RustArtifactClass, RustArtifactPlanV1,
-    RustBundledArtifact, RustPlanArtifactEffectiveness, RustPlanCompatibility, RustPlanError,
+    restore_rust_plan_gha, restore_rust_plan_layered_local, restore_rust_plan_local,
+    rust_plan_bundle_dir, rust_plan_cache_key, rust_plan_gha_version, save_rust_plan_delta_local,
+    save_rust_plan_gha, save_rust_plan_local, RustArtifactBundleLayerKind,
+    RustArtifactBundleManifest, RustArtifactClass, RustArtifactPlanV1, RustBundledArtifact,
+    RustPlanArtifactEffectiveness, RustPlanCompatibility, RustPlanError, RustPlanGhaError,
     RustPlanInputs, RustPlanMode, RustPlanOperation, RustPlanPackages, RustPlanSkippedSample,
     RustPlanSummary, RustToolchainIdentity, RUST_ARTIFACT_CACHE_SCHEMA_VERSION,
     RUST_ARTIFACT_PLAN_SCHEMA_VERSION,
 };
+pub(crate) use rust_plan::{tar_gz_decode, tar_gz_encode};
 pub use store::{ArtifactIndex, ArtifactStore};
 
 use crate::core::NormalizedPath;

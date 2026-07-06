@@ -1,18 +1,17 @@
 //! `zccache rust-plan` subcommands and helpers.
 
 use crate::artifact::{
-    restore_rust_plan_layered_local, restore_rust_plan_local, rust_plan_bundle_dir,
-    rust_plan_cache_key, save_rust_plan_delta_local, save_rust_plan_local, RustArtifactPlanV1,
-    RustPlanError, RustPlanOperation, RustPlanSummary,
+    restore_rust_plan_gha, restore_rust_plan_layered_local, restore_rust_plan_local,
+    rust_plan_gha_version, save_rust_plan_delta_local, save_rust_plan_gha, save_rust_plan_local,
+    RustArtifactPlanV1, RustPlanError, RustPlanGhaError, RustPlanOperation, RustPlanSummary,
 };
 use crate::core::NormalizedPath;
-use crate::gha::{GhaCache, GhaError};
+use crate::gha::GhaCache;
 use std::path::Path;
 use std::process::ExitCode;
 
 use super::args::{RustPlanBackendArg, RustPlanCommands};
 use super::session::query_session_stats_json;
-use super::targz::{tar_gz_decode, tar_gz_encode};
 use super::util::{absolute_path, format_bytes, resolve_endpoint};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,18 +45,6 @@ impl RustPlanRuntimeError {
     pub(crate) fn message(&self) -> &str {
         match self {
             Self::Backend { message, .. } => message,
-        }
-    }
-
-    pub(crate) fn with_kind(self, kind: RustPlanRuntimeErrorKind) -> Self {
-        match self {
-            Self::Backend {
-                backend, message, ..
-            } => Self::Backend {
-                backend,
-                kind,
-                message,
-            },
         }
     }
 }
@@ -315,22 +302,6 @@ async fn save_rust_plan_delta_local_async(
     .await
 }
 
-async fn run_rust_plan_backend_blocking<F, T>(
-    backend: RustPlanBackendArg,
-    work: F,
-) -> Result<T, RustPlanRuntimeError>
-where
-    F: FnOnce() -> Result<T, String> + Send + 'static,
-    T: Send + 'static,
-{
-    tokio::task::spawn_blocking(work)
-        .await
-        .map_err(|err| {
-            rust_plan_backend_failure(backend, format!("blocking rust-plan task failed: {err}"))
-        })?
-        .map_err(|err| rust_plan_backend_failure(backend, err))
-}
-
 async fn run_rust_plan_restore(
     plan: &RustArtifactPlanV1,
     cache_dir: &Path,
@@ -342,7 +313,9 @@ async fn run_rust_plan_restore(
                 .await
                 .map_err(|err| rust_plan_backend_failure(backend, err.to_string()))
         }
-        RustPlanBackendArg::Gha => restore_rust_plan_gha(plan, cache_dir).await,
+        RustPlanBackendArg::Gha => restore_rust_plan_gha(plan, cache_dir)
+            .await
+            .map_err(map_rust_plan_gha_error),
         RustPlanBackendArg::Auto => unreachable!("auto backend is resolved before execution"),
     }
 }
@@ -358,7 +331,9 @@ async fn run_rust_plan_save(
                 .await
                 .map_err(|err| rust_plan_backend_failure(backend, err.to_string()))
         }
-        RustPlanBackendArg::Gha => save_rust_plan_gha(plan, cache_dir).await,
+        RustPlanBackendArg::Gha => save_rust_plan_gha(plan, cache_dir)
+            .await
+            .map_err(map_rust_plan_gha_error),
         RustPlanBackendArg::Auto => unreachable!("auto backend is resolved before execution"),
     }
 }
@@ -371,86 +346,19 @@ fn resolve_rust_plan_backend(backend: RustPlanBackendArg) -> RustPlanBackendArg 
     }
 }
 
-pub(crate) fn rust_plan_gha_version(cache_key: &str) -> String {
-    GhaCache::version_hash(&["zccache-rust-plan-v2-protobuf", cache_key])
-}
-
-async fn restore_rust_plan_gha(
-    plan: &RustArtifactPlanV1,
-    cache_dir: &Path,
-) -> Result<RustPlanSummary, RustPlanRuntimeError> {
-    let cache_key = rust_plan_cache_key(plan);
-    let version = rust_plan_gha_version(&cache_key);
-    let cache = GhaCache::from_env().map_err(rust_plan_gha_error)?;
-    let Some(data) = cache
-        .restore(&cache_key, &version)
-        .await
-        .map_err(rust_plan_gha_error)?
-    else {
-        let mut summary =
-            restore_rust_plan_local_async(plan.clone(), NormalizedPath::new(cache_dir))
-                .await
-                .map_err(|err| {
-                    rust_plan_backend_failure(RustPlanBackendArg::Gha, err.to_string())
-                })?;
-        summary.set_backend("gha", Some(cache_key), Some(version));
-        summary.record_skip("<gha-cache>", "backend_cache_miss");
-        return Ok(summary);
-    };
-
-    let plan = plan.clone();
-    let cache_dir = cache_dir.to_path_buf();
-    run_rust_plan_backend_blocking(RustPlanBackendArg::Gha, move || {
-        let bundle_dir = rust_plan_bundle_dir(&cache_dir, &cache_key);
-        if bundle_dir.exists() {
-            std::fs::remove_dir_all(&bundle_dir).map_err(|err| err.to_string())?;
-        }
-        let bundle_parent = bundle_dir
-            .parent()
-            .ok_or_else(|| "invalid rust-plan bundle path".to_string())?;
-        std::fs::create_dir_all(bundle_parent).map_err(|err| err.to_string())?;
-        tar_gz_decode(&data, bundle_parent).map_err(|err| err.to_string())?;
-        let mut summary =
-            restore_rust_plan_local(&plan, &cache_dir).map_err(|err| err.to_string())?;
-        summary.set_backend("gha", Some(cache_key), Some(version));
-        Ok(summary)
-    })
-    .await
-}
-
-async fn save_rust_plan_gha(
-    plan: &RustArtifactPlanV1,
-    cache_dir: &Path,
-) -> Result<RustPlanSummary, RustPlanRuntimeError> {
-    let plan = plan.clone();
-    let cache_dir = cache_dir.to_path_buf();
-    let (summary, data) = run_rust_plan_backend_blocking(RustPlanBackendArg::Gha, move || {
-        let summary = save_rust_plan_local(&plan, &cache_dir).map_err(|err| err.to_string())?;
-        let cache_key = summary.cache_key.clone();
-        let bundle_dir = rust_plan_bundle_dir(&cache_dir, &cache_key);
-        let data = tar_gz_encode(&bundle_dir).map_err(|err| err.to_string())?;
-        Ok((summary, data))
-    })
-    .await?;
-    let cache_key = summary.cache_key.clone();
-    let version = rust_plan_gha_version(&cache_key);
-    let cache = GhaCache::from_env().map_err(rust_plan_gha_error)?;
-    cache
-        .save(&cache_key, &version, &data)
-        .await
-        .map_err(rust_plan_gha_error)?;
-    let mut summary = summary;
-    summary.set_backend("gha", Some(cache_key), Some(version));
-    Ok(summary)
-}
-
-fn rust_plan_gha_error(err: GhaError) -> RustPlanRuntimeError {
-    let kind = if matches!(&err, GhaError::NotAvailable) {
+/// Map the library-native `RustPlanGhaError` onto the CLI's runtime-error type
+/// at the boundary, preserving the unavailable-vs-failure distinction.
+fn map_rust_plan_gha_error(err: RustPlanGhaError) -> RustPlanRuntimeError {
+    let kind = if err.is_unavailable() {
         RustPlanRuntimeErrorKind::Unavailable
     } else {
         RustPlanRuntimeErrorKind::Failure
     };
-    rust_plan_backend_failure(RustPlanBackendArg::Gha, err.to_string()).with_kind(kind)
+    RustPlanRuntimeError::Backend {
+        backend: RustPlanBackendArg::Gha,
+        kind,
+        message: err.message().to_string(),
+    }
 }
 
 fn rust_plan_backend_failure(backend: RustPlanBackendArg, message: String) -> RustPlanRuntimeError {
