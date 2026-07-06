@@ -519,7 +519,9 @@ pub(super) async fn handle_link_ephemeral(
                     })
                     .await;
                     if let Ok((kh, meta)) = written {
-                        let _ = state_ref.index_writer_tx.send((kh, meta));
+                        let _ = state_ref
+                            .index_writer_tx
+                            .send(IndexWriterCommand::Insert(kh, meta));
                     }
                 });
             }

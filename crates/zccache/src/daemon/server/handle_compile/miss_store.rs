@@ -205,9 +205,10 @@ fn store_rustc_outputs(
             stats.rust_snapshot_hardlink_count = snapshot_stats.hardlink_count;
             stats.rust_snapshot_copy_count = snapshot_stats.copy_count;
             stats.rust_snapshot_copy_bytes = snapshot_stats.copy_bytes;
-            let _ = state
-                .index_writer_tx
-                .send((artifact_key_hex.to_string(), meta.clone()));
+            let _ = state.index_writer_tx.send(IndexWriterCommand::Insert(
+                artifact_key_hex.to_string(),
+                meta.clone(),
+            ));
             true
         }
         Err(e) => {
@@ -368,7 +369,9 @@ fn store_single_output(
         })
         .await;
         if let Ok((key_hex, meta)) = written {
-            let _ = state_ref.index_writer_tx.send((key_hex, meta));
+            let _ = state_ref
+                .index_writer_tx
+                .send(IndexWriterCommand::Insert(key_hex, meta));
         }
         // Always complete the pending entry, even on JoinError, so
         // waiters cannot hang past the spawn's lifetime.

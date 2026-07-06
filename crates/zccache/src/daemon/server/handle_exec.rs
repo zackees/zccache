@@ -792,7 +792,9 @@ async fn store_exec_artifact(state: &Arc<SharedState>, key_hex: String, artifact
             })
             .await;
             if let Ok((kh, meta)) = written {
-                let _ = state_ref.index_writer_tx.send((kh, meta));
+                let _ = state_ref
+                    .index_writer_tx
+                    .send(IndexWriterCommand::Insert(kh, meta));
             }
         });
     }

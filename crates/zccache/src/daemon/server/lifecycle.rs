@@ -49,7 +49,7 @@ pub(super) fn new_shared_state(
     backend_identity: running_process::broker::protocol_v2::backend_handle::DaemonProcess,
 ) -> (
     Arc<SharedState>,
-    tokio::sync::mpsc::UnboundedReceiver<(String, ArtifactIndex)>,
+    tokio::sync::mpsc::UnboundedReceiver<IndexWriterCommand>,
 ) {
     let shutdown = Arc::new(Notify::new());
     let now = now_secs();
@@ -75,7 +75,7 @@ pub(super) fn new_shared_state(
     let artifact_store = Arc::new(ArtifactStore::open_empty(&index_path));
 
     let (index_writer_tx, index_writer_rx) =
-        tokio::sync::mpsc::unbounded_channel::<(String, ArtifactIndex)>();
+        tokio::sync::mpsc::unbounded_channel::<IndexWriterCommand>();
     let index_writer_shutdown = Arc::new(Notify::new());
 
     // Try to restore the metadata cache from disk. A wrong-version /

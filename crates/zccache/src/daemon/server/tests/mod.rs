@@ -11,6 +11,7 @@ mod clear_handler;
 mod client_env;
 mod compiler_hash;
 mod deferred_cold_path;
+mod embedded_flush;
 mod exec_probe;
 mod fingerprint;
 mod link_cache;

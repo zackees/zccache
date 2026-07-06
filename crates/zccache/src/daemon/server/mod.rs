@@ -73,7 +73,7 @@ pub struct DaemonServer {
     shutdown: Arc<Notify>,
     state: Arc<SharedState>,
     /// Receiver for the background index-writer task. Taken in `run()`.
-    index_writer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<(String, ArtifactIndex)>>,
+    index_writer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<IndexWriterCommand>>,
 }
 
 /// In-process daemon engine used by the public embedded API.
@@ -82,7 +82,7 @@ pub struct DaemonServer {
 /// accepting an [`IpcListener`].
 pub(crate) struct EmbeddedDaemon {
     state: Arc<SharedState>,
-    index_writer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<(String, ArtifactIndex)>>,
+    index_writer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<IndexWriterCommand>>,
     index_writer_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 

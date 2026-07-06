@@ -271,7 +271,6 @@ impl EmbeddedDaemon {
 
     pub(crate) async fn shutdown(&self) -> EmbeddedFlushReport {
         self.state.shutdown_requested.store(true, Ordering::Release);
-        self.state.index_writer_shutdown.notify_waiters();
         let mut index_writer_handle = self.index_writer_handle.lock().await;
         let report = flush_embedded_state(&self.state, &mut index_writer_handle, true).await;
         let _ = std::fs::remove_dir_all(&self.state.depfile_tmpdir);
@@ -334,6 +333,12 @@ async fn flush_embedded_state(
         std::time::Duration::from_secs(30),
     )
     .await;
+
+    let index_writer_drained =
+        flush_index_writer(&state.index_writer_tx, std::time::Duration::from_secs(30)).await;
+    if !index_writer_drained {
+        tracing::warn!("timed out waiting for artifact index writer flush");
+    }
 
     if shutdown_writer {
         state.index_writer_shutdown.notify_waiters();

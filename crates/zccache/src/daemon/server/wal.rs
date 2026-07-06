@@ -2,6 +2,11 @@
 
 use super::*;
 
+pub(super) enum IndexWriterCommand {
+    Insert(String, ArtifactIndex),
+    Flush(tokio::sync::oneshot::Sender<()>),
+}
+
 /// Default WAL flush interval. Persist tasks return immediately after sending
 /// to the WAL; the WAL is flushed to the on-disk bincode blob on this cadence
 /// (or earlier if it exceeds the size budget).
@@ -61,7 +66,7 @@ pub(super) fn wal_max_pending() -> usize {
 /// an abrupt crash (where the files-on-disk are durable but the next
 /// session's `load_all()` won't see them, forcing a one-time re-miss).
 pub(super) async fn run_index_writer(
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<(String, ArtifactIndex)>,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<IndexWriterCommand>,
     store: Arc<ArtifactStore>,
     shutdown: Arc<Notify>,
 ) {
@@ -78,14 +83,17 @@ pub(super) async fn run_index_writer(
         tokio::select! {
             msg = rx.recv() => {
                 match msg {
-                    Some((k, v)) => {
-                        wal.insert(k, v);
+                    Some(command) => {
+                        process_index_writer_command(command, &store, &mut wal, max_pending).await;
                         // Drain whatever else is already queued in this tick.
-                        while let Ok((k, v)) = rx.try_recv() {
-                            wal.insert(k, v);
-                        }
-                        if wal.len() >= max_pending {
-                            flush_wal_to_disk(&store, &mut wal).await;
+                        while let Ok(command) = rx.try_recv() {
+                            process_index_writer_command(
+                                command,
+                                &store,
+                                &mut wal,
+                                max_pending,
+                            )
+                            .await;
                         }
                     }
                     None => {
@@ -103,8 +111,8 @@ pub(super) async fn run_index_writer(
             _ = shutdown.notified() => {
                 // Daemon-initiated graceful shutdown. Drain anything still
                 // queued and flush before the runtime aborts us.
-                while let Ok((k, v)) = rx.try_recv() {
-                    wal.insert(k, v);
+                while let Ok(command) = rx.try_recv() {
+                    process_index_writer_command(command, &store, &mut wal, max_pending).await;
                 }
                 tracing::info!(
                     pending = wal.len(),
@@ -115,6 +123,37 @@ pub(super) async fn run_index_writer(
             }
         }
     }
+}
+
+async fn process_index_writer_command(
+    command: IndexWriterCommand,
+    store: &Arc<ArtifactStore>,
+    wal: &mut std::collections::HashMap<String, ArtifactIndex>,
+    max_pending: usize,
+) {
+    match command {
+        IndexWriterCommand::Insert(k, v) => {
+            wal.insert(k, v);
+            if wal.len() >= max_pending {
+                flush_wal_to_disk(store, wal).await;
+            }
+        }
+        IndexWriterCommand::Flush(ack) => {
+            flush_wal_to_disk(store, wal).await;
+            let _ = ack.send(());
+        }
+    }
+}
+
+pub(super) async fn flush_index_writer(
+    tx: &tokio::sync::mpsc::UnboundedSender<IndexWriterCommand>,
+    timeout: std::time::Duration,
+) -> bool {
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    if tx.send(IndexWriterCommand::Flush(ack_tx)).is_err() {
+        return false;
+    }
+    matches!(tokio::time::timeout(timeout, ack_rx).await, Ok(Ok(())))
 }
 
 pub(super) async fn flush_wal_to_disk(

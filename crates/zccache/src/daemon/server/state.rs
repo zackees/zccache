@@ -161,7 +161,7 @@ pub(super) struct SharedState {
     /// writes) from the periodic index snapshot, so a slow flush no longer
     /// holds a persist permit while other artifacts wait. See
     /// `tests/persist_pool_bench.rs` for the data motivating this split.
-    pub(super) index_writer_tx: tokio::sync::mpsc::UnboundedSender<(String, ArtifactIndex)>,
+    pub(super) index_writer_tx: tokio::sync::mpsc::UnboundedSender<IndexWriterCommand>,
     /// Notify the index-writer to drain its WAL and exit on graceful shutdown.
     /// Without this, the writer would only see the channel close after every
     /// `Arc<SharedState>` ref (including those held by spawned persist tasks)

@@ -841,7 +841,9 @@ pub(super) async fn handle_compile_multi(
                 // Files are already on disk via the hardlink above. The
                 // remaining work is the redb index entry, which goes through
                 // the same background WAL the byte-write path used.
-                let _ = state_task.index_writer_tx.send((artifact_key_hex, meta));
+                let _ = state_task
+                    .index_writer_tx
+                    .send(IndexWriterCommand::Insert(artifact_key_hex, meta));
             }
             // No PersistTaskParams: persistence is complete synchronously.
             let persist: Option<PersistTaskParams> = None;
@@ -923,7 +925,9 @@ pub(super) async fn handle_compile_multi(
             })
             .await;
             if let Ok((key_hex, meta)) = written {
-                let _ = state_ref.index_writer_tx.send((key_hex, meta));
+                let _ = state_ref
+                    .index_writer_tx
+                    .send(IndexWriterCommand::Insert(key_hex, meta));
             }
         });
     }
