@@ -463,25 +463,25 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         artifact_index_build_ns,
         artifact_index_persist_ns,
         artifact_memory_insert_ns,
-    // #955: the miss persist (a large rustc `.rlib` copy when it can't be
-    // hardlinked cross-volume) is synchronous; run it under block_in_place
-    // so it doesn't park the tokio worker. See process::run_cpu_blocking.
+        // #955: the miss persist (a large rustc `.rlib` copy when it can't be
+        // hardlinked cross-volume) is synchronous; run it under block_in_place
+        // so it doesn't park the tokio worker. See process::run_cpu_blocking.
     } = crate::daemon::process::run_cpu_blocking(|| {
         store_miss_artifact(MissArtifactStoreRequest {
-        state_arc,
-        sid,
-        context_key,
-        source_path,
-        output_path,
-        scan_result,
-        hash_map: &hash_map,
-        output_data,
-        user_depfile: user_depfile_capture,
-        rustc_all_outputs: rustc_all_outputs.as_deref(),
-        stdout: &stdout,
-        stderr: &stderr,
-        exit_code,
-        compile_start,
+            state_arc,
+            sid,
+            context_key,
+            source_path,
+            output_path,
+            scan_result,
+            hash_map: &hash_map,
+            output_data,
+            user_depfile: user_depfile_capture,
+            rustc_all_outputs: rustc_all_outputs.as_deref(),
+            stdout: &stdout,
+            stderr: &stderr,
+            exit_code,
+            compile_start,
         })
     });
 

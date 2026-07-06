@@ -228,7 +228,6 @@ pub(super) fn new_shared_state(
     )
 }
 
-
 impl DaemonServer {
     /// Get a handle to signal shutdown.
     #[must_use]
@@ -300,7 +299,6 @@ impl DaemonServer {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *guard = Some(warning);
     }
-
 
     /// Get a snapshot of the phase profiler (for benchmarks).
     #[must_use]
@@ -387,7 +385,6 @@ impl DaemonServer {
         Arc::clone(&self.state)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
