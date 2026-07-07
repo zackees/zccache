@@ -12,10 +12,37 @@ description = "Local-first compiler cache for C/C++/Rust/Emscripten"
 [features]
 default = []
 # Enables zccache::test_support (dev-only helpers).
-test-support = []
-# Compatibility no-op: Tokio Console support is always compiled in and
-# remains dormant unless the daemon is started with the tokio-console profile.
-tokio-console = []
+test-support = ["dep:tracing-subscriber"]
+ci = ["dep:wait-timeout"]
+cli = ["dep:clap", "dep:tracing-subscriber", "download-client", "gha", "symbols"]
+download = ["dep:futures", "dep:reqwest"]
+download-client = [
+    "download",
+    "download-protocol",
+    "dep:lzma-rs",
+    "dep:ruzstd",
+    "dep:sevenz-rust",
+    "dep:sha2",
+    "dep:zip",
+]
+download-daemon = ["download", "download-protocol"]
+download-protocol = ["download"]
+gha = ["dep:reqwest", "dep:sha2"]
+symbols = []
+tokio-console = ["dep:console-subscriber"]
+zccache-bin = ["cli", "dep:mimalloc"]
+daemon-bin = ["dep:clap", "dep:mimalloc", "dep:tracing-subscriber"]
+download-bin = ["dep:clap", "dep:mimalloc", "download-client"]
+download-daemon-bin = [
+    "dep:clap",
+    "dep:mimalloc",
+    "dep:tracing-subscriber",
+    "download-daemon",
+]
+fingerprint-bin = ["dep:clap", "dep:mimalloc"]
+stamp-bin = ["symbols"]
+ci-bin = ["ci", "dep:md5"]
+crash-tools = ["dep:sadness-generator"]
 
 [dependencies]
 # core
@@ -30,8 +57,8 @@ blake3 = { workspace = true }
 memmap2 = { workspace = true }
 
 # gha
-reqwest = { workspace = true, features = ["json"] }
-sha2 = { workspace = true }
+reqwest = { workspace = true, features = ["json"], optional = true }
+sha2 = { workspace = true, optional = true }
 
 # protocol
 bincode = { workspace = true }
@@ -41,7 +68,7 @@ prost = { workspace = true }
 # ipc + test-support: needs full tokio. The tracing feature lets Tokio emit
 # runtime telemetry when the workspace is built with `--cfg tokio_unstable`.
 tokio = { workspace = true, features = ["tracing"] }
-console-subscriber = { workspace = true }
+console-subscriber = { workspace = true, optional = true }
 
 # fscache
 dashmap = { workspace = true }
@@ -71,21 +98,21 @@ rkyv = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 
 # fingerprint
-clap = { workspace = true }
+clap = { workspace = true, optional = true }
 fs2 = { workspace = true }
 
 # exec (issue #272): regex compiles `--key-args-filter` patterns
 regex = { workspace = true }
 
 # download stack
-futures = { workspace = true }
+futures = { workspace = true, optional = true }
 tokio-util = { workspace = true }
-zip = { workspace = true }
+zip = { workspace = true, optional = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
-ruzstd = { workspace = true }
-lzma-rs = { workspace = true }
-sevenz-rust = { workspace = true }
+ruzstd = { workspace = true, optional = true }
+lzma-rs = { workspace = true, optional = true }
+sevenz-rust = { workspace = true, optional = true }
 
 # daemon
 running-process = { workspace = true }
@@ -97,15 +124,15 @@ running-process = { workspace = true }
 # it explicit in [dependencies] does not add a new resolved crate.
 interprocess = "2.4.2"
 filetime = { workspace = true }
-sysinfo = "0.33"
-sadness-generator = "0.6"
+sysinfo = "0.30.13"
+sadness-generator = { version = "0.6", optional = true }
 
 # ci
-md5 = "0.7"
-wait-timeout = "0.2"
+md5 = { version = "0.7", optional = true }
+wait-timeout = { version = "0.2", optional = true }
 
 # shared: used by test_support, download-daemon bin, etc.
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
 
 # Global allocator on every target. mimalloc is pure C with no autotools
 # step, so it cross-compiles cleanly in every direction. tikv-jemalloc
@@ -114,7 +141,7 @@ tracing-subscriber = { workspace = true }
 # `--sysroot` flag — broke Linux->*-apple-darwin (and would equally
 # break Windows->Linux); see tikv/jemallocator#170. Using one allocator
 # everywhere also removes a per-platform variable from perf analysis.
-mimalloc = { workspace = true }
+mimalloc = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -130,6 +157,7 @@ windows-sys = { version = "0.59", features = [
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+futures = { workspace = true }
 # Spike-only (broker_into_backend_io_spike_test): bind a running-process broker
 # listener directly. Pinned to the version already locked transitively via
 # running-process so no new resolution occurs.
@@ -175,39 +203,48 @@ required-features = ["test-support"]
 [[bin]]
 name = "zccache-fp"
 path = "src/bin/zccache-fp.rs"
+required-features = ["fingerprint-bin"]
 
 [[bin]]
 name = "zccache-stamp"
 path = "src/bin/zccache-stamp.rs"
+required-features = ["stamp-bin"]
 
 [[bin]]
 name = "zccache-download-daemon"
 path = "src/bin/zccache-download-daemon.rs"
+required-features = ["download-daemon-bin"]
 
 [[bin]]
 name = "zccache-download"
 path = "src/bin/zccache-download.rs"
 doc = false
+required-features = ["download-bin"]
 
 [[bin]]
 name = "zccache-daemon"
 path = "src/bin/zccache-daemon.rs"
+required-features = ["daemon-bin"]
 
 [[bin]]
 name = "crash-trigger"
 path = "src/bin/crash-trigger.rs"
+required-features = ["crash-tools"]
 
 [[bin]]
 name = "zccache"
 path = "src/bin/zccache.rs"
+required-features = ["zccache-bin"]
 
 [[bin]]
 name = "cli-crash-trigger"
 path = "src/bin/cli-crash-trigger.rs"
+required-features = ["crash-tools"]
 
 [[bin]]
 name = "zccache-ci"
 path = "src/bin/zccache-ci.rs"
+required-features = ["ci-bin"]
 
 [[bench]]
 name = "write_payloads"

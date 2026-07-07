@@ -26,7 +26,9 @@
 //!    its daemon could be reaped.
 
 use crate::core::NormalizedPath;
+use std::borrow::Cow;
 use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -34,6 +36,26 @@ use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use wait_timeout::ChildExt;
+
+trait ProcessNameExt {
+    fn to_lossy_name(&self) -> Cow<'_, str>;
+}
+
+impl ProcessNameExt for str {
+    fn to_lossy_name(&self) -> Cow<'_, str> {
+        Cow::Borrowed(self)
+    }
+}
+
+impl ProcessNameExt for OsStr {
+    fn to_lossy_name(&self) -> Cow<'_, str> {
+        self.to_string_lossy()
+    }
+}
+
+fn process_name_lossy<N: ProcessNameExt + ?Sized>(name: &N) -> Cow<'_, str> {
+    name.to_lossy_name()
+}
 
 /// Default wall-clock timeout for the entire stop hook run, in seconds.
 ///
@@ -319,12 +341,11 @@ pub fn capture_diagnostics() {
 }
 
 fn dump_relevant_processes() {
-    let mut sys = sysinfo::System::new();
-    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    let sys = sysinfo::System::new_all();
     eprintln!("processes (zccache/cargo/rustc/soldr):");
     let mut count = 0usize;
     for (pid, p) in sys.processes() {
-        let name = p.name().to_string_lossy();
+        let name = process_name_lossy(p.name());
         let lower = name.to_ascii_lowercase();
         if lower.contains("zccache")
             || lower.contains("cargo")
@@ -333,7 +354,7 @@ fn dump_relevant_processes() {
         {
             eprintln!(
                 "  PID={pid} name={} status={:?} cpu={:.1}% mem={}KB",
-                name,
+                name.as_ref(),
                 p.status(),
                 p.cpu_usage(),
                 p.memory() / 1024,
@@ -432,15 +453,13 @@ pub const KILL_DAEMON_WAIT: Duration = Duration::from_secs(2);
 
 /// Find every running `zccache-daemon[.exe]` PID by walking the process table.
 fn find_daemon_pids() -> Vec<u32> {
-    use sysinfo::ProcessesToUpdate;
-
-    let mut sys = sysinfo::System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
+    let sys = sysinfo::System::new_all();
     sys.processes()
         .iter()
         .filter_map(|(pid, process)| {
-            let name = process.name().to_string_lossy();
-            (name == "zccache-daemon" || name == "zccache-daemon.exe").then_some(pid.as_u32())
+            let name = process_name_lossy(process.name());
+            (name.as_ref() == "zccache-daemon" || name.as_ref() == "zccache-daemon.exe")
+                .then_some(pid.as_u32())
         })
         .collect()
 }
@@ -528,17 +547,16 @@ pub fn kill_daemon() {
 /// This is conservative: we only reap when we can confirm the parent is
 /// gone. Daemons spawned by a still-running supervisor are left alone.
 pub fn reap_orphan_daemons() -> Vec<u32> {
-    use sysinfo::{Pid, ProcessesToUpdate};
+    use sysinfo::Pid;
 
-    let mut sys = sysinfo::System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
+    let sys = sysinfo::System::new_all();
 
     let alive: std::collections::HashSet<Pid> = sys.processes().keys().copied().collect();
 
     let mut killed = Vec::new();
     for (pid, process) in sys.processes() {
-        let name = process.name().to_string_lossy();
-        if name != "zccache-daemon" && name != "zccache-daemon.exe" {
+        let name = process_name_lossy(process.name());
+        if name.as_ref() != "zccache-daemon" && name.as_ref() != "zccache-daemon.exe" {
             continue;
         }
         let parent = process.parent();

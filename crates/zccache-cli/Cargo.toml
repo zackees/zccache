@@ -14,7 +14,7 @@ crate-type = ["rlib", "cdylib"]
 
 [features]
 default = []
-python = ["dep:pyo3"]
+python = ["dep:pyo3", "zccache/cli"]
 
 [dependencies]
 zccache = { workspace = true }

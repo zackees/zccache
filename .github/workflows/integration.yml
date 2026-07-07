@@ -42,6 +42,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+  ZCCACHE_INTEGRATION_FEATURES: "zccache/zccache-bin,zccache/daemon-bin,zccache/download-bin,zccache/download-daemon-bin,zccache/fingerprint-bin,zccache/stamp-bin,zccache/ci-bin,zccache/crash-tools,zccache/tokio-console,zccache/test-support"
 
 jobs:
   integration:
@@ -67,7 +68,7 @@ jobs:
           solo-toolchain-cache: true
       - name: Build integration test binaries
         shell: bash
-        run: soldr cargo test --workspace --no-fail-fast --no-run
+        run: soldr cargo test --workspace --features "$ZCCACHE_INTEGRATION_FEATURES" --no-fail-fast --no-run
       - name: Stop setup-soldr builder cache before tests
         uses: zackees/setup-soldr/cleanup@v0.9.62
       - name: Test (full workspace)
@@ -82,7 +83,7 @@ jobs:
           unset ZCCACHE_CACHE_DIR
           echo "Using isolated test SOLDR_CACHE_DIR=$SOLDR_CACHE_DIR"
           start=$SECONDS
-          soldr cargo test --workspace --no-fail-fast 2>&1 | tee test-output.txt
+          soldr cargo test --workspace --features "$ZCCACHE_INTEGRATION_FEATURES" --no-fail-fast 2>&1 | tee test-output.txt
           status=${PIPESTATUS[0]}
           dur=$((SECONDS - start))
           echo "- **Integration (Linux)**: ${dur}s" >> "$GITHUB_STEP_SUMMARY"

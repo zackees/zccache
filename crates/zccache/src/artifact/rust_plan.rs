@@ -1,5 +1,6 @@
 //! Plan-driven Rust target artifact save/restore.
 
+#[cfg(feature = "gha")]
 mod gha;
 mod local;
 mod manifest;
@@ -7,12 +8,14 @@ mod proto;
 mod schema;
 mod selection;
 mod summary;
+#[cfg(any(feature = "cli", feature = "gha"))]
 mod targz;
 mod threads;
 
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "gha")]
 pub use gha::{restore_rust_plan_gha, rust_plan_gha_version, save_rust_plan_gha, RustPlanGhaError};
 pub use local::{
     restore_rust_plan_layered_local, restore_rust_plan_local, rust_plan_bundle_dir,
@@ -28,6 +31,7 @@ pub use summary::{
     RustPlanArtifactEffectiveness, RustPlanCompatibility, RustPlanOperation, RustPlanSkippedSample,
     RustPlanSummary,
 };
+#[cfg(feature = "cli")]
 pub(crate) use targz::{tar_gz_decode, tar_gz_encode};
 
 #[cfg(test)]

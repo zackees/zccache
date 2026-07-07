@@ -425,11 +425,19 @@ impl CpuUsageMonitor {
         loop {
             std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
             system.refresh_cpu_usage();
-            let usage = system.global_cpu_usage().clamp(0.0, 100.0);
+            let usage = average_cpu_usage_percent(&system).clamp(0.0, 100.0);
             self.last_usage_percent_bits
                 .store(usage.to_bits(), Ordering::Relaxed);
         }
     }
+}
+
+fn average_cpu_usage_percent(system: &sysinfo::System) -> f32 {
+    let cpus = system.cpus();
+    if cpus.is_empty() {
+        return 0.0;
+    }
+    cpus.iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / cpus.len() as f32
 }
 
 fn current_cpu_usage_percent() -> Option<f32> {

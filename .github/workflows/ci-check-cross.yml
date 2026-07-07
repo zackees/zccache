@@ -63,7 +63,10 @@ jobs:
         # `/home/runner/.rustup` instead, which soldr ignores —
         # producing the "can't find crate for `core`" failure that
         # blocked main pre-fix.
-        run: soldr rustup target add ${{ inputs.target }}
+        shell: bash
+        run: |
+          soldr rustup target remove ${{ inputs.target }} || true
+          soldr rustup target add ${{ inputs.target }}
       - name: Check
         shell: bash
         run: |

@@ -11,7 +11,9 @@ pub mod audit;
 /// service. Spawned by [`embedded::ZccacheService::start`] when
 /// [`audit::AuditConfig::mode`] > `Off`.
 pub mod audit_writer;
+#[cfg(feature = "ci")]
 pub mod ci;
+#[cfg(feature = "cli")]
 pub mod cli;
 /// zccache#940 — per-sub-phase JSONL trace for the embedded compile
 /// path. Diagnostic-only, gated by the `ZCCACHE_INNER_TRACE` env var.
@@ -21,17 +23,23 @@ pub mod compiler;
 pub mod core;
 pub mod daemon;
 pub mod depgraph;
+#[cfg(feature = "download")]
 pub mod download;
+#[cfg(feature = "download-client")]
 pub mod download_client;
+#[cfg(feature = "download-daemon")]
 pub mod download_daemon;
+#[cfg(feature = "download-protocol")]
 pub mod download_protocol;
 pub mod embedded;
 pub mod fingerprint;
 pub mod fscache;
+#[cfg(feature = "gha")]
 pub mod gha;
 pub mod hash;
 pub mod ipc;
 pub mod protocol;
+#[cfg(feature = "symbols")]
 pub mod symbols;
 pub mod watcher;
 

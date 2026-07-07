@@ -20,7 +20,7 @@ mod parts;
 mod resolve;
 mod state;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "download-daemon"))]
 mod tests;
 
 use archive::{extract_archive, remove_path_if_exists};

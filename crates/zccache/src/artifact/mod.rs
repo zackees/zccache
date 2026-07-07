@@ -13,6 +13,7 @@ mod store;
 pub use kv::{
     is_valid_namespace, Key, KvError, KvResult, KvStore, INLINE_THRESHOLD, MAX_VALUE_BYTES,
 };
+#[cfg(feature = "gha")]
 pub use rust_plan::{
     restore_rust_plan_gha, restore_rust_plan_layered_local, restore_rust_plan_local,
     rust_plan_bundle_dir, rust_plan_cache_key, rust_plan_gha_version, save_rust_plan_delta_local,
@@ -23,6 +24,17 @@ pub use rust_plan::{
     RustPlanSummary, RustToolchainIdentity, RUST_ARTIFACT_CACHE_SCHEMA_VERSION,
     RUST_ARTIFACT_PLAN_SCHEMA_VERSION,
 };
+#[cfg(not(feature = "gha"))]
+pub use rust_plan::{
+    restore_rust_plan_layered_local, restore_rust_plan_local, rust_plan_bundle_dir,
+    rust_plan_cache_key, save_rust_plan_delta_local, save_rust_plan_local,
+    RustArtifactBundleLayerKind, RustArtifactBundleManifest, RustArtifactClass, RustArtifactPlanV1,
+    RustBundledArtifact, RustPlanArtifactEffectiveness, RustPlanCompatibility, RustPlanError,
+    RustPlanInputs, RustPlanMode, RustPlanOperation, RustPlanPackages, RustPlanSkippedSample,
+    RustPlanSummary, RustToolchainIdentity, RUST_ARTIFACT_CACHE_SCHEMA_VERSION,
+    RUST_ARTIFACT_PLAN_SCHEMA_VERSION,
+};
+#[cfg(feature = "cli")]
 pub(crate) use rust_plan::{tar_gz_decode, tar_gz_encode};
 pub use store::{ArtifactIndex, ArtifactStore};
 

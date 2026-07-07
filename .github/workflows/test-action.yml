@@ -212,7 +212,7 @@ jobs:
 
       - name: Build zccache CLI
         shell: bash
-        run: cargo build -p zccache --bin zccache
+        run: cargo build -p zccache --features zccache-bin --bin zccache
 
       # --- Test cargo-registry hash ---
       - name: "cargo-registry hash: produces 16-char hex"
@@ -310,12 +310,12 @@ jobs:
 
       - name: Build zccache CLI
         shell: bash
-        run: cargo build -p zccache --bin zccache
+        run: cargo build -p zccache --features zccache-bin --bin zccache
 
       # --- Unit tests always run ---
       - name: "zccache unit tests"
         shell: bash
-        run: cargo test -p zccache
+        run: cargo test -p zccache --features zccache-bin,daemon-bin,download-bin,download-daemon-bin,fingerprint-bin,stamp-bin,ci-bin,crash-tools,tokio-console,test-support
 
       # --- Test gha-cache status (works without cache API) ---
       - name: "gha-cache status: runs without error"

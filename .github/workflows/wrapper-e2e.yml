@@ -135,7 +135,7 @@ jobs:
           # reintroduce cargo-chef placeholder executables after cleanup.
           SOLDR_TARGET_CACHE_MODE: off
         run: |
-          soldr cargo build --release --target-dir target -p zccache --bin zccache -p zccache --bin zccache-daemon
+          soldr cargo build --release --target-dir target -p zccache --features zccache-bin,daemon-bin --bin zccache --bin zccache-daemon
 
       - name: install binaries on PATH (Unix)
         if: runner.os != 'Windows'

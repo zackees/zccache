@@ -260,6 +260,7 @@ jobs:
           repository: zackees/soldr
           ref: main
           path: soldr-src
+          submodules: recursive
 
       - name: Install Rust toolchain
         if: steps.gate.outputs.selected == 'true'
@@ -318,7 +319,7 @@ jobs:
         env:
           RUSTFLAGS: -C link-arg=-fuse-ld=mold
         run: |
-          cargo build --release --bin zccache --bin zccache-daemon --bin zccache-fp
+          cargo build --release --features zccache-bin,daemon-bin,fingerprint-bin --bin zccache --bin zccache-daemon --bin zccache-fp
 
       - name: Stage zccache binaries
         if: steps.gate.outputs.selected == 'true' && steps.cache_zccache.outputs.cache-hit != 'true'

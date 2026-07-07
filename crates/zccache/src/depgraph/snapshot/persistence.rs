@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::core::NormalizedPath;
-use rkyv::Deserialize;
+use rkyv::rancor::Error as RkyvError;
 
 use super::super::graph::DepGraph;
 
@@ -13,9 +13,6 @@ use super::{DepGraphSnapshot, SnapshotError, DEPGRAPH_MAGIC, DEPGRAPH_VERSION, H
 
 /// Entries older than this are trimmed before persisting the snapshot.
 const GC_TTL: Duration = Duration::from_secs(86_400); // 1 day
-
-/// Initial scratch-space size for rkyv serialization.
-const SERIALIZE_SCRATCH: usize = 4096;
 
 /// Returns the default path for the depgraph snapshot file.
 #[must_use]
@@ -32,7 +29,7 @@ pub fn save_to_file(graph: &DepGraph, path: &Path) -> Result<(), SnapshotError> 
 
     let snapshot = graph.to_snapshot();
 
-    let payload = rkyv::to_bytes::<_, SERIALIZE_SCRATCH>(&snapshot)
+    let payload = rkyv::to_bytes::<RkyvError>(&snapshot)
         .map_err(|e| SnapshotError::Corrupt(format!("serialize: {e}")))?;
 
     // Build header: magic + version (LE u32) + payload len (LE u64)
@@ -201,12 +198,8 @@ pub fn load_from_file(path: &Path) -> Result<DepGraph, SnapshotError> {
     let payload = &data[HEADER_SIZE..HEADER_SIZE + payload_len];
 
     // Validate and deserialize.
-    let archived = rkyv::check_archived_root::<DepGraphSnapshot>(payload)
+    let snapshot: DepGraphSnapshot = rkyv::from_bytes::<DepGraphSnapshot, RkyvError>(payload)
         .map_err(|e| SnapshotError::Corrupt(format!("validation: {e}")))?;
-
-    let snapshot: DepGraphSnapshot = archived
-        .deserialize(&mut rkyv::Infallible)
-        .map_err(|e| SnapshotError::Corrupt(format!("deserialize: {e:?}")))?;
 
     Ok(DepGraph::from_snapshot(snapshot))
 }

@@ -58,6 +58,7 @@ if [ ! -f /src/Cargo.toml ]; then
 fi
 mkdir -p /out
 cargo build --release \
+    --features zccache-bin,daemon-bin,fingerprint-bin \
     --bin zccache \
     --bin zccache-daemon \
     --bin zccache-fp

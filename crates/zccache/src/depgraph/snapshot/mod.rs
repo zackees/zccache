@@ -49,7 +49,6 @@ pub(crate) const HEADER_SIZE: usize = 16;
 // ---------------------------------------------------------------------------
 
 #[derive(Archive, Serialize, Deserialize)]
-#[archive(check_bytes)]
 pub struct DepGraphSnapshot {
     pub files: Vec<FileEntrySnapshot>,
     pub contexts: Vec<ContextEntrySnapshot>,
@@ -57,14 +56,12 @@ pub struct DepGraphSnapshot {
 }
 
 #[derive(Archive, Serialize, Deserialize)]
-#[archive(check_bytes)]
 pub struct FileEntrySnapshot {
     pub path: String,
     pub includes: Vec<IncludeDirectiveSnapshot>,
 }
 
 #[derive(Archive, Serialize, Deserialize)]
-#[archive(check_bytes)]
 pub struct IncludeDirectiveSnapshot {
     /// 0=Quoted, 1=AngleBracket, 2=Computed
     pub kind: u8,
@@ -73,7 +70,6 @@ pub struct IncludeDirectiveSnapshot {
 }
 
 #[derive(Archive, Serialize, Deserialize)]
-#[archive(check_bytes)]
 pub struct ContextEntrySnapshot {
     pub context_key: [u8; 32],
     pub key_root: Option<String>,
@@ -97,14 +93,12 @@ pub struct ContextEntrySnapshot {
 }
 
 #[derive(Archive, Serialize, Deserialize)]
-#[archive(check_bytes)]
 pub struct RustcExternSnapshot {
     pub name: String,
     pub path: String,
 }
 
 #[derive(Archive, Serialize, Deserialize)]
-#[archive(check_bytes)]
 pub struct SnapshotStats {
     pub saved_at_epoch_secs: u64,
     pub file_count: u64,

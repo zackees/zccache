@@ -540,7 +540,7 @@ fn run_server(args: Args) {
 }
 
 fn init_tracing(level: &str) {
-    use tracing_subscriber::{prelude::*, EnvFilter};
+    use tracing_subscriber::EnvFilter;
     let mut filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
     // When a parent process (notably soldr) launches us with a narrowed
     // `RUST_LOG=zccache_daemon=info`, the directive *only* matches the
@@ -575,50 +575,11 @@ fn init_tracing(level: &str) {
     if tokio_console_enabled {
         let bind = std::env::var(TOKIO_CONSOLE_BIND_ENV)
             .unwrap_or_else(|_| TOKIO_CONSOLE_DEFAULT_BIND.to_string());
-        let console_layer = std::panic::catch_unwind(console_subscriber::spawn);
-        match console_layer {
-            Ok(console_layer) => {
-                tracing_subscriber::registry()
-                    .with(console_layer)
-                    .with(
-                        tracing_subscriber::fmt::layer()
-                            .with_target(true)
-                            .with_thread_ids(true)
-                            .with_filter(filter),
-                    )
-                    .init();
-                tracing::info!(
-                    bind,
-                    "tokio-console daemon profile enabled; connect with `tokio-console {bind}`"
-                );
-            }
-            Err(_) => {
-                tracing_subscriber::registry()
-                    .with(
-                        tracing_subscriber::fmt::layer()
-                            .with_target(true)
-                            .with_thread_ids(true)
-                            .with_filter(filter),
-                    )
-                    .init();
-                tracing::warn!(
-                    bind,
-                    "tokio-console daemon profile requested but unavailable; \
-                     rebuild with RUSTFLAGS=\"--cfg tokio_unstable\""
-                );
-            }
-        }
+        init_tokio_console_tracing(filter, &bind);
         return;
     }
 
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_target(true)
-                .with_thread_ids(true)
-                .with_filter(filter),
-        )
-        .init();
+    init_fmt_tracing(filter);
 
     if let Some(profile) = profile {
         if profile != TOKIO_CONSOLE_PROFILE {
@@ -628,4 +589,59 @@ fn init_tracing(level: &str) {
             );
         }
     }
+}
+
+fn init_fmt_tracing(filter: tracing_subscriber::EnvFilter) {
+    use tracing_subscriber::prelude::*;
+
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(true)
+                .with_thread_ids(true)
+                .with_filter(filter),
+        )
+        .init();
+}
+
+#[cfg(feature = "tokio-console")]
+fn init_tokio_console_tracing(filter: tracing_subscriber::EnvFilter, bind: &str) {
+    use tracing_subscriber::prelude::*;
+
+    let console_layer = std::panic::catch_unwind(console_subscriber::spawn);
+    match console_layer {
+        Ok(console_layer) => {
+            tracing_subscriber::registry()
+                .with(console_layer)
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .with_target(true)
+                        .with_thread_ids(true)
+                        .with_filter(filter),
+                )
+                .init();
+            tracing::info!(
+                bind,
+                "tokio-console daemon profile enabled; connect with `tokio-console {bind}`"
+            );
+        }
+        Err(_) => {
+            init_fmt_tracing(filter);
+            tracing::warn!(
+                bind,
+                "tokio-console daemon profile requested but unavailable; \
+                 rebuild with RUSTFLAGS=\"--cfg tokio_unstable\""
+            );
+        }
+    }
+}
+
+#[cfg(not(feature = "tokio-console"))]
+fn init_tokio_console_tracing(filter: tracing_subscriber::EnvFilter, bind: &str) {
+    init_fmt_tracing(filter);
+    tracing::warn!(
+        bind,
+        "tokio-console daemon profile requested but zccache was built without \
+         the `tokio-console` feature"
+    );
 }
