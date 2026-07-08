@@ -101,8 +101,15 @@ pub(crate) async fn wait_with_output_watchdog_with_grace(
     let mut stderr = child.stderr.take();
     let mut out: Vec<u8> = Vec::new();
     let mut err: Vec<u8> = Vec::new();
-    let mut sbuf = [0u8; 64 * 1024];
-    let mut ebuf = [0u8; 64 * 1024];
+    // Heap-allocated read buffers, NOT `[0u8; 64 * 1024]` stack arrays: these
+    // are live across the `select!` await, so a stack array would embed 128 KiB
+    // in this future — and thus in the whole deeply-nested compile-pipeline
+    // future that contains it. Constructing/moving that oversized future
+    // overflows the tokio worker-thread stack on Linux (observed as
+    // `fatal runtime error: stack overflow` SIGABRT across the daemon
+    // integration suite; Windows' larger default stack masked it).
+    let mut sbuf = vec![0u8; 64 * 1024];
+    let mut ebuf = vec![0u8; 64 * 1024];
     let mut stdout_done = stdout.is_none();
     let mut stderr_done = stderr.is_none();
     // Exit status + the instant the child exited, captured together so the
