@@ -18,6 +18,17 @@ fn next_inner_compile_id() -> String {
     format!("z{n:08x}")
 }
 
+/// Per-step timeout for the embedded flush's disk saves (issue #973). The
+/// earlier flush steps (pending-writes drain, index-writer flush) are already
+/// bounded, but the depgraph / metadata / compiler-hash / system-includes saves
+/// and the artifact-store `flush_async` were not — a stuck disk (network FS, AV
+/// scan, full volume) could therefore hang `ZccacheService::flush()` /
+/// `shutdown()`, i.e. soldr/fbuild's exit path, forever. Bounding each step lets
+/// flush stay responsive; the abandoned `spawn_blocking` write completes (or
+/// not) on its own and every save uses atomic tmp+rename, so nothing partial is
+/// ever visible.
+const EMBEDDED_FLUSH_SAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 impl EmbeddedDaemon {
     pub(crate) async fn start(
         endpoint: String,
@@ -323,6 +334,45 @@ async fn status_snapshot(state: &SharedState) -> crate::protocol::DaemonStatus {
     }
 }
 
+/// Await a single flush save step, bounded by [`EMBEDDED_FLUSH_SAVE_TIMEOUT`].
+/// On timeout it complains loudly (`warn!`) and writes a durable lifecycle
+/// event (forensics), then returns so flush keeps making progress instead of
+/// hanging on a stuck disk (issue #973). The step's result is intentionally
+/// discarded — flush is best-effort and its report reflects in-memory counts.
+async fn bounded_flush_step<F, T>(step: &str, fut: F)
+where
+    F: std::future::Future<Output = T>,
+{
+    if flush_step_timed_out(fut, EMBEDDED_FLUSH_SAVE_TIMEOUT).await {
+        tracing::warn!(
+            event = "embedded_flush_step_timeout",
+            step,
+            timeout_ms = EMBEDDED_FLUSH_SAVE_TIMEOUT.as_millis() as u64,
+            "embedded flush save step exceeded its timeout — abandoning it so \
+             ZccacheService::flush()/shutdown() stays responsive on a stuck disk \
+             (issue #973)"
+        );
+        crate::core::lifecycle::write_event(
+            "embedded_flush_step_timeout",
+            serde_json::json!({
+                "step": step,
+                "timeout_ms": EMBEDDED_FLUSH_SAVE_TIMEOUT.as_millis() as u64,
+                "reason": "flush save step exceeded timeout; abandoned to keep flush/shutdown responsive",
+            }),
+        );
+    }
+}
+
+/// Run `fut` with a timeout, returning `true` if it timed out. Split from
+/// [`bounded_flush_step`] (which owns the logging) so the timeout wiring is
+/// deterministically unit-testable without touching the lifecycle log.
+async fn flush_step_timed_out<F, T>(fut: F, timeout: std::time::Duration) -> bool
+where
+    F: std::future::Future<Output = T>,
+{
+    tokio::time::timeout(timeout, fut).await.is_err()
+}
+
 async fn flush_embedded_state(
     state: &Arc<SharedState>,
     index_writer_handle: &mut Option<tokio::task::JoinHandle<()>>,
@@ -350,44 +400,53 @@ async fn flush_embedded_state(
     }
 
     let artifact_entries = state.artifact_store.len() as u64;
-    let _ = Arc::clone(&state.artifact_store).flush_async().await;
+    bounded_flush_step("artifact_store", Arc::clone(&state.artifact_store).flush_async()).await;
 
     let dg = state.dep_graph.load_full();
     let depgraph_path = embedded_depgraph_file_path(state);
     let depgraph_state = Arc::clone(state);
-    let _ = tokio::task::spawn_blocking(move || {
-        if let Some(parent) = depgraph_path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        if crate::depgraph::save_to_file(&dg, depgraph_path.as_path()).is_ok() {
-            depgraph_state
-                .dep_graph_persisted
-                .store(true, Ordering::Release);
-        }
-    })
+    bounded_flush_step(
+        "depgraph",
+        tokio::task::spawn_blocking(move || {
+            if let Some(parent) = depgraph_path.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            if crate::depgraph::save_to_file(&dg, depgraph_path.as_path()).is_ok() {
+                depgraph_state
+                    .dep_graph_persisted
+                    .store(true, Ordering::Release);
+            }
+        }),
+    )
     .await;
 
     let metadata_entries = state.cache_system.metadata().len() as u64;
     if state.metadata_cache_loaded.load(Ordering::Acquire) {
         let metadata_state = Arc::clone(state);
         let metadata_path = state.metadata_path.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            metadata_state
-                .cache_system
-                .metadata()
-                .save_to_disk(metadata_path.as_path())
-        })
+        bounded_flush_step(
+            "metadata",
+            tokio::task::spawn_blocking(move || {
+                metadata_state
+                    .cache_system
+                    .metadata()
+                    .save_to_disk(metadata_path.as_path())
+            }),
+        )
         .await;
     }
 
     if state.compiler_hash_cache_loaded.load(Ordering::Acquire) {
         let compiler_state = Arc::clone(state);
         let compiler_hash_cache_path = state.compiler_hash_cache_path.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            compiler_state
-                .compiler_hash_cache
-                .save_to_disk(compiler_hash_cache_path.as_path())
-        })
+        bounded_flush_step(
+            "compiler_hash",
+            tokio::task::spawn_blocking(move || {
+                compiler_state
+                    .compiler_hash_cache
+                    .save_to_disk(compiler_hash_cache_path.as_path())
+            }),
+        )
         .await;
     }
 
@@ -397,9 +456,12 @@ async fn flush_embedded_state(
             includes.clone()
         };
         let system_includes_cache_path = state.system_includes_cache_path.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            includes.save_to_disk(system_includes_cache_path.as_path())
-        })
+        bounded_flush_step(
+            "system_includes",
+            tokio::task::spawn_blocking(move || {
+                includes.save_to_disk(system_includes_cache_path.as_path())
+            }),
+        )
         .await;
     }
 
@@ -412,4 +474,28 @@ async fn flush_embedded_state(
 
 fn embedded_depgraph_file_path(state: &SharedState) -> crate::core::NormalizedPath {
     state.cache_dir.join("depgraph").join("depgraph.bin")
+}
+
+#[cfg(test)]
+mod flush_timeout_tests {
+    //! Issue #973: the embedded flush save steps must be bounded so a stuck
+    //! disk cannot hang `ZccacheService::flush()`/`shutdown()`.
+    use super::flush_step_timed_out;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn ready_step_does_not_time_out() {
+        let timed_out =
+            flush_step_timed_out(async { 42u32 }, Duration::from_secs(30)).await;
+        assert!(!timed_out, "a step that completes must not report a timeout");
+    }
+
+    #[tokio::test]
+    async fn stuck_step_times_out() {
+        // A save that never completes (stuck disk) must be abandoned at the
+        // bound rather than hanging flush forever.
+        let stuck = std::future::pending::<()>();
+        let timed_out = flush_step_timed_out(stuck, Duration::from_millis(50)).await;
+        assert!(timed_out, "a stuck step must report a timeout so flush continues");
+    }
 }
