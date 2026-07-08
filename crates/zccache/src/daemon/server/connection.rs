@@ -22,6 +22,71 @@ enum ResponseWire {
 
 const SERVER_REQUEST_RECV_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// Run a child-spawning handler (compile / link / exec) while concurrently
+/// watching the client connection for disconnect (issue #967, meta #968).
+///
+/// Returns `Some((response, journal_ctx))` when the handler finished first, or
+/// `None` when the client disconnected while the handler was still running — in
+/// which case the handler future has already been dropped, which drops the
+/// daemon-owned compiler [`tokio::process::Child`] (spawned `kill_on_drop(true)`)
+/// and reaps the subprocess and its compile-concurrency permit.
+///
+/// Before this guard existed, the daemon parked inside the compile/link await
+/// and never read the socket again, so a client that gave up (its 600 s recv
+/// timeout, a `taskkill`, a cancelled build) left the daemon awaiting a compile
+/// whose result could never be delivered — holding a compile-concurrency permit
+/// the whole time. Enough of those wedged the shared semaphore and every later
+/// compile queued forever (issue #962's amplifier; issue #967 is this fix).
+///
+/// The race is `biased` toward the handler so a compile that finishes in the
+/// same poll as an incoming disconnect still returns its response. On disconnect
+/// the handler future is dropped at its next suspension point — the
+/// `child.wait_with_output().await` inside [`crate::daemon::process`].
+///
+/// (Returns `Option` rather than a two-variant enum so the 448-byte completed
+/// payload does not sit next to a zero-size cancelled variant — `clippy::large_enum_variant`.)
+async fn guarded_dispatch<F>(
+    conn: &mut IpcConnection,
+    handler: F,
+) -> Option<(Response, Option<JournalContext>)>
+where
+    F: std::future::Future<Output = (Response, Option<JournalContext>)>,
+{
+    tokio::select! {
+        biased;
+        out = handler => Some(out),
+        () = conn.wait_for_disconnect() => None,
+    }
+}
+
+/// Emit the distinguishable client-cancellation diagnostic (issue #967
+/// acceptance): a loud `warn!` plus an on-disk lifecycle record so an operator
+/// can tell "client disconnected mid-compile" apart from a compiler failure, a
+/// daemon crash, or an IPC write error — even after a detached Windows run where
+/// daemon stderr is redirected.
+///
+/// This is deliberately `warn!` (not `info!`): a client vanishing mid-compile is
+/// abnormal — it means daemon work was thrown away and may indicate the client
+/// itself wedged or crashed — so it must complain loudly and leave a forensic
+/// trail, per the daemon's "every cancellation/timeout is logged loud + durable"
+/// rule.
+fn log_client_cancelled(kind: &str) {
+    tracing::warn!(
+        event = "client-cancelled",
+        kind,
+        "client disconnected before the response was produced; \
+         daemon-owned compiler child reaped via kill_on_drop and \
+         compile-concurrency permit released"
+    );
+    super::super::lifecycle::write_event(
+        "client_cancelled",
+        serde_json::json!({
+            "kind": kind,
+            "reason": "client disconnected before response; daemon child reaped, permit released",
+        }),
+    );
+}
+
 /// Handle a single client connection.
 pub(super) async fn handle_connection(
     mut conn: IpcConnection,
@@ -293,29 +358,18 @@ pub(super) async fn handle_connection(
                 env,
                 stdin,
             } => {
-                let parsed_session_id = session_id.parse::<SessionId>().ok();
-                if let Some(sid) = parsed_session_id {
-                    if state.ended_sessions.contains_key(&sid) {
-                        (
-                            Response::Error {
-                                message: format!("unknown session: {session_id}"),
-                            },
-                            None,
-                        )
-                    } else {
-                        compile_response_for_session(
-                            &state,
-                            parsed_session_id,
-                            session_id,
-                            args,
-                            cwd,
-                            compiler,
-                            env,
-                            stdin,
-                        )
-                        .await
+                let handler = async {
+                    let parsed_session_id = session_id.parse::<SessionId>().ok();
+                    if let Some(sid) = parsed_session_id {
+                        if state.ended_sessions.contains_key(&sid) {
+                            return (
+                                Response::Error {
+                                    message: format!("unknown session: {session_id}"),
+                                },
+                                None,
+                            );
+                        }
                     }
-                } else {
                     compile_response_for_session(
                         &state,
                         parsed_session_id,
@@ -327,6 +381,13 @@ pub(super) async fn handle_connection(
                         stdin,
                     )
                     .await
+                };
+                match guarded_dispatch(&mut conn, handler).await {
+                    Some((response, ctx)) => (response, ctx),
+                    None => {
+                        log_client_cancelled("compile");
+                            return Ok(());
+                    }
                 }
             }
             Request::CompileEphemeral {
@@ -338,25 +399,34 @@ pub(super) async fn handle_connection(
                 env,
                 stdin,
             } => {
-                let ctx = JournalContext {
-                    compiler: compiler.to_string_lossy().into_owned(),
-                    args,
-                    cwd: cwd.to_string_lossy().into_owned(),
-                    env: env.clone(),
-                    session_id: None,
+                let handler = async {
+                    let ctx = JournalContext {
+                        compiler: compiler.to_string_lossy().into_owned(),
+                        args,
+                        cwd: cwd.to_string_lossy().into_owned(),
+                        env: env.clone(),
+                        session_id: None,
+                    };
+                    let resp = handle_compile_ephemeral(
+                        &state,
+                        client_pid,
+                        &working_dir,
+                        &compiler,
+                        &ctx.args,
+                        &cwd,
+                        env,
+                        stdin,
+                    )
+                    .await;
+                    (resp, Some(ctx))
                 };
-                let resp = handle_compile_ephemeral(
-                    &state,
-                    client_pid,
-                    &working_dir,
-                    &compiler,
-                    &ctx.args,
-                    &cwd,
-                    env,
-                    stdin,
-                )
-                .await;
-                (resp, Some(ctx))
+                match guarded_dispatch(&mut conn, handler).await {
+                    Some((response, ctx)) => (response, ctx),
+                    None => {
+                        log_client_cancelled("compile_ephemeral");
+                            return Ok(());
+                    }
+                }
             }
             Request::SessionStats { session_id } => (
                 match session_id.parse::<SessionId>() {
@@ -456,16 +526,25 @@ pub(super) async fn handle_connection(
                 cwd,
                 env,
             } => {
-                let ctx = JournalContext {
-                    compiler: tool.to_string_lossy().into_owned(),
-                    args,
-                    cwd: cwd.to_string_lossy().into_owned(),
-                    env: env.clone(),
-                    session_id: None,
+                let handler = async {
+                    let ctx = JournalContext {
+                        compiler: tool.to_string_lossy().into_owned(),
+                        args,
+                        cwd: cwd.to_string_lossy().into_owned(),
+                        env: env.clone(),
+                        session_id: None,
+                    };
+                    let resp =
+                        handle_link_ephemeral(&state, client_pid, &tool, &ctx.args, &cwd, env).await;
+                    (resp, Some(ctx))
                 };
-                let resp =
-                    handle_link_ephemeral(&state, client_pid, &tool, &ctx.args, &cwd, env).await;
-                (resp, Some(ctx))
+                match guarded_dispatch(&mut conn, handler).await {
+                    Some((response, ctx)) => (response, ctx),
+                    None => {
+                        log_client_cancelled("link_ephemeral");
+                            return Ok(());
+                    }
+                }
             }
             Request::FingerprintCheck {
                 cache_file,
@@ -527,29 +606,38 @@ pub(super) async fn handle_connection(
                 non_deterministic,
                 key_args_filter,
             } => {
-                let resp = handle_generic_tool_exec(
-                    &state,
-                    &tool,
-                    &args,
-                    &cwd,
-                    env,
-                    &input_files,
-                    input_extra,
-                    output_streams,
-                    &output_files,
-                    tool_hash,
-                    cache_policy,
-                    cwd_in_key,
-                    &include_scan_files,
-                    &include_dirs,
-                    &system_include_dirs,
-                    &iquote_dirs,
-                    depfile.as_ref().map(|p| p.as_path()),
-                    non_deterministic,
-                    &key_args_filter,
-                )
-                .await;
-                (resp, None)
+                let handler = async {
+                    let resp = handle_generic_tool_exec(
+                        &state,
+                        &tool,
+                        &args,
+                        &cwd,
+                        env,
+                        &input_files,
+                        input_extra,
+                        output_streams,
+                        &output_files,
+                        tool_hash,
+                        cache_policy,
+                        cwd_in_key,
+                        &include_scan_files,
+                        &include_dirs,
+                        &system_include_dirs,
+                        &iquote_dirs,
+                        depfile.as_ref().map(|p| p.as_path()),
+                        non_deterministic,
+                        &key_args_filter,
+                    )
+                    .await;
+                    (resp, None)
+                };
+                match guarded_dispatch(&mut conn, handler).await {
+                    Some((response, ctx)) => (response, ctx),
+                    None => {
+                        log_client_cancelled("generic_tool_exec");
+                            return Ok(());
+                    }
+                }
             }
             Request::ListRustArtifacts => {
                 let mut artifacts = Vec::new();
@@ -1082,5 +1170,90 @@ mod self_profile_tests {
     #[test]
     fn error_outcome_returns_none() {
         assert!(derive_approx_spans("error", 100).is_none());
+    }
+}
+
+#[cfg(test)]
+mod disconnect_cancellation_tests {
+    //! Issue #967 / meta #968: a compile/link/exec handler must be abandoned
+    //! when the requesting client disconnects, so the daemon-owned compiler
+    //! child is reaped (`kill_on_drop`) and its compile-concurrency permit is
+    //! released — instead of the daemon parking inside `wait_with_output` on a
+    //! compile whose result can never be delivered (the amplifier behind the
+    //! #962 permit-starvation wedge).
+
+    use super::*;
+    use std::time::Duration;
+
+    /// Accept one server connection and connect a client to it. Returns the
+    /// server-side [`IpcConnection`] and the platform client handle (kept so
+    /// the caller controls when the peer disconnects). The listener is dropped
+    /// after the handshake — established connections outlive it.
+    async fn connected_pair() -> (IpcConnection, impl Sized) {
+        let endpoint = crate::ipc::unique_test_endpoint();
+        let mut listener = crate::ipc::IpcListener::bind_async(&endpoint).await.unwrap();
+        let (server, client) = tokio::join!(listener.accept(), crate::ipc::connect(&endpoint));
+        (server.unwrap(), client.unwrap())
+    }
+
+    #[tokio::test]
+    async fn guarded_dispatch_reports_client_gone_when_peer_drops() {
+        crate::test_support::test_timeout(async {
+            let (mut server, client) = connected_pair().await;
+
+            // Handler that never finishes — stands in for a compile parked in
+            // `child.wait_with_output()`. The guard must abandon it once the
+            // client disconnects.
+            let handler = std::future::pending::<(Response, Option<JournalContext>)>();
+
+            let dropper = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                drop(client); // client disconnects mid-request
+            });
+
+            let outcome = guarded_dispatch(&mut server, handler).await;
+            assert!(
+                outcome.is_none(),
+                "handler must be cancelled (None) when the client disconnects"
+            );
+            dropper.await.unwrap();
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn guarded_dispatch_completes_when_handler_finishes_first() {
+        crate::test_support::test_timeout(async {
+            let (mut server, _client) = connected_pair().await;
+
+            // A handler that resolves immediately must return its response even
+            // though the disconnect watcher is also armed — the race is biased
+            // toward the handler.
+            let handler = async { (Response::Pong, None) };
+            let outcome = guarded_dispatch(&mut server, handler).await;
+            assert!(
+                matches!(outcome, Some((Response::Pong, None))),
+                "a handler that finishes before disconnect must return its response"
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn wait_for_disconnect_pends_while_peer_alive_and_idle() {
+        crate::test_support::test_timeout(async {
+            let (mut server, _client) = connected_pair().await;
+
+            // A live but idle peer (blocked awaiting the compile response, as a
+            // real client is) must NOT be mistaken for a disconnect.
+            let res =
+                tokio::time::timeout(Duration::from_millis(150), server.wait_for_disconnect())
+                    .await;
+            assert!(
+                res.is_err(),
+                "wait_for_disconnect resolved while the peer was still alive"
+            );
+        })
+        .await;
     }
 }

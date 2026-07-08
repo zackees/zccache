@@ -283,6 +283,40 @@ impl IpcConnection {
         decode_response_wire(message)
     }
 
+    /// Resolve when the peer disconnects while the server is NOT otherwise
+    /// reading a request — i.e. while a long-running handler (compile / link /
+    /// exec) is in flight and the client is blocked awaiting the response.
+    ///
+    /// The server dispatch loop races this against the handler future
+    /// (`tokio::select!`). If the client goes away — clean EOF, a killed
+    /// process, a broken pipe — this resolves, the losing handler future is
+    /// dropped, and the daemon-owned compiler [`tokio::process::Child`]
+    /// (spawned with `kill_on_drop(true)`) is reaped as a side effect. Without
+    /// this, the daemon parks inside the compile await, never notices the dead
+    /// client, and holds its compile-concurrency permit until the child exits
+    /// on its own (issue #967, meta #968).
+    ///
+    /// Bytes that arrive while waiting (an unexpected pipelined request) are
+    /// buffered via the shared [`read_next_chunk`] path and the method keeps
+    /// waiting — it resolves ONLY on disconnect, never on data. This is
+    /// cancellation-safe: dropping the returned future (the common case, when
+    /// the handler wins the race) leaves any buffered bytes intact in
+    /// `read_buf` for the next `recv`/`recv_wire` call.
+    ///
+    /// [`read_next_chunk`]: framing::read_next_chunk
+    pub async fn wait_for_disconnect(&mut self) {
+        loop {
+            match framing::read_next_chunk(&mut self.reader, &mut self.read_buf).await {
+                // Unexpected pipelined bytes: keep them buffered for the next
+                // recv and keep watching for the actual disconnect.
+                Ok(true) => continue,
+                // Clean EOF (Ok(false)) or broken pipe / peer death (Err(_)).
+                // Either way the peer is gone.
+                Ok(false) | Err(_) => return,
+            }
+        }
+    }
+
     /// The recv read loop, factored out so both `recv` and
     /// `recv_with_timeout` share the same implementation. Always
     /// unbounded — the wrapping methods add the deadline.
