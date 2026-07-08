@@ -5,6 +5,7 @@
 
 #![allow(clippy::missing_errors_doc)]
 
+pub(crate) mod child_watchdog;
 pub mod compile_journal;
 pub mod crash;
 pub mod event_log;

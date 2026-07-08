@@ -749,6 +749,9 @@ pub(crate) async fn tokio_command_output_with_priority_stdin(
     let (decision, _ticket) = priority.resolve_and_track();
     let priority = decision.effective;
     let pipe_stdin = matches!(stdin_bytes, Some(b) if !b.is_empty());
+    // Human-readable program id for the child-wait watchdog diagnostics
+    // (issue #962). Captured before the command is mutated/spawned.
+    let cmd_desc = cmd.as_std().get_program().to_string_lossy().into_owned();
 
     #[cfg(windows)]
     {
@@ -775,7 +778,7 @@ pub(crate) async fn tokio_command_output_with_priority_stdin(
                 let _ = stdin.shutdown().await;
             }
         }
-        child.wait_with_output().await
+        crate::daemon::child_watchdog::wait_with_output_watchdog(child, &cmd_desc).await
     }
 
     #[cfg(unix)]
@@ -801,12 +804,13 @@ pub(crate) async fn tokio_command_output_with_priority_stdin(
                 let _ = stdin.shutdown().await;
             }
         }
-        child.wait_with_output().await
+        crate::daemon::child_watchdog::wait_with_output_watchdog(child, &cmd_desc).await
     }
 
     #[cfg(not(any(unix, windows)))]
     {
         let _ = stdin_bytes;
+        let _ = &cmd_desc;
         cmd.output().await
     }
 }
