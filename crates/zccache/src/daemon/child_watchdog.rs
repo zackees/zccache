@@ -717,4 +717,61 @@ mod tests {
         })
         .await;
     }
+
+    // ── Windows pipe-deadlock regression harness (issue #892) ────────────
+
+    /// A child that floods stderr past the OS pipe buffer (~64 KiB) *before*
+    /// writing stdout, then exits. A sequential "read stdout to EOF, then
+    /// stderr" drainer would deadlock — the child blocks on the full stderr
+    /// pipe while the drainer waits for stdout that never comes. The watchdog
+    /// drains both concurrently, so it must capture the full stderr flood + the
+    /// stdout marker and return promptly. This is the pipe-saturation /
+    /// missing-concurrent-drain case #892 asks for; on Windows it exercises the
+    /// named-pipe stdio path specifically.
+    #[tokio::test]
+    async fn concurrent_drain_survives_pipe_saturation() {
+        crate::test_support::test_timeout(async {
+            const FLOOD: usize = 256 * 1024; // 4x a 64 KiB pipe buffer
+            #[cfg(windows)]
+            let cmd = {
+                let mut c = tokio::process::Command::new("powershell");
+                c.args([
+                    "-NoProfile",
+                    "-Command",
+                    &format!("[Console]::Error.Write('b' * {FLOOD}); [Console]::Out.Write('done')"),
+                ]);
+                c
+            };
+            #[cfg(unix)]
+            let cmd = {
+                let mut c = tokio::process::Command::new("sh");
+                c.args([
+                    "-c",
+                    &format!("yes b | tr -d '\\n' | head -c {FLOOD} 1>&2; printf done"),
+                ]);
+                c
+            };
+
+            let child = piped(cmd).spawn().expect("spawn");
+            let start = Instant::now();
+            let out = wait_with_output_watchdog(child, "saturate")
+                .await
+                .expect("watchdog wait");
+            assert!(
+                start.elapsed() < Duration::from_secs(20),
+                "concurrent drain deadlocked on a saturated pipe (took {:?})",
+                start.elapsed()
+            );
+            assert!(
+                out.stderr.len() >= FLOOD,
+                "full stderr flood must be captured: got {} of {FLOOD} bytes",
+                out.stderr.len()
+            );
+            assert!(
+                String::from_utf8_lossy(&out.stdout).contains("done"),
+                "the post-flood stdout marker must be captured"
+            );
+        })
+        .await;
+    }
 }
