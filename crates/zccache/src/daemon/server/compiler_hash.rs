@@ -26,6 +26,92 @@ use std::io::Write as _;
 /// rejects older / newer snapshots instead of mis-decoding them.
 pub(super) const FORMAT_VERSION: u32 = 1;
 
+/// Env override (milliseconds) for the `<compiler> -vV` identity probe
+/// timeout. See [`rustc_probe_timeout`].
+const RUSTC_PROBE_TIMEOUT_ENV: &str = "ZCCACHE_RUSTC_PROBE_TIMEOUT_MS";
+
+/// Default `<compiler> -vV` probe timeout (ms). The probe is a ~10 ms cold-path
+/// optimization; no legitimate `-vV` runs anywhere near this. A generous bound
+/// is fine here (unlike a compile/link, `-vV` is tiny and fixed-cost) and stops
+/// a hung compiler wrapper (a soldr shim, a ccache-style front-end, a stuck
+/// rustc wrapper) from blocking cache-key computation forever (issue #972).
+const RUSTC_PROBE_TIMEOUT_DEFAULT_MS: u64 = 30_000;
+
+/// Resolve the `-vV` probe timeout from the environment.
+fn rustc_probe_timeout() -> std::time::Duration {
+    std::env::var(RUSTC_PROBE_TIMEOUT_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(std::time::Duration::from_millis(
+            RUSTC_PROBE_TIMEOUT_DEFAULT_MS,
+        ))
+}
+
+/// Loud + durable diagnostics when a `-vV` probe times out (forensics rule):
+/// the probe is abandoned and the caller falls back to the file-content hash,
+/// so the cache key stays well-defined — but the stall is recorded.
+fn warn_probe_timeout(path: &Path, timeout: std::time::Duration) {
+    tracing::warn!(
+        event = "rustc_identity_probe_timeout",
+        compiler = %path.display(),
+        timeout_ms = timeout.as_millis() as u64,
+        "`<compiler> -vV` identity probe exceeded its timeout — the compiler may be \
+         a wrapper that hangs; abandoning the probe and falling back to hashing the \
+         binary so cache-key computation is not blocked (issue #972)"
+    );
+    crate::core::lifecycle::write_event(
+        "rustc_identity_probe_timeout",
+        serde_json::json!({
+            "compiler": path.display().to_string(),
+            "timeout_ms": timeout.as_millis() as u64,
+            "reason": "-vV probe timed out; fell back to file-content hash",
+        }),
+    );
+}
+
+/// Outcome of a bounded `-vV` probe — distinguishes a genuine timeout (log it)
+/// from a spawn failure (expected for stub binaries in unit tests; don't log).
+enum ProbeOutcome {
+    Completed(std::process::Output),
+    TimedOut,
+    SpawnFailed,
+}
+
+/// Spawn `cmd` and wait up to `timeout`, killing the child on timeout. Used to
+/// bound the sync `-vV` probe. `-vV` output is tiny (well under any pipe
+/// buffer), so polling `try_wait` cannot deadlock on an undrained pipe.
+fn output_within(mut cmd: std::process::Command, timeout: std::time::Duration) -> ProbeOutcome {
+    use std::process::Stdio;
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(_) => return ProbeOutcome::SpawnFailed,
+    };
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                return match child.wait_with_output() {
+                    Ok(output) => ProbeOutcome::Completed(output),
+                    Err(_) => ProbeOutcome::SpawnFailed,
+                };
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return ProbeOutcome::TimedOut;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(_) => return ProbeOutcome::SpawnFailed,
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct CompilerHashEntry {
     pub(super) mtime: std::time::SystemTime,
@@ -273,13 +359,20 @@ pub(super) fn hash_rustc_identity(path: &Path) -> Option<ContentHash> {
     // otherwise flash — the daemon runs detached, so a console-subsystem
     // child spawned without CREATE_NO_WINDOW pops a visible window.
     crate::daemon::process::suppress_child_console(&mut cmd);
-    match cmd.output() {
-        Ok(output) if output.status.success() && !output.stdout.is_empty() => {
+    let timeout = rustc_probe_timeout();
+    match output_within(cmd, timeout) {
+        ProbeOutcome::Completed(output) if output.status.success() && !output.stdout.is_empty() => {
             Some(crate::hash::hash_bytes(&output.stdout))
         }
-        // Spawn error, non-zero exit, or empty stdout - fall through to
-        // the file-content hash so cache keys stay well-defined for
-        // stubbed binaries (unit tests) and broken toolchains.
+        // A hung wrapper compiler: log it, then fall through to the
+        // file-content hash so cache-key computation is never blocked (#972).
+        ProbeOutcome::TimedOut => {
+            warn_probe_timeout(path, timeout);
+            crate::hash::hash_file(path).ok()
+        }
+        // Spawn failure (stub binaries in unit tests), non-zero exit, or empty
+        // stdout — fall through to the file-content hash so keys stay
+        // well-defined. Not logged: these are expected, not stalls.
         _ => crate::hash::hash_file(path).ok(),
     }
 }
@@ -289,13 +382,99 @@ pub(super) async fn hash_rustc_identity_async(path: std::path::PathBuf) -> Optio
     cmd.arg("-vV");
     // Same CREATE_NO_WINDOW suppression as the sync variant above.
     crate::daemon::process::suppress_child_console_tokio(&mut cmd);
-    match cmd.output().await {
-        Ok(output) if output.status.success() && !output.stdout.is_empty() => {
+    // Reap the child if we abandon the probe on timeout (issue #972) so a hung
+    // wrapper compiler is not left running.
+    cmd.kill_on_drop(true);
+    let timeout = rustc_probe_timeout();
+    match tokio::time::timeout(timeout, cmd.output()).await {
+        Ok(Ok(output)) if output.status.success() && !output.stdout.is_empty() => {
             Some(crate::hash::hash_bytes(&output.stdout))
         }
-        // Spawn error, non-zero exit, or empty stdout - fall through to
-        // the file-content hash so cache keys stay well-defined for
-        // stubbed binaries (unit tests) and broken toolchains.
+        // Timeout: a wrapper compiler that hung. Log it (the `cmd.output()`
+        // future is dropped → kill_on_drop reaps the child), then fall through
+        // to the file-content hash so cache-key computation is not blocked.
+        Err(_) => {
+            warn_probe_timeout(&path, timeout);
+            crate::hash::hash_file(&path).ok()
+        }
+        // Spawn error, non-zero exit, or empty stdout — fall through to the
+        // file-content hash so cache keys stay well-defined for stubbed
+        // binaries (unit tests) and broken toolchains.
         _ => crate::hash::hash_file(&path).ok(),
+    }
+}
+
+#[cfg(test)]
+mod probe_timeout_tests {
+    //! Issue #972: the `<compiler> -vV` identity probe must be bounded so a
+    //! hung wrapper compiler cannot block cache-key computation.
+    use super::{output_within, ProbeOutcome};
+    use std::time::Duration;
+
+    fn slow_cmd() -> std::process::Command {
+        #[cfg(windows)]
+        {
+            let mut c = std::process::Command::new("cmd");
+            // ~30 s: 31 pings ~1 s apart.
+            c.args(["/c", "ping -n 31 127.0.0.1 >nul"]);
+            c
+        }
+        #[cfg(unix)]
+        {
+            let mut c = std::process::Command::new("sh");
+            c.args(["-c", "sleep 30"]);
+            c
+        }
+    }
+
+    fn fast_cmd() -> std::process::Command {
+        #[cfg(windows)]
+        {
+            let mut c = std::process::Command::new("cmd");
+            c.args(["/c", "echo hi"]);
+            c
+        }
+        #[cfg(unix)]
+        {
+            let mut c = std::process::Command::new("sh");
+            c.args(["-c", "echo hi"]);
+            c
+        }
+    }
+
+    #[test]
+    fn times_out_on_hung_compiler() {
+        // A probe that would run ~30 s is abandoned in ~200 ms.
+        let start = std::time::Instant::now();
+        let outcome = output_within(slow_cmd(), Duration::from_millis(200));
+        assert!(
+            matches!(outcome, ProbeOutcome::TimedOut),
+            "a slow probe must time out"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "timeout did not bound the wait (took {:?})",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn completes_fast_command() {
+        match output_within(fast_cmd(), Duration::from_secs(30)) {
+            ProbeOutcome::Completed(output) => assert!(output.status.success()),
+            other => panic!(
+                "expected Completed, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn spawn_failed_for_missing_binary() {
+        let cmd = std::process::Command::new("zzz-nonexistent-compiler-xyz-972");
+        assert!(matches!(
+            output_within(cmd, Duration::from_secs(5)),
+            ProbeOutcome::SpawnFailed
+        ));
     }
 }
