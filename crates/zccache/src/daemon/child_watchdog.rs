@@ -263,13 +263,9 @@ mod tests {
             cmd.args(["-c", "echo hello"]);
 
             let child = piped(cmd).spawn().expect("spawn");
-            let out = wait_with_output_watchdog_with_grace(
-                child,
-                "echo",
-                Duration::from_secs(2),
-            )
-            .await
-            .expect("watchdog wait");
+            let out = wait_with_output_watchdog_with_grace(child, "echo", Duration::from_secs(2))
+                .await
+                .expect("watchdog wait");
             assert!(out.status.success(), "status: {:?}", out.status);
             assert!(
                 String::from_utf8_lossy(&out.stdout).contains("hello"),
@@ -294,13 +290,9 @@ mod tests {
             cmd.args(["-c", "exit 3"]);
 
             let child = piped(cmd).spawn().expect("spawn");
-            let out = wait_with_output_watchdog_with_grace(
-                child,
-                "exit3",
-                Duration::from_secs(2),
-            )
-            .await
-            .expect("watchdog wait");
+            let out = wait_with_output_watchdog_with_grace(child, "exit3", Duration::from_secs(2))
+                .await
+                .expect("watchdog wait");
             assert_eq!(out.status.code(), Some(3));
         })
         .await;
@@ -324,13 +316,10 @@ mod tests {
 
             // Tiny grace so the test is fast; still far above a real drain.
             let start = Instant::now();
-            let out = wait_with_output_watchdog_with_grace(
-                child,
-                "orphan",
-                Duration::from_millis(300),
-            )
-            .await
-            .expect("watchdog wait");
+            let out =
+                wait_with_output_watchdog_with_grace(child, "orphan", Duration::from_millis(300))
+                    .await
+                    .expect("watchdog wait");
 
             assert!(
                 start.elapsed() < Duration::from_secs(10),
@@ -360,13 +349,9 @@ mod tests {
             cmd.args(["-c", "echo ok"]);
 
             let child = piped(cmd).spawn().expect("spawn");
-            let out = wait_with_output_watchdog_with_grace(
-                child,
-                "echo",
-                Duration::ZERO,
-            )
-            .await
-            .expect("watchdog wait");
+            let out = wait_with_output_watchdog_with_grace(child, "echo", Duration::ZERO)
+                .await
+                .expect("watchdog wait");
             assert!(out.status.success());
             assert!(String::from_utf8_lossy(&out.stdout).contains("ok"));
         })

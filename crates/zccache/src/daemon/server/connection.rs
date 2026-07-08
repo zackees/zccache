@@ -386,7 +386,7 @@ pub(super) async fn handle_connection(
                     Some((response, ctx)) => (response, ctx),
                     None => {
                         log_client_cancelled("compile");
-                            return Ok(());
+                        return Ok(());
                     }
                 }
             }
@@ -424,7 +424,7 @@ pub(super) async fn handle_connection(
                     Some((response, ctx)) => (response, ctx),
                     None => {
                         log_client_cancelled("compile_ephemeral");
-                            return Ok(());
+                        return Ok(());
                     }
                 }
             }
@@ -535,14 +535,15 @@ pub(super) async fn handle_connection(
                         session_id: None,
                     };
                     let resp =
-                        handle_link_ephemeral(&state, client_pid, &tool, &ctx.args, &cwd, env).await;
+                        handle_link_ephemeral(&state, client_pid, &tool, &ctx.args, &cwd, env)
+                            .await;
                     (resp, Some(ctx))
                 };
                 match guarded_dispatch(&mut conn, handler).await {
                     Some((response, ctx)) => (response, ctx),
                     None => {
                         log_client_cancelled("link_ephemeral");
-                            return Ok(());
+                        return Ok(());
                     }
                 }
             }
@@ -635,7 +636,7 @@ pub(super) async fn handle_connection(
                     Some((response, ctx)) => (response, ctx),
                     None => {
                         log_client_cancelled("generic_tool_exec");
-                            return Ok(());
+                        return Ok(());
                     }
                 }
             }
@@ -1191,7 +1192,9 @@ mod disconnect_cancellation_tests {
     /// after the handshake — established connections outlive it.
     async fn connected_pair() -> (IpcConnection, impl Sized) {
         let endpoint = crate::ipc::unique_test_endpoint();
-        let mut listener = crate::ipc::IpcListener::bind_async(&endpoint).await.unwrap();
+        let mut listener = crate::ipc::IpcListener::bind_async(&endpoint)
+            .await
+            .unwrap();
         let (server, client) = tokio::join!(listener.accept(), crate::ipc::connect(&endpoint));
         (server.unwrap(), client.unwrap())
     }

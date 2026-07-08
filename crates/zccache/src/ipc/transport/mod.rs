@@ -297,13 +297,11 @@ impl IpcConnection {
     /// on its own (issue #967, meta #968).
     ///
     /// Bytes that arrive while waiting (an unexpected pipelined request) are
-    /// buffered via the shared [`read_next_chunk`] path and the method keeps
+    /// buffered via the shared `read_next_chunk` path and the method keeps
     /// waiting — it resolves ONLY on disconnect, never on data. This is
     /// cancellation-safe: dropping the returned future (the common case, when
     /// the handler wins the race) leaves any buffered bytes intact in
     /// `read_buf` for the next `recv`/`recv_wire` call.
-    ///
-    /// [`read_next_chunk`]: framing::read_next_chunk
     pub async fn wait_for_disconnect(&mut self) {
         loop {
             match framing::read_next_chunk(&mut self.reader, &mut self.read_buf).await {
