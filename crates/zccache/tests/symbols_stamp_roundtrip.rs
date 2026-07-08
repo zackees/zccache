@@ -3,6 +3,11 @@
 //! CI workflow relies on — produced by the stamp binary, consumed by
 //! `read_marker_from_path` in the daemon and CLI.
 
+// `zccache::symbols` is gated behind the `symbols` feature (c615a17e
+// "gate zccache dependency surfaces"). Without this gate a
+// default-features `clippy/check --all-targets` fails to compile the
+// target. The integration lane enables it via `stamp-bin` → `symbols`.
+#![cfg(feature = "symbols")]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

@@ -2,6 +2,10 @@
 //! markers exposed by `zccache-ci`. Uses parameterized timeouts of a few
 //! hundred milliseconds so the suite runs in well under a second.
 
+// `zccache::ci` is gated behind the `ci` feature (c615a17e "gate zccache
+// dependency surfaces"). Without this gate a default-features
+// `clippy/check --all-targets` fails to compile the target.
+#![cfg(feature = "ci")]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

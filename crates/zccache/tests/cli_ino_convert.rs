@@ -1,3 +1,9 @@
+// The whole file tests `zccache::cli::run_ino_convert_cached`, which is
+// gated behind the `cli` feature (c615a17e "gate zccache dependency
+// surfaces"). Without this gate a default-features `clippy/check
+// --all-targets` fails to compile the target (broke the clippy lane on
+// main).
+#![cfg(feature = "cli")]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

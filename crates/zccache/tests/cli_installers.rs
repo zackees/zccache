@@ -1,3 +1,8 @@
+// Uses the optional `zip` dep (and exercises installer download flows),
+// both gated behind `download-client` since c615a17e "gate zccache
+// dependency surfaces". Without this gate a default-features
+// `clippy/check --all-targets` fails to compile the target.
+#![cfg(feature = "download-client")]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
