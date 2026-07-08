@@ -442,16 +442,34 @@ mod tests {
 
         let log_path = log_file_path().as_path().to_path_buf();
         let contents = std::fs::read_to_string(&log_path).expect("log file written");
-        let lines: Vec<&str> = contents.lines().collect();
-        assert_eq!(lines.len(), 2, "expected two events, got: {contents:?}");
+        // Concurrent tests elsewhere in the crate legitimately emit their
+        // own lifecycle events while this test's cache-dir override is
+        // active: `write_event` reads the env at call time, and async
+        // tests (e.g. the child-watchdog kill paths) cannot hold ENV_LOCK
+        // across their awaits. Filter to the two events this test wrote
+        // instead of asserting an exact line count (arm-lane flake seen
+        // on zccache#987).
+        let mine: Vec<serde_json::Value> = contents
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("line parses"))
+            .filter(|value| {
+                (value["event"] == EVENT_SPAWN && value["endpoint"] == "test://nowhere")
+                    || (value["event"] == EVENT_DIED_IDLE && value["idle_secs"] == 3600)
+            })
+            .collect();
+        assert_eq!(
+            mine.len(),
+            2,
+            "expected this test's two events, got: {contents:?}"
+        );
 
-        let first: serde_json::Value = serde_json::from_str(lines[0]).expect("line 0 parses");
+        let first = &mine[0];
         assert_eq!(first["event"], EVENT_SPAWN);
         assert!(first["ts_ms"].is_number());
         assert!(first["pid"].is_number());
         assert_eq!(first["endpoint"], "test://nowhere");
 
-        let second: serde_json::Value = serde_json::from_str(lines[1]).expect("line 1 parses");
+        let second = &mine[1];
         assert_eq!(second["event"], EVENT_DIED_IDLE);
         assert_eq!(second["idle_secs"], 3600);
         assert_eq!(second["uptime_secs"], 7200);
