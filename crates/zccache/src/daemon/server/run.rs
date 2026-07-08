@@ -619,7 +619,15 @@ impl DaemonServer {
         let state = Arc::clone(&self.state);
         tokio::spawn(async move {
             while !state.shutdown_requested.load(Ordering::Acquire) {
-                let event = settled_rx.recv().await;
+                // Race the settled-event recv against the shutdown signal
+                // (issue #974). Without this the loop only re-checks
+                // `shutdown_requested` AFTER `recv()` returns, so if the settle
+                // task neither sends nor drops its sender the consumer parks
+                // forever and ignores shutdown — a shutdown-cleanliness gap.
+                let event = tokio::select! {
+                    e = settled_rx.recv() => e,
+                    () = state.shutdown.notified() => None,
+                };
                 let Some(event) = event else { break };
                 match event {
                     SettledEvent::Batch { changed, removed } => {
