@@ -41,6 +41,15 @@ const EXEC_KEY_DOMAIN: &[u8] = b"zccache-exec-key-v2";
 /// in `protocol::mod`).
 const EXEC_STREAM_CAP_BYTES: usize = 16 * 1024 * 1024;
 
+/// Env override (milliseconds) for the [`acquire_in_flight`] coalesce wait
+/// budget. See [`in_flight_wait_budget`].
+const EXEC_COALESCE_WAIT_ENV: &str = "ZCCACHE_EXEC_COALESCE_WAIT_MS";
+
+/// Default coalesce wait budget (ms). Generous because exec tools can
+/// legitimately run a while; a wedged owner still can't hang waiters past this
+/// (issue #971 mode 3 — they fall back to running their own copy).
+const EXEC_COALESCE_WAIT_DEFAULT_MS: u64 = 60_000;
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_generic_tool_exec(
     state: &Arc<SharedState>,
@@ -599,12 +608,100 @@ async fn acquire_in_flight(state: &Arc<SharedState>, key_hex: &str) -> InFlightG
             }
         }
     };
-    notify_arc.notified().await;
+
+    let budget = in_flight_wait_budget();
+    if let CoalesceOutcome::TimedOut =
+        coalesce_wait(&state.in_flight_exec, &key, notify_arc, budget).await
+    {
+        // Loud + durable: a wedged owner made the herd fall back to running
+        // their own copies. Logged here (not in `coalesce_wait`) so the pure
+        // wait helper stays unit-testable without touching the lifecycle log.
+        tracing::warn!(
+            event = "in_flight_exec_wait_timeout",
+            key = %key,
+            budget_ms = budget.as_millis() as u64,
+            "waited past the coalesce budget for the in-flight exec owner of this key; \
+             the owner may be wedged — running our own copy instead of hanging (issue #971)"
+        );
+        crate::core::lifecycle::write_event(
+            "in_flight_exec_wait_timeout",
+            serde_json::json!({
+                "key": key,
+                "budget_ms": budget.as_millis() as u64,
+                "reason": "in-flight exec owner did not finish within the coalesce budget; running own copy",
+            }),
+        );
+    }
     InFlightGuardExec {
         state: Arc::clone(state),
         key,
         outcome: InFlight::WokenByPeer,
     }
+}
+
+/// Outcome of [`coalesce_wait`].
+#[derive(Debug, PartialEq, Eq)]
+enum CoalesceOutcome {
+    /// The owner's `Notify` fired while we were parked.
+    Woken,
+    /// The slot was already gone or replaced by a new owner when we re-checked
+    /// after registering — no wait was needed.
+    SlotResolved,
+    /// We waited the full budget without a wakeup (owner likely wedged).
+    TimedOut,
+}
+
+/// Wait for the in-flight owner of `key` to finish, bounded by `budget`.
+///
+/// Closes the two `tokio::sync::Notify` single-flight hazards behind #971:
+/// - **Lost wakeup (mode 1):** `Notified` only arms a waiter once polled, so we
+///   `enable()` the future BEFORE re-checking the map. An owner that runs
+///   `remove()` + `notify_waiters()` between the caller cloning the `Arc` and
+///   this point would otherwise have its wakeup dropped (`notify_waiters`
+///   stores no permit), stranding the waiter forever.
+/// - **Slot replaced (mode 2):** after `enable()` we re-check by identity
+///   (`Arc::ptr_eq`); if the slot is gone or a *new* owner installed a fresh
+///   `Notify`, the `notify_arc` we hold will never fire again, so we return
+///   `SlotResolved` instead of parking on a dead notify.
+///
+/// Kept free of `SharedState` and logging so it is deterministically testable
+/// against a bare `DashMap`.
+async fn coalesce_wait(
+    in_flight: &dashmap::DashMap<String, Arc<Notify>>,
+    key: &str,
+    notify_arc: Arc<Notify>,
+    budget: std::time::Duration,
+) -> CoalesceOutcome {
+    let notified = notify_arc.notified();
+    tokio::pin!(notified);
+    notified.as_mut().enable();
+
+    let still_ours = in_flight
+        .get(key)
+        .is_some_and(|cur| Arc::ptr_eq(cur.value(), &notify_arc));
+    if !still_ours {
+        return CoalesceOutcome::SlotResolved;
+    }
+
+    tokio::select! {
+        () = notified.as_mut() => CoalesceOutcome::Woken,
+        () = tokio::time::sleep(budget) => CoalesceOutcome::TimedOut,
+    }
+}
+
+/// Coalesce wait budget for [`acquire_in_flight`]. A peer already running the
+/// same keyed tool is usually the fast path, but a wedged owner must not hang
+/// its waiters forever — on expiry the waiter runs its own copy. Generous by
+/// default (exec tools can legitimately run a while); override with
+/// `ZCCACHE_EXEC_COALESCE_WAIT_MS`.
+fn in_flight_wait_budget() -> std::time::Duration {
+    std::env::var(EXEC_COALESCE_WAIT_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(std::time::Duration::from_millis(
+            EXEC_COALESCE_WAIT_DEFAULT_MS,
+        ))
 }
 
 // ─── Spawn + capture ────────────────────────────────────────────────────
@@ -615,25 +712,23 @@ async fn spawn_tool(
     cwd: &Path,
     env: &[(String, String)],
 ) -> std::io::Result<std::process::Output> {
-    let tool_owned = tool.to_path_buf();
-    let args_owned: Vec<String> = args.to_vec();
-    let cwd_owned = cwd.to_path_buf();
-    let env_owned = env.to_vec();
-    tokio::task::spawn_blocking(move || {
-        let mut cmd = std::process::Command::new(&tool_owned);
-        cmd.args(&args_owned).current_dir(&cwd_owned);
-        // Clear env and apply only the declared subset so the run is
-        // reproducible across hosts that may have unrelated env differences.
-        // PATH is intentionally NOT auto-injected — callers that need it
-        // must declare `--input-env PATH` so it participates in the key.
-        cmd.env_clear();
-        for (k, v) in &env_owned {
-            cmd.env(k, v);
-        }
-        crate::daemon::process::command_output_with_priority(&mut cmd, CompilePriority::Normal)
-    })
-    .await
-    .unwrap_or_else(|e| Err(std::io::Error::other(format!("join error: {e}"))))
+    let mut cmd = tokio::process::Command::new(tool);
+    cmd.args(args).current_dir(cwd);
+    // Clear env and apply only the declared subset so the run is reproducible
+    // across hosts that may have unrelated env differences. PATH is
+    // intentionally NOT auto-injected — callers that need it must declare
+    // `--input-env PATH` so it participates in the key.
+    cmd.env_clear();
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    // Route through the async priority helper so the tool wait flows through
+    // the orphan-pipe watchdog (issue #962): a tool that leaves a pipe-holding
+    // grandchild can no longer wedge the exec owner forever — which in turn
+    // stops that wedge from stranding every coalesced waiter on this key
+    // (issue #971 mode 3, the wedged-owner path).
+    crate::daemon::process::tokio_command_output_with_priority(&mut cmd, CompilePriority::Normal)
+        .await
 }
 
 fn snapshot_output_files(
@@ -822,6 +917,78 @@ fn absolutize_norm(p: &NormalizedPath, cwd: &Path) -> NormalizedPath {
 fn normalize_for_key(path: &Path) -> String {
     let s = path.to_string_lossy().into_owned();
     s.replace('\\', "/")
+}
+
+#[cfg(test)]
+mod coalesce_tests {
+    //! Issue #971: `coalesce_wait` must never strand a waiter — not on a
+    //! lost wakeup (mode 1), not on a replaced slot (mode 2), and not on a
+    //! wedged owner (mode 3, bounded fallback).
+    use super::{coalesce_wait, CoalesceOutcome};
+    use dashmap::DashMap;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Notify;
+
+    /// Fail fast instead of hanging the suite if a regression reintroduces the
+    /// wedge these tests exist to prevent.
+    async fn guarded(fut: impl std::future::Future<Output = CoalesceOutcome>) -> CoalesceOutcome {
+        tokio::time::timeout(Duration::from_secs(30), fut)
+            .await
+            .expect("coalesce_wait hung — the #971 fix regressed")
+    }
+
+    #[tokio::test]
+    async fn slot_gone_resolves_without_waiting() {
+        // Owner already finished and removed the slot before we parked. The
+        // re-check must see it gone and return immediately rather than block on
+        // a notify that will never fire again (the mode-1 lost-wakeup guard).
+        let map: DashMap<String, Arc<Notify>> = DashMap::new();
+        let ours = Arc::new(Notify::new()); // key is NOT in the map
+        let out = guarded(coalesce_wait(&map, "k", ours, Duration::from_secs(30))).await;
+        assert_eq!(out, CoalesceOutcome::SlotResolved);
+    }
+
+    #[tokio::test]
+    async fn slot_replaced_resolves() {
+        // A new owner installed a different Notify for the same key. Parking on
+        // our stale Arc would hang forever; the ptr_eq re-check returns instead.
+        let map: DashMap<String, Arc<Notify>> = DashMap::new();
+        let ours = Arc::new(Notify::new());
+        map.insert("k".to_string(), Arc::new(Notify::new())); // different Arc
+        let out = guarded(coalesce_wait(&map, "k", ours, Duration::from_secs(30))).await;
+        assert_eq!(out, CoalesceOutcome::SlotResolved);
+    }
+
+    #[tokio::test]
+    async fn woken_by_owner_notify() {
+        // Normal path: we hold the same Arc that is in the map; a sibling task
+        // fires notify_waiters and we wake.
+        let map: DashMap<String, Arc<Notify>> = DashMap::new();
+        let shared = Arc::new(Notify::new());
+        map.insert("k".to_string(), Arc::clone(&shared));
+        let waker = {
+            let shared = Arc::clone(&shared);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                shared.notify_waiters();
+            })
+        };
+        let out = guarded(coalesce_wait(&map, "k", shared, Duration::from_secs(30))).await;
+        assert_eq!(out, CoalesceOutcome::Woken);
+        waker.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn times_out_when_owner_wedged() {
+        // Owner holds the slot and never fires: the waiter must fall back after
+        // the budget (mode-3 bounded wait) rather than hang forever.
+        let map: DashMap<String, Arc<Notify>> = DashMap::new();
+        let shared = Arc::new(Notify::new());
+        map.insert("k".to_string(), Arc::clone(&shared));
+        let out = guarded(coalesce_wait(&map, "k", shared, Duration::from_millis(50))).await;
+        assert_eq!(out, CoalesceOutcome::TimedOut);
+    }
 }
 
 #[cfg(test)]

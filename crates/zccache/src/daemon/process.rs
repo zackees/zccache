@@ -9,9 +9,6 @@ use std::sync::{
 
 use arc_swap::ArcSwap;
 
-#[cfg(windows)]
-use std::os::windows::io::AsRawHandle;
-
 pub(crate) const COMPILE_PRIORITY_ENV: &str = "ZCCACHE_COMPILE_PRIORITY";
 pub const ZCCACHE_COMPILE_PRIORITY_LINK: &str = "ZCCACHE_COMPILE_PRIORITY_LINK";
 const AUTO_PRIORITY_SATURATED_CPU_PERCENT: f32 = 95.0;
@@ -622,95 +619,6 @@ pub(crate) fn suppress_child_console_tokio(cmd: &mut tokio::process::Command) {
     let _ = cmd;
 }
 
-/// Wait for a synchronous command after applying a compiler child priority.
-///
-/// Convenience wrapper that pipes `Stdio::null()` for stdin. Callers that
-/// need to forward bytes from the client's stdin (e.g. `rustc -`) use
-/// [`command_output_with_priority_stdin`] instead.
-pub(crate) fn command_output_with_priority(
-    cmd: &mut std::process::Command,
-    priority: CompilePriority,
-) -> io::Result<Output> {
-    command_output_with_priority_stdin(cmd, priority, None)
-}
-
-/// Sync variant that pipes `stdin_bytes` into the child's stdin when the
-/// slice is `Some` and non-empty. `None` or empty = `Stdio::null()` (the
-/// previous behaviour). Use this in the non-cacheable / direct-run path
-/// where the wrapper might be ferrying client stdin over IPC.
-pub(crate) fn command_output_with_priority_stdin(
-    cmd: &mut std::process::Command,
-    priority: CompilePriority,
-    stdin_bytes: Option<&[u8]>,
-) -> io::Result<Output> {
-    let (decision, _ticket) = priority.resolve_and_track();
-    let priority = decision.effective;
-    let pipe_stdin = matches!(stdin_bytes, Some(b) if !b.is_empty());
-
-    #[cfg(windows)]
-    {
-        use std::io::Write;
-        use std::os::windows::process::CommandExt;
-        use std::process::Stdio;
-
-        if pipe_stdin {
-            cmd.stdin(Stdio::piped());
-        } else {
-            cmd.stdin(Stdio::null());
-        }
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        cmd.creation_flags(child_creation_flags(priority));
-        let mut child = cmd.spawn()?;
-        assign_child_to_daemon_job(child.as_raw_handle());
-        apply_priority_to_child_windows(child.as_raw_handle(), priority);
-        if pipe_stdin {
-            if let Some(mut stdin) = child.stdin.take() {
-                // Best-effort: stdin write failures land in the child's
-                // own error path (it reads EOF / partial input). We still
-                // wait_with_output so the caller sees the exit code.
-                let _ = stdin.write_all(stdin_bytes.unwrap_or(&[]));
-                // Drop closes the pipe — signals EOF to the child.
-            }
-        }
-        child.wait_with_output()
-    }
-
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::process::Stdio;
-
-        if pipe_stdin {
-            cmd.stdin(Stdio::piped());
-        } else {
-            cmd.stdin(Stdio::null());
-        }
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        let mut child = cmd.spawn()?;
-        apply_priority_to_child_unix(child.id(), priority);
-        if pipe_stdin {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(stdin_bytes.unwrap_or(&[]));
-            }
-        }
-        child.wait_with_output()
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    {
-        if priority != CompilePriority::Normal {
-            tracing::debug!(
-                ?priority,
-                "compiler child priority is unsupported on this platform"
-            );
-        }
-        let _ = stdin_bytes; // No piping on pure-stub platforms.
-        cmd.output()
-    }
-}
-
 /// Wait for an async command after applying a compiler child priority.
 ///
 /// Convenience wrapper that pipes `Stdio::null()` for stdin. Callers that
@@ -740,7 +648,11 @@ pub(crate) async fn tokio_command_output_with_priority_timeout(
 }
 
 /// Async variant that pipes `stdin_bytes` into the child's stdin when the
-/// slice is `Some` and non-empty. See [`command_output_with_priority_stdin`].
+/// slice is `Some` and non-empty. `None` or empty pipes `Stdio::null()`.
+///
+/// The wait flows through the orphan-pipe watchdog in
+/// `crate::daemon::child_watchdog` so a child that leaves a pipe-holding
+/// grandchild cannot park the daemon forever (issue #962).
 pub(crate) async fn tokio_command_output_with_priority_stdin(
     cmd: &mut tokio::process::Command,
     priority: CompilePriority,
