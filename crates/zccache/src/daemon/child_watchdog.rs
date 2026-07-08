@@ -786,4 +786,55 @@ mod tests {
         })
         .await;
     }
+
+    // ── Concurrency preserved (issue #894) ───────────────────────────────
+
+    /// A ~1s sleeper with no output — long enough to overlap, short enough for a
+    /// fast test.
+    fn short_sleep_cmd() -> tokio::process::Command {
+        #[cfg(windows)]
+        {
+            let mut c = tokio::process::Command::new("cmd");
+            c.args(["/c", "ping -n 2 127.0.0.1 >nul"]);
+            c
+        }
+        #[cfg(unix)]
+        {
+            let mut c = tokio::process::Command::new("sh");
+            c.args(["-c", "sleep 1"]);
+            c
+        }
+    }
+
+    /// The watchdog must not serialize concurrent child waits: running N of them
+    /// at once should take about as long as one, not N times as long. Guards
+    /// against a regression where the per-wait select loop / CPU sampling
+    /// accidentally holds a shared lock or blocks a worker (acceptance for
+    /// #894 — the bridge preserves compile concurrency).
+    #[tokio::test]
+    async fn concurrent_waits_are_not_serialized() {
+        crate::test_support::test_timeout(async {
+            const N: usize = 4;
+            let start = Instant::now();
+            let handles: Vec<_> = (0..N)
+                .map(|_| {
+                    let child = piped(short_sleep_cmd()).spawn().expect("spawn");
+                    tokio::spawn(async move { wait_with_output_watchdog(child, "sleep1").await })
+                })
+                .collect();
+            for h in handles {
+                h.await.expect("join").expect("watchdog wait");
+            }
+            let elapsed = start.elapsed();
+            // Serial would be ~N seconds; concurrent is ~1s. A generous 3s bound
+            // (< N s) still fails loudly on any serialization while tolerating CI
+            // scheduling jitter.
+            assert!(
+                elapsed < Duration::from_secs(3),
+                "watchdog serialized {N} concurrent ~1s waits (took {elapsed:?}); \
+                 concurrency was reduced (#894)"
+            );
+        })
+        .await;
+    }
 }
