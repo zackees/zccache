@@ -257,6 +257,10 @@ async fn watchdog_inner(
         return child.wait_with_output().await;
     }
 
+    // Capture the pid up front for diagnostics (issue #893): by the time Mode A
+    // fires the child has already exited and `child.id()` returns `None`, so we
+    // record it now while it is still live.
+    let child_pid = child.id();
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
     let mut out: Vec<u8> = Vec::new();
@@ -351,6 +355,7 @@ async fn watchdog_inner(
                 if let Some((status, at)) = exited {
                     emit_orphan_pipe_diagnostics(
                         cmd_desc,
+                        child_pid,
                         grace,
                         at.elapsed(),
                         out.len(),
@@ -388,6 +393,7 @@ async fn watchdog_inner(
                 if should_kill_stalled(last_progress.elapsed(), stall_window, cpu_advanced) {
                     emit_stall_diagnostics(
                         cmd_desc,
+                        child_pid,
                         stall_window,
                         last_progress.elapsed(),
                         out.len(),
@@ -430,6 +436,7 @@ async fn read_opt<R: AsyncRead + Unpin>(
 #[allow(clippy::too_many_arguments)]
 fn emit_orphan_pipe_diagnostics(
     cmd_desc: &str,
+    pid: Option<u32>,
     grace: Duration,
     elapsed_since_exit: Duration,
     stdout_bytes: usize,
@@ -441,6 +448,7 @@ fn emit_orphan_pipe_diagnostics(
         event = "child_wait_watchdog_fired",
         stage = "post_exit_pipe_drain",
         cmd = %cmd_desc,
+        pid = pid.unwrap_or(0),
         grace_ms = grace.as_millis() as u64,
         elapsed_since_exit_ms = elapsed_since_exit.as_millis() as u64,
         stdout_bytes,
@@ -457,6 +465,7 @@ fn emit_orphan_pipe_diagnostics(
         serde_json::json!({
             "stage": "post_exit_pipe_drain",
             "cmd": cmd_desc,
+            "pid": pid,
             "grace_ms": grace.as_millis() as u64,
             "elapsed_since_exit_ms": elapsed_since_exit.as_millis() as u64,
             "stdout_bytes": stdout_bytes,
@@ -474,6 +483,7 @@ fn emit_orphan_pipe_diagnostics(
 /// build.
 fn emit_stall_diagnostics(
     cmd_desc: &str,
+    pid: Option<u32>,
     stall_window: Duration,
     since_progress: Duration,
     stdout_bytes: usize,
@@ -483,6 +493,7 @@ fn emit_stall_diagnostics(
         event = "child_wait_watchdog_fired",
         stage = "alive_hung_no_progress",
         cmd = %cmd_desc,
+        pid = pid.unwrap_or(0),
         stall_window_ms = stall_window.as_millis() as u64,
         since_progress_ms = since_progress.as_millis() as u64,
         stdout_bytes,
@@ -498,6 +509,7 @@ fn emit_stall_diagnostics(
         serde_json::json!({
             "stage": "alive_hung_no_progress",
             "cmd": cmd_desc,
+            "pid": pid,
             "stall_window_ms": stall_window.as_millis() as u64,
             "since_progress_ms": since_progress.as_millis() as u64,
             "stdout_bytes": stdout_bytes,
