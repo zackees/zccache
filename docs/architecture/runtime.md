@@ -52,6 +52,86 @@ This eliminates deadlock by design.
 
 ---
 
+## Async / process bridge (watchdogs, cancellation & timeouts)
+
+The daemon is async internally, but compiler/linker/tool execution, some IPC,
+and cache persistence are fundamentally **blocking or OS-handle driven**. Rather
+than let each call site decide whether to block, spawn, or await unbounded, all
+such work goes through one narrow, watchdogged bridge. The governing invariant:
+
+> **No daemon code path may block a Tokio worker on an unbounded external wait.**
+> Every process/pipe/IPC/disk wait that can hang indefinitely is either bounded
+> or made cancellable, and every bound that fires is logged loudly and durably.
+
+This is the async-bridge design tracked under meta #889. Its pieces:
+
+### 1. The one spawn API
+
+`daemon::process::tokio_command_output_with_priority_stdin` (and its
+`_priority` / `_timeout` wrappers) is the single entry point async daemon code
+uses to run a child process — compile (`compile_exec`), link (`handle_link`),
+multi-compile (`handle_compile_multi`), generic exec (`handle_exec`), and the
+system-include probe. It always spawns with piped stdio + `kill_on_drop(true)`;
+on Windows every child is also assigned to a process-wide **job object**
+(`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) so the whole tree dies with the daemon.
+
+### 2. Child-wait watchdog (`daemon::child_watchdog`)
+
+The naive `Child::wait_with_output()` can hang forever. `wait_with_output_watchdog`
+replaces it with a concurrent-drain loop guarding two independent wedge modes —
+**progress-based, never a wall-clock cap on the compile itself** (a large link
+legitimately runs for minutes):
+
+| Mode | Wedge | Signal | Action |
+|---|---|---|---|
+| **A** (#962) | Child exited, but an orphaned grandchild still holds the stdout/stderr pipe → EOF never arrives | pipe not EOF `POST_EXIT_DRAIN` after exit | abandon drain, return captured output + real status |
+| **B** (#891) | Child never exits and makes no progress | no output **and** no CPU for `STALL_WINDOW` | kill the child, return |
+
+Mode B samples per-process CPU (`GetProcessTimes` on Windows, `/proc/<pid>/stat`
+on Linux, `proc_pid_rusage` on macOS) every `STALL_TICK`; a child that is silent
+but CPU-bound (rustc mid-codegen) or chatty but slow is never touched.
+
+### 3. Request cancellation (#967)
+
+The IPC dispatch loop races each compile/link/exec handler against **client
+disconnect** (`IpcConnection::wait_for_disconnect`). If the client vanishes, the
+handler future is dropped at its `wait_with_output().await` point; `kill_on_drop`
+reaps the child and the compile-concurrency permit is released. The embedded
+service does the same via `ZccacheConfig::cancellation` (#923).
+
+### 4. Other bounded waits
+
+| Path | Bound | Env knob | Issue |
+|---|---|---|---|
+| Post-exit pipe drain (Mode A) | 2 s after exit | `ZCCACHE_POST_EXIT_DRAIN_MS` (`0`=off) | #962 |
+| Alive-hung stall (Mode B) | 300 s no-progress | `ZCCACHE_STALL_WINDOW_MS` (`0`=off) | #891 |
+| `<compiler> -vV` identity probe | 30 s | `ZCCACHE_RUSTC_PROBE_TIMEOUT_MS` | #972 |
+| Embedded flush disk-save steps | 30 s each | — | #973 |
+| `zccache exec` coalesce wait | 60 s, then run own copy | `ZCCACHE_EXEC_COALESCE_WAIT_MS` | #971 |
+| Client recv (server) | 600 s | — | — |
+| Windows named-pipe connect | 5 s + `ERROR_PIPE_BUSY` backoff | `ZCCACHE_PIPE_POOL_SIZE` | #666/#774 |
+| Watcher consumer loop | wakes on shutdown `Notify` | — | #974 |
+
+### 5. Sync work off the worker threads (#955)
+
+CPU/IO-heavy synchronous sections (rayon hashing of large extern sets, big
+`.rlib` persists) run under `run_cpu_blocking` — `tokio::task::block_in_place`
+on the multi-thread daemon runtime (spins up a replacement worker), inline on a
+current-thread runtime. Disk saves that must not stall a worker use
+`spawn_blocking`.
+
+### 6. Diagnostics (forensics)
+
+Every watchdog/timeout/cancellation fire emits **both** a `tracing::warn!`
+(`event = "child_wait_watchdog_fired"`, `"client_cancelled"`,
+`"embedded_flush_step_timeout"`, `"rustc_identity_probe_timeout"`,
+`"in_flight_exec_wait_timeout"`, …) **and** a durable
+`core::lifecycle::write_event` record — with the stage, command, elapsed time,
+and captured byte counts — so a wedge is investigable after a detached run where
+daemon stderr is redirected. A silent timeout is forbidden.
+
+---
+
 ## Correctness Model
 
 ### Layered Invalidation

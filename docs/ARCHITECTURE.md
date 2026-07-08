@@ -28,6 +28,7 @@ This document is the index for zccache's architecture specification. Each subsys
 - **Embedded soldr/fbuild service integration** → [embedded-service.md](architecture/embedded-service.md)
 - **Legacy action target snapshots** → [target-cache.md](architecture/target-cache.md)
 - **Thread safety & crash safety** → [runtime.md](architecture/runtime.md)
+- **Async/process bridge — watchdogs, cancellation & timeouts (deadlock hardening)** → [runtime.md § Async / process bridge](architecture/runtime.md#async--process-bridge-watchdogs-cancellation--timeouts)
 - **Where zccache writes on disk (`ZCCACHE_CACHE_DIR` contract)** → [runtime.md § Cache root invariants](architecture/runtime.md#cache-root-invariants)
 - **Windows/macOS/Linux differences** → [portability.md](architecture/portability.md)
 - **Compile journal fields & `miss_reason` enum** → [journal-schema.md](journal-schema.md)
