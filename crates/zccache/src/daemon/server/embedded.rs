@@ -400,7 +400,11 @@ async fn flush_embedded_state(
     }
 
     let artifact_entries = state.artifact_store.len() as u64;
-    bounded_flush_step("artifact_store", Arc::clone(&state.artifact_store).flush_async()).await;
+    bounded_flush_step(
+        "artifact_store",
+        Arc::clone(&state.artifact_store).flush_async(),
+    )
+    .await;
 
     let dg = state.dep_graph.load_full();
     let depgraph_path = embedded_depgraph_file_path(state);
@@ -485,9 +489,11 @@ mod flush_timeout_tests {
 
     #[tokio::test]
     async fn ready_step_does_not_time_out() {
-        let timed_out =
-            flush_step_timed_out(async { 42u32 }, Duration::from_secs(30)).await;
-        assert!(!timed_out, "a step that completes must not report a timeout");
+        let timed_out = flush_step_timed_out(async { 42u32 }, Duration::from_secs(30)).await;
+        assert!(
+            !timed_out,
+            "a step that completes must not report a timeout"
+        );
     }
 
     #[tokio::test]
@@ -496,6 +502,9 @@ mod flush_timeout_tests {
         // bound rather than hanging flush forever.
         let stuck = std::future::pending::<()>();
         let timed_out = flush_step_timed_out(stuck, Duration::from_millis(50)).await;
-        assert!(timed_out, "a stuck step must report a timeout so flush continues");
+        assert!(
+            timed_out,
+            "a stuck step must report a timeout so flush continues"
+        );
     }
 }
