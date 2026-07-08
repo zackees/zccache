@@ -635,3 +635,25 @@ fn colocate_basename_appears_in_path() {
     assert!(expected_suffix.starts_with(".zccache-myuser-"));
     assert!(expected_suffix.len() == ".zccache-myuser-".len() + 8);
 }
+
+#[test]
+fn no_spawn_value_grammar_matches_zccache_disable() {
+    use super::no_spawn_from_env_value;
+    use std::ffi::OsStr;
+
+    assert!(no_spawn_from_env_value(Some(OsStr::new("1"))));
+    assert!(no_spawn_from_env_value(Some(OsStr::new("true"))));
+    assert!(no_spawn_from_env_value(Some(OsStr::new("TRUE"))));
+    assert!(no_spawn_from_env_value(Some(OsStr::new("True"))));
+    assert!(!no_spawn_from_env_value(Some(OsStr::new("0"))));
+    assert!(!no_spawn_from_env_value(Some(OsStr::new(""))));
+    assert!(!no_spawn_from_env_value(Some(OsStr::new("yes"))));
+    assert!(!no_spawn_from_env_value(None));
+}
+
+#[test]
+fn no_spawn_error_names_the_env_var() {
+    let message = super::no_spawn_error("zccache-daemon");
+    assert!(message.contains("ZCCACHE_NO_SPAWN"));
+    assert!(message.contains("zccache-daemon"));
+}

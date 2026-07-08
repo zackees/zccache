@@ -105,6 +105,14 @@ fn which_on_path(name: &str) -> Option<NormalizedPath> {
 }
 
 fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
+    // Issue #982: backstop for the host no-spawn guard (see
+    // `core::config::NO_SPAWN_ENV`) — the download daemon is covered
+    // by the same contract as the compile daemon.
+    if crate::core::config::daemon_spawn_disabled() {
+        return Err(crate::core::config::no_spawn_error(
+            "zccache-download-daemon",
+        ));
+    }
     let mut cmd = std::process::Command::new(bin);
     cmd.args(["--foreground", "--endpoint", endpoint]);
     cmd.stdin(std::process::Stdio::null());
@@ -134,6 +142,13 @@ async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
         }
         return Err(format!(
             "download daemon process {pid} exists but is not accepting connections"
+        ));
+    }
+    // Issue #982: refuse before binary resolution so the guard's message
+    // wins over "cannot find zccache-download-daemon binary".
+    if crate::core::config::daemon_spawn_disabled() {
+        return Err(crate::core::config::no_spawn_error(
+            "zccache-download-daemon",
         ));
     }
     let bin = find_daemon_binary().ok_or("cannot find zccache-download-daemon binary")?;

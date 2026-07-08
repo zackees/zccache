@@ -48,6 +48,41 @@ pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 3600;
 /// without falling back to byte-copy. Unset → behaviour unchanged.
 pub const COLOCATE_ENV: &str = "ZCCACHE_COLOCATE";
 
+/// Environment variable set by embedding hosts (e.g. soldr's compiled-in
+/// `zccache` trampoline, which serves compiles through an embedded
+/// in-process zccache service) to forbid the CLI from ever spawning a
+/// standalone `zccache-daemon` / `zccache-download-daemon` process
+/// (issue #982). Value grammar matches `ZCCACHE_DISABLE`: `1` or
+/// case-insensitive `true`. Connecting to an already-running,
+/// version-compatible daemon remains allowed — the guard forbids
+/// spawning, not talking.
+pub const NO_SPAWN_ENV: &str = "ZCCACHE_NO_SPAWN";
+
+/// True when the host forbids standalone daemon spawns via [`NO_SPAWN_ENV`].
+#[must_use]
+pub fn daemon_spawn_disabled() -> bool {
+    no_spawn_from_env_value(std::env::var_os(NO_SPAWN_ENV).as_deref())
+}
+
+/// Testable core of [`daemon_spawn_disabled`] — no environment access.
+#[must_use]
+pub(crate) fn no_spawn_from_env_value(value: Option<&std::ffi::OsStr>) -> bool {
+    value
+        .map(|v| v.to_string_lossy())
+        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+}
+
+/// Standard error for a refused spawn. Names [`NO_SPAWN_ENV`] so operators
+/// can find the knob, and points at the embedded service so the failure is
+/// self-explaining in host contexts.
+#[must_use]
+pub fn no_spawn_error(daemon_name: &str) -> String {
+    format!(
+        "{daemon_name} spawn disabled by host ({NO_SPAWN_ENV}=1); \
+         this host serves compiles through an embedded zccache service"
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Re-exports — every public symbol the old single-file module exposed.
 // External callers use `crate::core::config::<Name>`, so we keep that path

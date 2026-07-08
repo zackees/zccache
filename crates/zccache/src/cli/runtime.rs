@@ -90,6 +90,12 @@ async fn spawn_and_wait(
     reason: &str,
     outbound_pid: Option<u32>,
 ) -> Result<(), String> {
+    // Issue #982: embedding hosts forbid standalone daemon spawns.
+    // Checked before binary resolution so the refusal message is the
+    // guard's, not a misleading "cannot find zccache-daemon binary".
+    if crate::core::config::daemon_spawn_disabled() {
+        return Err(crate::core::config::no_spawn_error("zccache-daemon"));
+    }
     let daemon_bin = find_daemon_binary().ok_or("cannot find zccache-daemon binary")?;
     // Issue #952: single-flight the spawn across a client herd. A
     // -j16 cold start used to produce 16+ spawn-attempts within
@@ -405,6 +411,17 @@ async fn stop_stale_daemon(endpoint: &str) -> Option<u32> {
 }
 
 pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
+    // Issue #982: under the host no-spawn guard a reachable,
+    // version-compatible daemon may still be used, but every other
+    // outcome — including the stale-daemon replace paths, which would
+    // stop the old daemon before respawning — fails here, BEFORE
+    // anything is stopped or killed.
+    if crate::core::config::daemon_spawn_disabled() {
+        return match check_daemon_version(endpoint).await {
+            VersionCheck::Ok | VersionCheck::DaemonNewer => Ok(()),
+            _ => Err(crate::core::config::no_spawn_error("zccache-daemon")),
+        };
+    }
     match check_daemon_version(endpoint).await {
         VersionCheck::Ok | VersionCheck::DaemonNewer => return Ok(()),
         VersionCheck::DaemonOlder { daemon_ver } => {
@@ -742,6 +759,12 @@ pub fn gc_daemon_spawn_logs() {
 }
 
 pub fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
+    // Issue #982: backstop for the host no-spawn guard — refuse before
+    // `prepare_daemon_exe` materializes a runtime-binaries copy, so a
+    // guarded run leaves zero daemon artifacts on disk.
+    if crate::core::config::daemon_spawn_disabled() {
+        return Err(crate::core::config::no_spawn_error("zccache-daemon"));
+    }
     // GC before the new spawn so neither dir grows unbounded across
     // crash-loop scenarios. Live daemons keep their open log file FDs;
     // GC only touches files older than the 24h cutoff and preserves

@@ -332,6 +332,32 @@ shipped binary; callers should set `ZCCACHE_DAEMON_NAMESPACE=dev` (or a more
 specific soldr namespace) and then use the normal `zccache` / `zccache-daemon`
 entrypoints.
 
+### Host no-spawn guard (`ZCCACHE_NO_SPAWN`)
+
+Embedding hosts that serve compiles through the in-process embedded service
+(see [embedded-service.md](embedded-service.md)) set `ZCCACHE_NO_SPAWN=1`
+(or case-insensitive `true`) to forbid the CLI from ever spawning a
+standalone `zccache-daemon` or `zccache-download-daemon` process
+(issue #982). soldr's compiled-in `zccache` trampoline is the canonical
+setter.
+
+Semantics:
+
+- Connecting to an **already-running, version-compatible** daemon is still
+  allowed — the guard forbids spawning, not talking.
+- Any path that would spawn — including the stale-daemon **replace** paths,
+  which would otherwise stop the old daemon first — fails *before* any
+  daemon is stopped, killed, or copied, with an error that names
+  `ZCCACHE_NO_SPAWN`.
+- Enforced at the `ensure_daemon` / `spawn_and_wait` chokepoints in
+  `cli/runtime.rs` and `cli/commands/daemon.rs`, as a backstop inside
+  `runtime::spawn_daemon` (before `prepare_daemon_exe` materializes a
+  runtime-binaries copy), and on the `download_client` spawn path.
+- This is different from `ZCCACHE_DISABLE=1`, which puts the compiler
+  wrapper into passthrough (run the compiler, skip the cache): the no-spawn
+  guard keeps every subcommand's cache semantics but turns lazy daemon
+  spawns into hard errors.
+
 ### Persistent writes — exhaustive table
 
 Every persistent write the daemon and CLI perform lands under the resolved
