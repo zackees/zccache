@@ -7,10 +7,10 @@
 
 pub use zccache_artifact as artifact;
 pub use zccache_audit as audit;
-/// Issue zccache#926 — durable audit JSONL writer for the embedded
-/// service. Spawned by [`embedded::ZccacheService::start`] when
-/// [`audit::AuditConfig::mode`] > `Off`.
-pub mod audit_writer;
+/// Issue zccache#926 — durable audit JSONL writer for the embedded service.
+/// Moved to `zccache-daemon-core` (#1018); re-exported so the public path
+/// `zccache::audit_writer` is unchanged.
+pub use zccache_daemon_core::audit_writer;
 #[cfg(feature = "ci")]
 pub mod ci;
 #[cfg(feature = "cli")]
@@ -21,7 +21,10 @@ pub mod cli;
 pub use zccache_compile_trace as compile_trace;
 pub use zccache_compiler as compiler;
 pub use zccache_core as core;
-pub mod daemon;
+/// The daemon subsystem, moved to `zccache-daemon-core` (#1018). Re-exported so
+/// the public path `zccache::daemon::…` (used by the bins, the CLI, and
+/// integration tests) is unchanged.
+pub use zccache_daemon_core::daemon;
 pub use zccache_depgraph as depgraph;
 #[cfg(feature = "download")]
 pub use zccache_download as download;
@@ -31,7 +34,10 @@ pub mod download_client;
 pub mod download_daemon;
 #[cfg(feature = "download-protocol")]
 pub use zccache_download_protocol as download_protocol;
-pub mod embedded;
+/// The embedded `ZccacheService` API (soldr/fbuild), moved to
+/// `zccache-daemon-core` (#1018). Re-exported so `zccache::embedded::…` is
+/// unchanged.
+pub use zccache_daemon_core::embedded;
 pub use zccache_fingerprint as fingerprint;
 pub use zccache_fscache as fscache;
 #[cfg(feature = "gha")]
@@ -43,5 +49,7 @@ pub use zccache_protocol as protocol;
 pub use zccache_symbols as symbols;
 pub use zccache_watcher as watcher;
 
+/// Dev-only test helpers, moved to `zccache-daemon-core` (#1018). Re-exported
+/// so `zccache::test_support` is unchanged for integration tests.
 #[cfg(feature = "test-support")]
-pub mod test_support;
+pub use zccache_daemon_core::test_support;

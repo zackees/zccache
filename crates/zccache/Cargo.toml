@@ -11,14 +11,14 @@ description = "Local-first compiler cache for C/C++/Rust/Emscripten"
 
 [features]
 default = []
-# Enables zccache::test_support (dev-only helpers).
-test-support = ["dep:tracing-subscriber"]
+# Enables zccache::test_support (dev-only helpers), now in zccache-daemon-core.
+test-support = ["zccache-daemon-core/test-support"]
 ci = ["dep:wait-timeout"]
-# The daemon process entry point as a library module (issue #997). Pulls in
-# the clap + tracing-subscriber deps the daemon `main` needs. Enabled by the
-# standalone `daemon-bin` target and by `cli` (so the `zccache` binary can
-# route to the daemon via argv[0] dispatch, issue #998).
-daemon-entry = ["dep:clap", "dep:tracing-subscriber"]
+# The daemon process entry point (`daemon::entry`, #997), now in
+# zccache-daemon-core. Enabled by the standalone `daemon-bin` target and by
+# `cli` (so the `zccache` binary can route to the daemon via argv[0] dispatch,
+# #998). Also pulls clap + tracing-subscriber for the CLI's own use.
+daemon-entry = ["zccache-daemon-core/daemon-entry", "dep:clap", "dep:tracing-subscriber"]
 cli = [
     "dep:clap",
     "dep:tracing-subscriber",
@@ -42,7 +42,7 @@ download-daemon = ["download", "download-protocol"]
 download-protocol = ["download", "dep:zccache-download-protocol"]
 gha = ["dep:zccache-gha", "zccache-artifact/gha"]
 symbols = ["dep:zccache-symbols"]
-tokio-console = ["dep:console-subscriber"]
+tokio-console = ["dep:console-subscriber", "zccache-daemon-core/tokio-console"]
 zccache-bin = ["cli", "dep:mimalloc"]
 daemon-bin = ["daemon-entry", "dep:mimalloc"]
 download-bin = ["dep:clap", "dep:mimalloc", "download-client"]
@@ -64,6 +64,7 @@ zccache-audit = { workspace = true }
 zccache-compile-trace = { workspace = true }
 zccache-compiler = { workspace = true }
 zccache-core = { workspace = true }
+zccache-daemon-core = { workspace = true }
 zccache-depgraph = { workspace = true }
 zccache-download = { workspace = true, optional = true }
 zccache-download-protocol = { workspace = true, optional = true }

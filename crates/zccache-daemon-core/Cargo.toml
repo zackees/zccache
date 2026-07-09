@@ -1,0 +1,83 @@
+[package]
+name = "zccache-daemon-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "zccache daemon subsystem: IPC server, compile/link/exec handlers, embedded service (#1018 crate split)"
+
+[features]
+default = []
+# The daemon process entry point (Args parsing + tracing setup + run_server).
+# Pulls clap + tracing-subscriber; enabled by the hosting binary.
+daemon-entry = ["dep:clap", "dep:tracing-subscriber"]
+# Dev-only test utilities (zccache_daemon_core::test_support).
+test-support = ["dep:tracing-subscriber"]
+tokio-console = ["dep:console-subscriber"]
+
+[dependencies]
+# internal subsystem crates the daemon uses
+zccache-artifact = { workspace = true }
+zccache-audit = { workspace = true }
+zccache-compile-trace = { workspace = true }
+zccache-compiler = { workspace = true }
+zccache-core = { workspace = true }
+zccache-depgraph = { workspace = true }
+zccache-fingerprint = { workspace = true }
+zccache-fscache = { workspace = true }
+zccache-hash = { workspace = true }
+zccache-ipc = { workspace = true }
+zccache-protocol = { workspace = true }
+zccache-watcher = { workspace = true }
+
+# external deps used directly by daemon code
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+crash-handler = "0.6"
+blake3 = { workspace = true }
+memmap2 = { workspace = true }
+bincode = { workspace = true }
+bytes = { workspace = true }
+prost = { workspace = true }
+tokio = { workspace = true, features = ["tracing"] }
+tokio-util = { workspace = true }
+running-process = { workspace = true }
+console-subscriber = { workspace = true, optional = true }
+dashmap = { workspace = true }
+arc-swap = { workspace = true }
+rayon = { workspace = true }
+redb = { workspace = true }
+tempfile = { workspace = true }
+notify = { workspace = true }
+jwalk = { workspace = true }
+globset = "0.4"
+clang = { workspace = true }
+rkyv = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+regex = { workspace = true }
+fs2 = { workspace = true }
+filetime = { workspace = true }
+sysinfo = "0.30.13"
+# daemon-entry / test-support
+clap = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = { workspace = true }

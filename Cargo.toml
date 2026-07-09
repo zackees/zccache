@@ -7,6 +7,7 @@ members = [
     "crates/zccache-compile-trace",
     "crates/zccache-compiler",
     "crates/zccache-core",
+    "crates/zccache-daemon-core",
     "crates/zccache-depgraph",
     "crates/zccache-download",
     "crates/zccache-download-protocol",
@@ -81,6 +82,7 @@ zccache-audit = { path = "crates/zccache-audit" }
 zccache-compile-trace = { path = "crates/zccache-compile-trace" }
 zccache-compiler = { path = "crates/zccache-compiler" }
 zccache-core = { path = "crates/zccache-core" }
+zccache-daemon-core = { path = "crates/zccache-daemon-core" }
 zccache-depgraph = { path = "crates/zccache-depgraph" }
 zccache-download = { path = "crates/zccache-download" }
 zccache-download-protocol = { path = "crates/zccache-download-protocol" }
