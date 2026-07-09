@@ -50,8 +50,6 @@ use running_process::broker::protocol_v2::client_compat::{
 use super::probe::probe_local_socket;
 
 use super::error::IpcError;
-#[cfg(unix)]
-use super::IpcConnection;
 use super::{connect, running_process_disabled, ClientConnection};
 
 /// Upstream TEST-ONLY seam: a non-empty value short-circuits the broker
