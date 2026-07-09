@@ -14,7 +14,7 @@ pub mod transport;
 
 pub use broker::{
     connect_daemon, connect_daemon_with_route, to_running_process_endpoint, BrokerRefusal,
-    DaemonConnectRoute, ZCCACHE_BROKER_CONNECT_ENV,
+    DaemonConnectRoute,
 };
 pub use error::IpcError;
 pub use manifest::{publish_manifest, publish_manifest_in, publish_service_definition};

@@ -123,7 +123,6 @@ async fn daemon_control_roundtrip_auto_prefers_prost_for_status() {
     let _env = EnvVarGuard::set_all(&[
         (RUNNING_PROCESS_DISABLE_ENV, Some("1".to_string())),
         (RUNNING_PROCESS_FAKE_BACKEND_ENV, None),
-        (ZCCACHE_BROKER_CONNECT_ENV, None),
     ]);
     let endpoint = unique_test_endpoint();
     let mut listener = IpcListener::bind(&endpoint).unwrap();
@@ -179,7 +178,6 @@ async fn daemon_control_roundtrip_auto_prefers_prost_for_clear() {
     let _env = EnvVarGuard::set_all(&[
         (RUNNING_PROCESS_DISABLE_ENV, Some("1".to_string())),
         (RUNNING_PROCESS_FAKE_BACKEND_ENV, None),
-        (ZCCACHE_BROKER_CONNECT_ENV, None),
     ]);
     let endpoint = unique_test_endpoint();
     let mut listener = IpcListener::bind(&endpoint).unwrap();
@@ -249,7 +247,6 @@ async fn daemon_control_roundtrip_bincode_selection_stays_v15_for_status() {
     let _env = EnvVarGuard::set_all(&[
         (RUNNING_PROCESS_DISABLE_ENV, Some("1".to_string())),
         (RUNNING_PROCESS_FAKE_BACKEND_ENV, None),
-        (ZCCACHE_BROKER_CONNECT_ENV, None),
     ]);
     let endpoint = unique_test_endpoint();
     let mut listener = IpcListener::bind(&endpoint).unwrap();
@@ -289,7 +286,6 @@ async fn daemon_control_roundtrip_auto_falls_back_to_bincode_for_old_daemon() {
     let _env = EnvVarGuard::set_all(&[
         (RUNNING_PROCESS_DISABLE_ENV, Some("1".to_string())),
         (RUNNING_PROCESS_FAKE_BACKEND_ENV, None),
-        (ZCCACHE_BROKER_CONNECT_ENV, None),
     ]);
     let endpoint = unique_test_endpoint();
     let mut listener = IpcListener::bind(&endpoint).unwrap();
@@ -358,7 +354,6 @@ async fn broker_lane_control_roundtrip_uses_frame_v1() {
             RUNNING_PROCESS_FAKE_BACKEND_ENV,
             Some(to_running_process_endpoint(&endpoint)),
         ),
-        (ZCCACHE_BROKER_CONNECT_ENV, Some("1".to_string())),
     ]);
 
     let mut listener = IpcListener::bind(&endpoint).unwrap();

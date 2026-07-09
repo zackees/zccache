@@ -5,8 +5,9 @@
 //! a `zccache.servicedef` protobuf into the running-process service
 //! definition directory so the shared broker can discover and verify the
 //! zccache daemon. This does not change how the daemon is spawned or how
-//! clients connect — the broker connect lane stays opt-in
-//! (`ZCCACHE_BROKER_CONNECT=1`, see `crate::ipc::broker`).
+//! clients connect — clients use the direct connect. (The opt-in broker
+//! connect lane was retired in #1002; only manifest/servicedef publication
+//! remains. See `crate::ipc::broker`.)
 //!
 //! ## v2 dual-write (slice 21 of zccache#782)
 //!

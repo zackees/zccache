@@ -14,12 +14,15 @@
 //! 2. `RUNNING_PROCESS_FAKE_BACKEND=<endpoint>` — upstream TEST-ONLY seam:
 //!    `connect_to_backend` dials the endpoint directly, skipping broker
 //!    discovery and Hello negotiation. Never set in production.
-//! 3. `ZCCACHE_BROKER_CONNECT=1` — opt-in production lane: a broker Hello
-//!    resolves the backend endpoint. Any broker failure (broker absent,
-//!    negotiation refused, resolved endpoint unreachable) falls back
-//!    silently to the direct connect — the broker lane must never make a
-//!    previously-working build fail.
-//! 4. Default — direct connect, byte-for-byte the pre-adoption behavior.
+//! 3. Default — direct connect, byte-for-byte the pre-adoption behavior.
+//!
+//! #1002: the production `ZCCACHE_BROKER_CONNECT=1` opt-in that gated a
+//! broker-negotiation connect lane has been **retired**. It was never enabled
+//! in production (and therefore untested there), and version-aware endpoint
+//! naming (#1004) is now zccache's standalone conflict-prevention mechanism, so
+//! the lane is no longer needed. The daemon still **publishes** its manifest +
+//! BackendHandle identity for discovery tooling; only the client-side broker
+//! *connect* path is gone. The fake-backend TEST seam is retained.
 //!
 //! On the production broker lane (Unix), the live negotiated socket handed
 //! back by [`AsyncBrokerSession::into_backend_io`] is **adopted directly** as
@@ -39,7 +42,7 @@
 // implementation under this namespace flips to v2-native; the
 // consumer side stays unchanged.
 use running_process::broker::protocol_v2::client_compat::{
-    AdoptError, AsyncBrokerSession, BackendConnectionRoute, OwnedConnectRequest, RefusalKind,
+    AdoptError, BackendConnectionRoute, RefusalKind,
 };
 // The raw-socket reachability probe used by the `RUNNING_PROCESS_FAKE_BACKEND`
 // seam lives in `ipc::probe` (extracted from the removed `broker_v2` module,
@@ -60,14 +63,6 @@ use super::{connect, running_process_disabled, ClientConnection};
 /// `RUNNING_PROCESS_DISABLE=1` hatch takes precedence: a disabled broker
 /// ignores the fake seam too. Never set this in production.
 pub const RUNNING_PROCESS_FAKE_BACKEND_ENV: &str = "RUNNING_PROCESS_FAKE_BACKEND";
-
-/// Opt-in switch for the production broker-negotiation lane.
-///
-/// The lane stays opt-in until the upstream perf gate (running-process
-/// #383 item 2) is satisfied and a shared broker actually manages zccache
-/// daemons; today zccache self-spawns its daemon, so the default path
-/// keeps the direct connect.
-pub const ZCCACHE_BROKER_CONNECT_ENV: &str = "ZCCACHE_BROKER_CONNECT";
 
 /// How [`connect_daemon`] reached the daemon endpoint.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,20 +102,14 @@ pub async fn connect_daemon_with_route(
 
     // Fake-backend test seam keeps resolve-and-drop + re-dial: it dials a raw
     // socket with no Hello negotiation, so there is no live session to adopt.
+    // This is the only remaining lane activator after #1002 retired the
+    // production broker connect opt-in.
     if let Some(seam_endpoint) = fake_backend_endpoint_from_env() {
         if let Some((resolved, route)) = resolve_fake_backend_seam_async(seam_endpoint).await {
             if let Some(result) = redial_resolved(route, resolved).await {
                 return Ok(result);
             }
         }
-        let conn = connect(endpoint).await?;
-        return Ok((conn, DaemonConnectRoute::Direct));
-    }
-
-    // Production broker lane: adopt the live negotiated socket as the data
-    // connection (Unix) instead of resolve-and-drop. See the module docs.
-    if let Some(result) = connect_via_broker().await {
-        return Ok(result);
     }
 
     let conn = connect(endpoint).await?;
@@ -140,109 +129,17 @@ pub(crate) fn broker_lane_active() -> bool {
 
 /// Is the broker lane requested for this process?
 ///
-/// True when the upstream fake-backend test seam is set (non-empty) or the
-/// production opt-in is enabled. The `RUNNING_PROCESS_DISABLE=1` precedence
-/// check happens in [`connect_daemon_with_route`] before this is consulted.
+/// #1002: the production `ZCCACHE_BROKER_CONNECT=1` opt-in has been retired —
+/// version-aware endpoint naming (#1004) is now zccache's standalone
+/// conflict-prevention mechanism, so the broker-negotiation connect lane it
+/// gated (never enabled in production, untested there) is gone. Only the
+/// upstream fake-backend TEST seam can still request the lane. The
+/// `RUNNING_PROCESS_DISABLE=1` precedence check happens in
+/// [`connect_daemon_with_route`] before this is consulted. Manifest /
+/// BackendHandle publication is unaffected — the daemon still publishes its
+/// identity for discovery tooling.
 fn broker_lane_requested() -> bool {
-    if std::env::var_os(RUNNING_PROCESS_FAKE_BACKEND_ENV).is_some_and(|value| !value.is_empty()) {
-        return true;
-    }
-    std::env::var(ZCCACHE_BROKER_CONNECT_ENV).is_ok_and(|value| value == "1")
-}
-
-/// Negotiate with the shared broker and return a ready data connection.
-///
-/// `AsyncBrokerSession::adopt` is the frozen one-call recipe: it honors
-/// RUNNING_PROCESS_DISABLE=1, runs the Hello negotiation on spawn_blocking,
-/// and hands back the negotiated session. On Unix the live socket is adopted
-/// directly via [`AsyncBrokerSession::into_backend_io`]; on Windows (no
-/// `into_backend_io` yet) the resolved endpoint is re-dialed.
-///
-/// Returns `None` on any broker-side failure; the caller falls back to the
-/// direct connect.
-async fn connect_via_broker() -> Option<(ClientConnection, DaemonConnectRoute)> {
-    let broker_endpoint = default_broker_endpoint()?;
-    let request = OwnedConnectRequest::new(
-        broker_endpoint,
-        "zccache",
-        zccache_core::VERSION,
-        zccache_core::VERSION,
-    );
-    let session = match AsyncBrokerSession::adopt(request).await {
-        Ok(session) => session,
-        // Belt-and-suspenders: connect_daemon_with_route already checks the
-        // disable hatch before calling us, but adopt re-checks it too.
-        Err(AdoptError::BrokerDisabled) => return None,
-        Err(err) => {
-            log_adopt_failure(&err);
-            return None;
-        }
-    };
-
-    let route = session.route();
-    let resolved = to_zccache_endpoint(session.endpoint());
-    adopt_session_connection(session, route, resolved).await
-}
-
-/// Adopt the negotiated session's live socket as the data connection.
-#[cfg(unix)]
-async fn adopt_session_connection(
-    session: AsyncBrokerSession,
-    route: BackendConnectionRoute,
-    resolved: String,
-) -> Option<(ClientConnection, DaemonConnectRoute)> {
-    match session.into_backend_io() {
-        Ok(io) => match unix_connection_from_backend_io(io) {
-            Ok(conn) => Some((
-                conn,
-                DaemonConnectRoute::Broker {
-                    route,
-                    endpoint: resolved,
-                },
-            )),
-            Err(err) => {
-                tracing::debug!(
-                    error = %err,
-                    "adopting broker backend socket failed; re-dialing resolved endpoint"
-                );
-                redial_resolved(route, resolved).await
-            }
-        },
-        Err(err) => {
-            tracing::debug!(
-                error = %err,
-                "into_backend_io declined the live socket; re-dialing resolved endpoint"
-            );
-            redial_resolved(route, resolved).await
-        }
-    }
-}
-
-/// Windows has no `into_backend_io` yet (OwnedHandle handoff deferred,
-/// running-process #720), so keep resolve-and-drop + re-dial.
-#[cfg(windows)]
-async fn adopt_session_connection(
-    session: AsyncBrokerSession,
-    route: BackendConnectionRoute,
-    resolved: String,
-) -> Option<(ClientConnection, DaemonConnectRoute)> {
-    drop(session);
-    redial_resolved(route, resolved).await
-}
-
-/// Wrap the adopted `OwnedFd` as a tokio-backed `IpcConnection`.
-///
-/// Slice 25 of zccache#782: migrated to the `protocol_v2::client_compat`
-/// namespace (upstream PR #529).
-#[cfg(unix)]
-fn unix_connection_from_backend_io(
-    io: running_process::broker::protocol_v2::client_compat::OwnedBackendIo,
-) -> Result<IpcConnection, IpcError> {
-    let fd = io.into_owned_fd();
-    let std_stream = std::os::unix::net::UnixStream::from(fd);
-    std_stream.set_nonblocking(true)?;
-    let stream = tokio::net::UnixStream::from_std(std_stream)?;
-    Ok(IpcConnection::from_unix_stream(stream))
+    std::env::var_os(RUNNING_PROCESS_FAKE_BACKEND_ENV).is_some_and(|value| !value.is_empty())
 }
 
 /// Re-dial a broker-resolved endpoint with zccache's own transport, reporting
@@ -410,21 +307,6 @@ pub fn classify_adopt_error(err: &AdoptError) -> Option<BrokerRefusal> {
     }
 }
 
-/// Log a broker adoption failure with its typed refusal classification.
-fn log_adopt_failure(err: &AdoptError) {
-    match classify_adopt_error(err) {
-        Some(refusal) => tracing::debug!(
-            ?refusal,
-            error = %err,
-            "running-process broker refused negotiation; using direct connect"
-        ),
-        None => tracing::debug!(
-            error = %err,
-            "running-process broker negotiation failed (unreachable/dial error); using direct connect"
-        ),
-    }
-}
-
 /// Read the fake-backend seam, honoring the disable-hatch precedence.
 fn fake_backend_endpoint_from_env() -> Option<String> {
     let value = std::env::var_os(RUNNING_PROCESS_FAKE_BACKEND_ENV)?;
@@ -433,20 +315,6 @@ fn fake_backend_endpoint_from_env() -> Option<String> {
         return None;
     }
     Some(value.into_owned())
-}
-
-/// Derive the per-user shared-broker endpoint for this host.
-fn default_broker_endpoint() -> Option<String> {
-    let sid_hash = running_process::broker::lifecycle::user_sid_hash().ok()?;
-    let pipe = running_process::broker::lifecycle::names::shared_broker_pipe(&sid_hash).ok()?;
-    #[cfg(windows)]
-    {
-        pipe.windows
-    }
-    #[cfg(unix)]
-    {
-        pipe.unix.map(|path| path.to_string_lossy().into_owned())
-    }
 }
 
 /// Translate a running-process backend endpoint into zccache connect form.
@@ -518,7 +386,6 @@ mod tests {
         let _env = EnvVarGuard::unset_all(&[
             RUNNING_PROCESS_DISABLE_ENV,
             RUNNING_PROCESS_FAKE_BACKEND_ENV,
-            ZCCACHE_BROKER_CONNECT_ENV,
         ]);
 
         let endpoint = unique_test_endpoint();
@@ -541,7 +408,6 @@ mod tests {
                 RUNNING_PROCESS_FAKE_BACKEND_ENV,
                 Some(to_running_process_endpoint(&endpoint)),
             ),
-            (ZCCACHE_BROKER_CONNECT_ENV, None),
         ]);
 
         let listener = IpcListener::bind(&endpoint).unwrap();
@@ -574,7 +440,6 @@ mod tests {
                 RUNNING_PROCESS_FAKE_BACKEND_ENV,
                 Some(to_running_process_endpoint(&unique_test_endpoint())),
             ),
-            (ZCCACHE_BROKER_CONNECT_ENV, Some("1".to_string())),
         ]);
 
         let listener = IpcListener::bind(&endpoint).unwrap();
@@ -598,7 +463,6 @@ mod tests {
                 RUNNING_PROCESS_FAKE_BACKEND_ENV,
                 Some(to_running_process_endpoint(&unique_test_endpoint())),
             ),
-            (ZCCACHE_BROKER_CONNECT_ENV, None),
         ]);
 
         let listener = IpcListener::bind(&endpoint).unwrap();
@@ -694,7 +558,6 @@ mod tests {
         let _env = EnvVarGuard::set_all(&[
             (RUNNING_PROCESS_DISABLE_ENV, None),
             (RUNNING_PROCESS_FAKE_BACKEND_ENV, None),
-            (ZCCACHE_BROKER_CONNECT_ENV, None),
         ]);
 
         // Warmup both lanes (first-connect costs: pipe namespace setup,
