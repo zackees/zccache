@@ -6,6 +6,26 @@ use std::process::ExitCode;
 use super::super::snapshot_fp;
 use super::util::{format_bytes, LOST_CONNECTION_MSG};
 
+/// #1005: prune stale sibling `v<VERSION>` cache dirs and print a summary.
+/// Operates on the filesystem (independent of the daemon), so it runs even
+/// when the daemon isn't reachable. Conservative: a version whose daemon still
+/// holds its files is skipped and reclaimed on a later prune.
+fn prune_and_report_stale_versions() {
+    let report = crate::core::config::prune_stale_version_dirs();
+    if !report.removed.is_empty() {
+        println!(
+            "  Stale versions:     pruned {}",
+            report.removed.join(", ")
+        );
+    }
+    if !report.skipped.is_empty() {
+        println!(
+            "  Stale versions:     skipped (in use) {}",
+            report.skipped.join(", ")
+        );
+    }
+}
+
 pub(crate) async fn cmd_clear(endpoint: &str) -> ExitCode {
     let recv_result = match crate::ipc::daemon_control_roundtrip(
         endpoint,
@@ -17,6 +37,8 @@ pub(crate) async fn cmd_clear(endpoint: &str) -> ExitCode {
         Ok(response) => response,
         Err(e) if crate::cli::client::is_daemon_unreachable_err(&e) => {
             eprintln!("daemon not running at {endpoint} — nothing to clear");
+            // #1005: still prune stale sibling version caches from disk.
+            prune_and_report_stale_versions();
             return ExitCode::SUCCESS;
         }
         Err(e) => {
@@ -42,6 +64,9 @@ pub(crate) async fn cmd_clear(endpoint: &str) -> ExitCode {
                     format_bytes(on_disk_bytes_freed)
                 );
             }
+            // #1005: prune stale sibling version caches (skips the running
+            // version and any version whose daemon still holds its files).
+            prune_and_report_stale_versions();
             ExitCode::SUCCESS
         }
         None => {

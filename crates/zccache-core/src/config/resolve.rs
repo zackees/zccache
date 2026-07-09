@@ -139,6 +139,101 @@ pub fn effective_cache_root_from_top_level(cache_root: &NormalizedPath) -> Norma
     cache_root.join(version)
 }
 
+/// Advisory top-level marker file recording the last daemon version that
+/// bound. Lives at `<top-level>/last-version.txt` — NEVER authoritative for
+/// identity (that is the versioned subdir); diagnostics + a warm-start hint
+/// only. Issue #1005 / #761 Phase-0 follow-up.
+pub const LAST_VERSION_MARKER: &str = "last-version.txt";
+
+/// Write `crate::VERSION` to the advisory `<top-level>/last-version.txt`.
+/// Best-effort — the error is returned for the caller to log, never fatal.
+pub fn write_last_version_marker() -> std::io::Result<()> {
+    write_last_version_marker_in(resolve_cache_root_top_level().0.as_path())
+}
+
+/// Test seam for [`write_last_version_marker`]: write the marker under an
+/// explicit top-level dir.
+pub fn write_last_version_marker_in(top_level: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(top_level)?;
+    std::fs::write(
+        top_level.join(LAST_VERSION_MARKER),
+        format!("{}\n", crate::VERSION),
+    )
+}
+
+/// Read the advisory last-version marker, if present and non-empty.
+#[must_use]
+pub fn read_last_version_marker() -> Option<String> {
+    let (top, _) = resolve_cache_root_top_level();
+    std::fs::read_to_string(top.join(LAST_VERSION_MARKER).as_path())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// True if `name` is a versioned cache subdir (`v<major>.<minor>.<patch>`),
+/// the shape [`versioned_subdir`] produces. Used to identify prunable siblings
+/// without pulling in a regex dependency.
+#[must_use]
+pub fn is_version_dir_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix('v') else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Outcome of [`prune_stale_version_dirs`].
+#[derive(Debug, Default, Clone)]
+pub struct PruneReport {
+    /// Version dirs successfully removed.
+    pub removed: Vec<String>,
+    /// Version dirs left in place (removal failed — most often a live daemon
+    /// on Windows holds its `zccache-daemon.exe` open; retried next prune).
+    pub skipped: Vec<String>,
+}
+
+/// Prune stale sibling `v<VERSION>` cache dirs under the top-level root,
+/// keeping the CURRENT version's dir.
+///
+/// Conservative + best-effort (issue #1005): a dir whose removal fails — the
+/// signal that a live daemon of that version still holds its
+/// `zccache-daemon.exe` open (Windows) — is **skipped**, not force-displaced,
+/// so `zccache clear` never nukes a running daemon's state and never fails.
+/// The skipped dir is reclaimed on a later prune once that daemon exits.
+pub fn prune_stale_version_dirs() -> PruneReport {
+    prune_stale_version_dirs_in(
+        resolve_cache_root_top_level().0.as_path(),
+        &versioned_subdir(),
+    )
+}
+
+/// Test seam for [`prune_stale_version_dirs`].
+pub fn prune_stale_version_dirs_in(top_level: &std::path::Path, keep: &str) -> PruneReport {
+    let mut report = PruneReport::default();
+    let entries = match std::fs::read_dir(top_level) {
+        Ok(e) => e,
+        Err(_) => return report,
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == keep || !is_version_dir_name(&name) {
+            continue;
+        }
+        match std::fs::remove_dir_all(entry.path()) {
+            Ok(()) => report.removed.push(name),
+            Err(_) => report.skipped.push(name),
+        }
+    }
+    report
+}
+
 /// True when `ZCCACHE_COLOCATE` is set to a non-empty, non-"0" value.
 pub(super) fn colocate_enabled() -> bool {
     std::env::var(COLOCATE_ENV)
@@ -259,5 +354,69 @@ fn normalize_cache_dir_override(path: &std::path::Path) -> NormalizedPath {
             .unwrap_or_default()
             .join(path)
             .into()
+    }
+}
+
+#[cfg(test)]
+mod version_hygiene_tests {
+    use super::*;
+
+    #[test]
+    fn is_version_dir_name_accepts_semver_dirs() {
+        assert!(is_version_dir_name("v1.12.15"));
+        assert!(is_version_dir_name("v0.0.0"));
+        assert!(is_version_dir_name("v10.200.3000"));
+    }
+
+    #[test]
+    fn is_version_dir_name_rejects_non_version_dirs() {
+        assert!(!is_version_dir_name("v1.12")); // only 2 parts
+        assert!(!is_version_dir_name("v1.12.15.1")); // 4 parts
+        assert!(!is_version_dir_name("1.12.15")); // no leading v
+        assert!(!is_version_dir_name("vX.Y.Z")); // non-numeric
+        assert!(!is_version_dir_name("v1.12.")); // empty part
+        assert!(!is_version_dir_name("logs"));
+        assert!(!is_version_dir_name("runtime-binaries"));
+        assert!(!is_version_dir_name("v"));
+    }
+
+    #[test]
+    fn prune_removes_stale_siblings_keeps_current_and_non_version_dirs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let top = tmp.path();
+        for name in ["v1.12.13", "v1.12.14", "v1.12.15", "logs", "crashes"] {
+            std::fs::create_dir_all(top.join(name)).unwrap();
+            std::fs::write(top.join(name).join("marker"), b"x").unwrap();
+        }
+        // Keep v1.12.15 (the "current" version); prune the two older siblings.
+        let report = prune_stale_version_dirs_in(top, "v1.12.15");
+
+        let mut removed = report.removed.clone();
+        removed.sort();
+        assert_eq!(removed, vec!["v1.12.13", "v1.12.14"]);
+        assert!(report.skipped.is_empty());
+
+        assert!(top.join("v1.12.15").is_dir(), "current version kept");
+        assert!(top.join("logs").is_dir(), "non-version dir kept");
+        assert!(top.join("crashes").is_dir(), "non-version dir kept");
+        assert!(!top.join("v1.12.13").exists());
+        assert!(!top.join("v1.12.14").exists());
+    }
+
+    #[test]
+    fn write_last_version_marker_writes_current_version() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let top = tmp.path().join("nested-top");
+        write_last_version_marker_in(&top).expect("marker write");
+        let contents = std::fs::read_to_string(top.join(LAST_VERSION_MARKER)).expect("read marker");
+        assert_eq!(contents.trim(), crate::VERSION);
+    }
+
+    #[test]
+    fn prune_is_noop_on_missing_top_level() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let missing = tmp.path().join("does-not-exist");
+        let report = prune_stale_version_dirs_in(&missing, "v1.12.15");
+        assert!(report.removed.is_empty() && report.skipped.is_empty());
     }
 }

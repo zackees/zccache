@@ -396,6 +396,11 @@ fn run_server(args: Args) {
         if let Err(e) = crate::ipc::write_lock_file(pid) {
             tracing::warn!("failed to write lock file: {e}");
         }
+        // #1005: advisory top-level marker of the last version that bound.
+        // Diagnostics / warm-start hint only, never authoritative for identity.
+        if let Err(e) = crate::core::config::write_last_version_marker() {
+            tracing::debug!("failed to write last-version marker: {e}");
+        }
         if let Err(e) = crate::ipc::write_backend_identity(&server.backend_identity()) {
             tracing::warn!("failed to write running-process backend identity: {e}");
         }
