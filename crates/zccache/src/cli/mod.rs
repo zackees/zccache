@@ -526,6 +526,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn concurrent_materialize_converges_on_one_daemon_binary() {
+        // #1006 adversarial: N threads racing to deploy the daemon (the
+        // thundering-herd first-invocation case) must converge on exactly one
+        // dest file, atomically (never a torn exe), with no leftover temps.
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let src = tmp.path().join("zccache");
+        std::fs::write(&src, vec![0xABu8; 4096]).expect("write source");
+        let dest = std::sync::Arc::new(tmp.path().join("v1.2.3").join("zccache-daemon"));
+        let src = std::sync::Arc::new(src);
+
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let (src, dest) = (std::sync::Arc::clone(&src), std::sync::Arc::clone(&dest));
+            handles.push(std::thread::spawn(move || {
+                materialize_daemon_exe_to(&src, &dest).map(|p| std::fs::read(p).unwrap())
+            }));
+        }
+        for h in handles {
+            let bytes = h.join().expect("thread panicked").expect("materialize ok");
+            assert_eq!(bytes.len(), 4096, "every racer sees a complete (non-torn) exe");
+            assert_eq!(bytes, vec![0xABu8; 4096]);
+        }
+        // Exactly the dest survives — no `.tmp.` leftovers from the losers.
+        let leftovers: Vec<_> = std::fs::read_dir(dest.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp."))
+            .collect();
+        assert!(leftovers.is_empty(), "no temp files left: {leftovers:?}");
+    }
+
     /// Issue #159: `session_end_idempotent` is the shared library entry
     /// point for ending a session — used by the CLI `session-end` command
     /// AND by tools like soldr that call into the library directly. When

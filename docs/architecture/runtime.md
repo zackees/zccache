@@ -132,6 +132,103 @@ daemon stderr is redirected. A silent timeout is forbidden.
 
 ---
 
+## Standalone daemon identity, deployment & lifecycle
+
+This section is the single source of truth for how a **standalone** zccache
+daemon is named, deployed, discovered, and torn down. It is the end state of
+the #1007 burn-down (#997–#1005). **Embedded mode is out of scope**: soldr and
+fbuild run the daemon in-process via `ZccacheService` on synthetic `embedded:`
+endpoints, never bind IPC, and are fenced off from standalone spawning by
+`ZCCACHE_NO_SPAWN` (#982/#987). Everything below applies only when the `zccache`
+CLI lazily spawns a real per-user daemon.
+
+### One binary, dispatched by `argv[0]` (#998)
+
+Only the `zccache` CLI is deployed. It is a **multi-call binary**: it reads its
+own `argv[0]` file stem and, if invoked as `zccache-daemon`, runs the daemon
+(`daemon::entry::run`); any other or empty name falls through to the CLI. The
+daemon `main` lives in the library (`daemon::entry`, #997) so both the CLI and
+the transitional `zccache-daemon` bin can host it. A hidden
+`zccache daemon-run <flags…>` subcommand is the `argv[0]`-independent escape
+hatch (debugging, `noexec` cache dirs, unreliable `argv[0]`). The name check is
+`cli::multicall::stem_matches`: Windows is case-insensitive and drops `.exe`;
+Unix is exact; a teardown orphan `zccache-daemon.old.<rand>.exe` does **not**
+dispatch as the daemon (`file_stem` strips only the final extension).
+
+### Version-rooted self-materialization (#999, fixes #760)
+
+When the daemon is needed, the CLI **copies itself** (`current_exe()`) to a
+stable, version-rooted path using the daemon's own name:
+
+```
+~/.zccache/v<VERSION>/zccache-daemon[.exe]
+```
+
+`materialize_daemon_exe` is **idempotent** (an existing dest whose size matches
+the source is reused — N concurrent same-version CLIs converge on one file, no
+repeated multi-MB copies) and **atomic** (temp-in-same-dir + `rename`; a
+concurrent winner is tolerated). Because each installed version owns its own
+`v<VERSION>/` directory, a stale copy can never masquerade as a newer one — the
+structural fix for the #760 "soft-shadow" downgrade the old random-name
+`runtime-binaries/` copies allowed. The own-name `zccache-daemon` satisfies
+`verify_pid_exe_stem(pid, "zccache-daemon")`.
+
+**Windows locked-exe teardown.** Windows locks a running executable's file, so
+`rm -rf` of a version dir (during `zccache clear`, a stale-sibling prune, or an
+upgrade) cannot delete a live daemon's `zccache-daemon.exe` — but it *can*
+rename it. `trampoline::unlock_exe` renames the locked exe to
+`zccache-daemon.old.<rand>.exe` to free the path; the orphan is swept once the
+daemon exits. The hash/random suffix is a **teardown displacement device only**,
+never the daemon's deployed identity.
+
+### Version-aware endpoint, lock & identity (#1004, #1003)
+
+Every front-door name carries the version tag (`v<VERSION>`), folded into the
+leaf helpers `socket_name` / `daemon_socket_name` / `pipe_name` /
+`lock_file_name`. Two installed versions therefore get **distinct** endpoints,
+locks, and backend-identity files and never contend — kill-and-replace becomes a
+same-version-only rare path (previously the #755 lifecycle-log herds). There is
+**no** unversioned compat alias: binding a shared alias would reintroduce the
+collision; the one-time transient extra daemon on the first upgrade (old daemon
+idles out) is the accepted trade-off.
+
+When a cache dir is pinned (`ZCCACHE_CACHE_DIR` / `--cache-dir`), the override is
+normalized through `effective_cache_root_from_top_level` (`normalized_override_root`,
+#1003) before the endpoint/lock/backend-identity are derived, so `--cache-dir
+/foo` and `--cache-dir /foo/v<version>` resolve to the **same** daemon — the
+endpoint, lock, backend identity, and daemon state all live coherently under
+`/foo/v<version>`.
+
+### Conflict prevention & the retired broker (#1002)
+
+Standalone conflict prevention is the version-aware endpoint scheme above, not a
+control-plane broker. The opt-in `ZCCACHE_BROKER_CONNECT` broker-negotiation
+connect lane was **retired** (#1002) — it was never enabled in production. The
+daemon still **publishes** its manifest + BackendHandle identity for discovery
+tooling; only the client-side broker *connect* path is gone. Clients use the
+direct connect.
+
+### Version-namespace hygiene (#1005)
+
+The daemon writes an advisory `<top-level>/last-version.txt` on bind
+(diagnostics / warm-start hint, never authoritative). `zccache clear` prunes
+stale sibling `v<MAJOR.MINOR.PATCH>` dirs, **skipping** the current version and
+any version whose daemon still holds its files (a live-daemon dir's removal
+fails on Windows and is retried next prune — `clear` never nukes a running
+daemon's state).
+
+### Spawn single-flight & takeover
+
+Discovery + spawn preserve the existing thundering-herd protections: the #952
+`.spawn` slot (materialization runs inside it — one arbiter copies + spawns,
+losers park on the ready-wait), the #640/#641 pre-bind probe, the #639 bind-race
+loser-defer, the #132 recycled-PID `verify_pid_exe_stem` defense, and the
+#666/#726 wedge single-payer. `ensure_daemon` kills+replaces only a
+same-version *stale* daemon (`DaemonOlder`). All spawn/park/takeover decisions
+land as JSONL lifecycle events (#755) for post-mortem correlation.
+
+---
+
 ## Correctness Model
 
 ### Layered Invalidation

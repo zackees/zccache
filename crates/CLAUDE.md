@@ -1,6 +1,9 @@
 # Crates Architecture
 
-21 crates split into two product surfaces: the **compile cache** (`zccache-daemon` + `zccache-cli`, plus their library subsystems) and a separate **download cache** (`zccache-download-daemon` + `zccache-download-cli`, plus their library subsystems). A few utility binaries (`zccache-fp`, `zccache-stamp`) and one CI lib (`zccache-ci`) round out the workspace.
+21 crates split into two product surfaces: the **compile cache** and a separate **download cache**, plus utility binaries (`zccache-fp`, `zccache-stamp`) and one CI lib (`zccache-ci`).
+
+> [!NOTE]
+> **Binary layout (post-consolidation, #997–#999).** The compile-cache binaries all live as `[[bin]]` targets in the single `crates/zccache` crate — `zccache` (CLI), `zccache-daemon` (the standalone daemon; its `main` is the library `daemon::entry`), and `zccache-fp`. As of #998 the `zccache` binary is a **multi-call binary**: it dispatches on `argv[0]` and runs the daemon when invoked as `zccache-daemon`, so the CLI **self-deploys** the daemon by copying itself to `~/.zccache/v<VERSION>/zccache-daemon` (#999) rather than shipping a separate daemon executable. `crates/zccache-cli` is **not** the CLI — it is the PyO3 `cdylib` hosting `zccache._native`. See [docs/architecture/runtime.md § Standalone daemon identity, deployment & lifecycle](../docs/architecture/runtime.md#standalone-daemon-identity-deployment--lifecycle).
 
 ## Dependency Graph
 
