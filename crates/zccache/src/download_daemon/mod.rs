@@ -152,7 +152,7 @@ async fn handle_connection(
                     .map_err(|e| e.to_string())?;
             }
             Request::Shutdown => {
-                state.shutdown.notify_one();
+                state.shutdown.notify_waiters();
                 conn.send(&Response::ShuttingDown)
                     .await
                     .map_err(|e| e.to_string())?;

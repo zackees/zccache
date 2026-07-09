@@ -13,8 +13,6 @@ ROOT = Path(__file__).parent.parent.resolve()
 RUST_PUBLISH_ORDER = [
     "zccache",
     "zccache-cli",
-    "zccache-fingerprint",
-    "zccache-watcher",
 ]
 DYNAMIC_VERSION_PYPROJECTS = (
     ROOT / "pyproject.toml",
@@ -27,9 +25,9 @@ DYNAMIC_VERSION_PYPROJECTS = (
 # crate name no longer matches the previous `startswith("zccache-")` filter,
 # so the publish flow silently skipped stamping `zccache` and crates.io
 # rejected the resulting path-only dep with
-# "all dependencies must have a version requirement specified". The set
-# is sourced from RUST_PUBLISH_ORDER so any new internal crate flows in
-# automatically.
+# "all dependencies must have a version requirement specified". The set is
+# sourced from RUST_PUBLISH_ORDER so it only includes crates that are still
+# published to crates.io; split-out engine crates remain publish=false.
 INTERNAL_CRATE_NAMES = frozenset(RUST_PUBLISH_ORDER)
 # Matches `<name> = { <body> }` where `<name>` is the umbrella `zccache`
 # *or* any `zccache-<suffix>` workspace member. Same rationale as the set

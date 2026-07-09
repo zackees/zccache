@@ -514,7 +514,7 @@ fn run_server(args: Args) {
         tokio::spawn(async move {
             if let Ok(()) = tokio::signal::ctrl_c().await {
                 tracing::info!("received Ctrl+C — shutting down");
-                shutdown.notify_one();
+                shutdown.notify_waiters();
             }
         });
 

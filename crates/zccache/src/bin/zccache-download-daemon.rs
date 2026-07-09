@@ -110,7 +110,7 @@ fn run_server(args: Args) {
         let shutdown = server.shutdown_handle();
         tokio::spawn(async move {
             if let Ok(()) = tokio::signal::ctrl_c().await {
-                shutdown.notify_one();
+                shutdown.notify_waiters();
             }
         });
         if let Err(err) = server.run().await {

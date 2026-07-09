@@ -296,6 +296,11 @@ impl DaemonServer {
                 }
                 () = self.shutdown.notified() => {
                     self.state.shutdown_requested.store(true, Ordering::Release);
+                    // `shutdown_handle()` exposes the raw Notify for legacy
+                    // tests and Ctrl+C handlers, many of which still call
+                    // notify_one(). Rebroadcast so whichever task observes the
+                    // edge first wakes the rest of the shutdown path.
+                    self.state.shutdown.notify_waiters();
                     tracing::info!("daemon server shutting down");
                     // Drop the watcher to stop the OS thread and close channels.
                     // The settle buffer and consumer tasks will exit when their
@@ -626,7 +631,13 @@ impl DaemonServer {
                 // forever and ignores shutdown — a shutdown-cleanliness gap.
                 let event = tokio::select! {
                     e = settled_rx.recv() => e,
-                    () = state.shutdown.notified() => None,
+                    () = state.shutdown.notified() => {
+                        state.shutdown_requested.store(true, Ordering::Release);
+                        // See the accept-loop shutdown branch: consuming a
+                        // single Notify edge here must still wake the loop.
+                        state.shutdown.notify_waiters();
+                        None
+                    },
                 };
                 let Some(event) = event else { break };
                 match event {

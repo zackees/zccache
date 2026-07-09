@@ -315,7 +315,7 @@ jobs:
       # --- Unit tests always run ---
       - name: "zccache unit tests"
         shell: bash
-        run: cargo test -p zccache --features zccache-bin,daemon-bin,download-bin,download-daemon-bin,fingerprint-bin,stamp-bin,ci-bin,crash-tools,tokio-console,test-support
+        run: cargo test -p zccache --lib --bins --features zccache-bin,daemon-bin,download-bin,download-daemon-bin,fingerprint-bin,stamp-bin,ci-bin,crash-tools,tokio-console,test-support -- --test-threads=1
 
       # --- Test gha-cache status (works without cache API) ---
       - name: "gha-cache status: runs without error"

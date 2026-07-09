@@ -83,7 +83,7 @@ jobs:
           unset ZCCACHE_CACHE_DIR
           echo "Using isolated test SOLDR_CACHE_DIR=$SOLDR_CACHE_DIR"
           start=$SECONDS
-          soldr cargo test --workspace --features "$ZCCACHE_INTEGRATION_FEATURES" --no-fail-fast 2>&1 | tee test-output.txt
+          soldr cargo test --workspace --features "$ZCCACHE_INTEGRATION_FEATURES" --no-fail-fast -- --test-threads=1 2>&1 | tee test-output.txt
           status=${PIPESTATUS[0]}
           dur=$((SECONDS - start))
           echo "- **Integration (Linux)**: ${dur}s" >> "$GITHUB_STEP_SUMMARY"
