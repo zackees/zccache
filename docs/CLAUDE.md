@@ -43,3 +43,4 @@ Feature documentation belongs in the **subsystem doc that owns the feature**, no
 - **[DESIGN_DECISIONS.md](DESIGN_DECISIONS.md)** — 25 ADR-style decisions with rationale
 - **[ROADMAP.md](ROADMAP.md)** — 7 implementation phases
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — Index of all architecture documents
+- **[rust-python-best-practices.md](rust-python-best-practices.md)** — CI + repo-hygiene decisions for the hybrid Rust/Python layout (#835)
