@@ -197,7 +197,7 @@ Cache-key composition has two layers, both domain-separated:
 - args in argv order, after `--key-args-filter` regex drops (filtered args still reach the tool's argv)
 - sorted (name=value) env subset declared via `--input-env`
 - cwd (when `cwd_in_key=true`; suppressible via `--no-cwd-in-key`)
-- sorted (path, content-hash) input file pairs (content via the two-layer fingerprint)
+- sorted (path, content-hash) input file pairs (content via the two-layer fingerprint), declared via repeated `--input-file` and/or the bulk forms below
 - sorted (path, content-hash) **Path A** transitive headers — every file reached from `--include-scan` seeds resolved against `--include-dir` / `--system-include` / `--iquote-dir` using the existing `depgraph::scanner`
 - declared output_file names (so changing the capture set invalidates)
 - `input_extra` opaque bytes
@@ -205,6 +205,12 @@ Cache-key composition has two layers, both domain-separated:
 **Full key** (domain tag `zccache-exec-full-key-v2`) — extends the primary with Path B depfile-derived deps:
 - **First invocation**: full = primary; tool runs, the emitted `--depfile` is parsed, each listed file's content-hash is recorded in a `<primary>.deps` sidecar alongside the artifact.
 - **Subsequent invocations**: the sidecar is read before lookup, dep contents are re-hashed (via two-layer), and the full key is composed; lookup happens under the full key. Stale sidecars (referencing vanished files) force a fresh miss; a non-zero tool exit skips writing the sidecar so the next call cleanly bootstraps.
+
+**Bulk input declaration** (issue #837) — for high-fanout callers (e.g. every file under `src/**`, ~1500–2000 paths) that would blow the OS argv limit spelling out `--input-file` per path:
+- `--input-file-list <PATH>` — read newline-delimited paths from a file.
+- `--input-file-stdin` — read newline-delimited paths from this process's stdin. Safe alongside the wrapped tool, which exec runs with a null stdin.
+
+Both are pure delivery mechanisms: `cli/commands/exec.rs::parse_input_path_lines` trims trailing whitespace/`\r` and drops blank lines (no comment syntax — a literal `#path` is preserved), then the entries join the `--input-file` set before absolutization. The cache key is byte-identical to spelling every path on the command line. `--input-glob` (daemon-side walking) was deferred as a design question; see #837.
 
 Cache policies (`ExecCachePolicy`):
 - `Normal` (default) — look up + store

@@ -443,6 +443,18 @@ pub(crate) enum Commands {
         /// Repeatable: declare a file whose content feeds the cache key.
         #[arg(long = "input-file", value_name = "PATH")]
         input_file: Vec<String>,
+        /// Issue #837: read a newline-delimited list of input-file paths from
+        /// this file. Each entry is treated exactly as a separate
+        /// `--input-file`; blank lines are ignored. Lets high-fanout callers
+        /// (e.g. every file under `src/**`) sidestep the OS argv limit.
+        #[arg(long = "input-file-list", value_name = "PATH")]
+        input_file_list: Option<String>,
+        /// Issue #837: read newline-delimited input-file paths from stdin.
+        /// Same semantics as `--input-file-list` but from the pipe. The
+        /// wrapped tool does not receive stdin (exec runs it with a null
+        /// stdin), so this does not compete with it.
+        #[arg(long = "input-file-stdin")]
+        input_file_stdin: bool,
         /// Repeatable: env var name whose *value* feeds the cache key.
         /// The current process env is queried for the value at request time.
         #[arg(long = "input-env", value_name = "NAME")]

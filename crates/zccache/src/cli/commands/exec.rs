@@ -18,6 +18,10 @@ use super::util::{absolute_path, connect, exit_code_from_i32, resolve_endpoint};
 /// daemon.
 pub(crate) struct ExecParams {
     pub(crate) input_files: Vec<String>,
+    /// Issue #837: newline-delimited file of additional input-file paths.
+    pub(crate) input_file_list: Option<String>,
+    /// Issue #837: read additional input-file paths from stdin.
+    pub(crate) input_file_stdin: bool,
     pub(crate) input_env: Vec<String>,
     pub(crate) input_extra: Option<String>,
     pub(crate) output_stdout: bool,
@@ -48,6 +52,8 @@ pub(crate) struct ExecParams {
 pub(crate) fn cmd_exec(params: ExecParams) -> ExitCode {
     let ExecParams {
         input_files,
+        input_file_list,
+        input_file_stdin,
         input_env,
         input_extra,
         output_stdout,
@@ -98,6 +104,30 @@ pub(crate) fn cmd_exec(params: ExecParams) -> ExitCode {
     }
 
     let cwd_norm: NormalizedPath = std::env::current_dir().unwrap_or_default().into();
+
+    // Issue #837: expand `--input-file-list` / `--input-file-stdin` into the
+    // same path set as repeated `--input-file`. This is purely a delivery
+    // mechanism — the paths join `input_files` before absolutization, so the
+    // cache key is byte-identical to spelling every path on the command line.
+    let mut input_files = input_files;
+    if let Some(list_path) = input_file_list.as_deref() {
+        match std::fs::read_to_string(list_path) {
+            Ok(contents) => input_files.extend(parse_input_path_lines(&contents)),
+            Err(e) => {
+                eprintln!("zccache exec: failed to read --input-file-list {list_path}: {e}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    if input_file_stdin {
+        use std::io::Read as _;
+        let mut buf = String::new();
+        if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
+            eprintln!("zccache exec: failed to read --input-file-stdin: {e}");
+            return ExitCode::from(2);
+        }
+        input_files.extend(parse_input_path_lines(&buf));
+    }
 
     let input_file_paths: Vec<NormalizedPath> =
         input_files.iter().map(|p| absolute_path(p)).collect();
@@ -258,6 +288,21 @@ fn parse_hex_32(s: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
+/// Issue #837: split a newline-delimited path list (from `--input-file-list`
+/// or `--input-file-stdin`) into individual paths. Trailing whitespace and
+/// `\r` (Windows CRLF) are trimmed and blank lines dropped so a trailing
+/// newline or a hand-edited list doesn't inject empty paths. Every surviving
+/// line is treated exactly as one `--input-file` value — no comment syntax,
+/// so a literal `#foo` path is preserved.
+fn parse_input_path_lines(contents: &str) -> Vec<String> {
+    contents
+        .lines()
+        .map(|line| line.trim_end_matches(['\r', '\n']).trim_end())
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,5 +325,27 @@ mod tests {
         let mut bad = "0".repeat(64);
         bad.replace_range(0..1, "z");
         assert!(parse_hex_32(&bad).is_none());
+    }
+
+    #[test]
+    fn parse_input_path_lines_splits_and_trims() {
+        let listing = "src/a.h\nsrc/b.h\r\n  src/c.h  \n\n\tsrc/d.h\n";
+        assert_eq!(
+            parse_input_path_lines(listing),
+            vec!["src/a.h", "src/b.h", "  src/c.h", "\tsrc/d.h"],
+        );
+    }
+
+    #[test]
+    fn parse_input_path_lines_drops_blanks_and_keeps_hash_paths() {
+        // Trailing newline / blank lines must not inject empty entries, and a
+        // leading '#' is a real path segment, not a comment.
+        assert!(parse_input_path_lines("\n\n   \n").is_empty());
+        assert_eq!(parse_input_path_lines("#notacomment.h\n"), vec!["#notacomment.h"]);
+    }
+
+    #[test]
+    fn parse_input_path_lines_empty_input_is_empty() {
+        assert!(parse_input_path_lines("").is_empty());
     }
 }

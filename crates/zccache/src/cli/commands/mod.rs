@@ -447,6 +447,8 @@ fn dispatch(command: Commands, global_strict_paths: Option<&str>) -> ExitCode {
         },
         Commands::Exec {
             input_file,
+            input_file_list,
+            input_file_stdin,
             input_env,
             input_extra,
             output_stdout,
@@ -466,6 +468,8 @@ fn dispatch(command: Commands, global_strict_paths: Option<&str>) -> ExitCode {
             tool_command,
         } => exec::cmd_exec(exec::ExecParams {
             input_files: input_file,
+            input_file_list,
+            input_file_stdin,
             input_env,
             input_extra,
             output_stdout,
