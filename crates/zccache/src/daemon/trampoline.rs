@@ -239,6 +239,7 @@ fn redirect_stdio_to_log_windows(log_path: &Path) -> bool {
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
 
+    #[allow(clashing_extern_declarations)]
     extern "system" {
         fn CreateFileW(
             lp_file_name: *const u16,
@@ -348,6 +349,7 @@ fn detach_stdio_windows() {
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
 
+    #[allow(clashing_extern_declarations)]
     extern "system" {
         fn CreateFileW(
             lp_file_name: *const u16,

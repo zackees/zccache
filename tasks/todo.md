@@ -98,3 +98,9 @@ Wave 5 status:
 Next wave:
 - Add publish-time single-crate amalgamation and CI guards so only the public `zccache` crate can be published.
 - Do release/soldr validation and hardening after the split PR lands.
+
+Wave 6 status:
+- Added release-time `zccache` crate amalgamation for crates.io packaging while keeping the checked-in workspace split for git/path consumers.
+- Marked internal and PyPI extension crates `publish = false`; crates.io publish order is now only the public `zccache` crate.
+- Release publish now performs a real `cargo package` verification on the transformed crate before upload.
+- Verified on 2026-07-09: focused release Python tests, full `ci/tests`, `bash ./test`, workspace clippy all-target/all-feature, and transformed `zccache` package verification with `RUSTFLAGS=-D warnings`.

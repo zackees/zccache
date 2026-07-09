@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from ci.env import clean_env
+from ci.publish_amalgamate import prepare_zccache_crate_for_publish
 from ci.release_checks import (
     RUST_PUBLISH_ORDER,
     ReleaseCheckError,
@@ -557,8 +558,11 @@ def verify_rust_crates_locally() -> None:
             + ", ".join(stamped)
         )
 
+    prepare_zccache_crate_for_publish(ROOT)
+    log("  Prepared crates/zccache as a self-contained crates.io package")
+
     for crate in RUST_PUBLISH_ORDER:
-        run(["cargo", "package", "--allow-dirty", "--no-verify", "-p", crate, "--list"], cwd=ROOT)
+        run(["cargo", "package", "--allow-dirty", "-p", crate], cwd=ROOT)
 
 
 def verify_crate_visible(crate: str, version: str) -> None:
@@ -588,7 +592,7 @@ def publish_rust_crates(version: str, existing_crates: set[str] | None = None) -
         if crate in existing_crates:
             log(f"  Skipping {crate} {version}; already published")
             continue
-        run(["cargo", "publish", "--allow-dirty", "--no-verify", "-p", crate], cwd=ROOT)
+        run(["cargo", "publish", "--allow-dirty", "-p", crate], cwd=ROOT)
         verify_crate_visible(crate, version)
 
 

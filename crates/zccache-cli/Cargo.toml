@@ -8,6 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
 description = "PyO3 cdylib hosting the `zccache._native` extension module"
+publish = false
 
 [lib]
 crate-type = ["rlib", "cdylib"]
