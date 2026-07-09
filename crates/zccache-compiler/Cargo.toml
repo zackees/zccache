@@ -1,0 +1,23 @@
+[package]
+name = "zccache-compiler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Compiler detection and invocation parsing for zccache"
+publish = false
+
+[dependencies]
+clang = { workspace = true }
+thiserror = { workspace = true }
+zccache-core = { workspace = true }
+zccache-hash = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

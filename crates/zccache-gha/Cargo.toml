@@ -1,0 +1,21 @@
+[package]
+name = "zccache-gha"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "GitHub Actions cache client for zccache"
+publish = false
+
+[dependencies]
+reqwest = { workspace = true, features = ["json"] }
+serde = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

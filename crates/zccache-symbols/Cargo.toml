@@ -1,0 +1,20 @@
+[package]
+name = "zccache-symbols"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Release marker and crash symbol sidecar primitives for zccache"
+publish = false
+
+[dependencies]
+zccache-core = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

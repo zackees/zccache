@@ -1,5 +1,7 @@
 ## src/
 
-PyO3 `_native` extension module wrapping `zccache::watcher`.
-This crate is a thin language binding — all Rust logic lives in the
-zccache (issue #365).
+Rust watcher engine source for `zccache-watcher`.
+
+The crate root preserves the former `zccache::watcher` module surface so the
+main facade can re-export this crate as `zccache::watcher`. The optional
+`python` feature keeps the PyO3 `_native` extension bindings in `python.rs`.

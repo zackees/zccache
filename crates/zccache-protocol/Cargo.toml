@@ -1,0 +1,33 @@
+[package]
+name = "zccache-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+readme = "README.md"
+description = "Internal daemon protocol types and wire codecs for zccache"
+
+[dependencies]
+zccache-core = { workspace = true }
+zccache-depgraph = { workspace = true }
+
+bincode = { workspace = true }
+bytes = { workspace = true }
+prost = { workspace = true }
+running-process = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+
+[build-dependencies]
+prost-build = { workspace = true }
+protoc-bin-vendored = { workspace = true }
+
+[lints]
+workspace = true

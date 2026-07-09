@@ -7,7 +7,8 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
-description = "PyO3 cdylib hosting the `zccache.fingerprint._native` extension module"
+description = "Fingerprint engine and PyO3 extension module for zccache"
+publish = false
 
 [lib]
 crate-type = ["rlib", "cdylib"]
@@ -17,12 +18,24 @@ default = []
 python = ["dep:pyo3"]
 
 [dependencies]
-zccache = { workspace = true }
+zccache-core = { workspace = true }
+zccache-hash = { workspace = true }
+fs2 = { workspace = true }
+globset = "0.4"
+jwalk = { workspace = true }
 pyo3 = { version = "0.23", features = [
     "extension-module",
     "generate-import-lib",
     "abi3-py310",
 ], optional = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [build-dependencies]
 pyo3-build-config = "0.23"

@@ -2,6 +2,20 @@
 resolver = "2"
 members = [
     "crates/zccache",
+    "crates/zccache-artifact",
+    "crates/zccache-audit",
+    "crates/zccache-compile-trace",
+    "crates/zccache-compiler",
+    "crates/zccache-core",
+    "crates/zccache-depgraph",
+    "crates/zccache-download",
+    "crates/zccache-download-protocol",
+    "crates/zccache-fscache",
+    "crates/zccache-gha",
+    "crates/zccache-hash",
+    "crates/zccache-ipc",
+    "crates/zccache-protocol",
+    "crates/zccache-symbols",
     "crates/zccache-watcher",
     "crates/zccache-cli",
     "crates/zccache-fingerprint",
@@ -61,6 +75,20 @@ rkyv = "0.8"
 mimalloc = "0.1"
 running-process = { version = "4.5.9", default-features = false, features = ["client-async"] }
 zccache = { path = "crates/zccache" }
+zccache-artifact = { path = "crates/zccache-artifact" }
+zccache-audit = { path = "crates/zccache-audit" }
+zccache-compile-trace = { path = "crates/zccache-compile-trace" }
+zccache-compiler = { path = "crates/zccache-compiler" }
+zccache-core = { path = "crates/zccache-core" }
+zccache-depgraph = { path = "crates/zccache-depgraph" }
+zccache-download = { path = "crates/zccache-download" }
+zccache-download-protocol = { path = "crates/zccache-download-protocol" }
+zccache-fscache = { path = "crates/zccache-fscache" }
+zccache-gha = { path = "crates/zccache-gha" }
+zccache-hash = { path = "crates/zccache-hash" }
+zccache-ipc = { path = "crates/zccache-ipc" }
+zccache-protocol = { path = "crates/zccache-protocol" }
+zccache-symbols = { path = "crates/zccache-symbols" }
 zccache-watcher = { path = "crates/zccache-watcher" }
 zccache-cli = { path = "crates/zccache-cli" }
 zccache-fingerprint = { path = "crates/zccache-fingerprint" }

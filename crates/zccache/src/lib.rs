@@ -5,8 +5,8 @@
 //! should `use crate::<module>::*` instead of the legacy
 //! `zccache_<module>::*` paths, which are being deleted wave by wave.
 
-pub mod artifact;
-pub mod audit;
+pub use zccache_artifact as artifact;
+pub use zccache_audit as audit;
 /// Issue zccache#926 — durable audit JSONL writer for the embedded
 /// service. Spawned by [`embedded::ZccacheService::start`] when
 /// [`audit::AuditConfig::mode`] > `Off`.
@@ -18,30 +18,30 @@ pub mod cli;
 /// zccache#940 — per-sub-phase JSONL trace for the embedded compile
 /// path. Diagnostic-only, gated by the `ZCCACHE_INNER_TRACE` env var.
 /// See module doc for the wire format and why it exists.
-pub mod compile_trace;
-pub mod compiler;
-pub mod core;
+pub use zccache_compile_trace as compile_trace;
+pub use zccache_compiler as compiler;
+pub use zccache_core as core;
 pub mod daemon;
-pub mod depgraph;
+pub use zccache_depgraph as depgraph;
 #[cfg(feature = "download")]
-pub mod download;
+pub use zccache_download as download;
 #[cfg(feature = "download-client")]
 pub mod download_client;
 #[cfg(feature = "download-daemon")]
 pub mod download_daemon;
 #[cfg(feature = "download-protocol")]
-pub mod download_protocol;
+pub use zccache_download_protocol as download_protocol;
 pub mod embedded;
-pub mod fingerprint;
-pub mod fscache;
+pub use zccache_fingerprint as fingerprint;
+pub use zccache_fscache as fscache;
 #[cfg(feature = "gha")]
-pub mod gha;
-pub mod hash;
-pub mod ipc;
-pub mod protocol;
+pub use zccache_gha as gha;
+pub use zccache_hash as hash;
+pub use zccache_ipc as ipc;
+pub use zccache_protocol as protocol;
 #[cfg(feature = "symbols")]
-pub mod symbols;
-pub mod watcher;
+pub use zccache_symbols as symbols;
+pub use zccache_watcher as watcher;
 
 #[cfg(feature = "test-support")]
 pub mod test_support;

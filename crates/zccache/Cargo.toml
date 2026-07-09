@@ -14,8 +14,15 @@ default = []
 # Enables zccache::test_support (dev-only helpers).
 test-support = ["dep:tracing-subscriber"]
 ci = ["dep:wait-timeout"]
-cli = ["dep:clap", "dep:tracing-subscriber", "download-client", "gha", "symbols"]
-download = ["dep:futures", "dep:reqwest"]
+cli = [
+    "dep:clap",
+    "dep:tracing-subscriber",
+    "download-client",
+    "gha",
+    "symbols",
+    "zccache-artifact/cli",
+]
+download = ["dep:zccache-download", "dep:futures", "dep:reqwest"]
 download-client = [
     "download",
     "download-protocol",
@@ -26,9 +33,9 @@ download-client = [
     "dep:zip",
 ]
 download-daemon = ["download", "download-protocol"]
-download-protocol = ["download"]
-gha = ["dep:reqwest", "dep:sha2"]
-symbols = []
+download-protocol = ["download", "dep:zccache-download-protocol"]
+gha = ["dep:zccache-gha", "zccache-artifact/gha"]
+symbols = ["dep:zccache-symbols"]
 tokio-console = ["dep:console-subscriber"]
 zccache-bin = ["cli", "dep:mimalloc"]
 daemon-bin = ["dep:clap", "dep:mimalloc", "dep:tracing-subscriber"]
@@ -45,6 +52,24 @@ ci-bin = ["ci", "dep:md5"]
 crash-tools = ["dep:sadness-generator"]
 
 [dependencies]
+# internal facade crates
+zccache-artifact = { workspace = true }
+zccache-audit = { workspace = true }
+zccache-compile-trace = { workspace = true }
+zccache-compiler = { workspace = true }
+zccache-core = { workspace = true }
+zccache-depgraph = { workspace = true }
+zccache-download = { workspace = true, optional = true }
+zccache-download-protocol = { workspace = true, optional = true }
+zccache-fingerprint = { workspace = true }
+zccache-fscache = { workspace = true }
+zccache-hash = { workspace = true }
+zccache-gha = { workspace = true, optional = true }
+zccache-ipc = { workspace = true }
+zccache-protocol = { workspace = true }
+zccache-symbols = { workspace = true, optional = true }
+zccache-watcher = { workspace = true }
+
 # core
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -169,10 +194,6 @@ zccache = { path = ".", features = ["test-support"] }
 # time-dependent unit tests (issue #717). test-util is a dev-only feature
 # so it does not bloat production builds.
 tokio = { workspace = true, features = ["test-util"] }
-
-[build-dependencies]
-prost-build = { workspace = true }
-protoc-bin-vendored = { workspace = true }
 
 [[bench]]
 name = "hashing"

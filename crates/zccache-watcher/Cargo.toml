@@ -7,7 +7,8 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
-description = "PyO3 cdylib hosting the `zccache.watcher._native` extension module"
+description = "Cross-platform file watcher engine and optional Python extension for zccache"
+publish = false
 
 [lib]
 crate-type = ["rlib", "cdylib"]
@@ -17,12 +18,22 @@ default = []
 python = ["dep:pyo3"]
 
 [dependencies]
-zccache = { workspace = true }
+zccache-core = { workspace = true }
+zccache-fscache = { workspace = true }
+globset = "0.4"
+jwalk = { workspace = true }
+notify = { workspace = true }
+rayon = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
 pyo3 = { version = "0.23", features = [
     "extension-module",
     "generate-import-lib",
     "abi3-py310",
 ], optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [build-dependencies]
 pyo3-build-config = "0.23"

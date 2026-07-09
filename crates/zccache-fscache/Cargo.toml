@@ -1,0 +1,27 @@
+[package]
+name = "zccache-fscache"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Filesystem metadata cache for zccache"
+publish = false
+
+[dependencies]
+bincode = { workspace = true }
+dashmap = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+zccache-core = { workspace = true }
+zccache-hash = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

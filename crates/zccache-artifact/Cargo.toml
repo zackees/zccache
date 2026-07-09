@@ -1,0 +1,39 @@
+[package]
+name = "zccache-artifact"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Artifact storage and Rust artifact plan support for zccache"
+publish = false
+
+[features]
+default = []
+cli = ["dep:flate2", "dep:tar"]
+gha = ["dep:zccache-gha", "dep:flate2", "dep:tar"]
+
+[dependencies]
+zccache-core = { workspace = true }
+zccache-hash = { workspace = true }
+zccache-gha = { workspace = true, optional = true }
+
+bincode = { workspace = true }
+blake3 = { workspace = true }
+dashmap = { workspace = true }
+flate2 = { workspace = true, optional = true }
+prost = { workspace = true }
+rayon = { workspace = true }
+redb = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tar = { workspace = true, optional = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

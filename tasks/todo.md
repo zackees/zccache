@@ -36,3 +36,65 @@ Meta: https://github.com/zackees/zccache/issues/968
 - Progress/CPU-based watchdogs, never dumb wall-clock (links run minutes)
 - Every timeout/watchdog fire: loud warn! + durable lifecycle event (forensics)
 - Constants at top of file
+
+# #975 internal crate split
+
+Source: https://github.com/zackees/zccache/issues/975#issuecomment-4920394110
+
+Contract:
+- Split the current `crates/zccache` monocrate into internal workspace crates so git-rev/vendored source consumers compile subsystems in parallel.
+- Keep `zccache` as the public facade preserving existing public module paths, feature names, and bin targets.
+- Keep crates.io publication as one public crate named `zccache`; later wave must add publish-time amalgamation plus a CI guard that no internal crate is accidentally published.
+
+Current wave:
+- Wave 1 foundation carve: `core`, `hash`, `audit`, and `gha`.
+- Subagents may edit disjoint module/crate files only and must not run linting, building, testing, formatting, or any executable command.
+- Main agent owns shared workspace manifests, facade wiring, and all verification/fixups with bounded `soldr` commands.
+
+Wave 1 status:
+- Added unpublished internal crates `zccache-core`, `zccache-hash`, `zccache-audit`, and `zccache-gha`.
+- `zccache` facade now re-exports those crates as `zccache::core`, `zccache::hash`, `zccache::audit`, and feature-gated `zccache::gha`.
+- Verified on 2026-07-09: focused `cargo check`, facade all-target/all-feature check, workspace all-target/all-feature check, `cargo fmt --all` via `soldr --no-cache`, workspace clippy all-target/all-feature, focused new-crate tests, and `./test`.
+
+Next wave:
+- Carve `symbols`, `download`, `fscache`, `compiler`, `artifact`, and `compile_trace` into new internal crates.
+- Repurpose the existing `crates/zccache-fingerprint` Python-extension crate into the internal fingerprint engine crate with Python bindings gated behind its existing `python` feature.
+
+Wave 2 status:
+- Added unpublished internal crates `zccache-artifact`, `zccache-compile-trace`, `zccache-compiler`, `zccache-download`, `zccache-fscache`, and `zccache-symbols`.
+- Repurposed existing `zccache-fingerprint` into the internal fingerprint engine crate while preserving the `python` extension feature.
+- `zccache` facade re-exports these crates on the old public paths and forwards `download`, `symbols`, `cli`, and `gha` features as needed.
+- Verified on 2026-07-09: Wave 2 crate check, facade all-target/all-feature check, workspace all-target/all-feature check, `cargo fmt --all` via `soldr --no-cache`, workspace clippy all-target/all-feature, focused internal-crate tests, and `./test`.
+
+Next wave:
+- Carve `depgraph` and `download_protocol` into internal crates.
+- Repurpose existing `crates/zccache-watcher` Python-extension crate into the internal watcher engine crate with Python bindings gated behind its existing `python` feature.
+
+Wave 3 status:
+- Added unpublished internal crates `zccache-depgraph` and `zccache-download-protocol`.
+- Repurposed existing `zccache-watcher` into the internal watcher engine crate while preserving the `python` extension feature.
+- `zccache` facade re-exports `depgraph`, feature-gated `download_protocol`, and `watcher` on the old public paths.
+- Verified on 2026-07-09: Wave 3 crate check, facade all-target/all-feature check, workspace all-target/all-feature check, `cargo fmt --all` via `soldr --no-cache`, workspace clippy all-target/all-feature, focused Wave 3 tests, and `./test`.
+
+Next wave:
+- Carve `protocol` into `zccache-protocol`.
+- Then carve `ipc` into `zccache-ipc` once `protocol` is available.
+
+Wave 4 status:
+- Added unpublished internal crate `zccache-protocol`.
+- Moved the daemon protocol module and protobuf build into `zccache-protocol`.
+- `zccache` facade re-exports `zccache_protocol` on the old `zccache::protocol` path.
+- Verified on 2026-07-09: protocol crate all-target/all-feature check, facade all-target/all-feature check, workspace all-target/all-feature check, `cargo fmt --all` via `soldr --no-cache`, and focused protocol tests.
+
+Next wave:
+- Carve `ipc` into `zccache-ipc` now that `zccache-protocol` owns protocol types.
+
+Wave 5 status:
+- Added unpublished internal crate `zccache-ipc`.
+- Moved the IPC transport, broker, manifest, and process helpers into `zccache-ipc`.
+- `zccache` facade re-exports `zccache_ipc` on the old `zccache::ipc` path.
+- Verified on 2026-07-09: IPC crate all-target/all-feature check, facade all-target/all-feature check, workspace all-target/all-feature check, `cargo fmt --all` via `soldr --no-cache`, workspace clippy all-target/all-feature, focused IPC tests, and `./test`.
+
+Next wave:
+- Add publish-time single-crate amalgamation and CI guards so only the public `zccache` crate can be published.
+- Do release/soldr validation and hardening after the split PR lands.

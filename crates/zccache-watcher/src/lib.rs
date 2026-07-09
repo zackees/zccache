@@ -1,123 +1,72 @@
-//! PyO3 cdylib for the polling watcher.
+//! File watcher for zccache.
 //!
-//! The Rust polling watcher itself lives in `zccache::watcher`
-//! (issue #365). This crate exists solely to host the `_native` Python
-//! extension module so the polished `zccache.watcher` Python package can
-//! `import zccache.watcher._native`.
+//! Provides cross-platform file watching with settle/coalesce buffering,
+//! directory ignore filtering, and integration with the metadata cache's
+//! clock-based change tracking.
+//!
+//! Architecture:
+//! ```text
+//! notify (OS thread) → mpsc → SettleBuffer (tokio task) → CacheSystem
+//! ```
 
-#![cfg(feature = "python")]
+#![allow(clippy::missing_errors_doc)]
 
-use std::path::PathBuf;
-use std::time::Duration;
+pub mod ignore;
+pub mod notify_watcher;
+pub mod polling_watcher;
+pub mod recovery;
+pub mod settle;
 
-use pyo3::exceptions::{PyOSError, PyRuntimeError};
-use pyo3::prelude::*;
+#[cfg(feature = "python")]
+mod python;
 
-use zccache::watcher::{PollWatchBatch, PollingWatcher, PollingWatcherConfig};
+use zccache_core::NormalizedPath;
 
-fn io_to_py_err(e: std::io::Error) -> PyErr {
-    PyErr::new::<PyOSError, _>(e.to_string())
+pub use ignore::IgnoreFilter;
+pub use notify_watcher::NotifyWatcher;
+pub use polling_watcher::{
+    PollWatchBatch, PollWatchObserver, PollingWatcher, PollingWatcherConfig,
+};
+#[cfg(feature = "python")]
+pub use python::{NativeWatcher, WatchBatch};
+pub use recovery::OverflowRecovery;
+pub use settle::{SettleBuffer, SettledEvent};
+
+/// Events produced by the file watcher.
+#[derive(Debug, Clone)]
+pub enum WatchEvent {
+    /// A file was modified.
+    Modified(NormalizedPath),
+    /// A file was created.
+    Created(NormalizedPath),
+    /// A file was removed.
+    Removed(NormalizedPath),
+    /// A file was renamed (from, to).
+    Renamed {
+        from: NormalizedPath,
+        to: NormalizedPath,
+    },
+    /// The watcher's event buffer overflowed. All watched paths
+    /// should be considered stale.
+    Overflow,
+    /// An error occurred in the watcher backend.
+    Error(String),
 }
 
-fn runtime_to_py_err(message: impl Into<String>) -> PyErr {
-    PyErr::new::<PyRuntimeError, _>(message.into())
+/// Configuration for the file watcher.
+#[derive(Debug, Clone)]
+pub struct WatcherConfig {
+    /// Settle window in milliseconds.
+    pub settle_window_ms: u64,
+    /// Directory patterns to ignore.
+    pub ignore_patterns: Vec<String>,
 }
 
-#[pyclass(module = "zccache.watcher._native")]
-#[derive(Clone, Debug)]
-pub struct WatchBatch {
-    #[pyo3(get)]
-    changed: Vec<String>,
-    #[pyo3(get)]
-    removed: Vec<String>,
-    #[pyo3(get)]
-    overflow: bool,
-}
-
-impl From<PollWatchBatch> for WatchBatch {
-    fn from(value: PollWatchBatch) -> Self {
+impl Default for WatcherConfig {
+    fn default() -> Self {
         Self {
-            changed: value
-                .changed
-                .into_iter()
-                .map(|path| path.to_string_lossy().into_owned())
-                .collect(),
-            removed: value
-                .removed
-                .into_iter()
-                .map(|path| path.to_string_lossy().into_owned())
-                .collect(),
-            overflow: value.overflow,
+            settle_window_ms: 50,
+            ignore_patterns: IgnoreFilter::default_patterns(),
         }
     }
-}
-
-#[pyclass(module = "zccache.watcher._native")]
-pub struct NativeWatcher {
-    watcher: PollingWatcher,
-}
-
-unsafe impl Send for NativeWatcher {}
-
-#[pymethods]
-impl NativeWatcher {
-    #[new]
-    #[pyo3(signature = (
-        root,
-        include_folders=vec![],
-        include_globs=vec![],
-        excluded_patterns=vec![],
-        poll_interval_ms=100,
-        debounce_ms=200
-    ))]
-    fn new(
-        root: String,
-        include_folders: Vec<String>,
-        include_globs: Vec<String>,
-        excluded_patterns: Vec<String>,
-        poll_interval_ms: u64,
-        debounce_ms: u64,
-    ) -> PyResult<Self> {
-        let mut config = PollingWatcherConfig::new(PathBuf::from(root));
-        config.include_folders = include_folders.into_iter().map(Into::into).collect();
-        config.include_globs = include_globs;
-        config.excluded_patterns = excluded_patterns;
-        config.poll_interval = Duration::from_millis(poll_interval_ms.max(1));
-        config.debounce = Duration::from_millis(debounce_ms);
-
-        let watcher = PollingWatcher::new(config).map_err(io_to_py_err)?;
-        Ok(Self { watcher })
-    }
-
-    fn start(&self) -> PyResult<()> {
-        self.watcher.start().map_err(io_to_py_err)
-    }
-
-    fn stop(&self) -> PyResult<()> {
-        self.watcher.stop().map_err(io_to_py_err)
-    }
-
-    fn resume(&self) -> PyResult<()> {
-        self.watcher.resume().map_err(io_to_py_err)
-    }
-
-    fn is_running(&self) -> bool {
-        self.watcher.is_running()
-    }
-
-    #[pyo3(signature = (timeout_ms=0))]
-    fn poll_batch(&self, timeout_ms: u64) -> PyResult<Option<WatchBatch>> {
-        let batch = self
-            .watcher
-            .poll_timeout(Duration::from_millis(timeout_ms))
-            .map_err(|_| runtime_to_py_err("watcher polling failed"))?;
-        Ok(batch.map(WatchBatch::from))
-    }
-}
-
-#[pymodule]
-fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<WatchBatch>()?;
-    m.add_class::<NativeWatcher>()?;
-    Ok(())
 }

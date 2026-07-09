@@ -1,0 +1,17 @@
+[package]
+name = "zccache-compile-trace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Diagnostic compile trace support for zccache"
+publish = false
+
+[dependencies]
+zccache-audit = { workspace = true }
+
+[lints]
+workspace = true

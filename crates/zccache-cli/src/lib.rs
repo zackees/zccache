@@ -450,6 +450,7 @@ impl NativeDownloadApi {
         dry_run=false,
         force=false
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn fetch(
         &self,
         source: &Bound<'_, PyAny>,
@@ -559,6 +560,7 @@ impl NativeClient {
         dry_run=false,
         force=false
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn download(
         &self,
         source: &Bound<'_, PyAny>,
