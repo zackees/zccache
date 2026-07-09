@@ -435,18 +435,25 @@ fn cache_dir_override_moves_endpoint_and_lock_file() {
     let _env = EnvGuard::set_cache_dir(&cache_dir);
 
     let endpoint = default_endpoint();
+    let v = zccache_core::config::versioned_subdir();
     #[cfg(unix)]
     assert_eq!(
         endpoint,
-        cache_dir.join("daemon.sock").to_string_lossy().into_owned()
+        cache_dir
+            .join(format!("daemon-{v}.sock"))
+            .to_string_lossy()
+            .into_owned()
     );
     #[cfg(windows)]
     {
         assert!(endpoint.starts_with(r"\\.\pipe\zccache-"));
-        assert!(endpoint.ends_with(&zccache_core::stable_path_id(&cache_dir)));
+        // #1004: endpoint now carries the version tag; the cache id is no
+        // longer the trailing component.
+        assert!(endpoint.contains(&zccache_core::stable_path_id(&cache_dir)));
+        assert!(endpoint.ends_with(&v));
     }
 
-    assert_eq!(lock_file_path(), cache_dir.join("daemon.lock"));
+    assert_eq!(lock_file_path(), cache_dir.join(format!("daemon-{v}.lock")));
 }
 
 #[test]
@@ -460,28 +467,56 @@ fn different_cache_roots_get_different_endpoints() {
 }
 
 #[test]
+fn endpoint_and_lock_carry_the_version_tag() {
+    // #1004: the version segment must appear in both the endpoint and the
+    // lock name so two installed versions never contend for one socket/pipe.
+    let root = tempfile::tempdir().unwrap();
+    let cache_dir = root.path().join("zc");
+    let _env = EnvGuard::set_cache_dir(&cache_dir);
+
+    let v = zccache_core::config::versioned_subdir();
+    assert!(
+        default_endpoint().contains(&v),
+        "endpoint {} must contain {v}",
+        default_endpoint()
+    );
+    assert!(
+        lock_file_path().to_string_lossy().contains(&v),
+        "lock path {} must contain {v}",
+        lock_file_path().display()
+    );
+    // A cache-dir-derived endpoint is versioned too.
+    assert!(endpoint_for_cache_dir(cache_dir.as_path(), None).contains(&v));
+}
+
+#[test]
 fn daemon_namespace_moves_endpoint_and_lock_file() {
     let root = tempfile::tempdir().unwrap();
     let cache_dir = root.path().join("zc");
     let _env = EnvGuard::set_cache_dir_and_namespace(&cache_dir, "soldr-dev");
 
     let endpoint = default_endpoint();
+    let v = zccache_core::config::versioned_subdir();
     #[cfg(unix)]
     assert_eq!(
         endpoint,
         cache_dir
-            .join("daemon-soldr-dev.sock")
+            .join(format!("daemon-soldr-dev-{v}.sock"))
             .to_string_lossy()
             .into_owned()
     );
     #[cfg(windows)]
     {
         assert!(endpoint.starts_with(r"\\.\pipe\zccache-"));
-        assert!(endpoint.ends_with("-soldr-dev"));
+        assert!(endpoint.contains("-soldr-dev-"));
+        assert!(endpoint.ends_with(&v));
         assert!(endpoint.contains(&zccache_core::stable_path_id(&cache_dir)));
     }
 
-    assert_eq!(lock_file_path(), cache_dir.join("daemon-soldr-dev.lock"));
+    assert_eq!(
+        lock_file_path(),
+        cache_dir.join(format!("daemon-soldr-dev-{v}.lock"))
+    );
 }
 
 #[test]
@@ -521,18 +556,20 @@ fn private_daemon_name_derives_endpoint_from_cache_root() {
     let cache_dir = root.path().join("zc");
     let endpoint = endpoint_for_private_daemon_name(Some(&cache_dir), "soldr dev");
 
+    let v = zccache_core::config::versioned_subdir();
     #[cfg(unix)]
     assert_eq!(
         endpoint,
         cache_dir
-            .join("daemon-soldr_dev.sock")
+            .join(format!("daemon-soldr_dev-{v}.sock"))
             .to_string_lossy()
             .into_owned()
     );
     #[cfg(windows)]
     {
         assert!(endpoint.starts_with(r"\\.\pipe\zccache-"));
-        assert!(endpoint.ends_with("-soldr_dev"));
+        assert!(endpoint.contains("-soldr_dev-"));
+        assert!(endpoint.ends_with(&v));
         assert!(endpoint.contains(&zccache_core::stable_path_id(&cache_dir)));
     }
 }
@@ -540,7 +577,11 @@ fn private_daemon_name_derives_endpoint_from_cache_root() {
 #[cfg(windows)]
 #[test]
 fn pipe_name_keeps_safe_username_endpoint_unchanged() {
-    assert_eq!(pipe_name("zackees", None), r"\\.\pipe\zccache-zackees");
+    let v = zccache_core::config::versioned_subdir();
+    assert_eq!(
+        pipe_name("zackees", None),
+        format!(r"\\.\pipe\zccache-zackees-{v}")
+    );
 }
 
 #[cfg(windows)]
@@ -580,7 +621,8 @@ fn cache_dir_endpoint_falls_back_to_short_unix_socket_path() {
     );
     assert!(endpoint.starts_with("/tmp/zccache-"));
     assert!(endpoint.contains(&zccache_core::stable_path_id(&cache_dir)));
-    assert!(endpoint.ends_with("-daemon-soldr-dev.sock"));
+    let v = zccache_core::config::versioned_subdir();
+    assert!(endpoint.ends_with(&format!("-daemon-soldr-dev-{v}.sock")));
 }
 
 /// On macOS, `daemon_exe_for_pid` must reject a PID whose

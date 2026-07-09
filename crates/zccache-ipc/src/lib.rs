@@ -470,19 +470,34 @@ pub fn lock_file_path() -> NormalizedPath {
     }
 }
 
+/// The `v<VERSION>` tag folded into every endpoint + lock name (#1004 / #694
+/// Phase 1). Without it, two installed zccache versions contend for one
+/// socket/pipe/lock and "resolve" the conflict by kill-and-replace ping-pong
+/// (the #755 lifecycle-log herds). With it, each version gets a distinct
+/// front door, so coexisting versions never fight — kill-and-replace becomes a
+/// same-version-only rare path.
+///
+/// Standalone-only: embedded hosts (soldr/fbuild) use synthetic `embedded:`
+/// endpoints and never bind IPC, so they are unaffected.
+fn version_tag() -> String {
+    zccache_core::config::versioned_subdir()
+}
+
 #[cfg(unix)]
 fn socket_name(namespace: Option<&str>) -> String {
+    let v = version_tag();
     match namespace {
-        Some(ns) => format!("sock-{ns}"),
-        None => "sock".to_string(),
+        Some(ns) => format!("sock-{ns}-{v}"),
+        None => format!("sock-{v}"),
     }
 }
 
 #[cfg(unix)]
 fn daemon_socket_name(namespace: Option<&str>) -> String {
+    let v = version_tag();
     match namespace {
-        Some(ns) => format!("daemon-{ns}.sock"),
-        None => "daemon.sock".to_string(),
+        Some(ns) => format!("daemon-{ns}-{v}.sock"),
+        None => format!("daemon-{v}.sock"),
     }
 }
 
@@ -490,16 +505,18 @@ fn daemon_socket_name(namespace: Option<&str>) -> String {
 fn pipe_name(base: &str, namespace: Option<&str>) -> String {
     let base = zccache_core::config::sanitize_ipc_component(base)
         .unwrap_or_else(|| String::from("unknown"));
+    let v = version_tag();
     match namespace {
-        Some(ns) => format!(r"\\.\pipe\zccache-{base}-{ns}"),
-        None => format!(r"\\.\pipe\zccache-{base}"),
+        Some(ns) => format!(r"\\.\pipe\zccache-{base}-{ns}-{v}"),
+        None => format!(r"\\.\pipe\zccache-{base}-{v}"),
     }
 }
 
 fn lock_file_name(namespace: Option<&str>) -> String {
+    let v = version_tag();
     match namespace {
-        Some(ns) => format!("daemon-{ns}.lock"),
-        None => "daemon.lock".to_string(),
+        Some(ns) => format!("daemon-{ns}-{v}.lock"),
+        None => format!("daemon-{v}.lock"),
     }
 }
 
