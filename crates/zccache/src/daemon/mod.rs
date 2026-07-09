@@ -8,6 +8,11 @@
 pub(crate) mod child_watchdog;
 pub mod compile_journal;
 pub mod crash;
+/// Standalone daemon process entry point (issue #997), gated so it only
+/// compiles when a binary that hosts it (`daemon-bin`, or the `cli`/`zccache`
+/// binary via argv[0] dispatch) pulls in clap + tracing-subscriber.
+#[cfg(feature = "daemon-entry")]
+pub mod entry;
 pub mod event_log;
 pub mod eviction;
 pub mod fingerprint;

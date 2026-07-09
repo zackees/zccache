@@ -14,9 +14,15 @@ default = []
 # Enables zccache::test_support (dev-only helpers).
 test-support = ["dep:tracing-subscriber"]
 ci = ["dep:wait-timeout"]
+# The daemon process entry point as a library module (issue #997). Pulls in
+# the clap + tracing-subscriber deps the daemon `main` needs. Enabled by the
+# standalone `daemon-bin` target and by `cli` (so the `zccache` binary can
+# route to the daemon via argv[0] dispatch, issue #998).
+daemon-entry = ["dep:clap", "dep:tracing-subscriber"]
 cli = [
     "dep:clap",
     "dep:tracing-subscriber",
+    "daemon-entry",
     "download-client",
     "gha",
     "symbols",
@@ -38,7 +44,7 @@ gha = ["dep:zccache-gha", "zccache-artifact/gha"]
 symbols = ["dep:zccache-symbols"]
 tokio-console = ["dep:console-subscriber"]
 zccache-bin = ["cli", "dep:mimalloc"]
-daemon-bin = ["dep:clap", "dep:mimalloc", "dep:tracing-subscriber"]
+daemon-bin = ["daemon-entry", "dep:mimalloc"]
 download-bin = ["dep:clap", "dep:mimalloc", "download-client"]
 download-daemon-bin = [
     "dep:clap",
