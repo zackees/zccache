@@ -41,11 +41,10 @@
 use running_process::broker::protocol_v2::client_compat::{
     AdoptError, AsyncBrokerSession, BackendConnectionRoute, OwnedConnectRequest, RefusalKind,
 };
-// Slice 11 of zccache#782: the raw-socket reachability probe used by
-// the `RUNNING_PROCESS_FAKE_BACKEND` seam now lives in `ipc::broker_v2`
-// instead of being pulled from the upstream v1 client module. This
-// gets one upstream import out of zccache's broker surface.
-use super::broker_v2::probe_local_socket;
+// The raw-socket reachability probe used by the `RUNNING_PROCESS_FAKE_BACKEND`
+// seam lives in `ipc::probe` (extracted from the removed `broker_v2` module,
+// issue #1001).
+use super::probe::probe_local_socket;
 
 use super::error::IpcError;
 #[cfg(unix)]

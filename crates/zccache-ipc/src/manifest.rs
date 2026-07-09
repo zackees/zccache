@@ -43,7 +43,6 @@ use std::path::{Path, PathBuf};
 
 use running_process::broker::builders::CacheManifestBuilder;
 use running_process::broker::protocol::CacheRootKind;
-use running_process::broker::protocol_v2;
 
 use zccache_core::NormalizedPath;
 
@@ -91,71 +90,22 @@ pub fn publish_manifest(cache_dir: &NormalizedPath) -> Option<PathBuf> {
     if super::running_process_disabled() {
         return None;
     }
-    let v1_path = match build_manifest_builder(cache_dir).publish() {
+    match build_manifest_builder(cache_dir).publish() {
         Ok(path) => Some(path),
         Err(err) => {
             tracing::warn!(error = %err, "failed to publish running-process cache manifest");
             None
         }
-    };
-
-    // Dual-write v2 alongside v1. The v2 write reuses v1's
-    // `central_registry_dir()` (mirrored upstream as
-    // `central_registry_dir_v2()`), so a single directory carries
-    // both. v2 failures are logged + ignored.
-    if let Err(err) = build_manifest_builder_v2(cache_dir).publish() {
-        tracing::warn!(
-            error = %err,
-            "v2 manifest dual-write failed (non-fatal during rollout)"
-        );
     }
-
-    v1_path
 }
 
 /// Seal and write the manifest into an explicit registry dir (tests, custom
 /// layouts). Bypasses the disable hatch so tests stay deterministic.
-///
-/// Returns the v1 path; the v2 file is written alongside as a side
-/// effect (callers that need both can locate the v2 file at
-/// `<v1_path.with_extension("v2.pb")>`).
 pub fn publish_manifest_in(
     registry_dir: &Path,
     cache_dir: &NormalizedPath,
 ) -> Result<PathBuf, running_process::broker::manifest::ManifestError> {
-    let v1_path = build_manifest_builder(cache_dir).publish_in(registry_dir)?;
-    // v2 dual-write — surface the v2 error here so tests can pin
-    // both write paths. Production [`publish_manifest`] swallows the
-    // v2 error; tests want the louder failure mode.
-    let _v2_path = build_manifest_builder_v2(cache_dir).publish_in(registry_dir)?;
-    Ok(v1_path)
-}
-
-/// Slice 23 of zccache#782: build a v2 CacheManifest mirroring the v1
-/// shape from [`build_manifest_builder`]. Shares service identity,
-/// version, broker_instance, and the full cache-root list — every
-/// `CacheRootKind` value is identical to v1 (the upstream `as i32`
-/// cast is wire-compatible per #526).
-#[must_use]
-pub fn build_manifest_builder_v2(cache_dir: &NormalizedPath) -> protocol_v2::CacheManifestBuilder {
-    use running_process::broker::protocol_v2::CacheRootKind as V2;
-    let index_dir = cache_dir.join("depgraph");
-    let log_dir = cache_dir.join("logs");
-    protocol_v2::CacheManifestBuilder::new(ZCCACHE_SERVICE_NAME, zccache_core::VERSION)
-        .broker_instance(SHARED_BROKER_INSTANCE)
-        .root(
-            V2::CacheData,
-            path_string(&zccache_core::config::artifacts_dir_from_cache_dir(
-                cache_dir,
-            )),
-        )
-        .root(V2::CacheIndex, path_string(&index_dir))
-        .root(V2::CacheLogs, path_string(&log_dir))
-        .root(V2::CacheLocks, path_string(cache_dir))
-        .root(
-            V2::CacheTmp,
-            path_string(&zccache_core::config::tmp_dir_from_cache_dir(cache_dir)),
-        )
+    build_manifest_builder(cache_dir).publish_in(registry_dir)
 }
 
 /// Install the zccache `ServiceDefinition` into the running-process service-
@@ -283,64 +233,4 @@ mod tests {
         assert_eq!(roots_by_kind(&loaded.roots), original);
     }
 
-    /// Slice 23 of zccache#782: dual-write also produces a v2
-    /// `zccache-<ver>.v2.pb` file alongside the v1 file, carrying the
-    /// same identity + cache-root list. Pins that a v2 broker would
-    /// discover the same zccache cache layout once it has a loader.
-    #[test]
-    fn publish_also_writes_v2_manifest() {
-        use prost::Message;
-
-        let registry = tempfile::tempdir().expect("tempdir");
-        let cache_dir = NormalizedPath::from("/tmp/zccache-manifest-v2-roundtrip");
-
-        publish_manifest_in(registry.path(), &cache_dir).expect("publish manifest");
-
-        // The v2 file lives at the same stem but with .v2.pb extension.
-        let v2_path = registry
-            .path()
-            .join(format!("zccache-{}.v2.pb", zccache_core::VERSION));
-        assert!(
-            v2_path.exists(),
-            "v2 manifest must exist at {}",
-            v2_path.display()
-        );
-
-        let bytes = std::fs::read(&v2_path).expect("read v2 file");
-        let decoded =
-            protocol_v2::CacheManifest::decode(bytes.as_slice()).expect("v2 CacheManifest decodes");
-
-        assert_eq!(decoded.service_name, "zccache");
-        assert_eq!(decoded.service_version, zccache_core::VERSION);
-        assert_eq!(decoded.broker_envelope_version, "v2");
-        assert_eq!(decoded.broker_instance, "shared");
-        assert_eq!(decoded.roots.len(), 5, "all 5 cache roots present in v2");
-
-        // v2 wire values mirror v1's per upstream PR #526, so an
-        // `as i32` cast from the v1 enum equals the v2 enum value.
-        use running_process::broker::protocol_v2::CacheRootKind as V2;
-        let v2_kinds: Vec<i32> = decoded.roots.iter().map(|r| r.kind).collect();
-        assert!(v2_kinds.contains(&(V2::CacheData as i32)));
-        assert!(v2_kinds.contains(&(V2::CacheIndex as i32)));
-        assert!(v2_kinds.contains(&(V2::CacheLogs as i32)));
-        assert!(v2_kinds.contains(&(V2::CacheLocks as i32)));
-        assert!(v2_kinds.contains(&(V2::CacheTmp as i32)));
-    }
-
-    /// v1↔v2 wire alignment: each cache root in the v2 manifest must
-    /// match the corresponding root in the v1 manifest at the same
-    /// `kind as i32` value (per upstream PR #526). Pins that the two
-    /// generations agree on the role classification for every root
-    /// zccache writes.
-    #[test]
-    fn v1_and_v2_manifest_roots_agree_on_wire_values() {
-        let cache_dir = NormalizedPath::from("/tmp/zccache-manifest-alignment");
-        let v1 = build_manifest_builder(&cache_dir).build().expect("seal v1");
-        let v2 = build_manifest_builder_v2(&cache_dir).build();
-        assert_eq!(v1.roots.len(), v2.roots.len(), "same root count");
-        for (a, b) in v1.roots.iter().zip(v2.roots.iter()) {
-            assert_eq!(a.kind, b.kind, "kind mismatch for path={}", a.path);
-            assert_eq!(a.path, b.path, "path mismatch for kind={}", a.kind);
-        }
-    }
 }

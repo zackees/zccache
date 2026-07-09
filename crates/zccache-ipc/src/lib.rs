@@ -7,7 +7,7 @@
 #![allow(clippy::missing_errors_doc)]
 
 pub mod broker;
-pub mod broker_v2;
+pub mod probe;
 pub mod error;
 pub mod manifest;
 pub mod transport;

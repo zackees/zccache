@@ -189,10 +189,6 @@ windows-sys = { version = "0.59", features = [
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 futures = { workspace = true }
-# Spike-only (broker_into_backend_io_spike_test): bind a running-process broker
-# listener directly. Pinned to the version already locked transitively via
-# running-process so no new resolution occurs.
-interprocess = "2.4.2"
 # Self-dep so zccache's own integration tests can pull in the gated
 # test_support module without needing a separate workspace member.
 zccache = { path = ".", features = ["test-support"] }
