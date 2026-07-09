@@ -5,6 +5,7 @@ use std::path::Path;
 pub mod client;
 pub mod commands;
 pub mod defender;
+pub mod multicall;
 mod runtime;
 pub mod snapshot_fp;
 pub mod symbols;

@@ -122,6 +122,20 @@ pub fn run() {
     run_with(args);
 }
 
+/// Parse the daemon [`Args`] from an explicit argv and run. Used by the
+/// hidden `zccache daemon-run …` escape hatch (#998): an argv[0]-independent
+/// way to enter the daemon (debugging, `noexec` cache dirs, or platforms where
+/// argv[0] is unreliable). The caller synthesizes a leading `zccache-daemon`
+/// program-name token followed by the daemon flags.
+pub fn run_from<I, T>(argv: I)
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let args = Args::parse_from(argv);
+    run_with(args);
+}
+
 /// Run the daemon from already-parsed [`Args`]. Split out so `argv[0]`
 /// dispatch (#998) and tests can drive the daemon without going through
 /// `Args::parse()` on the real process argv.

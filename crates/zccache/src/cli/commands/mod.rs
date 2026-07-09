@@ -44,6 +44,18 @@ use util::{absolute_path, init_tracing, resolve_endpoint, run_async};
 pub fn run() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
 
+    // #998: hidden argv[0]-independent escape hatch into the daemon.
+    // `zccache daemon-run <daemon-flags…>` forwards to the daemon entry with a
+    // synthesized `zccache-daemon` program name. Handled before any CLI/wrap
+    // machinery so it works even where argv[0] multi-call dispatch can't (a
+    // `noexec` cache dir, debugging, or a platform with an unreliable argv[0]).
+    if args.get(1).map(String::as_str) == Some("daemon-run") {
+        let daemon_argv = std::iter::once(crate::cli::multicall::DAEMON_STEM.to_string())
+            .chain(args.iter().skip(2).cloned());
+        crate::daemon::entry::run_from(daemon_argv);
+        return ExitCode::SUCCESS;
+    }
+
     // Best-effort: if the user opted in via env, fetch matching debug
     // sidecars before doing anything else so the very first command's
     // failure (if any) lands with resolvable symbols. Idempotent — skips

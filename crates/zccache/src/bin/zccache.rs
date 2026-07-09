@@ -43,6 +43,16 @@ fn main() -> ExitCode {
 }
 
 fn run_main() -> ExitCode {
+    // #998: argv[0] multi-call dispatch. When this binary is invoked under the
+    // daemon's name (the CLI self-copies to `…/v<VERSION>/zccache-daemon[.exe]`
+    // and runs it — #999), run the daemon and exit. Any other/unknown argv[0]
+    // falls through to the standard CLI below. The daemon installs its own
+    // crash guard, so this runs before the CLI's.
+    if zccache::cli::multicall::invoked_as_daemon() {
+        zccache::daemon::entry::run();
+        return ExitCode::SUCCESS;
+    }
+
     // Crash coverage first thing: panic hook + native signal/SEH
     // handler so a fault inside arg parsing or symbol install still
     // leaves a dump under `~/.zccache/crashes/`. Guard stays alive
