@@ -247,6 +247,7 @@ def lint_workspace():
         for dylint_manifest in (
             "dylints/ban_std_pathbuf/Cargo.toml",
             "dylints/ban_unrooted_tempdir/Cargo.toml",
+            "dylints/ban_tmp_literal/Cargo.toml",
         ):
             result = run_cmd(cargo_command(
                 "fmt",

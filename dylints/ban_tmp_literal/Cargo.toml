@@ -1,0 +1,21 @@
+[package]
+name = "ban_tmp_literal"
+version = "0.1.0"
+description = "Ban hardcoded /tmp path string literals; they only exist on POSIX"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Match the dylint_linting pin used by ban_std_pathbuf — same toolchain, same
+# upstream commit until a crates.io release ships the post-2026-03-18
+# rustc_session fix.
+dylint_linting = { git = "https://github.com/trailofbits/dylint", rev = "4bd91ce7729b74c7ee5664bbb588f7baf30b4a09" }
+
+[dev-dependencies]
+dylint_testing = { git = "https://github.com/trailofbits/dylint", rev = "4bd91ce7729b74c7ee5664bbb588f7baf30b4a09" }
+
+[package.metadata.rust-analyzer]
+rustc_private = true

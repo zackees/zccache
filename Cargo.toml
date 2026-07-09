@@ -24,6 +24,7 @@ exclude = [
     "dylints/ban_std_pathbuf",
     "dylints/ban_unrooted_tempdir",
     "dylints/ban_raw_subprocess_in_daemon",
+    "dylints/ban_tmp_literal",
 ]
 
 [workspace.package]

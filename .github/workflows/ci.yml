@@ -92,6 +92,8 @@ jobs:
         run: soldr cargo fmt --manifest-path dylints/ban_std_pathbuf/Cargo.toml --all -- --check
       - name: Check Dylint Library Formatting (ban_unrooted_tempdir)
         run: soldr cargo fmt --manifest-path dylints/ban_unrooted_tempdir/Cargo.toml --all -- --check
+      - name: Check Dylint Library Formatting (ban_tmp_literal)
+        run: soldr cargo fmt --manifest-path dylints/ban_tmp_literal/Cargo.toml --all -- --check
       - name: Test Dylint Library (ban_std_pathbuf)
         run: |
           export PATH="${CARGO_HOME}/bin:${PATH}"
@@ -100,6 +102,10 @@ jobs:
         run: |
           export PATH="${CARGO_HOME}/bin:${PATH}"
           soldr rustup run nightly-2026-03-26 cargo test --manifest-path dylints/ban_unrooted_tempdir/Cargo.toml
+      - name: Test Dylint Library (ban_tmp_literal)
+        run: |
+          export PATH="${CARGO_HOME}/bin:${PATH}"
+          soldr rustup run nightly-2026-03-26 cargo test --manifest-path dylints/ban_tmp_literal/Cargo.toml
       - name: Run Dylint
         run: |
           export PATH="${CARGO_HOME}/bin:${PATH}"

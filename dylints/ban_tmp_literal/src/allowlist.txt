@@ -1,0 +1,63 @@
+# Each non-empty, non-comment line is matched against the tail of each
+# source file path (slashes normalized). See ban_unrooted_tempdir for the
+# same mechanism.
+#
+# DO NOT add new entries without an inline comment explaining why the site
+# cannot use `zccache_core::config::tmp_dir()` (runtime scratch), a
+# `tempfile::tempdir_in(...)` (fs-touching tests), or a neutral fake path
+# like `/fixture/...` (fs-inert fixtures).
+
+# ── Group 1: deliberate cfg(unix) socket-endpoint conventions ──────────────
+# `/tmp/zccache-{user}/...` (and the download daemon's equivalent) is the
+# daemon-discovery fallback when XDG_RUNTIME_DIR is unset. These paths are
+# part of the endpoint contract between zccache versions — rewriting them
+# would strand running daemons and split caches. Permanent exemptions.
+crates/zccache-ipc/src/lib.rs
+crates/zccache-download-protocol/src/daemon_mgmt.rs
+
+# ── Group 2: wire-format compat pins ────────────────────────────────────────
+# Fixture literals in these files feed pinned bincode fingerprints and
+# variant-index golden values. Changing the bytes is a wire-format change by
+# definition; the literals stay verbatim. Permanent exemptions.
+crates/zccache-protocol/src/messages/compat/variant_indices.rs
+crates/zccache-protocol/src/messages/compat/fingerprint.rs
+crates/zccache-protocol/src/messages/compat/session_lifecycle.rs
+crates/zccache-protocol/src/messages/compat/ephemeral.rs
+crates/zccache-protocol/src/messages/compat/artifact_payload.rs
+crates/zccache-protocol/src/messages/compat/mod.rs
+
+# ── Group 3: fs-inert legacy test fixtures ──────────────────────────────────
+# Map keys, parser inputs, and Unix-only test socket names that never touch
+# the filesystem on Windows. Migrate to neutral fake paths (`/fixture/...`)
+# as you touch each file; do not add new entries in this group. See #828.
+crates/zccache/src/cli/commands/tests/analyze.rs
+crates/zccache/src/cli/runtime.rs
+crates/zccache/src/cli/snapshot_fp.rs
+crates/zccache/src/daemon/compile_journal/tests/entry.rs
+crates/zccache/src/daemon/compile_journal/tests/journal_file.rs
+crates/zccache/src/daemon/compile_journal/tests/miss_reason.rs
+crates/zccache/src/daemon/event_log.rs
+crates/zccache/src/daemon/eviction.rs
+crates/zccache/src/daemon/server/session.rs
+crates/zccache/src/daemon/server/tests/cache_trim.rs
+crates/zccache/src/daemon/server/tests/client_env.rs
+crates/zccache/tests/daemon_wire_prost_roundtrip.rs
+crates/zccache/tests/v2_probe_local_socket_test.rs
+crates/zccache/tests/v2_stress_adversarial_test.rs
+crates/zccache-compiler/src/response_file.rs
+crates/zccache-compiler/src/tests/rustc.rs
+crates/zccache-core/src/config/tests.rs
+crates/zccache-core/src/defender.rs
+crates/zccache-core/src/lifecycle.rs
+crates/zccache-depgraph/src/context/tests/rustc.rs
+crates/zccache-depgraph/src/depfile/tests.rs
+crates/zccache-depgraph/src/rustc_args.rs
+crates/zccache-depgraph/src/scanner.rs
+crates/zccache-fingerprint/src/persist.rs
+crates/zccache-fscache/src/metadata.rs
+crates/zccache-fscache/src/persistence.rs
+crates/zccache-ipc/src/broker_v2.rs
+crates/zccache-ipc/src/manifest.rs
+crates/zccache-ipc/src/mod_tests.rs
+crates/zccache-ipc/src/transport/mod.rs
+crates/zccache-symbols/src/cache.rs
