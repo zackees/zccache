@@ -57,10 +57,11 @@ pub fn unlock_exe() {
         Err(_) => return,
     };
 
-    // If the CLI already relocated us into `<global>/runtime-binaries/`
-    // before spawning, the install path is already unlocked. No rename
-    // needed — short-circuit. See issue #134.
-    if exe_is_under_runtime_binaries(&my_exe) {
+    // If we are already running from the CLI-deployed daemon copy under the
+    // versioned cache dir (`<global>/v<VERSION>/zccache-daemon.exe`, #999),
+    // the install path is not locked by us — no rename needed. Short-circuit.
+    // See issues #134 / #999.
+    if exe_is_deployed_daemon(&my_exe) {
         return;
     }
 
@@ -411,13 +412,14 @@ fn detach_stdio_windows() {
     }
 }
 
-/// True if `exe` lives directly inside `<global_cache_dir>/runtime-binaries/`,
-/// i.e. the CLI already copied us out of the install path. Compared
-/// against the canonicalized cache dir to be robust to symlinks and
-/// short-name (8.3) tilde expansion on Windows.
-fn exe_is_under_runtime_binaries(exe: &Path) -> bool {
-    let runtime_dir = crate::core::config::default_cache_dir().join("runtime-binaries");
-    let runtime_canon = match fs::canonicalize(&runtime_dir) {
+/// True if `exe` is the daemon binary the CLI deployed under the versioned
+/// cache dir (`<global_cache_dir>/zccache-daemon[.exe]`, issue #999) — i.e. we
+/// are already running from the relocated copy, not the install path, so no
+/// unlock rename is needed. Compared against the canonicalized cache dir to be
+/// robust to symlinks and short-name (8.3) tilde expansion on Windows.
+fn exe_is_deployed_daemon(exe: &Path) -> bool {
+    let cache_dir = crate::core::config::default_cache_dir();
+    let cache_canon = match fs::canonicalize(cache_dir.as_path()) {
         Ok(p) => p,
         Err(_) => return false,
     };
@@ -429,7 +431,7 @@ fn exe_is_under_runtime_binaries(exe: &Path) -> bool {
         Ok(p) => p,
         Err(_) => return false,
     };
-    exe_parent_canon == runtime_canon
+    exe_parent_canon == cache_canon
 }
 
 /// Delete stale .old files next to the exe. Best-effort — locked files skipped.

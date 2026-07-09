@@ -68,6 +68,10 @@ mod tests {
     #[test]
     fn full_path_matches() {
         assert!(matches("/home/u/.zccache/v1.12.15/zccache-daemon"));
+        // Backslash is a path separator only on Windows; on Unix it is an
+        // ordinary filename char, so a backslash "path" is one component and
+        // would not stem to `zccache-daemon`. Assert the native form per-OS.
+        #[cfg(windows)]
         assert!(matches(r"C:\Users\u\.zccache\v1.12.15\zccache-daemon.exe"));
     }
 

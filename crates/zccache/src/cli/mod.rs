@@ -92,9 +92,9 @@ pub(crate) fn link_retry_budget() -> u32 {
 #[allow(deprecated)]
 // gc_daemon_spawn_logs is deprecated but still re-exported for the public API.
 pub use runtime::{
-    connect_client, ensure_daemon, gc_daemon_spawn_logs, gc_log_directory, gc_log_directory_in,
-    gc_runtime_binaries, gc_runtime_binaries_in, prepare_daemon_exe, prepare_daemon_exe_in,
-    run_async, runtime_binaries_dir, spawn_daemon, wait_for_daemon_ready,
+    connect_client, deployed_daemon_path, ensure_daemon, gc_daemon_spawn_logs, gc_log_directory,
+    gc_log_directory_in, materialize_daemon_exe, materialize_daemon_exe_to, run_async, spawn_daemon,
+    wait_for_daemon_ready,
 };
 
 pub use crate::download_client::{
@@ -458,82 +458,72 @@ mod tests {
     }
 
     #[test]
-    fn prepare_daemon_exe_in_copies_to_target_dir() {
+    fn materialize_daemon_exe_copies_to_version_rooted_dest() {
         let tmp = tempfile::tempdir().expect("create tempdir");
-        let src = tmp.path().join("zccache-daemon.exe");
-        std::fs::write(&src, b"fake-daemon-bytes").expect("write source");
+        let src = tmp.path().join("zccache");
+        std::fs::write(&src, b"fake-cli-bytes").expect("write source");
 
-        let dest_dir = tmp.path().join("runtime-binaries");
-        let copied =
-            prepare_daemon_exe_in(&src, &dest_dir).expect("prepare_daemon_exe_in succeeds");
+        // Dest lives under a fresh version dir that does not yet exist.
+        let dest = tmp.path().join("v1.2.3").join("zccache-daemon");
+        assert!(!dest.exists(), "precondition: dest does not exist");
 
-        assert!(
-            copied.is_file(),
-            "copy at {} should exist",
-            copied.display()
-        );
+        let out = materialize_daemon_exe_to(&src, &dest).expect("materialize succeeds");
+        assert_eq!(out, dest, "returns the version-rooted dest path");
+        assert!(dest.is_file(), "dest created with the daemon's own name");
         assert_eq!(
-            copied.parent().unwrap(),
-            dest_dir,
-            "copy should land inside dest_dir"
+            std::fs::read(&dest).unwrap(),
+            b"fake-cli-bytes",
+            "dest contents match the source"
         );
-        assert!(
-            copied
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("zccache-daemon."),
-            "filename should start with zccache-daemon., got {}",
-            copied.display()
-        );
-        assert!(
-            copied.extension().and_then(|s| s.to_str()) == Some("exe"),
-            "extension should be preserved"
-        );
+        // No leftover temp files in the version dir.
+        let leftovers: Vec<_> = std::fs::read_dir(dest.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp."))
+            .collect();
+        assert!(leftovers.is_empty(), "no temp files left: {leftovers:?}");
+    }
+
+    #[test]
+    fn materialize_daemon_exe_is_idempotent_on_matching_size() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let src = tmp.path().join("zccache");
+        std::fs::write(&src, b"same-version-bytes").expect("write source");
+        let dest = tmp.path().join("v1.2.3").join("zccache-daemon");
+
+        let first = materialize_daemon_exe_to(&src, &dest).expect("first materialize");
+        // Stamp a SAME-LENGTH sentinel into the dest; a second materialize with
+        // a matching-size source must reuse it untouched (idempotent). The
+        // sentinel must equal the source length (18) so the size gate fires.
+        let sentinel = b"same-version-SENTL";
+        assert_eq!(sentinel.len(), b"same-version-bytes".len());
+        std::fs::write(&dest, sentinel).expect("overwrite dest sentinel");
+        let second = materialize_daemon_exe_to(&src, &dest).expect("second materialize");
+        assert_eq!(first, second);
         assert_eq!(
-            std::fs::read(&copied).unwrap(),
-            b"fake-daemon-bytes",
-            "copy contents should match source"
+            std::fs::read(&dest).unwrap(),
+            sentinel,
+            "matching-size dest is reused untouched"
         );
     }
 
     #[test]
-    fn prepare_daemon_exe_in_creates_missing_dest_dir() {
+    fn materialize_daemon_exe_replaces_partial_copy() {
         let tmp = tempfile::tempdir().expect("create tempdir");
-        let src = tmp.path().join("zccache-daemon");
-        std::fs::write(&src, b"x").expect("write source");
+        let src = tmp.path().join("zccache");
+        std::fs::write(&src, b"full-length-binary-bytes").expect("write source");
+        let dest = tmp.path().join("v1.2.3").join("zccache-daemon");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        // A truncated/partial copy from a crashed run — different size.
+        std::fs::write(&dest, b"partial").expect("write partial dest");
 
-        let dest_dir = tmp.path().join("nested").join("runtime-binaries");
-        assert!(!dest_dir.exists(), "precondition: dest_dir does not exist");
-
-        let copied = prepare_daemon_exe_in(&src, &dest_dir).expect("create + copy");
-        assert!(dest_dir.is_dir(), "dest_dir should now exist");
-        assert!(copied.is_file());
-    }
-
-    #[test]
-    fn gc_runtime_binaries_in_removes_unlocked_entries() {
-        let tmp = tempfile::tempdir().expect("create tempdir");
-        let dir = tmp.path().join("runtime-binaries");
-        std::fs::create_dir_all(&dir).expect("create dir");
-
-        let a = dir.join("zccache-daemon.111.exe");
-        let b = dir.join("zccache-daemon.222.exe");
-        std::fs::write(&a, b"a").unwrap();
-        std::fs::write(&b, b"b").unwrap();
-
-        gc_runtime_binaries_in(&dir);
-
-        assert!(!a.exists(), "{} should be GC'd", a.display());
-        assert!(!b.exists(), "{} should be GC'd", b.display());
-        assert!(dir.is_dir(), "directory itself remains");
-    }
-
-    #[test]
-    fn gc_runtime_binaries_in_is_noop_for_missing_dir() {
-        let tmp = tempfile::tempdir().expect("create tempdir");
-        let dir = tmp.path().join("does-not-exist");
-        gc_runtime_binaries_in(&dir);
+        materialize_daemon_exe_to(&src, &dest).expect("materialize replaces partial");
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            b"full-length-binary-bytes",
+            "size-mismatched partial dest is replaced"
+        );
     }
 
     /// Issue #159: `session_end_idempotent` is the shared library entry

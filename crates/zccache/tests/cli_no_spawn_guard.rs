@@ -99,9 +99,9 @@ impl Drop for GuardEnv {
     }
 }
 
-/// No `zccache-daemon.*` per-launch copy may exist anywhere under the
-/// isolated cache root (see `prepare_daemon_exe` — the copy is the last
-/// step before the actual process spawn).
+/// No deployed `zccache-daemon` binary may exist anywhere under the isolated
+/// cache root (see `materialize_daemon_exe` — the copy is the last step before
+/// the actual process spawn, gated behind the same no-spawn guard).
 fn assert_no_daemon_artifacts(root: &Path) {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -117,7 +117,7 @@ fn assert_no_daemon_artifacts(root: &Path) {
             let name = entry.file_name().to_string_lossy().to_string();
             assert!(
                 !name.starts_with("zccache-daemon"),
-                "found daemon runtime copy {path:?} — the guard must refuse before prepare_daemon_exe"
+                "found deployed daemon copy {path:?} — the guard must refuse before materialize_daemon_exe"
             );
         }
     }

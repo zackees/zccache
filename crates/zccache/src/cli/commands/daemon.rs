@@ -97,8 +97,7 @@ pub(crate) async fn spawn_and_wait(
     if crate::core::config::daemon_spawn_disabled() {
         return Err(crate::core::config::no_spawn_error("zccache-daemon"));
     }
-    let daemon_bin = find_daemon_binary().ok_or("cannot find zccache-daemon binary")?;
-    tracing::debug!(?daemon_bin, %endpoint, reason, "spawning daemon");
+    tracing::debug!(%endpoint, reason, "spawning daemon");
     // Issue #952: single-flight the spawn — same arbiter as the
     // runtime.rs spawn path. Exactly one client in a cold-start herd
     // spawns; the rest park on the ready-wait.
@@ -121,7 +120,7 @@ pub(crate) async fn spawn_and_wait(
                 "client_binary_path": meta["client_binary_path"],
             }),
         );
-        super::super::spawn_daemon(&daemon_bin, endpoint)?;
+        super::super::spawn_daemon(endpoint)?;
     } else {
         crate::core::lifecycle::write_event(
             crate::core::lifecycle::EVENT_SPAWN_PARKED,

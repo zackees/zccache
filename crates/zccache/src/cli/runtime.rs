@@ -96,7 +96,6 @@ async fn spawn_and_wait(
     if crate::core::config::daemon_spawn_disabled() {
         return Err(crate::core::config::no_spawn_error("zccache-daemon"));
     }
-    let daemon_bin = find_daemon_binary().ok_or("cannot find zccache-daemon binary")?;
     // Issue #952: single-flight the spawn across a client herd. A
     // -j16 cold start used to produce 16+ spawn-attempts within
     // milliseconds — each losing client paid a fork/exec plus lockfile
@@ -126,7 +125,7 @@ async fn spawn_and_wait(
                 "client_binary_path": meta["client_binary_path"],
             }),
         );
-        spawn_daemon(&daemon_bin, endpoint)?;
+        spawn_daemon(endpoint)?;
     } else {
         crate::core::lifecycle::write_event(
             crate::core::lifecycle::EVENT_SPAWN_PARKED,
@@ -494,43 +493,6 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
     spawn_and_wait(endpoint, crate::core::lifecycle::REASON_INITIAL_START, None).await
 }
 
-fn find_daemon_binary() -> Option<NormalizedPath> {
-    let name = if cfg!(windows) {
-        "zccache-daemon.exe"
-    } else {
-        "zccache-daemon"
-    };
-
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join(name);
-            if candidate.exists() {
-                return Some(candidate.into());
-            }
-        }
-    }
-
-    which_on_path(name)
-}
-
-fn which_on_path(name: &str) -> Option<NormalizedPath> {
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate.into());
-        }
-        #[cfg(windows)]
-        if Path::new(name).extension().is_none() {
-            let with_exe = dir.join(format!("{name}.exe"));
-            if with_exe.is_file() {
-                return Some(with_exe.into());
-            }
-        }
-    }
-    None
-}
-
 /// Initialize spawn-lineage env vars on a command the CLI is about to spawn.
 ///
 /// Mirrors the daemon-side propagation in `zccache_daemon::lineage` so that
@@ -584,74 +546,91 @@ fn cli_spawn_lineage_env() -> Vec<(String, String)> {
     out
 }
 
-/// Subdir of the zccache global cache directory where the CLI stores
-/// per-launch copies of the daemon binary. The daemon runs from one of
-/// these copies, never from the install path (e.g. `Scripts/zccache-daemon.exe`),
-/// so `pip install --upgrade zccache` can always overwrite the install
-/// path regardless of whether a daemon is alive. See issue #134.
-const RUNTIME_BINARIES_SUBDIR: &str = "runtime-binaries";
-
-/// Returns `<global_cache_dir>/runtime-binaries`.
-#[must_use]
-pub fn runtime_binaries_dir() -> NormalizedPath {
-    crate::core::config::default_cache_dir().join(RUNTIME_BINARIES_SUBDIR)
+/// File name the daemon binary is deployed under. The daemon runs from a copy
+/// of the CLI (self) placed under the versioned cache dir with the daemon's own
+/// name, so argv[0] dispatch (#998) routes the copy to the daemon and
+/// `verify_pid_exe_stem(pid, "zccache-daemon")` (zccache-ipc) recognizes it.
+fn deployed_daemon_file_name() -> &'static str {
+    if cfg!(windows) {
+        "zccache-daemon.exe"
+    } else {
+        "zccache-daemon"
+    }
 }
 
-/// Copy `canonical` (the daemon binary at its install location) to a unique
-/// path inside [`runtime_binaries_dir`] and return the new path. The caller
-/// then spawns from the returned path so the install location is never
-/// file-locked by a running daemon.
+/// Path the daemon binary is materialized to:
+/// `<versioned cache dir>/zccache-daemon[.exe]` — e.g.
+/// `~/.zccache/v<VERSION>/zccache-daemon.exe`.
 ///
-/// On copy failure the caller should fall back to spawning `canonical`
-/// directly; the in-place `unlock_exe()` in the daemon then handles the
-/// lock removal as a fallback.
-pub fn prepare_daemon_exe(canonical: &Path) -> Result<std::path::PathBuf, std::io::Error> {
-    prepare_daemon_exe_in(canonical, runtime_binaries_dir().as_path())
+/// Stable, version-rooted, using the daemon's own name (issue #999). Because
+/// each installed version owns its own `v<VERSION>/` directory, a stale copy
+/// from an older install can never masquerade as a newer one — this is the
+/// structural fix for the #760 "soft-shadow" downgrade the old random-name
+/// `runtime-binaries/` copies allowed.
+#[must_use]
+pub fn deployed_daemon_path() -> NormalizedPath {
+    crate::core::config::default_cache_dir().join(deployed_daemon_file_name())
 }
 
-/// Test seam for [`prepare_daemon_exe`]: copies `canonical` into `dir`
-/// (which is created if missing) and returns the destination path.
-pub fn prepare_daemon_exe_in(
-    canonical: &Path,
-    dir: &Path,
-) -> Result<std::path::PathBuf, std::io::Error> {
-    std::fs::create_dir_all(dir)?;
+/// Materialize the daemon binary at [`deployed_daemon_path`] by copying
+/// `source` — the running CLI (`current_exe()`), which contains the daemon
+/// via argv[0] dispatch.
+///
+/// **Idempotent**: if the destination already exists with a size matching the
+/// source it is reused unchanged, so N concurrent same-version CLIs converge
+/// on one file with no repeated multi-MB copies. **Atomic**: the copy lands on
+/// a temp name in the same directory and is `rename`d into place, so no reader
+/// ever executes a torn binary; a concurrent materializer that wins the rename
+/// is tolerated (we drop our temp and use theirs).
+pub fn materialize_daemon_exe(source: &Path) -> Result<std::path::PathBuf, std::io::Error> {
+    let dest = deployed_daemon_path().as_path().to_path_buf();
+    materialize_daemon_exe_to(source, &dest)
+}
 
-    // Per-launch unique name. PID alone is reused across reboots; xor with
-    // the current nanos timestamp to keep collisions rare even when several
-    // CLI processes spawn back-to-back.
+/// Test seam for [`materialize_daemon_exe`]: materialize `source` at `dest`.
+pub fn materialize_daemon_exe_to(
+    source: &Path,
+    dest: &Path,
+) -> Result<std::path::PathBuf, std::io::Error> {
+    // Idempotency + completeness gate: an existing dest whose size matches the
+    // source is a good copy of this same-version binary — reuse it untouched.
+    // A partial (crashed mid-copy) file has a different size and is replaced.
+    if let (Ok(dm), Ok(sm)) = (std::fs::metadata(dest), std::fs::metadata(source)) {
+        if dm.is_file() && dm.len() == sm.len() {
+            return Ok(dest.to_path_buf());
+        }
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // Temp name in the SAME dir so the finalizing rename stays on one
+    // filesystem (atomic). Unique per process so racing materializers don't
+    // clobber each other's temp.
     let rand_id: u32 = std::process::id()
         ^ std::time::UNIX_EPOCH
             .elapsed()
             .unwrap_or_default()
             .subsec_nanos();
-    let extension = canonical.extension().and_then(|s| s.to_str()).unwrap_or("");
-    let file_name = if extension.is_empty() {
-        format!("zccache-daemon.{rand_id}")
-    } else {
-        format!("zccache-daemon.{rand_id}.{extension}")
-    };
-    let dest = dir.join(&file_name);
-    std::fs::copy(canonical, &dest)?;
-    Ok(dest)
-}
-
-/// Best-effort delete every entry in [`runtime_binaries_dir`]. On Windows
-/// the kernel refuses to delete a file with an open handle, so files
-/// belonging to a *currently running* daemon are silently skipped — no PID
-/// tracking, no sidecar files. Cheap enough to call before every spawn.
-pub fn gc_runtime_binaries() {
-    gc_runtime_binaries_in(runtime_binaries_dir().as_path());
-}
-
-/// Test seam for [`gc_runtime_binaries`].
-pub fn gc_runtime_binaries_in(dir: &Path) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let _ = std::fs::remove_file(entry.path());
+    let tmp = dest.with_file_name(format!("zccache-daemon.tmp.{rand_id}"));
+    std::fs::copy(source, &tmp)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
+    }
+    match std::fs::rename(&tmp, dest) {
+        Ok(()) => Ok(dest.to_path_buf()),
+        Err(e) => {
+            // A concurrent materializer may have won the rename (or Windows is
+            // refusing to replace a dest another process just created). Drop
+            // our temp; if a usable dest now exists, use it.
+            let _ = std::fs::remove_file(&tmp);
+            if dest.is_file() {
+                Ok(dest.to_path_buf())
+            } else {
+                Err(e)
+            }
+        }
     }
 }
 
@@ -758,30 +737,39 @@ pub fn gc_daemon_spawn_logs() {
     gc_log_directory();
 }
 
-pub fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
+pub fn spawn_daemon(endpoint: &str) -> Result<(), String> {
     // Issue #982: backstop for the host no-spawn guard — refuse before
-    // `prepare_daemon_exe` materializes a runtime-binaries copy, so a
-    // guarded run leaves zero daemon artifacts on disk.
+    // `materialize_daemon_exe` copies anything, so a guarded run leaves zero
+    // daemon artifacts on disk.
     if crate::core::config::daemon_spawn_disabled() {
         return Err(crate::core::config::no_spawn_error("zccache-daemon"));
     }
-    // GC before the new spawn so neither dir grows unbounded across
-    // crash-loop scenarios. Live daemons keep their open log file FDs;
-    // GC only touches files older than the 24h cutoff and preserves
-    // the active `daemon-lifecycle.log` regardless of age.
-    gc_runtime_binaries();
+    // GC old spawn logs (the runtime-binaries dir is gone — the daemon binary
+    // is now a single stable version-rooted copy, pruned per-version by
+    // `zccache clear`, #1005).
     gc_log_directory();
 
-    // Prefer to spawn from a relocated copy in the zccache global dir.
-    // Fall back to the canonical install path if the copy fails — the
-    // daemon's own `unlock_exe()` then handles the in-place rename.
+    // #999: the daemon is a copy of THIS binary (the CLI, which contains the
+    // daemon via argv[0] dispatch) placed at the stable version-rooted path.
+    // Copying from the install path means the install path is never
+    // file-locked by a running daemon (the daemon runs from the copy), so
+    // `pip install --upgrade zccache` / `rm -rf <project>` still succeed
+    // (issue #134). Fall back to spawning the current exe in place if the
+    // copy fails — the daemon's own `unlock_exe()` then handles the rename.
+    let self_exe = std::env::current_exe()
+        .map_err(|e| format!("cannot resolve current executable to deploy daemon: {e}"))?;
     let bin_owned: std::path::PathBuf;
-    let spawn_bin: &Path = match prepare_daemon_exe(bin) {
+    // `spawned_as_daemon` is true when we run the materialized copy, whose
+    // argv[0] file stem is `zccache-daemon` so #998's dispatch routes it to
+    // the daemon. On the fallback we run THIS exe in place (argv[0] =
+    // `zccache`), which dispatches to the CLI — so we must enter the daemon
+    // via the explicit `daemon-run` escape hatch instead.
+    let (spawn_bin, spawned_as_daemon): (&Path, bool) = match materialize_daemon_exe(&self_exe) {
         Ok(p) => {
             bin_owned = p;
-            &bin_owned
+            (&bin_owned, true)
         }
-        Err(_) => bin,
+        Err(_) => (self_exe.as_path(), false),
     };
 
     // Allocate a per-spawn log file path. Passed to the daemon via
@@ -809,6 +797,13 @@ pub fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
     // the daemon then redirects its own stdout + stderr to `--log-file`
     // once it's running.
     let mut cmd = std::process::Command::new(spawn_bin);
+    // On the fallback (running this exe in place), route into the daemon via
+    // the argv[0]-independent `daemon-run` escape hatch (#998); the
+    // materialized copy needs no subcommand because argv[0] already selects
+    // the daemon.
+    if !spawned_as_daemon {
+        cmd.arg("daemon-run");
+    }
     cmd.args([
         "--foreground",
         "--endpoint",
