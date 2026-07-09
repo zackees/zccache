@@ -431,24 +431,26 @@ fn cache_dir_override_moves_endpoint_and_lock_file() {
 
     let endpoint = default_endpoint();
     let v = zccache_core::config::versioned_subdir();
+    // #1003: the override is normalized to the effective (versioned) root, so
+    // the endpoint/lock live under <cache_dir>/v<VERSION>.
+    let eff = zccache_core::config::effective_cache_root_from_top_level(&NormalizedPath::from(
+        cache_dir.clone(),
+    ));
     #[cfg(unix)]
     assert_eq!(
         endpoint,
-        cache_dir
-            .join(format!("daemon-{v}.sock"))
+        eff.join(format!("daemon-{v}.sock"))
             .to_string_lossy()
             .into_owned()
     );
     #[cfg(windows)]
     {
         assert!(endpoint.starts_with(r"\\.\pipe\zccache-"));
-        // #1004: endpoint now carries the version tag; the cache id is no
-        // longer the trailing component.
-        assert!(endpoint.contains(&zccache_core::stable_path_id(&cache_dir)));
+        assert!(endpoint.contains(&zccache_core::stable_path_id(eff.as_path())));
         assert!(endpoint.ends_with(&v));
     }
 
-    assert_eq!(lock_file_path(), cache_dir.join(format!("daemon-{v}.lock")));
+    assert_eq!(lock_file_path(), eff.join(format!("daemon-{v}.lock")));
 }
 
 #[test]
@@ -485,6 +487,32 @@ fn endpoint_and_lock_carry_the_version_tag() {
 }
 
 #[test]
+fn parent_and_versioned_cache_dir_resolve_to_the_same_identity() {
+    // #1003 / #771: `--cache-dir /foo` and `--cache-dir /foo/v<version>` must
+    // name the SAME daemon — same endpoint, lock, and backend identity — or a
+    // second client using the parent form is rejected as a cache-dir mismatch.
+    let root = tempfile::tempdir().unwrap();
+    let parent = root.path().join("foo");
+    let versioned = parent.join(zccache_core::config::versioned_subdir());
+
+    let (ep_parent, lock_parent, id_parent) = {
+        let _env = EnvGuard::set_cache_dir(&parent);
+        (default_endpoint(), lock_file_path(), backend_identity_path())
+    };
+    let (ep_versioned, lock_versioned, id_versioned) = {
+        let _env = EnvGuard::set_cache_dir(&versioned);
+        (default_endpoint(), lock_file_path(), backend_identity_path())
+    };
+
+    assert_eq!(ep_parent, ep_versioned, "endpoints must converge");
+    assert_eq!(lock_parent, lock_versioned, "lock paths must converge");
+    assert_eq!(
+        id_parent, id_versioned,
+        "backend identity paths must converge"
+    );
+}
+
+#[test]
 fn daemon_namespace_moves_endpoint_and_lock_file() {
     let root = tempfile::tempdir().unwrap();
     let cache_dir = root.path().join("zc");
@@ -492,11 +520,13 @@ fn daemon_namespace_moves_endpoint_and_lock_file() {
 
     let endpoint = default_endpoint();
     let v = zccache_core::config::versioned_subdir();
+    let eff = zccache_core::config::effective_cache_root_from_top_level(&NormalizedPath::from(
+        cache_dir.clone(),
+    ));
     #[cfg(unix)]
     assert_eq!(
         endpoint,
-        cache_dir
-            .join(format!("daemon-soldr-dev-{v}.sock"))
+        eff.join(format!("daemon-soldr-dev-{v}.sock"))
             .to_string_lossy()
             .into_owned()
     );
@@ -505,12 +535,12 @@ fn daemon_namespace_moves_endpoint_and_lock_file() {
         assert!(endpoint.starts_with(r"\\.\pipe\zccache-"));
         assert!(endpoint.contains("-soldr-dev-"));
         assert!(endpoint.ends_with(&v));
-        assert!(endpoint.contains(&zccache_core::stable_path_id(&cache_dir)));
+        assert!(endpoint.contains(&zccache_core::stable_path_id(eff.as_path())));
     }
 
     assert_eq!(
         lock_file_path(),
-        cache_dir.join(format!("daemon-soldr-dev-{v}.lock"))
+        eff.join(format!("daemon-soldr-dev-{v}.lock"))
     );
 }
 

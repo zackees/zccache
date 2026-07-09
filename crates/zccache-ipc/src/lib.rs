@@ -363,8 +363,8 @@ fn control_wire_mismatch_message(message: &str) -> bool {
 #[must_use]
 pub fn default_endpoint() -> String {
     let namespace = zccache_core::config::daemon_namespace();
-    if let Some(cache_dir) = zccache_core::config::cache_dir_override() {
-        return endpoint_for_cache_dir(&cache_dir, namespace.as_deref());
+    if let Some(cache_dir) = normalized_override_root() {
+        return endpoint_for_cache_dir(cache_dir.as_path(), namespace.as_deref());
     }
 
     #[cfg(unix)]
@@ -448,7 +448,7 @@ pub fn endpoint_for_private_daemon_name(
 #[must_use]
 pub fn lock_file_path() -> NormalizedPath {
     let namespace = zccache_core::config::daemon_namespace();
-    if let Some(cache_dir) = zccache_core::config::cache_dir_override() {
+    if let Some(cache_dir) = normalized_override_root() {
         return cache_dir.join(lock_file_name(namespace.as_deref()));
     }
 
@@ -549,10 +549,25 @@ pub fn remove_lock_file() {
 #[must_use]
 pub fn backend_identity_path() -> NormalizedPath {
     let namespace = zccache_core::config::daemon_namespace();
-    if let Some(cache_dir) = zccache_core::config::cache_dir_override() {
+    if let Some(cache_dir) = normalized_override_root() {
         return cache_dir.join(backend_identity_file_name(namespace.as_deref()));
     }
     zccache_core::config::default_cache_dir().join(backend_identity_file_name(namespace.as_deref()))
+}
+
+/// #1003 — the single normalized cache identity for daemon ownership.
+///
+/// When the user pins a cache dir, `--cache-dir /foo` and
+/// `--cache-dir /foo/v<version>` must resolve to the SAME daemon (same
+/// endpoint, lock, and backend identity), or a second client is rejected as a
+/// cache-dir mismatch (#770 / #771). Route the override through
+/// `effective_cache_root_from_top_level` (idempotent — it won't double-append
+/// the version) so both forms converge on one effective versioned root, and
+/// derive the endpoint, lock, and backend-identity from THAT. Returns `None`
+/// when no override is set (the default runtime/tmp/pipe location is used).
+fn normalized_override_root() -> Option<NormalizedPath> {
+    zccache_core::config::cache_dir_override()
+        .map(|top| zccache_core::config::effective_cache_root_from_top_level(&top))
 }
 
 fn backend_identity_file_name(namespace: Option<&str>) -> String {
