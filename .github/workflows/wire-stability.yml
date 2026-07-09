@@ -14,8 +14,8 @@ name: Wire stability
 on:
   pull_request:
     paths:
-      - "crates/zccache/proto/**"
-      - "crates/zccache/src/artifact/rust_plan_manifest.proto"
+      - "crates/zccache-protocol/proto/**"
+      - "crates/zccache-artifact/src/rust_plan_manifest.proto"
       - "ci/check_wire_stability.py"
       - "ci/wire_stability_snapshot.txt"
       - "docs/WIRE_STABILITY.md"

@@ -32,8 +32,8 @@ from typing import Iterable
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SNAPSHOT_PATH = REPO_ROOT / "ci" / "wire_stability_snapshot.txt"
 PROTO_PATHS: tuple[Path, ...] = (
-    REPO_ROOT / "crates" / "zccache" / "proto" / "zccache_v1.proto",
-    REPO_ROOT / "crates" / "zccache" / "src" / "artifact" / "rust_plan_manifest.proto",
+    REPO_ROOT / "crates" / "zccache-protocol" / "proto" / "zccache_v1.proto",
+    REPO_ROOT / "crates" / "zccache-artifact" / "src" / "rust_plan_manifest.proto",
 )
 
 
