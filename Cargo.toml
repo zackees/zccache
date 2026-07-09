@@ -19,6 +19,7 @@ members = [
     "crates/zccache-symbols",
     "crates/zccache-watcher",
     "crates/zccache-cli",
+    "crates/zccache-cli-core",
     "crates/zccache-fingerprint",
 ]
 exclude = [
@@ -81,6 +82,7 @@ zccache-artifact = { path = "crates/zccache-artifact" }
 zccache-audit = { path = "crates/zccache-audit" }
 zccache-compile-trace = { path = "crates/zccache-compile-trace" }
 zccache-compiler = { path = "crates/zccache-compiler" }
+zccache-cli-core = { path = "crates/zccache-cli-core" }
 zccache-core = { path = "crates/zccache-core" }
 zccache-daemon-core = { path = "crates/zccache-daemon-core" }
 zccache-depgraph = { path = "crates/zccache-depgraph" }

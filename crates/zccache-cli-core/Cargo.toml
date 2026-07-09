@@ -1,0 +1,106 @@
+[package]
+name = "zccache-cli-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "zccache CLI subsystem: commands, wrapper mode, client, and the download client/daemon (#1022 crate split)"
+
+[features]
+default = []
+# The CLI surface (subcommands + wrapper mode). Routes to the daemon via
+# daemon-core's argv[0]-dispatched entry.
+cli = [
+    "dep:clap",
+    "dep:tracing-subscriber",
+    "zccache-daemon-core/daemon-entry",
+    "download-client",
+    "gha",
+    "symbols",
+    "zccache-artifact/cli",
+]
+download = ["dep:zccache-download", "dep:futures", "dep:reqwest"]
+download-client = [
+    "download",
+    "download-protocol",
+    "dep:lzma-rs",
+    "dep:ruzstd",
+    "dep:sevenz-rust",
+    "dep:sha2",
+    "dep:zip",
+]
+download-daemon = ["download", "download-protocol", "dep:tracing-subscriber"]
+download-protocol = ["download", "dep:zccache-download-protocol"]
+gha = ["dep:zccache-gha", "zccache-artifact/gha"]
+symbols = ["dep:zccache-symbols"]
+
+[dependencies]
+# internal crates
+zccache-artifact = { workspace = true }
+zccache-audit = { workspace = true }
+zccache-compile-trace = { workspace = true }
+zccache-compiler = { workspace = true }
+zccache-core = { workspace = true }
+zccache-daemon-core = { workspace = true }
+zccache-depgraph = { workspace = true }
+zccache-download = { workspace = true, optional = true }
+zccache-download-protocol = { workspace = true, optional = true }
+zccache-fingerprint = { workspace = true }
+zccache-gha = { workspace = true, optional = true }
+zccache-hash = { workspace = true }
+zccache-ipc = { workspace = true }
+zccache-protocol = { workspace = true }
+zccache-symbols = { workspace = true, optional = true }
+
+# external
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+crash-handler = "0.6"
+blake3 = { workspace = true }
+memmap2 = { workspace = true }
+bincode = { workspace = true }
+bytes = { workspace = true }
+prost = { workspace = true }
+tokio = { workspace = true, features = ["tracing"] }
+tokio-util = { workspace = true }
+running-process = { workspace = true }
+interprocess = "2.4.2"
+dashmap = { workspace = true }
+filetime = { workspace = true }
+fs2 = { workspace = true }
+regex = { workspace = true }
+rayon = { workspace = true }
+jwalk = { workspace = true }
+tempfile = { workspace = true }
+clap = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+# download stack
+reqwest = { workspace = true, features = ["json"], optional = true }
+sha2 = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+zip = { workspace = true, optional = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+ruzstd = { workspace = true, optional = true }
+lzma-rs = { workspace = true, optional = true }
+sevenz-rust = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = { workspace = true }

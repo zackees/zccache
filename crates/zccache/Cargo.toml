@@ -19,6 +19,9 @@ ci = ["dep:wait-timeout"]
 # `cli` (so the `zccache` binary can route to the daemon via argv[0] dispatch,
 # #998). Also pulls clap + tracing-subscriber for the CLI's own use.
 daemon-entry = ["zccache-daemon-core/daemon-entry", "dep:clap", "dep:tracing-subscriber"]
+# The CLI surface now lives in `zccache-cli-core` (#1022 Split A); the facade
+# re-exports `cli`/`download_client`/`download_daemon` from it. clap +
+# tracing-subscriber stay here for the facade's own bins.
 cli = [
     "dep:clap",
     "dep:tracing-subscriber",
@@ -27,18 +30,22 @@ cli = [
     "gha",
     "symbols",
     "zccache-artifact/cli",
+    "dep:zccache-cli-core",
+    "zccache-cli-core/cli",
 ]
 download = ["dep:zccache-download", "dep:futures", "dep:reqwest"]
 download-client = [
     "download",
     "download-protocol",
-    "dep:lzma-rs",
-    "dep:ruzstd",
-    "dep:sevenz-rust",
-    "dep:sha2",
-    "dep:zip",
+    "dep:zccache-cli-core",
+    "zccache-cli-core/download-client",
 ]
-download-daemon = ["download", "download-protocol"]
+download-daemon = [
+    "download",
+    "download-protocol",
+    "dep:zccache-cli-core",
+    "zccache-cli-core/download-daemon",
+]
 download-protocol = ["download", "dep:zccache-download-protocol"]
 gha = ["dep:zccache-gha", "zccache-artifact/gha"]
 symbols = ["dep:zccache-symbols"]
@@ -61,6 +68,7 @@ crash-tools = ["dep:sadness-generator"]
 # internal facade crates
 zccache-artifact = { workspace = true }
 zccache-audit = { workspace = true }
+zccache-cli-core = { workspace = true, optional = true }
 zccache-compile-trace = { workspace = true }
 zccache-compiler = { workspace = true }
 zccache-core = { workspace = true }
@@ -90,7 +98,6 @@ memmap2 = { workspace = true }
 
 # gha
 reqwest = { workspace = true, features = ["json"], optional = true }
-sha2 = { workspace = true, optional = true }
 
 # protocol
 bincode = { workspace = true }
@@ -136,15 +143,13 @@ fs2 = { workspace = true }
 # exec (issue #272): regex compiles `--key-args-filter` patterns
 regex = { workspace = true }
 
-# download stack
+# download stack. The archive/decompress deps (zip, ruzstd, lzma-rs,
+# sevenz-rust, sha2) moved to zccache-cli-core with the download_client module
+# (#1022 Split A); only the crate re-exports + bins remain here.
 futures = { workspace = true, optional = true }
 tokio-util = { workspace = true }
-zip = { workspace = true, optional = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
-ruzstd = { workspace = true, optional = true }
-lzma-rs = { workspace = true, optional = true }
-sevenz-rust = { workspace = true, optional = true }
 
 # daemon
 running-process = { workspace = true }
@@ -190,6 +195,8 @@ windows-sys = { version = "0.59", features = [
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 futures = { workspace = true }
+# tests/cli_installers.rs builds sample archives to exercise the installer.
+zip = { workspace = true }
 # Self-dep so zccache's own integration tests can pull in the gated
 # test_support module without needing a separate workspace member.
 zccache = { path = ".", features = ["test-support"] }

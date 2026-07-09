@@ -13,8 +13,11 @@ pub use zccache_audit as audit;
 pub use zccache_daemon_core::audit_writer;
 #[cfg(feature = "ci")]
 pub mod ci;
+/// The CLI subsystem, moved to `zccache-cli-core` (#1022 Split A). Re-exported
+/// so the public path `zccache::cli::…` (used by the bins and integration
+/// tests) is unchanged.
 #[cfg(feature = "cli")]
-pub mod cli;
+pub use zccache_cli_core::cli;
 /// zccache#940 — per-sub-phase JSONL trace for the embedded compile
 /// path. Diagnostic-only, gated by the `ZCCACHE_INNER_TRACE` env var.
 /// See module doc for the wire format and why it exists.
@@ -28,10 +31,14 @@ pub use zccache_daemon_core::daemon;
 pub use zccache_depgraph as depgraph;
 #[cfg(feature = "download")]
 pub use zccache_download as download;
+/// The download-cache client, moved to `zccache-cli-core` (#1022 Split A).
+/// Re-exported so `zccache::download_client::…` is unchanged.
 #[cfg(feature = "download-client")]
-pub mod download_client;
+pub use zccache_cli_core::download_client;
+/// The download-cache daemon logic, moved to `zccache-cli-core` (#1022 Split A).
+/// Re-exported so `zccache::download_daemon::…` is unchanged.
 #[cfg(feature = "download-daemon")]
-pub mod download_daemon;
+pub use zccache_cli_core::download_daemon;
 #[cfg(feature = "download-protocol")]
 pub use zccache_download_protocol as download_protocol;
 /// The embedded `ZccacheService` API (soldr/fbuild), moved to
