@@ -185,16 +185,18 @@ runs:
         if [[ "${{ inputs.target }}" == *pc-windows-msvc ]]; then
           export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static"
         fi
-        "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache --features zccache-bin --bin zccache
-        "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache --features daemon-bin --bin zccache-daemon
-        # zccache-fp is a bin shipped *inside* the umbrella `zccache` crate
-        # (see crates/zccache/Cargo.toml `[[bin]] name = "zccache-fp"`). The
-        # sibling `zccache-fingerprint` crate is a pyo3 cdylib for the Python
-        # extension and produces no native executable. The staging step below
-        # then `cp`s `target/.../zccache-fp` into `staging/`, which is why
-        # building the wrong target left it complaining `cannot stat
-        # 'target/.../zccache-fp': No such file or directory`.
-        "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache --features fingerprint-bin --bin zccache-fp
+        # #1017 Lever 1: build all three shipped binaries in ONE cargo
+        # invocation with unified features. Building them separately (one
+        # invocation per feature set) re-resolved features and recompiled the
+        # whole `zccache` lib THREE times per platform. One invocation compiles
+        # the lib once and links the three bins — matching perf-rust-cluster.yml.
+        # zccache-fp is a bin shipped *inside* the umbrella `zccache` crate (the
+        # sibling `zccache-fingerprint` crate is a pyo3 cdylib and produces no
+        # native executable); the staging step below `cp`s `target/.../zccache-fp`
+        # into `staging/`.
+        "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache \
+          --features zccache-bin,daemon-bin,fingerprint-bin \
+          --bin zccache --bin zccache-daemon --bin zccache-fp
 
     # Windows DLL load smoke gate (see zccache#269). If the just-built
     # `zccache.exe` cannot complete loader init on this host, `--version`
