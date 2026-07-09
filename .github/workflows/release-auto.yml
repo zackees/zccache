@@ -363,6 +363,19 @@ jobs:
           cd release-assets
           find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
 
+      - name: Generate manifest.json
+        shell: bash
+        # Issue #858: publish a static manifest so soldr resolves binaries via
+        # the release-asset CDN instead of the rate-limited GitHub releases API.
+        # Runs after checksums so it enumerates the final archive set; the
+        # manifest lands in release-assets/ and is swept up by the upload glob.
+        run: |
+          uv run --no-project ci/build_release_manifest.py \
+            --assets-dir release-assets \
+            --version "${{ needs.preflight.outputs.version }}" \
+            --tag "${{ needs.preflight.outputs.release_tag }}" \
+            --repo "${{ github.repository }}"
+
       - name: Publish or update release
         uses: softprops/action-gh-release@v3
         with:
