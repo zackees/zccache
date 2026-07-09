@@ -40,3 +40,15 @@ locally — they're cheap and catch exactly what `cargo check` misses:
 If admin-merging past CI for speed, at minimum run fmt --check + doc first. The
 perf-rust-cluster jobs (`arm / Test`, `x86 / Test`, `arm-musl / Check`) are
 known-broken at the pin step and are NOT merge-blocking — don't chase them.
+
+## soldr is the bootstrapper even inside the docker Linux build container
+
+When validating in the `clud-docker-build` soldr container, go through
+`soldr cargo ...` / `soldr rustup ...`, NOT bare `cargo install` / `rustup`.
+soldr is baked into the image (`/usr/local/bin/soldr`) and owns toolchain
+discovery. Bare `cargo install cargo-dylint` failed with "rustup is not
+installed at '/cargo-home'" because CARGO_HOME points at a named volume whose
+proxies weren't seeded; `soldr cargo install` resolves the right toolchain
+front-door. The host PreToolUse hook enforces this, but `docker exec` bypasses
+the hook, so the discipline has to be applied manually in container scripts.
+**Rule:** any container-side build/lint script uses `soldr <tool>`.

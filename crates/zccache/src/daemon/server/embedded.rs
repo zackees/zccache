@@ -204,15 +204,23 @@ impl EmbeddedDaemon {
             env: request.env.clone(),
             session_id: None,
         };
-        let response = handle_compile_ephemeral(
-            &self.state,
-            std::process::id(),
-            &request.cwd,
-            &request.compiler,
-            &request.args,
-            &request.cwd,
-            request.env,
-            request.stdin,
+        // zccache#940: open the inner-trace scope so the deep pipeline seams
+        // (input_hash, cache_lookup, cache_load, rustc_spawn/wait, output_read,
+        // cache_store) attribute their sub-phase records to this compile_id.
+        // No-op unless ZCCACHE_INNER_TRACE is set; the IPC wrapper path does
+        // not open a scope, so only embedded compiles emit sub-phase records.
+        let response = super::inner_trace::scope(
+            compile_id.clone(),
+            handle_compile_ephemeral(
+                &self.state,
+                std::process::id(),
+                &request.cwd,
+                &request.compiler,
+                &request.args,
+                &request.cwd,
+                request.env,
+                request.stdin,
+            ),
         )
         .await;
         crate::compile_trace::record(

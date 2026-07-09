@@ -87,6 +87,12 @@ pub(super) fn materialize_cached_compile_hit(
     let t1 = Instant::now();
     let artifact_lookup_ns = (t1 - t0).as_nanos() as u64;
 
+    // zccache#940: cache-hit "cache_load" sub-phase — the artifact index
+    // lookup + payload read that materializes a cached hit. No-op unless this
+    // compile runs inside an embedded `inner_trace::scope` with the trace env
+    // set.
+    crate::daemon::server::inner_trace::record_ns("cache_load", artifact_lookup_ns);
+
     let payloads = Arc::clone(cached_ref.payloads.as_ref()?);
     let names = Arc::clone(&cached_ref.meta.output_names);
     let exit_code = cached_ref.meta.exit_code;

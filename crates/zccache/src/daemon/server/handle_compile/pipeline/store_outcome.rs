@@ -495,6 +495,22 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         total_ns,
     });
 
+    // zccache#940: emit the cache-miss sub-phase markers for the inner trace.
+    // Every value here is already measured for the miss profile above; we just
+    // forward the ones the issue enumerates. No-op unless this compile runs
+    // inside an embedded `inner_trace::scope` with ZCCACHE_INNER_TRACE set.
+    // `rustc_spawn`/`rustc_wait` reuse the fused prep/process timings — the
+    // subprocess spawn+wait+drain is one measured region (`compiler_process_ns`)
+    // in `process.rs`; splitting it would need a process-layer refactor the
+    // diagnostic doesn't warrant.
+    use crate::daemon::server::inner_trace::record_ns;
+    record_ns("input_hash", hash_source_ns.saturating_add(hash_headers_ns));
+    record_ns("cache_lookup", depgraph_check_ns);
+    record_ns("rustc_spawn", compiler_prep_ns);
+    record_ns("rustc_wait", compiler_process_ns);
+    record_ns("output_read", collect_outputs_ns);
+    record_ns("cache_store", artifact_store_ns);
+
     // Defer expensive watch_directories to background — canonicalize()
     // on Windows costs ~1-5ms per directory. This doesn't affect cache
     // correctness; it only delays watcher-based invalidation setup.

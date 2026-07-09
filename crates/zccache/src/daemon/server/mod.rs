@@ -128,6 +128,7 @@ mod handle_exec_probe;
 mod handle_link;
 mod handle_release_worktree_handles;
 mod in_flight;
+mod inner_trace;
 mod keys;
 mod lifecycle;
 mod link_helpers;
