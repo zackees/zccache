@@ -93,8 +93,8 @@ pub(crate) fn link_retry_budget() -> u32 {
 // gc_daemon_spawn_logs is deprecated but still re-exported for the public API.
 pub use runtime::{
     connect_client, deployed_daemon_path, ensure_daemon, gc_daemon_spawn_logs, gc_log_directory,
-    gc_log_directory_in, materialize_daemon_exe, materialize_daemon_exe_to, run_async, spawn_daemon,
-    wait_for_daemon_ready,
+    gc_log_directory_in, materialize_daemon_exe, materialize_daemon_exe_to, run_async,
+    spawn_daemon, wait_for_daemon_ready,
 };
 
 pub use crate::download_client::{
@@ -546,7 +546,11 @@ mod tests {
         }
         for h in handles {
             let bytes = h.join().expect("thread panicked").expect("materialize ok");
-            assert_eq!(bytes.len(), 4096, "every racer sees a complete (non-torn) exe");
+            assert_eq!(
+                bytes.len(),
+                4096,
+                "every racer sees a complete (non-torn) exe"
+            );
             assert_eq!(bytes, vec![0xABu8; 4096]);
         }
         // Exactly the dest survives — no `.tmp.` leftovers from the losers.

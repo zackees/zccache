@@ -13,10 +13,7 @@ use super::util::{format_bytes, LOST_CONNECTION_MSG};
 fn prune_and_report_stale_versions() {
     let report = crate::core::config::prune_stale_version_dirs();
     if !report.removed.is_empty() {
-        println!(
-            "  Stale versions:     pruned {}",
-            report.removed.join(", ")
-        );
+        println!("  Stale versions:     pruned {}", report.removed.join(", "));
     }
     if !report.skipped.is_empty() {
         println!(

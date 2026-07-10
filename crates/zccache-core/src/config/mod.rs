@@ -102,10 +102,11 @@ pub use paths::{
     tmp_dir, tmp_dir_from_cache_dir,
 };
 pub use resolve::{
-    cache_dir_override, default_cache_dir, effective_cache_root_from_top_level, is_version_dir_name,
-    prune_stale_version_dirs, prune_stale_version_dirs_in, read_last_version_marker,
-    resolve_cache_root, resolve_cache_root_top_level, versioned_subdir, write_last_version_marker,
-    write_last_version_marker_in, CacheRootSource, PruneReport, LAST_VERSION_MARKER,
+    cache_dir_override, default_cache_dir, effective_cache_root_from_top_level,
+    is_version_dir_name, prune_stale_version_dirs, prune_stale_version_dirs_in,
+    read_last_version_marker, resolve_cache_root, resolve_cache_root_top_level, versioned_subdir,
+    write_last_version_marker, write_last_version_marker_in, CacheRootSource, PruneReport,
+    LAST_VERSION_MARKER,
 };
 
 /// Top-level configuration for zccache.

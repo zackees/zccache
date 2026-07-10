@@ -341,7 +341,10 @@ mod tests {
         // Trailing newline / blank lines must not inject empty entries, and a
         // leading '#' is a real path segment, not a comment.
         assert!(parse_input_path_lines("\n\n   \n").is_empty());
-        assert_eq!(parse_input_path_lines("#notacomment.h\n"), vec!["#notacomment.h"]);
+        assert_eq!(
+            parse_input_path_lines("#notacomment.h\n"),
+            vec!["#notacomment.h"]
+        );
     }
 
     #[test]

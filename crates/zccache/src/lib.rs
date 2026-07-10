@@ -18,6 +18,14 @@ pub mod ci;
 /// tests) is unchanged.
 #[cfg(feature = "cli")]
 pub use zccache_cli_core::cli;
+/// The download-cache client, moved to `zccache-cli-core` (#1022 Split A).
+/// Re-exported so `zccache::download_client::…` is unchanged.
+#[cfg(feature = "download-client")]
+pub use zccache_cli_core::download_client;
+/// The download-cache daemon logic, moved to `zccache-cli-core` (#1022 Split A).
+/// Re-exported so `zccache::download_daemon::…` is unchanged.
+#[cfg(feature = "download-daemon")]
+pub use zccache_cli_core::download_daemon;
 /// zccache#940 — per-sub-phase JSONL trace for the embedded compile
 /// path. Diagnostic-only, gated by the `ZCCACHE_INNER_TRACE` env var.
 /// See module doc for the wire format and why it exists.
@@ -28,23 +36,15 @@ pub use zccache_core as core;
 /// the public path `zccache::daemon::…` (used by the bins, the CLI, and
 /// integration tests) is unchanged.
 pub use zccache_daemon_core::daemon;
-pub use zccache_depgraph as depgraph;
-#[cfg(feature = "download")]
-pub use zccache_download as download;
-/// The download-cache client, moved to `zccache-cli-core` (#1022 Split A).
-/// Re-exported so `zccache::download_client::…` is unchanged.
-#[cfg(feature = "download-client")]
-pub use zccache_cli_core::download_client;
-/// The download-cache daemon logic, moved to `zccache-cli-core` (#1022 Split A).
-/// Re-exported so `zccache::download_daemon::…` is unchanged.
-#[cfg(feature = "download-daemon")]
-pub use zccache_cli_core::download_daemon;
-#[cfg(feature = "download-protocol")]
-pub use zccache_download_protocol as download_protocol;
 /// The embedded `ZccacheService` API (soldr/fbuild), moved to
 /// `zccache-daemon-core` (#1018). Re-exported so `zccache::embedded::…` is
 /// unchanged.
 pub use zccache_daemon_core::embedded;
+pub use zccache_depgraph as depgraph;
+#[cfg(feature = "download")]
+pub use zccache_download as download;
+#[cfg(feature = "download-protocol")]
+pub use zccache_download_protocol as download_protocol;
 pub use zccache_fingerprint as fingerprint;
 pub use zccache_fscache as fscache;
 #[cfg(feature = "gha")]

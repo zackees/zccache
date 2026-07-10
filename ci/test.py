@@ -17,6 +17,36 @@ from ci.soldr import cargo_command, self_build_env
 
 SCRIPT_DIR = Path(__file__).parent.parent.resolve()
 
+# Feature set that enables every `required-features` [[bin]] in crates/zccache
+# (mirrors the list used by ci.yml's lib+bins test step). Tests under
+# crates/zccache/tests spawn these binaries via `env!("CARGO_BIN_EXE_*")` —
+# cargo bakes the path at compile time but does NOT build required-features
+# bins as part of `cargo test`, so on a fresh checkout the spawn fails with
+# NotFound (issue #1030: zccache-daemon, zccache, cli-crash-trigger, ...).
+PREBUILD_BIN_FEATURES = (
+    "zccache-bin,daemon-bin,download-bin,download-daemon-bin,"
+    "fingerprint-bin,stamp-bin,ci-bin,crash-tools,tokio-console,test-support"
+)
+
+
+def prebuild_test_helper_bins() -> int:
+    cmd = cargo_command("build") + [
+        "-p",
+        "zccache",
+        "--bins",
+        "--features",
+        PREBUILD_BIN_FEATURES,
+    ]
+    result = subprocess.run(
+        cmd,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=str(SCRIPT_DIR),
+        env=self_build_env(),
+    )
+    return result.returncode
+
 
 def main():
     try:
@@ -24,6 +54,10 @@ def main():
     except ReleaseCheckError as e:
         print(str(e), file=sys.stderr)
         return 1
+
+    rc = prebuild_test_helper_bins()
+    if rc != 0:
+        return rc
 
     cmd = cargo_command("test")
 

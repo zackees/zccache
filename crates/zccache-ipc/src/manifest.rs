@@ -232,5 +232,4 @@ mod tests {
         );
         assert_eq!(roots_by_kind(&loaded.roots), original);
     }
-
 }

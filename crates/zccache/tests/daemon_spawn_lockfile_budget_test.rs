@@ -135,7 +135,11 @@ fn daemon_writes_lockfile_within_budget_with_large_persisted_state() {
 
 #[test]
 fn lockfile_window_has_no_synchronous_persisted_state_loads() {
-    let lifecycle = source_file("src/daemon/server/lifecycle.rs");
+    // Post-#997/#1019 layout: `src/bin/zccache-daemon.rs` is a thin shim and
+    // the daemon subsystem lives in `zccache-daemon-core`; scan the real
+    // startup source there (issue #1030).
+    let lifecycle =
+        workspace_source_file("crates/zccache-daemon-core/src/daemon/server/lifecycle.rs");
     let bind_window = slice_between(
         &lifecycle,
         "let listener = IpcListener::bind(endpoint)?;",
@@ -143,14 +147,16 @@ fn lockfile_window_has_no_synchronous_persisted_state_loads() {
     );
     assert_no_sync_loads("bind_with_cache_dir", bind_window);
 
-    let daemon = source_file("src/bin/zccache-daemon.rs");
+    let daemon = workspace_source_file("crates/zccache-daemon-core/src/daemon/entry.rs");
+    // Marker is the binding name, not the full expression — rustfmt is free
+    // to reflow the spawn_blocking closure across lines.
     let startup_window = slice_between(
         &daemon,
-        "let bind_result = tokio::task::spawn_blocking(move || {",
-        "zccache::ipc::write_lock_file(pid)",
+        "let bind_result =",
+        "crate::ipc::write_lock_file(pid)",
     );
     assert!(
-        startup_window.contains("zccache::daemon::DaemonServer::bind(&bind_endpoint)"),
+        startup_window.contains("crate::daemon::DaemonServer::bind(&bind_endpoint)"),
         "daemon bind-to-lockfile window must include endpoint bind"
     );
     assert_no_sync_loads("daemon bind-to-lockfile", startup_window);
@@ -268,8 +274,15 @@ unsafe fn restore_env(key: &str, value: Option<std::ffi::OsString>) {
     }
 }
 
-fn source_file(relative: &str) -> String {
-    std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)).unwrap()
+/// Read a source file by workspace-root-relative path. The scanned daemon
+/// startup sources moved out of this crate in the #1019 split, so resolve
+/// from the workspace root (two levels above this crate's manifest).
+fn workspace_source_file(relative: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(relative);
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()))
 }
 
 fn slice_between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {

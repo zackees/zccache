@@ -337,10 +337,9 @@ fn run_server(args: Args) {
 
         // ── Issue #637/#639: discriminate loser-of-race from real bind failure ──
         let bind_endpoint = endpoint.clone();
-        let bind_result = tokio::task::spawn_blocking(move || {
-            crate::daemon::DaemonServer::bind(&bind_endpoint)
-        })
-        .await;
+        let bind_result =
+            tokio::task::spawn_blocking(move || crate::daemon::DaemonServer::bind(&bind_endpoint))
+                .await;
         let server = match bind_result {
             Ok(Ok(s)) => s,
             Ok(Err(e)) => {

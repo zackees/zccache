@@ -497,11 +497,19 @@ fn parent_and_versioned_cache_dir_resolve_to_the_same_identity() {
 
     let (ep_parent, lock_parent, id_parent) = {
         let _env = EnvGuard::set_cache_dir(&parent);
-        (default_endpoint(), lock_file_path(), backend_identity_path())
+        (
+            default_endpoint(),
+            lock_file_path(),
+            backend_identity_path(),
+        )
     };
     let (ep_versioned, lock_versioned, id_versioned) = {
         let _env = EnvGuard::set_cache_dir(&versioned);
-        (default_endpoint(), lock_file_path(), backend_identity_path())
+        (
+            default_endpoint(),
+            lock_file_path(),
+            backend_identity_path(),
+        )
     };
 
     assert_eq!(ep_parent, ep_versioned, "endpoints must converge");
