@@ -76,8 +76,20 @@ jobs:
           echo 'fn main() {}' > /tmp/std_probe.rs
           if ! soldr rustc --target ${{ inputs.target }} --emit=metadata \
               --out-dir /tmp /tmp/std_probe.rs; then
-            echo "rust-std for ${{ inputs.target }} is corrupt in the cached toolchain — reinstalling"
-            soldr rustup component remove "rust-std-${{ inputs.target }}" || true
+            echo "rust-std for ${{ inputs.target }} is corrupt in the cached toolchain — purging component state"
+            # `rustup component remove`/`target add` both no-op on this
+            # corruption: the per-component manifest file is missing but the
+            # toolchain's component registry still lists it, so rustup thinks
+            # the target is installed (verified on main run 2026-07-10
+            # 03:41Z — the remove+add round-trip completed in <200 ms and the
+            # re-probe failed identically). Surgically drop the registry
+            # entry and leftover files so `target add` performs a real
+            # install.
+            SYSROOT=$(soldr rustc --print sysroot)
+            echo "sysroot: $SYSROOT"
+            sed -i '/rust-std-${{ inputs.target }}/d' "$SYSROOT/lib/rustlib/components" || true
+            rm -f "$SYSROOT/lib/rustlib/manifest-rust-std-${{ inputs.target }}"
+            rm -rf "$SYSROOT/lib/rustlib/${{ inputs.target }}"
             soldr rustup target add ${{ inputs.target }}
             soldr rustc --target ${{ inputs.target }} --emit=metadata \
               --out-dir /tmp /tmp/std_probe.rs
