@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "zccache CLI subsystem: commands, wrapper mode, client, and the download client/daemon (#1022 crate split)"
+# Internal engine crate — amalgamated into the published `zccache` monocrate
+# (Wave 7 model, see ci/release_checks.py). Never published standalone.
+publish = false
 
 [features]
 default = []

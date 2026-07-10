@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "zccache daemon subsystem: IPC server, compile/link/exec handlers, embedded service (#1018 crate split)"
+# Internal engine crate — amalgamated into the published `zccache` monocrate
+# (Wave 7 model, see ci/release_checks.py). Never published standalone.
+publish = false
 
 [features]
 default = []
