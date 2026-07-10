@@ -76,20 +76,17 @@ jobs:
           echo 'fn main() {}' > /tmp/std_probe.rs
           if ! soldr rustc --target ${{ inputs.target }} --emit=metadata \
               --out-dir /tmp /tmp/std_probe.rs; then
-            echo "rust-std for ${{ inputs.target }} is corrupt in the cached toolchain — purging component state"
-            # `rustup component remove`/`target add` both no-op on this
-            # corruption: the per-component manifest file is missing but the
-            # toolchain's component registry still lists it, so rustup thinks
-            # the target is installed (verified on main run 2026-07-10
-            # 03:41Z — the remove+add round-trip completed in <200 ms and the
-            # re-probe failed identically). Surgically drop the registry
-            # entry and leftover files so `target add` performs a real
-            # install.
-            SYSROOT=$(soldr rustc --print sysroot)
-            echo "sysroot: $SYSROOT"
-            sed -i '/rust-std-${{ inputs.target }}/d' "$SYSROOT/lib/rustlib/components" || true
-            rm -f "$SYSROOT/lib/rustlib/manifest-rust-std-${{ inputs.target }}"
-            rm -rf "$SYSROOT/lib/rustlib/${{ inputs.target }}"
+            # `rustup component remove`, `rustup target add`, and (verified
+            # on the 2026-07-10 03:47Z main run) even surgically editing
+            # lib/rustlib/components all leave rustup convinced the target
+            # is "up to date" — its install state lives in the toolchain's
+            # v2 manifestation files, not the v1 components list. The only
+            # reliable repair is reinstalling the whole pinned toolchain
+            # (~2 min, and only on the corrupt-cache path).
+            TC=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+            echo "rust-std for ${{ inputs.target }} is corrupt in the cached toolchain — reinstalling toolchain $TC"
+            soldr rustup toolchain uninstall "$TC" || true
+            soldr rustup toolchain install "$TC" --profile minimal
             soldr rustup target add ${{ inputs.target }}
             soldr rustc --target ${{ inputs.target }} --emit=metadata \
               --out-dir /tmp /tmp/std_probe.rs
