@@ -171,7 +171,20 @@ fn is_fingerprint_meta_file(rel: &Path) -> bool {
     let Some(name) = rel.file_name().and_then(OsStr::to_str) else {
         return false;
     };
+    // Cargo writes human-readable diagnostics beside several hash records
+    // using the same stem plus `.json`. Reject the suffix before consulting
+    // prefixes so `bin-*.json` and build-script JSON cannot masquerade as
+    // load-bearing fingerprints.
+    if rel.extension() == Some(OsStr::new("json")) {
+        return false;
+    }
     if name == "invoked.timestamp" {
+        return true;
+    }
+    // Cargo stores the load-bearing fingerprints for build-script compile
+    // and execution units under these two prefixes. They are opaque hash
+    // records just like dep-/lib-/bin-*; adjacent JSON remains diagnostic.
+    if name.starts_with("build-script-") || name.starts_with("run-build-script-") {
         return true;
     }
     matches!(

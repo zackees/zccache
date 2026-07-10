@@ -158,6 +158,26 @@ fn thin_v2_save_keeps_fingerprint_meta_but_drops_fingerprint_outputs() {
         &target.join(".fingerprint/serde-abc/lib-serde"),
         b"libstamp",
     );
+    write(
+        &target.join(".fingerprint/serde-abc/build-script-build-script-build"),
+        b"build-script-hash",
+    );
+    write(
+        &target.join(".fingerprint/serde-abc/run-build-script-build-script-build"),
+        b"run-build-script-hash",
+    );
+    write(
+        &target.join(".fingerprint/serde-abc/build-script-build-script-build.json"),
+        b"diagnostic",
+    );
+    write(
+        &target.join(".fingerprint/serde-abc/run-build-script-build-script-build.json"),
+        b"diagnostic",
+    );
+    write(
+        &target.join(".fingerprint/serde-abc/bin-serde.json"),
+        b"diagnostic",
+    );
     // Output file (dropped):
     write(
         &target.join(".fingerprint/serde-abc/serde-abc.json"),
@@ -202,10 +222,26 @@ fn thin_v2_save_keeps_fingerprint_meta_but_drops_fingerprint_outputs() {
         "lib-* must be kept; got {kept_paths:?}",
     );
     assert!(
+        kept_paths
+            .iter()
+            .any(|p| p.ends_with(".fingerprint/serde-abc/build-script-build-script-build")),
+        "build-script-* hashes must be kept; got {kept_paths:?}",
+    );
+    assert!(
+        kept_paths
+            .iter()
+            .any(|p| p.ends_with(".fingerprint/serde-abc/run-build-script-build-script-build")),
+        "run-build-script-* hashes must be kept; got {kept_paths:?}",
+    );
+    assert!(
         !kept_paths
             .iter()
             .any(|p| p.ends_with(".fingerprint/serde-abc/serde-abc.json")),
         "fingerprint output .json must be dropped; got {kept_paths:?}",
+    );
+    assert!(
+        !kept_paths.iter().any(|p| p.ends_with(".json")),
+        "all fingerprint diagnostic JSON must be dropped; got {kept_paths:?}",
     );
     assert!(
         kept_paths.iter().any(|p| p.ends_with("deps/serde-abc.d")),
@@ -270,6 +306,29 @@ fn thin_v2_classifier_recognizes_new_classes() {
         ),
         Some(RustArtifactClass::CargoFingerprintOutputs),
     );
+    for name in [
+        "build-script-build-script-build",
+        "run-build-script-build-script-build",
+    ] {
+        let path = Path::new("debug/.fingerprint/serde-abc").join(name);
+        assert_eq!(
+            classify_artifact(&path, RustPlanMode::Thin, true),
+            Some(RustArtifactClass::CargoFingerprintMeta),
+            "{name} is a load-bearing Cargo freshness hash",
+        );
+    }
+    for name in [
+        "build-script-build-script-build.json",
+        "run-build-script-build-script-build.json",
+        "bin-serde.json",
+    ] {
+        let path = Path::new("debug/.fingerprint/serde-abc").join(name);
+        assert_eq!(
+            classify_artifact(&path, RustPlanMode::Thin, true),
+            Some(RustArtifactClass::CargoFingerprintOutputs),
+            "{name} is diagnostic JSON, not a freshness hash",
+        );
+    }
     // Legacy (thin_v2 = false) keeps the umbrella class so older
     // callers see no behavior change.
     assert_eq!(
