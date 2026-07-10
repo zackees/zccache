@@ -15,33 +15,32 @@
 # Daemon trampoline chdirs to $TMPDIR so the parent's launch-cwd directory
 # can be deleted on Windows. The path is the chdir destination, not a
 # scratch location. See `release_cwd()`.
-crates/zccache/src/daemon/trampoline.rs
+crates/zccache-daemon-core/src/daemon/trampoline.rs
 
 # Same release_cwd pattern, duplicated in the cli's compiler-wrap path so
 # the cli doesn't need a runtime dep on the daemon crate.
-crates/zccache-cli/src/main.rs
-crates/zccache/src/cli/commands/wrap.rs
+crates/zccache-cli-core/src/cli/commands/wrap.rs
 
 # zccache-test-support is a dev-only crate. The temp-dir cleanup helper
 # walks $TMPDIR looking for stale test fixtures; it does not create state
 # there at zccache runtime.
-crates/zccache-test-support/src/lib.rs
+crates/zccache-daemon-core/src/test_support/mod.rs
 
 # Daemon startup walks $TMPDIR to clean up legacy state from older zccache
 # installs (see `cleanup_legacy_temp_root_state`). The response-file write
 # paths at lines 2235/6817 are transient sidecars whose lifetime is bounded
 # by the compiler subprocess and which deliberately don't live under the
 # user-visible `~/.zccache/` tree. Migrating those is a follow-up.
-crates/zccache/src/daemon/server/run.rs
+crates/zccache-daemon-core/src/daemon/server/run.rs
 
 # diag.rs reads `std::env::temp_dir()` purely to display its value in a
 # diagnostic dump (`zccache wrap --diag`). Nothing is created at the
 # path; if the operator's TMPDIR is misconfigured we want to surface
 # the value as observed, not a normalized rewrite.
-crates/zccache/src/cli/commands/wrap/diag.rs
+crates/zccache-cli-core/src/cli/commands/wrap/diag.rs
 
 # Same release_cwd pattern as wrap.rs (which is allowlisted above) —
 # passthrough.rs chdirs to $TMPDIR before invoking the underlying tool
 # so the wrapper's own working directory handle is released. The path
 # is the chdir destination, not a scratch location.
-crates/zccache/src/cli/commands/wrap/passthrough.rs
+crates/zccache-cli-core/src/cli/commands/wrap/passthrough.rs

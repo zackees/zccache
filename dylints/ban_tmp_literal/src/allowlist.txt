@@ -30,20 +30,18 @@ crates/zccache-protocol/src/messages/compat/mod.rs
 # Map keys, parser inputs, and Unix-only test socket names that never touch
 # the filesystem on Windows. Migrate to neutral fake paths (`/fixture/...`)
 # as you touch each file; do not add new entries in this group. See #828.
-crates/zccache/src/cli/commands/tests/analyze.rs
-crates/zccache/src/cli/runtime.rs
-crates/zccache/src/cli/snapshot_fp.rs
-crates/zccache/src/daemon/compile_journal/tests/entry.rs
-crates/zccache/src/daemon/compile_journal/tests/journal_file.rs
-crates/zccache/src/daemon/compile_journal/tests/miss_reason.rs
-crates/zccache/src/daemon/event_log.rs
-crates/zccache/src/daemon/eviction.rs
-crates/zccache/src/daemon/server/session.rs
-crates/zccache/src/daemon/server/tests/cache_trim.rs
-crates/zccache/src/daemon/server/tests/client_env.rs
+crates/zccache-cli-core/src/cli/commands/tests/analyze.rs
+crates/zccache-cli-core/src/cli/runtime.rs
+crates/zccache-cli-core/src/cli/snapshot_fp.rs
+crates/zccache-daemon-core/src/daemon/compile_journal/tests/entry.rs
+crates/zccache-daemon-core/src/daemon/compile_journal/tests/journal_file.rs
+crates/zccache-daemon-core/src/daemon/compile_journal/tests/miss_reason.rs
+crates/zccache-daemon-core/src/daemon/event_log.rs
+crates/zccache-daemon-core/src/daemon/eviction.rs
+crates/zccache-daemon-core/src/daemon/server/session.rs
+crates/zccache-daemon-core/src/daemon/server/tests/cache_trim.rs
+crates/zccache-daemon-core/src/daemon/server/tests/client_env.rs
 crates/zccache/tests/daemon_wire_prost_roundtrip.rs
-crates/zccache/tests/v2_probe_local_socket_test.rs
-crates/zccache/tests/v2_stress_adversarial_test.rs
 crates/zccache-compiler/src/response_file.rs
 crates/zccache-compiler/src/tests/rustc.rs
 crates/zccache-core/src/config/tests.rs
@@ -56,7 +54,6 @@ crates/zccache-depgraph/src/scanner.rs
 crates/zccache-fingerprint/src/persist.rs
 crates/zccache-fscache/src/metadata.rs
 crates/zccache-fscache/src/persistence.rs
-crates/zccache-ipc/src/broker_v2.rs
 crates/zccache-ipc/src/manifest.rs
 crates/zccache-ipc/src/mod_tests.rs
 crates/zccache-ipc/src/transport/mod.rs
