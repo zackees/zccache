@@ -36,7 +36,7 @@ pub use persistence::{
 };
 
 /// On-disk format version. Bump when snapshot layout changes.
-pub const DEPGRAPH_VERSION: u32 = 5;
+pub const DEPGRAPH_VERSION: u32 = 6;
 
 /// Magic bytes identifying a depgraph snapshot file ("ZCDG").
 pub const DEPGRAPH_MAGIC: [u8; 4] = [0x5A, 0x43, 0x44, 0x47];
@@ -88,6 +88,10 @@ pub struct ContextEntrySnapshot {
     pub artifact_key: Option<[u8; 32]>,
     pub last_file_hashes: Vec<(String, [u8; 32])>,
     pub rustc_externs: Vec<RustcExternSnapshot>,
+    /// Rustc env-dep snapshot (zccache#1021): env variable names the
+    /// crate read via `env!()`/`option_env!()` with the blake3 hash of
+    /// each value at the last compile (`None` = unset).
+    pub rustc_env_deps: Vec<RustcEnvDepSnapshot>,
     /// 0=Cold, 1=Warm, 2=Stale
     pub state: u8,
 }
@@ -96,6 +100,12 @@ pub struct ContextEntrySnapshot {
 pub struct RustcExternSnapshot {
     pub name: String,
     pub path: String,
+}
+
+#[derive(Archive, Serialize, Deserialize)]
+pub struct RustcEnvDepSnapshot {
+    pub name: String,
+    pub value_hash: Option<[u8; 32]>,
 }
 
 #[derive(Archive, Serialize, Deserialize)]
@@ -167,6 +177,15 @@ impl DepGraph {
                         path: path.to_string_lossy().into_owned(),
                     })
                     .collect();
+                let rustc_env_deps = self
+                    .get_rustc_env_deps(key)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(name, value_hash)| RustcEnvDepSnapshot {
+                        name,
+                        value_hash: value_hash.map(|h| *h.as_bytes()),
+                    })
+                    .collect();
                 ContextEntrySnapshot {
                     context_key: *key.hash().as_bytes(),
                     key_root: ctx
@@ -192,6 +211,7 @@ impl DepGraph {
                         .map(|(p, h)| (p.to_string_lossy().into_owned(), *h.as_bytes()))
                         .collect(),
                     rustc_externs,
+                    rustc_env_deps,
                     state: match ctx.state {
                         ContextState::Cold => 0,
                         ContextState::Warm => 1,
@@ -247,12 +267,19 @@ impl DepGraph {
 
         let contexts: DashMap<ContextKey, ContextEntry> = DashMap::new();
         let rustc_externs: DashMap<ContextKey, Vec<(String, NormalizedPath)>> = DashMap::new();
+        let rustc_env_deps: DashMap<ContextKey, Vec<(String, Option<ContentHash>)>> =
+            DashMap::new();
         snap.contexts.into_par_iter().for_each(|c| {
             let key = ContextKey::from_raw(c.context_key);
             let externs: Vec<(String, NormalizedPath)> = c
                 .rustc_externs
                 .into_iter()
                 .map(|entry| (entry.name, NormalizedPath::from(entry.path.as_str())))
+                .collect();
+            let env_deps: Vec<(String, Option<ContentHash>)> = c
+                .rustc_env_deps
+                .into_iter()
+                .map(|entry| (entry.name, entry.value_hash.map(ContentHash::from_bytes)))
                 .collect();
             let context = CompileContext {
                 source_file: NormalizedPath::from(c.source_file.as_str()),
@@ -290,9 +317,17 @@ impl DepGraph {
             if !externs.is_empty() {
                 rustc_externs.insert(key, externs);
             }
+            if !env_deps.is_empty() {
+                rustc_env_deps.insert(key, env_deps);
+            }
         });
 
-        DepGraph::from_maps_with_rustc_externs(files, contexts, rustc_externs)
+        DepGraph::from_maps_with_rustc_externs_and_env_deps(
+            files,
+            contexts,
+            rustc_externs,
+            rustc_env_deps,
+        )
     }
 }
 

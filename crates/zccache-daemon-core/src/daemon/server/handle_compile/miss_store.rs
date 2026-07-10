@@ -9,6 +9,9 @@ pub(super) struct MissArtifactStoreRequest<'a> {
     pub(super) source_path: &'a NormalizedPath,
     pub(super) output_path: &'a NormalizedPath,
     pub(super) scan_result: crate::depgraph::ScanResult,
+    /// Rustc env-dep `(name, value)` pairs resolved from the request env
+    /// (zccache#1021). Empty for C/C++ and env-free rustc crates.
+    pub(super) rustc_env_dep_values: Vec<(String, Option<String>)>,
     pub(super) hash_map: &'a HashMap<NormalizedPath, ContentHash>,
     pub(super) output_data: Vec<u8>,
     /// Issue #643: when the user's compile line emitted a depfile that
@@ -52,6 +55,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
         source_path,
         output_path,
         scan_result,
+        rustc_env_dep_values,
         hash_map,
         output_data,
         user_depfile,
@@ -69,10 +73,22 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
     };
     let include_count = scan_result.resolved.len();
     let t_depgraph_update = Instant::now();
-    let artifact_key_result = state
-        .dep_graph
-        .load()
-        .update(context_key, scan_result, get_hash);
+    let env_dep_names: Vec<String> = rustc_env_dep_values
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
+    let artifact_key_result = state.dep_graph.load().update_with_env(
+        context_key,
+        scan_result,
+        get_hash,
+        &env_dep_names,
+        |name| {
+            rustc_env_dep_values
+                .iter()
+                .find(|(n, _)| n == name)
+                .and_then(|(_, v)| v.clone())
+        },
+    );
     let mut stats = MissArtifactStoreStats {
         depgraph_update_ns: t_depgraph_update.elapsed().as_nanos() as u64,
         ..MissArtifactStoreStats::default()

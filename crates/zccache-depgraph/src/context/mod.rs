@@ -1029,3 +1029,47 @@ where
 
     ArtifactKey(ContentHash::from_bytes(*hasher.finalize().as_bytes()))
 }
+
+/// Fold rustc env-dep values into an already-computed rustc artifact key
+/// (zccache#1021).
+///
+/// rustc records every `env!()`/`option_env!()` read as a
+/// `# env-dep:NAME[=value]` line in its dep-info. The values are compile
+/// inputs exactly like extern rlib bytes: `cargo:rustc-env` vars (vergen's
+/// `VERGEN_GIT_SHA` and friends) change without any argv/source change,
+/// and serving the old artifact ships the stale value inside the rlib.
+///
+/// Layered on top of the base key rather than folded inside it so that
+/// contexts with **no** recorded env-deps (the overwhelmingly common
+/// case) keep byte-identical artifact keys with prior releases — no cache
+/// invalidation for env-free crates.
+///
+/// `env_hashes` entries are `(name, value_hash)` where `None` means the
+/// variable was **unset** at read time (`option_env!` → `None`) — a
+/// distinct variant from every set value. Entries are sorted by name for
+/// determinism.
+#[must_use]
+pub fn fold_rustc_env_deps_into_artifact_key(
+    base: ArtifactKey,
+    env_hashes: &mut [(String, Option<ContentHash>)],
+) -> ArtifactKey {
+    if env_hashes.is_empty() {
+        return base;
+    }
+    env_hashes.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"zccache-rustc-env-deps-v1\0");
+    hasher.update(base.0.as_bytes());
+    hasher.update(b"\0");
+    for (name, value_hash) in env_hashes.iter() {
+        hasher.update(name.as_bytes());
+        hasher.update(b"\0");
+        match value_hash {
+            Some(h) => hasher.update(h.as_bytes()),
+            None => hasher.update(b"unset"),
+        };
+        hasher.update(b"\0");
+    }
+    ArtifactKey(ContentHash::from_bytes(*hasher.finalize().as_bytes()))
+}

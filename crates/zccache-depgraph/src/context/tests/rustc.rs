@@ -646,3 +646,62 @@ fn rustc_artifact_key_with_root_matches_equivalent_source_and_dependency_paths()
         "source and dependency files under equivalent roots should hash relative to those roots"
     );
 }
+
+// ── Env-dep folding (zccache#1021) ─────────────────────────────────────
+
+#[test]
+fn env_dep_fold_is_a_no_op_for_empty_set() {
+    use super::super::fold_rustc_env_deps_into_artifact_key;
+    let ck = make_rustc_context("/w/src/lib.rs", "2021").context_key();
+    let base = compute_rustc_artifact_key(&ck, &mut [(Path::new("/w/src/lib.rs"), h(1))], &mut []);
+    // Empty env set → key must be byte-identical (no invalidation for the
+    // overwhelmingly common env-free crate).
+    assert_eq!(fold_rustc_env_deps_into_artifact_key(base, &mut []), base);
+}
+
+#[test]
+fn env_dep_fold_distinguishes_values_and_unset() {
+    use super::super::fold_rustc_env_deps_into_artifact_key;
+    use zccache_hash::hash_bytes;
+    let ck = make_rustc_context("/w/src/lib.rs", "2021").context_key();
+    let base = compute_rustc_artifact_key(&ck, &mut [(Path::new("/w/src/lib.rs"), h(1))], &mut []);
+
+    let alpha = fold_rustc_env_deps_into_artifact_key(
+        base,
+        &mut [("STAMP".to_string(), Some(hash_bytes(b"alpha")))],
+    );
+    let beta = fold_rustc_env_deps_into_artifact_key(
+        base,
+        &mut [("STAMP".to_string(), Some(hash_bytes(b"beta")))],
+    );
+    let unset = fold_rustc_env_deps_into_artifact_key(base, &mut [("STAMP".to_string(), None)]);
+
+    assert_ne!(base, alpha, "folding a set value must change the key");
+    assert_ne!(alpha, beta, "different values must produce different keys");
+    assert_ne!(
+        alpha, unset,
+        "unset is a distinct variant from every set value"
+    );
+    assert_ne!(base, unset, "unset still differs from no-env-deps-at-all");
+
+    // Determinism: same inputs in any order → same key.
+    let ab = fold_rustc_env_deps_into_artifact_key(
+        base,
+        &mut [
+            ("A".to_string(), Some(hash_bytes(b"1"))),
+            ("B".to_string(), Some(hash_bytes(b"2"))),
+        ],
+    );
+    let ba = fold_rustc_env_deps_into_artifact_key(
+        base,
+        &mut [
+            ("B".to_string(), Some(hash_bytes(b"2"))),
+            ("A".to_string(), Some(hash_bytes(b"1"))),
+        ],
+    );
+    assert_eq!(ab, ba, "fold must sort by name for determinism");
+}
+
+fn h(byte: u8) -> zccache_hash::ContentHash {
+    zccache_hash::ContentHash::from_bytes([byte; 32])
+}

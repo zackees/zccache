@@ -10,14 +10,42 @@ use zccache_core::NormalizedPath;
 use zccache_hash::ContentHash;
 
 use super::super::context::{
-    compute_artifact_key_with, compute_rustc_artifact_key_with_root_with, ArtifactKey, ContextKey,
+    compute_artifact_key_with, compute_rustc_artifact_key_with_root_with,
+    fold_rustc_env_deps_into_artifact_key, ArtifactKey, ContextKey,
 };
 use super::{
-    collect_rustc_extern_hashes, drifted_paths, format_drift_for_log, CacheVerdict, ContextState,
-    DepGraph,
+    collect_rustc_env_hashes, collect_rustc_extern_hashes, drifted_paths, format_drift_for_log,
+    CacheVerdict, ContextState, DepGraph,
 };
 
 impl DepGraph {
+    /// Fold the context's recorded env-dep set (zccache#1021) into a
+    /// freshly-computed rustc artifact key using CURRENT env values from
+    /// `env_value`. No-op (returns `base` unchanged) for contexts without
+    /// recorded env-deps — the overwhelmingly common case — so their keys
+    /// stay byte-identical with prior releases.
+    fn fold_env_deps_for_key<E>(
+        &self,
+        key: &ContextKey,
+        base: ArtifactKey,
+        env_value: &E,
+    ) -> ArtifactKey
+    where
+        E: Fn(&str) -> Option<String>,
+    {
+        match self.rustc_env_dep_inputs(key) {
+            Some(deps) if !deps.is_empty() => {
+                let mut env_hashes = collect_rustc_env_hashes(&deps, env_value);
+                fold_rustc_env_deps_into_artifact_key(base, &mut env_hashes)
+            }
+            _ => base,
+        }
+    }
+
+    /// [`Self::check_rustc_metadata_compat_diagnostic_with_env`] without an
+    /// env lookup. For contexts with recorded env-deps this conservatively
+    /// misses (safe direction); rustc callers should use the `_with_env`
+    /// variant.
     pub fn check_rustc_metadata_compat_diagnostic<F, G>(
         &self,
         compat_key: &ContextKey,
@@ -28,6 +56,28 @@ impl DepGraph {
     where
         F: Fn(&Path) -> bool,
         G: Fn(&Path) -> Option<ContentHash>,
+    {
+        self.check_rustc_metadata_compat_diagnostic_with_env(
+            compat_key,
+            current_externs,
+            is_fresh,
+            get_hash,
+            |_| None,
+        )
+    }
+
+    pub fn check_rustc_metadata_compat_diagnostic_with_env<F, G, E>(
+        &self,
+        compat_key: &ContextKey,
+        current_externs: &[(String, NormalizedPath)],
+        is_fresh: F,
+        get_hash: G,
+        env_value: E,
+    ) -> (CacheVerdict, String, Option<ContextKey>)
+    where
+        F: Fn(&Path) -> bool,
+        G: Fn(&Path) -> Option<ContentHash>,
+        E: Fn(&str) -> Option<String>,
     {
         let Some(actual_key) = self
             .rustc_check_metadata_compat
@@ -160,6 +210,22 @@ impl DepGraph {
             );
         }
 
+        // zccache#1021: the compat candidate serves its STORED artifact
+        // key, so a changed env-dep value must refuse the alias instead of
+        // shipping the artifact compiled under the old value.
+        if let Some(deps) = self.rustc_env_dep_inputs(&actual_key) {
+            if !deps.is_empty() {
+                let current = collect_rustc_env_hashes(&deps, &env_value);
+                if current != deps {
+                    return (
+                        CacheVerdict::Cold,
+                        "rustc metadata compatibility env-dep values changed".to_string(),
+                        Some(actual_key),
+                    );
+                }
+            }
+        }
+
         self.hits.fetch_add(1, Ordering::Relaxed);
         (
             CacheVerdict::Hit { artifact_key },
@@ -179,6 +245,26 @@ impl DepGraph {
     where
         F: Fn(&Path) -> bool,
         G: Fn(&Path) -> Option<ContentHash>,
+    {
+        self.check_with_env(key, is_fresh, get_hash, |_| None)
+    }
+
+    /// [`Self::check`] with an env lookup for rustc env-dep folding
+    /// (zccache#1021). `env_value` resolves the CURRENT value of an env
+    /// variable the crate read via `env!()`/`option_env!()` at its last
+    /// compile; a changed value produces a different artifact key and a
+    /// forced recompile instead of a stale hit.
+    pub fn check_with_env<F, G, E>(
+        &self,
+        key: &ContextKey,
+        is_fresh: F,
+        get_hash: G,
+        env_value: E,
+    ) -> CacheVerdict
+    where
+        F: Fn(&Path) -> bool,
+        G: Fn(&Path) -> Option<ContentHash>,
+        E: Fn(&str) -> Option<String>,
     {
         self.checks.fetch_add(1, Ordering::Relaxed);
 
@@ -286,13 +372,14 @@ impl DepGraph {
                 self.misses.fetch_add(1, Ordering::Relaxed);
                 return CacheVerdict::Cold;
             };
-            compute_rustc_artifact_key_with_root_with(
+            let base = compute_rustc_artifact_key_with_root_with(
                 key,
                 &mut file_hashes,
                 &mut extern_hashes,
                 entry.key_root.as_deref(),
                 |path, key_root| self.cached_normalize_key_path(path, key_root),
-            )
+            );
+            self.fold_env_deps_for_key(key, base, &env_value)
         } else {
             compute_artifact_key_with(
                 key,
@@ -359,6 +446,23 @@ impl DepGraph {
     where
         F: Fn(&Path) -> bool,
         G: Fn(&Path) -> Option<ContentHash>,
+    {
+        self.check_diagnostic_with_env(key, is_fresh, get_hash, |_| None)
+    }
+
+    /// [`Self::check_diagnostic`] with an env lookup for rustc env-dep
+    /// folding (zccache#1021). See [`Self::check_with_env`].
+    pub fn check_diagnostic_with_env<F, G, E>(
+        &self,
+        key: &ContextKey,
+        is_fresh: F,
+        get_hash: G,
+        env_value: E,
+    ) -> (CacheVerdict, String)
+    where
+        F: Fn(&Path) -> bool,
+        G: Fn(&Path) -> Option<ContentHash>,
+        E: Fn(&str) -> Option<String>,
     {
         self.checks.fetch_add(1, Ordering::Relaxed);
 
@@ -486,13 +590,14 @@ impl DepGraph {
                 self.misses.fetch_add(1, Ordering::Relaxed);
                 return (CacheVerdict::Cold, "rustc extern hash missing".to_string());
             };
-            compute_rustc_artifact_key_with_root_with(
+            let base = compute_rustc_artifact_key_with_root_with(
                 key,
                 &mut file_hashes,
                 &mut extern_hashes,
                 entry.key_root.as_deref(),
                 |path, key_root| self.cached_normalize_key_path(path, key_root),
-            )
+            );
+            self.fold_env_deps_for_key(key, base, &env_value)
         } else {
             compute_artifact_key_with(
                 key,
@@ -584,6 +689,21 @@ impl DepGraph {
     where
         G: Fn(&Path) -> Option<ContentHash>,
     {
+        self.try_fast_hit_with_env(key, get_hash, |_| None)
+    }
+
+    /// [`Self::try_fast_hit`] with an env lookup for rustc env-dep folding
+    /// (zccache#1021). See [`Self::check_with_env`].
+    pub fn try_fast_hit_with_env<G, E>(
+        &self,
+        key: &ContextKey,
+        get_hash: G,
+        env_value: E,
+    ) -> Option<ArtifactKey>
+    where
+        G: Fn(&Path) -> Option<ContentHash>,
+        E: Fn(&str) -> Option<String>,
+    {
         let rustc_externs = self.rustc_extern_inputs(key);
         let entry = self.contexts.get(key)?;
 
@@ -610,13 +730,14 @@ impl DepGraph {
 
         let computed = if let Some(externs) = rustc_externs.as_deref() {
             let mut extern_hashes = collect_rustc_extern_hashes(externs, &get_hash)?;
-            compute_rustc_artifact_key_with_root_with(
+            let base = compute_rustc_artifact_key_with_root_with(
                 key,
                 &mut file_hashes,
                 &mut extern_hashes,
                 entry.key_root.as_deref(),
                 |path, key_root| self.cached_normalize_key_path(path, key_root),
-            )
+            );
+            self.fold_env_deps_for_key(key, base, &env_value)
         } else {
             compute_artifact_key_with(
                 key,

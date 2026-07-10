@@ -121,6 +121,18 @@ pub struct DepGraph {
     /// their paths are output-placement state. Their content hashes affect the
     /// rustc artifact key by crate name, but target-dir path prefixes must not.
     pub(super) rustc_externs: DashMap<ContextKey, Vec<(String, NormalizedPath)>>,
+    /// Rustc env-dep snapshots keyed by context (zccache#1021).
+    ///
+    /// rustc records every `env!()`/`option_env!()` read as a
+    /// `# env-dep:NAME[=value]` line in its dep-info. We store, per
+    /// context, the read variable NAMES with the blake3 hash of the value
+    /// each had at the last successful compile (`None` = the variable was
+    /// unset). Check paths re-resolve the CURRENT values via a
+    /// caller-supplied lookup and fold them into the artifact key, so a
+    /// changed `cargo:rustc-env` value (vergen `VERGEN_GIT_SHA` etc.)
+    /// misses instead of serving an artifact with the stale value baked
+    /// in. Non-rustc contexts never have an entry here.
+    pub(super) rustc_env_deps: DashMap<ContextKey, Vec<(String, Option<ContentHash>)>>,
     /// Rustc check/build metadata compatibility alias.
     ///
     /// Keyed by `RustcCompileContext::check_metadata_compat_key_with_root`.
@@ -192,6 +204,31 @@ where
         extern_hashes.push((name.clone(), get_hash(path)?));
     }
     Some(extern_hashes)
+}
+
+/// Hash an env-dep value for the artifact key (zccache#1021).
+/// `None` (variable unset) stays `None` — the key fold encodes it as a
+/// distinct "unset" marker.
+pub fn hash_env_dep_value(value: Option<&str>) -> Option<ContentHash> {
+    value.map(|v| zccache_hash::hash_bytes(v.as_bytes()))
+}
+
+/// Resolve the CURRENT `(name, value_hash)` pairs for a recorded env-dep
+/// name set via the caller-supplied env lookup.
+pub(super) fn collect_rustc_env_hashes<E>(
+    names: &[(String, Option<ContentHash>)],
+    env_value: &E,
+) -> Vec<(String, Option<ContentHash>)>
+where
+    E: Fn(&str) -> Option<String>,
+{
+    names
+        .iter()
+        .map(|(name, _recorded)| {
+            let current = env_value(name);
+            (name.clone(), hash_env_dep_value(current.as_deref()))
+        })
+        .collect()
 }
 
 /// Files whose content hash has drifted relative to the hashes captured by
@@ -272,6 +309,7 @@ impl DepGraph {
             files: DashMap::new(),
             contexts: DashMap::new(),
             rustc_externs: DashMap::new(),
+            rustc_env_deps: DashMap::new(),
             rustc_check_metadata_compat: DashMap::new(),
             path_key_cache: DashMap::new(),
             checks: AtomicU64::new(0),
@@ -319,16 +357,30 @@ impl DepGraph {
         self.rustc_externs.get(key).map(|externs| externs.clone())
     }
 
-    /// Construct a `DepGraph` from pre-built maps, including rustc extern inputs.
-    pub(crate) fn from_maps_with_rustc_externs(
+    /// Recorded env-dep snapshot for a context (zccache#1021): the env
+    /// variable names the crate read via `env!()`/`option_env!()` with the
+    /// value hash each had at the last compile (`None` = unset). `None`
+    /// result = the context has no recorded env-deps (the common case).
+    pub(super) fn rustc_env_dep_inputs(
+        &self,
+        key: &ContextKey,
+    ) -> Option<Vec<(String, Option<ContentHash>)>> {
+        self.rustc_env_deps.get(key).map(|deps| deps.clone())
+    }
+
+    /// Construct a `DepGraph` from pre-built maps, including rustc extern
+    /// inputs and env-dep snapshots (zccache#1021).
+    pub(crate) fn from_maps_with_rustc_externs_and_env_deps(
         files: DashMap<NormalizedPath, FileEntry>,
         contexts: DashMap<ContextKey, ContextEntry>,
         rustc_externs: DashMap<ContextKey, Vec<(String, NormalizedPath)>>,
+        rustc_env_deps: DashMap<ContextKey, Vec<(String, Option<ContentHash>)>>,
     ) -> Self {
         Self {
             files,
             contexts,
             rustc_externs,
+            rustc_env_deps,
             rustc_check_metadata_compat: DashMap::new(),
             path_key_cache: DashMap::new(),
             checks: AtomicU64::new(0),

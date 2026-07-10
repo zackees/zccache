@@ -125,6 +125,42 @@ pub(super) fn context_files_fresh(
     true
 }
 
+/// [`context_files_fresh`] plus the rustc env-dep gate (zccache#1021):
+/// the zero-hash fast paths must also decline when a recorded
+/// `env!()`/`option_env!()` value differs from the current request env —
+/// env values have no mtime, so the journal can't see them change.
+pub(super) fn context_files_and_env_fresh(
+    state: &SharedState,
+    context_key: &ContextKey,
+    source_path: &Path,
+    since: Clock,
+    client_env: Option<&[(String, String)]>,
+) -> bool {
+    if !context_env_deps_fresh(state, context_key, client_env) {
+        return false;
+    }
+    context_files_fresh(state, context_key, source_path, since)
+}
+
+/// True when every recorded env-dep value for the context matches the
+/// current request env (or the context has none recorded — the common
+/// case).
+pub(super) fn context_env_deps_fresh(
+    state: &SharedState,
+    context_key: &ContextKey,
+    client_env: Option<&[(String, String)]>,
+) -> bool {
+    let Some(deps) = state.dep_graph.load().get_rustc_env_deps(context_key) else {
+        return true;
+    };
+    deps.iter().all(|(name, recorded_hash)| {
+        let current = client_env
+            .and_then(|env| env.iter().find(|(k, _)| k == name))
+            .map(|(_, v)| v.as_str());
+        crate::depgraph::hash_env_dep_value(current) == *recorded_hash
+    })
+}
+
 /// Look up an artifact by key, falling through to the on-disk
 /// [`ArtifactStore`] when the in-memory [`SharedState::artifacts`] DashMap
 /// has not yet been hydrated.

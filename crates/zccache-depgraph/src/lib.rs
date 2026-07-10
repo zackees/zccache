@@ -22,11 +22,11 @@ pub mod watcher_support;
 pub use args::{ParsedArgs, UserDepFlags};
 pub use compile_commands::{parse_compile_commands_json, CompileCommand};
 pub use context::{
-    compute_artifact_key, compute_rustc_artifact_key, ArtifactKey, CompileContext, ContextKey,
-    RustcCompileContext,
+    compute_artifact_key, compute_rustc_artifact_key, fold_rustc_env_deps_into_artifact_key,
+    ArtifactKey, CompileContext, ContextKey, RustcCompileContext,
 };
 pub use depfile::{prepare_depfile, DepfileError, DepfileStrategy};
-pub use graph::{CacheVerdict, ContextState, DepGraph, DepGraphStats};
+pub use graph::{hash_env_dep_value, CacheVerdict, ContextState, DepGraph, DepGraphStats};
 pub use rustc_args::{parse_rustc_args, ExternCrate, RustcParsedArgs};
 pub use scanner::{IncludeDirective, IncludeKind, ScanResult};
 pub use search_paths::IncludeSearchPaths;

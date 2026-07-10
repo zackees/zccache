@@ -28,6 +28,9 @@ pub(super) struct HashVerifyInput<'a> {
     pub(super) source_path: &'a NormalizedPath,
     pub(super) ctx: &'a CompileContext,
     pub(super) rustc_extern_paths: &'a [NormalizedPath],
+    /// Request env — value source for rustc env-dep key folding
+    /// (zccache#1021).
+    pub(super) client_env: Option<&'a [(String, String)]>,
     pub(super) snap_clock: Clock,
 }
 
@@ -42,6 +45,7 @@ pub(super) fn hash_and_verify(input: HashVerifyInput<'_>) -> HashSourceOutcome {
         state,
         sid,
         context_key,
+        client_env,
         source_path,
         ctx,
         rustc_extern_paths,
@@ -161,10 +165,19 @@ pub(super) fn hash_and_verify(input: HashVerifyInput<'_>) -> HashSourceOutcome {
         // Fast path: recompute artifact key from fresh hashes and compare
         // with the stored key.  Skips redundant journal freshness checks
         // and path clones that check_diagnostic performs.
-        if let Some(artifact_key) = state.dep_graph.load().try_fast_hit(&context_key, |p| {
-            let path = NormalizedPath::new(p);
-            hash_map.get(&path).copied()
-        }) {
+        let env_value = |name: &str| -> Option<String> {
+            client_env
+                .and_then(|env| env.iter().find(|(k, _)| k == name))
+                .map(|(_, v)| v.clone())
+        };
+        if let Some(artifact_key) = state.dep_graph.load().try_fast_hit_with_env(
+            &context_key,
+            |p| {
+                let path = NormalizedPath::new(p);
+                hash_map.get(&path).copied()
+            },
+            env_value,
+        ) {
             depgraph_check_ns = 0;
             verdict = crate::depgraph::CacheVerdict::Hit { artifact_key };
             diag_reason = "fast_key_match".to_string();
@@ -182,10 +195,16 @@ pub(super) fn hash_and_verify(input: HashVerifyInput<'_>) -> HashSourceOutcome {
                     let path = NormalizedPath::new(p);
                     hash_map.get(&path).copied()
                 };
-                state
-                    .dep_graph
-                    .load()
-                    .check_diagnostic(&context_key, is_fresh, get_hash)
+                state.dep_graph.load().check_diagnostic_with_env(
+                    &context_key,
+                    is_fresh,
+                    get_hash,
+                    |name| {
+                        client_env
+                            .and_then(|env| env.iter().find(|(k, _)| k == name))
+                            .map(|(_, v)| v.clone())
+                    },
+                )
             };
             depgraph_check_ns = t4.elapsed().as_nanos() as u64;
             verdict = result.0;

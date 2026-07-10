@@ -410,6 +410,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         source_path: &source_path,
         ctx: &ctx,
         rustc_extern_paths: &rustc_extern_paths,
+        client_env: client_env.as_deref(),
         snap_clock,
     }) {
         HashSourceOutcome::Ready(outcome) => outcome,
@@ -601,11 +602,17 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 let (compat_verdict, compat_reason, actual_context_key) = state
                     .dep_graph
                     .load()
-                    .check_rustc_metadata_compat_diagnostic(
+                    .check_rustc_metadata_compat_diagnostic_with_env(
                         &compat_key,
                         &rustc_current_externs,
                         is_fresh,
                         get_hash,
+                        |name| {
+                            client_env
+                                .as_deref()
+                                .and_then(|env| env.iter().find(|(k, _)| k == name))
+                                .map(|(_, v)| v.clone())
+                        },
                     );
                 write_session_log(
                     &state.sessions,
@@ -784,6 +791,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             compilation: &compilation,
             rustc_args_opt: rustc_args_opt.as_deref(),
             rustc_extern_paths: &rustc_extern_paths,
+            client_env: client_env.as_deref(),
             is_rustc,
             rust_profile_enabled,
             rust_profile_mode,

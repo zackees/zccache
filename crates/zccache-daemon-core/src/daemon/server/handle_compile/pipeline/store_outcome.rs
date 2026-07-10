@@ -23,6 +23,9 @@ pub(super) struct StoreOutcomeRequest<'a> {
     pub(super) compilation: &'a crate::compiler::CacheableCompilation,
     pub(super) rustc_args_opt: Option<&'a crate::depgraph::RustcParsedArgs>,
     pub(super) rustc_extern_paths: &'a [NormalizedPath],
+    /// Request env the compile ran under — the value source for rustc
+    /// env-dep snapshots (zccache#1021).
+    pub(super) client_env: Option<&'a [(String, String)]>,
     pub(super) is_rustc: bool,
     pub(super) rust_profile_enabled: bool,
     pub(super) rust_profile_mode: &'a str,
@@ -106,6 +109,8 @@ struct CompileScanRequest {
 
 struct CompileScanCollection {
     scan_result: crate::depgraph::ScanResult,
+    /// Env-dep names scanned from rustc dep-info (zccache#1021).
+    rustc_env_dep_names: Vec<String>,
     user_depfile_capture: Option<(NormalizedPath, Vec<u8>)>,
     depfile_parse_warning: Option<String>,
 }
@@ -114,6 +119,7 @@ async fn collect_compile_scan_blocking(req: CompileScanRequest) -> CompileScanCo
     tokio::task::spawn_blocking(move || collect_compile_scan(req))
         .await
         .unwrap_or_else(|e| CompileScanCollection {
+            rustc_env_dep_names: Vec::new(),
             scan_result: crate::depgraph::ScanResult {
                 resolved: Vec::new(),
                 unresolved: vec![format!("compile dependency scan worker failed: {e}")],
@@ -136,16 +142,27 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
     } = req;
 
     if is_rustc {
-        let scan_result = rustc_args.as_ref().map_or_else(
-            || crate::depgraph::ScanResult {
-                resolved: Vec::new(),
-                unresolved: vec!["missing parsed rustc args for rustc dependency scan".into()],
-                has_computed: false,
+        let (scan_result, rustc_env_dep_names) = rustc_args.as_ref().map_or_else(
+            || {
+                (
+                    crate::depgraph::ScanResult {
+                        resolved: Vec::new(),
+                        unresolved: vec![
+                            "missing parsed rustc args for rustc dependency scan".into()
+                        ],
+                        has_computed: false,
+                    },
+                    Vec::new(),
+                )
             },
-            |args| scan_rustc_deps(args, &source_path, &cwd_path),
+            |args| {
+                let dep_scan = scan_rustc_deps(args, &source_path, &cwd_path);
+                (dep_scan.scan, dep_scan.env_dep_names)
+            },
         );
         return CompileScanCollection {
             scan_result,
+            rustc_env_dep_names,
             user_depfile_capture: None,
             depfile_parse_warning: None,
         };
@@ -192,6 +209,7 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
 
     CompileScanCollection {
         scan_result,
+        rustc_env_dep_names: Vec::new(),
         user_depfile_capture,
         depfile_parse_warning,
     }
@@ -214,6 +232,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         compilation,
         rustc_args_opt,
         rustc_extern_paths,
+        client_env,
         is_rustc,
         rust_profile_enabled,
         rust_profile_mode,
@@ -322,9 +341,21 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
     };
     let CompileScanCollection {
         scan_result,
+        rustc_env_dep_names,
         user_depfile_capture,
         ..
     } = scan_collection;
+    // Resolve env-dep values from the request env NOW (the borrow doesn't
+    // survive into the store task): the compile ran under exactly this env.
+    let rustc_env_dep_values: Vec<(String, Option<String>)> = rustc_env_dep_names
+        .iter()
+        .map(|name| {
+            let value = client_env
+                .and_then(|env| env.iter().find(|(k, _)| k == name))
+                .map(|(_, v)| v.clone());
+            (name.clone(), value)
+        })
+        .collect();
     let include_scan_ns = t_scan.elapsed().as_nanos() as u64;
 
     // Register scanned paths for zero-syscall fast path on future hits.
@@ -474,6 +505,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
             source_path,
             output_path,
             scan_result,
+            rustc_env_dep_values,
             hash_map: &hash_map,
             output_data,
             user_depfile: user_depfile_capture,

@@ -7,7 +7,7 @@ This document is the index for zccache's architecture specification. Each subsys
 | Document | Lines | What it covers |
 |---|---|---|
 | [architecture/overview.md](architecture/overview.md) | ~280 | System diagram, all 9 component descriptions and key interfaces |
-| [architecture/data-flow.md](architecture/data-flow.md) | ~120 | Cache hit, cache miss, and passthrough step-by-step traces |
+| [architecture/data-flow.md](architecture/data-flow.md) | ~160 | Cache hit, cache miss, passthrough traces + rustc key-scope rules (env-deps, incremental, crate types) |
 | [architecture/ipc.md](architecture/ipc.md) | ~60 | Transport abstraction, socket discovery, connection lifecycle, errors |
 | [architecture/metadata-cache.md](architecture/metadata-cache.md) | ~130 | In-memory cache data model, confidence levels, watcher integration |
 | [architecture/artifact-store.md](architecture/artifact-store.md) | ~130 | Disk layout, redb index schema, LRU eviction, corruption detection |

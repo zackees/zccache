@@ -4,9 +4,15 @@
 
 use std::time::Instant;
 
-use super::super::context::{compute_rustc_artifact_key_with_root_with, ArtifactKey, ContextKey};
+use super::super::context::{
+    compute_rustc_artifact_key_with_root_with, fold_rustc_env_deps_into_artifact_key, ArtifactKey,
+    ContextKey,
+};
 use super::super::scanner::ScanResult;
-use super::{collect_rustc_extern_hashes, depgraph_update_profile_enabled, ContextState, DepGraph};
+use super::{
+    collect_rustc_extern_hashes, depgraph_update_profile_enabled, hash_env_dep_value, ContextState,
+    DepGraph,
+};
 use zccache_hash::ContentHash;
 
 impl DepGraph {
@@ -22,6 +28,40 @@ impl DepGraph {
     where
         G: Fn(&std::path::Path) -> Option<ContentHash>,
     {
+        self.update_with_env(key, scan_result, get_hash, &[], |_| None)
+    }
+
+    /// [`Self::update`] with the rustc env-dep set scanned from dep-info
+    /// (zccache#1021).
+    ///
+    /// `env_dep_names` are the env variable names rustc recorded as
+    /// `# env-dep:` lines for this compile; `env_value` resolves the value
+    /// each had in the environment the compile ran under. The snapshot
+    /// `(name, value_hash)` is stored per context so check paths can fold
+    /// CURRENT values into the artifact key, and the key stored here is
+    /// folded the same way so both sides agree.
+    pub fn update_with_env<G, E>(
+        &self,
+        key: &ContextKey,
+        scan_result: ScanResult,
+        get_hash: G,
+        env_dep_names: &[String],
+        env_value: E,
+    ) -> Option<ArtifactKey>
+    where
+        G: Fn(&std::path::Path) -> Option<ContentHash>,
+        E: Fn(&str) -> Option<String>,
+    {
+        // Snapshot the env-dep values the compile actually saw, replacing
+        // any prior snapshot (the name set can change across compiles).
+        let mut env_hashes: Vec<(String, Option<ContentHash>)> = env_dep_names
+            .iter()
+            .map(|name| {
+                let value = env_value(name);
+                (name.clone(), hash_env_dep_value(value.as_deref()))
+            })
+            .collect();
+        self.set_rustc_env_deps(*key, env_hashes.clone());
         // Issue #582: emit a `zccache_depgraph_update_breakdown` line when
         // `ZCCACHE_PROFILE_CC_MISS` is set so the next perf iteration has
         // sub-phase data for the remaining ~2.4 ms mean `depgraph_update_ns`.
@@ -74,13 +114,14 @@ impl DepGraph {
         let t_artifact_key = profile_enabled.then(Instant::now);
         let artifact_key = if let Some(externs) = rustc_externs.as_deref() {
             let mut extern_hashes = collect_rustc_extern_hashes(externs, &get_hash)?;
-            compute_rustc_artifact_key_with_root_with(
+            let base = compute_rustc_artifact_key_with_root_with(
                 key,
                 &mut file_hashes,
                 &mut extern_hashes,
                 entry.key_root.as_deref(),
                 |path, key_root| self.cached_normalize_key_path(path, key_root),
-            )
+            );
+            fold_rustc_env_deps_into_artifact_key(base, &mut env_hashes)
         } else {
             // Issue #591: closure-free path for cc/cpp. For paths NOT
             // under `key_root` (system headers — the common case),

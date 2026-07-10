@@ -168,48 +168,53 @@ pub(super) async fn build_rustc_compile_context_async(
     }
 }
 
+/// Result of scanning rustc's dep-info after a compile: the file
+/// dependencies plus the env-dep variable names rustc recorded
+/// (zccache#1021).
+pub(super) struct RustcDepScan {
+    pub(super) scan: crate::depgraph::ScanResult,
+    /// Env variable names from `# env-dep:NAME[=value]` lines — every
+    /// `env!()`/`option_env!()` the crate read at compile time. Values
+    /// are re-resolved from the request env; only the names are taken
+    /// from dep-info.
+    pub(super) env_dep_names: Vec<String>,
+}
+
+fn empty_scan() -> crate::depgraph::ScanResult {
+    crate::depgraph::ScanResult {
+        resolved: Vec::new(),
+        unresolved: Vec::new(),
+        has_computed: false,
+    }
+}
+
 /// Scan rustc dependencies after compilation.
 ///
 /// Parses rustc's dep-info file which has multiple rules (one per output target),
-/// all sharing the same dependencies. Extracts the unique set of source file deps.
+/// all sharing the same dependencies. Extracts the unique set of source file deps
+/// and the `# env-dep:` variable names (zccache#1021).
 /// `--extern` crate files are tracked separately by the dependency graph so
 /// their content, but not target-dir path prefix, participates in artifact keys.
 pub(super) fn scan_rustc_deps(
     rustc_args: &crate::depgraph::RustcParsedArgs,
     source_path: &Path,
     cwd: &Path,
-) -> crate::depgraph::ScanResult {
-    let result = if rustc_args.emit_types.iter().any(|t| t == "dep-info") {
+) -> RustcDepScan {
+    if rustc_args.emit_types.iter().any(|t| t == "dep-info") {
         let name = rustc_args.crate_name.as_deref().unwrap_or("unknown");
         let ext_suffix = rustc_args.extra_filename.as_deref().unwrap_or("");
         let dir = rustc_args.out_dir.as_deref().unwrap_or(cwd);
         let depfile_path = dir.join(format!("{name}{ext_suffix}.d"));
         if depfile_path.exists() {
             if let Ok(content) = std::fs::read_to_string(&depfile_path) {
-                parse_rustc_depinfo(&content, source_path, cwd)
-            } else {
-                crate::depgraph::ScanResult {
-                    resolved: Vec::new(),
-                    unresolved: Vec::new(),
-                    has_computed: false,
-                }
-            }
-        } else {
-            crate::depgraph::ScanResult {
-                resolved: Vec::new(),
-                unresolved: Vec::new(),
-                has_computed: false,
+                return parse_rustc_depinfo(&content, source_path, cwd);
             }
         }
-    } else {
-        crate::depgraph::ScanResult {
-            resolved: Vec::new(),
-            unresolved: Vec::new(),
-            has_computed: false,
-        }
-    };
-
-    result
+    }
+    RustcDepScan {
+        scan: empty_scan(),
+        env_dep_names: Vec::new(),
+    }
 }
 
 /// Parse rustc's multi-rule dep-info format.
@@ -223,18 +228,34 @@ pub(super) fn scan_rustc_deps(
 /// src/util.rs:
 /// ```
 ///
-/// We extract deps from ALL rules and deduplicate, excluding the source file.
-pub(super) fn parse_rustc_depinfo(
-    content: &str,
-    source_path: &Path,
-    cwd: &Path,
-) -> crate::depgraph::ScanResult {
+/// We extract deps from ALL rules and deduplicate, excluding the source
+/// file. `# env-dep:NAME[=value]` comment lines are collected as env-dep
+/// NAMES (zccache#1021) — previously they fell through the rule parser
+/// and were silently discarded by the exists() filter.
+pub(super) fn parse_rustc_depinfo(content: &str, source_path: &Path, cwd: &Path) -> RustcDepScan {
     let mut deps = std::collections::HashSet::new();
+    let mut env_dep_names: Vec<String> = Vec::new();
 
     for line in content.lines() {
         // Join continuation lines (backslash-newline)
         let line = line.trim();
         if line.is_empty() {
+            continue;
+        }
+
+        // `# env-dep:NAME[=value]` — rustc records every env!()/
+        // option_env!() read. Take the NAME (values are re-resolved from
+        // the request env at key time; rustc escapes values in-place so
+        // splitting on the first '=' is safe for the name).
+        if let Some(rest) = line.strip_prefix("# env-dep:") {
+            let name = rest.split('=').next().unwrap_or(rest).trim();
+            if !name.is_empty() && !env_dep_names.iter().any(|n| n == name) {
+                env_dep_names.push(name.to_string());
+            }
+            continue;
+        }
+        // Any other comment line — never a dep rule.
+        if line.starts_with('#') {
             continue;
         }
 
@@ -308,11 +329,15 @@ pub(super) fn parse_rustc_depinfo(
         }
     }
     resolved.sort();
+    env_dep_names.sort();
 
-    crate::depgraph::ScanResult {
-        resolved,
-        unresolved: Vec::new(),
-        has_computed: false,
+    RustcDepScan {
+        scan: crate::depgraph::ScanResult {
+            resolved,
+            unresolved: Vec::new(),
+            has_computed: false,
+        },
+        env_dep_names,
     }
 }
 

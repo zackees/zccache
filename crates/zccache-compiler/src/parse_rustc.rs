@@ -16,6 +16,12 @@ use super::{CacheableCompilation, CompilerFamily, ParsedInvocation};
 ///   caches the same set. The artifact key already covers source
 ///   content, deps, and compiler identity, so the safety contract
 ///   is the same as any other rustc invocation.
+/// Crate types zccache caches (zccache#1021 documents the exclusions):
+/// `dylib` and `cdylib` are deliberately NOT cacheable — dynamic
+/// libraries embed platform linker state (soname/install-name, import
+/// libs) that the artifact store does not model, so PyO3/maturin
+/// `cdylib` final artifacts recompile every time while their rlib deps
+/// still hit.
 const RUSTC_CACHEABLE_CRATE_TYPES: &[&str] = &["lib", "rlib", "staticlib", "proc-macro", "bin"];
 
 /// Host dynamic-library file-name pattern for proc-macros, matching
@@ -212,10 +218,16 @@ pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedI
         }
     };
 
-    // Note: -C incremental is ignored for caching purposes.
+    // Note: -C incremental is ignored for caching purposes (zccache#1021).
     // The incremental dir is excluded from the cache key, and we let rustc
-    // use it on a miss (doesn't affect output determinism for rlib/rmeta).
-    // sccache also allows incremental — cargo always passes it.
+    // use it on a miss. This is a DELIBERATE divergence from sccache,
+    // which refuses to cache incremental compiles (its guidance is
+    // CARGO_INCREMENTAL=0). zccache accepts the residual risk: incremental
+    // can alter codegen-unit partitioning (and thus internal symbol
+    // names) between otherwise-identical compiles, but the emitted
+    // rlib/rmeta interface (SVH) is stable, and cargo passes incremental
+    // on every dev-profile compile — refusing it would forfeit the bulk
+    // of dev-loop caching.
 
     // Default crate type is bin if not specified
     if crate_types.is_empty() {

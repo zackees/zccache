@@ -382,6 +382,103 @@ async fn rustc_env_vars_affect_cache_key() {
     h.shutdown().await;
 }
 
+/// Non-CARGO env vars read via `env!()`/`option_env!()` must affect the
+/// cache key (zccache#1021). rustc records every env read as a
+/// `# env-dep:NAME[=value]` line in its dep-info; build scripts inject
+/// such vars via `cargo:rustc-env` (vergen's `VERGEN_GIT_SHA`,
+/// shadow-rs, `built`). Cargo re-invokes rustc when the value changes —
+/// if zccache then serves the artifact compiled under the OLD value,
+/// the stale value ships inside the rlib.
+///
+/// Unlike `rustc_env_vars_affect_cache_key` above, the var here does NOT
+/// start with `CARGO_`, so the request/context env fingerprint does not
+/// cover it — only dep-info env-dep tracking can.
+#[tokio::test]
+#[ignore]
+async fn rustc_non_cargo_env_dep_affects_cache_key() {
+    let mut h = match TestHarness::new().await {
+        Some(h) => h,
+        None => return,
+    };
+
+    h.write_file(
+        "envdep.rs",
+        r#"pub fn stamp() -> &'static str {
+    match option_env!("ZCC_TEST_STAMP") {
+        Some(s) => s,
+        None => "unset",
+    }
+}
+"#,
+    );
+
+    // Cargo-style invocation: dep-info emitted next to the artifact via
+    // --out-dir + -C extra-filename (this is where the daemon learns the
+    // env-dep set; cargo always passes dep-info).
+    let args_base = &[
+        "--edition",
+        "2021",
+        "--crate-type",
+        "lib",
+        "--crate-name",
+        "envdep",
+        "--emit=dep-info,link",
+        "-C",
+        "extra-filename=-zcctest",
+        "--out-dir",
+        ".",
+        "envdep.rs",
+    ];
+    let rlib = "libenvdep-zcctest.rlib";
+
+    // Compile with ZCC_TEST_STAMP=alpha
+    let env_alpha: Vec<(String, String)> = vec![("ZCC_TEST_STAMP".into(), "alpha".into())];
+    let (ec, cached) = h.compile_args(args_base, Some(env_alpha.clone())).await;
+    assert_eq!(ec, 0);
+    assert!(!cached, "first compile should be miss");
+    let obj_alpha = std::fs::read(h.path(rlib)).unwrap();
+
+    // Compile with ZCC_TEST_STAMP=beta — MUST be a miss (the env value is
+    // baked into the rlib via option_env!). A hit here serves a stale
+    // artifact with "alpha" embedded.
+    let env_beta: Vec<(String, String)> = vec![("ZCC_TEST_STAMP".into(), "beta".into())];
+    let (ec, cached) = h.compile_args(args_base, Some(env_beta)).await;
+    assert_eq!(ec, 0);
+    assert!(
+        !cached,
+        "changed non-CARGO env-dep MUST produce a cache miss (false hit = stale rlib)"
+    );
+    let obj_beta = std::fs::read(h.path(rlib)).unwrap();
+    assert_ne!(
+        obj_alpha, obj_beta,
+        "different ZCC_TEST_STAMP → different .rlib content"
+    );
+
+    // Unset entirely — also a distinct variant (option_env! → None).
+    // `Some(vec![])` keeps the same full base env as alpha/beta (same
+    // CARGO_* fingerprint → same context) with only the stamp absent.
+    let (ec, cached) = h.compile_args(args_base, Some(vec![])).await;
+    assert_eq!(ec, 0);
+    assert!(
+        !cached,
+        "unset env-dep is a distinct variant from set — must miss"
+    );
+
+    // Back to alpha → the recompile must embed alpha again. (Served from
+    // cache when the alpha variant is still stored; either way the BYTES
+    // must be the alpha bytes, never beta's.)
+    std::fs::remove_file(h.path(rlib)).unwrap();
+    let (ec, _cached) = h.compile_args(args_base, Some(env_alpha)).await;
+    assert_eq!(ec, 0);
+    assert_eq!(
+        obj_alpha,
+        std::fs::read(h.path(rlib)).unwrap(),
+        "flip-back to ZCC_TEST_STAMP=alpha must produce the alpha rlib bytes"
+    );
+
+    h.shutdown().await;
+}
+
 /// --remap-path-prefix changes embedded paths in the binary.
 #[tokio::test]
 #[ignore]

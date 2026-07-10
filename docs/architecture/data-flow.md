@@ -131,3 +131,39 @@ Non-cacheable patterns detected by the CLI:
 - `-E` / `-M` / `-MM` (preprocessing / dependency generation only).
 - `-` as input (stdin source).
 - Unrecognized compiler.
+
+## Rustc Cache-Key Specifics (zccache#1021)
+
+The rustc lane shares the pipeline above but has four key-scope rules of
+its own:
+
+- **Env-deps are cache inputs.** rustc records every `env!()` /
+  `option_env!()` read as a `# env-dep:NAME[=value]` line in its
+  dep-info. The daemon stores the name set per context
+  (`DepGraph::rustc_env_deps`, persisted in the depgraph snapshot) and
+  folds the blake3 hash of each CURRENT value into the artifact key
+  (`fold_rustc_env_deps_into_artifact_key`). A changed
+  `cargo:rustc-env` value (vergen's `VERGEN_GIT_SHA`, shadow-rs, etc.)
+  therefore forces a recompile instead of serving an rlib with the old
+  value baked in. Unset is a distinct variant from every set value.
+  Contexts with no env-deps (the overwhelmingly common case) keep
+  byte-identical keys with prior releases. `CARGO_*` values are
+  additionally fingerprinted request-side (see
+  `request_env_fingerprint_vars`).
+- **`-C incremental` is excluded from the key** and allowed on misses.
+  Deliberate divergence from sccache (which refuses incremental):
+  cargo passes incremental on every dev-profile compile, and the
+  emitted rlib/rmeta interface (SVH) is stable even though CGU
+  partitioning may differ. See the note in
+  `zccache-compiler/src/parse_rustc.rs`.
+- **Cacheable crate types are `lib`, `rlib`, `staticlib`, `proc-macro`,
+  `bin`.** `dylib`/`cdylib` are deliberately not cached (platform
+  linker state is not modeled) — PyO3/maturin `cdylib` final artifacts
+  recompile every time while their rlib deps still hit.
+- **Native libraries in link steps are a documented blind spot.**
+  `bin`/`staticlib` units linking system libraries via `-L`/`-l` do not
+  content-hash the resolved library bytes (matching sccache). An
+  upgraded system library with an otherwise-identical invocation can
+  serve a stale binary; the accepted trade-off avoids per-link hashing
+  of large system libraries. Revisit if a real-world stale-bin report
+  lands.

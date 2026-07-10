@@ -226,6 +226,42 @@ fn rustc_externs_roundtrip() {
     assert_eq!(loaded.get_rustc_externs(&key), Some(externs));
 }
 
+/// Rustc env-dep snapshots (zccache#1021) must roundtrip, including the
+/// unset (`None`) value-hash variant.
+#[test]
+fn rustc_env_deps_roundtrip() {
+    let dir = TempDir::new().unwrap();
+    let path = test_path(&dir);
+    let graph = DepGraph::new();
+
+    let ctx = make_ctx("/src/app.rs");
+    let key = ctx.context_key();
+    graph.register_rustc_with_key_and_root_result(key, ctx, None, Vec::new(), None);
+    graph.update_with_env(
+        &key,
+        ScanResult {
+            resolved: Vec::new(),
+            unresolved: Vec::new(),
+            has_computed: false,
+        },
+        super::dummy_hash,
+        &["VERGEN_GIT_SHA".to_string(), "MAYBE_UNSET".to_string()],
+        |name| (name == "VERGEN_GIT_SHA").then(|| "abc123".to_string()),
+    );
+
+    let recorded = graph.get_rustc_env_deps(&key).expect("env deps recorded");
+    assert_eq!(recorded.len(), 2);
+
+    save_to_file(&graph, &path).unwrap();
+    let loaded = load_from_file(&path).unwrap();
+
+    assert_eq!(
+        loaded.get_rustc_env_deps(&key),
+        Some(recorded),
+        "env-dep snapshot must survive save/load"
+    );
+}
+
 /// Artifact key=None (Cold context) must roundtrip as None.
 #[test]
 fn artifact_key_none_roundtrip() {

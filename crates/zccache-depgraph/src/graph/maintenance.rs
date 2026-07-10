@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use zccache_core::NormalizedPath;
+use zccache_hash::ContentHash;
 
 use super::super::context::{CompileContext, ContextKey};
 use super::super::scanner::IncludeDirective;
@@ -116,6 +117,21 @@ impl DepGraph {
             self.rustc_externs.remove(&key);
         }
 
+        let stale_env_deps: Vec<ContextKey> = self
+            .rustc_env_deps
+            .iter()
+            .filter_map(|entry| {
+                if live_contexts.contains(entry.key()) {
+                    None
+                } else {
+                    Some(*entry.key())
+                }
+            })
+            .collect();
+        for key in stale_env_deps {
+            self.rustc_env_deps.remove(&key);
+        }
+
         // Also trim file entries not referenced by any context.
         let referenced: std::collections::HashSet<NormalizedPath> = self.contexts.iter().fold(
             std::collections::HashSet::new(),
@@ -152,6 +168,7 @@ impl DepGraph {
         self.files.clear();
         self.contexts.clear();
         self.rustc_externs.clear();
+        self.rustc_env_deps.clear();
         self.path_key_cache.clear();
         self.checks.store(0, Ordering::Relaxed);
         self.hits.store(0, Ordering::Relaxed);
@@ -221,6 +238,28 @@ impl DepGraph {
     #[must_use]
     pub fn get_rustc_externs(&self, key: &ContextKey) -> Option<Vec<(String, NormalizedPath)>> {
         self.rustc_extern_inputs(key)
+    }
+
+    /// Get the recorded rustc env-dep snapshot for a context
+    /// (zccache#1021): `(name, value_hash_at_last_compile)` pairs where
+    /// `None` = the variable was unset. Empty/absent for non-rustc
+    /// contexts and rustc crates that read no env.
+    #[must_use]
+    pub fn get_rustc_env_deps(
+        &self,
+        key: &ContextKey,
+    ) -> Option<Vec<(String, Option<ContentHash>)>> {
+        self.rustc_env_dep_inputs(key)
+    }
+
+    /// Replace the recorded rustc env-dep snapshot for a context
+    /// (zccache#1021). An empty `deps` removes the entry.
+    pub fn set_rustc_env_deps(&self, key: ContextKey, deps: Vec<(String, Option<ContentHash>)>) {
+        if deps.is_empty() {
+            self.rustc_env_deps.remove(&key);
+        } else {
+            self.rustc_env_deps.insert(key, deps);
+        }
     }
 
     /// Store scanned includes for a file (shared file node).

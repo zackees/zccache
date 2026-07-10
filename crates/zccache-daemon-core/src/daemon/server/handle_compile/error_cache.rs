@@ -50,7 +50,9 @@ pub(super) fn maybe_store_rustc_error_artifact(
         return None;
     }
 
-    let scan_result = scan_rustc_deps(rustc_args, source_path, cwd_path);
+    // Error-cache path ignores env-dep names: failed compiles are keyed
+    // conservatively and re-validated on every replay (zccache#1021).
+    let scan_result = scan_rustc_deps(rustc_args, source_path, cwd_path).scan;
     let tracked_paths: Vec<NormalizedPath> = std::iter::once(source_path.clone())
         .chain(scan_result.resolved.iter().cloned())
         .chain(ctx.force_includes.iter().cloned())
