@@ -1,6 +1,6 @@
 //! Broker-mediated connect lane for the daemon client path.
 //!
-//! Wires the frozen [`AsyncBrokerSession::adopt`] one-call recipe
+//! Wires the frozen `AsyncBrokerSession::adopt` one-call recipe
 //! (re-exported through `protocol_v2::client_compat` per zccache#782
 //! slices 25-A/25; underlying impl from running-process#433/#435)
 //! in front of zccache's direct IPC connect. `adopt` runs the Hello negotiation (service_name
@@ -25,7 +25,7 @@
 //! *connect* path is gone. The fake-backend TEST seam is retained.
 //!
 //! On the production broker lane (Unix), the live negotiated socket handed
-//! back by [`AsyncBrokerSession::into_backend_io`] is **adopted directly** as
+//! back by `AsyncBrokerSession::into_backend_io` is **adopted directly** as
 //! the data connection — no re-dial. The adopted socket is byte-identical to a
 //! fresh `connect()` stream (the broker hands back a `backend_pipe` the client
 //! dials itself), so recv timeouts and the v15/v16/FrameV1 wire lanes keep

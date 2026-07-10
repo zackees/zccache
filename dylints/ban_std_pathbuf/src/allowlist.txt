@@ -1,14 +1,14 @@
-crates/zccache/src/core/path.rs
+crates/zccache-core/src/path.rs
 # `config::volume_root` constructs a path component-by-component (Prefix +
 # RootDir) which is exactly what `PathBuf::push` is for. NormalizedPath
 # doesn't expose mutation, so the assembly stays on raw PathBuf and the
 # result is wrapped into NormalizedPath at the boundary.
-crates/zccache/src/core/config.rs
-crates/zccache/src/download_client/artifact.rs
+crates/zccache-core/src/config/mod.rs
+crates/zccache-cli-core/src/download_client/artifact/mod.rs
 crates/zccache/src/bin/zccache-download.rs
-crates/zccache/src/download_daemon/mod.rs
-crates/zccache/src/cli/mod.rs
-crates/zccache/src/cli/symbols.rs
+crates/zccache-cli-core/src/download_daemon/mod.rs
+crates/zccache-cli-core/src/cli/mod.rs
+crates/zccache-cli-core/src/cli/symbols.rs
 # The cli's `main.rs`, `python.rs`, and `snapshot_fp.rs` carry the legacy
 # clap surface plus the pyo3 bindings; migrating their `PathBuf` fields to
 # `NormalizedPath` interacts with clap's `value_parser`, pyo3's `IntoPy`
@@ -18,67 +18,76 @@ crates/zccache/src/cli/symbols.rs
 crates/zccache/src/bin/zccache.rs
 crates/zccache/src/bin/zccache-stamp.rs
 crates/zccache-cli/src/lib.rs
-crates/zccache/src/cli/snapshot_fp.rs
-crates/zccache/src/cli/commands/args.rs
-crates/zccache/src/cli/commands/cache_ops.rs
-crates/zccache/src/cli/commands/symbols.rs
-crates/zccache/src/cli/commands/wrap.rs
-crates/zccache/src/cli/defender.rs
-crates/zccache/src/cli/runtime.rs
+crates/zccache-cli-core/src/cli/snapshot_fp.rs
+crates/zccache-cli-core/src/cli/commands/args/mod.rs
+crates/zccache-cli-core/src/cli/commands/cache_ops.rs
+crates/zccache-cli-core/src/cli/commands/symbols.rs
+crates/zccache-cli-core/src/cli/commands/wrap.rs
+crates/zccache-cli-core/src/cli/defender.rs
+crates/zccache-cli-core/src/cli/runtime.rs
 # Crash, lifecycle, and defender code crosses OS process and file-system
 # boundaries. These modules still use raw paths while the normalized path
 # API is being threaded through the surrounding runtime contracts.
-crates/zccache/src/core/crash.rs
-crates/zccache/src/core/defender.rs
-crates/zccache/src/core/lifecycle.rs
+crates/zccache-core/src/crash.rs
+crates/zccache-core/src/defender.rs
+crates/zccache-core/src/lifecycle.rs
 # Daemon server still spawns child processes and hands them raw PathBuf
 # command lines; migration depends on the IPC types adopting
 # NormalizedPath end-to-end.
-crates/zccache/src/daemon/server/mod.rs
-crates/zccache/src/daemon/server/handle_exec.rs
-crates/zccache/src/daemon/server/handle_link.rs
-crates/zccache/src/daemon/server/link_helpers.rs
-crates/zccache/src/daemon/server/persist.rs
-crates/zccache/src/daemon/server/run.rs
+crates/zccache-daemon-core/src/daemon/server/mod.rs
+crates/zccache-daemon-core/src/daemon/server/handle_exec.rs
+crates/zccache-daemon-core/src/daemon/server/handle_link.rs
+crates/zccache-daemon-core/src/daemon/server/link_helpers.rs
+crates/zccache-daemon-core/src/daemon/server/persist/mod.rs
+crates/zccache-daemon-core/src/daemon/server/run.rs
 # Daemon trampoline mirrors the launch-cwd release pattern tracked by the
 # unrooted-tempdir lint and has not yet been moved to NormalizedPath.
-crates/zccache/src/daemon/trampoline.rs
+crates/zccache-daemon-core/src/daemon/trampoline.rs
 # Symbol sidecar generation manipulates adjacent dump-file paths and remains
 # on PathBuf until the symbol cache API is normalized.
-crates/zccache/src/symbols/cache.rs
+crates/zccache-symbols/src/cache.rs
 # zccache-download holds the FetchRequest archive_path / destination
 # fields as PathBuf; the download daemon serializes those over the wire,
 # so the migration is a protocol-shaped change.
-crates/zccache/src/download/mod.rs
+crates/zccache-download/src/lib.rs
 # Added 2026-06-15 — files where new PathBuf usage landed after the
 # previous allowlist snapshot. Track migration in a follow-up so the
 # lint catches *new* violations elsewhere; these files mirror the
 # existing legacy patterns and are out of scope for #762.
-crates/zccache/src/cli/commands/meson_cache.rs
-crates/zccache/src/cli/commands/service_definition.rs
-crates/zccache/src/cli/commands/wrap/diag.rs
-crates/zccache/src/cli/commands/wrap/passthrough.rs
-crates/zccache/src/daemon/server/compiler_hash.rs
-crates/zccache/src/daemon/server/handle_release_worktree_handles.rs
-crates/zccache/src/ipc/manifest.rs
-crates/zccache/src/ipc/mod.rs
+crates/zccache-cli-core/src/cli/commands/meson_cache.rs
+crates/zccache-cli-core/src/cli/commands/service_definition.rs
+crates/zccache-cli-core/src/cli/commands/wrap/diag.rs
+crates/zccache-cli-core/src/cli/commands/wrap/passthrough.rs
+crates/zccache-daemon-core/src/daemon/server/compiler_hash.rs
+crates/zccache-daemon-core/src/daemon/server/handle_release_worktree_handles.rs
+crates/zccache-ipc/src/manifest.rs
+crates/zccache-ipc/src/lib.rs
 # Added 2026-06-23 -- legacy files still visible now that the PathBuf
 # gate runs in CI again after #877. Keep these explicit so new files are
 # still caught while the remaining migrations are tracked separately.
-crates/zccache/src/cli/commands/args/mod.rs
-crates/zccache/src/cli/commands/args/subcommands.rs
-crates/zccache/src/cli/commands/cargo_registry.rs
-crates/zccache/src/cli/commands/tests/analyze.rs
-crates/zccache/src/cli/commands/tests/warm_lockfile.rs
-crates/zccache/src/core/config/resolve.rs
-crates/zccache/src/daemon/server/persist/artifact_io.rs
-crates/zccache/src/daemon/server/persist/pack.rs
-crates/zccache/src/daemon/server/persist/tests.rs
-crates/zccache/src/daemon/server/tests/deferred_cold_path.rs
-crates/zccache/src/daemon/server/tests/link_cache.rs
-crates/zccache/src/depgraph/snapshot/tests/behavioral.rs
-crates/zccache/src/download_client/artifact/archive.rs
-crates/zccache/src/download_client/artifact/hashing.rs
-crates/zccache/src/download_client/artifact/lock.rs
-crates/zccache/src/download_client/artifact/marker.rs
-crates/zccache/src/fscache/verify.rs
+crates/zccache-cli-core/src/cli/commands/args/mod.rs
+crates/zccache-cli-core/src/cli/commands/args/subcommands.rs
+crates/zccache-cli-core/src/cli/commands/cargo_registry.rs
+crates/zccache-cli-core/src/cli/commands/tests/analyze.rs
+crates/zccache-cli-core/src/cli/commands/tests/warm_lockfile.rs
+crates/zccache-core/src/config/resolve.rs
+crates/zccache-daemon-core/src/daemon/server/persist/artifact_io.rs
+crates/zccache-daemon-core/src/daemon/server/persist/pack.rs
+crates/zccache-daemon-core/src/daemon/server/persist/tests.rs
+crates/zccache-daemon-core/src/daemon/server/tests/deferred_cold_path.rs
+crates/zccache-daemon-core/src/daemon/server/tests/link_cache.rs
+crates/zccache-depgraph/src/snapshot/tests/behavioral.rs
+crates/zccache-cli-core/src/download_client/artifact/archive.rs
+crates/zccache-cli-core/src/download_client/artifact/hashing.rs
+crates/zccache-cli-core/src/download_client/artifact/lock.rs
+crates/zccache-cli-core/src/download_client/artifact/marker.rs
+crates/zccache-fscache/src/verify.rs
+# Post-crate-split additions (issue #1025). These carried PathBuf boundary
+# code from before the gate existed but were masked while the Dylint job
+# failed fast on the stale entries above; migrate to NormalizedPath and
+# remove from this list as the runtime contracts allow.
+crates/zccache-compile-trace/src/lib.rs
+crates/zccache-daemon-core/src/audit_writer.rs
+crates/zccache-daemon-core/src/daemon/server/handle_compile_ephemeral.rs
+crates/zccache-daemon-core/src/embedded.rs
+crates/zccache-watcher/src/python.rs

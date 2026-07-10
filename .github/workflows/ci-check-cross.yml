@@ -67,6 +67,21 @@ jobs:
         run: |
           soldr rustup target remove ${{ inputs.target }} || true
           soldr rustup target add ${{ inputs.target }}
+          # The setup-soldr-restored RUSTUP_HOME cache can carry a corrupted
+          # rust-std component (observed 2026-07-10 on linux-arm-musl:
+          # "could not read component file: .../manifest-rust-std-..." then
+          # "can't find crate for `std`"). `target add` no-ops on the broken
+          # install, so probe std resolution and force a component
+          # reinstall once before giving up (issue #1025).
+          echo 'fn main() {}' > /tmp/std_probe.rs
+          if ! soldr rustc --target ${{ inputs.target }} --emit=metadata \
+              --out-dir /tmp /tmp/std_probe.rs; then
+            echo "rust-std for ${{ inputs.target }} is corrupt in the cached toolchain — reinstalling"
+            soldr rustup component remove "rust-std-${{ inputs.target }}" || true
+            soldr rustup target add ${{ inputs.target }}
+            soldr rustc --target ${{ inputs.target }} --emit=metadata \
+              --out-dir /tmp /tmp/std_probe.rs
+          fi
       - name: Check
         shell: bash
         run: |

@@ -53,7 +53,15 @@ jobs:
         run: |
           unset ZCCACHE_CACHE_DIR
           echo "Using isolated coverage SOLDR_CACHE_DIR=$SOLDR_CACHE_DIR"
-          soldr cargo llvm-cov --workspace --lcov --output-path lcov.info
+          # --lib --bins matches ci-check.yml's test scope. The integration
+          # tests under crates/*/tests spawn helper binaries via
+          # env!("CARGO_BIN_EXE_*"); cargo never builds required-features
+          # bins for `cargo test`, so under llvm-cov's separate target dir
+          # (target/llvm-cov-target) those spawns fail with NotFound
+          # (issue #1025: cli_cache_root broke Coverage on every push since
+          # 2026-07-07). Spawned children wouldn't contribute coverage
+          # anyway — scope to in-process unit tests.
+          soldr cargo llvm-cov --workspace --lib --bins --lcov --output-path lcov.info
       - name: Stop isolated coverage cache
         if: always()
         shell: bash

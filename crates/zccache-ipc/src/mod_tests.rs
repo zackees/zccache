@@ -532,12 +532,28 @@ fn daemon_namespace_moves_endpoint_and_lock_file() {
         cache_dir.clone(),
     ));
     #[cfg(unix)]
-    assert_eq!(
-        endpoint,
-        eff.join(format!("daemon-soldr-dev-{v}.sock"))
+    {
+        // Mirror `endpoint_for_cache_dir`: long tempdirs (macOS
+        // `/var/folders/...`) push the direct socket path past the portable
+        // AF_UNIX budget, so the endpoint falls back to the compact `/tmp`
+        // form that still folds in cache identity, namespace, and version
+        // (issue #1025 — macOS CI red).
+        let direct = eff
+            .join(format!("daemon-soldr-dev-{v}.sock"))
             .to_string_lossy()
-            .into_owned()
-    );
+            .into_owned();
+        if direct.len() <= MAX_PORTABLE_UNIX_SOCKET_PATH_BYTES {
+            assert_eq!(endpoint, direct);
+        } else {
+            assert_eq!(
+                endpoint,
+                format!(
+                    "/tmp/zccache-{}-daemon-soldr-dev-{v}.sock",
+                    zccache_core::stable_path_id(eff.as_path())
+                )
+            );
+        }
+    }
     #[cfg(windows)]
     {
         assert!(endpoint.starts_with(r"\\.\pipe\zccache-"));
