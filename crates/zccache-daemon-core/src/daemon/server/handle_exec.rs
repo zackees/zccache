@@ -357,6 +357,17 @@ pub(super) async fn handle_generic_tool_exec(
         Vec::new()
     });
 
+    if staged_plan.is_some() && exit_code != 0 {
+        return Response::GenericToolExecResult {
+            exit_code,
+            stdout,
+            stderr,
+            output_files: Vec::new(),
+            cached: false,
+            cache_key_hex: full_hex,
+        };
+    }
+
     // 10. Snapshot declared output files. A missing declared file marks the
     //     run uncacheable — the next request can't replay something we
     //     never captured.
