@@ -55,10 +55,7 @@ fn complete_cargo_closure_avoids_unreported_target_files() {
 
     let saved = save_rust_plan_local(&plan, &cache).unwrap();
     assert_eq!(saved.saved_file_count, 2);
-    let manifest = load_manifest(&rust_plan_bundle_dir(
-        &cache,
-        &rust_plan_cache_key(&plan),
-    ));
+    let manifest = load_manifest(&rust_plan_bundle_dir(&cache, &rust_plan_cache_key(&plan)));
     assert!(manifest
         .artifacts
         .iter()
