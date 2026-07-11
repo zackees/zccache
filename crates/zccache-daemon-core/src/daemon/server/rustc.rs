@@ -366,12 +366,24 @@ pub(super) fn rustc_expected_output_paths(
     primary_output_path: &Path,
     cwd: &Path,
 ) -> Vec<NormalizedPath> {
-    let mut paths = vec![NormalizedPath::new(primary_output_path)];
+    let explicit_link = rustc_args
+        .explicit_emit_paths
+        .iter()
+        .find(|(kind, _)| kind == "link")
+        .map(|(_, path)| path.clone());
+    let mut paths = vec![explicit_link.unwrap_or_else(|| NormalizedPath::new(primary_output_path))];
     let crate_name = rustc_args.crate_name.as_deref().unwrap_or("unknown");
     let ext_suffix = rustc_args.extra_filename.as_deref().unwrap_or("");
     let dir = rustc_args.out_dir.as_deref().unwrap_or(cwd);
 
     for emit_type in &rustc_args.emit_types {
+        if rustc_args
+            .explicit_emit_paths
+            .iter()
+            .any(|(kind, _)| kind == emit_type)
+        {
+            continue;
+        }
         let candidate = match emit_type.as_str() {
             "metadata" => Some(dir.join(format!("lib{crate_name}{ext_suffix}.rmeta"))),
             "link" => Some(dir.join(format!("lib{crate_name}{ext_suffix}.rlib"))),

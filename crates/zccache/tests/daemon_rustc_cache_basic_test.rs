@@ -435,6 +435,69 @@ async fn test_rustc_multi_output_cached() {
     .await;
 }
 
+/// Explicit per-output `--emit` paths must be staged on a miss and restored to
+/// those same paths on a hit. This exercises the reverse mapping independently
+/// of Cargo's conventional output names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore] // integration-level: starts real daemon with IPC + rustc
+async fn test_rustc_explicit_emit_paths_cached() {
+    let rustc = match zccache::test_support::find_rustc() {
+        Some(p) => p,
+        None => return,
+    };
+
+    zccache::test_support::test_timeout(async move {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("lib.rs");
+        let out_dir = tmp.path().join("custom");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        std::fs::write(&src, "pub fn explicit() -> i32 { 7 }\n").unwrap();
+
+        let link = out_dir.join("chosen.rlib");
+        let dep = out_dir.join("chosen.d");
+        let emit = format!("--emit=link={},dep-info={}", link.display(), dep.display());
+        let rustc_str = rustc.to_string_lossy().to_string();
+        let src_str = src.to_string_lossy().to_string();
+        let args = [
+            "--crate-type",
+            "lib",
+            "--crate-name",
+            "explicit",
+            emit.as_str(),
+            src_str.as_str(),
+        ];
+
+        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
+        let session_id = start_session(&mut client).await;
+
+        let (exit_code, cached) =
+            compile(&mut client, &session_id, &rustc_str, &args, tmp.path()).await;
+        assert_eq!(exit_code, 0);
+        assert!(!cached);
+        assert!(link.is_file(), "explicit link output missing");
+        assert!(dep.is_file(), "explicit dep-info output missing");
+        assert!(!std::fs::read_to_string(&dep)
+            .unwrap()
+            .contains(".staged-v2"));
+        let link_bytes = std::fs::read(&link).unwrap();
+        let dep_bytes = std::fs::read(&dep).unwrap();
+        std::fs::remove_file(&link).unwrap();
+        std::fs::remove_file(&dep).unwrap();
+
+        let (exit_code, cached) =
+            compile(&mut client, &session_id, &rustc_str, &args, tmp.path()).await;
+        assert_eq!(exit_code, 0);
+        assert!(cached);
+        assert_eq!(std::fs::read(&link).unwrap(), link_bytes);
+        assert_eq!(std::fs::read(&dep).unwrap(), dep_bytes);
+
+        shutdown.notify_one();
+        server_handle.await.unwrap();
+    })
+    .await;
+}
+
 /// Test check-style metadata can reuse a prior build-style metadata+link artifact.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration-level: starts real daemon with IPC + rustc

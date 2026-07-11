@@ -312,7 +312,7 @@ fn rustc_explicit_emit_link_path_is_the_primary_output() {
             "lib",
             "--crate-name",
             "hello",
-            "--emit=link=C:/tmp/custom.rlib,dep-info=C:/tmp/custom.d",
+            r"--emit=link=C:\tmp\custom.rlib,dep-info=C:\tmp\custom.d",
             "lib.rs",
         ]),
     );
