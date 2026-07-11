@@ -67,17 +67,18 @@ impl FsFixture {
     }
 
     pub fn refs_vhdx() -> FixtureResult {
-        // ReFS's checksummed metadata/integrity streams are sized
-        // proportionally to the volume's *declared* capacity even under
-        // `format ... quick` (unlike FAT32/exFAT/NTFS, whose format
-        // footprint stays small regardless of the declared maximum). CI
-        // runners intermittently failed `diskpart create vdisk` for this
-        // row alone with "not enough space on the disk" at maximum=1024
-        // while the other windows_vhd rows (same 1024 MB ceiling, non-ReFS)
-        // consistently succeeded. Halving the ceiling reduces that
-        // metadata footprint while staying well above ReFS's minimum
-        // volume size.
-        windows_vhd_sized("refs-vhdx", "refs", 512)
+        // A 512 MB ceiling was tried to reduce ReFS's metadata footprint
+        // (its checksummed integrity streams scale with declared capacity
+        // even under `format ... quick`) but empirically triggered VDS's
+        // own "The volume size is too small" error — 1024 MB is below
+        // that failure's boundary and is the size known to pass ReFS's
+        // format step; the earlier intermittent "not enough space on the
+        // disk" failures at this same 1024 MB size are CI-runner-level
+        // VDS/diskpart flakiness (real free space was confirmed plentiful
+        // — 32+ GB on C:, 143+ GB on D: — in a run that still failed),
+        // mitigated by the retry loop wrapping this step in fs-matrix.yml
+        // rather than by changing the declared size further.
+        windows_vhd_sized("refs-vhdx", "refs", 1024)
     }
 
     pub fn fat32_vhdx() -> FixtureResult {
