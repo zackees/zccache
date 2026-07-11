@@ -546,13 +546,29 @@ pub(in crate::daemon::server) fn cleanup_staged_artifact_temps(
             continue;
         }
         if path.is_dir() {
+            let key = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned());
+            let current = key
+                .as_deref()
+                .and_then(|key| {
+                    fs::read_to_string(root.join(format!("{key}.current")).as_path()).ok()
+                })
+                .map(|value| value.trim().to_string());
             for child in fs::read_dir(&path)?.flatten() {
                 let child_path = child.path();
-                if child_path
+                let child_name = child_path
                     .file_name()
-                    .is_some_and(|name| name.to_string_lossy().starts_with(".tmp-"))
-                {
-                    fs::remove_dir_all(child_path)?;
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let remove = child_name.starts_with(".tmp-")
+                    || (child_path.is_dir() && current.as_deref() != Some(child_name.as_str()));
+                if remove {
+                    if child_path.is_dir() {
+                        fs::remove_dir_all(child_path)?;
+                    } else {
+                        fs::remove_file(child_path)?;
+                    }
                     removed += 1;
                 }
             }
@@ -694,10 +710,19 @@ mod tests {
         fs::create_dir_all(&key_root).unwrap();
         fs::create_dir(key_root.join(".tmp-crashed")).unwrap();
         fs::create_dir(key_root.join("stable-generation")).unwrap();
+        fs::create_dir(key_root.join("orphan-generation")).unwrap();
+        fs::write(
+            artifact_dir
+                .join(STAGED_ROOT)
+                .join(format!("{}.current", "d".repeat(64))),
+            "stable-generation",
+        )
+        .unwrap();
 
-        assert_eq!(cleanup_staged_artifact_temps(&artifact_dir).unwrap(), 1);
+        assert_eq!(cleanup_staged_artifact_temps(&artifact_dir).unwrap(), 2);
         assert!(!key_root.join(".tmp-crashed").exists());
         assert!(key_root.join("stable-generation").exists());
+        assert!(!key_root.join("orphan-generation").exists());
     }
 
     #[test]
