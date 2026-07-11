@@ -55,28 +55,37 @@ fn materialize_cached_file(out_path: &Path, cache_file: &Path) -> std::io::Resul
         let registration = prepare_hardlink_registration(cache_file, out_path)?;
         match std::fs::hard_link(cache_file, out_path) {
             Ok(()) => {
-                set_readonly(cache_file, readonly_enabled())?;
-                match commit_hardlink_registration(registration, out_path) {
-                    Ok(()) => {
-                        touch_mtime(out_path);
-                        return Ok(());
-                    }
-                    Err(error) => {
-                        // A failure here (including a transient stat/handle
-                        // error resolving the just-created link's identity)
-                        // must not become a hard failure of the whole
-                        // materialization — fall back to a copy the same
-                        // way a failed std::fs::hard_link already does
-                        // (issue #1042).
-                        tracing::warn!(
-                            event = "cow_hardlink_registration_commit_failed",
-                            cache_file = %cache_file.display(),
-                            out_path = %out_path.display(),
-                            error = %error,
-                            "hardlink registration commit failed after a successful hardlink; falling back to copy"
-                        );
-                        let _ = make_writable(out_path);
-                        let _ = remove_output_file(out_path);
+                if let Err(error) = set_readonly(cache_file, readonly_enabled()) {
+                    tracing::warn!(
+                        event = "cow_hardlink_readonly_failed",
+                        cache_file = %cache_file.display(),
+                        out_path = %out_path.display(),
+                        error = %error,
+                        "hardlink protection failed after creation; falling back to copy"
+                    );
+                    let _ = cleanup_failed_hardlink(registration, cache_file, out_path);
+                } else {
+                    match commit_hardlink_registration(registration, out_path) {
+                        Ok(()) => {
+                            touch_mtime(out_path);
+                            return Ok(());
+                        }
+                        Err(error) => {
+                            // A failure here (including a transient stat/handle
+                            // error resolving the just-created link's identity)
+                            // must not become a hard failure of the whole
+                            // materialization — fall back to a copy the same
+                            // way a failed std::fs::hard_link already does
+                            // (issue #1042).
+                            tracing::warn!(
+                                event = "cow_hardlink_registration_commit_failed",
+                                cache_file = %cache_file.display(),
+                                out_path = %out_path.display(),
+                                error = %error,
+                                "hardlink registration commit failed after a successful hardlink; falling back to copy"
+                            );
+                            let _ = cleanup_failed_hardlink(registration, cache_file, out_path);
+                        }
                     }
                 }
             }
@@ -89,6 +98,7 @@ fn materialize_cached_file(out_path: &Path, cache_file: &Path) -> std::io::Resul
                     "hardlink materialization failed despite capability probe; falling back to copy"
                 );
                 cancel_hardlink_registration(registration, out_path);
+                commit_registered_detach(registration, out_path);
             }
         }
     }
@@ -97,6 +107,36 @@ fn materialize_cached_file(out_path: &Path, cache_file: &Path) -> std::io::Resul
     restore_cache_mtime(cache_file, out_path)?;
     touch_mtime(out_path);
     Ok(())
+}
+
+fn cleanup_failed_hardlink(
+    registration: FileId,
+    cache_file: &Path,
+    out_path: &Path,
+) -> std::io::Result<()> {
+    cancel_hardlink_registration(registration, out_path);
+
+    let removed = match make_writable(out_path) {
+        Ok(()) => remove_output_file(out_path),
+        Err(error) => Err(error),
+    }
+    .or_else(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    });
+    if removed.is_ok() {
+        commit_registered_detach(registration, out_path);
+    }
+    let restored = if removed.is_ok() {
+        set_readonly(cache_file, readonly_enabled())
+    } else {
+        Ok(())
+    };
+
+    removed.and(restored)
 }
 
 /// `out_path` IS `cache_file` here (same inode, already hardlinked from a

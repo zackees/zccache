@@ -254,51 +254,140 @@ fn restore_manifest_artifacts(
         }
     }
 
-    for artifact in &manifest.artifacts {
-        let src = match safe_join(&files_dir, &artifact.relative_path) {
-            Ok(path) => path,
-            Err(err) => {
-                summary.skip(&artifact.relative_path, "path_traversal");
-                summary.compatibility.errors.push(err.to_string());
-                continue;
+    let verify_blake3 = restore_verify_blake3_enabled();
+    let threads = resolve_rust_plan_tar_threads();
+    let outcomes = if threads <= 1 || manifest.artifacts.len() < 2 {
+        manifest
+            .artifacts
+            .iter()
+            .map(|artifact| restore_one_artifact(plan, &files_dir, artifact, verify_blake3))
+            .collect::<Vec<_>>()
+    } else {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .thread_name(|idx| format!("zccache-rust-plan-{idx}"))
+            .build()
+            .map_err(|err| {
+                RustPlanError::Io(std::io::Error::other(format!(
+                    "failed to build rust-plan thread pool: {err}"
+                )))
+            })?;
+        pool.install(|| {
+            manifest
+                .artifacts
+                .par_iter()
+                .map(|artifact| {
+                    restore_one_artifact(plan, &files_dir, artifact, verify_blake3)
+                })
+                .collect()
+        })
+    };
+
+    // Rayon preserves the input order when collecting, so merging here keeps
+    // counts, error ordering, and the bounded skip sample deterministic.
+    for outcome in outcomes {
+        match outcome {
+            RestoreArtifactOutcome::Restored { bytes } => {
+                summary.restored_file_count += 1;
+                summary.restored_bytes += bytes;
             }
-        };
-        let dst = match safe_join(plan.target_dir.as_path(), &artifact.relative_path) {
-            Ok(path) => path,
-            Err(err) => {
-                summary.skip(&artifact.relative_path, "path_traversal");
-                summary.compatibility.errors.push(err.to_string());
-                continue;
+            RestoreArtifactOutcome::Skipped { path, reason, error } => {
+                summary.skip(path, reason);
+                if let Some(error) = error {
+                    summary.compatibility.errors.push(error);
+                }
             }
-        };
-        let Ok(metadata) = std::fs::metadata(&src) else {
-            summary.skip(
-                &artifact.relative_path,
-                "restored_payload_missing_or_corrupt",
-            );
-            continue;
-        };
-        if metadata.len() != artifact.size {
-            summary.skip(
-                &artifact.relative_path,
-                "restored_payload_missing_or_corrupt",
-            );
-            continue;
+            RestoreArtifactOutcome::Error { path, error } => {
+                summary.compatibility.status = "warning".to_string();
+                summary.compatibility.errors.push(format!("{path}: {error}"));
+            }
         }
+    }
+
+    Ok(())
+}
+
+const RESTORE_VERIFY_BLAKE3_ENV: &str = "ZCCACHE_RUST_PLAN_RESTORE_VERIFY_BLAKE3";
+
+fn restore_verify_blake3_enabled() -> bool {
+    std::env::var(RESTORE_VERIFY_BLAKE3_ENV)
+        .ok()
+        .is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+}
+
+enum RestoreArtifactOutcome {
+    Restored {
+        bytes: u64,
+    },
+    Skipped {
+        path: String,
+        reason: &'static str,
+        error: Option<String>,
+    },
+    Error {
+        path: String,
+        error: String,
+    },
+}
+
+fn restore_one_artifact(
+    plan: &RustArtifactPlanV1,
+    files_dir: &Path,
+    artifact: &RustBundledArtifact,
+    verify_blake3: bool,
+) -> RestoreArtifactOutcome {
+    let path = artifact.relative_path.clone();
+    let src = match safe_join(files_dir, &path) {
+        Ok(path) => path,
+        Err(err) => {
+            return RestoreArtifactOutcome::Skipped {
+                path,
+                reason: "path_traversal",
+                error: Some(err.to_string()),
+            };
+        }
+    };
+    let dst = match safe_join(plan.target_dir.as_path(), &path) {
+        Ok(path) => path,
+        Err(err) => {
+            return RestoreArtifactOutcome::Skipped {
+                path,
+                reason: "path_traversal",
+                error: Some(err.to_string()),
+            };
+        }
+    };
+    let Ok(metadata) = std::fs::metadata(&src) else {
+        return RestoreArtifactOutcome::Skipped {
+            path,
+            reason: "restored_payload_missing_or_corrupt",
+            error: None,
+        };
+    };
+    if metadata.len() != artifact.size {
+        return RestoreArtifactOutcome::Skipped {
+            path,
+            reason: "restored_payload_missing_or_corrupt",
+            error: None,
+        };
+    }
+    if verify_blake3 {
         let Ok(content_hash) = zccache_hash::hash_file(&src).map(|hash| hash.to_hex()) else {
-            summary.skip(
-                &artifact.relative_path,
-                "restored_payload_missing_or_corrupt",
-            );
-            continue;
+            return RestoreArtifactOutcome::Skipped {
+                path,
+                reason: "restored_payload_missing_or_corrupt",
+                error: None,
+            };
         };
         if content_hash != artifact.content_hash {
-            summary.skip(
-                &artifact.relative_path,
-                "restored_payload_missing_or_corrupt",
-            );
-            continue;
+            return RestoreArtifactOutcome::Skipped {
+                path,
+                reason: "restored_payload_missing_or_corrupt",
+                error: None,
+            };
         }
+    }
+    let result = (|| -> std::io::Result<()> {
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -317,11 +406,17 @@ fn restore_manifest_artifacts(
                 .set_modified(modified);
             let _ = file.set_times(file_times);
         }
-        summary.restored_file_count += 1;
-        summary.restored_bytes += artifact.size;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => RestoreArtifactOutcome::Restored {
+            bytes: artifact.size,
+        },
+        Err(error) => RestoreArtifactOutcome::Error {
+            path,
+            error: error.to_string(),
+        },
     }
-
-    Ok(())
 }
 pub fn save_rust_plan_delta_local(
     plan: &RustArtifactPlanV1,

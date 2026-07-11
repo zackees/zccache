@@ -5,9 +5,51 @@
 use super::super::*;
 use super::{load_manifest, sample_plan, synthetic_target, write_manifest};
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
+const FULL_VERIFY_ENV: &str = "ZCCACHE_RUST_PLAN_RESTORE_VERIFY_BLAKE3";
+
+#[allow(clippy::permissions_set_readonly_false)]
+fn make_writable_for_test(path: &Path) {
+    let mut permissions = std::fs::metadata(path).unwrap().permissions();
+    permissions.set_readonly(false);
+    std::fs::set_permissions(path, permissions).unwrap();
+}
+
+static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+struct FullVerifyEnvGuard {
+    _lock: MutexGuard<'static, ()>,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl FullVerifyEnvGuard {
+    fn enable() -> Self {
+        let lock = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::var_os(FULL_VERIFY_ENV);
+        std::env::set_var(FULL_VERIFY_ENV, "1");
+        Self {
+            _lock: lock,
+            previous,
+        }
+    }
+}
+
+impl Drop for FullVerifyEnvGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(FULL_VERIFY_ENV, value),
+            None => std::env::remove_var(FULL_VERIFY_ENV),
+        }
+    }
+}
 
 #[test]
 fn restore_skips_missing_wrong_size_and_wrong_hash_payloads() {
+    let _verify = FullVerifyEnvGuard::enable();
     let dir = tempfile::tempdir().unwrap();
     synthetic_target(dir.path());
     let plan = sample_plan(dir.path(), RustPlanMode::Thin);
@@ -44,6 +86,40 @@ fn restore_skips_missing_wrong_size_and_wrong_hash_payloads() {
             .miss_classifications
             .get("restored_payload_missing_or_corrupt"),
         Some(&3)
+    );
+    assert!(!plan
+        .target_dir
+        .join("debug/deps/libserde-abc.rlib")
+        .exists());
+}
+
+#[test]
+fn restore_rejects_corrupted_payload_when_full_verification_is_enabled() {
+    let _verify = FullVerifyEnvGuard::enable();
+    let dir = tempfile::tempdir().unwrap();
+    synthetic_target(dir.path());
+    let plan = sample_plan(dir.path(), RustPlanMode::Thin);
+    let cache = dir.path().join("cache");
+
+    save_rust_plan_local(&plan, &cache).unwrap();
+    let bundle_dir = rust_plan_bundle_dir(&cache, &rust_plan_cache_key(&plan));
+    let payload = bundle_dir
+        .join(BUNDLE_FILES_DIR)
+        .join("debug/deps/libserde-abc.rlib");
+    make_writable_for_test(&payload);
+    let mut bytes = std::fs::read(&payload).unwrap();
+    bytes[0] ^= 0xff;
+    std::fs::write(&payload, bytes).unwrap();
+
+    std::fs::remove_dir_all(plan.target_dir.as_path()).unwrap();
+    let restored = restore_rust_plan_local(&plan, &cache).unwrap();
+
+    assert_eq!(restored.restored_file_count, 5);
+    assert_eq!(
+        restored
+            .skipped_reasons
+            .get("restored_payload_missing_or_corrupt"),
+        Some(&1)
     );
     assert!(!plan
         .target_dir

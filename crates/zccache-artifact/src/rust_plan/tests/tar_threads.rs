@@ -3,6 +3,40 @@
 
 use super::super::*;
 use super::{sample_plan, synthetic_target};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
+const THREADS_ENV: &str = "ZCCACHE_RUST_PLAN_TAR_THREADS";
+
+static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+struct ThreadsEnvGuard {
+    _lock: MutexGuard<'static, ()>,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl ThreadsEnvGuard {
+    fn set(threads: &str) -> Self {
+        let lock = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::var_os(THREADS_ENV);
+        std::env::set_var(THREADS_ENV, threads);
+        Self {
+            _lock: lock,
+            previous,
+        }
+    }
+}
+
+impl Drop for ThreadsEnvGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(THREADS_ENV, value),
+            None => std::env::remove_var(THREADS_ENV),
+        }
+    }
+}
 
 #[test]
 fn tar_threads_parser_accepts_grammar_from_soldr_273() {
@@ -71,4 +105,32 @@ fn parallel_bundling_matches_sequential_byte_for_byte() {
         assert_eq!(seq.content_hash, par.content_hash);
         assert_eq!(seq.class, par.class);
     }
+}
+
+#[test]
+fn parallel_bundle_payloads_restore_correctly() {
+    let _threads = ThreadsEnvGuard::set("4");
+    let dir = tempfile::tempdir().unwrap();
+    synthetic_target(dir.path());
+    let plan = sample_plan(dir.path(), RustPlanMode::Thin);
+    let cache = dir.path().join("cache");
+
+    save_rust_plan_local(&plan, &cache).unwrap();
+
+    std::fs::remove_dir_all(plan.target_dir.as_path()).unwrap();
+    let restored = restore_rust_plan_local(&plan, &cache).unwrap();
+
+    assert_eq!(restored.restored_file_count, 6);
+    assert_eq!(
+        std::fs::read(plan.target_dir.join("debug/deps/libserde-abc.rlib")).unwrap(),
+        b"serde rlib"
+    );
+    assert_eq!(
+        std::fs::read(
+            plan.target_dir
+                .join("debug/.fingerprint/serde-abc/dep-lib-serde")
+        )
+        .unwrap(),
+        b"fingerprint"
+    );
 }

@@ -50,12 +50,6 @@ fn digest_path(blob_path: &Path) -> PathBuf {
         .join(sidecar_name)
 }
 
-pub(in crate::daemon::server) fn write_authoritative_blob_digest(
-    blob_path: &Path,
-) -> std::io::Result<()> {
-    write_authoritative_blob_digest_for(blob_path, blob_path)
-}
-
 /// Writes the digest sidecar keyed by `named_as`'s digest path, but hashes
 /// `hash_source`'s bytes. Lets a caller compute and persist the digest for a
 /// blob's *final* resting name while its bytes are still at a private tmp
@@ -66,7 +60,126 @@ pub(in crate::daemon::server) fn write_authoritative_blob_digest_for(
     hash_source: &Path,
     named_as: &Path,
 ) -> std::io::Result<()> {
-    std::fs::write(digest_path(named_as), hash_file(hash_source)?)
+    write_authoritative_blob_digest_for_with_cleanup(hash_source, named_as).map(|digest| {
+        digest.commit();
+    })
+}
+
+#[cfg(test)]
+pub(in crate::daemon::server) fn write_authoritative_blob_digest(
+    blob_path: &Path,
+) -> std::io::Result<()> {
+    write_authoritative_blob_digest_for(blob_path, blob_path)
+}
+
+/// Owns the digest sidecar published by one artifact-write attempt.
+///
+/// Dropping an uncommitted guard removes only the sidecar installed by that
+/// attempt. This lets artifact_io clean up after a later blob-rename failure
+/// without deleting a sidecar that existed before the attempt started.
+pub(in crate::daemon::server) struct AuthoritativeBlobDigest {
+    path: Option<PathBuf>,
+    digest: [u8; 32],
+}
+
+impl AuthoritativeBlobDigest {
+    /// Keep the sidecar after its blob has been published successfully.
+    pub(in crate::daemon::server) fn commit(mut self) {
+        self.path = None;
+    }
+}
+
+impl Drop for AuthoritativeBlobDigest {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let matches = std::fs::read(&path)
+                .map(|bytes| bytes.as_slice() == self.digest.as_slice())
+                .unwrap_or(false);
+            if matches {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+}
+
+/// Writes and atomically publishes an authoritative digest sidecar, returning
+/// an ownership guard for cleanup if the subsequent blob publication fails.
+/// The final sidecar is never opened for writing, so a partial write cannot
+/// truncate an existing valid sidecar.
+pub(in crate::daemon::server) fn write_authoritative_blob_digest_for_with_cleanup(
+    hash_source: &Path,
+    named_as: &Path,
+) -> std::io::Result<AuthoritativeBlobDigest> {
+    use std::io::Write;
+
+    let digest = hash_file(hash_source)?;
+    let final_path = digest_path(named_as);
+
+    // `create_new` prevents two writers from sharing a temporary file. A
+    // retry also handles a stale file left by an interrupted prior attempt
+    // (including a reused process id) without falling back to the final path.
+    let (temp_path, result) = loop {
+        let counter = ARTIFACT_PERSIST_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let temp_path = final_path.with_file_name(format!(
+            ".{}.tmp-{}-{}",
+            final_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
+            std::process::id(),
+            counter
+        ));
+        let mut temp = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(temp) => temp,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        let result = (|| {
+            temp.write_all(&digest)?;
+            temp.sync_all()?;
+            drop(temp);
+            replace_digest_sidecar(&temp_path, &final_path)
+        })();
+        break (temp_path, result);
+    };
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    Ok(AuthoritativeBlobDigest {
+        path: Some(final_path),
+        digest,
+    })
+}
+
+#[cfg(not(windows))]
+fn replace_digest_sidecar(temp_path: &Path, final_path: &Path) -> std::io::Result<()> {
+    std::fs::rename(temp_path, final_path)
+}
+
+#[cfg(windows)]
+fn replace_digest_sidecar(temp_path: &Path, final_path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING};
+
+    let temp = temp_path.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+    let final_path = final_path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    // SAFETY: Both buffers are NUL-terminated UTF-16 strings that remain
+    // alive for the duration of the call.
+    if unsafe { MoveFileExW(temp.as_ptr(), final_path.as_ptr(), MOVEFILE_REPLACE_EXISTING) } == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 /// Best-effort cleanup of a blob's digest sidecar. Used when a publish
