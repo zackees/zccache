@@ -12,7 +12,12 @@ use super::passthrough::run_tool_direct;
 /// Files whose content hash is already in the format cache are skipped entirely,
 /// preserving their mtime and avoiding unnecessary downstream rebuilds. After
 /// formatting, the new content hash of each file is stored in the cache.
-pub(super) fn run_rustfmt_cached(rustfmt_path: &Path, args: &[String], cwd: &Path) -> ExitCode {
+pub(super) fn run_rustfmt_cached(
+    rustfmt_path: &Path,
+    args: &[String],
+    cwd: &Path,
+    cache_root: Option<&Path>,
+) -> ExitCode {
     use crate::compiler::parse_rustfmt::{find_rustfmt_config, parse_rustfmt_invocation};
 
     let parsed = match parse_rustfmt_invocation(args) {
@@ -53,7 +58,9 @@ pub(super) fn run_rustfmt_cached(rustfmt_path: &Path, args: &[String], cwd: &Pat
         hasher.finalize().to_hex()
     };
 
-    let cache_dir = crate::core::config::default_cache_dir()
+    let cache_dir = cache_root
+        .map(crate::core::NormalizedPath::new)
+        .unwrap_or_else(crate::core::config::default_cache_dir)
         .join("fmt")
         .join(&context_hash);
 

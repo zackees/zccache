@@ -39,6 +39,17 @@ use args::{
 };
 use util::{absolute_path, init_tracing, resolve_endpoint, run_async};
 
+/// Run rustfmt through zccache's format cache without entering the standalone
+/// CLI or daemon lifecycle. Embedders provide their managed cache root.
+pub fn run_embedded_rustfmt(
+    rustfmt_path: &Path,
+    args: &[String],
+    cwd: &Path,
+    cache_root: &Path,
+) -> ExitCode {
+    wrap::run_embedded_rustfmt(rustfmt_path, args, cwd, cache_root)
+}
+
 /// Parse argv, run the requested subcommand or wrapper path, and return
 /// the process exit code.
 pub fn run() -> ExitCode {

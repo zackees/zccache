@@ -62,7 +62,9 @@ pub(crate) fn run_wrap(
     let _ = std::env::set_current_dir(std::env::temp_dir());
 
     match routing::classify_invocation(&args[0], &tool_args) {
-        WrapperRoute::Formatter => rustfmt::run_rustfmt_cached(&wrapped_tool, &tool_args, &cwd),
+        WrapperRoute::Formatter => {
+            rustfmt::run_rustfmt_cached(&wrapped_tool, &tool_args, &cwd, None)
+        }
         WrapperRoute::LinkOrArchive => run_async(ipc::cmd_link_ephemeral(
             &endpoint,
             &wrapped_tool,
@@ -81,6 +83,15 @@ pub(crate) fn run_wrap(
             client_env,
         ),
     }
+}
+
+pub(crate) fn run_embedded_rustfmt(
+    rustfmt_path: &std::path::Path,
+    args: &[String],
+    cwd: &std::path::Path,
+    cache_root: &std::path::Path,
+) -> ExitCode {
+    rustfmt::run_rustfmt_cached(rustfmt_path, args, cwd, Some(cache_root))
 }
 
 fn run_compile_route(
