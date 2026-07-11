@@ -50,14 +50,15 @@ jobs:
         # unrelated to this test's own logic (every other row passes
         # consistently). Retry the whole (fast, <30s) matrix run a few times
         # before failing the job, rather than requiring a manual rerun.
-        run: >-
+        run: |-
           for attempt in 1 2 3; do
-            soldr cargo test -p zccache-daemon-core --features test-support
-            filesystem_materialization_matrix_prints_loud_summary -- --nocapture --test-threads=1
-            && exit 0;
-            echo "attempt $attempt failed, retrying..." >&2;
-            sleep 5;
-          done;
+            if soldr cargo test -p zccache-daemon-core --features test-support \
+              filesystem_materialization_matrix_prints_loud_summary -- --nocapture --test-threads=1; then
+              exit 0
+            fi
+            echo "attempt $attempt failed, retrying..." >&2
+            sleep 5
+          done
           exit 1
       - name: ReFS cluster-rounding acceptance
         if: runner.os == 'Windows'
