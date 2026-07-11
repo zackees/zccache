@@ -416,13 +416,12 @@ fn restore_one_artifact(
         }
     }
     if dst.exists() && !allow_overwrite_existing {
-        let matches_manifest = std::fs::metadata(&dst)
-            .is_ok_and(|metadata| {
-                metadata.len() == artifact.size
-                    && zccache_hash::hash_file(&dst)
-                        .map(|hash| hash.to_hex() == artifact.content_hash)
-                        .unwrap_or(false)
-            });
+        let matches_manifest = std::fs::metadata(&dst).is_ok_and(|metadata| {
+            metadata.len() == artifact.size
+                && zccache_hash::hash_file(&dst)
+                    .map(|hash| hash.to_hex() == artifact.content_hash)
+                    .unwrap_or(false)
+        });
         return RestoreArtifactOutcome::Skipped {
             path,
             reason: if matches_manifest {

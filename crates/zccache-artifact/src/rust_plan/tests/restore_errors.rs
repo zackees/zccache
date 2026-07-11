@@ -111,7 +111,10 @@ fn restore_overlays_missing_files_without_overwriting_existing_conflicts() {
 
     assert_eq!(std::fs::read(&existing).unwrap(), b"local-conflict");
     assert_eq!(std::fs::read(&missing).unwrap(), missing_original);
-    assert_eq!(restored.skipped_reasons.get("destination_conflict"), Some(&1));
+    assert_eq!(
+        restored.skipped_reasons.get("destination_conflict"),
+        Some(&1)
+    );
     assert_eq!(restored.restored_file_count, 1);
 }
 

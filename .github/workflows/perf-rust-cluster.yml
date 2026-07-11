@@ -6,10 +6,8 @@ name: Perf Cluster Rust
 #     cargo + Swatinem cache + mold linker — no soldr/zccache
 #     wrapping cargo, would be circular with the binaries under
 #     test);
-#   - bench job pins the freshly-built zccache into soldr via
-#     `soldr update-zccache` before scenarios run;
-#   - fail loudly when either source build fails or when
-#     `soldr update-zccache --status` reports the pin is missing.
+#   - soldr's vendored submodule is moved to the zccache commit under
+#     test before soldr is built, so the tested daemon is embedded.
 
 on:
   workflow_dispatch:
@@ -262,6 +260,14 @@ jobs:
           path: soldr-src
           submodules: recursive
 
+      - name: Pin zccache source into soldr build
+        if: steps.gate.outputs.selected == 'true'
+        run: |
+          set -euo pipefail
+          git -C soldr-src/_vender/zccache fetch origin "$GITHUB_SHA"
+          git -C soldr-src/_vender/zccache checkout --detach "$GITHUB_SHA"
+          test "$(git -C soldr-src/_vender/zccache rev-parse HEAD)" = "$GITHUB_SHA"
+
       - name: Install Rust toolchain
         if: steps.gate.outputs.selected == 'true'
         run: |
@@ -296,13 +302,13 @@ jobs:
             echo "| repo | key |"
             echo "| --- | --- |"
             echo "| zccache | zccache-${{ matrix.platform }}-${{ github.sha }}-${bucket} |"
-            echo "| soldr   | soldr-${{ matrix.platform }}-${soldr_sha}-${bucket} |"
+            echo "| soldr   | soldr-${{ matrix.platform }}-${soldr_sha}-${{ github.sha }}-${bucket} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Restore prebuilt zccache binaries
         if: steps.gate.outputs.selected == 'true'
         id: cache_zccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: staged/zccache
           key: zccache-${{ matrix.platform }}-${{ github.sha }}-${{ steps.keys.outputs.bucket }}
@@ -331,10 +337,10 @@ jobs:
       - name: Restore prebuilt soldr binary
         if: steps.gate.outputs.selected == 'true'
         id: cache_soldr
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: staged/soldr
-          key: soldr-${{ matrix.platform }}-${{ steps.keys.outputs.soldr_sha }}-${{ steps.keys.outputs.bucket }}
+          key: soldr-${{ matrix.platform }}-${{ steps.keys.outputs.soldr_sha }}-${{ github.sha }}-${{ steps.keys.outputs.bucket }}
 
       - name: Restore cargo cache for soldr build
         if: steps.gate.outputs.selected == 'true' && steps.cache_soldr.outputs.cache-hit != 'true'
@@ -436,9 +442,8 @@ jobs:
         if: steps.gate.outputs.selected == 'true'
         run: |
           # Workers need cargo on PATH so soldr cargo can dispatch to
-          # it. Soldr fetches/manages zccache itself on first use, but
-          # we override that below by pinning the freshly-built zccache
-          # via `soldr update-zccache`.
+          # it. The staged soldr already embeds the zccache commit under
+          # test.
           rustup show active-toolchain || rustup toolchain install stable --profile minimal --no-self-update
 
       - name: Install fixture native deps
@@ -464,26 +469,6 @@ jobs:
           mkdir -p "$HOME/.local/bin"
           cp staged/soldr/soldr "$HOME/.local/bin/soldr"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Pin zccache via soldr update-zccache
-        if: steps.gate.outputs.selected == 'true'
-        run: |
-          set -euo pipefail
-          chmod +x staged/zccache/zccache staged/zccache/zccache-daemon staged/zccache/zccache-fp
-          soldr update-zccache "$(pwd)/staged/zccache" --json | tee zccache-pin.json
-          soldr update-zccache --status --json | tee zccache-pin-status.json
-          # `.pinned` was a boolean in the original `update-zccache` subcommand,
-          # but in the current (alias-backed) implementation it's an object
-          # containing `binaries`, `source_kind`, `source_value`, `version`, ...
-          # — or `null` when no pin is in effect. Treat any non-null value as
-          # success; additionally require `source_kind == "path"` so a residual
-          # managed-version pin can't masquerade as a successful local pin.
-          if ! jq -e '.pinned != null and .pinned.source_kind == "path"' \
-              zccache-pin-status.json >/dev/null; then
-            echo "::error::soldr update-zccache reports no local-path pin after pinning"
-            cat zccache-pin-status.json
-            exit 1
-          fi
 
       - name: Verify soldr is the source build
         if: steps.gate.outputs.selected == 'true'

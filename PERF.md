@@ -4,6 +4,8 @@ zccache has one performance workflow today: **`.github/workflows/perf-rust-clust
 
 For the per-scenario design rationale (what each cell proves), see [`perf/README.md`](perf/README.md).
 
+> **Embedded integration update:** soldr now embeds zccache. The cluster checks the zccache commit under test out inside soldr's vendored submodule before building soldr; the historical runtime pin command is no longer used.
+
 ## Setup
 
 No secrets required. Both repos are public; `actions/checkout` reads them with the default `GITHUB_TOKEN`.

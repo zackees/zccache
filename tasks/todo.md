@@ -117,3 +117,13 @@ Issue: https://github.com/zackees/zccache/issues/1039
 - [ ] Add perf regression gate and user/architecture/feature-matrix docs.
 - [ ] Validate on Windows 10 and Linux Docker, then run repo lint/test/review gates.
 - [ ] Push one PR with RED evidence, wait for GHA/review, fix, squash merge, verify issue closure.
+
+# Fix-forward after #1049 and soldr embedded-zccache integration
+
+- [x] Capture RED for the obsolete `soldr update-zccache` perf bootstrap.
+- [x] Build soldr with the current zccache commit checked out in its vendored submodule.
+- [x] Key the staged soldr binary by both the soldr and zccache commits.
+- [x] Remove the obsolete runtime pin step.
+- [x] Format the #1049 Rust changes and update the performance documentation.
+- [x] Run focused tests, formatting, clippy, and review gates.
+- [ ] Merge upstream, bump soldr's submodule, validate, and merge downstream.
