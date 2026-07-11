@@ -24,14 +24,11 @@ pub(in crate::daemon::server) fn write_cached_file(
 fn materialize_cached_file(out_path: &Path, cache_file: &Path) -> std::io::Result<()> {
     verify_registered_blob(cache_file)?;
     if same_file(out_path, cache_file) {
-        // out_path IS cache_file here (same inode, already hardlinked from
-        // a prior materialization) — touch_mtime()'s sibling-floor would
-        // mutate the *shared blob's* mtime, corrupting it for every other
-        // hardlink to this same cache entry. Nothing was (re)materialized
-        // on this call, so there is nothing to floor; leave the existing
-        // mtime untouched.
         set_readonly(cache_file, readonly_enabled())?;
-        register_hardlink(cache_file, out_path)?;
+        match compute_sibling_floor(out_path)? {
+            Some(floor) => detach_with_floored_mtime(out_path, cache_file, floor)?,
+            None => register_hardlink(cache_file, out_path)?,
+        }
         return Ok(());
     }
     remove_materialized_output(out_path)?;
@@ -80,6 +77,32 @@ fn materialize_cached_file(out_path: &Path, cache_file: &Path) -> std::io::Resul
     restore_cache_mtime(cache_file, out_path)?;
     touch_mtime(out_path);
     Ok(())
+}
+
+/// `out_path` IS `cache_file` here (same inode, already hardlinked from a
+/// prior materialization) and the sibling-floor mtime requirement
+/// (#466/#467) needs to raise this output's mtime. Mutating it in place
+/// would bump the *shared blob's* mtime too, corrupting it for every other
+/// hardlink pointing at the same cache entry. Detach this specific output
+/// into a private copy instead, so only it gets the floored mtime — the
+/// cache blob itself, and every other output still hardlinked to it, is
+/// left untouched.
+fn detach_with_floored_mtime(
+    out_path: &Path,
+    cache_file: &Path,
+    floor: filetime::FileTime,
+) -> std::io::Result<()> {
+    let registration = prepare_registered_detach(out_path);
+    make_writable(out_path)?;
+    remove_output_file(out_path)?;
+    std::fs::copy(cache_file, out_path)?;
+    make_writable(out_path)?;
+    let result = set_materialized_mtime(out_path, floor);
+    set_readonly(cache_file, readonly_enabled())?;
+    if let Some((id, _)) = registration {
+        commit_registered_detach(id, out_path);
+    }
+    result
 }
 
 fn restore_cache_mtime(cache_file: &Path, out_path: &Path) -> std::io::Result<()> {

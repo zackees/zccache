@@ -661,6 +661,68 @@ fn write_cached_output_preserves_mtime_on_existing_hardlink() {
     assert_eq!(out_mtime.unix_seconds(), expected.unix_seconds());
 }
 
+/// Regression test: when a sibling-floor mtime bump is required on the
+/// same_file (already-hardlinked) path, it must not mutate the shared cache
+/// blob's mtime — every other output hardlinked to that blob would see the
+/// bump too. The output should instead detach into a private copy that
+/// carries the floored mtime, leaving the blob (and any other hardlink to
+/// it) untouched.
+#[test]
+fn write_cached_output_floor_detaches_instead_of_corrupting_shared_blob() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cached.rlib");
+    let out = dir.path().join("output.rlib");
+    let sibling = dir.path().join("sibling.rlib");
+
+    let content = b"cached rlib data";
+    seed_persisted_blob(&cache, content);
+
+    // First delivery: creates the hardlink (or copy, depending on fs caps).
+    write_cached_output(&out, &cache, content).unwrap();
+    if !same_file(&out, &cache) {
+        // This filesystem doesn't support hardlinks — the detach path this
+        // test targets never triggers. Nothing to verify.
+        return;
+    }
+
+    let old_time = filetime::FileTime::from_unix_time(1_000_000_000, 0);
+    set_materialized_mtime(&out, old_time).unwrap();
+    let blob_time_before =
+        filetime::FileTime::from_last_modification_time(&std::fs::metadata(&cache).unwrap());
+
+    // A newer sibling artifact in the same directory forces the #466/#467
+    // floor to kick in on the next materialization of `out`.
+    std::fs::write(&sibling, b"newer sibling").unwrap();
+    let newer_time = filetime::FileTime::from_unix_time(2_000_000_000, 0);
+    filetime::set_file_mtime(&sibling, newer_time).unwrap();
+
+    // Second delivery: same_file path, floor must apply.
+    write_cached_output(&out, &cache, content).unwrap();
+
+    let out_mtime =
+        filetime::FileTime::from_last_modification_time(&std::fs::metadata(&out).unwrap());
+    assert_eq!(
+        out_mtime.unix_seconds(),
+        newer_time.unix_seconds(),
+        "output mtime must be floored up to the newer sibling"
+    );
+
+    let blob_time_after =
+        filetime::FileTime::from_last_modification_time(&std::fs::metadata(&cache).unwrap());
+    assert_eq!(
+        blob_time_after.unix_seconds(),
+        blob_time_before.unix_seconds(),
+        "flooring an output must never mutate the shared cache blob's mtime"
+    );
+
+    assert!(
+        !same_file(&out, &cache),
+        "output must be detached from the shared blob once its mtime diverges"
+    );
+    assert_eq!(std::fs::read(&cache).unwrap(), content);
+    assert_eq!(std::fs::read(&out).unwrap(), content);
+}
+
 /// write_cached_output fallback (fs::write) naturally sets fresh mtime.
 #[test]
 fn write_cached_output_fallback_has_fresh_mtime() {
