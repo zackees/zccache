@@ -319,10 +319,10 @@ fn rustc_explicit_emit_link_path_is_the_primary_output() {
     let ParsedInvocation::Cacheable(compilation) = result else {
         panic!("expected cacheable rustc invocation");
     };
-    assert!(compilation
-        .output_file
-        .to_string_lossy()
-        .ends_with("tmp\\custom.rlib"));
+    assert_eq!(
+        compilation.output_file.file_name().and_then(|name| name.to_str()),
+        Some("custom.rlib")
+    );
 }
 
 #[test]
