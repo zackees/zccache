@@ -188,13 +188,16 @@ impl StagedCompilePlan {
         if cc_has_unsupported_side_outputs(args) {
             return Ok(None);
         }
-        if crate::compiler::OutputClassification::for_compiler(
+        let output_role = crate::compiler::OutputClassification::for_compiler(
             family,
             &primary_output.to_string_lossy(),
         )
-        .role
-            != crate::compiler::OutputRole::Object
-        {
+        .role;
+        if !matches!(
+            output_role,
+            crate::compiler::OutputRole::Object
+                | crate::compiler::OutputRole::PrecompiledHeaderOrModule
+        ) {
             return Ok(None);
         }
         if family == crate::compiler::CompilerFamily::Msvc
@@ -731,6 +734,42 @@ mod tests {
             crate::depgraph::DepfileStrategy::UserSpecified { path }
                 if path.as_path().starts_with(temp.path().join(".staged-v2"))
         ));
+        plan.cleanup().unwrap();
+    }
+
+    #[test]
+    fn cc_plan_stages_single_precompiled_header_output() {
+        if !staged_tests_enabled() {
+            return;
+        }
+        let temp = tempdir().unwrap();
+        let output: NormalizedPath = temp.path().join("header.pch").into();
+        let plan = StagedCompilePlan::cc(
+            temp.path(),
+            crate::compiler::CompilerFamily::Clang,
+            &[
+                "-x".into(),
+                "c-header".into(),
+                "header.h".into(),
+                "-o".into(),
+                output.to_string_lossy().into_owned(),
+            ],
+            &output,
+            temp.path(),
+            &crate::depgraph::UserDepFlags::default(),
+        )
+        .unwrap()
+        .unwrap();
+        let stage_root = plan
+            .primary_staged()
+            .parent()
+            .and_then(Path::parent)
+            .unwrap();
+        let compile_dir = plan.primary_staged().parent().unwrap();
+        assert_eq!(stage_root, temp.path().join(".staged-v2"));
+        assert!(compile_dir
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with(".compile-")));
         plan.cleanup().unwrap();
     }
 

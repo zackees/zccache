@@ -87,6 +87,15 @@ impl OutputClassification {
                     delivery: DeliveryPolicy::ReflinkPreferred,
                 }
             }
+            CompilerFamily::Gcc | CompilerFamily::Clang | CompilerFamily::Msvc
+                if matches!(extension, "pch" | "gch" | "pcm") =>
+            {
+                Self {
+                    role: OutputRole::PrecompiledHeaderOrModule,
+                    mutation: MutationContract::AtomicReplaceOnly,
+                    delivery: DeliveryPolicy::ReflinkPreferred,
+                }
+            }
             _ if extension == "d" => Self {
                 role: OutputRole::DepInfo,
                 mutation: MutationContract::MayEditInPlace,
@@ -130,6 +139,10 @@ mod tests {
         assert_eq!(
             OutputClassification::for_compiler(CompilerFamily::Clang, "x.o").delivery,
             DeliveryPolicy::ReflinkPreferred
+        );
+        assert_eq!(
+            OutputClassification::for_compiler(CompilerFamily::Clang, "x.pch").role,
+            OutputRole::PrecompiledHeaderOrModule
         );
     }
 
