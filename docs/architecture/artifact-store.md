@@ -17,14 +17,15 @@ successful compile from the private files, but it never exposes a partial
 cache hit.
 
 Rollout values are `rust` (Rust single and multi-output plans), `c-cpp`
-(ordinary single-object GCC/Clang plans without user-owned depfiles; MSVC
+(ordinary single-object GCC/Clang plans including user-owned `-MF`/`-MD`
+depfiles; MSVC
 flag rewriting is supported only for explicit `/Fo` object paths), or
 `all`. Unsupported shapes—including multi-source compiler invocations, PCH,
 modules, linker side outputs, generic exec, and stdout output—remain on the
 legacy path before compiler spawn. Explicit Rust `--emit=kind=path` outputs
-are parsed and included in output discovery; the staged lane conservatively
-falls back until cache-hit reverse mapping for every explicit destination is
-complete.
+are parsed and included in the complete cache-hit reverse map. Inferred
+outputs for staticlibs, bins, proc macros, objects, assembly, LLVM IR/bitcode,
+MIR, and dep-info use their actual rustc extensions.
 
 Pure archive invocations with one output and no linker side effects use the
 same private transaction when the lane is `all`.
@@ -190,7 +191,7 @@ remove read-only attributes before deletion.
 disables read-only enforcement. Neither setting adds an IPC roundtrip.
 Unsupported shapes—including multi-source compiler invocations, PCH,
 modules, linker side outputs, generic exec, and stdout output—remain on the
-legacy path before compiler spawn. Explicit Rust `--emit=kind=path` outputs
-are parsed and included in output discovery; the staged lane conservatively
-falls back until cache-hit reverse mapping for every explicit destination is
-complete.
+legacy path before compiler spawn. Explicit Rust `--emit=kind=path`
+destinations are included in the complete cache-hit reverse map. The staged
+lane remains opt-in for output families that do not yet have complete-set
+plans.

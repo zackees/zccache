@@ -277,23 +277,26 @@ pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedI
     let metadata_only = !has_link_emit && emit_types.iter().any(|t| t == "metadata");
 
     // Derive output path
-    let primary_emit = emit_types
-        .iter()
-        .find(|kind| {
-            matches!(
-                kind.as_str(),
-                "link"
-                    | "metadata"
-                    | "dep-info"
-                    | "obj"
-                    | "asm"
-                    | "llvm-ir"
-                    | "llvm-bc"
-                    | "bitcode"
-                    | "mir"
-            )
-        })
-        .map(String::as_str);
+    let primary_emit = if emit_types.iter().any(|kind| kind == "link") {
+        Some("link")
+    } else {
+        emit_types
+            .iter()
+            .find(|kind| {
+                matches!(
+                    kind.as_str(),
+                    "metadata"
+                        | "dep-info"
+                        | "obj"
+                        | "asm"
+                        | "llvm-ir"
+                        | "llvm-bc"
+                        | "bitcode"
+                        | "mir"
+                )
+            })
+            .map(String::as_str)
+    };
     let output = if let Some(o) = output_file {
         o
     } else if let Some(o) = explicit_link_output {
