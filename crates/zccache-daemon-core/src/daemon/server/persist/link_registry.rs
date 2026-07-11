@@ -185,6 +185,20 @@ pub(in crate::daemon::server) fn verify_registered_blob(blob_path: &Path) -> std
     let Some(id) = get_file_id(blob_path) else {
         return Ok(());
     };
+    // A prior blob at this same (volume, inode) identity may have been
+    // deleted and the identity reused by an unrelated file — ephemeral
+    // test fixtures (loop-mounted / disk-image filesystems) reliably
+    // reissue low inode numbers after unmount/remount. Trusting a
+    // mismatched record would either skip real verification or reject a
+    // perfectly valid blob against someone else's expected hash.
+    // `prepare_hardlink_registration` already guards this same hazard on
+    // the write path; mirror it here on the read/verify path.
+    if registry()
+        .get(&id)
+        .is_some_and(|record| record.blob_path != blob_path)
+    {
+        registry().remove(&id);
+    }
     let Some(record) = registry().get(&id) else {
         // Registry state is process-local, so restart verification must use a
         // digest persisted when the immutable blob was stored. Link count is

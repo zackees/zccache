@@ -290,19 +290,30 @@ fn linux_loop(name: &'static str, filesystem: &str, mkfs: &str) -> FixtureResult
     }
     let mount = temp.path().join("mount");
     std::fs::create_dir(&mount).map_err(|error| skip(name, error.to_string()))?;
-    let mount_output = run_privileged(
-        "mount",
-        &["-t", filesystem, &device, &mount.to_string_lossy()],
-    )
-    .map_err(|error| skip(name, error.to_string()))?;
+    let mount_str = mount.to_string_lossy().into_owned();
+    // FAT-family filesystems (vfat) have no POSIX permission bits: every
+    // file is owned by whoever mounted it, and a later `chmod` on the
+    // mountpoint is silently ignored by the kernel driver. Without
+    // `uid=/gid=`, a privileged (sudo) mount leaves the tree owned by
+    // root and unwritable by the unprivileged CI user. Pass the current
+    // uid/gid + a permissive umask explicitly for vfat.
+    let uid_gid_opt = (filesystem == "vfat").then(current_uid_gid).flatten();
+    let mount_args: Vec<&str> = match &uid_gid_opt {
+        Some(opt) => vec!["-t", filesystem, "-o", opt, &device, &mount_str],
+        None => vec!["-t", filesystem, &device, &mount_str],
+    };
+    let mount_output =
+        run_privileged("mount", &mount_args).map_err(|error| skip(name, error.to_string()))?;
     if !mount_output.status.success() {
         let _ = run_privileged("losetup", &["-d", &device]);
         return Err(skip(name, command_error("mount", &mount_output)));
     }
-    let chmod = run_privileged("chmod", &["0777", &mount.to_string_lossy()])
-        .map_err(|error| skip(name, error.to_string()))?;
-    if !chmod.status.success() {
-        return Err(skip(name, command_error("chmod", &chmod)));
+    if uid_gid_opt.is_none() {
+        let chmod = run_privileged("chmod", &["0777", &mount_str])
+            .map_err(|error| skip(name, error.to_string()))?;
+        if !chmod.status.success() {
+            return Err(skip(name, command_error("chmod", &chmod)));
+        }
     }
     Ok(FsFixture {
         name,
@@ -363,6 +374,19 @@ fn mac_image(name: &'static str, filesystem: &str) -> FixtureResult {
 #[cfg(not(target_os = "macos"))]
 fn mac_image(name: &'static str, _filesystem: &str) -> FixtureResult {
     Err(skip(name, "disk-image fixtures are macOS-only"))
+}
+
+#[cfg(target_os = "linux")]
+fn current_uid_gid() -> Option<String> {
+    let uid = String::from_utf8(Command::new("id").arg("-u").output().ok()?.stdout)
+        .ok()?
+        .trim()
+        .to_string();
+    let gid = String::from_utf8(Command::new("id").arg("-g").output().ok()?.stdout)
+        .ok()?
+        .trim()
+        .to_string();
+    Some(format!("uid={uid},gid={gid},umask=000"))
 }
 
 #[cfg(target_os = "linux")]

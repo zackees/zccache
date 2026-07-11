@@ -110,6 +110,13 @@ fn exercise_row(fixture: &FsFixture, cross_volume: bool) -> &'static str {
     write_authoritative_blob_digest(&blob).unwrap();
     let old_time = filetime::FileTime::from_unix_time(1_000_000_000, 123);
     filetime::set_file_mtime(&blob, old_time).unwrap();
+    // FAT/exFAT store mtime with 2-second granularity, so the value that
+    // actually lands on disk can differ from what was requested. Compare
+    // the materialized mtime against the blob's *actual* stored mtime
+    // (which `restore_cache_mtime` reads and propagates) rather than the
+    // pre-rounding `old_time` we asked for.
+    let blob_time =
+        filetime::FileTime::from_last_modification_time(&std::fs::metadata(&blob).unwrap());
     let caps = fs_caps(&blob, &output);
     if cross_volume {
         assert!(!caps.reflink && !caps.hardlink);
@@ -117,7 +124,7 @@ fn exercise_row(fixture: &FsFixture, cross_volume: bool) -> &'static str {
     write_cached_output(&output, &blob, original).unwrap();
     let output_time =
         filetime::FileTime::from_last_modification_time(&std::fs::metadata(&output).unwrap());
-    assert_eq!(output_time.unix_seconds(), old_time.unix_seconds());
+    assert_eq!(output_time.unix_seconds(), blob_time.unix_seconds());
 
     let tier = if caps.reflink {
         assert!(!same_file(&blob, &output));
