@@ -66,19 +66,6 @@ fn materialize_cached_file(out_path: &Path, cache_file: &Path) -> std::io::Resul
                     error = %error,
                     "hardlink materialization failed despite capability probe; falling back to copy"
                 );
-                // TEMP DIAGNOSTIC (#1039 fs-matrix CI investigation): the
-                // fs_matrix acceptance test doesn't init a tracing
-                // subscriber, so the warn! above is invisible in that
-                // test's CI output. eprintln! always reaches the captured
-                // job log regardless of subscriber state. Remove once the
-                // cross-platform same_file() assertion failure is root
-                // caused.
-                eprintln!(
-                    "[cow-diag] hard_link({}, {}) failed: {error} (caps.hardlink={})",
-                    cache_file.display(),
-                    out_path.display(),
-                    caps.hardlink
-                );
                 cancel_hardlink_registration(registration, out_path);
             }
         }

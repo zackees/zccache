@@ -55,8 +55,21 @@ pub(in crate::daemon::server) fn apply_reflink_switch(
     caps
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct VolumePair(u128, u128);
+// The path ancestor is part of the key, not just the raw volume id.
+// Ephemeral disk-image / loop-mount volumes (macOS hdiutil, Linux
+// losetup) reliably recycle their device id after unmount — a later,
+// unrelated filesystem can attach at the SAME `st_dev`. A cache keyed
+// on volume id alone would then hand out a stale capability probed
+// against the *previous* filesystem at that id (e.g. HFS+'s
+// hardlink=true reused for a freshly-mounted exFAT volume, which has
+// no hardlink support at all — `std::fs::hard_link` then fails with
+// ENOTSUP despite the cached capability). The probe ancestor path is
+// stable for repeat calls into the *same* real mount (so legitimate
+// caching across many blobs in one cache directory is preserved) but
+// differs across distinct mounts, including ones that reuse a device
+// id, because mount points are never reused verbatim.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct VolumePair(u128, u128, PathBuf);
 
 static CAPS: OnceLock<dashmap::DashMap<VolumePair, VolumeCaps>> = OnceLock::new();
 static PROBE_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -89,14 +102,16 @@ pub(in crate::daemon::server) fn fs_caps(src: &Path, dst: &Path) -> VolumeCaps {
     let Some(src_volume) = volume_identity(src) else {
         return VolumeCaps::copy_only();
     };
-    let dst_probe = existing_path(dst.parent().unwrap_or(dst));
-    let Some(dst_volume) = dst_probe.and_then(|path| volume_identity(&path)) else {
+    let Some(dst_probe) = existing_path(dst.parent().unwrap_or(dst)) else {
+        return VolumeCaps::copy_only();
+    };
+    let Some(dst_volume) = volume_identity(&dst_probe) else {
         return VolumeCaps::copy_only();
     };
     if src_volume != dst_volume {
         return VolumeCaps::copy_only();
     }
-    let key = VolumePair(src_volume, dst_volume);
+    let key = VolumePair(src_volume, dst_volume, dst_probe);
     if let Some(caps) = cache().get(&key) {
         return (*caps).effective();
     }
