@@ -274,6 +274,11 @@ fn windows_vhd(name: &'static str, _filesystem: &str) -> FixtureResult {
     Err(skip(name, "VHDX fixtures are Windows-only"))
 }
 
+#[cfg(not(windows))]
+fn windows_vhd_sized(name: &'static str, _filesystem: &str, _maximum_mb: u32) -> FixtureResult {
+    Err(skip(name, "VHDX fixtures are Windows-only"))
+}
+
 #[cfg(target_os = "linux")]
 fn linux_loop(name: &'static str, filesystem: &str, mkfs: &str) -> FixtureResult {
     for tool in ["losetup", "mount", "umount", mkfs] {
