@@ -44,22 +44,9 @@ jobs:
           # No-op on Linux/macOS, which use TMPDIR instead.
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
-        # The refs-vhdx row's `diskpart create vdisk` / VDS attach has shown
-        # intermittent CI-runner-level failures ("not enough space on the
-        # disk") even with plentiful confirmed free space on both C: and D:,
-        # unrelated to this test's own logic (every other row passes
-        # consistently). Retry the whole (fast, <30s) matrix run a few times
-        # before failing the job, rather than requiring a manual rerun.
-        run: |-
-          for attempt in 1 2 3; do
-            if soldr cargo test -p zccache-daemon-core --features test-support \
-              filesystem_materialization_matrix_prints_loud_summary -- --nocapture --test-threads=1; then
-              exit 0
-            fi
-            echo "attempt $attempt failed, retrying..." >&2
-            sleep 5
-          done
-          exit 1
+        run: >-
+          soldr cargo test -p zccache-daemon-core --features test-support
+          filesystem_materialization_matrix_prints_loud_summary -- --nocapture --test-threads=1
       - name: ReFS cluster-rounding acceptance
         if: runner.os == 'Windows'
         shell: bash
