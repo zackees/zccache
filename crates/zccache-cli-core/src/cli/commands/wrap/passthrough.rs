@@ -6,6 +6,9 @@ use std::process::ExitCode;
 use super::super::util::exit_code_from_i32;
 use super::tool_resolution::resolve_compiler_path;
 
+#[cfg(test)]
+pub(super) static CWD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Release the wrapper's own CWD handle on the build dir before spawning
 /// a child, while keeping the child's CWD pointing at the original
 /// directory so relative paths in argv still resolve.
@@ -15,16 +18,19 @@ use super::tool_resolution::resolve_compiler_path;
 /// Windows the parent's CWD holds an implicit kernel handle on the
 /// build directory, blocking `shutil.rmtree` until the wrapper exits.
 /// This helper restores parity with the cached-path behavior.
+pub(super) fn release_cwd_for_command(cmd: &mut std::process::Command, child_cwd: &Path) {
+    cmd.current_dir(child_cwd);
+    // Release the wrapper's own CWD handle before spawning. The child inherits
+    // `cmd.current_dir(...)` regardless of where the parent ends up, so
+    // argv-relative paths still resolve from the caller-supplied directory.
+    let _ = std::env::set_current_dir(std::env::temp_dir());
+}
+
 fn run_with_released_cwd(
     cmd: &mut std::process::Command,
 ) -> std::io::Result<std::process::ExitStatus> {
     if let Ok(cwd) = std::env::current_dir() {
-        cmd.current_dir(&cwd);
-        // Release the wrapper's own CWD handle before spawning. The
-        // child inherits `cmd.current_dir(...)` regardless of where the
-        // parent ends up, so argv-relative paths still resolve from
-        // the build dir.
-        let _ = std::env::set_current_dir(std::env::temp_dir());
+        release_cwd_for_command(cmd, &cwd);
     }
     cmd.status()
 }
@@ -46,27 +52,9 @@ pub(super) fn run_passthrough(args: &[String]) -> ExitCode {
     }
 }
 
-/// Run a tool directly and return its exit code.
-pub(super) fn run_tool_direct(tool: &Path, args: &[String]) -> ExitCode {
-    let mut cmd = std::process::Command::new(tool);
-    cmd.args(args);
-    match run_with_released_cwd(&mut cmd) {
-        Ok(status) => exit_code_from_i32(status.code().unwrap_or(1)),
-        Err(e) => {
-            eprintln!("zccache: failed to run {}: {e}", tool.display());
-            ExitCode::FAILURE
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Process-global lock so the two CWD-mutating tests don't race.
-    /// `env::set_current_dir` is process-wide; running these in parallel
-    /// would produce nondeterministic results.
-    static CWD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn noop_tool() -> std::path::PathBuf {
         if cfg!(windows) {
@@ -123,7 +111,7 @@ mod tests {
     /// exit) must also release the wrapper's CWD — same correctness
     /// rationale as `run_passthrough`.
     #[test]
-    fn run_tool_direct_releases_wrapper_cwd() {
+    fn direct_rustfmt_policy_releases_wrapper_cwd() {
         let _guard = CWD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original_cwd = std::env::current_dir().ok();
         let build_dir = tempfile::tempdir().unwrap();
@@ -132,13 +120,16 @@ mod tests {
 
         let tool = noop_tool();
         let args: Vec<String> = noop_args();
-        let _ = run_tool_direct(&tool, &args);
+        let mut command = std::process::Command::new(&tool);
+        command.args(&args);
+        release_cwd_for_command(&mut command, &canonical_build_dir);
+        let _ = command.status();
 
         let after = std::env::current_dir().unwrap();
         let after_canonical = std::fs::canonicalize(&after).unwrap_or(after);
         assert_ne!(
             after_canonical, canonical_build_dir,
-            "issue #555: run_tool_direct must release the wrapper's CWD",
+            "issue #555: direct rustfmt execution must release the wrapper's CWD",
         );
 
         if let Some(cwd) = original_cwd {

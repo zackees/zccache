@@ -50,6 +50,24 @@ pub fn run_embedded_rustfmt(
     wrap::run_embedded_rustfmt(rustfmt_path, args, cwd, cache_root)
 }
 
+/// Run the formatter cache while delegating child execution to the host.
+///
+/// Embedders can use the runner to apply their own timeout, environment, and
+/// platform spawn policy while zccache retains ownership of cache lookup and
+/// marker updates. The returned integer is the exact child exit status.
+pub fn run_embedded_rustfmt_with_runner<F>(
+    rustfmt_path: &Path,
+    args: &[String],
+    cwd: &Path,
+    cache_root: &Path,
+    runner: F,
+) -> std::io::Result<i32>
+where
+    F: FnOnce(&mut std::process::Command) -> std::io::Result<i32>,
+{
+    wrap::run_embedded_rustfmt_with_runner(rustfmt_path, args, cwd, cache_root, runner)
+}
+
 /// Parse argv, run the requested subcommand or wrapper path, and return
 /// the process exit code.
 pub fn run() -> ExitCode {

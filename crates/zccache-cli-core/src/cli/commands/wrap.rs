@@ -94,6 +94,19 @@ pub(crate) fn run_embedded_rustfmt(
     rustfmt::run_rustfmt_cached(rustfmt_path, args, cwd, Some(cache_root))
 }
 
+pub(crate) fn run_embedded_rustfmt_with_runner<F>(
+    rustfmt_path: &std::path::Path,
+    args: &[String],
+    cwd: &std::path::Path,
+    cache_root: &std::path::Path,
+    runner: F,
+) -> std::io::Result<i32>
+where
+    F: FnOnce(&mut std::process::Command) -> std::io::Result<i32>,
+{
+    rustfmt::run_rustfmt_cached_with_runner(rustfmt_path, args, cwd, Some(cache_root), runner)
+}
+
 fn run_compile_route(
     endpoint: &str,
     raw_tool: &str,

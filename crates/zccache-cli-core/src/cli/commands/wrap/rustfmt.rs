@@ -5,8 +5,6 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use super::super::util::exit_code_from_i32;
-use super::passthrough::run_tool_direct;
-
 /// Run rustfmt with format caching.
 ///
 /// Files whose content hash is already in the format cache are skipped entirely,
@@ -18,13 +16,37 @@ pub(super) fn run_rustfmt_cached(
     cwd: &Path,
     cache_root: Option<&Path>,
 ) -> ExitCode {
+    match run_rustfmt_cached_with_runner(rustfmt_path, args, cwd, cache_root, |cmd| {
+        Ok(cmd.status()?.code().unwrap_or(1))
+    }) {
+        Ok(code) => exit_code_from_i32(code),
+        Err(e) => {
+            eprintln!("zccache: failed to run rustfmt: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+pub(super) fn run_rustfmt_cached_with_runner<F>(
+    rustfmt_path: &Path,
+    args: &[String],
+    cwd: &Path,
+    cache_root: Option<&Path>,
+    runner: F,
+) -> std::io::Result<i32>
+where
+    F: FnOnce(&mut std::process::Command) -> std::io::Result<i32>,
+{
     use crate::compiler::parse_rustfmt::{find_rustfmt_config, parse_rustfmt_invocation};
 
     let parsed = match parse_rustfmt_invocation(args) {
         Some(p) => p,
         None => {
             // --help, --version, or stdin mode: pass through.
-            return run_tool_direct(rustfmt_path, args);
+            let mut cmd = std::process::Command::new(rustfmt_path);
+            cmd.args(args);
+            super::passthrough::release_cwd_for_command(&mut cmd, cwd);
+            return runner(&mut cmd);
         }
     };
 
@@ -98,16 +120,10 @@ pub(super) fn run_rustfmt_cached(
     }
 
     if miss_files.is_empty() {
-        return ExitCode::SUCCESS;
+        return Ok(0);
     }
 
-    let exit_i32 = match run_rustfmt_on_files(rustfmt_path, args, &miss_files, &parsed) {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("zccache: failed to run rustfmt: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let exit_i32 = run_rustfmt_on_files(rustfmt_path, args, cwd, &miss_files, &parsed, runner)?;
 
     if exit_i32 == 0 {
         for (abs, was_hit, cached_hash) in &all_files {
@@ -126,23 +142,76 @@ pub(super) fn run_rustfmt_cached(
         }
     }
 
-    exit_code_from_i32(exit_i32)
+    Ok(exit_i32)
 }
 
-fn run_rustfmt_on_files(
+fn run_rustfmt_on_files<F>(
     rustfmt_path: &Path,
     original_args: &[String],
+    cwd: &Path,
     files: &[NormalizedPath],
     parsed: &crate::compiler::parse_rustfmt::ParsedRustfmt,
-) -> Result<i32, std::io::Error> {
+    runner: F,
+) -> Result<i32, std::io::Error>
+where
+    F: FnOnce(&mut std::process::Command) -> std::io::Result<i32>,
+{
     let mut cmd = std::process::Command::new(rustfmt_path);
     cmd.args(&parsed.flags);
     for f in files {
         cmd.arg(f);
     }
+    super::passthrough::release_cwd_for_command(&mut cmd, cwd);
 
     let _ = original_args;
 
-    let status = cmd.status()?;
-    Ok(status.code().unwrap_or(1))
+    runner(&mut cmd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct CwdRestore(Option<std::path::PathBuf>);
+
+    impl Drop for CwdRestore {
+        fn drop(&mut self) {
+            if let Some(cwd) = self.0.take() {
+                let _ = std::env::set_current_dir(cwd);
+            }
+        }
+    }
+
+    #[test]
+    fn embedded_runner_controls_child_and_preserves_exact_exit_code() {
+        let _lock = super::super::passthrough::CWD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _cwd_restore = CwdRestore(std::env::current_dir().ok());
+        let root = tempfile::tempdir().unwrap();
+        let rustfmt = root.path().join("rustfmt-test-bin");
+        let source = root.path().join("input.rs");
+        std::fs::write(&rustfmt, b"fake formatter identity").unwrap();
+        std::fs::write(&source, b"fn main( ) {}\n").unwrap();
+        let args = vec![source.display().to_string()];
+        let mut called = false;
+
+        let code = run_rustfmt_cached_with_runner(
+            &rustfmt,
+            &args,
+            root.path(),
+            Some(&root.path().join("cache")),
+            |command| {
+                called = true;
+                assert_eq!(command.get_program(), rustfmt.as_os_str());
+                assert_eq!(command.get_current_dir(), Some(root.path()));
+                assert!(command.get_args().any(|arg| arg == source.as_os_str()));
+                Ok(37)
+            },
+        )
+        .unwrap();
+
+        assert!(called);
+        assert_eq!(code, 37);
+    }
 }
