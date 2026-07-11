@@ -5,6 +5,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "perf-rust-cluster.yml"
+LOCAL_ENTRYPOINT = ROOT / "ci" / "docker" / "perf_entrypoint.sh"
+LOCAL_RUNNER = ROOT / "ci" / "docker" / "runner.Dockerfile"
+LOCAL_ORCHESTRATOR = ROOT / "ci" / "perf_local.py"
 
 
 def workflow_text() -> str:
@@ -20,8 +23,7 @@ def test_perf_cluster_builds_soldr_with_the_zccache_commit_under_test() -> None:
 
     assert 'git -C soldr-src/_vender/zccache fetch origin "$GITHUB_SHA"' in pin_step
     assert (
-        'git -C soldr-src/_vender/zccache checkout --detach "$GITHUB_SHA"'
-        in pin_step
+        'git -C soldr-src/_vender/zccache checkout --detach "$GITHUB_SHA"' in pin_step
     )
     assert 'rev-parse HEAD)" = "$GITHUB_SHA"' in pin_step
     assert workflow.index(pin_step_name) < workflow.index("Build soldr (release)")
@@ -32,6 +34,27 @@ def test_perf_cluster_does_not_use_removed_runtime_zccache_pinning() -> None:
     workflow = workflow_text()
 
     assert "soldr update-zccache" not in workflow
+
+
+def test_perf_local_does_not_use_removed_runtime_zccache_pinning() -> None:
+    local_harness = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (LOCAL_ENTRYPOINT, LOCAL_RUNNER, LOCAL_ORCHESTRATOR)
+    )
+
+    assert "soldr update-zccache" not in local_harness
+    assert "/zccache-bin" not in local_harness
+    assert '"--skip-soldr-build",' not in LOCAL_ORCHESTRATOR.read_text(encoding="utf-8")
+
+
+def test_perf_local_lists_daemon_runtime_without_copying_special_files() -> None:
+    entrypoint = LOCAL_ENTRYPOINT.read_text(encoding="utf-8")
+
+    assert "warm-daemon-files.txt" in entrypoint
+    assert (
+        'copy_if_exists "${scenario_root}/cache-warm/cache/soldr-daemon"'
+        not in entrypoint
+    )
 
 
 def test_perf_cluster_pins_cache_action_to_an_immutable_commit() -> None:

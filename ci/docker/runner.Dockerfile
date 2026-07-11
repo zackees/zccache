@@ -7,7 +7,6 @@
 # the base is rust:1.94.1, but the runner doesn't build anything itself).
 # Instead it mounts in:
 #   - the soldr binary produced by soldr-builder
-#   - the zccache trio produced by zccache-builder
 #   - the zccache source (read-only, for perf/scenarios/, perf/lib/,
 #     perf/fixtures/)
 #   - a results dir on the host
@@ -23,7 +22,6 @@
 #
 #   docker run --rm \
 #     -v <repo>/.perf-local/binaries/soldr/soldr:/usr/local/bin/soldr:ro \
-#     -v <repo>/.perf-local/binaries/zccache:/zccache-bin:ro \
 #     -v <repo>:/zccache-src:ro \
 #     -v <repo>/.perf-local/results/<scenario>:/results \
 #     -e SCENARIO=cold-tar-untar-warm \
@@ -47,11 +45,9 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # The entrypoint expects all the above mounts to be in place. It then:
-#   1. soldr update-zccache /zccache-bin  (pin the freshly-built zccache)
-#   2. soldr update-zccache --status --json  (sanity-verify pin)
-#   3. bash perf/lib/extract.sh $FIXTURE $WORK_DIR
-#   4. bash perf/scenarios/$SCENARIO/run.sh $WORK_DIR/$FIXTURE
-#   5. Copy result.json + *-cache-report.json + *-zccache-logs/ to /results
+#   1. bash perf/lib/extract.sh $FIXTURE $WORK_DIR
+#   2. bash perf/scenarios/$SCENARIO/run.sh $WORK_DIR/$FIXTURE
+#   3. Copy result.json + *-cache-report.json + *-zccache-logs/ to /results
 COPY perf_entrypoint.sh /usr/local/bin/perf_entrypoint.sh
 RUN chmod +x /usr/local/bin/perf_entrypoint.sh
 

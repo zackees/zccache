@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
 
 
@@ -24,6 +25,66 @@ def _load_perf_local():
 
 
 perf_local = _load_perf_local()
+
+
+def test_pin_soldr_zccache_source_initializes_and_pins_current_checkout(
+    tmp_path, monkeypatch
+):
+    soldr_src = tmp_path / "soldr-src"
+    commands = []
+
+    monkeypatch.setattr(
+        perf_local,
+        "run",
+        lambda command, **_kwargs: commands.append(command)
+        or subprocess.CompletedProcess(command, 0),
+    )
+    monkeypatch.setattr(perf_local, "git_head", lambda _repo: "abc123")
+    monkeypatch.setattr(perf_local, "git_is_dirty", lambda _repo: False)
+
+    perf_local.pin_soldr_zccache_source(soldr_src)
+
+    vendored = soldr_src / "_vender" / "zccache"
+    assert commands == [
+        [
+            "git",
+            "-C",
+            str(soldr_src),
+            "submodule",
+            "update",
+            "--init",
+            "--recursive",
+        ],
+        ["git", "-C", str(vendored), "fetch", str(perf_local.REPO_ROOT), "abc123"],
+        ["git", "-C", str(vendored), "checkout", "--detach", "abc123"],
+    ]
+
+
+def test_pin_soldr_zccache_source_rejects_wrong_checkout(tmp_path, monkeypatch):
+    soldr_src = tmp_path / "soldr-src"
+    heads = iter(["abc123", "def456"])
+    monkeypatch.setattr(perf_local, "run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(perf_local, "git_head", lambda _repo: next(heads))
+    monkeypatch.setattr(perf_local, "git_is_dirty", lambda _repo: False)
+
+    try:
+        perf_local.pin_soldr_zccache_source(soldr_src)
+    except RuntimeError as error:
+        assert "expected abc123" in str(error)
+        assert "found def456" in str(error)
+    else:
+        raise AssertionError("mismatched embedded zccache checkout must fail")
+
+
+def test_pin_soldr_zccache_source_rejects_dirty_checkout(tmp_path, monkeypatch):
+    monkeypatch.setattr(perf_local, "git_is_dirty", lambda _repo: True)
+
+    try:
+        perf_local.pin_soldr_zccache_source(tmp_path / "soldr-src")
+    except RuntimeError as error:
+        assert "commit or stash" in str(error)
+    else:
+        raise AssertionError("dirty zccache source must not be silently ignored")
 
 
 # ── fmt_ms ───────────────────────────────────────────────────────────────────
@@ -155,7 +216,11 @@ def _write_scenario_results(
     (results_dir / "result.json").write_text(json.dumps(result))
 
     if cache_report is not None:
-        report_name = "b-cache-report.json" if scenario == "worktree-share" else "warm-cache-report.json"
+        report_name = (
+            "b-cache-report.json"
+            if scenario == "worktree-share"
+            else "warm-cache-report.json"
+        )
         (results_dir / report_name).write_text(
             json.dumps({"last_session": cache_report})
         )
@@ -330,22 +395,22 @@ def _phase_profile_with_writeoutput_dominant() -> dict:
     return {
         "hit_count": 100,
         "miss_count": 5,
-        "parse_args_ns":           5_000_000,    # 5ms
-        "build_context_ns":       12_000_000,    # 12ms
-        "hash_source_ns":         80_000_000,    # 80ms
-        "hash_headers_ns":        76_000_000,    # 76ms — sums w/ source to 156ms
-        "depgraph_check_ns":     198_000_000,    # 198ms
-        "request_cache_lookup_ns": 4_000_000,    # 4ms
-        "cross_root_validate_ns":  8_000_000,
-        "artifact_lookup_ns":     42_000_000,    # 42ms
-        "write_output_ns":       312_000_000,    # 312ms — dominant
-        "bookkeeping_ns":          3_000_000,
-        "total_hit_ns":          740_000_000,
-        "compiler_exec_ns":      900_000_000,    # 900ms across 5 misses
-        "include_scan_ns":        25_000_000,
-        "hash_all_ns":            12_000_000,
-        "artifact_store_ns":      18_000_000,
-        "total_miss_ns":         955_000_000,
+        "parse_args_ns": 5_000_000,  # 5ms
+        "build_context_ns": 12_000_000,  # 12ms
+        "hash_source_ns": 80_000_000,  # 80ms
+        "hash_headers_ns": 76_000_000,  # 76ms — sums w/ source to 156ms
+        "depgraph_check_ns": 198_000_000,  # 198ms
+        "request_cache_lookup_ns": 4_000_000,  # 4ms
+        "cross_root_validate_ns": 8_000_000,
+        "artifact_lookup_ns": 42_000_000,  # 42ms
+        "write_output_ns": 312_000_000,  # 312ms — dominant
+        "bookkeeping_ns": 3_000_000,
+        "total_hit_ns": 740_000_000,
+        "compiler_exec_ns": 900_000_000,  # 900ms across 5 misses
+        "include_scan_ns": 25_000_000,
+        "hash_all_ns": 12_000_000,
+        "artifact_store_ns": 18_000_000,
+        "total_miss_ns": 955_000_000,
     }
 
 
@@ -392,7 +457,8 @@ def test_render_summary_includes_phase_breakdown(tmp_path, capsys):
     # largest total (compiler_exec at 900ms beats write_output at 312ms).
     breakdown = out.split("Phase breakdown", 1)[1]
     first_data_row = next(
-        line for line in breakdown.splitlines()
+        line
+        for line in breakdown.splitlines()
         if line.startswith("| ") and "Phase" not in line and "---" not in line
     )
     assert "compiler_exec" in first_data_row

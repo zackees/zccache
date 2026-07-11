@@ -6,11 +6,10 @@ Three Docker images (see `ci/docker/README.md`) collaborate:
 1. `zccache-perf-soldr-builder` — rust:alpine + musl-dev. Volume-mounts a
    local soldr checkout, builds a static `soldr` binary into a host-side
    `binaries/soldr/` dir.
-2. `zccache-perf-zccache-builder` — rust:bookworm. Volume-mounts the
-   zccache repo, builds the `zccache` trio into `binaries/zccache/`.
-3. `zccache-perf-runner` — rust:bookworm + bash/tar/zstd/jq. Mounts both
-   binary dirs + the zccache source for `perf/scenarios/`, runs the
-   scenario, writes result.json + cache reports back to host.
+2. `zccache-perf-zccache-builder` — the warmed development image used by
+   local test, lint, formatting, and shell subcommands.
+3. `zccache-perf-runner` — mounts soldr with this checkout's committed
+   zccache HEAD embedded, runs a scenario, and writes reports to the host.
 
 Build state — cargo `/target` and `CARGO_HOME` — lives in named Docker
 volumes (`zccache-perf-target-{soldr,zccache}` and
@@ -160,30 +159,101 @@ def image_exists(tag: str) -> bool:
 
 def build_image(tag: str, dockerfile: Path, context: Path, *, force: bool) -> None:
     if not force and image_exists(tag):
-        print(f"[perf-local] image {tag} already built, skipping (use --rebuild-images to force)")
+        print(
+            f"[perf-local] image {tag} already built, skipping (use --rebuild-images to force)"
+        )
         return
     print(f"[perf-local] building image {tag} from {dockerfile.relative_to(REPO_ROOT)}")
-    run([
-        "docker", "build",
-        "-t", tag,
-        "-f", str(dockerfile),
-        str(context),
-    ])
+    run(
+        [
+            "docker",
+            "build",
+            "-t",
+            tag,
+            "-f",
+            str(dockerfile),
+            str(context),
+        ]
+    )
 
 
 def build_all_images(*, force: bool) -> None:
-    build_image(IMAGE_SOLDR,   DOCKER_DIR / "soldr-builder.Dockerfile",   DOCKER_DIR, force=force)
-    build_image(IMAGE_ZCCACHE, DOCKER_DIR / "zccache-builder.Dockerfile", DOCKER_DIR, force=force)
-    build_image(IMAGE_RUNNER,  DOCKER_DIR / "runner.Dockerfile",          DOCKER_DIR, force=force)
+    build_image(
+        IMAGE_SOLDR, DOCKER_DIR / "soldr-builder.Dockerfile", DOCKER_DIR, force=force
+    )
+    build_image(
+        IMAGE_ZCCACHE,
+        DOCKER_DIR / "zccache-builder.Dockerfile",
+        DOCKER_DIR,
+        force=force,
+    )
+    build_image(IMAGE_RUNNER, DOCKER_DIR / "runner.Dockerfile", DOCKER_DIR, force=force)
 
 
 # ---------------------------------------------------------------------------
 # Source preparation
 
 
+def git_head(repo: Path) -> str:
+    """Return the exact commit checked out in ``repo``."""
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+def git_is_dirty(repo: Path) -> bool:
+    """True when ``repo`` has tracked or untracked working-tree changes."""
+    return bool(
+        subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    )
+
+
+def pin_soldr_zccache_source(soldr_src: Path) -> None:
+    """Build soldr with the zccache checkout under test embedded in it.
+
+    soldr consumes zccache as a git submodule, so cloning soldr alone is no
+    longer enough. Mirror the Perf Cluster workflow: materialize all soldr
+    submodules, then move its zccache submodule to this checkout's exact SHA.
+    """
+    if git_is_dirty(REPO_ROOT):
+        raise RuntimeError(
+            "the zccache checkout is dirty; commit or stash changes before running "
+            "perf_local.py so embedded source cannot differ from the requested run"
+        )
+    zccache_sha = git_head(REPO_ROOT)
+    vendored = soldr_src / "_vender" / "zccache"
+    run(
+        [
+            "git",
+            "-C",
+            str(soldr_src),
+            "submodule",
+            "update",
+            "--init",
+            "--recursive",
+        ]
+    )
+    # Fetch locally so unpublished commits can be measured before push.
+    run(["git", "-C", str(vendored), "fetch", str(REPO_ROOT), zccache_sha])
+    run(["git", "-C", str(vendored), "checkout", "--detach", zccache_sha])
+    actual_sha = git_head(vendored)
+    if actual_sha != zccache_sha:
+        raise RuntimeError(
+            "failed to pin soldr's embedded zccache: "
+            f"expected {zccache_sha}, found {actual_sha}"
+        )
+
+
 def ensure_soldr_source() -> Path:
-    """Shallow-clone soldr's main HEAD into .perf-local/soldr-src/ (or refresh
-    if already there). Returns the checkout path."""
+    """Refresh soldr main and embed this checkout's committed zccache HEAD."""
     src = PERF_LOCAL / "soldr-src"
     if (src / ".git").is_dir():
         print(f"[perf-local] refreshing soldr source at {src}")
@@ -192,11 +262,20 @@ def ensure_soldr_source() -> Path:
     else:
         src.mkdir(parents=True, exist_ok=True)
         print(f"[perf-local] cloning soldr@{SOLDR_REF} -> {src}")
-        run(["git", "clone", "--depth", "1", "--branch", SOLDR_REF, SOLDR_REPO, str(src)])
-    sha = subprocess.run(
-        ["git", "-C", str(src), "rev-parse", "HEAD"],
-        capture_output=True, text=True, check=True,
-    ).stdout.strip()
+        run(
+            [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "--branch",
+                SOLDR_REF,
+                SOLDR_REPO,
+                str(src),
+            ]
+        )
+    pin_soldr_zccache_source(src)
+    sha = git_head(src)
     print(f"[perf-local] soldr-src now at {sha[:12]}")
     return src
 
@@ -208,10 +287,9 @@ def ensure_volume_dirs() -> dict[str, Path]:
     we keep host directories only for things that need to be visible from
     the host file system."""
     layout = {
-        "soldr_src":         PERF_LOCAL / "soldr-src",
-        "bin_soldr":         PERF_LOCAL / "binaries" / "soldr",
-        "bin_zccache":       PERF_LOCAL / "binaries" / "zccache",
-        "results":           PERF_LOCAL / "results",
+        "soldr_src": PERF_LOCAL / "soldr-src",
+        "bin_soldr": PERF_LOCAL / "binaries" / "soldr",
+        "results": PERF_LOCAL / "results",
     }
     for path in layout.values():
         path.mkdir(parents=True, exist_ok=True)
@@ -232,26 +310,22 @@ def host_volume(host: Path, container: str, mode: str = "") -> str:
 
 def run_soldr_builder(layout: dict[str, Path]) -> None:
     print(f"[perf-local] building soldr binary -> {layout['bin_soldr']}")
-    run([
-        "docker", "run", "--rm",
-        "-v", host_volume(layout["soldr_src"],        "/src", "ro"),
-        "-v", f"{VOLUME_TARGET_SOLDR}:/target",
-        "-v", f"{VOLUME_CARGO_HOME_SOLDR}:/cargo-home",
-        "-v", host_volume(layout["bin_soldr"],        "/out"),
-        IMAGE_SOLDR,
-    ])
-
-
-def run_zccache_builder(layout: dict[str, Path]) -> None:
-    print(f"[perf-local] building zccache trio -> {layout['bin_zccache']}")
-    run([
-        "docker", "run", "--rm",
-        "-v", host_volume(REPO_ROOT,                    "/src", "ro"),
-        "-v", f"{VOLUME_TARGET_ZCCACHE}:/target",
-        "-v", f"{VOLUME_CARGO_HOME_ZCCACHE}:/cargo-home",
-        "-v", host_volume(layout["bin_zccache"],        "/out"),
-        IMAGE_ZCCACHE,
-    ])
+    run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            host_volume(layout["soldr_src"], "/src", "ro"),
+            "-v",
+            f"{VOLUME_TARGET_SOLDR}:/target",
+            "-v",
+            f"{VOLUME_CARGO_HOME_SOLDR}:/cargo-home",
+            "-v",
+            host_volume(layout["bin_soldr"], "/out"),
+            IMAGE_SOLDR,
+        ]
+    )
 
 
 def run_scenario(layout: dict[str, Path], scenario: str, fixture: str) -> Path:
@@ -281,17 +355,25 @@ def run_scenario(layout: dict[str, Path], scenario: str, fixture: str) -> Path:
     env_flags: list[str] = []
     for k, v in pass_through_env:
         env_flags.extend(["-e", f"{k}={v}"])
-    run([
-        "docker", "run", "--rm",
-        "-v", host_volume(soldr_bin,              "/usr/local/bin/soldr", "ro"),
-        "-v", host_volume(layout["bin_zccache"],  "/zccache-bin",         "ro"),
-        "-v", host_volume(REPO_ROOT,              "/zccache-src",         "ro"),
-        "-v", host_volume(results_dir,            "/results"),
-        "-e", f"SCENARIO={scenario}",
-        "-e", f"FIXTURE={fixture}",
-        *env_flags,
-        IMAGE_RUNNER,
-    ])
+    run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            host_volume(soldr_bin, "/usr/local/bin/soldr", "ro"),
+            "-v",
+            host_volume(REPO_ROOT, "/zccache-src", "ro"),
+            "-v",
+            host_volume(results_dir, "/results"),
+            "-e",
+            f"SCENARIO={scenario}",
+            "-e",
+            f"FIXTURE={fixture}",
+            *env_flags,
+            IMAGE_RUNNER,
+        ]
+    )
     elapsed = time.monotonic() - start
     print(f"[perf-local] scenario completed in {elapsed:.1f}s")
     return results_dir
@@ -350,7 +432,9 @@ def render_summary(results_dir: Path, scenario: str, fixture: str) -> int:
     cold_ms = result.get(cold_key)
     warm_ms = result.get(warm_key)
     if cold_ms is None or warm_ms is None or warm_ms <= 0:
-        print(f"[perf-local] FAIL: bad timing in result.json (cold={cold_ms} warm={warm_ms})")
+        print(
+            f"[perf-local] FAIL: bad timing in result.json (cold={cold_ms} warm={warm_ms})"
+        )
         return 1
     speedup = cold_ms / warm_ms
 
@@ -463,19 +547,39 @@ def render_phase_breakdown(phase_profile) -> None:
     src_ns = int(phase_profile.get("hash_source_ns") or 0)
     hdr_ns = int(phase_profile.get("hash_headers_ns") or 0)
     rows = [
-        ("parse_args",                  int(phase_profile.get("parse_args_ns") or 0),           hit_count),
-        ("build_context",               int(phase_profile.get("build_context_ns") or 0),         hit_count),
-        ("metadata cache (source+hdrs)", src_ns + hdr_ns,                                        hit_count),
-        ("depgraph_check",              int(phase_profile.get("depgraph_check_ns") or 0),        hit_count),
-        ("request_cache_lookup",        int(phase_profile.get("request_cache_lookup_ns") or 0),  hit_count),
-        ("cross_root_validate",         int(phase_profile.get("cross_root_validate_ns") or 0),   hit_count),
-        ("artifact_lookup",             int(phase_profile.get("artifact_lookup_ns") or 0),       hit_count),
-        ("write_output (materialize)",  int(phase_profile.get("write_output_ns") or 0),          hit_count),
-        ("bookkeeping",                 int(phase_profile.get("bookkeeping_ns") or 0),           hit_count),
-        ("compiler_exec",               int(phase_profile.get("compiler_exec_ns") or 0),         miss_count),
-        ("include_scan",                int(phase_profile.get("include_scan_ns") or 0),          miss_count),
-        ("hash_all",                    int(phase_profile.get("hash_all_ns") or 0),              miss_count),
-        ("artifact_store",              int(phase_profile.get("artifact_store_ns") or 0),        miss_count),
+        ("parse_args", int(phase_profile.get("parse_args_ns") or 0), hit_count),
+        ("build_context", int(phase_profile.get("build_context_ns") or 0), hit_count),
+        ("metadata cache (source+hdrs)", src_ns + hdr_ns, hit_count),
+        ("depgraph_check", int(phase_profile.get("depgraph_check_ns") or 0), hit_count),
+        (
+            "request_cache_lookup",
+            int(phase_profile.get("request_cache_lookup_ns") or 0),
+            hit_count,
+        ),
+        (
+            "cross_root_validate",
+            int(phase_profile.get("cross_root_validate_ns") or 0),
+            hit_count,
+        ),
+        (
+            "artifact_lookup",
+            int(phase_profile.get("artifact_lookup_ns") or 0),
+            hit_count,
+        ),
+        (
+            "write_output (materialize)",
+            int(phase_profile.get("write_output_ns") or 0),
+            hit_count,
+        ),
+        ("bookkeeping", int(phase_profile.get("bookkeeping_ns") or 0), hit_count),
+        ("compiler_exec", int(phase_profile.get("compiler_exec_ns") or 0), miss_count),
+        ("include_scan", int(phase_profile.get("include_scan_ns") or 0), miss_count),
+        ("hash_all", int(phase_profile.get("hash_all_ns") or 0), miss_count),
+        (
+            "artifact_store",
+            int(phase_profile.get("artifact_store_ns") or 0),
+            miss_count,
+        ),
     ]
     rows.sort(key=lambda r: r[1], reverse=True)
 
@@ -540,11 +644,16 @@ def build_zccache_docker_cmd(
     if interactive:
         cmd.append("-it")
     cmd += [
-        "-v", host_volume(REPO_ROOT, "/src", src_mode),
-        "-v", f"{VOLUME_TARGET_ZCCACHE}:/target",
-        "-v", f"{VOLUME_CARGO_HOME_ZCCACHE}:/cargo-home",
-        "-v", f"{VOLUME_RUST_STATE}:/root/.rustup",
-        "-w", "/src",
+        "-v",
+        host_volume(REPO_ROOT, "/src", src_mode),
+        "-v",
+        f"{VOLUME_TARGET_ZCCACHE}:/target",
+        "-v",
+        f"{VOLUME_CARGO_HOME_ZCCACHE}:/cargo-home",
+        "-v",
+        f"{VOLUME_RUST_STATE}:/root/.rustup",
+        "-w",
+        "/src",
     ]
     if bash_script is not None:
         cmd += ["--entrypoint", "/bin/bash", IMAGE_ZCCACHE, "-c", bash_script]
@@ -721,16 +830,6 @@ def main() -> int:
         action="store_true",
         help="Force a rebuild of all three Docker images even if cached.",
     )
-    parser.add_argument(
-        "--skip-soldr-build",
-        action="store_true",
-        help="Skip the soldr-builder run (reuse an existing binary). Useful for fast iteration after a zccache-only change.",
-    )
-    parser.add_argument(
-        "--skip-zccache-build",
-        action="store_true",
-        help="Skip the zccache-builder run (reuse an existing binary). Useful for fast iteration when only the scenario script changed.",
-    )
     args = parser.parse_args()
 
     if not docker_available():
@@ -748,12 +847,8 @@ def main() -> int:
     layout = ensure_volume_dirs()
     build_all_images(force=args.rebuild_images)
 
-    if not args.skip_soldr_build:
-        ensure_soldr_source()
-        run_soldr_builder(layout)
-
-    if not args.skip_zccache_build:
-        run_zccache_builder(layout)
+    ensure_soldr_source()
+    run_soldr_builder(layout)
 
     results_dir = run_scenario(layout, args.scenario, args.fixture)
     return render_summary(results_dir, args.scenario, args.fixture)

@@ -21,8 +21,8 @@ crates changed.
 | Image tag                          | Built from                  | Role                                                                                                |
 |------------------------------------|-----------------------------|-----------------------------------------------------------------------------------------------------|
 | `zccache-perf-soldr-builder`       | `soldr-builder.Dockerfile`  | rust:alpine + musl-dev. Volume-mount soldr source at `/src`, persistent `/target`, drop static `soldr` binary at `/out/soldr`. |
-| `zccache-perf-zccache-builder`     | `zccache-builder.Dockerfile`| rust:bookworm. Volume-mount zccache source at `/src`, persistent `/target`, drop `zccache`/`zccache-daemon`/`zccache-fp` at `/out/`. |
-| `zccache-perf-runner`              | `runner.Dockerfile`         | rust:bookworm + bash/tar/zstd/jq. Mounts the two `/out/` dirs above + the zccache source for scenario scripts + a host-side results dir. Runs `soldr update-zccache` then the scenario script. |
+| `zccache-perf-zccache-builder`     | `zccache-builder.Dockerfile`| rust:bookworm development image used by the local test, lint, and shell subcommands. |
+| `zccache-perf-runner`              | `runner.Dockerfile`         | Runs scenarios with soldr embedding this checkout's committed zccache HEAD. |
 
 ## Volume conventions
 
@@ -38,11 +38,7 @@ All volumes are managed by the orchestrator. The layout under `<repo>/.perf-loca
 │   ├── soldr/                  # so no-op rebuilds don't re-fetch ~175 MiB per run
 │   └── zccache/
 ├── binaries/
-│   ├── soldr/soldr             # static soldr binary produced by builder
-│   └── zccache/                # zccache trio produced by builder
-│       ├── zccache
-│       ├── zccache-daemon
-│       └── zccache-fp
+│   └── soldr/soldr             # static soldr binary with zccache embedded
 └── results/
     └── <scenario>/             # result.json + cache reports per run
 ```

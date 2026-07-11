@@ -241,18 +241,16 @@ uv run python ci/perf_local.py                      # cold-tar-untar-warm × med
 uv run python ci/perf_local.py --scenario worktree-share
 uv run python ci/perf_local.py --fixture sqlite-link
 uv run python ci/perf_local.py --rebuild-images     # force docker build of all 3 images
-uv run python ci/perf_local.py --skip-soldr-build   # fast iteration after zccache-only change
 ```
 
 Architecture:
 
 - **`zccache-perf-soldr-builder`** — rust:alpine + musl-dev. Builds the
   static `soldr` binary at `.perf-local/binaries/soldr/soldr`.
-- **`zccache-perf-zccache-builder`** — rust:bookworm. Builds the
-  `zccache` trio at `.perf-local/binaries/zccache/`.
-- **`zccache-perf-runner`** — rust:bookworm + bash/tar/zstd/jq. Mounts
-  both binary dirs + the zccache source for `perf/scenarios/`, runs the
-  scenario, writes `result.json` + cache reports under
+- **`zccache-perf-zccache-builder`** — rust:bookworm development image
+  retained for the local test, lint, formatting, and shell subcommands.
+- **`zccache-perf-runner`** — runs scenarios with soldr embedding this
+  checkout's committed zccache HEAD and writes reports under
   `.perf-local/results/<scenario>/`.
 
 Source code is **volume-mounted** into the builder containers, and

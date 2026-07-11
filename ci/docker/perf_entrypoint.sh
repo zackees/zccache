@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs inside the zccache-perf-runner container. Reproduces the per-cell
 # bench job from .github/workflows/perf-rust-cluster.yml end-to-end on a
-# pre-built pair of (soldr, zccache trio) binaries.
+# pre-built soldr binary with this checkout's zccache embedded.
 #
 # Env contract (set by ci/perf_local.py):
 #   SCENARIO  - cold-tar-untar-warm | worktree-share | touch-no-change
@@ -9,7 +9,6 @@
 #
 # Mount contract (all required, fail loud if missing):
 #   /usr/local/bin/soldr    - the soldr binary (mode +x)
-#   /zccache-bin/           - {zccache,zccache-daemon,zccache-fp}
 #   /zccache-src/           - the zccache repo (read-only)
 #   /results/               - host-writable; result.json + reports land here
 
@@ -34,38 +33,12 @@ require_mount() {
 require_env SCENARIO
 require_env FIXTURE
 require_mount /usr/local/bin/soldr file
-require_mount /zccache-bin dir
 require_mount /zccache-src dir
 require_mount /results dir
-
-# Confirm binaries are present + executable. The error here is friendlier
-# than the later soldr-side failure if a binary is missing.
-for bin in zccache zccache-daemon zccache-fp; do
-    if [[ ! -x "/zccache-bin/${bin}" ]]; then
-        echo "ERROR: /zccache-bin/${bin} missing or not executable" >&2
-        exit 2
-    fi
-done
 
 # The soldr binary is mounted read-only from the host's binaries/ dir.
 # The builder image set +x on it at build time so no chmod is needed
 # here (and chmod would fail on a read-only mount).
-# `soldr update-zccache` expects a writable copy under its managed dir.
-# We point it at /zccache-bin (read-only mount is fine; soldr copies out).
-soldr update-zccache /zccache-bin --json | tee /results/zccache-pin.json
-soldr update-zccache --status --json | tee /results/zccache-pin-status.json
-
-# Same sanity check as .github/workflows/perf-rust-cluster.yml step
-# "Pin zccache via soldr update-zccache". `.pinned` is an object in the
-# current alias-backed subcommand; non-null + source_kind="path" means a
-# local-path pin is in effect.
-if ! jq -e '.pinned != null and .pinned.source_kind == "path"' \
-        /results/zccache-pin-status.json >/dev/null; then
-    echo "ERROR: soldr update-zccache reports no local-path pin after pinning" >&2
-    cat /results/zccache-pin-status.json >&2
-    exit 1
-fi
-
 # Work dir for the fixture extraction. The scenario scripts write under
 # this dir and expect to own it. We use /tmp/perf-work so the persistent
 # /results volume isn't polluted with intermediate state.
@@ -105,6 +78,10 @@ copy_if_exists "${scenario_root}/cold-shutdown.json"
 copy_if_exists "${scenario_root}/warm-shutdown.json"
 copy_if_exists "${scenario_root}/save-report.json"
 copy_if_exists "${scenario_root}/load-report.json"
+copy_if_exists "${scenario_root}/cache-warm/daemon-spawn.log"
+find "${scenario_root}/cache-warm/cache/soldr-daemon" -maxdepth 3 \
+    -printf '%y %p -> %l\n' >"${scenario_root}/warm-daemon-files.txt" 2>/dev/null || true
+copy_if_exists "${scenario_root}/warm-daemon-files.txt"
 copy_if_exists "${scenario_root}/cold-zccache-logs"
 copy_if_exists "${scenario_root}/warm-zccache-logs"
 copy_if_exists "${scenario_root}/rss-${SCENARIO}.csv"
