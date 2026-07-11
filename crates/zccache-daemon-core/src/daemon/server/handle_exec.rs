@@ -30,6 +30,117 @@ use crate::depgraph::search_paths::IncludeSearchPaths;
 use crate::protocol::{ExecCachePolicy, ExecOutputStreams};
 use dashmap::mapref::entry::Entry;
 
+static EXEC_STAGE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+struct ExecStagedPlan {
+    outputs: Vec<(NormalizedPath, NormalizedPath)>,
+    rewritten_args: Vec<String>,
+    root: PathBuf,
+}
+
+impl ExecStagedPlan {
+    fn build(
+        artifact_dir: &Path,
+        args: &[String],
+        output_files: &[NormalizedPath],
+        cwd: &Path,
+    ) -> Option<Self> {
+        if output_files.is_empty() {
+            return None;
+        }
+        let root = artifact_dir.join(".staged-v2").join(format!(
+            ".exec-{}-{}",
+            std::process::id(),
+            EXEC_STAGE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).ok()?;
+        let result = (|| {
+            let mut outputs = Vec::with_capacity(output_files.len());
+            let mut rewritten_args = args.to_vec();
+            for declared in output_files {
+                let requested: NormalizedPath = absolutize(declared.as_path(), cwd).into();
+                let filename = requested.file_name()?;
+                let staged: NormalizedPath = root.join(filename).into();
+                if outputs
+                    .iter()
+                    .any(|(_, existing): &(NormalizedPath, NormalizedPath)| existing == &staged)
+                {
+                    return None;
+                }
+                let requested_text = requested.to_string_lossy();
+                let declared_text = declared.to_string_lossy();
+                let mut replaced = false;
+                for arg in &mut rewritten_args {
+                    if arg == requested_text.as_ref() || arg == declared_text.as_ref() {
+                        *arg = staged.to_string_lossy().into_owned();
+                        replaced = true;
+                    }
+                }
+                if !replaced {
+                    return None;
+                }
+                outputs.push((requested, staged));
+            }
+            Some(Self {
+                outputs,
+                rewritten_args,
+                root: root.clone(),
+            })
+        })();
+        if result.is_none() {
+            let _ = std::fs::remove_dir_all(&root);
+        }
+        result
+    }
+
+    fn staged_paths(&self) -> Vec<NormalizedPath> {
+        self.outputs
+            .iter()
+            .map(|(_, staged)| staged.clone())
+            .collect()
+    }
+
+    fn materialize(&self) -> std::io::Result<()> {
+        for (requested, staged) in &self.outputs {
+            if let Some(parent) = requested.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            crate::daemon::server::persist::materialize_independent(
+                staged.as_path(),
+                requested.as_path(),
+            )?;
+        }
+        self.cleanup()
+    }
+
+    fn cleanup(&self) -> std::io::Result<()> {
+        std::fs::remove_dir_all(&self.root).or_else(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        })
+    }
+}
+
+impl Drop for ExecStagedPlan {
+    fn drop(&mut self) {
+        let _ = self.cleanup();
+    }
+}
+
+fn exec_staging_enabled() -> bool {
+    std::env::var(crate::daemon::server::persist::STAGED_ARTIFACTS_ENV)
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "all" | "1" | "true" | "yes" | "on" | "exec"
+            )
+        })
+}
+
 /// Domain separation tag for generic-exec cache keys. v2 covers Path A +
 /// Path B + filtered args; v1 callers (PROTOCOL_VERSION 10) are no longer
 /// wire-compatible since the protocol version itself shifted to 11.
@@ -197,9 +308,22 @@ pub(super) async fn handle_generic_tool_exec(
         // for us, not the original runner.
     }
 
-    // 9. Cache miss — run the tool.
-    for declared in output_files {
-        let path = absolutize(declared.as_path(), cwd);
+    // 9. Cache miss — stage declared outputs only when the tool's argv gives
+    // us an unambiguous exact-token rewrite for every output. Opaque output
+    // syntax remains on the legacy path before spawn.
+    let staged_plan = if exec_staging_enabled() {
+        ExecStagedPlan::build(&state.artifact_dir, args, output_files, cwd)
+    } else {
+        None
+    };
+    let compiler_args = staged_plan
+        .as_ref()
+        .map_or(args, |plan| plan.rewritten_args.as_slice());
+    let execution_outputs = staged_plan
+        .as_ref()
+        .map_or_else(|| output_files.to_vec(), ExecStagedPlan::staged_paths);
+    for path in &execution_outputs {
+        let path = path.as_path();
         if let Err(error) = break_output_hardlink_before_compile(&path) {
             tracing::warn!(
                 event = "exec_output_detach_failed",
@@ -212,7 +336,7 @@ pub(super) async fn handle_generic_tool_exec(
             };
         }
     }
-    let output = match spawn_tool(tool, args, cwd, &env).await {
+    let output = match spawn_tool(tool, compiler_args, cwd, &env).await {
         Ok(o) => o,
         Err(e) => {
             return Response::Error {
@@ -236,7 +360,8 @@ pub(super) async fn handle_generic_tool_exec(
     // 10. Snapshot declared output files. A missing declared file marks the
     //     run uncacheable — the next request can't replay something we
     //     never captured.
-    let (captured_outputs, cache_outputs, all_captured) = snapshot_output_files(output_files, cwd);
+    let (captured_outputs, cache_outputs, all_captured) =
+        snapshot_output_files(output_files, &execution_outputs, cwd);
 
     // 11. Path B: after a successful run, parse the depfile the tool wrote,
     //     persist the dep set under the primary key, and re-compose the
@@ -297,6 +422,19 @@ pub(super) async fn handle_generic_tool_exec(
             key = %final_full_hex,
             "exec marked non-deterministic; not storing"
         );
+    }
+
+    if let Some(plan) = staged_plan.as_ref() {
+        if !all_captured {
+            return Response::Error {
+                message: "successful generic tool omitted a staged output".to_string(),
+            };
+        }
+        if let Err(error) = plan.materialize() {
+            return Response::Error {
+                message: format!("failed to materialize generic tool outputs: {error}"),
+            };
+        }
     }
 
     drop(coalesce_guard); // Releasing the guard wakes any waiters.
@@ -747,13 +885,14 @@ async fn spawn_tool(
 
 fn snapshot_output_files(
     output_files: &[NormalizedPath],
+    actual_paths: &[NormalizedPath],
     cwd: &Path,
 ) -> (Vec<ArtifactOutput>, Vec<ArtifactOutput>, bool) {
     let mut captured_outputs: Vec<ArtifactOutput> = Vec::with_capacity(output_files.len());
     let mut cache_outputs: Vec<ArtifactOutput> = Vec::with_capacity(output_files.len());
     let mut all_captured = true;
-    for declared in output_files {
-        let abs: PathBuf = absolutize(declared.as_path(), cwd);
+    for (declared, actual) in output_files.iter().zip(actual_paths) {
+        let abs: PathBuf = absolutize(actual.as_path(), cwd);
         match std::fs::read(&abs) {
             Ok(bytes) => {
                 let payload = ArtifactPayload::Bytes(Arc::new(bytes));
