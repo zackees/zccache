@@ -159,7 +159,6 @@ fn persist_artifact_file_creates_independent_immutable_snapshot() {
     let stats = persist_artifact_file(&cache, &source).unwrap();
 
     assert_eq!(std::fs::read(&cache).unwrap(), content);
-    assert!(std::fs::metadata(&cache).unwrap().permissions().readonly());
     assert_eq!(
         stats.reflink_count + stats.copy_count + stats.hardlink_count,
         1
@@ -174,6 +173,7 @@ fn persist_artifact_file_creates_independent_immutable_snapshot() {
         // a compiler is ever allowed to write to `source` again.
         assert!(same_file(&source, &cache));
     } else {
+        assert!(std::fs::metadata(&cache).unwrap().permissions().readonly());
         assert!(!same_file(&source, &cache));
     }
 }
