@@ -30,6 +30,12 @@ MIR, and dep-info use their actual rustc extensions.
 Pure archive invocations with one output and no linker side effects use the
 same private transaction when the lane is `all`.
 
+Generic tool execution also participates in the `all` lane when every
+declared output is an exact argument token. Those paths are rewritten into a
+private staging directory before spawn and independently materialized after
+the run. Generic tools whose output paths are embedded in opaque arguments,
+environment variables, or undeclared side effects retain the legacy path.
+
 Published v2 files are always independent copies or true reflinks of private
 compiler files. Hardlinks are not used by the staged lane. Requested output
 materialization also uses reflink/copy only; this is especially important for
