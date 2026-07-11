@@ -227,7 +227,7 @@ pub fn restore_rust_plan_local(
     }
 
     let eligible = manifest.artifacts.len() as u64;
-    restore_manifest_artifacts(plan, &bundle_dir, &manifest, &mut summary)?;
+    restore_manifest_artifacts(plan, &bundle_dir, &manifest, &mut summary, false)?;
 
     summary.refresh_effectiveness(eligible);
     Ok(summary)
@@ -238,6 +238,7 @@ fn restore_manifest_artifacts(
     bundle_dir: &Path,
     manifest: &RustArtifactBundleManifest,
     summary: &mut RustPlanSummary,
+    allow_overwrite_existing: bool,
 ) -> Result<(), RustPlanError> {
     let files_dir = bundle_dir.join(BUNDLE_FILES_DIR);
     for deleted_path in &manifest.deleted_paths {
@@ -260,7 +261,15 @@ fn restore_manifest_artifacts(
         manifest
             .artifacts
             .iter()
-            .map(|artifact| restore_one_artifact(plan, &files_dir, artifact, verify_blake3))
+            .map(|artifact| {
+                restore_one_artifact(
+                    plan,
+                    &files_dir,
+                    artifact,
+                    verify_blake3,
+                    allow_overwrite_existing,
+                )
+            })
             .collect::<Vec<_>>()
     } else {
         let pool = rayon::ThreadPoolBuilder::new()
@@ -276,7 +285,15 @@ fn restore_manifest_artifacts(
             manifest
                 .artifacts
                 .par_iter()
-                .map(|artifact| restore_one_artifact(plan, &files_dir, artifact, verify_blake3))
+                .map(|artifact| {
+                    restore_one_artifact(
+                        plan,
+                        &files_dir,
+                        artifact,
+                        verify_blake3,
+                        allow_overwrite_existing,
+                    )
+                })
                 .collect()
         })
     };
@@ -345,6 +362,7 @@ fn restore_one_artifact(
     files_dir: &Path,
     artifact: &RustBundledArtifact,
     verify_blake3: bool,
+    allow_overwrite_existing: bool,
 ) -> RestoreArtifactOutcome {
     let path = artifact.relative_path.clone();
     let src = match safe_join(files_dir, &path) {
@@ -397,12 +415,27 @@ fn restore_one_artifact(
             };
         }
     }
+    if dst.exists() && !allow_overwrite_existing {
+        let matches_manifest = std::fs::metadata(&dst)
+            .is_ok_and(|metadata| {
+                metadata.len() == artifact.size
+                    && zccache_hash::hash_file(&dst)
+                        .map(|hash| hash.to_hex() == artifact.content_hash)
+                        .unwrap_or(false)
+            });
+        return RestoreArtifactOutcome::Skipped {
+            path,
+            reason: if matches_manifest {
+                "destination_already_present"
+            } else {
+                "destination_conflict"
+            },
+            error: None,
+        };
+    }
     let result = (|| -> std::io::Result<()> {
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)?;
-        }
-        if dst.exists() {
-            std::fs::remove_file(&dst)?;
         }
         restore_bundle_file(&src, &dst)?;
         if let Ok(file) = std::fs::File::open(&dst) {
@@ -557,7 +590,7 @@ pub fn restore_rust_plan_layered_local(
         let manifest = read_bundle_manifest(&base_bundle_dir)?;
         if validate_manifest(plan, &cache_key, &manifest, &mut summary)? {
             eligible += manifest.artifacts.len() as u64;
-            restore_manifest_artifacts(plan, &base_bundle_dir, &manifest, &mut summary)?;
+            restore_manifest_artifacts(plan, &base_bundle_dir, &manifest, &mut summary, true)?;
         }
     } else {
         summary.record_skip("<base-bundle>", "base_bundle_missing_for_layered_restore");
@@ -567,7 +600,7 @@ pub fn restore_rust_plan_layered_local(
         let manifest = read_bundle_manifest(&delta_bundle_dir)?;
         if validate_manifest(plan, &cache_key, &manifest, &mut summary)? {
             eligible += manifest.artifacts.len() as u64;
-            restore_manifest_artifacts(plan, &delta_bundle_dir, &manifest, &mut summary)?;
+            restore_manifest_artifacts(plan, &delta_bundle_dir, &manifest, &mut summary, true)?;
         }
     } else {
         summary.record_skip("<delta-bundle>", "delta_bundle_missing_for_layered_restore");

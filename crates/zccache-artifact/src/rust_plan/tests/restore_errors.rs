@@ -94,6 +94,28 @@ fn restore_skips_missing_wrong_size_and_wrong_hash_payloads() {
 }
 
 #[test]
+fn restore_overlays_missing_files_without_overwriting_existing_conflicts() {
+    let dir = tempfile::tempdir().unwrap();
+    synthetic_target(dir.path());
+    let plan = sample_plan(dir.path(), RustPlanMode::Thin);
+    let cache = dir.path().join("cache");
+
+    save_rust_plan_local(&plan, &cache).unwrap();
+    let existing = plan.target_dir.join("debug/deps/libserde-abc.rlib");
+    std::fs::write(&existing, b"local-conflict").unwrap();
+    let missing = plan.target_dir.join("debug/deps/libserde-abc.rmeta");
+    let missing_original = std::fs::read(&missing).unwrap();
+    std::fs::remove_file(&missing).unwrap();
+
+    let restored = restore_rust_plan_local(&plan, &cache).unwrap();
+
+    assert_eq!(std::fs::read(&existing).unwrap(), b"local-conflict");
+    assert_eq!(std::fs::read(&missing).unwrap(), missing_original);
+    assert_eq!(restored.skipped_reasons.get("destination_conflict"), Some(&1));
+    assert_eq!(restored.restored_file_count, 1);
+}
+
+#[test]
 fn restore_rejects_corrupted_payload_when_full_verification_is_enabled() {
     let _verify = FullVerifyEnvGuard::enable();
     let dir = tempfile::tempdir().unwrap();
