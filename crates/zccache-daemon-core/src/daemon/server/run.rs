@@ -33,6 +33,49 @@ impl DaemonServer {
         let cache_dir = self.state.cache_dir.clone();
         let temp_root = std::env::temp_dir();
 
+        // Migrate legacy blob digests once per cache root. Keep this off the
+        // Tokio runtime thread because the helper hashes files synchronously.
+        // The marker is published only after a successful migration so a
+        // failed attempt remains retryable on the next daemon start.
+        {
+            let cache_dir = cache_dir.clone();
+            let artifact_dir = self.state.artifact_dir.clone();
+            tokio::spawn(async move {
+                let marker = cache_dir.join(".legacy-blob-digests-migrated-v1");
+                if marker.exists() {
+                    tracing::debug!(path = %marker.display(), "legacy blob digest migration already complete");
+                    return;
+                }
+
+                let migration_root = artifact_dir;
+                let result = tokio::task::spawn_blocking(move || {
+                    let migrated = migrate_legacy_blob_digests(&migration_root)?;
+                    use std::io::Write;
+                    let mut marker_file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&marker)?;
+                    marker_file.write_all(b"v1\n")?;
+                    marker_file.sync_all()?;
+                    Ok::<usize, std::io::Error>(migrated)
+                })
+                .await;
+
+                match result {
+                    Ok(Ok(migrated)) => {
+                        tracing::info!(migrated, "legacy blob digest migration complete")
+                    }
+                    Ok(Err(error)) => tracing::warn!(
+                        path = %cache_dir.display(),
+                        "legacy blob digest migration failed: {error}"
+                    ),
+                    Err(error) => {
+                        tracing::warn!("legacy blob digest migration task failed: {error}")
+                    }
+                }
+            });
+        }
+
         // Clean up legacy log backup directory (Bug 7).
         {
             let legacy_logs = cache_dir.join("logs.bak");

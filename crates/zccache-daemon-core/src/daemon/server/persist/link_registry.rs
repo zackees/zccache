@@ -211,6 +211,49 @@ fn read_authoritative_blob_digest(blob_path: &Path) -> std::io::Result<Option<[u
     }
 }
 
+fn is_digest_migration_excluded(path: &Path) -> bool {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    name.starts_with(".cowhash-") || name.contains(".tmp-")
+}
+
+/// Backfill digest sidecars for blobs written before durable sidecars existed.
+///
+/// This is intended as a one-time startup migration. A valid sidecar makes a
+/// blob a no-op on subsequent runs; files that disappear between enumeration
+/// and hashing or sidecar publication are ignored as stale entries.
+pub(in crate::daemon::server) fn migrate_legacy_blob_digests(
+    artifact_dir: &Path,
+) -> std::io::Result<usize> {
+    let mut migrated = 0;
+    for entry in std::fs::read_dir(artifact_dir)? {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        if is_digest_migration_excluded(&path) {
+            continue;
+        }
+        let is_file = match entry.file_type() {
+            Ok(file_type) => file_type.is_file(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if !is_file {
+            continue;
+        }
+        if read_authoritative_blob_digest(&path)?.is_some() {
+            continue;
+        }
+        match write_authoritative_blob_digest_for(&path, &path) {
+            Ok(()) => migrated += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(migrated)
+}
+
 pub(in crate::daemon::server) fn register_hardlink(
     blob_path: &Path,
     output_path: &Path,

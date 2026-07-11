@@ -285,6 +285,32 @@ fn verify_registered_blob_evicts_undigested_blob_even_when_singly_linked() {
     assert!(!cache.exists(), "unverifiable blob must be evicted");
 }
 
+#[test]
+fn legacy_digest_migration_preserves_blob_and_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("legacy.rlib");
+    let content = b"blob written by a legacy zccache version";
+    std::fs::write(&cache, content).unwrap();
+
+    // Migrate the legacy digest-less blob, then repeat the migration to prove
+    // that an already-migrated blob is left unchanged.
+    assert_eq!(migrate_legacy_blob_digests(dir.path()).unwrap(), 1);
+    let migrated_content = std::fs::read(&cache).unwrap();
+    assert_eq!(migrate_legacy_blob_digests(dir.path()).unwrap(), 0);
+    assert_eq!(std::fs::read(&cache).unwrap(), migrated_content);
+
+    // Simulate a daemon restart: durable verification must retain the blob.
+    forget_blob_registration_for_restart_test(&cache);
+    verify_registered_blob(&cache).expect("migrated legacy blob must survive restart verification");
+    assert_eq!(std::fs::read(&cache).unwrap(), content);
+
+    // Verify the durable sidecar path again after forgetting the rebuilt
+    // in-memory record; migration and restart verification must be repeatable.
+    forget_blob_registration_for_restart_test(&cache);
+    verify_registered_blob(&cache).unwrap();
+    assert_eq!(std::fs::read(&cache).unwrap(), content);
+}
+
 /// Regression test for issue #1042 finding #3: a failed identity resolution
 /// on a fresh hardlink registration (the output was never actually
 /// created — standing in for get_file_id() failing transiently right after
