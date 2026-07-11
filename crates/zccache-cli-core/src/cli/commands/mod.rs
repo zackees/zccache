@@ -54,6 +54,19 @@ pub fn run_embedded_rustfmt(
 /// the process exit code.
 pub fn run() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
+    run_with_args(&args)
+}
+
+/// Parse and dispatch an explicit full argv vector.
+///
+/// Embedders use this entrypoint to invoke daemon-free CLI subcommands without
+/// spawning a standalone `zccache` process. `args[0]` is the synthetic program
+/// name, matching the shape returned by [`std::env::args`].
+pub fn run_with_args(args: &[String]) -> ExitCode {
+    if args.is_empty() {
+        eprintln!("zccache: explicit argv must include a program name");
+        return ExitCode::FAILURE;
+    }
 
     // #998: hidden argv[0]-independent escape hatch into the daemon.
     // `zccache daemon-run <daemon-flags…>` forwards to the daemon entry with a
@@ -91,7 +104,7 @@ pub fn run() -> ExitCode {
     }
 
     use clap::Parser;
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(args);
     let global_strict_paths = cli.strict_paths.clone();
 
     init_tracing();

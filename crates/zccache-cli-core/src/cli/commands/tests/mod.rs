@@ -8,6 +8,7 @@ mod cache_ops;
 mod daemon;
 mod engine_profile;
 mod exit_code;
+mod run_with_args;
 mod session_warnings;
 mod snapshot;
 mod util;
