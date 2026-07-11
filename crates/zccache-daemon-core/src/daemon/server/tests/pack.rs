@@ -66,7 +66,7 @@ fn persist_artifact_payloads_unpacked_layout() {
 }
 
 #[test]
-fn persist_artifact_paths_detaches_compiler_outputs_in_unpacked_layout() {
+fn persist_artifact_paths_preserves_compiler_output_writability() {
     std::env::remove_var("ZCCACHE_PACK_ARTIFACTS");
     let dir = tempfile::tempdir().unwrap();
     let key = "deadc0de";
@@ -86,16 +86,11 @@ fn persist_artifact_paths_detaches_compiler_outputs_in_unpacked_layout() {
     assert_eq!(std::fs::read(&cache_a).unwrap(), b"rlib-bytes");
     assert_eq!(std::fs::read(&cache_b).unwrap(), b"rmeta-bytes");
 
-    // Persistence must never make the compiler output an alias of an
-    // immutable cache blob. Reflink or copy keeps later compiler writes
-    // private; inode inequality proves that contract on Unix.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let src_ino = std::fs::metadata(&src_a).unwrap().ino();
-        let cache_ino = std::fs::metadata(&cache_a).unwrap().ino();
-        assert_ne!(src_ino, cache_ino, "cache blob must not share source inode");
-    }
+    // A hardlink-tier store may intentionally share the source inode, but
+    // persistence must never apply the cache blob's read-only bit through
+    // that alias and make the still-live compiler output unwritable.
+    assert!(!std::fs::metadata(&src_a).unwrap().permissions().readonly());
+    assert!(!std::fs::metadata(&src_b).unwrap().permissions().readonly());
 }
 
 #[test]

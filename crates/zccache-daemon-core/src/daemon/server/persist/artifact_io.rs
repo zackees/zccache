@@ -253,7 +253,13 @@ pub(in crate::daemon::server) fn persist_artifact_file(
         // since std::fs::hard_link fails if the destination already exists.
         let _ = std::fs::remove_file(&tmp_path);
         if std::fs::hard_link(source_path, &tmp_path).is_ok() {
-            set_readonly(&tmp_path, readonly_enabled())?;
+            // The hardlink shares the compiler output's inode. Changing its
+            // read-only bit through `tmp_path` would also make the still-live
+            // source path read-only (and on Windows changes its FILE_ATTRIBUTE_READONLY),
+            // causing the next compiler/link step to fail with access denied.
+            // The hardlink registry's digest verification protects this
+            // shared store entry; permission hardening is reserved for
+            // independent reflink/copy blobs.
             digest.write_for(&tmp_path, cache_path)?;
             replace_artifact_cache_file(&tmp_path, cache_path)?;
             return Ok(PersistArtifactFileStats {
