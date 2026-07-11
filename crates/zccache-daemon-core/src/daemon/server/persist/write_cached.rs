@@ -37,10 +37,14 @@ fn materialize_cached_file(out_path: &Path, cache_file: &Path) -> std::io::Resul
         touch_mtime(out_path);
         return Ok(());
     }
-    if hardlink_below_limit(
-        caps,
-        hard_link_count(cache_file).unwrap_or(caps.hardlink_limit),
-    ) {
+    // A failed link-count query must not be read as "at capacity" — that
+    // silently defeats the hardlink tier (falls through to a full copy)
+    // on every transient stat/handle failure. Fall back to 0 (unknown ==
+    // assume no existing links yet) like the other `hard_link_count`
+    // call sites in this module; a genuinely-too-many-links file still
+    // fails the real `std::fs::hard_link` call below, which already has
+    // a graceful copy fallback.
+    if hardlink_below_limit(caps, hard_link_count(cache_file).unwrap_or_default()) {
         set_readonly(cache_file, readonly_enabled())?;
         let registration = prepare_hardlink_registration(cache_file, out_path)?;
         if std::fs::hard_link(cache_file, out_path).is_ok() {
