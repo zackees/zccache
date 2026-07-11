@@ -196,7 +196,7 @@ remove read-only attributes before deletion.
 `ZCCACHE_DISABLE_REFLINK=1` disables cloning and `ZCCACHE_COW_READONLY=0`
 disables read-only enforcement. Neither setting adds an IPC roundtrip.
 Unsupported shapes—including multi-source compiler invocations, C++ modules,
-linker side outputs, generic exec, and stdout output—remain on the
+linker side outputs, opaque generic exec, and stdout output—remain on the
 legacy path before compiler spawn. Explicit Rust `--emit=kind=path`
 destinations are included in the complete cache-hit reverse map. The staged
 lane remains opt-in for output families that do not yet have complete-set
