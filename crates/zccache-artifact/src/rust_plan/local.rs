@@ -15,7 +15,7 @@ use super::schema::{
     ensure_supported_cache_schema_version, RustArtifactClass, RustArtifactPlanV1, RustPlanError,
     RUST_ARTIFACT_CACHE_SCHEMA_VERSION,
 };
-use super::selection::{collect_files, select_artifacts, SelectedArtifact};
+use super::selection::{resolve_cargo_artifacts, select_artifacts, SelectedArtifact};
 use super::summary::{RustPlanOperation, RustPlanSummary};
 use super::threads::resolve_rust_plan_tar_threads;
 
@@ -81,8 +81,7 @@ pub fn save_rust_plan_local(
         plan.journal_log_path.clone(),
     );
 
-    let mut candidates = Vec::new();
-    collect_files(plan.target_dir.as_path(), &mut candidates)?;
+    let mut candidates = resolve_cargo_artifacts(plan)?;
     candidates.sort();
 
     let selected = select_artifacts(plan, candidates, &mut summary);
@@ -503,8 +502,7 @@ pub fn save_rust_plan_delta_local(
         })
         .unwrap_or_default();
 
-    let mut candidates = Vec::new();
-    collect_files(plan.target_dir.as_path(), &mut candidates)?;
+    let mut candidates = resolve_cargo_artifacts(plan)?;
     candidates.sort();
     let selected = select_artifacts(plan, candidates, &mut summary);
 

@@ -42,6 +42,10 @@ pub(super) mod rust_plan_proto {
         pub cache_profile: String,
         #[prost(uint32, repeated, tag = "14")]
         pub dropped_artifact_classes: Vec<u32>,
+        #[prost(string, repeated, tag = "15")]
+        pub cargo_artifact_paths: Vec<String>,
+        #[prost(bool, tag = "16")]
+        pub cargo_artifacts_complete: bool,
     }
 
     #[derive(Clone, PartialEq, ::prost::Message)]
@@ -272,6 +276,8 @@ pub(super) fn plan_to_proto(plan: &RustArtifactPlanV1) -> rust_plan_proto::RustA
             .copied()
             .map(artifact_class_to_proto)
             .collect(),
+        cargo_artifact_paths: plan.cargo_artifact_paths.clone(),
+        cargo_artifacts_complete: plan.cargo_artifacts_complete,
     }
 }
 
@@ -332,6 +338,8 @@ pub(super) fn plan_from_proto(
             .into_iter()
             .map(artifact_class_from_proto)
             .collect::<Result<Vec<_>, RustPlanError>>()?,
+        cargo_artifact_paths: proto.cargo_artifact_paths,
+        cargo_artifacts_complete: proto.cargo_artifacts_complete,
     };
     plan.validate()?;
     Ok(plan)

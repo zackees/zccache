@@ -254,6 +254,46 @@ pub(super) fn collect_files(
     Ok(())
 }
 
+/// Use Cargo's post-build artifact closure when it is complete and safe.
+/// Any malformed or stale entry conservatively falls back to the recursive
+/// target walk so an incomplete message stream cannot under-save a target.
+pub(super) fn resolve_cargo_artifacts(
+    plan: &RustArtifactPlanV1,
+) -> Result<Vec<NormalizedPath>, RustPlanError> {
+    if !plan.cargo_artifacts_complete {
+        let mut files = Vec::new();
+        collect_files(plan.target_dir.as_path(), &mut files)?;
+        return Ok(files);
+    }
+
+    let mut files = Vec::with_capacity(plan.cargo_artifact_paths.len());
+    for relative in &plan.cargo_artifact_paths {
+        let path = Path::new(relative);
+        if path.is_absolute()
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+        {
+            let mut fallback = Vec::new();
+            collect_files(plan.target_dir.as_path(), &mut fallback)?;
+            return Ok(fallback);
+        }
+        let full = plan.target_dir.join(path);
+        if !full.is_file() {
+            let mut fallback = Vec::new();
+            collect_files(plan.target_dir.as_path(), &mut fallback)?;
+            return Ok(fallback);
+        }
+        files.push(NormalizedPath::new(full));
+    }
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
 fn relative_path_string(path: &Path) -> String {
     path.components()
         .filter_map(|component| match component {

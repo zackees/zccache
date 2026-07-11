@@ -57,6 +57,8 @@ pub(super) fn sample_plan(root: &Path, mode: RustPlanMode) -> RustArtifactPlanV1
         journal_log_path: Some(root.join("zccache-session.jsonl").into()),
         cache_profile: None,
         dropped_artifact_classes: Vec::new(),
+        cargo_artifact_paths: Vec::new(),
+        cargo_artifacts_complete: false,
     }
 }
 

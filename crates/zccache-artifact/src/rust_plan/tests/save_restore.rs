@@ -40,6 +40,47 @@ fn thin_save_restore_selects_dependency_artifacts_and_metadata() {
 }
 
 #[test]
+fn complete_cargo_closure_avoids_unreported_target_files() {
+    let dir = tempfile::tempdir().unwrap();
+    synthetic_target(dir.path());
+    let plan = RustArtifactPlanV1 {
+        cargo_artifact_paths: vec![
+            "debug/deps/libserde-abc.rlib".to_string(),
+            "debug/.fingerprint/serde-abc/dep-lib-serde".to_string(),
+        ],
+        cargo_artifacts_complete: true,
+        ..sample_plan(dir.path(), RustPlanMode::Thin)
+    };
+    let cache = dir.path().join("cache");
+
+    let saved = save_rust_plan_local(&plan, &cache).unwrap();
+    assert_eq!(saved.saved_file_count, 2);
+    let manifest = load_manifest(&rust_plan_bundle_dir(
+        &cache,
+        &rust_plan_cache_key(&plan),
+    ));
+    assert!(manifest
+        .artifacts
+        .iter()
+        .all(|artifact| artifact.relative_path != "debug/deps/libapp-abc.rlib"));
+}
+
+#[test]
+fn invalid_cargo_closure_falls_back_to_recursive_walk() {
+    let dir = tempfile::tempdir().unwrap();
+    synthetic_target(dir.path());
+    let plan = RustArtifactPlanV1 {
+        cargo_artifact_paths: vec!["../outside.rlib".to_string()],
+        cargo_artifacts_complete: true,
+        ..sample_plan(dir.path(), RustPlanMode::Thin)
+    };
+    let cache = dir.path().join("cache");
+
+    let saved = save_rust_plan_local(&plan, &cache).unwrap();
+    assert_eq!(saved.saved_file_count, 6);
+}
+
+#[test]
 fn save_writes_protobuf_manifest_and_restore_preserves_mtime() {
     let dir = tempfile::tempdir().unwrap();
     synthetic_target(dir.path());

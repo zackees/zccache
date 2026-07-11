@@ -191,6 +191,11 @@ pub struct RustArtifactPlanV1 {
     /// allow-list. Empty for legacy plans.
     #[serde(default)]
     pub dropped_artifact_classes: Vec<RustArtifactClass>,
+    /// Relative paths reported by Cargo's JSON artifact stream.
+    #[serde(default)]
+    pub cargo_artifact_paths: Vec<String>,
+    #[serde(default)]
+    pub cargo_artifacts_complete: bool,
 }
 
 impl RustArtifactPlanV1 {

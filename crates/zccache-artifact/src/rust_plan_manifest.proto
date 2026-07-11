@@ -17,6 +17,8 @@ message RustArtifactPlanV1 {
   string journal_log_path = 12;
   string cache_profile = 13;
   repeated uint32 dropped_artifact_classes = 14;
+  repeated string cargo_artifact_paths = 15;
+  bool cargo_artifacts_complete = 16;
 }
 
 message RustToolchainIdentity {
