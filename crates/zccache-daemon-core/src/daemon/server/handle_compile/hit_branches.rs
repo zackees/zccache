@@ -109,6 +109,8 @@ pub(super) fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Option<R
     } else {
         "HIT_WORKTREE_REQUEST"
     };
+    let rustc_requested_outputs =
+        rustc_explicit_requested_outputs(effective_args, &output_path, cwd);
     materialize_cached_compile_hit(CachedHitMaterializeRequest {
         state,
         sid,
@@ -123,7 +125,7 @@ pub(super) fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Option<R
         record_compilation: true,
         downgrade_output_metadata: false,
         mtime_floor_paths,
-        rustc_metadata_compat_outputs: None,
+        rustc_metadata_compat_outputs: rustc_requested_outputs,
         phases: CachedHitPhases::request_cache(request_cache_lookup_ns, cross_root_validate_ns),
     })
 }
@@ -228,6 +230,11 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
     let input_paths = request_cache_input_paths(state, &context_key, source_path, ctx);
     let current_depfile_dest: Option<NormalizedPath> =
         dep_flags.and_then(|flags| user_depfile_destination(flags, output_path.as_path()));
+    let rustc_requested_outputs = if is_rustc {
+        rustc_explicit_requested_outputs(effective_args, output_path, cwd_path)
+    } else {
+        None
+    };
     let response = materialize_cached_compile_hit(CachedHitMaterializeRequest {
         state,
         sid,
@@ -242,7 +249,7 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
         record_compilation: false,
         downgrade_output_metadata: true,
         mtime_floor_paths: input_paths.clone(),
-        rustc_metadata_compat_outputs: None,
+        rustc_metadata_compat_outputs: rustc_requested_outputs,
         phases: CachedHitPhases {
             parse_args_ns,
             build_context_ns,
@@ -346,6 +353,11 @@ pub(super) async fn try_depgraph_cached_hit(probe: DepgraphHitProbe<'_>) -> Opti
     let input_paths = request_cache_input_paths(state, &context_key, source_path, ctx);
     let current_depfile_dest: Option<NormalizedPath> =
         dep_flags.and_then(|flags| user_depfile_destination(flags, output_path.as_path()));
+    let rustc_requested_outputs = if is_rustc {
+        rustc_explicit_requested_outputs(effective_args, output_path, cwd_path)
+    } else {
+        None
+    };
 
     // Rustc miss storage publishes a pending in-memory artifact immediately,
     // then hardlinks/copies the output payloads to the artifact directory on a
@@ -373,7 +385,7 @@ pub(super) async fn try_depgraph_cached_hit(probe: DepgraphHitProbe<'_>) -> Opti
         record_compilation: false,
         downgrade_output_metadata: true,
         mtime_floor_paths: input_paths.clone(),
-        rustc_metadata_compat_outputs: None,
+        rustc_metadata_compat_outputs: rustc_requested_outputs,
         phases: CachedHitPhases {
             parse_args_ns,
             build_context_ns,
@@ -418,4 +430,24 @@ pub(super) async fn try_depgraph_cached_hit(probe: DepgraphHitProbe<'_>) -> Opti
         );
     }
     Some(response)
+}
+
+/// Explicit Rust `--emit=kind=path` destinations are part of the request
+/// shape, but the cache payload names are the producer's names.  Supply the
+/// current request's complete output map so a hit restores custom destinations
+/// instead of placing payloads beside the primary output by basename.
+fn rustc_explicit_requested_outputs(
+    effective_args: &[String],
+    output_path: &NormalizedPath,
+    cwd: &Path,
+) -> Option<Vec<NormalizedPath>> {
+    let parsed = crate::depgraph::parse_rustc_args(effective_args, cwd);
+    if parsed.explicit_emit_paths.is_empty() {
+        return None;
+    }
+    Some(crate::daemon::server::rustc_expected_output_paths(
+        &parsed,
+        output_path.as_path(),
+        cwd,
+    ))
 }

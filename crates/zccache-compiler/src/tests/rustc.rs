@@ -320,7 +320,10 @@ fn rustc_explicit_emit_link_path_is_the_primary_output() {
         panic!("expected cacheable rustc invocation");
     };
     assert_eq!(
-        compilation.output_file.file_name().and_then(|name| name.to_str()),
+        compilation
+            .output_file
+            .file_name()
+            .and_then(|name| name.to_str()),
         Some("custom.rlib")
     );
 }

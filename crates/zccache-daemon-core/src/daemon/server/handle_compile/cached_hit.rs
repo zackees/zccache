@@ -224,18 +224,28 @@ pub(super) fn materialize_cached_compile_hit(
 }
 
 fn rustc_compat_payload_index_for(names: &[String], requested: &NormalizedPath) -> Option<usize> {
-    let requested_ext = requested.extension().and_then(|ext| ext.to_str())?;
-    let wanted = match requested_ext {
-        "rmeta" => "rmeta",
-        "d" => "d",
-        _ => return None,
-    };
-    names.iter().position(|name| {
-        std::path::Path::new(name)
-            .extension()
-            .and_then(|ext| ext.to_str())
-            == Some(wanted)
-    })
+    let requested_name = requested.file_name()?.to_str()?;
+    if let Some(index) = names.iter().position(|name| name == requested_name) {
+        return Some(index);
+    }
+    let wanted = rustc_output_kind(requested)?;
+    names
+        .iter()
+        .position(|name| rustc_output_kind(std::path::Path::new(name)) == Some(wanted))
+}
+
+fn rustc_output_kind(path: &std::path::Path) -> Option<&'static str> {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("rmeta") => Some("metadata"),
+        Some("d") => Some("dep-info"),
+        Some("o") => Some("obj"),
+        Some("s") => Some("asm"),
+        Some("ll") => Some("llvm-ir"),
+        Some("bc") => Some("llvm-bc"),
+        Some("mir") => Some("mir"),
+        Some("rlib" | "a" | "exe" | "dll" | "so" | "dylib") | None => Some("link"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

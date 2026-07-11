@@ -35,10 +35,7 @@ impl StagedCompilePlan {
         expected_outputs: &[NormalizedPath],
         cwd: &Path,
     ) -> io::Result<Option<Self>> {
-        if !staged_lane_enabled(crate::compiler::CompilerFamily::Rustc)
-            || emit_to_stdout(args)
-            || !emit_specs(args).is_empty()
-        {
+        if !staged_lane_enabled(crate::compiler::CompilerFamily::Rustc) || emit_to_stdout(args) {
             return Ok(None);
         }
         let root = artifact_dir.join(".staged-v2").join(format!(
@@ -549,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_emit_destination_falls_back_until_hit_mapping_is_complete() {
+    fn explicit_emit_destination_is_staged_and_mapped() {
         if !staged_tests_enabled() {
             return;
         }
@@ -562,8 +559,16 @@ mod tests {
             std::slice::from_ref(&output),
             temp.path(),
         )
+        .unwrap()
         .unwrap();
-        assert!(plan.is_none());
+        assert!(plan.outputs.iter().any(|output| {
+            output.requested.file_name().and_then(|name| name.to_str()) == Some("custom.d")
+        }));
+        assert!(plan
+            .rewritten_args
+            .iter()
+            .any(|arg| arg.contains("dep-info=") && arg.contains(".staged-v2")));
+        plan.cleanup().unwrap();
     }
 
     #[test]
