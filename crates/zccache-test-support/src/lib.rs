@@ -67,7 +67,17 @@ impl FsFixture {
     }
 
     pub fn refs_vhdx() -> FixtureResult {
-        windows_vhd("refs-vhdx", "refs")
+        // ReFS's checksummed metadata/integrity streams are sized
+        // proportionally to the volume's *declared* capacity even under
+        // `format ... quick` (unlike FAT32/exFAT/NTFS, whose format
+        // footprint stays small regardless of the declared maximum). CI
+        // runners intermittently failed `diskpart create vdisk` for this
+        // row alone with "not enough space on the disk" at maximum=1024
+        // while the other windows_vhd rows (same 1024 MB ceiling, non-ReFS)
+        // consistently succeeded. Halving the ceiling reduces that
+        // metadata footprint while staying well above ReFS's minimum
+        // volume size.
+        windows_vhd_sized("refs-vhdx", "refs", 512)
     }
 
     pub fn fat32_vhdx() -> FixtureResult {
@@ -224,6 +234,11 @@ fn command_error(command: &str, output: &Output) -> String {
 
 #[cfg(windows)]
 fn windows_vhd(name: &'static str, filesystem: &str) -> FixtureResult {
+    windows_vhd_sized(name, filesystem, 1024)
+}
+
+#[cfg(windows)]
+fn windows_vhd_sized(name: &'static str, filesystem: &str, maximum_mb: u32) -> FixtureResult {
     let temp = tempfile::Builder::new()
         .prefix("zccache-vhdx-")
         .tempdir()
@@ -233,7 +248,7 @@ fn windows_vhd(name: &'static str, filesystem: &str) -> FixtureResult {
     std::fs::create_dir(&mount).map_err(|error| skip(name, error.to_string()))?;
     let script = temp.path().join("create.txt");
     let body = format!(
-        "create vdisk file=\"{}\" maximum=1024 type=expandable\r\nselect vdisk file=\"{}\"\r\nattach vdisk\r\ncreate partition primary\r\nformat fs={} quick label=zccache\r\nassign mount=\"{}\"\r\n",
+        "create vdisk file=\"{}\" maximum={maximum_mb} type=expandable\r\nselect vdisk file=\"{}\"\r\nattach vdisk\r\ncreate partition primary\r\nformat fs={} quick label=zccache\r\nassign mount=\"{}\"\r\n",
         image.display(),
         image.display(),
         filesystem,

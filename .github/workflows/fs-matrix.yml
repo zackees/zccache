@@ -25,6 +25,10 @@ jobs:
       - name: Install Linux filesystem tools
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y btrfs-progs dosfstools e2fsprogs
+      - name: Report disk space (Windows diagnostic)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
       - name: Run capability and behavior matrix
         shell: bash
         env:
