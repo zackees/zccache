@@ -283,6 +283,22 @@ fn thin_v2_classifier_recognizes_new_classes() {
         Some(RustArtifactClass::BuildScriptBuild),
     );
 
+    // zccache#1047: Cargo also emits an underscore-and-hash binary next to
+    // the dash-named alias. Its fingerprint records this exact path, so it
+    // must survive any plan that retains BuildScriptBuild artifacts. This
+    // name comes from the soldr#1579 Cargo repro rather than an invented
+    // fixture shape.
+    assert_eq!(
+        classify_artifact(
+            Path::new(
+                "debug/build/verify-noop-70a17bdca3084565/build_script_build-70a17bdca3084565"
+            ),
+            RustPlanMode::Thin,
+            true,
+        ),
+        Some(RustArtifactClass::BuildScriptBuild),
+    );
+
     assert_eq!(
         classify_artifact(
             Path::new("debug/deps/libserde-abc.dwo"),

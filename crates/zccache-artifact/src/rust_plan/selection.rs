@@ -202,11 +202,16 @@ fn is_fingerprint_meta_file(rel: &Path) -> bool {
     ) && stem.contains('-')
 }
 
-/// True for cargo's compiled build-script binaries. The base name is
-/// `build-script-build`; the `.exe` suffix appears on Windows targets.
+/// True for Cargo's compiled build-script binaries. Cargo creates both a
+/// dash-named alias (`build-script-build`) and an underscore-and-hash binary
+/// (`build_script_build-<hash>`) that its fingerprint records reference.
+/// The `.exe` suffix appears on Windows targets.
 fn is_build_script_build_file(name: &str) -> bool {
     let stem = name.strip_suffix(".exe").unwrap_or(name);
-    stem == "build-script-build" || stem.starts_with("build-script-build-")
+    stem == "build-script-build"
+        || stem.starts_with("build-script-build-")
+        || stem == "build_script_build"
+        || stem.starts_with("build_script_build-")
 }
 
 fn is_likely_proc_macro_dylib(rel: &Path) -> bool {
