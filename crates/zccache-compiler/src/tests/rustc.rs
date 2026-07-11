@@ -329,6 +329,40 @@ fn rustc_explicit_emit_link_path_is_the_primary_output() {
 }
 
 #[test]
+fn rustc_non_link_emit_uses_its_real_primary_extension() {
+    for (emit, expected) in [
+        ("obj", "hello.o"),
+        ("asm", "hello.s"),
+        ("llvm-ir", "hello.ll"),
+        ("llvm-bc", "hello.bc"),
+        ("mir", "hello.mir"),
+    ] {
+        let result = parse_invocation(
+            "rustc",
+            &args(&[
+                "--crate-type",
+                "lib",
+                "--crate-name",
+                "hello",
+                "--emit",
+                emit,
+                "lib.rs",
+            ]),
+        );
+        let ParsedInvocation::Cacheable(compilation) = result else {
+            panic!("expected cacheable rustc invocation for {emit}");
+        };
+        assert_eq!(
+            compilation
+                .output_file
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some(expected)
+        );
+    }
+}
+
+#[test]
 fn rustc_full_cargo_invocation_cacheable() {
     // Realistic cargo-generated rustc command
     let result = parse_invocation(

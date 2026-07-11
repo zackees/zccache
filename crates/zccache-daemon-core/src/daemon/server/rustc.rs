@@ -386,7 +386,11 @@ pub(super) fn rustc_expected_output_paths(
         }
         let candidate = match emit_type.as_str() {
             "metadata" => Some(dir.join(format!("lib{crate_name}{ext_suffix}.rmeta"))),
-            "link" => Some(dir.join(format!("lib{crate_name}{ext_suffix}.rlib"))),
+            // The parser's primary output is authoritative for `link`: it
+            // already accounts for bin, staticlib, proc-macro, target, and
+            // explicit `--emit=link=...` naming. Inferring an rlib here would
+            // create a false required output for those crate types.
+            "link" => None,
             "dep-info" => Some(dir.join(format!("{crate_name}{ext_suffix}.d"))),
             "obj" => Some(dir.join(format!("{crate_name}{ext_suffix}.o"))),
             "asm" => Some(dir.join(format!("{crate_name}{ext_suffix}.s"))),
