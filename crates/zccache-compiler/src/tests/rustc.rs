@@ -305,6 +305,11 @@ fn rustc_output_from_out_dir() {
 
 #[test]
 fn rustc_explicit_emit_link_path_is_the_primary_output() {
+    let emit_arg = if cfg!(windows) {
+        r"--emit=link=C:\tmp\custom.rlib,dep-info=C:\tmp\custom.d".to_string()
+    } else {
+        "--emit=link=/tmp/custom.rlib,dep-info=/tmp/custom.d".to_string()
+    };
     let result = parse_invocation(
         "rustc",
         &args(&[
@@ -312,7 +317,7 @@ fn rustc_explicit_emit_link_path_is_the_primary_output() {
             "lib",
             "--crate-name",
             "hello",
-            r"--emit=link=C:\tmp\custom.rlib,dep-info=C:\tmp\custom.d",
+            emit_arg.as_str(),
             "lib.rs",
         ]),
     );
