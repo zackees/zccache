@@ -29,6 +29,17 @@ jobs:
         shell: bash
         env:
           ZCCACHE_REQUIRE_FS_MATRIX: "1"
+          # GitHub-hosted Windows runners keep the checkout/build on the
+          # roomy D: drive (via RUNNER_TEMP / the workspace path) but
+          # tempfile::tempdir() defaults to C:\Users\...\AppData\Local\Temp
+          # when TEMP/TMP aren't set — a much smaller volume. The refs-vhdx
+          # row's `diskpart create vdisk` was intermittently failing there
+          # with "There is not enough space on the disk" even for a small
+          # dynamic VHDX. Point TEMP/TMP at RUNNER_TEMP (same drive as the
+          # workspace) so VHDX images land on the drive with real headroom.
+          # No-op on Linux/macOS, which use TMPDIR instead.
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: >-
           soldr cargo test -p zccache-daemon-core --features test-support
           filesystem_materialization_matrix_prints_loud_summary -- --nocapture --test-threads=1
