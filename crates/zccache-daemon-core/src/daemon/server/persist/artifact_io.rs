@@ -16,7 +16,10 @@ impl DigestSidecarGuard {
         let path = blob_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
-            .join(format!(".cowhash-{}", blake3::hash(name.as_bytes()).to_hex()));
+            .join(format!(
+                ".cowhash-{}",
+                blake3::hash(name.as_bytes()).to_hex()
+            ));
         let previous = match std::fs::read(&path) {
             Ok(bytes) => Some(bytes),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,

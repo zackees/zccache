@@ -276,9 +276,7 @@ fn restore_manifest_artifacts(
             manifest
                 .artifacts
                 .par_iter()
-                .map(|artifact| {
-                    restore_one_artifact(plan, &files_dir, artifact, verify_blake3)
-                })
+                .map(|artifact| restore_one_artifact(plan, &files_dir, artifact, verify_blake3))
                 .collect()
         })
     };
@@ -291,7 +289,11 @@ fn restore_manifest_artifacts(
                 summary.restored_file_count += 1;
                 summary.restored_bytes += bytes;
             }
-            RestoreArtifactOutcome::Skipped { path, reason, error } => {
+            RestoreArtifactOutcome::Skipped {
+                path,
+                reason,
+                error,
+            } => {
                 summary.skip(path, reason);
                 if let Some(error) = error {
                     summary.compatibility.errors.push(error);
@@ -299,7 +301,10 @@ fn restore_manifest_artifacts(
             }
             RestoreArtifactOutcome::Error { path, error } => {
                 summary.compatibility.status = "warning".to_string();
-                summary.compatibility.errors.push(format!("{path}: {error}"));
+                summary
+                    .compatibility
+                    .errors
+                    .push(format!("{path}: {error}"));
             }
         }
     }
@@ -312,7 +317,12 @@ const RESTORE_VERIFY_BLAKE3_ENV: &str = "ZCCACHE_RUST_PLAN_RESTORE_VERIFY_BLAKE3
 fn restore_verify_blake3_enabled() -> bool {
     std::env::var(RESTORE_VERIFY_BLAKE3_ENV)
         .ok()
-        .is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
 }
 
 enum RestoreArtifactOutcome {

@@ -122,10 +122,7 @@ pub(in crate::daemon::server) fn write_authoritative_blob_digest_for_with_cleanu
         let counter = ARTIFACT_PERSIST_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let temp_path = final_path.with_file_name(format!(
             ".{}.tmp-{}-{}",
-            final_path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy(),
+            final_path.file_name().unwrap_or_default().to_string_lossy(),
             std::process::id(),
             counter
         ));
@@ -167,7 +164,11 @@ fn replace_digest_sidecar(temp_path: &Path, final_path: &Path) -> std::io::Resul
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING};
 
-    let temp = temp_path.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+    let temp = temp_path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
     let final_path = final_path
         .as_os_str()
         .encode_wide()
@@ -175,7 +176,14 @@ fn replace_digest_sidecar(temp_path: &Path, final_path: &Path) -> std::io::Resul
         .collect::<Vec<_>>();
     // SAFETY: Both buffers are NUL-terminated UTF-16 strings that remain
     // alive for the duration of the call.
-    if unsafe { MoveFileExW(temp.as_ptr(), final_path.as_ptr(), MOVEFILE_REPLACE_EXISTING) } == 0 {
+    if unsafe {
+        MoveFileExW(
+            temp.as_ptr(),
+            final_path.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING,
+        )
+    } == 0
+    {
         Err(std::io::Error::last_os_error())
     } else {
         Ok(())

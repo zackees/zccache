@@ -160,7 +160,10 @@ fn persist_artifact_file_creates_independent_immutable_snapshot() {
 
     assert_eq!(std::fs::read(&cache).unwrap(), content);
     assert!(std::fs::metadata(&cache).unwrap().permissions().readonly());
-    assert_eq!(stats.reflink_count + stats.copy_count + stats.hardlink_count, 1);
+    assert_eq!(
+        stats.reflink_count + stats.copy_count + stats.hardlink_count,
+        1
+    );
     if stats.hardlink_count == 1 {
         // Issue #1042 finding #4: the hardlink tier legitimately shares an
         // inode with `source` by design (that's the whole point of the
