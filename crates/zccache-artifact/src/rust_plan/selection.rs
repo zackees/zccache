@@ -28,6 +28,7 @@ pub(super) fn select_artifacts(
         plan.dropped_artifact_classes.iter().copied().collect();
     let excluded_names = excluded_package_names(&plan.packages);
     let thin_v2 = plan.cache_profile.as_deref() == Some("thin-v2");
+    let hydrated = thin_v2 && plan.cargo_artifacts_complete;
     let mut selected = Vec::new();
 
     for path in candidates {
@@ -59,7 +60,7 @@ pub(super) fn select_artifacts(
             // A file matching any dropped class is skipped even if its class is
             // also listed under `allowed_artifact_classes`. This is the
             // load-bearing change that lets thin-v2 actually prune the bundle.
-            if dropped.contains(&class) {
+            if !hydrated && dropped.contains(&class) {
                 summary.skip(rel, "artifact_class_disallowed_by_plan");
                 continue;
             }

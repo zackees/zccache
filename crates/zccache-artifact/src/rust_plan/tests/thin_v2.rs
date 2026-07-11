@@ -142,6 +142,38 @@ fn thin_v2_save_drops_rlib_rmeta_even_when_allowed_list_lists_them() {
 }
 
 #[test]
+fn hydrated_thin_v2_keeps_verified_primary_outputs() {
+    let dir = tempfile::tempdir().unwrap();
+    synthetic_target(dir.path());
+    let mut plan = sample_thin_v2_plan(dir.path());
+    plan.allowed_artifact_classes.extend([
+        RustArtifactClass::Rlib,
+        RustArtifactClass::Rmeta,
+        RustArtifactClass::ProcMacro,
+        RustArtifactClass::SharedLib,
+        RustArtifactClass::BuildScriptBuild,
+        RustArtifactClass::CargoFingerprintOutputs,
+    ]);
+    plan.cargo_artifact_paths = vec![
+        "debug/deps/libserde-abc.rlib".to_string(),
+        "debug/deps/libserde-abc.rmeta".to_string(),
+    ];
+    plan.cargo_artifacts_complete = true;
+
+    let cache = dir.path().join("cache");
+    save_rust_plan_local(&plan, &cache).unwrap();
+    let manifest = load_manifest(&rust_plan_bundle_dir(&cache, &rust_plan_cache_key(&plan)));
+    assert!(manifest
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.relative_path.ends_with("libserde-abc.rlib")));
+    assert!(manifest
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.relative_path.ends_with("libserde-abc.rmeta")));
+}
+
+#[test]
 fn thin_v2_save_keeps_fingerprint_meta_but_drops_fingerprint_outputs() {
     // Tests the split: files cargo reads to make a freshness decision
     // (`dep-*`, `lib-*`, `bin-*`, `output-*`, `build-script-*`,
