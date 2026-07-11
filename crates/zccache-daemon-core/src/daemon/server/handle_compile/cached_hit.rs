@@ -256,7 +256,9 @@ mod tests {
         let output_path: NormalizedPath = dir.path().join("output.o").into();
         let cache_path = cache_dir.join("artifact-key_0");
         let payload = Arc::new(b"compiled object".to_vec());
+        let _ = make_writable(&cache_path);
         std::fs::write(&cache_path, payload.as_slice()).unwrap();
+        write_authoritative_blob_digest(&cache_path).unwrap();
 
         let old_time = filetime::FileTime::from_unix_time(1_000_000_000, 0);
         filetime::set_file_mtime(&cache_path, old_time).unwrap();
@@ -358,8 +360,12 @@ mod tests {
         );
         let obj_cache_path = cache_dir.join("depfile-key_0");
         let dep_cache_path = cache_dir.join("depfile-key_1");
+        let _ = make_writable(&obj_cache_path);
+        let _ = make_writable(&dep_cache_path);
         std::fs::write(&obj_cache_path, obj_payload.as_slice()).unwrap();
         std::fs::write(&dep_cache_path, dep_payload.as_slice()).unwrap();
+        write_authoritative_blob_digest(&obj_cache_path).unwrap();
+        write_authoritative_blob_digest(&dep_cache_path).unwrap();
 
         let sid = state.sessions.create(crate::depgraph::SessionConfig {
             client_pid: std::process::id(),
@@ -451,7 +457,9 @@ mod tests {
 
         let obj_payload = Arc::new(b"object only".to_vec());
         let cache_path = cache_dir.join("legacy-key_0");
+        let _ = make_writable(&cache_path);
         std::fs::write(&cache_path, obj_payload.as_slice()).unwrap();
+        write_authoritative_blob_digest(&cache_path).unwrap();
 
         let sid = state.sessions.create(crate::depgraph::SessionConfig {
             client_pid: std::process::id(),
@@ -525,7 +533,9 @@ mod tests {
         let source_path: NormalizedPath = dir.path().join("source.cc").into();
         let cache_path = cache_dir.join("budget-key_0");
         let payload = Arc::new(b"compiled object".to_vec());
+        let _ = make_writable(&cache_path);
         std::fs::write(&cache_path, payload.as_slice()).unwrap();
+        write_authoritative_blob_digest(&cache_path).unwrap();
 
         let sid = state.sessions.create(crate::depgraph::SessionConfig {
             client_pid: std::process::id(),

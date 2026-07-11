@@ -1,0 +1,40 @@
+name: Filesystem Matrix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: zackees/setup-soldr@v0.9.62
+        with:
+          zccache-seed-strict: true
+          toolchain: 1.94.1
+          cache: true
+          cache-key-suffix: fs-matrix-${{ matrix.os }}
+          linker: fast
+      - name: Install Linux filesystem tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y btrfs-progs dosfstools e2fsprogs
+      - name: Run capability and behavior matrix
+        shell: bash
+        env:
+          ZCCACHE_REQUIRE_FS_MATRIX: "1"
+        run: >-
+          soldr cargo test -p zccache-daemon-core --features test-support
+          filesystem_materialization_matrix_prints_loud_summary -- --nocapture --test-threads=1
+      - name: ReFS cluster-rounding acceptance
+        if: runner.os == 'Windows'
+        shell: bash
+        run: >-
+          soldr cargo test -p zccache-daemon-core --features test-support
+          refs_non_cluster_multiple_round_trips_when_available -- --nocapture --test-threads=1

@@ -104,3 +104,16 @@ Wave 6 status:
 - Marked internal and PyPI extension crates `publish = false`; crates.io publish order is now only the public `zccache` crate.
 - Release publish now performs a real `cargo package` verification on the transformed crate before upload.
 - Verified on 2026-07-09: focused release Python tests, full `ci/tests`, `bash ./test`, workspace clippy all-target/all-feature, and transformed `zccache` package verification with `RUSTFLAGS=-D warnings`.
+# #1039 capability-driven COW materialization
+
+Issue: https://github.com/zackees/zccache/issues/1039
+
+- [ ] Capture RED characterization for poisoning, capability selection, registry, reflink independence, readonly cleanup, and matrix reporting.
+- [ ] Add per-volume-pair capability probing with cached verdicts and kill switches.
+- [ ] Add 128-bit-safe file identity and hardlink materialization registry/ceiling fallback.
+- [ ] Add reflink-first materialization with mtime preservation and hardlink/copy fallback.
+- [ ] Enforce readonly cache blobs, mediated detach, and verify/heal behavior.
+- [ ] Add parameterized filesystem fixtures with loud matrix summaries.
+- [ ] Add perf regression gate and user/architecture/feature-matrix docs.
+- [ ] Validate on Windows 10 and Linux Docker, then run repo lint/test/review gates.
+- [ ] Push one PR with RED evidence, wait for GHA/review, fix, squash merge, verify issue closure.

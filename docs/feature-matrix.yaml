@@ -211,12 +211,28 @@
 
 - id: hardlink-delivery
   category: Architecture
-  feature: Hardlink delivery on hit
+  feature: Safe hardlink delivery on hit
   zccache: yes
   sccache: no
   headline: true
-  notes: Cache hits are served by hardlinking the cached artifact to the output path — one syscall. sccache copies bytes back over IPC.
+  notes: Cache hits use a capability-driven reflink, protected-hardlink, or copy ladder. sccache copies bytes back over IPC.
   evidence: README.md#why-is-zccache-so-much-faster-on-warm-hits
+
+- id: reflink-delivery
+  category: Architecture
+  feature: Reflink delivery (ReFS, btrfs/XFS, APFS)
+  zccache: yes
+  sccache: no
+  notes: zccache probes volume-pair capabilities and prefers true block-level COW while preserving stored mtimes.
+  evidence: README.md#safe-filesystem-materialization
+
+- id: hardlink-poisoning-safety
+  category: Reliability
+  feature: Hardlink cache-poisoning prevention and detection
+  zccache: yes
+  sccache: partial
+  notes: Read-only blobs, native-file-ID registry, mediated detach, and watcher-assisted suspect verification prevent silent poisoning.
+  evidence: README.md#safe-filesystem-materialization
 
 - id: in-memory-metadata-cache
   category: Architecture

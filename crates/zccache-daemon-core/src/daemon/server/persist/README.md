@@ -25,6 +25,8 @@ re-exports `*` from each submodule.
 - **[`hardlink.rs`](hardlink.rs)** — Cross-platform hardlink helpers
   (`break_output_hardlink_before_compile`, `hard_link_count`,
   `same_file`, Windows `get_file_id`).
+- **[`fs_caps.rs`](fs_caps.rs)** — Cached per-volume capability probes.
+- **[`link_registry.rs`](link_registry.rs)** — Hardlink ledger and suspect verification.
 - **[`mtime.rs`](mtime.rs)** — Mtime preservation + sibling-floor refinement
   (`touch_mtime`, `floor_materialized_outputs_to_input_max`,
   `floor_artifact_mtime_to_sibling_max`). See the iter7 invariant in

@@ -14,6 +14,7 @@ mod deferred_cold_path;
 mod embedded_flush;
 mod exec_probe;
 mod fingerprint;
+mod fs_matrix;
 mod link_cache;
 mod metadata_deferred;
 mod pack;

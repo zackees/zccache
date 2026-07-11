@@ -5,6 +5,12 @@
 //! had downstream consequences for cargo's incremental fingerprint.
 
 use super::super::*;
+use crate::daemon::server::handle_compile_multi::materialize_multi_hit;
+
+fn seed_persisted_blob(path: &Path, bytes: &[u8]) {
+    std::fs::write(path, bytes).unwrap();
+    write_authoritative_blob_digest(path).unwrap();
+}
 
 // ── write_cached_output staleness tests ────────────────────────────
 
@@ -31,7 +37,7 @@ fn write_cached_output_overwrites_same_size_different_content() {
         new_content.len(),
         "test requires same size"
     );
-    std::fs::write(&cache, new_content).unwrap();
+    seed_persisted_blob(&cache, new_content);
 
     // write_cached_output must replace the stale output with the cached content.
     write_cached_output(&out, &cache, new_content).unwrap();
@@ -51,7 +57,7 @@ fn write_cached_output_creates_new_file() {
     let cache = dir.path().join("cached.o");
 
     let content = b"fresh object file data";
-    std::fs::write(&cache, content).unwrap();
+    seed_persisted_blob(&cache, content);
 
     write_cached_output(&out, &cache, content).unwrap();
 
@@ -84,23 +90,24 @@ fn write_cached_output_skips_when_already_hardlinked() {
     let out = dir.path().join("output.o");
 
     let content = b"cached artifact content";
-    std::fs::write(&cache, content).unwrap();
+    seed_persisted_blob(&cache, content);
 
     // First write: creates hardlink
     write_cached_output(&out, &cache, content).unwrap();
     assert_eq!(std::fs::read(&out).unwrap(), content.as_slice());
 
-    // Verify they are the same file (hardlink).
-    assert!(
-        same_file(&out, &cache),
-        "output should be a hardlink to cache file after first write"
-    );
+    let hardlinked = same_file(&out, &cache);
 
     // Second write: should detect hardlink and skip.
     // (If it didn't skip, it would still produce correct content,
     //  but the test verifies the optimization path exists.)
     write_cached_output(&out, &cache, content).unwrap();
     assert_eq!(std::fs::read(&out).unwrap(), content.as_slice());
+    if hardlinked {
+        assert!(same_file(&out, &cache));
+    } else {
+        assert!(!same_file(&out, &cache));
+    }
 }
 
 #[test]
@@ -111,10 +118,7 @@ fn persist_artifact_output_does_not_mutate_existing_hardlink() {
 
     persist_artifact_output(&cache, b"first").unwrap();
     write_cached_output(&out, &cache, b"first").unwrap();
-    assert!(
-        same_file(&out, &cache),
-        "cache hit should initially hardlink output to cache payload"
-    );
+    let was_hardlinked = same_file(&out, &cache);
 
     persist_artifact_output(&cache, b"second").unwrap();
 
@@ -124,14 +128,13 @@ fn persist_artifact_output_does_not_mutate_existing_hardlink() {
         "publishing a later cache payload must not mutate existing target outputs"
     );
     assert_eq!(std::fs::read(&cache).unwrap(), b"second");
-    assert!(
-        !same_file(&out, &cache),
-        "cache path replacement should break the hardlink relationship"
-    );
+    if was_hardlinked {
+        assert!(!same_file(&out, &cache));
+    }
 }
 
 #[test]
-fn persist_artifact_file_reports_hardlink_snapshot_stats() {
+fn persist_artifact_file_creates_independent_immutable_snapshot() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("libunit.rlib");
     let cache = dir.path().join("artifact-key_0");
@@ -141,13 +144,10 @@ fn persist_artifact_file_reports_hardlink_snapshot_stats() {
     let stats = persist_artifact_file(&cache, &source).unwrap();
 
     assert_eq!(std::fs::read(&cache).unwrap(), content);
-    assert!(
-        same_file(&source, &cache),
-        "same-directory snapshots should use a hardlink"
-    );
-    assert_eq!(stats.hardlink_count, 1);
-    assert_eq!(stats.copy_count, 0);
-    assert_eq!(stats.copy_bytes, 0);
+    assert!(!same_file(&source, &cache));
+    assert!(std::fs::metadata(&cache).unwrap().permissions().readonly());
+    assert_eq!(stats.reflink_count + stats.copy_count, 1);
+    assert_eq!(stats.hardlink_count, 0);
 }
 
 /// Regression test for issue #197: a cache hit hardlinks the target
@@ -163,16 +163,13 @@ fn break_output_hardlink_before_compile_prevents_cache_poisoning() {
 
     let cached_content = b"cached artifact from worktree a";
     let rebuilt_content = b"rebuilt artifact in worktree b";
-    std::fs::write(&cache, cached_content).unwrap();
+    seed_persisted_blob(&cache, cached_content);
 
     write_cached_output(&out, &cache, cached_content).unwrap();
-    assert!(same_file(&out, &cache), "cache hit should hardlink output");
+    let was_hardlinked = same_file(&out, &cache);
 
     break_output_hardlink_before_compile(&out).unwrap();
-    assert!(
-        !same_file(&out, &cache),
-        "compile miss must detach output from cache hardlink first"
-    );
+    assert!(!was_hardlinked || !same_file(&out, &cache));
 
     std::fs::write(&out, rebuilt_content).unwrap();
 
@@ -182,6 +179,414 @@ fn break_output_hardlink_before_compile_prevents_cache_poisoning() {
         "compiler overwrite of output must not mutate shared cache artifact"
     );
     assert_eq!(std::fs::read(&out).unwrap(), rebuilt_content);
+}
+
+/// RED characterization for #1039: an unmediated writer must never be able to
+/// silently change the shared store blob through a hardlinked output.
+#[test]
+fn unmediated_mutation_cannot_silently_poison_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cached.rlib");
+    let out = dir.path().join("libapp.rlib");
+    let original = b"trusted cache bytes";
+    seed_persisted_blob(&cache, original);
+
+    write_cached_output(&out, &cache, original).unwrap();
+    if same_file(&out, &cache) {
+        let mutation = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&out)
+            .and_then(|mut file| std::io::Write::write_all(&mut file, b"poison"));
+        if mutation.is_ok() {
+            // Privileged writers (notably root in containers) can bypass mode
+            // bits. The watcher/registry safety net must detect and evict.
+            mark_registered_links_suspect([out.as_path()]);
+            let error = verify_registered_blob(&cache).expect_err("poison must be detected");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+            assert!(!cache.exists(), "poisoned cache blob must be evicted");
+            return;
+        }
+    } else {
+        std::fs::write(&out, b"private mutation").unwrap();
+    }
+    assert_eq!(std::fs::read(&cache).unwrap(), original);
+}
+
+/// Cache blobs are immutable by default; mediated writers detach and clear the
+/// attribute only on their private destination.
+#[test]
+fn persisted_blob_is_readonly_and_detach_is_writable() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cached.rlib");
+    let out = dir.path().join("libapp.rlib");
+
+    persist_artifact_output(&cache, b"immutable").unwrap();
+    assert!(std::fs::metadata(&cache).unwrap().permissions().readonly());
+    write_cached_output(&out, &cache, b"immutable").unwrap();
+    break_output_hardlink_before_compile(&out).unwrap();
+    assert!(!std::fs::metadata(&out).unwrap().permissions().readonly());
+    std::fs::write(&out, b"rebuilt").unwrap();
+    assert_eq!(std::fs::read(&cache).unwrap(), b"immutable");
+}
+
+#[test]
+fn capability_verdict_is_cached_and_registry_tracks_hardlinks() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cached.rlib");
+    let out = dir.path().join("libapp.rlib");
+    seed_persisted_blob(&cache, b"bytes");
+
+    let first = fs_caps(&cache, &out);
+    let second = fs_caps(&cache, &out);
+    assert_eq!(first, second);
+    write_cached_output(&out, &cache, b"bytes").unwrap();
+    if same_file(&out, &cache) {
+        assert_eq!(registered_output_count(&cache), 1);
+        assert_eq!(hard_link_count(&cache).unwrap(), 2);
+    } else {
+        assert!(first.reflink || !first.hardlink);
+    }
+}
+
+#[test]
+fn hardlink_ceiling_degrades_before_os_error() {
+    let caps = VolumeCaps {
+        reflink: false,
+        hardlink: true,
+        readonly_enforced: true,
+        file_id: FileIdWidth::Bits128,
+        hardlink_limit: 1023,
+    };
+    assert!(hardlink_below_limit(caps, 1022));
+    assert!(!hardlink_below_limit(caps, 1023));
+    assert!(!hardlink_below_limit(caps, 1024));
+}
+
+#[test]
+fn disable_reflink_kill_switch_forces_next_tier() {
+    let caps = VolumeCaps {
+        reflink: true,
+        hardlink: true,
+        readonly_enforced: true,
+        file_id: FileIdWidth::Bits128,
+        hardlink_limit: 1023,
+    };
+    let disabled = apply_reflink_switch(caps, true);
+    assert!(!disabled.reflink);
+    assert!(disabled.hardlink);
+}
+
+#[test]
+fn suspect_corruption_emits_durable_forensics() {
+    let dir = tempfile::tempdir().unwrap();
+    let _cache_dir = super::CacheDirEnvGuard::set(dir.path());
+    let blob = dir.path().join("blob.rlib");
+    let output = dir.path().join("output.rlib");
+    seed_persisted_blob(&blob, b"original");
+    std::fs::hard_link(&blob, &output).unwrap();
+    register_hardlink(&blob, &output).unwrap();
+    make_writable(&output).unwrap();
+    std::fs::write(&output, b"poisoned").unwrap();
+    mark_registered_links_suspect([output.as_path()]);
+
+    let error = verify_registered_blob(&blob).expect_err("poisoned blob must be rejected");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    let log = std::fs::read_to_string(crate::core::lifecycle::log_file_path()).unwrap();
+    let event: serde_json::Value = log
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .find(|event: &serde_json::Value| {
+            event["event"] == "cow_blob_corruption_detected"
+                && event["blob_path"] == blob.to_string_lossy().as_ref()
+        })
+        .expect("matching corruption event");
+    assert_eq!(event["event"], "cow_blob_corruption_detected");
+    assert_eq!(event["cache_key"], "blob.rlib");
+    assert!(event["expected_hash"].is_string());
+    assert!(event["actual_hash"].is_string());
+    assert_eq!(event["link_count"], 2);
+    assert!(event["registered_outputs"].as_array().unwrap().len() == 1);
+    assert!(event["elapsed_ns"].as_u64().is_some());
+    assert!(!blob.exists(), "corrupt cache blob must be evicted");
+}
+
+#[test]
+fn removed_link_event_marks_blob_suspect_before_forgetting_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = dir.path().join("blob.rlib");
+    let output = dir.path().join("output.rlib");
+    std::fs::write(&blob, b"original").unwrap();
+    std::fs::hard_link(&blob, &output).unwrap();
+    register_hardlink(&blob, &output).unwrap();
+    make_writable(&output).unwrap();
+    std::fs::write(&output, b"poisoned").unwrap();
+    std::fs::remove_file(&output).unwrap();
+
+    mark_removed_links_suspect([output.as_path()]);
+
+    let error = verify_registered_blob(&blob).expect_err("removed poison must be rejected");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(!blob.exists());
+}
+
+#[test]
+fn watcher_overflow_marks_every_blob_suspect() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = dir.path().join("blob.rlib");
+    let output = dir.path().join("output.rlib");
+    std::fs::write(&blob, b"original").unwrap();
+    std::fs::hard_link(&blob, &output).unwrap();
+    register_hardlink(&blob, &output).unwrap();
+    make_writable(&output).unwrap();
+    std::fs::write(&output, b"poisoned").unwrap();
+
+    mark_all_registered_links_suspect();
+
+    let error = verify_registered_blob(&blob).expect_err("overflow poison must be rejected");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(!blob.exists());
+}
+
+#[test]
+fn watcher_event_between_hardlink_publish_and_registry_commit_is_retained() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = dir.path().join("blob.rlib");
+    let output = dir.path().join("output.rlib");
+    std::fs::write(&blob, b"original").unwrap();
+    let registration = prepare_hardlink_registration(&blob, &output).unwrap();
+    std::fs::hard_link(&blob, &output).unwrap();
+    make_writable(&output).unwrap();
+    std::fs::write(&output, b"poisoned during publish").unwrap();
+    std::fs::remove_file(&output).unwrap();
+
+    mark_removed_links_suspect([output.as_path()]);
+    let commit = commit_hardlink_registration(registration, &output);
+    assert_eq!(commit.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+
+    let error = verify_registered_blob(&blob).expect_err("publish race must be detected");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(!blob.exists());
+}
+
+#[test]
+fn daemon_restart_fails_closed_for_unregistered_multilink_blob() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = dir.path().join("blob.rlib");
+    let output = dir.path().join("output.rlib");
+    std::fs::write(&blob, b"original").unwrap();
+    std::fs::hard_link(&blob, &output).unwrap();
+    register_hardlink(&blob, &output).unwrap();
+    forget_blob_registration_for_restart_test(&blob);
+    make_writable(&output).unwrap();
+    std::fs::write(&output, b"poisoned while daemon was down").unwrap();
+
+    let error = verify_registered_blob(&blob).expect_err("unknown shared blob must be evicted");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(!blob.exists());
+    assert!(
+        output.exists(),
+        "workspace output must survive cache eviction"
+    );
+}
+
+#[test]
+fn restart_digest_detects_poison_after_alias_was_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = dir.path().join("blob.rlib");
+    let output = dir.path().join("output.rlib");
+    std::fs::write(&blob, b"original").unwrap();
+    write_authoritative_blob_digest(&blob).unwrap();
+    std::fs::hard_link(&blob, &output).unwrap();
+    register_hardlink(&blob, &output).unwrap();
+    make_writable(&output).unwrap();
+    std::fs::write(&output, b"poisoned while daemon was down").unwrap();
+    std::fs::remove_file(&output).unwrap();
+    forget_blob_registration_for_restart_test(&blob);
+
+    let error = verify_registered_blob(&blob).expect_err("durable digest must reject poison");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(!blob.exists());
+}
+
+#[test]
+fn restart_digest_rebuilds_registry_for_clean_blob() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = dir.path().join("blob.rlib");
+    std::fs::write(&blob, b"original").unwrap();
+    write_authoritative_blob_digest(&blob).unwrap();
+
+    verify_registered_blob(&blob).unwrap();
+
+    assert!(registered_blob_id(&blob).is_some());
+    assert_eq!(std::fs::read(blob).unwrap(), b"original");
+}
+
+#[test]
+fn failed_restart_eviction_restores_readonly_and_retries_after_alias_delete() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = dir.path().join("blob.rlib");
+    let output = dir.path().join("output.rlib");
+    std::fs::write(&blob, b"unverifiable").unwrap();
+    std::fs::hard_link(&blob, &output).unwrap();
+    fail_detach_remove_for_test(&blob);
+
+    let first = verify_registered_blob(&blob).expect_err("injected restart eviction must fail");
+    assert_eq!(first.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(std::fs::metadata(&blob).unwrap().permissions().readonly());
+
+    make_writable(&output).unwrap();
+    std::fs::remove_file(&output).unwrap();
+    let retry = verify_registered_blob(&blob).expect_err("unverifiable blob must retry eviction");
+    assert_eq!(retry.kind(), std::io::ErrorKind::InvalidData);
+    assert!(!blob.exists());
+}
+
+#[test]
+fn multi_hit_materialization_failure_is_reported_to_the_handler() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut targets = Vec::new();
+    let mut payloads = Vec::new();
+    for index in 0..2 {
+        let blob: NormalizedPath = dir.path().join(format!("blob-{index}.o")).into();
+        let output: NormalizedPath = dir.path().join(format!("output-{index}.o")).into();
+        std::fs::write(&blob, b"original").unwrap();
+        std::fs::hard_link(&blob, &output).unwrap();
+        register_hardlink(&blob, &output).unwrap();
+        forget_blob_registration_for_restart_test(&blob);
+        targets.push((output, blob.clone()));
+        payloads.push(CachedPayload::File(blob));
+    }
+
+    assert!(!materialize_multi_hit(&targets, &payloads));
+    assert!(
+        targets.iter().any(|(_, blob)| !blob.exists()),
+        "at least the rejected blob must be evicted before the handler rebuilds"
+    );
+}
+
+#[test]
+fn failed_detach_keeps_hardlink_registered_and_readonly() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = dir.path().join("blob.rlib");
+    let output = dir.path().join("output.rlib");
+    std::fs::write(&blob, b"original").unwrap();
+    std::fs::hard_link(&blob, &output).unwrap();
+    register_hardlink(&blob, &output).unwrap();
+    set_readonly(&blob, true).unwrap();
+    fail_detach_remove_for_test(&output);
+
+    let error = break_output_hardlink_before_compile(&output)
+        .expect_err("injected remove failure must propagate");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(same_file(&blob, &output));
+    assert_eq!(registered_output_count(&blob), 1);
+    assert!(std::fs::metadata(&blob).unwrap().permissions().readonly());
+    make_writable(&blob).unwrap();
+}
+
+#[test]
+fn failed_detach_rename_restores_blob_readonly_after_unlink() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = dir.path().join("blob.rlib");
+    let output = dir.path().join("output.rlib");
+    std::fs::write(&blob, b"original").unwrap();
+    std::fs::hard_link(&blob, &output).unwrap();
+    register_hardlink(&blob, &output).unwrap();
+    set_readonly(&blob, true).unwrap();
+    fail_detach_rename_for_test(&output);
+
+    let error = break_output_hardlink_before_compile(&output)
+        .expect_err("injected rename failure must propagate");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(!output.exists(), "shared output name was already unlinked");
+    assert!(blob.exists());
+    assert_eq!(hard_link_count(&blob).unwrap(), 1);
+    assert_eq!(registered_output_count(&blob), 0);
+    assert!(std::fs::metadata(&blob).unwrap().permissions().readonly());
+    make_writable(&blob).unwrap();
+}
+
+#[test]
+fn failed_blob_removal_restores_readonly_and_registration() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = dir.path().join("blob.rlib");
+    let output = dir.path().join("output.rlib");
+    std::fs::write(&blob, b"original").unwrap();
+    std::fs::hard_link(&blob, &output).unwrap();
+    register_hardlink(&blob, &output).unwrap();
+    set_readonly(&blob, true).unwrap();
+    fail_detach_remove_for_test(&blob);
+
+    let error = remove_registered_blob(&blob).expect_err("injected removal must fail");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(same_file(&blob, &output));
+    assert_eq!(registered_output_count(&blob), 1);
+    assert!(std::fs::metadata(&blob).unwrap().permissions().readonly());
+    make_writable(&blob).unwrap();
+}
+
+#[test]
+fn failed_corrupt_blob_eviction_retains_suspect_record_for_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = dir.path().join("blob.rlib");
+    let output = dir.path().join("output.rlib");
+    std::fs::write(&blob, b"original").unwrap();
+    std::fs::hard_link(&blob, &output).unwrap();
+    register_hardlink(&blob, &output).unwrap();
+    make_writable(&output).unwrap();
+    std::fs::write(&output, b"poisoned").unwrap();
+    mark_registered_links_suspect([output.as_path()]);
+    fail_detach_remove_for_test(&blob);
+
+    let first = verify_registered_blob(&blob).expect_err("injected eviction must fail");
+    assert_eq!(first.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(blob.exists());
+    assert!(std::fs::metadata(&blob).unwrap().permissions().readonly());
+
+    make_writable(&output).unwrap();
+    std::fs::remove_file(&output).unwrap();
+    let retry = verify_registered_blob(&blob).expect_err("known corruption must remain suspect");
+    assert_eq!(retry.kind(), std::io::ErrorKind::InvalidData);
+    assert!(!blob.exists());
+}
+
+#[test]
+fn replacing_registered_blob_drops_old_inode_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = dir.path().join("blob.rlib");
+    let output = dir.path().join("output.rlib");
+    let tmp = dir.path().join("replacement.tmp");
+    std::fs::write(&blob, b"original").unwrap();
+    std::fs::hard_link(&blob, &output).unwrap();
+    register_hardlink(&blob, &output).unwrap();
+    let old_id = get_file_id(&blob).unwrap();
+    std::fs::write(&tmp, b"replacement").unwrap();
+
+    replace_artifact_cache_file(&tmp, &blob).unwrap();
+
+    assert!(!is_file_id_registered(old_id));
+    assert_eq!(std::fs::read(&blob).unwrap(), b"replacement");
+    assert_eq!(std::fs::read(&output).unwrap(), b"original");
+}
+
+#[cfg(unix)]
+#[test]
+fn dangling_output_symlink_is_replaced() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let blob = dir.path().join("blob.rlib");
+    let output = dir.path().join("output.rlib");
+    seed_persisted_blob(&blob, b"original");
+    symlink(dir.path().join("missing"), &output).unwrap();
+
+    write_cached_file(&output, &blob).unwrap();
+
+    assert_eq!(std::fs::read(output).unwrap(), b"original");
 }
 
 /// Regression test for issue #15: hardlink delivery must set output mtime
@@ -206,7 +611,7 @@ fn write_cached_output_preserves_cache_mtime_on_hardlink() {
     let out = dir.path().join("output.rlib");
 
     let content = b"cached rlib data";
-    std::fs::write(&cache, content).unwrap();
+    seed_persisted_blob(&cache, content);
 
     let old_time = filetime::FileTime::from_unix_time(1_000_000_000, 0); // 2001-09-09
     filetime::set_file_mtime(&cache, old_time).unwrap();
@@ -233,25 +638,27 @@ fn write_cached_output_preserves_mtime_on_existing_hardlink() {
     let out = dir.path().join("output.rlib");
 
     let content = b"cached rlib data";
-    std::fs::write(&cache, content).unwrap();
+    seed_persisted_blob(&cache, content);
 
     // First delivery: creates hardlink
     write_cached_output(&out, &cache, content).unwrap();
 
     let old_time = filetime::FileTime::from_unix_time(1_000_000_000, 0);
-    filetime::set_file_mtime(&out, old_time).unwrap();
+    set_materialized_mtime(&out, old_time).unwrap();
 
-    // Second delivery: same_file path. Iter7 keeps the existing
-    // (backdated) mtime instead of stamping `now()`.
+    let hardlinked = same_file(&out, &cache);
+    // Second delivery: same_file keeps the linked mtime; a reflink tier
+    // rematerializes from the immutable blob and restores the blob mtime.
     write_cached_output(&out, &cache, content).unwrap();
 
     let out_mtime =
         filetime::FileTime::from_last_modification_time(&std::fs::metadata(&out).unwrap());
-    assert_eq!(
-        out_mtime.unix_seconds(),
-        old_time.unix_seconds(),
-        "mtime must be preserved across repeated cache hits on the same file"
-    );
+    let expected = if hardlinked {
+        old_time
+    } else {
+        filetime::FileTime::from_last_modification_time(&std::fs::metadata(&cache).unwrap())
+    };
+    assert_eq!(out_mtime.unix_seconds(), expected.unix_seconds());
 }
 
 /// write_cached_output fallback (fs::write) naturally sets fresh mtime.

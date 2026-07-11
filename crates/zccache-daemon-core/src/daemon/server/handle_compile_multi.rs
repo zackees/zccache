@@ -28,6 +28,13 @@ pub(super) enum UnitCacheResult {
     },
 }
 
+pub(super) fn materialize_multi_hit(
+    targets: &[(NormalizedPath, NormalizedPath)],
+    payloads: &[CachedPayload],
+) -> bool {
+    write_payloads_par(targets, payloads)
+}
+
 /// Check cache for a single compilation unit. Returns Hit (output written) or Miss.
 ///
 /// If `shared_base` is provided, the CompileContext is built by cloning it and
@@ -157,29 +164,33 @@ pub(super) fn check_unit_cache(
                                 (out, cache_file)
                             })
                             .collect();
-                        let _ = write_payloads_par(&targets, &payloads);
-
-                        state.stats.record_hit(0, artifact_bytes);
-                        state.profiler.record_hit(&HitPhases {
-                            parse_args_ns: 0,
-                            build_context_ns: t_ctx.as_nanos() as u64,
-                            hash_source_ns: 0,
-                            hash_headers_ns: 0,
-                            depgraph_check_ns: 0,
-                            request_cache_lookup_ns: 0,
-                            cross_root_validate_ns: 0,
-                            artifact_lookup_ns: 0,
-                            write_output_ns: 0,
-                            bookkeeping_ns: 0,
-                            total_ns: t0.elapsed().as_nanos() as u64,
-                        });
-                        return UnitCacheResult::Hit {
-                            stdout,
-                            stderr,
-                            artifact_bytes,
-                            source_path,
-                            pending_writes: Vec::new(),
-                        };
+                        if materialize_multi_hit(&targets, &payloads) {
+                            state.stats.record_hit(0, artifact_bytes);
+                            state.profiler.record_hit(&HitPhases {
+                                parse_args_ns: 0,
+                                build_context_ns: t_ctx.as_nanos() as u64,
+                                hash_source_ns: 0,
+                                hash_headers_ns: 0,
+                                depgraph_check_ns: 0,
+                                request_cache_lookup_ns: 0,
+                                cross_root_validate_ns: 0,
+                                artifact_lookup_ns: 0,
+                                write_output_ns: 0,
+                                bookkeeping_ns: 0,
+                                total_ns: t0.elapsed().as_nanos() as u64,
+                            });
+                            return UnitCacheResult::Hit {
+                                stdout,
+                                stderr,
+                                artifact_bytes,
+                                source_path,
+                                pending_writes: Vec::new(),
+                            };
+                        }
+                        let evicted: std::collections::HashSet<String> =
+                            std::iter::once(artifact_key_hex.clone()).collect();
+                        state.dep_graph.load().invalidate_artifact_keys(&evicted);
+                        state.fast_hit_cache.remove(&context_key);
                     }
                 }
             }
@@ -282,46 +293,46 @@ pub(super) fn check_unit_cache(
                         (out, cache_file)
                     })
                     .collect();
-                let _ = write_payloads_par(&targets, &payloads);
+                if materialize_multi_hit(&targets, &payloads) {
+                    state.stats.record_hit(0, artifact_bytes);
 
-                state.stats.record_hit(0, artifact_bytes);
+                    // Populate fast-hit cache for future requests
+                    let tracked_paths =
+                        request_cache_input_paths(state, &context_key, &source_path, &ctx);
+                    state.cache_system.register_tracked(&tracked_paths);
+                    let current_clock = state.cache_system.current_clock();
+                    state.fast_hit_cache.insert(
+                        context_key,
+                        FastHitEntry {
+                            clock: current_clock,
+                            artifact_key_hex: artifact_key_hex.clone(),
+                            cached_at: std::time::Instant::now(),
+                        },
+                    );
 
-                // Populate fast-hit cache for future requests
-                let tracked_paths =
-                    request_cache_input_paths(state, &context_key, &source_path, &ctx);
-                state.cache_system.register_tracked(&tracked_paths);
-                let current_clock = state.cache_system.current_clock();
-                state.fast_hit_cache.insert(
-                    context_key,
-                    FastHitEntry {
-                        clock: current_clock,
-                        artifact_key_hex: artifact_key_hex.clone(),
-                        cached_at: std::time::Instant::now(),
-                    },
-                );
+                    let total_ns = t0.elapsed().as_nanos() as u64;
+                    state.profiler.record_hit(&HitPhases {
+                        parse_args_ns: 0,
+                        build_context_ns: t_ctx.as_nanos() as u64,
+                        hash_source_ns: (t_hash_source - t_register).as_nanos() as u64,
+                        hash_headers_ns: (t_hash_headers - t_hash_source).as_nanos() as u64,
+                        depgraph_check_ns: (t_depgraph - t_hash_headers).as_nanos() as u64,
+                        request_cache_lookup_ns: 0,
+                        cross_root_validate_ns: 0,
+                        artifact_lookup_ns: (t_lookup - t_depgraph).as_nanos() as u64,
+                        write_output_ns: 0,
+                        bookkeeping_ns: 0,
+                        total_ns,
+                    });
 
-                let total_ns = t0.elapsed().as_nanos() as u64;
-                state.profiler.record_hit(&HitPhases {
-                    parse_args_ns: 0,
-                    build_context_ns: t_ctx.as_nanos() as u64,
-                    hash_source_ns: (t_hash_source - t_register).as_nanos() as u64,
-                    hash_headers_ns: (t_hash_headers - t_hash_source).as_nanos() as u64,
-                    depgraph_check_ns: (t_depgraph - t_hash_headers).as_nanos() as u64,
-                    request_cache_lookup_ns: 0,
-                    cross_root_validate_ns: 0,
-                    artifact_lookup_ns: (t_lookup - t_depgraph).as_nanos() as u64,
-                    write_output_ns: 0,
-                    bookkeeping_ns: 0,
-                    total_ns,
-                });
-
-                return UnitCacheResult::Hit {
-                    stdout,
-                    stderr,
-                    artifact_bytes,
-                    source_path,
-                    pending_writes: Vec::new(),
-                };
+                    return UnitCacheResult::Hit {
+                        stdout,
+                        stderr,
+                        artifact_bytes,
+                        source_path,
+                        pending_writes: Vec::new(),
+                    };
+                }
             }
         }
         if depgraph_claimed_hit {

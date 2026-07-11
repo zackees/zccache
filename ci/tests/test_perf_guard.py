@@ -618,6 +618,48 @@ def test_prebuilt_benchmark_binary_commands_are_filtered():
     ]
 
 
+def test_production_rust_perf_command_uses_prebuilt_test_filter():
+    commands = perf_guard._benchmark_commands(
+        "rust",
+        Path("perf-guard-bin/perf_bench_test"),
+        "perf_rust_workspace_link",
+    )
+
+    assert commands == [
+        [
+            str(Path("perf-guard-bin/perf_bench_test")),
+            "perf_rust_workspace_link",
+            "--nocapture",
+            "--ignored",
+            "--test-threads=1",
+        ]
+    ]
+
+
+def test_perf_workflow_has_dedicated_cow_materialization_gate():
+    workflow = (perf_guard.REPO_ROOT / ".github/workflows/perf-guard.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "\n  pull_request:\n" in workflow
+    job = workflow.split("\n  cow-materialization-budget:\n", 1)[1].split(
+        "\n  build-perf-benchmark:\n", 1
+    )[0]
+    build_job = workflow.split("\n  build-perf-benchmark:\n", 1)[1].split(
+        "\n  perf-guard:\n", 1
+    )[0]
+    speed_floor_job = workflow.split("\n  perf-guard:\n", 1)[1]
+    assert not any(line.startswith("    if:") for line in job.splitlines())
+    assert "    if: github.ref == 'refs/heads/main'" in build_job
+    assert "    if: github.ref == 'refs/heads/main'" in speed_floor_job
+    assert "name: COW materialization hit budget" in job
+    assert (
+        "soldr --no-cache cargo test -p zccache-daemon-core "
+        "--features test-support "
+        "perf_cow_materialization_128_hits_under_two_seconds" in job
+    )
+
+
 def test_run_benchmarks_once_uses_fresh_cache_per_command(tmp_path, monkeypatch):
     commands = [["bench", "one"], ["bench", "two"]]
     cache_dirs = [tmp_path / "cache-one", tmp_path / "cache-two"]

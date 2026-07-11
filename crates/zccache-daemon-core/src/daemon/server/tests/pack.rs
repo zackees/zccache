@@ -66,7 +66,7 @@ fn persist_artifact_payloads_unpacked_layout() {
 }
 
 #[test]
-fn persist_artifact_paths_hardlinks_in_unpacked_layout() {
+fn persist_artifact_paths_detaches_compiler_outputs_in_unpacked_layout() {
     std::env::remove_var("ZCCACHE_PACK_ARTIFACTS");
     let dir = tempfile::tempdir().unwrap();
     let key = "deadc0de";
@@ -86,16 +86,15 @@ fn persist_artifact_paths_hardlinks_in_unpacked_layout() {
     assert_eq!(std::fs::read(&cache_a).unwrap(), b"rlib-bytes");
     assert_eq!(std::fs::read(&cache_b).unwrap(), b"rmeta-bytes");
 
-    // On the same-volume happy path we expect a real hardlink — both
-    // names should resolve to the same inode. Inode-equality test via
-    // platform metadata. Skip on platforms that don't easily expose
-    // it (Windows tests still verify the bytes match above).
+    // Persistence must never make the compiler output an alias of an
+    // immutable cache blob. Reflink or copy keeps later compiler writes
+    // private; inode inequality proves that contract on Unix.
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         let src_ino = std::fs::metadata(&src_a).unwrap().ino();
         let cache_ino = std::fs::metadata(&cache_a).unwrap().ino();
-        assert_eq!(src_ino, cache_ino, "expected hardlink (shared inode)");
+        assert_ne!(src_ino, cache_ino, "cache blob must not share source inode");
     }
 }
 

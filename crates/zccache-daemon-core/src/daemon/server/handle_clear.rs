@@ -52,7 +52,7 @@ pub(super) async fn handle_clear(state: &SharedState) -> Response {
         use rayon::prelude::*;
         let paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
         paths.par_iter().for_each(|p| {
-            let _ = std::fs::remove_file(p);
+            let _ = remove_registered_blob(p);
         });
     }
 

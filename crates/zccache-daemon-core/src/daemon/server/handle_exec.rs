@@ -198,6 +198,20 @@ pub(super) async fn handle_generic_tool_exec(
     }
 
     // 9. Cache miss — run the tool.
+    for declared in output_files {
+        let path = absolutize(declared.as_path(), cwd);
+        if let Err(error) = break_output_hardlink_before_compile(&path) {
+            tracing::warn!(
+                event = "exec_output_detach_failed",
+                path = %path.display(),
+                error = %error,
+                "failed to detach generic-tool output before execution"
+            );
+            return Response::Error {
+                message: format!("failed to detach output {}: {error}", path.display()),
+            };
+        }
+    }
     let output = match spawn_tool(tool, args, cwd, &env).await {
         Ok(o) => o,
         Err(e) => {

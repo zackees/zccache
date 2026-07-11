@@ -129,6 +129,7 @@ fn batch_floor_bumps_build_script_output_to_extern_mtime() {
     let cache = dir.path().join("cache/build-script-cache");
     std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
     std::fs::write(&cache, b"build script exe").unwrap();
+    write_authoritative_blob_digest(&cache).unwrap();
     let old_time = filetime::FileTime::from_unix_time(1_000_000, 0);
     filetime::set_file_mtime(&cache, old_time).unwrap();
 
@@ -170,6 +171,7 @@ fn batch_floor_freshens_materialized_outputs_without_floor_paths() {
     let cache = dir.path().join("cache/libcrate-cache.rlib");
     std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
     std::fs::write(&cache, b"rlib").unwrap();
+    write_authoritative_blob_digest(&cache).unwrap();
     let old_mtime = epoch_plus(1_000_000);
     filetime::set_file_mtime(&cache, filetime::FileTime::from_system_time(old_mtime)).unwrap();
 
@@ -189,5 +191,30 @@ fn batch_floor_freshens_materialized_outputs_without_floor_paths() {
         output_mtime > old_mtime,
         "compile-hit output must not inherit the stale cache mtime; \
          output={output_mtime:?}, old_cache={old_mtime:?}",
+    );
+}
+
+/// Function-level warm-hit budget for #1039. The generous 2-second ceiling is
+/// over 3x the observed Windows/NTFS debug-build time for 128 deliveries while
+/// still catching accidental per-hit hashing or probe-cache regressions.
+#[test]
+fn perf_cow_materialization_128_hits_under_two_seconds() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cache/blob.rlib");
+    std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    std::fs::write(&cache, vec![0x5a; 256 * 1024]).unwrap();
+    write_authoritative_blob_digest(&cache).unwrap();
+    let started = std::time::Instant::now();
+    for index in 0..128 {
+        let output = dir.path().join(format!("target/output-{index}.rlib"));
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+        write_cached_file(&output, &cache).unwrap();
+        make_writable(&output).unwrap();
+    }
+    let elapsed = started.elapsed();
+    make_writable(&cache).unwrap();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "128 capability-driven materializations took {elapsed:?}"
     );
 }

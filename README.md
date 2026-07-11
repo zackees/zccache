@@ -104,7 +104,7 @@ The full matrix lives at [`docs/FEATURE-MATRIX.md`](docs/FEATURE-MATRIX.md) and 
 | clang-tidy (static analysis results cached) | yes | no |
 | include-what-you-use (IWYU) | yes | no |
 | Persistent daemon with sub-ms IPC | yes | partial |
-| Hardlink delivery on hit | yes | no |
+| Safe hardlink delivery on hit | yes | no |
 | ZCCACHE_PATH_REMAP=auto cross-worktree sharing | yes | no |
 | GitHub Actions Cache (native API client) | yes | yes |
 | Per-hit cost | yes | partial |
@@ -157,7 +157,8 @@ See [`docs/FEATURE-MATRIX.md`](docs/FEATURE-MATRIX.md) for the long-form view wi
 |---|:---:|:---:|
 | Persistent daemon with sub-ms IPC | yes | partial |
 | Single-roundtrip IPC (length-prefixed bincode) | yes | no |
-| Hardlink delivery on hit | yes | no |
+| Safe hardlink delivery on hit | yes | no |
+| Reflink delivery (ReFS, btrfs/XFS, APFS) | yes | no |
 | In-memory metadata cache (DashMap) | yes | no |
 | Filesystem watcher (notify-backed) | yes | no |
 | Content-addressed artifact store | yes | yes |
@@ -211,6 +212,12 @@ See [`docs/FEATURE-MATRIX.md`](docs/FEATURE-MATRIX.md) for the long-form view wi
 | Per-hit cost | yes | partial |
 | mtime preservation on hits | yes | partial |
 | Compiler child priority (auto-throttle at 95% CPU) | yes | no |
+
+#### Reliability
+
+| Feature | zccache | sccache |
+|---|:---:|:---:|
+| Hardlink cache-poisoning prevention and detection | yes | partial |
 <!-- END feature-matrix-full -->
 
 </details>
@@ -445,6 +452,22 @@ future prost default, and `ZCCACHE_DAEMON_WIRE=bincode` is the documented
 fallback spelling for keeping v15 behavior during the migration.
 
 ### Worktree cache sharing
+
+#### Safe filesystem materialization
+
+Cache-hit delivery is capability driven. zccache probes the actual source and
+target volume pair once and caches the result: reflink (true copy-on-write) is
+preferred, otherwise zccache uses registered read-only hardlinks with
+copy-before-write and watcher-assisted verification, and finally a plain copy
+on cross-volume or limited filesystems. Correctness is identical in every tier;
+only disk sharing changes.
+
+Set `ZCCACHE_DISABLE_REFLINK=1` to diagnose or bypass block cloning. Read-only
+hardlink enforcement defaults on; set `ZCCACHE_COW_READONLY=0` only as a
+compatibility escape hatch. Cache-file mtimes are preserved for reflinks and
+hardlinks and are never stamped with the current time. On Windows, placing both
+the cache and build target on a ReFS Dev Drive provides the strongest true-COW
+tier; prefer a real partition-backed Dev Drive over a VHDX for daily use.
 
 zccache can share cache entries across sibling Git worktrees when the compile is
 equivalent. This targets multi-agent workflows where several checkouts of the

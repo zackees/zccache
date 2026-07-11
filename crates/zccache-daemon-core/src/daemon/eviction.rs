@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use super::server::{CachedArtifact, FastHitEntry};
+use super::server::{remove_cow_blob, CachedArtifact, FastHitEntry};
 
 /// Estimated bytes per metadata cache entry.
 const METADATA_ENTRY_BYTES: usize = 400;
@@ -332,7 +332,7 @@ pub(crate) fn evict_disk_artifacts(
     let mut deleted_since_yield = 0;
     for artifact in &to_evict {
         for file in &artifact.files {
-            let _ = std::fs::remove_file(file);
+            let _ = remove_cow_blob(file);
             deleted_since_yield += 1;
             if deleted_since_yield >= DISK_EVICTION_DELETE_BATCH_SIZE {
                 std::thread::yield_now();
@@ -741,6 +741,23 @@ mod tests {
         assert!(freed > 0);
         assert_eq!(removed, 1);
         assert!(artifacts.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn disk_eviction_removes_readonly_blob() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifacts: DashMap<String, CachedArtifact> = DashMap::new();
+        write_fake_artifact(dir.path(), "readonly", 5000);
+        let data = dir.path().join("readonly_0");
+        let mut permissions = std::fs::metadata(&data).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&data, permissions).unwrap();
+
+        let (_, removed) = evict_disk_artifacts(dir.path(), &artifacts, 0, None);
+
+        assert_eq!(removed, 1);
+        assert!(!data.exists());
     }
 
     /// Regression test for <https://github.com/zackees/zccache/issues/680>.

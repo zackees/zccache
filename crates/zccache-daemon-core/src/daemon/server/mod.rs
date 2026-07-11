@@ -168,6 +168,10 @@ use lifecycle::*;
 use link_helpers::*;
 use pch::*;
 use persist::*;
+
+pub(crate) fn remove_cow_blob(path: &Path) -> std::io::Result<()> {
+    remove_registered_blob(path)
+}
 use private_daemon::*;
 use request_cache::*;
 use rsp_cache::*;

@@ -87,7 +87,7 @@ pub(in crate::daemon::server) fn floor_materialized_outputs_to_input_max<'a>(
             continue;
         };
         if current < max_mtime {
-            let _ = filetime::set_file_mtime(path, ft);
+            let _ = set_materialized_mtime(path, ft);
         }
     }
 }
@@ -140,7 +140,25 @@ pub(in crate::daemon::server) fn floor_artifact_mtime_to_sibling_max(
     }
     if max_mtime > my_mtime {
         let ft = filetime::FileTime::from_system_time(max_mtime);
-        let _ = filetime::set_file_mtime(path, ft);
+        let _ = set_materialized_mtime(path, ft);
     }
     Ok(())
+}
+
+pub(in crate::daemon::server) fn set_materialized_mtime(
+    path: &Path,
+    mtime: filetime::FileTime,
+) -> std::io::Result<()> {
+    let readonly = std::fs::metadata(path)?.permissions().readonly();
+    if readonly {
+        make_writable(path)?;
+    }
+    let result = filetime::set_file_mtime(path, mtime);
+    if readonly {
+        let restore = set_readonly(path, true);
+        if result.is_ok() {
+            restore?;
+        }
+    }
+    result
 }

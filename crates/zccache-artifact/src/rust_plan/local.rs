@@ -88,7 +88,7 @@ pub fn save_rust_plan_local(
     let selected = select_artifacts(plan, candidates, &mut summary);
 
     if bundle_dir.exists() {
-        std::fs::remove_dir_all(&bundle_dir)?;
+        remove_bundle_dir(&bundle_dir)?;
     }
     std::fs::create_dir_all(&files_dir)?;
 
@@ -164,7 +164,7 @@ fn bundle_one_artifact(
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::copy(&sel.source_path, &dst)?;
+    snapshot_to_bundle(&sel.source_path, &dst)?;
     snapshot_selected_artifact(sel)
 }
 
@@ -305,9 +305,7 @@ fn restore_manifest_artifacts(
         if dst.exists() {
             std::fs::remove_file(&dst)?;
         }
-        if std::fs::hard_link(&src, &dst).is_err() {
-            std::fs::copy(&src, &dst)?;
-        }
+        restore_bundle_file(&src, &dst)?;
         if let Ok(file) = std::fs::File::open(&dst) {
             let modified = if artifact.mtime_unix_nanos == 0 {
                 SystemTime::now()
@@ -374,7 +372,7 @@ pub fn save_rust_plan_delta_local(
     let selected = select_artifacts(plan, candidates, &mut summary);
 
     if delta_bundle_dir.exists() {
-        std::fs::remove_dir_all(&delta_bundle_dir)?;
+        remove_bundle_dir(&delta_bundle_dir)?;
     }
     std::fs::create_dir_all(&delta_files_dir)?;
 
@@ -398,7 +396,7 @@ pub fn save_rust_plan_delta_local(
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::copy(&sel.source_path, dst)?;
+        snapshot_to_bundle(&sel.source_path, &dst)?;
         artifacts.push(snapshot);
     }
 
@@ -478,6 +476,59 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn snapshot_to_bundle(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if reflink_copy::reflink(src, dst).is_err() {
+        std::fs::copy(src, dst)?;
+    }
+    let mut permissions = std::fs::metadata(dst)?.permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(dst, permissions)
+}
+
+fn restore_bundle_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    // Rust-plan bundles are immutable. Reflink is ideal; where unavailable we
+    // copy instead of hardlinking because this crate does not own the daemon's
+    // mediated-write registry and must not create an untracked shared writer.
+    if reflink_copy::reflink(src, dst).is_err() {
+        std::fs::copy(src, dst)?;
+    }
+    make_bundle_file_writable(dst)
+}
+
+#[cfg_attr(windows, allow(clippy::permissions_set_readonly_false))]
+fn make_bundle_file_writable(path: &Path) -> std::io::Result<()> {
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(permissions.mode() | 0o200);
+    }
+    #[cfg(windows)]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(path, permissions)
+}
+
+fn remove_bundle_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    fn clear_readonly(path: &Path) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            let child = entry.path();
+            if entry.file_type()?.is_dir() {
+                clear_readonly(&child)?;
+            } else {
+                if entry.metadata()?.permissions().readonly() {
+                    make_bundle_file_writable(&child)?;
+                }
+            }
+        }
+        Ok(())
+    }
+    #[cfg(windows)]
+    clear_readonly(path)?;
+    std::fs::remove_dir_all(path)
 }
 
 pub(super) fn system_time_to_unix_nanos(time: SystemTime) -> u64 {

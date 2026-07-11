@@ -595,6 +595,7 @@ impl DaemonServer {
         let (watcher, raw_rx) = match NotifyWatcher::new(ignore) {
             Ok(w) => w,
             Err(e) => {
+                set_registry_watcher_available(false);
                 tracing::warn!("failed to start file watcher: {e} — running without watcher");
                 return;
             }
@@ -605,12 +606,14 @@ impl DaemonServer {
                 *watcher_guard = Some(watcher);
             }
             Err(_) => {
+                set_registry_watcher_available(false);
                 tracing::warn!(
                     "timed out acquiring watcher lock during startup; running without watcher"
                 );
                 return;
             }
         }
+        set_registry_watcher_available(true);
         self.state.watcher_active.store(true, Ordering::Release);
 
         // Settle buffer: coalesces raw events into batches after a quiet period.
@@ -678,6 +681,10 @@ impl DaemonServer {
                                     p.display()
                                 );
                             }
+                            mark_registered_links_suspect(
+                                changed.iter().map(|path| path.as_path()),
+                            );
+                            mark_removed_links_suspect(removed.iter().map(|path| path.as_path()));
                             state.fingerprint.on_batch(&changed, &removed);
                             state
                                 .cache_system
@@ -685,6 +692,7 @@ impl DaemonServer {
                         }
                     }
                     SettledEvent::Overflow => {
+                        mark_all_registered_links_suspect();
                         tracing::warn!("watcher overflow — downgrading all metadata");
                         state.cache_system.apply_overflow();
                     }

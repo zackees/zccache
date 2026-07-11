@@ -33,8 +33,18 @@ static BUILD_RELEASE_CLI: Once = Once::new();
 
 fn build_and_find_release_cli() -> NormalizedPath {
     BUILD_RELEASE_CLI.call_once(|| {
-        let status = std::process::Command::new("cargo")
-            .args(["build", "--release", "-p", "zccache", "--bin", "zccache"])
+        let status = std::process::Command::new("soldr")
+            .args([
+                "cargo",
+                "build",
+                "--release",
+                "-p",
+                "zccache",
+                "--bin",
+                "zccache",
+                "--features",
+                "zccache-bin",
+            ])
             .env_remove("RUSTC_WRAPPER")
             .env_remove("RUSTC_WORKSPACE_WRAPPER")
             .status()

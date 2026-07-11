@@ -4,6 +4,7 @@ GitHub Actions workflow definitions.
 
 - **ci.yml** - Runs fmt, Dylint, MSRV, and doc builds on main and pull requests.
 - **ci-check.yml** - Reusable check/test workflow used by the OS-specific CI workflows.
+- **fs-matrix.yml** - Provisions real ReFS/FAT, btrfs/ext4/vfat, and macOS disk-image fixtures for COW materialization acceptance.
 - **clippy.yml** - Runs Clippy on pushes to main for the README status badge.
 - **benchmark-stats.yml** - Manual/scheduled zccache vs bare compiler vs sccache benchmark publisher for the README images and rendered stats page.
 - **perf-guard.yml** - Main-only Rust, C, and C++ perf-regression guard that runs language jobs in parallel, fails below the zccache vs bare compiler or pinned-sccache speed floors, and uploads Markdown/JSON run artifacts.

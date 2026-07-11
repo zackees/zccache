@@ -125,3 +125,31 @@ On artifact lookup:
 If any check fails, remove the artifact directory and its redb entry, and treat as a cache miss. Log a warning.
 
 On startup, the daemon does NOT do a full integrity scan (too slow for large caches). Corruption is detected lazily on lookup.
+
+## Capability-driven COW materialization
+
+The daemon probes operations instead of trusting filesystem names. The first
+materialization for a `(cache volume, target volume)` pair attempts a throwaway
+reflink and hardlink and caches the resulting `VolumeCaps`. Cross-volume pairs
+short-circuit to the copy tier.
+
+The ordered tiers are:
+
+1. **Reflink:** a new file with shared extents and kernel-enforced COW. The
+   daemon restores the blob's stored mtime because clone metadata is separate.
+2. **Hardlink COW-lite:** the link is recorded by native file identity, the blob
+   and output are read-only, and mediated compiler/tool writes copy-detach.
+   Each stored blob carries a durable digest so a restarted daemon can rebuild
+   the in-memory ledger safely even when prior aliases were deleted. Watcher
+   changes mark entries suspect; the next hit hashes the blob and refuses a
+   mismatch with warning and durable lifecycle forensics.
+3. **Copy:** used when neither sharing primitive is available. The destination
+   is independent and writable.
+
+Windows identity uses `GetFileInformationByHandleEx(FileIdInfo)` and its native
+128-bit ID, with the legacy index as a pre-Windows-8 fallback. Link counts are
+checked before creation so exhaustion degrades to copy. Eviction and `clear`
+remove read-only attributes before deletion.
+
+`ZCCACHE_DISABLE_REFLINK=1` disables cloning and `ZCCACHE_COW_READONLY=0`
+disables read-only enforcement. Neither setting adds an IPC roundtrip.

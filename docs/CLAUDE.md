@@ -13,6 +13,7 @@ Architecture docs are split by subsystem. Read only what's relevant to your curr
 | `zccache-fscache` | [metadata-cache.md](architecture/metadata-cache.md) |
 | `zccache-watcher` | [metadata-cache.md](architecture/metadata-cache.md) (watcher section) |
 | `zccache-artifact` | [artifact-store.md](architecture/artifact-store.md) |
+| Cross-filesystem COW materialization | [artifact-store.md](architecture/artifact-store.md), [portability.md](architecture/portability.md) |
 | `zccache-hash` | [overview.md](architecture/overview.md) (2.8) |
 | `zccache-compiler` | [overview.md](architecture/overview.md) (2.9), [data-flow.md](architecture/data-flow.md) |
 | `zccache-core` | [overview.md](architecture/overview.md) |

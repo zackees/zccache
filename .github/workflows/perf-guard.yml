@@ -12,6 +12,14 @@ on:
       - "ci/**"
       - "crates/**"
       - ".github/workflows/perf-guard.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "ci/**"
+      - "crates/**"
+      - ".github/workflows/perf-guard.yml"
 
 concurrency:
   group: perf-guard-${{ github.ref }}
@@ -21,6 +29,28 @@ permissions:
   contents: read
 
 jobs:
+  cow-materialization-budget:
+    name: COW materialization hit budget
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: zackees/setup-soldr@v0.9.62
+        with:
+          zccache-seed-strict: true
+          cache: false
+          linker: fast
+
+      # Issue #1039: keep this independent from the main-only benchmark
+      # matrix so pull requests cannot merge before exercising the budget.
+      - name: Run COW materialization budget
+        shell: bash
+        run: |
+          set -euo pipefail
+          soldr --no-cache cargo test -p zccache-daemon-core --features test-support perf_cow_materialization_128_hits_under_two_seconds
+
   build-perf-benchmark:
     name: Build perf benchmark binary
     if: github.ref == 'refs/heads/main'

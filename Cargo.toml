@@ -17,6 +17,7 @@ members = [
     "crates/zccache-ipc",
     "crates/zccache-protocol",
     "crates/zccache-symbols",
+    "crates/zccache-test-support",
     "crates/zccache-watcher",
     "crates/zccache-cli",
     "crates/zccache-cli-core",
@@ -64,6 +65,7 @@ futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "stream"] }
 tokio-util = "0.7"
 filetime = "0.2"
+reflink-copy = "=0.1.30"
 fs2 = "0.4"
 regex = "1"
 serde_json = "1"
@@ -94,6 +96,7 @@ zccache-hash = { path = "crates/zccache-hash" }
 zccache-ipc = { path = "crates/zccache-ipc" }
 zccache-protocol = { path = "crates/zccache-protocol" }
 zccache-symbols = { path = "crates/zccache-symbols" }
+zccache-test-support = { path = "crates/zccache-test-support" }
 zccache-watcher = { path = "crates/zccache-watcher" }
 zccache-cli = { path = "crates/zccache-cli" }
 zccache-fingerprint = { path = "crates/zccache-fingerprint" }

@@ -64,6 +64,7 @@ uuid = { version = "1", features = ["v4"] }
 regex = { workspace = true }
 fs2 = { workspace = true }
 filetime = { workspace = true }
+reflink-copy = { workspace = true }
 sysinfo = "0.30.13"
 # daemon-entry / test-support
 clap = { workspace = true, optional = true }
@@ -82,5 +83,6 @@ windows-sys = { version = "0.59", features = [
 ] }
 
 [dev-dependencies]
+zccache-test-support = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }

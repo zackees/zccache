@@ -1,0 +1,16 @@
+[package]
+name = "zccache-test-support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Cross-filesystem test fixtures for zccache"
+publish = false
+
+[dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

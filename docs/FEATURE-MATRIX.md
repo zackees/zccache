@@ -47,7 +47,8 @@ sccache claims are best-effort and sourced from the upstream README and docs at 
 |---|:---:|:---:|---|---|
 | Persistent daemon with sub-ms IPC | yes | partial | zccache's daemon serves hits in ~1ms over a single IPC roundtrip. sccache has a server, but each call pays ~170ms (spawn + handshake + disk I/O). | [README.md#why-is-zccache-so-much-faster-on-warm-hits](README.md#why-is-zccache-so-much-faster-on-warm-hits) |
 | Single-roundtrip IPC (length-prefixed bincode) | yes | no | One length-prefixed bincode message per compile. sccache's protocol uses multiple subprocess invocations per call. | [link](https://github.com/mozilla/sccache/blob/main/README.md) |
-| Hardlink delivery on hit | yes | no | Cache hits are served by hardlinking the cached artifact to the output path — one syscall. sccache copies bytes back over IPC. | [README.md#why-is-zccache-so-much-faster-on-warm-hits](README.md#why-is-zccache-so-much-faster-on-warm-hits) |
+| Safe hardlink delivery on hit | yes | no | Cache hits use a capability-driven reflink, protected-hardlink, or copy ladder. sccache copies bytes back over IPC. | [README.md#why-is-zccache-so-much-faster-on-warm-hits](README.md#why-is-zccache-so-much-faster-on-warm-hits) |
+| Reflink delivery (ReFS, btrfs/XFS, APFS) | yes | no | zccache probes volume-pair capabilities and prefers true block-level COW while preserving stored mtimes. | [README.md#safe-filesystem-materialization](README.md#safe-filesystem-materialization) |
 | In-memory metadata cache (DashMap) | yes | no | File sizes, mtimes, and content hashes live in a lock-free DashMap. Cache key computation is a memory lookup. | [README.md#why-is-zccache-so-much-faster-on-warm-hits](README.md#why-is-zccache-so-much-faster-on-warm-hits) |
 | Filesystem watcher (notify-backed) | yes | no | Background `notify` watcher tracks file changes in real time, so the daemon already knows whether inputs are dirty before compile is invoked. | [README.md#why-is-zccache-so-much-faster-on-warm-hits](README.md#why-is-zccache-so-much-faster-on-warm-hits) |
 | Content-addressed artifact store | yes | yes | Both hash-key cache entries by input content. | [link](https://github.com/mozilla/sccache/blob/main/README.md) |
@@ -101,3 +102,9 @@ sccache claims are best-effort and sourced from the upstream README and docs at 
 | Per-hit cost | yes | partial | zccache serves hits in ~1ms (in-memory lookup + hardlink). sccache pays ~170ms per call (spawn + hash + IPC + disk I/O). | [README.md#why-is-zccache-so-much-faster-on-warm-hits](README.md#why-is-zccache-so-much-faster-on-warm-hits) |
 | mtime preservation on hits | yes | partial | zccache preserves the cached artifact's mtime so cargo's incremental fingerprint doesn't invalidate downstream crates. | [CLAUDE.md](CLAUDE.md) |
 | Compiler child priority (auto-throttle at 95% CPU) | yes | no | zccache demotes compiler children when system CPU is saturated, keeping the host responsive during big rebuilds. | [README.md](README.md) |
+
+## Reliability
+
+| Feature | zccache | sccache | Notes | Evidence |
+|---|:---:|:---:|---|---|
+| Hardlink cache-poisoning prevention and detection | yes | partial | Read-only blobs, native-file-ID registry, mediated detach, and watcher-assisted suspect verification prevent silent poisoning. | [README.md#safe-filesystem-materialization](README.md#safe-filesystem-materialization) |

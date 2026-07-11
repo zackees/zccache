@@ -3,6 +3,71 @@
 
 use super::*;
 
+#[cfg(test)]
+static FAIL_DETACH_REMOVE_PATHS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashSet<PathBuf>>,
+> = std::sync::OnceLock::new();
+#[cfg(test)]
+static FAIL_DETACH_RENAME_PATHS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashSet<PathBuf>>,
+> = std::sync::OnceLock::new();
+
+pub(in crate::daemon::server) fn remove_output_file(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Ok(mut injected) = FAIL_DETACH_REMOVE_PATHS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+        .lock()
+    {
+        if injected.remove(path) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected detach remove failure",
+            ));
+        }
+    }
+    std::fs::remove_file(path)
+}
+
+fn rename_detached_output(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Ok(mut injected) = FAIL_DETACH_RENAME_PATHS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+        .lock()
+    {
+        if injected.remove(to) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected detach rename failure",
+            ));
+        }
+    }
+    std::fs::rename(from, to)
+}
+
+#[cfg(test)]
+pub(in crate::daemon::server) fn fail_detach_remove_for_test(path: &Path) {
+    FAIL_DETACH_REMOVE_PATHS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .expect("detach failure injection lock")
+        .insert(path.to_path_buf());
+}
+
+#[cfg(test)]
+pub(in crate::daemon::server) fn fail_detach_rename_for_test(path: &Path) {
+    FAIL_DETACH_RENAME_PATHS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .expect("detach rename failure injection lock")
+        .insert(path.to_path_buf());
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(in crate::daemon::server) struct FileId {
+    pub(in crate::daemon::server) volume_serial: u64,
+    pub(in crate::daemon::server) identifier: [u8; 16],
+}
+
 pub(in crate::daemon::server) fn break_output_hardlink_before_compile(
     path: &Path,
 ) -> std::io::Result<()> {
@@ -14,6 +79,7 @@ pub(in crate::daemon::server) fn break_output_hardlink_before_compile(
     }
 
     if hard_link_count(path)? <= 1 {
+        make_writable(path)?;
         return Ok(());
     }
 
@@ -48,13 +114,32 @@ pub(in crate::daemon::server) fn break_output_hardlink_before_compile(
 
         match copy_result {
             Ok(()) => {
-                if let Err(e) = std::fs::remove_file(path) {
+                let registration = prepare_registered_detach(path);
+                if let Err(error) = make_writable(path) {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Err(error);
+                }
+                if let Err(e) = remove_output_file(path) {
+                    if let Some((_, blob_path)) = &registration {
+                        let _ = set_readonly(blob_path, readonly_enabled());
+                    }
                     let _ = std::fs::remove_file(&tmp_path);
                     return Err(e);
                 }
-                if let Err(e) = std::fs::rename(&tmp_path, path) {
+                if let Err(e) = rename_detached_output(&tmp_path, path) {
+                    if let Some((id, blob_path)) = &registration {
+                        let _ = set_readonly(blob_path, readonly_enabled());
+                        commit_registered_detach(*id, path);
+                    }
                     let _ = std::fs::remove_file(&tmp_path);
                     return Err(e);
+                }
+                if let Some((id, _)) = &registration {
+                    commit_registered_detach(*id, path);
+                }
+                make_writable(path)?;
+                if let Some((_, blob_path)) = registration {
+                    let _ = set_readonly(&blob_path, readonly_enabled());
                 }
                 return Ok(());
             }
@@ -74,6 +159,22 @@ pub(in crate::daemon::server) fn break_output_hardlink_before_compile(
             "failed to create hardlink detach temp file",
         )
     }))
+}
+
+pub(in crate::daemon::server) fn set_readonly(path: &Path, readonly: bool) -> std::io::Result<()> {
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    if permissions.readonly() == readonly {
+        return Ok(());
+    }
+    permissions.set_readonly(readonly);
+    std::fs::set_permissions(path, permissions)
+}
+
+pub(in crate::daemon::server) fn make_writable(path: &Path) -> std::io::Result<()> {
+    if path.exists() && std::fs::metadata(path)?.permissions().readonly() {
+        set_readonly(path, false)?;
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -128,11 +229,21 @@ pub(in crate::daemon::server) fn hard_link_count(path: &Path) -> std::io::Result
 /// Returns `false` if either file doesn't exist or the check fails.
 #[cfg(unix)]
 pub(in crate::daemon::server) fn same_file(a: &Path, b: &Path) -> bool {
+    get_file_id(a)
+        .zip(get_file_id(b))
+        .is_some_and(|(a, b)| a == b)
+}
+
+#[cfg(unix)]
+pub(in crate::daemon::server) fn get_file_id(path: &Path) -> Option<FileId> {
     use std::os::unix::fs::MetadataExt;
-    match (std::fs::metadata(a), std::fs::metadata(b)) {
-        (Ok(ma), Ok(mb)) => ma.dev() == mb.dev() && ma.ino() == mb.ino(),
-        _ => false,
-    }
+    let metadata = std::fs::metadata(path).ok()?;
+    let mut identifier = [0_u8; 16];
+    identifier[..8].copy_from_slice(&metadata.ino().to_ne_bytes());
+    Some(FileId {
+        volume_serial: metadata.dev(),
+        identifier,
+    })
 }
 
 #[cfg(windows)]
@@ -143,14 +254,16 @@ pub(in crate::daemon::server) fn same_file(a: &Path, b: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Returns (volume_serial, file_index_high, file_index_low) for a path.
+/// Returns the volume serial and native 128-bit file ID. ReFS does not
+/// guarantee uniqueness for the legacy 64-bit index.
 #[cfg(windows)]
-pub(in crate::daemon::server) fn get_file_id(path: &Path) -> Option<(u32, u32, u32)> {
+pub(in crate::daemon::server) fn get_file_id(path: &Path) -> Option<FileId> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_NORMAL,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        CreateFileW, FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+        BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_INFO, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
     };
 
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -162,25 +275,39 @@ pub(in crate::daemon::server) fn get_file_id(path: &Path) -> Option<(u32, u32, u
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             std::ptr::null(),
             OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
+            FILE_FLAG_BACKUP_SEMANTICS,
             std::ptr::null_mut(),
         );
         if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
             return None;
         }
 
-        let mut info: BY_HANDLE_FILE_INFORMATION = std::mem::zeroed();
-        let ok = GetFileInformationByHandle(handle, &mut info);
+        let mut native: FILE_ID_INFO = std::mem::zeroed();
+        let native_ok = GetFileInformationByHandleEx(
+            handle,
+            FileIdInfo,
+            (&raw mut native).cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        );
+        if native_ok != 0 {
+            CloseHandle(handle);
+            return Some(FileId {
+                volume_serial: native.VolumeSerialNumber,
+                identifier: native.FileId.Identifier,
+            });
+        }
+        let mut legacy: BY_HANDLE_FILE_INFORMATION = std::mem::zeroed();
+        let legacy_ok = GetFileInformationByHandle(handle, &mut legacy);
         CloseHandle(handle);
-
-        if ok == 0 {
+        if legacy_ok == 0 {
             return None;
         }
-
-        Some((
-            info.dwVolumeSerialNumber,
-            info.nFileIndexHigh,
-            info.nFileIndexLow,
-        ))
+        let mut identifier = [0_u8; 16];
+        identifier[..4].copy_from_slice(&legacy.nFileIndexLow.to_ne_bytes());
+        identifier[4..8].copy_from_slice(&legacy.nFileIndexHigh.to_ne_bytes());
+        Some(FileId {
+            volume_serial: u64::from(legacy.dwVolumeSerialNumber),
+            identifier,
+        })
     }
 }

@@ -118,6 +118,16 @@ fn run_cargo_build(root: &Path, target_dir: &Path, verbose: bool) -> Output {
     run_command(cmd, "cargo build")
 }
 
+fn run_cargo_clean(root: &Path, target_dir: &Path) -> Output {
+    let mut cmd = Command::new(cargo_bin());
+    cmd.current_dir(root);
+    cmd.env("CARGO_TERM_COLOR", "never");
+    cmd.env("ZCCACHE_COW_READONLY", "1");
+    cmd.args(["clean", "--target-dir"]);
+    cmd.arg(target_dir);
+    run_command(cmd, "cargo clean")
+}
+
 fn toolchain_identity() -> RustToolchainIdentity {
     let rustc = run_command(
         {
@@ -800,5 +810,11 @@ fn rust_plan_lifecycle_keeps_path_dep_fresh_and_rebuilds_workspace_crate() {
     assert!(
         has_rust_lib_artifact(&deps_dir, "app"),
         "rebuild should recreate the workspace crate rlib"
+    );
+    let clean = run_cargo_clean(root, &target_dir);
+    assert!(clean.status.success());
+    assert!(
+        !target_dir.exists(),
+        "cargo clean must remove restored artifacts"
     );
 }

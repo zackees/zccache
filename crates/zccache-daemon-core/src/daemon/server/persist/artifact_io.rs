@@ -22,9 +22,12 @@ pub(in crate::daemon::server) fn persist_artifact_output(
     let tmp_path = artifact_persist_tmp_path(cache_path);
     let result = (|| {
         std::fs::write(&tmp_path, payload)?;
-        replace_artifact_cache_file(&tmp_path, cache_path)
+        set_readonly(&tmp_path, readonly_enabled())?;
+        replace_artifact_cache_file(&tmp_path, cache_path)?;
+        write_authoritative_blob_digest(cache_path)
     })();
     if let Err(e) = result {
+        let _ = make_writable(&tmp_path);
         let _ = std::fs::remove_file(&tmp_path);
         return Err(enrich_persist_err(e, None, cache_path));
     }
@@ -140,6 +143,7 @@ pub(in crate::daemon::server) fn persist_artifact_paths_with_stats(
             || Ok(PersistArtifactFileStats::default()),
             |a, b| match (a, b) {
                 (Ok(x), Ok(y)) => Ok(PersistArtifactFileStats {
+                    reflink_count: x.reflink_count + y.reflink_count,
                     hardlink_count: x.hardlink_count + y.hardlink_count,
                     copy_count: x.copy_count + y.copy_count,
                     copy_bytes: x.copy_bytes + y.copy_bytes,
@@ -151,6 +155,7 @@ pub(in crate::daemon::server) fn persist_artifact_paths_with_stats(
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(in crate::daemon::server) struct PersistArtifactFileStats {
+    pub(in crate::daemon::server) reflink_count: u64,
     pub(in crate::daemon::server) hardlink_count: u64,
     pub(in crate::daemon::server) copy_count: u64,
     pub(in crate::daemon::server) copy_bytes: u64,
@@ -166,17 +171,21 @@ pub(in crate::daemon::server) fn persist_artifact_file(
     }
 
     let tmp_path = artifact_persist_tmp_path(cache_path);
-    let result = (|| match std::fs::hard_link(source_path, &tmp_path) {
+    let result = (|| match reflink_copy::reflink(source_path, &tmp_path) {
         Ok(()) => {
+            set_readonly(&tmp_path, readonly_enabled())?;
             replace_artifact_cache_file(&tmp_path, cache_path)?;
+            write_authoritative_blob_digest(cache_path)?;
             Ok(PersistArtifactFileStats {
-                hardlink_count: 1,
+                reflink_count: 1,
                 ..PersistArtifactFileStats::default()
             })
         }
         Err(_) => {
             let copy_bytes = std::fs::copy(source_path, &tmp_path)?;
+            set_readonly(&tmp_path, readonly_enabled())?;
             replace_artifact_cache_file(&tmp_path, cache_path)?;
+            write_authoritative_blob_digest(cache_path)?;
             Ok(PersistArtifactFileStats {
                 copy_count: 1,
                 copy_bytes,
@@ -187,6 +196,7 @@ pub(in crate::daemon::server) fn persist_artifact_file(
     match result {
         Ok(stats) => Ok(stats),
         Err(e) => {
+            let _ = make_writable(&tmp_path);
             let _ = std::fs::remove_file(&tmp_path);
             Err(enrich_persist_err(e, Some(source_path), cache_path))
         }
@@ -198,7 +208,12 @@ pub(in crate::daemon::server) fn replace_artifact_cache_file(
     tmp_path: &Path,
     cache_path: &Path,
 ) -> std::io::Result<()> {
-    std::fs::rename(tmp_path, cache_path)
+    let replaced = registered_blob_id(cache_path);
+    std::fs::rename(tmp_path, cache_path)?;
+    if let Some(id) = replaced {
+        unregister_blob_id(id);
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -206,14 +221,21 @@ pub(in crate::daemon::server) fn replace_artifact_cache_file(
     tmp_path: &Path,
     cache_path: &Path,
 ) -> std::io::Result<()> {
-    av_scan_retry(|| match std::fs::rename(tmp_path, cache_path) {
+    let replaced = registered_blob_id(cache_path);
+    let result = av_scan_retry(|| match std::fs::rename(tmp_path, cache_path) {
         Ok(()) => Ok(()),
         Err(_) if cache_path.exists() => {
-            std::fs::remove_file(cache_path)?;
+            remove_registered_blob(cache_path)?;
             std::fs::rename(tmp_path, cache_path)
         }
         Err(err) => Err(err),
-    })
+    });
+    if result.is_ok() {
+        if let Some(id) = replaced {
+            unregister_blob_id(id);
+        }
+    }
+    result
 }
 
 // ── Windows AV-scanner retry (issue #490) ──────────────────────────────────
