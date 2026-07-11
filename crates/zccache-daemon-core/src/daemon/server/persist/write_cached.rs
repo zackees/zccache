@@ -56,9 +56,29 @@ fn materialize_cached_file(out_path: &Path, cache_file: &Path) -> std::io::Resul
         match std::fs::hard_link(cache_file, out_path) {
             Ok(()) => {
                 set_readonly(cache_file, readonly_enabled())?;
-                commit_hardlink_registration(registration, out_path)?;
-                touch_mtime(out_path);
-                return Ok(());
+                match commit_hardlink_registration(registration, out_path) {
+                    Ok(()) => {
+                        touch_mtime(out_path);
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        // A failure here (including a transient stat/handle
+                        // error resolving the just-created link's identity)
+                        // must not become a hard failure of the whole
+                        // materialization — fall back to a copy the same
+                        // way a failed std::fs::hard_link already does
+                        // (issue #1042).
+                        tracing::warn!(
+                            event = "cow_hardlink_registration_commit_failed",
+                            cache_file = %cache_file.display(),
+                            out_path = %out_path.display(),
+                            error = %error,
+                            "hardlink registration commit failed after a successful hardlink; falling back to copy"
+                        );
+                        let _ = make_writable(out_path);
+                        let _ = remove_output_file(out_path);
+                    }
+                }
             }
             Err(error) => {
                 tracing::warn!(

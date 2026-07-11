@@ -96,18 +96,25 @@ fn write_cached_output_skips_when_already_hardlinked() {
     write_cached_output(&out, &cache, content).unwrap();
     assert_eq!(std::fs::read(&out).unwrap(), content.as_slice());
 
-    let hardlinked = same_file(&out, &cache);
+    // A plain same-volume tempdir supports hardlinks on every CI platform
+    // (Windows/Linux/macOS) this suite runs on. Assert that precondition
+    // loudly instead of silently branching on it — a silent branch let this
+    // test pass without ever exercising the hardlink-skip path it's named
+    // for (issue #1042 test-coverage regression).
+    assert!(
+        same_file(&out, &cache),
+        "test tempdir must support same-volume hardlinks for this test to exercise anything"
+    );
 
     // Second write: should detect hardlink and skip.
     // (If it didn't skip, it would still produce correct content,
     //  but the test verifies the optimization path exists.)
     write_cached_output(&out, &cache, content).unwrap();
     assert_eq!(std::fs::read(&out).unwrap(), content.as_slice());
-    if hardlinked {
-        assert!(same_file(&out, &cache));
-    } else {
-        assert!(!same_file(&out, &cache));
-    }
+    assert!(
+        same_file(&out, &cache),
+        "output must remain hardlinked to cache after the skip fast path"
+    );
 }
 
 #[test]
@@ -118,7 +125,14 @@ fn persist_artifact_output_does_not_mutate_existing_hardlink() {
 
     persist_artifact_output(&cache, b"first").unwrap();
     write_cached_output(&out, &cache, b"first").unwrap();
-    let was_hardlinked = same_file(&out, &cache);
+    // See the comment in write_cached_output_skips_when_already_hardlinked:
+    // this must hold in every CI environment this suite runs in, so assert
+    // it loudly rather than silently skip the invariant this test exists to
+    // check (issue #1042 test-coverage regression).
+    assert!(
+        same_file(&out, &cache),
+        "test tempdir must support same-volume hardlinks for this test to exercise anything"
+    );
 
     persist_artifact_output(&cache, b"second").unwrap();
 
@@ -128,9 +142,10 @@ fn persist_artifact_output_does_not_mutate_existing_hardlink() {
         "publishing a later cache payload must not mutate existing target outputs"
     );
     assert_eq!(std::fs::read(&cache).unwrap(), b"second");
-    if was_hardlinked {
-        assert!(!same_file(&out, &cache));
-    }
+    assert!(
+        !same_file(&out, &cache),
+        "publishing a new cache payload must detach any existing hardlinked output"
+    );
 }
 
 #[test]
@@ -144,10 +159,156 @@ fn persist_artifact_file_creates_independent_immutable_snapshot() {
     let stats = persist_artifact_file(&cache, &source).unwrap();
 
     assert_eq!(std::fs::read(&cache).unwrap(), content);
-    assert!(!same_file(&source, &cache));
     assert!(std::fs::metadata(&cache).unwrap().permissions().readonly());
-    assert_eq!(stats.reflink_count + stats.copy_count, 1);
-    assert_eq!(stats.hardlink_count, 0);
+    assert_eq!(stats.reflink_count + stats.copy_count + stats.hardlink_count, 1);
+    if stats.hardlink_count == 1 {
+        // Issue #1042 finding #4: the hardlink tier legitimately shares an
+        // inode with `source` by design (that's the whole point of the
+        // fast path). The "immutable snapshot" guarantee for a hardlinked
+        // source comes not from file independence but from
+        // break_output_hardlink_before_compile, which unconditionally
+        // detaches any shared alias (based on OS-level link count) before
+        // a compiler is ever allowed to write to `source` again.
+        assert!(same_file(&source, &cache));
+    } else {
+        assert!(!same_file(&source, &cache));
+    }
+}
+
+/// Regression test for issue #1042 finding #4/#5: persist_artifact_file
+/// must attempt a hardlink before falling back to a full byte copy on
+/// non-reflink filesystems. Commit 49dd59c replaced the pre-existing
+/// hardlink-first strategy with reflink-then-copy and dropped the hardlink
+/// attempt entirely; a plain same-volume tempdir doesn't support reflink
+/// (that requires a COW-capable filesystem like btrfs/APFS/ReFS), so this
+/// exercises exactly the regressed path on Windows/Linux CI.
+#[test]
+fn persist_artifact_file_uses_hardlink_when_reflink_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("libunit.rlib");
+    let cache = dir.path().join("artifact-key_0");
+    let content = b"compiled rust artifact for hardlink fast path";
+    std::fs::write(&source, content).unwrap();
+
+    let stats = persist_artifact_file(&cache, &source).unwrap();
+
+    assert_eq!(std::fs::read(&cache).unwrap(), content);
+    if stats.reflink_count == 0 {
+        // This tempdir doesn't support reflink (the common case for a
+        // plain NTFS/ext4 tempdir) — the hardlink tier must have been
+        // taken instead of falling all the way through to a full copy.
+        assert_eq!(
+            stats.hardlink_count, 1,
+            "persist_artifact_file must use the hardlink fast path when reflink is \
+             unavailable, instead of always falling through to a full copy"
+        );
+        assert_eq!(stats.copy_count, 0);
+    }
+}
+
+/// Regression test for issue #1042 finding #1: the digest sidecar for a
+/// freshly-persisted blob must be written and named for the *final*
+/// cache_path before the blob becomes visible, so a process restart can
+/// always durably re-verify it instead of evicting it as unregistered.
+#[test]
+fn persist_artifact_output_writes_digest_before_publishing() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("artifact-key_0");
+    let content = b"freshly persisted artifact";
+
+    persist_artifact_output(&cache, content).unwrap();
+    assert!(cache.exists());
+
+    // Simulate a daemon restart: the in-memory registry is gone, so
+    // verification must fall back to the durable digest sidecar.
+    forget_blob_registration_for_restart_test(&cache);
+    verify_registered_blob(&cache).expect(
+        "a freshly-persisted blob must have a durable digest sidecar keyed to its \
+         final name, surviving a restart without being evicted",
+    );
+    assert!(cache.exists(), "blob must not have been evicted");
+}
+
+/// Same as above, for the persist_artifact_file (hardlink/reflink/copy) path.
+#[test]
+fn persist_artifact_file_writes_digest_before_publishing() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("libunit.rlib");
+    let cache = dir.path().join("artifact-key_0");
+    let content = b"compiled rust artifact";
+    std::fs::write(&source, content).unwrap();
+
+    persist_artifact_file(&cache, &source).unwrap();
+    assert!(cache.exists());
+
+    forget_blob_registration_for_restart_test(&cache);
+    verify_registered_blob(&cache).expect(
+        "a freshly-persisted blob must have a durable digest sidecar keyed to its \
+         final name, surviving a restart without being evicted",
+    );
+    assert!(cache.exists(), "blob must not have been evicted");
+}
+
+/// Regression test for issue #1042 finding #1: fix #1 (writing the digest
+/// sidecar *before* the publishing rename, not after) is what actually
+/// closes the "valid blob evicted on restart" gap for freshly-persisted
+/// blobs going forward — this is exercised by
+/// persist_artifact_output_writes_digest_before_publishing and
+/// persist_artifact_file_writes_digest_before_publishing above.
+///
+/// An earlier version of this fix additionally tried to trust any
+/// digest-less blob with a hardlink count <= 1 (reasoning: no *current*
+/// alias, so nothing could have poisoned it). That reasoning is unsound: a
+/// since-deleted alias could have mutated the shared inode before being
+/// removed, and the blob's current bytes would already reflect that
+/// poisoning — link count only reflects the present, not whether a risky
+/// window existed in the past. This is exactly what
+/// failed_restart_eviction_restores_readonly_and_retries_after_alias_delete
+/// (below) already covers, so a digest-less blob is always evicted on
+/// verification; the remaining cost is a one-time cache miss for blobs
+/// written by a pre-#1039 zccache version on upgrade, which is the safer
+/// trade-off.
+#[test]
+fn verify_registered_blob_evicts_undigested_blob_even_when_singly_linked() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("legacy.rlib");
+    let content = b"blob written without a digest sidecar";
+    // Deliberately skip seed_persisted_blob's digest write.
+    std::fs::write(&cache, content).unwrap();
+
+    let error = verify_registered_blob(&cache)
+        .expect_err("an undigested, unregistered blob must be evicted, even singly-linked");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(!cache.exists(), "unverifiable blob must be evicted");
+}
+
+/// Regression test for issue #1042 finding #3: a failed identity resolution
+/// on a fresh hardlink registration (the output was never actually
+/// created — standing in for get_file_id() failing transiently right after
+/// a real std::fs::hard_link succeeded) must not mark the shared blob
+/// suspect. Marking it suspect on an inconclusive check would force an
+/// unnecessary re-hash — and risk of false eviction — for every other
+/// legitimate hardlink alias to that same blob.
+#[test]
+fn commit_hardlink_registration_does_not_poison_blob_on_unresolvable_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cached.rlib");
+    let out = dir.path().join("output.rlib");
+    let content = b"shared cache bytes";
+    seed_persisted_blob(&cache, content);
+
+    let id = prepare_hardlink_registration(&cache, &out).unwrap();
+    // `out` was never actually created at this path.
+    let commit_result = commit_hardlink_registration(id, &out);
+    assert!(
+        commit_result.is_err(),
+        "commit must fail when the output identity can't be resolved"
+    );
+    assert!(
+        !is_blob_suspect_for_test(&cache),
+        "an unresolvable output identity is not evidence of corruption and must not \
+         mark the shared blob suspect"
+    );
 }
 
 /// Regression test for issue #197: a cache hit hardlinks the target
@@ -166,10 +327,21 @@ fn break_output_hardlink_before_compile_prevents_cache_poisoning() {
     seed_persisted_blob(&cache, cached_content);
 
     write_cached_output(&out, &cache, cached_content).unwrap();
-    let was_hardlinked = same_file(&out, &cache);
+    // See the comment in write_cached_output_skips_when_already_hardlinked:
+    // this must hold in every CI environment this suite runs in. This is
+    // the issue #197 regression test — asserting it loudly instead of
+    // silently branching restores the deterministic coverage that commit
+    // 49dd59c's runtime-conditional rewrite dropped (issue #1042).
+    assert!(
+        same_file(&out, &cache),
+        "test tempdir must support same-volume hardlinks for this test to exercise anything"
+    );
 
     break_output_hardlink_before_compile(&out).unwrap();
-    assert!(!was_hardlinked || !same_file(&out, &cache));
+    assert!(
+        !same_file(&out, &cache),
+        "break_output_hardlink_before_compile must detach the output from the shared cache blob"
+    );
 
     std::fs::write(&out, rebuilt_content).unwrap();
 
@@ -646,19 +818,27 @@ fn write_cached_output_preserves_mtime_on_existing_hardlink() {
     let old_time = filetime::FileTime::from_unix_time(1_000_000_000, 0);
     set_materialized_mtime(&out, old_time).unwrap();
 
-    let hardlinked = same_file(&out, &cache);
-    // Second delivery: same_file keeps the linked mtime; a reflink tier
-    // rematerializes from the immutable blob and restores the blob mtime.
+    // See the comment in write_cached_output_skips_when_already_hardlinked:
+    // this must hold in every CI environment this suite runs in — assert it
+    // loudly so this test always checks the "mtime preserved on the
+    // same-file path" invariant it's named for, instead of silently falling
+    // back to checking the reflink-tier formula instead (issue #1042
+    // test-coverage regression).
+    assert!(
+        same_file(&out, &cache),
+        "test tempdir must support same-volume hardlinks for this test to exercise anything"
+    );
+
+    // Second delivery: same_file keeps the linked mtime.
     write_cached_output(&out, &cache, content).unwrap();
 
     let out_mtime =
         filetime::FileTime::from_last_modification_time(&std::fs::metadata(&out).unwrap());
-    let expected = if hardlinked {
-        old_time
-    } else {
-        filetime::FileTime::from_last_modification_time(&std::fs::metadata(&cache).unwrap())
-    };
-    assert_eq!(out_mtime.unix_seconds(), expected.unix_seconds());
+    assert_eq!(
+        out_mtime.unix_seconds(),
+        old_time.unix_seconds(),
+        "mtime must be preserved on the same_file (already-hardlinked) path"
+    );
 }
 
 /// Regression test: when a sibling-floor mtime bump is required on the

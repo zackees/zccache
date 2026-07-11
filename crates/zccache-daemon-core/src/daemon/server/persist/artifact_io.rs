@@ -23,12 +23,20 @@ pub(in crate::daemon::server) fn persist_artifact_output(
     let result = (|| {
         std::fs::write(&tmp_path, payload)?;
         set_readonly(&tmp_path, readonly_enabled())?;
-        replace_artifact_cache_file(&tmp_path, cache_path)?;
-        write_authoritative_blob_digest(cache_path)
+        // Write the digest sidecar for cache_path's *final* name while the
+        // bytes are still private at tmp_path, so the rename that publishes
+        // the blob is the last fallible step. Writing the digest *after*
+        // the rename (the prior order) could leave a published, digest-less
+        // blob behind if this write failed — which verify_registered_blob
+        // would later evict as unverifiable even though it was never
+        // tampered with (issue #1042).
+        write_authoritative_blob_digest_for(&tmp_path, cache_path)?;
+        replace_artifact_cache_file(&tmp_path, cache_path)
     })();
     if let Err(e) = result {
         let _ = make_writable(&tmp_path);
         let _ = std::fs::remove_file(&tmp_path);
+        remove_authoritative_blob_digest(cache_path);
         return Err(enrich_persist_err(e, None, cache_path));
     }
     Ok(())
@@ -171,33 +179,52 @@ pub(in crate::daemon::server) fn persist_artifact_file(
     }
 
     let tmp_path = artifact_persist_tmp_path(cache_path);
-    let result = (|| match reflink_copy::reflink(source_path, &tmp_path) {
-        Ok(()) => {
+    // Tier order: reflink (true COW, cheapest) -> hardlink (shared inode,
+    // no bytes copied) -> full copy (always works, most expensive). Commit
+    // 49dd59c replaced the pre-existing hardlink-first strategy with
+    // reflink-then-copy and dropped the hardlink attempt entirely, which
+    // regressed the STORE-direction fast path to a full byte copy on every
+    // non-reflink filesystem (most Linux ext4, most Windows NTFS without
+    // ReFS) — issue #1042.
+    let result = (|| {
+        if reflink_copy::reflink(source_path, &tmp_path).is_ok() {
             set_readonly(&tmp_path, readonly_enabled())?;
+            write_authoritative_blob_digest_for(&tmp_path, cache_path)?;
             replace_artifact_cache_file(&tmp_path, cache_path)?;
-            write_authoritative_blob_digest(cache_path)?;
-            Ok(PersistArtifactFileStats {
+            return Ok(PersistArtifactFileStats {
                 reflink_count: 1,
                 ..PersistArtifactFileStats::default()
-            })
+            });
         }
-        Err(_) => {
-            let copy_bytes = std::fs::copy(source_path, &tmp_path)?;
+        // A failed reflink attempt may have left a partial tmp file behind
+        // (platform-dependent); clear it defensively before the next tier,
+        // since std::fs::hard_link fails if the destination already exists.
+        let _ = std::fs::remove_file(&tmp_path);
+        if std::fs::hard_link(source_path, &tmp_path).is_ok() {
             set_readonly(&tmp_path, readonly_enabled())?;
+            write_authoritative_blob_digest_for(&tmp_path, cache_path)?;
             replace_artifact_cache_file(&tmp_path, cache_path)?;
-            write_authoritative_blob_digest(cache_path)?;
-            Ok(PersistArtifactFileStats {
-                copy_count: 1,
-                copy_bytes,
+            return Ok(PersistArtifactFileStats {
+                hardlink_count: 1,
                 ..PersistArtifactFileStats::default()
-            })
+            });
         }
+        let copy_bytes = std::fs::copy(source_path, &tmp_path)?;
+        set_readonly(&tmp_path, readonly_enabled())?;
+        write_authoritative_blob_digest_for(&tmp_path, cache_path)?;
+        replace_artifact_cache_file(&tmp_path, cache_path)?;
+        Ok(PersistArtifactFileStats {
+            copy_count: 1,
+            copy_bytes,
+            ..PersistArtifactFileStats::default()
+        })
     })();
     match result {
         Ok(stats) => Ok(stats),
         Err(e) => {
             let _ = make_writable(&tmp_path);
             let _ = std::fs::remove_file(&tmp_path);
+            remove_authoritative_blob_digest(cache_path);
             Err(enrich_persist_err(e, Some(source_path), cache_path))
         }
     }

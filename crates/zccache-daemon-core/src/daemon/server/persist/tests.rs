@@ -194,6 +194,48 @@ fn batch_floor_freshens_materialized_outputs_without_floor_paths() {
     );
 }
 
+#[test]
+fn fs_caps_stays_correct_across_many_distinct_destination_dirs() {
+    // Issue #1042 finding #6: the `VolumePair` cache key includes a
+    // destination-parent `PathBuf` (fix for the ephemeral-device-id-reuse
+    // bug), so a long-running daemon servicing many distinct build-output
+    // directories accumulates one cache entry per distinct destination
+    // parent with no eviction. `CAPS_CACHE_LIMIT` (4096) is too large to
+    // exhaustively exercise here, so this regression test instead asserts
+    // the practical invariant: probing many distinct destination
+    // directories must keep returning correct, consistent capabilities
+    // and must never panic, regardless of how large the cache grows.
+    let src_dir = tempfile::tempdir().unwrap();
+    let src = src_dir.path().join("src.rlib");
+    std::fs::write(&src, b"source artifact").unwrap();
+
+    let root = tempfile::tempdir().unwrap();
+    let mut first_caps = None;
+    for index in 0..100 {
+        let dst_dir = root.path().join(format!("dest-{index}"));
+        std::fs::create_dir_all(&dst_dir).unwrap();
+        let dst = dst_dir.join("out.rlib");
+
+        let caps = fs_caps(&src, &dst);
+        // Calling again for the same destination must be idempotent
+        // (cache hit or a fresh, consistent re-probe after an eviction).
+        let caps_again = fs_caps(&src, &dst);
+        assert_eq!(
+            caps, caps_again,
+            "fs_caps must return consistent capabilities for the same destination on repeat calls"
+        );
+
+        if let Some(first) = first_caps {
+            assert_eq!(
+                caps, first,
+                "same src/dst volume pair on the same filesystem should probe identical capabilities"
+            );
+        } else {
+            first_caps = Some(caps);
+        }
+    }
+}
+
 /// Function-level warm-hit budget for #1039. The generous 2-second ceiling is
 /// over 3x the observed Windows/NTFS debug-build time for 128 deliveries while
 /// still catching accidental per-hit hashing or probe-cache regressions.
