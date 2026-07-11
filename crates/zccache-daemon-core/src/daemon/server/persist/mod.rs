@@ -30,6 +30,7 @@ mod hardlink;
 mod link_registry;
 mod mtime;
 mod pack;
+mod staged_store;
 mod write_cached;
 
 pub(in crate::daemon::server) use artifact_io::*;
@@ -38,6 +39,7 @@ pub(in crate::daemon::server) use hardlink::*;
 pub(in crate::daemon::server) use link_registry::*;
 pub(in crate::daemon::server) use mtime::*;
 pub(in crate::daemon::server) use pack::*;
+pub(in crate::daemon::server) use staged_store::*;
 pub(in crate::daemon::server) use write_cached::*;
 
 #[cfg(test)]

@@ -22,8 +22,17 @@ pub(in crate::daemon::server) fn write_cached_file(
 }
 
 fn materialize_cached_file(out_path: &Path, cache_file: &Path) -> std::io::Result<()> {
-    verify_registered_blob(cache_file)?;
+    let staged = is_staged_artifact_path(cache_file);
+    if !staged {
+        verify_registered_blob(cache_file)?;
+    }
     if same_file(out_path, cache_file) {
+        if staged {
+            let floor =
+                filetime::FileTime::from_last_modification_time(&std::fs::metadata(cache_file)?);
+            detach_with_floored_mtime(out_path, cache_file, floor)?;
+            return Ok(());
+        }
         set_readonly(cache_file, readonly_enabled())?;
         match compute_sibling_floor(out_path)? {
             Some(floor) => detach_with_floored_mtime(out_path, cache_file, floor)?,
@@ -46,7 +55,7 @@ fn materialize_cached_file(out_path: &Path, cache_file: &Path) -> std::io::Resul
     // call sites in this module; a genuinely-too-many-links file still
     // fails the real `std::fs::hard_link` call below, which already has
     // a graceful copy fallback.
-    if hardlink_below_limit(caps, hard_link_count(cache_file).unwrap_or_default()) {
+    if !staged && hardlink_below_limit(caps, hard_link_count(cache_file).unwrap_or_default()) {
         // Only flip the blob read-only *after* the link actually lands.
         // Read-only exists to protect the blob once it's shared; setting
         // it beforehand serves no purpose on the attempt path and, if

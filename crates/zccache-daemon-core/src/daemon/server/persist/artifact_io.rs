@@ -169,6 +169,15 @@ pub(in crate::daemon::server) fn persist_artifact_paths_with_stats(
     key_hex: &str,
     sources: &[NormalizedPath],
 ) -> std::io::Result<PersistArtifactFileStats> {
+    if staged_artifacts_enabled() && !pack_mode_enabled() {
+        let stats = persist_staged_artifact_paths(artifact_dir, key_hex, sources)?;
+        return Ok(PersistArtifactFileStats {
+            reflink_count: stats.reflink_count,
+            hardlink_count: 0,
+            copy_count: stats.copy_count,
+            copy_bytes: stats.copy_bytes,
+        });
+    }
     if pack_mode_enabled() {
         let bytes: Vec<Arc<Vec<u8>>> = sources
             .iter()

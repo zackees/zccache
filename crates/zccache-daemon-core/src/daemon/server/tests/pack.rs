@@ -81,6 +81,17 @@ fn persist_artifact_paths_preserves_compiler_output_writability() {
     ];
     persist_artifact_paths(dir.path(), key, &sources).unwrap();
 
+    if staged_artifacts_enabled() {
+        let payloads = load_staged_artifact_paths(dir.path(), key, &[10, 11])
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::fs::read(&payloads[0]).unwrap(), b"rlib-bytes");
+        assert_eq!(std::fs::read(&payloads[1]).unwrap(), b"rmeta-bytes");
+        assert!(!same_file(&src_a, &payloads[0]));
+        assert!(!same_file(&src_b, &payloads[1]));
+        return;
+    }
+
     let cache_a = dir.path().join("deadc0de_0");
     let cache_b = dir.path().join("deadc0de_1");
     assert_eq!(std::fs::read(&cache_a).unwrap(), b"rlib-bytes");

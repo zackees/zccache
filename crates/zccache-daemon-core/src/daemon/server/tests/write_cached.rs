@@ -267,6 +267,31 @@ fn persist_artifact_file_writes_digest_before_publishing() {
     assert!(cache.exists(), "blob must not have been evicted");
 }
 
+#[test]
+fn staged_generation_materializes_independently_from_the_backend() {
+    let dir = tempfile::tempdir().unwrap();
+    let artifact_dir = dir.path().join("artifacts");
+    std::fs::create_dir_all(&artifact_dir).unwrap();
+    let source = dir.path().join("source.rlib");
+    let output = dir.path().join("target.rlib");
+    std::fs::write(&source, b"staged immutable artifact").unwrap();
+
+    persist_staged_artifact_paths(&artifact_dir, &"f".repeat(64), &[source.clone().into()])
+        .unwrap();
+    let payloads = load_staged_artifact_paths(&artifact_dir, &"f".repeat(64), &[25])
+        .unwrap()
+        .unwrap();
+    write_cached_file(&output, &payloads[0]).unwrap();
+
+    assert!(!same_file(&output, &payloads[0]));
+    assert!(!std::fs::metadata(&output).unwrap().permissions().readonly());
+    std::fs::write(&output, b"mutated target output").unwrap();
+    assert_eq!(
+        std::fs::read(&payloads[0]).unwrap(),
+        b"staged immutable artifact"
+    );
+}
+
 /// Regression test for issue #1042 finding #1: fix #1 (writing the digest
 /// sidecar *before* the publishing rename, not after) is what actually
 /// closes the "valid blob evicted on restart" gap for freshly-persisted

@@ -110,6 +110,21 @@ pub(super) fn ensure_payloads<'a>(
     key_hex: &str,
 ) -> Option<&'a [CachedPayload]> {
     if cached.payloads.is_none() {
+        if staged_artifacts_enabled() {
+            match load_staged_artifact_paths(artifact_dir, key_hex, &cached.meta.output_sizes) {
+                Ok(Some(payloads)) => {
+                    cached.payloads = Some(Arc::from(
+                        payloads
+                            .into_iter()
+                            .map(CachedPayload::File)
+                            .collect::<Vec<_>>(),
+                    ));
+                    return cached.payloads.as_deref();
+                }
+                Ok(None) => {}
+                Err(_) => return None,
+            }
+        }
         let mut payloads = Vec::with_capacity(cached.meta.output_names.len());
         for i in 0..cached.meta.output_names.len() {
             let path = artifact_dir.join(format!("{key_hex}_{i}"));

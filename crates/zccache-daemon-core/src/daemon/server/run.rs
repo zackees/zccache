@@ -41,6 +41,9 @@ impl DaemonServer {
             let cache_dir = cache_dir.clone();
             let artifact_dir = self.state.artifact_dir.clone();
             tokio::spawn(async move {
+                if let Err(error) = cleanup_staged_artifact_temps(&artifact_dir) {
+                    tracing::debug!(%error, "staged artifact temp cleanup skipped");
+                }
                 let marker = cache_dir.join(".legacy-blob-digests-migrated-v1");
                 if marker.exists() {
                     tracing::debug!(path = %marker.display(), "legacy blob digest migration already complete");
