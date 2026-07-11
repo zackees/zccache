@@ -24,9 +24,14 @@ pub(in crate::daemon::server) fn write_cached_file(
 fn materialize_cached_file(out_path: &Path, cache_file: &Path) -> std::io::Result<()> {
     verify_registered_blob(cache_file)?;
     if same_file(out_path, cache_file) {
+        // out_path IS cache_file here (same inode, already hardlinked from
+        // a prior materialization) — touch_mtime()'s sibling-floor would
+        // mutate the *shared blob's* mtime, corrupting it for every other
+        // hardlink to this same cache entry. Nothing was (re)materialized
+        // on this call, so there is nothing to floor; leave the existing
+        // mtime untouched.
         set_readonly(cache_file, readonly_enabled())?;
         register_hardlink(cache_file, out_path)?;
-        touch_mtime(out_path);
         return Ok(());
     }
     remove_materialized_output(out_path)?;
