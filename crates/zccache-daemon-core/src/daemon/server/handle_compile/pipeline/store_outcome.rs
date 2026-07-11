@@ -18,6 +18,10 @@ pub(super) struct StoreOutcomeRequest<'a> {
     pub(super) context_key: &'a ContextKey,
     pub(super) source_path: &'a NormalizedPath,
     pub(super) output_path: &'a NormalizedPath,
+    pub(super) compiler_output_path: NormalizedPath,
+    pub(super) staged_output_paths: Option<Vec<NormalizedPath>>,
+    pub(super) staged_plan: Option<StagedCompilePlan>,
+    pub(super) synchronous_persist: bool,
     pub(super) cwd_path: &'a NormalizedPath,
     pub(super) ctx: &'a CompileContext,
     pub(super) compilation: &'a crate::compiler::CacheableCompilation,
@@ -72,6 +76,7 @@ async fn collect_compile_outputs_blocking(
     rustc_args: Option<crate::depgraph::RustcParsedArgs>,
     output_path: NormalizedPath,
     cwd_path: NormalizedPath,
+    staged_output_paths: Option<Vec<NormalizedPath>>,
 ) -> std::io::Result<CompileOutputCollection> {
     tokio::task::spawn_blocking(move || {
         if is_rustc {
@@ -81,7 +86,25 @@ async fn collect_compile_outputs_blocking(
                     "missing parsed rustc args for rustc output collection",
                 ));
             };
-            let outputs = collect_rustc_output_files(&rustc_args, &output_path, &cwd_path);
+            let outputs = if let Some(paths) = staged_output_paths {
+                paths
+                    .into_iter()
+                    .filter_map(|path| {
+                        let metadata = std::fs::metadata(&path).ok()?;
+                        if !metadata.is_file() {
+                            return None;
+                        }
+                        let name = path.file_name()?.to_string_lossy().into_owned();
+                        Some(RustcOutputFile {
+                            name,
+                            path,
+                            size: metadata.len(),
+                        })
+                    })
+                    .collect()
+            } else {
+                collect_rustc_output_files(&rustc_args, &output_path, &cwd_path)
+            };
             if outputs.is_empty() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -227,6 +250,10 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         context_key,
         source_path,
         output_path,
+        compiler_output_path,
+        staged_output_paths,
+        staged_plan,
+        synchronous_persist,
         cwd_path,
         ctx,
         compilation,
@@ -263,6 +290,10 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
 
     let state = state_arc.as_ref();
 
+    if let Some(plan) = staged_plan.as_ref() {
+        plan.rewrite_logical_side_outputs();
+    }
+
     // The compiler just wrote the output file. Invalidate it in the
     // cache system so any compilation that depends on this output
     // (e.g. via -include-pch) sees the change immediately — no need
@@ -279,13 +310,20 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
     let output_collection = match collect_compile_outputs_blocking(
         is_rustc,
         rustc_args_owned.clone(),
-        output_path.clone(),
+        compiler_output_path.clone(),
         cwd_path.clone(),
+        staged_output_paths,
     )
     .await
     {
         Ok(output_collection) => output_collection,
         Err(e) => {
+            if let Some(plan) = staged_plan.as_ref() {
+                let _ = plan.cleanup();
+                return Some(Response::Error {
+                    message: format!("successful compiler omitted a staged output: {e}"),
+                });
+            }
             if is_rustc {
                 tracing::warn!("failed to stat output file {}: {e}", output_path.display());
             } else {
@@ -321,9 +359,17 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
     // *current* build's `-MF` target, even after `git clean` or
     // worktree-rename — closing the stale-incremental-build bug.
     let t_scan = std::time::Instant::now();
+    let scan_rustc_args = rustc_args_owned.clone().map(|mut args| {
+        if let Some(paths) = staged_plan.as_ref().map(StagedCompilePlan::output_paths) {
+            if let Some(parent) = paths.first().and_then(|path| path.as_path().parent()) {
+                args.out_dir = Some(parent.into());
+            }
+        }
+        args
+    });
     let scan_collection = collect_compile_scan_blocking(CompileScanRequest {
         is_rustc,
-        rustc_args: rustc_args_owned,
+        rustc_args: scan_rustc_args,
         source_path: source_path.clone(),
         cwd_path: cwd_path.clone(),
         depfile_strategy,
@@ -503,7 +549,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
             sid,
             context_key,
             source_path,
-            output_path,
+            output_path: &compiler_output_path,
             scan_result,
             rustc_env_dep_values,
             hash_map: &hash_map,
@@ -514,8 +560,22 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
             stderr: &stderr,
             exit_code,
             compile_start,
+            synchronous_persist,
         })
     });
+
+    if let Some(plan) = staged_plan {
+        if let Err(error) = plan.materialize() {
+            write_session_log(
+                &state.sessions,
+                sid,
+                &format!("[DIAG] staged_materialization_failed: {error}"),
+            );
+            return Some(Response::Error {
+                message: format!("failed to materialize compiler output: {error}"),
+            });
+        }
+    }
 
     // Record miss phase profile
     let total_ns = compile_start.elapsed().as_nanos() as u64;

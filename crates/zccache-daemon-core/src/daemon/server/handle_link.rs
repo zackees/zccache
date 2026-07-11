@@ -304,6 +304,20 @@ pub(super) async fn handle_link_ephemeral(
     } else {
         cwd_path.join(&parsed_tool.output_file).into()
     };
+    let staged_plan = if parsed_tool.is_archive && parsed_tool.secondary_outputs.is_empty() {
+        match StagedCompilePlan::archive(&state.artifact_dir, args, &output_path, cwd_path) {
+            Ok(plan) => plan,
+            Err(error) => {
+                tracing::warn!(%error, "archive staging plan failed; using legacy path");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let compiler_args = staged_plan
+        .as_ref()
+        .map_or_else(|| args.to_vec(), |plan| plan.rewritten_args.clone());
     let output_dir = output_path.parent().unwrap_or(cwd_path);
 
     // Snapshot the output directory before the link so we can detect
@@ -335,7 +349,7 @@ pub(super) async fn handle_link_ephemeral(
     let t_compiler_process = profile_enabled.then(std::time::Instant::now);
     let result = run_tool_passthrough(
         tool,
-        args,
+        &compiler_args,
         cwd,
         env,
         &lineage,
@@ -403,7 +417,10 @@ pub(super) async fn handle_link_ephemeral(
             Vec::with_capacity(1 + parsed_tool.secondary_outputs.len() + side_effects.len());
         read_targets.push((
             primary_name_os.to_string_lossy().into_owned(),
-            std::path::PathBuf::from(output_path.as_path()),
+            staged_plan.as_ref().map_or_else(
+                || std::path::PathBuf::from(output_path.as_path()),
+                |plan| std::path::PathBuf::from(plan.primary_staged().as_path()),
+            ),
         ));
         for secondary in &parsed_tool.secondary_outputs {
             let sec_path = if secondary.is_absolute() {
@@ -501,33 +518,52 @@ pub(super) async fn handle_link_ephemeral(
                     state: Arc::clone(state),
                     size: payload_size,
                 };
-                let sem = Arc::clone(&state.persist_semaphore);
-                let state_ref = Arc::clone(state);
-                tokio::spawn(async move {
-                    #[expect(
-                        clippy::expect_used,
-                        reason = "persist_semaphore is owned by ServerState for the daemon's lifetime; AcquireError here would be a logic bug (semaphore explicitly closed), not a runtime condition"
-                    )]
-                    let _permit = sem
-                        .acquire()
-                        .await
-                        .expect("persist_semaphore is owned by ServerState and never closed");
-                    let written = tokio::task::spawn_blocking(move || {
-                        let _guard = guard;
-                        let _ = persist_artifact_paths(&artifact_dir, &kh, &source_paths);
-                        (kh, persist_meta)
-                    })
-                    .await;
-                    if let Ok((kh, meta)) = written {
-                        let _ = state_ref
+                if let Some(plan) = staged_plan.as_ref() {
+                    let _guard = guard;
+                    let written = persist_artifact_paths(&artifact_dir, &kh, &source_paths).is_ok();
+                    if written {
+                        let _ = state
                             .index_writer_tx
-                            .send(IndexWriterCommand::Insert(kh, meta));
+                            .send(IndexWriterCommand::Insert(kh, persist_meta));
                     }
-                });
+                    if let Err(error) = plan.materialize() {
+                        return Response::Error {
+                            message: format!("failed to materialize archive output: {error}"),
+                        };
+                    }
+                } else {
+                    let sem = Arc::clone(&state.persist_semaphore);
+                    let state_ref = Arc::clone(state);
+                    tokio::spawn(async move {
+                        #[expect(
+                            clippy::expect_used,
+                            reason = "persist_semaphore is owned by ServerState for the daemon's lifetime; AcquireError here would be a logic bug (semaphore explicitly closed), not a runtime condition"
+                        )]
+                        let _permit = sem
+                            .acquire()
+                            .await
+                            .expect("persist_semaphore is owned by ServerState and never closed");
+                        let written = tokio::task::spawn_blocking(move || {
+                            let _guard = guard;
+                            let _ = persist_artifact_paths(&artifact_dir, &kh, &source_paths);
+                            (kh, persist_meta)
+                        })
+                        .await;
+                        if let Ok((kh, meta)) = written {
+                            let _ = state_ref
+                                .index_writer_tx
+                                .send(IndexWriterCommand::Insert(kh, meta));
+                        }
+                    });
+                }
             }
 
             state.artifacts.insert(key_hex.clone(), cached);
             tracing::debug!(%key_hex, "link artifact cached");
+        } else if staged_plan.is_some() {
+            return Response::Error {
+                message: "successful archive omitted its staged output".to_string(),
+            };
         }
     }
 

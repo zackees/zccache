@@ -379,6 +379,11 @@ async fn test_rustc_multi_output_cached() {
             "dep-info should exist: {}",
             depinfo.display()
         );
+        let depinfo_text = std::fs::read_to_string(&depinfo).unwrap();
+        assert!(
+            !depinfo_text.contains(".staged-v2"),
+            "staging path leaked: {depinfo_text}"
+        );
 
         // Save originals for comparison
         let rlib_data = std::fs::read(&rlib).unwrap();

@@ -204,7 +204,14 @@ pub(super) fn scan_rustc_deps(
         let name = rustc_args.crate_name.as_deref().unwrap_or("unknown");
         let ext_suffix = rustc_args.extra_filename.as_deref().unwrap_or("");
         let dir = rustc_args.out_dir.as_deref().unwrap_or(cwd);
-        let depfile_path = dir.join(format!("{name}{ext_suffix}.d"));
+        let depfile_path = rustc_args
+            .explicit_emit_paths
+            .iter()
+            .find(|(kind, _)| kind == "dep-info")
+            .map_or_else(
+                || dir.join(format!("{name}{ext_suffix}.d")),
+                |(_, path)| path.as_path().to_path_buf(),
+            );
         if depfile_path.exists() {
             if let Ok(content) = std::fs::read_to_string(&depfile_path) {
                 return parse_rustc_depinfo(&content, source_path, cwd);
@@ -372,11 +379,34 @@ pub(super) fn rustc_expected_output_paths(
             "obj" => Some(dir.join(format!("{crate_name}{ext_suffix}.o"))),
             "asm" => Some(dir.join(format!("{crate_name}{ext_suffix}.s"))),
             "llvm-ir" => Some(dir.join(format!("{crate_name}{ext_suffix}.ll"))),
+            "llvm-bc" | "bitcode" => Some(dir.join(format!("{crate_name}{ext_suffix}.bc"))),
             "mir" => Some(dir.join(format!("{crate_name}{ext_suffix}.mir"))),
             _ => None,
         };
         if let Some(path) = candidate {
             push_unique_output_path(&mut paths, path.into());
+        }
+    }
+
+    for (kind, explicit_path) in &rustc_args.explicit_emit_paths {
+        let replacement = paths.iter().position(|path| match kind.as_str() {
+            "metadata" => path.extension().and_then(|ext| ext.to_str()) == Some("rmeta"),
+            "link" => matches!(
+                path.extension().and_then(|ext| ext.to_str()),
+                Some("rlib" | "a" | "exe") | None
+            ),
+            "dep-info" => path.extension().and_then(|ext| ext.to_str()) == Some("d"),
+            "obj" => path.extension().and_then(|ext| ext.to_str()) == Some("o"),
+            "asm" => path.extension().and_then(|ext| ext.to_str()) == Some("s"),
+            "llvm-ir" => path.extension().and_then(|ext| ext.to_str()) == Some("ll"),
+            "llvm-bc" | "bitcode" => path.extension().and_then(|ext| ext.to_str()) == Some("bc"),
+            "mir" => path.extension().and_then(|ext| ext.to_str()) == Some("mir"),
+            _ => false,
+        });
+        if let Some(index) = replacement {
+            paths[index] = explicit_path.clone();
+        } else {
+            push_unique_output_path(&mut paths, explicit_path.clone());
         }
     }
 
@@ -453,6 +483,27 @@ pub(super) fn collect_rustc_output_files(
                         outputs.push(RustcOutputFile {
                             name,
                             path: path.into(),
+                            size: meta.len(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    for (_, path) in &rustc_args.explicit_emit_paths {
+        if path != primary_output_path && path.exists() {
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            if !outputs.iter().any(|existing| existing.name == name) {
+                if let Ok(meta) = std::fs::metadata(path) {
+                    if meta.is_file() {
+                        outputs.push(RustcOutputFile {
+                            name,
+                            path: path.clone(),
                             size: meta.len(),
                         });
                     }

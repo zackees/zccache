@@ -304,6 +304,28 @@ fn rustc_output_from_out_dir() {
 }
 
 #[test]
+fn rustc_explicit_emit_link_path_is_the_primary_output() {
+    let result = parse_invocation(
+        "rustc",
+        &args(&[
+            "--crate-type",
+            "lib",
+            "--crate-name",
+            "hello",
+            "--emit=link=C:/tmp/custom.rlib,dep-info=C:/tmp/custom.d",
+            "lib.rs",
+        ]),
+    );
+    let ParsedInvocation::Cacheable(compilation) = result else {
+        panic!("expected cacheable rustc invocation");
+    };
+    assert!(compilation
+        .output_file
+        .to_string_lossy()
+        .ends_with("tmp\\custom.rlib"));
+}
+
+#[test]
 fn rustc_full_cargo_invocation_cacheable() {
     // Realistic cargo-generated rustc command
     let result = parse_invocation(

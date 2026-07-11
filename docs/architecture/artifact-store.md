@@ -6,6 +6,41 @@ For how cache keys are computed see [overview.md](overview.md) (section 2.8). Fo
 
 ---
 
+## Immutable staged-output rollout
+
+The opt-in `ZCCACHE_STAGED_ARTIFACTS` lane makes the daemon's v2 generations
+the authoritative source for supported compiler misses. The compiler is
+redirected into a private directory before spawn; after a successful compile,
+all outputs are hashed and published as one digest-stamped generation, then
+materialized to the requested paths. A failed publication can still salvage a
+successful compile from the private files, but it never exposes a partial
+cache hit.
+
+Rollout values are `rust` (Rust single and multi-output plans), `c-cpp`
+(ordinary single-object GCC/Clang plans without user-owned depfiles; MSVC
+flag rewriting is supported only for explicit `/Fo` object paths), or
+`all`. Unsupported shapes—including multi-source compiler invocations, PCH,
+modules, linker side outputs, generic exec, and stdout output—remain on the
+legacy path before compiler spawn. Explicit Rust `--emit=kind=path` outputs
+are parsed and included in output discovery; the staged lane conservatively
+falls back until cache-hit reverse mapping for every explicit destination is
+complete.
+
+Pure archive invocations with one output and no linker side effects use the
+same private transaction when the lane is `all`.
+
+Published v2 files are always independent copies or true reflinks of private
+compiler files. Hardlinks are not used by the staged lane. Requested output
+materialization also uses reflink/copy only; this is especially important for
+SQLite, databases, incremental state, depfiles, and unknown outputs because an
+NTFS hardlink is a shared mutable inode, not COW.
+
+The v2 transaction is visible only after the complete generation and manifest
+are written and the per-key pointer is switched. Readers validate the pointer,
+manifest, sizes, and every output digest before serving a hit. Startup removes
+abandoned staging directories and pointer temporary files. The current flat
+v1 and pack formats remain readable during rollout.
+
 ## Directory Layout
 
 ```
@@ -153,3 +188,9 @@ remove read-only attributes before deletion.
 
 `ZCCACHE_DISABLE_REFLINK=1` disables cloning and `ZCCACHE_COW_READONLY=0`
 disables read-only enforcement. Neither setting adds an IPC roundtrip.
+Unsupported shapes—including multi-source compiler invocations, PCH,
+modules, linker side outputs, generic exec, and stdout output—remain on the
+legacy path before compiler spawn. Explicit Rust `--emit=kind=path` outputs
+are parsed and included in output discovery; the staged lane conservatively
+falls back until cache-hit reverse mapping for every explicit destination is
+complete.

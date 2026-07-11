@@ -744,10 +744,17 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         compiler_exec_ns,
         compiler_prep_ns,
         post_exec_ns,
+        staged_plan,
     } = match exec_result {
         CompileExecResult::Ok(outcome) => outcome,
         CompileExecResult::Error(resp) => return resp,
     };
+
+    if exit_code != 0 {
+        if let Some(plan) = staged_plan.as_ref() {
+            let _ = plan.cleanup();
+        }
+    }
 
     if exit_code != 0 {
         state.stats.record_error();
@@ -780,12 +787,19 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
 
     // Only cache successful compilations
     if exit_code == 0 {
+        let synchronous_persist = staged_plan.is_some();
         if let Some(response) = store_successful_compile(StoreOutcomeRequest {
             state_arc,
             sid: &sid,
             context_key: &context_key,
             source_path: &source_path,
             output_path: &output_path,
+            compiler_output_path: staged_plan
+                .as_ref()
+                .map_or_else(|| output_path.clone(), |plan| plan.primary_staged().clone()),
+            staged_output_paths: staged_plan.as_ref().map(StagedCompilePlan::output_paths),
+            staged_plan,
+            synchronous_persist,
             cwd_path: &cwd_path,
             ctx: &ctx,
             compilation: &compilation,

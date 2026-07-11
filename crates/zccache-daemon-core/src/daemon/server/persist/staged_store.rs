@@ -46,6 +46,25 @@ pub(in crate::daemon::server) fn staged_artifacts_enabled() -> bool {
         })
 }
 
+pub(in crate::daemon::server) fn staged_lane_enabled(
+    family: crate::compiler::CompilerFamily,
+) -> bool {
+    let Ok(value) = std::env::var(STAGED_ARTIFACTS_ENV) else {
+        return false;
+    };
+    match value.trim().to_ascii_lowercase().as_str() {
+        "all" | "1" | "true" | "yes" | "on" => true,
+        "rust" => family == crate::compiler::CompilerFamily::Rustc,
+        "c" | "cc" | "c-cpp" | "cpp" => matches!(
+            family,
+            crate::compiler::CompilerFamily::Gcc
+                | crate::compiler::CompilerFamily::Clang
+                | crate::compiler::CompilerFamily::Msvc
+        ),
+        _ => false,
+    }
+}
+
 pub(in crate::daemon::server) fn is_staged_artifact_path(path: &Path) -> bool {
     let components = path
         .components()
@@ -201,6 +220,9 @@ fn copy_independent(source: &Path, destination: &Path) -> io::Result<(bool, u64)
     }
     // A failed reflink probe may leave a partial destination, including
     // platform-specific attributes. Remove it before attempting the copy tier.
+    if fs::metadata(destination).is_ok() {
+        let _ = set_readonly(destination, false);
+    }
     let _ = fs::remove_file(destination);
     let bytes = fs::copy(source, destination)?;
     Ok((false, bytes))
@@ -216,11 +238,39 @@ fn copy_output(source: &Path, destination: &Path) -> io::Result<(bool, u64)> {
         let _ = fs::remove_file(destination);
         return result;
     }
-    fs::set_permissions(destination, source_metadata.permissions())?;
+    let mut permissions = source_metadata.permissions();
+    // Keep the destination writable while restoring timestamps. On Windows,
+    // setting mtime on a read-only file fails with ERROR_ACCESS_DENIED.
+    permissions.set_readonly(false);
+    fs::set_permissions(destination, permissions)?;
     let mtime = filetime::FileTime::from_last_modification_time(&source_metadata);
     filetime::set_file_mtime(destination, mtime)?;
     set_readonly(destination, true)?;
     result
+}
+
+/// Materialize a staged compiler output without sharing a writable inode with
+/// the private compiler file or the published backend generation.
+pub(in crate::daemon::server) fn materialize_independent(
+    source: &Path,
+    destination: &Path,
+) -> io::Result<()> {
+    if let Ok(metadata) = fs::metadata(destination) {
+        if metadata.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::IsADirectory,
+                format!(
+                    "output destination is a directory: {}",
+                    destination.display()
+                ),
+            ));
+        }
+        let _ = set_readonly(destination, false);
+        fs::remove_file(destination)?;
+    }
+    copy_output(source, destination).map(|_| {
+        let _ = set_readonly(destination, false);
+    })
 }
 
 fn digest_file(path: &Path) -> io::Result<(u64, String)> {
@@ -648,5 +698,34 @@ mod tests {
         assert_eq!(cleanup_staged_artifact_temps(&artifact_dir).unwrap(), 1);
         assert!(!key_root.join(".tmp-crashed").exists());
         assert!(key_root.join("stable-generation").exists());
+    }
+
+    #[test]
+    fn mutable_page_writer_never_shares_backend_inode() {
+        // This is intentionally a database-shaped page writer rather than
+        // the sqlite-link compile fixture: it exercises truncate, same-size
+        // page replacement, and a journal-like sibling file.
+        let dir = tempfile::tempdir().unwrap();
+        let artifact_dir = dir.path().join("artifacts");
+        fs::create_dir_all(&artifact_dir).unwrap();
+        let backend = dir.path().join("backend.db");
+        let journal = dir.path().join("backend.db-wal");
+        fs::write(&backend, vec![0x11_u8; 4096]).unwrap();
+        fs::write(&journal, b"journal-before-checkpoint").unwrap();
+        let sources = vec![backend.clone().into(), journal.clone().into()];
+        persist_staged_artifact_paths(&artifact_dir, &"f".repeat(64), &sources).unwrap();
+        let journal_size = fs::metadata(&journal).unwrap().len();
+        let payloads =
+            load_staged_artifact_paths(&artifact_dir, &"f".repeat(64), &[4096, journal_size])
+                .unwrap()
+                .unwrap();
+        let destination = dir.path().join("work.db");
+        materialize_independent(&payloads[0], &destination).unwrap();
+        let mut page = vec![0x22_u8; 4096];
+        page[37] = 0x99;
+        fs::write(&destination, page).unwrap();
+        assert_eq!(fs::read(&backend).unwrap(), vec![0x11_u8; 4096]);
+        assert_ne!(fs::read(&destination).unwrap(), fs::read(&backend).unwrap());
+        assert!(!same_file(&payloads[0], &destination));
     }
 }

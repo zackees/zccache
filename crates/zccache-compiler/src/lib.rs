@@ -20,6 +20,7 @@
 
 pub mod arduino;
 mod detect;
+pub mod output_policy;
 mod parse;
 pub mod parse_archiver;
 pub mod parse_linker;
@@ -36,6 +37,7 @@ use std::sync::Arc;
 use zccache_core::NormalizedPath;
 
 pub use detect::detect_family;
+pub use output_policy::{DeliveryPolicy, MutationContract, OutputClassification, OutputRole};
 pub use parse::parse_invocation;
 
 /// Supported compiler families.

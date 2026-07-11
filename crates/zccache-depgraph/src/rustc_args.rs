@@ -32,6 +32,8 @@ pub struct RustcParsedArgs {
     pub edition: Option<String>,
     /// `--emit` types (dep-info, metadata, link, etc.).
     pub emit_types: Vec<String>,
+    /// Explicit `--emit=kind=path` destinations, resolved against `cwd`.
+    pub explicit_emit_paths: Vec<(String, NormalizedPath)>,
     /// `--cfg` values (sorted for deterministic hashing).
     pub cfgs: Vec<String>,
     /// `--check-cfg` values (sorted).
@@ -104,6 +106,7 @@ pub fn parse_rustc_args(args: &[String], cwd: &Path) -> RustcParsedArgs {
         crate_types: Vec::new(),
         edition: None,
         emit_types: Vec::new(),
+        explicit_emit_paths: Vec::new(),
         cfgs: Vec::new(),
         check_cfgs: Vec::new(),
         codegen_flags: Vec::new(),
@@ -158,6 +161,13 @@ pub fn parse_rustc_args(args: &[String], cwd: &Path) -> RustcParsedArgs {
                 let emit_type = part.split('=').next().unwrap_or(part).to_string();
                 if !result.emit_types.contains(&emit_type) {
                     result.emit_types.push(emit_type);
+                }
+                if let Some((kind, path)) = part.split_once('=') {
+                    if path != "-" && !path.is_empty() {
+                        result
+                            .explicit_emit_paths
+                            .push((kind.to_string(), resolve_path(path, cwd)));
+                    }
                 }
             }
             continue;
@@ -450,6 +460,8 @@ mod tests {
             &cwd(),
         );
         assert_eq!(parsed.emit_types, vec!["dep-info", "metadata", "link"]);
+        assert_eq!(parsed.explicit_emit_paths.len(), 1);
+        assert_eq!(parsed.explicit_emit_paths[0].0, "dep-info");
     }
 
     #[test]

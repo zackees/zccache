@@ -27,6 +27,7 @@ pub(super) struct MissArtifactStoreRequest<'a> {
     pub(super) stderr: &'a Arc<Vec<u8>>,
     pub(super) exit_code: i32,
     pub(super) compile_start: Instant,
+    pub(super) synchronous_persist: bool,
 }
 
 #[derive(Default)]
@@ -64,6 +65,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
         stderr,
         exit_code,
         compile_start,
+        synchronous_persist,
     } = request;
     let state = state_arc.as_ref();
     let t_store = Instant::now();
@@ -139,6 +141,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
                 compile_start,
                 &mut stats,
                 t_artifact_build,
+                synchronous_persist,
             );
         }
     }
@@ -276,6 +279,7 @@ fn store_single_output(
     compile_start: Instant,
     stats: &mut MissArtifactStoreStats,
     t_artifact_build: Instant,
+    synchronous_persist: bool,
 ) {
     let state = state_arc.as_ref();
     // Issue #643: stash the user's depfile as a second output so cache
@@ -342,6 +346,26 @@ fn store_single_output(
         state: Arc::clone(state_arc),
         size: payload_size,
     };
+    if synchronous_persist {
+        let written = persist_artifact_paths(&artifact_dir, &key_hex, &source_paths).is_ok();
+        if written {
+            let _ = state.index_writer_tx.send(IndexWriterCommand::Insert(
+                key_hex.clone(),
+                persist_meta.clone(),
+            ));
+        }
+        stats.persist_enqueue_ns = t_persist_enqueue.elapsed().as_nanos() as u64;
+        state.artifacts.insert(artifact_key_hex.to_string(), cached);
+        let latency_ns = compile_start.elapsed().as_nanos() as u64;
+        state.stats.record_miss(latency_ns, artifact_bytes);
+        let src = source_path.clone();
+        record_session_stat(&state.sessions, sid, move |t| {
+            t.record_miss(src, artifact_bytes)
+        });
+        stats.artifact_insert_stats_ns = t_persist_enqueue.elapsed().as_nanos() as u64;
+        return;
+    }
+
     let sem = Arc::clone(&state.persist_semaphore);
     let state_ref = Arc::clone(state_arc);
     let completion_key = artifact_key_hex.to_string();

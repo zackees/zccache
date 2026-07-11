@@ -39,6 +39,7 @@ pub(super) struct CompileExecOutcome {
     pub(super) compiler_exec_ns: u64,
     pub(super) compiler_prep_ns: u64,
     pub(super) post_exec_ns: u64,
+    pub(super) staged_plan: Option<StagedCompilePlan>,
 }
 
 pub(super) enum CompileExecResult {
@@ -95,13 +96,56 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         depfile_strategy = DepfileStrategy::ShowIncludes;
     }
 
+    let expected_outputs = if let Some(rustc_args) = rustc_args_opt {
+        rustc_expected_output_paths(rustc_args, output_path, cwd_path)
+    } else {
+        vec![output_path.clone()]
+    };
+    let staged_plan = if is_rustc {
+        match StagedCompilePlan::rustc(
+            &state.artifact_dir,
+            effective_args,
+            output_path,
+            &expected_outputs,
+            cwd,
+        ) {
+            Ok(plan) => plan,
+            Err(e) => {
+                return CompileExecResult::Error(Response::Error {
+                    message: format!("failed to prepare private compiler staging: {e}"),
+                });
+            }
+        }
+    } else if !dep_flags.has_md && dep_flags.mf_path.is_none() {
+        match StagedCompilePlan::cc(
+            &state.artifact_dir,
+            compilation.family,
+            effective_args,
+            output_path,
+            cwd,
+        ) {
+            Ok(plan) => plan,
+            Err(e) => {
+                return CompileExecResult::Error(Response::Error {
+                    message: format!("failed to prepare private compiler staging: {e}"),
+                });
+            }
+        }
+    } else {
+        None
+    };
+    let compiler_args = staged_plan.as_ref().map_or_else(
+        || effective_args.to_vec(),
+        |plan| plan.rewritten_args.clone(),
+    );
+
     // Combine expanded_args + extra_args for response-file length check.
     // Only allocates when extra_args is non-empty.
     let combined_args;
     let rsp_args: &[String] = if extra_args.is_empty() {
-        effective_args
+        &compiler_args
     } else {
-        combined_args = [effective_args, extra_args.as_slice()].concat();
+        combined_args = [compiler_args.as_slice(), extra_args.as_slice()].concat();
         &combined_args
     };
 
@@ -118,11 +162,9 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         }
     };
 
-    let output_paths = if let Some(rustc_args) = rustc_args_opt {
-        rustc_expected_output_paths(rustc_args, output_path, cwd_path)
-    } else {
-        vec![output_path.clone()]
-    };
+    let output_paths = staged_plan
+        .as_ref()
+        .map_or(expected_outputs, StagedCompilePlan::output_paths);
     let t_break_outputs = std::time::Instant::now();
     for path in &output_paths {
         if let Err(e) = break_output_hardlink_before_compile(path) {
@@ -140,7 +182,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     if let Some(ref rsp) = _rsp_guard {
         cmd.arg(rsp.at_arg()).current_dir(cwd);
     } else {
-        cmd.args(effective_args).current_dir(cwd);
+        cmd.args(&compiler_args).current_dir(cwd);
         if !extra_args.is_empty() {
             cmd.args(&extra_args);
         }
@@ -289,5 +331,6 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         compiler_exec_ns,
         compiler_prep_ns,
         post_exec_ns,
+        staged_plan,
     })
 }
