@@ -45,14 +45,30 @@ fn materialize_cached_file(out_path: &Path, cache_file: &Path) -> std::io::Resul
     // fails the real `std::fs::hard_link` call below, which already has
     // a graceful copy fallback.
     if hardlink_below_limit(caps, hard_link_count(cache_file).unwrap_or_default()) {
-        set_readonly(cache_file, readonly_enabled())?;
+        // Only flip the blob read-only *after* the link actually lands.
+        // Read-only exists to protect the blob once it's shared; setting
+        // it beforehand serves no purpose on the attempt path and, if
+        // `hard_link` fails, left the blob stuck read-only forever (no
+        // revert existed on the failure path below).
         let registration = prepare_hardlink_registration(cache_file, out_path)?;
-        if std::fs::hard_link(cache_file, out_path).is_ok() {
-            commit_hardlink_registration(registration, out_path)?;
-            touch_mtime(out_path);
-            return Ok(());
+        match std::fs::hard_link(cache_file, out_path) {
+            Ok(()) => {
+                set_readonly(cache_file, readonly_enabled())?;
+                commit_hardlink_registration(registration, out_path)?;
+                touch_mtime(out_path);
+                return Ok(());
+            }
+            Err(error) => {
+                tracing::warn!(
+                    event = "cow_hardlink_fallback_to_copy",
+                    cache_file = %cache_file.display(),
+                    out_path = %out_path.display(),
+                    error = %error,
+                    "hardlink materialization failed despite capability probe; falling back to copy"
+                );
+                cancel_hardlink_registration(registration, out_path);
+            }
         }
-        cancel_hardlink_registration(registration, out_path);
     }
     std::fs::copy(cache_file, out_path)?;
     make_writable(out_path)?;
