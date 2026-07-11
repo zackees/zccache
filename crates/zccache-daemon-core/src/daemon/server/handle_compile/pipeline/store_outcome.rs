@@ -367,6 +367,11 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         }
         args
     });
+    let depfile_strategy = staged_plan
+        .as_ref()
+        .map_or(depfile_strategy.clone(), |plan| {
+            plan.rewrite_depfile_strategy(depfile_strategy.clone())
+        });
     let scan_collection = collect_compile_scan_blocking(CompileScanRequest {
         is_rustc,
         rustc_args: scan_rustc_args,

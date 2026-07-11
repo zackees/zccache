@@ -116,13 +116,14 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
                 });
             }
         }
-    } else if !dep_flags.has_md && dep_flags.mf_path.is_none() {
+    } else {
         match StagedCompilePlan::cc(
             &state.artifact_dir,
             compilation.family,
             effective_args,
             output_path,
             cwd,
+            dep_flags,
         ) {
             Ok(plan) => plan,
             Err(e) => {
@@ -131,8 +132,6 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
                 });
             }
         }
-    } else {
-        None
     };
     let compiler_args = staged_plan.as_ref().map_or_else(
         || effective_args.to_vec(),

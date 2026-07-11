@@ -180,6 +180,7 @@ impl StagedCompilePlan {
         args: &[String],
         primary_output: &NormalizedPath,
         cwd: &Path,
+        dep_flags: &crate::depgraph::UserDepFlags,
     ) -> io::Result<Option<Self>> {
         if !staged_lane_enabled(family) {
             return Ok(None);
@@ -218,6 +219,11 @@ impl StagedCompilePlan {
             )
         })?;
         let staged: NormalizedPath = root.join(file_name).into();
+        let requested_depfile = dep_flags.mf_path.clone().or_else(|| {
+            dep_flags
+                .has_md
+                .then(|| requested.as_path().with_extension("d").into())
+        });
         let mut rewritten_args = args.to_vec();
         let mut replaced = false;
         let mut i = 0;
@@ -261,14 +267,66 @@ impl StagedCompilePlan {
                     replaced = true;
                 }
             }
+            if let Some(requested_depfile) = requested_depfile.as_ref() {
+                if rewritten_args[i] == "-MF" {
+                    if i + 1 >= rewritten_args.len() {
+                        let _ = std::fs::remove_dir_all(&root);
+                        return Ok(None);
+                    }
+                    let staged_depfile =
+                        root.join(requested_depfile.file_name().ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "depfile output has no filename",
+                            )
+                        })?);
+                    rewritten_args[i + 1] = staged_depfile.to_string_lossy().into_owned();
+                    i += 2;
+                    continue;
+                }
+                if let Some(value) = rewritten_args[i].strip_prefix("-MF") {
+                    if !value.is_empty() {
+                        let staged_depfile =
+                            root.join(requested_depfile.file_name().ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "depfile output has no filename",
+                                )
+                            })?);
+                        rewritten_args[i] = format!("-MF{}", staged_depfile.display());
+                        continue;
+                    }
+                }
+            }
             i += 1;
+        }
+        if dep_flags.mf_path.is_some()
+            && !args
+                .iter()
+                .any(|arg| arg == "-MF" || arg.starts_with("-MF"))
+        {
+            let _ = std::fs::remove_dir_all(&root);
+            return Ok(None);
         }
         if !replaced {
             rewritten_args.push("-o".to_string());
             rewritten_args.push(staged.to_string_lossy().into_owned());
         }
+        let mut outputs = vec![StagedOutputPlan { requested, staged }];
+        if let Some(requested_depfile) = requested_depfile {
+            let staged_depfile = root.join(requested_depfile.file_name().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "depfile output has no filename",
+                )
+            })?);
+            outputs.push(StagedOutputPlan {
+                requested: requested_depfile,
+                staged: staged_depfile.into(),
+            });
+        }
         Ok(Some(Self {
-            outputs: vec![StagedOutputPlan { requested, staged }],
+            outputs,
             rewritten_args,
             root,
         }))
@@ -339,6 +397,40 @@ impl StagedCompilePlan {
 
     pub(in crate::daemon::server) fn primary_staged(&self) -> &NormalizedPath {
         &self.outputs[0].staged
+    }
+
+    pub(in crate::daemon::server) fn rewrite_depfile_strategy(
+        &self,
+        strategy: crate::depgraph::DepfileStrategy,
+    ) -> crate::depgraph::DepfileStrategy {
+        let path = match &strategy {
+            crate::depgraph::DepfileStrategy::Injected { path }
+            | crate::depgraph::DepfileStrategy::UserSpecified { path }
+            | crate::depgraph::DepfileStrategy::UserDefault { path } => path,
+            crate::depgraph::DepfileStrategy::ShowIncludes
+            | crate::depgraph::DepfileStrategy::Unsupported => return strategy,
+        };
+        let Some(staged) = self
+            .outputs
+            .iter()
+            .find(|output| output.requested == *path)
+            .map(|output| output.staged.clone())
+        else {
+            return strategy;
+        };
+        match strategy {
+            crate::depgraph::DepfileStrategy::Injected { .. } => {
+                crate::depgraph::DepfileStrategy::Injected { path: staged }
+            }
+            crate::depgraph::DepfileStrategy::UserSpecified { .. } => {
+                crate::depgraph::DepfileStrategy::UserSpecified { path: staged }
+            }
+            crate::depgraph::DepfileStrategy::UserDefault { .. } => {
+                crate::depgraph::DepfileStrategy::UserDefault { path: staged }
+            }
+            crate::depgraph::DepfileStrategy::ShowIncludes
+            | crate::depgraph::DepfileStrategy::Unsupported => strategy,
+        }
     }
 
     pub(in crate::daemon::server) fn materialize(&self) -> io::Result<()> {
@@ -584,6 +676,7 @@ mod tests {
             &["-c".into(), "hello.cpp".into(), "-ohello.o".into()],
             &output,
             temp.path(),
+            &crate::depgraph::UserDepFlags::default(),
         )
         .unwrap()
         .unwrap();
@@ -591,6 +684,53 @@ mod tests {
             .rewritten_args
             .iter()
             .any(|arg| arg.starts_with("-o") && arg.contains(".staged-v2")));
+        plan.cleanup().unwrap();
+    }
+
+    #[test]
+    fn cc_plan_stages_user_depfile_without_leaking_private_path() {
+        if !staged_tests_enabled() {
+            return;
+        }
+        let temp = tempdir().unwrap();
+        let output: NormalizedPath = temp.path().join("hello.o").into();
+        let depfile: NormalizedPath = temp.path().join("deps/hello.d").into();
+        let dep_flags = crate::depgraph::UserDepFlags {
+            has_md: true,
+            mf_path: Some(depfile.clone()),
+        };
+        let plan = StagedCompilePlan::cc(
+            temp.path(),
+            crate::compiler::CompilerFamily::Clang,
+            &[
+                "-c".into(),
+                "hello.cpp".into(),
+                "-o".into(),
+                "hello.o".into(),
+                "-MD".into(),
+                "-MF".into(),
+                depfile.to_string_lossy().into_owned(),
+            ],
+            &output,
+            temp.path(),
+            &dep_flags,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(plan.outputs.len(), 2);
+        assert!(plan
+            .rewritten_args
+            .windows(2)
+            .any(|args| args[0] == "-MF" && args[1].contains(".staged-v2")));
+        let rewritten =
+            plan.rewrite_depfile_strategy(crate::depgraph::DepfileStrategy::UserSpecified {
+                path: depfile,
+            });
+        assert!(matches!(
+            rewritten,
+            crate::depgraph::DepfileStrategy::UserSpecified { path }
+                if path.as_path().starts_with(temp.path().join(".staged-v2"))
+        ));
         plan.cleanup().unwrap();
     }
 
@@ -607,6 +747,7 @@ mod tests {
             &["/c".into(), "hello.cpp".into(), "/Fo:hello.obj".into()],
             &output,
             temp.path(),
+            &crate::depgraph::UserDepFlags::default(),
         )
         .unwrap()
         .unwrap();

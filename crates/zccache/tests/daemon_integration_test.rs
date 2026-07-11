@@ -284,6 +284,7 @@ int main() {
 
         let log_file = tmp.path().join("session.log");
         let output_obj = tmp.path().join("hello.o");
+        let depfile = tmp.path().join("hello.d");
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
         let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
@@ -318,6 +319,9 @@ int main() {
                     hello_cpp.to_string_lossy().into_owned(),
                     "-o".to_string(),
                     output_obj.to_string_lossy().into_owned(),
+                    "-MD".to_string(),
+                    "-MF".to_string(),
+                    depfile.to_string_lossy().into_owned(),
                 ],
                 cwd: tmp.path().to_string_lossy().into_owned().into(),
                 compiler: compiler_str.clone().into(),
@@ -340,11 +344,13 @@ int main() {
 
         // Verify .o was produced
         assert!(output_obj.exists(), "output object file should exist");
+        assert!(depfile.exists(), "user-requested depfile should exist");
         let first_obj_size = std::fs::metadata(&output_obj).unwrap().len();
         assert!(first_obj_size > 0, "object file should not be empty");
 
         // Remove .o so we can verify cache restores it
         std::fs::remove_file(&output_obj).unwrap();
+        std::fs::remove_file(&depfile).unwrap();
         assert!(!output_obj.exists(), ".o should be deleted");
 
         // Second compile — should be a cache hit
@@ -356,6 +362,9 @@ int main() {
                     hello_cpp.to_string_lossy().into_owned(),
                     "-o".to_string(),
                     output_obj.to_string_lossy().into_owned(),
+                    "-MD".to_string(),
+                    "-MF".to_string(),
+                    depfile.to_string_lossy().into_owned(),
                 ],
                 cwd: tmp.path().to_string_lossy().into_owned().into(),
                 compiler: compiler_str.into(),
@@ -381,6 +390,7 @@ int main() {
             output_obj.exists(),
             "cache hit should restore the object file"
         );
+        assert!(depfile.exists(), "cache hit should restore the depfile");
         let second_obj_size = std::fs::metadata(&output_obj).unwrap().len();
         assert_eq!(
             first_obj_size, second_obj_size,
