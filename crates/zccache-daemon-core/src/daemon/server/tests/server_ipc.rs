@@ -628,7 +628,7 @@ async fn staged_publication_fault_salvages_or_fails_closed_with_forensics() {
             assert!(event["copied_bytes"].is_u64());
             assert!(event["elapsed_ns"].is_u64());
         }
-        assert!(!lifecycle.contains(&state.staging.path().to_string_lossy().as_ref()));
+        assert!(!lifecycle.contains(state.staging.path().to_string_lossy().as_ref()));
     })
     .await;
 }
@@ -852,7 +852,7 @@ async fn cli_clear_resets_cache() {
     .await;
 }
 
-/// Multi-file compilations fall back to running the compiler directly.
+/// Multi-file compilations cache each source independently.
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + compiler
 async fn cli_multi_file_compilation_runs_directly() {

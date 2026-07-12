@@ -117,6 +117,12 @@ pub fn find_clang() -> Option<NormalizedPath> {
     find_on_path("clang++")
 }
 
+/// Find clang-cl via clang-tool-chain + PATH. Convenience wrapper.
+pub fn find_clang_cl() -> Option<NormalizedPath> {
+    ensure_clang_tool_chain_on_path();
+    find_on_path("clang-cl")
+}
+
 /// Find `rustc` on PATH.
 pub fn find_rustc() -> Option<NormalizedPath> {
     find_on_path("rustc")

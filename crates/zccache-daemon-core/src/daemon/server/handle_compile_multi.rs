@@ -2,6 +2,13 @@
 
 use super::*;
 
+#[path = "handle_compile_multi_args.rs"]
+mod args;
+#[path = "handle_compile_multi_staged.rs"]
+mod staged;
+
+use args::filter_multi_source_args;
+
 /// A deferred output write for a cache hit.
 pub(super) struct PendingWrite {
     out_path: NormalizedPath,
@@ -377,11 +384,12 @@ pub(super) async fn handle_compile_multi(
     // redundant arg parsing for each of the N compilation units.
     let shared_base: Arc<CompileContext> = {
         let first = &compilations[0];
-        let parsed = match first.family {
-            crate::compiler::CompilerFamily::Msvc => {
-                crate::depgraph::msvc_args::parse_msvc_args(&first.original_args, &cwd_path)
-            }
-            _ => crate::depgraph::args::parse_gnu_args(&first.original_args, &cwd_path),
+        let parsed = if first.family == crate::compiler::CompilerFamily::Msvc
+            || crate::compiler::parse_msvc::looks_like_msvc_args(&first.original_args)
+        {
+            crate::depgraph::msvc_args::parse_msvc_args(&first.original_args, &cwd_path)
+        } else {
+            crate::depgraph::args::parse_gnu_args(&first.original_args, &cwd_path)
         };
         let mut base = CompileContext::from_parsed_args(parsed);
         for path in &system_includes {
@@ -531,6 +539,25 @@ pub(super) async fn handle_compile_multi(
         ),
     );
 
+    if let Some(response) = staged::try_handle_staged_misses(
+        &state,
+        &sid,
+        &compiler,
+        &compilations,
+        &original_args,
+        &source_indices,
+        &unit_results,
+        &cwd_path,
+        &client_env,
+        snap_clock,
+        &mut all_stdout,
+        &mut all_stderr,
+    )
+    .await
+    {
+        return response;
+    }
+
     // Build compiler args from original_args, removing hit source files by index.
     // This preserves all original flags (including unknown ones) exactly as passed.
     let supports_depfile = compilations[0].family.supports_depfile();
@@ -554,12 +581,13 @@ pub(super) async fn handle_compile_multi(
             })
             .collect()
     };
-    let mut compiler_args: Vec<String> = original_args
+    let retained_source_indices: HashSet<usize> = source_indices
         .iter()
-        .enumerate()
-        .filter(|(i, _)| !hit_indices.contains(i))
-        .map(|(_, a)| a.clone())
+        .copied()
+        .filter(|index| !hit_indices.contains(index))
         .collect();
+    let mut compiler_args =
+        filter_multi_source_args(&original_args, &source_indices, &retained_source_indices);
     if supports_depfile {
         compiler_args.push("-MD".to_string());
     }

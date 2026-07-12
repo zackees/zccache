@@ -9,6 +9,17 @@ use std::path::Path;
 
 use zccache_core::NormalizedPath;
 
+#[cfg(any(windows, test))]
+mod format;
+#[cfg(test)]
+use format::gnu as format_rsp_content;
+#[cfg(any(windows, test))]
+use format::gnu_if_safe as format_rsp_content_if_safe;
+#[cfg(any(windows, test))]
+use format::{
+    msvc_if_safe as format_rsp_content_msvc_if_safe, rustc_if_safe as format_rsp_content_rustc,
+};
+
 /// Maximum nesting depth for response files to prevent stack overflow.
 const MAX_DEPTH: usize = 10;
 
@@ -169,7 +180,7 @@ fn expand_recursive(
             }
 
             let content =
-                std::fs::read_to_string(&canonical).map_err(|e| ResponseFileError::ReadError {
+                read_response_file_text(&canonical).map_err(|e| ResponseFileError::ReadError {
                     path: resolved,
                     source: e,
                 })?;
@@ -192,6 +203,34 @@ fn expand_recursive(
     Ok(result)
 }
 
+fn read_response_file_text(path: &Path) -> std::io::Result<String> {
+    let bytes = std::fs::read(path)?;
+    if let Some(payload) = bytes.strip_prefix(&[0xff, 0xfe]) {
+        return decode_utf16(payload, u16::from_le_bytes);
+    }
+    if let Some(payload) = bytes.strip_prefix(&[0xfe, 0xff]) {
+        return decode_utf16(payload, u16::from_be_bytes);
+    }
+    let payload = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&bytes);
+    String::from_utf8(payload.to_vec())
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+fn decode_utf16(payload: &[u8], decode_word: fn([u8; 2]) -> u16) -> std::io::Result<String> {
+    if !payload.len().is_multiple_of(2) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "UTF-16 response file has an odd byte count",
+        ));
+    }
+    let words = payload
+        .chunks_exact(2)
+        .map(|chunk| decode_word([chunk[0], chunk[1]]));
+    char::decode_utf16(words)
+        .collect::<Result<String, _>>()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
 /// Maximum command-line length (in bytes) before we spill to a response file.
 /// Windows `CreateProcess` has a 32,767 character limit. We use a conservative
 /// threshold to account for the compiler path, env block, and quoting overhead.
@@ -202,73 +241,6 @@ const MAX_CMDLINE_LEN: usize = 30_000;
 #[cfg(windows)]
 static RSP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Format arguments as response file content with proper quoting.
-///
-/// Each argument is written on its own line. Arguments containing spaces,
-/// double quotes, or starting with `@` are double-quoted to prevent the
-/// compiler from misinterpreting them. Inside quotes, `"` and `\` are
-/// backslash-escaped.
-#[cfg(any(windows, test))]
-#[cfg_attr(not(test), allow(dead_code))]
-fn format_rsp_content(args: &[String]) -> String {
-    let estimated_len: usize = args.iter().map(|a| a.len() + 3).sum();
-    let mut content = String::with_capacity(estimated_len);
-    for arg in args {
-        #[expect(
-            clippy::expect_used,
-            reason = "test-only path; tests pass arg shapes known to be representable. Production callers use format_rsp_content_if_safe which returns Option."
-        )]
-        let formatted = format_rsp_argument(arg).expect("argument should be representable");
-        content.push_str(&formatted);
-        content.push('\n');
-    }
-    content
-}
-
-#[cfg(any(windows, test))]
-fn format_rsp_content_if_safe(args: &[String]) -> Option<String> {
-    let estimated_len: usize = args.iter().map(|a| a.len() + 3).sum();
-    let mut content = String::with_capacity(estimated_len);
-    for arg in args {
-        content.push_str(&format_rsp_argument(arg)?);
-        content.push('\n');
-    }
-    Some(content)
-}
-
-#[cfg(any(windows, test))]
-fn format_rsp_argument(arg: &str) -> Option<String> {
-    if arg.is_empty() {
-        return Some("''".to_string());
-    }
-
-    let needs_quoting = arg.contains(char::is_whitespace)
-        || arg.contains('"')
-        || arg.contains('\'')
-        || arg.starts_with('@');
-
-    if !needs_quoting {
-        return Some(arg.to_string());
-    }
-
-    // GCC/Clang response files on Windows treat single quotes literally.
-    // Prefer them when possible so we preserve backslashes and embedded
-    // double quotes exactly as they appeared in the original argv.
-    if !arg.contains('\'') {
-        return Some(format!("'{arg}'"));
-    }
-
-    // Double-quoted response file args are only safe when the argument
-    // contains no backslashes, since our parser/compiler model would treat
-    // backslashes as escapes and change Windows path semantics.
-    if !arg.contains('\\') {
-        let escaped = arg.replace('"', "\\\"");
-        return Some(format!("\"{escaped}\""));
-    }
-
-    None
-}
-
 /// Format args for a response file that **rustc** will read.
 ///
 /// Rustc's response-file parser at
@@ -276,7 +248,7 @@ fn format_rsp_argument(arg: &str) -> Option<String> {
 /// `contents.lines().for_each(|arg| ...)` — every line becomes one argv
 /// element verbatim, with **no quote handling at all**. That means the
 /// GCC/Clang-style single-quote wrapping (`'arg'`) used by
-/// [`format_rsp_argument`] would leak the literal `'` characters into
+/// GCC-style quoting would leak the literal `'` characters into
 /// the argument value and break parsing of structured options like
 /// `--check-cfg "cfg(feature, values(\"...\", \"...\"))"` (issue #634:
 /// rustc reported "multiple input filenames provided" when zccache
@@ -288,20 +260,6 @@ fn format_rsp_argument(arg: &str) -> Option<String> {
 /// args cannot be represented in rustc's line-oriented format; we
 /// return `None` and the caller falls back to passing the args directly
 /// on the command line.
-#[cfg(any(windows, test))]
-fn format_rsp_content_rustc(args: &[String]) -> Option<String> {
-    let estimated_len: usize = args.iter().map(|a| a.len() + 1).sum();
-    let mut content = String::with_capacity(estimated_len);
-    for arg in args {
-        if arg.contains('\n') || arg.contains('\r') {
-            return None;
-        }
-        content.push_str(arg);
-        content.push('\n');
-    }
-    Some(content)
-}
-
 /// If the total length of `args` exceeds the Windows command-line limit, write
 /// them to a temporary `.rsp` file and return a single `@path` argument.
 /// Otherwise return `None` (caller should pass args directly).
@@ -311,8 +269,9 @@ fn format_rsp_content_rustc(args: &[String]) -> Option<String> {
 /// - `CompilerFamily::Rustc` uses rustc's line-oriented format (one arg
 ///   per line, no quoting). Required because rustc does not unquote
 ///   `'..."..."...'`-style values from response files; see #634.
-/// - All other families use the GCC/Clang/MSVC-compatible single- or
-///   double-quoted format produced by `format_rsp_argument`.
+/// - MSVC/clang-cl syntax uses Windows CRT-compatible quoting.
+/// - GCC/Clang syntax doubles backslashes for the GNU response parser before
+///   applying single- or double-quoted formatting.
 ///
 /// The returned [`TempResponseFile`] keeps the temporary file alive via RAII.
 /// Drop it after the compiler process finishes.
@@ -332,6 +291,8 @@ pub fn write_response_file_if_needed(
         NormalizedPath::new(tmp_dir.join(format!("zccache_{}_{}.rsp", std::process::id(), id)));
     let content = match family_hint {
         crate::CompilerFamily::Rustc => format_rsp_content_rustc(args),
+        crate::CompilerFamily::Msvc => format_rsp_content_msvc_if_safe(args),
+        _ if crate::parse_msvc::looks_like_msvc_args(args) => format_rsp_content_msvc_if_safe(args),
         _ => format_rsp_content_if_safe(args),
     };
     let Some(content) = content else {
@@ -509,6 +470,33 @@ mod tests {
             result,
             s(&["-c", "foo.cpp", "-DMSG=hello world", "-I/path/to/include"])
         );
+    }
+
+    #[test]
+    fn expand_utf16le_response_file_with_unicode_argument() {
+        let mut file = NamedTempFile::new().unwrap();
+        let mut encoded = vec![0xff, 0xfe];
+        for word in "/c \"\u{6e90}.cpp\" /Foobj\\\r\n".encode_utf16() {
+            encoded.extend_from_slice(&word.to_le_bytes());
+        }
+        file.write_all(&encoded).unwrap();
+
+        let path = file.path().to_str().unwrap();
+        let result = expand_response_files(&s(&[&format!("@{path}")])).unwrap();
+
+        assert_eq!(result, s(&["/c", "\u{6e90}.cpp", "/Foobj\\"]));
+    }
+
+    #[test]
+    fn expand_rejects_malformed_utf16_response_file() {
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(&[0xff, 0xfe, b'a']).unwrap();
+
+        let path = file.path().to_str().unwrap();
+        let error = expand_response_files(&s(&[&format!("@{path}")])).unwrap_err();
+
+        assert!(matches!(error, ResponseFileError::ReadError { .. }));
+        assert!(error.to_string().contains("odd byte count"));
     }
 
     #[test]
@@ -838,7 +826,7 @@ mod tests {
     fn format_rsp_escapes_backslash_in_quoted() {
         let args = s(&[r"-IC:\path with spaces\include"]);
         let content = format_rsp_content(&args);
-        assert_eq!(content, "'-IC:\\path with spaces\\include'\n");
+        assert_eq!(content, "\"-IC:\\\\path with spaces\\\\include\"\n");
     }
 
     #[test]
@@ -868,13 +856,15 @@ mod tests {
     }
 
     #[test]
-    fn format_rsp_declines_unsafe_single_quote_with_backslash() {
+    fn format_rsp_quotes_single_quote_with_doubled_backslashes() {
         let args = s(&[r"C:\path with spaces\o'hare"]);
-        assert!(format_rsp_content_if_safe(&args).is_none());
+        let content = format_rsp_content_if_safe(&args).unwrap();
+        assert_eq!(content, "\"C:\\\\path with spaces\\\\o'hare\"\n");
+        assert_eq!(parse_response_file_content(&content), args);
     }
 
     #[test]
-    fn format_rsp_prefers_single_quotes_for_windows_gcc_shapes() {
+    fn format_rsp_doubles_windows_backslashes_for_gnu_driver() {
         let args = s(&[
             r#"-DVALUE="C:\Program Files\SDK\include""#,
             r"C:\work tree\main.c",
@@ -882,9 +872,23 @@ mod tests {
         let content = format_rsp_content_if_safe(&args).unwrap();
         assert_eq!(
             content,
-            "'-DVALUE=\"C:\\Program Files\\SDK\\include\"'\n'C:\\work tree\\main.c'\n"
+            "\"-DVALUE=\\\"C:\\\\Program Files\\\\SDK\\\\include\\\"\"\n\"C:\\\\work tree\\\\main.c\"\n"
         );
         assert_eq!(parse_response_file_content(&content), args);
+    }
+
+    #[test]
+    fn format_rsp_msvc_preserves_windows_paths_and_quotes() {
+        let args = s(&[
+            r"/FoC:\build\obj\main.obj",
+            r"C:\work tree\main.cpp",
+            r#"/DVALUE=\"quoted\""#,
+        ]);
+        let content = format_rsp_content_msvc_if_safe(&args).unwrap();
+        assert_eq!(
+            content,
+            "/FoC:\\build\\obj\\main.obj\n\"C:\\work tree\\main.cpp\"\n\"/DVALUE=\\\\\\\"quoted\\\\\\\"\"\n"
+        );
     }
 
     // ── #634: rustc response-file dialect ─────────────────────────────

@@ -112,16 +112,14 @@ impl ExecStagedPlan {
 
     pub(super) fn materialize(&self) -> std::io::Result<StagedMaterializationStats> {
         let mut observed = StagedMaterializationStats::default();
-        #[cfg(test)]
-        let mut fault_index = 0;
-        for (requested, staged) in &self.outputs {
+        for (fault_index, (requested, staged)) in self.outputs.iter().enumerate() {
+            #[cfg(not(test))]
+            let _ = fault_index;
             #[cfg(test)]
             {
-                let index = fault_index;
-                fault_index += 1;
                 inject_staged_fault(
                     requested.as_path(),
-                    StagedFaultPoint::MaterializeOutput(index),
+                    StagedFaultPoint::MaterializeOutput(fault_index),
                 )
                 .map_err(|error| materialization_error(error, observed))?;
             }

@@ -170,3 +170,20 @@ pub(super) fn materialize_exec_plan_observed(
         plan.materialize(),
     )
 }
+
+pub(super) fn materialize_multi_plan_observed(
+    state: &SharedState,
+    plan: &StagedMultiUnitPlan,
+    salvage_reason: Option<&'static str>,
+) -> std::io::Result<()> {
+    let output_count = plan.outputs.len();
+    record_salvage_start(state, output_count, salvage_reason);
+    let started = std::time::Instant::now();
+    record_observed_materialization(
+        state,
+        output_count,
+        salvage_reason,
+        started,
+        plan.materialize(),
+    )
+}

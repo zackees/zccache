@@ -106,6 +106,54 @@ fn multi_file_mixed_extensions() {
 }
 
 #[test]
+fn multi_file_sources_beginning_with_dash_after_end_of_options() {
+    let result = parse_invocation("clang", &args(&["-c", "--", "-first.c", "-second.cpp"]));
+    match result {
+        ParsedInvocation::MultiFile {
+            compilations,
+            source_indices,
+            ..
+        } => {
+            assert_eq!(compilations.len(), 2);
+            assert_eq!(compilations[0].source_file, NormalizedPath::new("-first.c"));
+            assert_eq!(
+                compilations[1].source_file,
+                NormalizedPath::new("-second.cpp")
+            );
+            assert_eq!(source_indices, vec![2, 3]);
+        }
+        other => panic!("expected MultiFile, got: {other:?}"),
+    }
+}
+
+#[test]
+fn multi_file_same_stem_collision_is_not_cached_per_unit() {
+    let result = parse_invocation(
+        "clang",
+        &args(&["-c", "src/duplicate.c", "other/duplicate.cpp"]),
+    );
+    assert!(matches!(
+        result,
+        ParsedInvocation::NonCacheable { ref reason }
+            if reason == "multi-file output name collision"
+    ));
+}
+
+#[test]
+fn multi_file_explicit_output_is_left_to_the_compiler() {
+    for output_args in [vec!["-o", "batch.o"], vec!["-obatch.o"]] {
+        let mut invocation = vec!["-c", "first.c", "second.c"];
+        invocation.extend(output_args);
+        let result = parse_invocation("clang", &args(&invocation));
+        assert!(matches!(
+            result,
+            ParsedInvocation::NonCacheable { ref reason }
+                if reason == "multi-file explicit output is compiler-owned"
+        ));
+    }
+}
+
+#[test]
 fn stdin_non_cacheable() {
     let result = parse_invocation("gcc", &args(&["-c", "-"]));
     assert!(matches!(result, ParsedInvocation::NonCacheable { .. }));
@@ -278,22 +326,12 @@ fn header_without_x_flag_is_not_source() {
 
 #[test]
 fn x_flag_reset_disables_header_mode() {
-    // `-x c++-header pch.h -x c++ main.cpp -c -o main.o`
+    // `-x c++-header pch.h -x c++ main.cpp -c`
     // After `-x c++`, header_mode resets — main.cpp is a normal source,
     // pch.h was collected as header-mode source → multi-file.
     let result = parse_invocation(
         "clang++",
-        &args(&[
-            "-x",
-            "c++-header",
-            "pch.h",
-            "-x",
-            "c++",
-            "main.cpp",
-            "-c",
-            "-o",
-            "main.o",
-        ]),
+        &args(&["-x", "c++-header", "pch.h", "-x", "c++", "main.cpp", "-c"]),
     );
     match result {
         ParsedInvocation::MultiFile { compilations, .. } => {
@@ -342,19 +380,7 @@ fn sticky_header_mode_cpp_not_spuriously_pch() {
     // and main.cpp is a normal source — not a PCH candidate.
     let result = parse_invocation(
         "clang++",
-        &args(&[
-            "-x",
-            "c++-header",
-            "pch.h",
-            "-o",
-            "pch.h.pch",
-            "-x",
-            "c++",
-            "-c",
-            "main.cpp",
-            "-o",
-            "main.o",
-        ]),
+        &args(&["-x", "c++-header", "pch.h", "-x", "c++", "-c", "main.cpp"]),
     );
     // main.cpp must be recognized as a normal source via its extension,
     // NOT via header_mode. With the old bug, header_mode stayed true and

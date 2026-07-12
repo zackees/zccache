@@ -27,6 +27,7 @@ mod rustc_depinfo;
 mod server_ipc;
 mod session_errors;
 mod session_staged_attribution;
+mod staged_compiler_sets;
 mod system_includes_deferred;
 mod write_cached;
 

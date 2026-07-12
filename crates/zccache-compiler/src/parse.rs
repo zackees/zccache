@@ -157,10 +157,29 @@ pub fn parse_invocation(compiler: &str, args: &[String]) -> ParsedInvocation {
     let mut output_file: Option<String> = None;
     let mut current_mode = SourceMode::Normal;
     let mut unknown_flags: Vec<String> = Vec::new();
+    let mut positional_only = false;
 
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
+
+        if arg == "--" && !positional_only {
+            positional_only = true;
+            i += 1;
+            continue;
+        }
+        if positional_only {
+            let effective_mode = if current_mode != SourceMode::Normal {
+                current_mode
+            } else {
+                source_mode_from_extension(arg)
+            };
+            if is_source_file(arg) || current_mode != SourceMode::Normal {
+                source_files.push((arg.clone(), i, effective_mode));
+            }
+            i += 1;
+            continue;
+        }
 
         // Check for non-cacheable flags
         if arg == "-E" || arg == "-M" || arg == "-MM" {
@@ -257,6 +276,11 @@ pub fn parse_invocation(compiler: &str, args: &[String]) -> ParsedInvocation {
     // Multi-file: `-o` is invalid with `-c` and multiple sources (compiler rejects it),
     // so each source gets its default output name (stem.o).
     if source_files.len() > 1 {
+        if output_file.is_some() {
+            return ParsedInvocation::NonCacheable {
+                reason: "multi-file explicit output is compiler-owned".to_string(),
+            };
+        }
         let source_indices: Vec<usize> = source_files.iter().map(|(_, idx, _)| *idx).collect();
         let shared_args: Arc<[String]> = Arc::from(args.to_vec());
         let compilations = source_files
@@ -274,7 +298,20 @@ pub fn parse_invocation(compiler: &str, args: &[String]) -> ParsedInvocation {
                 original_args: Arc::clone(&shared_args),
                 unknown_flags: unknown_flags.clone(),
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let mut output_names = std::collections::HashSet::new();
+        if compilations.iter().any(|compilation| {
+            let output = compilation.output_file.to_string_lossy();
+            #[cfg(windows)]
+            let output = output.to_ascii_lowercase();
+            #[cfg(not(windows))]
+            let output = output.into_owned();
+            !output_names.insert(output)
+        }) {
+            return ParsedInvocation::NonCacheable {
+                reason: "multi-file output name collision".to_string(),
+            };
+        }
         return ParsedInvocation::MultiFile {
             compilations,
             original_args: shared_args,

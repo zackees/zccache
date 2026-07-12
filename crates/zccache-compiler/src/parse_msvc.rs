@@ -122,6 +122,11 @@ fn msvc_default_output(source: &str) -> String {
     format!("{stem}.obj")
 }
 
+fn msvc_output_in_directory(directory: &str, source: &str) -> String {
+    debug_assert!(directory.ends_with('/') || directory.ends_with('\\'));
+    format!("{directory}{}", msvc_default_output(source))
+}
+
 /// Parse an MSVC / clang-cl compiler invocation for cacheability.
 ///
 /// `compiler` is the executable path. `family` should be `CompilerFamily::Msvc`
@@ -353,10 +358,19 @@ pub fn parse_msvc_invocation(
         };
     }
 
-    // Multi-file invocations: when `cl.exe` or `clang-cl` are given multiple
-    // sources with `/c`, each becomes a separate `.obj`. MSVC names them by
-    // stem in the cwd just like gcc.
+    // Multi-file `/Fo` is valid only when it names a directory. Preserve that
+    // directory in each unit's requested output map. A file-valued `/Fo`
+    // bypasses per-unit caching so the legacy compiler path reports its native
+    // diagnostic without cache hits suppressing execution.
     if source_files.len() > 1 {
+        if output_file
+            .as_deref()
+            .is_some_and(|path| !path.ends_with('/') && !path.ends_with('\\'))
+        {
+            return ParsedInvocation::NonCacheable {
+                reason: "multi-file explicit output is compiler-owned".to_string(),
+            };
+        }
         let source_indices: Vec<usize> = source_files.iter().map(|(_, idx)| *idx).collect();
         let shared_args: Arc<[String]> = Arc::from(args.to_vec());
         let compilations = source_files
@@ -365,11 +379,32 @@ pub fn parse_msvc_invocation(
                 compiler: NormalizedPath::new(compiler),
                 family,
                 source_file: NormalizedPath::new(src),
-                output_file: NormalizedPath::new(msvc_default_output(src)),
+                output_file: NormalizedPath::new(
+                    output_file
+                        .as_deref()
+                        .filter(|path| path.ends_with('/') || path.ends_with('\\'))
+                        .map_or_else(
+                            || msvc_default_output(src),
+                            |directory| msvc_output_in_directory(directory, src),
+                        ),
+                ),
                 original_args: Arc::clone(&shared_args),
                 unknown_flags: unknown_flags.clone(),
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let mut output_names = std::collections::HashSet::new();
+        if compilations.iter().any(|compilation| {
+            !output_names.insert(
+                compilation
+                    .output_file
+                    .to_string_lossy()
+                    .to_ascii_lowercase(),
+            )
+        }) {
+            return ParsedInvocation::NonCacheable {
+                reason: "multi-file output name collision".to_string(),
+            };
+        }
         return ParsedInvocation::MultiFile {
             compilations,
             original_args: shared_args,
@@ -736,6 +771,56 @@ mod tests {
             }
             other => panic!("expected MultiFile, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn multi_file_msvc_fo_directory_maps_each_requested_object() {
+        let result = parse_msvc_invocation(
+            "cl.exe",
+            &args(&["/c", "src/a.c", "other/b.cpp", "/Fo:obj\\"]),
+            CompilerFamily::Msvc,
+        );
+        match result {
+            ParsedInvocation::MultiFile { compilations, .. } => {
+                assert_eq!(
+                    compilations[0].output_file,
+                    NormalizedPath::new("obj\\a.obj")
+                );
+                assert_eq!(
+                    compilations[1].output_file,
+                    NormalizedPath::new("obj\\b.obj")
+                );
+            }
+            other => panic!("expected MultiFile, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multi_file_msvc_case_folded_output_collision_is_not_cached_per_unit() {
+        let result = parse_msvc_invocation(
+            "cl.exe",
+            &args(&["/c", "src/Duplicate.c", "other/duplicate.cpp", "/Fo:obj\\"]),
+            CompilerFamily::Msvc,
+        );
+        assert!(matches!(
+            result,
+            ParsedInvocation::NonCacheable { ref reason }
+                if reason == "multi-file output name collision"
+        ));
+    }
+
+    #[test]
+    fn multi_file_msvc_file_valued_fo_is_left_to_the_compiler() {
+        let result = parse_msvc_invocation(
+            "cl.exe",
+            &args(&["/c", "first.c", "second.c", "/Fo:batch.obj"]),
+            CompilerFamily::Msvc,
+        );
+        assert!(matches!(
+            result,
+            ParsedInvocation::NonCacheable { ref reason }
+                if reason == "multi-file explicit output is compiler-owned"
+        ));
     }
 
     // ── Non-cacheable invocations ───────────────────────────────────────

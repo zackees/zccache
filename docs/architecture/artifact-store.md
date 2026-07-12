@@ -20,11 +20,14 @@ cache hit.
 switch. Narrow diagnostic values are `rust` (Rust single and multi-output
 plans), `c-cpp` (ordinary single-object and single-PCH GCC/Clang plans
 including user-owned `-MF`/`-MD` depfiles; MSVC flag rewriting is supported
-only for explicit `/Fo` object paths), or
-`all`. Unsupported shapes—including multi-source compiler invocations, C++
-modules, unrewritable or undeclared linker outputs, opaque generic exec, and
-stdout output—remain on the
-legacy path before compiler spawn. Explicit Rust `--emit=kind=path` outputs
+for explicit `/Fo` object paths), or `all`. Ordinary multi-source GCC/Clang
+and MSVC/clang-cl object compilations are split into private per-source
+invocations. Default `-MD`/`-MMD` depfiles and MSVC `/Fo` output directories
+are included in each unit's complete v2 output set. Shared or explicit `-MF`,
+diagnostic JSON, PDB/PCH/listing, module/header-unit, save-temps, split-DWARF,
+and dump outputs remain on the legacy path before compiler spawn, as do
+unrewritable or undeclared linker outputs, opaque generic exec, and stdout
+output. Explicit Rust `--emit=kind=path` outputs
 are parsed and included in the complete cache-hit reverse map. Inferred
 outputs for staticlibs, bins, proc macros, objects, assembly, LLVM IR/bitcode,
 MIR, and dep-info use their actual rustc extensions.
@@ -262,10 +265,9 @@ remove read-only attributes before deletion.
 
 `ZCCACHE_DISABLE_REFLINK=1` disables cloning and `ZCCACHE_COW_READONLY=0`
 disables read-only enforcement. Neither setting adds an IPC roundtrip.
-Unsupported shapes—including multi-source compiler invocations, C++ modules,
+Unsupported shapes—including shared multi-source side outputs, C++ modules,
 unrewritable/undeclared linker outputs, opaque generic exec, and stdout
-output—remain on the
-legacy path before compiler spawn. Explicit Rust `--emit=kind=path`
+output—remain on the legacy path before compiler spawn. Explicit Rust `--emit=kind=path`
 destinations are included in the complete cache-hit reverse map. Output
 families without complete-set plans select the legacy path before spawn; they
 are never partially staged.
