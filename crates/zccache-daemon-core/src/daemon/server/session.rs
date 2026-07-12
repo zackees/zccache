@@ -70,6 +70,12 @@ pub(super) async fn handle_session_start(
     };
 
     let session_id = state.sessions.create(session_config);
+    if args.track_stats {
+        state.session_staged_profiles.insert(
+            session_id,
+            Arc::new(crate::daemon::staged_stats::StagedProfiler::new()),
+        );
+    }
     state.ended_sessions.remove(&session_id);
     state.session_worktree_roots.insert(
         session_id,

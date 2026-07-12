@@ -111,6 +111,9 @@ pub(super) struct SharedState {
     /// Private daemon lifetime/ref-count state.
     pub(super) private_daemon: PrivateDaemonLifecycle,
     pub(super) sessions: SessionManager,
+    /// Request-owned staged telemetry for active tracked sessions.
+    pub(super) session_staged_profiles:
+        DashMap<SessionId, Arc<crate::daemon::staged_stats::StagedProfiler>>,
     pub(super) system_includes: Mutex<SystemIncludeCache>,
     /// Dependency graph: tracks include relationships and cache verdicts.
     ///

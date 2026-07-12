@@ -171,6 +171,7 @@ pub(super) fn new_shared_state(
             cache_dir: cache_dir.clone(),
             private_daemon: PrivateDaemonLifecycle::new(),
             sessions: SessionManager::new(std::time::Duration::from_secs(300)),
+            session_staged_profiles: DashMap::new(),
             system_includes: Mutex::new(system_includes_loaded),
             system_includes_cache_path,
             dep_graph: arc_swap::ArcSwap::from_pointee(DepGraph::new()),

@@ -129,15 +129,13 @@ pub struct SessionStats {
     /// Depgraph/artifact lookup outcome breakdown.
     #[serde(default)]
     pub lookup_outcomes: LookupOutcomes,
-    /// Daemon-wide phase-timing aggregate. `None` from older daemons that
-    /// don't populate the field; `Some` from PROTOCOL_VERSION >= 9 daemons.
+    /// Phase-timing aggregate. `None` from older daemons that don't populate
+    /// the field; `Some` from PROTOCOL_VERSION >= 9 daemons.
     ///
-    /// Aggregate is daemon-wide totals since the last
-    /// `PhaseProfiler::reset()` (which is called on `Request::Clear`). For
-    /// fresh-daemon perf scenarios this is equivalent to "this session's
-    /// phase totals". For long-lived daemons handling overlapping sessions,
-    /// totals cross-contaminate — that's acceptable for v1 and revisited if
-    /// a real consumer needs per-session isolation.
+    /// Legacy hit/miss fields are daemon-wide totals since the last Clear.
+    /// The nested staged-pipeline summary is request-owned and isolated to
+    /// this tracked session; concurrent or ephemeral requests cannot change it.
+    /// Clear resets both the daemon aggregate and active-session summaries.
     pub phase_profile: Option<PhaseProfileSummary>,
 }
 

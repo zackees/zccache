@@ -46,6 +46,9 @@ pub(super) async fn handle_clear(state: &SharedState) -> Response {
     // Reset stats and profiler.
     state.stats.reset();
     state.profiler.reset();
+    for profile in &state.session_staged_profiles {
+        profile.value().reset();
+    }
 
     // Delete on-disk artifact files in parallel. V2 generations are a
     // directory tree and coordinate with active publishers through their

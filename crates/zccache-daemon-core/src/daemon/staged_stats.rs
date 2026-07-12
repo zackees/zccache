@@ -1,6 +1,8 @@
 //! Bounded aggregate telemetry for immutable staged compiler outputs (#1071).
 
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use crate::protocol::StagedProfileSummary;
 
@@ -191,6 +193,19 @@ pub(crate) struct StagedProfiler {
     failures: [AtomicU64; FAILURES.len()],
 }
 
+tokio::task_local! {
+    static REQUEST_STAGED_PROFILE: Arc<StagedProfiler>;
+}
+
+/// Mirror staged observations made while `future` runs into one request's
+/// owning session without changing the daemon-wide aggregate call sites.
+pub(crate) async fn scope_request_profile<T>(
+    profile: Arc<StagedProfiler>,
+    future: impl Future<Output = T>,
+) -> T {
+    REQUEST_STAGED_PROFILE.scope(profile, future).await
+}
+
 fn saturating_atomic_add(value: &AtomicU64, amount: u64) {
     let _ = value.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_add(amount))
@@ -212,18 +227,46 @@ impl StagedProfiler {
     }
 
     pub(crate) fn add_count(&self, counter: StagedCounter, amount: u64) {
-        saturating_atomic_add(&self.counters[counter as usize], amount);
+        self.add_count_direct(counter, amount);
+        self.mirror(|profile| profile.add_count_direct(counter, amount));
     }
 
     pub(crate) fn timing(&self, timing: StagedTiming, elapsed_ns: u64) {
-        saturating_atomic_add(&self.timings_ns[timing as usize], elapsed_ns);
+        self.timing_direct(timing, elapsed_ns);
+        self.mirror(|profile| profile.timing_direct(timing, elapsed_ns));
     }
 
     pub(crate) fn bytes(&self, kind: StagedBytes, amount: u64) {
-        saturating_atomic_add(&self.bytes[kind as usize], amount);
+        self.bytes_direct(kind, amount);
+        self.mirror(|profile| profile.bytes_direct(kind, amount));
     }
 
     pub(crate) fn failure(&self, failure: StagedFailure) {
+        self.failure_direct(failure);
+        self.mirror(|profile| profile.failure_direct(failure));
+    }
+
+    fn mirror(&self, record: impl FnOnce(&StagedProfiler)) {
+        let _ = REQUEST_STAGED_PROFILE.try_with(|profile| {
+            if !std::ptr::eq(self, profile.as_ref()) {
+                record(profile);
+            }
+        });
+    }
+
+    fn add_count_direct(&self, counter: StagedCounter, amount: u64) {
+        saturating_atomic_add(&self.counters[counter as usize], amount);
+    }
+
+    fn timing_direct(&self, timing: StagedTiming, elapsed_ns: u64) {
+        saturating_atomic_add(&self.timings_ns[timing as usize], elapsed_ns);
+    }
+
+    fn bytes_direct(&self, kind: StagedBytes, amount: u64) {
+        saturating_atomic_add(&self.bytes[kind as usize], amount);
+    }
+
+    fn failure_direct(&self, failure: StagedFailure) {
         saturating_atomic_add(&self.failures[failure as usize], 1);
     }
 
@@ -360,5 +403,64 @@ mod tests {
         assert_eq!(snapshot.counters["publication_failure"], expected);
         assert_eq!(snapshot.failures["pointer_commit"], expected);
         assert_eq!(snapshot.timings_ns["publication"], expected);
+    }
+
+    #[tokio::test]
+    async fn concurrent_request_profiles_do_not_cross_attribute() {
+        let aggregate = Arc::new(StagedProfiler::new());
+        let first = Arc::new(StagedProfiler::new());
+        let second = Arc::new(StagedProfiler::new());
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+
+        let first_task = {
+            let aggregate = Arc::clone(&aggregate);
+            let profile = Arc::clone(&first);
+            let barrier = Arc::clone(&barrier);
+            tokio::spawn(scope_request_profile(profile, async move {
+                barrier.wait().await;
+                for _ in 0..17 {
+                    aggregate.count(StagedCounter::PublicationFailure);
+                    aggregate.failure(StagedFailure::PointerCommit);
+                    aggregate.timing(StagedTiming::Publication, 3);
+                    tokio::task::yield_now().await;
+                }
+            }))
+        };
+        let second_task = {
+            let aggregate = Arc::clone(&aggregate);
+            let profile = Arc::clone(&second);
+            let barrier = Arc::clone(&barrier);
+            tokio::spawn(scope_request_profile(profile, async move {
+                barrier.wait().await;
+                for _ in 0..23 {
+                    aggregate.count(StagedCounter::PublicationFailure);
+                    aggregate.failure(StagedFailure::Manifest);
+                    aggregate.timing(StagedTiming::Publication, 5);
+                    tokio::task::yield_now().await;
+                }
+            }))
+        };
+
+        barrier.wait().await;
+        first_task.await.unwrap();
+        second_task.await.unwrap();
+
+        let aggregate = aggregate.snapshot();
+        assert_eq!(aggregate.counters["publication_failure"], 40);
+        assert_eq!(aggregate.failures["pointer_commit"], 17);
+        assert_eq!(aggregate.failures["manifest"], 23);
+        assert_eq!(aggregate.timings_ns["publication"], 166);
+
+        let first = first.snapshot();
+        assert_eq!(first.counters["publication_failure"], 17);
+        assert_eq!(first.failures["pointer_commit"], 17);
+        assert_eq!(first.failures["manifest"], 0);
+        assert_eq!(first.timings_ns["publication"], 51);
+
+        let second = second.snapshot();
+        assert_eq!(second.counters["publication_failure"], 23);
+        assert_eq!(second.failures["pointer_commit"], 0);
+        assert_eq!(second.failures["manifest"], 23);
+        assert_eq!(second.timings_ns["publication"], 115);
     }
 }

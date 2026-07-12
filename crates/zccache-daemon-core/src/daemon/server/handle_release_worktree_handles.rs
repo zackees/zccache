@@ -67,6 +67,7 @@ pub(super) async fn handle_release_worktree_handles(
         // down. Order matches connection.rs:295 to keep the two sites
         // visually comparable.
         state.session_worktree_roots.remove(&sid);
+        state.session_staged_profiles.remove(&sid);
         if let Some(ended) = state.sessions.end(&sid) {
             if !ended.owner_pids.is_empty() {
                 state

@@ -26,6 +26,7 @@ mod release_worktree_handles;
 mod rustc_depinfo;
 mod server_ipc;
 mod session_errors;
+mod session_staged_attribution;
 mod system_includes_deferred;
 mod write_cached;
 

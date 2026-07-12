@@ -100,7 +100,10 @@ succeeded (reflink, hardlink-shared, or copy), copied bytes, failures, and
 elapsed ns. Archive, declared-linker, and exact-exec misses use the same
 planning, private-tool execution, and materialization accounting. Publication,
 salvage, and materialization use path-scoped, one-shot test faults at commit and
-per-output edges. The summary reports counters, nanosecond totals, copied-byte
+per-output edges. Task-local mirroring attributes compile observations to the
+owning tracked session while preserving daemon aggregates; concurrent sessions
+and unscoped ephemeral requests cannot cross-contaminate staged totals. The
+summary reports counters, nanosecond totals, copied-byte
 totals, and stable failure reason IDs. Labels are daemon-owned constants:
 paths, argv, cache keys, and raw OS errors are never metric keys. Bincode
 protocol v18 carries this summary; the protobuf schema adds it as an optional

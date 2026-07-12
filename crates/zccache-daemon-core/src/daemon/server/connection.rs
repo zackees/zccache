@@ -22,6 +22,18 @@ enum ResponseWire {
 
 const SERVER_REQUEST_RECV_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
+pub(super) fn session_phase_profile(
+    state: &SharedState,
+    session_id: &SessionId,
+) -> crate::protocol::PhaseProfileSummary {
+    let mut totals = state.profiler.totals_snapshot();
+    totals.staged = state.session_staged_profiles.get(session_id).map_or_else(
+        || crate::daemon::staged_stats::StagedProfiler::new().snapshot(),
+        |profile| profile.snapshot(),
+    );
+    totals.into()
+}
+
 /// Run a child-spawning handler (compile / link / exec) while concurrently
 /// watching the client connection for disconnect (issue #967, meta #968).
 ///
@@ -370,7 +382,13 @@ pub(super) async fn handle_connection(
                             );
                         }
                     }
-                    compile_response_for_session(
+                    let request_profile = parsed_session_id.as_ref().and_then(|sid| {
+                        state
+                            .session_staged_profiles
+                            .get(sid)
+                            .map(|profile| Arc::clone(profile.value()))
+                    });
+                    let request = compile_response_for_session(
                         &state,
                         parsed_session_id,
                         session_id,
@@ -379,8 +397,14 @@ pub(super) async fn handle_connection(
                         compiler,
                         env,
                         stdin,
-                    )
-                    .await
+                    );
+                    match request_profile {
+                        Some(profile) => {
+                            crate::daemon::staged_stats::scope_request_profile(profile, request)
+                                .await
+                        }
+                        None => request.await,
+                    }
                 };
                 match guarded_dispatch(&mut conn, handler).await {
                     Some((response, ctx)) => (response, ctx),
@@ -447,10 +471,9 @@ pub(super) async fn handle_connection(
                                     bytes_read: f.bytes_read,
                                     bytes_written: f.bytes_written,
                                     lookup_outcomes: f.lookup_outcomes.into(),
-                                    // Daemon-wide phase totals — see
-                                    // PhaseProfileSummary doc for the
-                                    // single-vs-multi-session caveat.
-                                    phase_profile: Some(state.profiler.totals_snapshot().into()),
+                                    // Legacy phase fields remain daemon-wide;
+                                    // staged telemetry is request/session-owned.
+                                    phase_profile: Some(session_phase_profile(&state, &sid)),
                                 }
                             });
                             Response::SessionStatsResult { stats }
@@ -470,6 +493,8 @@ pub(super) async fn handle_connection(
                 match session_id.parse::<SessionId>() {
                     Ok(sid) => {
                         state.session_worktree_roots.remove(&sid);
+                        let ended_phase_profile = session_phase_profile(&state, &sid);
+                        state.session_staged_profiles.remove(&sid);
                         if let Some(session) = state.sessions.end(&sid) {
                             state.ended_sessions.insert(sid, ());
                             if !session.owner_pids.is_empty() {
@@ -497,7 +522,7 @@ pub(super) async fn handle_connection(
                                     bytes_read: f.bytes_read,
                                     bytes_written: f.bytes_written,
                                     lookup_outcomes: f.lookup_outcomes.into(),
-                                    phase_profile: Some(state.profiler.totals_snapshot().into()),
+                                    phase_profile: Some(ended_phase_profile),
                                 }
                             });
                             Response::SessionEnded { stats }

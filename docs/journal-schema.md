@@ -86,7 +86,9 @@ reads only the documented fields; it tolerates malformed lines
 ## Engine phase profiling
 
 `session-stats --json` and `session-end --json` include `phase_profile` when
-the daemon can report aggregate cache-engine phase totals. Use
+the daemon can report cache-engine phase totals. Legacy hit/miss fields remain
+daemon-wide; the nested staged-pipeline summary contains only work attributed
+to that tracked session. Use
 `zccache engine-profile <stats-json>` to render the hit/miss phase breakdown
 from `last-session-stats.json` or captured session-stats JSON. Add `--json`
 for the stable machine-readable form.
