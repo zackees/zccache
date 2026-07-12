@@ -32,7 +32,7 @@ use dashmap::mapref::entry::Entry;
 
 static EXEC_STAGE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-struct ExecStagedPlan {
+pub(super) struct ExecStagedPlan {
     outputs: Vec<(NormalizedPath, NormalizedPath)>,
     rewritten_args: Vec<String>,
     root: PathBuf,
@@ -110,7 +110,7 @@ impl ExecStagedPlan {
             .collect()
     }
 
-    fn materialize(&self) -> std::io::Result<StagedMaterializationStats> {
+    pub(super) fn materialize(&self) -> std::io::Result<StagedMaterializationStats> {
         let mut observed = StagedMaterializationStats::default();
         #[cfg(test)]
         let mut fault_index = 0;
@@ -139,6 +139,10 @@ impl ExecStagedPlan {
         self.cleanup()
             .map_err(|error| materialization_error(error, observed))?;
         Ok(observed)
+    }
+
+    pub(super) fn output_count(&self) -> usize {
+        self.outputs.len()
     }
 
     fn cleanup(&self) -> std::io::Result<()> {
@@ -473,6 +477,8 @@ pub(super) async fn handle_generic_tool_exec(
     let too_large = stdout.len() > EXEC_STREAM_CAP_BYTES || stderr.len() > EXEC_STREAM_CAP_BYTES;
 
     let cacheable_exit = true; // exit codes are part of the cached payload — even non-zero
+    let mut staged_publication_failure = None;
+    let mut staged_cached_artifact = None;
     if store_allowed && all_captured && !too_large && depfile_ok && cacheable_exit {
         let artifact = ArtifactData {
             outputs: cache_outputs,
@@ -480,7 +486,11 @@ pub(super) async fn handle_generic_tool_exec(
             stderr: Arc::clone(&stderr),
             exit_code,
         };
-        store_exec_artifact(state, final_full_hex.clone(), artifact).await;
+        let staged_sources = staged_plan.as_ref().map(ExecStagedPlan::staged_paths);
+        match store_exec_artifact(state, final_full_hex.clone(), artifact, staged_sources).await {
+            Ok(pending) => staged_cached_artifact = pending,
+            Err(reason) => staged_publication_failure = Some(reason),
+        }
     } else if too_large {
         tracing::warn!(
             stdout_len = stdout.len(),
@@ -501,67 +511,14 @@ pub(super) async fn handle_generic_tool_exec(
                 message: "successful generic tool omitted a staged output".to_string(),
             };
         }
-        use crate::daemon::staged_stats::{StagedBytes, StagedCounter, StagedFailure};
-        let materialize_started = std::time::Instant::now();
-        match plan.materialize() {
-            Ok(observed) => {
-                state
-                    .profiler
-                    .staged
-                    .add_count(StagedCounter::MaterializeReflink, observed.reflink_count);
-                state
-                    .profiler
-                    .staged
-                    .add_count(StagedCounter::MaterializeCopy, observed.copy_count);
-                state
-                    .profiler
-                    .staged
-                    .bytes(StagedBytes::Materialization, observed.copy_bytes);
-                state.profiler.staged.timing(
-                    StagedTiming::MissMaterialization,
-                    materialize_started.elapsed().as_nanos() as u64,
-                );
-            }
-            Err(error) => {
-                let elapsed_ns = materialize_started.elapsed().as_nanos() as u64;
-                let progress = materialization_error_progress(&error);
-                state
-                    .profiler
-                    .staged
-                    .add_count(StagedCounter::MaterializeReflink, progress.reflink_count);
-                state
-                    .profiler
-                    .staged
-                    .add_count(StagedCounter::MaterializeCopy, progress.copy_count);
-                state
-                    .profiler
-                    .staged
-                    .bytes(StagedBytes::Materialization, progress.copy_bytes);
-                state
-                    .profiler
-                    .staged
-                    .count(StagedCounter::MaterializeFailure);
-                state
-                    .profiler
-                    .staged
-                    .failure(StagedFailure::RequestedMaterialization);
-                state
-                    .profiler
-                    .staged
-                    .timing(StagedTiming::MissMaterialization, elapsed_ns);
-                crate::core::lifecycle::write_event(
-                    "staged_materialization_failed",
-                    serde_json::json!({
-                        "reason": "requested_materialization",
-                        "output_count": plan.outputs.len(),
-                        "copied_bytes": progress.copy_bytes,
-                        "elapsed_ns": elapsed_ns,
-                    }),
-                );
-                return Response::Error {
-                    message: format!("failed to materialize generic tool outputs: {error}"),
-                };
-            }
+        let salvage_reason = staged_publication_failure.map(StagedPublishFailure::id);
+        if let Err(error) = materialize_exec_plan_observed(state, plan, salvage_reason) {
+            return Response::Error {
+                message: format!("failed to materialize generic tool outputs: {error}"),
+            };
+        }
+        if let Some(cached) = staged_cached_artifact {
+            state.artifacts.insert(final_full_hex.clone(), cached);
         }
     }
 
@@ -837,7 +794,16 @@ async fn try_exec_cache_hit(
         .collect();
     let payloads_for_write: Vec<CachedPayload> =
         paired.into_iter().map(|(_, p)| p.clone()).collect();
-    if !write_payloads_par(&targets, &payloads_for_write) {
+    let has_staged_payload = payloads_for_write.iter().any(|payload| {
+        matches!(payload, CachedPayload::File(path) if is_staged_artifact_path(path.as_path()))
+    });
+    let materialize_started = std::time::Instant::now();
+    let observed = write_payloads_par_observed(&targets, &payloads_for_write);
+    if has_staged_payload {
+        if !record_staged_hit_materialization(state, targets.len(), materialize_started, observed) {
+            return None;
+        }
+    } else if observed.is_none() {
         return None;
     }
 
@@ -879,8 +845,17 @@ async fn try_exec_cache_hit(
 
 // ─── Store ──────────────────────────────────────────────────────────────
 
-async fn store_exec_artifact(state: &Arc<SharedState>, key_hex: String, artifact: ArtifactData) {
+async fn store_exec_artifact(
+    state: &Arc<SharedState>,
+    key_hex: String,
+    artifact: ArtifactData,
+    staged_sources: Option<Vec<NormalizedPath>>,
+) -> Result<Option<CachedArtifact>, StagedPublishFailure> {
     let cached = CachedArtifact::from_artifact_data(&artifact);
+    if let Some(sources) = staged_sources {
+        publish_artifact_paths_observed(state, &key_hex, cached.meta.clone(), &sources)?;
+        return Ok(Some(cached));
+    }
     {
         let artifact_dir = state.artifact_dir.clone();
         let key_for_persist = key_hex.clone();
@@ -919,6 +894,7 @@ async fn store_exec_artifact(state: &Arc<SharedState>, key_hex: String, artifact
         });
     }
     state.artifacts.insert(key_hex, cached);
+    Ok(None)
 }
 
 // ─── Path normalization ─────────────────────────────────────────────────

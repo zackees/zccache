@@ -135,6 +135,18 @@ pub(in crate::daemon::server) struct StagedCompilePlan {
 }
 
 impl StagedCompilePlan {
+    #[cfg(test)]
+    pub(in crate::daemon::server) fn for_test(
+        root: PathBuf,
+        outputs: Vec<StagedOutputPlan>,
+    ) -> Self {
+        Self {
+            outputs,
+            rewritten_args: Vec::new(),
+            root,
+        }
+    }
+
     /// Build a plan for the narrow Phase 3 Rust lane.  A plan is absent for
     /// unsupported invocations, preserving the proven legacy path.
     pub(in crate::daemon::server) fn rustc(

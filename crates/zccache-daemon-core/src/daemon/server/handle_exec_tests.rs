@@ -10,6 +10,157 @@ fn empty_extra() -> Arc<Vec<u8>> {
     Arc::new(Vec::new())
 }
 
+#[tokio::test]
+async fn staged_exec_publication_failure_never_inserts_cache_entry() {
+    let temp = tempdir().unwrap();
+    let endpoint = crate::ipc::unique_test_endpoint();
+    let cache_dir: NormalizedPath = temp.path().join("cache").into();
+    let server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
+    let first: NormalizedPath = temp.path().join("first.out").into();
+    let second: NormalizedPath = temp.path().join("second.out").into();
+    std::fs::write(&first, b"first exact output").unwrap();
+    std::fs::write(&second, b"second exact output").unwrap();
+    let artifact = ArtifactData {
+        outputs: vec![
+            ArtifactOutput {
+                name: "first.out".to_string(),
+                payload: ArtifactPayload::Bytes(Arc::new(b"first exact output".to_vec())),
+            },
+            ArtifactOutput {
+                name: "second.out".to_string(),
+                payload: ArtifactPayload::Bytes(Arc::new(b"second exact output".to_vec())),
+            },
+        ],
+        stdout: Arc::new(Vec::new()),
+        stderr: Arc::new(Vec::new()),
+        exit_code: 0,
+    };
+    let key = "e".repeat(64);
+    let fault = StagedFaultGuard::arm(
+        &server.state.artifact_dir,
+        [StagedFaultPoint::PointerCommit],
+    );
+
+    let reason = match store_exec_artifact(
+        &server.state,
+        key.clone(),
+        artifact,
+        Some(vec![first, second]),
+    )
+    .await
+    {
+        Err(reason) => reason,
+        Ok(_) => panic!("publication fault must fail the staged store"),
+    };
+    assert_eq!(reason, StagedPublishFailure::PointerCommit);
+    assert!(!server.state.artifacts.contains_key(&key));
+    let staged = server.state.profiler.staged.snapshot();
+    assert_eq!(staged.counters["publication_failure"], 1);
+    assert_eq!(staged.failures["pointer_commit"], 1);
+    fault.assert_all_consumed();
+}
+
+#[tokio::test]
+async fn staged_exec_publication_failure_salvages_requested_output() {
+    let temp = tempdir().unwrap();
+    let endpoint = crate::ipc::unique_test_endpoint();
+    let cache_dir: NormalizedPath = temp.path().join("cache").into();
+    let server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
+    let root = temp.path().join("private-exec");
+    std::fs::create_dir_all(&root).unwrap();
+    let requested: NormalizedPath = temp.path().join("result.bin").into();
+    let staged: NormalizedPath = root.join("result.bin").into();
+    std::fs::write(&staged, b"complete exact output").unwrap();
+    let plan = ExecStagedPlan {
+        root,
+        rewritten_args: Vec::new(),
+        outputs: vec![(requested.clone(), staged.clone())],
+    };
+    let artifact = ArtifactData {
+        outputs: vec![ArtifactOutput {
+            name: "result.bin".to_string(),
+            payload: ArtifactPayload::Bytes(Arc::new(b"complete exact output".to_vec())),
+        }],
+        stdout: Arc::new(Vec::new()),
+        stderr: Arc::new(Vec::new()),
+        exit_code: 0,
+    };
+    let key = "f".repeat(64);
+    let fault = StagedFaultGuard::arm(
+        &server.state.artifact_dir,
+        [StagedFaultPoint::PointerCommit],
+    );
+    let reason =
+        match store_exec_artifact(&server.state, key.clone(), artifact, Some(vec![staged])).await {
+            Err(reason) => reason,
+            Ok(_) => panic!("publication fault must fail the staged store"),
+        };
+
+    materialize_exec_plan_observed(&server.state, &plan, Some(reason.id())).unwrap();
+    assert_eq!(std::fs::read(&requested).unwrap(), b"complete exact output");
+    assert!(!server.state.artifacts.contains_key(&key));
+    let staged = server.state.profiler.staged.snapshot();
+    assert_eq!(staged.counters["publication_failure"], 1);
+    assert_eq!(staged.counters["salvage_attempt"], 1);
+    assert_eq!(staged.counters["salvage_success"], 1);
+    assert_eq!(staged.failures["pointer_commit"], 1);
+    fault.assert_all_consumed();
+}
+
+#[tokio::test]
+async fn staged_exec_disk_hit_reports_physical_materialization_tier() {
+    let temp = tempdir().unwrap();
+    let endpoint = crate::ipc::unique_test_endpoint();
+    let cache_dir: NormalizedPath = temp.path().join("cache").into();
+    let server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
+    let source: NormalizedPath = temp.path().join("private-result.bin").into();
+    std::fs::write(&source, b"persisted exact output").unwrap();
+    let artifact = ArtifactData {
+        outputs: vec![ArtifactOutput {
+            name: "result.bin".to_string(),
+            payload: ArtifactPayload::Bytes(Arc::new(b"persisted exact output".to_vec())),
+        }],
+        stdout: Arc::new(Vec::new()),
+        stderr: Arc::new(Vec::new()),
+        exit_code: 0,
+    };
+    let metadata = CachedArtifact::from_artifact_data(&artifact).meta;
+    let key = "d".repeat(64);
+    let cached = store_exec_artifact(&server.state, key.clone(), artifact, Some(vec![source]))
+        .await
+        .unwrap()
+        .expect("staged stores defer memory visibility until materialization");
+    server.state.artifacts.insert(key.clone(), cached);
+    server.state.artifacts.remove(&key);
+    server.state.artifact_store.insert(&key, &metadata);
+
+    let response = try_exec_cache_hit(
+        &server.state,
+        &key,
+        temp.path(),
+        &[NormalizedPath::from("result.bin")],
+        ExecOutputStreams::default(),
+    )
+    .await;
+    assert!(matches!(
+        response,
+        Some(Response::GenericToolExecResult { cached: true, .. })
+    ));
+    assert_eq!(
+        std::fs::read(temp.path().join("result.bin")).unwrap(),
+        b"persisted exact output"
+    );
+    let staged = server.state.profiler.staged.snapshot();
+    assert_eq!(staged.counters["publication_success"], 1);
+    assert_eq!(
+        staged.counters["materialize_reflink"]
+            + staged.counters["materialize_hardlink_shared"]
+            + staged.counters["materialize_copy"],
+        1
+    );
+    assert!(staged.timings_ns.contains_key("hit_materialization"));
+}
+
 #[test]
 fn primary_key_changes_when_input_hash_changes() {
     let k1 = compose_primary_key(

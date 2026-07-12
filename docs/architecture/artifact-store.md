@@ -98,7 +98,10 @@ lane populates planning, compiler staging, hashing, publication, salvage, and
 requested-path materialization. V2 file hits report the tier that actually
 succeeded (reflink, hardlink-shared, or copy), copied bytes, failures, and
 elapsed ns. Archive, declared-linker, and exact-exec misses use the same
-planning, private-tool execution, and materialization accounting. Publication,
+planning, private-tool execution, complete-generation publication/index commit,
+salvage, and materialization accounting. Exact exec persists staged output paths
+as v2 generations before requested-path materialization; it no longer converts
+that lane back into asynchronous flat-v1 payload writes. Publication,
 salvage, and materialization use path-scoped, one-shot test faults at commit and
 per-output edges. Task-local mirroring attributes compile observations to the
 owning tracked session while preserving daemon aggregates; concurrent sessions

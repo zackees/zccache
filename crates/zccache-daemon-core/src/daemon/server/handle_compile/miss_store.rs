@@ -49,40 +49,6 @@ pub(super) struct MissArtifactStoreStats {
     pub(super) artifact_memory_insert_ns: u64,
 }
 
-fn record_staged_publication_failure(state: &SharedState, reason: StagedPublishFailure) {
-    use crate::daemon::staged_stats::{StagedCounter, StagedFailure};
-    state
-        .profiler
-        .staged
-        .count(StagedCounter::PublicationFailure);
-    if reason == StagedPublishFailure::Conflict {
-        state
-            .profiler
-            .staged
-            .count(StagedCounter::PublicationConflict);
-        state
-            .profiler
-            .staged
-            .failure(StagedFailure::PublicationConflict);
-    } else {
-        state.profiler.staged.failure(reason.failure());
-    }
-}
-
-fn send_staged_index_insert(
-    state: &SharedState,
-    key: String,
-    metadata: ArtifactIndex,
-) -> Result<(), StagedPublishFailure> {
-    #[cfg(test)]
-    inject_staged_fault(&state.artifact_dir, StagedFaultPoint::IndexCommit)
-        .map_err(|_| StagedPublishFailure::IndexCommit)?;
-    state
-        .index_writer_tx
-        .send(IndexWriterCommand::Insert(key, metadata))
-        .map_err(|_| StagedPublishFailure::IndexCommit)
-}
-
 pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> MissArtifactStoreStats {
     let MissArtifactStoreRequest {
         state_arc,
@@ -261,14 +227,17 @@ fn store_rustc_outputs(
             stats.rust_snapshot_hardlink_count = snapshot_stats.hardlink_count;
             stats.rust_snapshot_copy_count = snapshot_stats.copy_count;
             stats.rust_snapshot_copy_bytes = snapshot_stats.copy_bytes;
-            let index_failure = if snapshot_stats.staged {
-                send_staged_index_insert(state, artifact_key_hex.to_string(), meta.clone()).err()
+            let (index_failure, index_commit_ns) = if snapshot_stats.staged {
+                match send_staged_index_insert(state, artifact_key_hex.to_string(), meta.clone()) {
+                    Ok(elapsed_ns) => (None, elapsed_ns),
+                    Err(reason) => (Some(reason), 0),
+                }
             } else {
                 let _ = state.index_writer_tx.send(IndexWriterCommand::Insert(
                     artifact_key_hex.to_string(),
                     meta.clone(),
                 ));
-                None
+                (None, 0)
             };
             if let Some(reason) = index_failure {
                 record_staged_publication_failure(state, reason);
@@ -293,7 +262,9 @@ fn store_rustc_outputs(
                         .timing(StagedTiming::Hashing, snapshot_stats.staged_hash_ns);
                     state.profiler.staged.timing(
                         StagedTiming::Publication,
-                        snapshot_stats.staged_publication_ns,
+                        snapshot_stats
+                            .staged_publication_ns
+                            .saturating_add(index_commit_ns),
                     );
                     state
                         .profiler
@@ -432,10 +403,14 @@ fn store_single_output(
         let written =
             match persist_artifact_paths_with_stats(&artifact_dir, &key_hex, &source_paths) {
                 Ok(persisted) => {
-                    let index_failure = if persisted.staged {
-                        send_staged_index_insert(state, key_hex.clone(), persist_meta.clone()).err()
+                    let (index_failure, index_commit_ns) = if persisted.staged {
+                        match send_staged_index_insert(state, key_hex.clone(), persist_meta.clone())
+                        {
+                            Ok(elapsed_ns) => (None, elapsed_ns),
+                            Err(reason) => (Some(reason), 0),
+                        }
                     } else {
-                        None
+                        (None, 0)
                     };
                     if let Some(reason) = index_failure {
                         stats.staged_failure_reason = Some(reason.id());
@@ -453,10 +428,12 @@ fn store_single_output(
                                 .profiler
                                 .staged
                                 .timing(StagedTiming::Hashing, persisted.staged_hash_ns);
-                            state
-                                .profiler
-                                .staged
-                                .timing(StagedTiming::Publication, persisted.staged_publication_ns);
+                            state.profiler.staged.timing(
+                                StagedTiming::Publication,
+                                persisted
+                                    .staged_publication_ns
+                                    .saturating_add(index_commit_ns),
+                            );
                             state
                                 .profiler
                                 .staged

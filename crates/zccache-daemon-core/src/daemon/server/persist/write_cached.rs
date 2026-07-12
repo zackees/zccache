@@ -19,6 +19,7 @@ pub(in crate::daemon::server) fn write_cached_output(
     .map(|_| ())
 }
 
+#[cfg(test)]
 pub(in crate::daemon::server) fn write_cached_file(
     out_path: &Path,
     cache_file: &Path,
@@ -234,9 +235,7 @@ fn remove_materialized_output(path: &Path) -> std::io::Result<()> {
         Err(error) => return Err(error),
     }
     let registration = prepare_registered_detach(path);
-    if let Err(error) = make_writable(path) {
-        return Err(error);
-    }
+    make_writable(path)?;
     if let Err(error) = remove_output_file(path) {
         if let Some((_, blob_path)) = &registration {
             let _ = set_readonly(blob_path, readonly_enabled());
@@ -250,17 +249,6 @@ fn remove_materialized_output(path: &Path) -> std::io::Result<()> {
         let _ = set_readonly(&blob_path, readonly_enabled());
     }
     Ok(())
-}
-
-pub(in crate::daemon::server) fn write_cached_payload(
-    out_path: &Path,
-    cache_file: &Path,
-    payload: &CachedPayload,
-) -> std::io::Result<()> {
-    match payload {
-        CachedPayload::Bytes(data) => write_cached_output(out_path, cache_file, data),
-        CachedPayload::File(path) => write_cached_file(out_path, path),
-    }
 }
 
 pub(in crate::daemon::server) fn write_cached_payload_with_policy_stats(
@@ -288,24 +276,49 @@ where
     P: AsRef<Path> + Sync,
     Q: AsRef<Path> + Sync,
 {
+    write_payloads_par_observed(targets, payloads).is_some()
+}
+
+pub(in crate::daemon::server) fn write_payloads_par_observed<P, Q>(
+    targets: &[(P, Q)],
+    payloads: &[CachedPayload],
+) -> Option<StagedMaterializationStats>
+where
+    P: AsRef<Path> + Sync,
+    Q: AsRef<Path> + Sync,
+{
     debug_assert_eq!(targets.len(), payloads.len());
-    let write_one = |out: &Path, cache: &Path, payload: &CachedPayload| -> bool {
+    let write_one = |out: &Path,
+                     cache: &Path,
+                     payload: &CachedPayload|
+     -> std::io::Result<StagedMaterializationStats> {
         if let Some(parent) = out.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        write_cached_payload(out, cache, payload).is_ok()
+        write_cached_payload_with_policy_stats(
+            out,
+            cache,
+            payload,
+            crate::compiler::DeliveryPolicy::IndependentOnly,
+        )
     };
     if targets.len() < PAR_WRITE_THRESHOLD {
-        return targets
-            .iter()
-            .zip(payloads.iter())
-            .all(|((out, cache), payload)| write_one(out.as_ref(), cache.as_ref(), payload));
+        let mut observed = StagedMaterializationStats::default();
+        for ((out, cache), payload) in targets.iter().zip(payloads) {
+            observed.add(write_one(out.as_ref(), cache.as_ref(), payload).ok()?);
+        }
+        return Some(observed);
     }
     use rayon::prelude::*;
     targets
         .par_iter()
         .zip(payloads.par_iter())
-        .all(|((out, cache), payload)| write_one(out.as_ref(), cache.as_ref(), payload))
+        .map(|((out, cache), payload)| write_one(out.as_ref(), cache.as_ref(), payload))
+        .try_reduce(StagedMaterializationStats::default, |mut total, one| {
+            total.add(one);
+            Ok(total)
+        })
+        .ok()
 }
 
 #[cfg(test)]
