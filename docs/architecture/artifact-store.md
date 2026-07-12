@@ -95,8 +95,10 @@ key, accounts for all physical bytes, and removes the logical artifact once.
 
 Session phase profiles include a bounded `staged` summary. The compile-miss
 lane populates planning, compiler staging, hashing, publication, salvage, and
-requested-path materialization; hit-tier and special-producer wiring remains
-tracked by #1071. The summary reports counters, nanosecond totals, copied-byte
+requested-path materialization. V2 file hits report the tier that actually
+succeeded (reflink, hardlink-shared, or copy), copied bytes, failures, and
+elapsed ns; special-producer wiring remains tracked by #1071. The summary
+reports counters, nanosecond totals, copied-byte
 totals, and stable failure reason IDs. Labels are daemon-owned constants:
 paths, argv, cache keys, and raw OS errors are never metric keys. Bincode
 protocol v18 carries this summary; the protobuf schema adds it as an optional

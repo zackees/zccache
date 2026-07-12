@@ -306,13 +306,19 @@ fn staged_generation_hardlinks_only_when_semantically_authorized() {
         .unwrap()
         .unwrap();
     let payload = CachedPayload::File(payloads[0].clone());
-    write_cached_payload_with_policy(
-        &output,
-        &payloads[0],
-        &payload,
-        crate::compiler::DeliveryPolicy::HardlinkEligible,
+    let targets = vec![(&output, &payloads[0])];
+    let observed = write_payloads_par_with_mtime_floor_and_policies_observed(
+        &targets,
+        &[payload],
+        &Vec::<NormalizedPath>::new(),
+        &[crate::compiler::DeliveryPolicy::HardlinkEligible],
     )
     .unwrap();
+    assert_eq!(
+        observed.reflink_count + observed.hardlink_count + observed.copy_count,
+        1,
+        "a staged file restore reports exactly one successful tier"
+    );
     if !require_hardlink(
         &output,
         &payloads[0],

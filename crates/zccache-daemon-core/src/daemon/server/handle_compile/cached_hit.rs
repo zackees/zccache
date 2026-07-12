@@ -167,16 +167,60 @@ pub(super) fn materialize_cached_compile_hit(
             )
         })
         .collect::<Vec<_>>();
-    if !write_payloads_par_with_mtime_floor_and_policies(
+    let has_staged_payload = payloads_to_write.iter().any(
+        |payload| matches!(payload, CachedPayload::File(path) if is_staged_artifact_path(path)),
+    );
+    let observed = match write_payloads_par_with_mtime_floor_and_policies_observed(
         &targets,
         &payloads_to_write,
         &mtime_floor_paths,
         &delivery_policies,
     ) {
-        return None;
-    }
+        Some(observed) => observed,
+        None => {
+            if has_staged_payload {
+                use crate::daemon::staged_stats::{StagedCounter, StagedFailure, StagedTiming};
+                state
+                    .profiler
+                    .staged
+                    .count(StagedCounter::MaterializeFailure);
+                state
+                    .profiler
+                    .staged
+                    .failure(StagedFailure::RequestedMaterialization);
+                state.profiler.staged.timing(
+                    StagedTiming::HitMaterialization,
+                    t1.elapsed().as_nanos() as u64,
+                );
+            }
+            return None;
+        }
+    };
     let t2 = Instant::now();
     let write_output_ns = (t2 - t1).as_nanos() as u64;
+    if has_staged_payload {
+        use crate::daemon::staged_stats::{StagedBytes, StagedCounter, StagedTiming};
+        state
+            .profiler
+            .staged
+            .add_count(StagedCounter::MaterializeReflink, observed.reflink_count);
+        state
+            .profiler
+            .staged
+            .add_count(StagedCounter::MaterializeHardlink, observed.hardlink_count);
+        state
+            .profiler
+            .staged
+            .add_count(StagedCounter::MaterializeCopy, observed.copy_count);
+        state
+            .profiler
+            .staged
+            .bytes(StagedBytes::Materialization, observed.copy_bytes);
+        state
+            .profiler
+            .staged
+            .timing(StagedTiming::HitMaterialization, write_output_ns);
+    }
 
     let cached_error = exit_code != 0;
     if !cached_error && downgrade_output_metadata {

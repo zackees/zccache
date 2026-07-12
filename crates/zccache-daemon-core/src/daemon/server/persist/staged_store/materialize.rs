@@ -8,8 +8,18 @@ use std::path::Path;
 #[derive(Clone, Copy, Debug, Default)]
 pub(in crate::daemon::server) struct StagedMaterializationStats {
     pub(in crate::daemon::server) reflink_count: u64,
+    pub(in crate::daemon::server) hardlink_count: u64,
     pub(in crate::daemon::server) copy_count: u64,
     pub(in crate::daemon::server) copy_bytes: u64,
+}
+
+impl StagedMaterializationStats {
+    pub(in crate::daemon::server) fn add(&mut self, other: Self) {
+        self.reflink_count = self.reflink_count.saturating_add(other.reflink_count);
+        self.hardlink_count = self.hardlink_count.saturating_add(other.hardlink_count);
+        self.copy_count = self.copy_count.saturating_add(other.copy_count);
+        self.copy_bytes = self.copy_bytes.saturating_add(other.copy_bytes);
+    }
 }
 
 /// Materialize without sharing a writable inode with private or backend bytes.
@@ -41,6 +51,7 @@ pub(in crate::daemon::server) fn materialize_independent_with_stats(
         let _ = set_readonly(destination, false);
         StagedMaterializationStats {
             reflink_count: u64::from(reflink),
+            hardlink_count: 0,
             copy_count: u64::from(!reflink),
             copy_bytes,
         }
