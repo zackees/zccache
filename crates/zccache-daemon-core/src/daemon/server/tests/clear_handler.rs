@@ -118,14 +118,36 @@ async fn handle_clear_preserves_in_flight_private_staging() {
         let server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
         let staged = server.test_state().staging.path().join("active-output.o");
         std::fs::write(&staged, b"compiler result").unwrap();
+        let published = tmp.path().join("published-output.o");
+        std::fs::write(&published, b"cached result").unwrap();
+        let key = "6".repeat(64);
+        persist_staged_artifact_paths(
+            server.test_state().artifact_dir.as_path(),
+            &key,
+            &[published.into()],
+        )
+        .unwrap();
 
         let response = super::super::handle_clear::handle_clear(server.test_state()).await;
-        assert!(matches!(response, Response::Cleared { .. }));
+        assert!(matches!(
+            response,
+            Response::Cleared {
+                on_disk_bytes_freed,
+                ..
+            } if on_disk_bytes_freed >= 13
+        ));
         assert_eq!(
             std::fs::read(&staged).unwrap(),
             b"compiler result",
             "Clear must not delete a compiler result before salvage/materialization"
         );
+        assert!(load_staged_artifact_paths(
+            server.test_state().artifact_dir.as_path(),
+            &key,
+            &[13],
+        )
+        .unwrap()
+        .is_none());
     })
     .await;
 }

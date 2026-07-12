@@ -42,6 +42,8 @@
 //! | `pipe-handover` (#755) | CLI (on takeover) | new daemon claimed the endpoint a previous daemon held | `pid` (the new daemon), `inbound_pid`, `inbound_version`, `outbound_pid`, `reason`, `client_pid` |
 //! | `client-disconnected` (#755) | client | IPC connection broke mid-request | `endpoint`, `client_pid`, `client_version`, `client_binary_path`, `cause`, `detail` |
 //! | `version_mismatch` | daemon | client / daemon protocol versions disagree | `daemon_protocol_version`, `client_protocol_version`, `reason` |
+//! | `staged_publication_conflict` | daemon | one cache key produced two different valid generations; first generation retained | `cache_key`, `existing_generation`, `candidate_generation`, `elapsed_ns` |
+//! | `staged_publication_replaces_invalid_generation` | daemon | a corrupt/incomplete selected generation was replaced by a validated compile result | `cache_key`, `invalid_generation`, `replacement_generation` |
 //!
 //! ## Forensic walkthrough: the two-versions-on-one-pipe wedge
 //!

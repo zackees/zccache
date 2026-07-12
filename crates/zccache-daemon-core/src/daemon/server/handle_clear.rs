@@ -15,7 +15,7 @@ pub(super) async fn handle_clear(state: &SharedState) -> Response {
     let dep_graph_contexts_cleared = state.dep_graph.load().stats().context_count as u64;
 
     // Calculate on-disk artifact size before deleting.
-    let on_disk_bytes_freed = match std::fs::read_dir(&state.artifact_dir) {
+    let mut on_disk_bytes_freed = match std::fs::read_dir(&state.artifact_dir) {
         Ok(entries) => entries
             .filter_map(|e| e.ok())
             .filter_map(|e| e.metadata().ok().map(|m| m.len()))
@@ -47,10 +47,20 @@ pub(super) async fn handle_clear(state: &SharedState) -> Response {
     state.stats.reset();
     state.profiler.reset();
 
-    // Delete on-disk artifact files in parallel.
+    // Delete on-disk artifact files in parallel. V2 generations are a
+    // directory tree and coordinate with active publishers through their
+    // store lock; the legacy helper below handles only flat files.
+    match clear_staged_artifacts(&state.artifact_dir) {
+        Ok(bytes) => on_disk_bytes_freed = on_disk_bytes_freed.saturating_add(bytes),
+        Err(error) => tracing::warn!(%error, "failed to clear staged artifact generations"),
+    }
     if let Ok(entries) = std::fs::read_dir(&state.artifact_dir) {
         use rayon::prelude::*;
-        let paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+        let paths: Vec<_> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|path| !is_staged_artifact_root(path))
+            .collect();
         paths.par_iter().for_each(|p| {
             let _ = remove_registered_blob(p);
         });

@@ -16,6 +16,8 @@ pub(in crate::daemon::server) const STAGED_ARTIFACTS_ENV: &str = "ZCCACHE_STAGED
 
 const STAGED_ROOT: &str = ".staged-v2";
 const STAGED_MANIFEST_VERSION: u32 = 1;
+const PUBLISH_LOCK: &str = ".publish.lock";
+const STORE_LOCK: &str = ".store.lock";
 
 static STAGED_ARTIFACT_TMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -101,8 +103,28 @@ pub(in crate::daemon::server) fn is_staged_artifact_path(path: &Path) -> bool {
     root_matches && key_matches && generation_matches && output_matches
 }
 
+pub(in crate::daemon::server) fn is_staged_artifact_root(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| {
+        if cfg!(windows) {
+            name.to_string_lossy().eq_ignore_ascii_case(STAGED_ROOT)
+        } else {
+            name == STAGED_ROOT
+        }
+    })
+}
+
 fn staged_root(artifact_dir: &Path) -> PathBuf {
     artifact_dir.join(STAGED_ROOT)
+}
+
+fn open_store_lock(root: &Path) -> io::Result<File> {
+    fs::create_dir_all(root)?;
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join(STORE_LOCK))
 }
 
 fn validate_key(key_hex: &str) -> io::Result<()> {
@@ -330,11 +352,59 @@ fn load_manifest(
     Ok(manifest)
 }
 
+fn validate_staged_generation(
+    artifact_dir: &Path,
+    key_hex: &str,
+    generation_hex: &str,
+) -> io::Result<()> {
+    validate_generation(generation_hex)?;
+    let generation = generation_dir(artifact_dir, key_hex, generation_hex);
+    let manifest = load_manifest(&manifest_path(&generation), key_hex, generation_hex)?;
+    if generation_digest(key_hex, &manifest.outputs) != generation_hex {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "staged generation digest does not match its manifest",
+        ));
+    }
+    let mut seen = vec![false; manifest.outputs.len()];
+    for output in &manifest.outputs {
+        if output.index >= seen.len() || seen[output.index] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "staged manifest has a duplicate or invalid output index",
+            ));
+        }
+        seen[output.index] = true;
+        let path = output_path(&generation, output.index);
+        if fs::metadata(&path)?.len() != output.size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "staged output size does not match its manifest",
+            ));
+        }
+        let (_, digest_hex) = digest_file(&path)?;
+        if digest_hex != output.digest_hex {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "staged output digest does not match its manifest",
+            ));
+        }
+    }
+    if seen.iter().any(|was_seen| !was_seen) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "staged manifest has a missing output index",
+        ));
+    }
+    Ok(())
+}
+
 pub(in crate::daemon::server) fn persist_staged_artifact_paths(
     artifact_dir: &Path,
     key_hex: &str,
     sources: &[NormalizedPath],
 ) -> io::Result<PersistArtifactFileStats> {
+    let publish_started = std::time::Instant::now();
     validate_key(key_hex)?;
     if sources.is_empty() {
         return Err(io::Error::new(
@@ -344,8 +414,17 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
     }
 
     let root = staged_root(artifact_dir);
+    let store_lock = open_store_lock(&root)?;
+    fs2::FileExt::lock_shared(&store_lock)?;
     let key_root = root.join(key_hex);
     fs::create_dir_all(&key_root)?;
+    let publish_lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(key_root.join(PUBLISH_LOCK))?;
+    fs2::FileExt::lock_exclusive(&publish_lock)?;
     let temporary_generation = key_root.join(format!(
         ".tmp-{}-{}",
         std::process::id(),
@@ -402,6 +481,47 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
 
         let generation_hex = generation_digest(key_hex, &outputs);
         validate_generation(&generation_hex)?;
+        let pointer = pointer_path(artifact_dir, key_hex);
+        let mut invalid_generation_to_remove = None;
+        if let Ok(previous_value) = fs::read_to_string(&pointer) {
+            let previous = previous_value.trim();
+            if !previous.is_empty() && previous != generation_hex {
+                if validate_staged_generation(artifact_dir, key_hex, previous).is_ok() {
+                    crate::core::lifecycle::write_event(
+                        "staged_publication_conflict",
+                        serde_json::json!({
+                            "cache_key": key_hex,
+                            "existing_generation": previous,
+                            "candidate_generation": generation_hex,
+                            "elapsed_ns": publish_started.elapsed().as_nanos() as u64,
+                        }),
+                    );
+                    tracing::error!(
+                        event = "staged_publication_conflict",
+                        cache_key = key_hex,
+                        existing_generation = previous,
+                        candidate_generation = generation_hex,
+                        "same cache key produced a different complete output generation"
+                    );
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "same cache key produced different staged output bytes",
+                    ));
+                }
+                crate::core::lifecycle::write_event(
+                    "staged_publication_replaces_invalid_generation",
+                    serde_json::json!({
+                        "cache_key": key_hex,
+                        "invalid_generation": previous,
+                        "replacement_generation": generation_hex,
+                    }),
+                );
+                if validate_generation(previous).is_ok() {
+                    invalid_generation_to_remove = Some(previous.to_string());
+                }
+            }
+        }
+        let output_count = outputs.len();
         let final_generation = generation_dir(artifact_dir, key_hex, &generation_hex);
         let manifest = StagedManifest {
             version: STAGED_MANIFEST_VERSION,
@@ -450,7 +570,6 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
             )
         })?;
 
-        let pointer = pointer_path(artifact_dir, key_hex);
         atomic_write(&pointer, generation_hex.as_bytes()).map_err(|error| {
             io::Error::new(
                 error.kind(),
@@ -465,6 +584,27 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
                 )
             })?;
         }
+        if let Some(invalid_generation) = invalid_generation_to_remove {
+            let invalid_path = generation_dir(artifact_dir, key_hex, &invalid_generation);
+            if let Err(error) = remove_staged_tree(&invalid_path) {
+                tracing::warn!(
+                    path = %invalid_path.display(),
+                    %error,
+                    "failed to remove replaced invalid staged generation"
+                );
+            }
+        }
+        tracing::info!(
+            event = "staged_publication_complete",
+            cache_key = key_hex,
+            generation = generation_hex,
+            output_count,
+            reflink_count = stats.reflink_count,
+            copy_count = stats.copy_count,
+            copy_bytes = stats.copy_bytes,
+            elapsed_ns = publish_started.elapsed().as_nanos() as u64,
+            "published immutable staged artifact generation"
+        );
         Ok(stats)
     })();
 
@@ -546,16 +686,20 @@ pub(in crate::daemon::server) fn cleanup_staged_artifact_temps(
     artifact_dir: &Path,
 ) -> io::Result<usize> {
     let root = staged_root(artifact_dir);
-    let Ok(entries) = fs::read_dir(&root) else {
+    if !root.is_dir() {
         return Ok(0);
-    };
+    }
+    let store_lock = open_store_lock(&root)?;
+    fs2::FileExt::lock_exclusive(&store_lock)?;
+    let entries = fs::read_dir(&root)?;
     let mut removed = 0;
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_file()
-            && path
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("."))
+            && path.file_name().is_some_and(|name| {
+                let name = name.to_string_lossy();
+                name.starts_with(".") && name != STORE_LOCK
+            })
         {
             fs::remove_file(path)?;
             removed += 1;
@@ -577,8 +721,10 @@ pub(in crate::daemon::server) fn cleanup_staged_artifact_temps(
                     .file_name()
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                let remove = child_name.starts_with(".tmp-")
-                    || (child_path.is_dir() && current.as_deref() != Some(child_name.as_str()));
+                let remove = child_name != PUBLISH_LOCK
+                    && (child_name.starts_with(".tmp-")
+                        || (child_path.is_dir()
+                            && current.as_deref() != Some(child_name.as_str())));
                 if remove {
                     if child_path.is_dir() {
                         fs::remove_dir_all(child_path)?;
@@ -591,6 +737,46 @@ pub(in crate::daemon::server) fn cleanup_staged_artifact_temps(
         }
     }
     Ok(removed)
+}
+
+fn remove_staged_tree(path: &Path) -> io::Result<u64> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_symlink() {
+        fs::remove_file(path)?;
+        return Ok(0);
+    }
+    if metadata.is_dir() {
+        let mut removed = 0;
+        for entry in fs::read_dir(path)?.flatten() {
+            removed += remove_staged_tree(&entry.path())?;
+        }
+        fs::remove_dir(path)?;
+        return Ok(removed);
+    }
+    let size = metadata.len();
+    remove_registered_blob(path)?;
+    Ok(size)
+}
+
+pub(in crate::daemon::server) fn clear_staged_artifacts(artifact_dir: &Path) -> io::Result<u64> {
+    let root = staged_root(artifact_dir);
+    if !root.is_dir() {
+        return Ok(0);
+    }
+    let store_lock = open_store_lock(&root)?;
+    fs2::FileExt::lock_exclusive(&store_lock)?;
+    let mut bytes_removed = 0;
+    for entry in fs::read_dir(&root)?.flatten() {
+        if entry.file_name() == STORE_LOCK {
+            continue;
+        }
+        bytes_removed += remove_staged_tree(&entry.path())?;
+    }
+    Ok(bytes_removed)
 }
 
 #[cfg(test)]
@@ -649,8 +835,9 @@ mod tests {
     }
 
     #[test]
-    fn staged_pointer_switches_only_after_the_new_generation_is_complete() {
+    fn staged_publication_rejects_nondeterministic_same_key_output() {
         let dir = tempfile::tempdir().unwrap();
+        let _cache_dir = crate::daemon::server::tests::CacheDirEnvGuard::set(dir.path());
         let artifact_dir = dir.path().join("artifacts");
         fs::create_dir_all(&artifact_dir).unwrap();
         let sources = source_files(dir.path());
@@ -659,17 +846,101 @@ mod tests {
 
         make_writable(&sources[0]).unwrap();
         fs::write(&sources[0], b"replacement immutable payload").unwrap();
-        persist_staged_artifact_paths(&artifact_dir, &key, &sources).unwrap();
+        let error = persist_staged_artifact_paths(&artifact_dir, &key, &sources).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
 
-        let payloads = load_staged_artifact_paths(&artifact_dir, &key, &[29, 24])
+        let payloads = load_staged_artifact_paths(&artifact_dir, &key, &[23, 24])
+            .unwrap()
+            .unwrap();
+        assert_eq!(fs::read(&payloads[0]).unwrap(), b"first immutable payload");
+        assert_eq!(fs::read(&payloads[1]).unwrap(), b"second immutable payload");
+        assert!(!same_file(sources[0].as_path(), payloads[0].as_path()));
+
+        let log = fs::read_to_string(crate::core::lifecycle::log_file_path()).unwrap();
+        let event: serde_json::Value = log
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .find(|event: &serde_json::Value| {
+                event["event"] == "staged_publication_conflict" && event["cache_key"] == key
+            })
+            .expect("durable staged publication conflict event");
+        assert_ne!(event["existing_generation"], event["candidate_generation"]);
+        assert!(event["elapsed_ns"].as_u64().is_some());
+    }
+
+    #[test]
+    fn staged_publication_can_replace_a_proven_corrupt_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifact_dir = dir.path().join("artifacts");
+        fs::create_dir_all(&artifact_dir).unwrap();
+        let sources = source_files(dir.path());
+        let key = "9".repeat(64);
+        persist_staged_artifact_paths(&artifact_dir, &key, &sources).unwrap();
+        let old_generation = fs::read_to_string(pointer_path(&artifact_dir, &key)).unwrap();
+        let payloads = load_staged_artifact_paths(&artifact_dir, &key, &[23, 24])
+            .unwrap()
+            .unwrap();
+        make_writable(&payloads[0]).unwrap();
+        fs::write(&payloads[0], b"corrupt").unwrap();
+
+        fs::write(&sources[0], b"replacement immutable payload").unwrap();
+        persist_staged_artifact_paths(&artifact_dir, &key, &sources).unwrap();
+        let replacement = load_staged_artifact_paths(&artifact_dir, &key, &[29, 24])
             .unwrap()
             .unwrap();
         assert_eq!(
-            fs::read(&payloads[0]).unwrap(),
+            fs::read(&replacement[0]).unwrap(),
             b"replacement immutable payload"
         );
-        assert_eq!(fs::read(&payloads[1]).unwrap(), b"second immutable payload");
-        assert!(!same_file(sources[0].as_path(), payloads[0].as_path()));
+        assert!(!generation_dir(&artifact_dir, &key, old_generation.trim()).exists());
+    }
+
+    #[test]
+    fn concurrent_same_key_publishers_never_overwrite_each_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifact_dir = dir.path().join("artifacts");
+        fs::create_dir_all(&artifact_dir).unwrap();
+        let source_a: NormalizedPath = dir.path().join("a.o").into();
+        let source_b: NormalizedPath = dir.path().join("b.o").into();
+        fs::write(&source_a, b"generation-a").unwrap();
+        fs::write(&source_b, b"generation-b").unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let key = "8".repeat(64);
+
+        let publishers: Vec<_> = [source_a, source_b]
+            .into_iter()
+            .map(|source| {
+                let barrier = std::sync::Arc::clone(&barrier);
+                let artifact_dir = artifact_dir.clone();
+                let key = key.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    persist_staged_artifact_paths(&artifact_dir, &key, &[source])
+                })
+            })
+            .collect();
+        barrier.wait();
+        let results: Vec<_> = publishers
+            .into_iter()
+            .map(|publisher| publisher.join().unwrap())
+            .collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| result
+                    .as_ref()
+                    .is_err_and(|error| error.kind() == io::ErrorKind::AlreadyExists))
+                .count(),
+            1
+        );
+        let payloads = load_staged_artifact_paths(&artifact_dir, &key, &[12])
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            fs::read(&payloads[0]).unwrap().as_slice(),
+            b"generation-a" | b"generation-b"
+        ));
     }
 
     #[test]
@@ -727,6 +998,7 @@ mod tests {
         fs::create_dir(key_root.join(".tmp-crashed")).unwrap();
         fs::create_dir(key_root.join("stable-generation")).unwrap();
         fs::create_dir(key_root.join("orphan-generation")).unwrap();
+        fs::write(key_root.join(PUBLISH_LOCK), b"").unwrap();
         fs::write(
             artifact_dir
                 .join(STAGED_ROOT)
@@ -739,6 +1011,42 @@ mod tests {
         assert!(!key_root.join(".tmp-crashed").exists());
         assert!(key_root.join("stable-generation").exists());
         assert!(!key_root.join("orphan-generation").exists());
+        assert!(key_root.join(PUBLISH_LOCK).exists());
+    }
+
+    #[test]
+    fn staged_clear_removes_every_visible_generation_but_keeps_coordination_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifact_dir = dir.path().join("artifacts");
+        fs::create_dir_all(&artifact_dir).unwrap();
+        let sources = source_files(dir.path());
+        let key = "7".repeat(64);
+        persist_staged_artifact_paths(&artifact_dir, &key, &sources).unwrap();
+        #[cfg(unix)]
+        let outside = {
+            let outside = dir.path().join("outside-clear-boundary");
+            fs::create_dir(&outside).unwrap();
+            fs::write(outside.join("must-survive"), b"outside").unwrap();
+            std::os::unix::fs::symlink(
+                &outside,
+                artifact_dir.join(STAGED_ROOT).join("hostile-symlink"),
+            )
+            .unwrap();
+            outside
+        };
+
+        assert!(clear_staged_artifacts(&artifact_dir).unwrap() > 0);
+        #[cfg(unix)]
+        assert_eq!(fs::read(outside.join("must-survive")).unwrap(), b"outside");
+        assert!(load_staged_artifact_paths(&artifact_dir, &key, &[23, 24])
+            .unwrap()
+            .is_none());
+        let remaining: Vec<_> = fs::read_dir(artifact_dir.join(STAGED_ROOT))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect();
+        assert_eq!(remaining, vec![std::ffi::OsString::from(STORE_LOCK)]);
     }
 
     #[test]

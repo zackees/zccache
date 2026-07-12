@@ -77,6 +77,14 @@ manifest, sizes, and every output digest before serving a hit. Startup removes
 abandoned staging directories and pointer temporary files. The current flat
 v1 and pack formats remain readable during rollout.
 
+Publication holds a shared store lock plus an exclusive per-key lock. Cleanup
+and cache Clear hold the store lock exclusively, so neither can remove an
+active transaction. If a valid generation already exists and the same cache
+key produces different bytes, publication fails closed, preserves the first
+generation, and emits a durable `staged_publication_conflict` lifecycle event.
+An invalid/corrupt prior generation may be replaced and is recorded as
+`staged_publication_replaces_invalid_generation`.
+
 ## Directory Layout
 
 ```
