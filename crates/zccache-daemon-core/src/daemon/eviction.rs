@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use super::server::persist::{evict_v2_artifact_keys, scan_v2_disk_artifacts};
 use super::server::{remove_cow_blob, CachedArtifact, FastHitEntry};
 
 /// Estimated bytes per metadata cache entry.
@@ -223,6 +224,7 @@ struct DiskArtifact {
     total_size: u64,
     mtime: std::time::SystemTime,
     files: Vec<NormalizedPath>,
+    staged: bool,
 }
 
 /// Evict on-disk artifacts when total disk usage exceeds `max_cache_size`.
@@ -268,8 +270,11 @@ pub(crate) fn evict_disk_artifacts(
             continue;
         };
 
-        // Derive the key stem: "abcd1234.meta" → "abcd1234", "abcd1234_0" → "abcd1234"
+        // Derive the key stem: "abcd1234.meta" → "abcd1234",
+        // "abcd1234.pack" → "abcd1234", "abcd1234_0" → "abcd1234".
         let key = if let Some(stem) = fname.strip_suffix(".meta") {
+            stem.to_string()
+        } else if let Some(stem) = fname.strip_suffix(".pack") {
             stem.to_string()
         } else if let Some(pos) = fname.rfind('_') {
             // Data file: key_hex_{index}
@@ -286,6 +291,7 @@ pub(crate) fn evict_disk_artifacts(
             total_size: 0,
             mtime: std::time::SystemTime::UNIX_EPOCH,
             files: Vec::new(),
+            staged: false,
         });
         group.total_size += size;
         // Use data file mtime as LRU proxy. For legacy .meta files, also
@@ -298,6 +304,28 @@ pub(crate) fn evict_disk_artifacts(
             }
         }
         group.files.push(path.into());
+    }
+
+    match scan_v2_disk_artifacts(artifact_dir) {
+        Ok(staged_artifacts) => {
+            for staged in staged_artifacts {
+                let key = staged.key;
+                let staged_size = staged.total_size;
+                let staged_mtime = staged.mtime;
+                total_disk = total_disk.saturating_add(staged_size);
+                let group = groups.entry(key.clone()).or_insert_with(|| DiskArtifact {
+                    key,
+                    total_size: 0,
+                    mtime: std::time::SystemTime::UNIX_EPOCH,
+                    files: Vec::new(),
+                    staged: true,
+                });
+                group.total_size = group.total_size.saturating_add(staged_size);
+                group.mtime = group.mtime.max(staged_mtime);
+                group.staged = true;
+            }
+        }
+        Err(error) => tracing::warn!(%error, "failed to scan staged artifacts for eviction"),
     }
 
     if total_disk <= max_cache_size {
@@ -339,6 +367,14 @@ pub(crate) fn evict_disk_artifacts(
                 deleted_since_yield = 0;
             }
         }
+    }
+    let staged_keys: std::collections::HashSet<String> = to_evict
+        .iter()
+        .filter(|artifact| artifact.staged)
+        .map(|artifact| artifact.key.clone())
+        .collect();
+    if let Err(error) = evict_v2_artifact_keys(artifact_dir, &staged_keys) {
+        tracing::warn!(%error, "failed to evict staged artifact generations");
     }
 
     // Remove from in-memory DashMap.
@@ -694,6 +730,16 @@ mod tests {
         std::fs::write(&data_path, vec![0u8; size]).unwrap();
     }
 
+    fn write_fake_staged_artifact(dir: &Path, key: &str, size: usize) {
+        let root = dir.join(".staged-v2");
+        let generation = "b".repeat(64);
+        let generation_dir = root.join(key).join(&generation);
+        std::fs::create_dir_all(&generation_dir).unwrap();
+        std::fs::write(generation_dir.join("output-0"), vec![0u8; size]).unwrap();
+        std::fs::write(generation_dir.join("manifest.bin"), b"manifest").unwrap();
+        std::fs::write(root.join(format!("{key}.current")), generation).unwrap();
+    }
+
     #[test]
     fn disk_eviction_noop_under_budget() {
         let dir = tempfile::tempdir().unwrap();
@@ -740,6 +786,32 @@ mod tests {
         let (freed, removed) = evict_disk_artifacts(dir.path(), &artifacts, 0, None);
         assert!(freed > 0);
         assert_eq!(removed, 1);
+        assert!(artifacts.is_empty());
+    }
+
+    #[test]
+    fn disk_eviction_groups_and_removes_mixed_v1_pack_v2_key_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifacts: DashMap<String, CachedArtifact> = DashMap::new();
+        let key = "a".repeat(64);
+        write_fake_artifact(dir.path(), &key, 1024);
+        std::fs::write(dir.path().join(format!("{key}.pack")), vec![0u8; 512]).unwrap();
+        write_fake_staged_artifact(dir.path(), &key, 2048);
+        artifacts.insert(key.clone(), make_artifact(3584));
+
+        let (freed, removed) = evict_disk_artifacts(dir.path(), &artifacts, 0, None);
+
+        assert!(freed >= 3584);
+        assert_eq!(removed, 1, "mixed formats are one logical artifact");
+        assert!(!dir.path().join(format!("{key}.meta")).exists());
+        assert!(!dir.path().join(format!("{key}_0")).exists());
+        assert!(!dir.path().join(format!("{key}.pack")).exists());
+        assert!(!dir.path().join(".staged-v2").join(&key).exists());
+        assert!(!dir
+            .path()
+            .join(".staged-v2")
+            .join(format!("{key}.current"))
+            .exists());
         assert!(artifacts.is_empty());
     }
 

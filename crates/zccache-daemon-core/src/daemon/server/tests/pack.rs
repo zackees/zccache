@@ -105,6 +105,73 @@ fn persist_artifact_paths_preserves_compiler_output_writability() {
 }
 
 #[test]
+fn mixed_v1_pack_v2_lookup_and_downgrade_policy_are_explicit() {
+    let dir = tempfile::tempdir().unwrap();
+    let v1_key = "1".repeat(64);
+    let pack_key = "2".repeat(64);
+    let v2_key = "3".repeat(64);
+    std::fs::write(dir.path().join(format!("{v1_key}_0")), b"legacy-flat").unwrap();
+    std::fs::write(
+        pack_path_for(dir.path(), &pack_key),
+        build_pack(&[Arc::new(b"legacy-pack".to_vec())]),
+    )
+    .unwrap();
+    let v2_source: NormalizedPath = dir.path().join("v2-source.o").into();
+    std::fs::write(&v2_source, b"staged-v2").unwrap();
+    persist_staged_artifact_paths(dir.path(), &v2_key, &[v2_source]).unwrap();
+
+    let index = |name: &str, size: u64| {
+        CachedArtifact::from_index(ArtifactIndex::new(
+            vec![name.to_string()],
+            vec![size],
+            Arc::new(Vec::new()),
+            Arc::new(Vec::new()),
+            0,
+        ))
+    };
+    let bytes = |payload: &CachedPayload| match payload {
+        CachedPayload::File(path) => std::fs::read(path).unwrap(),
+        CachedPayload::Bytes(bytes) => bytes.as_ref().clone(),
+    };
+
+    let mut v1 = index("legacy.o", 11);
+    let mut pack = index("packed.o", 11);
+    let mut v2 = index("staged.o", 9);
+    assert_eq!(
+        bytes(&ensure_payloads_with_staged_policy(&mut v1, dir.path(), &v1_key, true).unwrap()[0]),
+        b"legacy-flat"
+    );
+    assert_eq!(
+        bytes(
+            &ensure_payloads_with_staged_policy(&mut pack, dir.path(), &pack_key, true).unwrap()[0]
+        ),
+        b"legacy-pack"
+    );
+    assert_eq!(
+        bytes(&ensure_payloads_with_staged_policy(&mut v2, dir.path(), &v2_key, true).unwrap()[0]),
+        b"staged-v2"
+    );
+
+    // Downgrade/kill-switch policy: legacy layouts remain readable, while a
+    // v2-only entry is a safe miss rather than being reinterpreted.
+    let mut downgraded_v1 = index("legacy.o", 11);
+    let mut downgraded_pack = index("packed.o", 11);
+    let mut downgraded_v2 = index("staged.o", 9);
+    assert!(
+        ensure_payloads_with_staged_policy(&mut downgraded_v1, dir.path(), &v1_key, false)
+            .is_some()
+    );
+    assert!(
+        ensure_payloads_with_staged_policy(&mut downgraded_pack, dir.path(), &pack_key, false)
+            .is_some()
+    );
+    assert!(
+        ensure_payloads_with_staged_policy(&mut downgraded_v2, dir.path(), &v2_key, false)
+            .is_none()
+    );
+}
+
+#[test]
 fn persist_artifact_paths_falls_back_to_copy_when_source_missing() {
     std::env::remove_var("ZCCACHE_PACK_ARTIFACTS");
     let dir = tempfile::tempdir().unwrap();

@@ -109,8 +109,17 @@ pub(super) fn ensure_payloads<'a>(
     artifact_dir: &Path,
     key_hex: &str,
 ) -> Option<&'a [CachedPayload]> {
+    ensure_payloads_with_staged_policy(cached, artifact_dir, key_hex, staged_artifacts_enabled())
+}
+
+pub(super) fn ensure_payloads_with_staged_policy<'a>(
+    cached: &'a mut CachedArtifact,
+    artifact_dir: &Path,
+    key_hex: &str,
+    staged_enabled: bool,
+) -> Option<&'a [CachedPayload]> {
     if cached.payloads.is_none() {
-        if staged_artifacts_enabled() {
+        if staged_enabled {
             match load_staged_artifact_paths(artifact_dir, key_hex, &cached.meta.output_sizes) {
                 Ok(Some(payloads)) => {
                     cached.payloads = Some(Arc::from(

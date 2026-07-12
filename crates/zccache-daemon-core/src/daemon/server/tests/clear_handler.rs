@@ -127,6 +127,19 @@ async fn handle_clear_preserves_in_flight_private_staging() {
             &[published.into()],
         )
         .unwrap();
+        let legacy_key = "5".repeat(64);
+        let pack_key = "4".repeat(64);
+        let legacy_path = server
+            .test_state()
+            .artifact_dir
+            .join(format!("{legacy_key}_0"));
+        let pack_path = pack_path_for(server.test_state().artifact_dir.as_path(), &pack_key);
+        std::fs::write(&legacy_path, b"legacy result").unwrap();
+        std::fs::write(
+            &pack_path,
+            build_pack(&[Arc::new(b"packed result".to_vec())]),
+        )
+        .unwrap();
 
         let response = super::super::handle_clear::handle_clear(server.test_state()).await;
         assert!(matches!(
@@ -148,6 +161,8 @@ async fn handle_clear_preserves_in_flight_private_staging() {
         )
         .unwrap()
         .is_none());
+        assert!(!legacy_path.exists());
+        assert!(!pack_path.exists());
     })
     .await;
 }

@@ -135,7 +135,7 @@ mod link_helpers;
 mod loaders;
 mod pch;
 mod pending_writes;
-mod persist;
+pub(crate) mod persist;
 mod private_daemon;
 mod request_cache;
 mod rsp_cache;

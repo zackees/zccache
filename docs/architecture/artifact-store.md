@@ -85,6 +85,14 @@ generation, and emits a durable `staged_publication_conflict` lifecycle event.
 An invalid/corrupt prior generation may be replaced and is recorded as
 `staged_publication_replaces_invalid_generation`.
 
+Mixed-format lookup is explicit during migration: v2 is attempted first,
+then flat v1 payloads, then pack payloads. Disabling staged artifacts (or
+downgrading to a reader without v2 support) leaves v1/pack entries readable
+and treats v2-only entries as cache misses; v2 bytes are never reinterpreted
+as a legacy format. Re-enabling a v2-aware reader makes those generations
+available again. Disk eviction groups coexisting v1/pack/v2 storage by cache
+key, accounts for all physical bytes, and removes the logical artifact once.
+
 ## Directory Layout
 
 ```

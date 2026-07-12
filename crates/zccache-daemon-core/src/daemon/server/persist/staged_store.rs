@@ -12,6 +12,11 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+mod maintenance;
+pub(crate) use maintenance::{
+    evict_staged_artifact_keys, scan_staged_disk_artifacts, StagedDiskArtifact,
+};
+
 pub(in crate::daemon::server) const STAGED_ARTIFACTS_ENV: &str = "ZCCACHE_STAGED_ARTIFACTS";
 
 const STAGED_ROOT: &str = ".staged-v2";

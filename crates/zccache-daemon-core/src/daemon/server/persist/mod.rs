@@ -44,5 +44,18 @@ pub(in crate::daemon::server) use staged_plan::*;
 pub(in crate::daemon::server) use staged_store::*;
 pub(in crate::daemon::server) use write_cached::*;
 
+pub(crate) type V2DiskArtifact = staged_store::StagedDiskArtifact;
+
+pub(crate) fn scan_v2_disk_artifacts(artifact_dir: &Path) -> std::io::Result<Vec<V2DiskArtifact>> {
+    staged_store::scan_staged_disk_artifacts(artifact_dir)
+}
+
+pub(crate) fn evict_v2_artifact_keys(
+    artifact_dir: &Path,
+    keys: &std::collections::HashSet<String>,
+) -> std::io::Result<u64> {
+    staged_store::evict_staged_artifact_keys(artifact_dir, keys)
+}
+
 #[cfg(test)]
 mod tests;
