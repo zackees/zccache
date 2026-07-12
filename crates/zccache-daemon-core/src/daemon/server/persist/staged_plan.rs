@@ -29,7 +29,7 @@ impl StagedCompilePlan {
     /// Build a plan for the narrow Phase 3 Rust lane.  A plan is absent for
     /// unsupported invocations, preserving the proven legacy path.
     pub(in crate::daemon::server) fn rustc(
-        artifact_dir: &Path,
+        staging_dir: &Path,
         args: &[String],
         primary_output: &NormalizedPath,
         expected_outputs: &[NormalizedPath],
@@ -38,7 +38,7 @@ impl StagedCompilePlan {
         if !staged_lane_enabled(crate::compiler::CompilerFamily::Rustc) || emit_to_stdout(args) {
             return Ok(None);
         }
-        let root = artifact_dir.join(".staged-v2").join(format!(
+        let root = staging_dir.join(format!(
             ".compile-{}-{}",
             std::process::id(),
             PLAN_COUNTER.fetch_add(1, Ordering::Relaxed)
@@ -175,7 +175,7 @@ impl StagedCompilePlan {
     }
 
     pub(in crate::daemon::server) fn cc(
-        artifact_dir: &Path,
+        staging_dir: &Path,
         family: crate::compiler::CompilerFamily,
         args: &[String],
         primary_output: &NormalizedPath,
@@ -208,7 +208,7 @@ impl StagedCompilePlan {
         {
             return Ok(None);
         }
-        let root = artifact_dir.join(".staged-v2").join(format!(
+        let root = staging_dir.join(format!(
             ".compile-{}-{}",
             std::process::id(),
             PLAN_COUNTER.fetch_add(1, Ordering::Relaxed)
@@ -339,7 +339,7 @@ impl StagedCompilePlan {
     /// use a separate planner because silently omitting a PDB/import library
     /// would violate complete-set publication.
     pub(in crate::daemon::server) fn archive(
-        artifact_dir: &Path,
+        staging_dir: &Path,
         args: &[String],
         primary_output: &NormalizedPath,
         cwd: &Path,
@@ -347,7 +347,7 @@ impl StagedCompilePlan {
         if !staged_lane_enabled(crate::compiler::CompilerFamily::Gcc) {
             return Ok(None);
         }
-        let root = artifact_dir.join(".staged-v2").join(format!(
+        let root = staging_dir.join(format!(
             ".compile-{}-{}",
             std::process::id(),
             PLAN_COUNTER.fetch_add(1, Ordering::Relaxed)
@@ -395,7 +395,7 @@ impl StagedCompilePlan {
     /// by exact path replacement. Undeclared linker side effects are checked
     /// by the caller after the process exits; they invalidate publication.
     pub(in crate::daemon::server) fn link(
-        artifact_dir: &Path,
+        staging_dir: &Path,
         args: &[String],
         primary_output: &NormalizedPath,
         secondary_outputs: &[NormalizedPath],
@@ -407,7 +407,7 @@ impl StagedCompilePlan {
         if has_unmodeled_link_output_option(args) {
             return Ok(None);
         }
-        let root = artifact_dir.join(".staged-v2").join(format!(
+        let root = staging_dir.join(format!(
             ".link-{}-{}",
             std::process::id(),
             PLAN_COUNTER.fetch_add(1, Ordering::Relaxed)

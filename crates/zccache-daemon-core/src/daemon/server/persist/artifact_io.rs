@@ -169,7 +169,7 @@ pub(in crate::daemon::server) fn persist_artifact_paths_with_stats(
     key_hex: &str,
     sources: &[NormalizedPath],
 ) -> std::io::Result<PersistArtifactFileStats> {
-    if staged_artifacts_enabled() && !pack_mode_enabled() {
+    if staged_artifacts_enabled() && staged_key_supported(key_hex) && !pack_mode_enabled() {
         let stats = persist_staged_artifact_paths(artifact_dir, key_hex, sources)?;
         return Ok(PersistArtifactFileStats {
             reflink_count: stats.reflink_count,

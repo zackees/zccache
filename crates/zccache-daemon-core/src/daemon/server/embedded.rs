@@ -37,7 +37,8 @@ impl EmbeddedDaemon {
     ) -> Result<Self, crate::ipc::IpcError> {
         let backend_identity = crate::ipc::current_backend_identity(&endpoint)
             .map_err(|err| crate::ipc::IpcError::Endpoint(err.to_string()))?;
-        let (state, index_writer_rx) = new_shared_state(&endpoint, &cache_dir, backend_identity);
+        let (state, index_writer_rx) = new_shared_state(&endpoint, &cache_dir, backend_identity)
+            .map_err(|error| crate::ipc::IpcError::Endpoint(error.to_string()))?;
         // Arm the startup depgraph-load gate as early as possible — before
         // this state can serve any compile. The shared `dep_graph_load_complete`
         // flag inits `true` ("assume loaded"); the standalone daemon flips it
@@ -80,6 +81,9 @@ impl EmbeddedDaemon {
 
         let state = Arc::clone(&self.state);
         let artifact_load = tokio::task::spawn_blocking(move || {
+            if let Err(error) = state.staging.cleanup_abandoned() {
+                tracing::debug!(%error, "abandoned private staging cleanup skipped");
+            }
             if let Err(e) = state.artifact_store.load_from_disk() {
                 tracing::warn!("embedded artifact index load failed, continuing empty: {e}");
             }

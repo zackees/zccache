@@ -108,3 +108,24 @@ async fn handle_clear_preserves_system_includes() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn handle_clear_preserves_in_flight_private_staging() {
+    crate::test_support::test_timeout(async {
+        let endpoint = crate::ipc::unique_test_endpoint();
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = crate::core::NormalizedPath::new(tmp.path());
+        let server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
+        let staged = server.test_state().staging.path().join("active-output.o");
+        std::fs::write(&staged, b"compiler result").unwrap();
+
+        let response = super::super::handle_clear::handle_clear(server.test_state()).await;
+        assert!(matches!(response, Response::Cleared { .. }));
+        assert_eq!(
+            std::fs::read(&staged).unwrap(),
+            b"compiler result",
+            "Clear must not delete a compiler result before salvage/materialization"
+        );
+    })
+    .await;
+}

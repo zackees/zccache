@@ -32,7 +32,8 @@ impl DaemonServer {
         let listener = IpcListener::bind(endpoint)?;
         let backend_identity = crate::ipc::current_backend_identity(endpoint)
             .map_err(|err| crate::ipc::IpcError::Endpoint(err.to_string()))?;
-        let (state, index_writer_rx) = new_shared_state(endpoint, cache_dir, backend_identity);
+        let (state, index_writer_rx) = new_shared_state(endpoint, cache_dir, backend_identity)
+            .map_err(|error| crate::ipc::IpcError::Endpoint(error.to_string()))?;
 
         Ok(Self {
             listener,
@@ -47,10 +48,10 @@ pub(super) fn new_shared_state(
     endpoint: &str,
     cache_dir: &crate::core::NormalizedPath,
     backend_identity: running_process::broker::protocol_v2::backend_handle::DaemonProcess,
-) -> (
+) -> std::io::Result<(
     Arc<SharedState>,
     tokio::sync::mpsc::UnboundedReceiver<IndexWriterCommand>,
-) {
+)> {
     let shutdown = Arc::new(Notify::new());
     let now = now_secs();
     let instance = SERVER_INSTANCE.fetch_add(1, Ordering::Relaxed);
@@ -162,7 +163,7 @@ pub(super) fn new_shared_state(
         ),
     }
 
-    (
+    Ok((
         Arc::new(SharedState {
             endpoint: endpoint.to_string(),
             backend_identity,
@@ -183,6 +184,7 @@ pub(super) fn new_shared_state(
             stats: StatsCollector::new(),
             profiler: PhaseProfiler::new(),
             artifact_dir,
+            staging: StagingRoot::new(cache_dir.as_path(), instance)?,
             metadata_path,
             compiler_hash_cache_path,
             depfile_tmpdir: {
@@ -225,7 +227,7 @@ pub(super) fn new_shared_state(
             exec_cache: DashMap::new(),
         }),
         index_writer_rx,
-    )
+    ))
 }
 
 impl DaemonServer {

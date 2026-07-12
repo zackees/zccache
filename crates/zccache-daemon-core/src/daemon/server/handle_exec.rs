@@ -40,7 +40,7 @@ struct ExecStagedPlan {
 
 impl ExecStagedPlan {
     fn build(
-        artifact_dir: &Path,
+        staging_dir: &Path,
         args: &[String],
         output_files: &[NormalizedPath],
         cwd: &Path,
@@ -48,7 +48,7 @@ impl ExecStagedPlan {
         if output_files.is_empty() {
             return None;
         }
-        let root = artifact_dir.join(".staged-v2").join(format!(
+        let root = staging_dir.join(format!(
             ".exec-{}-{}",
             std::process::id(),
             EXEC_STAGE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -312,7 +312,7 @@ pub(super) async fn handle_generic_tool_exec(
     // us an unambiguous exact-token rewrite for every output. Opaque output
     // syntax remains on the legacy path before spawn.
     let staged_plan = if exec_staging_enabled() {
-        ExecStagedPlan::build(&state.artifact_dir, args, output_files, cwd)
+        ExecStagedPlan::build(state.staging.path(), args, output_files, cwd)
     } else {
         None
     };
@@ -324,7 +324,7 @@ pub(super) async fn handle_generic_tool_exec(
         .map_or_else(|| output_files.to_vec(), ExecStagedPlan::staged_paths);
     for path in &execution_outputs {
         let path = path.as_path();
-        if let Err(error) = break_output_hardlink_before_compile(&path) {
+        if let Err(error) = break_output_hardlink_before_compile(path) {
             tracing::warn!(
                 event = "exec_output_detach_failed",
                 path = %path.display(),

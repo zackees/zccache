@@ -311,7 +311,7 @@ pub(super) async fn handle_link_ephemeral(
         cwd_path.join(&parsed_tool.output_file).into()
     };
     let staged_plan = if parsed_tool.is_archive && parsed_tool.secondary_outputs.is_empty() {
-        match StagedCompilePlan::archive(&state.artifact_dir, args, &output_path, cwd_path) {
+        match StagedCompilePlan::archive(state.staging.path(), args, &output_path, cwd_path) {
             Ok(plan) => plan,
             Err(error) => {
                 tracing::warn!(%error, "archive staging plan failed; using legacy path");
@@ -320,7 +320,7 @@ pub(super) async fn handle_link_ephemeral(
         }
     } else {
         match StagedCompilePlan::link(
-            &state.artifact_dir,
+            state.staging.path(),
             args,
             &output_path,
             &parsed_tool.secondary_outputs,

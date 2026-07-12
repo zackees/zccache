@@ -1,11 +1,10 @@
-//! Opt-in immutable artifact generations for the staged-output rollout (#1056).
+//! Default-on immutable artifact generations for the staged-output rollout (#1056).
 //!
 //! This is the storage half of the staged compiler-output design. The compiler
-//! still writes its normal output path while this lane is opt-in, but the
+//! writes supported outputs into private staging before publication. The
 //! persisted generation is always independent: reflink when the filesystem can
-//! provide true COW, otherwise a byte copy. Hardlinks are deliberately not used
-//! here because a published generation must not share an inode with a live
-//! compiler output.
+//! provide true COW, otherwise a byte copy. Unsupported plans fall back before
+//! spawn, and `ZCCACHE_STAGED_ARTIFACTS=off` is the rollout kill switch.
 
 use super::*;
 use serde::{Deserialize, Serialize};
@@ -36,21 +35,19 @@ struct StagedOutput {
 }
 
 pub(in crate::daemon::server) fn staged_artifacts_enabled() -> bool {
-    std::env::var(STAGED_ARTIFACTS_ENV)
-        .ok()
-        .is_some_and(|value| {
-            !matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "" | "0" | "false" | "off" | "no"
-            )
-        })
+    std::env::var(STAGED_ARTIFACTS_ENV).map_or(true, |value| {
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "off" | "no"
+        )
+    })
 }
 
 pub(in crate::daemon::server) fn staged_lane_enabled(
     family: crate::compiler::CompilerFamily,
 ) -> bool {
     let Ok(value) = std::env::var(STAGED_ARTIFACTS_ENV) else {
-        return false;
+        return true;
     };
     match value.trim().to_ascii_lowercase().as_str() {
         "all" | "1" | "true" | "yes" | "on" => true,
@@ -66,14 +63,18 @@ pub(in crate::daemon::server) fn staged_lane_enabled(
 }
 
 pub(in crate::daemon::server) fn staged_link_lane_enabled() -> bool {
-    std::env::var(STAGED_ARTIFACTS_ENV)
-        .ok()
-        .is_some_and(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "all" | "1" | "true" | "yes" | "on"
-            )
-        })
+    std::env::var(STAGED_ARTIFACTS_ENV).is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "all" | "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+pub(in crate::daemon::server) fn staged_key_supported(key_hex: &str) -> bool {
+    !key_hex.is_empty()
+        && key_hex.len() <= 128
+        && key_hex.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 pub(in crate::daemon::server) fn is_staged_artifact_path(path: &Path) -> bool {
@@ -105,10 +106,7 @@ fn staged_root(artifact_dir: &Path) -> PathBuf {
 }
 
 fn validate_key(key_hex: &str) -> io::Result<()> {
-    if key_hex.is_empty()
-        || !key_hex.bytes().all(|byte| byte.is_ascii_hexdigit())
-        || key_hex.len() > 128
-    {
+    if !staged_key_supported(key_hex) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "staged artifact key must be a bounded hexadecimal string",
@@ -249,11 +247,9 @@ fn copy_output(source: &Path, destination: &Path) -> io::Result<(bool, u64)> {
         let _ = fs::remove_file(destination);
         return result;
     }
-    let mut permissions = source_metadata.permissions();
     // Keep the destination writable while restoring timestamps. On Windows,
     // setting mtime on a read-only file fails with ERROR_ACCESS_DENIED.
-    permissions.set_readonly(false);
-    fs::set_permissions(destination, permissions)?;
+    make_writable(destination)?;
     let mtime = filetime::FileTime::from_last_modification_time(&source_metadata);
     filetime::set_file_mtime(destination, mtime)?;
     set_readonly(destination, true)?;

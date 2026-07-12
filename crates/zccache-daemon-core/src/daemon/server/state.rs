@@ -8,6 +8,91 @@
 
 use super::*;
 
+const STAGING_LOCK_FILE: &str = ".active.lock";
+
+/// Per-daemon private output staging. The held lock distinguishes an active
+/// daemon from crash debris, so startup cleanup cannot remove another live
+/// daemon's compiler outputs.
+pub(super) struct StagingRoot {
+    path: NormalizedPath,
+    lock: Option<std::fs::File>,
+}
+
+impl StagingRoot {
+    pub(super) fn new(cache_dir: &Path, instance: u64) -> std::io::Result<Self> {
+        use fs2::FileExt;
+        use std::io::Write;
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = cache_dir
+            .join("staging")
+            .join(format!("{}-{instance}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&path)?;
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path.join(STAGING_LOCK_FILE))?;
+        // Never wait behind a cleaner that observed this just-created
+        // directory before we acquired its lock. Failing daemon startup is
+        // safer than returning a staging root a concurrent cleaner unlinked.
+        file.try_lock_exclusive()?;
+        writeln!(file, "{}", std::process::id())?;
+        Ok(Self {
+            path: path.into(),
+            lock: Some(file),
+        })
+    }
+
+    pub(super) fn path(&self) -> &Path {
+        self.path.as_path()
+    }
+
+    pub(super) fn cleanup_abandoned(&self) -> std::io::Result<usize> {
+        use fs2::FileExt;
+
+        let Some(parent) = self.path.parent() else {
+            return Ok(0);
+        };
+        let mut removed = 0;
+        for entry in std::fs::read_dir(parent)?.flatten() {
+            let path = entry.path();
+            if !path.is_dir() || path == self.path.as_path() {
+                continue;
+            }
+            let lock = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(path.join(STAGING_LOCK_FILE));
+            let Ok(lock) = lock else { continue };
+            if lock.try_lock_exclusive().is_err() {
+                continue;
+            }
+            FileExt::unlock(&lock)?;
+            drop(lock);
+            std::fs::remove_dir_all(&path)?;
+            removed += 1;
+        }
+        Ok(removed)
+    }
+}
+
+impl Drop for StagingRoot {
+    fn drop(&mut self) {
+        if let Some(lock) = self.lock.take() {
+            let _ = fs2::FileExt::unlock(&lock);
+            drop(lock);
+        }
+        let _ = std::fs::remove_dir_all(self.path.as_path());
+    }
+}
+
 /// Shared state accessible by all connection handlers.
 pub(super) struct SharedState {
     /// IPC endpoint this daemon bound. Reported through `zccache status` so
@@ -68,6 +153,8 @@ pub(super) struct SharedState {
     pub(super) profiler: PhaseProfiler,
     /// On-disk artifact cache for hardlink optimization on cache hits.
     pub(super) artifact_dir: NormalizedPath,
+    /// Private compiler/linker outputs, isolated from cache clear/eviction.
+    pub(super) staging: StagingRoot,
     /// On-disk path for the persisted [`MetadataCache`] snapshot.
     ///
     /// Written on flush (`Clear`) and shutdown (`Shutdown`); read at
@@ -284,4 +371,25 @@ pub(super) struct SharedState {
     /// `Request::ExecStore`. Slice 1 keeps this in-memory only; a
     /// follow-up slice swaps to `KvStore` for persistence.
     pub(super) exec_cache: DashMap<String, Arc<Vec<u8>>>,
+}
+
+#[cfg(test)]
+mod staging_tests {
+    use super::*;
+
+    #[test]
+    fn abandoned_cleanup_preserves_live_roots_and_removes_crash_debris() {
+        let temp = tempfile::tempdir().unwrap();
+        let live_a = StagingRoot::new(temp.path(), 1).unwrap();
+        let live_b = StagingRoot::new(temp.path(), 2).unwrap();
+        std::fs::write(live_b.path().join("active.o"), b"active").unwrap();
+
+        let abandoned = temp.path().join("staging").join("abandoned");
+        std::fs::create_dir_all(&abandoned).unwrap();
+        std::fs::write(abandoned.join("orphan.o"), b"orphan").unwrap();
+
+        assert_eq!(live_a.cleanup_abandoned().unwrap(), 1);
+        assert!(live_b.path().join("active.o").exists());
+        assert!(!abandoned.exists());
+    }
 }

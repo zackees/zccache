@@ -8,7 +8,7 @@ For how cache keys are computed see [overview.md](overview.md) (section 2.8). Fo
 
 ## Immutable staged-output rollout
 
-The opt-in `ZCCACHE_STAGED_ARTIFACTS` lane makes the daemon's v2 generations
+The default-on staged-artifact lane makes the daemon's v2 generations
 the authoritative source for supported compiler misses. The compiler is
 redirected into a private directory before spawn; after a successful compile,
 all outputs are hashed and published as one digest-stamped generation, then
@@ -16,10 +16,11 @@ materialized to the requested paths. A failed publication can still salvage a
 successful compile from the private files, but it never exposes a partial
 cache hit.
 
-Rollout values are `rust` (Rust single and multi-output plans), `c-cpp`
-(ordinary single-object and single-PCH GCC/Clang plans including user-owned
-`-MF`/`-MD` depfiles; MSVC
-flag rewriting is supported only for explicit `/Fo` object paths), or
+`ZCCACHE_STAGED_ARTIFACTS=off` restores the legacy path as an immediate kill
+switch. Narrow diagnostic values are `rust` (Rust single and multi-output
+plans), `c-cpp` (ordinary single-object and single-PCH GCC/Clang plans
+including user-owned `-MF`/`-MD` depfiles; MSVC flag rewriting is supported
+only for explicit `/Fo` object paths), or
 `all`. Unsupported shapes—including multi-source compiler invocations, C++
 modules, unrewritable or undeclared linker outputs, opaque generic exec, and
 stdout output—remain on the
@@ -29,9 +30,10 @@ outputs for staticlibs, bins, proc macros, objects, assembly, LLVM IR/bitcode,
 MIR, and dep-info use their actual rustc extensions.
 
 Pure archive invocations with one output and no linker side effects use the
-same private transaction when the lane is `all`.
+same private transaction by default.
 
-Linker invocations participate in the `all` lane when the parser's primary
+Linker invocations remain `all`-gated because opaque tools can create
+undeclared siblings. They participate when the parser's primary
 and declared secondary destinations can all be rewritten before spawn. The
 private directory is checked for undeclared files/bundles after the linker
 exits, and the requested output directory is checked for external side
@@ -43,11 +45,11 @@ GNU semantic map destinations (`%` or a directory), and conditional
 LTCG/PGO/embedded-IDL/Windows-metadata outputs remain on the legacy path
 before spawn.
 
-Generic tool execution also participates in the `all` lane when every
-declared output is an exact argument token. Those paths are rewritten into a
-private staging directory before spawn and independently materialized after
-the run. Generic tools whose output paths are embedded in opaque arguments,
-environment variables, or undeclared side effects retain the legacy path.
+Generic tool execution participates by default when every declared output is
+an exact argument token. Those paths are rewritten into a private staging
+directory before spawn and independently materialized after the run. Generic
+tools whose output paths are embedded in opaque arguments, environment
+variables, or undeclared side effects retain the legacy path.
 
 Published v2 files are always independent copies or true reflinks of private
 compiler files. Hardlinks are never used between compiler staging and the
@@ -62,6 +64,12 @@ hardlink registry. This lets restart verification reject a mutate-then-delete
 alias attack before the backend is served. Read-only enforcement, watcher
 suspicion, file-identity registration, link-count limits, and copy fallback
 remain mandatory for the narrow semantic allowlist.
+
+Private compiler/linker files live under a per-daemon `{cache_root}/staging/`
+directory, outside the clearable artifact store. An advisory lock protects
+each live daemon's directory: startup cleanup reclaims only unlocked crash
+debris, while cache clear and eviction cannot delete outputs still needed for
+publication salvage or requested-path materialization.
 
 The v2 transaction is visible only after the complete generation and manifest
 are written and the per-key pointer is switched. Readers validate the pointer,
@@ -220,6 +228,6 @@ Unsupported shapes—including multi-source compiler invocations, C++ modules,
 unrewritable/undeclared linker outputs, opaque generic exec, and stdout
 output—remain on the
 legacy path before compiler spawn. Explicit Rust `--emit=kind=path`
-destinations are included in the complete cache-hit reverse map. The staged
-lane remains opt-in for output families that do not yet have complete-set
-plans.
+destinations are included in the complete cache-hit reverse map. Output
+families without complete-set plans select the legacy path before spawn; they
+are never partially staged.

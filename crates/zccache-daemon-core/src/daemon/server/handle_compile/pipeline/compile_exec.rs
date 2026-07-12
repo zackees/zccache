@@ -103,7 +103,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     };
     let staged_plan = if is_rustc {
         match StagedCompilePlan::rustc(
-            &state.artifact_dir,
+            state.staging.path(),
             effective_args,
             output_path,
             &expected_outputs,
@@ -118,7 +118,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         }
     } else {
         match StagedCompilePlan::cc(
-            &state.artifact_dir,
+            state.staging.path(),
             compilation.family,
             effective_args,
             output_path,

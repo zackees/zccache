@@ -484,15 +484,12 @@ cat "$src" >> "$out"
 /// The test simulates the crash by **dropping** the `DaemonServer` (no
 /// graceful shutdown — no shutdown notify, no final WAL flush, no in-flight
 /// task drain) and binding a fresh server to the same cache root. Both
-/// daemons share the cache root via `ZCCACHE_CACHE_DIR` (set by
-/// `CacheDirEnvGuard`), so the second daemon reads whatever the first
-/// daemon managed to persist before the abrupt drop.
+/// daemons are explicitly bound to the same cache root, so the second daemon
+/// reads whatever the first managed to persist before the abrupt drop.
 #[tokio::test]
 async fn crash_mid_flight_recovery_never_surfaces_wrong_content() {
     let tmp = tempfile::tempdir().unwrap();
     let cache_root = tmp.path().join("zccache-cache");
-    let _guard = CacheDirEnvGuard::set(&cache_root);
-
     let cc = write_fake_cc(tmp.path());
     let src = tmp.path().join("crashy.c");
     std::fs::write(&src, b"int crashy(void) { return 9; }\n").unwrap();
@@ -510,7 +507,11 @@ async fn crash_mid_flight_recovery_never_surfaces_wrong_content() {
     // surfacing content from a different cache key, the wrong-hit we must
     // never see.
     let expected = {
-        let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+        let server = DaemonServer::bind_with_cache_dir(
+            &crate::ipc::unique_test_endpoint(),
+            &cache_root.clone().into(),
+        )
+        .unwrap();
         let resp = handle_compile_ephemeral(
             &server.state,
             std::process::id(),
@@ -538,7 +539,11 @@ async fn crash_mid_flight_recovery_never_surfaces_wrong_content() {
     // Second daemon: same cache root, fresh process state. `load_all()` may
     // or may not have seen the first daemon's writes depending on whether
     // the artifact persist + WAL flush completed before the drop.
-    let server2 = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+    let server2 = DaemonServer::bind_with_cache_dir(
+        &crate::ipc::unique_test_endpoint(),
+        &cache_root.clone().into(),
+    )
+    .unwrap();
     let resp = handle_compile_ephemeral(
         &server2.state,
         std::process::id(),

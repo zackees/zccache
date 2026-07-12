@@ -40,7 +40,11 @@ impl DaemonServer {
         {
             let cache_dir = cache_dir.clone();
             let artifact_dir = self.state.artifact_dir.clone();
+            let state = Arc::clone(&self.state);
             tokio::spawn(async move {
+                if let Err(error) = state.staging.cleanup_abandoned() {
+                    tracing::debug!(%error, "abandoned private staging cleanup skipped");
+                }
                 if let Err(error) = cleanup_staged_artifact_temps(&artifact_dir) {
                     tracing::debug!(%error, "staged artifact temp cleanup skipped");
                 }
