@@ -100,17 +100,21 @@ impl ExecStagedPlan {
             .collect()
     }
 
-    fn materialize(&self) -> std::io::Result<()> {
+    fn materialize(&self) -> std::io::Result<StagedMaterializationStats> {
+        let mut observed = StagedMaterializationStats::default();
         for (requested, staged) in &self.outputs {
             if let Some(parent) = requested.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            crate::daemon::server::persist::materialize_independent(
-                staged.as_path(),
-                requested.as_path(),
-            )?;
+            observed.add(
+                crate::daemon::server::persist::materialize_independent_with_stats(
+                    staged.as_path(),
+                    requested.as_path(),
+                )?,
+            );
         }
-        self.cleanup()
+        self.cleanup()?;
+        Ok(observed)
     }
 
     fn cleanup(&self) -> std::io::Result<()> {
@@ -311,11 +315,27 @@ pub(super) async fn handle_generic_tool_exec(
     // 9. Cache miss — stage declared outputs only when the tool's argv gives
     // us an unambiguous exact-token rewrite for every output. Opaque output
     // syntax remains on the legacy path before spawn.
+    use crate::daemon::staged_stats::{StagedCounter, StagedFailure, StagedTiming};
+    let planning_started = std::time::Instant::now();
+    state.profiler.staged.count(StagedCounter::PlanAttempted);
     let staged_plan = if exec_staging_enabled() {
         ExecStagedPlan::build(state.staging.path(), args, output_files, cwd)
     } else {
         None
     };
+    state.profiler.staged.timing(
+        StagedTiming::Planning,
+        planning_started.elapsed().as_nanos() as u64,
+    );
+    if staged_plan.is_some() {
+        state.profiler.staged.count(StagedCounter::PlanEnabled);
+    } else {
+        state.profiler.staged.count(StagedCounter::PlanUnsupported);
+        state
+            .profiler
+            .staged
+            .failure(StagedFailure::UnsupportedShape);
+    }
     let compiler_args = staged_plan
         .as_ref()
         .map_or(args, |plan| plan.rewritten_args.as_slice());
@@ -336,6 +356,7 @@ pub(super) async fn handle_generic_tool_exec(
             };
         }
     }
+    let compiler_started = std::time::Instant::now();
     let output = match spawn_tool(tool, compiler_args, cwd, &env).await {
         Ok(o) => o,
         Err(e) => {
@@ -344,6 +365,13 @@ pub(super) async fn handle_generic_tool_exec(
             };
         }
     };
+    if staged_plan.is_some() {
+        state.profiler.staged.count(StagedCounter::CompilerStaged);
+        state.profiler.staged.timing(
+            StagedTiming::Compiler,
+            compiler_started.elapsed().as_nanos() as u64,
+        );
+    }
 
     let exit_code = output.status.code().unwrap_or(1);
     let stdout = Arc::new(if output_streams.stdout {
@@ -441,10 +469,40 @@ pub(super) async fn handle_generic_tool_exec(
                 message: "successful generic tool omitted a staged output".to_string(),
             };
         }
-        if let Err(error) = plan.materialize() {
-            return Response::Error {
-                message: format!("failed to materialize generic tool outputs: {error}"),
-            };
+        use crate::daemon::staged_stats::{StagedBytes, StagedCounter, StagedFailure};
+        let materialize_started = std::time::Instant::now();
+        match plan.materialize() {
+            Ok(observed) => {
+                state
+                    .profiler
+                    .staged
+                    .add_count(StagedCounter::MaterializeReflink, observed.reflink_count);
+                state
+                    .profiler
+                    .staged
+                    .add_count(StagedCounter::MaterializeCopy, observed.copy_count);
+                state
+                    .profiler
+                    .staged
+                    .bytes(StagedBytes::Materialization, observed.copy_bytes);
+                state.profiler.staged.timing(
+                    StagedTiming::MissMaterialization,
+                    materialize_started.elapsed().as_nanos() as u64,
+                );
+            }
+            Err(error) => {
+                state
+                    .profiler
+                    .staged
+                    .count(StagedCounter::MaterializeFailure);
+                state
+                    .profiler
+                    .staged
+                    .failure(StagedFailure::RequestedMaterialization);
+                return Response::Error {
+                    message: format!("failed to materialize generic tool outputs: {error}"),
+                };
+            }
         }
     }
 

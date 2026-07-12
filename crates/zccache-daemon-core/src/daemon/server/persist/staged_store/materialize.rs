@@ -22,14 +22,6 @@ impl StagedMaterializationStats {
     }
 }
 
-/// Materialize without sharing a writable inode with private or backend bytes.
-pub(in crate::daemon::server) fn materialize_independent(
-    source: &Path,
-    destination: &Path,
-) -> io::Result<()> {
-    materialize_independent_with_stats(source, destination).map(|_| ())
-}
-
 pub(in crate::daemon::server) fn materialize_independent_with_stats(
     source: &Path,
     destination: &Path,

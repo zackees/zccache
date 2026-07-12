@@ -2,6 +2,50 @@
 
 use super::*;
 
+fn materialize_link_plan_observed(
+    state: &SharedState,
+    plan: &StagedCompilePlan,
+) -> std::io::Result<()> {
+    use crate::daemon::staged_stats::{StagedBytes, StagedCounter, StagedFailure, StagedTiming};
+    let started = std::time::Instant::now();
+    match plan.materialize() {
+        Ok(observed) => {
+            state
+                .profiler
+                .staged
+                .add_count(StagedCounter::MaterializeReflink, observed.reflink_count);
+            state
+                .profiler
+                .staged
+                .add_count(StagedCounter::MaterializeCopy, observed.copy_count);
+            state
+                .profiler
+                .staged
+                .bytes(StagedBytes::Materialization, observed.copy_bytes);
+            state.profiler.staged.timing(
+                StagedTiming::MissMaterialization,
+                started.elapsed().as_nanos() as u64,
+            );
+            Ok(())
+        }
+        Err(error) => {
+            state
+                .profiler
+                .staged
+                .count(StagedCounter::MaterializeFailure);
+            state
+                .profiler
+                .staged
+                .failure(StagedFailure::RequestedMaterialization);
+            state.profiler.staged.timing(
+                StagedTiming::MissMaterialization,
+                started.elapsed().as_nanos() as u64,
+            );
+            Err(error)
+        }
+    }
+}
+
 /// Handle a single-roundtrip ephemeral link/archive request.
 ///
 /// Parses the tool invocation, computes a cache key from the tool binary and
@@ -310,6 +354,9 @@ pub(super) async fn handle_link_ephemeral(
     } else {
         cwd_path.join(&parsed_tool.output_file).into()
     };
+    use crate::daemon::staged_stats::{StagedCounter, StagedFailure, StagedTiming};
+    let planning_started = std::time::Instant::now();
+    state.profiler.staged.count(StagedCounter::PlanAttempted);
     let staged_plan = if parsed_tool.is_archive && parsed_tool.secondary_outputs.is_empty() {
         match StagedCompilePlan::archive(state.staging.path(), args, &output_path, cwd_path) {
             Ok(plan) => plan,
@@ -333,6 +380,19 @@ pub(super) async fn handle_link_ephemeral(
             }
         }
     };
+    state.profiler.staged.timing(
+        StagedTiming::Planning,
+        planning_started.elapsed().as_nanos() as u64,
+    );
+    if staged_plan.is_some() {
+        state.profiler.staged.count(StagedCounter::PlanEnabled);
+    } else {
+        state.profiler.staged.count(StagedCounter::PlanUnsupported);
+        state
+            .profiler
+            .staged
+            .failure(StagedFailure::UnsupportedShape);
+    }
     let compiler_args = staged_plan
         .as_ref()
         .map_or_else(|| args.to_vec(), |plan| plan.rewritten_args.clone());
@@ -365,6 +425,7 @@ pub(super) async fn handle_link_ephemeral(
     let env_for_hook = env.clone();
 
     let t_compiler_process = profile_enabled.then(std::time::Instant::now);
+    let staged_compiler_started = staged_plan.as_ref().map(|_| std::time::Instant::now());
     let result = run_tool_passthrough(
         tool,
         &compiler_args,
@@ -378,6 +439,15 @@ pub(super) async fn handle_link_ephemeral(
     let compiler_process_ns = t_compiler_process
         .map(|t| t.elapsed().as_nanos() as u64)
         .unwrap_or(0);
+    if staged_plan.is_some() {
+        state.profiler.staged.count(StagedCounter::CompilerStaged);
+        state.profiler.staged.timing(
+            StagedTiming::Compiler,
+            staged_compiler_started
+                .map(|started| started.elapsed().as_nanos() as u64)
+                .unwrap_or(0),
+        );
+    }
 
     // 6b. Invoke optional post-link deploy command on successful link.
     // This handles the case where the compiler driver does NOT auto-deploy
@@ -442,7 +512,7 @@ pub(super) async fn handle_link_ephemeral(
                     staged_count = unexpected_staged.len(),
                     "undeclared linker side effects invalidate staged publication"
                 );
-                if let Err(error) = plan.materialize() {
+                if let Err(error) = materialize_link_plan_observed(state, plan) {
                     return Response::Error {
                         message: format!("failed to materialize staged link output: {error}"),
                     };
@@ -575,7 +645,7 @@ pub(super) async fn handle_link_ephemeral(
                             .index_writer_tx
                             .send(IndexWriterCommand::Insert(kh, persist_meta));
                     }
-                    if let Err(error) = plan.materialize() {
+                    if let Err(error) = materialize_link_plan_observed(state, plan) {
                         return Response::Error {
                             message: format!("failed to materialize staged link output: {error}"),
                         };
