@@ -2,6 +2,8 @@
 
 Unit tests for the linker parser, split by domain so each file stays small.
 
+`dsymutil.rs` covers dSYM directory-output parsing and fallback modes.
+
 - `mod.rs` — wires the per-domain test modules and exposes a shared `args` helper.
 - `detection.rs` — `detect_family` / `is_linker` / `is_compiler_driver` tests.
 - `gnu_ld.rs` — GNU `ld` / `lld` argument-parsing tests (incl. linker scripts).

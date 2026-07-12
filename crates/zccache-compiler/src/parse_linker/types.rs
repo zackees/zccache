@@ -13,6 +13,17 @@ pub enum LinkerFamily {
     MsvcLink,
     /// Compiler driver used as linker (gcc, clang, etc.)
     CompilerDriver,
+    /// Apple/LLVM dsymutil debug-bundle producer.
+    Dsymutil,
+}
+
+/// Filesystem shape produced by a cacheable linker-like tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkOutputKind {
+    /// One ordinary file plus any declared secondary files.
+    File,
+    /// One directory tree that must publish and restore as a unit.
+    DirectoryBundle,
 }
 
 /// The result of parsing a linker invocation.
@@ -38,6 +49,8 @@ pub struct CacheableLink {
     pub input_files: Vec<NormalizedPath>,
     /// The output file path (shared library, DLL, or executable).
     pub output_file: NormalizedPath,
+    /// Filesystem shape of the primary output.
+    pub output_kind: LinkOutputKind,
     /// Secondary output files produced alongside the primary output.
     /// E.g., MSVC `/IMPLIB:foo.lib` produces `foo.lib` + `foo.exp`.
     /// May not all exist after linking — the server should skip missing ones.

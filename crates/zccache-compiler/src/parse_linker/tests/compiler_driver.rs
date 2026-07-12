@@ -203,3 +203,26 @@ fn gcc_driver_declares_wl_map_and_dependency_outputs() {
         ]
     );
 }
+
+#[test]
+fn clang_driver_declares_apple_semantic_destinations() {
+    let result = parse_linker_invocation(
+        "clang",
+        args(&[
+            "-o",
+            "app",
+            "-Wl,-map,reports/app.map,-dependency_info,deps/app.dat",
+            "main.o",
+        ]),
+    );
+    let ParsedLinkerInvocation::Cacheable(c) = result else {
+        panic!("expected cacheable")
+    };
+    assert_eq!(
+        c.secondary_outputs,
+        vec![
+            NormalizedPath::new("reports/app.map"),
+            NormalizedPath::new("deps/app.dat"),
+        ]
+    );
+}

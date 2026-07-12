@@ -1,6 +1,6 @@
 //! GNU `ld` / LLVM `lld` argument parser.
 
-use super::types::{CacheableLink, LinkerFamily, ParsedLinkerInvocation};
+use super::types::{CacheableLink, LinkOutputKind, LinkerFamily, ParsedLinkerInvocation};
 use zccache_core::NormalizedPath;
 
 /// Parse GNU ld / lld arguments for linking.
@@ -89,7 +89,16 @@ pub(super) fn parse_gnu_ld(
             i += 1;
             continue;
         }
-
+        if arg == "-map" || arg == "-dependency_info" {
+            cache_relevant_flags.push(arg.clone());
+            i += 1;
+            if i < args.len() {
+                secondary_outputs.push(NormalizedPath::new(&args[i]));
+                cache_relevant_flags.push(args[i].clone());
+            }
+            i += 1;
+            continue;
+        }
         // -shared or --shared — shared library mode (cache-relevant: affects output type)
         if arg == "-shared" || arg == "--shared" {
             cache_relevant_flags.push(arg.clone());
@@ -249,6 +258,7 @@ pub(super) fn parse_gnu_ld(
         family,
         input_files,
         output_file,
+        output_kind: LinkOutputKind::File,
         secondary_outputs,
         cache_relevant_flags,
         original_args: args,

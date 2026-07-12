@@ -19,6 +19,7 @@
 
 mod compiler_driver;
 pub(crate) mod detect;
+mod dsymutil;
 mod gnu_ld;
 mod msvc_link;
 mod types;
@@ -27,10 +28,11 @@ mod types;
 mod tests;
 
 pub use detect::{is_link_invocation, is_linker};
-pub use types::{CacheableLink, LinkerFamily, ParsedLinkerInvocation};
+pub use types::{CacheableLink, LinkOutputKind, LinkerFamily, ParsedLinkerInvocation};
 
 use compiler_driver::parse_compiler_driver_link;
 use detect::{detect_family, is_compiler_driver};
+use dsymutil::parse_dsymutil;
 use gnu_ld::parse_gnu_ld;
 use msvc_link::parse_msvc_link;
 
@@ -47,6 +49,7 @@ pub fn parse_linker_invocation(tool: &str, args: Vec<String>) -> ParsedLinkerInv
             LinkerFamily::MsvcLink => parse_msvc_link(tool, args),
             LinkerFamily::Ld | LinkerFamily::Lld => parse_gnu_ld(tool, family, args),
             LinkerFamily::CompilerDriver => parse_compiler_driver_link(tool, args),
+            LinkerFamily::Dsymutil => parse_dsymutil(tool, args),
         };
     }
 

@@ -1,6 +1,6 @@
 //! MSVC `link.exe` argument parser.
 
-use super::types::{CacheableLink, LinkerFamily, ParsedLinkerInvocation};
+use super::types::{CacheableLink, LinkOutputKind, LinkerFamily, ParsedLinkerInvocation};
 use zccache_core::NormalizedPath;
 
 /// Parse MSVC link.exe arguments for linking (DLL or executable).
@@ -27,6 +27,13 @@ pub(super) fn parse_msvc_link(tool: &str, args: Vec<String>) -> ParsedLinkerInvo
     let mut explicit_ilk = false;
     let mut debug_outputs = Vec::new();
     let mut incremental_outputs = Vec::new();
+    let mut ltcg_incremental = false;
+    let mut ltcg_output = None;
+    let mut profile_generation = false;
+    let mut profile_use = false;
+    let mut profile_output = None;
+    let mut winmd = false;
+    let mut winmd_output = None;
 
     for arg in &args {
         let upper = arg.to_uppercase();
@@ -87,6 +94,51 @@ pub(super) fn parse_msvc_link(tool: &str, args: Vec<String>) -> ParsedLinkerInvo
         }
         if upper == "/INCREMENTAL:NO" || upper == "-INCREMENTAL:NO" {
             incremental = Some(false);
+            cache_relevant_flags.push(arg.clone());
+            continue;
+        }
+        if upper == "/LTCG:INCREMENTAL" || upper == "-LTCG:INCREMENTAL" {
+            ltcg_incremental = true;
+            cache_relevant_flags.push(arg.clone());
+            continue;
+        }
+        if upper.starts_with("/LTCGOUT:") || upper.starts_with("-LTCGOUT:") {
+            ltcg_output = Some(NormalizedPath::new(&arg[9..]));
+            cache_relevant_flags.push(arg.clone());
+            continue;
+        }
+        if matches!(
+            upper.as_str(),
+            "/GENPROFILE" | "-GENPROFILE" | "/FASTGENPROFILE" | "-FASTGENPROFILE"
+        ) {
+            profile_generation = true;
+            cache_relevant_flags.push(arg.clone());
+            continue;
+        }
+        if upper == "/USEPROFILE"
+            || upper == "-USEPROFILE"
+            || upper.starts_with("/USEPROFILE:")
+            || upper.starts_with("-USEPROFILE:")
+        {
+            profile_use = true;
+            if let Some(pgd_offset) = upper.find("PGD=") {
+                profile_output = Some(NormalizedPath::new(&arg[pgd_offset + 4..]));
+            }
+            cache_relevant_flags.push(arg.clone());
+            continue;
+        }
+        if upper.starts_with("/PGD:") || upper.starts_with("-PGD:") {
+            profile_output = Some(NormalizedPath::new(&arg[5..]));
+            cache_relevant_flags.push(arg.clone());
+            continue;
+        }
+        if upper == "/WINMD" || upper == "-WINMD" {
+            winmd = true;
+            cache_relevant_flags.push(arg.clone());
+            continue;
+        }
+        if upper.starts_with("/WINMDFILE:") || upper.starts_with("-WINMDFILE:") {
+            winmd_output = Some(NormalizedPath::new(&arg[11..]));
             cache_relevant_flags.push(arg.clone());
             continue;
         }
@@ -155,6 +207,24 @@ pub(super) fn parse_msvc_link(tool: &str, args: Vec<String>) -> ParsedLinkerInvo
         let ext = if is_dll { "dll" } else { "exe" };
         NormalizedPath::new(first.with_extension(ext))
     });
+    if profile_generation && profile_use {
+        return ParsedLinkerInvocation::NonCacheable {
+            reason: "MSVC profile generation and profile use cannot share one staged plan"
+                .to_string(),
+        };
+    }
+    if profile_use {
+        let Some(profile_input) = profile_output.as_ref() else {
+            return ParsedLinkerInvocation::NonCacheable {
+                reason: "MSVC /USEPROFILE requires an explicit PGD path for caching".to_string(),
+            };
+        };
+        input_files.push(if profile_input.extension().is_some() {
+            profile_input.clone()
+        } else {
+            NormalizedPath::new(profile_input.with_extension("pgd"))
+        });
+    }
     if has_debug {
         secondary_outputs.extend(debug_outputs);
     }
@@ -175,6 +245,26 @@ pub(super) fn parse_msvc_link(tool: &str, args: Vec<String>) -> ParsedLinkerInvo
     if implicit_map {
         secondary_outputs.push(NormalizedPath::new(output_file.with_extension("map")));
     }
+    if ltcg_incremental {
+        secondary_outputs.push(
+            ltcg_output.unwrap_or_else(|| NormalizedPath::new(output_file.with_extension("iobj"))),
+        );
+    }
+    if profile_generation {
+        secondary_outputs.push(
+            profile_output
+                .unwrap_or_else(|| NormalizedPath::new(output_file.with_extension("pgd"))),
+        );
+    }
+    if winmd {
+        let output = winmd_output
+            .unwrap_or_else(|| NormalizedPath::new(output_file.with_extension("winmd")));
+        secondary_outputs.push(if output.extension().is_some() {
+            output
+        } else {
+            NormalizedPath::new(output.with_extension("winmd"))
+        });
+    }
     let mut seen_outputs = std::collections::HashSet::new();
     secondary_outputs.retain(|output| seen_outputs.insert(output.clone()));
 
@@ -183,6 +273,7 @@ pub(super) fn parse_msvc_link(tool: &str, args: Vec<String>) -> ParsedLinkerInvo
         family: LinkerFamily::MsvcLink,
         input_files,
         output_file,
+        output_kind: LinkOutputKind::File,
         secondary_outputs,
         cache_relevant_flags,
         original_args: args,

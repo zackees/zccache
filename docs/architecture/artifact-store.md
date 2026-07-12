@@ -43,10 +43,45 @@ exits, and the requested output directory is checked for external side
 effects. Either condition prevents cache publication; declared outputs are
 independently salvaged to preserve a successful link.
 Explicit GNU/LLVM map and dependency-file paths and active MSVC PDB, ILK,
-stripped-PDB, and map paths are declared secondary outputs. Implicit names,
-GNU semantic map destinations (`%` or a directory), and conditional
-LTCG/PGO/embedded-IDL/Windows-metadata outputs remain on the legacy path
-before spawn.
+stripped-PDB, and map paths are declared secondary outputs. Apple `-map` and
+`-dependency_info` files are also declared and redirected. MSVC incremental
+LTCG (`.iobj`), profile-generation (`.pgd`), and
+Windows metadata (`.winmd`) products participate when their enabling switches
+are active; known implicit names are converted to explicit private
+destinations before spawn.
+
+`dsymutil` is the supported directory producer. A normal one-input invocation
+is redirected to a private sibling of the requested `.dSYM`, serialized as one
+deterministic manifest payload, and published through the same complete v2
+generation transaction as file outputs. A hit validates the complete payload,
+unpacks it to another private sibling, restores directory/file permissions and
+mtimes, then renames it into place. Existing bundles are replaced with the
+platform atomic directory-exchange primitive on macOS and Linux. The manifest
+rejects traversal, non-UTF-8 paths, symlinks, special files, and excessive
+entry/byte counts. Bundle staging is on the destination filesystem so cold
+miss publication and requested-path installation cannot fail with a
+cross-volume rename.
+
+The audited linker fallback inventory is intentionally bounded:
+
+- MSVC `/IDLOUT`, `/TLBOUT`, and `/MIDL` remain pre-spawn fallbacks because
+  module attributes can fan out into IDL, TLB, header, proxy, and IID files in
+  tool-version-dependent locations.
+- MSVC `/USEPROFILE` requires an explicit PGD path so the profile database is
+  hashed as an input. Its implicit-PGD form and deprecated `/LTCG:PG*` modes
+  remain pre-spawn fallbacks because output redirection changes their implicit
+  database resolution and update semantics.
+- Apple `-object_path_lto` and `-save-temps` remain pre-spawn fallbacks because
+  retained temporary products depend on LTO decisions and linker version.
+- LLVM `--stats=<file>` remains a pre-spawn fallback because it is not a
+  portable ELF linker output contract across LLD tool families and versions.
+- GNU/LLVM semantic output paths containing `%` or naming a directory remain
+  pre-spawn fallbacks because the linker, rather than the invocation, selects
+  the final file set.
+- `dsymutil` flat/no-output/dump/update/reproducer/resource-embedding and
+  `--codesign` modes remain pre-spawn fallbacks. Signing and notarization are
+  independent post-publication operations and are never replayed from a
+  mutable staged tree.
 
 Generic tool execution participates by default when every declared output is
 an exact argument token. Those paths are rewritten into a private staging
@@ -68,8 +103,10 @@ alias attack before the backend is served. Read-only enforcement, watcher
 suspicion, file-identity registration, link-count limits, and copy fallback
 remain mandatory for the narrow semantic allowlist.
 
-Private compiler/linker files live under a per-daemon `{cache_root}/staging/`
-directory, outside the clearable artifact store. An advisory lock protects
+Private compiler/linker files normally live under a per-daemon
+`{cache_root}/staging/` directory, outside the clearable artifact store.
+Directory producers use a hidden private sibling beside the requested bundle
+to preserve same-filesystem atomic installation. An advisory lock protects
 each live daemon's directory: startup cleanup reclaims only unlocked crash
 debris, while cache clear and eviction cannot delete outputs still needed for
 publication salvage or requested-path materialization.

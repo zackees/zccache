@@ -22,6 +22,7 @@ Topic-focused submodules:
 - `session.rs` — `Request::SessionStart` handler + session log writer
 - `handle_clear.rs` — `Request::Clear` handler
 - `handle_compile_ephemeral.rs` — single-roundtrip ephemeral compile + direct (uncached) compiler invocation
+- `directory_link.rs` — transactional publication and delivery for directory-producing link tools
 - `watch.rs` — `watch_directory` / `watch_directories` helpers
 - `util.rs` — `persist_workers_default`, `hash_file`, `context_files_fresh`, `lookup_artifact_with_disk_fallback`
 

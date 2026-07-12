@@ -503,3 +503,29 @@ fn gnu_ld_stdout_map_is_not_a_file_output() {
     };
     assert!(c.secondary_outputs.is_empty());
 }
+
+#[test]
+fn apple_ld_declares_semantic_map_and_dependency_destinations() {
+    let result = parse_linker_invocation(
+        "ld",
+        args(&[
+            "-o",
+            "app",
+            "-map",
+            "reports/app.map",
+            "-dependency_info",
+            "deps/app.dat",
+            "main.o",
+        ]),
+    );
+    let ParsedLinkerInvocation::Cacheable(c) = result else {
+        panic!("expected cacheable")
+    };
+    assert_eq!(
+        c.secondary_outputs,
+        vec![
+            NormalizedPath::new("reports/app.map"),
+            NormalizedPath::new("deps/app.dat"),
+        ]
+    );
+}

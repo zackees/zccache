@@ -2,6 +2,7 @@
 
 mod compiler_driver;
 mod detection;
+mod dsymutil;
 mod gnu_ld;
 mod implib;
 mod is_link;

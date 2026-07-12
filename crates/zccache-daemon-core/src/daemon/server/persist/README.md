@@ -9,6 +9,8 @@ re-exports `*` from each submodule.
 
 ## Layout
 
+`directory_bundle.rs` owns transactional directory-output packing and restore.
+
 - **[`mod.rs`](mod.rs)** — Module wiring + re-exports.
 - **[`artifact_io.rs`](artifact_io.rs)** — Atomic writes
   (`persist_artifact_output`, `persist_artifact_file`,

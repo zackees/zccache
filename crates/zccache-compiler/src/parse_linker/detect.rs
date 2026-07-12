@@ -23,6 +23,10 @@ pub(super) fn detect_family(tool: &str) -> Option<LinkerFamily> {
     let full_name = cross_platform_file_name(tool);
     let stem = file_stem(full_name);
 
+    if stem == "dsymutil" || stem.starts_with("dsymutil-") {
+        return Some(LinkerFamily::Dsymutil);
+    }
+
     // MSVC link.exe (case-insensitive) — check stem so "link.exe" matches
     if stem.eq_ignore_ascii_case("link") {
         return Some(LinkerFamily::MsvcLink);

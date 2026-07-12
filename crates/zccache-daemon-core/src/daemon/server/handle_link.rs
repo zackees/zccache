@@ -15,6 +15,28 @@ fn publish_and_materialize_staged_link(
     Ok(publication.is_ok())
 }
 
+fn with_link_warning(result: Response, warning: Option<String>) -> Response {
+    match (result, warning) {
+        (
+            Response::LinkResult {
+                exit_code,
+                stdout,
+                stderr,
+                cached,
+                ..
+            },
+            warning @ Some(_),
+        ) => Response::LinkResult {
+            exit_code,
+            stdout,
+            stderr,
+            cached,
+            warning,
+        },
+        (result, _) => result,
+    }
+}
+
 /// Handle a single-roundtrip ephemeral link/archive request.
 ///
 /// Parses the tool invocation, computes a cache key from the tool binary and
@@ -58,6 +80,7 @@ pub(super) async fn handle_link_ephemeral(
         // files alongside the output. The pre-link `snapshot_directory` and
         // post-link `detect_side_effects` work is wasted for archive cold-misses.
         is_archive: bool,
+        output_kind: crate::compiler::parse_linker::LinkOutputKind,
     }
 
     let parsed_tool = match parse_archive_invocation(tool.to_str().unwrap_or(""), args) {
@@ -72,6 +95,7 @@ pub(super) async fn handle_link_ephemeral(
             cache_relevant_flags: c.cache_relevant_flags,
             non_deterministic: c.non_deterministic,
             is_archive: true,
+            output_kind: crate::compiler::parse_linker::LinkOutputKind::File,
         },
         ParsedArchiveInvocation::NonCacheable { reason: ar_reason } => {
             // Try linker parser
@@ -81,6 +105,9 @@ pub(super) async fn handle_link_ephemeral(
                         crate::compiler::parse_linker::LinkerFamily::MsvcLink => {
                             "/DETERMINISTIC".to_string()
                         }
+                        crate::compiler::parse_linker::LinkerFamily::Dsymutil => {
+                            "deterministic input debug information".to_string()
+                        }
                         _ => "--build-id=sha1 (avoid --build-id=uuid)".to_string(),
                     },
                     input_files: c.input_files,
@@ -89,6 +116,7 @@ pub(super) async fn handle_link_ephemeral(
                     cache_relevant_flags: c.cache_relevant_flags,
                     non_deterministic: c.non_deterministic,
                     is_archive: false,
+                    output_kind: c.output_kind,
                 },
                 ParsedLinkerInvocation::NonCacheable {
                     reason: link_reason,
@@ -264,6 +292,41 @@ pub(super) async fn handle_link_ephemeral(
             } else {
                 cwd_path.join(&parsed_tool.output_file).into()
             };
+            if parsed_tool.output_kind
+                == crate::compiler::parse_linker::LinkOutputKind::DirectoryBundle
+            {
+                let valid_bundle =
+                    payloads.len() == 1 && names.len() == 1 && is_directory_output_name(&names[0]);
+                let materialize_started = std::time::Instant::now();
+                let observed = valid_bundle
+                    .then(|| materialize_directory_payload(&payloads[0], &output_path))
+                    .transpose()
+                    .ok()
+                    .flatten()
+                    .map(|copy_bytes| StagedMaterializationStats {
+                        copy_count: 1,
+                        copy_bytes,
+                        ..StagedMaterializationStats::default()
+                    });
+                if record_staged_hit_materialization(state, 1, materialize_started, observed) {
+                    return Response::LinkResult {
+                        exit_code,
+                        stdout,
+                        stderr,
+                        cached: true,
+                        warning: nd_warning,
+                    };
+                }
+                return run_tool_passthrough(
+                    tool,
+                    args,
+                    cwd,
+                    env,
+                    &lineage,
+                    state.depfile_tmpdir.as_path(),
+                )
+                .await;
+            }
             let targets: Vec<(NormalizedPath, NormalizedPath)> = (0..payloads.len())
                 .map(|i| {
                     let target: NormalizedPath = if i == 0 {
@@ -340,45 +403,80 @@ pub(super) async fn handle_link_ephemeral(
     use crate::daemon::staged_stats::{StagedCounter, StagedTiming};
     let planning_started = std::time::Instant::now();
     state.profiler.staged.count(StagedCounter::PlanAttempted);
-    let staged_plan_result = if parsed_tool.is_archive && parsed_tool.secondary_outputs.is_empty() {
-        StagedCompilePlan::archive(state.staging.path(), args, &output_path, cwd_path)
-    } else {
-        StagedCompilePlan::link(
-            state.staging.path(),
-            args,
-            &output_path,
-            &parsed_tool.secondary_outputs,
-            cwd_path,
-        )
-    };
+    let directory_plan_result = (parsed_tool.output_kind
+        == crate::compiler::parse_linker::LinkOutputKind::DirectoryBundle)
+        .then(|| StagedDirectoryPlan::dsymutil(state.staging.path(), args, &output_path, cwd_path));
+    let staged_plan_result = directory_plan_result.is_none().then(|| {
+        if parsed_tool.is_archive && parsed_tool.secondary_outputs.is_empty() {
+            StagedCompilePlan::archive(state.staging.path(), args, &output_path, cwd_path)
+        } else {
+            StagedCompilePlan::link(
+                state.staging.path(),
+                args,
+                &output_path,
+                &parsed_tool.secondary_outputs,
+                cwd_path,
+            )
+        }
+    });
     state.profiler.staged.timing(
         StagedTiming::Planning,
         planning_started.elapsed().as_nanos() as u64,
     );
     let staged_plan = match staged_plan_result {
-        StagedPlanOutcome::Enabled(plan) => {
+        None => None,
+        Some(staged_plan_result) => match staged_plan_result {
+            StagedPlanOutcome::Enabled(plan) => {
+                state.profiler.staged.count(StagedCounter::PlanEnabled);
+                Some(plan)
+            }
+            StagedPlanOutcome::Unsupported(reason) => {
+                state.profiler.staged.count(StagedCounter::PlanUnsupported);
+                state.profiler.staged.failure(reason.failure());
+                None
+            }
+            StagedPlanOutcome::Error(error) => {
+                state.profiler.staged.count(StagedCounter::PlanError);
+                state.profiler.staged.failure(error.reason.failure());
+                tracing::warn!(
+                    reason = error.reason.id(),
+                    error = %error.source,
+                    "link staging plan failed; using legacy path"
+                );
+                None
+            }
+        },
+    };
+    let directory_plan = match directory_plan_result {
+        None => None,
+        Some(StagedPlanOutcome::Enabled(plan)) => {
             state.profiler.staged.count(StagedCounter::PlanEnabled);
             Some(plan)
         }
-        StagedPlanOutcome::Unsupported(reason) => {
+        Some(StagedPlanOutcome::Unsupported(reason)) => {
             state.profiler.staged.count(StagedCounter::PlanUnsupported);
             state.profiler.staged.failure(reason.failure());
             None
         }
-        StagedPlanOutcome::Error(error) => {
+        Some(StagedPlanOutcome::Error(error)) => {
             state.profiler.staged.count(StagedCounter::PlanError);
             state.profiler.staged.failure(error.reason.failure());
             tracing::warn!(
                 reason = error.reason.id(),
                 error = %error.source,
-                "link staging plan failed; using legacy path"
+                "directory output staging plan failed; using passthrough path"
             );
             None
         }
     };
-    let compiler_args = staged_plan
-        .as_ref()
-        .map_or_else(|| args.to_vec(), |plan| plan.rewritten_args.clone());
+    let compiler_args = directory_plan.as_ref().map_or_else(
+        || {
+            staged_plan
+                .as_ref()
+                .map_or_else(|| args.to_vec(), |plan| plan.rewritten_args.clone())
+        },
+        |plan| plan.rewritten_args.clone(),
+    );
     let output_dir = output_path.parent().unwrap_or(cwd_path);
 
     // Snapshot the output directory before the link so we can detect
@@ -388,7 +486,7 @@ pub(super) async fn handle_link_ephemeral(
     // side-effect files. Skip both pre-link snapshot and post-link rescan
     // for archives — saves a `read_dir` + per-entry `stat` on every archive
     // cold-miss.
-    let dir_snapshot = if parsed_tool.is_archive {
+    let dir_snapshot = if parsed_tool.is_archive || directory_plan.is_some() {
         super::super::side_effect::DirSnapshot::default()
     } else {
         super::super::side_effect::snapshot_directory(output_dir)
@@ -408,7 +506,8 @@ pub(super) async fn handle_link_ephemeral(
     let env_for_hook = env.clone();
 
     let t_compiler_process = profile_enabled.then(std::time::Instant::now);
-    let staged_compiler_started = staged_plan.as_ref().map(|_| std::time::Instant::now());
+    let staged_compiler_started =
+        (staged_plan.is_some() || directory_plan.is_some()).then(std::time::Instant::now);
     let result = run_tool_passthrough(
         tool,
         &compiler_args,
@@ -422,7 +521,7 @@ pub(super) async fn handle_link_ephemeral(
     let compiler_process_ns = t_compiler_process
         .map(|t| t.elapsed().as_nanos() as u64)
         .unwrap_or(0);
-    if staged_plan.is_some() {
+    if staged_plan.is_some() || directory_plan.is_some() {
         state.profiler.staged.count(StagedCounter::CompilerStaged);
         state.profiler.staged.timing(
             StagedTiming::Compiler,
@@ -438,8 +537,10 @@ pub(super) async fn handle_link_ephemeral(
     // layer where clang-tool-chain's `post_link_dll_deployment` lives).
     // The hook runs BEFORE the side-effect scan so scanning picks up
     // whatever it deployed.
-    if let (Some(cmd), Response::LinkResult { exit_code: 0, .. }) = (&deploy_cmd, &result) {
-        run_post_link_deploy_hook(cmd, &output_path, env_for_hook.as_deref(), &lineage).await;
+    if directory_plan.is_none() {
+        if let (Some(cmd), Response::LinkResult { exit_code: 0, .. }) = (&deploy_cmd, &result) {
+            run_post_link_deploy_hook(cmd, &output_path, env_for_hook.as_deref(), &lineage).await;
+        }
     }
 
     // 7. If successful, cache the output
@@ -450,6 +551,15 @@ pub(super) async fn handle_link_ephemeral(
         ..
     } = result
     {
+        if let Some(plan) = directory_plan.as_ref() {
+            if let Err(error) = cache_staged_directory_link(state, plan, &key_hex, stdout, stderr) {
+                return Response::Error {
+                    message: format!("failed to materialize staged directory output: {error}"),
+                };
+            }
+            return with_link_warning(result, nd_warning);
+        }
+
         // Enumerate (name, path) for primary + declared secondaries +
         // detected side-effects in cache-index order so that `outputs[i]`
         // maps to `{key}_i` on disk after the parallel reads below. Missing
@@ -677,25 +787,7 @@ pub(super) async fn handle_link_ephemeral(
         }
     }
 
-    let final_response = match (result, nd_warning) {
-        (
-            Response::LinkResult {
-                exit_code,
-                stdout,
-                stderr,
-                cached,
-                ..
-            },
-            warning @ Some(_),
-        ) => Response::LinkResult {
-            exit_code,
-            stdout,
-            stderr,
-            cached,
-            warning,
-        },
-        (result, _) => result,
-    };
+    let final_response = with_link_warning(result, nd_warning);
 
     if profile_enabled {
         let total_ns = link_start.elapsed().as_nanos() as u64;

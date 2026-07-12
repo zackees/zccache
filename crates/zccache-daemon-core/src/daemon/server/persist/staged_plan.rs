@@ -592,7 +592,7 @@ impl StagedCompilePlan {
             requested_outputs.extend(secondary_outputs.iter().map(|output| absolute(output, cwd)));
             let mut outputs = Vec::with_capacity(requested_outputs.len());
             let mut rewritten_args = args.to_vec();
-            for requested in requested_outputs {
+            for (output_index, requested) in requested_outputs.into_iter().enumerate() {
                 let requested_text = requested.to_string_lossy();
                 if requested_text.contains('%') || requested.as_path().is_dir() {
                     return Ok(StagedPlanOutcome::Unsupported(
@@ -628,6 +628,16 @@ impl StagedCompilePlan {
                                 StagedPlanReason::AmbiguousOutputArgument,
                             ));
                         }
+                    }
+                }
+                if !replaced && output_index > 0 {
+                    if let Some(option) = implicit_msvc_output_option(
+                        &rewritten_args,
+                        requested.as_path(),
+                        staged.as_path(),
+                    ) {
+                        rewritten_args.push(option);
+                        replaced = true;
                     }
                 }
                 if !replaced {
@@ -846,31 +856,58 @@ fn has_unmodeled_link_output_option(args: &[String]) -> bool {
     args.iter().any(|arg| {
         let lower = arg.to_ascii_lowercase();
         [
-            "/pgd:",
-            "-pgd:",
-            "/ltcgout:",
-            "-ltcgout:",
-            "/idlout:",
-            "-idlout:",
-            "/tlbout:",
-            "-tlbout:",
-            "/winmdfile:",
-            "-winmdfile:",
-            "/midl:",
-            "-midl:",
-            "--stats=",
+            "/idlout:", "-idlout:", "/tlbout:", "-tlbout:", "/midl:", "-midl:", "--stats=",
         ]
         .iter()
         .any(|prefix| lower.starts_with(prefix))
+            || matches!(arg.as_str(), "-object_path_lto" | "-save-temps")
             || matches!(
                 lower.as_str(),
-                "/winmd" | "-winmd" | "/ltcg:incremental" | "-ltcg:incremental"
-            )
-            || matches!(
-                arg.as_str(),
-                "-map" | "-dependency_info" | "-object_path_lto" | "-save-temps"
+                "/ltcg:pginstrument"
+                    | "-ltcg:pginstrument"
+                    | "/ltcg:pgoptimize"
+                    | "-ltcg:pgoptimize"
+                    | "/ltcg:pgupdate"
+                    | "-ltcg:pgupdate"
             )
     })
+}
+
+fn implicit_msvc_output_option(args: &[String], requested: &Path, staged: &Path) -> Option<String> {
+    let extension = requested
+        .extension()
+        .and_then(|extension| extension.to_str())?
+        .to_ascii_lowercase();
+    let upper_args = args
+        .iter()
+        .map(|arg| arg.to_ascii_uppercase())
+        .collect::<Vec<_>>();
+    let has = |option: &str| upper_args.iter().any(|arg| arg == option);
+    let has_prefix = |prefix: &str| upper_args.iter().any(|arg| arg.starts_with(prefix));
+    let prefix = match extension.as_str() {
+        "pdb" if has_prefix("/DEBUG") || has_prefix("-DEBUG") => "/PDB:",
+        "ilk"
+            if has("/INCREMENTAL")
+                || has("-INCREMENTAL")
+                || has_prefix("/DEBUG")
+                || has_prefix("-DEBUG") =>
+        {
+            "/ILK:"
+        }
+        "map" if has("/MAP") || has("-MAP") => "/MAP:",
+        "iobj" if has("/LTCG:INCREMENTAL") || has("-LTCG:INCREMENTAL") => "/LTCGOUT:",
+        "pgd"
+            if has("/GENPROFILE")
+                || has("-GENPROFILE")
+                || has("/FASTGENPROFILE")
+                || has("-FASTGENPROFILE") =>
+        {
+            "/PGD:"
+        }
+        "winmd" if has("/WINMD") || has("-WINMD") => "/WINMDFILE:",
+        _ => return None,
+    };
+    Some(format!("{prefix}{}", staged.display()))
 }
 
 impl Drop for StagedCompilePlan {

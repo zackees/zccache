@@ -154,6 +154,23 @@ pub(super) fn materialize_link_plan_observed(
     )
 }
 
+pub(super) fn materialize_directory_plan_observed(
+    state: &SharedState,
+    plan: &StagedDirectoryPlan,
+    salvage_reason: Option<&'static str>,
+) -> std::io::Result<()> {
+    record_salvage_start(state, 1, salvage_reason);
+    let started = std::time::Instant::now();
+    record_observed_materialization(
+        state,
+        1,
+        salvage_reason,
+        started,
+        plan.materialize()
+            .map(|()| StagedMaterializationStats::default()),
+    )
+}
+
 pub(super) fn materialize_exec_plan_observed(
     state: &SharedState,
     plan: &ExecStagedPlan,

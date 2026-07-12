@@ -1,6 +1,6 @@
 //! Compiler-driver-as-linker argument parser (e.g. `gcc -shared -o ...`).
 
-use super::types::{CacheableLink, LinkerFamily, ParsedLinkerInvocation};
+use super::types::{CacheableLink, LinkOutputKind, LinkerFamily, ParsedLinkerInvocation};
 use zccache_core::NormalizedPath;
 
 /// Object/library file extensions recognized as linker inputs.
@@ -93,6 +93,11 @@ pub(super) fn parse_compiler_driver_link(tool: &str, args: Vec<String>) -> Parse
                         secondary_outputs.push(NormalizedPath::new(depfile));
                     }
                 }
+                if (*part == "-map" || *part == "-dependency_info")
+                    && parts.get(index + 1).is_some_and(|value| !value.is_empty())
+                {
+                    secondary_outputs.push(NormalizedPath::new(parts[index + 1]));
+                }
             }
             cache_relevant_flags.push(arg.clone());
             i += 1;
@@ -178,6 +183,7 @@ pub(super) fn parse_compiler_driver_link(tool: &str, args: Vec<String>) -> Parse
         family: LinkerFamily::CompilerDriver,
         input_files,
         output_file,
+        output_kind: LinkOutputKind::File,
         secondary_outputs,
         cache_relevant_flags,
         original_args: args,

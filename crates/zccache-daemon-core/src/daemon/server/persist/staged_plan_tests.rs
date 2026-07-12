@@ -336,7 +336,7 @@ fn link_plan_stages_explicit_msvc_debug_output_set() {
 }
 
 #[test]
-fn link_plan_rejects_implicit_msvc_side_output_before_spawn() {
+fn link_plan_redirects_implicit_msvc_side_output_before_spawn() {
     if !staged_tests_enabled() {
         return;
     }
@@ -350,8 +350,14 @@ fn link_plan_rejects_implicit_msvc_side_output_before_spawn() {
         &[implicit_pdb],
         temp.path(),
     )
+    .unwrap()
     .unwrap();
-    assert!(plan.is_none());
+    assert_eq!(plan.outputs.len(), 2);
+    assert!(plan
+        .rewritten_args
+        .iter()
+        .any(|arg| arg.starts_with("/PDB:") && arg.contains(".link-")));
+    plan.cleanup().unwrap();
 }
 
 #[test]
@@ -390,7 +396,7 @@ fn link_plan_rejects_unmodeled_output_option_before_spawn() {
         temp.path(),
         &[
             format!("/OUT:{}", primary.display()),
-            "/LTCGOUT:state/app.iobj".into(),
+            "/IDLOUT:generated/app.idl".into(),
         ],
         &primary,
         &[],
@@ -400,6 +406,30 @@ fn link_plan_rejects_unmodeled_output_option_before_spawn() {
         plan,
         StagedPlanOutcome::Unsupported(StagedPlanReason::UnmodeledSideOutput)
     ));
+}
+
+#[test]
+fn implicit_msvc_outputs_receive_explicit_staged_destinations() {
+    let requested = Path::new("bin/app.pgd");
+    let staged = Path::new("staging/app.pgd");
+    assert_eq!(
+        implicit_msvc_output_option(&["/GENPROFILE".into()], requested, staged),
+        Some(format!("/PGD:{}", staged.display()))
+    );
+
+    let requested = Path::new("bin/app.iobj");
+    let staged = Path::new("staging/app.iobj");
+    assert_eq!(
+        implicit_msvc_output_option(&["/LTCG:INCREMENTAL".into()], requested, staged),
+        Some(format!("/LTCGOUT:{}", staged.display()))
+    );
+
+    let requested = Path::new("bin/app.winmd");
+    let staged = Path::new("staging/app.winmd");
+    assert_eq!(
+        implicit_msvc_output_option(&["/WINMD".into()], requested, staged),
+        Some(format!("/WINMDFILE:{}", staged.display()))
+    );
 }
 
 #[test]

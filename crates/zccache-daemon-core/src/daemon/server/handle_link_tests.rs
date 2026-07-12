@@ -90,3 +90,43 @@ async fn failed_link_publication_and_salvage_fail_closed() {
     publish_fault.assert_all_consumed();
     salvage_fault.assert_all_consumed();
 }
+
+#[tokio::test]
+async fn failed_directory_publication_salvages_complete_tree_without_cache_entry() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir: NormalizedPath = temp.path().join("cache").into();
+    let server =
+        DaemonServer::bind_with_cache_dir(&crate::ipc::unique_test_endpoint(), &cache_dir).unwrap();
+    let root = temp.path().join("private-directory-link");
+    let staged: NormalizedPath = root.join("app.dSYM").into();
+    std::fs::create_dir_all(staged.join("Contents/Resources/DWARF")).unwrap();
+    std::fs::write(
+        staged.join("Contents/Resources/DWARF/app"),
+        b"complete debug tree",
+    )
+    .unwrap();
+    let requested: NormalizedPath = temp.path().join("app.dSYM").into();
+    let plan = StagedDirectoryPlan::for_test(root, requested.clone(), staged);
+    let fault = StagedFaultGuard::arm(&server.state.artifact_dir, [StagedFaultPoint::IndexCommit]);
+    let key = "c".repeat(64);
+
+    cache_staged_directory_link(
+        &server.state,
+        &plan,
+        &key,
+        &Arc::new(Vec::new()),
+        &Arc::new(Vec::new()),
+    )
+    .unwrap();
+
+    assert!(!server.state.artifacts.contains_key(&key));
+    assert_eq!(
+        std::fs::read(requested.join("Contents/Resources/DWARF/app")).unwrap(),
+        b"complete debug tree"
+    );
+    let staged = server.state.profiler.staged.snapshot();
+    assert_eq!(staged.counters["publication_failure"], 1);
+    assert_eq!(staged.counters["salvage_attempt"], 1);
+    assert_eq!(staged.counters["salvage_success"], 1);
+    fault.assert_all_consumed();
+}

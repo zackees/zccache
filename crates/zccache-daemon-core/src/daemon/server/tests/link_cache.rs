@@ -39,6 +39,91 @@ printf 'map\n' > "$out_dir/app.wasm.map"
     tool
 }
 
+#[cfg(unix)]
+fn write_fake_primary_linker(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tool = dir.join("gcc");
+    std::fs::write(
+        &tool,
+        r#"#!/bin/sh
+out=
+while [ "$#" -gt 0 ]; do
+if [ "$1" = "-o" ]; then
+    shift
+    out=$1
+fi
+shift || true
+done
+printf 'binary\n' > "$out"
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&tool).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&tool, permissions).unwrap();
+    tool
+}
+
+#[cfg(unix)]
+fn write_fake_dsymutil(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tool = dir.join("dsymutil");
+    std::fs::write(
+        &tool,
+        r#"#!/bin/sh
+out=
+while [ "$#" -gt 0 ]; do
+if [ "$1" = "-o" ]; then
+    shift
+    out=$1
+fi
+shift || true
+done
+if [ -z "$out" ]; then
+exit 2
+fi
+mkdir -p "$out/Contents/Resources/DWARF"
+printf 'debug-binary\n' > "$out/Contents/Resources/DWARF/app"
+printf 'plist\n' > "$out/Contents/Info.plist"
+chmod 755 "$out/Contents/Resources/DWARF/app"
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&tool).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&tool, permissions).unwrap();
+    tool
+}
+
+#[cfg(windows)]
+fn write_fake_dsymutil(dir: &Path) -> std::path::PathBuf {
+    let tool = dir.join("dsymutil.cmd");
+    std::fs::write(
+        &tool,
+        r#"@echo off
+set "OUT="
+:args
+if "%~1"=="" goto run
+if "%~1"=="-o" (
+  set "OUT=%~2"
+  shift
+)
+shift
+goto args
+:run
+if "%OUT%"=="" exit /b 2
+mkdir "%OUT%\Contents\Resources\DWARF" >nul 2>nul
+> "%OUT%\Contents\Resources\DWARF\app" echo debug-binary
+> "%OUT%\Contents\Info.plist" echo plist
+exit /b 0
+"#,
+    )
+    .unwrap();
+    tool
+}
+
 #[cfg(windows)]
 fn write_fake_linker(dir: &Path) -> std::path::PathBuf {
     let tool = dir.join("clang.cmd");
@@ -58,8 +143,27 @@ exit /b 0
     tool
 }
 
+#[cfg(windows)]
+fn write_fake_primary_linker(dir: &Path) -> std::path::PathBuf {
+    let tool = dir.join("gcc.cmd");
+    std::fs::write(
+        &tool,
+        r#"@echo off
+set "OUT=%~2"
+if "%OUT%"=="" exit /b 2
+> "%OUT%" echo binary
+exit /b 0
+"#,
+    )
+    .unwrap();
+    tool
+}
+
 #[tokio::test]
 async fn link_cache_hit_restores_sibling_side_effects() {
+    if staged_link_lane_enabled() {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let fake_linker = write_fake_linker(tmp.path());
     let input = tmp.path().join("main.o");
@@ -150,7 +254,7 @@ async fn link_cache_hit_restores_sibling_side_effects() {
 #[tokio::test]
 async fn link_cache_key_preserves_input_order_under_parallel_hashing() {
     let tmp = tempfile::tempdir().unwrap();
-    let fake_linker = write_fake_linker(tmp.path());
+    let fake_linker = write_fake_primary_linker(tmp.path());
     let output = tmp.path().join("app.exe");
 
     // 12 inputs — enough to exercise rayon's work-stealing across
@@ -237,4 +341,82 @@ async fn link_cache_key_preserves_input_order_under_parallel_hashing() {
         ),
         "reversed-order link must MISS (input order is part of the cache key), got: {third:?}"
     );
+}
+
+#[tokio::test]
+async fn directory_bundle_cache_hit_restores_complete_tree() {
+    if !staged_link_lane_enabled() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let fake_dsymutil = write_fake_dsymutil(tmp.path());
+    let input = tmp.path().join("app");
+    let output = tmp.path().join("app.dSYM");
+    std::fs::write(&input, b"fake executable with debug information").unwrap();
+
+    let _cache_dir = CacheDirEnvGuard::set(&tmp.path().join("zccache-cache"));
+    let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+    let args = vec![
+        input.to_string_lossy().into_owned(),
+        "-o".to_string(),
+        output.to_string_lossy().into_owned(),
+    ];
+
+    let first = handle_link_ephemeral(
+        &server.state,
+        std::process::id(),
+        &fake_dsymutil,
+        &args,
+        tmp.path(),
+        None,
+    )
+    .await;
+    assert!(matches!(
+        first,
+        Response::LinkResult {
+            exit_code: 0,
+            cached: false,
+            ..
+        }
+    ));
+    let dwarf = output.join("Contents/Resources/DWARF/app");
+    let plist = output.join("Contents/Info.plist");
+    let dwarf_mtime = std::fs::metadata(&dwarf).unwrap().modified().unwrap();
+    let dwarf_bytes = std::fs::read(&dwarf).unwrap();
+    assert!(dwarf_bytes.starts_with(b"debug-binary"));
+    assert!(plist.exists());
+
+    std::fs::remove_dir_all(&output).unwrap();
+    let second = handle_link_ephemeral(
+        &server.state,
+        std::process::id(),
+        &fake_dsymutil,
+        &args,
+        tmp.path(),
+        None,
+    )
+    .await;
+    assert!(matches!(
+        second,
+        Response::LinkResult {
+            exit_code: 0,
+            cached: true,
+            ..
+        }
+    ));
+    assert_eq!(std::fs::read(&dwarf).unwrap(), dwarf_bytes);
+    assert!(plist.exists());
+    assert_eq!(
+        std::fs::metadata(&dwarf).unwrap().modified().unwrap(),
+        dwarf_mtime
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(dwarf).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+    }
 }

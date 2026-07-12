@@ -306,3 +306,92 @@ fn msvc_debug_none_does_not_declare_debug_outputs() {
     };
     assert!(c.secondary_outputs.is_empty());
 }
+
+#[test]
+fn msvc_declares_conditional_ltcg_profile_and_winmd_outputs() {
+    let result = parse_linker_invocation(
+        "link.exe",
+        args(&[
+            "/OUT:bin/app.exe",
+            "/LTCG:INCREMENTAL",
+            "/LTCGOUT:state/app.iobj",
+            "/FASTGENPROFILE",
+            "/PGD:profiles/app.pgd",
+            "/WINMD",
+            "/WINMDFILE:metadata/app",
+            "main.obj",
+        ]),
+    );
+    let ParsedLinkerInvocation::Cacheable(c) = result else {
+        panic!("expected cacheable")
+    };
+    assert_eq!(
+        c.secondary_outputs,
+        vec![
+            NormalizedPath::new("state/app.iobj"),
+            NormalizedPath::new("profiles/app.pgd"),
+            NormalizedPath::new("metadata/app.winmd"),
+        ]
+    );
+}
+
+#[test]
+fn msvc_declares_default_conditional_output_names() {
+    let result = parse_linker_invocation(
+        "link.exe",
+        args(&[
+            "/OUT:bin/app.exe",
+            "/LTCG:INCREMENTAL",
+            "/GENPROFILE",
+            "/WINMD",
+            "main.obj",
+        ]),
+    );
+    let ParsedLinkerInvocation::Cacheable(c) = result else {
+        panic!("expected cacheable")
+    };
+    assert_eq!(
+        c.secondary_outputs,
+        vec![
+            NormalizedPath::new("bin/app.iobj"),
+            NormalizedPath::new("bin/app.pgd"),
+            NormalizedPath::new("bin/app.winmd"),
+        ]
+    );
+}
+
+#[test]
+fn msvc_useprofile_hashes_explicit_pgd_input() {
+    let result = parse_linker_invocation(
+        "link.exe",
+        args(&[
+            "/OUT:bin/app.exe",
+            "/LTCG",
+            "/USEPROFILE:PGD=profiles/app",
+            "main.obj",
+        ]),
+    );
+    let ParsedLinkerInvocation::Cacheable(c) = result else {
+        panic!("expected cacheable")
+    };
+    assert_eq!(
+        c.input_files,
+        vec![
+            NormalizedPath::new("main.obj"),
+            NormalizedPath::new("profiles/app.pgd"),
+        ]
+    );
+    assert!(c.secondary_outputs.is_empty());
+}
+
+#[test]
+fn msvc_useprofile_with_implicit_pgd_falls_back() {
+    let result = parse_linker_invocation(
+        "link.exe",
+        args(&["/OUT:bin/app.exe", "/LTCG", "/USEPROFILE", "main.obj"]),
+    );
+    assert!(matches!(
+        result,
+        ParsedLinkerInvocation::NonCacheable { .. }
+    ));
+}

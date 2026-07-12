@@ -25,6 +25,7 @@
 use super::*;
 
 mod artifact_io;
+mod directory_bundle;
 mod fs_caps;
 mod hardlink;
 mod link_registry;
@@ -36,6 +37,7 @@ mod staged_store;
 mod write_cached;
 
 pub(in crate::daemon::server) use artifact_io::*;
+pub(in crate::daemon::server) use directory_bundle::*;
 pub(in crate::daemon::server) use fs_caps::*;
 pub(in crate::daemon::server) use hardlink::*;
 pub(in crate::daemon::server) use link_registry::*;
