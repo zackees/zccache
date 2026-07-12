@@ -118,6 +118,18 @@ Issue: https://github.com/zackees/zccache/issues/1039
 - [ ] Validate on Windows 10 and Linux Docker, then run repo lint/test/review gates.
 - [ ] Push one PR with RED evidence, wait for GHA/review, fix, squash merge, verify issue closure.
 
+# #1056 immutable staged-output burn-down
+
+Parent: https://github.com/zackees/zccache/issues/1056
+Current child: https://github.com/zackees/zccache/issues/1071
+
+- [ ] Replace lossy staged planner `Option` results with enabled/unsupported/error outcomes.
+- [ ] Attribute every compile/archive/link/exact-exec rejection to one bounded stable reason.
+- [ ] Add deterministic publication, salvage, and materialization fault hooks and adversarial tests.
+- [ ] Validate #1071 on Windows and Linux Docker, merge its PR(s), then close the child.
+- [ ] Re-audit every remaining parent producer, filesystem, mutable-output, and perf exit gate.
+- [ ] Implement and merge all remaining parent slices before closing #1056.
+
 # Fix-forward after #1049 and soldr embedded-zccache integration
 
 - [x] Capture RED for the obsolete `soldr update-zccache` perf bootstrap.

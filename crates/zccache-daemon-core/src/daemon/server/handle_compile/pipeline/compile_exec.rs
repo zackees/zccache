@@ -101,7 +101,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     } else {
         vec![output_path.clone()]
     };
-    use crate::daemon::staged_stats::{StagedCounter, StagedFailure, StagedTiming};
+    use crate::daemon::staged_stats::{StagedCounter, StagedTiming};
     let planning_started = std::time::Instant::now();
     state.profiler.staged.count(StagedCounter::PlanAttempted);
     let staged_plan_result = if is_rustc {
@@ -127,23 +127,23 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         planning_started.elapsed().as_nanos() as u64,
     );
     let staged_plan = match staged_plan_result {
-        Ok(Some(plan)) => {
+        StagedPlanOutcome::Enabled(plan) => {
             state.profiler.staged.count(StagedCounter::PlanEnabled);
             Some(plan)
         }
-        Ok(None) => {
+        StagedPlanOutcome::Unsupported(reason) => {
             state.profiler.staged.count(StagedCounter::PlanUnsupported);
-            state
-                .profiler
-                .staged
-                .failure(StagedFailure::UnsupportedShape);
+            state.profiler.staged.failure(reason.failure());
             None
         }
-        Err(e) => {
+        StagedPlanOutcome::Error(error) => {
             state.profiler.staged.count(StagedCounter::PlanError);
-            state.profiler.staged.failure(StagedFailure::Planning);
+            state.profiler.staged.failure(error.reason.failure());
             return CompileExecResult::Error(Response::Error {
-                message: format!("failed to prepare private compiler staging: {e}"),
+                message: format!(
+                    "failed to prepare private compiler staging: {}",
+                    error.source
+                ),
             });
         }
     };

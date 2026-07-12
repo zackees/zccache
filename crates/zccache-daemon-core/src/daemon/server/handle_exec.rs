@@ -44,28 +44,38 @@ impl ExecStagedPlan {
         args: &[String],
         output_files: &[NormalizedPath],
         cwd: &Path,
-    ) -> Option<Self> {
+    ) -> StagedPlanOutcome<Self> {
+        if !exec_staging_enabled() {
+            return StagedPlanOutcome::Unsupported(StagedPlanReason::LaneDisabled);
+        }
         if output_files.is_empty() {
-            return None;
+            return StagedPlanOutcome::Unsupported(StagedPlanReason::NoDeclaredOutputs);
         }
         let root = staging_dir.join(format!(
             ".exec-{}-{}",
             std::process::id(),
             EXEC_STAGE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
-        std::fs::create_dir_all(&root).ok()?;
+        if let Err(source) = std::fs::create_dir_all(&root) {
+            return StagedPlanOutcome::Error(StagedPlanError {
+                reason: StagedPlanReason::StagingDirectoryCreate,
+                source,
+            });
+        }
         let result = (|| {
             let mut outputs = Vec::with_capacity(output_files.len());
             let mut rewritten_args = args.to_vec();
             for declared in output_files {
                 let requested: NormalizedPath = absolutize(declared.as_path(), cwd).into();
-                let filename = requested.file_name()?;
+                let Some(filename) = requested.file_name() else {
+                    return StagedPlanOutcome::Unsupported(StagedPlanReason::OutputMissingFilename);
+                };
                 let staged: NormalizedPath = root.join(filename).into();
                 if outputs
                     .iter()
                     .any(|(_, existing): &(NormalizedPath, NormalizedPath)| existing == &staged)
                 {
-                    return None;
+                    return StagedPlanOutcome::Unsupported(StagedPlanReason::OutputNameCollision);
                 }
                 let requested_text = requested.to_string_lossy();
                 let declared_text = declared.to_string_lossy();
@@ -77,17 +87,17 @@ impl ExecStagedPlan {
                     }
                 }
                 if !replaced {
-                    return None;
+                    return StagedPlanOutcome::Unsupported(StagedPlanReason::OutputNotInArguments);
                 }
                 outputs.push((requested, staged));
             }
-            Some(Self {
+            StagedPlanOutcome::Enabled(Self {
                 outputs,
                 rewritten_args,
                 root: root.clone(),
             })
         })();
-        if result.is_none() {
+        if !matches!(result, StagedPlanOutcome::Enabled(_)) {
             let _ = std::fs::remove_dir_all(&root);
         }
         result
@@ -315,27 +325,35 @@ pub(super) async fn handle_generic_tool_exec(
     // 9. Cache miss — stage declared outputs only when the tool's argv gives
     // us an unambiguous exact-token rewrite for every output. Opaque output
     // syntax remains on the legacy path before spawn.
-    use crate::daemon::staged_stats::{StagedCounter, StagedFailure, StagedTiming};
+    use crate::daemon::staged_stats::{StagedCounter, StagedTiming};
     let planning_started = std::time::Instant::now();
     state.profiler.staged.count(StagedCounter::PlanAttempted);
-    let staged_plan = if exec_staging_enabled() {
-        ExecStagedPlan::build(state.staging.path(), args, output_files, cwd)
-    } else {
-        None
-    };
+    let staged_plan_result = ExecStagedPlan::build(state.staging.path(), args, output_files, cwd);
     state.profiler.staged.timing(
         StagedTiming::Planning,
         planning_started.elapsed().as_nanos() as u64,
     );
-    if staged_plan.is_some() {
-        state.profiler.staged.count(StagedCounter::PlanEnabled);
-    } else {
-        state.profiler.staged.count(StagedCounter::PlanUnsupported);
-        state
-            .profiler
-            .staged
-            .failure(StagedFailure::UnsupportedShape);
-    }
+    let staged_plan = match staged_plan_result {
+        StagedPlanOutcome::Enabled(plan) => {
+            state.profiler.staged.count(StagedCounter::PlanEnabled);
+            Some(plan)
+        }
+        StagedPlanOutcome::Unsupported(reason) => {
+            state.profiler.staged.count(StagedCounter::PlanUnsupported);
+            state.profiler.staged.failure(reason.failure());
+            None
+        }
+        StagedPlanOutcome::Error(error) => {
+            state.profiler.staged.count(StagedCounter::PlanError);
+            state.profiler.staged.failure(error.reason.failure());
+            tracing::warn!(
+                reason = error.reason.id(),
+                error = %error.source,
+                "exact-exec staging plan failed; using legacy path"
+            );
+            None
+        }
+    };
     let compiler_args = staged_plan
         .as_ref()
         .map_or(args, |plan| plan.rewritten_args.as_slice());
@@ -521,265 +539,9 @@ pub(super) async fn handle_generic_tool_exec(
 // ─── Key composition ─────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
-fn compose_primary_key(
-    tool_id: &ContentHash,
-    args: &[String],
-    env: &[(String, String)],
-    cwd: &Path,
-    cwd_in_key: bool,
-    input_pairs: &[(String, ContentHash)],
-    scan_pairs: &[(String, ContentHash)],
-    output_files: &[NormalizedPath],
-    input_extra: &Arc<Vec<u8>>,
-) -> ContentHash {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(EXEC_KEY_DOMAIN);
-    hasher.update(tool_id.as_bytes());
-
-    hasher.update(b"args:");
-    hasher.update(&(args.len() as u64).to_le_bytes());
-    for a in args {
-        hasher.update(&(a.len() as u64).to_le_bytes());
-        hasher.update(a.as_bytes());
-    }
-
-    let mut env_sorted: Vec<(&str, &str)> =
-        env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    env_sorted.sort_by(|a, b| a.0.cmp(b.0));
-    hasher.update(b"env:");
-    hasher.update(&(env_sorted.len() as u64).to_le_bytes());
-    for (k, v) in &env_sorted {
-        hasher.update(&(k.len() as u64).to_le_bytes());
-        hasher.update(k.as_bytes());
-        hasher.update(&(v.len() as u64).to_le_bytes());
-        hasher.update(v.as_bytes());
-    }
-
-    if cwd_in_key {
-        let cwd_str = normalize_for_key(cwd);
-        hasher.update(b"cwd:");
-        hasher.update(&(cwd_str.len() as u64).to_le_bytes());
-        hasher.update(cwd_str.as_bytes());
-    } else {
-        hasher.update(b"cwd:omitted");
-    }
-
-    mix_path_hash_pairs(&mut hasher, b"inputs:", input_pairs);
-    mix_path_hash_pairs(&mut hasher, b"scan:", scan_pairs);
-
-    let mut out_names: Vec<String> = output_files
-        .iter()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
-    out_names.sort();
-    hasher.update(b"outs:");
-    hasher.update(&(out_names.len() as u64).to_le_bytes());
-    for name in &out_names {
-        hasher.update(&(name.len() as u64).to_le_bytes());
-        hasher.update(name.as_bytes());
-    }
-
-    hasher.update(b"extra:");
-    hasher.update(&(input_extra.len() as u64).to_le_bytes());
-    hasher.update(input_extra);
-
-    ContentHash::from_bytes(*hasher.finalize().as_bytes())
-}
-
-/// Compose the full key by extending the primary with depfile-derived deps.
-/// The pairs MUST be sorted by path (the helpers that build them already do
-/// this); we re-sort defensively so the function is robust against future
-/// callers that forget.
-fn compose_full_key(primary: &ContentHash, dep_pairs: &[(String, ContentHash)]) -> ContentHash {
-    let mut sorted = dep_pairs.to_vec();
-    sorted.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"zccache-exec-full-key-v2");
-    hasher.update(primary.as_bytes());
-    mix_path_hash_pairs(&mut hasher, b"depfile:", &sorted);
-    ContentHash::from_bytes(*hasher.finalize().as_bytes())
-}
-
-fn mix_path_hash_pairs(hasher: &mut blake3::Hasher, tag: &[u8], pairs: &[(String, ContentHash)]) {
-    hasher.update(tag);
-    hasher.update(&(pairs.len() as u64).to_le_bytes());
-    for (path, hash) in pairs {
-        hasher.update(&(path.len() as u64).to_le_bytes());
-        hasher.update(path.as_bytes());
-        hasher.update(hash.as_bytes());
-    }
-}
-
-// ─── Key args filter ─────────────────────────────────────────────────────
-
-fn apply_key_args_filter(args: &[String], patterns: &[String]) -> Result<Vec<String>, String> {
-    if patterns.is_empty() {
-        return Ok(args.to_vec());
-    }
-    let regexes: Vec<regex::Regex> = patterns
-        .iter()
-        .map(|p| regex::Regex::new(p).map_err(|e| format!("{p:?}: {e}")))
-        .collect::<Result<_, _>>()?;
-    Ok(args
-        .iter()
-        .filter(|a| !regexes.iter().any(|r| r.is_match(a)))
-        .cloned()
-        .collect())
-}
-
-// ─── Path A: include scan ───────────────────────────────────────────────
-
-fn run_include_scan(
-    state: &Arc<SharedState>,
-    cwd: &Path,
-    seeds: &[NormalizedPath],
-    include_dirs: &[NormalizedPath],
-    system_include_dirs: &[NormalizedPath],
-    iquote_dirs: &[NormalizedPath],
-) -> Result<Vec<(String, ContentHash)>, String> {
-    if seeds.is_empty() {
-        return Ok(Vec::new());
-    }
-    let search = IncludeSearchPaths {
-        iquote: iquote_dirs
-            .iter()
-            .map(|p| absolutize_norm(p, cwd))
-            .collect(),
-        user: include_dirs
-            .iter()
-            .map(|p| absolutize_norm(p, cwd))
-            .collect(),
-        system: system_include_dirs
-            .iter()
-            .map(|p| absolutize_norm(p, cwd))
-            .collect(),
-        after: Vec::new(),
-    };
-
-    let mut resolved: Vec<NormalizedPath> = Vec::new();
-    for seed in seeds {
-        let abs = absolutize_norm(seed, cwd);
-        let scan = scan_recursive(abs.as_path(), &search);
-        resolved.extend(scan.resolved);
-        if scan.has_computed {
-            tracing::warn!(
-                seed = %abs.display(),
-                "include scan encountered #include MACRO (computed include) — key may be over-broad"
-            );
-        }
-    }
-    // Dedup + sort by path so the key is stable.
-    resolved.sort();
-    resolved.dedup();
-
-    let mut pairs: Vec<(String, ContentHash)> = Vec::with_capacity(resolved.len());
-    for header in &resolved {
-        let abs = header.as_path();
-        let hash = hash_file_via_cache(state, abs)
-            .ok_or_else(|| format!("include-scan: cannot hash {}", abs.display()))?;
-        pairs.push((normalize_for_key(abs), hash));
-    }
-    Ok(pairs)
-}
-
-// ─── Path B: depfile + sidecar ──────────────────────────────────────────
-
-/// On a warm invocation, load the dep set the previous run persisted under
-/// `<primary_hex>.deps`. Returns `None` when no sidecar exists (first run)
-/// or when any listed dep file no longer exists — that case forces a fresh
-/// first-run because the cached dep set is stale.
-fn load_depfile_sidecar(
-    state: &Arc<SharedState>,
-    primary_hex: &str,
-    _cwd: &Path,
-) -> Option<Vec<(String, ContentHash)>> {
-    let path = depfile_sidecar_path(&state.artifact_dir, primary_hex);
-    let content = std::fs::read_to_string(&path).ok()?;
-    let mut pairs: Vec<(String, ContentHash)> = Vec::new();
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let abs = Path::new(trimmed);
-        if !abs.exists() {
-            tracing::debug!(
-                missing = %abs.display(),
-                "depfile sidecar references vanished file; treating as miss"
-            );
-            return None;
-        }
-        let hash = hash_file_via_cache(state, abs)?;
-        pairs.push((normalize_for_key(abs), hash));
-    }
-    pairs.sort_by(|a, b| a.0.cmp(&b.0));
-    Some(pairs)
-}
-
-fn persist_depfile_sidecar(
-    state: &Arc<SharedState>,
-    primary_hex: &str,
-    dep_pairs: &[(String, ContentHash)],
-) {
-    let path = depfile_sidecar_path(&state.artifact_dir, primary_hex);
-    let mut content = String::new();
-    for (p, _) in dep_pairs {
-        content.push_str(p);
-        content.push('\n');
-    }
-    if let Err(e) = std::fs::write(&path, content) {
-        tracing::warn!(path = %path.display(), err = %e, "failed to write depfile sidecar");
-    }
-}
-
-fn depfile_sidecar_path(artifact_dir: &Path, primary_hex: &str) -> PathBuf {
-    artifact_dir.join(format!("{primary_hex}.deps"))
-}
-
-/// Parse the depfile the tool emitted, hash each listed file. `inputs` is
-/// the already-declared primary input set; we exclude any path that's
-/// already in that set so the dep-set hash doesn't double-count them.
-fn harvest_depfile(
-    state: &Arc<SharedState>,
-    depfile_path: &Path,
-    cwd: &Path,
-    inputs: &[(String, ContentHash)],
-) -> Result<Vec<(String, ContentHash)>, String> {
-    let content =
-        std::fs::read_to_string(depfile_path).map_err(|e| format!("read depfile: {e}"))?;
-    // `parse_depfile` takes a `source` path it excludes from results; we
-    // pass an empty path so nothing is excluded — exec doesn't have a
-    // single "source", any included files get filtered against the
-    // declared input set below.
-    let scan = crate::depgraph::depfile::parse_depfile(&content, Path::new(""), cwd)
-        .map_err(|e| format!("parse depfile: {e}"))?;
-
-    let declared: std::collections::HashSet<&str> =
-        inputs.iter().map(|(p, _)| p.as_str()).collect();
-
-    let mut pairs: Vec<(String, ContentHash)> = Vec::new();
-    for dep in &scan.resolved {
-        let abs = dep.as_path();
-        if !abs.exists() {
-            return Err(format!(
-                "depfile references missing file: {}",
-                abs.display()
-            ));
-        }
-        let key = normalize_for_key(abs);
-        if declared.contains(key.as_str()) {
-            continue;
-        }
-        let hash = hash_file_via_cache(state, abs)
-            .ok_or_else(|| format!("cannot hash dep {}", abs.display()))?;
-        pairs.push((key, hash));
-    }
-    pairs.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(pairs)
-}
-
-// ─── Coalescing ─────────────────────────────────────────────────────────
-
+#[path = "handle_exec_key.rs"]
+mod key;
+use key::*;
 enum InFlight {
     /// We acquired the slot ourselves (no peer was running).
     Owner,
@@ -1214,163 +976,5 @@ mod coalesce_tests {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn h(byte: u8) -> ContentHash {
-        ContentHash::from_bytes([byte; 32])
-    }
-
-    fn empty_extra() -> Arc<Vec<u8>> {
-        Arc::new(Vec::new())
-    }
-
-    #[test]
-    fn primary_key_changes_when_input_hash_changes() {
-        let k1 = compose_primary_key(
-            &h(1),
-            &["--json".into()],
-            &[("PATH".into(), "/bin".into())],
-            Path::new("/p"),
-            true,
-            &[("src/a.cpp".into(), h(2))],
-            &[],
-            &[NormalizedPath::from("out.json")],
-            &empty_extra(),
-        );
-        let k2 = compose_primary_key(
-            &h(1),
-            &["--json".into()],
-            &[("PATH".into(), "/bin".into())],
-            Path::new("/p"),
-            true,
-            &[("src/a.cpp".into(), h(3))],
-            &[],
-            &[NormalizedPath::from("out.json")],
-            &empty_extra(),
-        );
-        assert_ne!(k1, k2);
-    }
-
-    #[test]
-    fn primary_key_stable_for_env_order() {
-        let k1 = compose_primary_key(
-            &h(1),
-            &[],
-            &[
-                ("PATH".into(), "/bin".into()),
-                ("LINT_VER".into(), "1".into()),
-            ],
-            Path::new("/p"),
-            true,
-            &[],
-            &[],
-            &[],
-            &empty_extra(),
-        );
-        let k2 = compose_primary_key(
-            &h(1),
-            &[],
-            &[
-                ("LINT_VER".into(), "1".into()),
-                ("PATH".into(), "/bin".into()),
-            ],
-            Path::new("/p"),
-            true,
-            &[],
-            &[],
-            &[],
-            &empty_extra(),
-        );
-        assert_eq!(k1, k2);
-    }
-
-    #[test]
-    fn full_key_extends_primary_with_depfile_deps() {
-        let primary = compose_primary_key(
-            &h(1),
-            &[],
-            &[],
-            Path::new("/p"),
-            true,
-            &[],
-            &[],
-            &[],
-            &empty_extra(),
-        );
-        let k_no_deps = compose_full_key(&primary, &[]);
-        let k_with = compose_full_key(&primary, &[("h.h".into(), h(9))]);
-        // Without deps, full key is *not* equal to primary because of the
-        // domain tag — but it must differ from a key with deps.
-        assert_ne!(k_no_deps, k_with);
-    }
-
-    #[test]
-    fn full_key_order_independent_for_dep_pairs() {
-        let primary = compose_primary_key(
-            &h(1),
-            &[],
-            &[],
-            Path::new("/p"),
-            true,
-            &[],
-            &[],
-            &[],
-            &empty_extra(),
-        );
-        let a = vec![("a.h".into(), h(2)), ("b.h".into(), h(3))];
-        let b = vec![("b.h".into(), h(3)), ("a.h".into(), h(2))];
-        assert_eq!(
-            compose_full_key(&primary, &a),
-            compose_full_key(&primary, &b)
-        );
-    }
-
-    #[test]
-    fn key_args_filter_drops_matching_args() {
-        let filtered = apply_key_args_filter(
-            &[
-                "compile".into(),
-                "--verbose".into(),
-                "--no-color".into(),
-                "src.cpp".into(),
-            ],
-            &["^--verbose$".into(), "^--no-color$".into()],
-        )
-        .unwrap();
-        assert_eq!(filtered, vec!["compile".to_string(), "src.cpp".to_string()]);
-    }
-
-    #[test]
-    fn key_args_filter_invalid_regex_errors() {
-        let err = apply_key_args_filter(&["a".into()], &["(".into()]).unwrap_err();
-        assert!(err.contains('('));
-    }
-
-    #[test]
-    fn primary_key_differs_when_scan_changes() {
-        let k1 = compose_primary_key(
-            &h(1),
-            &[],
-            &[],
-            Path::new("/p"),
-            true,
-            &[],
-            &[("hdr.h".into(), h(7))],
-            &[],
-            &empty_extra(),
-        );
-        let k2 = compose_primary_key(
-            &h(1),
-            &[],
-            &[],
-            Path::new("/p"),
-            true,
-            &[],
-            &[("hdr.h".into(), h(8))],
-            &[],
-            &empty_extra(),
-        );
-        assert_ne!(k1, k2);
-    }
-}
+#[path = "handle_exec_tests.rs"]
+mod tests;

@@ -354,45 +354,45 @@ pub(super) async fn handle_link_ephemeral(
     } else {
         cwd_path.join(&parsed_tool.output_file).into()
     };
-    use crate::daemon::staged_stats::{StagedCounter, StagedFailure, StagedTiming};
+    use crate::daemon::staged_stats::{StagedCounter, StagedTiming};
     let planning_started = std::time::Instant::now();
     state.profiler.staged.count(StagedCounter::PlanAttempted);
-    let staged_plan = if parsed_tool.is_archive && parsed_tool.secondary_outputs.is_empty() {
-        match StagedCompilePlan::archive(state.staging.path(), args, &output_path, cwd_path) {
-            Ok(plan) => plan,
-            Err(error) => {
-                tracing::warn!(%error, "archive staging plan failed; using legacy path");
-                None
-            }
-        }
+    let staged_plan_result = if parsed_tool.is_archive && parsed_tool.secondary_outputs.is_empty() {
+        StagedCompilePlan::archive(state.staging.path(), args, &output_path, cwd_path)
     } else {
-        match StagedCompilePlan::link(
+        StagedCompilePlan::link(
             state.staging.path(),
             args,
             &output_path,
             &parsed_tool.secondary_outputs,
             cwd_path,
-        ) {
-            Ok(plan) => plan,
-            Err(error) => {
-                tracing::warn!(%error, "link staging plan failed; using legacy path");
-                None
-            }
-        }
+        )
     };
     state.profiler.staged.timing(
         StagedTiming::Planning,
         planning_started.elapsed().as_nanos() as u64,
     );
-    if staged_plan.is_some() {
-        state.profiler.staged.count(StagedCounter::PlanEnabled);
-    } else {
-        state.profiler.staged.count(StagedCounter::PlanUnsupported);
-        state
-            .profiler
-            .staged
-            .failure(StagedFailure::UnsupportedShape);
-    }
+    let staged_plan = match staged_plan_result {
+        StagedPlanOutcome::Enabled(plan) => {
+            state.profiler.staged.count(StagedCounter::PlanEnabled);
+            Some(plan)
+        }
+        StagedPlanOutcome::Unsupported(reason) => {
+            state.profiler.staged.count(StagedCounter::PlanUnsupported);
+            state.profiler.staged.failure(reason.failure());
+            None
+        }
+        StagedPlanOutcome::Error(error) => {
+            state.profiler.staged.count(StagedCounter::PlanError);
+            state.profiler.staged.failure(error.reason.failure());
+            tracing::warn!(
+                reason = error.reason.id(),
+                error = %error.source,
+                "link staging plan failed; using legacy path"
+            );
+            None
+        }
+    };
     let compiler_args = staged_plan
         .as_ref()
         .map_or_else(|| args.to_vec(), |plan| plan.rewritten_args.clone());

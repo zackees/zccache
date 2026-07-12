@@ -86,6 +86,19 @@ const BYTES: &[(StagedBytes, &str)] = &[
 pub(crate) enum StagedFailure {
     UnsupportedShape,
     Planning,
+    PlanLaneDisabled,
+    PlanOutputToStdout,
+    PlanOutputNameCollision,
+    PlanUnmodeledSideOutput,
+    PlanUnsupportedOutputRole,
+    PlanMissingRequiredOutputFlag,
+    PlanMissingOptionValue,
+    PlanOutputMissingFilename,
+    PlanUnsupportedOutputPath,
+    PlanAmbiguousOutputArgument,
+    PlanOutputNotInArguments,
+    PlanNoDeclaredOutputs,
+    PlanStagingDirectoryCreate,
     OutputValidation,
     Hashing,
     DurableDigest,
@@ -100,6 +113,52 @@ pub(crate) enum StagedFailure {
 const FAILURES: &[(StagedFailure, &str)] = &[
     (StagedFailure::UnsupportedShape, "unsupported_shape"),
     (StagedFailure::Planning, "planning"),
+    (StagedFailure::PlanLaneDisabled, "plan_lane_disabled"),
+    (StagedFailure::PlanOutputToStdout, "plan_output_to_stdout"),
+    (
+        StagedFailure::PlanOutputNameCollision,
+        "plan_output_name_collision",
+    ),
+    (
+        StagedFailure::PlanUnmodeledSideOutput,
+        "plan_unmodeled_side_output",
+    ),
+    (
+        StagedFailure::PlanUnsupportedOutputRole,
+        "plan_unsupported_output_role",
+    ),
+    (
+        StagedFailure::PlanMissingRequiredOutputFlag,
+        "plan_missing_required_output_flag",
+    ),
+    (
+        StagedFailure::PlanMissingOptionValue,
+        "plan_missing_option_value",
+    ),
+    (
+        StagedFailure::PlanOutputMissingFilename,
+        "plan_output_missing_filename",
+    ),
+    (
+        StagedFailure::PlanUnsupportedOutputPath,
+        "plan_unsupported_output_path",
+    ),
+    (
+        StagedFailure::PlanAmbiguousOutputArgument,
+        "plan_ambiguous_output_argument",
+    ),
+    (
+        StagedFailure::PlanOutputNotInArguments,
+        "plan_output_not_in_arguments",
+    ),
+    (
+        StagedFailure::PlanNoDeclaredOutputs,
+        "plan_no_declared_outputs",
+    ),
+    (
+        StagedFailure::PlanStagingDirectoryCreate,
+        "plan_staging_directory_create",
+    ),
     (StagedFailure::OutputValidation, "output_validation"),
     (StagedFailure::Hashing, "hashing"),
     (StagedFailure::DurableDigest, "durable_digest"),
