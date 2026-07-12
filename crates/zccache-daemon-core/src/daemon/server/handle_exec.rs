@@ -473,27 +473,38 @@ pub(super) async fn handle_generic_tool_exec(
     let too_large = stdout.len() > EXEC_STREAM_CAP_BYTES || stderr.len() > EXEC_STREAM_CAP_BYTES;
 
     let cacheable_exit = true; // exit codes are part of the cached payload — even non-zero
-    if store_allowed && all_captured && !too_large && depfile_ok && cacheable_exit {
-        let artifact = ArtifactData {
-            outputs: cache_outputs,
-            stdout: Arc::clone(&stdout),
-            stderr: Arc::clone(&stderr),
-            exit_code,
+    let publication_failure =
+        if store_allowed && all_captured && !too_large && depfile_ok && cacheable_exit {
+            let artifact = ArtifactData {
+                outputs: cache_outputs,
+                stdout: Arc::clone(&stdout),
+                stderr: Arc::clone(&stderr),
+                exit_code,
+            };
+            store_exec_artifact(
+                state,
+                final_full_hex.clone(),
+                artifact,
+                staged_plan.as_ref().map(|_| execution_outputs.as_slice()),
+            )
+            .await
+        } else if too_large {
+            tracing::warn!(
+                stdout_len = stdout.len(),
+                stderr_len = stderr.len(),
+                cap = EXEC_STREAM_CAP_BYTES,
+                "exec output exceeded cache cap; not storing this run"
+            );
+            None
+        } else if non_deterministic {
+            tracing::debug!(
+                key = %final_full_hex,
+                "exec marked non-deterministic; not storing"
+            );
+            None
+        } else {
+            None
         };
-        store_exec_artifact(state, final_full_hex.clone(), artifact).await;
-    } else if too_large {
-        tracing::warn!(
-            stdout_len = stdout.len(),
-            stderr_len = stderr.len(),
-            cap = EXEC_STREAM_CAP_BYTES,
-            "exec output exceeded cache cap; not storing this run"
-        );
-    } else if non_deterministic {
-        tracing::debug!(
-            key = %final_full_hex,
-            "exec marked non-deterministic; not storing"
-        );
-    }
 
     if let Some(plan) = staged_plan.as_ref() {
         if !all_captured {
@@ -501,67 +512,14 @@ pub(super) async fn handle_generic_tool_exec(
                 message: "successful generic tool omitted a staged output".to_string(),
             };
         }
-        use crate::daemon::staged_stats::{StagedBytes, StagedCounter, StagedFailure};
-        let materialize_started = std::time::Instant::now();
-        match plan.materialize() {
-            Ok(observed) => {
-                state
-                    .profiler
-                    .staged
-                    .add_count(StagedCounter::MaterializeReflink, observed.reflink_count);
-                state
-                    .profiler
-                    .staged
-                    .add_count(StagedCounter::MaterializeCopy, observed.copy_count);
-                state
-                    .profiler
-                    .staged
-                    .bytes(StagedBytes::Materialization, observed.copy_bytes);
-                state.profiler.staged.timing(
-                    StagedTiming::MissMaterialization,
-                    materialize_started.elapsed().as_nanos() as u64,
-                );
-            }
-            Err(error) => {
-                let elapsed_ns = materialize_started.elapsed().as_nanos() as u64;
-                let progress = materialization_error_progress(&error);
-                state
-                    .profiler
-                    .staged
-                    .add_count(StagedCounter::MaterializeReflink, progress.reflink_count);
-                state
-                    .profiler
-                    .staged
-                    .add_count(StagedCounter::MaterializeCopy, progress.copy_count);
-                state
-                    .profiler
-                    .staged
-                    .bytes(StagedBytes::Materialization, progress.copy_bytes);
-                state
-                    .profiler
-                    .staged
-                    .count(StagedCounter::MaterializeFailure);
-                state
-                    .profiler
-                    .staged
-                    .failure(StagedFailure::RequestedMaterialization);
-                state
-                    .profiler
-                    .staged
-                    .timing(StagedTiming::MissMaterialization, elapsed_ns);
-                crate::core::lifecycle::write_event(
-                    "staged_materialization_failed",
-                    serde_json::json!({
-                        "reason": "requested_materialization",
-                        "output_count": plan.outputs.len(),
-                        "copied_bytes": progress.copy_bytes,
-                        "elapsed_ns": elapsed_ns,
-                    }),
-                );
-                return Response::Error {
-                    message: format!("failed to materialize generic tool outputs: {error}"),
-                };
-            }
+        if let Err(error) =
+            materialize_staged_outputs(state, plan.outputs.len(), publication_failure, || {
+                plan.materialize()
+            })
+        {
+            return Response::Error {
+                message: format!("failed to materialize generic tool outputs: {error}"),
+            };
         }
     }
 
@@ -879,8 +837,30 @@ async fn try_exec_cache_hit(
 
 // ─── Store ──────────────────────────────────────────────────────────────
 
-async fn store_exec_artifact(state: &Arc<SharedState>, key_hex: String, artifact: ArtifactData) {
+async fn store_exec_artifact(
+    state: &Arc<SharedState>,
+    key_hex: String,
+    artifact: ArtifactData,
+    staged_sources: Option<&[NormalizedPath]>,
+) -> Option<StagedPublishFailure> {
     let cached = CachedArtifact::from_artifact_data(&artifact);
+    if let Some(sources) = staged_sources {
+        let result = publish_staged_artifact(state, &key_hex, cached.meta.clone(), sources);
+        match result {
+            Ok(()) => {
+                state.artifacts.insert(key_hex, cached);
+                return None;
+            }
+            Err(reason) => {
+                tracing::warn!(
+                    key = %key_hex,
+                    reason = reason.id(),
+                    "staged exact-exec publication failed; salvaging requested outputs"
+                );
+                return Some(reason);
+            }
+        }
+    }
     {
         let artifact_dir = state.artifact_dir.clone();
         let key_for_persist = key_hex.clone();
@@ -919,6 +899,7 @@ async fn store_exec_artifact(state: &Arc<SharedState>, key_hex: String, artifact
         });
     }
     state.artifacts.insert(key_hex, cached);
+    None
 }
 
 // ─── Path normalization ─────────────────────────────────────────────────

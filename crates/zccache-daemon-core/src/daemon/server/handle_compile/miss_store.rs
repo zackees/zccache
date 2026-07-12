@@ -49,40 +49,6 @@ pub(super) struct MissArtifactStoreStats {
     pub(super) artifact_memory_insert_ns: u64,
 }
 
-fn record_staged_publication_failure(state: &SharedState, reason: StagedPublishFailure) {
-    use crate::daemon::staged_stats::{StagedCounter, StagedFailure};
-    state
-        .profiler
-        .staged
-        .count(StagedCounter::PublicationFailure);
-    if reason == StagedPublishFailure::Conflict {
-        state
-            .profiler
-            .staged
-            .count(StagedCounter::PublicationConflict);
-        state
-            .profiler
-            .staged
-            .failure(StagedFailure::PublicationConflict);
-    } else {
-        state.profiler.staged.failure(reason.failure());
-    }
-}
-
-fn send_staged_index_insert(
-    state: &SharedState,
-    key: String,
-    metadata: ArtifactIndex,
-) -> Result<(), StagedPublishFailure> {
-    #[cfg(test)]
-    inject_staged_fault(&state.artifact_dir, StagedFaultPoint::IndexCommit)
-        .map_err(|_| StagedPublishFailure::IndexCommit)?;
-    state
-        .index_writer_tx
-        .send(IndexWriterCommand::Insert(key, metadata))
-        .map_err(|_| StagedPublishFailure::IndexCommit)
-}
-
 pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> MissArtifactStoreStats {
     let MissArtifactStoreRequest {
         state_arc,

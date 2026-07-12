@@ -2,73 +2,6 @@
 
 use super::*;
 
-fn materialize_link_plan_observed(
-    state: &SharedState,
-    plan: &StagedCompilePlan,
-) -> std::io::Result<()> {
-    use crate::daemon::staged_stats::{StagedBytes, StagedCounter, StagedFailure, StagedTiming};
-    let started = std::time::Instant::now();
-    match plan.materialize() {
-        Ok(observed) => {
-            state
-                .profiler
-                .staged
-                .add_count(StagedCounter::MaterializeReflink, observed.reflink_count);
-            state
-                .profiler
-                .staged
-                .add_count(StagedCounter::MaterializeCopy, observed.copy_count);
-            state
-                .profiler
-                .staged
-                .bytes(StagedBytes::Materialization, observed.copy_bytes);
-            state.profiler.staged.timing(
-                StagedTiming::MissMaterialization,
-                started.elapsed().as_nanos() as u64,
-            );
-            Ok(())
-        }
-        Err(error) => {
-            let elapsed_ns = started.elapsed().as_nanos() as u64;
-            let progress = materialization_error_progress(&error);
-            state
-                .profiler
-                .staged
-                .add_count(StagedCounter::MaterializeReflink, progress.reflink_count);
-            state
-                .profiler
-                .staged
-                .add_count(StagedCounter::MaterializeCopy, progress.copy_count);
-            state
-                .profiler
-                .staged
-                .bytes(StagedBytes::Materialization, progress.copy_bytes);
-            state
-                .profiler
-                .staged
-                .count(StagedCounter::MaterializeFailure);
-            state
-                .profiler
-                .staged
-                .failure(StagedFailure::RequestedMaterialization);
-            state
-                .profiler
-                .staged
-                .timing(StagedTiming::MissMaterialization, elapsed_ns);
-            crate::core::lifecycle::write_event(
-                "staged_materialization_failed",
-                serde_json::json!({
-                    "reason": "requested_materialization",
-                    "output_count": plan.output_paths().len(),
-                    "copied_bytes": progress.copy_bytes,
-                    "elapsed_ns": elapsed_ns,
-                }),
-            );
-            Err(error)
-        }
-    }
-}
-
 /// Handle a single-roundtrip ephemeral link/archive request.
 ///
 /// Parses the tool invocation, computes a cache key from the tool binary and
@@ -535,7 +468,11 @@ pub(super) async fn handle_link_ephemeral(
                     staged_count = unexpected_staged.len(),
                     "undeclared linker side effects invalidate staged publication"
                 );
-                if let Err(error) = materialize_link_plan_observed(state, plan) {
+                if let Err(error) =
+                    materialize_staged_outputs(state, plan.output_paths().len(), None, || {
+                        plan.materialize()
+                    })
+                {
                     return Response::Error {
                         message: format!("failed to materialize staged link output: {error}"),
                     };
@@ -662,13 +599,24 @@ pub(super) async fn handle_link_ephemeral(
                 };
                 if let Some(plan) = staged_plan.as_ref() {
                     let _guard = guard;
-                    let written = persist_artifact_paths(&artifact_dir, &kh, &source_paths).is_ok();
-                    if written {
-                        let _ = state
-                            .index_writer_tx
-                            .send(IndexWriterCommand::Insert(kh, persist_meta));
+                    let publication_failure =
+                        publish_staged_artifact(state, &kh, persist_meta, &source_paths).err();
+                    if publication_failure.is_none() {
+                        state.artifacts.insert(key_hex.clone(), cached);
+                        tracing::debug!(%key_hex, "link artifact cached");
+                    } else {
+                        tracing::warn!(
+                            key = %key_hex,
+                            reason = publication_failure.map(StagedPublishFailure::id),
+                            "staged link publication failed; salvaging requested outputs"
+                        );
                     }
-                    if let Err(error) = materialize_link_plan_observed(state, plan) {
+                    if let Err(error) = materialize_staged_outputs(
+                        state,
+                        plan.output_paths().len(),
+                        publication_failure,
+                        || plan.materialize(),
+                    ) {
                         return Response::Error {
                             message: format!("failed to materialize staged link output: {error}"),
                         };
@@ -697,11 +645,10 @@ pub(super) async fn handle_link_ephemeral(
                                 .send(IndexWriterCommand::Insert(kh, meta));
                         }
                     });
+                    state.artifacts.insert(key_hex.clone(), cached);
+                    tracing::debug!(%key_hex, "link artifact cached");
                 }
             }
-
-            state.artifacts.insert(key_hex.clone(), cached);
-            tracing::debug!(%key_hex, "link artifact cached");
         } else if staged_plan.is_some() {
             return Response::Error {
                 message: "successful archive omitted its staged output".to_string(),
