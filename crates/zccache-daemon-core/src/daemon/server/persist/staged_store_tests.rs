@@ -11,6 +11,15 @@ fn source_files(dir: &Path) -> Vec<NormalizedPath> {
 }
 
 #[test]
+fn publication_timing_is_exclusive_of_hashing() {
+    let hashing_ns = 37;
+    let publication_ns = exclusive_publication_ns(100, hashing_ns);
+    assert_eq!(publication_ns, 63);
+    assert_eq!(hashing_ns + publication_ns, 100);
+    assert_eq!(exclusive_publication_ns(10, 11), 0);
+}
+
+#[test]
 fn staged_generation_is_independent_and_hash_addressed() {
     let dir = tempfile::tempdir().unwrap();
     let artifact_dir = dir.path().join("artifacts");
@@ -254,6 +263,121 @@ fn concurrent_same_key_publishers_never_overwrite_each_other() {
         fs::read(&payloads[0]).unwrap().as_slice(),
         b"generation-a" | b"generation-b"
     ));
+}
+
+#[test]
+fn clear_waits_for_in_flight_publication_then_removes_the_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let artifact_dir = dir.path().join("artifacts");
+    fs::create_dir_all(&artifact_dir).unwrap();
+    let sources = source_files(dir.path());
+    let key = "1".repeat(64);
+    let hook = StagedHookGuard::arm(&artifact_dir, StagedHookPoint::PublicationStoreLocked);
+    let publisher = {
+        let artifact_dir = artifact_dir.clone();
+        let key = key.clone();
+        std::thread::spawn(move || persist_staged_artifact_paths(&artifact_dir, &key, &sources))
+    };
+    hook.wait_until_reached();
+
+    let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+    let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+    let clearer = {
+        let artifact_dir = artifact_dir.clone();
+        std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            done_tx.send(clear_staged_artifacts(&artifact_dir)).unwrap();
+        })
+    };
+    started_rx.recv().unwrap();
+    assert!(matches!(
+        done_rx.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+
+    hook.resume();
+    publisher.join().unwrap().unwrap();
+    assert!(done_rx.recv().unwrap().unwrap() > 0);
+    clearer.join().unwrap();
+    assert!(load_staged_artifact_paths(&artifact_dir, &key, &[23, 24])
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn eviction_waits_for_in_flight_publication_then_removes_the_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let artifact_dir = dir.path().join("artifacts");
+    fs::create_dir_all(&artifact_dir).unwrap();
+    let sources = source_files(dir.path());
+    let key = "2".repeat(64);
+    let hook = StagedHookGuard::arm(&artifact_dir, StagedHookPoint::PublicationStoreLocked);
+    let publisher = {
+        let artifact_dir = artifact_dir.clone();
+        let key = key.clone();
+        std::thread::spawn(move || persist_staged_artifact_paths(&artifact_dir, &key, &sources))
+    };
+    hook.wait_until_reached();
+
+    let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+    let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+    let evictor = {
+        let artifact_dir = artifact_dir.clone();
+        let key = key.clone();
+        std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            done_tx
+                .send(evict_staged_artifact_keys(
+                    &artifact_dir,
+                    &std::collections::HashSet::from([key]),
+                ))
+                .unwrap();
+        })
+    };
+    started_rx.recv().unwrap();
+    assert!(matches!(
+        done_rx.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+
+    hook.resume();
+    publisher.join().unwrap().unwrap();
+    assert!(done_rx.recv().unwrap().unwrap() > 0);
+    evictor.join().unwrap();
+    assert!(load_staged_artifact_paths(&artifact_dir, &key, &[23, 24])
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn clear_during_salvage_cannot_remove_private_compiler_outputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let artifact_dir = dir.path().join("artifacts");
+    fs::create_dir_all(&artifact_dir).unwrap();
+    let published = source_files(dir.path());
+    persist_staged_artifact_paths(&artifact_dir, &"3".repeat(64), &published).unwrap();
+
+    let private_root = dir.path().join("private-staging");
+    fs::create_dir_all(&private_root).unwrap();
+    let staged: NormalizedPath = private_root.join("result.rlib").into();
+    let requested: NormalizedPath = dir.path().join("result.rlib").into();
+    fs::write(&staged, b"successful compiler output").unwrap();
+    let plan = StagedCompilePlan::for_test(
+        private_root,
+        vec![StagedOutputPlan {
+            requested: requested.clone(),
+            staged,
+        }],
+    );
+    let hook = StagedHookGuard::arm(&requested, StagedHookPoint::MaterializeOutput);
+    let salvage = std::thread::spawn(move || plan.materialize());
+    hook.wait_until_reached();
+
+    assert!(clear_staged_artifacts(&artifact_dir).unwrap() > 0);
+    assert!(!requested.exists());
+    hook.resume();
+    salvage.join().unwrap().unwrap();
+    assert_eq!(fs::read(&requested).unwrap(), b"successful compiler output");
 }
 
 #[test]

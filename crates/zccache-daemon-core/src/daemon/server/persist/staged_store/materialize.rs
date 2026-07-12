@@ -63,6 +63,8 @@ pub(in crate::daemon::server) fn materialize_independent_with_stats(
     source: &Path,
     destination: &Path,
 ) -> io::Result<StagedMaterializationStats> {
+    #[cfg(test)]
+    super::hook::pause(destination, super::StagedHookPoint::MaterializeOutput);
     if let Ok(metadata) = fs::metadata(destination) {
         if metadata.is_dir() {
             return Err(io::Error::new(

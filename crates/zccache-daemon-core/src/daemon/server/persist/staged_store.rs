@@ -27,6 +27,10 @@ mod fault;
 pub(in crate::daemon::server) use fault::{
     inject as inject_staged_fault, StagedFaultGuard, StagedFaultPoint,
 };
+#[cfg(test)]
+mod hook;
+#[cfg(test)]
+pub(in crate::daemon::server) use hook::{StagedHookGuard, StagedHookPoint};
 
 pub(in crate::daemon::server) const STAGED_ARTIFACTS_ENV: &str = "ZCCACHE_STAGED_ARTIFACTS";
 
@@ -36,6 +40,10 @@ const PUBLISH_LOCK: &str = ".publish.lock";
 const STORE_LOCK: &str = ".store.lock";
 
 static STAGED_ARTIFACT_TMP_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn exclusive_publication_ns(total_ns: u64, hashing_ns: u64) -> u64 {
+    total_ns.saturating_sub(hashing_ns)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::daemon::server) enum StagedPublishFailure {
@@ -499,6 +507,8 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
         .map_err(|error| publish_error(StagedPublishFailure::StoreSetup, error))?;
     fs2::FileExt::lock_shared(&store_lock)
         .map_err(|error| publish_error(StagedPublishFailure::StoreSetup, error))?;
+    #[cfg(test)]
+    hook::pause(artifact_dir, StagedHookPoint::PublicationStoreLocked);
     let key_root = root.join(key_hex);
     fs::create_dir_all(&key_root)
         .map_err(|error| publish_error(StagedPublishFailure::StoreSetup, error))?;
@@ -756,8 +766,8 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
                 );
             }
         }
-        stats.staged_publication_ns =
-            (publish_started.elapsed().as_nanos() as u64).saturating_sub(stats.staged_hash_ns);
+        let total_ns = publish_started.elapsed().as_nanos() as u64;
+        stats.staged_publication_ns = exclusive_publication_ns(total_ns, stats.staged_hash_ns);
         tracing::info!(
             event = "staged_publication_complete",
             cache_key = key_hex,
@@ -766,7 +776,7 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
             reflink_count = stats.reflink_count,
             copy_count = stats.copy_count,
             copy_bytes = stats.copy_bytes,
-            elapsed_ns = publish_started.elapsed().as_nanos() as u64,
+            elapsed_ns = total_ns,
             "published immutable staged artifact generation"
         );
         Ok(stats)
