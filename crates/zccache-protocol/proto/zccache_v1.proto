@@ -310,6 +310,14 @@ message PhaseProfileSummary {
   uint64 hash_all_ns = 16;
   uint64 artifact_store_ns = 17;
   uint64 total_miss_ns = 18;
+  StagedProfileSummary staged = 19;
+}
+
+message StagedProfileSummary {
+  map<string, uint64> counters = 1;
+  map<string, uint64> timings_ns = 2;
+  map<string, uint64> bytes = 3;
+  map<string, uint64> failures = 4;
 }
 
 message SessionStarted {

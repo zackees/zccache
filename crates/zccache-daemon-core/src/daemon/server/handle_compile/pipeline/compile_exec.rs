@@ -101,36 +101,50 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     } else {
         vec![output_path.clone()]
     };
-    let staged_plan = if is_rustc {
-        match StagedCompilePlan::rustc(
+    use crate::daemon::staged_stats::{StagedCounter, StagedFailure, StagedTiming};
+    let planning_started = std::time::Instant::now();
+    state.profiler.staged.count(StagedCounter::PlanAttempted);
+    let staged_plan_result = if is_rustc {
+        StagedCompilePlan::rustc(
             state.staging.path(),
             effective_args,
             output_path,
             &expected_outputs,
             cwd,
-        ) {
-            Ok(plan) => plan,
-            Err(e) => {
-                return CompileExecResult::Error(Response::Error {
-                    message: format!("failed to prepare private compiler staging: {e}"),
-                });
-            }
-        }
+        )
     } else {
-        match StagedCompilePlan::cc(
+        StagedCompilePlan::cc(
             state.staging.path(),
             compilation.family,
             effective_args,
             output_path,
             cwd,
             dep_flags,
-        ) {
-            Ok(plan) => plan,
-            Err(e) => {
-                return CompileExecResult::Error(Response::Error {
-                    message: format!("failed to prepare private compiler staging: {e}"),
-                });
-            }
+        )
+    };
+    state.profiler.staged.timing(
+        StagedTiming::Planning,
+        planning_started.elapsed().as_nanos() as u64,
+    );
+    let staged_plan = match staged_plan_result {
+        Ok(Some(plan)) => {
+            state.profiler.staged.count(StagedCounter::PlanEnabled);
+            Some(plan)
+        }
+        Ok(None) => {
+            state.profiler.staged.count(StagedCounter::PlanUnsupported);
+            state
+                .profiler
+                .staged
+                .failure(StagedFailure::UnsupportedShape);
+            None
+        }
+        Err(e) => {
+            state.profiler.staged.count(StagedCounter::PlanError);
+            state.profiler.staged.failure(StagedFailure::Planning);
+            return CompileExecResult::Error(Response::Error {
+                message: format!("failed to prepare private compiler staging: {e}"),
+            });
         }
     };
     let compiler_args = staged_plan.as_ref().map_or_else(
@@ -262,6 +276,13 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     )
     .await;
     let compiler_process_ns = t_compiler_process.elapsed().as_nanos() as u64;
+    if staged_plan.is_some() {
+        state.profiler.staged.count(StagedCounter::CompilerStaged);
+        state
+            .profiler
+            .staged
+            .timing(StagedTiming::Compiler, compiler_process_ns);
+    }
 
     if state.compile_concurrency.is_some() {
         let duration_ns = compile_span_start.elapsed().as_nanos() as u64;

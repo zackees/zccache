@@ -340,6 +340,29 @@ fn phase_profile_to_prost(profile: &crate::PhaseProfileSummary) -> zccache_v1::P
         hash_all_ns: profile.hash_all_ns,
         artifact_store_ns: profile.artifact_store_ns,
         total_miss_ns: profile.total_miss_ns,
+        staged: Some(staged_profile_to_prost(&profile.staged)),
+    }
+}
+
+fn staged_profile_to_prost(
+    profile: &crate::StagedProfileSummary,
+) -> zccache_v1::StagedProfileSummary {
+    zccache_v1::StagedProfileSummary {
+        counters: profile.counters.clone().into_iter().collect(),
+        timings_ns: profile.timings_ns.clone().into_iter().collect(),
+        bytes: profile.bytes.clone().into_iter().collect(),
+        failures: profile.failures.clone().into_iter().collect(),
+    }
+}
+
+fn staged_profile_from_prost(
+    profile: zccache_v1::StagedProfileSummary,
+) -> crate::StagedProfileSummary {
+    crate::StagedProfileSummary {
+        counters: profile.counters.into_iter().collect(),
+        timings_ns: profile.timings_ns.into_iter().collect(),
+        bytes: profile.bytes.into_iter().collect(),
+        failures: profile.failures.into_iter().collect(),
     }
 }
 
@@ -365,6 +388,10 @@ fn phase_profile_from_prost(
         hash_all_ns: profile.hash_all_ns,
         artifact_store_ns: profile.artifact_store_ns,
         total_miss_ns: profile.total_miss_ns,
+        staged: profile
+            .staged
+            .map(staged_profile_from_prost)
+            .unwrap_or_default(),
     }
 }
 

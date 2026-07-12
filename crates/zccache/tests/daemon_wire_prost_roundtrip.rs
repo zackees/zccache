@@ -202,7 +202,7 @@ mod full_family {
     use zccache::protocol::{
         ArtifactData, ArtifactOutput, ArtifactPayload, ExecCachePolicy, ExecOutputStreams,
         LookupOutcomes, LookupResult, PhaseProfileSummary, PrivateDaemonSessionOptions, Request,
-        Response, RustArtifactInfo, SessionStats, StoreResult,
+        Response, RustArtifactInfo, SessionStats, StagedProfileSummary, StoreResult,
     };
 
     fn roundtrip_request(request: Request) {
@@ -274,6 +274,14 @@ mod full_family {
                 hash_all_ns: 16,
                 artifact_store_ns: 17,
                 total_miss_ns: 18,
+                staged: StagedProfileSummary {
+                    counters: [("plan_enabled".to_string(), 2)].into_iter().collect(),
+                    timings_ns: [("planning".to_string(), 19)].into_iter().collect(),
+                    bytes: [("publication_copied".to_string(), 20)]
+                        .into_iter()
+                        .collect(),
+                    failures: [("unsupported_shape".to_string(), 1)].into_iter().collect(),
+                },
             }),
         }
     }

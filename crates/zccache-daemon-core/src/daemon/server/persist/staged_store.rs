@@ -16,6 +16,10 @@ mod maintenance;
 pub(crate) use maintenance::{
     evict_staged_artifact_keys, scan_staged_disk_artifacts, StagedDiskArtifact,
 };
+mod materialize;
+pub(in crate::daemon::server) use materialize::{
+    materialize_independent, materialize_independent_with_stats, StagedMaterializationStats,
+};
 
 pub(in crate::daemon::server) const STAGED_ARTIFACTS_ENV: &str = "ZCCACHE_STAGED_ARTIFACTS";
 
@@ -283,30 +287,6 @@ fn copy_output(source: &Path, destination: &Path) -> io::Result<(bool, u64)> {
     result
 }
 
-/// Materialize a staged compiler output without sharing a writable inode with
-/// the private compiler file or the published backend generation.
-pub(in crate::daemon::server) fn materialize_independent(
-    source: &Path,
-    destination: &Path,
-) -> io::Result<()> {
-    if let Ok(metadata) = fs::metadata(destination) {
-        if metadata.is_dir() {
-            return Err(io::Error::new(
-                io::ErrorKind::IsADirectory,
-                format!(
-                    "output destination is a directory: {}",
-                    destination.display()
-                ),
-            ));
-        }
-        let _ = set_readonly(destination, false);
-        fs::remove_file(destination)?;
-    }
-    copy_output(source, destination).map(|_| {
-        let _ = set_readonly(destination, false);
-    })
-}
-
 fn digest_file(path: &Path) -> io::Result<(u64, String)> {
     let mut file = File::open(path)?;
     let mut hasher = blake3::Hasher::new();
@@ -439,7 +419,10 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
 
     let result = (|| {
         let mut outputs = Vec::with_capacity(sources.len());
-        let mut stats = PersistArtifactFileStats::default();
+        let mut stats = PersistArtifactFileStats {
+            staged: true,
+            ..PersistArtifactFileStats::default()
+        };
         for (index, source) in sources.iter().enumerate() {
             let destination = output_path(&temporary_generation, index);
             let (reflink, copied_bytes) =
@@ -453,6 +436,7 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
                         ),
                     )
                 })?;
+            let hash_started = std::time::Instant::now();
             let (size, digest_hex) = digest_file(&destination).map_err(|error| {
                 io::Error::new(
                     error.kind(),
@@ -462,6 +446,9 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
                     ),
                 )
             })?;
+            stats.staged_hash_ns = stats
+                .staged_hash_ns
+                .saturating_add(hash_started.elapsed().as_nanos() as u64);
             write_authoritative_blob_digest_for(&destination, &destination).map_err(|error| {
                 io::Error::new(
                     error.kind(),
@@ -599,6 +586,8 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
                 );
             }
         }
+        stats.staged_publication_ns =
+            (publish_started.elapsed().as_nanos() as u64).saturating_sub(stats.staged_hash_ns);
         tracing::info!(
             event = "staged_publication_complete",
             cache_key = key_hex,

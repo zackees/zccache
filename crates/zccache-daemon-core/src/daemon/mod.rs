@@ -22,6 +22,7 @@ pub mod lineage;
 pub(crate) mod process;
 pub mod server;
 pub mod side_effect;
+pub(crate) mod staged_stats;
 pub mod stats;
 pub mod trampoline;
 

@@ -211,4 +211,23 @@ pub struct PhaseProfileSummary {
     pub artifact_store_ns: u64,
     /// Wall-clock total of the miss path.
     pub total_miss_ns: u64,
+    /// Staged-output pipeline counters, timings, bytes, and bounded failures.
+    #[serde(default)]
+    pub staged: StagedProfileSummary,
+}
+
+/// Aggregate staged-output telemetry.
+///
+/// Keys are a bounded vocabulary owned by the daemon, never user paths,
+/// command lines, cache keys, or raw operating-system error strings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct StagedProfileSummary {
+    #[serde(default)]
+    pub counters: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub timings_ns: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub bytes: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub failures: BTreeMap<String, u64>,
 }

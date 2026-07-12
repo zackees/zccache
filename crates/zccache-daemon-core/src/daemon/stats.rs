@@ -210,6 +210,8 @@ impl Default for StatsCollector {
 ///
 /// All values are in nanoseconds. Thread-safe via atomics.
 pub struct PhaseProfiler {
+    /// Bounded staged-output pipeline telemetry.
+    pub(crate) staged: super::staged_stats::StagedProfiler,
     /// Number of profiled requests.
     pub count: AtomicU64,
     /// Parse compiler invocation args.
@@ -253,6 +255,7 @@ impl PhaseProfiler {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            staged: super::staged_stats::StagedProfiler::new(),
             count: AtomicU64::new(0),
             parse_args_ns: AtomicU64::new(0),
             build_context_ns: AtomicU64::new(0),
@@ -318,6 +321,7 @@ impl PhaseProfiler {
 
     /// Reset all phase counters to zero.
     pub fn reset(&self) {
+        self.staged.reset();
         self.count.store(0, Ordering::Relaxed);
         self.parse_args_ns.store(0, Ordering::Relaxed);
         self.build_context_ns.store(0, Ordering::Relaxed);
@@ -373,6 +377,7 @@ impl PhaseProfiler {
             hash_all_ns: self.hash_all_ns.load(Ordering::Relaxed),
             artifact_store_ns: self.artifact_store_ns.load(Ordering::Relaxed),
             total_miss_ns: self.total_miss_ns.load(Ordering::Relaxed),
+            staged: self.staged.snapshot(),
         }
     }
 
@@ -458,6 +463,7 @@ pub struct PhaseTotals {
     pub hash_all_ns: u64,
     pub artifact_store_ns: u64,
     pub total_miss_ns: u64,
+    pub staged: crate::protocol::StagedProfileSummary,
 }
 
 impl From<PhaseTotals> for crate::protocol::PhaseProfileSummary {
@@ -481,6 +487,7 @@ impl From<PhaseTotals> for crate::protocol::PhaseProfileSummary {
             hash_all_ns: t.hash_all_ns,
             artifact_store_ns: t.artifact_store_ns,
             total_miss_ns: t.total_miss_ns,
+            staged: t.staged,
         }
     }
 }

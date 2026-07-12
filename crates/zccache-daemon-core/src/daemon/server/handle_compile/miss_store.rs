@@ -125,6 +125,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
                 compile_start,
                 &mut stats,
                 t_artifact_build,
+                synchronous_persist,
             );
         } else {
             store_single_output(
@@ -177,6 +178,7 @@ fn store_rustc_outputs(
     compile_start: Instant,
     stats: &mut MissArtifactStoreStats,
     t_artifact_build: Instant,
+    synchronous_persist: bool,
 ) {
     let state = state_arc.as_ref();
     let t_artifact_meta_build = Instant::now();
@@ -221,6 +223,25 @@ fn store_rustc_outputs(
     stats.rust_snapshot_ns = t_persist_sync.elapsed().as_nanos() as u64;
     let persisted = match sync_persist_result {
         Ok(snapshot_stats) => {
+            if snapshot_stats.staged {
+                use crate::daemon::staged_stats::{StagedBytes, StagedCounter, StagedTiming};
+                state
+                    .profiler
+                    .staged
+                    .count(StagedCounter::PublicationSuccess);
+                state
+                    .profiler
+                    .staged
+                    .timing(StagedTiming::Hashing, snapshot_stats.staged_hash_ns);
+                state.profiler.staged.timing(
+                    StagedTiming::Publication,
+                    snapshot_stats.staged_publication_ns,
+                );
+                state
+                    .profiler
+                    .staged
+                    .bytes(StagedBytes::Publication, snapshot_stats.copy_bytes);
+            }
             stats.rust_snapshot_hardlink_count = snapshot_stats.hardlink_count;
             stats.rust_snapshot_copy_count = snapshot_stats.copy_count;
             stats.rust_snapshot_copy_bytes = snapshot_stats.copy_bytes;
@@ -231,6 +252,25 @@ fn store_rustc_outputs(
             true
         }
         Err(e) => {
+            if synchronous_persist {
+                use crate::daemon::staged_stats::{StagedCounter, StagedFailure};
+                state
+                    .profiler
+                    .staged
+                    .count(StagedCounter::PublicationFailure);
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    state
+                        .profiler
+                        .staged
+                        .count(StagedCounter::PublicationConflict);
+                    state
+                        .profiler
+                        .staged
+                        .failure(StagedFailure::PublicationConflict);
+                } else {
+                    state.profiler.staged.failure(StagedFailure::Publication);
+                }
+            }
             stats.rust_snapshot_error_count = stats.rust_snapshot_error_count.saturating_add(1);
             tracing::warn!(
                 key = %artifact_key_hex,
@@ -347,7 +387,58 @@ fn store_single_output(
         size: payload_size,
     };
     if synchronous_persist {
-        let written = persist_artifact_paths(&artifact_dir, &key_hex, &source_paths).is_ok();
+        use crate::daemon::staged_stats::{
+            StagedBytes, StagedCounter, StagedFailure, StagedTiming,
+        };
+        let staged_publication =
+            staged_artifacts_enabled() && staged_key_supported(&key_hex) && !pack_mode_enabled();
+        let written =
+            match persist_artifact_paths_with_stats(&artifact_dir, &key_hex, &source_paths) {
+                Ok(persisted) => {
+                    if persisted.staged {
+                        state
+                            .profiler
+                            .staged
+                            .count(StagedCounter::PublicationSuccess);
+                        state
+                            .profiler
+                            .staged
+                            .timing(StagedTiming::Hashing, persisted.staged_hash_ns);
+                        state
+                            .profiler
+                            .staged
+                            .timing(StagedTiming::Publication, persisted.staged_publication_ns);
+                        state
+                            .profiler
+                            .staged
+                            .bytes(StagedBytes::Publication, persisted.copy_bytes);
+                    }
+                    true
+                }
+                Err(error) => {
+                    stats.rust_snapshot_error_count =
+                        stats.rust_snapshot_error_count.saturating_add(1);
+                    if staged_publication {
+                        state
+                            .profiler
+                            .staged
+                            .count(StagedCounter::PublicationFailure);
+                        if error.kind() == std::io::ErrorKind::AlreadyExists {
+                            state
+                                .profiler
+                                .staged
+                                .count(StagedCounter::PublicationConflict);
+                            state
+                                .profiler
+                                .staged
+                                .failure(StagedFailure::PublicationConflict);
+                        } else {
+                            state.profiler.staged.failure(StagedFailure::Publication);
+                        }
+                    }
+                    false
+                }
+            };
         if written {
             let _ = state.index_writer_tx.send(IndexWriterCommand::Insert(
                 key_hex.clone(),

@@ -90,6 +90,7 @@ fn session_stats_with_phase_profile_roundtrip() {
             hash_all_ns: 95_000_000,
             artifact_store_ns: 120_000_000,
             total_miss_ns: 11_885_000_000,
+            staged: StagedProfileSummary::default(),
         }),
     };
     roundtrip(&stats);
@@ -103,6 +104,17 @@ fn session_stats_with_phase_profile_roundtrip() {
     assert_eq!(decoded.lookup_outcomes.depgraph_hit_artifact_hit, 103);
     assert_eq!(decoded.lookup_outcomes.depgraph_hit_artifact_miss, 2);
     assert_eq!(decoded.lookup_outcomes.depgraph_cold_skip, 7);
+
+    let mut pre_v18_json = serde_json::to_value(&stats).expect("serialize value");
+    pre_v18_json["phase_profile"]
+        .as_object_mut()
+        .expect("phase profile object")
+        .remove("staged");
+    let pre_v18: SessionStats = serde_json::from_value(pre_v18_json).expect("pre-v18 decode");
+    assert_eq!(
+        pre_v18.phase_profile.unwrap().staged,
+        StagedProfileSummary::default()
+    );
 
     // An old-daemon-style JSON that omits phase_profile must decode to
     // None (back-compat with PROTOCOL_VERSION 8 consumers that haven't

@@ -259,7 +259,10 @@ async fn cli_session_lifecycle() {
 
         std::fs::write(
             &src,
-            "#include <stdio.h>\nint main() { printf(\"hello\\n\"); return 0; }\n",
+            format!(
+                "// isolated fixture: {}\n#include <stdio.h>\nint main() {{ printf(\"hello\\n\"); return 0; }}\n",
+                tmp.path().display()
+            ),
         )
         .unwrap();
 
@@ -272,7 +275,7 @@ async fn cli_session_lifecycle() {
                 client_pid: std::process::id(),
                 working_dir: cwd.clone().into(),
                 log_file: Some(log.to_string_lossy().into_owned().into()),
-                track_stats: false,
+                track_stats: true,
                 journal_path: None,
                 profile: false,
                 private_daemon: None,
@@ -359,7 +362,23 @@ async fn cli_session_lifecycle() {
             .unwrap();
 
         match client.recv().await.unwrap() {
-            Some(Response::SessionEnded { .. }) => {}
+            Some(Response::SessionEnded { stats: Some(stats) }) => {
+                let staged = &stats.phase_profile.expect("phase profile").staged;
+                assert!(staged.counters["plan_attempted"] >= 1);
+                assert!(staged.counters["plan_enabled"] >= 1);
+                assert!(staged.counters["compiler_staged"] >= 1);
+                assert!(
+                    staged.counters["publication_success"] >= 1,
+                    "staged counters: {:?}; failures: {:?}",
+                    staged.counters,
+                    staged.failures
+                );
+                assert!(
+                    staged.counters["materialize_reflink"]
+                        + staged.counters["materialize_copy"]
+                        >= 1
+                );
+            }
             other => panic!("expected SessionEnded, got: {other:?}"),
         }
 

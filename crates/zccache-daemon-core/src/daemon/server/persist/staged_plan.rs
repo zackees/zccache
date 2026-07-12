@@ -4,7 +4,7 @@
 //! redirected before it starts, and unsupported output shapes must fall back
 //! before spawn rather than publishing a partial set afterwards.
 
-use super::staged_store::staged_lane_enabled;
+use super::staged_store::{staged_lane_enabled, StagedMaterializationStats};
 use crate::core::path::NormalizedPath;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -535,12 +535,13 @@ impl StagedCompilePlan {
         }
     }
 
-    pub(in crate::daemon::server) fn materialize(&self) -> io::Result<()> {
+    pub(in crate::daemon::server) fn materialize(&self) -> io::Result<StagedMaterializationStats> {
+        let mut stats = StagedMaterializationStats::default();
         for output in &self.outputs {
             if let Some(parent) = output.requested.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            crate::daemon::server::persist::materialize_independent(
+            let output_stats = crate::daemon::server::persist::materialize_independent_with_stats(
                 output.staged.as_path(),
                 output.requested.as_path(),
             )
@@ -554,8 +555,14 @@ impl StagedCompilePlan {
                     ),
                 )
             })?;
+            stats.reflink_count = stats
+                .reflink_count
+                .saturating_add(output_stats.reflink_count);
+            stats.copy_count = stats.copy_count.saturating_add(output_stats.copy_count);
+            stats.copy_bytes = stats.copy_bytes.saturating_add(output_stats.copy_bytes);
         }
-        self.cleanup()
+        self.cleanup()?;
+        Ok(stats)
     }
 
     /// Rust dep-info is an output too. Translate the private staging prefix

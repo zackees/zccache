@@ -93,6 +93,18 @@ as a legacy format. Re-enabling a v2-aware reader makes those generations
 available again. Disk eviction groups coexisting v1/pack/v2 storage by cache
 key, accounts for all physical bytes, and removes the logical artifact once.
 
+Session phase profiles include a bounded `staged` summary. The compile-miss
+lane populates planning, compiler staging, hashing, publication, salvage, and
+requested-path materialization; hit-tier and special-producer wiring remains
+tracked by #1071. The summary reports counters, nanosecond totals, copied-byte
+totals, and stable failure reason IDs. Labels are daemon-owned constants:
+paths, argv, cache keys, and raw OS errors are never metric keys. Bincode
+protocol v18 carries this summary; the protobuf schema adds it as an optional
+message so older protobuf readers continue to ignore it safely. Clear resets
+these totals with the existing phase profiler. The additive protobuf field
+advances that lane to protocol v19. Salvage and requested-path materialization
+failures also emit durable lifecycle records.
+
 ## Directory Layout
 
 ```

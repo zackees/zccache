@@ -14,21 +14,21 @@ pub use messages::*;
 /// This remains the active compatibility version until the v16 prost dispatcher
 /// is wired through the IPC transport. Do not change `PROTOCOL_VERSION` to v16
 /// while `encode_message` and `decode_message` still serialize bincode bodies.
-pub const BINCODE_PROTOCOL_VERSION: u32 = 17;
+pub const BINCODE_PROTOCOL_VERSION: u32 = 18;
 
-/// Planned prost daemon wire version.
+/// Prost daemon wire version.
 ///
 /// The prost schema and frame helpers use this value. A future change will make
 /// the daemon dispatch v15 bincode and v16 prost frames concurrently.
-pub const PROST_PROTOCOL_VERSION: u32 = 16;
+pub const PROST_PROTOCOL_VERSION: u32 = 19;
 
 /// Protocol version number. Bump this when the wire format changes:
 /// new/removed/reordered enum variants or struct field changes.
 /// Patch releases that don't change the protocol keep the same version.
 ///
-/// v16 (planned): prost-encoded protobuf body. The v16 schema lives in
-///                  `proto/zccache_v1.proto`; v15 bincode remains accepted
-///                  during the transition.
+/// v19: v16-family prost body with staged-output telemetry. The schema lives in
+///                  `proto/zccache_v1.proto`; the bincode lane remains
+///                  separately versioned during the transition.
 /// v15 (current bincode): added `Request::ReleaseWorktreeHandles` /
 ///                  `Response::ReleaseWorktreeHandlesResult` so callers
 ///                  (soldr Tier 3 worktree teardown, issue #690) can ask
@@ -47,6 +47,8 @@ pub const PROST_PROTOCOL_VERSION: u32 = 16;
 ///                  Lets a Python binding cache an in-process function call
 ///                  via the daemon's KV store without serializing argv
 ///                  (subsumes #837 for Python consumers).
+/// v18: `PhaseProfileSummary` gained bounded staged-output pipeline
+///                  counters, timings, byte totals, and failure reasons.
 /// v11: `Request::GenericToolExec` gained Path A (include scan)
 ///                  + Path B (depfile) + `non_deterministic` +
 ///                  `key_args_filter` fields completing issue #272.
@@ -65,9 +67,9 @@ use prost::Message as ProstMessage;
 /// Message decoded from a version-dispatched daemon frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodedWireMessage<Bincode, Prost> {
-    /// v15 bincode payload, kept for old clients during the migration.
+    /// Bincode payload (historical variant name; current header version is v18).
     BincodeV15(Bincode),
-    /// v16 prost payload.
+    /// Prost payload (historical variant name; current header version is v19).
     ProstV16(Prost),
     /// Prost payload carried inside a running-process broker `Frame`
     /// envelope. `request_id` is the frame correlation id the responder

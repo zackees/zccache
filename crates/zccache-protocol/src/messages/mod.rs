@@ -22,7 +22,7 @@ pub use artifact::{
 pub use exec::{ExecCachePolicy, ExecOutputStreams};
 pub use status::{
     DaemonStatus, LookupOutcomes, PhaseProfileSummary, PrivateDaemonOwnerStatus,
-    PrivateDaemonStatus, SessionStats,
+    PrivateDaemonStatus, SessionStats, StagedProfileSummary,
 };
 
 /// Private daemon options carried by `SessionStart`.

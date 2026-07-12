@@ -176,6 +176,9 @@ pub(in crate::daemon::server) fn persist_artifact_paths_with_stats(
             hardlink_count: 0,
             copy_count: stats.copy_count,
             copy_bytes: stats.copy_bytes,
+            staged: true,
+            staged_hash_ns: stats.staged_hash_ns,
+            staged_publication_ns: stats.staged_publication_ns,
         });
     }
     if pack_mode_enabled() {
@@ -214,6 +217,9 @@ pub(in crate::daemon::server) fn persist_artifact_paths_with_stats(
                     hardlink_count: x.hardlink_count + y.hardlink_count,
                     copy_count: x.copy_count + y.copy_count,
                     copy_bytes: x.copy_bytes + y.copy_bytes,
+                    staged: x.staged || y.staged,
+                    staged_hash_ns: x.staged_hash_ns + y.staged_hash_ns,
+                    staged_publication_ns: x.staged_publication_ns + y.staged_publication_ns,
                 }),
                 (Err(e), _) | (_, Err(e)) => Err(e),
             },
@@ -226,6 +232,9 @@ pub(in crate::daemon::server) struct PersistArtifactFileStats {
     pub(in crate::daemon::server) hardlink_count: u64,
     pub(in crate::daemon::server) copy_count: u64,
     pub(in crate::daemon::server) copy_bytes: u64,
+    pub(in crate::daemon::server) staged: bool,
+    pub(in crate::daemon::server) staged_hash_ns: u64,
+    pub(in crate::daemon::server) staged_publication_ns: u64,
 }
 
 pub(in crate::daemon::server) fn persist_artifact_file(
