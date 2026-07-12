@@ -317,6 +317,20 @@ fn single_artifact_key_in(cache_dir: &Path) -> String {
             keys.insert(key.to_string());
         }
     }
+    let staged_root = artifact_dir.join(".staged-v2");
+    if let Ok(entries) = std::fs::read_dir(staged_root) {
+        for entry in entries.flatten() {
+            if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if let Some(key) = name.strip_suffix(".current") {
+                if !key.is_empty() && key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    keys.insert(key.to_string());
+                }
+            }
+        }
+    }
     assert_eq!(
         keys.len(),
         1,
@@ -341,6 +355,13 @@ fn remove_artifact_payloads(cache_dir: &Path, artifact_key_hex: &str) {
             std::fs::remove_file(path).expect("remove artifact payload");
             removed += 1;
         }
+    }
+    let staged_pointer = artifact_dir
+        .join(".staged-v2")
+        .join(format!("{artifact_key_hex}.current"));
+    if staged_pointer.is_file() {
+        std::fs::remove_file(staged_pointer).expect("remove staged artifact pointer");
+        removed += 1;
     }
     assert!(
         removed > 0,
