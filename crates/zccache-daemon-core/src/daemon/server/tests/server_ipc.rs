@@ -7,7 +7,7 @@
 use super::super::*;
 use super::CacheDirEnvGuard;
 
-async fn start_daemon() -> (String, tokio::task::JoinHandle<()>, Arc<Notify>) {
+pub(super) async fn start_daemon() -> (String, tokio::task::JoinHandle<()>, Arc<Notify>) {
     let endpoint = crate::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();
     let shutdown = server.shutdown_handle();
@@ -416,72 +416,219 @@ async fn cli_session_lifecycle() {
     .await;
 }
 
-/// Ending a session with a malformed (non-UUID) ID returns an error.
 #[tokio::test]
-#[ignore] // integration-level: starts real daemon with IPC
-async fn cli_session_end_invalid_id() {
-    crate::test_support::test_timeout(async {
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+#[ignore] // integration-level: real clang + daemon IPC + deterministic store faults
+async fn staged_publication_fault_salvages_or_fails_closed_with_forensics() {
+    let Some(clang) = crate::test_support::find_clang() else {
+        return;
+    };
+    crate::test_support::test_timeout(async move {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let _cache_env = CacheDirEnvGuard::set(&cache_dir);
+        let endpoint = crate::ipc::unique_test_endpoint();
+        let mut server = DaemonServer::bind(&endpoint).unwrap();
+        let state = server.test_state_arc();
+        let shutdown = server.shutdown_handle();
+        let server_task = tokio::spawn(async move { server.run(0).await.unwrap() });
         let mut client = crate::ipc::connect(&endpoint).await.unwrap();
+        let cwd = tmp.path().to_string_lossy().into_owned();
+        let source = tmp.path().join("fault-success.c");
+        let output = tmp.path().join("fault-success.o");
+        let failed_source = tmp.path().join("fault-failed.c");
+        let failed_output = tmp.path().join("fault-failed.o");
+        let index_source = tmp.path().join("fault-index.c");
+        let index_output = tmp.path().join("fault-index.o");
+        std::fs::write(&source, "int staged_fault_success(void) { return 1; }\n").unwrap();
+        std::fs::write(
+            &failed_source,
+            "int staged_fault_failed(void) { return 2; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &index_source,
+            "int staged_fault_index(void) { return 3; }\n",
+        )
+        .unwrap();
 
         client
-            .send(&Request::SessionEnd {
-                session_id: 999999.to_string(),
+            .send(&Request::SessionStart {
+                client_pid: std::process::id(),
+                working_dir: cwd.clone().into(),
+                log_file: None,
+                track_stats: true,
+                journal_path: None,
+                profile: false,
+                private_daemon: None,
             })
             .await
             .unwrap();
+        let session_id = match client.recv().await.unwrap() {
+            Some(Response::SessionStarted { session_id, .. }) => session_id,
+            other => panic!("expected SessionStarted, got {other:?}"),
+        };
+        let compile = |session_id: String, source: &Path, output: &Path| Request::Compile {
+            session_id,
+            args: vec![
+                "-c".to_string(),
+                source.to_string_lossy().into_owned(),
+                "-o".to_string(),
+                output.to_string_lossy().into_owned(),
+            ],
+            cwd: cwd.clone().into(),
+            compiler: clang.to_string_lossy().into_owned().into(),
+            env: None,
+            stdin: Vec::new(),
+        };
 
-        match client.recv().await.unwrap() {
-            Some(Response::Error { message }) => {
-                assert!(
-                    message.contains("unknown session") || message.contains("invalid session"),
-                    "expected session error, got: {message}"
-                );
-            }
-            other => panic!("expected Error, got: {other:?}"),
-        }
+        let publish_fault =
+            StagedFaultGuard::arm(&state.artifact_dir, [StagedFaultPoint::PointerCommit]);
+        client
+            .send(&compile(session_id.clone(), &source, &output))
+            .await
+            .unwrap();
+        assert!(matches!(
+            client.recv().await.unwrap(),
+            Some(Response::CompileResult {
+                exit_code: 0,
+                cached: false,
+                ..
+            })
+        ));
+        assert!(output.exists(), "successful compile was not salvaged");
+        publish_fault.assert_all_consumed();
 
-        shutdown.notify_one();
-        server_handle.await.unwrap();
-    })
-    .await;
-}
+        let publish_fault =
+            StagedFaultGuard::arm(&state.artifact_dir, [StagedFaultPoint::PointerCommit]);
+        let salvage_fault =
+            StagedFaultGuard::arm(&failed_output, [StagedFaultPoint::MaterializeOutput(0)]);
+        client
+            .send(&compile(session_id.clone(), &failed_source, &failed_output))
+            .await
+            .unwrap();
+        assert!(matches!(
+            client.recv().await.unwrap(),
+            Some(Response::Error { .. })
+        ));
+        assert!(
+            !failed_output.exists(),
+            "failed salvage reported a requested output"
+        );
+        publish_fault.assert_all_consumed();
+        salvage_fault.assert_all_consumed();
 
-/// Ending an unknown session (well-formed UUID, but daemon has no record
-/// of it) is idempotent and returns SessionEnded { stats: None }.
-///
-/// This simulates the scenario where the daemon was restarted between
-/// `session-start` and `session-end` (e.g. zccache-ci kills the daemon
-/// mid-build to unlock target binaries on Windows). Build wrappers like
-/// soldr call `session-end` at process exit and must not see a spurious
-/// failure when the in-memory session is gone.
-#[tokio::test]
-#[ignore] // integration-level: starts real daemon with IPC
-async fn cli_session_end_unknown_uuid_is_idempotent() {
-    crate::test_support::test_timeout(async {
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client = crate::ipc::connect(&endpoint).await.unwrap();
+        let index_fault =
+            StagedFaultGuard::arm(&state.artifact_dir, [StagedFaultPoint::IndexCommit]);
+        client
+            .send(&compile(session_id.clone(), &index_source, &index_output))
+            .await
+            .unwrap();
+        assert!(matches!(
+            client.recv().await.unwrap(),
+            Some(Response::CompileResult {
+                exit_code: 0,
+                cached: false,
+                ..
+            })
+        ));
+        assert!(index_output.exists(), "index failure was not salvaged");
+        index_fault.assert_all_consumed();
+
+        // Failed index publication must not leave a process-local cache entry.
+        // The identical request must execute again, not become a false hit.
+        std::fs::remove_file(&index_output).unwrap();
+        client
+            .send(&compile(session_id.clone(), &index_source, &index_output))
+            .await
+            .unwrap();
+        assert!(matches!(
+            client.recv().await.unwrap(),
+            Some(Response::CompileResult {
+                exit_code: 0,
+                cached: false,
+                ..
+            })
+        ));
+        assert!(
+            index_output.exists(),
+            "retry after index failure did not compile"
+        );
 
         client
             .send(&Request::SessionEnd {
-                // A well-formed UUID that the daemon has never seen.
-                session_id: "00000000-0000-0000-0000-000000000000".to_string(),
+                session_id: session_id.clone(),
             })
             .await
             .unwrap();
-
-        match client.recv().await.unwrap() {
-            Some(Response::SessionEnded { stats }) => {
-                assert!(
-                    stats.is_none(),
-                    "no stats expected for unknown session, got: {stats:?}"
-                );
+        let staged = match client.recv().await.unwrap() {
+            Some(Response::SessionEnded { stats: Some(stats) }) => {
+                stats.phase_profile.unwrap().staged
             }
-            other => panic!("expected SessionEnded for unknown UUID, got: {other:?}"),
-        }
+            other => panic!("expected SessionEnded stats, got {other:?}"),
+        };
+        assert_eq!(staged.counters["publication_failure"], 3);
+        assert_eq!(staged.failures["pointer_commit"], 2);
+        assert_eq!(staged.failures["index_commit"], 1);
+        assert_eq!(staged.counters["salvage_attempt"], 3);
+        assert_eq!(staged.counters["salvage_success"], 2);
+        assert_eq!(staged.counters["salvage_failure"], 1);
+        assert_eq!(staged.counters["materialize_failure"], 1);
+        assert!(staged.timings_ns.contains_key("salvage"));
 
         shutdown.notify_one();
-        server_handle.await.unwrap();
+        server_task.await.unwrap();
+        let restarted = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+        drop(restarted);
+
+        let lifecycle_path = crate::core::lifecycle::log_file_path();
+        assert!(lifecycle_path.as_path().starts_with(&cache_dir));
+        let lifecycle = std::fs::read_dir(lifecycle_path.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("daemon-lifecycle")
+            })
+            .map(|entry| std::fs::read_to_string(entry.path()).unwrap())
+            .collect::<String>();
+        assert_eq!(
+            lifecycle
+                .matches("\"event\":\"staged_salvage_started\"")
+                .count(),
+            3
+        );
+        assert_eq!(
+            lifecycle
+                .matches("\"event\":\"staged_salvage_complete\"")
+                .count(),
+            2
+        );
+        assert_eq!(
+            lifecycle
+                .matches("\"event\":\"staged_salvage_failed\"")
+                .count(),
+            1
+        );
+        for event in lifecycle
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .filter(|event| {
+                event["event"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("staged_salvage_"))
+            })
+        {
+            let reason = event["reason"].as_str().expect("bounded salvage reason");
+            assert!(reason
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte == b'_'));
+            assert!(event["output_count"].is_u64());
+            assert!(event["copied_bytes"].is_u64());
+            assert!(event["elapsed_ns"].is_u64());
+        }
+        assert!(!lifecycle.contains(&state.staging.path().to_string_lossy().as_ref()));
     })
     .await;
 }

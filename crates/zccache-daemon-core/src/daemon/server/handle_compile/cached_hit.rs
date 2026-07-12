@@ -180,6 +180,7 @@ pub(super) fn materialize_cached_compile_hit(
         None => {
             if has_staged_payload {
                 use crate::daemon::staged_stats::{StagedCounter, StagedFailure, StagedTiming};
+                let elapsed_ns = t1.elapsed().as_nanos() as u64;
                 state
                     .profiler
                     .staged
@@ -188,9 +189,18 @@ pub(super) fn materialize_cached_compile_hit(
                     .profiler
                     .staged
                     .failure(StagedFailure::RequestedMaterialization);
-                state.profiler.staged.timing(
-                    StagedTiming::HitMaterialization,
-                    t1.elapsed().as_nanos() as u64,
+                state
+                    .profiler
+                    .staged
+                    .timing(StagedTiming::HitMaterialization, elapsed_ns);
+                crate::core::lifecycle::write_event(
+                    "staged_materialization_failed",
+                    serde_json::json!({
+                        "reason": "requested_materialization",
+                        "output_count": targets.len(),
+                        "copied_bytes": 0,
+                        "elapsed_ns": elapsed_ns,
+                    }),
                 );
             }
             return None;

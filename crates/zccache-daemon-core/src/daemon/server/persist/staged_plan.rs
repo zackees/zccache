@@ -4,7 +4,11 @@
 //! redirected before it starts, and unsupported output shapes must fall back
 //! before spawn rather than publishing a partial set afterwards.
 
-use super::staged_store::{staged_lane_enabled, StagedMaterializationStats};
+#[cfg(test)]
+use super::staged_store::materialization_error_progress;
+#[cfg(test)]
+use super::staged_store::{inject_staged_fault, StagedFaultGuard, StagedFaultPoint};
+use super::staged_store::{materialization_error, staged_lane_enabled, StagedMaterializationStats};
 use crate::core::path::NormalizedPath;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -101,17 +105,6 @@ pub(in crate::daemon::server) enum StagedPlanOutcome<T> {
     Enabled(T),
     Unsupported(StagedPlanReason),
     Error(StagedPlanError),
-}
-
-#[cfg(test)]
-impl<T> StagedPlanOutcome<T> {
-    fn unwrap(self) -> Option<T> {
-        match self {
-            Self::Enabled(value) => Some(value),
-            Self::Unsupported(_) => None,
-            Self::Error(error) => panic!("planner failed: {:?}: {}", error.reason, error.source),
-        }
-    }
 }
 
 fn planning_error(reason: StagedPlanReason, source: io::Error) -> StagedPlanError {
@@ -715,22 +708,38 @@ impl StagedCompilePlan {
 
     pub(in crate::daemon::server) fn materialize(&self) -> io::Result<StagedMaterializationStats> {
         let mut stats = StagedMaterializationStats::default();
+        #[cfg(test)]
+        let mut fault_index = 0;
         for output in &self.outputs {
+            #[cfg(test)]
+            {
+                let index = fault_index;
+                fault_index += 1;
+                inject_staged_fault(
+                    output.requested.as_path(),
+                    StagedFaultPoint::MaterializeOutput(index),
+                )
+                .map_err(|error| materialization_error(error, stats))?;
+            }
             if let Some(parent) = output.requested.parent() {
-                std::fs::create_dir_all(parent)?;
+                std::fs::create_dir_all(parent)
+                    .map_err(|error| materialization_error(error, stats))?;
             }
             let output_stats = crate::daemon::server::persist::materialize_independent_with_stats(
                 output.staged.as_path(),
                 output.requested.as_path(),
             )
             .map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    format!(
-                        "{} -> {}: {error}",
-                        output.staged.display(),
-                        output.requested.display()
+                materialization_error(
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "{} -> {}: {error}",
+                            output.staged.display(),
+                            output.requested.display()
+                        ),
                     ),
+                    stats,
                 )
             })?;
             stats.reflink_count = stats
@@ -739,7 +748,8 @@ impl StagedCompilePlan {
             stats.copy_count = stats.copy_count.saturating_add(output_stats.copy_count);
             stats.copy_bytes = stats.copy_bytes.saturating_add(output_stats.copy_bytes);
         }
-        self.cleanup()?;
+        self.cleanup()
+            .map_err(|error| materialization_error(error, stats))?;
         Ok(stats)
     }
 

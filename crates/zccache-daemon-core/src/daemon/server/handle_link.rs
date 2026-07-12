@@ -29,6 +29,20 @@ fn materialize_link_plan_observed(
             Ok(())
         }
         Err(error) => {
+            let elapsed_ns = started.elapsed().as_nanos() as u64;
+            let progress = materialization_error_progress(&error);
+            state
+                .profiler
+                .staged
+                .add_count(StagedCounter::MaterializeReflink, progress.reflink_count);
+            state
+                .profiler
+                .staged
+                .add_count(StagedCounter::MaterializeCopy, progress.copy_count);
+            state
+                .profiler
+                .staged
+                .bytes(StagedBytes::Materialization, progress.copy_bytes);
             state
                 .profiler
                 .staged
@@ -37,9 +51,18 @@ fn materialize_link_plan_observed(
                 .profiler
                 .staged
                 .failure(StagedFailure::RequestedMaterialization);
-            state.profiler.staged.timing(
-                StagedTiming::MissMaterialization,
-                started.elapsed().as_nanos() as u64,
+            state
+                .profiler
+                .staged
+                .timing(StagedTiming::MissMaterialization, elapsed_ns);
+            crate::core::lifecycle::write_event(
+                "staged_materialization_failed",
+                serde_json::json!({
+                    "reason": "requested_materialization",
+                    "output_count": plan.output_paths().len(),
+                    "copied_bytes": progress.copy_bytes,
+                    "elapsed_ns": elapsed_ns,
+                }),
             );
             Err(error)
         }

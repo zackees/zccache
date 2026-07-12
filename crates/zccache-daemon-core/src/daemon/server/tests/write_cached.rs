@@ -337,6 +337,72 @@ fn staged_generation_hardlinks_only_when_semantically_authorized() {
 }
 
 #[test]
+fn staged_hit_tier_faults_fall_through_without_misattribution() {
+    let dir = tempfile::tempdir().unwrap();
+    let artifact_dir = dir.path().join("artifacts");
+    std::fs::create_dir_all(&artifact_dir).unwrap();
+    let source = dir.path().join("source.rlib");
+    std::fs::write(&source, b"tier fault payload").unwrap();
+    let key = "b".repeat(64);
+    persist_staged_artifact_paths(&artifact_dir, &key, &[source.into()]).unwrap();
+    let payloads = load_staged_artifact_paths(&artifact_dir, &key, &[18])
+        .unwrap()
+        .unwrap();
+    let output = dir.path().join("target.rlib");
+    if !fs_caps(&payloads[0], &output).hardlink {
+        eprintln!("SKIP staged_hit_tier_faults: fixture has no hardlink capability");
+        return;
+    }
+    let faults = StagedFaultGuard::arm(
+        &output,
+        [
+            StagedFaultPoint::MaterializeReflink,
+            StagedFaultPoint::MaterializeHardlink,
+        ],
+    );
+    let payload = CachedPayload::File(payloads[0].clone());
+    let targets = vec![(&output, &payloads[0])];
+    let observed = write_payloads_par_with_mtime_floor_and_policies_observed(
+        &targets,
+        &[payload],
+        &Vec::<NormalizedPath>::new(),
+        &[crate::compiler::DeliveryPolicy::HardlinkEligible],
+    )
+    .unwrap();
+    assert_eq!(observed.reflink_count, 0);
+    assert_eq!(observed.hardlink_count, 0);
+    assert_eq!(observed.copy_count, 1);
+    assert_eq!(observed.copy_bytes, 18);
+    faults.assert_all_consumed();
+}
+
+#[test]
+fn staged_hit_copy_fault_leaves_no_partial_destination() {
+    let dir = tempfile::tempdir().unwrap();
+    let artifact_dir = dir.path().join("artifacts");
+    std::fs::create_dir_all(&artifact_dir).unwrap();
+    let source = dir.path().join("source.rmeta");
+    std::fs::write(&source, b"copy failure payload").unwrap();
+    let key = "c".repeat(64);
+    persist_staged_artifact_paths(&artifact_dir, &key, &[source.into()]).unwrap();
+    let payload = load_staged_artifact_paths(&artifact_dir, &key, &[20])
+        .unwrap()
+        .unwrap()
+        .remove(0);
+    let output = dir.path().join("target.rmeta");
+    let faults = StagedFaultGuard::arm(
+        &output,
+        [
+            StagedFaultPoint::MaterializeReflink,
+            StagedFaultPoint::MaterializeCopy,
+        ],
+    );
+    write_cached_file(&output, &payload).unwrap_err();
+    assert!(!output.exists());
+    faults.assert_all_consumed();
+}
+
+#[test]
 fn staged_generation_digest_survives_registry_restart() {
     let dir = tempfile::tempdir().unwrap();
     let artifact_dir = dir.path().join("artifacts");

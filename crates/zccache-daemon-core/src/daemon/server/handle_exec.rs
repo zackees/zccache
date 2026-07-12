@@ -112,18 +112,32 @@ impl ExecStagedPlan {
 
     fn materialize(&self) -> std::io::Result<StagedMaterializationStats> {
         let mut observed = StagedMaterializationStats::default();
+        #[cfg(test)]
+        let mut fault_index = 0;
         for (requested, staged) in &self.outputs {
-            if let Some(parent) = requested.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            observed.add(
-                crate::daemon::server::persist::materialize_independent_with_stats(
-                    staged.as_path(),
+            #[cfg(test)]
+            {
+                let index = fault_index;
+                fault_index += 1;
+                inject_staged_fault(
                     requested.as_path(),
-                )?,
-            );
+                    StagedFaultPoint::MaterializeOutput(index),
+                )
+                .map_err(|error| materialization_error(error, observed))?;
+            }
+            if let Some(parent) = requested.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|error| materialization_error(error, observed))?;
+            }
+            let output = crate::daemon::server::persist::materialize_independent_with_stats(
+                staged.as_path(),
+                requested.as_path(),
+            )
+            .map_err(|error| materialization_error(error, observed))?;
+            observed.add(output);
         }
-        self.cleanup()?;
+        self.cleanup()
+            .map_err(|error| materialization_error(error, observed))?;
         Ok(observed)
     }
 
@@ -509,6 +523,20 @@ pub(super) async fn handle_generic_tool_exec(
                 );
             }
             Err(error) => {
+                let elapsed_ns = materialize_started.elapsed().as_nanos() as u64;
+                let progress = materialization_error_progress(&error);
+                state
+                    .profiler
+                    .staged
+                    .add_count(StagedCounter::MaterializeReflink, progress.reflink_count);
+                state
+                    .profiler
+                    .staged
+                    .add_count(StagedCounter::MaterializeCopy, progress.copy_count);
+                state
+                    .profiler
+                    .staged
+                    .bytes(StagedBytes::Materialization, progress.copy_bytes);
                 state
                     .profiler
                     .staged
@@ -517,6 +545,19 @@ pub(super) async fn handle_generic_tool_exec(
                     .profiler
                     .staged
                     .failure(StagedFailure::RequestedMaterialization);
+                state
+                    .profiler
+                    .staged
+                    .timing(StagedTiming::MissMaterialization, elapsed_ns);
+                crate::core::lifecycle::write_event(
+                    "staged_materialization_failed",
+                    serde_json::json!({
+                        "reason": "requested_materialization",
+                        "output_count": plan.outputs.len(),
+                        "copied_bytes": progress.copy_bytes,
+                        "elapsed_ns": elapsed_ns,
+                    }),
+                );
                 return Response::Error {
                     message: format!("failed to materialize generic tool outputs: {error}"),
                 };
@@ -904,76 +945,8 @@ fn normalize_for_key(path: &Path) -> String {
 }
 
 #[cfg(test)]
-mod coalesce_tests {
-    //! Issue #971: `coalesce_wait` must never strand a waiter — not on a
-    //! lost wakeup (mode 1), not on a replaced slot (mode 2), and not on a
-    //! wedged owner (mode 3, bounded fallback).
-    use super::{coalesce_wait, CoalesceOutcome};
-    use dashmap::DashMap;
-    use std::sync::Arc;
-    use std::time::Duration;
-    use tokio::sync::Notify;
-
-    /// Fail fast instead of hanging the suite if a regression reintroduces the
-    /// wedge these tests exist to prevent.
-    async fn guarded(fut: impl std::future::Future<Output = CoalesceOutcome>) -> CoalesceOutcome {
-        tokio::time::timeout(Duration::from_secs(30), fut)
-            .await
-            .expect("coalesce_wait hung — the #971 fix regressed")
-    }
-
-    #[tokio::test]
-    async fn slot_gone_resolves_without_waiting() {
-        // Owner already finished and removed the slot before we parked. The
-        // re-check must see it gone and return immediately rather than block on
-        // a notify that will never fire again (the mode-1 lost-wakeup guard).
-        let map: DashMap<String, Arc<Notify>> = DashMap::new();
-        let ours = Arc::new(Notify::new()); // key is NOT in the map
-        let out = guarded(coalesce_wait(&map, "k", ours, Duration::from_secs(30))).await;
-        assert_eq!(out, CoalesceOutcome::SlotResolved);
-    }
-
-    #[tokio::test]
-    async fn slot_replaced_resolves() {
-        // A new owner installed a different Notify for the same key. Parking on
-        // our stale Arc would hang forever; the ptr_eq re-check returns instead.
-        let map: DashMap<String, Arc<Notify>> = DashMap::new();
-        let ours = Arc::new(Notify::new());
-        map.insert("k".to_string(), Arc::new(Notify::new())); // different Arc
-        let out = guarded(coalesce_wait(&map, "k", ours, Duration::from_secs(30))).await;
-        assert_eq!(out, CoalesceOutcome::SlotResolved);
-    }
-
-    #[tokio::test]
-    async fn woken_by_owner_notify() {
-        // Normal path: we hold the same Arc that is in the map; a sibling task
-        // fires notify_waiters and we wake.
-        let map: DashMap<String, Arc<Notify>> = DashMap::new();
-        let shared = Arc::new(Notify::new());
-        map.insert("k".to_string(), Arc::clone(&shared));
-        let waker = {
-            let shared = Arc::clone(&shared);
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                shared.notify_waiters();
-            })
-        };
-        let out = guarded(coalesce_wait(&map, "k", shared, Duration::from_secs(30))).await;
-        assert_eq!(out, CoalesceOutcome::Woken);
-        waker.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn times_out_when_owner_wedged() {
-        // Owner holds the slot and never fires: the waiter must fall back after
-        // the budget (mode-3 bounded wait) rather than hang forever.
-        let map: DashMap<String, Arc<Notify>> = DashMap::new();
-        let shared = Arc::new(Notify::new());
-        map.insert("k".to_string(), Arc::clone(&shared));
-        let out = guarded(coalesce_wait(&map, "k", shared, Duration::from_millis(50))).await;
-        assert_eq!(out, CoalesceOutcome::TimedOut);
-    }
-}
+#[path = "handle_exec_coalesce_tests.rs"]
+mod coalesce_tests;
 
 #[cfg(test)]
 #[path = "handle_exec_tests.rs"]

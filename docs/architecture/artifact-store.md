@@ -98,9 +98,9 @@ lane populates planning, compiler staging, hashing, publication, salvage, and
 requested-path materialization. V2 file hits report the tier that actually
 succeeded (reflink, hardlink-shared, or copy), copied bytes, failures, and
 elapsed ns. Archive, declared-linker, and exact-exec misses use the same
-planning, private-tool execution, and materialization accounting. Deterministic
-fault attribution remains tracked by #1071. The summary reports counters,
-nanosecond totals, copied-byte
+planning, private-tool execution, and materialization accounting. Publication,
+salvage, and materialization use path-scoped, one-shot test faults at commit and
+per-output edges. The summary reports counters, nanosecond totals, copied-byte
 totals, and stable failure reason IDs. Labels are daemon-owned constants:
 paths, argv, cache keys, and raw OS errors are never metric keys. Bincode
 protocol v18 carries this summary; the protobuf schema adds it as an optional

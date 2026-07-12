@@ -22,6 +22,43 @@ impl StagedMaterializationStats {
     }
 }
 
+#[derive(Debug)]
+struct StagedMaterializationError {
+    source: io::Error,
+    progress: StagedMaterializationStats,
+}
+
+impl std::fmt::Display for StagedMaterializationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.source.fmt(formatter)
+    }
+}
+
+impl std::error::Error for StagedMaterializationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+pub(in crate::daemon::server) fn materialization_error(
+    source: io::Error,
+    progress: StagedMaterializationStats,
+) -> io::Error {
+    io::Error::new(
+        source.kind(),
+        StagedMaterializationError { source, progress },
+    )
+}
+
+pub(in crate::daemon::server) fn materialization_error_progress(
+    error: &io::Error,
+) -> StagedMaterializationStats {
+    error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<StagedMaterializationError>())
+        .map_or_else(StagedMaterializationStats::default, |error| error.progress)
+}
+
 pub(in crate::daemon::server) fn materialize_independent_with_stats(
     source: &Path,
     destination: &Path,
@@ -52,7 +89,10 @@ pub(in crate::daemon::server) fn materialize_independent_with_stats(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{load_staged_artifact_paths, persist_staged_artifact_paths};
+    use super::super::{
+        load_staged_artifact_paths, persist_staged_artifact_paths, StagedFaultGuard,
+        StagedFaultPoint,
+    };
     use super::*;
 
     #[test]
@@ -77,5 +117,40 @@ mod tests {
         let materialized = materialize_independent_with_stats(&payload, &destination).unwrap();
         assert_eq!(materialized.reflink_count + materialized.copy_count, 1);
         assert_eq!(fs::read(destination).unwrap(), b"observable staged payload");
+    }
+
+    #[test]
+    fn independent_materialization_faults_fall_back_or_fail_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.rlib");
+        fs::write(&source, b"independent materialization payload").unwrap();
+
+        let fallback = dir.path().join("fallback.rlib");
+        let reflink_fault =
+            StagedFaultGuard::arm(&fallback, [StagedFaultPoint::MaterializeReflink]);
+        let observed = materialize_independent_with_stats(&source, &fallback).unwrap();
+        assert_eq!(observed.reflink_count, 0);
+        assert_eq!(observed.copy_count, 1);
+        assert_eq!(observed.copy_bytes, 35);
+        assert_eq!(
+            fs::read(&fallback).unwrap(),
+            b"independent materialization payload"
+        );
+        reflink_fault.assert_all_consumed();
+
+        let failed = dir.path().join("failed.rlib");
+        let all_faults = StagedFaultGuard::arm(
+            &failed,
+            [
+                StagedFaultPoint::MaterializeReflink,
+                StagedFaultPoint::MaterializeCopy,
+            ],
+        );
+        materialize_independent_with_stats(&source, &failed).unwrap_err();
+        assert!(
+            !failed.exists(),
+            "failed copy tier left a partial destination"
+        );
+        all_faults.assert_all_consumed();
     }
 }

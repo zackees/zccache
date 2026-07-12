@@ -73,7 +73,17 @@ fn materialize_cached_file(
     }
     remove_materialized_output(out_path)?;
     let caps = fs_caps(cache_file, out_path);
-    if caps.reflink && reflink_copy::reflink(cache_file, out_path).is_ok() {
+    let reflink_allowed = {
+        #[cfg(test)]
+        {
+            inject_staged_fault(out_path, StagedFaultPoint::MaterializeReflink).is_ok()
+        }
+        #[cfg(not(test))]
+        {
+            true
+        }
+    };
+    if reflink_allowed && caps.reflink && reflink_copy::reflink(cache_file, out_path).is_ok() {
         make_writable(out_path)?;
         restore_cache_mtime(cache_file, out_path)?;
         touch_mtime(out_path);
@@ -86,9 +96,12 @@ fn materialize_cached_file(
     // call sites in this module; a genuinely-too-many-links file still
     // fails the real `std::fs::hard_link` call below, which already has
     // a graceful copy fallback.
-    if hardlink_allowed
-        && hardlink_below_limit(caps, hard_link_count(cache_file).unwrap_or_default())
-    {
+    let hardlink_candidate = hardlink_allowed
+        && hardlink_below_limit(caps, hard_link_count(cache_file).unwrap_or_default());
+    #[cfg(test)]
+    let hardlink_candidate = hardlink_candidate
+        && inject_staged_fault(out_path, StagedFaultPoint::MaterializeHardlink).is_ok();
+    if hardlink_candidate {
         // Only flip the blob read-only *after* the link actually lands.
         // Read-only exists to protect the blob once it's shared; setting
         // it beforehand serves no purpose on the attempt path and, if
@@ -144,6 +157,8 @@ fn materialize_cached_file(
             }
         }
     }
+    #[cfg(test)]
+    inject_staged_fault(out_path, StagedFaultPoint::MaterializeCopy)?;
     let copied_bytes = std::fs::copy(cache_file, out_path)?;
     make_writable(out_path)?;
     restore_cache_mtime(cache_file, out_path)?;

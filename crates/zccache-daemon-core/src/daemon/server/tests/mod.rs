@@ -25,6 +25,7 @@ mod post_link_hook;
 mod release_worktree_handles;
 mod rustc_depinfo;
 mod server_ipc;
+mod session_errors;
 mod system_includes_deferred;
 mod write_cached;
 

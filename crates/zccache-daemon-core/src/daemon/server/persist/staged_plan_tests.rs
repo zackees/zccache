@@ -2,6 +2,16 @@
 use super::*;
 use tempfile::tempdir;
 
+impl<T> StagedPlanOutcome<T> {
+    fn unwrap(self) -> Option<T> {
+        match self {
+            Self::Enabled(value) => Some(value),
+            Self::Unsupported(_) => None,
+            Self::Error(error) => panic!("planner failed: {:?}: {}", error.reason, error.source),
+        }
+    }
+}
+
 fn staged_tests_enabled() -> bool {
     std::env::var_os(super::super::staged_store::STAGED_ARTIFACTS_ENV).is_some()
 }
@@ -545,6 +555,36 @@ fn planner_errors_keep_precise_reasons() {
             ..
         })
     ));
+}
+
+#[test]
+fn output_fault_stops_partial_salvage_before_completion() {
+    if !staged_tests_enabled() {
+        return;
+    }
+    let temp = tempdir().unwrap();
+    let archive: NormalizedPath = temp.path().join("target/libx.rlib").into();
+    let metadata: NormalizedPath = temp.path().join("target/libx.rmeta").into();
+    let plan = StagedCompilePlan::rustc(
+        temp.path(),
+        &["--out-dir".into(), temp.path().display().to_string()],
+        &archive,
+        &[archive.clone(), metadata.clone()],
+        temp.path(),
+    )
+    .unwrap()
+    .unwrap();
+    for (index, staged) in plan.output_paths().iter().enumerate() {
+        std::fs::write(staged, format!("complete output {index}")).unwrap();
+    }
+    let fault = StagedFaultGuard::arm(temp.path(), [StagedFaultPoint::MaterializeOutput(1)]);
+    let error = plan.materialize().unwrap_err();
+    let progress = materialization_error_progress(&error);
+    assert_eq!(progress.reflink_count + progress.copy_count, 1);
+    assert!(progress.copy_bytes == 0 || progress.copy_bytes == 17);
+    assert_eq!(std::fs::read(&archive).unwrap(), b"complete output 0");
+    assert!(!metadata.exists());
+    fault.assert_all_consumed();
 }
 
 #[test]

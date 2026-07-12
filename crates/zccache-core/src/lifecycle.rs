@@ -44,6 +44,10 @@
 //! | `version_mismatch` | daemon | client / daemon protocol versions disagree | `daemon_protocol_version`, `client_protocol_version`, `reason` |
 //! | `staged_publication_conflict` | daemon | one cache key produced two different valid generations; first generation retained | `cache_key`, `existing_generation`, `candidate_generation`, `elapsed_ns` |
 //! | `staged_publication_replaces_invalid_generation` | daemon | a corrupt/incomplete selected generation was replaced by a validated compile result | `cache_key`, `invalid_generation`, `replacement_generation` |
+//! | `staged_salvage_started` | daemon | publication/index failed after a successful compile; requested outputs are being recovered | `reason`, `output_count`, `copied_bytes`, `elapsed_ns` |
+//! | `staged_salvage_complete` | daemon | every requested output was independently recovered | `reason`, `output_count`, `copied_bytes`, `elapsed_ns` |
+//! | `staged_salvage_failed` | daemon | recovery stopped before the complete requested output set existed | `reason`, `output_count`, `copied_bytes`, `elapsed_ns` |
+//! | `staged_materialization_failed` | daemon | a published miss/hit could not fulfill every requested output path | `reason`, `output_count`, `copied_bytes`, `elapsed_ns` |
 //!
 //! ## Forensic walkthrough: the two-versions-on-one-pipe wedge
 //!

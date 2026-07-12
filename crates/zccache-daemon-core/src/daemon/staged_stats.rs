@@ -104,6 +104,10 @@ pub(crate) enum StagedFailure {
     DurableDigest,
     Manifest,
     Publication,
+    PublicationOutputCopy,
+    GenerationPublish,
+    PointerCommit,
+    IndexCommit,
     PublicationConflict,
     Salvage,
     RequestedMaterialization,
@@ -164,6 +168,13 @@ const FAILURES: &[(StagedFailure, &str)] = &[
     (StagedFailure::DurableDigest, "durable_digest"),
     (StagedFailure::Manifest, "manifest"),
     (StagedFailure::Publication, "publication"),
+    (
+        StagedFailure::PublicationOutputCopy,
+        "publication_output_copy",
+    ),
+    (StagedFailure::GenerationPublish, "generation_publish"),
+    (StagedFailure::PointerCommit, "pointer_commit"),
+    (StagedFailure::IndexCommit, "index_commit"),
     (StagedFailure::PublicationConflict, "publication_conflict"),
     (StagedFailure::Salvage, "salvage"),
     (
@@ -322,5 +333,32 @@ mod tests {
             .chain(reset.bytes.values())
             .chain(reset.failures.values())
             .all(|value| *value == 0));
+    }
+
+    #[test]
+    fn concurrent_fault_accounting_has_no_lost_updates() {
+        let profiler = std::sync::Arc::new(StagedProfiler::new());
+        let threads = 16_u64;
+        let increments = 1_000_u64;
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                let profiler = std::sync::Arc::clone(&profiler);
+                std::thread::spawn(move || {
+                    for _ in 0..increments {
+                        profiler.count(StagedCounter::PublicationFailure);
+                        profiler.failure(StagedFailure::PointerCommit);
+                        profiler.timing(StagedTiming::Publication, 1);
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let snapshot = profiler.snapshot();
+        let expected = threads * increments;
+        assert_eq!(snapshot.counters["publication_failure"], expected);
+        assert_eq!(snapshot.failures["pointer_commit"], expected);
+        assert_eq!(snapshot.timings_ns["publication"], expected);
     }
 }
