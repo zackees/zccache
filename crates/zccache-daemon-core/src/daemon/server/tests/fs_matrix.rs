@@ -255,6 +255,7 @@ fn reflink_larger_than_four_gib_uses_chunked_clone() {
     let old_time = filetime::FileTime::from_unix_time(1_000_000_000, 100);
     filetime::set_file_mtime(&blob, old_time).unwrap();
     drop(file);
+    write_authoritative_blob_digest(&blob).unwrap();
     let caps = fs_caps(&blob, &output);
     assert!(caps.reflink, "stress fixture must support reflinks");
     let observed = write_cached_file_observed(&output, &blob).unwrap();
@@ -276,7 +277,7 @@ fn reflink_larger_than_four_gib_uses_chunked_clone() {
     output_file.sync_all().unwrap();
     assert_eq!(read_at(&blob, FOUR_GIB + 9, 14), b"boundary-after");
     std::fs::remove_file(&output).unwrap();
-    std::fs::remove_file(&blob).unwrap();
+    remove_registered_blob(&blob).unwrap();
     assert!(!output.exists() && !blob.exists());
     println!(
         "large COW acceptance: executed fixture={} bytes={LENGTH} tier=reflink copied_bytes=0 mutation_isolated=true mtime_preserved=true file_identity=independent cleanup=true",
