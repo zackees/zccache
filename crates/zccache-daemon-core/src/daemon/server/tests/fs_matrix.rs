@@ -210,6 +210,7 @@ fn refs_non_cluster_multiple_round_trips() {
     std::fs::write(&blob, &bytes).unwrap();
     let old_time = filetime::FileTime::from_unix_time(1_000_000_000, 100);
     filetime::set_file_mtime(&blob, old_time).unwrap();
+    write_authoritative_blob_digest(&blob).unwrap();
     let observed = write_cached_file_observed(&output, &blob).unwrap();
     assert_eq!(observed.reflink_count, 1, "ReFS must use the reflink tier");
     assert_eq!(observed.copy_bytes, 0);
@@ -221,7 +222,7 @@ fn refs_non_cluster_multiple_round_trips() {
     std::fs::write(&output, b"private").unwrap();
     assert_eq!(std::fs::read(&blob).unwrap(), bytes);
     std::fs::remove_file(&output).unwrap();
-    std::fs::remove_file(&blob).unwrap();
+    remove_registered_blob(&blob).unwrap();
     assert!(!output.exists() && !blob.exists());
     println!(
         "ReFS acceptance: executed tier=reflink copied_bytes=0 mutation_isolated=true mtime_preserved=true file_identity=independent cleanup=true"
