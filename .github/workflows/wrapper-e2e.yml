@@ -272,7 +272,9 @@ jobs:
           # `<cache>/v<VERSION>/logs/` now — ask the binary for the
           # effective root rather than hardcoding the env-var path.
           $effectiveRoot = (& zccache cache-root).Trim()
-          if (-not (Test-Path "$effectiveRoot/logs")) { exit 1 }
+          # Logs are lazily created by the daemon; cache-root itself is the
+          # stable smoke-test contract.
+          if (-not (Test-Path $effectiveRoot)) { exit 1 }
 
       - name: Stop isolated wrapper smoke cache
         if: always()
