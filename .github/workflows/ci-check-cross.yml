@@ -11,14 +11,10 @@ name: CI Check Cross
 # cleanly against the musl target. Tests + integration coverage live
 # in the native-glibc Linux lanes.
 #
-# We deliberately DO NOT use setup-soldr@v0.9.62's `cross-targets:`
-# input here: as of 2026-06-20 it installs a `cargo-zigbuild` shim at
-# /home/runner/work/_temp/setup-soldr-soldr/bin/cargo-zigbuild-0.23.0/
-# whose binary file fails to execute with "Syntax error: ) unexpected"
-# (wrapper-script issue upstream). Workaround: apt-install musl-tools
-# for the `musl-gcc` linker, then `rustup target add` + bare
-# `cargo build --target <triple>`. Well-trodden host-arch musl pattern,
-# doesn't need zig at all.
+# setup-soldr owns target installation and validation through its
+# cross-targets input. The action installs and probes the target in its
+# managed toolchain, so this workflow does not mutate toolchain state.
+# We still install musl-tools because the native musl linker is required.
 
 on:
   workflow_call:
@@ -43,54 +39,20 @@ jobs:
     runs-on: ${{ inputs.os }}
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@v0.9.62
+      - uses: zackees/setup-soldr@8bbdf856fde68287bc41c552cb3c3341d1b1316b
         with:
           zccache-seed-strict: true
           toolchain: 1.94.1
           cache: true
           cache-key-suffix: check-${{ inputs.label }}
           linker: fast
+          cross-targets: ${{ inputs.target }}
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
           verify-compile-cache: warn
           solo-toolchain-cache: true
       - name: Install musl-tools
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - name: Add rust target
-        # Route through `soldr rustup` so the target lands in the
-        # setup-soldr-managed RUSTUP_HOME (the same one `soldr cargo`
-        # below uses). Bare `rustup target add` installs into
-        # `/home/runner/.rustup` instead, which soldr ignores —
-        # producing the "can't find crate for `core`" failure that
-        # blocked main pre-fix.
-        shell: bash
-        run: |
-          soldr rustup target remove ${{ inputs.target }} || true
-          soldr rustup target add ${{ inputs.target }}
-          # The setup-soldr-restored RUSTUP_HOME cache can carry a corrupted
-          # rust-std component (observed 2026-07-10 on linux-arm-musl:
-          # "could not read component file: .../manifest-rust-std-..." then
-          # "can't find crate for `std`"). `target add` no-ops on the broken
-          # install, so probe std resolution and force a component
-          # reinstall once before giving up (issue #1025).
-          echo 'fn main() {}' > /tmp/std_probe.rs
-          if ! soldr rustc --target ${{ inputs.target }} --emit=metadata \
-              --out-dir /tmp /tmp/std_probe.rs; then
-            # `rustup component remove`, `rustup target add`, and (verified
-            # on the 2026-07-10 03:47Z main run) even surgically editing
-            # lib/rustlib/components all leave rustup convinced the target
-            # is "up to date" — its install state lives in the toolchain's
-            # v2 manifestation files, not the v1 components list. The only
-            # reliable repair is reinstalling the whole pinned toolchain
-            # (~2 min, and only on the corrupt-cache path).
-            TC=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
-            echo "rust-std for ${{ inputs.target }} is corrupt in the cached toolchain — reinstalling toolchain $TC"
-            soldr rustup toolchain uninstall "$TC" || true
-            soldr rustup toolchain install "$TC" --profile minimal
-            soldr rustup target add ${{ inputs.target }}
-            soldr rustc --target ${{ inputs.target }} --emit=metadata \
-              --out-dir /tmp /tmp/std_probe.rs
-          fi
       - name: Check
         shell: bash
         run: |

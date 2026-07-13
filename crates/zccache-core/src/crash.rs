@@ -90,7 +90,7 @@ pub fn install(bin_stem: &'static str) -> CrashGuard {
 /// is mid-startup and an `eprintln!` would race with their own tracing
 /// init.
 fn write_last_run_marker(bin_stem: &str) -> std::io::Result<()> {
-    let cache_dir = super::config::default_cache_dir();
+    let cache_dir = super::config::daemon_state_dir();
     std::fs::create_dir_all(&cache_dir)?;
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -100,7 +100,7 @@ fn write_last_run_marker(bin_stem: &str) -> std::io::Result<()> {
 }
 
 fn last_run_marker_path(bin_stem: &str) -> PathBuf {
-    let cache_dir = super::config::default_cache_dir();
+    let cache_dir = super::config::daemon_state_dir();
     cache_dir
         .join(format!("last_run_{bin_stem}.txt"))
         .as_path()

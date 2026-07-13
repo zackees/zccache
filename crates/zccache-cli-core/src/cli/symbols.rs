@@ -735,7 +735,7 @@ mod tests {
             .and_then(|s| s.to_str());
         assert_eq!(parent, Some("symbols"));
 
-        let expected_root = crate::core::config::default_cache_dir();
+        let expected_root = crate::core::config::daemon_state_dir();
         assert!(
             path.starts_with(expected_root.as_path()),
             "cache path {} should be under default_cache_dir {}",

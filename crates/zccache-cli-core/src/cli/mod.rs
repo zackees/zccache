@@ -185,7 +185,7 @@ pub fn run_ino_convert_cached(
     }
     let cache_key = hasher.finalize().to_hex();
 
-    let cache_dir = crate::core::config::default_cache_dir().join("ino");
+    let cache_dir = crate::core::config::daemon_state_dir().join("ino");
     std::fs::create_dir_all(&cache_dir)?;
     let cached_cpp = cache_dir.join(format!("{cache_key}.ino.cpp"));
 
@@ -265,7 +265,7 @@ pub fn infer_download_archive_path(
     archive_format: ArchiveFormat,
 ) -> std::path::PathBuf {
     let file_name = infer_download_file_name(source, archive_format);
-    crate::core::config::default_cache_dir()
+    crate::core::config::daemon_state_dir()
         .join("downloads")
         .join("artifacts")
         .join(file_name)

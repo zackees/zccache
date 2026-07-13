@@ -569,7 +569,7 @@ fn deployed_daemon_file_name() -> &'static str {
 /// `runtime-binaries/` copies allowed.
 #[must_use]
 pub fn deployed_daemon_path() -> NormalizedPath {
-    crate::core::config::default_cache_dir().join(deployed_daemon_file_name())
+    crate::core::config::daemon_state_dir().join(deployed_daemon_file_name())
 }
 
 /// Materialize the daemon binary at [`deployed_daemon_path`] by copying
@@ -648,7 +648,7 @@ const DAEMON_SPAWN_LOGS_SUBDIR: &str = "logs";
 /// path — the daemon's own opener will see the error and fall back to
 /// `Stdio::null` after warning.
 fn allocate_daemon_spawn_log_path() -> std::path::PathBuf {
-    let dir = crate::core::config::default_cache_dir().join(DAEMON_SPAWN_LOGS_SUBDIR);
+    let dir = crate::core::config::daemon_state_dir().join(DAEMON_SPAWN_LOGS_SUBDIR);
     let _ = std::fs::create_dir_all(dir.as_path());
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -689,7 +689,7 @@ const LOG_GC_CUTOFF: std::time::Duration = std::time::Duration::from_secs(60 * 6
 /// and deleting it mid-life would erase the very history that #323
 /// needed to diagnose the multi-spawn bug.
 pub fn gc_log_directory() {
-    let dir = crate::core::config::default_cache_dir().join(DAEMON_SPAWN_LOGS_SUBDIR);
+    let dir = crate::core::config::daemon_state_dir().join(DAEMON_SPAWN_LOGS_SUBDIR);
     gc_log_directory_in(dir.as_path(), LOG_GC_CUTOFF);
 }
 

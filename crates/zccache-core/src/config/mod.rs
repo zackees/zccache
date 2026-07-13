@@ -25,6 +25,12 @@ pub const CACHE_DIR_ENV: &str = "ZCCACHE_CACHE_DIR";
 /// without sharing IPC endpoints, lock files, or lifecycle logs.
 pub const DAEMON_NAMESPACE_ENV: &str = "ZCCACHE_DAEMON_NAMESPACE";
 
+/// Optional explicit root for daemon-owned mutable state. Embedding hosts can
+/// set this when the broker has already assigned a stable private directory;
+/// it is deliberately separate from `ZCCACHE_CACHE_DIR`, which remains the
+/// user-visible top-level root used for endpoint and shared artifact identity.
+pub const DAEMON_STATE_DIR_ENV: &str = "ZCCACHE_DAEMON_STATE_DIR";
+
 /// Human-readable namespace label reported when no explicit daemon namespace
 /// is configured. This label is diagnostic only; default endpoint/path names
 /// deliberately do not include it so existing users keep the same layout.
@@ -102,11 +108,12 @@ pub use paths::{
     tmp_dir, tmp_dir_from_cache_dir,
 };
 pub use resolve::{
-    cache_dir_override, default_cache_dir, effective_cache_root_from_top_level,
-    is_version_dir_name, prune_stale_version_dirs, prune_stale_version_dirs_in,
-    read_last_version_marker, resolve_cache_root, resolve_cache_root_top_level, versioned_subdir,
-    write_last_version_marker, write_last_version_marker_in, CacheRootSource, PruneReport,
-    LAST_VERSION_MARKER,
+    cache_dir_override, daemon_state_dir, daemon_state_dir_from_cache_dir,
+    daemon_state_dir_from_cache_dir_with_namespace, default_cache_dir,
+    effective_cache_root_from_top_level, is_version_dir_name, prune_stale_version_dirs,
+    prune_stale_version_dirs_in, read_last_version_marker, resolve_cache_root,
+    resolve_cache_root_top_level, versioned_subdir, write_last_version_marker,
+    write_last_version_marker_in, CacheRootSource, PruneReport, LAST_VERSION_MARKER,
 };
 
 /// Top-level configuration for zccache.
