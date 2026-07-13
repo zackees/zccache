@@ -234,7 +234,9 @@ jobs:
           # broke on macOS in 1.7.2.
           soldr cargo add serde --features derive
           soldr cargo build --verbose 2>&1 | tee build.log
-          grep -F 'zccache ' build.log
+          # Cargo wraps long verbose command lines at terminal width, so the
+          # wrapper path may not retain a trailing space on the same line.
+          grep -F 'zccache' build.log
           # Issue #761 / #762 Phase 0: logs live under
           # `<cache>/v<VERSION>/logs/` now — ask the binary for the
           # effective root rather than hardcoding the env-var path.
