@@ -72,6 +72,33 @@ pub(in crate::daemon::server) fn write_authoritative_blob_digest(
     write_authoritative_blob_digest_for(blob_path, blob_path)
 }
 
+#[cfg(test)]
+pub(in crate::daemon::server) fn register_trusted_blob_for_test(
+    blob_path: &Path,
+) -> std::io::Result<()> {
+    let id = get_file_id(blob_path).ok_or_else(|| {
+        std::io::Error::other(format!(
+            "unable to identify test cache blob {}",
+            blob_path.display()
+        ))
+    })?;
+    if let Some((_, stale)) = registry().remove(&id) {
+        for output in stale.outputs {
+            output_ids().remove(&output);
+        }
+    }
+    registry().insert(
+        id,
+        LinkRecord {
+            blob_path: blob_path.to_path_buf(),
+            expected_hash: [0; 32],
+            outputs: BTreeSet::new(),
+            suspect: false,
+        },
+    );
+    Ok(())
+}
+
 /// Owns the digest sidecar published by one artifact-write attempt.
 ///
 /// Dropping an uncommitted guard removes only the sidecar installed by that
