@@ -37,9 +37,19 @@ fn materialize_cached_file(
     cache_file: &Path,
     delivery: crate::compiler::DeliveryPolicy,
 ) -> std::io::Result<StagedMaterializationStats> {
+    materialize_cached_file_observed(out_path, cache_file, delivery, false)
+}
+
+fn materialize_cached_file_observed(
+    out_path: &Path,
+    cache_file: &Path,
+    delivery: crate::compiler::DeliveryPolicy,
+    force_observation: bool,
+) -> std::io::Result<StagedMaterializationStats> {
     let staged = is_staged_artifact_path(cache_file);
+    let observe = force_observation || staged;
     let observed = |reflink_count, hardlink_count, copy_count, copy_bytes| {
-        if staged {
+        if observe {
             StagedMaterializationStats {
                 reflink_count,
                 hardlink_count,
@@ -165,6 +175,19 @@ fn materialize_cached_file(
     restore_cache_mtime(cache_file, out_path)?;
     touch_mtime(out_path);
     Ok(observed(0, 0, 1, copied_bytes))
+}
+
+#[cfg(test)]
+pub(in crate::daemon::server) fn write_cached_file_observed(
+    out_path: &Path,
+    cache_file: &Path,
+) -> std::io::Result<StagedMaterializationStats> {
+    materialize_cached_file_observed(
+        out_path,
+        cache_file,
+        crate::compiler::DeliveryPolicy::IndependentOnly,
+        true,
+    )
 }
 
 fn cleanup_failed_hardlink(

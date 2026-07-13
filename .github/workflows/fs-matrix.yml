@@ -1,6 +1,9 @@
 name: Filesystem Matrix
 
 on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 0"
   push:
     branches: [main]
   pull_request:
@@ -50,6 +53,39 @@ jobs:
       - name: ReFS cluster-rounding acceptance
         if: runner.os == 'Windows'
         shell: bash
+        env:
+          ZCCACHE_REQUIRE_REFS: "1"
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: >-
           soldr cargo test -p zccache-daemon-core --features test-support
-          refs_non_cluster_multiple_round_trips_when_available -- --nocapture --test-threads=1
+          refs_non_cluster_multiple_round_trips -- --nocapture --test-threads=1
+
+  large-cow:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: zackees/setup-soldr@v0.9.62
+        with:
+          zccache-seed-strict: true
+          toolchain: 1.94.1
+          cache: true
+          cache-key-suffix: fs-large-cow-${{ matrix.os }}
+          linker: fast
+      - name: Install btrfs fixture tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y btrfs-progs
+      - name: Run required >4 GiB COW acceptance
+        shell: bash
+        env:
+          ZCCACHE_REQUIRE_LARGE_COW: "1"
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: >-
+          soldr cargo test -p zccache-daemon-core --features test-support
+          reflink_larger_than_four_gib_uses_chunked_clone -- --nocapture --test-threads=1
