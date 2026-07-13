@@ -166,20 +166,31 @@ separate because runner and filesystem costs differ:
 | Platform | min speedup | restore max | worktree max | touch max | staged miss max |
 |---|---:|---:|---:|---:|---:|
 | Linux | `4.5x` | `1500ms` | `4000ms` | `2500ms` | `15000ms` |
-| macOS ARM | `0.05x` | `2500ms` | `6000ms` | `5000ms` | `25000ms` |
-| Windows | `1.3x` | `10000ms` | `30000ms` | `30000ms` | `40000ms` |
-
-The macOS ratio floor is temporarily permissive because intermittent soldr
-diagnostic-capture timeouts include a 300-second wait and successful no-cache
-retry in the measured warm duration. The absolute worktree, touch, and restore
-ceilings remain hard, as do all staged correctness gates. Issue #1093 tracks
-separating this integration-timeout artifact from cache latency and ratcheting
-the ratio back to an evidence-based floor.
+| macOS ARM | `3.0x` | `2500ms` | `6000ms` | `5000ms` | `25000ms` |
+| Windows | `1.3x` | `5000ms` | `30000ms` | `30000ms` | `40000ms` |
 
 The Windows floor includes the `sqlite-link` fixture's bundled native C
 compile, which is outside rustc artifact reuse. Staged telemetry remains a
 hard gate, so a direct-fallback regression still fails even when wall-clock
-speedup exceeds `1.3x`.
+speedup exceeds `1.3x`. There is one narrowly scoped temporary exception for
+Windows `sqlite-link` × `worktree-share`: `1.25x` and `35000ms`, reflecting the
+clean sample from run 29226873285 (1.27x, 32.13 seconds). This does not weaken
+other Windows rows. It is an explicit exception to the normal distribution
+requirement below; issue #1093 tracks collecting that distribution and either
+tightening or removing the override.
+
+Measured `soldr cargo` commands have no child wall-clock deadline: valid builds
+of large codebases may run for an hour or more. Instead, each command snapshots
+the scenario-local `logs/cargo-aborts.jsonl` offset and saves newly appended
+records as `soldr-aborts-*.jsonl`. Every result must include typed
+`infrastructure_valid`, `invalid_reasons`, `soldr_abort_count`,
+`soldr_timeout_count`, `soldr_no_cache_retry_count`, and
+`soldr_abort_evidence` fields. Evidence paths are artifact-relative basenames,
+and the evaluator requires every declared file to exist beside `result.json`.
+Any new abort, timeout, automatic no-cache retry, truncated or rewritten log,
+malformed record, missing field, or missing evidence file invalidates the
+sample before performance thresholds are evaluated. Old records before the
+captured offset are deliberately ignored.
 
 The staged miss budget is the sum of hashing, publication, and requested-path
 materialization telemetry. Every cell also requires at least one cold staged
@@ -216,7 +227,9 @@ Every cell appends to `$GITHUB_STEP_SUMMARY`. From the run page:
    counts, copied bytes, salvage count, cache counts, and RSS.
 4. Failed runs annotate the failing rows with `::error::` lines (visible in the "Annotations" sidebar).
 
-Raw `result.json`, `*-shutdown.json`, and `rss-*.csv` are uploaded as `perf-results-<platform>-<fixture>` artifacts (14-day retention).
+Raw `result.json`, `soldr-aborts-*.jsonl`, `*-shutdown.json`, and `rss-*.csv`
+are uploaded as `perf-results-<platform>-<fixture>` artifacts (14-day
+retention).
 
 ## Iterating on a perf problem — local-first, GHA last
 

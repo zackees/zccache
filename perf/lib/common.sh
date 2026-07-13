@@ -175,14 +175,231 @@ measure::elapsed_ms() {
     echo $(( now - start ))
 }
 
+# --- Benchmark infrastructure validity ------------------------------
+
+# Each soldr cache root owns its own append-only cargo-aborts.jsonl. A
+# scenario snapshots the byte offset immediately before each measured command
+# and copies only newly appended records into its artifact directory. This
+# keeps stale records and concurrently running scenarios out of the verdict.
+measure::infrastructure_guard_init() {
+    _MEASURE_INFRASTRUCTURE_VALID=true
+    _MEASURE_INVALID_REASONS_JSON='[]'
+    _MEASURE_SOLDR_ABORT_COUNT=0
+    _MEASURE_SOLDR_TIMEOUT_COUNT=0
+    _MEASURE_SOLDR_NO_CACHE_RETRY_COUNT=0
+    _MEASURE_ABORT_EVIDENCE_JSON='[]'
+}
+
+measure::soldr_abort_log_bytes() {
+    local log="${1}/logs/cargo-aborts.jsonl"
+    if [[ -f "${log}" ]]; then
+        wc -c < "${log}" | tr -d '[:space:]'
+    else
+        echo 0
+    fi
+}
+
+measure::soldr_abort_log_prefix_fingerprint() {
+    local log="$1"
+    local bytes="$2"
+    if (( bytes == 0 )); then
+        echo "0:0"
+    else
+        head -c "${bytes}" "${log}" | cksum | awk '{ print $1 ":" $2 }'
+    fi
+}
+
+measure::_mark_infrastructure_invalid() {
+    local reason="$1"
+    _MEASURE_INFRASTRUCTURE_VALID=false
+    _MEASURE_INVALID_REASONS_JSON="$(
+        jq -cn --argjson reasons "${_MEASURE_INVALID_REASONS_JSON}" \
+            --arg reason "${reason}" '$reasons + [$reason]'
+    )"
+}
+
+# measure::capture_soldr_abort_delta <cache-root> <baseline-bytes>
+#                                    <baseline-fingerprint> <evidence-file>
+#                                    <phase-label>
+measure::capture_soldr_abort_delta() {
+    local cache_root="$1"
+    local baseline_bytes="$2"
+    local baseline_fingerprint="$3"
+    local evidence_file="$4"
+    local phase="$5"
+    local log="${cache_root}/logs/cargo-aborts.jsonl"
+    local evidence_name current_bytes current_fingerprint delta_bytes captured_bytes line
+    local updated_evidence_paths
+    local aborts=0 timeouts=0 retries=0 malformed=0
+
+    evidence_name="$(basename -- "${evidence_file}")"
+    if ! mkdir -p "$(dirname -- "${evidence_file}")"; then
+        echo "${phase}: could not create soldr abort evidence directory" >&2
+        return 1
+    fi
+    if ! : > "${evidence_file}"; then
+        echo "${phase}: could not create soldr abort evidence file ${evidence_file}" >&2
+        return 1
+    fi
+    if ! updated_evidence_paths="$(
+        jq -cn --argjson paths "${_MEASURE_ABORT_EVIDENCE_JSON}" \
+            --arg path "${evidence_name}" '$paths + [$path]'
+    )"; then
+        echo "${phase}: could not update soldr abort evidence metadata" >&2
+        return 1
+    fi
+    _MEASURE_ABORT_EVIDENCE_JSON="${updated_evidence_paths}"
+
+    if ! current_bytes="$(measure::soldr_abort_log_bytes "${cache_root}")"; then
+        echo "${phase}: could not read soldr abort log size" >&2
+        return 1
+    fi
+    if (( current_bytes < baseline_bytes )); then
+        cp "${log}" "${evidence_file}" 2>/dev/null || true
+        measure::_mark_infrastructure_invalid \
+            "${phase}: soldr cargo-aborts.jsonl was truncated during the measured command; evidence=${evidence_name}"
+        return 0
+    fi
+
+    if ! current_fingerprint="$(
+        measure::soldr_abort_log_prefix_fingerprint "${log}" "${baseline_bytes}"
+    )"; then
+        echo "${phase}: could not fingerprint soldr abort log" >&2
+        return 1
+    fi
+    if [[ "${current_fingerprint}" != "${baseline_fingerprint}" ]]; then
+        cp "${log}" "${evidence_file}" 2>/dev/null || true
+        measure::_mark_infrastructure_invalid \
+            "${phase}: soldr cargo-aborts.jsonl existing prefix changed during the measured command; evidence=${evidence_name}"
+        return 0
+    fi
+    if (( current_bytes == baseline_bytes )); then
+        return 0
+    fi
+
+    # Bound the copy to the size observed above. A later asynchronous append
+    # belongs to the next command and must not turn this snapshot into a false
+    # partial-record failure.
+    delta_bytes=$(( current_bytes - baseline_bytes ))
+    if ! head -c "${current_bytes}" "${log}" \
+        | tail -c "${delta_bytes}" > "${evidence_file}"; then
+        echo "${phase}: failed to copy soldr abort evidence from ${log}" >&2
+        return 1
+    fi
+    captured_bytes="$(wc -c < "${evidence_file}" | tr -d '[:space:]')"
+    if (( captured_bytes != delta_bytes )); then
+        echo "${phase}: soldr abort evidence changed while being copied" >&2
+        return 1
+    fi
+
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        [[ -z "${line}" ]] && continue
+        if ! jq -e 'type == "object" and .event == "cargo_abort"' \
+            >/dev/null 2>&1 <<<"${line}"; then
+            malformed=$(( malformed + 1 ))
+            continue
+        fi
+        aborts=$(( aborts + 1 ))
+        if jq -e '.timeout == true' >/dev/null 2>&1 <<<"${line}"; then
+            timeouts=$(( timeouts + 1 ))
+        fi
+        if jq -e '.auto_retry_planned == true' >/dev/null 2>&1 <<<"${line}"; then
+            retries=$(( retries + 1 ))
+        fi
+    done < "${evidence_file}"
+
+    _MEASURE_SOLDR_ABORT_COUNT=$(( _MEASURE_SOLDR_ABORT_COUNT + aborts ))
+    _MEASURE_SOLDR_TIMEOUT_COUNT=$(( _MEASURE_SOLDR_TIMEOUT_COUNT + timeouts ))
+    _MEASURE_SOLDR_NO_CACHE_RETRY_COUNT=$(( _MEASURE_SOLDR_NO_CACHE_RETRY_COUNT + retries ))
+
+    if (( malformed > 0 )); then
+        measure::_mark_infrastructure_invalid \
+            "${phase}: ${malformed} malformed or partial soldr abort record(s); evidence=${evidence_name}"
+    fi
+    if (( aborts > 0 )); then
+        measure::_mark_infrastructure_invalid \
+            "${phase}: soldr recorded ${aborts} cargo abort(s), ${timeouts} timeout(s), and ${retries} no-cache retry plan(s); evidence=${evidence_name}"
+    fi
+}
+
+# measure::run_guarded_soldr_command <cache-root> <evidence-file>
+#                                    <phase-label> <command> [args...]
+measure::run_guarded_soldr_command() {
+    local cache_root="$1"
+    local evidence_file="$2"
+    local phase="$3"
+    shift 3
+    local log baseline_bytes baseline_fingerprint command_status capture_status=0
+
+    log="${cache_root}/logs/cargo-aborts.jsonl"
+    if ! baseline_bytes="$(measure::soldr_abort_log_bytes "${cache_root}")"; then
+        measure::_mark_infrastructure_invalid \
+            "${phase}: could not read initial soldr abort log size; evidence=$(basename -- "${evidence_file}")"
+        return 1
+    fi
+    if (( baseline_bytes > 0 )); then
+        if ! baseline_fingerprint="$(
+            measure::soldr_abort_log_prefix_fingerprint "${log}" "${baseline_bytes}"
+        )"; then
+            measure::_mark_infrastructure_invalid \
+                "${phase}: could not fingerprint initial soldr abort log; evidence=$(basename -- "${evidence_file}")"
+            return 1
+        fi
+    else
+        baseline_fingerprint="0:0"
+    fi
+    if "$@"; then
+        command_status=0
+    else
+        command_status=$?
+    fi
+    if measure::capture_soldr_abort_delta \
+        "${cache_root}" "${baseline_bytes}" "${baseline_fingerprint}" \
+        "${evidence_file}" "${phase}"; then
+        capture_status=0
+    else
+        capture_status=$?
+        measure::_mark_infrastructure_invalid \
+            "${phase}: failed to capture soldr abort evidence; evidence=$(basename -- "${evidence_file}")"
+    fi
+    if (( command_status != 0 )); then
+        measure::_mark_infrastructure_invalid \
+            "${phase}: measured command exited with status ${command_status}; evidence=$(basename -- "${evidence_file}")"
+    fi
+    if (( command_status != 0 )); then
+        return "${command_status}"
+    fi
+    return "${capture_status}"
+}
+
+measure::emit_infrastructure_failure_json() {
+    local scenario="$1"
+    local guard_status="$2"
+    measure::emit_summary_json "${scenario}" \
+        "infrastructure_valid=${_MEASURE_INFRASTRUCTURE_VALID}" \
+        "invalid_reasons=json:${_MEASURE_INVALID_REASONS_JSON}" \
+        "soldr_abort_count=${_MEASURE_SOLDR_ABORT_COUNT}" \
+        "soldr_timeout_count=${_MEASURE_SOLDR_TIMEOUT_COUNT}" \
+        "soldr_no_cache_retry_count=${_MEASURE_SOLDR_NO_CACHE_RETRY_COUNT}" \
+        "soldr_abort_evidence=json:${_MEASURE_ABORT_EVIDENCE_JSON}" \
+        "guarded_command_status=${guard_status}"
+}
+
+measure::fail_if_infrastructure_invalid() {
+    if [[ "${_MEASURE_INFRASTRUCTURE_VALID:-false}" != "true" ]]; then
+        echo "benchmark infrastructure invalid: ${_MEASURE_INVALID_REASONS_JSON:-[]}" >&2
+        return 1
+    fi
+}
+
 # --- Summary emission -----------------------------------------------
 
 # measure::emit_summary_json <scenario> <key=value>...
 #
 # Prints a single JSON object on stdout with the provided key/value
-# pairs (all values are emitted as strings unless they match a
-# number-only regex, in which case they are emitted as JSON numbers).
-# A `scenario` key is always included.
+# pairs. Numbers and booleans are emitted as their native JSON types;
+# `json:<value>` emits a pre-validated object or array. Everything else is a
+# string. A `scenario` key is always included.
 measure::emit_summary_json() {
     local scenario="$1"; shift
     local first=1
@@ -191,8 +408,16 @@ measure::emit_summary_json() {
         local key="${kv%%=*}"
         local value="${kv#*=}"
         printf ','
-        if [[ "${value}" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+        if [[ "${value}" =~ ^-?[0-9]+(\.[0-9]+)?$ ]] \
+            || [[ "${value}" == "true" || "${value}" == "false" ]]; then
             printf '"%s":%s' "${key}" "${value}"
+        elif [[ "${value}" == json:* ]]; then
+            local raw_json="${value#json:}"
+            if ! jq -e . >/dev/null 2>&1 <<<"${raw_json}"; then
+                echo "invalid raw JSON for summary key ${key}" >&2
+                return 1
+            fi
+            printf '"%s":%s' "${key}" "${raw_json}"
         else
             # Naive JSON-string escape: backslash + double quote.
             local escaped="${value//\\/\\\\}"

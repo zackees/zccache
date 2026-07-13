@@ -36,6 +36,7 @@ RSS_CSV="${WORKDIR}/rss-${SCENARIO}.csv"
 echo "scenario: using soldr cache save/load (round 2a)" >&2
 
 mkdir -p "${CACHE_COLD}" "${CACHE_WARM}"
+measure::infrastructure_guard_init
 
 measure::start_rss_poller "${RSS_CSV}"
 trap 'measure::stop_rss_poller' EXIT
@@ -43,10 +44,18 @@ trap 'measure::stop_rss_poller' EXIT
 # --- Cold build ----------------------------------------------------
 
 cold_start_ms="$(measure::now_ms)"
-(
-    cd "${FIXTURE_DIR}"
-    SOLDR_CACHE_DIR="${CACHE_COLD}" soldr cargo build --release
-)
+pushd "${FIXTURE_DIR}" >/dev/null
+if SOLDR_CACHE_DIR="${CACHE_COLD}" measure::run_guarded_soldr_command \
+    "${CACHE_COLD}" "${WORKDIR}/soldr-aborts-cold.jsonl" "cold build" \
+    soldr cargo build --release; then
+    :
+else
+    command_status=$?
+    measure::emit_infrastructure_failure_json "${SCENARIO}" "${command_status}" \
+        || echo "failed to emit infrastructure failure JSON" >&2
+    exit "${command_status}"
+fi
+popd >/dev/null
 cold_elapsed_ms="$(measure::elapsed_ms "${cold_start_ms}")"
 
 # Capture zccache's own cache report for cold side (symmetric with
@@ -117,10 +126,18 @@ rm -f "${CACHE_WARM}/cache/zccache/logs/last-session-stats.json" \
 # --- Warm build ----------------------------------------------------
 
 warm_start_ms="$(measure::now_ms)"
-(
-    cd "${FIXTURE_DIR}"
-    SOLDR_CACHE_DIR="${CACHE_WARM}" soldr cargo build --release
-)
+pushd "${FIXTURE_DIR}" >/dev/null
+if SOLDR_CACHE_DIR="${CACHE_WARM}" measure::run_guarded_soldr_command \
+    "${CACHE_WARM}" "${WORKDIR}/soldr-aborts-warm.jsonl" "warm build" \
+    soldr cargo build --release; then
+    :
+else
+    command_status=$?
+    measure::emit_infrastructure_failure_json "${SCENARIO}" "${command_status}" \
+        || echo "failed to emit infrastructure failure JSON" >&2
+    exit "${command_status}"
+fi
+popd >/dev/null
 warm_elapsed_ms="$(measure::elapsed_ms "${warm_start_ms}")"
 
 # Copy zccache's per-session logs out of the cache tree so the
@@ -189,6 +206,13 @@ measure::emit_summary_json "${SCENARIO}" \
     "tarball_bytes=${tar_bytes}" \
     "archive_mode=soldr-save-load-ci" \
     "peak_daemon_rss_bytes=${peak_daemon_rss}" \
-    "peak_compile_rss_bytes=${peak_compile_rss}"
+    "peak_compile_rss_bytes=${peak_compile_rss}" \
+    "infrastructure_valid=${_MEASURE_INFRASTRUCTURE_VALID}" \
+    "invalid_reasons=json:${_MEASURE_INVALID_REASONS_JSON}" \
+    "soldr_abort_count=${_MEASURE_SOLDR_ABORT_COUNT}" \
+    "soldr_timeout_count=${_MEASURE_SOLDR_TIMEOUT_COUNT}" \
+    "soldr_no_cache_retry_count=${_MEASURE_SOLDR_NO_CACHE_RETRY_COUNT}" \
+    "soldr_abort_evidence=json:${_MEASURE_ABORT_EVIDENCE_JSON}"
 
 measure::append_summary_md "| ${SCENARIO} | ${cold_elapsed_ms} ms | ${warm_elapsed_ms} ms | ${speedup}x | ${warm_hits}/${warm_misses} | ${warm_hit_rate} | $(( peak_daemon_rss / 1024 / 1024 )) MiB |"
+measure::fail_if_infrastructure_invalid

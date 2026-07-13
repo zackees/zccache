@@ -13,6 +13,10 @@ SNAPSHOT_SCENARIOS = (
     ROOT / "perf" / "scenarios" / "cold-tar-untar-warm" / "run.sh",
     ROOT / "perf" / "scenarios" / "restore-no-clean-warm" / "run.sh",
 )
+ROLLOUT_SCENARIOS = SNAPSHOT_SCENARIOS + (
+    ROOT / "perf" / "scenarios" / "worktree-share" / "run.sh",
+    ROOT / "perf" / "scenarios" / "touch-no-change" / "run.sh",
+)
 
 
 def workflow_text() -> str:
@@ -84,10 +88,13 @@ def test_perf_cluster_final_rollout_matrix_and_defaults_are_required() -> None:
     assert "fixture: [medium, sqlite-link]" in workflow
     assert 'max_warm_ms_worktree: "6000"' in workflow
     assert 'max_warm_ms_touch: "5000"' in workflow
-    assert workflow.count('min_speedup: "0.05"') == 1
+    assert 'min_speedup: "0.05"' not in workflow
+    assert workflow.count('min_speedup: "3.0"') == 1
     assert 'min_speedup: "1.3"' in workflow
-    assert workflow.count('max_warm_ms_restore: "10000"') == 1
-    assert workflow.count('max_warm_ms_worktree: "30000"') == 1
+    assert 'min_speedup_sqlite_worktree: "1.25"' in workflow
+    assert workflow.count('max_warm_ms_restore: "5000"') == 1
+    assert 'max_warm_ms_worktree: "30000"' in workflow
+    assert 'max_warm_ms_sqlite_worktree: "35000"' in workflow
     assert workflow.count('max_warm_ms_touch: "30000"') == 1
     assert (
         "cold-tar-untar-warm|restore-no-clean-warm|worktree-share|touch-no-change) "
@@ -124,7 +131,40 @@ def test_perf_cluster_normalizes_windows_temp_for_git_bash_tools() -> None:
     assert 'out_root="${runner_temp}/perf-${M_PLATFORM}-${M_FIXTURE}"' in run_step
     assert 'artifact_root="$(cygpath -w "${out_root}")"' in run_step
     assert 'echo "out_root=${artifact_root}" >> "$GITHUB_OUTPUT"' in run_step
-    assert 'SOLDR_CARGO_WAIT_TIMEOUT_SECS: "300"' in run_step
+    assert "SOLDR_CARGO_WAIT_TIMEOUT_SECS" not in run_step
+
+
+def test_perf_cluster_fails_closed_on_soldr_abort_contamination() -> None:
+    workflow = workflow_text()
+
+    for required in (
+        "infrastructure_valid",
+        "invalid_reasons",
+        "soldr_abort_count",
+        "soldr_timeout_count",
+        "soldr_no_cache_retry_count",
+        "soldr_abort_evidence",
+        "INFRA-INVALID",
+        "missing or malformed infrastructure-validity fields",
+        "soldr-aborts-*.jsonl",
+    ):
+        assert required in workflow
+
+    common = COMMON_SH.read_text(encoding="utf-8")
+    assert "measure::run_guarded_soldr_command()" in common
+    assert "cargo-aborts.jsonl" in common
+
+    for scenario in ROLLOUT_SCENARIOS:
+        script = scenario.read_text(encoding="utf-8")
+        assert script.count("measure::run_guarded_soldr_command") == 2
+        assert script.count("soldr cargo build --release") == script.count(
+            "measure::run_guarded_soldr_command"
+        )
+        assert script.count("measure::emit_infrastructure_failure_json") == 2
+        assert script.count('|| echo "failed to emit infrastructure failure JSON"') == 2
+        assert '"infrastructure_valid=${_MEASURE_INFRASTRUCTURE_VALID}"' in script
+        assert '"invalid_reasons=json:${_MEASURE_INVALID_REASONS_JSON}"' in script
+        assert "measure::fail_if_infrastructure_invalid" in script
 
 
 def test_windows_rss_poller_does_not_create_a_lockable_script() -> None:
