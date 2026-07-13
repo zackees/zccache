@@ -300,6 +300,12 @@ fn run_server(args: Args) {
     // not on Defender's exclusion list. Non-fatal; no-ops off Windows
     // and when `ZCCACHE_QUIET` is set.
     let cache_root = crate::core::config::default_cache_dir();
+    let daemon_state_root = crate::core::config::daemon_state_dir();
+    tracing::info!(
+        daemon_namespace = %crate::core::config::daemon_namespace_label(),
+        mutable_state_dir = %daemon_state_root.display(),
+        "resolved daemon cache state"
+    );
     crate::core::defender::maybe_emit_first_run_banner(cache_root.as_path());
 
     #[expect(

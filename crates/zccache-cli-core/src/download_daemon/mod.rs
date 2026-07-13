@@ -353,7 +353,7 @@ async fn attach_job(
         return Ok((existing, false));
     }
 
-    let metadata_dir = crate::core::config::default_cache_dir()
+    let metadata_dir = crate::core::config::daemon_state_dir()
         .join("downloads")
         .join(&download_id);
     let initial_status = if destination.exists() && !options.force {

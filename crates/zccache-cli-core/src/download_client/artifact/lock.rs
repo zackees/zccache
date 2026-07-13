@@ -40,7 +40,7 @@ fn fetch_lock_path(request: &ResolvedFetchRequest) -> PathBuf {
         key.push_str(&crate::core::normalize_for_key(expanded_path));
     }
     let hash = stable_download_id(Path::new(&key));
-    crate::core::config::default_cache_dir()
+    crate::core::config::daemon_state_dir()
         .join("downloads")
         .join("locks")
         .join(format!("{hash}.lock"))

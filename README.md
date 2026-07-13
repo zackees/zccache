@@ -444,6 +444,14 @@ such as `soldr-dev`. `zccache-daemon-dev` is not a separate shipped binary; it
 is represented by the documented namespace mode so the `zccache` CLI, wrapper
 mode, and direct daemon entrypoint all resolve the same daemon identity.
 
+All daemon-owned mutable state (indexes, metadata snapshots, depgraph,
+compiler/system-include hashes, journals, download markers, and runtime
+sidecars) follows that stable namespace under `<cache>/daemon-state/<namespace>`.
+The `ZCCACHE_DAEMON_STATE_DIR` override lets an embedding broker provide the
+already-derived private directory directly; legacy unnamespaced layouts remain
+valid and a namespaced daemon rebuilds from misses rather than depending on a
+successful migration of shared snapshots.
+
 ### Daemon wire migration
 
 The active daemon wire remains v15 bincode while the v16 prost schema and

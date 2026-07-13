@@ -12,7 +12,7 @@
 //! from issue #275. The `cache_root_invariant_all_subpaths_rooted` test in
 //! `tests.rs` guards that invariant.
 
-use super::resolve::default_cache_dir;
+use super::resolve::{daemon_state_dir_from_cache_dir, default_cache_dir};
 use crate::NormalizedPath;
 
 /// Returns the directory for content-addressed compiled outputs.
@@ -64,13 +64,13 @@ pub fn symbols_cache_dir() -> NormalizedPath {
 /// Returns the symbols-archive cache under an explicit cache root.
 #[must_use]
 pub fn symbols_cache_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
-    cache_dir.join("symbols")
+    daemon_state_dir_from_cache_dir(cache_dir).join("symbols")
 }
 
 /// Returns the cargo registry archive cache under an explicit cache root.
 #[must_use]
 pub fn cargo_registry_cache_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
-    cache_dir.join("cargo-registry")
+    daemon_state_dir_from_cache_dir(cache_dir).join("cargo-registry")
 }
 
 /// Returns the path to the artifact index database.
@@ -98,13 +98,13 @@ pub fn log_dir() -> NormalizedPath {
 /// [`default_cache_dir`].
 #[must_use]
 pub fn artifacts_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
-    cache_dir.join("artifacts")
+    daemon_state_dir_from_cache_dir(cache_dir).join("artifacts")
 }
 
 /// Returns the tmp directory under an explicit cache root.
 #[must_use]
 pub fn tmp_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
-    cache_dir.join("tmp")
+    daemon_state_dir_from_cache_dir(cache_dir).join("tmp")
 }
 
 /// Returns the depfile directory under an explicit cache root.
@@ -114,7 +114,7 @@ pub fn depfile_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath 
 }
 
 pub(super) fn depgraph_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
-    cache_dir.join("depgraph")
+    daemon_state_dir_from_cache_dir(cache_dir).join("depgraph")
 }
 
 /// Returns the artifact index path under an explicit cache root.
@@ -126,7 +126,7 @@ pub(super) fn depgraph_dir_from_cache_dir(cache_dir: &NormalizedPath) -> Normali
 /// `zccache clear` or delete `index.redb` manually.
 #[must_use]
 pub fn index_path_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
-    cache_dir.join("index.bin")
+    daemon_state_dir_from_cache_dir(cache_dir).join("index.bin")
 }
 
 /// Returns the on-disk path for the persisted `MetadataCache` snapshot.
@@ -137,7 +137,7 @@ pub fn index_path_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
 /// `soldr save`/`soldr load`) picks both files up automatically.
 #[must_use]
 pub fn metadata_path_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
-    cache_dir.join("metadata.bin")
+    daemon_state_dir_from_cache_dir(cache_dir).join("metadata.bin")
 }
 
 /// Returns the on-disk path for the persisted compiler-binary hash cache.
@@ -150,7 +150,7 @@ pub fn metadata_path_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPat
 /// load pipeline already bundles it.
 #[must_use]
 pub fn compiler_hash_cache_path_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
-    cache_dir.join("compiler_hash.bin")
+    daemon_state_dir_from_cache_dir(cache_dir).join("compiler_hash.bin")
 }
 
 /// Returns the on-disk path for the persisted `SystemIncludeCache` snapshot.
@@ -163,15 +163,15 @@ pub fn compiler_hash_cache_path_from_cache_dir(cache_dir: &NormalizedPath) -> No
 /// soldr save / load pipeline already bundles it.
 #[must_use]
 pub fn system_includes_cache_path_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
-    cache_dir.join("system_includes.bin")
+    daemon_state_dir_from_cache_dir(cache_dir).join("system_includes.bin")
 }
 
 pub(super) fn crash_dump_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
-    cache_dir.join("crashes")
+    daemon_state_dir_from_cache_dir(cache_dir).join("crashes")
 }
 
 /// Returns the log directory under an explicit cache root.
 #[must_use]
 pub fn log_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
-    cache_dir.join("logs")
+    daemon_state_dir_from_cache_dir(cache_dir).join("logs")
 }

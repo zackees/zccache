@@ -254,7 +254,7 @@ pub struct KvStore {
 impl KvStore {
     /// Open under the canonical zccache root (`default_cache_dir()`).
     pub fn open_default() -> KvResult<Self> {
-        let dir = zccache_core::config::default_cache_dir();
+        let dir = zccache_core::config::daemon_state_dir();
         Self::open(dir)
     }
 

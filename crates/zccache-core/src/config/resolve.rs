@@ -7,7 +7,7 @@
 //! the per-daemon-version subdir layout (issues #761 / #762 Phase 0).
 
 use super::namespace::home_dir_short_hash;
-use super::{CACHE_DIR_ENV, COLOCATE_ENV};
+use super::{CACHE_DIR_ENV, COLOCATE_ENV, DAEMON_NAMESPACE_ENV, DAEMON_STATE_DIR_ENV};
 use crate::NormalizedPath;
 use std::ffi::OsString;
 use std::path::Path;
@@ -21,6 +21,62 @@ use std::path::Path;
 #[must_use]
 pub fn default_cache_dir() -> NormalizedPath {
     default_cache_dir_from_env_value(std::env::var_os(CACHE_DIR_ENV))
+}
+
+/// Resolve the directory that owns daemon-local mutable snapshots.
+///
+/// An embedding host may provide an already-derived private path through
+/// `ZCCACHE_DAEMON_STATE_DIR`. Otherwise an explicitly named daemon gets a
+/// stable namespace below the top-level cache root. The default namespace
+/// intentionally retains the historical layout for backwards compatibility.
+#[must_use]
+pub fn daemon_state_dir() -> NormalizedPath {
+    let cache_dir = default_cache_dir();
+    if let Some(value) = std::env::var_os(DAEMON_STATE_DIR_ENV).filter(|value| !value.is_empty()) {
+        return normalize_cache_dir_override(std::path::Path::new(&value));
+    }
+    daemon_state_dir_from_cache_dir(&cache_dir)
+}
+
+/// Resolve daemon-local state under an explicit top-level cache root.
+#[must_use]
+pub fn daemon_state_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
+    if let Some(value) = std::env::var_os(DAEMON_STATE_DIR_ENV).filter(|value| !value.is_empty()) {
+        return normalize_cache_dir_override(std::path::Path::new(&value));
+    }
+    daemon_state_dir_from_cache_dir_with_namespace(
+        cache_dir,
+        std::env::var_os(DAEMON_NAMESPACE_ENV).and_then(|value| value.into_string().ok()),
+    )
+}
+
+/// Pure path helper used by tests and embedding hosts that already have a
+/// normalized namespace. Sanitization makes the resulting path component
+/// bounded and safe on every supported filesystem.
+#[must_use]
+pub fn daemon_state_dir_from_cache_dir_with_namespace(
+    cache_dir: &NormalizedPath,
+    namespace: Option<String>,
+) -> NormalizedPath {
+    let Some(namespace) = namespace
+        .as_deref()
+        .and_then(super::namespace::sanitize_daemon_namespace)
+    else {
+        return cache_dir.clone();
+    };
+    if cache_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == namespace)
+        && cache_dir
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == "daemon-state")
+    {
+        return cache_dir.clone();
+    }
+    cache_dir.join("daemon-state").join(namespace)
 }
 
 pub(super) fn default_cache_dir_from_env_value(value: Option<OsString>) -> NormalizedPath {
@@ -418,5 +474,37 @@ mod version_hygiene_tests {
         let missing = tmp.path().join("does-not-exist");
         let report = prune_stale_version_dirs_in(&missing, "v1.12.15");
         assert!(report.removed.is_empty() && report.skipped.is_empty());
+    }
+
+    #[test]
+    fn daemon_state_namespace_is_stable_and_distinct() {
+        let root = NormalizedPath::from("/tmp/zccache-root");
+        let a = daemon_state_dir_from_cache_dir_with_namespace(&root, Some("broker-a".into()));
+        let b = daemon_state_dir_from_cache_dir_with_namespace(&root, Some("broker-b".into()));
+        assert_ne!(a, b);
+        assert_eq!(
+            a,
+            daemon_state_dir_from_cache_dir_with_namespace(&root, Some("broker-a".into()))
+        );
+        assert!(a.as_path().ends_with("daemon-state/broker-a"));
+    }
+
+    #[test]
+    fn daemon_state_default_preserves_legacy_layout() {
+        let root = NormalizedPath::from("/tmp/zccache-root");
+        assert_eq!(
+            daemon_state_dir_from_cache_dir_with_namespace(&root, None),
+            root
+        );
+    }
+
+    #[test]
+    fn daemon_state_namespace_path_is_idempotent() {
+        let root = NormalizedPath::from("/tmp/zccache-root");
+        let state = daemon_state_dir_from_cache_dir_with_namespace(&root, Some("broker-a".into()));
+        assert_eq!(
+            daemon_state_dir_from_cache_dir_with_namespace(&state, Some("broker-a".into())),
+            state
+        );
     }
 }

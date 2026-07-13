@@ -23,7 +23,7 @@ pub(crate) fn cmd_symbols_symbolicate(dumps: Vec<PathBuf>) -> ExitCode {
     // sidecar — true dedup. The existing `symbols::install` is the
     // battle-tested fetch path; we just point its `--prefix` at our
     // shared dir.
-    let cache_root: PathBuf = crate::core::config::default_cache_dir().into_path_buf();
+    let cache_root: PathBuf = crate::core::config::daemon_state_dir().into_path_buf();
     let symbols_dir = crate::symbols::symbols_dir_for(&cache_root, &marker.version, &marker.triple);
     let symbols_dir_path: PathBuf = symbols_dir.into_path_buf();
 

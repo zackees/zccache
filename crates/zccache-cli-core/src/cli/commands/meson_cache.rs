@@ -169,7 +169,7 @@ pub(crate) fn cmd_configure(
         }
     };
 
-    let cache_root = config::default_cache_dir();
+    let cache_root = config::daemon_state_dir();
     let entry_dir = Path::new(cache_root.as_path())
         .join("meson-configure")
         .join(&key_hex);

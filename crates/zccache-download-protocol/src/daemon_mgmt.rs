@@ -48,7 +48,7 @@ fn endpoint_for_cache_dir(cache_dir: &std::path::Path) -> String {
 
 /// Path to the daemon PID lock file.
 pub fn lock_file_path() -> NormalizedPath {
-    zccache_core::config::default_cache_dir().join("download-daemon.lock")
+    zccache_core::config::daemon_state_dir().join("download-daemon.lock")
 }
 
 /// Write the daemon PID to the lock file.

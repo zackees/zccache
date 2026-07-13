@@ -28,7 +28,7 @@ pub(super) struct ArtifactMarker {
 
 pub(super) fn artifact_marker_path(cache_path: &Path) -> PathBuf {
     let hash = stable_download_id(cache_path);
-    crate::core::config::default_cache_dir()
+    crate::core::config::daemon_state_dir()
         .join("downloads")
         .join("artifact-state")
         .join(format!("{hash}.json"))
@@ -37,7 +37,7 @@ pub(super) fn artifact_marker_path(cache_path: &Path) -> PathBuf {
 
 pub(super) fn expanded_marker_path(expanded_path: &Path) -> PathBuf {
     let hash = stable_download_id(expanded_path);
-    crate::core::config::default_cache_dir()
+    crate::core::config::daemon_state_dir()
         .join("downloads")
         .join("expanded-state")
         .join(format!("{hash}.json"))

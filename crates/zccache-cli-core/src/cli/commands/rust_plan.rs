@@ -237,7 +237,7 @@ pub(crate) async fn cmd_rust_plan(action: RustPlanCommands) -> ExitCode {
 fn resolve_rust_plan_cache_dir(explicit: Option<&str>) -> NormalizedPath {
     explicit
         .map(NormalizedPath::from)
-        .unwrap_or_else(|| crate::core::config::default_cache_dir().join("rust-artifacts"))
+        .unwrap_or_else(|| crate::core::config::daemon_state_dir().join("rust-artifacts"))
 }
 
 fn load_rust_plan_for_cli(
