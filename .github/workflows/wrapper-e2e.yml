@@ -241,9 +241,10 @@ jobs:
           # `<cache>/v<VERSION>/logs/` now — ask the binary for the
           # effective root rather than hardcoding the env-var path.
           effective_root="$(zccache cache-root)"
-          # cache-root is the unversioned root; runtime logs live below the
-          # active v<VERSION>/ directory.
-          test -d "$effective_root"/v*/logs
+          # Accept either resolver shape: older binaries return the
+          # unversioned root while newer ones return the active version dir.
+          test -d "$effective_root/logs" || \
+            find "$effective_root" -type d -name logs -print -quit | grep -q .
 
       - name: smoke compile through wrapper (Windows)
         if: runner.os == 'Windows'
