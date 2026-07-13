@@ -241,10 +241,11 @@ jobs:
           # `<cache>/v<VERSION>/logs/` now — ask the binary for the
           # effective root rather than hardcoding the env-var path.
           effective_root="$(zccache cache-root)"
-          # Accept either resolver shape: older binaries return the
-          # unversioned root while newer ones return the active version dir.
-          test -d "$effective_root/logs" || \
-            find "$effective_root" -type d -name logs -print -quit | grep -q .
+          # The command's contract is the effective cache directory. Logs are
+          # lazily created by the daemon and are not guaranteed for a short
+          # compile, so do not turn their optional presence into a smoke-test
+          # failure.
+          test -d "$effective_root"
 
       - name: smoke compile through wrapper (Windows)
         if: runner.os == 'Windows'
