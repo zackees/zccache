@@ -9,6 +9,7 @@ struct StagedMiss {
     source_path: NormalizedPath,
     context_key: ContextKey,
     ctx: Box<CompileContext>,
+    input_snapshot: InputSnapshot,
     plan: StagedMultiUnitPlan,
     scan_result: Option<crate::depgraph::ScanResult>,
 }
@@ -18,9 +19,13 @@ struct PublishedMiss {
     context_key: ContextKey,
     plan: StagedMultiUnitPlan,
     cache_entry: Option<(String, CachedArtifact)>,
-    salvage_reason: Option<&'static str>,
+    graph_update: Option<(
+        crate::depgraph::ScanResult,
+        HashMap<NormalizedPath, ContentHash>,
+    )>,
     dep_dirs: Vec<NormalizedPath>,
     artifact_bytes: u64,
+    validation_clock: Clock,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -33,24 +38,19 @@ pub(super) async fn try_handle_staged_misses(
     source_indices: &[usize],
     unit_results: &[UnitCacheResult],
     cwd: &NormalizedPath,
+    key_root: &NormalizedPath,
     client_env: &Option<Vec<(String, String)>>,
-    snap_clock: Clock,
     all_stdout: &mut Vec<u8>,
     all_stderr: &mut Vec<u8>,
 ) -> Option<Response> {
-    let case_insensitive_outputs = compilations
-        .iter()
-        .any(|compilation| compilation.family == crate::compiler::CompilerFamily::Msvc)
-        || crate::compiler::parse_msvc::looks_like_msvc_args(original_args);
     let mut requested_outputs = HashSet::new();
     for compilation in compilations {
-        let output = compilation.output_file.to_string_lossy();
-        let identity = if case_insensitive_outputs {
-            output.to_ascii_lowercase()
+        let output = if compilation.output_file.is_absolute() {
+            compilation.output_file.clone()
         } else {
-            output.into_owned()
+            cwd.join(&compilation.output_file)
         };
-        if !requested_outputs.insert(identity) {
+        if !requested_outputs.insert(output) {
             use crate::daemon::staged_stats::{StagedCounter, StagedFailure};
             state.profiler.staged.count(StagedCounter::PlanAttempted);
             state.profiler.staged.count(StagedCounter::PlanUnsupported);
@@ -68,6 +68,7 @@ pub(super) async fn try_handle_staged_misses(
             output_path,
             context_key,
             ctx,
+            input_snapshot,
         } = unit
         else {
             continue;
@@ -117,6 +118,7 @@ pub(super) async fn try_handle_staged_misses(
             source_path: source_path.clone(),
             context_key: *context_key,
             ctx: ctx.clone(),
+            input_snapshot: input_snapshot.clone(),
             plan,
             scan_result: None,
         });
@@ -150,7 +152,11 @@ pub(super) async fn try_handle_staged_misses(
         let rsp_guard = match crate::compiler::response_file::write_response_file_if_needed(
             &compiler_args,
             &state.depfile_tmpdir,
-            compilations[0].family,
+            if miss.plan.msvc_syntax {
+                crate::compiler::CompilerFamily::Msvc
+            } else {
+                compilations[miss.unit_index].family
+            },
         ) {
             Ok(guard) => guard,
             Err(error) => {
@@ -234,7 +240,7 @@ pub(super) async fn try_handle_staged_misses(
     let mut published = Vec::with_capacity(misses.len());
     for (miss, output_sizes) in misses.into_iter().zip(validated_sizes) {
         let artifact_bytes = output_sizes.iter().sum();
-        let scan_result =
+        let mut scan_result =
             miss.scan_result
                 .unwrap_or_else(|| {
                     match crate::depgraph::depfile::parse_depfile_path(
@@ -256,33 +262,52 @@ pub(super) async fn try_handle_staged_misses(
                         }
                     }
                 });
-        let tracked_paths: Vec<NormalizedPath> = std::iter::once(miss.source_path.clone())
-            .chain(scan_result.resolved.iter().cloned())
-            .collect();
+        let mut tracked: HashSet<NormalizedPath> =
+            miss.input_snapshot.hashes.keys().cloned().collect();
+        tracked.insert(miss.source_path.clone());
+        tracked.extend(scan_result.resolved.iter().cloned());
+        tracked.extend(miss.ctx.force_includes.iter().cloned());
+        let tracked_paths: Vec<NormalizedPath> = tracked.into_iter().collect();
+        let resolved: HashSet<NormalizedPath> = scan_result.resolved.iter().cloned().collect();
+        scan_result.resolved.extend(
+            miss.input_snapshot
+                .hashes
+                .keys()
+                .filter(|path| {
+                    path.as_path() != miss.source_path.as_path() && !resolved.contains(*path)
+                })
+                .cloned(),
+        );
         state.cache_system.register_tracked(&tracked_paths);
         let dep_dirs = tracked_paths
             .iter()
             .filter_map(|path| path.parent().map(NormalizedPath::from))
             .collect();
+        let current_clock = state.cache_system.current_clock();
         let hash_map: HashMap<NormalizedPath, ContentHash> = {
             use rayon::prelude::*;
             tracked_paths
                 .par_iter()
                 .filter_map(|path| {
-                    hash_file(&state.cache_system, path, snap_clock)
+                    hash_file(&state.cache_system, path, current_clock)
                         .ok()
                         .map(|hash| (path.clone(), hash))
                 })
                 .collect()
         };
-        let get_hash = |path: &Path| hash_map.get(&NormalizedPath::new(path)).copied();
-        let artifact_key = state
-            .dep_graph
-            .load()
-            .update(&miss.context_key, scan_result, get_hash);
+        let stable = miss.input_snapshot.stable(state, &tracked_paths, &hash_map);
         let mut cache_entry = None;
-        let mut salvage_reason = None;
-        if let Some(artifact_key) = artifact_key {
+        let mut graph_update = None;
+        if stable {
+            let file_hashes: Vec<(NormalizedPath, ContentHash)> = hash_map
+                .iter()
+                .map(|(path, hash)| (path.clone(), *hash))
+                .collect();
+            let artifact_key = crate::depgraph::context::compute_artifact_key_normalized_with_root(
+                &miss.context_key,
+                &file_hashes,
+                Some(key_root.as_path()),
+            );
             let key = artifact_key.hash().to_hex();
             let output_names = miss
                 .plan
@@ -297,42 +322,33 @@ pub(super) async fn try_handle_staged_misses(
                         .into_owned()
                 })
                 .collect();
-            let empty = Arc::new(Vec::new());
+            let (stdout, stderr) = &ordered_output[miss.unit_index];
             let metadata = ArtifactIndex::new(
                 output_names,
                 output_sizes,
-                Arc::clone(&empty),
-                Arc::clone(&empty),
+                Arc::new(stdout.clone()),
+                Arc::new(stderr.clone()),
                 0,
             );
-            let staged_paths: Vec<NormalizedPath> = miss
-                .plan
-                .outputs
-                .iter()
-                .map(|output| output.staged.clone())
-                .collect();
-            match publish_artifact_paths_observed(state, &key, metadata.clone(), &staged_paths) {
-                Ok(_) => cache_entry = Some((key, CachedArtifact::from_index(metadata))),
-                Err(reason) => salvage_reason = Some(reason.id()),
-            }
+            cache_entry = Some((key, CachedArtifact::from_index(metadata)));
+            graph_update = Some((scan_result, hash_map));
         }
         published.push(PublishedMiss {
             source_path: miss.source_path,
             context_key: miss.context_key,
             plan: miss.plan,
             cache_entry,
-            salvage_reason,
+            graph_update,
             dep_dirs,
             artifact_bytes,
+            validation_clock: current_clock,
         });
     }
 
     let mut changed_outputs = Vec::new();
     let mut dependency_directories = HashSet::new();
-    let mut completed = Vec::with_capacity(published.len());
-    for miss in published {
-        if let Err(error) = materialize_multi_plan_observed(state, &miss.plan, miss.salvage_reason)
-        {
+    for miss in &published {
+        if let Err(error) = materialize_multi_plan_observed(state, &miss.plan, None) {
             return Some(Response::Error {
                 message: format!("failed to materialize multi-source output: {error}"),
             });
@@ -343,15 +359,64 @@ pub(super) async fn try_handle_staged_misses(
                 .iter()
                 .map(|output| output.requested.clone()),
         );
-        dependency_directories.extend(miss.dep_dirs);
+        dependency_directories.extend(miss.dep_dirs.iter().cloned());
+    }
+
+    let mut completed = Vec::with_capacity(published.len());
+    for mut miss in published {
+        if let Some((key, metadata)) = miss
+            .cache_entry
+            .as_ref()
+            .map(|(key, cached)| (key.clone(), cached.meta.clone()))
+        {
+            let staged_paths: Vec<NormalizedPath> = miss
+                .plan
+                .outputs
+                .iter()
+                .map(|output| output.staged.clone())
+                .collect();
+            if let Err(reason) =
+                publish_artifact_paths_observed(state, &key, metadata, &staged_paths)
+            {
+                record_prepublication_salvage_success(state, miss.plan.outputs.len(), reason.id());
+                miss.cache_entry = None;
+                miss.graph_update = None;
+            } else if let Some((scan_result, hash_map)) = miss.graph_update.take() {
+                if let Some((_, cached)) = miss.cache_entry.as_ref() {
+                    state.artifacts.insert(key.clone(), cached.clone());
+                }
+                let get_hash = |path: &Path| hash_map.get(&NormalizedPath::new(path)).copied();
+                let committed_key = state
+                    .dep_graph
+                    .load()
+                    .update(&miss.context_key, scan_result, get_hash)
+                    .map(|artifact_key| artifact_key.hash().to_hex());
+                if committed_key.as_deref() != Some(key.as_str()) {
+                    tracing::error!(
+                        expected = %key,
+                        actual = ?committed_key,
+                        "staged multi-source artifact key changed during depgraph commit"
+                    );
+                    let mut invalid = HashSet::from([key.clone()]);
+                    invalid.extend(committed_key);
+                    state.dep_graph.load().invalidate_artifact_keys(&invalid);
+                    state.artifacts.remove(&key);
+                    miss.cache_entry = None;
+                }
+            }
+        }
+        if let Err(error) = miss.plan.cleanup() {
+            tracing::warn!(%error, "failed to clean staged multi-source workspace");
+        }
         completed.push((
             miss.source_path,
             miss.context_key,
             miss.cache_entry,
             miss.artifact_bytes,
+            miss.validation_clock,
         ));
     }
-    for (source, context_key, cache_entry, artifact_bytes) in completed {
+    for (source, context_key, cache_entry, artifact_bytes, validation_clock) in completed {
         state.stats.record_miss(0, artifact_bytes);
         record_session_stat(&state.sessions, sid, move |stats| {
             stats.record_miss(source, artifact_bytes);
@@ -361,7 +426,7 @@ pub(super) async fn try_handle_staged_misses(
             state.fast_hit_cache.insert(
                 context_key,
                 FastHitEntry {
-                    clock: state.cache_system.current_clock(),
+                    clock: validation_clock,
                     artifact_key_hex: key,
                     cached_at: std::time::Instant::now(),
                 },

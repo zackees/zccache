@@ -246,6 +246,13 @@ pub(in crate::daemon::server) fn get_file_id(path: &Path) -> Option<FileId> {
     })
 }
 
+#[cfg(unix)]
+pub(in crate::daemon::server) fn get_file_change_marker(path: &Path) -> Option<i128> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(path).ok()?;
+    Some(i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec()))
+}
+
 #[cfg(windows)]
 pub(in crate::daemon::server) fn same_file(a: &Path, b: &Path) -> bool {
     get_file_id(a)
@@ -309,5 +316,72 @@ pub(in crate::daemon::server) fn get_file_id(path: &Path) -> Option<FileId> {
             volume_serial: u64::from(legacy.dwVolumeSerialNumber),
             identifier,
         })
+    }
+}
+
+#[cfg(windows)]
+/// Returns the file's USN sequence. `ChangeTime` is deliberately not a
+/// fallback: `SetFileTime` can restore it along with mtime and hide an ABA
+/// mutation. Callers disable publication when the filesystem has no USN.
+pub(in crate::daemon::server) fn get_file_change_marker(path: &Path) -> Option<i128> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_READ, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows_sys::Win32::System::Ioctl::{
+        FSCTL_READ_FILE_USN_DATA, READ_FILE_USN_DATA, USN_RECORD_V2, USN_RECORD_V3,
+    };
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    unsafe {
+        let handle = CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            std::ptr::null_mut(),
+        );
+        if handle == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let query = READ_FILE_USN_DATA {
+            MinMajorVersion: 2,
+            MaxMajorVersion: 4,
+        };
+        let mut record = [0_u8; 512];
+        let mut returned = 0_u32;
+        let usn_ok = DeviceIoControl(
+            handle,
+            FSCTL_READ_FILE_USN_DATA,
+            (&raw const query).cast(),
+            std::mem::size_of::<READ_FILE_USN_DATA>() as u32,
+            record.as_mut_ptr().cast(),
+            record.len() as u32,
+            &raw mut returned,
+            std::ptr::null_mut(),
+        );
+        if usn_ok != 0 && returned >= 8 {
+            let major = u16::from_ne_bytes([record[4], record[5]]);
+            let usn = match major {
+                2 if returned as usize >= std::mem::size_of::<USN_RECORD_V2>() => {
+                    Some(std::ptr::read_unaligned(record.as_ptr().cast::<USN_RECORD_V2>()).Usn)
+                }
+                3 if returned as usize >= std::mem::size_of::<USN_RECORD_V3>() => {
+                    Some(std::ptr::read_unaligned(record.as_ptr().cast::<USN_RECORD_V3>()).Usn)
+                }
+                _ => None,
+            };
+            if let Some(usn) = usn {
+                let _ = CloseHandle(handle);
+                return Some(i128::from(usn));
+            }
+        }
+        let _ = CloseHandle(handle);
+        None
     }
 }

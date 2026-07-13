@@ -137,6 +137,26 @@ fn record_salvage_start(
     );
 }
 
+pub(super) fn record_prepublication_salvage_success(
+    state: &SharedState,
+    output_count: usize,
+    reason: &'static str,
+) {
+    use crate::daemon::staged_stats::{StagedCounter, StagedTiming};
+    record_salvage_start(state, output_count, Some(reason));
+    state.profiler.staged.count(StagedCounter::SalvageSuccess);
+    state.profiler.staged.timing(StagedTiming::Salvage, 0);
+    crate::core::lifecycle::write_event(
+        "staged_salvage_complete",
+        serde_json::json!({
+            "reason": reason,
+            "output_count": output_count,
+            "copied_bytes": 0,
+            "elapsed_ns": 0,
+        }),
+    );
+}
+
 pub(super) fn materialize_link_plan_observed(
     state: &SharedState,
     plan: &StagedCompilePlan,

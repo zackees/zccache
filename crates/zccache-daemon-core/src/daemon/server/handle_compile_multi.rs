@@ -4,36 +4,16 @@ use super::*;
 
 #[path = "handle_compile_multi_args.rs"]
 mod args;
+#[path = "handle_compile_multi_preflight.rs"]
+mod preflight;
 #[path = "handle_compile_multi_staged.rs"]
 mod staged;
+#[path = "handle_compile_multi_types.rs"]
+mod types;
 
 use args::filter_multi_source_args;
-
-/// A deferred output write for a cache hit.
-pub(super) struct PendingWrite {
-    out_path: NormalizedPath,
-    cache_file: NormalizedPath,
-    data: Vec<u8>,
-}
-
-/// Result of a per-unit cache check in multi-file compile.
-pub(super) enum UnitCacheResult {
-    /// Cache hit — output write is deferred for batching.
-    Hit {
-        stdout: Arc<Vec<u8>>,
-        stderr: Arc<Vec<u8>>,
-        artifact_bytes: u64,
-        source_path: NormalizedPath,
-        pending_writes: Vec<PendingWrite>,
-    },
-    /// Cache miss — needs compilation.
-    Miss {
-        source_path: NormalizedPath,
-        output_path: NormalizedPath,
-        context_key: ContextKey,
-        ctx: Box<CompileContext>,
-    },
-}
+use preflight::InputSnapshot;
+use types::{PendingWrite, UnitCacheResult};
 
 pub(super) fn materialize_multi_hit(
     targets: &[(NormalizedPath, NormalizedPath)],
@@ -213,6 +193,7 @@ pub(super) fn check_unit_cache(
                 output_path,
                 context_key,
                 ctx: Box::new(ctx),
+                input_snapshot: InputSnapshot::incomplete(snap_clock),
             };
         }
     };
@@ -350,11 +331,13 @@ pub(super) fn check_unit_cache(
     }
 
     state.fast_hit_cache.remove(&context_key);
+    let input_snapshot = InputSnapshot::capture(state, &source_path, &ctx, hash_map, snap_clock);
     UnitCacheResult::Miss {
         source_path,
         output_path,
         context_key,
         ctx: Box::new(ctx),
+        input_snapshot,
     }
 }
 
@@ -377,6 +360,20 @@ pub(super) async fn handle_compile_multi(
     let mut all_stdout = Vec::new();
     let mut all_stderr = Vec::new();
     let key_root = worktree_root.as_ref().unwrap_or(&cwd_path).clone();
+
+    if let Some(response) = preflight::run_unsupported_batch(
+        &state,
+        &sid,
+        &compiler,
+        &compilations,
+        &original_args,
+        &cwd_path,
+        &client_env,
+    )
+    .await
+    {
+        return response;
+    }
 
     // ── Pre-parse shared args once for all units ─────────────────────
     // All units share the same original_args (via Arc) — only source/output
@@ -548,8 +545,8 @@ pub(super) async fn handle_compile_multi(
         &source_indices,
         &unit_results,
         &cwd_path,
+        &key_root,
         &client_env,
-        snap_clock,
         &mut all_stdout,
         &mut all_stderr,
     )
@@ -685,6 +682,7 @@ pub(super) async fn handle_compile_multi(
                 output_path,
                 context_key,
                 ctx,
+                ..
             } => (
                 source_path.clone(),
                 output_path.clone(),

@@ -89,6 +89,32 @@ pub(super) async fn run_compiler_direct(
     // compiler path; `detect_family` falls back to Gcc for unknown
     // names, which matches the historical behaviour.
     let family_hint = crate::compiler::detect_family(&compiler.to_string_lossy());
+    run_compiler_direct_with_family(
+        compiler,
+        args,
+        cwd,
+        sessions,
+        sid,
+        client_env,
+        stdin_bytes,
+        tmp_dir,
+        family_hint,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn run_compiler_direct_with_family(
+    compiler: &NormalizedPath,
+    args: &[String],
+    cwd: &Path,
+    sessions: &SessionManager,
+    sid: &SessionId,
+    client_env: &Option<Vec<(String, String)>>,
+    stdin_bytes: &[u8],
+    tmp_dir: &Path,
+    family_hint: crate::compiler::CompilerFamily,
+) -> Response {
     let _rsp_guard = match crate::compiler::response_file::write_response_file_if_needed(
         args,
         tmp_dir,

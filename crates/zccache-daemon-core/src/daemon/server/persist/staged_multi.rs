@@ -6,6 +6,187 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static MULTI_PLAN_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+pub(in crate::daemon::server) fn classify_staged_multi_invocation(
+    family: crate::compiler::CompilerFamily,
+    args: &[String],
+    requested_outputs: &[NormalizedPath],
+    cwd: &Path,
+) -> StagedPlanOutcome<()> {
+    if !staged_lane_enabled(family) {
+        return StagedPlanOutcome::Unsupported(StagedPlanReason::LaneDisabled);
+    }
+    if !matches!(
+        family,
+        crate::compiler::CompilerFamily::Gcc
+            | crate::compiler::CompilerFamily::Clang
+            | crate::compiler::CompilerFamily::Msvc
+    ) {
+        return StagedPlanOutcome::Unsupported(StagedPlanReason::UnsupportedOutputRole);
+    }
+    let msvc_syntax = family == crate::compiler::CompilerFamily::Msvc
+        || crate::compiler::parse_msvc::looks_like_msvc_args(args);
+    if has_unmodeled_multi_output(args, msvc_syntax) {
+        return StagedPlanOutcome::Unsupported(StagedPlanReason::UnmodeledSideOutput);
+    }
+    if (!msvc_syntax && has_gnu_explicit_output(args))
+        || (msvc_syntax && has_file_valued_msvc_output(args))
+    {
+        return StagedPlanOutcome::Unsupported(StagedPlanReason::AmbiguousOutputArgument);
+    }
+
+    let mut unique = std::collections::HashSet::new();
+    for output in requested_outputs {
+        let absolute: NormalizedPath = if output.is_absolute() {
+            output.clone()
+        } else {
+            cwd.join(output).into()
+        };
+        if absolute.file_name().is_none() {
+            return StagedPlanOutcome::Error(StagedPlanError {
+                reason: StagedPlanReason::OutputMissingFilename,
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "multi-source output has no filename",
+                ),
+            });
+        }
+        if !unique.insert(absolute) {
+            return StagedPlanOutcome::Unsupported(StagedPlanReason::OutputNameCollision);
+        }
+    }
+    StagedPlanOutcome::Enabled(())
+}
+
+pub(in crate::daemon::server) fn explicit_staged_side_outputs(
+    args: &[String],
+    msvc_syntax: bool,
+    cwd: &Path,
+) -> Vec<NormalizedPath> {
+    let mut values = Vec::new();
+    let creates_pch = args.iter().any(|arg| {
+        arg.strip_prefix('/')
+            .or_else(|| arg.strip_prefix('-'))
+            .is_some_and(|body| body.starts_with("Yc"))
+    });
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        let mut value = None;
+        if msvc_syntax {
+            let body = arg
+                .strip_prefix('/')
+                .or_else(|| arg.strip_prefix('-'))
+                .unwrap_or(arg);
+            let lower = body.to_ascii_lowercase();
+            if lower == "sourcedependencies"
+                || lower == "sourcedependencies:directives"
+                || lower == "module:output"
+                || lower == "ifcoutput"
+            {
+                value = args.get(index + 1).map(String::as_str);
+                if value.is_some() {
+                    index += 1;
+                }
+            } else if lower.starts_with("module:output") {
+                value = Some(&body["module:output".len()..]);
+            } else if lower.starts_with("sourcedependencies") {
+                value = Some(&body["sourceDependencies".len()..]);
+            } else if let Some(rest) = body.strip_prefix("ifcOutput") {
+                value = Some(rest.strip_prefix(':').unwrap_or(rest));
+            } else {
+                for prefix in ["Fd", "Fa", "Fr", "FR", "Fi"] {
+                    if let Some(rest) = body.strip_prefix(prefix) {
+                        if rest.is_empty() {
+                            if matches!(prefix, "Fd" | "Fi") {
+                                value = args.get(index + 1).map(String::as_str);
+                                if value.is_some() {
+                                    index += 1;
+                                }
+                            }
+                        } else {
+                            value = Some(rest.strip_prefix(':').unwrap_or(rest));
+                        }
+                        break;
+                    }
+                }
+                if lower == "doc" {
+                    value = args.get(index + 1).map(String::as_str);
+                    if value.is_some() {
+                        index += 1;
+                    }
+                } else if let Some(rest) = lower.strip_prefix("doc:") {
+                    value = Some(&body[body.len() - rest.len()..]);
+                } else if let Some(rest) = body.strip_prefix("doc") {
+                    if Path::new(rest).extension().is_some() {
+                        value = Some(rest);
+                    }
+                }
+                if creates_pch {
+                    if body == "Fp" {
+                        value = args.get(index + 1).map(String::as_str);
+                        if value.is_some() {
+                            index += 1;
+                        }
+                    } else if let Some(rest) = body.strip_prefix("Fp") {
+                        value = Some(rest.strip_prefix(':').unwrap_or(rest));
+                    }
+                }
+            }
+        } else {
+            for flag in [
+                "--serialize-diagnostics",
+                "-dependency-file",
+                "-foptimization-record-file",
+                "-fdiagnostics-file",
+                "-MF",
+                "-MJ",
+            ] {
+                if arg == flag {
+                    value = args.get(index + 1).map(String::as_str);
+                    if value.is_some() {
+                        index += 1;
+                    }
+                    break;
+                }
+                if let Some(rest) = arg.strip_prefix(flag) {
+                    if !rest.is_empty() {
+                        value = Some(rest.strip_prefix('=').unwrap_or(rest));
+                        break;
+                    }
+                }
+            }
+            if value.is_none()
+                && (arg.starts_with("-fopt-info") || arg.starts_with("-ftime-trace="))
+            {
+                value = arg.split_once('=').map(|(_, path)| path);
+            }
+            if value.is_none() && arg.starts_with("-Wa,") {
+                value = arg.rsplit_once('=').map(|(_, path)| path);
+            }
+            if value.is_none() {
+                if arg == "-fmodule-output" {
+                    value = args.get(index + 1).map(String::as_str);
+                    if value.is_some() {
+                        index += 1;
+                    }
+                } else if let Some(path) = arg.strip_prefix("-fmodule-output=") {
+                    value = Some(path);
+                }
+            }
+        }
+        if let Some(path) = value.filter(|path| !path.is_empty()) {
+            let path = Path::new(path);
+            values.push(if path.is_absolute() {
+                path.into()
+            } else {
+                cwd.join(path).into()
+            });
+        }
+        index += 1;
+    }
+    values
+}
+
 #[derive(Debug)]
 pub(in crate::daemon::server) struct StagedMultiUnitPlan {
     pub(in crate::daemon::server) rewritten_args: Vec<String>,
@@ -23,27 +204,20 @@ impl StagedMultiUnitPlan {
         requested_output: &NormalizedPath,
         cwd: &Path,
     ) -> StagedPlanOutcome<Self> {
-        if !staged_lane_enabled(family) {
-            return StagedPlanOutcome::Unsupported(StagedPlanReason::LaneDisabled);
-        }
-        if !matches!(
+        match classify_staged_multi_invocation(
             family,
-            crate::compiler::CompilerFamily::Gcc
-                | crate::compiler::CompilerFamily::Clang
-                | crate::compiler::CompilerFamily::Msvc
+            &args,
+            std::slice::from_ref(requested_output),
+            cwd,
         ) {
-            return StagedPlanOutcome::Unsupported(StagedPlanReason::UnsupportedOutputRole);
+            StagedPlanOutcome::Enabled(()) => {}
+            StagedPlanOutcome::Unsupported(reason) => {
+                return StagedPlanOutcome::Unsupported(reason)
+            }
+            StagedPlanOutcome::Error(error) => return StagedPlanOutcome::Error(error),
         }
         let msvc_syntax = family == crate::compiler::CompilerFamily::Msvc
             || crate::compiler::parse_msvc::looks_like_msvc_args(&args);
-        if has_unmodeled_multi_output(&args, msvc_syntax) {
-            return StagedPlanOutcome::Unsupported(StagedPlanReason::UnmodeledSideOutput);
-        }
-        if (!msvc_syntax && has_gnu_explicit_output(&args))
-            || (msvc_syntax && has_file_valued_msvc_output(&args))
-        {
-            return StagedPlanOutcome::Unsupported(StagedPlanReason::AmbiguousOutputArgument);
-        }
 
         let requested = if requested_output.is_absolute() {
             requested_output.clone()
@@ -140,8 +314,6 @@ impl StagedMultiUnitPlan {
             observed.copy_count = observed.copy_count.saturating_add(output_stats.copy_count);
             observed.copy_bytes = observed.copy_bytes.saturating_add(output_stats.copy_bytes);
         }
-        self.cleanup()
-            .map_err(|error| materialization_error(error, observed))?;
         Ok(observed)
     }
 
@@ -172,7 +344,7 @@ impl StagedMultiUnitPlan {
             .collect()
     }
 
-    fn cleanup(&self) -> std::io::Result<()> {
+    pub(in crate::daemon::server) fn cleanup(&self) -> std::io::Result<()> {
         std::fs::remove_dir_all(&self.root).or_else(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 Ok(())
@@ -225,30 +397,23 @@ fn has_unmodeled_multi_output(args: &[String], msvc_syntax: bool) -> bool {
     args.iter().any(|arg| {
         let lower = arg.to_ascii_lowercase();
         if msvc_syntax {
-            [
-                "/fd",
-                "-fd",
-                "/fp",
-                "-fp",
-                "/fa",
-                "-fa",
-                "/fr",
-                "-fr",
-                "/yc",
-                "-yc",
-                "/doc",
-                "-doc",
-                "/module:",
-                "-module:",
-                "/headerunit",
-                "-headerunit",
-                "/sourcedependencies",
-                "-sourcedependencies",
-            ]
-            .iter()
-            .any(|prefix| lower.starts_with(prefix))
-                || arg.starts_with("/Fi")
-                || arg.starts_with("-Fi")
+            let body = arg
+                .strip_prefix('/')
+                .or_else(|| arg.strip_prefix('-'))
+                .unwrap_or(arg);
+            let lower_body = body.to_ascii_lowercase();
+            body.starts_with("Fd")
+                || body.starts_with("Fp")
+                || body.starts_with("Fr")
+                || body.starts_with("FR")
+                || body.starts_with("Fi")
+                || body.starts_with("Fa")
+                || matches!(lower_body.as_str(), "fa" | "fac" | "fas" | "facs")
+                || body.starts_with("Yc")
+                || lower_body.starts_with("doc")
+                || lower_body.starts_with("module:")
+                || lower_body.starts_with("headerunit")
+                || lower_body.starts_with("sourcedependencies")
                 || matches!(lower.as_str(), "/zi" | "-zi")
                 || lower.starts_with("/ifc")
                 || lower.starts_with("-ifc")
@@ -256,11 +421,12 @@ fn has_unmodeled_multi_output(args: &[String], msvc_syntax: bool) -> bool {
                 || lower == "-interface"
         } else {
             lower.starts_with("--serialize-diagnostics")
+                || lower.starts_with("-dependency-file")
                 || lower.starts_with("-mj")
                 || lower.starts_with("-fmodule")
                 || lower == "-save-temps"
                 || lower.starts_with("-save-temps=")
-                || lower == "-gsplit-dwarf"
+                || lower.starts_with("-gsplit-dwarf")
                 || lower.starts_with("-fdump-")
                 || lower == "--coverage"
                 || lower == "-coverage"
@@ -271,7 +437,7 @@ fn has_unmodeled_multi_output(args: &[String], msvc_syntax: bool) -> bool {
                 || lower == "-fstack-usage"
                 || lower.starts_with("-fcallgraph-info")
                 || lower == "-fsave-optimization-record"
-                || lower.starts_with("-foptimization-record-file=")
+                || lower.starts_with("-foptimization-record-file")
                 || lower.starts_with("-fopt-info")
                 || lower.starts_with("-fdiagnostics-file=")
                 || lower.starts_with("-fdiagnostics-format=sarif-file")
@@ -327,6 +493,107 @@ impl Drop for StagedMultiUnitPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn invocation_rejects_case_alias_output_names() {
+        let temp = tempfile::tempdir().unwrap();
+        let args = vec!["-c".into(), "one.c".into(), "two.c".into()];
+        let outputs = vec![
+            temp.path().join("objects/Foo.o").into(),
+            temp.path().join("objects/foo.o").into(),
+        ];
+        assert!(matches!(
+            classify_staged_multi_invocation(
+                crate::compiler::CompilerFamily::Clang,
+                &args,
+                &outputs,
+                temp.path(),
+            ),
+            StagedPlanOutcome::Unsupported(StagedPlanReason::OutputNameCollision)
+        ));
+    }
+
+    #[test]
+    fn explicit_side_outputs_collect_gnu_and_msvc_paths() {
+        let cwd = Path::new("workspace");
+        let gnu = vec![
+            "-MF".into(),
+            "shared.d".into(),
+            "-fdiagnostics-file=diag.json".into(),
+        ];
+        assert_eq!(
+            explicit_staged_side_outputs(&gnu, false, cwd),
+            vec![cwd.join("shared.d"), cwd.join("diag.json")]
+        );
+        let msvc = vec![
+            "/Fd:shared.pdb".into(),
+            "/doccomments.xdc".into(),
+            "/sourceDependencies:directives".into(),
+            "deps.json".into(),
+            "/module:output".into(),
+            "module.ifc".into(),
+        ];
+        assert_eq!(
+            explicit_staged_side_outputs(&msvc, true, cwd),
+            vec![
+                cwd.join("shared.pdb"),
+                cwd.join("comments.xdc"),
+                cwd.join("deps.json"),
+                cwd.join("module.ifc")
+            ]
+        );
+    }
+
+    #[test]
+    fn explicit_side_outputs_never_treat_msvc_inputs_as_outputs() {
+        let cwd = Path::new("workspace");
+        let args = vec![
+            "/FIforced.h".into(),
+            "/Yuprefix.h".into(),
+            "/Fpprefix.pch".into(),
+            "/favor:INTEL64".into(),
+        ];
+        assert!(explicit_staged_side_outputs(&args, true, cwd).is_empty());
+    }
+
+    #[test]
+    fn msvc_favor_tuning_option_remains_stageable() {
+        let temp = tempfile::tempdir().unwrap();
+        let args = vec![
+            "/c".into(),
+            "/favor:INTEL64".into(),
+            "first.c".into(),
+            "second.c".into(),
+        ];
+        assert!(matches!(
+            classify_staged_multi_invocation(
+                crate::compiler::CompilerFamily::Msvc,
+                &args,
+                &[
+                    temp.path().join("first.obj").into(),
+                    temp.path().join("second.obj").into(),
+                ],
+                temp.path(),
+            ),
+            StagedPlanOutcome::Enabled(())
+        ));
+    }
+
+    #[test]
+    fn explicit_side_outputs_collect_assembler_listing_and_created_pch() {
+        let cwd = Path::new("workspace");
+        let gnu = vec!["-Wa,-adhln=listing.txt".into()];
+        assert_eq!(
+            explicit_staged_side_outputs(&gnu, false, cwd),
+            vec![cwd.join("listing.txt")]
+        );
+        let msvc = vec!["/Ycprefix.h".into(), "/Fpprefix.pch".into()];
+        assert_eq!(
+            explicit_staged_side_outputs(&msvc, true, cwd),
+            vec![cwd.join("prefix.pch")]
+        );
+    }
 
     #[test]
     fn multi_unit_plan_keeps_one_source_and_redirects_private_outputs() {
@@ -430,15 +697,18 @@ mod tests {
         let requested: NormalizedPath = temp.path().join("first.o").into();
         for side_output in [
             "--serialize-diagnostics=shared.dia",
+            "-dependency-file",
             "-MJshared.json",
             "-fmodule-file=math.pcm",
             "-save-temps",
             "-gsplit-dwarf",
+            "-gsplit-dwarf=single",
             "-fdump-tree-all",
             "--coverage",
             "-ftime-trace",
             "-fstack-usage",
             "-fsave-optimization-record",
+            "-foptimization-record-file=optimization.yaml",
             "-fopt-info-vec=optimization.txt",
             "-fdiagnostics-format=sarif-file",
             "-Wa,-adhln=listing.txt",

@@ -140,6 +140,8 @@ async fn staged_multi_source_clang_cl_restores_directory_outputs_from_response_f
             .unwrap()
             .flatten()
             .all(|entry| entry.path().extension().is_none_or(|ext| ext != "rsp")));
+        let staged = state.profiler.staged.snapshot();
+        assert_eq!(staged.counters["plan_attempted"], staged.counters["plan_enabled"]);
 
         shutdown.notify_one();
         server.await.unwrap();
@@ -389,8 +391,200 @@ async fn staged_multi_source_materialization_failure_reports_error_before_index_
         assert!(first_object.exists());
         assert!(!second_object.exists());
         assert!(state.artifacts.is_empty());
+        assert_eq!(state.dep_graph.load().contexts_with_artifact_key(), 0);
+        let pointer_count = std::fs::read_dir(state.artifact_dir.join(".staged-v2"))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "current"))
+                    .count()
+            })
+            .unwrap_or(0);
+        assert_eq!(pointer_count, 0);
         let staged = state.profiler.staged.snapshot();
         assert_eq!(staged.counters["materialize_failure"], 1);
+
+        shutdown.notify_one();
+        server.await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "integration: real clang + daemon IPC"]
+async fn unsupported_shared_depfile_always_runs_original_batch_and_detaches_outputs() {
+    let Some(clang) = crate::test_support::find_clang() else {
+        return;
+    };
+    crate::test_support::test_timeout(async move {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir: NormalizedPath = temp.path().join("cache").into();
+        let first = temp.path().join("first.c");
+        let second = temp.path().join("second.c");
+        let first_object = temp.path().join("first.o");
+        let second_object = temp.path().join("second.o");
+        let shared_depfile = temp.path().join("shared.d");
+        let sentinel = temp.path().join("cache-sentinel.o");
+        let depfile_sentinel = temp.path().join("depfile-sentinel.d");
+        std::fs::write(&first, "int first(void) { return 1; }\n").unwrap();
+        std::fs::write(&second, "int second(void) { return 2; }\n").unwrap();
+        let (endpoint, server, shutdown, state) = start_daemon(&cache_dir).await;
+        let mut client = crate::ipc::connect(&endpoint).await.unwrap();
+        let cwd: NormalizedPath = temp.path().into();
+        client
+            .send(&Request::SessionStart {
+                client_pid: std::process::id(),
+                working_dir: cwd.clone(),
+                log_file: None,
+                track_stats: true,
+                journal_path: None,
+                profile: false,
+                private_daemon: None,
+            })
+            .await
+            .unwrap();
+        let session_id = match client.recv().await.unwrap() {
+            Some(Response::SessionStarted { session_id, .. }) => session_id,
+            other => panic!("expected SessionStarted, got {other:?}"),
+        };
+        let args = vec![
+            "-c".into(),
+            "-MMD".into(),
+            "-MF".into(),
+            shared_depfile.to_string_lossy().into_owned(),
+            first.to_string_lossy().into_owned(),
+            second.to_string_lossy().into_owned(),
+        ];
+        let request = || Request::Compile {
+            session_id: session_id.clone(),
+            args: args.clone(),
+            cwd: cwd.clone(),
+            compiler: clang.to_string_lossy().into_owned().into(),
+            env: None,
+            stdin: Vec::new(),
+        };
+
+        client.send(&request()).await.unwrap();
+        assert_compile(client.recv().await.unwrap(), false);
+        assert!(first_object.is_file() && second_object.is_file());
+        assert!(shared_depfile.is_file());
+
+        let sentinel_bytes = std::fs::read(&first_object).unwrap();
+        let depfile_sentinel_bytes = std::fs::read(&shared_depfile).unwrap();
+        std::fs::hard_link(&first_object, &sentinel).unwrap();
+        std::fs::hard_link(&shared_depfile, &depfile_sentinel).unwrap();
+        client.send(&request()).await.unwrap();
+        assert_compile(client.recv().await.unwrap(), false);
+        assert!(shared_depfile.is_file());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), sentinel_bytes);
+        assert_eq!(
+            std::fs::read(&depfile_sentinel).unwrap(),
+            depfile_sentinel_bytes
+        );
+
+        std::fs::write(&first, "this is not valid C\n").unwrap();
+        client.send(&request()).await.unwrap();
+        match client.recv().await.unwrap() {
+            Some(Response::CompileResult {
+                exit_code, cached, ..
+            }) => {
+                assert_ne!(exit_code, 0);
+                assert!(!cached);
+            }
+            other => panic!("expected failed CompileResult, got {other:?}"),
+        }
+        client
+            .send(&Request::SessionEnd {
+                session_id: session_id.clone(),
+            })
+            .await
+            .unwrap();
+        match client.recv().await.unwrap() {
+            Some(Response::SessionEnded { stats: Some(stats) }) => {
+                assert_eq!(stats.errors, 1);
+                assert_eq!(stats.compilations, 6);
+            }
+            other => panic!("expected SessionEnded stats, got {other:?}"),
+        }
+        let staged = state.profiler.staged.snapshot();
+        assert_eq!(staged.counters["plan_attempted"], 3);
+        assert_eq!(staged.counters["plan_unsupported"], 3);
+        assert_eq!(staged.counters["plan_enabled"], 0);
+
+        shutdown.notify_one();
+        server.await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "integration: real clang + daemon IPC"]
+async fn unsupported_mode_detaches_default_depfiles_from_prior_staged_outputs() {
+    let Some(clang) = crate::test_support::find_clang() else {
+        return;
+    };
+    crate::test_support::test_timeout(async move {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first.c");
+        let second = temp.path().join("second.c");
+        let header = temp.path().join("new.h");
+        let first_depfile = temp.path().join("first.d");
+        let sentinel = temp.path().join("depfile-cache-sentinel.d");
+        std::fs::write(&first, "int first(void) { return 1; }\n").unwrap();
+        std::fs::write(&second, "int second(void) { return 2; }\n").unwrap();
+        let cache_dir: NormalizedPath = temp.path().join("cache").into();
+        let (endpoint, server, shutdown, _state) = start_daemon(&cache_dir).await;
+        let mut client = crate::ipc::connect(&endpoint).await.unwrap();
+        let cwd: NormalizedPath = temp.path().into();
+        client
+            .send(&Request::SessionStart {
+                client_pid: std::process::id(),
+                working_dir: cwd.clone(),
+                log_file: None,
+                track_stats: true,
+                journal_path: None,
+                profile: false,
+                private_daemon: None,
+            })
+            .await
+            .unwrap();
+        let session_id = match client.recv().await.unwrap() {
+            Some(Response::SessionStarted { session_id, .. }) => session_id,
+            other => panic!("expected SessionStarted, got {other:?}"),
+        };
+        let base_args = vec![
+            "-c".into(),
+            "-MMD".into(),
+            first.to_string_lossy().into_owned(),
+            second.to_string_lossy().into_owned(),
+        ];
+        let request = |args: Vec<String>| Request::Compile {
+            session_id: session_id.clone(),
+            args,
+            cwd: cwd.clone(),
+            compiler: clang.to_string_lossy().into_owned().into(),
+            env: None,
+            stdin: Vec::new(),
+        };
+        client.send(&request(base_args.clone())).await.unwrap();
+        assert_compile(client.recv().await.unwrap(), false);
+        let sentinel_bytes = std::fs::read(&first_depfile).unwrap();
+        std::fs::hard_link(&first_depfile, &sentinel).unwrap();
+
+        std::fs::write(&header, "#define NEW_VALUE 3\n").unwrap();
+        std::fs::write(
+            &first,
+            "#include \"new.h\"\nint first(void) { return NEW_VALUE; }\n",
+        )
+        .unwrap();
+        let mut unsupported_args = base_args;
+        unsupported_args.insert(2, "--coverage".into());
+        client.send(&request(unsupported_args)).await.unwrap();
+        assert_compile(client.recv().await.unwrap(), false);
+        assert_eq!(std::fs::read(&sentinel).unwrap(), sentinel_bytes);
+        assert!(std::fs::read_to_string(&first_depfile)
+            .unwrap()
+            .contains("new.h"));
 
         shutdown.notify_one();
         server.await.unwrap();
