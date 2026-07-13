@@ -128,7 +128,7 @@ runs:
 
     - name: Setup soldr build cache
       if: inputs.use_soldr == 'true'
-      uses: zackees/setup-soldr@4a04deba405aae33669094bf281a3d14cde7bce1
+      uses: zackees/setup-soldr@44de7b9653da46e3d77ccbe2d70dedf69a1e12ee
       with:
         toolchain: 1.94.1
         cache: true
