@@ -37,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: zackees/setup-soldr@44de7b9653da46e3d77ccbe2d70dedf69a1e12ee
+      - uses: zackees/setup-soldr@bea35cc843969b89c2544b8683f600e8edc3a258
         with:
           zccache-seed-strict: true
           cache: false
@@ -60,7 +60,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: zackees/setup-soldr@44de7b9653da46e3d77ccbe2d70dedf69a1e12ee
+      - uses: zackees/setup-soldr@bea35cc843969b89c2544b8683f600e8edc3a258
         with:
           zccache-seed-strict: true
           cache: false
@@ -117,7 +117,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: zackees/setup-soldr@44de7b9653da46e3d77ccbe2d70dedf69a1e12ee
+      - uses: zackees/setup-soldr@bea35cc843969b89c2544b8683f600e8edc3a258
         with:
           zccache-seed-strict: true
           cache: false
