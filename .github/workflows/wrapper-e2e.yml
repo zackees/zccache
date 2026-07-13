@@ -59,7 +59,7 @@ jobs:
 
       - name: setup soldr with cook prebuild (Unix)
         if: runner.os != 'Windows'
-        uses: zackees/setup-soldr@86b1f8ebb092f2aab2d9c6ee4cd63557a838dfb6
+        uses: zackees/setup-soldr@4a04deba405aae33669094bf281a3d14cde7bce1
         with:
           zccache-seed-strict: true
           cache: true
@@ -70,7 +70,7 @@ jobs:
 
       - name: setup soldr without cook prebuild (Windows)
         if: runner.os == 'Windows'
-        uses: zackees/setup-soldr@86b1f8ebb092f2aab2d9c6ee4cd63557a838dfb6
+        uses: zackees/setup-soldr@4a04deba405aae33669094bf281a3d14cde7bce1
         with:
           zccache-seed-strict: true
           cache: true
@@ -210,7 +210,7 @@ jobs:
           Add-Content $env:GITHUB_PATH $installDir
 
       - name: Stop setup-soldr builder cache before wrapper smoke test
-        uses: zackees/setup-soldr/cleanup@86b1f8ebb092f2aab2d9c6ee4cd63557a838dfb6
+        uses: zackees/setup-soldr/cleanup@4a04deba405aae33669094bf281a3d14cde7bce1
 
       - name: smoke compile through wrapper (Unix)
         if: runner.os != 'Windows'
