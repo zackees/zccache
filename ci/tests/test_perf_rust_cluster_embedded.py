@@ -66,6 +66,12 @@ def test_perf_local_lists_daemon_runtime_without_copying_special_files() -> None
     )
 
 
+def test_perf_local_runner_installs_worktree_scenario_dependencies() -> None:
+    runner = LOCAL_RUNNER.read_text(encoding="utf-8")
+
+    assert "        git \\\n" in runner
+
+
 def test_perf_cluster_pins_cache_action_to_an_immutable_commit() -> None:
     workflow = workflow_text()
     expected_sha = "0057852bfaa89a56745cba8c7296529d2fc39830"
