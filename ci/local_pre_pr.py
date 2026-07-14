@@ -15,6 +15,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PERF_LOCAL = REPO_ROOT / "ci" / "perf_local.py"
 UV = "uv"
+SUITES = ("integration", "cargo-registry", "wrapper-e2e", "gha-cache")
 
 
 def run_perf_local(*args: str) -> None:
@@ -27,6 +28,17 @@ def run_fast_checks() -> None:
     run_perf_local("fmt")
     run_perf_local("clippy")
     run_perf_local("test")
+
+
+def run_linux_suites(selected: list[str]) -> None:
+    features = (
+        "zccache/zccache-bin,zccache/daemon-bin,zccache/download-bin,"
+        "zccache/download-daemon-bin,zccache/fingerprint-bin,zccache/stamp-bin,"
+        "zccache/ci-bin,zccache/crash-tools,zccache/tokio-console,zccache/test-support"
+    )
+    run_perf_local("cargo", "build", "-p", "zccache", "--features", features, "--bin", "zccache")
+    for suite in selected:
+        run_perf_local("exec", f"/src/ci/local_pre_pr_steps/{suite}.sh")
 
 
 def run_warm_benchmark() -> None:
@@ -52,9 +64,15 @@ def main() -> int:
         action="store_true",
         help="also measure the two-pass warm no-op cargo check budget",
     )
+    parser.add_argument("--suites", default=",".join(SUITES), help="comma-separated Linux suites")
     args = parser.parse_args()
+    selected = [item.strip() for item in args.suites.split(",") if item.strip()]
+    unknown = sorted(set(selected) - set(SUITES))
+    if unknown:
+        parser.error(f"unknown suite(s): {', '.join(unknown)}")
     try:
         run_fast_checks()
+        run_linux_suites(selected)
         if args.benchmark:
             run_warm_benchmark()
     except subprocess.CalledProcessError as error:

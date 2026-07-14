@@ -1019,6 +1019,15 @@ def run_shell(args: list[str]) -> int:
     return subprocess.run(cmd, check=False, env=env).returncode
 
 
+def run_exec(args: list[str]) -> int:
+    """Run a checked-in bash recipe in the warmed Linux builder container."""
+    if len(args) != 1 or not args[0].startswith("/src/"):
+        print("usage: perf_local.py exec /src/ci/local_pre_pr_steps/<suite>.sh", file=sys.stderr)
+        return 2
+    cmd = build_zccache_docker_cmd(bash_script=f"bash {_shell_quote(args[0])}")
+    return run_zccache_docker_cmd(cmd)
+
+
 def _shell_quote(arg: str) -> str:
     """Minimal quoting for embedding an argv element inside a `bash -c`
     string. Wraps in single quotes and escapes any embedded single
@@ -1130,6 +1139,7 @@ def main() -> int:
         "clippy": run_clippy,
         "test": run_test,
         "shell": run_shell,
+        "exec": run_exec,
     }
     if len(sys.argv) >= 2 and sys.argv[1] in SUBCOMMAND_RUNNERS:
         if not docker_available():
