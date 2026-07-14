@@ -236,7 +236,7 @@ def git_is_dirty(repo: Path) -> bool:
     )
 
 
-def pin_soldr_zccache_source(soldr_src: Path) -> None:
+def pin_soldr_zccache_source(soldr_src: Path, *, initialize_submodules: bool = True) -> None:
     """Build soldr with the zccache checkout under test embedded in it.
 
     soldr consumes zccache as a git submodule, so cloning soldr alone is no
@@ -247,17 +247,21 @@ def pin_soldr_zccache_source(soldr_src: Path) -> None:
         raise RuntimeError("the zccache checkout is dirty; commit or stash changes before running perf_local.py so embedded source cannot differ from the requested run")
     zccache_sha = git_head(REPO_ROOT)
     vendored = soldr_src / "_vender" / "zccache"
-    run(
-        [
-            "git",
-            "-C",
-            str(soldr_src),
-            "submodule",
-            "update",
-            "--init",
-            "--recursive",
-        ]
-    )
+    if initialize_submodules or not vendored.exists():
+        run(
+            [
+                "git",
+                "-C",
+                str(soldr_src),
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+            ]
+        )
+    if vendored.exists() and git_head(vendored) == zccache_sha:
+        print(f"[perf-local] embedded zccache already at {zccache_sha[:12]}, skipping source mutation")
+        return
     # Fetch locally so unpublished commits can be measured before push.
     run(["git", "-C", str(vendored), "fetch", str(REPO_ROOT), zccache_sha])
     run(["git", "-C", str(vendored), "checkout", "--detach", zccache_sha])
@@ -275,9 +279,19 @@ def ensure_soldr_source(soldr_ref: str = SOLDR_REF) -> Path:
     """
     src = PERF_LOCAL / "soldr-src"
     if (src / ".git").is_dir():
-        print(f"[perf-local] refreshing soldr@{soldr_ref} at {src}")
+        print(f"[perf-local] resolving soldr@{soldr_ref} at {src}")
         run(["git", "-C", str(src), "fetch", "--depth", "1", "origin", soldr_ref])
-        run(["git", "-C", str(src), "reset", "--hard", "FETCH_HEAD"])
+        requested_sha = subprocess.run(
+            ["git", "-C", str(src), "rev-parse", "FETCH_HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        source_changed = git_head(src) != requested_sha
+        if source_changed:
+            run(["git", "-C", str(src), "reset", "--hard", requested_sha])
+        else:
+            print(f"[perf-local] soldr source already at {requested_sha[:12]}, skipping reset")
     else:
         src.mkdir(parents=True, exist_ok=True)
         print(f"[perf-local] cloning soldr@{soldr_ref} -> {src}")
@@ -293,7 +307,8 @@ def ensure_soldr_source(soldr_ref: str = SOLDR_REF) -> Path:
                 str(src),
             ]
         )
-    pin_soldr_zccache_source(src)
+        source_changed = True
+    pin_soldr_zccache_source(src, initialize_submodules=source_changed)
     sha = git_head(src)
     print(f"[perf-local] soldr-src now at {sha[:12]}")
     return src
@@ -327,7 +342,34 @@ def host_volume(host: Path, container: str, mode: str = "") -> str:
     return s
 
 
-def run_soldr_builder(layout: dict[str, Path]) -> None:
+def soldr_build_identity(layout: dict[str, Path]) -> dict[str, object]:
+    """Identity of every input that can affect the published soldr binary."""
+    image = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{.Id}}", IMAGE_SOLDR],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    return {
+        "schema_version": 1,
+        "soldr_sha": git_head(layout["soldr_src"]),
+        "zccache_sha": git_head(REPO_ROOT),
+        "builder_image_id": image,
+    }
+
+
+def run_soldr_builder(layout: dict[str, Path], *, force: bool = False) -> None:
+    identity = soldr_build_identity(layout)
+    binary = layout["bin_soldr"] / "soldr"
+    stamp = layout["bin_soldr"] / "build-identity.json"
+    if not force and binary.is_file() and stamp.is_file():
+        try:
+            previous_identity = json.loads(stamp.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            previous_identity = None
+        if previous_identity == identity:
+            print("[perf-local] soldr binary inputs unchanged, skipping builder")
+            return
     print(f"[perf-local] building soldr binary -> {layout['bin_soldr']}")
     run(
         [
@@ -345,6 +387,11 @@ def run_soldr_builder(layout: dict[str, Path]) -> None:
             IMAGE_SOLDR,
         ]
     )
+    if not binary.is_file():
+        raise FileNotFoundError(f"soldr builder succeeded without publishing {binary}")
+    stamp_tmp = stamp.with_suffix(".json.tmp")
+    stamp_tmp.write_text(json.dumps(identity, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    stamp_tmp.replace(stamp)
 
 
 def run_scenario(layout: dict[str, Path], scenario: str, fixture: str, jobs: int) -> Path:
@@ -371,7 +418,14 @@ def run_scenario(layout: dict[str, Path], scenario: str, fixture: str, jobs: int
     # enough rustc processes to exhaust that VM and surface os error 12 through
     # soldr. Keep local measurements reproducible and within the selected
     # budget; callers with a larger VM can raise --jobs explicitly.
-    env_flags: list[str] = ["-e", f"CARGO_BUILD_JOBS={jobs}"]
+    # A performance sample must never silently switch to uncached rustc. This
+    # is a benchmark-integrity requirement, not a production default.
+    env_flags: list[str] = [
+        "-e",
+        f"CARGO_BUILD_JOBS={jobs}",
+        "-e",
+        "SOLDR_DAEMON_REQUIRED=1",
+    ]
     for k, v in pass_through_env:
         env_flags.extend(["-e", f"{k}={v}"])
     run(
@@ -445,11 +499,13 @@ def validate_infrastructure_result(result: dict, results_dir: Path) -> None:
         raise ValueError("infrastructure result must be an object")
     reasons = result.get("invalid_reasons")
     evidence = result.get("soldr_abort_evidence")
+    fallback_evidence = result.get("soldr_daemon_fallback_evidence")
     valid = result.get("infrastructure_valid")
     count_names = (
         "soldr_abort_count",
         "soldr_timeout_count",
         "soldr_no_cache_retry_count",
+        "soldr_daemon_fallback_count",
     )
     counts = {name: result.get(name) for name in count_names}
 
@@ -460,6 +516,13 @@ def validate_infrastructure_result(result: dict, results_dir: Path) -> None:
         or not isinstance(evidence, list)
         or not evidence
         or not all(isinstance(item, str) and re.fullmatch(r"soldr-aborts-[A-Za-z0-9_-]+[.]jsonl", item) for item in evidence)
+        or not isinstance(fallback_evidence, list)
+        or not fallback_evidence
+        or not all(
+            isinstance(item, str)
+            and re.fullmatch(r"soldr-daemon-fallbacks-[A-Za-z0-9_-]+[.]jsonl", item)
+            for item in fallback_evidence
+        )
         or not all(type(value) is int and value >= 0 for value in counts.values())
     )
     if malformed:
@@ -473,10 +536,15 @@ def validate_infrastructure_result(result: dict, results_dir: Path) -> None:
     missing = [item for item in evidence if not (results_dir / item).is_file()]
     if missing:
         raise ValueError(f"declared soldr abort evidence is missing: {missing[0]}")
+    missing_fallback = [item for item in fallback_evidence if not (results_dir / item).is_file()]
+    if missing_fallback:
+        raise ValueError(
+            f"declared soldr daemon fallback evidence is missing: {missing_fallback[0]}"
+        )
     if not valid or any(counts.values()):
         detail = "; ".join(reasons) or "soldr abort detected"
         raise ValueError(
-            f"contaminated benchmark sample: {detail}; aborts={counts['soldr_abort_count']}, timeouts={counts['soldr_timeout_count']}, no-cache retries={counts['soldr_no_cache_retry_count']}"
+            f"contaminated benchmark sample: {detail}; aborts={counts['soldr_abort_count']}, timeouts={counts['soldr_timeout_count']}, no-cache retries={counts['soldr_no_cache_retry_count']}, daemon fallbacks={counts['soldr_daemon_fallback_count']}"
         )
 
 
@@ -1055,7 +1123,7 @@ def main() -> int:
     build_all_images(force=args.rebuild_images)
 
     ensure_soldr_source(args.soldr_ref)
-    run_soldr_builder(layout)
+    run_soldr_builder(layout, force=args.rebuild_images)
 
     if args.matrix:
         return run_rollout_matrix(layout, args.jobs)

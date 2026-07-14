@@ -86,7 +86,9 @@ else
         "soldr_abort_count=${_MEASURE_SOLDR_ABORT_COUNT}" \
         "soldr_timeout_count=${_MEASURE_SOLDR_TIMEOUT_COUNT}" \
         "soldr_no_cache_retry_count=${_MEASURE_SOLDR_NO_CACHE_RETRY_COUNT}" \
-        "soldr_abort_evidence=json:${_MEASURE_ABORT_EVIDENCE_JSON}"
+        "soldr_daemon_fallback_count=${_MEASURE_SOLDR_DAEMON_FALLBACK_COUNT}" \
+        "soldr_abort_evidence=json:${_MEASURE_ABORT_EVIDENCE_JSON}" \
+        "soldr_daemon_fallback_evidence=json:${_MEASURE_DAEMON_FALLBACK_EVIDENCE_JSON}"
 fi
 final_status="$command_status"
 if [[ "$3" == true ]]; then
@@ -179,6 +181,31 @@ def test_malformed_new_record_fails_closed(tmp_path: Path) -> None:
     assert result["infrastructure_valid"] is False
     assert result["soldr_abort_count"] == 0
     assert "malformed or partial" in result["invalid_reasons"][0]
+
+
+def test_compile_daemon_fallback_is_classified_and_invalidates_sample(tmp_path: Path) -> None:
+    record = {
+        "schema_version": 1,
+        "event": "compile_daemon_fallback",
+        "ts_ms": 123,
+        "session_id": 456,
+        "pid": 789,
+        "budget_ms": 30_000,
+        "reason": "daemon unavailable",
+    }
+    result = run_guard(
+        tmp_path,
+        'printf \'%s\\n\' "$FAKE_ABORT_RECORD" >> "$cache/logs/compile-daemon-fallbacks.jsonl"',
+        record=json.dumps(record, separators=(",", ":")),
+    )
+
+    assert result["infrastructure_valid"] is False
+    assert result["soldr_abort_count"] == 0
+    assert result["soldr_daemon_fallback_count"] == 1
+    assert result["soldr_daemon_fallback_evidence"] == [
+        "soldr-daemon-fallbacks-test.jsonl"
+    ]
+    assert "bypassed its compile daemon" in result["invalid_reasons"][0]
 
 
 def test_non_timeout_process_abort_invalidates_sample(tmp_path: Path) -> None:
@@ -324,9 +351,10 @@ def run_evaluator(tmp_path: Path, payload: object, *, create_evidence: bool = Tr
     result.parent.mkdir(parents=True, exist_ok=True)
     result.write_text(json.dumps(payload), encoding="utf-8")
     if create_evidence and isinstance(payload, dict):
-        for evidence in payload.get("soldr_abort_evidence", []):
-            if isinstance(evidence, str) and Path(evidence).name == evidence:
-                (tmp_path / evidence).touch()
+        for field in ("soldr_abort_evidence", "soldr_daemon_fallback_evidence"):
+            for evidence in payload.get(field, []):
+                if isinstance(evidence, str) and Path(evidence).name == evidence:
+                    (tmp_path / evidence).touch()
     try:
         perf_local_module().validate_infrastructure_result(payload, tmp_path)
     except (TypeError, ValueError) as error:
@@ -345,7 +373,9 @@ def valid_result() -> dict:
         "soldr_abort_count": 0,
         "soldr_timeout_count": 0,
         "soldr_no_cache_retry_count": 0,
+        "soldr_daemon_fallback_count": 0,
         "soldr_abort_evidence": ["soldr-aborts-cold.jsonl"],
+        "soldr_daemon_fallback_evidence": ["soldr-daemon-fallbacks-cold.jsonl"],
     }
 
 

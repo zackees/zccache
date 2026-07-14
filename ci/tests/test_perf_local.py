@@ -95,8 +95,19 @@ def test_ensure_soldr_source_refreshes_requested_ref(tmp_path, monkeypatch):
         "run",
         lambda command, **_kwargs: commands.append(command) or subprocess.CompletedProcess(command, 0),
     )
-    monkeypatch.setattr(perf_local, "pin_soldr_zccache_source", lambda _src: None)
-    monkeypatch.setattr(perf_local, "git_head", lambda _repo: "abc123")
+    monkeypatch.setattr(
+        perf_local.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, stdout="def456\n"),
+    )
+    pin_calls = []
+    monkeypatch.setattr(
+        perf_local,
+        "pin_soldr_zccache_source",
+        lambda src, **kwargs: pin_calls.append((src, kwargs)),
+    )
+    heads = iter(["abc123", "def456"])
+    monkeypatch.setattr(perf_local, "git_head", lambda _repo: next(heads))
 
     assert perf_local.ensure_soldr_source("fix/1651-portable-zccache-identity") == soldr_src
     assert commands == [
@@ -110,8 +121,59 @@ def test_ensure_soldr_source_refreshes_requested_ref(tmp_path, monkeypatch):
             "origin",
             "fix/1651-portable-zccache-identity",
         ],
-        ["git", "-C", str(soldr_src), "reset", "--hard", "FETCH_HEAD"],
+        ["git", "-C", str(soldr_src), "reset", "--hard", "def456"],
     ]
+    assert pin_calls == [(soldr_src, {"initialize_submodules": True})]
+
+
+def test_ensure_soldr_source_does_not_mutate_unchanged_checkout(tmp_path, monkeypatch):
+    scratch = tmp_path / "perf-local"
+    soldr_src = scratch / "soldr-src"
+    (soldr_src / ".git").mkdir(parents=True)
+    commands = []
+    monkeypatch.setattr(perf_local, "PERF_LOCAL", scratch)
+    monkeypatch.setattr(
+        perf_local,
+        "run",
+        lambda command, **_kwargs: commands.append(command) or subprocess.CompletedProcess(command, 0),
+    )
+    monkeypatch.setattr(
+        perf_local.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, stdout="abc123\n"),
+    )
+    pin_calls = []
+    monkeypatch.setattr(
+        perf_local,
+        "pin_soldr_zccache_source",
+        lambda src, **kwargs: pin_calls.append((src, kwargs)),
+    )
+    monkeypatch.setattr(perf_local, "git_head", lambda _repo: "abc123")
+
+    assert perf_local.ensure_soldr_source("main") == soldr_src
+    assert commands == [["git", "-C", str(soldr_src), "fetch", "--depth", "1", "origin", "main"]]
+    assert pin_calls == [(soldr_src, {"initialize_submodules": False})]
+
+
+def test_soldr_builder_skips_when_all_inputs_match_stamp(tmp_path, monkeypatch):
+    layout = {
+        "soldr_src": tmp_path / "soldr-src",
+        "bin_soldr": tmp_path / "bin-soldr",
+        "results": tmp_path / "results",
+    }
+    layout["bin_soldr"].mkdir()
+    (layout["bin_soldr"] / "soldr").touch()
+    identity = {
+        "schema_version": 1,
+        "soldr_sha": "soldr-sha",
+        "zccache_sha": "zccache-sha",
+        "builder_image_id": "sha256:image",
+    }
+    (layout["bin_soldr"] / "build-identity.json").write_text(json.dumps(identity))
+    monkeypatch.setattr(perf_local, "soldr_build_identity", lambda _layout: identity)
+    monkeypatch.setattr(perf_local, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("builder must be skipped")))
+
+    perf_local.run_soldr_builder(layout)
 
 
 # ── fmt_ms ───────────────────────────────────────────────────────────────────
@@ -416,12 +478,15 @@ def _write_gated_results(tmp_path: Path, scenario: str = "cold-tar-untar-warm") 
             "soldr_abort_count": 0,
             "soldr_timeout_count": 0,
             "soldr_no_cache_retry_count": 0,
+            "soldr_daemon_fallback_count": 0,
             "soldr_abort_evidence": ["soldr-aborts-warm.jsonl"],
+            "soldr_daemon_fallback_evidence": ["soldr-daemon-fallbacks-warm.jsonl"],
             "warm_misses": 0,
         }
     )
     result_path.write_text(json.dumps(result))
     (results / "soldr-aborts-warm.jsonl").touch()
+    (results / "soldr-daemon-fallbacks-warm.jsonl").touch()
     (results / "cold-cache-report.json").write_text(json.dumps({"last_session": {"phase_profile": {"staged": staged}}}))
     return results
 

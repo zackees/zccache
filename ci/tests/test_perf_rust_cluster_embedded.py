@@ -31,11 +31,12 @@ def test_perf_local_does_not_use_removed_runtime_zccache_pinning() -> None:
     assert '"--skip-soldr-build",' not in LOCAL_ORCHESTRATOR.read_text(encoding="utf-8")
 
 
-def test_perf_local_lists_daemon_runtime_without_copying_special_files() -> None:
+def test_perf_local_retains_daemon_runtime_from_every_cache_root() -> None:
     entrypoint = LOCAL_ENTRYPOINT.read_text(encoding="utf-8")
 
-    assert "warm-daemon-files.txt" in entrypoint
-    assert 'copy_if_exists "${scenario_root}/cache-warm/cache/soldr-daemon"' not in entrypoint
+    assert "daemon-files.txt" in entrypoint
+    assert "find \"${scenario_root}\" -type f -name daemon-spawn.log" in entrypoint
+    assert 'destination="/results/daemon-runtime/${relative}"' in entrypoint
 
 
 def test_perf_local_retains_worktree_reports_and_abort_evidence() -> None:
@@ -93,7 +94,9 @@ def test_perf_local_fails_closed_on_soldr_abort_contamination() -> None:
         "soldr_abort_count",
         "soldr_timeout_count",
         "soldr_no_cache_retry_count",
+        "soldr_daemon_fallback_count",
         "soldr_abort_evidence",
+        "soldr_daemon_fallback_evidence",
         "missing or malformed infrastructure-validity fields",
     ):
         assert required in orchestrator
@@ -101,6 +104,7 @@ def test_perf_local_fails_closed_on_soldr_abort_contamination() -> None:
     common = COMMON_SH.read_text(encoding="utf-8")
     assert "measure::run_guarded_soldr_command()" in common
     assert "cargo-aborts.jsonl" in common
+    assert "compile-daemon-fallbacks.jsonl" in common
     assert '$5 == "soldr" || $5 == "zccache-daemon"' in common
 
     for scenario in ROLLOUT_SCENARIOS:
@@ -111,7 +115,15 @@ def test_perf_local_fails_closed_on_soldr_abort_contamination() -> None:
         assert script.count('|| echo "failed to emit infrastructure failure JSON"') == 2
         assert '"infrastructure_valid=${_MEASURE_INFRASTRUCTURE_VALID}"' in script
         assert '"invalid_reasons=json:${_MEASURE_INVALID_REASONS_JSON}"' in script
+        assert '"soldr_daemon_fallback_count=${_MEASURE_SOLDR_DAEMON_FALLBACK_COUNT}"' in script
+        assert '"soldr_daemon_fallback_evidence=json:${_MEASURE_DAEMON_FALLBACK_EVIDENCE_JSON}"' in script
         assert "measure::fail_if_infrastructure_invalid" in script
+
+
+def test_perf_local_requires_soldr_daemon_for_measured_runs() -> None:
+    orchestrator = LOCAL_ORCHESTRATOR.read_text(encoding="utf-8")
+
+    assert '"SOLDR_DAEMON_REQUIRED=1"' in orchestrator
 
 
 def test_windows_rss_poller_does_not_create_a_lockable_script() -> None:

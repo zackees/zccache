@@ -187,11 +187,22 @@ measure::infrastructure_guard_init() {
     _MEASURE_SOLDR_ABORT_COUNT=0
     _MEASURE_SOLDR_TIMEOUT_COUNT=0
     _MEASURE_SOLDR_NO_CACHE_RETRY_COUNT=0
+    _MEASURE_SOLDR_DAEMON_FALLBACK_COUNT=0
     _MEASURE_ABORT_EVIDENCE_JSON='[]'
+    _MEASURE_DAEMON_FALLBACK_EVIDENCE_JSON='[]'
 }
 
 measure::soldr_abort_log_bytes() {
     local log="${1}/logs/cargo-aborts.jsonl"
+    if [[ -f "${log}" ]]; then
+        wc -c < "${log}" | tr -d '[:space:]'
+    else
+        echo 0
+    fi
+}
+
+measure::soldr_daemon_fallback_log_bytes() {
+    local log="${1}/logs/compile-daemon-fallbacks.jsonl"
     if [[ -f "${log}" ]]; then
         wc -c < "${log}" | tr -d '[:space:]'
     else
@@ -322,6 +333,84 @@ measure::capture_soldr_abort_delta() {
     fi
 }
 
+# Capture soldr's dedicated compile-daemon fallback stream separately from
+# cargo-aborts.jsonl so both retained evidence files preserve homogeneous
+# schemas.
+measure::capture_soldr_daemon_fallback_delta() {
+    local cache_root="$1"
+    local baseline_bytes="$2"
+    local baseline_fingerprint="$3"
+    local evidence_file="$4"
+    local phase="$5"
+    local log="${cache_root}/logs/compile-daemon-fallbacks.jsonl"
+    local evidence_name current_bytes current_fingerprint delta_bytes captured_bytes line
+    local updated_evidence_paths
+    local fallbacks=0 malformed=0
+
+    evidence_name="$(basename -- "${evidence_file}")"
+    mkdir -p "$(dirname -- "${evidence_file}")" || return 1
+    : > "${evidence_file}" || return 1
+    updated_evidence_paths="$(
+        jq -cn --argjson paths "${_MEASURE_DAEMON_FALLBACK_EVIDENCE_JSON}" \
+            --arg path "${evidence_name}" '$paths + [$path]'
+    )" || return 1
+    _MEASURE_DAEMON_FALLBACK_EVIDENCE_JSON="${updated_evidence_paths}"
+
+    current_bytes="$(measure::soldr_daemon_fallback_log_bytes "${cache_root}")" || return 1
+    if (( current_bytes < baseline_bytes )); then
+        cp "${log}" "${evidence_file}" 2>/dev/null || true
+        measure::_mark_infrastructure_invalid \
+            "${phase}: soldr compile-daemon-fallbacks.jsonl was truncated; evidence=${evidence_name}"
+        return 0
+    fi
+    current_fingerprint="$(
+        measure::soldr_abort_log_prefix_fingerprint "${log}" "${baseline_bytes}"
+    )" || return 1
+    if [[ "${current_fingerprint}" != "${baseline_fingerprint}" ]]; then
+        cp "${log}" "${evidence_file}" 2>/dev/null || true
+        measure::_mark_infrastructure_invalid \
+            "${phase}: soldr compile-daemon-fallbacks.jsonl existing prefix changed; evidence=${evidence_name}"
+        return 0
+    fi
+    if (( current_bytes == baseline_bytes )); then
+        return 0
+    fi
+
+    delta_bytes=$(( current_bytes - baseline_bytes ))
+    head -c "${current_bytes}" "${log}" \
+        | tail -c "${delta_bytes}" > "${evidence_file}" || return 1
+    captured_bytes="$(wc -c < "${evidence_file}" | tr -d '[:space:]')"
+    (( captured_bytes == delta_bytes )) || return 1
+
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        [[ -z "${line}" ]] && continue
+        if jq -e '
+            type == "object"
+            and .schema_version == 1
+            and .event == "compile_daemon_fallback"
+            and (.ts_ms | type == "number")
+            and (.pid | type == "number")
+            and (.budget_ms | type == "number")
+            and (.reason | type == "string")
+            and ((.session_id == null) or (.session_id | type == "number"))
+        ' >/dev/null 2>&1 <<<"${line}"; then
+            fallbacks=$(( fallbacks + 1 ))
+        else
+            malformed=$(( malformed + 1 ))
+        fi
+    done < "${evidence_file}"
+
+    _MEASURE_SOLDR_DAEMON_FALLBACK_COUNT=$(( _MEASURE_SOLDR_DAEMON_FALLBACK_COUNT + fallbacks ))
+    if (( malformed > 0 )); then
+        measure::_mark_infrastructure_invalid \
+            "${phase}: ${malformed} malformed soldr daemon fallback record(s); evidence=${evidence_name}"
+    fi
+    if (( fallbacks > 0 )); then
+        measure::_mark_infrastructure_invalid \
+            "${phase}: soldr bypassed its compile daemon ${fallbacks} time(s); evidence=${evidence_name}"
+    fi
+}
+
 # measure::run_guarded_soldr_command <cache-root> <evidence-file>
 #                                    <phase-label> <command> [args...]
 measure::run_guarded_soldr_command() {
@@ -329,7 +418,9 @@ measure::run_guarded_soldr_command() {
     local evidence_file="$2"
     local phase="$3"
     shift 3
-    local log baseline_bytes baseline_fingerprint command_status capture_status=0
+    local log fallback_log fallback_evidence_file
+    local baseline_bytes baseline_fingerprint fallback_baseline_bytes fallback_baseline_fingerprint
+    local command_status capture_status=0
 
     log="${cache_root}/logs/cargo-aborts.jsonl"
     if ! baseline_bytes="$(measure::soldr_abort_log_bytes "${cache_root}")"; then
@@ -348,6 +439,20 @@ measure::run_guarded_soldr_command() {
     else
         baseline_fingerprint="0:0"
     fi
+    fallback_log="${cache_root}/logs/compile-daemon-fallbacks.jsonl"
+    fallback_evidence_file="$(dirname -- "${evidence_file}")/$(basename -- "${evidence_file}" | sed 's/^soldr-aborts-/soldr-daemon-fallbacks-/')"
+    if ! fallback_baseline_bytes="$(measure::soldr_daemon_fallback_log_bytes "${cache_root}")"; then
+        measure::_mark_infrastructure_invalid \
+            "${phase}: could not read initial soldr daemon fallback log size"
+        return 1
+    fi
+    if (( fallback_baseline_bytes > 0 )); then
+        fallback_baseline_fingerprint="$(
+            measure::soldr_abort_log_prefix_fingerprint "${fallback_log}" "${fallback_baseline_bytes}"
+        )" || return 1
+    else
+        fallback_baseline_fingerprint="0:0"
+    fi
     if "$@"; then
         command_status=0
     else
@@ -361,6 +466,13 @@ measure::run_guarded_soldr_command() {
         capture_status=$?
         measure::_mark_infrastructure_invalid \
             "${phase}: failed to capture soldr abort evidence; evidence=$(basename -- "${evidence_file}")"
+    fi
+    if ! measure::capture_soldr_daemon_fallback_delta \
+        "${cache_root}" "${fallback_baseline_bytes}" "${fallback_baseline_fingerprint}" \
+        "${fallback_evidence_file}" "${phase}"; then
+        capture_status=1
+        measure::_mark_infrastructure_invalid \
+            "${phase}: failed to capture soldr daemon fallback evidence; evidence=$(basename -- "${fallback_evidence_file}")"
     fi
     if (( command_status != 0 )); then
         measure::_mark_infrastructure_invalid \
@@ -381,7 +493,9 @@ measure::emit_infrastructure_failure_json() {
         "soldr_abort_count=${_MEASURE_SOLDR_ABORT_COUNT}" \
         "soldr_timeout_count=${_MEASURE_SOLDR_TIMEOUT_COUNT}" \
         "soldr_no_cache_retry_count=${_MEASURE_SOLDR_NO_CACHE_RETRY_COUNT}" \
+        "soldr_daemon_fallback_count=${_MEASURE_SOLDR_DAEMON_FALLBACK_COUNT}" \
         "soldr_abort_evidence=json:${_MEASURE_ABORT_EVIDENCE_JSON}" \
+        "soldr_daemon_fallback_evidence=json:${_MEASURE_DAEMON_FALLBACK_EVIDENCE_JSON}" \
         "guarded_command_status=${guard_status}"
 }
 

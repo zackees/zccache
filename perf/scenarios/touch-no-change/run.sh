@@ -123,7 +123,9 @@ measure::emit_summary_json "${SCENARIO}" \
     "soldr_abort_count=${_MEASURE_SOLDR_ABORT_COUNT}" \
     "soldr_timeout_count=${_MEASURE_SOLDR_TIMEOUT_COUNT}" \
     "soldr_no_cache_retry_count=${_MEASURE_SOLDR_NO_CACHE_RETRY_COUNT}" \
-    "soldr_abort_evidence=json:${_MEASURE_ABORT_EVIDENCE_JSON}"
+    "soldr_daemon_fallback_count=${_MEASURE_SOLDR_DAEMON_FALLBACK_COUNT}" \
+    "soldr_abort_evidence=json:${_MEASURE_ABORT_EVIDENCE_JSON}" \
+    "soldr_daemon_fallback_evidence=json:${_MEASURE_DAEMON_FALLBACK_EVIDENCE_JSON}"
 
 measure::append_summary_md "| ${SCENARIO} | ${cold_elapsed_ms} ms | ${warm_elapsed_ms} ms | ${speedup}x | ${warm_hits}/${warm_misses} | ${warm_hit_rate} | $(( peak_daemon_rss / 1024 / 1024 )) MiB |"
 measure::fail_if_infrastructure_invalid
