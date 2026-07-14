@@ -250,9 +250,9 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         context_key,
         source_path,
         output_path,
-        compiler_output_path,
+        mut compiler_output_path,
         staged_output_paths,
-        staged_plan,
+        mut staged_plan,
         synchronous_persist,
         cwd_path,
         ctx,
@@ -529,6 +529,61 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         }
     });
     let hash_all_ns = t_hash.elapsed().as_nanos() as u64;
+
+    // C/C++ staged outputs are already captured in memory above. Materialize
+    // them before publishing the cache entry so the persistence worker can
+    // hard-link the requested output asynchronously. Keeping the staged plan
+    // alive through synchronous persistence made every cold C miss pay for a
+    // second copy/hash publication on the response path.
+    let staged_cc_materialized = if !is_rustc { staged_plan.take() } else { None };
+    let mut staged_cc_materialization = None;
+    if let Some(plan) = staged_cc_materialized {
+        use crate::daemon::staged_stats::{
+            StagedBytes, StagedCounter, StagedFailure, StagedTiming,
+        };
+        let started = std::time::Instant::now();
+        match plan.materialize() {
+            Ok(materialized) => {
+                state.profiler.staged.add_count(
+                    StagedCounter::MaterializeReflink,
+                    materialized.reflink_count,
+                );
+                state
+                    .profiler
+                    .staged
+                    .add_count(StagedCounter::MaterializeCopy, materialized.copy_count);
+                state
+                    .profiler
+                    .staged
+                    .bytes(StagedBytes::Materialization, materialized.copy_bytes);
+                state.profiler.staged.timing(
+                    StagedTiming::MissMaterialization,
+                    started.elapsed().as_nanos() as u64,
+                );
+                compiler_output_path = output_path.clone();
+                state.cache_system.apply_changes(vec![output_path.clone()]);
+                staged_cc_materialization = Some(());
+            }
+            Err(error) => {
+                state
+                    .profiler
+                    .staged
+                    .count(StagedCounter::MaterializeFailure);
+                state
+                    .profiler
+                    .staged
+                    .failure(StagedFailure::RequestedMaterialization);
+                state.profiler.staged.timing(
+                    StagedTiming::MissMaterialization,
+                    started.elapsed().as_nanos() as u64,
+                );
+                return Some(Response::Error {
+                    message: format!("failed to materialize compiler output: {error}"),
+                });
+            }
+        }
+    }
+    let synchronous_persist = synchronous_persist && staged_cc_materialization.is_none();
 
     let MissArtifactStoreStats {
         artifact_store_ns,
