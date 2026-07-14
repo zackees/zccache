@@ -1,0 +1,5 @@
+[toolchain]
+# cargo-dylint removes RUSTUP_TOOLCHAIN before compiling each library. Keep
+# those builds on the same nightly used for the Dylint driver and CI tests.
+channel = "nightly-2026-03-26"
+components = ["llvm-tools-preview", "rust-src", "rustc-dev"]
