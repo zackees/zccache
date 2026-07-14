@@ -162,8 +162,8 @@ pub(super) async fn handle_link_ephemeral(
     };
 
     // 3+4. Hash tool binary and input files concurrently via rayon::join
-    // (issue #566). Both phases are CPU-bound blake3 work over mmap'd
-    // files. Before this overlap, they ran strictly sequentially —
+    // (issue #566). Both phases are file reads plus CPU-bound blake3 work.
+    // Before this overlap, they ran strictly sequentially —
     // `tool_hash` (~150 MB rustc binary, 10–20 ms) blocked the start of
     // input hashing (50 .rlibs in parallel via #564, also 5–15 ms wall).
     // `rayon::join` reduces the combined wall-clock to ~max(tool_hash,
@@ -177,39 +177,49 @@ pub(super) async fn handle_link_ephemeral(
         link_path_remap_key_root,
     );
 
-    let inputs: Vec<&NormalizedPath> = parsed_tool
+    let inputs: Vec<NormalizedPath> = parsed_tool
         .input_files
         .iter()
         .chain(link_key_plan.extra_input_files.iter())
+        .map(|input| {
+            if input.is_absolute() {
+                input.clone()
+            } else {
+                cwd_path.join(input).into()
+            }
+        })
         .collect();
 
-    let t_hash = profile_enabled.then(std::time::Instant::now);
-    let (tool_hash_opt, hash_results) = rayon::join(
-        || hash_file_via_cache(state, tool_path),
-        || -> Vec<(NormalizedPath, Option<ContentHash>)> {
-            use rayon::prelude::*;
-            inputs
+    use rayon::prelude::*;
+
+    let hash_wall_started = profile_enabled.then(std::time::Instant::now);
+    let ((tool_hash_opt, tool_hash_ns), (hash_results, input_hash_ns)) = rayon::join(
+        || {
+            let started = profile_enabled.then(std::time::Instant::now);
+            let hash = hash_file_via_cache(state, tool_path);
+            let elapsed = started
+                .map(|started| started.elapsed().as_nanos() as u64)
+                .unwrap_or(0);
+            (hash, elapsed)
+        },
+        || {
+            let started = profile_enabled.then(std::time::Instant::now);
+            let hashes = inputs
                 .par_iter()
                 .map(|input| {
-                    let input_path: NormalizedPath = if input.is_absolute() {
-                        (*input).clone()
-                    } else {
-                        cwd_path.join(input).into()
-                    };
-                    let hash = hash_file_via_cache(state, &input_path);
-                    (input_path, hash)
+                    let hash = hash_normalized_file_via_cache(state, input);
+                    (input.clone(), hash)
                 })
-                .collect()
+                .collect::<Vec<(NormalizedPath, Option<ContentHash>)>>();
+            let elapsed = started
+                .map(|started| started.elapsed().as_nanos() as u64)
+                .unwrap_or(0);
+            (hashes, elapsed)
         },
     );
-    // Combined wall-clock budget for the overlapped phases. Reported as
-    // both tool_hash_ns and input_hash_ns in the LinkMissProfile for now
-    // — they're indistinguishable post-overlap. A future diagnostic
-    // change can split them via per-closure timers if needed.
-    let combined_hash_ns = t_hash.map(|t| t.elapsed().as_nanos() as u64).unwrap_or(0);
-    let tool_hash_ns = combined_hash_ns;
-    let input_hash_ns = combined_hash_ns;
-
+    let hash_wall_ns = hash_wall_started
+        .map(|started| started.elapsed().as_nanos() as u64)
+        .unwrap_or(0);
     let tool_hash = match tool_hash_opt {
         Some(h) => h,
         None => {
@@ -510,15 +520,19 @@ pub(super) async fn handle_link_ephemeral(
     let t_compiler_process = profile_enabled.then(std::time::Instant::now);
     let staged_compiler_started =
         (staged_plan.is_some() || directory_plan.is_some()).then(std::time::Instant::now);
-    let result = run_tool_passthrough(
-        tool,
-        &compiler_args,
-        cwd,
-        env,
-        &lineage,
-        state.depfile_tmpdir.as_path(),
-    )
-    .await;
+    let result = if parsed_tool.is_archive {
+        run_archive_tool_passthrough(tool, &compiler_args, cwd, env, &lineage).await
+    } else {
+        run_tool_passthrough(
+            tool,
+            &compiler_args,
+            cwd,
+            env,
+            &lineage,
+            state.depfile_tmpdir.as_path(),
+        )
+        .await
+    };
 
     let compiler_process_ns = t_compiler_process
         .map(|t| t.elapsed().as_nanos() as u64)
@@ -860,6 +874,7 @@ pub(super) async fn handle_link_ephemeral(
             input_count,
             total_ns,
             parse_args_ns,
+            hash_wall_ns,
             tool_hash_ns,
             input_hash_ns,
             cache_lookup_ns,
@@ -929,6 +944,37 @@ pub(super) async fn run_tool_passthrough(
         },
         Err(e) => Response::Error {
             message: format!("failed to run {}: {e}", tool.display()),
+        },
+    }
+}
+
+/// Run a parsed pure archiver without the general compiler-child watchdog.
+///
+/// Archivers are leaf processes: they only read declared inputs and write the
+/// requested archive. Waiting on the Tokio child directly avoids watchdog and
+/// blocking-pool setup costs that are material for a 10-20 ms `ar` run.
+async fn run_archive_tool_passthrough(
+    tool: &Path,
+    args: &[String],
+    cwd: &Path,
+    env: Option<Vec<(String, String)>>,
+    lineage: &super::super::lineage::Lineage,
+) -> Response {
+    let mut cmd = tokio::process::Command::new(tool);
+    cmd.args(args);
+    cmd.current_dir(cwd);
+    apply_client_env(&mut cmd, &env, lineage);
+    let priority = CompilePriority::from_client_env(env.as_deref());
+    match super::super::process::tokio_leaf_command_output_with_priority(&mut cmd, priority).await {
+        Ok(output) => Response::LinkResult {
+            exit_code: output.status.code().unwrap_or(1),
+            stdout: Arc::new(output.stdout),
+            stderr: Arc::new(output.stderr),
+            cached: false,
+            warning: None,
+        },
+        Err(error) => Response::Error {
+            message: format!("failed to run {}: {error}", tool.display()),
         },
     }
 }

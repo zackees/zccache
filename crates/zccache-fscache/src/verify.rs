@@ -21,6 +21,16 @@ pub enum VerifyResult {
 }
 
 impl MetadataCache {
+    fn metadata_from_fs(fs_meta: std::fs::Metadata) -> Result<FileMetadata> {
+        Ok(FileMetadata {
+            mtime: fs_meta.modified()?,
+            size: fs_meta.len(),
+            confidence: Confidence::High,
+            last_verified: Instant::now(),
+            content_hash: None,
+        })
+    }
+
     /// Stat a file and return its current metadata at `High` confidence.
     ///
     /// This does NOT insert into the cache — it only reads from the filesystem.
@@ -29,17 +39,7 @@ impl MetadataCache {
     ///
     /// Returns an error if the file cannot be stat'd (not found, permission denied, etc.).
     pub fn stat_file(path: &Path) -> Result<FileMetadata> {
-        let fs_meta = std::fs::metadata(path)?;
-        let mtime = fs_meta.modified()?;
-        let size = fs_meta.len();
-
-        Ok(FileMetadata {
-            mtime,
-            size,
-            confidence: Confidence::High,
-            last_verified: Instant::now(),
-            content_hash: None,
-        })
+        Self::metadata_from_fs(std::fs::metadata(path)?)
     }
 
     /// Verify whether the cached entry for `path` still matches the filesystem.
@@ -87,11 +87,17 @@ impl MetadataCache {
     /// Returns an error if the file cannot be read.
     pub fn lookup(&self, path: &Path) -> Result<ContentHash> {
         let normalized = NormalizedPath::from(path);
-        let cached = self.get(&normalized);
+        self.lookup_normalized(&normalized)
+    }
+
+    /// Full cache lookup for a path the caller has already normalized.
+    pub fn lookup_normalized(&self, normalized: &NormalizedPath) -> Result<ContentHash> {
+        let path = normalized.as_path();
+        let cached = self.get(normalized);
 
         // Cache miss → stat, hash, insert.
         let entry = match cached {
-            None => return self.hash_and_insert(path),
+            None => return self.hash_and_insert(path, normalized),
             Some(e) => e,
         };
 
@@ -100,7 +106,7 @@ impl MetadataCache {
         let fresh = match Self::stat_file(path) {
             Ok(m) => m,
             Err(zccache_core::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                self.remove(&normalized);
+                self.remove(normalized);
                 return Err(zccache_core::Error::FileNotFound(path.into()));
             }
             Err(e) => return Err(e),
@@ -132,24 +138,20 @@ impl MetadataCache {
         }
 
         // Stale, Low, or no cached hash — re-hash.
-        self.hash_and_insert(path)
+        self.hash_and_insert(path, normalized)
     }
 
     /// Stat the file, hash it, insert at High confidence, return hash.
-    fn hash_and_insert(&self, path: &Path) -> Result<ContentHash> {
-        let pre_stat = Self::stat_file(path)?;
-        let hash = hash_file_off_runtime(path)?;
-        let post_stat = Self::stat_file(path)?;
+    fn hash_and_insert(&self, path: &Path, normalized: &NormalizedPath) -> Result<ContentHash> {
+        let (pre_stat, hash, post_stat) = hash_file_snapshot(path)?;
 
         // TOCTOU check: if file changed during hashing, retry up to 3 times.
         if pre_stat.mtime != post_stat.mtime || pre_stat.size != post_stat.size {
             for _ in 0..3 {
-                let pre = Self::stat_file(path)?;
-                let h = hash_file_off_runtime(path)?;
-                let post = Self::stat_file(path)?;
+                let (pre, h, post) = hash_file_snapshot(path)?;
                 if pre.mtime == post.mtime && pre.size == post.size {
                     self.insert(
-                        path.into(),
+                        normalized.clone(),
                         FileMetadata {
                             content_hash: Some(*h.as_bytes()),
                             ..post
@@ -161,7 +163,7 @@ impl MetadataCache {
             // Still unstable after retries — return last hash but at Low confidence.
             let meta = Self::stat_file(path)?;
             self.insert(
-                path.into(),
+                normalized.clone(),
                 FileMetadata {
                     confidence: Confidence::Low,
                     content_hash: Some(*hash.as_bytes()),
@@ -172,7 +174,7 @@ impl MetadataCache {
         }
 
         self.insert(
-            path.into(),
+            normalized.clone(),
             FileMetadata {
                 content_hash: Some(*hash.as_bytes()),
                 ..post_stat
@@ -182,8 +184,12 @@ impl MetadataCache {
     }
 }
 
-fn hash_file_off_runtime(path: &Path) -> Result<ContentHash> {
-    Ok(zccache_hash::hash_file(path)?)
+fn hash_file_snapshot(path: &Path) -> Result<(FileMetadata, ContentHash, FileMetadata)> {
+    let file = std::fs::File::open(path)?;
+    let pre = MetadataCache::metadata_from_fs(file.metadata()?)?;
+    let hash = zccache_hash::hash_open_file(&file, pre.size)?;
+    let post = MetadataCache::stat_file(path)?;
+    Ok((pre, hash, post))
 }
 
 #[cfg(test)]
