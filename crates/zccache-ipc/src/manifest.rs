@@ -184,12 +184,20 @@ mod tests {
     use running_process::broker::manifest::read_manifest;
     use running_process::broker::protocol::CacheRoot;
 
+    fn isolate_daemon_state_env() -> crate::test_env::EnvVarGuard {
+        crate::test_env::EnvVarGuard::set_all(&[
+            (zccache_core::config::DAEMON_NAMESPACE_ENV, None),
+            (zccache_core::config::DAEMON_STATE_DIR_ENV, None),
+        ])
+    }
+
     fn roots_by_kind(roots: &[CacheRoot]) -> Vec<(i32, String)> {
         roots.iter().map(|r| (r.kind, r.path.clone())).collect()
     }
 
     #[test]
     fn manifest_records_all_five_cache_roots() {
+        let _env = isolate_daemon_state_env();
         let cache_dir = NormalizedPath::from("/tmp/zccache-manifest-test");
         let manifest = build_manifest_builder(&cache_dir)
             .build()
@@ -213,6 +221,7 @@ mod tests {
 
     #[test]
     fn publish_round_trips_through_central_registry() {
+        let _env = isolate_daemon_state_env();
         let registry = tempfile::tempdir().expect("tempdir");
         let cache_dir = NormalizedPath::from("/tmp/zccache-manifest-roundtrip");
 

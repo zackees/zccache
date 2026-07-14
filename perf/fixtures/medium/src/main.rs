@@ -1,5 +1,5 @@
 // A deliberately ordinary Rust binary used as the medium-sized
-// performance fixture for the soldr perf cluster.
+// performance fixture for the local Docker matrix.
 //
 // Every dep declared in Cargo.toml is exercised by name from main so
 // dead-code elimination cannot prune the compile units we want to

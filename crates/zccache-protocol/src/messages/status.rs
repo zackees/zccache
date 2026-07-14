@@ -169,7 +169,7 @@ impl From<zccache_depgraph::LookupOutcomes> for LookupOutcomes {
 /// identify which phase dominates the warm-side wall time (e.g.
 /// `write_output_ns` for artifact materialization vs `depgraph_check_ns`
 /// for depgraph lookups).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct PhaseProfileSummary {
     /// Number of cache-hit compiles that contributed to the hit-path totals.
     pub hit_count: u64,

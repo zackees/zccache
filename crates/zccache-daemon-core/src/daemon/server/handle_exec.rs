@@ -161,14 +161,7 @@ impl Drop for ExecStagedPlan {
 }
 
 fn exec_staging_enabled() -> bool {
-    std::env::var(crate::daemon::server::persist::STAGED_ARTIFACTS_ENV)
-        .ok()
-        .is_some_and(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "all" | "1" | "true" | "yes" | "on" | "exec"
-            )
-        })
+    crate::daemon::server::persist::staged_exec_lane_enabled()
 }
 
 /// Domain separation tag for generic-exec cache keys. v2 covers Path A +

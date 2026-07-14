@@ -8,7 +8,7 @@
 #   1. We want a glibc binary so the runner image (also bookworm) has
 #      no dynamic-link surprises when soldr invokes zccache-daemon.
 #   2. bookworm is the same OS family as the catthehacker/ubuntu act-24.04
-#      image, so binary behaviour matches the GHA perf-cluster runner
+#      image, so binary behaviour matches the local performance runner
 #      as closely as we can without literally booting the same image.
 #
 # Run via ci/perf_local.py:

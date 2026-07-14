@@ -141,6 +141,7 @@ fn exercise_row(fixture: &FsFixture, cross_volume: bool) -> String {
         filetime::FileTime::from_last_modification_time(&std::fs::metadata(&output).unwrap());
     assert_eq!(output_time.unix_seconds(), blob_time.unix_seconds());
     let shares_file_identity = same_file(&blob, &output);
+    let mut blob_may_be_evicted = false;
 
     let tier = if observed.reflink_count == 1 {
         assert!(!shares_file_identity);
@@ -156,6 +157,7 @@ fn exercise_row(fixture: &FsFixture, cross_volume: bool) -> String {
             assert!(
                 write_cached_output(&fixture.root().join("second.rlib"), &blob, original).is_err()
             );
+            blob_may_be_evicted = true;
         } else {
             assert_eq!(std::fs::read(&blob).unwrap(), original);
         }
@@ -184,7 +186,17 @@ fn exercise_row(fixture: &FsFixture, cross_volume: bool) -> String {
     if output.exists() {
         std::fs::remove_file(&output).unwrap();
     }
-    std::fs::remove_file(&blob).unwrap();
+    // A successful hardlink mutation makes integrity verification evict the
+    // poisoned authoritative blob. Cleanup must also handle that expected
+    // state instead of turning successful corruption detection into ENOENT.
+    if blob.exists() {
+        std::fs::remove_file(&blob).unwrap();
+    } else {
+        assert!(
+            blob_may_be_evicted,
+            "authoritative blob vanished outside the corruption-eviction path"
+        );
+    }
     let cleanup = !output.exists() && !blob.exists();
     assert!(cleanup);
     format!(

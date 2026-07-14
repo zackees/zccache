@@ -1,5 +1,4 @@
-"""Local perf-cluster harness — Docker-based reproduction of one scenario from
-`.github/workflows/perf-rust-cluster.yml`, without burning a GHA cycle.
+"""Authoritative local Linux Docker performance harness for zccache.
 
 Three Docker images (see `ci/docker/README.md`) collaborate:
 
@@ -32,29 +31,33 @@ volumes contain the live build state going forward.
 
 Usage::
 
-    uv run python ci/perf_local.py                                # default: cold-tar-untar-warm x medium
-    uv run python ci/perf_local.py --scenario worktree-share
-    uv run python ci/perf_local.py --scenario cold-tar-untar-warm --fixture sqlite-link
-    uv run python ci/perf_local.py --rebuild-images               # force docker build of all 3 images
+    uv run --no-project python ci/perf_local.py                    # default: cold-tar-untar-warm x medium
+    uv run --no-project python ci/perf_local.py --matrix           # release gate: all 8 rollout cells
+    uv run --no-project python ci/perf_local.py --scenario worktree-share
+    uv run --no-project python ci/perf_local.py --scenario cold-tar-untar-warm --fixture sqlite-link
+    uv run --no-project python ci/perf_local.py --soldr-ref fix/1651-portable-zccache-identity
+    uv run --no-project python ci/perf_local.py --jobs 2           # fit an 8 GiB Docker VM
+    uv run --no-project python ci/perf_local.py --rebuild-images   # force docker build of all 3 images
 
     # Ad-hoc cargo in the same warmed target/ volume — much faster than
     # `soldr cargo` on the host because the daemon is undisturbed:
-    uv run python ci/perf_local.py cargo test --lib --no-run
-    uv run python ci/perf_local.py cargo test --release --lib fscache::metadata::tests::mtimes
-    uv run python ci/perf_local.py cargo clippy --workspace -- -D warnings
+    uv run --no-project python ci/perf_local.py cargo test --lib --no-run
+    uv run --no-project python ci/perf_local.py cargo test --release --lib fscache::metadata::tests::mtimes
+    uv run --no-project python ci/perf_local.py cargo clippy --workspace -- -D warnings
 
     # Issue #477: dedicated subcommands that bake in the right `docker run`
     # incantation (named volumes + MSYS_NO_PATHCONV + persistent rustup
     # state). All run inside the same `zccache-perf-zccache-builder` image:
-    uv run python ci/perf_local.py fmt                          # cargo fmt --all -- --check
-    uv run python ci/perf_local.py fmt --fix                    # cargo fmt --all (rewrites in place)
-    uv run python ci/perf_local.py clippy                       # cargo clippy -p zccache --lib --tests -- -D warnings
-    uv run python ci/perf_local.py clippy --workspace --all-targets   # forward extra args
-    uv run python ci/perf_local.py test [PATTERN]               # cargo test --lib [PATTERN]
-    uv run python ci/perf_local.py shell                        # interactive bash in the builder image
+    uv run --no-project python ci/perf_local.py fmt             # cargo fmt --all -- --check
+    uv run --no-project python ci/perf_local.py fmt --fix       # cargo fmt --all (rewrites in place)
+    uv run --no-project python ci/perf_local.py clippy          # cargo clippy -p zccache --lib --tests -- -D warnings
+    uv run --no-project python ci/perf_local.py clippy --workspace --all-targets
+    uv run --no-project python ci/perf_local.py test [PATTERN]  # cargo test --lib [PATTERN]
+    uv run --no-project python ci/perf_local.py shell           # interactive bash in the builder image
 
-The result table emitted at the end mirrors the rich "Evaluate" step from the
-GHA perf cluster, so you can compare local vs cluster numbers row-for-row.
+The eight-cell ``--matrix`` run is the sanctioned release gate. GitHub Actions
+does not execute wall-clock benchmarks; it only runs deterministic tests and
+platform correctness checks.
 """
 
 from __future__ import annotations
@@ -62,6 +65,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -112,8 +116,28 @@ VALID_SCENARIOS = (
     "restore-no-clean-warm",
 )
 VALID_FIXTURES = ("medium", "sqlite-link")
+ROLLOUT_SCENARIOS = (
+    "cold-tar-untar-warm",
+    "worktree-share",
+    "touch-no-change",
+    "restore-no-clean-warm",
+)
 DEFAULT_SCENARIO = "cold-tar-untar-warm"
 DEFAULT_FIXTURE = "medium"
+
+# Local Docker Desktop measurements are intentionally separate from hosted
+# runner budgets. The 8 GiB VM runs with CARGO_BUILD_JOBS=2; these ceilings
+# leave roughly 2x headroom over the accepted #1084 matrix while preserving a
+# meaningful user-visible floor.
+LOCAL_MIN_SPEEDUP = 4.5
+LOCAL_MAX_WARM_MS = {
+    "cold-tar-untar-warm": None,
+    "restore-no-clean-warm": 10_000,
+    "worktree-share": 15_000,
+    "touch-no-change": 10_000,
+}
+LOCAL_MAX_STAGED_OVERHEAD_MS = 15_000
+LOCAL_MAX_MATERIALIZATION_COPIED_BYTES = 2 * (1 << 30)
 
 
 # ---------------------------------------------------------------------------
@@ -159,9 +183,7 @@ def image_exists(tag: str) -> bool:
 
 def build_image(tag: str, dockerfile: Path, context: Path, *, force: bool) -> None:
     if not force and image_exists(tag):
-        print(
-            f"[perf-local] image {tag} already built, skipping (use --rebuild-images to force)"
-        )
+        print(f"[perf-local] image {tag} already built, skipping (use --rebuild-images to force)")
         return
     print(f"[perf-local] building image {tag} from {dockerfile.relative_to(REPO_ROOT)}")
     run(
@@ -178,9 +200,7 @@ def build_image(tag: str, dockerfile: Path, context: Path, *, force: bool) -> No
 
 
 def build_all_images(*, force: bool) -> None:
-    build_image(
-        IMAGE_SOLDR, DOCKER_DIR / "soldr-builder.Dockerfile", DOCKER_DIR, force=force
-    )
+    build_image(IMAGE_SOLDR, DOCKER_DIR / "soldr-builder.Dockerfile", DOCKER_DIR, force=force)
     build_image(
         IMAGE_ZCCACHE,
         DOCKER_DIR / "zccache-builder.Dockerfile",
@@ -216,52 +236,65 @@ def git_is_dirty(repo: Path) -> bool:
     )
 
 
-def pin_soldr_zccache_source(soldr_src: Path) -> None:
+def pin_soldr_zccache_source(soldr_src: Path, *, initialize_submodules: bool = True) -> None:
     """Build soldr with the zccache checkout under test embedded in it.
 
     soldr consumes zccache as a git submodule, so cloning soldr alone is no
-    longer enough. Mirror the Perf Cluster workflow: materialize all soldr
+    longer enough. Materialize all soldr
     submodules, then move its zccache submodule to this checkout's exact SHA.
     """
     if git_is_dirty(REPO_ROOT):
-        raise RuntimeError(
-            "the zccache checkout is dirty; commit or stash changes before running "
-            "perf_local.py so embedded source cannot differ from the requested run"
-        )
+        raise RuntimeError("the zccache checkout is dirty; commit or stash changes before running perf_local.py so embedded source cannot differ from the requested run")
     zccache_sha = git_head(REPO_ROOT)
     vendored = soldr_src / "_vender" / "zccache"
-    run(
-        [
-            "git",
-            "-C",
-            str(soldr_src),
-            "submodule",
-            "update",
-            "--init",
-            "--recursive",
-        ]
-    )
+    if initialize_submodules or not vendored.exists():
+        run(
+            [
+                "git",
+                "-C",
+                str(soldr_src),
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+            ]
+        )
+    if vendored.exists() and git_head(vendored) == zccache_sha:
+        print(f"[perf-local] embedded zccache already at {zccache_sha[:12]}, skipping source mutation")
+        return
     # Fetch locally so unpublished commits can be measured before push.
     run(["git", "-C", str(vendored), "fetch", str(REPO_ROOT), zccache_sha])
     run(["git", "-C", str(vendored), "checkout", "--detach", zccache_sha])
     actual_sha = git_head(vendored)
     if actual_sha != zccache_sha:
-        raise RuntimeError(
-            "failed to pin soldr's embedded zccache: "
-            f"expected {zccache_sha}, found {actual_sha}"
-        )
+        raise RuntimeError(f"failed to pin soldr's embedded zccache: expected {zccache_sha}, found {actual_sha}")
 
 
-def ensure_soldr_source() -> Path:
-    """Refresh soldr main and embed this checkout's committed zccache HEAD."""
+def ensure_soldr_source(soldr_ref: str = SOLDR_REF) -> Path:
+    """Refresh the requested soldr ref and embed this zccache checkout.
+
+    ``--soldr-ref`` is the local bridge for cross-repository changes: it lets a
+    zccache branch measure against an unmerged soldr fix without editing the
+    shallow scratch clone or waiting for a GitHub Actions cycle.
+    """
     src = PERF_LOCAL / "soldr-src"
     if (src / ".git").is_dir():
-        print(f"[perf-local] refreshing soldr source at {src}")
-        run(["git", "-C", str(src), "fetch", "--depth", "1", "origin", SOLDR_REF])
-        run(["git", "-C", str(src), "reset", "--hard", "FETCH_HEAD"])
+        print(f"[perf-local] resolving soldr@{soldr_ref} at {src}")
+        run(["git", "-C", str(src), "fetch", "--depth", "1", "origin", soldr_ref])
+        requested_sha = subprocess.run(
+            ["git", "-C", str(src), "rev-parse", "FETCH_HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        source_changed = git_head(src) != requested_sha
+        if source_changed:
+            run(["git", "-C", str(src), "reset", "--hard", requested_sha])
+        else:
+            print(f"[perf-local] soldr source already at {requested_sha[:12]}, skipping reset")
     else:
         src.mkdir(parents=True, exist_ok=True)
-        print(f"[perf-local] cloning soldr@{SOLDR_REF} -> {src}")
+        print(f"[perf-local] cloning soldr@{soldr_ref} -> {src}")
         run(
             [
                 "git",
@@ -269,12 +302,13 @@ def ensure_soldr_source() -> Path:
                 "--depth",
                 "1",
                 "--branch",
-                SOLDR_REF,
+                soldr_ref,
                 SOLDR_REPO,
                 str(src),
             ]
         )
-    pin_soldr_zccache_source(src)
+        source_changed = True
+    pin_soldr_zccache_source(src, initialize_submodules=source_changed)
     sha = git_head(src)
     print(f"[perf-local] soldr-src now at {sha[:12]}")
     return src
@@ -308,7 +342,34 @@ def host_volume(host: Path, container: str, mode: str = "") -> str:
     return s
 
 
-def run_soldr_builder(layout: dict[str, Path]) -> None:
+def soldr_build_identity(layout: dict[str, Path]) -> dict[str, object]:
+    """Identity of every input that can affect the published soldr binary."""
+    image = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{.Id}}", IMAGE_SOLDR],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    return {
+        "schema_version": 1,
+        "soldr_sha": git_head(layout["soldr_src"]),
+        "zccache_sha": git_head(REPO_ROOT),
+        "builder_image_id": image,
+    }
+
+
+def run_soldr_builder(layout: dict[str, Path], *, force: bool = False) -> None:
+    identity = soldr_build_identity(layout)
+    binary = layout["bin_soldr"] / "soldr"
+    stamp = layout["bin_soldr"] / "build-identity.json"
+    if not force and binary.is_file() and stamp.is_file():
+        try:
+            previous_identity = json.loads(stamp.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            previous_identity = None
+        if previous_identity == identity:
+            print("[perf-local] soldr binary inputs unchanged, skipping builder")
+            return
     print(f"[perf-local] building soldr binary -> {layout['bin_soldr']}")
     run(
         [
@@ -326,11 +387,16 @@ def run_soldr_builder(layout: dict[str, Path]) -> None:
             IMAGE_SOLDR,
         ]
     )
+    if not binary.is_file():
+        raise FileNotFoundError(f"soldr builder succeeded without publishing {binary}")
+    stamp_tmp = stamp.with_suffix(".json.tmp")
+    stamp_tmp.write_text(json.dumps(identity, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    stamp_tmp.replace(stamp)
 
 
-def run_scenario(layout: dict[str, Path], scenario: str, fixture: str) -> Path:
+def run_scenario(layout: dict[str, Path], scenario: str, fixture: str, jobs: int) -> Path:
     """Run the per-scenario container. Returns the results dir for this run."""
-    results_dir = layout["results"] / scenario
+    results_dir = layout["results"] / fixture / scenario
     # Wipe last run's results so partial output from a crashing run doesn't
     # masquerade as a complete result.
     if results_dir.exists():
@@ -339,20 +405,27 @@ def run_scenario(layout: dict[str, Path], scenario: str, fixture: str) -> Path:
 
     soldr_bin = layout["bin_soldr"] / "soldr"
     if not soldr_bin.is_file():
-        raise FileNotFoundError(
-            f"soldr binary missing at {soldr_bin}. "
-            "Did the soldr-builder step succeed?"
-        )
+        raise FileNotFoundError(f"soldr binary missing at {soldr_bin}. Did the soldr-builder step succeed?")
 
     print(f"[perf-local] running scenario {scenario} x {fixture} -> {results_dir}")
     start = time.monotonic()
     # Pass any ZCCACHE_* env through to the container so the daemon's
     # env-gated instrumentation (e.g. ZCCACHE_HIT_TRACE=1 for the sub-phase
     # dump from issue #468) reaches the in-container daemon process.
-    pass_through_env = [
-        (k, v) for k, v in os.environ.items() if k.startswith("ZCCACHE_")
+    pass_through_env = [(k, v) for k, v in os.environ.items() if k.startswith("ZCCACHE_")]
+    # Docker Desktop commonly has an 8 GiB VM even when the Windows host has
+    # substantially more RAM. An unconstrained medium-fixture build can run
+    # enough rustc processes to exhaust that VM and surface os error 12 through
+    # soldr. Keep local measurements reproducible and within the selected
+    # budget; callers with a larger VM can raise --jobs explicitly.
+    # A performance sample must never silently switch to uncached rustc. This
+    # is a benchmark-integrity requirement, not a production default.
+    env_flags: list[str] = [
+        "-e",
+        f"CARGO_BUILD_JOBS={jobs}",
+        "-e",
+        "SOLDR_DAEMON_REQUIRED=1",
     ]
-    env_flags: list[str] = []
     for k, v in pass_through_env:
         env_flags.extend(["-e", f"{k}={v}"])
     run(
@@ -380,9 +453,7 @@ def run_scenario(layout: dict[str, Path], scenario: str, fixture: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Result rendering — mirrors .github/workflows/perf-rust-cluster.yml
-# "Evaluate" step's rich table so local + cluster numbers compare apples-
-# to-apples.
+# Result rendering for local diagnostics and retained matrix evidence.
 
 
 def fmt_ms(ms) -> str:
@@ -417,6 +488,181 @@ def fmt_count_pct(n, total) -> str:
     return f"{int(n)} ({int(n) / int(total) * 100:.1f}%)"
 
 
+def validate_infrastructure_result(result: dict, results_dir: Path) -> None:
+    """Reject samples contaminated by soldr abort/retry behavior.
+
+    Timing is meaningless when the build silently timed out or retried without
+    the cache, so this schema and its artifact-relative evidence are validated
+    before any performance threshold.
+    """
+    if not isinstance(result, dict):
+        raise ValueError("infrastructure result must be an object")
+    reasons = result.get("invalid_reasons")
+    evidence = result.get("soldr_abort_evidence")
+    fallback_evidence = result.get("soldr_daemon_fallback_evidence")
+    valid = result.get("infrastructure_valid")
+    count_names = (
+        "soldr_abort_count",
+        "soldr_timeout_count",
+        "soldr_no_cache_retry_count",
+        "soldr_daemon_fallback_count",
+    )
+    counts = {name: result.get(name) for name in count_names}
+
+    malformed = (
+        type(valid) is not bool
+        or not isinstance(reasons, list)
+        or not all(isinstance(reason, str) for reason in reasons)
+        or not isinstance(evidence, list)
+        or not evidence
+        or not all(isinstance(item, str) and re.fullmatch(r"soldr-aborts-[A-Za-z0-9_-]+[.]jsonl", item) for item in evidence)
+        or not isinstance(fallback_evidence, list)
+        or not fallback_evidence
+        or not all(
+            isinstance(item, str)
+            and re.fullmatch(r"soldr-daemon-fallbacks-[A-Za-z0-9_-]+[.]jsonl", item)
+            for item in fallback_evidence
+        )
+        or not all(type(value) is int and value >= 0 for value in counts.values())
+    )
+    if malformed:
+        raise ValueError("missing or malformed infrastructure-validity fields")
+    if counts["soldr_timeout_count"] > counts["soldr_abort_count"]:
+        raise ValueError("timeout count exceeds abort count")
+    if counts["soldr_no_cache_retry_count"] > counts["soldr_abort_count"]:
+        raise ValueError("no-cache retry count exceeds abort count")
+    if valid != (len(reasons) == 0):
+        raise ValueError("infrastructure validity and reasons disagree")
+    missing = [item for item in evidence if not (results_dir / item).is_file()]
+    if missing:
+        raise ValueError(f"declared soldr abort evidence is missing: {missing[0]}")
+    missing_fallback = [item for item in fallback_evidence if not (results_dir / item).is_file()]
+    if missing_fallback:
+        raise ValueError(
+            f"declared soldr daemon fallback evidence is missing: {missing_fallback[0]}"
+        )
+    if not valid or any(counts.values()):
+        detail = "; ".join(reasons) or "soldr abort detected"
+        raise ValueError(
+            f"contaminated benchmark sample: {detail}; aborts={counts['soldr_abort_count']}, timeouts={counts['soldr_timeout_count']}, no-cache retries={counts['soldr_no_cache_retry_count']}, daemon fallbacks={counts['soldr_daemon_fallback_count']}"
+        )
+
+
+def _read_session_report(results_dir: Path, names: tuple[str, ...]) -> dict | None:
+    for name in names:
+        path = results_dir / name
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            return None
+        session = payload.get("last_session")
+        return session if isinstance(session, dict) else None
+    return None
+
+
+def _staged_profile(report: dict | None) -> dict | None:
+    if not report:
+        return None
+    profile = report.get("phase_profile")
+    if not isinstance(profile, dict):
+        return None
+    staged = profile.get("staged")
+    return staged if isinstance(staged, dict) else None
+
+
+def evaluate_rollout_result(results_dir: Path, scenario: str, fixture: str) -> list[str]:
+    """Return every hard-gate failure for one sanctioned local matrix cell."""
+    failures: list[str] = []
+    result_path = results_dir / "result.json"
+    if not result_path.is_file():
+        return ["result.json missing"]
+    try:
+        result = json.loads(result_path.read_text())
+    except json.JSONDecodeError as error:
+        return [f"result.json is malformed: {error}"]
+    if not isinstance(result, dict):
+        return ["result.json must contain one object"]
+
+    try:
+        validate_infrastructure_result(result, results_dir)
+    except ValueError as error:
+        failures.append(str(error))
+
+    cold_key = "a_ms" if scenario == "worktree-share" else "cold_ms"
+    warm_key = "b_ms" if scenario == "worktree-share" else "warm_ms"
+    cold_ms = result.get(cold_key)
+    warm_ms = result.get(warm_key)
+    if type(cold_ms) is not int or type(warm_ms) is not int or warm_ms <= 0:
+        failures.append(f"invalid timing fields {cold_key}={cold_ms} {warm_key}={warm_ms}")
+    else:
+        speedup = cold_ms / warm_ms
+        if speedup < LOCAL_MIN_SPEEDUP:
+            failures.append(f"speedup {speedup:.2f}x is below {LOCAL_MIN_SPEEDUP:.2f}x")
+        warm_limit = LOCAL_MAX_WARM_MS[scenario]
+        if warm_limit is not None and warm_ms > warm_limit:
+            failures.append(f"warm time {warm_ms}ms exceeds {warm_limit}ms")
+
+    cold_report = _read_session_report(results_dir, ("cold-cache-report.json", "a-cache-report.json"))
+    warm_report = _read_session_report(results_dir, ("warm-cache-report.json", "b-cache-report.json"))
+    cold_staged = _staged_profile(cold_report)
+    warm_staged = _staged_profile(warm_report)
+    if cold_staged is None:
+        failures.append("missing cold staged telemetry")
+        return failures
+
+    cold_timings = cold_staged.get("timings_ns", {})
+    cold_counters = cold_staged.get("counters", {})
+    if not isinstance(cold_timings, dict) or not isinstance(cold_counters, dict):
+        failures.append("malformed cold staged telemetry")
+        return failures
+    overhead_ns = sum(int(cold_timings.get(name, 0) or 0) for name in ("hashing", "publication", "miss_materialization"))
+    overhead_ms = (overhead_ns + 999_999) // 1_000_000
+    if int(cold_counters.get("publication_success", 0) or 0) <= 0:
+        failures.append("cold path published no staged generations")
+    if overhead_ms > LOCAL_MAX_STAGED_OVERHEAD_MS:
+        failures.append(f"staged miss overhead {overhead_ms}ms exceeds {LOCAL_MAX_STAGED_OVERHEAD_MS}ms")
+
+    counter_sets = [cold_counters]
+    if warm_staged is not None:
+        warm_counters = warm_staged.get("counters", {})
+        warm_bytes = warm_staged.get("bytes", {})
+        if not isinstance(warm_counters, dict) or not isinstance(warm_bytes, dict):
+            failures.append("malformed warm staged telemetry")
+            return failures
+        counter_sets.append(warm_counters)
+        copied = int(warm_bytes.get("materialization_copied", 0) or 0)
+        tiers = sum(
+            int(warm_counters.get(name, 0) or 0)
+            for name in (
+                "materialize_reflink",
+                "materialize_hardlink_shared",
+                "materialize_copy",
+            )
+        )
+    elif scenario == "restore-no-clean-warm":
+        copied = 0
+        tiers = 0
+    else:
+        failures.append("missing warm staged telemetry")
+        return failures
+
+    salvage = sum(int(counters.get("salvage_attempt", 0) or 0) for counters in counter_sets)
+    critical = sum(int(counters.get(name, 0) or 0) for counters in counter_sets for name in ("publication_failure", "publication_conflict", "materialize_failure"))
+    if salvage != 0 or critical != 0:
+        failures.append(f"salvage={salvage} critical_failures={critical}")
+    if copied > LOCAL_MAX_MATERIALIZATION_COPIED_BYTES:
+        failures.append(f"materialization copied {copied} bytes, max {LOCAL_MAX_MATERIALIZATION_COPIED_BYTES}")
+    if scenario == "restore-no-clean-warm":
+        if result.get("warm_misses") != 0:
+            failures.append(f"restore warm build had cache misses: {result.get('warm_misses')}")
+    elif tiers <= 0:
+        failures.append("warm build reported no materialization tier")
+
+    return failures
+
+
 def render_summary(results_dir: Path, scenario: str, fixture: str) -> int:
     """Print a one-row summary table + the inline annotation that the GHA
     Evaluate step would emit. Returns 0 if the speedup hit the 3x gate."""
@@ -432,9 +678,7 @@ def render_summary(results_dir: Path, scenario: str, fixture: str) -> int:
     cold_ms = result.get(cold_key)
     warm_ms = result.get(warm_key)
     if cold_ms is None or warm_ms is None or warm_ms <= 0:
-        print(
-            f"[perf-local] FAIL: bad timing in result.json (cold={cold_ms} warm={warm_ms})"
-        )
+        print(f"[perf-local] FAIL: bad timing in result.json (cold={cold_ms} warm={warm_ms})")
         return 1
     speedup = cold_ms / warm_ms
 
@@ -492,11 +736,7 @@ def render_summary(results_dir: Path, scenario: str, fixture: str) -> int:
     print()
     print(f"## Perf result — local Docker harness — {fixture} / {scenario}")
     print()
-    header = (
-        "| Fixture | Scenario | Verdict | Speedup | Need | Cold | Warm "
-        "| Compiles | Hits | Misses | Ignored | Errors | Unique Srcs "
-        "| Bytes W | Time Saved | Daemon RSS | Compile RSS |"
-    )
+    header = "| Fixture | Scenario | Verdict | Speedup | Need | Cold | Warm | Compiles | Hits | Misses | Ignored | Errors | Unique Srcs | Bytes W | Time Saved | Daemon RSS | Compile RSS |"
     sep = "| --- | --- | :---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
     row = (
         f"| {fixture} | {scenario} | **{verdict}** | {speedup:.2f}x | >={threshold:.2f}x "
@@ -584,9 +824,7 @@ def render_phase_breakdown(phase_profile) -> None:
     rows.sort(key=lambda r: r[1], reverse=True)
 
     print()
-    print(
-        f"### Phase breakdown (warm-side daemon — {hit_count} hits, {miss_count} misses)"
-    )
+    print(f"### Phase breakdown (warm-side daemon — {hit_count} hits, {miss_count} misses)")
     print()
     print("| Phase | Total ms | Avg per event (µs) |")
     print("| --- | ---: | ---: |")
@@ -604,10 +842,7 @@ def render_phase_breakdown(phase_profile) -> None:
     total_hit_ns = int(phase_profile.get("total_hit_ns") or 0)
     total_miss_ns = int(phase_profile.get("total_miss_ns") or 0)
     print()
-    print(
-        f"total_hit_ns={total_hit_ns / 1_000_000:.1f}ms "
-        f"total_miss_ns={total_miss_ns / 1_000_000:.1f}ms"
-    )
+    print(f"total_hit_ns={total_hit_ns / 1_000_000:.1f}ms total_miss_ns={total_miss_ns / 1_000_000:.1f}ms")
 
 
 # ---------------------------------------------------------------------------
@@ -670,8 +905,7 @@ def run_zccache_docker_cmd(cmd: list[str]) -> int:
     stops translating `/src` to a Windows path."""
     if not image_exists(IMAGE_ZCCACHE):
         print(
-            f"[perf-local] image {IMAGE_ZCCACHE} not built yet — "
-            "run `uv run python ci/perf_local.py --skip-soldr-build` first.",
+            f"[perf-local] image {IMAGE_ZCCACHE} not built yet — run `uv run python ci/perf_local.py --skip-soldr-build` first.",
             file=sys.stderr,
         )
         return 2
@@ -705,10 +939,7 @@ def run_cargo_in_container(cargo_args: list[str]) -> int:
 # (the volume persists across container instances). The components are
 # installed for the toolchain pinned in `rust-toolchain.toml` (or the
 # default if no pin file is found at /src).
-_ENSURE_RUSTFMT_CLIPPY = (
-    "rustup component add rustfmt clippy >/dev/null 2>&1 || "
-    "rustup component add rustfmt clippy"
-)
+_ENSURE_RUSTFMT_CLIPPY = "rustup component add rustfmt clippy >/dev/null 2>&1 || rustup component add rustfmt clippy"
 
 
 def run_fmt(args: list[str]) -> int:
@@ -782,6 +1013,35 @@ def _shell_quote(arg: str) -> str:
     return "'" + arg.replace("'", "'\"'\"'") + "'"
 
 
+def run_rollout_matrix(layout: dict[str, Path], jobs: int) -> int:
+    """Run and hard-gate both fixtures across all rollout scenarios."""
+    failed_cells: list[str] = []
+    for fixture in VALID_FIXTURES:
+        for scenario in ROLLOUT_SCENARIOS:
+            cell = f"{fixture}/{scenario}"
+            try:
+                results_dir = run_scenario(layout, scenario, fixture, jobs)
+            except subprocess.CalledProcessError as error:
+                print(f"[perf-local] FAIL {cell}: scenario exited {error.returncode}")
+                failed_cells.append(cell)
+                continue
+            render_summary(results_dir, scenario, fixture)
+            failures = evaluate_rollout_result(results_dir, scenario, fixture)
+            if failures:
+                failed_cells.append(cell)
+                for failure in failures:
+                    print(f"[perf-local] HARD-GATE FAIL {cell}: {failure}")
+            else:
+                print(f"[perf-local] HARD-GATE PASS {cell}")
+
+    print()
+    if failed_cells:
+        print(f"[perf-local] MATRIX FAIL: {len(failed_cells)}/{len(VALID_FIXTURES) * len(ROLLOUT_SCENARIOS)} cells failed: " + ", ".join(failed_cells))
+        return 1
+    print(f"[perf-local] MATRIX PASS: all {len(VALID_FIXTURES) * len(ROLLOUT_SCENARIOS)} cells passed")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -804,9 +1064,7 @@ def main() -> int:
     if len(sys.argv) >= 2 and sys.argv[1] in SUBCOMMAND_RUNNERS:
         if not docker_available():
             print(
-                "ERROR: docker is required but not available.\n"
-                "  - Is Docker Desktop running?\n"
-                "  - Is `docker` on PATH?\n",
+                "ERROR: docker is required but not available.\n  - Is Docker Desktop running?\n  - Is `docker` on PATH?\n",
                 file=sys.stderr,
             )
             return 2
@@ -820,6 +1078,11 @@ def main() -> int:
         help=f"Which perf scenario to run (default: {DEFAULT_SCENARIO}).",
     )
     parser.add_argument(
+        "--matrix",
+        action="store_true",
+        help="Run the sanctioned 2-fixture x 4-scenario local Linux gate.",
+    )
+    parser.add_argument(
         "--fixture",
         choices=VALID_FIXTURES,
         default=DEFAULT_FIXTURE,
@@ -830,13 +1093,25 @@ def main() -> int:
         action="store_true",
         help="Force a rebuild of all three Docker images even if cached.",
     )
+    parser.add_argument(
+        "--soldr-ref",
+        default=SOLDR_REF,
+        help=(f"Soldr branch, tag, or commit to build before embedding this zccache checkout (default: {SOLDR_REF})."),
+    )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=2,
+        help="Maximum parallel Cargo jobs inside the scenario container (default: 2).",
+    )
     args = parser.parse_args()
+
+    if args.jobs < 1:
+        parser.error("--jobs must be at least 1")
 
     if not docker_available():
         print(
-            "ERROR: docker is required but not available.\n"
-            "  - Is Docker Desktop running?\n"
-            "  - Is `docker` on PATH?\n",
+            "ERROR: docker is required but not available.\n  - Is Docker Desktop running?\n  - Is `docker` on PATH?\n",
             file=sys.stderr,
         )
         return 2
@@ -847,10 +1122,13 @@ def main() -> int:
     layout = ensure_volume_dirs()
     build_all_images(force=args.rebuild_images)
 
-    ensure_soldr_source()
-    run_soldr_builder(layout)
+    ensure_soldr_source(args.soldr_ref)
+    run_soldr_builder(layout, force=args.rebuild_images)
 
-    results_dir = run_scenario(layout, args.scenario, args.fixture)
+    if args.matrix:
+        return run_rollout_matrix(layout, args.jobs)
+
+    results_dir = run_scenario(layout, args.scenario, args.fixture, args.jobs)
     return render_summary(results_dir, args.scenario, args.fixture)
 
 

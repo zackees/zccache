@@ -552,6 +552,7 @@ pub(crate) fn phase_profile_summary_json(
         "hash_all_ns": p.hash_all_ns,
         "artifact_store_ns": p.artifact_store_ns,
         "total_miss_ns": p.total_miss_ns,
+        "staged": &p.staged,
     })
 }
 

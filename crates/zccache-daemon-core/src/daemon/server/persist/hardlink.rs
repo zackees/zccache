@@ -177,6 +177,26 @@ pub(in crate::daemon::server) fn make_writable(path: &Path) -> std::io::Result<(
     Ok(())
 }
 
+/// Convert a cache file path to the verbatim absolute form required by
+/// manual Win32 calls. Rust's std::fs does this internally, but direct
+/// `MoveFileExW` callers otherwise retain the legacy MAX_PATH limit.
+#[cfg(windows)]
+pub(in crate::daemon::server) fn windows_verbatim_file_path(
+    path: &Path,
+) -> std::io::Result<PathBuf> {
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("cache path has no filename: {}", path.display()),
+        )
+    })?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    Ok(std::fs::canonicalize(parent)?.join(file_name))
+}
+
 #[cfg(unix)]
 pub(in crate::daemon::server) fn hard_link_count(path: &Path) -> std::io::Result<u64> {
     use std::os::unix::fs::MetadataExt;

@@ -138,7 +138,17 @@ struct StagedOutput {
 }
 
 pub(in crate::daemon::server) fn staged_artifacts_enabled() -> bool {
-    std::env::var(STAGED_ARTIFACTS_ENV).map_or(true, |value| {
+    staged_artifacts_enabled_for(std::env::var(STAGED_ARTIFACTS_ENV).ok().as_deref())
+}
+
+pub(in crate::daemon::server) fn staged_lane_enabled(
+    family: crate::compiler::CompilerFamily,
+) -> bool {
+    staged_lane_enabled_for(std::env::var(STAGED_ARTIFACTS_ENV).ok().as_deref(), family)
+}
+
+fn staged_artifacts_enabled_for(value: Option<&str>) -> bool {
+    value.is_none_or(|value| {
         !matches!(
             value.trim().to_ascii_lowercase().as_str(),
             "" | "0" | "false" | "off" | "no"
@@ -146,10 +156,8 @@ pub(in crate::daemon::server) fn staged_artifacts_enabled() -> bool {
     })
 }
 
-pub(in crate::daemon::server) fn staged_lane_enabled(
-    family: crate::compiler::CompilerFamily,
-) -> bool {
-    let Ok(value) = std::env::var(STAGED_ARTIFACTS_ENV) else {
+fn staged_lane_enabled_for(value: Option<&str>, family: crate::compiler::CompilerFamily) -> bool {
+    let Some(value) = value else {
         return true;
     };
     match value.trim().to_ascii_lowercase().as_str() {
@@ -166,10 +174,27 @@ pub(in crate::daemon::server) fn staged_lane_enabled(
 }
 
 pub(in crate::daemon::server) fn staged_link_lane_enabled() -> bool {
-    std::env::var(STAGED_ARTIFACTS_ENV).is_ok_and(|value| {
+    staged_link_lane_enabled_for(std::env::var(STAGED_ARTIFACTS_ENV).ok().as_deref())
+}
+
+fn staged_link_lane_enabled_for(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
         matches!(
             value.trim().to_ascii_lowercase().as_str(),
             "all" | "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+pub(in crate::daemon::server) fn staged_exec_lane_enabled() -> bool {
+    staged_exec_lane_enabled_for(std::env::var(STAGED_ARTIFACTS_ENV).ok().as_deref())
+}
+
+fn staged_exec_lane_enabled_for(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "all" | "1" | "true" | "yes" | "on" | "exec"
         )
     })
 }
@@ -325,8 +350,12 @@ fn replace_staged_path(source: &Path, destination: &Path) -> io::Result<()> {
             MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
         };
 
-        let source_wide: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-        let destination_wide: Vec<u16> = destination
+        let source_wide: Vec<u16> = windows_verbatim_file_path(source)?
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let destination_wide: Vec<u16> = windows_verbatim_file_path(destination)?
             .as_os_str()
             .encode_wide()
             .chain(Some(0))

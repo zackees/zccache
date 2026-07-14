@@ -461,6 +461,21 @@ fallback spelling for keeping v15 behavior during the migration.
 
 ### Worktree cache sharing
 
+#### Immutable staged outputs
+
+Supported compiler and archive outputs use the immutable staged lane by
+default. zccache redirects the tool into a private directory, publishes the
+complete output set as one generation, and only then materializes requested
+paths. This prevents partial cache entries and makes publication, salvage, and
+delivery observable in session `phase_profile.staged` telemetry.
+
+`ZCCACHE_STAGED_ARTIFACTS=off` is the rollout kill switch. Diagnostic values
+`rust` and `c-cpp` limit staging to one compiler family; `exec` enables exact
+generic execution; and `all` also opts declared linker outputs into staging. These compatibility values
+remain supported through the 1.13.x release line and will not be considered for
+removal before 1.14. Legacy v1 and pack entries remain readable while staging
+is disabled.
+
 #### Safe filesystem materialization
 
 Cache-hit delivery is capability driven. zccache probes the actual source and

@@ -1,5 +1,32 @@
 //! Transaction, race, migration, cleanup, and deterministic fault tests.
 use super::*;
+
+#[test]
+fn staged_rollout_defaults_on_and_preserves_compatibility_switches() {
+    use crate::compiler::CompilerFamily::{Clang, Rustc};
+
+    assert!(staged_artifacts_enabled_for(None));
+    assert!(staged_lane_enabled_for(None, Rustc));
+    assert!(staged_lane_enabled_for(None, Clang));
+    assert!(!staged_link_lane_enabled_for(None));
+    assert!(!staged_exec_lane_enabled_for(None));
+
+    for disabled in ["", "0", "false", "off", "no", " OFF "] {
+        assert!(!staged_artifacts_enabled_for(Some(disabled)));
+        assert!(!staged_lane_enabled_for(Some(disabled), Rustc));
+        assert!(!staged_lane_enabled_for(Some(disabled), Clang));
+        assert!(!staged_link_lane_enabled_for(Some(disabled)));
+        assert!(!staged_exec_lane_enabled_for(Some(disabled)));
+    }
+
+    assert!(staged_lane_enabled_for(Some("rust"), Rustc));
+    assert!(!staged_lane_enabled_for(Some("rust"), Clang));
+    assert!(!staged_lane_enabled_for(Some("c-cpp"), Rustc));
+    assert!(staged_lane_enabled_for(Some("c-cpp"), Clang));
+    assert!(staged_link_lane_enabled_for(Some("all")));
+    assert!(staged_exec_lane_enabled_for(Some("all")));
+    assert!(staged_exec_lane_enabled_for(Some("exec")));
+}
 use std::fs;
 
 fn source_files(dir: &Path) -> Vec<NormalizedPath> {
@@ -58,6 +85,31 @@ fn staged_generation_is_independent_and_hash_addressed() {
             .join("file")
     ));
     assert!(is_staged_artifact_path(&payloads[0]));
+}
+
+#[cfg(windows)]
+#[test]
+fn staged_generation_publishes_beyond_legacy_max_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut artifact_dir = dir.path().join("artifacts");
+    while artifact_dir.as_os_str().len() < 220 {
+        artifact_dir = artifact_dir.join("long-staged-cache-segment");
+    }
+    fs::create_dir_all(&artifact_dir).unwrap();
+    let source = dir.path().join("source.rlib");
+    fs::write(&source, b"long-path immutable payload").unwrap();
+    let key = "b".repeat(64);
+    assert!(pointer_path(&artifact_dir, &key).as_os_str().len() > 260);
+
+    persist_staged_artifact_paths(&artifact_dir, &key, &[source.into()])
+        .expect("staged digest publication must support Win32 paths beyond MAX_PATH");
+    let payloads = load_staged_artifact_paths(&artifact_dir, &key, &[27])
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fs::read(&payloads[0]).unwrap(),
+        b"long-path immutable payload"
+    );
 }
 
 #[test]

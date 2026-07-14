@@ -7,22 +7,20 @@ zccache is a local-first compiler cache (21 crates) for C/C++/Rust/Emscripten, i
 > [!IMPORTANT]
 > ## Performance work → read [PERF.md](PERF.md) FIRST
 >
-> **The `perf-rust-cluster` GitHub Action is the only sanctioned path for zccache perf work.**
+> **The local Linux Docker matrix in `ci/perf_local.py --matrix` is the sanctioned path for zccache perf work.**
 > If you are testing, measuring, optimizing, or regressing zccache's performance —
 > read **[PERF.md](PERF.md)** before doing anything else.
 >
-> Branch naming (`perf/<plat>-<fix>-<scen>`) controls exactly which cells of the matrix
-> run. Pushing to a wrong branch name silently runs the full sweep — costly and slow.
-> **Do not guess.** PERF.md has the complete 48-pattern scope table.
+> GitHub Actions does not run the large wall-clock fixture matrix. Use narrow
+> local cells while iterating, then run all eight cells with `--matrix` before merge.
 >
 > Do not invent ad-hoc benchmarks (`criterion`, `divan`, `hyperfine` in a one-off
-> script). The perf cluster is the regression-blocking measurement; everything else
+> script). The local Docker matrix is the regression-blocking measurement; everything else
 > is diagnostic.
 >
-> **When iterating on a perf problem: reproduce locally first.** One GHA cycle is
-> 5–17 minutes; one local cycle is seconds. Use the cluster to confirm a fix you
-> already validated locally — not to test hypotheses you haven't tried yet. See
-> PERF.md → "Iterating on a perf problem — local-first, GHA last."
+> **When iterating on a perf problem: reproduce in local Docker first.** Retain
+> `.perf-local/results/<fixture>/<scenario>/` as evidence and never use Actions
+> as the timing feedback loop.
 >
 > **Every perf fix lands with a perf unit test.** Without a test, the bug comes
 > back. Either extend `crates/zccache-daemon/tests/perf_bench_test.rs` + add a
@@ -53,7 +51,7 @@ soldr cargo bench -p zccache-hash
 ./perf.sh                   # performance benchmark (zccache vs sccache vs bare clang)
 ```
 
-See [PERF.md](PERF.md) for the scenario-driven `perf-rust-cluster.yml` workflow (cold-tar-untar-warm and friends).
+See [PERF.md](PERF.md) for the scenario-driven local Docker gate (cold-tar-untar-warm and friends).
 
 ## Distribution
 

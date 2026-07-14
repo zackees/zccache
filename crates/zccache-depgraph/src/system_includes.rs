@@ -713,7 +713,7 @@ Selected multilib: .;@m64
         // parser previously matched only `"-cc1"` (quoted) and missed
         // this entire format, falling back to the slow `-v -E` probe.
         // Sample lifted from /usr/bin/clang-18 -### -E -x c++ /dev/null
-        // on Ubuntu 24.04 (the perf-cluster runner image).
+        // on Ubuntu 24.04 (the local performance runner image).
         let output = r#"clang version 18.1.3 (1ubuntu1)
 Target: x86_64-pc-linux-gnu
 Thread model: posix

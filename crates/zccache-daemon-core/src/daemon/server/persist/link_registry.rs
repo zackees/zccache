@@ -191,12 +191,12 @@ fn replace_digest_sidecar(temp_path: &Path, final_path: &Path) -> std::io::Resul
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING};
 
-    let temp = temp_path
+    let temp = windows_verbatim_file_path(temp_path)?
         .as_os_str()
         .encode_wide()
         .chain(Some(0))
         .collect::<Vec<_>>();
-    let final_path = final_path
+    let final_path = windows_verbatim_file_path(final_path)?
         .as_os_str()
         .encode_wide()
         .chain(Some(0))

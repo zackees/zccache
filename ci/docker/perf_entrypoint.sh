@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs inside the zccache-perf-runner container. Reproduces the per-cell
-# bench job from .github/workflows/perf-rust-cluster.yml end-to-end on a
+# local performance matrix cell end-to-end on a
 # pre-built soldr binary with this checkout's zccache embedded.
 #
 # Env contract (set by ci/perf_local.py):
@@ -74,17 +74,35 @@ copy_if_exists() {
 scenario_root="${WORK_DIR}"
 copy_if_exists "${scenario_root}/cold-cache-report.json"
 copy_if_exists "${scenario_root}/warm-cache-report.json"
+copy_if_exists "${scenario_root}/a-cache-report.json"
+copy_if_exists "${scenario_root}/b-cache-report.json"
 copy_if_exists "${scenario_root}/cold-shutdown.json"
 copy_if_exists "${scenario_root}/warm-shutdown.json"
+copy_if_exists "${scenario_root}/worktree-shutdown.json"
 copy_if_exists "${scenario_root}/save-report.json"
 copy_if_exists "${scenario_root}/load-report.json"
-copy_if_exists "${scenario_root}/cache-warm/daemon-spawn.log"
-find "${scenario_root}/cache-warm/cache/soldr-daemon" -maxdepth 3 \
-    -printf '%y %p -> %l\n' >"${scenario_root}/warm-daemon-files.txt" 2>/dev/null || true
-copy_if_exists "${scenario_root}/warm-daemon-files.txt"
+# Retain daemon startup evidence from every cache root. Startup failures are
+# intermittent and may affect the cold, warm, A, or B side independently.
+while IFS= read -r -d '' daemon_log; do
+    relative="${daemon_log#"${scenario_root}/"}"
+    destination="/results/daemon-runtime/${relative}"
+    mkdir -p "$(dirname -- "${destination}")"
+    cp "${daemon_log}" "${destination}"
+done < <(find "${scenario_root}" -type f -name daemon-spawn.log -print0)
+find "${scenario_root}" -type d -path '*/cache/soldr-daemon' -print0 \
+    | while IFS= read -r -d '' daemon_dir; do
+        find "${daemon_dir}" -maxdepth 3 -printf '%y %p -> %l\n'
+    done >"${scenario_root}/daemon-files.txt" 2>/dev/null || true
+copy_if_exists "${scenario_root}/daemon-files.txt"
 copy_if_exists "${scenario_root}/cold-zccache-logs"
 copy_if_exists "${scenario_root}/warm-zccache-logs"
 copy_if_exists "${scenario_root}/rss-${SCENARIO}.csv"
+for evidence in "${scenario_root}"/soldr-aborts-*.jsonl; do
+    copy_if_exists "${evidence}"
+done
+for evidence in "${scenario_root}"/soldr-daemon-fallbacks-*.jsonl; do
+    copy_if_exists "${evidence}"
+done
 
 echo "DONE. Results in /results/:"
 ls -la /results/

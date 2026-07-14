@@ -2,8 +2,8 @@
 
 Scope: pure functions only (formatting helpers + result-summary rendering).
 Docker invocation, image build, and container run are NOT tested here —
-they'd require a working Docker daemon and would duplicate what the GHA
-perf cluster already covers end-to-end.
+they'd require a working Docker daemon and would duplicate what the local
+Docker matrix already covers end-to-end.
 """
 
 from __future__ import annotations
@@ -27,17 +27,14 @@ def _load_perf_local():
 perf_local = _load_perf_local()
 
 
-def test_pin_soldr_zccache_source_initializes_and_pins_current_checkout(
-    tmp_path, monkeypatch
-):
+def test_pin_soldr_zccache_source_initializes_and_pins_current_checkout(tmp_path, monkeypatch):
     soldr_src = tmp_path / "soldr-src"
     commands = []
 
     monkeypatch.setattr(
         perf_local,
         "run",
-        lambda command, **_kwargs: commands.append(command)
-        or subprocess.CompletedProcess(command, 0),
+        lambda command, **_kwargs: commands.append(command) or subprocess.CompletedProcess(command, 0),
     )
     monkeypatch.setattr(perf_local, "git_head", lambda _repo: "abc123")
     monkeypatch.setattr(perf_local, "git_is_dirty", lambda _repo: False)
@@ -85,6 +82,98 @@ def test_pin_soldr_zccache_source_rejects_dirty_checkout(tmp_path, monkeypatch):
         assert "commit or stash" in str(error)
     else:
         raise AssertionError("dirty zccache source must not be silently ignored")
+
+
+def test_ensure_soldr_source_refreshes_requested_ref(tmp_path, monkeypatch):
+    scratch = tmp_path / "perf-local"
+    soldr_src = scratch / "soldr-src"
+    (soldr_src / ".git").mkdir(parents=True)
+    commands = []
+    monkeypatch.setattr(perf_local, "PERF_LOCAL", scratch)
+    monkeypatch.setattr(
+        perf_local,
+        "run",
+        lambda command, **_kwargs: commands.append(command) or subprocess.CompletedProcess(command, 0),
+    )
+    monkeypatch.setattr(
+        perf_local.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, stdout="def456\n"),
+    )
+    pin_calls = []
+    monkeypatch.setattr(
+        perf_local,
+        "pin_soldr_zccache_source",
+        lambda src, **kwargs: pin_calls.append((src, kwargs)),
+    )
+    heads = iter(["abc123", "def456"])
+    monkeypatch.setattr(perf_local, "git_head", lambda _repo: next(heads))
+
+    assert perf_local.ensure_soldr_source("fix/1651-portable-zccache-identity") == soldr_src
+    assert commands == [
+        [
+            "git",
+            "-C",
+            str(soldr_src),
+            "fetch",
+            "--depth",
+            "1",
+            "origin",
+            "fix/1651-portable-zccache-identity",
+        ],
+        ["git", "-C", str(soldr_src), "reset", "--hard", "def456"],
+    ]
+    assert pin_calls == [(soldr_src, {"initialize_submodules": True})]
+
+
+def test_ensure_soldr_source_does_not_mutate_unchanged_checkout(tmp_path, monkeypatch):
+    scratch = tmp_path / "perf-local"
+    soldr_src = scratch / "soldr-src"
+    (soldr_src / ".git").mkdir(parents=True)
+    commands = []
+    monkeypatch.setattr(perf_local, "PERF_LOCAL", scratch)
+    monkeypatch.setattr(
+        perf_local,
+        "run",
+        lambda command, **_kwargs: commands.append(command) or subprocess.CompletedProcess(command, 0),
+    )
+    monkeypatch.setattr(
+        perf_local.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, stdout="abc123\n"),
+    )
+    pin_calls = []
+    monkeypatch.setattr(
+        perf_local,
+        "pin_soldr_zccache_source",
+        lambda src, **kwargs: pin_calls.append((src, kwargs)),
+    )
+    monkeypatch.setattr(perf_local, "git_head", lambda _repo: "abc123")
+
+    assert perf_local.ensure_soldr_source("main") == soldr_src
+    assert commands == [["git", "-C", str(soldr_src), "fetch", "--depth", "1", "origin", "main"]]
+    assert pin_calls == [(soldr_src, {"initialize_submodules": False})]
+
+
+def test_soldr_builder_skips_when_all_inputs_match_stamp(tmp_path, monkeypatch):
+    layout = {
+        "soldr_src": tmp_path / "soldr-src",
+        "bin_soldr": tmp_path / "bin-soldr",
+        "results": tmp_path / "results",
+    }
+    layout["bin_soldr"].mkdir()
+    (layout["bin_soldr"] / "soldr").touch()
+    identity = {
+        "schema_version": 1,
+        "soldr_sha": "soldr-sha",
+        "zccache_sha": "zccache-sha",
+        "builder_image_id": "sha256:image",
+    }
+    (layout["bin_soldr"] / "build-identity.json").write_text(json.dumps(identity))
+    monkeypatch.setattr(perf_local, "soldr_build_identity", lambda _layout: identity)
+    monkeypatch.setattr(perf_local, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("builder must be skipped")))
+
+    perf_local.run_soldr_builder(layout)
 
 
 # ── fmt_ms ───────────────────────────────────────────────────────────────────
@@ -200,7 +289,7 @@ def _write_scenario_results(
     results_dir = tmp_path / scenario
     results_dir.mkdir()
 
-    # Per-scenario key naming, matching perf-rust-cluster.yml's evaluate step.
+    # Per-scenario key naming used by the local evaluator.
     if scenario == "worktree-share":
         cold_key, warm_key = "a_ms", "b_ms"
     else:
@@ -216,14 +305,8 @@ def _write_scenario_results(
     (results_dir / "result.json").write_text(json.dumps(result))
 
     if cache_report is not None:
-        report_name = (
-            "b-cache-report.json"
-            if scenario == "worktree-share"
-            else "warm-cache-report.json"
-        )
-        (results_dir / report_name).write_text(
-            json.dumps({"last_session": cache_report})
-        )
+        report_name = "b-cache-report.json" if scenario == "worktree-share" else "warm-cache-report.json"
+        (results_dir / report_name).write_text(json.dumps({"last_session": cache_report}))
 
     return results_dir
 
@@ -360,6 +443,98 @@ def test_render_summary_bad_timing_fails(tmp_path, capsys):
     assert "bad timing" in out
 
 
+def _write_gated_results(tmp_path: Path, scenario: str = "cold-tar-untar-warm") -> Path:
+    staged = {
+        "timings_ns": {
+            "hashing": 1_000_000,
+            "publication": 2_000_000,
+            "miss_materialization": 3_000_000,
+        },
+        "counters": {
+            "publication_success": 4,
+            "publication_failure": 0,
+            "publication_conflict": 0,
+            "materialize_failure": 0,
+            "salvage_attempt": 0,
+            "materialize_reflink": 0,
+            "materialize_hardlink_shared": 4,
+            "materialize_copy": 1,
+        },
+        "bytes": {"materialization_copied": 1024},
+    }
+    results = _write_scenario_results(
+        tmp_path,
+        scenario,
+        cold_ms=60_000,
+        warm_ms=5_000,
+        cache_report={"phase_profile": {"staged": staged}},
+    )
+    result_path = results / "result.json"
+    result = json.loads(result_path.read_text())
+    result.update(
+        {
+            "infrastructure_valid": True,
+            "invalid_reasons": [],
+            "soldr_abort_count": 0,
+            "soldr_timeout_count": 0,
+            "soldr_no_cache_retry_count": 0,
+            "soldr_daemon_fallback_count": 0,
+            "soldr_abort_evidence": ["soldr-aborts-warm.jsonl"],
+            "soldr_daemon_fallback_evidence": ["soldr-daemon-fallbacks-warm.jsonl"],
+            "warm_misses": 0,
+        }
+    )
+    result_path.write_text(json.dumps(result))
+    (results / "soldr-aborts-warm.jsonl").touch()
+    (results / "soldr-daemon-fallbacks-warm.jsonl").touch()
+    (results / "cold-cache-report.json").write_text(json.dumps({"last_session": {"phase_profile": {"staged": staged}}}))
+    return results
+
+
+def test_rollout_evaluator_accepts_complete_local_cell(tmp_path):
+    results = _write_gated_results(tmp_path)
+
+    assert perf_local.evaluate_rollout_result(results, "cold-tar-untar-warm", "medium") == []
+
+
+def test_rollout_evaluator_rejects_missing_tier_and_staged_failure(tmp_path):
+    results = _write_gated_results(tmp_path)
+    report_path = results / "warm-cache-report.json"
+    report = json.loads(report_path.read_text())
+    counters = report["last_session"]["phase_profile"]["staged"]["counters"]
+    counters["materialize_hardlink_shared"] = 0
+    counters["materialize_copy"] = 0
+    counters["publication_failure"] = 1
+    report_path.write_text(json.dumps(report))
+
+    failures = perf_local.evaluate_rollout_result(results, "cold-tar-untar-warm", "medium")
+    assert any("critical_failures=1" in failure for failure in failures)
+    assert "warm build reported no materialization tier" in failures
+
+
+def test_rollout_evaluator_rejects_local_warm_ceiling(tmp_path):
+    results = _write_gated_results(tmp_path, "touch-no-change")
+    result_path = results / "result.json"
+    result = json.loads(result_path.read_text())
+    result["cold_ms"] = 120_000
+    result["warm_ms"] = 10_001
+    result_path.write_text(json.dumps(result))
+
+    failures = perf_local.evaluate_rollout_result(results, "touch-no-change", "medium")
+    assert "warm time 10001ms exceeds 10000ms" in failures
+
+
+def test_rollout_evaluator_rejects_restore_miss(tmp_path):
+    results = _write_gated_results(tmp_path, "restore-no-clean-warm")
+    result_path = results / "result.json"
+    result = json.loads(result_path.read_text())
+    result["warm_misses"] = 1
+    result_path.write_text(json.dumps(result))
+
+    failures = perf_local.evaluate_rollout_result(results, "restore-no-clean-warm", "sqlite-link")
+    assert "restore warm build had cache misses: 1" in failures
+
+
 # ── docker_available smoke check ─────────────────────────────────────────────
 #
 # `docker_available` has a 10s subprocess timeout on `docker info`, so even
@@ -456,11 +631,7 @@ def test_render_summary_includes_phase_breakdown(tmp_path, capsys):
     # Sort order: the first phase-table row after the header must be the
     # largest total (compiler_exec at 900ms beats write_output at 312ms).
     breakdown = out.split("Phase breakdown", 1)[1]
-    first_data_row = next(
-        line
-        for line in breakdown.splitlines()
-        if line.startswith("| ") and "Phase" not in line and "---" not in line
-    )
+    first_data_row = next(line for line in breakdown.splitlines() if line.startswith("| ") and "Phase" not in line and "---" not in line)
     assert "compiler_exec" in first_data_row
 
 

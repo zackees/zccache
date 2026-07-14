@@ -32,6 +32,14 @@ are parsed and included in the complete cache-hit reverse map. Inferred
 outputs for staticlibs, bins, proc macros, objects, assembly, LLVM IR/bitcode,
 MIR, and dep-info use their actual rustc extensions.
 
+This default-on decision is final for the 1.13.x release line. The `off`,
+`rust`, `c-cpp`, `exec`, and `all` compatibility values remain accepted for that full
+release window; removal is not eligible before 1.14 and requires a separate
+deprecation decision. The default does not implicitly enable linker staging:
+linkers remain explicit `all` opt-ins, while exact generic execution accepts
+`exec` or `all`, because their
+side-effect inventories require the stricter contract described below.
+
 Pure archive invocations with one output and no linker side effects use the
 same private transaction by default.
 

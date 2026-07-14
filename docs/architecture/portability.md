@@ -16,6 +16,19 @@ Cross-platform differences and planned extension points.
 | Lock file PID check | `kill(pid, 0)` | `kill(pid, 0)` | `OpenProcess(SYNCHRONIZE, pid)` |
 | Cache root | `~/.zccache` | `~/.zccache` | `~/.zccache` |
 | Daemon spawn | `fork` + `setsid` + `exec` | `fork` + `setsid` + `exec` | `CreateProcessW` (detached) |
+| Staged delivery | reflink/hardlink/copy by volume capability | clonefile/reflink or copy by volume capability | ReFS block clone, registered NTFS hardlink, or copy |
+
+The immutable staged-output transaction is platform independent: every
+platform publishes a complete digest-stamped generation before requested-path
+delivery. Only the final materialization tier differs. Session
+`phase_profile.staged` reports the actual reflink, hardlink-shared, or copy
+tier and copied bytes, so the cross-platform perf gate does not infer behavior
+from the operating-system label.
+
+`ZCCACHE_STAGED_ARTIFACTS=off` and the `rust`, `c-cpp`, `exec`, and `all` diagnostic
+values are portable and retained through 1.13.x. The kill switch leaves legacy
+v1/pack reads available on Linux, macOS, and Windows; v2-only entries become
+misses rather than being reinterpreted.
 
 ## Path Handling
 

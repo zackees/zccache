@@ -1,14 +1,14 @@
 # Local Perf Harness Docker Images
 
-Three Docker images that together let you reproduce the `perf-rust-cluster.yml`
-GHA scenarios on the host machine without burning a GHA cycle. Orchestrated by
+Three Docker images that run the authoritative Linux performance scenarios on
+the host machine without using hosted runners. Orchestrated by
 [`../perf_local.py`](../perf_local.py).
 
 ## Why three images instead of one big multi-stage build
 
 A single multi-stage `Dockerfile` would re-COPY the entire source tree on every
 iteration, busting Docker's layer cache the moment a single `.rs` file changed.
-That's the same wall-time as a GHA cycle, defeating the point.
+That would make every iteration pay a full cold build, defeating the point.
 
 By splitting into a **builder pair** (one per Rust project) plus a separate
 **runner** image, sources are mounted as volumes — the cargo target/ dir lives
@@ -40,7 +40,7 @@ All volumes are managed by the orchestrator. The layout under `<repo>/.perf-loca
 ├── binaries/
 │   └── soldr/soldr             # static soldr binary with zccache embedded
 └── results/
-    └── <scenario>/             # result.json + cache reports per run
+    └── <fixture>/<scenario>/   # result.json + cache reports per run
 ```
 
 The `cargo-home/` volumes are required for fast incremental rebuilds: the
@@ -61,3 +61,14 @@ rebuild (e.g. after pinning a new toolchain), pass `--rebuild-images` to
 
 Source changes do NOT trigger image rebuilds — they trigger a cargo recompile
 inside the running container, which reuses the persistent `target/` volume.
+
+For a cross-repository change that is not merged into soldr `main` yet, pass
+`--soldr-ref <branch-or-commit>`. The harness refreshes its shallow soldr clone
+to that ref and then pins the clone's vendored zccache back to the current
+zccache checkout, so the measured binary always contains the exact pair under
+test.
+
+The scenario container defaults to `--jobs 2`. This avoids exhausting the
+typical 8 GiB Docker Desktop VM during the medium fixture's cold build while
+keeping the same concurrency for both sides of every comparison. Increase it
+explicitly on larger Docker VMs.

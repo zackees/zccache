@@ -27,6 +27,7 @@ RSS_CSV="${WORKDIR}/rss-${SCENARIO}.csv"
 WORKTREE_B="${WORKDIR}/medium-worktree-b"
 
 mkdir -p "${CACHE}"
+measure::infrastructure_guard_init
 
 # soldr's path-remap (#352) requires a real `.git/` checkout — tarball
 # checkouts silently fall back to no remap. `git init` + one commit
@@ -47,29 +48,50 @@ trap 'measure::stop_rss_poller' EXIT
 # --- Build worktree A (cold, populates cache) -----------------------
 
 a_start_ms="$(measure::now_ms)"
-(
-    cd "${FIXTURE_DIR}"
-    SOLDR_CACHE_DIR="${CACHE}" soldr cargo build --release
-)
+pushd "${FIXTURE_DIR}" >/dev/null
+if SOLDR_CACHE_DIR="${CACHE}" measure::run_guarded_soldr_command \
+    "${CACHE}" "${WORKDIR}/soldr-aborts-a.jsonl" "worktree A build" \
+    soldr cargo build --release; then
+    :
+else
+    command_status=$?
+    measure::emit_infrastructure_failure_json "${SCENARIO}" "${command_status}" \
+        || echo "failed to emit infrastructure failure JSON" >&2
+    exit "${command_status}"
+fi
+popd >/dev/null
 a_elapsed_ms="$(measure::elapsed_ms "${a_start_ms}")"
 
 SOLDR_CACHE_DIR="${CACHE}" soldr cache flush --json >/dev/null 2>&1 || true
+SOLDR_CACHE_DIR="${CACHE}" soldr cache report --json \
+    > "${WORKDIR}/a-cache-report.json" 2>/dev/null || true
 
 cache_after_a_bytes="$(measure::cache_bytes "${CACHE}")"
 
 # --- Build worktree B (should hit because path-remap rewrites src paths) ---
 
 b_start_ms="$(measure::now_ms)"
-(
-    cd "${WORKTREE_B}"
-    SOLDR_CACHE_DIR="${CACHE}" soldr cargo build --release
-)
+pushd "${WORKTREE_B}" >/dev/null
+if SOLDR_CACHE_DIR="${CACHE}" measure::run_guarded_soldr_command \
+    "${CACHE}" "${WORKDIR}/soldr-aborts-b.jsonl" "worktree B build" \
+    soldr cargo build --release; then
+    :
+else
+    command_status=$?
+    measure::emit_infrastructure_failure_json "${SCENARIO}" "${command_status}" \
+        || echo "failed to emit infrastructure failure JSON" >&2
+    exit "${command_status}"
+fi
+popd >/dev/null
 b_elapsed_ms="$(measure::elapsed_ms "${b_start_ms}")"
 
 b_stats="$(SOLDR_CACHE_DIR="${CACHE}" measure::session_end_json)"
 b_hits="$(echo "${b_stats}" | jq -r '.stats.hits // 0')"
 b_misses="$(echo "${b_stats}" | jq -r '.stats.misses // 0')"
 b_hit_rate="$(echo "${b_stats}" | jq -r '.stats.hit_rate // 0')"
+
+SOLDR_CACHE_DIR="${CACHE}" soldr cache report --json \
+    > "${WORKDIR}/b-cache-report.json" 2>/dev/null || true
 
 SOLDR_CACHE_DIR="${CACHE}" soldr cache shutdown \
     --shutdown-timeout-seconds 30 --json >"${WORKDIR}/worktree-shutdown.json" || true
@@ -111,6 +133,15 @@ measure::emit_summary_json "${SCENARIO}" \
     "cache_after_b_bytes=${cache_after_b_bytes}" \
     "growth_ratio=${growth_ratio}" \
     "peak_daemon_rss_bytes=${peak_daemon_rss}" \
-    "peak_compile_rss_bytes=${peak_compile_rss}"
+    "peak_compile_rss_bytes=${peak_compile_rss}" \
+    "infrastructure_valid=${_MEASURE_INFRASTRUCTURE_VALID}" \
+    "invalid_reasons=json:${_MEASURE_INVALID_REASONS_JSON}" \
+    "soldr_abort_count=${_MEASURE_SOLDR_ABORT_COUNT}" \
+    "soldr_timeout_count=${_MEASURE_SOLDR_TIMEOUT_COUNT}" \
+    "soldr_no_cache_retry_count=${_MEASURE_SOLDR_NO_CACHE_RETRY_COUNT}" \
+    "soldr_daemon_fallback_count=${_MEASURE_SOLDR_DAEMON_FALLBACK_COUNT}" \
+    "soldr_abort_evidence=json:${_MEASURE_ABORT_EVIDENCE_JSON}" \
+    "soldr_daemon_fallback_evidence=json:${_MEASURE_DAEMON_FALLBACK_EVIDENCE_JSON}"
 
 measure::append_summary_md "| ${SCENARIO} | ${a_elapsed_ms} ms | ${b_elapsed_ms} ms | ${speedup}x | ${b_hits}/${b_misses} | ${b_hit_rate} | $(( peak_daemon_rss / 1024 / 1024 )) MiB |"
+measure::fail_if_infrastructure_invalid

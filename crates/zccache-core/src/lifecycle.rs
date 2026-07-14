@@ -487,12 +487,22 @@ mod tests {
         let _env = EnvGuard::set_cache_dir_and_namespace(tmp.path(), "soldr-dev");
 
         assert_eq!(live_log_filename(), "daemon-lifecycle-soldr-dev.log");
-        // Issue #761 / #762 Phase 0: cache state lives under
-        // `<root>/v<VERSION>/logs/...`, not `<root>/logs/...`.
+        // Issue #761 / #762 Phase 0 versions cache state, and #1098 isolates
+        // mutable state for an explicit namespace below `daemon-state/`. Use
+        // the pure resolver seam so a host-provided ZCCACHE_DAEMON_STATE_DIR
+        // cannot make this process-global env test race unrelated config tests.
+        let versioned_root =
+            crate::NormalizedPath::from(tmp.path().join(crate::config::versioned_subdir()));
+        let state_dir = crate::config::daemon_state_dir_from_cache_dir_with_namespace(
+            &versioned_root,
+            Some("soldr-dev".to_string()),
+        );
         assert_eq!(
-            log_file_path(),
+            log_file_path_in(&state_dir.join("logs")),
             tmp.path()
                 .join(crate::config::versioned_subdir())
+                .join("daemon-state")
+                .join("soldr-dev")
                 .join("logs")
                 .join("daemon-lifecycle-soldr-dev.log")
         );

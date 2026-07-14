@@ -125,6 +125,15 @@ fn rust_plan_cli_parses_validate_restore_save() {
 
 #[test]
 fn rust_plan_session_stats_json_separates_compile_cache_stats() {
+    let mut phase_profile = crate::protocol::PhaseProfileSummary::default();
+    phase_profile
+        .staged
+        .counters
+        .insert("materialize_reflink".into(), 7);
+    phase_profile
+        .staged
+        .bytes
+        .insert("materialization_copied".into(), 0);
     let stats = crate::protocol::SessionStats {
         duration_ms: 1000,
         compilations: 10,
@@ -143,7 +152,7 @@ fn rust_plan_session_stats_json_separates_compile_cache_stats() {
             depgraph_cold_skip: 3,
             depgraph_other_miss: [("headers_changed".to_string(), 1)].into_iter().collect(),
         },
-        phase_profile: None,
+        phase_profile: Some(phase_profile),
     };
     let json = session_stats_json("session-123", &stats);
     assert_eq!(json["status"], "ok");
@@ -158,6 +167,14 @@ fn rust_plan_session_stats_json_separates_compile_cache_stats() {
     assert_eq!(
         json["lookup_outcomes"]["depgraph_other_miss"]["headers_changed"],
         1
+    );
+    assert_eq!(
+        json["phase_profile"]["staged"]["counters"]["materialize_reflink"],
+        7
+    );
+    assert_eq!(
+        json["phase_profile"]["staged"]["bytes"]["materialization_copied"],
+        0
     );
 }
 
