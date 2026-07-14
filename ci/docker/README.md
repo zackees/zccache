@@ -67,3 +67,8 @@ For a cross-repository change that is not merged into soldr `main` yet, pass
 to that ref and then pins the clone's vendored zccache back to the current
 zccache checkout, so the measured binary always contains the exact pair under
 test.
+
+The scenario container defaults to `--jobs 2`. This avoids exhausting the
+typical 8 GiB Docker Desktop VM during the medium fixture's cold build while
+keeping the same concurrency for both sides of every comparison. Increase it
+explicitly on larger Docker VMs.

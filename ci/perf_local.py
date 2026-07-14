@@ -36,6 +36,7 @@ Usage::
     uv run --no-project python ci/perf_local.py --scenario worktree-share
     uv run --no-project python ci/perf_local.py --scenario cold-tar-untar-warm --fixture sqlite-link
     uv run --no-project python ci/perf_local.py --soldr-ref fix/1651-portable-zccache-identity
+    uv run --no-project python ci/perf_local.py --jobs 2           # fit an 8 GiB Docker VM
     uv run --no-project python ci/perf_local.py --rebuild-images   # force docker build of all 3 images
 
     # Ad-hoc cargo in the same warmed target/ volume — much faster than
@@ -334,7 +335,9 @@ def run_soldr_builder(layout: dict[str, Path]) -> None:
     )
 
 
-def run_scenario(layout: dict[str, Path], scenario: str, fixture: str) -> Path:
+def run_scenario(
+    layout: dict[str, Path], scenario: str, fixture: str, jobs: int
+) -> Path:
     """Run the per-scenario container. Returns the results dir for this run."""
     results_dir = layout["results"] / scenario
     # Wipe last run's results so partial output from a crashing run doesn't
@@ -358,7 +361,12 @@ def run_scenario(layout: dict[str, Path], scenario: str, fixture: str) -> Path:
     pass_through_env = [
         (k, v) for k, v in os.environ.items() if k.startswith("ZCCACHE_")
     ]
-    env_flags: list[str] = []
+    # Docker Desktop commonly has an 8 GiB VM even when the Windows host has
+    # substantially more RAM. An unconstrained medium-fixture build can run
+    # enough rustc processes to exhaust that VM and surface os error 12 through
+    # soldr. Keep local measurements reproducible and within the selected
+    # budget; callers with a larger VM can raise --jobs explicitly.
+    env_flags: list[str] = ["-e", f"CARGO_BUILD_JOBS={jobs}"]
     for k, v in pass_through_env:
         env_flags.extend(["-e", f"{k}={v}"])
     run(
@@ -844,7 +852,16 @@ def main() -> int:
             f"zccache checkout (default: {SOLDR_REF})."
         ),
     )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=2,
+        help="Maximum parallel Cargo jobs inside the scenario container (default: 2).",
+    )
     args = parser.parse_args()
+
+    if args.jobs < 1:
+        parser.error("--jobs must be at least 1")
 
     if not docker_available():
         print(
@@ -864,7 +881,7 @@ def main() -> int:
     ensure_soldr_source(args.soldr_ref)
     run_soldr_builder(layout)
 
-    results_dir = run_scenario(layout, args.scenario, args.fixture)
+    results_dir = run_scenario(layout, args.scenario, args.fixture, args.jobs)
     return render_summary(results_dir, args.scenario, args.fixture)
 
 
