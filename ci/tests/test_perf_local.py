@@ -183,6 +183,16 @@ def test_fmt_ms_minutes_seconds():
     assert perf_local.fmt_ms(120_000) == "2m00s"
 
 
+def test_threshold_manifest_is_authoritative_for_evaluation_and_rendering():
+    assert perf_local.PERF_THRESHOLDS_PATH.is_file()
+    assert perf_local.LOCAL_MIN_SPEEDUP == perf_local.PERF_THRESHOLDS["minimum_speedup"]
+    assert perf_local.LOCAL_MAX_WARM_MS == perf_local.PERF_THRESHOLDS["maximum_warm_ms"]
+    assert (
+        perf_local.LOCAL_MAX_STAGED_OVERHEAD_MS
+        == perf_local.PERF_THRESHOLDS["maximum_staged_overhead_ms"]
+    )
+
+
 def test_fmt_ms_seconds_with_fraction():
     # >= 1000 ms shows seconds with two decimals
     assert perf_local.fmt_ms(1_500) == "1.50s"

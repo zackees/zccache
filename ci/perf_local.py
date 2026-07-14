@@ -75,6 +75,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCKER_DIR = REPO_ROOT / "ci" / "docker"
 PERF_LOCAL = REPO_ROOT / ".perf-local"
+PERF_THRESHOLDS_PATH = REPO_ROOT / "ci" / "perf_thresholds.json"
 
 SOLDR_REPO = "https://github.com/zackees/soldr.git"
 SOLDR_REF = "main"
@@ -125,19 +126,26 @@ ROLLOUT_SCENARIOS = (
 DEFAULT_SCENARIO = "cold-tar-untar-warm"
 DEFAULT_FIXTURE = "medium"
 
-# Local Docker Desktop measurements are intentionally separate from hosted
-# runner budgets. The 8 GiB VM runs with CARGO_BUILD_JOBS=2; these ceilings
-# leave roughly 2x headroom over the accepted #1084 matrix while preserving a
-# meaningful user-visible floor.
-LOCAL_MIN_SPEEDUP = 4.5
-LOCAL_MAX_WARM_MS = {
-    "cold-tar-untar-warm": None,
-    "restore-no-clean-warm": 10_000,
-    "worktree-share": 15_000,
-    "touch-no-change": 10_000,
-}
-LOCAL_MAX_STAGED_OVERHEAD_MS = 15_000
-LOCAL_MAX_MATERIALIZATION_COPIED_BYTES = 2 * (1 << 30)
+def load_perf_thresholds() -> dict:
+    """Load and validate the single source of truth for local timing gates."""
+    thresholds = json.loads(PERF_THRESHOLDS_PATH.read_text(encoding="utf-8"))
+    if thresholds.get("schema_version") != 1:
+        raise ValueError("unsupported perf threshold manifest schema")
+    warm_limits = thresholds.get("maximum_warm_ms")
+    if not isinstance(warm_limits, dict) or set(warm_limits) != set(ROLLOUT_SCENARIOS):
+        raise ValueError("threshold manifest must define every rollout scenario")
+    if not isinstance(thresholds.get("minimum_speedup"), (int, float)):
+        raise ValueError("threshold manifest minimum_speedup must be numeric")
+    return thresholds
+
+
+PERF_THRESHOLDS = load_perf_thresholds()
+LOCAL_MIN_SPEEDUP = float(PERF_THRESHOLDS["minimum_speedup"])
+LOCAL_MAX_WARM_MS = PERF_THRESHOLDS["maximum_warm_ms"]
+LOCAL_MAX_STAGED_OVERHEAD_MS = int(PERF_THRESHOLDS["maximum_staged_overhead_ms"])
+LOCAL_MAX_MATERIALIZATION_COPIED_BYTES = int(
+    PERF_THRESHOLDS["maximum_materialization_copied_bytes"]
+)
 
 
 # ---------------------------------------------------------------------------
@@ -730,7 +738,7 @@ def render_summary(results_dir: Path, scenario: str, fixture: str) -> int:
     daemon_rss = result.get("peak_daemon_rss_bytes")
     compile_rss = result.get("peak_compile_rss_bytes")
 
-    threshold = 4.5
+    threshold = LOCAL_MIN_SPEEDUP
     verdict = "PASS" if speedup >= threshold else "FAIL"
 
     print()
