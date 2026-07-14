@@ -727,6 +727,41 @@ pub(crate) async fn tokio_command_output_with_priority_stdin(
     }
 }
 
+/// Run a leaf tool without the orphan-pipe watchdog used for compilers.
+/// Pure archivers do not spawn descendants, so Tokio can reap them directly.
+pub(crate) async fn tokio_leaf_command_output_with_priority(
+    cmd: &mut tokio::process::Command,
+    priority: CompilePriority,
+) -> io::Result<Output> {
+    use std::process::Stdio;
+
+    let (decision, _ticket) = priority.resolve_and_track();
+    let priority = decision.effective;
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd.kill_on_drop(true);
+
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(child_creation_flags(priority));
+    }
+
+    let child = cmd.spawn()?;
+    #[cfg(windows)]
+    {
+        if let Some(handle) = child.raw_handle() {
+            assign_child_to_daemon_job(handle);
+            apply_priority_to_child_windows(handle, priority);
+        }
+    }
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        apply_priority_to_child_unix(pid, priority);
+    }
+    child.wait_with_output().await
+}
+
 #[cfg(windows)]
 fn assign_child_to_daemon_job(raw_handle: std::os::windows::io::RawHandle) {
     let Some(job) = DAEMON_JOB.get_or_init(WindowsJob::new).as_ref() else {

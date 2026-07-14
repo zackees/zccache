@@ -2,6 +2,42 @@
 
 use super::*;
 
+#[cfg(unix)]
+#[tokio::test]
+async fn archive_fast_path_preserves_client_env_and_lineage() {
+    let temp = tempfile::tempdir().unwrap();
+    let lineage = crate::daemon::lineage::Lineage::current(Some(4242), None);
+    let env = vec![
+        ("PATH".to_string(), std::env::var("PATH").unwrap()),
+        (
+            "ARCHIVE_FAST_PATH_SENTINEL".to_string(),
+            "present".to_string(),
+        ),
+        ("MAKEFLAGS".to_string(), "--jobserver-auth=3,4".to_string()),
+    ];
+    let args = vec![
+        "-c".to_string(),
+        "printf '%s|%s|%s' \"$ARCHIVE_FAST_PATH_SENTINEL\" \"$ZCCACHE_CLIENT_PID\" \"${MAKEFLAGS-unset}\"".to_string(),
+    ];
+
+    let response =
+        run_archive_tool_passthrough(Path::new("sh"), &args, temp.path(), Some(env), &lineage)
+            .await;
+
+    match response {
+        Response::LinkResult {
+            exit_code,
+            stdout,
+            stderr,
+            ..
+        } => {
+            assert_eq!(exit_code, 0, "{}", String::from_utf8_lossy(&stderr));
+            assert_eq!(&*stdout, b"present|4242|unset");
+        }
+        other => panic!("expected LinkResult, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn failed_link_publication_salvages_output_without_becoming_cacheable() {
     let temp = tempfile::tempdir().unwrap();

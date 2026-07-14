@@ -248,6 +248,7 @@ pub(in crate::daemon::server) struct LinkMissProfile<'a> {
     pub(in crate::daemon::server) input_count: usize,
     pub(in crate::daemon::server) total_ns: u64,
     pub(in crate::daemon::server) parse_args_ns: u64,
+    pub(in crate::daemon::server) hash_wall_ns: u64,
     pub(in crate::daemon::server) tool_hash_ns: u64,
     pub(in crate::daemon::server) input_hash_ns: u64,
     pub(in crate::daemon::server) cache_lookup_ns: u64,
@@ -262,6 +263,7 @@ pub(in crate::daemon::server) fn emit_link_miss_profile(profile: LinkMissProfile
         input_count,
         total_ns,
         parse_args_ns,
+        hash_wall_ns,
         tool_hash_ns,
         input_hash_ns,
         cache_lookup_ns,
@@ -271,8 +273,7 @@ pub(in crate::daemon::server) fn emit_link_miss_profile(profile: LinkMissProfile
     } = profile;
 
     let accounted_ns = parse_args_ns
-        .saturating_add(tool_hash_ns)
-        .saturating_add(input_hash_ns)
+        .saturating_add(hash_wall_ns)
         .saturating_add(cache_lookup_ns)
         .saturating_add(compiler_process_ns)
         .saturating_add(output_read_ns)
@@ -283,7 +284,7 @@ pub(in crate::daemon::server) fn emit_link_miss_profile(profile: LinkMissProfile
         concat!(
             "zccache_link_miss_profile ",
             "family={} input_count={} total_ns={} parse_args_ns={} ",
-            "tool_hash_ns={} input_hash_ns={} cache_lookup_ns={} ",
+            "hash_wall_ns={} tool_hash_ns={} input_hash_ns={} cache_lookup_ns={} ",
             "compiler_process_ns={} output_read_ns={} ",
             "artifact_store_ns={} unaccounted_ns={}",
         ),
@@ -291,6 +292,7 @@ pub(in crate::daemon::server) fn emit_link_miss_profile(profile: LinkMissProfile
         input_count,
         total_ns,
         parse_args_ns,
+        hash_wall_ns,
         tool_hash_ns,
         input_hash_ns,
         cache_lookup_ns,

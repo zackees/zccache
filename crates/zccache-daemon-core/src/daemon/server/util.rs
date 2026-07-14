@@ -70,6 +70,17 @@ pub(super) fn hash_file_via_cache(state: &SharedState, path: &Path) -> Option<Co
     crate::hash::hash_file(path).ok()
 }
 
+/// Hash a normalized path without repeating path normalization in the cache.
+pub(super) fn hash_normalized_file_via_cache(
+    state: &SharedState,
+    path: &NormalizedPath,
+) -> Option<ContentHash> {
+    if let Ok(hash) = state.cache_system.metadata().lookup_normalized(path) {
+        return Some(hash);
+    }
+    crate::hash::hash_file(path).ok()
+}
+
 /// Hash a file using the CacheSystem's metadata cache.
 ///
 /// This stat-verifies the file, hashes if needed (with TOCTOU protection),

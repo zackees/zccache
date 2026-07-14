@@ -125,11 +125,16 @@ pub fn hash_reader<R: Read>(mut reader: R) -> std::io::Result<ContentHash> {
 /// larger than the work below this point. Issue #556.
 const RAYON_HASH_THRESHOLD_BYTES: u64 = 128 * 1024;
 
-/// Hash the contents of a file using memory mapping.
+/// Mapping tiny files costs more than copying them into Blake3's working
+/// buffer. Archive and linker requests commonly hash dozens of small object
+/// files, so keep those reads on the already-open file handle.
+const MMAP_HASH_THRESHOLD_BYTES: u64 = 64 * 1024;
+
+/// Hash the contents of a file.
 ///
-/// Uses `memmap2` for zero-copy file access. The OS page cache ensures
-/// files recently read (e.g., during compilation) are hashed from memory,
-/// not disk. Falls back to buffered reading for empty files.
+/// Small files use buffered reads to avoid mmap setup overhead. Larger files
+/// use `memmap2` for zero-copy access; the OS page cache ensures files recently
+/// read (e.g., during compilation) are hashed from memory, not disk.
 ///
 /// Files at or above 128 KB use blake3's rayon-parallel hashing path
 /// (issue #556) — the cold compiler-binary hash (clang++ ~80-120 MB on
@@ -143,20 +148,35 @@ const RAYON_HASH_THRESHOLD_BYTES: u64 = 128 * 1024;
 /// # Safety
 ///
 /// Memory mapping is technically unsafe if another process modifies the file
-/// concurrently. The TOCTOU check in `MetadataCache::hash_and_insert` detects
-/// this by comparing stat before and after hashing.
+/// concurrently. Callers must prevent concurrent writes or compare metadata
+/// before and after hashing, as the metadata cache does.
 pub fn hash_file(path: &Path) -> std::io::Result<ContentHash> {
     let file = std::fs::File::open(path)?;
     let meta = file.metadata()?;
+    hash_open_file(&file, meta.len())
+}
 
-    if meta.len() == 0 {
+/// Hash an already-open file whose length was captured from that handle.
+///
+/// This lets callers that also need filesystem metadata avoid reopening and
+/// restating the file. The handle must be positioned at byte zero.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read or mapped.
+pub fn hash_open_file(file: &std::fs::File, len: u64) -> std::io::Result<ContentHash> {
+    if len == 0 {
         return Ok(hash_bytes(b""));
     }
 
-    // SAFETY: The caller (MetadataCache::hash_and_insert) stats before and
-    // after hashing to detect concurrent modification.
-    let mmap = unsafe { memmap2::Mmap::map(&file)? };
-    if meta.len() >= RAYON_HASH_THRESHOLD_BYTES {
+    if len < MMAP_HASH_THRESHOLD_BYTES {
+        return hash_reader(file);
+    }
+
+    // SAFETY: Mapping may observe concurrent modifications. Callers that need
+    // change detection must compare file metadata before and after hashing.
+    let mmap = unsafe { memmap2::Mmap::map(file)? };
+    if len >= RAYON_HASH_THRESHOLD_BYTES {
         // Issue #556: blake3's rayon-parallel path. ~4x speedup on a
         // 4-core CI runner for a 100 MB clang++ binary (cold compiler
         // hash, first-after-daemon-start cc/cpp link overhead).
