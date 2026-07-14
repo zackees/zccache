@@ -82,13 +82,13 @@ measure::stop_rss_poller() {
 
 # measure::peak_daemon_rss_bytes <csv-path>
 #
-# Prints the largest zccache-daemon RSS observed in the CSV (in
-# bytes). Prints `0` if no daemon rows are present.
+# Prints the largest embedded soldr or standalone zccache-daemon RSS observed
+# in the CSV (in bytes). Prints `0` if no daemon rows are present.
 measure::peak_daemon_rss_bytes() {
     local csv="$1"
     awk -F, '
         NR == 1 { next }
-        $5 == "zccache-daemon" || $5 == "zccache" {
+        $5 == "soldr" || $5 == "zccache-daemon" || $5 == "zccache" {
             kb = $3 + 0
             if (kb > peak) peak = kb
         }

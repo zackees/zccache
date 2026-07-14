@@ -160,6 +160,7 @@ def test_perf_cluster_fails_closed_on_soldr_abort_contamination() -> None:
     common = COMMON_SH.read_text(encoding="utf-8")
     assert "measure::run_guarded_soldr_command()" in common
     assert "cargo-aborts.jsonl" in common
+    assert '$5 == "soldr" || $5 == "zccache-daemon"' in common
 
     for scenario in ROLLOUT_SCENARIOS:
         script = scenario.read_text(encoding="utf-8")
