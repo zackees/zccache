@@ -125,7 +125,7 @@ def _benchmark_commands(
     if test_name is not None:
         return [benchmark_stats.benchmark_command_for_test(test_name)]
     if language is None:
-        return [benchmark_stats.BENCHMARK_COMMAND]
+        return benchmark_stats.benchmark_commands_for_all()
     return benchmark_stats.benchmark_commands_for_language(language)
 
 

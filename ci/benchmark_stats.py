@@ -85,15 +85,6 @@ BENCHMARK_TESTS_BY_LANGUAGE = {
         "perf_rust_workspace_link",
     ),
 }
-BENCHMARK_COMMAND = [
-    *BENCHMARK_BASE_COMMAND,
-    "--",
-    "--nocapture",
-    "--ignored",
-    "--test-threads=1",
-]
-
-
 TABLES = {
     "## C Benchmark:": {
         "id": "c-inline",
@@ -191,6 +182,15 @@ def benchmark_commands_for_language(language: str) -> list[list[str]]:
     return [benchmark_command_for_test(test_name) for test_name in test_names]
 
 
+def benchmark_commands_for_all() -> list[list[str]]:
+    """Return only the benchmark tests represented in the published report."""
+    return [
+        benchmark_command_for_test(test_name)
+        for language in LANGUAGES
+        for test_name in BENCHMARK_TESTS_BY_LANGUAGE[language]
+    ]
+
+
 def _utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
 
@@ -263,7 +263,9 @@ def collect_metadata() -> dict[str, Any]:
             "clang": _first_line(_run_quiet(["clang++", "--version"])),
             "sccache": _first_line(_run_quiet(["sccache", "--version"])),
         },
-        "benchmark_command": " ".join(BENCHMARK_COMMAND),
+        "benchmark_command": " ; ".join(
+            " ".join(command) for command in benchmark_commands_for_all()
+        ),
         "pages_url": os.environ.get("ZCCACHE_BENCHMARK_PAGES_URL", DEFAULT_PAGES_URL),
         "raw_image_base_url": raw_image_base_url,
         "raw_image_urls": {
@@ -300,26 +302,34 @@ def run_benchmarks(log_path: Path) -> str:
     env = benchmark_env(cache_dir)
 
     try:
-        result = subprocess.run(
-            BENCHMARK_COMMAND,
-            cwd=REPO_ROOT,
-            env=env,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
+        outputs: list[str] = []
+        returncode = 0
+        commands = benchmark_commands_for_all()
+        for command in commands:
+            result = subprocess.run(
+                command,
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+            outputs.append(result.stdout)
+            if result.returncode != 0:
+                returncode = result.returncode
+                break
     finally:
         shutil.rmtree(cache_dir, ignore_errors=True)
 
-    output = result.stdout
+    output = "".join(outputs)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text(output, encoding="utf-8")
     print(output, end="")
-    if result.returncode != 0:
-        raise SystemExit(result.returncode)
+    if returncode != 0:
+        raise SystemExit(returncode)
     return output
 
 
