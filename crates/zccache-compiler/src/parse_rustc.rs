@@ -39,8 +39,11 @@ fn rustc_proc_macro_filename(crate_name: &str, extra: &str) -> String {
 
 /// Host executable file-name pattern for `--crate-type bin`. Windows
 /// adds `.exe`; unix has no extension.
-fn rustc_bin_filename(crate_name: &str, extra: &str) -> String {
-    if cfg!(target_os = "windows") {
+fn rustc_bin_filename(crate_name: &str, extra: &str, target: Option<&str>) -> String {
+    let windows_target = target
+        .map(|triple| triple.split('-').any(|part| part == "windows"))
+        .unwrap_or(cfg!(target_os = "windows"));
+    if windows_target {
         format!("{crate_name}{extra}.exe")
     } else {
         format!("{crate_name}{extra}")
@@ -87,6 +90,7 @@ pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedI
     let mut out_dir: Option<String> = None;
     let mut crate_name: Option<String> = None;
     let mut extra_filename: Option<String> = None;
+    let mut target: Option<String> = None;
     let mut emit_types: Vec<String> = Vec::new();
     let mut explicit_link_output: Option<String> = None;
     let mut explicit_output: Option<String> = None;
@@ -171,6 +175,19 @@ pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedI
             }
         } else if let Some(val) = arg.strip_prefix("--out-dir=") {
             out_dir = Some(val.to_string());
+            i += 1;
+            continue;
+        }
+
+        // --target <triple> or --target=<triple>
+        if arg == "--target" {
+            if let Some(next) = args.get(i + 1) {
+                target = Some(next.clone());
+                i += 2;
+                continue;
+            }
+        } else if let Some(val) = arg.strip_prefix("--target=") {
+            target = Some(val.to_string());
             i += 1;
             continue;
         }
@@ -323,7 +340,7 @@ pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedI
         } else if is_proc_macro {
             rustc_proc_macro_filename(name, suffix)
         } else if is_bin {
-            rustc_bin_filename(name, suffix)
+            rustc_bin_filename(name, suffix, target.as_deref())
         } else if crate_types.iter().any(|t| t == "staticlib") {
             format!("lib{name}{suffix}.a")
         } else {
@@ -358,7 +375,7 @@ pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedI
         } else if is_proc_macro {
             rustc_proc_macro_filename(name, "")
         } else if is_bin {
-            rustc_bin_filename(name, "")
+            rustc_bin_filename(name, "", target.as_deref())
         } else if crate_types.iter().any(|t| t == "staticlib") {
             format!("lib{name}.a")
         } else {

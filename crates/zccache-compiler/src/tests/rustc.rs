@@ -124,6 +124,33 @@ fn rustc_bin_primary_output_uses_executable_extension() {
 }
 
 #[test]
+fn rustc_cross_windows_bin_uses_executable_extension() {
+    let result = parse_invocation(
+        "rustc",
+        &args(&[
+            "--target",
+            "x86_64-pc-windows-msvc",
+            "--crate-name",
+            "soldr",
+            "--crate-type",
+            "bin",
+            "--out-dir",
+            "/tmp/target/deps",
+            "/path/to/main.rs",
+        ]),
+    );
+    let cc = match result {
+        ParsedInvocation::Cacheable(c) => c,
+        other => panic!("expected cacheable, got: {other:?}"),
+    };
+    assert!(
+        cc.output_file.to_string_lossy().ends_with("soldr.exe"),
+        "cross-target Windows bins must use .exe: {}",
+        cc.output_file.to_string_lossy()
+    );
+}
+
+#[test]
 fn rustc_dylib_is_non_cacheable() {
     let result = parse_invocation("rustc", &args(&["--crate-type", "dylib", "src/lib.rs"]));
     assert!(matches!(result, ParsedInvocation::NonCacheable { .. }));
