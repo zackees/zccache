@@ -1,335 +1,163 @@
 # PERF.md — testing zccache performance
 
-zccache has one performance workflow today: **`.github/workflows/perf-rust-cluster.yml`** (the Rust perf cluster). It exercises zccache against Rust workloads by **building `soldr` and `zccache` from source on every run** (plain `cargo build --release` + `Swatinem/rust-cache` + `mold` linker — no soldr/zccache wrapping cargo, that would be circular), then wires them together via the new sticky `soldr update-zccache <dir>` API so the freshly-built zccache is the one under test. A future **`perf-cpp-cluster.yml`** will mirror this shape for C/C++ workloads (clang/gcc + zccache).
+zccache's scenario-level performance gate runs locally in Linux Docker through
+[`ci/perf_local.py`](ci/perf_local.py). GitHub Actions does not run the large
+wall-clock fixture matrix. Hosted runners remain responsible for deterministic
+unit/integration checks and platform filesystem correctness, while the local
+Docker gate supplies repeatable timing and retained evidence on known hardware.
 
-For the per-scenario design rationale (what each cell proves), see [`perf/README.md`](perf/README.md).
+For what each scenario proves, see [`perf/README.md`](perf/README.md).
 
-> **Embedded integration update:** soldr now embeds zccache. The cluster checks the zccache commit under test out inside soldr's vendored submodule before building soldr; the historical runtime pin command is no longer used.
+## Authoritative release gate
 
-## Setup
+Run the complete matrix from a clean committed checkout:
 
-No secrets required. Both repos are public; `actions/checkout` reads them with the default `GITHUB_TOKEN`.
+```powershell
+uv run --no-project ci/perf_local.py --matrix
+```
 
-If either source tree at `main` HEAD fails to build, the `build-binaries` job fails loudly with the cargo error message — that is the fail-loud signal that the upstream is broken.
+The matrix is Linux × two fixtures × four scenarios:
 
-### Why build from source instead of consuming pre-built artifacts?
-
-Two reasons:
-- **`soldr` and `zccache` are the binaries under test.** Building them with themselves (wrapping `cargo` with `soldr` or `zccache`) would either bootstrap them off prior cached versions of themselves, or measure the bootstrap rather than the cache. Plain `cargo build --release` sidesteps both pitfalls.
-- **`main` HEAD is the substance of the test.** Whatever soldr or zccache do today on `main` is what the perf cluster measures today. Artifact consumption would lag by however stale the upstream's most recent dispatched build happens to be (soldr's `release-auto.yml` only fires on releases; zccache's `build.yml` is `workflow_dispatch`-only).
-
-### What about speed?
-
-`Swatinem/rust-cache` caches cargo intermediates per-repo per-platform; warm rebuilds are typically a few minutes. `mold` linker is installed on Linux to shorten the final-link step. The first run on a new platform is slower because both caches are empty.
-
-## How it triggers
-
-The workflow fires on:
-
-1. **`workflow_dispatch`** — the "Run workflow" button in the Actions UI. Dispatch inputs are used verbatim and the branch name is ignored.
-2. **`push`** to `main`, `perf/**`, or `evaluate/**`. The branch name is parsed into an effective `(platforms, fixtures, scenarios)` scope (see below). The dispatch inputs are not consulted.
-3. **Manual `gh workflow run` CLI** — same as the dispatch button.
-
-The full matrix is always loaded; cells that fall outside the resolved scope
-skip themselves at the gate step. `main`, `perf/all`, and dispatch defaults run
-the sanctioned full matrix: Linux, Windows, and macOS ARM; `medium` and
-`sqlite-link`; and all four scenarios. Canonical `perf/<plat>-<fix>-<scen>`
-branches remain the iteration path for a narrower cell.
-
-## Branch-name convention
-
-Branch syntax: **`perf/<plat>-<fix>-<scen>`** with one short token per axis. `all` is the wildcard at any axis.
-
-### Token mapping
-
-| Axis | Branch token | Real value |
-|---|---|---|
-| Platform | `linux` | `linux` |
-| Platform | `win` | `win` |
-| Platform | `mac` | `mac-arm` |
-| Fixture | `medium` | `medium` |
-| Fixture | `sqlite` | `sqlite-link` |
-| Scenario | `cold` | `cold-tar-untar-warm` |
-| Scenario | `worktree` | `worktree-share` |
-| Scenario | `touch` | `touch-no-change` |
-| Scenario | `restore` | `restore-no-clean-warm` |
-| any axis | `all` | wildcard — run every value on this axis |
-
-The full scope table below is exhaustive for the original three scenarios; for the newer `restore` token, every pattern in the table has a parallel `…-restore` form (e.g. `perf/linux-medium-restore` runs the single cell linux × medium × restore-no-clean-warm).
-
-Short tokens keep the branch name unambiguous (the real names contain hyphens that would collide with the axis separator).
-
-### Full scope table
-
-48 hierarchical patterns plus two full aliases. Anything not in this table
-(e.g., a developer iteration branch like `perf/cluster-hierarchical-skip`)
-falls back to the full default scope and emits a `::notice::`.
-
-#### Aliases — full ride
-
-| Branch | Scope |
+| Fixture | Purpose |
 |---|---|
-| `main` | full sweep |
-| `perf/all` | same as `perf/all-all-all` |
+| `medium` | Representative Rust workspace |
+| `sqlite-link` | Mixed Rust/C compilation through bundled SQLite; this is compiler coverage, not a mutable-database test |
 
-#### Platform = `all` (12)
-
-| Branch | Scope |
+| Scenario | Contract |
 |---|---|
-| `perf/all-all-all` | full sweep |
-| `perf/all-all-cold` | every platform, every fixture, **cold** only |
-| `perf/all-all-worktree` | every platform, every fixture, **worktree-share** only |
-| `perf/all-all-touch` | every platform, every fixture, **touch-no-change** only |
-| `perf/all-medium-all` | every platform, **medium** fixture, every scenario |
-| `perf/all-medium-cold` | every platform, **medium**, cold only |
-| `perf/all-medium-worktree` | every platform, **medium**, worktree only |
-| `perf/all-medium-touch` | every platform, **medium**, touch only |
-| `perf/all-sqlite-all` | every platform, **sqlite-link**, every scenario |
-| `perf/all-sqlite-cold` | every platform, **sqlite-link**, cold only |
-| `perf/all-sqlite-worktree` | every platform, **sqlite-link**, worktree only |
-| `perf/all-sqlite-touch` | every platform, **sqlite-link**, touch only |
+| `cold-tar-untar-warm` | Archived cache restores into a useful warm cache without duplicating the cache tree |
+| `worktree-share` | Sibling worktrees reuse artifacts without unbounded cache growth |
+| `touch-no-change` | Metadata-only source changes do not destroy reuse |
+| `restore-no-clean-warm` | Restoring the cache without cleaning `target/` leaves the next build effectively warm and miss-free |
 
-#### Platform = `linux` (12)
+All eight cells must pass. Results and raw evidence are retained under:
 
-| Branch | Scope |
-|---|---|
-| `perf/linux-all-all` | **linux** only, every fixture × scenario |
-| `perf/linux-all-cold` | linux, every fixture, cold only |
-| `perf/linux-all-worktree` | linux, every fixture, worktree only |
-| `perf/linux-all-touch` | linux, every fixture, touch only |
-| `perf/linux-medium-all` | linux + medium, every scenario |
-| `perf/linux-medium-cold` | **single cell**: linux × medium × cold |
-| `perf/linux-medium-worktree` | **single cell**: linux × medium × worktree |
-| `perf/linux-medium-touch` | **single cell**: linux × medium × touch |
-| `perf/linux-sqlite-all` | linux + sqlite-link, every scenario |
-| `perf/linux-sqlite-cold` | **single cell**: linux × sqlite-link × cold |
-| `perf/linux-sqlite-worktree` | **single cell**: linux × sqlite-link × worktree |
-| `perf/linux-sqlite-touch` | **single cell**: linux × sqlite-link × touch |
+```text
+.perf-local/results/<fixture>/<scenario>/
+```
 
-#### Platform = `win` (12)
+Each directory contains `result.json`, cache reports, abort evidence,
+shutdown records, logs, and RSS samples. A later fixture or scenario cannot
+overwrite earlier evidence.
 
-| Branch | Scope |
-|---|---|
-| `perf/win-all-all` | **win** only, every fixture × scenario |
-| `perf/win-all-cold` | win, every fixture, cold only |
-| `perf/win-all-worktree` | win, every fixture, worktree only |
-| `perf/win-all-touch` | win, every fixture, touch only |
-| `perf/win-medium-all` | win + medium, every scenario |
-| `perf/win-medium-cold` | **single cell**: win × medium × cold |
-| `perf/win-medium-worktree` | **single cell**: win × medium × worktree |
-| `perf/win-medium-touch` | **single cell**: win × medium × touch |
-| `perf/win-sqlite-all` | win + sqlite-link, every scenario |
-| `perf/win-sqlite-cold` | **single cell**: win × sqlite-link × cold |
-| `perf/win-sqlite-worktree` | **single cell**: win × sqlite-link × worktree |
-| `perf/win-sqlite-touch` | **single cell**: win × sqlite-link × touch |
+## Why local Docker is the gate
 
-#### Platform = `mac` (mac-arm) (12)
+- The Docker VM and job limit are known. Hosted-runner contention does not
+  silently redefine the floor.
+- Named Linux volumes preserve compiler fingerprints and make warm rebuilds
+  fast even when Docker Desktop runs on Windows.
+- soldr and zccache are built from the exact requested source revisions, so an
+  unmerged cross-repository fix can be tested before either PR lands.
+- Long builds are allowed to finish. Progress diagnostics are emitted after
+  60-second intervals, but there is no five-minute wall-clock abort.
+- Every sample remains on disk for adversarial inspection instead of expiring
+  as an Actions artifact.
 
-| Branch | Scope |
-|---|---|
-| `perf/mac-all-all` | **mac-arm** only, every fixture × scenario |
-| `perf/mac-all-cold` | mac, every fixture, cold only |
-| `perf/mac-all-worktree` | mac, every fixture, worktree only |
-| `perf/mac-all-touch` | mac, every fixture, touch only |
-| `perf/mac-medium-all` | mac + medium, every scenario |
-| `perf/mac-medium-cold` | **single cell**: mac × medium × cold |
-| `perf/mac-medium-worktree` | **single cell**: mac × medium × worktree |
-| `perf/mac-medium-touch` | **single cell**: mac × medium × touch |
-| `perf/mac-sqlite-all` | mac + sqlite-link, every scenario |
-| `perf/mac-sqlite-cold` | **single cell**: mac × sqlite-link × cold |
-| `perf/mac-sqlite-worktree` | **single cell**: mac × sqlite-link × worktree |
-| `perf/mac-sqlite-touch` | **single cell**: mac × sqlite-link × touch |
-
-Linux runs on Ubuntu 24.04, Windows runs on Windows 2025, and `mac-arm` runs
-on the Apple Silicon `macos-14` image. Each platform builds its own soldr and
-zccache binaries before benchmarking.
-
-## Picking a branch for the work you're doing
-
-- **Iterating on cache hit-rate fixes that only affect sqlite builds** → `perf/linux-sqlite-cold` (fastest signal: one cell, the hard gate scenario).
-- **Tuning archive fidelity** → `perf/all-all-cold` (sweep cold-tar-untar-warm across everything; fixture variation matters).
-- **Worktree path-remap change** → `perf/linux-all-worktree` (every fixture on linux, worktree scenario only).
-- **Just experimenting / unsure** → use one canonical narrow branch first;
-  `perf/all` and `main` intentionally run the full release gate.
-- **Personal feature branch like `perf/wip/foo`** → falls through to the full
-  scope with a `::notice::`. Rename to a canonical pattern for a narrow loop.
+The first soldr build may take 5–15 minutes. Persistent Docker volumes make
+later source iterations much faster. The default `--jobs 2` fits an 8 GiB
+Docker Desktop VM; raise it only when the VM has enough memory.
 
 ## Gate semantics
 
-Every scenario gates on **`speedup >= min_speedup` AND (optionally) `warm_ms
-<= max_warm_ms_<scen>`** — both must hold for PASS. The warm-ms ceiling is
-opt-in per scenario; scenarios with no ceiling gate on speedup alone.
+Timing is evaluated only after infrastructure validity passes. Every result
+must declare typed values for:
 
-Every scenario is a hard gate. Platform timing budgets are deliberately
-separate because runner and filesystem costs differ:
+- `infrastructure_valid`
+- `invalid_reasons`
+- `soldr_abort_count`
+- `soldr_timeout_count`
+- `soldr_no_cache_retry_count`
+- `soldr_abort_evidence`
 
-| Platform | min speedup | restore max | worktree max | touch max | staged miss max |
-|---|---:|---:|---:|---:|---:|
-| Linux | `4.5x` | `1500ms` | `4000ms` | `2500ms` | `15000ms` |
-| macOS ARM | `3.0x` | `2500ms` | `6000ms` | `5000ms` | `25000ms` |
-| Windows | `1.3x` | `5000ms` | `30000ms` | `30000ms` | `40000ms` |
+Every declared evidence file must exist beside `result.json`. Any soldr abort,
+timeout, automatic no-cache retry, malformed record, missing field, or missing
+evidence file invalidates the sample before timing is considered.
 
-The Windows floor includes the `sqlite-link` fixture's bundled native C
-compile, which is outside rustc artifact reuse. Staged telemetry remains a
-hard gate, so a direct-fallback regression still fails even when wall-clock
-speedup exceeds `1.3x`. There is one narrowly scoped temporary exception for
-Windows `sqlite-link` × `worktree-share`: `1.25x` and `35000ms`, reflecting the
-clean sample from run 29226873285 (1.27x, 32.13 seconds). This does not weaken
-other Windows rows. It is an explicit exception to the normal distribution
-requirement below; issue #1093 tracks collecting that distribution and either
-tightening or removing the override.
+The local Linux thresholds are:
 
-Measured `soldr cargo` commands have no child wall-clock deadline: valid builds
-of large codebases may run for an hour or more. Instead, each command snapshots
-the scenario-local `logs/cargo-aborts.jsonl` offset and saves newly appended
-records as `soldr-aborts-*.jsonl`. Every result must include typed
-`infrastructure_valid`, `invalid_reasons`, `soldr_abort_count`,
-`soldr_timeout_count`, `soldr_no_cache_retry_count`, and
-`soldr_abort_evidence` fields. Evidence paths are artifact-relative basenames,
-and the evaluator requires every declared file to exist beside `result.json`.
-Any new abort, timeout, automatic no-cache retry, truncated or rewritten log,
-malformed record, missing field, or missing evidence file invalidates the
-sample before performance thresholds are evaluated. Old records before the
-captured offset are deliberately ignored.
+| Gate | Budget |
+|---|---:|
+| Minimum speedup, every cell | `4.5x` |
+| Restore warm time | `10,000ms` |
+| Worktree warm time | `15,000ms` |
+| Touch warm time | `10,000ms` |
+| Cold staged hash + publish + materialize overhead | `15,000ms` |
+| Warm bytes copied | `2 GiB` |
+| Salvage attempts / critical staged failures | `0` |
 
-The staged miss budget is the sum of hashing, publication, and requested-path
-materialization telemetry. Every cell also requires at least one cold staged
-publication, zero salvage and critical staged failures, and no more than 2 GiB
-of warm materialization copies. Cache-exercising warm scenarios must report an
-actual reflink, hardlink-shared, or copy tier. `restore-no-clean-warm` instead
-requires zero cache misses. Wrapper compilations that are served entirely as
-cache hits are allowed; a miss is the signal that Cargo rebuilt downstream
-state instead of accepting the restore as a no-op.
+`cold-tar-untar-warm` has no absolute warm-time ceiling; its speedup is the
+signal. The other ceilings include roughly 2× headroom over the accepted
+8 GiB, two-job Docker measurements from #1084.
 
-Why both gates instead of speedup-only: some scenarios have cold-side compile
-time that dominates the speedup ratio (e.g. `restore-no-clean-warm`: cargo
-populates `target/` from scratch on cold, so a real 20× warm regression — warm
-going from 75 ms back to 1500 ms — still reports a ~40x speedup and passes a
-speedup-only gate cleanly). The warm-ms ceiling catches user-visible regressions
-that hide behind a high ratio. Other scenarios (`cold-tar-untar-warm`) want
-speedup as the signal of cache contribution and don't currently set a warm-ms
-ceiling.
+Every cell must also report at least one successful cold staged publication.
+Warm cache scenarios must report a reflink, hardlink-shared, or copy
+materialization tier. `restore-no-clean-warm` instead requires exactly zero
+warm cache misses. Missing staged telemetry is a hard failure.
 
-Thresholds live on each `evaluate` matrix row (`min_speedup`,
-`max_warm_ms_<scen>`, `max_staged_overhead_ms`, and
-`max_materialization_copied_bytes`). Change them only with a linked sanctioned
-run showing the before/after distribution; ad-hoc local timings are diagnostic,
-not release-gate evidence.
+## Narrow diagnostic runs
 
-## Reading the run
+Run one cell while iterating:
 
-Every cell appends to `$GITHUB_STEP_SUMMARY`. From the run page:
-
-1. **Scope** table at the top (`setup` job) — confirms the resolved `(platforms, fixtures, scenarios)` and the source (`branch:<ref>`, `alias:main`, `dispatch`, `unknown-perf:<ref>`, etc.).
-2. **bench** cells emit a per-fixture table with `cold/A ms | warm/B ms | speedup | hits/misses | hit rate | peak daemon RSS`.
-3. **Evaluate** emits a per-platform table covering every fixture/scenario,
-   including cold/warm timing, staged miss overhead, materialization tier
-   counts, copied bytes, salvage count, cache counts, and RSS.
-4. Failed runs annotate the failing rows with `::error::` lines (visible in the "Annotations" sidebar).
-
-Raw `result.json`, `soldr-aborts-*.jsonl`, `*-shutdown.json`, and `rss-*.csv`
-are uploaded as `perf-results-<platform>-<fixture>` artifacts (14-day
-retention).
-
-## Iterating on a perf problem — local-first, GHA last
-
-When you find (or suspect) a perf regression, the bias is **reproduce and fix locally first**. GHA is the gate; the local loop is the iteration loop. One GHA cycle is 5–17 minutes; one local cycle is seconds to a couple of minutes. Burning GHA cycles on hypotheses you haven't tried locally is the slowest possible workflow.
-
-The flow:
-
-1. **Reproduce locally.** Pick the narrowest scenario that surfaces the problem and run it on the same fixture the GHA job hit. See [Local dry-runs](#local-dry-runs) below for the one-liner. Capture the JSON `{"scenario":...}` line — that's your baseline.
-2. **Form one hypothesis.** Don't change two things at once or you'll lose attribution.
-3. **Edit + re-run the local scenario.** Compare cold_ms, warm_ms, ratio (warm/cold), hits, misses against your baseline. Iterate locally until the JSON line says you fixed it.
-4. **Only now push.** Open a `perf/<plat>-<fix>-<scen>` branch matched to the narrowest cell that exercises your fix (see [Picking a branch](#picking-a-branch-for-the-work-youre-doing)). Watch the GHA run to confirm the local result reproduces on the cluster's hardware.
-5. **Iterate on GHA only when you must.** If the bug only reproduces under GHA's environment (older glibc, different filesystem, specific runner image), you've earned the right to push uncertain hypotheses. Note in the commit message that local repro failed and why — future-you will want that context.
-6. **Lock the fix in with a perf unit test.** See [Preventing regressions](#preventing-regressions--add-a-perf-unit-test). Without a test, the bug comes back the next time someone refactors the affected path.
-
-The cluster is the regression-blocking measurement, but it is a bad iteration loop. Use it accordingly.
-
-## Preventing regressions — add a perf unit test
-
-Every perf bug you fix should leave a test behind that fails when the regression returns. Tests are the spec: if the perf characteristic isn't tested, it doesn't exist. The perf cluster catches scenario-level cold/warm collapses, but a tight unit test pins down the specific function or path that was slow and makes the future fix obvious.
-
-Two venues, picked by what you're protecting:
-
-**1. Compile-time speed floors (C / C++ / Rust vs bare + vs sccache).** Extend [`crates/zccache-daemon/tests/perf_bench_test.rs`](crates/zccache-daemon/tests/perf_bench_test.rs) with a new `#[test] #[ignore]` benchmark, then add a threshold row in [`ci/perf_guard.py`](ci/perf_guard.py) so [`.github/workflows/perf-guard.yml`](.github/workflows/perf-guard.yml) gates on it on every push to main. The existing rows are your template (`perf_c_zccache_vs_bare`, `perf_warm_cache_zccache_vs_sccache`, etc.).
-
-**2. Function- or path-level budget assertions.** For a regression scoped to a single function (e.g. "session-end took 200 ms when it used to take 5 ms"), add a `#[test]` in the relevant crate that asserts a `Duration` budget:
-
-```rust
-#[test]
-fn session_end_under_50ms() {
-    let t = Instant::now();
-    daemon.session_end(session_id).unwrap();
-    let elapsed = t.elapsed();
-    assert!(elapsed < Duration::from_millis(50), "session_end took {:?}", elapsed);
-}
+```powershell
+uv run --no-project ci/perf_local.py
+uv run --no-project ci/perf_local.py --scenario worktree-share
+uv run --no-project ci/perf_local.py --fixture sqlite-link
+uv run --no-project ci/perf_local.py --scenario restore-no-clean-warm --fixture sqlite-link
 ```
 
-Pick the budget at ~3× the post-fix measurement so machine variance doesn't make the test flaky. Mark `#[ignore]` if the test is too slow for the normal suite — `./test --full` picks up ignored tests and CI runs that variant.
+Single-cell runs print a timing/report summary and are diagnostic. Before a
+performance PR merges, run `--matrix` so infrastructure and staged telemetry
+hard gates are applied to all eight cells.
 
-**Naming convention:** prefix the test with `perf_` so it's discoverable and so a future cleanup can grep them all. Reference the issue number in a comment (e.g. `// regression test for #320`) — future-you will want to find why the budget was picked.
+For a dependent soldr change that has not merged:
 
-**Avoid `criterion` / `divan`** for these tests. The point is a single hard assertion that flips a CI red, not a statistical comparison — those tools are for diagnosis (PERF.md → "Iterating on a perf problem"), not regression gates.
-
-## Local dry-runs
-
-### Recommended: Docker harness (`ci/perf_local.py`)
-
-Three-image Docker harness that reproduces one perf-cluster cell on the host
-machine without burning a GHA cycle:
-
-```bash
-uv run python ci/perf_local.py                      # cold-tar-untar-warm × medium (default)
-uv run python ci/perf_local.py --scenario worktree-share
-uv run python ci/perf_local.py --fixture sqlite-link
-uv run python ci/perf_local.py --rebuild-images     # force docker build of all 3 images
+```powershell
+uv run --no-project ci/perf_local.py --matrix --soldr-ref fix/example-branch
 ```
 
-Architecture:
+The harness checks out that soldr ref, moves soldr's embedded zccache submodule
+to the current committed zccache SHA, and builds the exact pair. A dirty
+zccache checkout is rejected so measured source cannot differ from the commit
+being reported.
 
-- **`zccache-perf-soldr-builder`** — rust:alpine + musl-dev. Builds the
-  static `soldr` binary at `.perf-local/binaries/soldr/soldr`.
-- **`zccache-perf-zccache-builder`** — rust:bookworm development image
-  retained for the local test, lint, formatting, and shell subcommands.
-- **`zccache-perf-runner`** — runs scenarios with soldr embedding this
-  checkout's committed zccache HEAD and writes reports under
-  `.perf-local/results/<scenario>/`.
+Use `--rebuild-images` after changing a Dockerfile. Build/test/lint helpers use
+the same warmed Linux volumes:
 
-Source code is **volume-mounted** into the builder containers, and
-`target/` lives in a persistent host-side volume — so cargo incremental
-recompiles only the crates that changed. First run is full (~5-8 min);
-subsequent runs after editing one crate finish in seconds. Image
-rebuilds are only needed when a `ci/docker/*.Dockerfile` changes
-(force with `--rebuild-images`).
-
-The orchestrator prints the same rich Evaluate-style summary table the
-GHA workflow emits, so a local result is directly comparable to a cluster
-result row-for-row.
-
-See [`ci/docker/README.md`](ci/docker/README.md) for the full mount layout.
-
-### Bare-bash dry-run (no Docker, Linux only)
-
-For when Docker isn't available and you're on a Linux host that already has
-the perf script's deps installed (bash, tar, zstd, jq, plus a soldr +
-zccache pair on PATH):
-
-```bash
-# Set up the fixture, then run one scenario (writes result.json to stdout)
-bash perf/lib/extract.sh medium /tmp/perf-medium && bash perf/scenarios/cold-tar-untar-warm/run.sh /tmp/perf-medium/medium
+```powershell
+uv run --no-project ci/perf_local.py fmt
+uv run --no-project ci/perf_local.py clippy --workspace --all-targets
+uv run --no-project ci/perf_local.py test
 ```
 
-Swap `medium` → `sqlite-link` for the other fixture, and `cold-tar-untar-warm`
-→ `worktree-share` / `touch-no-change` for the other two scenarios. The
-scripts are POSIX bash and do not require any GHA-only env vars;
-`measure::append_summary_md` is a no-op when `$GITHUB_STEP_SUMMARY` is unset.
+See [`ci/docker/README.md`](ci/docker/README.md) for image and volume layout.
 
-To diff between runs, re-pipe the result.json into a file and
-`jq -r 'to_entries | map("\(.key)=\(.value)") | join(" ")'` it — keys appear
-in a stable order, so visual diff works.
+## Cross-platform responsibility
 
-## Related
+Linux Docker is the sanctioned timing environment. Native Windows, macOS, and
+special filesystems still gate correctness through focused tests:
 
-- **Issue [#320](https://github.com/zackees/zccache/issues/320)** — the cold_skip regression that motivated this workflow.
-- **[soldr's PERF.md](https://github.com/zackees/soldr/blob/main/PERF.md)** — the upstream pattern this workflow is adapted from.
+- NTFS hardlinks must remain shared-inode only for allowlisted immutable
+  outputs, with mutation fail-closed behavior.
+- ReFS/btrfs/APFS reflinks must prove destination mutation cannot write through
+  to the object store.
+- Mutable and unknown outputs must use reflink or independent copy.
+- FAT/exFAT, cross-volume, unsupported, and failure cases must fall back safely.
+
+Do not infer platform performance from Linux timing, and do not weaken Linux
+budgets to accommodate a hosted runner. If dedicated stable hardware is later
+added for another platform, establish a separate local baseline and explicit
+budgets.
+
+## Regression tests
+
+Scenario timing catches broad failures. A performance bug should also leave a
+deterministic test at the narrowest useful layer:
+
+- Use the existing ignored benchmark tests plus `ci/perf_guard.py` for
+  compile-time comparisons that are stable enough for a cheap hosted check.
+- Use a focused duration/counter assertion for a specific function or path.
+- Prefer approximately 3× headroom over the post-fix local measurement.
+- Prefix performance tests with `perf_` and reference the motivating issue.
+
+Do not add a second ad-hoc benchmark framework. Extend this harness or the
+existing focused regression tests.

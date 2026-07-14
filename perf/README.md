@@ -1,117 +1,91 @@
-# soldr performance cluster
+# Local performance scenarios
 
-`workflow_dispatch`-triggered GitHub Actions workflow that measures
-soldr's cache hit rate, daemon memory, and on-disk footprint across a
-three-axis matrix:
+These fixtures and shell scenarios are driven by the authoritative Linux
+Docker harness in [`../ci/perf_local.py`](../ci/perf_local.py). Run the full
+release gate with:
 
-- **Platform** — which OS the worker runs on. v2 ships `linux`; `win`
-  and `mac-arm` / `mac-x86` slot in as matrix-row additions once the
-  RSS sidecar in `lib/common.sh` grows cross-platform branches.
-- **Fixture** — what is being cached. `medium` (pure-Rust dep graph)
-  and `sqlite-link` (Rust + a bundled C library) today.
-- **Scenario** — how the cache flows between invocations. Three
-  scenarios today, each pinning a single failure mode.
+```powershell
+uv run --no-project ci/perf_local.py --matrix
+```
 
-Dispatch inputs accept comma-separated subsets per axis (or `all`)
-so a one-cell debug run is a single picker tweak in the Actions UI.
+The harness builds soldr with the current committed zccache revision embedded,
+runs each fixture/scenario pair in an isolated container, applies hard timing,
+infrastructure, and staged-telemetry gates, and retains evidence under
+`.perf-local/results/<fixture>/<scenario>/`.
 
-## Why this exists
+## Fixtures
 
-A "single speed demo" tells you that soldr is slow, never *why*.  Each
-matrix cell in this cluster pins a single failure mode:
+- `medium`: representative pure-Rust dependency graph.
+- `sqlite-link`: Rust plus bundled `libsqlite3` through `cc-rs`. It validates
+  mixed compiler coverage; it is not a mutable SQLite database test.
 
-| Scenario              | What breaks when this cell turns red                |
-| --------------------- | --------------------------------------------------- |
-| `build-then-check`    | cross-verb build/check cache reuse (soldr#758)       |
-| `cold-tar-untar-warm` | cache archive fidelity (tar/untar round-trip)        |
-| `worktree-share`      | `ZCCACHE_PATH_REMAP=auto` injection (issue #352)     |
-| `touch-no-change`     | mtime/content-hash robustness (soldr save/load #377) |
+Fixture archives are generated from the sibling source directories by
+[`fixtures/regen.sh`](fixtures/regen.sh).
 
-## How a worker measures
+## Scenarios
 
-Each worker (one matrix cell) does the same four things and emits a
-single JSON line plus a markdown row to `$GITHUB_STEP_SUMMARY`:
+| Scenario | What turns red |
+|---|---|
+| `build-then-check` | Cross-verb build/check reuse; diagnostic, not part of the eight-cell rollout gate |
+| `cold-tar-untar-warm` | Cache archive fidelity or cache-tree duplication |
+| `worktree-share` | Path remapping or sibling-worktree sharing |
+| `touch-no-change` | Content-hash robustness after metadata-only changes |
+| `restore-no-clean-warm` | Restore/no-op behavior or downstream cache misses |
 
-1. **Hit rate** comes from `soldr cache report --json` /
-   `soldr session-end --json` — soldr already exposes per-session
-   `hits`, `misses`, `compilations`, `hit_rate`, plus per-extension
-   rollups when `zccache analyze` is available.
-2. **Memory** comes from a bash sidecar that polls
-   `ps -o pid,rss,vsz,comm` once per second into a CSV filtered to
-   `zccache-daemon|rustc|cargo`. Peak and p95 RSS are computed
-   post-hoc from the CSV.
-3. **Disk footprint** is `du -sb $SOLDR_CACHE_DIR/cache/zccache` plus
-   the size of any intermediate tarball.
-4. **Wall time** is wrapped around each build step.
+Every rollout scenario wraps both measured builds with
+`measure::run_guarded_soldr_command`. There is no fixed child wall-clock
+deadline. Structured soldr abort/retry evidence invalidates a sample before
+timing is evaluated.
 
-The raw CSV and JSON payloads are uploaded as
-`perf-results-<platform>-<fixture>-<scenario>` artifacts so you can
-re-analyse a run without re-firing the workflow.
+## Measurement
 
-## How the master build is cached
+[`lib/common.sh`](lib/common.sh) owns shared measurement behavior:
 
-The `build-soldr` job uses two layered caches keyed by platform so
-the second dispatch on the same soldr commit is essentially free:
+- elapsed wall time;
+- cache size and archive size;
+- compiler and embedded-daemon RSS sampling;
+- cache/session reports;
+- staged hash/publication/materialization counters and timings;
+- artifact-relative abort evidence;
+- snapshot quiescing so SQLite state is not archived with a live owner.
 
-1. **`actions/cache`** keyed by
-   `soldr-bin-<platform>-<hashFiles('crates/**','Cargo.{toml,lock}')>`
-   over `target/release/soldr` — same source, same platform, no
-   compile.
-2. **`Swatinem/rust-cache@v2`** under that, exercised only on a
-   cache miss, so the rare rebuild is incremental.
-
-Soldr itself is deliberately **not** used to build soldr in this
-workflow. The perf cluster has to keep working when soldr is broken
-or absent on a new platform, so the bootstrap path stays on bare
-cargo + stock GHA caches.
+Scenario scripts emit one `result.json`. The local Python evaluator rejects
+missing or malformed infrastructure fields, non-positive timing, speedups or
+warm times outside the documented budgets, missing staged publications,
+salvage/critical failures, excessive copied bytes, missing materialization
+tiers, and restore warm misses.
 
 ## Layout
 
-```
+```text
 perf/
 ├── fixtures/
-│   ├── medium/             # pure-Rust dep graph (~200 crates)
+│   ├── medium/
 │   ├── medium.tar.gz
-│   ├── sqlite-link/        # Rust + bundled C (libsqlite3 via cc-rs)
+│   ├── sqlite-link/
 │   ├── sqlite-link.tar.gz
-│   └── regen.sh            # rebuilds <name>.tar.gz from <name>/
+│   └── regen.sh
 ├── lib/
-│   ├── common.sh           # measure::* helpers (rss poller, du, summary)
-│   └── extract.sh          # untar a fixture into $WORKDIR
-├── scenarios/
-│   ├── build-then-check/run.sh
-│   ├── cold-tar-untar-warm/run.sh
-│   ├── worktree-share/run.sh
-│   └── touch-no-change/run.sh
-└── README.md               # this file
+│   ├── common.sh
+│   └── extract.sh
+└── scenarios/
+    ├── build-then-check/run.sh
+    ├── cold-tar-untar-warm/run.sh
+    ├── worktree-share/run.sh
+    ├── touch-no-change/run.sh
+    └── restore-no-clean-warm/run.sh
 ```
 
-## Adding a new fixture
+## Adding a fixture or scenario
 
-1. `mkdir perf/fixtures/<name>` with a self-contained Rust project.
-   The Cargo.toml MUST declare `[workspace]` so it does not get
-   folded into the parent soldr workspace.
-2. `(cd perf/fixtures/<name> && soldr cargo generate-lockfile)` to
-   pin transitive versions.
-3. `bash perf/fixtures/regen.sh <name>` to produce the tarball.
-4. Commit both the source tree and the new tarball.
+1. Keep fixture source deterministic and network-independent after extraction.
+2. Reuse the helpers in `lib/common.sh`; do not add a second timing or abort
+   protocol.
+3. Emit typed infrastructure fields and preserve evidence beside `result.json`.
+4. Add pure harness tests under `ci/tests/` for parsing and failure behavior.
+5. Add the cell to `ci/perf_local.py` only after a local baseline justifies its
+   budgets.
+6. Update [`../PERF.md`](../PERF.md) with the contract and threshold rationale.
 
-## Adding a new scenario
-
-1. `mkdir perf/scenarios/<name>` with a `run.sh` that takes the
-   fixture's working directory as its first positional argument and
-   writes a single JSON line to stdout.
-2. Add the scenario name to the matrix in
-   `.github/workflows/perf-cluster.yml`.
-
-## Running locally
-
-```bash
-# Extract the fixture into a scratch dir and run one scenario:
-WORKDIR=$(mktemp -d)
-bash perf/lib/extract.sh medium "${WORKDIR}"
-bash perf/scenarios/touch-no-change/run.sh "${WORKDIR}/medium"
-```
-
-`SOLDR_DEBUG=1` keeps the raw RSS CSV around (otherwise it is deleted
-at the end of the scenario).
+Do not move the wall-clock matrix into GitHub Actions. Hosted jobs remain for
+deterministic regression and platform-correctness tests.

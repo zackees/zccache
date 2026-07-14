@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Common helpers for perf cluster workers. Source this file with
+# Common helpers for local Docker performance workers. Source this file with
 # `. "${LIB_DIR}/common.sh"` from a scenario script.
 #
 # Conventions

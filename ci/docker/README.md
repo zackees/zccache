@@ -1,14 +1,14 @@
 # Local Perf Harness Docker Images
 
-Three Docker images that together let you reproduce the `perf-rust-cluster.yml`
-GHA scenarios on the host machine without burning a GHA cycle. Orchestrated by
+Three Docker images that run the authoritative Linux performance scenarios on
+the host machine without using hosted runners. Orchestrated by
 [`../perf_local.py`](../perf_local.py).
 
 ## Why three images instead of one big multi-stage build
 
 A single multi-stage `Dockerfile` would re-COPY the entire source tree on every
 iteration, busting Docker's layer cache the moment a single `.rs` file changed.
-That's the same wall-time as a GHA cycle, defeating the point.
+That would make every iteration pay a full cold build, defeating the point.
 
 By splitting into a **builder pair** (one per Rust project) plus a separate
 **runner** image, sources are mounted as volumes — the cargo target/ dir lives

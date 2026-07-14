@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -12,18 +13,22 @@ from functools import cache
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMON_SH = ROOT / "perf" / "lib" / "common.sh"
-WORKFLOW = ROOT / ".github" / "workflows" / "perf-rust-cluster.yml"
+
+
+@cache
+def perf_local_module():
+    path = ROOT / "ci" / "perf_local.py"
+    spec = importlib.util.spec_from_file_location("perf_local_guard", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @cache
 def bash_executable() -> str:
     names = ("bash.exe", "bash") if os.name == "nt" else ("bash",)
-    candidates = [
-        Path(directory) / name
-        for directory in os.environ.get("PATH", "").split(os.pathsep)
-        if directory
-        for name in names
-    ]
+    candidates = [Path(directory) / name for directory in os.environ.get("PATH", "").split(os.pathsep) if directory for name in names]
     resolved = shutil.which("bash")
     if resolved:
         candidates.append(Path(resolved))
@@ -37,9 +42,7 @@ def bash_executable() -> str:
             text=True,
         )
         system = probe.stdout.strip()
-        if probe.returncode == 0 and (
-            os.name != "nt" or system.startswith(("MINGW", "MSYS", "CYGWIN"))
-        ):
+        if probe.returncode == 0 and (os.name != "nt" or system.startswith(("MINGW", "MSYS", "CYGWIN"))):
             return str(candidate)
     raise AssertionError("a working Bash executable is required")
 
@@ -57,7 +60,7 @@ def run_guard(
     env = os.environ.copy()
     if record is not None:
         env["FAKE_ABORT_RECORD"] = record
-    script = r'''
+    script = r"""
 set -euo pipefail
 . "$1"
 cache="$PWD/cache"
@@ -97,7 +100,7 @@ if [[ "$3" == true ]]; then
     fi
 fi
 exit "$final_status"
-'''
+"""
     completed = subprocess.run(
         [
             bash_executable(),
@@ -144,7 +147,7 @@ def test_new_timeout_and_retry_record_invalidates_sample(tmp_path: Path) -> None
     }
     result = run_guard(
         tmp_path,
-        "printf '%s\\n' \"$FAKE_ABORT_RECORD\" >> \"$cache/logs/cargo-aborts.jsonl\"",
+        'printf \'%s\\n\' "$FAKE_ABORT_RECORD" >> "$cache/logs/cargo-aborts.jsonl"',
         record=json.dumps(record, separators=(",", ":")),
     )
 
@@ -159,7 +162,7 @@ def test_new_timeout_and_retry_record_invalidates_sample(tmp_path: Path) -> None
 
     enforced = run_guard(
         tmp_path / "enforced",
-        "printf '%s\\n' \"$FAKE_ABORT_RECORD\" >> \"$cache/logs/cargo-aborts.jsonl\"",
+        'printf \'%s\\n\' "$FAKE_ABORT_RECORD" >> "$cache/logs/cargo-aborts.jsonl"',
         record=json.dumps(record, separators=(",", ":")),
         enforce=True,
         expected_status=1,
@@ -170,7 +173,7 @@ def test_new_timeout_and_retry_record_invalidates_sample(tmp_path: Path) -> None
 def test_malformed_new_record_fails_closed(tmp_path: Path) -> None:
     result = run_guard(
         tmp_path,
-        "printf '%s' '{\"event\":\"cargo_abort\"' >> \"$cache/logs/cargo-aborts.jsonl\"",
+        'printf \'%s\' \'{"event":"cargo_abort"\' >> "$cache/logs/cargo-aborts.jsonl"',
     )
 
     assert result["infrastructure_valid"] is False
@@ -187,7 +190,7 @@ def test_non_timeout_process_abort_invalidates_sample(tmp_path: Path) -> None:
     }
     result = run_guard(
         tmp_path,
-        "printf '%s\\n' \"$FAKE_ABORT_RECORD\" >> \"$cache/logs/cargo-aborts.jsonl\"; return 137",
+        'printf \'%s\\n\' "$FAKE_ABORT_RECORD" >> "$cache/logs/cargo-aborts.jsonl"; return 137',
         record=json.dumps(record, separators=(",", ":")),
         expected_status=137,
     )
@@ -231,9 +234,7 @@ def test_capture_failure_after_success_fails_and_evaluator_rejects(
 
     assert result["infrastructure_valid"] is False
     assert result["guarded_command_status"] == 1
-    assert not evaluator_accepts(
-        tmp_path / "evaluator", result, create_evidence=False
-    )
+    assert not evaluator_accepts(tmp_path / "evaluator", result, create_evidence=False)
 
 
 def test_abort_log_size_read_failure_fails_closed(tmp_path: Path) -> None:
@@ -285,8 +286,7 @@ def test_equal_size_abort_log_rewrite_fails_closed(tmp_path: Path) -> None:
 
     result = run_guard(
         tmp_path,
-        "printf '%s\\n' '{\"event\":\"cargo_abort\",\"timeout\":1}' "
-        '> "$cache/logs/cargo-aborts.jsonl"',
+        'printf \'%s\\n\' \'{"event":"cargo_abort","timeout":1}\' > "$cache/logs/cargo-aborts.jsonl"',
     )
 
     assert result["infrastructure_valid"] is False
@@ -296,9 +296,7 @@ def test_equal_size_abort_log_rewrite_fails_closed(tmp_path: Path) -> None:
 def test_abort_in_another_scenario_root_is_ignored(tmp_path: Path) -> None:
     result = run_guard(
         tmp_path,
-        "mkdir -p \"$PWD/other-cache/logs\"; "
-        "printf '%s\\n' '{\"event\":\"cargo_abort\",\"timeout\":true}' "
-        ">> \"$PWD/other-cache/logs/cargo-aborts.jsonl\"",
+        'mkdir -p "$PWD/other-cache/logs"; printf \'%s\\n\' \'{"event":"cargo_abort","timeout":true}\' >> "$PWD/other-cache/logs/cargo-aborts.jsonl"',
     )
 
     assert result["infrastructure_valid"] is True
@@ -321,51 +319,23 @@ def test_short_delayed_command_has_no_guard_deadline(tmp_path: Path) -> None:
     assert result["soldr_timeout_count"] == 0
 
 
-def evaluator_function() -> str:
-    workflow = WORKFLOW.read_text(encoding="utf-8")
-    marker = "          validate_infrastructure_result() {"
-    start = workflow.index(marker)
-    end = workflow.index("\n\n          # ---- formatting helpers", start)
-    return workflow[start:end]
-
-
-def run_evaluator(
-    tmp_path: Path, payload: object, *, create_evidence: bool = True
-) -> subprocess.CompletedProcess[str]:
+def run_evaluator(tmp_path: Path, payload: object, *, create_evidence: bool = True) -> subprocess.CompletedProcess[str]:
     result = tmp_path / "result.json"
     result.parent.mkdir(parents=True, exist_ok=True)
     result.write_text(json.dumps(payload), encoding="utf-8")
-    script = evaluator_function() + r'''
-if [[ "$2" == true ]]; then
-    while IFS= read -r evidence; do
-        : > "$evidence"
-    done < <(jq -r '.soldr_abort_evidence[]?' "$1")
-fi
-validate_infrastructure_result "$1"
-'''
-    completed = subprocess.run(
-        [
-            bash_executable(),
-            "-c",
-            script,
-            "evaluator-test",
-            "result.json",
-            str(create_evidence).lower(),
-        ],
-        cwd=tmp_path,
-        check=False,
-        text=True,
-        capture_output=True,
-    )
-    return completed
+    if create_evidence and isinstance(payload, dict):
+        for evidence in payload.get("soldr_abort_evidence", []):
+            if isinstance(evidence, str) and Path(evidence).name == evidence:
+                (tmp_path / evidence).touch()
+    try:
+        perf_local_module().validate_infrastructure_result(payload, tmp_path)
+    except (TypeError, ValueError) as error:
+        return subprocess.CompletedProcess([], 1, "", str(error))
+    return subprocess.CompletedProcess([], 0, "", "")
 
 
-def evaluator_accepts(
-    tmp_path: Path, payload: object, *, create_evidence: bool = True
-) -> bool:
-    return run_evaluator(
-        tmp_path, payload, create_evidence=create_evidence
-    ).returncode == 0
+def evaluator_accepts(tmp_path: Path, payload: object, *, create_evidence: bool = True) -> bool:
+    return run_evaluator(tmp_path, payload, create_evidence=create_evidence).returncode == 0
 
 
 def valid_result() -> dict:
@@ -415,6 +385,4 @@ def test_evaluator_rejects_schema_valid_contamination_and_missing_evidence(
         soldr_timeout_count=1,
     )
     assert not evaluator_accepts(tmp_path / "contaminated", contaminated)
-    assert not evaluator_accepts(
-        tmp_path / "missing-evidence", valid_result(), create_evidence=False
-    )
+    assert not evaluator_accepts(tmp_path / "missing-evidence", valid_result(), create_evidence=False)

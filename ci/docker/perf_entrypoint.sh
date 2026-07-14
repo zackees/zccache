@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs inside the zccache-perf-runner container. Reproduces the per-cell
-# bench job from .github/workflows/perf-rust-cluster.yml end-to-end on a
+# local performance matrix cell end-to-end on a
 # pre-built soldr binary with this checkout's zccache embedded.
 #
 # Env contract (set by ci/perf_local.py):
