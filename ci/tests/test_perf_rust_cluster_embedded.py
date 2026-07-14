@@ -38,6 +38,18 @@ def test_perf_local_lists_daemon_runtime_without_copying_special_files() -> None
     assert 'copy_if_exists "${scenario_root}/cache-warm/cache/soldr-daemon"' not in entrypoint
 
 
+def test_perf_local_retains_worktree_reports_and_abort_evidence() -> None:
+    entrypoint = LOCAL_ENTRYPOINT.read_text(encoding="utf-8")
+
+    for artifact in (
+        "a-cache-report.json",
+        "b-cache-report.json",
+        "worktree-shutdown.json",
+        "soldr-aborts-*.jsonl",
+    ):
+        assert artifact in entrypoint
+
+
 def test_perf_local_runner_installs_scenario_dependencies() -> None:
     runner = LOCAL_RUNNER.read_text(encoding="utf-8")
 

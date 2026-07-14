@@ -74,8 +74,11 @@ copy_if_exists() {
 scenario_root="${WORK_DIR}"
 copy_if_exists "${scenario_root}/cold-cache-report.json"
 copy_if_exists "${scenario_root}/warm-cache-report.json"
+copy_if_exists "${scenario_root}/a-cache-report.json"
+copy_if_exists "${scenario_root}/b-cache-report.json"
 copy_if_exists "${scenario_root}/cold-shutdown.json"
 copy_if_exists "${scenario_root}/warm-shutdown.json"
+copy_if_exists "${scenario_root}/worktree-shutdown.json"
 copy_if_exists "${scenario_root}/save-report.json"
 copy_if_exists "${scenario_root}/load-report.json"
 copy_if_exists "${scenario_root}/cache-warm/daemon-spawn.log"
@@ -85,6 +88,9 @@ copy_if_exists "${scenario_root}/warm-daemon-files.txt"
 copy_if_exists "${scenario_root}/cold-zccache-logs"
 copy_if_exists "${scenario_root}/warm-zccache-logs"
 copy_if_exists "${scenario_root}/rss-${SCENARIO}.csv"
+for evidence in "${scenario_root}"/soldr-aborts-*.jsonl; do
+    copy_if_exists "${evidence}"
+done
 
 echo "DONE. Results in /results/:"
 ls -la /results/
