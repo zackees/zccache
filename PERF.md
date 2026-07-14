@@ -16,6 +16,18 @@ Run the complete matrix from a clean committed checkout:
 uv run --no-project ci/perf_local.py --matrix
 ```
 
+For threshold audits, repeat every cell and retain the per-cell distribution
+under `.perf-local/results/<fixture>/<scenario>/repeat-summary.json`:
+
+```powershell
+uv run --no-project ci/perf_local.py --matrix --repeat 5
+```
+
+Each summary records the sample count, minimum, median, p95, median absolute
+deviation (MAD), and maximum for cold and warm timings. Every sample still
+passes the normal infrastructure and threshold gates; a repeated run never
+turns a failed sample into a passing aggregate.
+
 The matrix is Linux × two fixtures × four scenarios:
 
 | Fixture | Purpose |
