@@ -28,6 +28,24 @@ deviation (MAD), and maximum for cold and warm timings. Every sample still
 passes the normal infrastructure and threshold gates; a repeated run never
 turns a failed sample into a passing aggregate.
 
+Threshold provenance is reproducible from git history:
+
+```powershell
+uv run --no-project python ci/perf_history.py --output ci/perf_threshold_history.json
+```
+
+The inventory covers the deleted hosted workflow, `PERF.md`, the local harness,
+and the manifest, preserving the commit, scope, and threshold-related diff
+lines. Before changing a budget, compare manifests and attach sample IDs,
+issue, and rationale:
+
+```powershell
+uv run --no-project python ci/perf_history.py --old ci/perf_thresholds.json --new path/to/proposed-thresholds.json --evidence path/to/ratchet-evidence.json
+```
+
+Floor decreases and ceiling increases fail without that evidence object;
+correctness gates remain independent of timing changes.
+
 The matrix is Linux × two fixtures × four scenarios:
 
 | Fixture | Purpose |
