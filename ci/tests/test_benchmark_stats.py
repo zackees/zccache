@@ -276,6 +276,43 @@ def test_benchmark_command_targets_existing_workspace_package():
     ]
 
 
+def test_all_benchmark_commands_are_registered_report_tests():
+    commands = benchmark_stats.benchmark_commands_for_all()
+    names = [command[command.index("--") + 1] for command in commands]
+    registered = [
+        test_name
+        for language in benchmark_stats.LANGUAGES
+        for test_name in benchmark_stats.BENCHMARK_TESTS_BY_LANGUAGE[language]
+    ]
+
+    assert names == registered
+    assert "perf_meson_probe_storm_wrapper" not in names
+
+
+def test_run_benchmarks_executes_each_registered_test(tmp_path, monkeypatch):
+    commands = benchmark_stats.benchmark_commands_for_all()
+    executed = []
+
+    class Result:
+        returncode = 0
+
+        def __init__(self, command):
+            self.stdout = f"ran {command[command.index('--') + 1]}\n"
+
+    def fake_run(command, **kwargs):
+        executed.append(command)
+        return Result(command)
+
+    monkeypatch.setattr(benchmark_stats.subprocess, "run", fake_run)
+
+    output = benchmark_stats.run_benchmarks(tmp_path / "bench.log")
+
+    assert executed == commands
+    assert output == "".join(
+        f"ran {command[command.index('--') + 1]}\n" for command in commands
+    )
+
+
 def test_zero_duration_cells_are_invalid_not_inflated():
     # #443: a 0.000s reading is a broken measurement — a cold (or even a warm
     # cache-hit) compile/link is never instant. It must be treated as invalid

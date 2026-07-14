@@ -583,6 +583,16 @@ def test_benchmark_language_commands_are_filtered():
     ]
 
 
+def test_unfiltered_benchmark_commands_are_reported_tests_only():
+    commands = perf_guard._benchmark_commands(None)
+
+    assert [command[command.index("--") + 1] for command in commands] == [
+        test_name
+        for language in benchmark_stats.LANGUAGES
+        for test_name in benchmark_stats.BENCHMARK_TESTS_BY_LANGUAGE[language]
+    ]
+
+
 def test_prebuilt_benchmark_binary_commands_are_filtered():
     commands = perf_guard._benchmark_commands("c++", Path("perf_bench_test"))
 
