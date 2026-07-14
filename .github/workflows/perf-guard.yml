@@ -49,7 +49,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          soldr --no-cache cargo test -p zccache-daemon-core --features test-support perf_cow_materialization_128_hits_under_two_seconds
+          soldr cargo test -p zccache-daemon-core --features test-support perf_cow_materialization_128_hits_under_two_seconds
 
   build-perf-benchmark:
     name: Build perf benchmark binary
@@ -70,7 +70,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          soldr --no-cache cargo test -p zccache --test perf_bench_test --no-run
+          soldr cargo test -p zccache --test perf_bench_test --no-run
           bench_bin="$(
             find target/debug/deps \
               -maxdepth 1 \

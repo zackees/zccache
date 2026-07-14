@@ -664,10 +664,11 @@ def test_perf_workflow_has_dedicated_cow_materialization_gate():
     assert "    if: github.ref == 'refs/heads/main'" in speed_floor_job
     assert "name: COW materialization hit budget" in job
     assert (
-        "soldr --no-cache cargo test -p zccache-daemon-core "
+        "soldr cargo test -p zccache-daemon-core "
         "--features test-support "
         "perf_cow_materialization_128_hits_under_two_seconds" in job
     )
+    assert "--no-cache" not in job + build_job + speed_floor_job
 
 
 def test_run_benchmarks_once_uses_fresh_cache_per_command(tmp_path, monkeypatch):
