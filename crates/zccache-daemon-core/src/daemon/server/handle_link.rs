@@ -54,6 +54,8 @@ pub(super) async fn handle_link_ephemeral(
     // archive operations (c-static-library-link, cpp-driver-link).
     let profile_enabled = std::env::var_os(CC_MISS_PROFILE_ENV).is_some();
     let link_start = std::time::Instant::now();
+    let mut output_read_ns = 0;
+    let mut artifact_store_ns = 0;
     let lineage = super::super::lineage::Lineage::current(Some(client_pid), None);
     use crate::compiler::parse_archiver::{parse_archive_invocation, ParsedArchiveInvocation};
     use crate::compiler::parse_linker::{parse_linker_invocation, ParsedLinkerInvocation};
@@ -400,7 +402,7 @@ pub(super) async fn handle_link_ephemeral(
     } else {
         cwd_path.join(&parsed_tool.output_file).into()
     };
-    use crate::daemon::staged_stats::{StagedCounter, StagedTiming};
+    use crate::daemon::staged_stats::{StagedBytes, StagedCounter, StagedFailure, StagedTiming};
     let planning_started = std::time::Instant::now();
     state.profiler.staged.count(StagedCounter::PlanAttempted);
     let directory_plan_result = (parsed_tool.output_kind
@@ -423,7 +425,7 @@ pub(super) async fn handle_link_ephemeral(
         StagedTiming::Planning,
         planning_started.elapsed().as_nanos() as u64,
     );
-    let staged_plan = match staged_plan_result {
+    let mut staged_plan = match staged_plan_result {
         None => None,
         Some(staged_plan_result) => match staged_plan_result {
             StagedPlanOutcome::Enabled(plan) => {
@@ -543,6 +545,53 @@ pub(super) async fn handle_link_ephemeral(
         }
     }
 
+    // Archives have no undeclared side effects. Materialize the staged
+    // archive before building the in-memory cache entry so disk persistence
+    // can run asynchronously, matching the C compile miss path.
+    if parsed_tool.is_archive {
+        if let Some(plan) = staged_plan.take() {
+            let started = std::time::Instant::now();
+            match plan.materialize() {
+                Ok(materialized) => {
+                    state.profiler.staged.add_count(
+                        StagedCounter::MaterializeReflink,
+                        materialized.reflink_count,
+                    );
+                    state
+                        .profiler
+                        .staged
+                        .add_count(StagedCounter::MaterializeCopy, materialized.copy_count);
+                    state
+                        .profiler
+                        .staged
+                        .bytes(StagedBytes::Materialization, materialized.copy_bytes);
+                    state.profiler.staged.timing(
+                        StagedTiming::MissMaterialization,
+                        started.elapsed().as_nanos() as u64,
+                    );
+                    state.cache_system.apply_changes(vec![output_path.clone()]);
+                }
+                Err(error) => {
+                    state
+                        .profiler
+                        .staged
+                        .count(StagedCounter::MaterializeFailure);
+                    state
+                        .profiler
+                        .staged
+                        .failure(StagedFailure::RequestedMaterialization);
+                    state.profiler.staged.timing(
+                        StagedTiming::MissMaterialization,
+                        started.elapsed().as_nanos() as u64,
+                    );
+                    return Response::Error {
+                        message: format!("failed to materialize archive output: {error}"),
+                    };
+                }
+            }
+        }
+    }
+
     // 7. If successful, cache the output
     if let Response::LinkResult {
         exit_code: 0,
@@ -650,6 +699,7 @@ pub(super) async fn handle_link_ephemeral(
         // Read all output files; preserve order. Falls back to a serial
         // loop when there's only the primary output — rayon dispatch cost
         // (~150 µs) is comparable to one fs::read for small outputs.
+        let output_read_started = profile_enabled.then(std::time::Instant::now);
         let reads: Vec<Option<ArtifactOutput>> = if read_targets.len() <= 1 {
             read_targets
                 .iter()
@@ -672,6 +722,9 @@ pub(super) async fn handle_link_ephemeral(
                 })
                 .collect()
         };
+        output_read_ns = output_read_started
+            .map(|started| started.elapsed().as_nanos() as u64)
+            .unwrap_or(0);
 
         if staged_plan.is_some() && reads.iter().any(Option::is_none) {
             let _ = staged_plan.as_ref().map(StagedCompilePlan::cleanup);
@@ -710,6 +763,7 @@ pub(super) async fn handle_link_ephemeral(
             // `persist_artifact_paths` so the cold-miss disk-write count drops
             // from 2 (compiler + cache) to 1 (compiler + hardlink). Cross-volume
             // case falls back to `std::fs::copy` — identical to prior semantics.
+            let artifact_store_started = profile_enabled.then(std::time::Instant::now);
             let cacheable = {
                 let artifact_dir = state.artifact_dir.clone();
                 let kh = key_hex.clone();
@@ -775,6 +829,9 @@ pub(super) async fn handle_link_ephemeral(
                     true
                 }
             };
+            artifact_store_ns = artifact_store_started
+                .map(|started| started.elapsed().as_nanos() as u64)
+                .unwrap_or(0);
 
             if cacheable {
                 state.artifacts.insert(key_hex.clone(), cached);
@@ -807,12 +864,8 @@ pub(super) async fn handle_link_ephemeral(
             input_hash_ns,
             cache_lookup_ns,
             compiler_process_ns,
-            // output_read_ns + artifact_store_ns are not measured today —
-            // the cache populate runs in a background spawn after we
-            // return. Tracked as zero here so the published line stays
-            // parseable; a follow-up can plumb them through if needed.
-            output_read_ns: 0,
-            artifact_store_ns: 0,
+            output_read_ns,
+            artifact_store_ns,
         });
     }
 
