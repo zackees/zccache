@@ -33,6 +33,7 @@ Usage::
 
     uv run --no-project python ci/perf_local.py                    # default: cold-tar-untar-warm x medium
     uv run --no-project python ci/perf_local.py --matrix           # release gate: all 8 rollout cells
+    uv run --no-project python ci/perf_local.py --matrix --repeat 5 # repeated distribution audit
     uv run --no-project python ci/perf_local.py --scenario worktree-share
     uv run --no-project python ci/perf_local.py --scenario cold-tar-untar-warm --fixture sqlite-link
     uv run --no-project python ci/perf_local.py --soldr-ref fix/1651-portable-zccache-identity
@@ -67,6 +68,7 @@ import json
 import os
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import time
@@ -402,9 +404,15 @@ def run_soldr_builder(layout: dict[str, Path], *, force: bool = False) -> None:
     stamp_tmp.replace(stamp)
 
 
-def run_scenario(layout: dict[str, Path], scenario: str, fixture: str, jobs: int) -> Path:
+def run_scenario(
+    layout: dict[str, Path],
+    scenario: str,
+    fixture: str,
+    jobs: int,
+    results_dir: Path | None = None,
+) -> Path:
     """Run the per-scenario container. Returns the results dir for this run."""
-    results_dir = layout["results"] / fixture / scenario
+    results_dir = results_dir or layout["results"] / fixture / scenario
     # Wipe last run's results so partial output from a crashing run doesn't
     # masquerade as a complete result.
     if results_dir.exists():
@@ -1021,26 +1029,80 @@ def _shell_quote(arg: str) -> str:
     return "'" + arg.replace("'", "'\"'\"'") + "'"
 
 
-def run_rollout_matrix(layout: dict[str, Path], jobs: int) -> int:
+def _distribution(values: list[int]) -> dict[str, float | int]:
+    """Return stable summary statistics for repeated timing samples."""
+    ordered = sorted(values)
+    median = statistics.median(ordered)
+    deviations = [abs(value - median) for value in ordered]
+    return {
+        "count": len(ordered),
+        "min_ms": ordered[0],
+        "median_ms": median,
+        "p95_ms": ordered[max(0, (len(ordered) * 95 + 99) // 100 - 1)],
+        "mad_ms": statistics.median(deviations),
+        "max_ms": ordered[-1],
+    }
+
+
+def _write_repeat_summary(
+    base_dir: Path,
+    samples: list[tuple[Path, dict]],
+    scenario: str,
+    fixture: str,
+) -> None:
+    timings: dict[str, list[int]] = {"cold_ms": [], "warm_ms": []}
+    for sample_dir, result in samples:
+        cold_key = "a_ms" if scenario == "worktree-share" else "cold_ms"
+        warm_key = "b_ms" if scenario == "worktree-share" else "warm_ms"
+        timings["cold_ms"].append(int(result[cold_key]))
+        timings["warm_ms"].append(int(result[warm_key]))
+    summary = {
+        "schema_version": 1,
+        "fixture": fixture,
+        "scenario": scenario,
+        "samples": [str(path.relative_to(base_dir)) for path, _ in samples],
+        "distributions": {name: _distribution(values) for name, values in timings.items()},
+    }
+    (base_dir / "repeat-summary.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def run_rollout_matrix(layout: dict[str, Path], jobs: int, repeat: int) -> int:
     """Run and hard-gate both fixtures across all rollout scenarios."""
     failed_cells: list[str] = []
     for fixture in VALID_FIXTURES:
         for scenario in ROLLOUT_SCENARIOS:
             cell = f"{fixture}/{scenario}"
-            try:
-                results_dir = run_scenario(layout, scenario, fixture, jobs)
-            except subprocess.CalledProcessError as error:
-                print(f"[perf-local] FAIL {cell}: scenario exited {error.returncode}")
-                failed_cells.append(cell)
-                continue
-            render_summary(results_dir, scenario, fixture)
-            failures = evaluate_rollout_result(results_dir, scenario, fixture)
-            if failures:
-                failed_cells.append(cell)
-                for failure in failures:
-                    print(f"[perf-local] HARD-GATE FAIL {cell}: {failure}")
+            base_dir = layout["results"] / fixture / scenario
+            if repeat > 1 and base_dir.exists():
+                shutil.rmtree(base_dir)
+            samples: list[tuple[Path, dict]] = []
+            cell_failed = False
+            for sample_number in range(1, repeat + 1):
+                sample_dir = base_dir if repeat == 1 else base_dir / f"sample-{sample_number:02d}"
+                try:
+                    results_dir = run_scenario(layout, scenario, fixture, jobs, sample_dir)
+                except subprocess.CalledProcessError as error:
+                    print(f"[perf-local] FAIL {cell} sample {sample_number}: scenario exited {error.returncode}")
+                    cell_failed = True
+                    break
+                render_summary(results_dir, scenario, fixture)
+                failures = evaluate_rollout_result(results_dir, scenario, fixture)
+                if failures:
+                    cell_failed = True
+                    for failure in failures:
+                        print(f"[perf-local] HARD-GATE FAIL {cell} sample {sample_number}: {failure}")
+                    break
+                result = json.loads((results_dir / "result.json").read_text(encoding="utf-8"))
+                samples.append((results_dir, result))
+            if not cell_failed:
+                if repeat > 1:
+                    _write_repeat_summary(base_dir, samples, scenario, fixture)
+                warm = [int(result["b_ms" if scenario == "worktree-share" else "warm_ms"]) for _, result in samples]
+                print(f"[perf-local] HARD-GATE PASS {cell} ({repeat} sample(s), warm median={statistics.median(warm):.0f}ms)")
             else:
-                print(f"[perf-local] HARD-GATE PASS {cell}")
+                failed_cells.append(cell)
 
     print()
     if failed_cells:
@@ -1112,10 +1174,18 @@ def main() -> int:
         default=2,
         help="Maximum parallel Cargo jobs inside the scenario container (default: 2).",
     )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="Repeat each matrix cell and retain distribution summaries (default: 1).",
+    )
     args = parser.parse_args()
 
     if args.jobs < 1:
         parser.error("--jobs must be at least 1")
+    if args.repeat < 1:
+        parser.error("--repeat must be at least 1")
 
     if not docker_available():
         print(
@@ -1134,7 +1204,7 @@ def main() -> int:
     run_soldr_builder(layout, force=args.rebuild_images)
 
     if args.matrix:
-        return run_rollout_matrix(layout, args.jobs)
+        return run_rollout_matrix(layout, args.jobs, args.repeat)
 
     results_dir = run_scenario(layout, args.scenario, args.fixture, args.jobs)
     return render_summary(results_dir, args.scenario, args.fixture)

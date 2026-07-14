@@ -193,6 +193,19 @@ def test_threshold_manifest_is_authoritative_for_evaluation_and_rendering():
     )
 
 
+def test_distribution_reports_repeatability_statistics():
+    summary = perf_local._distribution([100, 110, 120, 130, 140])
+
+    assert summary == {
+        "count": 5,
+        "min_ms": 100,
+        "median_ms": 120,
+        "p95_ms": 140,
+        "mad_ms": 10,
+        "max_ms": 140,
+    }
+
+
 def test_fmt_ms_seconds_with_fraction():
     # >= 1000 ms shows seconds with two decimals
     assert perf_local.fmt_ms(1_500) == "1.50s"
