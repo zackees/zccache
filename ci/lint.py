@@ -79,6 +79,14 @@ def dylint_env():
     return env
 
 
+def dylint_command() -> list[str]:
+    """Run cargo-dylint directly so soldr cannot reselect stable Rust."""
+    executable = which("cargo-dylint")
+    if executable is None:
+        raise FileNotFoundError("cargo-dylint is required for workspace linting")
+    return [executable, "--all", "--workspace"]
+
+
 def ensure_dylint_aliases():
     """Create cargo-dylint's expected `name@toolchain` aliases when missing."""
     libraries_root = SCRIPT_DIR / "target" / "dylint" / "libraries"
@@ -174,7 +182,7 @@ def lint_dylint_only():
     if result != 0:
         return result
 
-    dylint_cmd = cargo_command("dylint", "--all", "--workspace")
+    dylint_cmd = dylint_command()
 
     # cargo-dylint expects libraries on disk as `<name>@<toolchain>.<ext>` but
     # cargo emits them as bare `<name>.<ext>`. Each freshly-built library
