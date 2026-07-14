@@ -70,6 +70,7 @@ def test_perf_local_runner_installs_worktree_scenario_dependencies() -> None:
     runner = LOCAL_RUNNER.read_text(encoding="utf-8")
 
     assert "        git \\\n" in runner
+    assert "        procps \\\n" in runner
 
 
 def test_perf_cluster_pins_cache_action_to_an_immutable_commit() -> None:

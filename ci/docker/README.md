@@ -40,7 +40,7 @@ All volumes are managed by the orchestrator. The layout under `<repo>/.perf-loca
 ├── binaries/
 │   └── soldr/soldr             # static soldr binary with zccache embedded
 └── results/
-    └── <scenario>/             # result.json + cache reports per run
+    └── <fixture>/<scenario>/   # result.json + cache reports per run
 ```
 
 The `cargo-home/` volumes are required for fast incremental rebuilds: the

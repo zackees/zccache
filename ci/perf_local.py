@@ -339,7 +339,7 @@ def run_scenario(
     layout: dict[str, Path], scenario: str, fixture: str, jobs: int
 ) -> Path:
     """Run the per-scenario container. Returns the results dir for this run."""
-    results_dir = layout["results"] / scenario
+    results_dir = layout["results"] / fixture / scenario
     # Wipe last run's results so partial output from a crashing run doesn't
     # masquerade as a complete result.
     if results_dir.exists():

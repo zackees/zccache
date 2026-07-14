@@ -41,6 +41,7 @@ RUN apt-get update \
         tar \
         zstd \
         jq \
+        procps \
         time \
         ca-certificates \
  && rm -rf /var/lib/apt/lists/*
