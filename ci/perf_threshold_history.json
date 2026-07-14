@@ -1,0 +1,226 @@
+[
+  {
+    "commit": "c65989907abf2b46857e19cb2523b818bc4a887d",
+    "paths": [
+      "PERF.md",
+      "ci/perf_local.py"
+    ],
+    "subject": "perf(ci): retain repeated threshold distributions (#1106)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "caa70428eb011b5a1ea665213be4c32cbeec71ca",
+    "paths": [
+      "ci/perf_local.py",
+      "ci/perf_thresholds.json"
+    ],
+    "subject": "perf(ci): centralize local threshold manifest (#1102)",
+    "threshold_lines": [
+      "+    warm_limits = thresholds.get(\"maximum_warm_ms\")",
+      "+    if not isinstance(thresholds.get(\"minimum_speedup\"), (int, float)):",
+      "+        raise ValueError(\"threshold manifest minimum_speedup must be numeric\")",
+      "+LOCAL_MIN_SPEEDUP = float(PERF_THRESHOLDS[\"minimum_speedup\"])",
+      "+LOCAL_MAX_WARM_MS = PERF_THRESHOLDS[\"maximum_warm_ms\"]",
+      "+LOCAL_MAX_STAGED_OVERHEAD_MS = int(PERF_THRESHOLDS[\"maximum_staged_overhead_ms\"])",
+      "+  \"minimum_speedup\": 4.5,",
+      "+  \"maximum_warm_ms\": {",
+      "+  \"maximum_staged_overhead_ms\": 15000,"
+    ]
+  },
+  {
+    "commit": "772be9ae638ca1469973019be98157c6d357c7d0",
+    "paths": [
+      ".github/workflows/perf-rust-cluster.yml",
+      "PERF.md",
+      "ci/perf_local.py"
+    ],
+    "subject": "perf(cache): finish cross-platform staged rollout gates (#1090)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "777d963d47a7c7a9adcc010474e412cecd0df852",
+    "paths": [
+      "PERF.md",
+      "ci/perf_local.py"
+    ],
+    "subject": "fix(perf): run local scenarios with embedded zccache (#1051)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "801120a5977f72c093c09fef8da5104281868ca1",
+    "paths": [
+      ".github/workflows/perf-rust-cluster.yml",
+      "PERF.md"
+    ],
+    "subject": "fix(ci): test embedded zccache through soldr (#1050)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "c615a17ee5f8e85faf9e2030aae43f961281629f",
+    "paths": [
+      ".github/workflows/perf-rust-cluster.yml"
+    ],
+    "subject": "feat: gate zccache dependency surfaces",
+    "threshold_lines": []
+  },
+  {
+    "commit": "4690900ab55b9f99e5ddc7d4c91599ecf47fe976",
+    "paths": [
+      "ci/perf_local.py"
+    ],
+    "subject": "reuse build metadata for cargo check",
+    "threshold_lines": []
+  },
+  {
+    "commit": "b96a0eb3b627c007b9551e188ece0063dbef3013",
+    "paths": [
+      "ci/perf_local.py"
+    ],
+    "subject": "ci(perf-local): fmt / clippy / test / shell subcommands + persistent rustup volume (#477) (#479)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "9cd27feadf28bc9ad9b49e9afedb12b69cbd8997",
+    "paths": [
+      "ci/perf_local.py"
+    ],
+    "subject": "ci(perf-local): named Docker volumes + cargo subcommand \u2192 4-6m rebuild \u2192 1s (#475)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "11e9080ab8ff159d4eb0851a45ad67e052a6694e",
+    "paths": [
+      "ci/perf_local.py"
+    ],
+    "subject": "perf(daemon): env-gated ZCCACHE_HIT_TRACE dump for hit-path sub-phase data (#470)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "87c5417bad976cf91e6447b6d610c814921d18cc",
+    "paths": [
+      "ci/perf_local.py"
+    ],
+    "subject": "perf-local: mount persistent /cargo-home volume \u2014 no-op soldr build 33s\u21927s (#352)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "155a9843470b11f88b93590ac87e384353c71a33",
+    "paths": [
+      ".github/workflows/perf-rust-cluster.yml",
+      "PERF.md"
+    ],
+    "subject": "perf-cluster: AND-style gate \u2014 speedup \u2265 min_speedup AND optional warm_ms \u2264 max (#351)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "d955ad186372dce98f1d3b6bb3d60540ca4ad68c",
+    "paths": [
+      ".github/workflows/perf-rust-cluster.yml",
+      "PERF.md"
+    ],
+    "subject": "perf-cluster: wire restore-no-clean-warm into the matrix and branch parser (#350)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "dbb94fbc7f38a9b0e59071c2929ea2e9777d5f38",
+    "paths": [
+      "ci/perf_local.py"
+    ],
+    "subject": "perf-harness: add restore-no-clean-warm scenario \u2014 7.6s \u2192 75ms warm (852x) (#349)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "5527719966cae0ce9e1735cefeae8f1e5ee0645a",
+    "paths": [
+      ".github/workflows/perf-rust-cluster.yml",
+      "ci/perf_local.py"
+    ],
+    "subject": "perf(depgraph): hash-fallback in check_diagnostic; warm 30s\u219212s, gate 3x\u21924.5x (#344)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "eb69459b13c3767a8199afc30964e323388df9c8",
+    "paths": [
+      "PERF.md",
+      "ci/perf_local.py"
+    ],
+    "subject": "ci(perf): three-image Docker harness for local perf-cluster reproduction (#341)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "5ea51db9d1f97f69452fd30a18d6432cc018dd62",
+    "paths": [
+      "PERF.md",
+      "ci/perf_local.py"
+    ],
+    "subject": "Revert \"feat(perf): three-image Docker harness for local perf-cluster reproduction\"",
+    "threshold_lines": []
+  },
+  {
+    "commit": "1a88a83924e408846f110fa270fe287a04da6111",
+    "paths": [
+      "PERF.md",
+      "ci/perf_local.py"
+    ],
+    "subject": "feat(perf): three-image Docker harness for local perf-cluster reproduction",
+    "threshold_lines": []
+  },
+  {
+    "commit": "abc12eb52c1e4a933cf9a1cc848c203a8e5aba9e",
+    "paths": [
+      ".github/workflows/perf-rust-cluster.yml",
+      "PERF.md"
+    ],
+    "subject": "ci(perf): default to medium fixture only; rename workflow to 'Perf Cluster Rust'",
+    "threshold_lines": []
+  },
+  {
+    "commit": "65bb0295a9fc4a04fa18815c3439a4c121f41d28",
+    "paths": [
+      ".github/workflows/perf-rust-cluster.yml"
+    ],
+    "subject": "ci(perf): rich Evaluate table \u2014 counts, ratios, bytes, time saved, RSS",
+    "threshold_lines": []
+  },
+  {
+    "commit": "366db4462acfd34816b8b07a8355523aaa18c4be",
+    "paths": [
+      ".github/workflows/perf-rust-cluster.yml"
+    ],
+    "subject": "ci(perf): cache soldr + zccache release binaries keyed `<repo>-<plat>-<sha>-<bucket>`",
+    "threshold_lines": []
+  },
+  {
+    "commit": "8d11602e08fae0e69c8abeae1f0cdca03423555a",
+    "paths": [
+      ".github/workflows/perf-rust-cluster.yml"
+    ],
+    "subject": "ci(perf): fix `.pinned == true` jq check after soldr alias rename",
+    "threshold_lines": []
+  },
+  {
+    "commit": "fe54928f204516c79e3b0660a9fcf3590691e4bc",
+    "paths": [
+      "PERF.md"
+    ],
+    "subject": "docs(perf): require a perf unit test for every regression fix (#330)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "b3274d21078de99a0e394998af584f721b23f4fe",
+    "paths": [
+      "PERF.md"
+    ],
+    "subject": "docs(perf): encode the local-first iteration bias (#329)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "bda64e0f82a0e15fe3f5bb7ff5b7407e36766518",
+    "paths": [
+      ".github/workflows/perf-rust-cluster.yml",
+      "PERF.md"
+    ],
+    "subject": "feat(perf): add perf-rust-cluster.yml scenario sweep (mirrors soldr's pattern) (#326)",
+    "threshold_lines": []
+  }
+]
