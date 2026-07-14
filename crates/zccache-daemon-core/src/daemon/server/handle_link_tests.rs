@@ -9,7 +9,10 @@ async fn archive_fast_path_preserves_client_env_and_lineage() {
     let lineage = crate::daemon::lineage::Lineage::current(Some(4242), None);
     let env = vec![
         ("PATH".to_string(), std::env::var("PATH").unwrap()),
-        ("ARCHIVE_FAST_PATH_SENTINEL".to_string(), "present".to_string()),
+        (
+            "ARCHIVE_FAST_PATH_SENTINEL".to_string(),
+            "present".to_string(),
+        ),
         ("MAKEFLAGS".to_string(), "--jobserver-auth=3,4".to_string()),
     ];
     let args = vec![
@@ -17,14 +20,9 @@ async fn archive_fast_path_preserves_client_env_and_lineage() {
         "printf '%s|%s|%s' \"$ARCHIVE_FAST_PATH_SENTINEL\" \"$ZCCACHE_CLIENT_PID\" \"${MAKEFLAGS-unset}\"".to_string(),
     ];
 
-    let response = run_archive_tool_passthrough(
-        Path::new("sh"),
-        &args,
-        temp.path(),
-        Some(env),
-        &lineage,
-    )
-    .await;
+    let response =
+        run_archive_tool_passthrough(Path::new("sh"), &args, temp.path(), Some(env), &lineage)
+            .await;
 
     match response {
         Response::LinkResult {
