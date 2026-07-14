@@ -20,3 +20,5 @@ dylint_testing = { git = "https://github.com/trailofbits/dylint", rev = "4bd91ce
 
 [package.metadata.rust-analyzer]
 rustc_private = true
+
+[workspace]

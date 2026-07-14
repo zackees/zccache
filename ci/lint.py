@@ -60,9 +60,22 @@ def run_cmd_capture(cmd):
 
 
 def dylint_env():
-    """Run cargo-dylint under the nightly toolchain without using +toolchain syntax."""
+    """Run cargo-dylint with the nightly toolchain ahead of stable shims.
+
+    cargo-dylint deliberately removes ``RUSTUP_TOOLCHAIN`` before compiling a
+    lint library. Put the selected toolchain's bin directory first on PATH so
+    those sanitized child commands still use the driver-compatible cargo and
+    rustc binaries.
+    """
     env = self_build_env()
     env["RUSTUP_TOOLCHAIN"] = DYLINT_TOOLCHAIN
+    rustc = subprocess.check_output(
+        ["rustup", "which", "--toolchain", DYLINT_TOOLCHAIN, "rustc"],
+        env=env,
+        text=True,
+    ).strip()
+    toolchain_bin = str(Path(rustc).resolve().parent)
+    env["PATH"] = os.pathsep.join([toolchain_bin, env.get("PATH", "")])
     return env
 
 
