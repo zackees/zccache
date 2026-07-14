@@ -61,3 +61,9 @@ rebuild (e.g. after pinning a new toolchain), pass `--rebuild-images` to
 
 Source changes do NOT trigger image rebuilds — they trigger a cargo recompile
 inside the running container, which reuses the persistent `target/` volume.
+
+For a cross-repository change that is not merged into soldr `main` yet, pass
+`--soldr-ref <branch-or-commit>`. The harness refreshes its shallow soldr clone
+to that ref and then pins the clone's vendored zccache back to the current
+zccache checkout, so the measured binary always contains the exact pair under
+test.

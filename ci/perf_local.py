@@ -32,26 +32,27 @@ volumes contain the live build state going forward.
 
 Usage::
 
-    uv run python ci/perf_local.py                                # default: cold-tar-untar-warm x medium
-    uv run python ci/perf_local.py --scenario worktree-share
-    uv run python ci/perf_local.py --scenario cold-tar-untar-warm --fixture sqlite-link
-    uv run python ci/perf_local.py --rebuild-images               # force docker build of all 3 images
+    uv run --no-project python ci/perf_local.py                    # default: cold-tar-untar-warm x medium
+    uv run --no-project python ci/perf_local.py --scenario worktree-share
+    uv run --no-project python ci/perf_local.py --scenario cold-tar-untar-warm --fixture sqlite-link
+    uv run --no-project python ci/perf_local.py --soldr-ref fix/1651-portable-zccache-identity
+    uv run --no-project python ci/perf_local.py --rebuild-images   # force docker build of all 3 images
 
     # Ad-hoc cargo in the same warmed target/ volume — much faster than
     # `soldr cargo` on the host because the daemon is undisturbed:
-    uv run python ci/perf_local.py cargo test --lib --no-run
-    uv run python ci/perf_local.py cargo test --release --lib fscache::metadata::tests::mtimes
-    uv run python ci/perf_local.py cargo clippy --workspace -- -D warnings
+    uv run --no-project python ci/perf_local.py cargo test --lib --no-run
+    uv run --no-project python ci/perf_local.py cargo test --release --lib fscache::metadata::tests::mtimes
+    uv run --no-project python ci/perf_local.py cargo clippy --workspace -- -D warnings
 
     # Issue #477: dedicated subcommands that bake in the right `docker run`
     # incantation (named volumes + MSYS_NO_PATHCONV + persistent rustup
     # state). All run inside the same `zccache-perf-zccache-builder` image:
-    uv run python ci/perf_local.py fmt                          # cargo fmt --all -- --check
-    uv run python ci/perf_local.py fmt --fix                    # cargo fmt --all (rewrites in place)
-    uv run python ci/perf_local.py clippy                       # cargo clippy -p zccache --lib --tests -- -D warnings
-    uv run python ci/perf_local.py clippy --workspace --all-targets   # forward extra args
-    uv run python ci/perf_local.py test [PATTERN]               # cargo test --lib [PATTERN]
-    uv run python ci/perf_local.py shell                        # interactive bash in the builder image
+    uv run --no-project python ci/perf_local.py fmt             # cargo fmt --all -- --check
+    uv run --no-project python ci/perf_local.py fmt --fix       # cargo fmt --all (rewrites in place)
+    uv run --no-project python ci/perf_local.py clippy          # cargo clippy -p zccache --lib --tests -- -D warnings
+    uv run --no-project python ci/perf_local.py clippy --workspace --all-targets
+    uv run --no-project python ci/perf_local.py test [PATTERN]  # cargo test --lib [PATTERN]
+    uv run --no-project python ci/perf_local.py shell           # interactive bash in the builder image
 
 The result table emitted at the end mirrors the rich "Evaluate" step from the
 GHA perf cluster, so you can compare local vs cluster numbers row-for-row.
@@ -252,16 +253,21 @@ def pin_soldr_zccache_source(soldr_src: Path) -> None:
         )
 
 
-def ensure_soldr_source() -> Path:
-    """Refresh soldr main and embed this checkout's committed zccache HEAD."""
+def ensure_soldr_source(soldr_ref: str = SOLDR_REF) -> Path:
+    """Refresh the requested soldr ref and embed this zccache checkout.
+
+    ``--soldr-ref`` is the local bridge for cross-repository changes: it lets a
+    zccache branch measure against an unmerged soldr fix without editing the
+    shallow scratch clone or waiting for a GitHub Actions cycle.
+    """
     src = PERF_LOCAL / "soldr-src"
     if (src / ".git").is_dir():
-        print(f"[perf-local] refreshing soldr source at {src}")
-        run(["git", "-C", str(src), "fetch", "--depth", "1", "origin", SOLDR_REF])
+        print(f"[perf-local] refreshing soldr@{soldr_ref} at {src}")
+        run(["git", "-C", str(src), "fetch", "--depth", "1", "origin", soldr_ref])
         run(["git", "-C", str(src), "reset", "--hard", "FETCH_HEAD"])
     else:
         src.mkdir(parents=True, exist_ok=True)
-        print(f"[perf-local] cloning soldr@{SOLDR_REF} -> {src}")
+        print(f"[perf-local] cloning soldr@{soldr_ref} -> {src}")
         run(
             [
                 "git",
@@ -269,7 +275,7 @@ def ensure_soldr_source() -> Path:
                 "--depth",
                 "1",
                 "--branch",
-                SOLDR_REF,
+                soldr_ref,
                 SOLDR_REPO,
                 str(src),
             ]
@@ -830,6 +836,14 @@ def main() -> int:
         action="store_true",
         help="Force a rebuild of all three Docker images even if cached.",
     )
+    parser.add_argument(
+        "--soldr-ref",
+        default=SOLDR_REF,
+        help=(
+            "Soldr branch, tag, or commit to build before embedding this "
+            f"zccache checkout (default: {SOLDR_REF})."
+        ),
+    )
     args = parser.parse_args()
 
     if not docker_available():
@@ -847,7 +861,7 @@ def main() -> int:
     layout = ensure_volume_dirs()
     build_all_images(force=args.rebuild_images)
 
-    ensure_soldr_source()
+    ensure_soldr_source(args.soldr_ref)
     run_soldr_builder(layout)
 
     results_dir = run_scenario(layout, args.scenario, args.fixture)
