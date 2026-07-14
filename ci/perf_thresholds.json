@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "environment": "linux-docker",
+  "minimum_speedup": 4.5,
+  "maximum_warm_ms": {
+    "cold-tar-untar-warm": null,
+    "worktree-share": 15000,
+    "touch-no-change": 10000,
+    "restore-no-clean-warm": 10000
+  },
+  "maximum_staged_overhead_ms": 15000,
+  "maximum_materialization_copied_bytes": 2147483648
+}
