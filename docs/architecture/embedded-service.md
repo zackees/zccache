@@ -157,14 +157,36 @@ pub struct CompileResponse {
     pub compile_id: String,
 }
 
+pub enum CompileChunk {
+    Stdout(Vec<u8>),
+    Stderr(Vec<u8>),
+    Done { /* outcome metadata */ },
+}
+
 impl ZccacheService {
     pub async fn start(config: ZccacheConfig) -> Result<Self>;
     pub async fn compile(&self, request: CompileRequest) -> Result<CompileResponse>;
+    pub async fn compile_streaming<F>(&self, request: CompileRequest, on_chunk: F) -> Result<()>
+    where
+        F: FnMut(CompileChunk);
     pub async fn stats(&self) -> Result<ServiceStats>;
     pub async fn flush(&self) -> Result<FlushReport>;
     pub async fn shutdown(self, mode: ShutdownMode) -> Result<ShutdownReport>;
 }
 ```
+
+`compile_streaming` is the canonical producer. `compile` is a buffered adapter
+that collects the same chunks. Compiler misses and direct invocations emit
+output while the child is running; cache hits replay stored output in 64 KiB
+chunks. Ordering is preserved within stdout and stderr, while cross-stream
+ordering follows the runtime pipe drain.
+
+The callback runs inline. A slow callback therefore applies backpressure to a
+bounded channel and eventually to the compiler pipes. Retained output is capped
+at 1 MiB per stream by default, configurable through
+`ZCCACHE_STREAM_CAPTURE_LIMIT_BYTES`. When a stream exceeds the cap, zccache
+keeps a live-emitted head plus a bounded tail and inserts an explicit marker
+between them; those capped bytes and marker are what a later cache hit replays.
 
 ### MVP API Acceptance
 

@@ -140,19 +140,54 @@ pub(super) async fn run_compiler_direct_with_family(
     }
     apply_client_env(&mut cmd, client_env, &lineage);
     let compiler_priority = CompilePriority::from_client_env(client_env.as_deref());
-    let result = super::super::process::tokio_command_output_with_priority_stdin(
-        &mut cmd,
-        compiler_priority,
-        if stdin_bytes.is_empty() {
-            None
-        } else {
-            Some(stdin_bytes)
-        },
-    )
-    .await;
+    let stdin = if stdin_bytes.is_empty() {
+        None
+    } else {
+        Some(stdin_bytes)
+    };
+    let (result, streamed_output) = if let Some(context) = crate::daemon::compile_output::current()
+    {
+        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        let process = super::super::process::tokio_command_output_streaming_with_priority_stdin(
+            &mut cmd,
+            compiler_priority,
+            stdin,
+            sender,
+        );
+        let consume = crate::daemon::compile_output::consume(
+            receiver,
+            context,
+            crate::daemon::compile_output::StderrFilter::None,
+        );
+        let (process_result, capture_result) = tokio::join!(process, consume);
+        (process_result, Some(capture_result))
+    } else {
+        (
+            super::super::process::tokio_command_output_with_priority_stdin(
+                &mut cmd,
+                compiler_priority,
+                stdin,
+            )
+            .await,
+            None,
+        )
+    };
 
     match result {
-        Ok(output) => {
+        Ok(mut output) => {
+            if let Some(capture) = streamed_output {
+                match capture {
+                    Ok(capture) => {
+                        output.stdout = capture.stdout;
+                        output.stderr = capture.stderr;
+                    }
+                    Err(e) => {
+                        return Response::Error {
+                            message: format!("failed to stream compiler output: {e}"),
+                        };
+                    }
+                }
+            }
             let exit_code = output.status.code().unwrap_or(-1);
             write_session_log(sessions, sid, &format!("[DIRECT] exit_code={exit_code}"));
             Response::CompileResult {
