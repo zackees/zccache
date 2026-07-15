@@ -375,6 +375,63 @@ def test_all_command_failures_fail_even_when_rows_parse():
     assert not report.passed
 
 
+def test_distribution_mode_requires_every_attempt_to_succeed():
+    attempts = [rows(PASSING_LOG), rows(PASSING_LOG)]
+
+    retry_report = perf_guard.evaluate_attempts(
+        attempts,
+        threshold=1.5,
+        command_failures=[1],
+    )
+    distribution_report = perf_guard.evaluate_attempts(
+        attempts,
+        threshold=1.5,
+        command_failures=[1],
+        require_all_attempts=True,
+    )
+
+    assert retry_report.passed
+    assert not distribution_report.passed
+
+
+def test_distribution_mode_requires_complete_numeric_samples():
+    first = rows(PASSING_LOG)
+    second = rows(PASSING_LOG)
+    second[0]["zccache_vs_sccache_ratio"] = None
+
+    report = perf_guard.evaluate_attempts(
+        [first, second],
+        threshold=1.5,
+        require_all_attempts=True,
+    )
+
+    assert not report.passed
+    status = next(
+        status
+        for status in report.statuses
+        if status.language == "c"
+        and status.scenario == "Single-file, Cold"
+        and status.baseline == "sccache"
+    )
+    assert status.attempts_seen == 2
+    assert len(status.samples) == 1
+
+
+def test_distribution_mode_requires_every_sample_to_clear_its_floor():
+    attempts = [rows(FAILING_RUST_LOG), rows(PASSING_LOG)]
+
+    retry_report = perf_guard.evaluate_attempts(attempts, threshold=1.5)
+    distribution_report = perf_guard.evaluate_attempts(
+        attempts,
+        threshold=1.5,
+        require_all_attempts=True,
+    )
+
+    assert retry_report.passed
+    assert not distribution_report.passed
+    assert "actual 1.200x" in perf_guard.format_final_status(distribution_report)
+
+
 def test_report_marks_failed_rows():
     report = perf_guard.evaluate_attempts([rows(FAILING_RUST_LOG)], threshold=1.5)
     markdown = perf_guard.format_report(report, 1.5, 1.5, 1.5, 1.5)
@@ -483,7 +540,7 @@ def test_report_json_marks_thresholds_and_failed_statuses():
         cold_sccache_threshold=1.5,
     )
 
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["passed"] is False
     assert payload["languages"] == ["c", "c++", "rust"]
     assert payload["thresholds"] == {
@@ -500,6 +557,73 @@ def test_report_json_marks_thresholds_and_failed_statuses():
         and not status["passed"]
     ]
     assert {status["baseline"] for status in failing} == {"bare", "sccache"}
+
+
+def test_distribution_statistics_cover_odd_and_even_samples():
+    assert perf_guard._distribution([1.0, 2.0, 9.0]) == {
+        "count": 3,
+        "min": 1.0,
+        "median": 2.0,
+        "p95": 9.0,
+        "mad": 1.0,
+        "max": 9.0,
+    }
+    assert perf_guard._distribution([1.0, 2.0, 4.0, 9.0]) == {
+        "count": 4,
+        "min": 1.0,
+        "median": 3.0,
+        "p95": 9.0,
+        "mad": 1.5,
+        "max": 9.0,
+    }
+
+
+def test_report_json_retains_attempt_distributions_and_provenance():
+    second_log = PASSING_LOG.replace(
+        "| Single-file, Warm | 3.000s | 2.000s | **1.000s** | **2.0x faster** | **3.0x faster** |",
+        "| Single-file, Warm | 4.000s | 3.000s | **1.000s** | **3.0x faster** | **4.0x faster** |",
+        1,
+    )
+    report = perf_guard.evaluate_attempts(
+        [rows(PASSING_LOG), rows(second_log)],
+        threshold=1.5,
+        languages=("c",),
+        require_all_attempts=True,
+    )
+
+    payload = perf_guard.format_report_json(
+        report,
+        1.5,
+        1.5,
+        ("c",),
+        cold_bare_threshold=1.5,
+        cold_sccache_threshold=1.5,
+        metadata={"git_sha": "abc123", "dirty": False},
+    )
+    status = next(
+        status
+        for status in payload["statuses"]
+        if status["scenario"] == "Single-file, Warm"
+        and status["baseline"] == "bare"
+    )
+
+    assert payload["attempt_policy"] == "all-required"
+    assert payload["metadata"] == {"git_sha": "abc123", "dirty": False}
+    assert status["passed"] is True
+    assert [sample["attempt"] for sample in status["samples"]] == [1, 2]
+    assert status["samples"][1]["attempt_json"] == "attempt-2.json"
+    assert status["samples"][1]["raw_log"] == "attempt-2.log"
+    assert status["distributions"]["ratio"] == {
+        "count": 2,
+        "min": 3.0,
+        "median": 3.5,
+        "p95": 4.0,
+        "mad": 0.5,
+        "max": 4.0,
+    }
+    assert "## Attempt distributions" in perf_guard.format_distribution_report(
+        report
+    )
 
 
 def test_report_json_passed_is_boolean_when_no_rows_parse():
@@ -553,6 +677,66 @@ def test_writes_perf_guard_final_status_artifact(tmp_path):
     assert (tmp_path / "perf-guard-result.txt").read_text(encoding="utf-8") == (
         final_status + "\n"
     )
+
+
+def test_run_attempts_stops_after_first_pass_by_default(tmp_path, monkeypatch):
+    calls = 0
+
+    def fake_run(log_path, language, benchmark_binary, test_name):
+        nonlocal calls
+        calls += 1
+        return 0, PASSING_LOG
+
+    monkeypatch.setattr(perf_guard, "run_benchmarks_once", fake_run)
+
+    attempts, failures = perf_guard._run_attempts(
+        tmp_path,
+        3,
+        1.5,
+        1.5,
+        1.5,
+        1.5,
+        perf_guard.REQUIRED_LANGUAGES,
+        None,
+        None,
+    )
+
+    assert calls == 1
+    assert len(attempts) == 1
+    assert failures == []
+
+
+def test_run_attempts_collects_every_requested_sample(tmp_path, monkeypatch):
+    calls = 0
+
+    def fake_run(log_path, language, benchmark_binary, test_name):
+        nonlocal calls
+        calls += 1
+        return 0, PASSING_LOG
+
+    monkeypatch.setattr(perf_guard, "run_benchmarks_once", fake_run)
+
+    attempts, failures = perf_guard._run_attempts(
+        tmp_path,
+        3,
+        1.5,
+        1.5,
+        1.5,
+        1.5,
+        perf_guard.REQUIRED_LANGUAGES,
+        None,
+        None,
+        collect_all_attempts=True,
+    )
+
+    assert calls == 3
+    assert len(attempts) == 3
+    assert failures == []
+    assert sorted(path.name for path in tmp_path.glob("attempt-*.json")) == [
+        "attempt-1.json",
+        "attempt-2.json",
+        "attempt-3.json",
+    ]
 
 
 def test_benchmark_language_commands_are_filtered():
