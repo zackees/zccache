@@ -78,6 +78,7 @@ def test_pinned_tool_versions_are_required():
 def test_resume_identity_rejects_commit_image_host_or_inventory_changes():
     identity = {
         "commit": "abc123",
+        "ref": "perf/example",
         "image_digest": "sha256:image",
         "host_fingerprint": "host-a",
         "inventory": [["c", "perf_c_zccache_vs_bare"]],
@@ -160,6 +161,8 @@ def test_invalid_or_fallback_sample_cannot_enter_campaign():
 
 
 def test_busy_host_detection_uses_competing_container_cpu_and_process_names():
+    assert perf_standalone.HOST_PROCESS_ENUMERATION_TIMEOUT_SECONDS >= 30
+
     assert not perf_standalone.busy_reasons(
         containers=[("soldr-perf-local", 0.02)],
         process_names=[],
@@ -330,6 +333,7 @@ def test_summary_metadata_is_corrected_to_campaign_identity(tmp_path):
     )
     identity = {
         "commit": "abc123",
+        "ref": "perf/example",
         "dirty": False,
         "image_digest": "sha256:image",
         "host_fingerprint": "host-a",
@@ -345,6 +349,7 @@ def test_summary_metadata_is_corrected_to_campaign_identity(tmp_path):
     )
 
     assert enriched["metadata"]["git_sha"] == "abc123"
+    assert enriched["metadata"]["git_ref"] == "perf/example"
     assert enriched["metadata"]["dirty"] is False
     assert enriched["metadata"]["docker_command"] == command
     assert enriched["infrastructure"]["cache_telemetry"] == telemetry
