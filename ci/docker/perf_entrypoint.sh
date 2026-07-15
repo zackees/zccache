@@ -56,8 +56,14 @@ if [[ ! -f "${scenario_script}" ]]; then
     echo "ERROR: scenario script not found: ${scenario_script}" >&2
     exit 2
 fi
+scenario_stdout="/results/scenario-stdout.log"
 bash "${scenario_script}" "${WORK_DIR}/${FIXTURE}" \
-    | tee "/results/result.json"
+    | tee "${scenario_stdout}"
+# soldr may print machine-readable command output before the scenario's final
+# result object. Preserve that evidence, but keep result.json to its documented
+# single-object contract.
+tail -n 1 "${scenario_stdout}" >"/results/result.json"
+jq -e 'type == "object"' "/results/result.json" >/dev/null
 
 # Step 3: copy the cache reports, shutdown reports, RSS CSV, and the
 # per-session zccache logs that the GHA workflow's upload-artifact step

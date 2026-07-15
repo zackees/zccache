@@ -35,7 +35,7 @@ def test_perf_local_retains_daemon_runtime_from_every_cache_root() -> None:
     entrypoint = LOCAL_ENTRYPOINT.read_text(encoding="utf-8")
 
     assert "daemon-files.txt" in entrypoint
-    assert "find \"${scenario_root}\" -type f -name daemon-spawn.log" in entrypoint
+    assert 'find "${scenario_root}" -type f -name daemon-spawn.log' in entrypoint
     assert 'destination="/results/daemon-runtime/${relative}"' in entrypoint
 
 
@@ -49,6 +49,14 @@ def test_perf_local_retains_worktree_reports_and_abort_evidence() -> None:
         "soldr-aborts-*.jsonl",
     ):
         assert artifact in entrypoint
+
+
+def test_perf_local_isolates_the_final_result_from_command_stdout() -> None:
+    entrypoint = LOCAL_ENTRYPOINT.read_text(encoding="utf-8")
+
+    assert 'tee "${scenario_stdout}"' in entrypoint
+    assert 'tail -n 1 "${scenario_stdout}" >"/results/result.json"' in entrypoint
+    assert 'jq -e \'type == "object"\' "/results/result.json"' in entrypoint
 
 
 def test_perf_local_runner_installs_scenario_dependencies() -> None:
