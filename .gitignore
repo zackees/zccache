@@ -34,6 +34,7 @@ Thumbs.db
 
 # Local perf harness scratch (ci/perf_local.py + ci/docker/* output)
 .perf-local/
+.perf-standalone/
 
 # Local bench scratch (Stop-hook cold-cache benchmark output + helper script)
 tasks/bench-output/

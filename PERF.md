@@ -161,6 +161,37 @@ uv run --no-project ci/perf_local.py test
 
 See [`ci/docker/README.md`](ci/docker/README.md) for image and volume layout.
 
+## Standalone compiler campaign
+
+The standalone campaign runs the registered C, C++, Emscripten, and Rust
+`perf_bench_test` scenarios in one pinned Linux image. The image uses soldr to
+prepare Rust into a cached Docker layer, then seeds soldr/Cargo/rustup state
+into a named runtime volume. Source is mounted read-only, and timed samples
+invoke the prebuilt benchmark binary directly.
+
+Run one diagnostic sample while iterating:
+
+```powershell
+uv run --no-project python -m ci.perf_standalone --language c --test perf_c_zccache_vs_bare --attempts 1 --rebuild-image
+```
+
+Run the complete five-sample campaign from a clean committed checkout:
+
+```powershell
+uv run --no-project python -m ci.perf_standalone
+```
+
+Resume an interrupted campaign without mixing commit, image, fixture, host, or
+attempt identities:
+
+```powershell
+uv run --no-project python -m ci.perf_standalone --resume
+```
+
+Evidence is retained under `.perf-standalone/results/`. Each campaign has a
+JSON index and Markdown table linking raw logs, parsed rows, cache phase/byte
+telemetry, command provenance, and resource usage for every test.
+
 ## Cross-platform responsibility
 
 Linux Docker is the sanctioned timing environment. Native Windows, macOS, and
