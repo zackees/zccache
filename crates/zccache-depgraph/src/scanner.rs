@@ -5,8 +5,10 @@
 //! all `#include` directives are returned unconditionally.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use super::search_paths::IncludeSearchPaths;
+use dashmap::DashMap;
 use zccache_core::NormalizedPath;
 
 /// The kind of `#include` directive.
@@ -16,6 +18,10 @@ pub enum IncludeKind {
     Quoted,
     /// `#include <foo.h>` â€” angle-bracket include.
     AngleBracket,
+    /// A quoted `#include_next` directive.
+    QuotedNext,
+    /// An angle-bracket `#include_next` directive.
+    AngleBracketNext,
     /// `#include MACRO` â€” computed include, cannot resolve by text scanning.
     Computed(String),
 }
@@ -30,6 +36,16 @@ pub struct IncludeDirective {
     pub path: String,
     /// 1-based line number in the file.
     pub line: u32,
+}
+
+/// Request-scoped memo for parsed source/header directives.
+///
+/// A multi-source compile commonly gives every unit the same standard-library
+/// graph. Sharing this memo preserves each unit's independent recursive result
+/// while avoiding repeated reads and parsing of those common headers.
+#[derive(Default)]
+pub struct RecursiveScanCache {
+    directives: DashMap<NormalizedPath, Arc<Vec<IncludeDirective>>>,
 }
 
 /// Result of a recursive include scan.
@@ -149,8 +165,46 @@ pub fn resolve_include(
             }
             None
         }
+        IncludeKind::QuotedNext => resolve_include_next(
+            &directive.path,
+            search.quoted_search_dirs(),
+            including_file_dir,
+        ),
+        IncludeKind::AngleBracketNext => resolve_include_next(
+            &directive.path,
+            search.angle_search_dirs(),
+            including_file_dir,
+        ),
         IncludeKind::Computed(_) => None,
     }
+}
+
+fn resolve_include_next<'a>(
+    path: &str,
+    search_dirs: impl Iterator<Item = &'a Path>,
+    including_file_dir: &Path,
+) -> Option<NormalizedPath> {
+    let including_dir = try_normalize(including_file_dir)?;
+    let dirs: Vec<&Path> = search_dirs.collect();
+    let current_root = dirs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, dir)| {
+            let normalized = try_normalize(dir)?;
+            including_dir
+                .starts_with(normalized.as_path())
+                .then(|| (index, normalized.as_path().components().count()))
+        })
+        .fold(None, |best, candidate| match best {
+            Some((_, best_depth)) if best_depth >= candidate.1 => best,
+            _ => Some(candidate),
+        })
+        .map(|(index, _)| index);
+    let start = current_root.map_or(0, |index| index + 1);
+    dirs.into_iter().skip(start).find_map(|dir| {
+        let candidate = dir.join(path);
+        candidate.is_file().then(|| normalize(&candidate))
+    })
 }
 
 /// Recursively scan a source file for all transitive includes.
@@ -166,6 +220,23 @@ pub fn resolve_include(
 /// parallelization). Callers in `graph.rs` only iterate the list to hash
 /// all files; no order invariant is broken.
 pub fn scan_recursive(source: &Path, search: &IncludeSearchPaths) -> ScanResult {
+    scan_recursive_impl(source, search, None)
+}
+
+/// Recursively scan with a request-scoped parsed-directive memo.
+pub fn scan_recursive_cached(
+    source: &Path,
+    search: &IncludeSearchPaths,
+    cache: &RecursiveScanCache,
+) -> ScanResult {
+    scan_recursive_impl(source, search, Some(cache))
+}
+
+fn scan_recursive_impl(
+    source: &Path,
+    search: &IncludeSearchPaths,
+    cache: Option<&RecursiveScanCache>,
+) -> ScanResult {
     use dashmap::DashSet;
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -194,6 +265,7 @@ pub fn scan_recursive(source: &Path, search: &IncludeSearchPaths) -> ScanResult 
                     &resolved,
                     &unresolved,
                     &has_computed,
+                    cache,
                 )
             })
             .collect();
@@ -224,10 +296,22 @@ fn scan_one_level(
     resolved: &std::sync::Mutex<Vec<NormalizedPath>>,
     unresolved: &std::sync::Mutex<Vec<String>>,
     has_computed: &std::sync::atomic::AtomicBool,
+    cache: Option<&RecursiveScanCache>,
 ) -> Vec<NormalizedPath> {
-    let directives = match scan_includes(file) {
-        Ok(d) => d,
-        Err(_) => return Vec::new(),
+    let directives = if let Some(cache) = cache {
+        let key = NormalizedPath::from(file);
+        Arc::clone(
+            cache
+                .directives
+                .entry(key)
+                .or_insert_with(|| Arc::new(scan_includes(file).unwrap_or_default()))
+                .value(),
+        )
+    } else {
+        match scan_includes(file) {
+            Ok(directives) => Arc::new(directives),
+            Err(_) => return Vec::new(),
+        }
     };
 
     let file_dir = file.parent().unwrap_or(Path::new("."));
@@ -237,7 +321,7 @@ fn scan_one_level(
     let mut local_unresolved: Vec<String> = Vec::new();
     let mut saw_computed = false;
 
-    for directive in &directives {
+    for directive in directives.iter() {
         match &directive.kind {
             IncludeKind::Computed(_) => {
                 saw_computed = true;
@@ -285,8 +369,8 @@ fn join_continuations(source: &str) -> String {
         if ch == '\\' {
             match chars.peek() {
                 Some('\n') => {
-                    chars.next(); // consume the newline
-                                  // Don't emit either the backslash or the newline.
+                    // Don't emit either the backslash or the newline.
+                    chars.next();
                 }
                 Some('\r') => {
                     chars.next(); // consume \r
@@ -376,8 +460,12 @@ fn parse_include_from_line(line: &str) -> Option<IncludeDirective> {
     let after_hash = trimmed.strip_prefix('#')?;
     let after_hash = after_hash.trim();
 
-    // Must be "include"
-    let after_include = after_hash.strip_prefix("include")?;
+    let (after_include, include_next) = if let Some(rest) = after_hash.strip_prefix("include_next")
+    {
+        (rest, true)
+    } else {
+        (after_hash.strip_prefix("include")?, false)
+    };
 
     // "include" must not be part of a longer identifier.
     if let Some(next_ch) = after_include.chars().next() {
@@ -400,7 +488,11 @@ fn parse_include_from_line(line: &str) -> Option<IncludeDirective> {
             return None;
         }
         return Some(IncludeDirective {
-            kind: IncludeKind::Quoted,
+            kind: if include_next {
+                IncludeKind::QuotedNext
+            } else {
+                IncludeKind::Quoted
+            },
             path: path.to_string(),
             line: 0, // Filled in by caller.
         });
@@ -414,7 +506,11 @@ fn parse_include_from_line(line: &str) -> Option<IncludeDirective> {
             return None;
         }
         return Some(IncludeDirective {
-            kind: IncludeKind::AngleBracket,
+            kind: if include_next {
+                IncludeKind::AngleBracketNext
+            } else {
+                IncludeKind::AngleBracket
+            },
             path: path.to_string(),
             line: 0,
         });
@@ -585,6 +681,16 @@ mod tests {
     }
 
     #[test]
+    fn parse_include_next_directives() {
+        let includes = scan_includes_str("#include_next <system.h>\n#include_next \"quoted.h\"\n");
+        assert_eq!(includes.len(), 2);
+        assert_eq!(includes[0].kind, IncludeKind::AngleBracketNext);
+        assert_eq!(includes[0].path, "system.h");
+        assert_eq!(includes[1].kind, IncludeKind::QuotedNext);
+        assert_eq!(includes[1].path, "quoted.h");
+    }
+
+    #[test]
     fn not_include_directive() {
         let source = "#define FOO 1\n#ifdef BAR\n#endif\n";
         let includes = scan_includes_str(source);
@@ -729,6 +835,55 @@ mod tests {
     }
 
     #[test]
+    fn resolve_include_next_skips_current_search_root() {
+        let dir = TempDir::new().unwrap();
+        let first = dir.path().join("first");
+        let second = dir.path().join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(first.join("same.h"), "// first").unwrap();
+        std::fs::write(second.join("same.h"), "// second").unwrap();
+        let directive = IncludeDirective {
+            kind: IncludeKind::AngleBracketNext,
+            path: "same.h".into(),
+            line: 1,
+        };
+        let search = IncludeSearchPaths {
+            system: vec![first.clone().into(), second.clone().into()],
+            ..Default::default()
+        };
+
+        let result = resolve_include(&directive, &search, &first).unwrap();
+
+        assert_eq!(result, normalize(&second.join("same.h")));
+    }
+
+    #[test]
+    fn resolve_include_next_uses_most_specific_nested_search_root() {
+        let dir = TempDir::new().unwrap();
+        let outer = dir.path().join("include");
+        let inner = outer.join("cxx");
+        let next = dir.path().join("next");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::create_dir_all(&next).unwrap();
+        std::fs::write(inner.join("same.h"), "// inner").unwrap();
+        std::fs::write(next.join("same.h"), "// next").unwrap();
+        let directive = IncludeDirective {
+            kind: IncludeKind::AngleBracketNext,
+            path: "same.h".into(),
+            line: 1,
+        };
+        let search = IncludeSearchPaths {
+            system: vec![outer.into(), inner.clone().into(), next.clone().into()],
+            ..Default::default()
+        };
+
+        let result = resolve_include(&directive, &search, &inner).unwrap();
+
+        assert_eq!(result, normalize(&next.join("same.h")));
+    }
+
+    #[test]
     fn resolve_computed_returns_none() {
         let directive = IncludeDirective {
             kind: IncludeKind::Computed("MACRO".to_string()),
@@ -863,6 +1018,24 @@ mod tests {
 
         // a.h, b.h, common.h â€” each once.
         assert_eq!(result.resolved.len(), 3);
+    }
+
+    #[test]
+    fn recursive_scan_cache_shares_parsing_but_preserves_per_source_results() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("one.c"), "#include \"shared.h\"\n").unwrap();
+        std::fs::write(dir.path().join("two.c"), "#include \"shared.h\"\n").unwrap();
+        std::fs::write(dir.path().join("shared.h"), "#include \"nested.h\"\n").unwrap();
+        std::fs::write(dir.path().join("nested.h"), "// leaf\n").unwrap();
+        let cache = RecursiveScanCache::default();
+        let search = IncludeSearchPaths::default();
+
+        let one = scan_recursive_cached(&dir.path().join("one.c"), &search, &cache);
+        let two = scan_recursive_cached(&dir.path().join("two.c"), &search, &cache);
+
+        assert_eq!(one.resolved.len(), 2);
+        assert_eq!(two.resolved.len(), 2);
+        assert_eq!(cache.directives.len(), 4);
     }
 
     #[test]

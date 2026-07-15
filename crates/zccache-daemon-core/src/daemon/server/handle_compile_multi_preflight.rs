@@ -11,6 +11,21 @@ struct InputStamp {
     change_marker: Option<i128>,
 }
 
+pub(super) struct InputStampSet {
+    stamps: HashMap<NormalizedPath, InputStamp>,
+}
+
+impl InputStampSet {
+    pub(super) fn capture(paths: &[NormalizedPath]) -> Self {
+        Self {
+            stamps: paths
+                .iter()
+                .filter_map(|path| input_stamp(path).map(|stamp| (path.clone(), stamp)))
+                .collect(),
+        }
+    }
+}
+
 fn input_stamp(path: &Path) -> Option<InputStamp> {
     let metadata = std::fs::metadata(path).ok()?;
     Some(InputStamp {
@@ -160,6 +175,41 @@ pub(in crate::daemon::server) struct InputSnapshot {
     clock: Clock,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::daemon::server) enum InputSnapshotIssue {
+    Incomplete,
+    InputSetChanged,
+    StampSetChanged,
+    ContentChanged,
+    StampChanged,
+    JournalChanged,
+}
+
+impl InputSnapshotIssue {
+    pub(super) const fn id(self) -> &'static str {
+        match self {
+            Self::Incomplete => "snapshot_incomplete",
+            Self::InputSetChanged => "snapshot_input_set_changed",
+            Self::StampSetChanged => "snapshot_stamp_set_changed",
+            Self::ContentChanged => "snapshot_content_changed",
+            Self::StampChanged => "snapshot_stamp_changed",
+            Self::JournalChanged => "snapshot_journal_changed",
+        }
+    }
+
+    pub(super) const fn failure(self) -> crate::daemon::staged_stats::StagedFailure {
+        use crate::daemon::staged_stats::StagedFailure;
+        match self {
+            Self::Incomplete => StagedFailure::SnapshotIncomplete,
+            Self::InputSetChanged => StagedFailure::SnapshotInputSetChanged,
+            Self::StampSetChanged => StagedFailure::SnapshotStampSetChanged,
+            Self::ContentChanged => StagedFailure::SnapshotContentChanged,
+            Self::StampChanged => StagedFailure::SnapshotStampChanged,
+            Self::JournalChanged => StagedFailure::SnapshotJournalChanged,
+        }
+    }
+}
+
 impl InputSnapshot {
     pub(super) fn incomplete(clock: Clock) -> Self {
         Self {
@@ -174,27 +224,44 @@ impl InputSnapshot {
         state: &SharedState,
         source: &NormalizedPath,
         ctx: &CompileContext,
-        mut hashes: HashMap<NormalizedPath, ContentHash>,
-        clock: Clock,
+        hashes: HashMap<NormalizedPath, ContentHash>,
+        scan_cache: &crate::depgraph::scanner::RecursiveScanCache,
     ) -> Self {
-        let scan = crate::depgraph::scanner::scan_recursive(source, &ctx.include_search);
-        let mut complete = true;
-        for path in scan.resolved.iter().chain(ctx.force_includes.iter()) {
-            if hashes.contains_key(path) {
-                continue;
-            }
-            match hash_file(&state.cache_system, path, clock) {
-                Ok(hash) => {
-                    hashes.insert(path.clone(), hash);
-                }
-                Err(_) => complete = false,
-            }
-        }
-        let stamps: HashMap<NormalizedPath, InputStamp> = hashes
-            .keys()
+        let scan = crate::depgraph::scanner::scan_recursive_cached(
+            source,
+            &ctx.include_search,
+            scan_cache,
+        );
+        let paths: HashSet<NormalizedPath> = hashes
+            .into_keys()
+            .chain(scan.resolved)
+            .chain(ctx.force_includes.iter().cloned())
+            .collect();
+        let paths: Vec<NormalizedPath> = paths.into_iter().collect();
+        state.cache_system.register_tracked(&paths);
+        let clock = state.cache_system.current_clock();
+        let before_stamps: HashMap<NormalizedPath, InputStamp> = paths
+            .iter()
             .filter_map(|path| input_stamp(path).map(|stamp| (path.clone(), stamp)))
             .collect();
-        complete &= stamps.len() == hashes.len();
+        let hashes: HashMap<NormalizedPath, ContentHash> = {
+            use rayon::prelude::*;
+            paths
+                .par_iter()
+                .filter_map(|path| {
+                    hash_file(&state.cache_system, path, clock)
+                        .ok()
+                        .map(|hash| (path.clone(), hash))
+                })
+                .collect()
+        };
+        let stamps: HashMap<NormalizedPath, InputStamp> = paths
+            .iter()
+            .filter_map(|path| input_stamp(path).map(|stamp| (path.clone(), stamp)))
+            .collect();
+        let mut complete = hashes.len() == paths.len();
+        complete &= before_stamps == stamps;
+        complete &= stamps.len() == paths.len();
         complete &= stamps_have_native_markers(&stamps);
         Self {
             hashes,
@@ -204,23 +271,42 @@ impl InputSnapshot {
         }
     }
 
-    pub(super) fn stable(
+    pub(super) fn issue_with_stamps(
         &self,
         state: &SharedState,
         paths: &[NormalizedPath],
         current_hashes: &HashMap<NormalizedPath, ContentHash>,
-    ) -> bool {
-        self.complete
-            && self.hashes.len() == current_hashes.len()
-            && self.stamps.len() == paths.len()
-            && self
-                .hashes
-                .iter()
-                .all(|(path, before)| current_hashes.get(path) == Some(before))
-            && paths.iter().all(|path| {
-                input_stamp(path).as_ref() == self.stamps.get(path)
-                    && !state.cache_system.journal().changed_since(path, self.clock)
-            })
+        current_stamps: &InputStampSet,
+    ) -> Option<InputSnapshotIssue> {
+        if !self.complete {
+            return Some(InputSnapshotIssue::Incomplete);
+        }
+        if self.hashes.len() != current_hashes.len() {
+            return Some(InputSnapshotIssue::InputSetChanged);
+        }
+        if self.stamps.len() != paths.len() {
+            return Some(InputSnapshotIssue::StampSetChanged);
+        }
+        if !self
+            .hashes
+            .iter()
+            .all(|(path, before)| current_hashes.get(path) == Some(before))
+        {
+            return Some(InputSnapshotIssue::ContentChanged);
+        }
+        if !paths
+            .iter()
+            .all(|path| current_stamps.stamps.get(path) == self.stamps.get(path))
+        {
+            return Some(InputSnapshotIssue::StampChanged);
+        }
+        if paths
+            .iter()
+            .any(|path| state.cache_system.journal().changed_since(path, self.clock))
+        {
+            return Some(InputSnapshotIssue::JournalChanged);
+        }
+        None
     }
 }
 
@@ -424,10 +510,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(current_hash, before_hash);
-        assert!(!snapshot.stable(
-            &state,
-            std::slice::from_ref(&input),
-            &HashMap::from([(input.clone(), current_hash)]),
-        ));
+        assert!(snapshot
+            .issue_with_stamps(
+                &state,
+                std::slice::from_ref(&input),
+                &HashMap::from([(input.clone(), current_hash)]),
+                &InputStampSet::capture(std::slice::from_ref(&input)),
+            )
+            .is_some());
     }
 }

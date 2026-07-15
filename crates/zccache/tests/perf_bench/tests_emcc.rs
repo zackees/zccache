@@ -192,13 +192,21 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
     let _ = client.recv::<Response>().await;
     nuke_and_regenerate(zc_dir.path());
     warmup_compiler(&compiler, zc_dir.path());
-    let zc_cold_multi =
-        zccache_compile_multi(&mut client, &session_id, &compiler, &zc_cwd, &sources).await;
+    let zc_cold_multi = zccache_compile_multi(
+        &mut client,
+        &session_id,
+        &compiler,
+        &zc_cwd,
+        &sources,
+        false,
+    )
+    .await;
     eprintln!("        multi cold:   {}", fmt_dur(zc_cold_multi));
     let mut zc_warm_multi = Vec::with_capacity(WARM_TRIALS);
     for _ in 0..WARM_TRIALS {
         zc_warm_multi.push(
-            zccache_compile_multi(&mut client, &session_id, &compiler, &zc_cwd, &sources).await,
+            zccache_compile_multi(&mut client, &session_id, &compiler, &zc_cwd, &sources, true)
+                .await,
         );
     }
     print_trials("multi warm:", &zc_warm_multi);

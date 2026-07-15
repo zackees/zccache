@@ -15,6 +15,15 @@ use args::filter_multi_source_args;
 use preflight::InputSnapshot;
 use types::{PendingWrite, UnitCacheResult};
 
+struct UnitCacheCheck<'a> {
+    cwd_path: &'a Path,
+    key_root: &'a NormalizedPath,
+    system_includes: &'a [NormalizedPath],
+    shared_base: Option<&'a CompileContext>,
+    scan_cache: &'a crate::depgraph::scanner::RecursiveScanCache,
+    cache_now: Instant,
+}
+
 pub(super) fn materialize_multi_hit(
     targets: &[(NormalizedPath, NormalizedPath)],
     payloads: &[CachedPayload],
@@ -27,15 +36,19 @@ pub(super) fn materialize_multi_hit(
 /// If `shared_base` is provided, the CompileContext is built by cloning it and
 /// overriding the source_file, avoiding redundant arg parsing for multi-file
 /// compilations where all units share the same flags.
-pub(super) fn check_unit_cache(
+fn check_unit_cache(
     state: &SharedState,
     compilation: &crate::compiler::CacheableCompilation,
-    cwd_path: &Path,
-    key_root: &NormalizedPath,
-    system_includes: &[NormalizedPath],
-    shared_base: Option<&CompileContext>,
-    cache_now: Instant,
+    check: UnitCacheCheck<'_>,
 ) -> UnitCacheResult {
+    let UnitCacheCheck {
+        cwd_path,
+        key_root,
+        system_includes,
+        shared_base,
+        scan_cache,
+        cache_now,
+    } = check;
     let t0 = std::time::Instant::now();
     let snap_clock = state.cache_system.current_clock();
     state.stats.record_compilation();
@@ -331,7 +344,7 @@ pub(super) fn check_unit_cache(
     }
 
     state.fast_hit_cache.remove(&context_key);
-    let input_snapshot = InputSnapshot::capture(state, &source_path, &ctx, hash_map, snap_clock);
+    let input_snapshot = InputSnapshot::capture(state, &source_path, &ctx, hash_map, scan_cache);
     UnitCacheResult::Miss {
         source_path,
         output_path,
@@ -399,6 +412,7 @@ pub(super) async fn handle_compile_multi(
 
     // ── Phase 1: Check cache for each unit (parallel, as-completed) ──
     let mut join_set = tokio::task::JoinSet::new();
+    let scan_cache = Arc::new(crate::depgraph::scanner::RecursiveScanCache::default());
     for (idx, compilation) in compilations.iter().enumerate() {
         let state = Arc::clone(&state);
         let cwd_path = cwd_path.clone();
@@ -406,6 +420,7 @@ pub(super) async fn handle_compile_multi(
         let system_includes = system_includes.clone();
         let compilation = compilation.clone();
         let shared_base = Arc::clone(&shared_base);
+        let scan_cache = Arc::clone(&scan_cache);
         let cache_now = compile_start;
         join_set.spawn_blocking(move || {
             (
@@ -413,11 +428,14 @@ pub(super) async fn handle_compile_multi(
                 check_unit_cache(
                     &state,
                     &compilation,
-                    &cwd_path,
-                    &key_root,
-                    &system_includes,
-                    Some(&shared_base),
-                    cache_now,
+                    UnitCacheCheck {
+                        cwd_path: &cwd_path,
+                        key_root: &key_root,
+                        system_includes: &system_includes,
+                        shared_base: Some(&shared_base),
+                        scan_cache: &scan_cache,
+                        cache_now,
+                    },
                 ),
             )
         });

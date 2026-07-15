@@ -110,7 +110,7 @@ pub fn discovery_args_fast() -> Vec<&'static str> {
 }
 
 /// Parse the `-cc1` line from clang's `-###` output and extract every
-/// `-internal-isystem` / `-internal-externc-isystem` path.
+/// `-iwithsysroot`, `-internal-isystem`, and `-internal-externc-isystem` path.
 ///
 /// The driver prints exactly one line per invocation that looks like:
 ///
@@ -147,16 +147,42 @@ pub fn parse_cc1_system_include_output(output: &str) -> Vec<NormalizedPath> {
         if !tokens.iter().any(|t| t == "-cc1") {
             continue;
         }
-        let mut iter = tokens.iter();
+        let sysroot = tokens
+            .windows(2)
+            .find_map(|pair| (pair[0] == "-isysroot").then_some(pair[1].as_str()));
+        let mut with_sysroot = Vec::new();
+        let mut internal = Vec::new();
+        let mut iter = tokens.iter().peekable();
         while let Some(token) = iter.next() {
             if token == "-internal-isystem" || token == "-internal-externc-isystem" {
                 if let Some(path) = iter.next() {
                     if !path.is_empty() {
-                        paths.push(NormalizedPath::new(path));
+                        internal.push(NormalizedPath::new(path));
                     }
+                }
+            } else if let Some(joined_path) = token.strip_prefix("-iwithsysroot") {
+                let path = if joined_path.is_empty() {
+                    iter.next().map(String::as_str)
+                } else {
+                    Some(joined_path)
+                };
+                if let Some(path) = path.filter(|path| !path.is_empty()) {
+                    let resolved = sysroot.map_or_else(
+                        || NormalizedPath::new(path),
+                        |root| {
+                            NormalizedPath::new(
+                                Path::new(root).join(path.trim_start_matches(['/', '\\'])),
+                            )
+                        },
+                    );
+                    with_sysroot.push(resolved);
                 }
             }
         }
+        // Clang appends these flags to the cc1 argv after its internal
+        // directories, but searches them first (as shown by `-v -E`).
+        paths.extend(with_sysroot);
+        paths.extend(internal);
         // Only the first cc1 line — multi-arch / multi-tu drivers may
         // emit several but the include search order is identical.
         if !paths.is_empty() {
@@ -745,6 +771,24 @@ InstalledDir: /usr/bin
         let paths = parse_cc1_system_include_output(output);
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0], NormalizedPath::new("/opt/Custom Include Path/v1"));
+    }
+
+    #[test]
+    fn parse_cc1_output_resolves_emscripten_iwithsysroot_in_search_order() {
+        let output = r#" "/emsdk/upstream/bin/clang-20" "-cc1" "-isysroot" "/emsdk/upstream/emscripten/cache/sysroot" "-internal-isystem" "/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1" "-internal-isystem" "/emsdk/upstream/lib/clang/20/include" "-iwithsysroot/include/fakesdl" "-iwithsysroot/include/compat" "-x" "c++" "/dev/null"
+"#;
+
+        let paths = parse_cc1_system_include_output(output);
+
+        assert_eq!(
+            paths,
+            vec![
+                NormalizedPath::new("/emsdk/upstream/emscripten/cache/sysroot/include/fakesdl"),
+                NormalizedPath::new("/emsdk/upstream/emscripten/cache/sysroot/include/compat"),
+                NormalizedPath::new("/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1"),
+                NormalizedPath::new("/emsdk/upstream/lib/clang/20/include"),
+            ]
+        );
     }
 
     #[test]

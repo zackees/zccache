@@ -114,6 +114,12 @@ pub(crate) enum StagedFailure {
     Salvage,
     RequestedMaterialization,
     CorruptObject,
+    SnapshotIncomplete,
+    SnapshotInputSetChanged,
+    SnapshotStampSetChanged,
+    SnapshotContentChanged,
+    SnapshotStampChanged,
+    SnapshotJournalChanged,
 }
 
 const FAILURES: &[(StagedFailure, &str)] = &[
@@ -184,6 +190,27 @@ const FAILURES: &[(StagedFailure, &str)] = &[
         "requested_materialization",
     ),
     (StagedFailure::CorruptObject, "corrupt_object"),
+    (StagedFailure::SnapshotIncomplete, "snapshot_incomplete"),
+    (
+        StagedFailure::SnapshotInputSetChanged,
+        "snapshot_input_set_changed",
+    ),
+    (
+        StagedFailure::SnapshotStampSetChanged,
+        "snapshot_stamp_set_changed",
+    ),
+    (
+        StagedFailure::SnapshotContentChanged,
+        "snapshot_content_changed",
+    ),
+    (
+        StagedFailure::SnapshotStampChanged,
+        "snapshot_stamp_changed",
+    ),
+    (
+        StagedFailure::SnapshotJournalChanged,
+        "snapshot_journal_changed",
+    ),
 ];
 
 pub(crate) struct StagedProfiler {

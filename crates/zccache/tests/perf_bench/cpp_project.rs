@@ -176,6 +176,7 @@ pub async fn zccache_compile_multi(
     compiler: &str,
     cwd: &str,
     sources: &[String],
+    expected_cached: bool,
 ) -> Duration {
     clean_objects(Path::new(cwd));
     let mut args: Vec<String> = vec!["-c".into()];
@@ -195,8 +196,14 @@ pub async fn zccache_compile_multi(
         .await
         .unwrap();
     match client.recv().await.unwrap() {
-        Some(Response::CompileResult { exit_code, .. }) => {
+        Some(Response::CompileResult {
+            exit_code, cached, ..
+        }) => {
             assert_eq!(exit_code, 0, "multi-file compile failed");
+            assert_eq!(
+                cached, expected_cached,
+                "multi-file compile returned an unexpected cache state"
+            );
         }
         other => panic!("expected CompileResult, got: {other:?}"),
     }

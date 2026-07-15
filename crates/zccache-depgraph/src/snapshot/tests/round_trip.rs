@@ -55,6 +55,16 @@ fn populated_graph_roundtrip() {
                 path: "PLATFORM_HEADER".into(),
                 line: 3,
             },
+            IncludeDirective {
+                kind: IncludeKind::QuotedNext,
+                path: "quoted-next.h".into(),
+                line: 4,
+            },
+            IncludeDirective {
+                kind: IncludeKind::AngleBracketNext,
+                path: "angle-next.h".into(),
+                line: 5,
+            },
         ],
     );
 
@@ -108,10 +118,12 @@ fn populated_graph_roundtrip() {
     let includes = loaded
         .get_file_includes(&NormalizedPath::from("/src/main.cpp"))
         .unwrap();
-    assert_eq!(includes.len(), 3);
+    assert_eq!(includes.len(), 5);
     assert_eq!(includes[0].kind, IncludeKind::Quoted);
     assert_eq!(includes[1].kind, IncludeKind::AngleBracket);
     assert!(matches!(includes[2].kind, IncludeKind::Computed(_)));
+    assert_eq!(includes[3].kind, IncludeKind::QuotedNext);
+    assert_eq!(includes[4].kind, IncludeKind::AngleBracketNext);
 
     // Verify context state survived.
     assert_eq!(loaded.get_state(&key), Some(ContextState::Warm));
