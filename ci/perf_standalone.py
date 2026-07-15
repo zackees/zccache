@@ -47,6 +47,7 @@ COMPETING_PROCESSES = {
     "sccache",
 }
 BUSY_CPU_PERCENT = 5.0
+HOST_PROCESS_ENUMERATION_TIMEOUT_SECONDS = 30
 RECIPE_FILES = (
     DOCKERFILE,
     REPO_ROOT / "ci/docker/standalone_perf_entrypoint.sh",
@@ -149,6 +150,7 @@ def validate_resume_identity(
 ) -> None:
     for field in (
         "commit",
+        "ref",
         "image_digest",
         "host_fingerprint",
         "inventory",
@@ -368,7 +370,7 @@ def _process_names() -> list[str]:
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=10,
+                timeout=HOST_PROCESS_ENUMERATION_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired as error:
             raise RuntimeError("host process enumeration timed out") from error
@@ -420,7 +422,7 @@ def _windows_process_snapshot() -> dict[int, tuple[str, float]] | None:
             capture_output=True,
             text=True,
             check=False,
-            timeout=10,
+            timeout=HOST_PROCESS_ENUMERATION_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
         return None
@@ -649,6 +651,7 @@ def _enrich_summary(
     metadata.update(
         {
             "git_sha": identity["commit"],
+            "git_ref": identity["ref"],
             "dirty": identity["dirty"],
             "image_digest": identity["image_digest"],
             "host_fingerprint": identity["host_fingerprint"],
@@ -759,6 +762,7 @@ def run_campaign(args: argparse.Namespace) -> Path:
     host = _host_identity()
     identity = {
         "commit": commit,
+        "ref": _git_output("rev-parse", "--abbrev-ref", "HEAD"),
         "dirty": False,
         "image_digest": _image_digest(),
         "host_fingerprint": host["fingerprint"],
