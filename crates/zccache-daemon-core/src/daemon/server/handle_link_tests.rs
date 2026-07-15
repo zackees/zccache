@@ -3,6 +3,120 @@
 use super::*;
 
 #[cfg(unix)]
+fn write_counting_archiver(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tool = dir.join("ar");
+    std::fs::write(
+        &tool,
+        r#"#!/bin/sh
+count_file="$ARCHIVE_COUNT_FILE"
+count=0
+if [ -f "$count_file" ]; then count=$(cat "$count_file"); fi
+echo $((count + 1)) > "$count_file"
+shift
+output="$1"
+shift
+: > "$output"
+for input in "$@"; do cat "$input" >> "$output"; done
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&tool).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&tool, permissions).unwrap();
+    tool
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_archive_overlap_skips_warm_hits_and_discards_artifact_hits() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir: NormalizedPath = temp.path().join("cache").into();
+    let server =
+        DaemonServer::bind_with_cache_dir(&crate::ipc::unique_test_endpoint(), &cache_dir).unwrap();
+    let tool = write_counting_archiver(temp.path());
+    let input = temp.path().join("member.o");
+    let output = temp.path().join("libmember.a");
+    let count_file = temp.path().join("archive-count");
+    std::fs::write(&input, b"object payload").unwrap();
+    let args = vec![
+        "rcsD".to_string(),
+        output.to_string_lossy().into_owned(),
+        input.to_string_lossy().into_owned(),
+    ];
+    let env = Some(vec![
+        ("PATH".to_string(), std::env::var("PATH").unwrap()),
+        (
+            "ARCHIVE_COUNT_FILE".to_string(),
+            count_file.to_string_lossy().into_owned(),
+        ),
+    ]);
+
+    let first = handle_link_ephemeral(
+        &server.state,
+        std::process::id(),
+        &tool,
+        &args,
+        temp.path(),
+        env.clone(),
+    )
+    .await;
+    assert!(matches!(
+        first,
+        Response::LinkResult {
+            exit_code: 0,
+            cached: false,
+            ..
+        }
+    ));
+    assert_eq!(std::fs::read(&output).unwrap(), b"object payload");
+    assert_eq!(std::fs::read_to_string(&count_file).unwrap().trim(), "1");
+
+    let warm = handle_link_ephemeral(
+        &server.state,
+        std::process::id(),
+        &tool,
+        &args,
+        temp.path(),
+        env.clone(),
+    )
+    .await;
+    assert!(matches!(warm, Response::LinkResult { cached: true, .. }));
+    assert_eq!(
+        std::fs::read_to_string(&count_file).unwrap().trim(),
+        "1",
+        "a metadata-hot artifact hit must not launch the archiver"
+    );
+
+    server.state.cache_system.clear();
+    std::fs::remove_file(&output).unwrap();
+    let cold_metadata_hit = handle_link_ephemeral(
+        &server.state,
+        std::process::id(),
+        &tool,
+        &args,
+        temp.path(),
+        env,
+    )
+    .await;
+    assert!(matches!(
+        cold_metadata_hit,
+        Response::LinkResult { cached: true, .. }
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&count_file).unwrap().trim(),
+        "2",
+        "cold metadata should overlap an isolated archiver invocation"
+    );
+    assert_eq!(
+        std::fs::read(&output).unwrap(),
+        b"object payload",
+        "the artifact hit must restore the canonical cached payload"
+    );
+}
+
+#[cfg(unix)]
 #[tokio::test]
 async fn archive_fast_path_preserves_client_env_and_lineage() {
     let temp = tempfile::tempdir().unwrap();

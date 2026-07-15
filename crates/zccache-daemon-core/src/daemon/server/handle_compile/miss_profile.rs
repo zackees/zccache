@@ -255,6 +255,7 @@ pub(in crate::daemon::server) struct LinkMissProfile<'a> {
     pub(in crate::daemon::server) compiler_process_ns: u64,
     pub(in crate::daemon::server) output_read_ns: u64,
     pub(in crate::daemon::server) artifact_store_ns: u64,
+    pub(in crate::daemon::server) hash_tool_overlapped: bool,
 }
 
 pub(in crate::daemon::server) fn emit_link_miss_profile(profile: LinkMissProfile<'_>) {
@@ -270,12 +271,17 @@ pub(in crate::daemon::server) fn emit_link_miss_profile(profile: LinkMissProfile
         compiler_process_ns,
         output_read_ns,
         artifact_store_ns,
+        hash_tool_overlapped,
     } = profile;
 
+    let hash_and_tool_ns = if hash_tool_overlapped {
+        hash_wall_ns.max(compiler_process_ns)
+    } else {
+        hash_wall_ns.saturating_add(compiler_process_ns)
+    };
     let accounted_ns = parse_args_ns
-        .saturating_add(hash_wall_ns)
+        .saturating_add(hash_and_tool_ns)
         .saturating_add(cache_lookup_ns)
-        .saturating_add(compiler_process_ns)
         .saturating_add(output_read_ns)
         .saturating_add(artifact_store_ns);
     let unaccounted_ns = total_ns.saturating_sub(accounted_ns);
@@ -286,7 +292,7 @@ pub(in crate::daemon::server) fn emit_link_miss_profile(profile: LinkMissProfile
             "family={} input_count={} total_ns={} parse_args_ns={} ",
             "hash_wall_ns={} tool_hash_ns={} input_hash_ns={} cache_lookup_ns={} ",
             "compiler_process_ns={} output_read_ns={} ",
-            "artifact_store_ns={} unaccounted_ns={}",
+            "artifact_store_ns={} hash_tool_overlapped={} unaccounted_ns={}",
         ),
         family,
         input_count,
@@ -299,6 +305,7 @@ pub(in crate::daemon::server) fn emit_link_miss_profile(profile: LinkMissProfile
         compiler_process_ns,
         output_read_ns,
         artifact_store_ns,
+        hash_tool_overlapped,
         unaccounted_ns,
     );
 }
