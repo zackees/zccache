@@ -12,13 +12,133 @@
 //! locale, producing a [`ScanResult`] with `has_computed = false`.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use zccache_core::NormalizedPath;
 
 use super::depfile::canonicalize_path;
 use super::scanner::ScanResult;
 
 /// Well-known English prefix â€” checked first as a fast path.
 const ENGLISH_PREFIX: &str = "Note: including file:";
+
+/// Maximum partial line retained while waiting for a newline. Include paths
+/// are line-oriented and comfortably below this size; an oversized diagnostic
+/// is passed through incrementally so one malformed line cannot defeat the
+/// streaming compile path's memory bound.
+const MAX_PARTIAL_LINE_BYTES: usize = 64 * 1024;
+
+/// Incremental `/showIncludes` parser used by the live compiler-output path.
+///
+/// Complete lines are classified as chunks arrive. Non-include stderr is
+/// appended to the caller-provided output buffer with its original line
+/// endings, while include paths are accumulated for [`ScanResult`].
+pub struct ShowIncludesParser {
+    source_canonical: NormalizedPath,
+    cwd: PathBuf,
+    prefix: Option<String>,
+    seen: HashSet<NormalizedPath>,
+    resolved: Vec<NormalizedPath>,
+    partial: Vec<u8>,
+    passthrough_line: bool,
+}
+
+impl ShowIncludesParser {
+    pub fn new(source: &Path, cwd: &Path) -> Self {
+        Self {
+            source_canonical: canonicalize_path(source, cwd),
+            cwd: cwd.to_path_buf(),
+            prefix: None,
+            seen: HashSet::new(),
+            resolved: Vec::new(),
+            partial: Vec::new(),
+            passthrough_line: false,
+        }
+    }
+
+    /// Consume another stderr chunk and append filtered bytes to `output`.
+    pub fn push(&mut self, mut chunk: &[u8], output: &mut Vec<u8>) {
+        while !chunk.is_empty() {
+            if self.passthrough_line {
+                if let Some(newline) = chunk.iter().position(|byte| *byte == b'\n') {
+                    output.extend_from_slice(&chunk[..=newline]);
+                    chunk = &chunk[newline + 1..];
+                    self.passthrough_line = false;
+                } else {
+                    output.extend_from_slice(chunk);
+                    return;
+                }
+                continue;
+            }
+
+            if let Some(newline) = chunk.iter().position(|byte| *byte == b'\n') {
+                self.partial.extend_from_slice(&chunk[..=newline]);
+                chunk = &chunk[newline + 1..];
+                self.finish_line(output);
+            } else {
+                self.partial.extend_from_slice(chunk);
+                if self.partial.len() > MAX_PARTIAL_LINE_BYTES {
+                    output.extend_from_slice(&self.partial);
+                    self.partial.clear();
+                    self.passthrough_line = true;
+                }
+                return;
+            }
+        }
+    }
+
+    /// Flush a final unterminated line and return the dependency scan.
+    pub fn finish(mut self, output: &mut Vec<u8>) -> ScanResult {
+        if !self.partial.is_empty() {
+            self.finish_line(output);
+        }
+        ScanResult {
+            resolved: self.resolved,
+            unresolved: Vec::new(),
+            has_computed: false,
+        }
+    }
+
+    fn finish_line(&mut self, output: &mut Vec<u8>) {
+        let raw = std::mem::take(&mut self.partial);
+        let text_end = raw
+            .strip_suffix(b"\n")
+            .unwrap_or(&raw)
+            .strip_suffix(b"\r")
+            .unwrap_or_else(|| raw.strip_suffix(b"\n").unwrap_or(&raw));
+        let line = String::from_utf8_lossy(text_end);
+
+        if self.prefix.is_none() {
+            self.prefix = if line.starts_with(ENGLISH_PREFIX) {
+                Some(ENGLISH_PREFIX.to_string())
+            } else {
+                extract_prefix_candidate(&line)
+            };
+        }
+
+        let Some(prefix) = self.prefix.as_deref() else {
+            output.extend_from_slice(&raw);
+            return;
+        };
+        let Some(path_str) = line.strip_prefix(prefix) else {
+            output.extend_from_slice(&raw);
+            return;
+        };
+        let path_str = path_str.trim();
+        if path_str.is_empty() {
+            return;
+        }
+        let dep_path = Path::new(path_str);
+        let abs_path = if dep_path.is_absolute() {
+            canonicalize_path(dep_path, &self.cwd)
+        } else {
+            canonicalize_path(&self.cwd.join(dep_path), &self.cwd)
+        };
+        if abs_path != self.source_canonical && self.seen.insert(abs_path.clone()) {
+            self.resolved.push(abs_path);
+        }
+    }
+}
 
 /// Parse MSVC `/showIncludes` stderr output into a [`ScanResult`].
 ///
@@ -249,6 +369,46 @@ mod tests {
         let filtered_str = String::from_utf8(filtered).unwrap();
         assert!(filtered_str.contains("warning C4996"));
         assert!(!filtered_str.contains("including file"));
+    }
+
+    #[test]
+    fn incremental_parser_handles_lines_split_across_chunks() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cwd = dir.path();
+        let header = cwd.join("split.h");
+        let source = cwd.join("main.cpp");
+        std::fs::write(&header, "").unwrap();
+        std::fs::write(&source, "").unwrap();
+
+        let stderr = format!(
+            "Note: including file: {}\r\nwarning C4996: split warning\r\n",
+            header.display()
+        );
+        let mut parser = ShowIncludesParser::new(&source, cwd);
+        let mut filtered = Vec::new();
+        for chunk in stderr.as_bytes().chunks(3) {
+            parser.push(chunk, &mut filtered);
+        }
+        let scan = parser.finish(&mut filtered);
+
+        assert_eq!(scan.resolved.len(), 1);
+        assert_eq!(filtered, b"warning C4996: split warning\r\n");
+    }
+
+    #[test]
+    fn incremental_parser_bounds_oversized_unterminated_line() {
+        let mut parser = ShowIncludesParser::new(Path::new("main.cpp"), Path::new("."));
+        let diagnostic = vec![b'x'; MAX_PARTIAL_LINE_BYTES * 2];
+        let mut filtered = Vec::new();
+
+        for chunk in diagnostic.chunks(4096) {
+            parser.push(chunk, &mut filtered);
+            assert!(parser.partial.len() <= MAX_PARTIAL_LINE_BYTES);
+        }
+        let scan = parser.finish(&mut filtered);
+
+        assert!(scan.resolved.is_empty());
+        assert_eq!(filtered, diagnostic);
     }
 
     #[cfg(windows)]

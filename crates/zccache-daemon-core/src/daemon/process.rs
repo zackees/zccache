@@ -658,6 +658,27 @@ pub(crate) async fn tokio_command_output_with_priority_stdin(
     priority: CompilePriority,
     stdin_bytes: Option<&[u8]>,
 ) -> io::Result<Output> {
+    tokio_command_output_with_priority_stdin_inner(cmd, priority, stdin_bytes, None).await
+}
+
+/// Streaming counterpart used by the embedded compile API. Process setup,
+/// priority, job assignment, stdin, and watchdog behavior are identical to
+/// [`tokio_command_output_with_priority_stdin`]; only pipe capture differs.
+pub(crate) async fn tokio_command_output_streaming_with_priority_stdin(
+    cmd: &mut tokio::process::Command,
+    priority: CompilePriority,
+    stdin_bytes: Option<&[u8]>,
+    sender: tokio::sync::mpsc::Sender<crate::daemon::compile_output::RawOutputChunk>,
+) -> io::Result<Output> {
+    tokio_command_output_with_priority_stdin_inner(cmd, priority, stdin_bytes, Some(sender)).await
+}
+
+async fn tokio_command_output_with_priority_stdin_inner(
+    cmd: &mut tokio::process::Command,
+    priority: CompilePriority,
+    stdin_bytes: Option<&[u8]>,
+    stream: Option<tokio::sync::mpsc::Sender<crate::daemon::compile_output::RawOutputChunk>>,
+) -> io::Result<Output> {
     let (decision, _ticket) = priority.resolve_and_track();
     let priority = decision.effective;
     let pipe_stdin = matches!(stdin_bytes, Some(b) if !b.is_empty());
@@ -690,7 +711,17 @@ pub(crate) async fn tokio_command_output_with_priority_stdin(
                 let _ = stdin.shutdown().await;
             }
         }
-        crate::daemon::child_watchdog::wait_with_output_watchdog(child, &cmd_desc).await
+        match stream {
+            Some(sender) => {
+                crate::daemon::child_watchdog::wait_with_output_watchdog_streaming(
+                    child, &cmd_desc, sender,
+                )
+                .await
+            }
+            None => {
+                crate::daemon::child_watchdog::wait_with_output_watchdog(child, &cmd_desc).await
+            }
+        }
     }
 
     #[cfg(unix)]
@@ -716,13 +747,24 @@ pub(crate) async fn tokio_command_output_with_priority_stdin(
                 let _ = stdin.shutdown().await;
             }
         }
-        crate::daemon::child_watchdog::wait_with_output_watchdog(child, &cmd_desc).await
+        match stream {
+            Some(sender) => {
+                crate::daemon::child_watchdog::wait_with_output_watchdog_streaming(
+                    child, &cmd_desc, sender,
+                )
+                .await
+            }
+            None => {
+                crate::daemon::child_watchdog::wait_with_output_watchdog(child, &cmd_desc).await
+            }
+        }
     }
 
     #[cfg(not(any(unix, windows)))]
     {
         let _ = stdin_bytes;
         let _ = &cmd_desc;
+        let _ = stream;
         cmd.output().await
     }
 }

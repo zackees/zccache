@@ -270,11 +270,36 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     };
     let compile_span_start = std::time::Instant::now();
 
-    let result = crate::daemon::process::tokio_command_output_with_priority(
-        &mut cmd,
-        compiler_priority_decision.effective,
-    )
-    .await;
+    let (result, streamed_output) = if let Some(context) = crate::daemon::compile_output::current()
+    {
+        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        let filter = if depfile_strategy == DepfileStrategy::ShowIncludes {
+            crate::daemon::compile_output::StderrFilter::ShowIncludes {
+                source: source_path.as_path(),
+                cwd: cwd_path.as_path(),
+            }
+        } else {
+            crate::daemon::compile_output::StderrFilter::None
+        };
+        let process = crate::daemon::process::tokio_command_output_streaming_with_priority_stdin(
+            &mut cmd,
+            compiler_priority_decision.effective,
+            None,
+            sender,
+        );
+        let consume = crate::daemon::compile_output::consume(receiver, context, filter);
+        let (process_result, capture_result) = tokio::join!(process, consume);
+        (process_result, Some(capture_result))
+    } else {
+        (
+            crate::daemon::process::tokio_command_output_with_priority(
+                &mut cmd,
+                compiler_priority_decision.effective,
+            )
+            .await,
+            None,
+        )
+    };
     let compiler_process_ns = t_compiler_process.elapsed().as_nanos() as u64;
     if staged_plan.is_some() {
         state.profiler.staged.count(StagedCounter::CompilerStaged);
@@ -308,25 +333,37 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
             });
         }
     };
+    let streamed_output = match streamed_output {
+        Some(Ok(output)) => Some(output),
+        Some(Err(e)) => {
+            return CompileExecResult::Error(Response::Error {
+                message: format!("failed to stream compiler output: {e}"),
+            });
+        }
+        None => None,
+    };
     let compiler_exec_ns = t_exec.elapsed().as_nanos() as u64;
     let compiler_prep_ns = compiler_exec_ns.saturating_sub(compiler_process_ns);
 
     let t_post_exec = std::time::Instant::now();
     let exit_code = output.status.code().unwrap_or(-1);
-    let stdout = Arc::new(output.stdout);
-
-    // For MSVC /showIncludes: parse dependency info from stderr and
-    // filter out the /showIncludes lines before returning to the client.
-    let (show_includes_scan, stderr_bytes) = if depfile_strategy == DepfileStrategy::ShowIncludes {
+    let (stdout_bytes, show_includes_scan, stderr_bytes) = if let Some(streamed) = streamed_output {
+        (
+            streamed.stdout,
+            streamed.show_includes_scan,
+            streamed.stderr,
+        )
+    } else if depfile_strategy == DepfileStrategy::ShowIncludes {
         let (scan, filtered) = crate::depgraph::show_includes::parse_show_includes(
             &output.stderr,
             source_path,
             cwd_path,
         );
-        (Some(scan), filtered)
+        (output.stdout, Some(scan), filtered)
     } else {
-        (None, output.stderr)
+        (output.stdout, None, output.stderr)
     };
+    let stdout = Arc::new(stdout_bytes);
     let stderr = Arc::new(stderr_bytes);
     let post_exec_ns = t_post_exec.elapsed().as_nanos() as u64;
 

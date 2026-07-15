@@ -36,6 +36,9 @@ use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Child;
+use tokio::sync::mpsc;
+
+use super::compile_output::RawOutputChunk;
 
 /// Default post-exit drain grace. Once the child has exited, the daemon waits
 /// at most this long for stdout/stderr to reach EOF before concluding an orphan
@@ -219,6 +222,25 @@ pub(crate) async fn wait_with_output_watchdog(
     .await
 }
 
+/// Streaming variant of [`wait_with_output_watchdog`]. The watchdog remains
+/// the only owner of the child pipes, but forwards each read through a bounded
+/// channel instead of retaining stdout/stderr itself.
+pub(crate) async fn wait_with_output_watchdog_streaming(
+    child: Child,
+    cmd_desc: &str,
+    sender: mpsc::Sender<RawOutputChunk>,
+) -> std::io::Result<Output> {
+    watchdog_inner_impl(
+        child,
+        cmd_desc,
+        post_exit_grace(),
+        stall_window(),
+        STALL_TICK,
+        Some(sender),
+    )
+    .await
+}
+
 /// [`wait_with_output_watchdog`] with an explicit post-exit drain grace and
 /// Mode B (alive-hung) disabled, so tests can pin the grace without mutating
 /// the process-global environment (which would race across parallel tests). A
@@ -245,15 +267,26 @@ async fn wait_with_output_watchdog_with_grace(
 ///
 /// With both zero this is a plain `wait_with_output`.
 async fn watchdog_inner(
-    mut child: Child,
+    child: Child,
     cmd_desc: &str,
     grace: Duration,
     stall_window: Duration,
     stall_tick: Duration,
 ) -> std::io::Result<Output> {
+    watchdog_inner_impl(child, cmd_desc, grace, stall_window, stall_tick, None).await
+}
+
+async fn watchdog_inner_impl(
+    mut child: Child,
+    cmd_desc: &str,
+    grace: Duration,
+    stall_window: Duration,
+    stall_tick: Duration,
+    stream: Option<mpsc::Sender<RawOutputChunk>>,
+) -> std::io::Result<Output> {
     // Both modes disabled: historical behavior (host opt-out for exotic
     // pipelines needing strict EOF semantics).
-    if grace.is_zero() && stall_window.is_zero() {
+    if grace.is_zero() && stall_window.is_zero() && stream.is_none() {
         return child.wait_with_output().await;
     }
 
@@ -265,6 +298,8 @@ async fn watchdog_inner(
     let mut stderr = child.stderr.take();
     let mut out: Vec<u8> = Vec::new();
     let mut err: Vec<u8> = Vec::new();
+    let mut stdout_bytes = 0usize;
+    let mut stderr_bytes = 0usize;
     // Heap-allocated read buffers, NOT `[0u8; 64 * 1024]` stack arrays: these
     // are live across the `select!` await, so a stack array would embed 128 KiB
     // in this future — and thus in the whole deeply-nested compile-pipeline
@@ -338,7 +373,18 @@ async fn watchdog_inner(
             r = read_opt(stdout.as_mut(), &mut sbuf), if !stdout_done => match r {
                 Ok(0) => stdout_done = true,
                 Ok(n) => {
-                    out.extend_from_slice(&sbuf[..n]);
+                    stdout_bytes += n;
+                    if let Some(sender) = stream.as_ref() {
+                        sender
+                            .send(RawOutputChunk::Stdout(sbuf[..n].to_vec()))
+                            .await
+                            .map_err(|_| std::io::Error::new(
+                                std::io::ErrorKind::BrokenPipe,
+                                "compiler output consumer disconnected",
+                            ))?;
+                    } else {
+                        out.extend_from_slice(&sbuf[..n]);
+                    }
                     last_progress = Instant::now();
                 }
                 Err(_) => stdout_done = true,
@@ -346,7 +392,18 @@ async fn watchdog_inner(
             r = read_opt(stderr.as_mut(), &mut ebuf), if !stderr_done => match r {
                 Ok(0) => stderr_done = true,
                 Ok(n) => {
-                    err.extend_from_slice(&ebuf[..n]);
+                    stderr_bytes += n;
+                    if let Some(sender) = stream.as_ref() {
+                        sender
+                            .send(RawOutputChunk::Stderr(ebuf[..n].to_vec()))
+                            .await
+                            .map_err(|_| std::io::Error::new(
+                                std::io::ErrorKind::BrokenPipe,
+                                "compiler output consumer disconnected",
+                            ))?;
+                    } else {
+                        err.extend_from_slice(&ebuf[..n]);
+                    }
                     last_progress = Instant::now();
                 }
                 Err(_) => stderr_done = true,
@@ -358,8 +415,8 @@ async fn watchdog_inner(
                         child_pid,
                         grace,
                         at.elapsed(),
-                        out.len(),
-                        err.len(),
+                        stdout_bytes,
+                        stderr_bytes,
                         stdout_done,
                         stderr_done,
                     );
@@ -396,8 +453,8 @@ async fn watchdog_inner(
                         child_pid,
                         stall_window,
                         last_progress.elapsed(),
-                        out.len(),
-                        err.len(),
+                        stdout_bytes,
+                        stderr_bytes,
                     );
                     // Kill the wedged child and reap it to recover the real
                     // (killed) exit status; the compile-concurrency permit the
@@ -556,6 +613,46 @@ mod tests {
                 "stdout was: {:?}",
                 String::from_utf8_lossy(&out.stdout)
             );
+        })
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn streaming_sink_preserves_output_and_orphan_watchdog() {
+        crate::test_support::test_timeout(async {
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.args(["-c", "sleep 30 & printf 'live\\n'"]);
+            let child = piped(cmd).spawn().expect("spawn");
+            let (sender, mut receiver) = mpsc::channel(8);
+            let wait = watchdog_inner_impl(
+                child,
+                "stream-orphan",
+                Duration::from_millis(300),
+                Duration::ZERO,
+                STALL_TICK,
+                Some(sender),
+            );
+            let collect = async {
+                let mut stdout = Vec::new();
+                while let Some(chunk) = receiver.recv().await {
+                    if let RawOutputChunk::Stdout(bytes) = chunk {
+                        stdout.extend(bytes);
+                    }
+                }
+                stdout
+            };
+            let started = Instant::now();
+            let (output, stdout) = tokio::join!(wait, collect);
+            let output = output.expect("watchdog wait");
+
+            assert!(started.elapsed() < Duration::from_secs(10));
+            assert!(output.status.success());
+            assert!(
+                output.stdout.is_empty(),
+                "streaming sink owns captured bytes"
+            );
+            assert_eq!(stdout, b"live\n");
         })
         .await;
     }
@@ -726,6 +823,26 @@ mod tests {
                 !out.status.success(),
                 "a killed wedged child must not report success"
             );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn streaming_sink_preserves_alive_hung_watchdog() {
+        crate::test_support::test_timeout(async {
+            let child = piped(sleeper_cmd()).spawn().expect("spawn");
+            let (sender, mut receiver) = mpsc::channel(8);
+            let wait = watchdog_inner_impl(
+                child,
+                "stream-sleeper",
+                Duration::ZERO,
+                Duration::from_millis(150),
+                Duration::from_millis(50),
+                Some(sender),
+            );
+            let drain = async { while receiver.recv().await.is_some() {} };
+            let (output, ()) = tokio::join!(wait, drain);
+            assert!(!output.expect("watchdog wait").status.success());
         })
         .await;
     }

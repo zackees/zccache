@@ -7,6 +7,7 @@
 
 pub(crate) mod child_watchdog;
 pub mod compile_journal;
+pub(crate) mod compile_output;
 pub mod crash;
 /// Standalone daemon process entry point (issue #997), gated so it only
 /// compiles when a binary that hosts it (`daemon-bin`, or the `cli`/`zccache`

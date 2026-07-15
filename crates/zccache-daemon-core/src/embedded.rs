@@ -250,25 +250,17 @@ pub enum CacheOutcome {
 }
 
 /// Streaming compile event (issue #937). Yielded by
-/// [`ZccacheService::compile_streaming`] as rustc produces output —
+/// [`ZccacheService::compile_streaming`] as the compiler produces output —
 /// `Stdout` and `Stderr` chunks arrive incrementally; the terminal
 /// `Done` event carries the exit code and cache outcome.
 ///
-/// **MVP shape — internally pass-through today.** The current
-/// implementation runs the existing buffered `compile` path under
-/// the hood and emits a single `Stdout` chunk + single `Stderr`
-/// chunk + `Done` at the end. The wire format and consumer code on
-/// the soldr side (soldr#982 commit 82e26f4) already speaks this
-/// shape, so consumers can rely on it as a stable API. The
-/// daemon-internal refactor that pumps rustc pipes into chunks as
-/// bytes arrive is the cross-cutting work tracked in #937 itself —
-/// when it lands, only the producer side of this enum's emission
-/// changes; the public API stays.
+/// Live chunks use a bounded channel and retained output is capped with an
+/// explicit truncation marker. Cache hits replay through the same event shape.
 #[derive(Debug, Clone)]
 pub enum CompileChunk {
-    /// A chunk of rustc's stdout bytes.
+    /// A chunk of compiler stdout bytes.
     Stdout(Vec<u8>),
-    /// A chunk of rustc's stderr bytes.
+    /// A chunk of compiler stderr bytes.
     Stderr(Vec<u8>),
     /// Terminal event with the compile's outcome metadata.
     Done {
@@ -378,6 +370,34 @@ impl ZccacheService {
     /// effect — there is no orphaned `rustc` left behind. Hosts should
     /// treat `Cancelled` as terminal (no retry inside the same shutdown).
     pub async fn compile(&self, request: CompileRequest) -> Result<CompileResponse> {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut done = None;
+        self.compile_streaming(request, |chunk| match chunk {
+            CompileChunk::Stdout(bytes) => stdout.extend_from_slice(&bytes),
+            CompileChunk::Stderr(bytes) => stderr.extend_from_slice(&bytes),
+            CompileChunk::Done {
+                exit_code,
+                cached,
+                cache_outcome,
+                compile_id,
+            } => done = Some((exit_code, cached, cache_outcome, compile_id)),
+        })
+        .await?;
+        let (exit_code, cached, cache_outcome, compile_id) = done.ok_or_else(|| {
+            EmbeddedError::Compile("streaming compile completed without a Done event".to_string())
+        })?;
+        Ok(CompileResponse {
+            exit_code,
+            stdout,
+            stderr,
+            cached,
+            cache_outcome,
+            compile_id,
+        })
+    }
+
+    async fn compile_inner(&self, request: CompileRequest) -> Result<CompileResponse> {
         let compile_id = request
             .audit
             .compile_id
@@ -430,32 +450,47 @@ impl ZccacheService {
         })
     }
 
-    /// Streaming compile (issue #937). Invokes `on_chunk` once per
-    /// stdout/stderr chunk, then once with the terminal `Done` event.
+    /// Streaming compile (issue #937). Invokes `on_chunk` as compiler output
+    /// arrives, then once with the terminal `Done` event. Per-stream ordering
+    /// is preserved; ordering between stdout and stderr follows the pipe drain.
     ///
-    /// **MVP: pass-through over the existing buffered `compile`.**
-    /// The current implementation runs `compile()` to completion and
-    /// emits one `Stdout` + one `Stderr` + one `Done` chunk. The full
-    /// streaming-source refactor (pump rustc pipes directly into the
-    /// chunk emitter) is the cross-cutting work tracked in #937 — when
-    /// it lands inside the daemon pipeline, only the producer side of
-    /// this method changes; the public API stays.
-    ///
-    /// Consumers can rely on this API today via the soldr-side
-    /// streaming wire format (soldr#982 commit `82e26f4`,
-    /// `PROTOCOL_VERSION = 7`). When the daemon-side pipeline refactor
-    /// lands the chunk granularity gets finer; consumer code doesn't
-    /// need to change.
+    /// The callback runs inline and applies backpressure to the bounded drain.
+    /// Retained output is capped at 1 MiB per stream by default; set
+    /// `ZCCACHE_STREAM_CAPTURE_LIMIT_BYTES` to a positive byte count to change
+    /// it. Truncation is explicit and the same marker is cached and replayed.
     pub async fn compile_streaming<F>(&self, request: CompileRequest, mut on_chunk: F) -> Result<()>
     where
         F: FnMut(CompileChunk),
     {
-        let response = self.compile(request).await?;
-        if !response.stdout.is_empty() {
-            on_chunk(CompileChunk::Stdout(response.stdout));
+        const CHUNK_BYTES: usize = 64 * 1024;
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+        let context = crate::daemon::compile_output::OutputContext::new(sender);
+        let compile =
+            crate::daemon::compile_output::scope(context.clone(), self.compile_inner(request));
+        tokio::pin!(compile);
+
+        let response = loop {
+            tokio::select! {
+                biased;
+                chunk = receiver.recv() => {
+                    if let Some(chunk) = chunk {
+                        emit_output_chunk(&mut on_chunk, chunk);
+                    }
+                }
+                result = &mut compile => break result?,
+            }
+        };
+        while let Ok(chunk) = receiver.try_recv() {
+            emit_output_chunk(&mut on_chunk, chunk);
         }
-        if !response.stderr.is_empty() {
-            on_chunk(CompileChunk::Stderr(response.stderr));
+
+        if !context.was_live() {
+            for chunk in response.stdout.chunks(CHUNK_BYTES) {
+                on_chunk(CompileChunk::Stdout(chunk.to_vec()));
+            }
+            for chunk in response.stderr.chunks(CHUNK_BYTES) {
+                on_chunk(CompileChunk::Stderr(chunk.to_vec()));
+            }
         }
         on_chunk(CompileChunk::Done {
             exit_code: response.exit_code,
@@ -539,6 +574,20 @@ impl ZccacheService {
     }
 }
 
+fn emit_output_chunk<F>(on_chunk: &mut F, chunk: crate::daemon::compile_output::OutputChunk)
+where
+    F: FnMut(CompileChunk),
+{
+    match chunk {
+        crate::daemon::compile_output::OutputChunk::Stdout(bytes) => {
+            on_chunk(CompileChunk::Stdout(bytes));
+        }
+        crate::daemon::compile_output::OutputChunk::Stderr(bytes) => {
+            on_chunk(CompileChunk::Stderr(bytes));
+        }
+    }
+}
+
 impl ServiceStats {
     fn from_snapshot(snapshot: EmbeddedStatsSnapshot) -> Self {
         let status = snapshot.status;
@@ -606,6 +655,26 @@ mod streaming_tests {
     //! consumer-visible event order.
 
     use super::*;
+    use tempfile::TempDir;
+
+    async fn start_test_service(temp: &TempDir) -> ZccacheService {
+        let mut audit = AuditConfig::default();
+        audit.mode = crate::audit::AuditMode::Off;
+        ZccacheService::start(ZccacheConfig {
+            host: HostIdentity {
+                product: "streaming-test".into(),
+                instance_id: uuid::Uuid::new_v4().to_string(),
+                workspace_id: "streaming-workspace".into(),
+            },
+            cache_root: temp.path().join("cache").into(),
+            audit,
+            limits: ServiceLimits::default(),
+            runtime: RuntimeHooks::default(),
+            cancellation: None,
+        })
+        .await
+        .expect("service start")
+    }
 
     #[test]
     fn compile_chunk_done_carries_outcome_fields() {
@@ -641,6 +710,74 @@ mod streaming_tests {
             CompileChunk::Stderr(bytes) => assert_eq!(bytes, b"warn"),
             other => panic!("expected Stderr, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn cache_hit_replays_byte_identical_streams() {
+        let Some(compiler) = crate::test_support::find_clang() else {
+            return;
+        };
+        let temp = TempDir::new().expect("tempdir");
+        let source = temp.path().join("warning.c");
+        let output = temp.path().join("warning.o");
+        std::fs::write(
+            &source,
+            "#warning stream-replay\nint value(void) { return 1; }\n",
+        )
+        .expect("source");
+        let service = start_test_service(&temp).await;
+        let request = CompileRequest {
+            audit: AuditContext::new(
+                crate::audit::AuditId::new("stream-run").expect("id"),
+                crate::audit::AuditId::new("stream-trace").expect("id"),
+            ),
+            compiler,
+            args: vec![
+                "-c".into(),
+                source.to_string_lossy().into_owned(),
+                "-o".into(),
+                output.to_string_lossy().into_owned(),
+            ],
+            cwd: temp.path().into(),
+            env: Vec::new(),
+            stdin: Vec::new(),
+        };
+
+        let mut miss_stdout = Vec::new();
+        let mut miss_stderr = Vec::new();
+        let mut miss_cached = None;
+        service
+            .compile_streaming(request.clone(), |chunk| match chunk {
+                CompileChunk::Stdout(bytes) => miss_stdout.extend(bytes),
+                CompileChunk::Stderr(bytes) => miss_stderr.extend(bytes),
+                CompileChunk::Done { cached, .. } => miss_cached = Some(cached),
+            })
+            .await
+            .expect("cache miss compile");
+        assert_eq!(miss_cached, Some(false));
+        assert!(!miss_stderr.is_empty());
+
+        std::fs::remove_file(&output).expect("remove first output");
+        let mut hit_stdout = Vec::new();
+        let mut hit_stderr = Vec::new();
+        let mut hit_cached = None;
+        service
+            .compile_streaming(request, |chunk| match chunk {
+                CompileChunk::Stdout(bytes) => hit_stdout.extend(bytes),
+                CompileChunk::Stderr(bytes) => hit_stderr.extend(bytes),
+                CompileChunk::Done { cached, .. } => hit_cached = Some(cached),
+            })
+            .await
+            .expect("cache hit compile");
+
+        assert_eq!(hit_cached, Some(true));
+        assert_eq!(hit_stdout, miss_stdout);
+        assert_eq!(hit_stderr, miss_stderr);
+        assert!(output.exists(), "cache hit must restore the output file");
+        service
+            .shutdown(ShutdownMode::Graceful)
+            .await
+            .expect("shutdown");
     }
 }
 
