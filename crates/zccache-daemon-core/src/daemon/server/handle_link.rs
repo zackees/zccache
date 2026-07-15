@@ -1,6 +1,8 @@
-//! Link/passthrough handlers: handle_link_ephemeral, run_tool_passthrough, run_post_link_deploy_hook.
+//! Ephemeral link/archive request handler.
 
 use super::*;
+use super::link_hash::*;
+use super::link_process::*;
 
 fn publish_and_materialize_staged_link(
     state: &SharedState,
@@ -190,39 +192,108 @@ pub(super) async fn handle_link_ephemeral(
         })
         .collect();
 
-    use rayon::prelude::*;
+    // Pure archives can safely run against an isolated staged output while
+    // their strong cache key is discovered. Restrict speculation to requests
+    // with at least one absent metadata-cache hash: established warm hits keep
+    // the existing 1 ms path and never launch the tool. A staged result is
+    // discarded if strong key discovery still finds an artifact cache hit.
+    let output_path = if parsed_tool.output_file.is_absolute() {
+        parsed_tool.output_file.clone()
+    } else {
+        cwd_path.join(&parsed_tool.output_file).into()
+    };
+    let archive_hash_speculating =
+        parsed_tool.is_archive && archive_hash_cache_is_cold(state, tool_path, &inputs);
+    let mut speculative_archive_plan = None;
+    if archive_hash_speculating {
+        use crate::daemon::staged_stats::{StagedCounter, StagedTiming};
 
-    let hash_wall_started = profile_enabled.then(std::time::Instant::now);
-    let ((tool_hash_opt, tool_hash_ns), (hash_results, input_hash_ns)) = rayon::join(
-        || {
-            let started = profile_enabled.then(std::time::Instant::now);
-            let hash = hash_file_via_cache(state, tool_path);
-            let elapsed = started
-                .map(|started| started.elapsed().as_nanos() as u64)
-                .unwrap_or(0);
-            (hash, elapsed)
-        },
-        || {
-            let started = profile_enabled.then(std::time::Instant::now);
-            let hashes = inputs
-                .par_iter()
-                .map(|input| {
-                    let hash = hash_normalized_file_via_cache(state, input);
-                    (input.clone(), hash)
-                })
-                .collect::<Vec<(NormalizedPath, Option<ContentHash>)>>();
-            let elapsed = started
-                .map(|started| started.elapsed().as_nanos() as u64)
-                .unwrap_or(0);
-            (hashes, elapsed)
-        },
-    );
-    let hash_wall_ns = hash_wall_started
-        .map(|started| started.elapsed().as_nanos() as u64)
-        .unwrap_or(0);
+        let planning_started = std::time::Instant::now();
+        state.profiler.staged.count(StagedCounter::PlanAttempted);
+        match StagedCompilePlan::archive(state.staging.path(), args, &output_path, cwd_path) {
+            StagedPlanOutcome::Enabled(plan) => {
+                state.profiler.staged.count(StagedCounter::PlanEnabled);
+                state.profiler.staged.timing(
+                    StagedTiming::Planning,
+                    planning_started.elapsed().as_nanos() as u64,
+                );
+                speculative_archive_plan = Some(plan);
+            }
+            StagedPlanOutcome::Unsupported(reason) => {
+                state.profiler.staged.count(StagedCounter::PlanUnsupported);
+                state.profiler.staged.failure(reason.failure());
+                state.profiler.staged.timing(
+                    StagedTiming::Planning,
+                    planning_started.elapsed().as_nanos() as u64,
+                );
+            }
+            StagedPlanOutcome::Error(error) => {
+                state.profiler.staged.count(StagedCounter::PlanError);
+                state.profiler.staged.failure(error.reason.failure());
+                state.profiler.staged.timing(
+                    StagedTiming::Planning,
+                    planning_started.elapsed().as_nanos() as u64,
+                );
+                tracing::warn!(
+                    reason = error.reason.id(),
+                    error = %error.source,
+                    "speculative archive staging plan failed"
+                );
+            }
+        }
+    }
+
+    let (hashes, mut speculative_archive) = if let Some(plan) = speculative_archive_plan {
+        let hash_state = Arc::clone(state);
+        let hash_tool = tool.to_path_buf();
+        let hash_inputs = inputs.clone();
+        let hash_task = tokio::task::spawn_blocking(move || {
+            hash_link_inputs(&hash_state, &hash_tool, &hash_inputs, profile_enabled)
+        });
+        let process_started = std::time::Instant::now();
+        let archive = async {
+            let result = run_archive_tool_passthrough(
+                tool,
+                &plan.rewritten_args,
+                cwd,
+                env.clone(),
+                &lineage,
+            )
+            .await;
+            (result, process_started.elapsed().as_nanos() as u64)
+        };
+        let ((result, process_ns), hash_result) = tokio::join!(archive, hash_task);
+        let hashes = match hash_result {
+            Ok(hashes) => hashes,
+            Err(error) => {
+                let _ = plan.cleanup();
+                tracing::warn!(%error, "archive hash task failed; retrying without cache");
+                return run_archive_tool_passthrough(tool, args, cwd, env, &lineage).await;
+            }
+        };
+        (
+            hashes,
+            Some(CompletedSpeculativeArchive {
+                plan,
+                result,
+                process_ns,
+            }),
+        )
+    } else {
+        (
+            hash_link_inputs(state, tool_path, &inputs, profile_enabled),
+            None,
+        )
+    };
+    let hash_wall_ns = hashes.wall_ns;
+    let tool_hash_ns = hashes.tool_ns;
+    let input_hash_ns = hashes.inputs_ns;
+    let tool_hash_opt = hashes.tool_hash;
+    let hash_results = hashes.inputs;
     let tool_hash = match tool_hash_opt {
         Some(h) => h,
         None => {
+            discard_speculative_archive(&mut speculative_archive);
             tracing::warn!("cannot hash tool {}", tool.display());
             return run_tool_passthrough(
                 tool,
@@ -255,6 +326,7 @@ pub(super) async fn handle_link_ephemeral(
 
     for (path, hash) in &hash_results {
         let Some(input_hash) = hash else {
+            discard_speculative_archive(&mut speculative_archive);
             tracing::warn!("cannot hash input file {}: skipping cache", path.display());
             return run_tool_passthrough(
                 tool,
@@ -279,6 +351,7 @@ pub(super) async fn handle_link_ephemeral(
         // Load payloads from disk if not already loaded.
         let loaded = ensure_payloads(&mut entry, &state.artifact_dir, &key_hex).is_some();
         if loaded {
+            discard_speculative_archive(&mut speculative_archive);
             #[expect(
                 clippy::expect_used,
                 reason = "ensure_payloads on the preceding line returned Some, which is the contract guaranteeing entry.payloads is now populated"
@@ -406,38 +479,49 @@ pub(super) async fn handle_link_ephemeral(
     tracing::debug!(%key_hex, "link cache miss");
     state.stats.record_link_miss();
 
-    // Compute output path early (needed for pre-link directory snapshot).
-    let output_path = if parsed_tool.output_file.is_absolute() {
-        parsed_tool.output_file.clone()
-    } else {
-        cwd_path.join(&parsed_tool.output_file).into()
-    };
+    let archive_hash_tool_overlapped = speculative_archive.is_some();
+    let (speculative_plan, speculative_result, speculative_process_ns) =
+        match speculative_archive.take() {
+            Some(speculative) => (
+                Some(speculative.plan),
+                Some(speculative.result),
+                Some(speculative.process_ns),
+            ),
+            None => (None, None, None),
+        };
     use crate::daemon::staged_stats::{StagedBytes, StagedCounter, StagedFailure, StagedTiming};
     let planning_started = std::time::Instant::now();
-    state.profiler.staged.count(StagedCounter::PlanAttempted);
+    let plans_now = speculative_plan.is_none();
+    if plans_now {
+        state.profiler.staged.count(StagedCounter::PlanAttempted);
+    }
     let directory_plan_result = (parsed_tool.output_kind
         == crate::compiler::parse_linker::LinkOutputKind::DirectoryBundle)
         .then(|| StagedDirectoryPlan::dsymutil(state.staging.path(), args, &output_path, cwd_path));
-    let staged_plan_result = directory_plan_result.is_none().then(|| {
-        if parsed_tool.is_archive && parsed_tool.secondary_outputs.is_empty() {
-            StagedCompilePlan::archive(state.staging.path(), args, &output_path, cwd_path)
-        } else {
-            StagedCompilePlan::link(
-                state.staging.path(),
-                args,
-                &output_path,
-                &parsed_tool.secondary_outputs,
-                cwd_path,
-            )
-        }
-    });
-    state.profiler.staged.timing(
-        StagedTiming::Planning,
-        planning_started.elapsed().as_nanos() as u64,
-    );
-    let mut staged_plan = match staged_plan_result {
-        None => None,
-        Some(staged_plan_result) => match staged_plan_result {
+    let staged_plan_result =
+        (speculative_plan.is_none() && directory_plan_result.is_none()).then(|| {
+            if parsed_tool.is_archive && parsed_tool.secondary_outputs.is_empty() {
+                StagedCompilePlan::archive(state.staging.path(), args, &output_path, cwd_path)
+            } else {
+                StagedCompilePlan::link(
+                    state.staging.path(),
+                    args,
+                    &output_path,
+                    &parsed_tool.secondary_outputs,
+                    cwd_path,
+                )
+            }
+        });
+    if plans_now {
+        state.profiler.staged.timing(
+            StagedTiming::Planning,
+            planning_started.elapsed().as_nanos() as u64,
+        );
+    }
+    let mut staged_plan = match (speculative_plan, staged_plan_result) {
+        (Some(plan), _) => Some(plan),
+        (None, None) => None,
+        (None, Some(staged_plan_result)) => match staged_plan_result {
             StagedPlanOutcome::Enabled(plan) => {
                 state.profiler.staged.count(StagedCounter::PlanEnabled);
                 Some(plan)
@@ -520,7 +604,9 @@ pub(super) async fn handle_link_ephemeral(
     let t_compiler_process = profile_enabled.then(std::time::Instant::now);
     let staged_compiler_started =
         (staged_plan.is_some() || directory_plan.is_some()).then(std::time::Instant::now);
-    let result = if parsed_tool.is_archive {
+    let result = if let Some(result) = speculative_result {
+        result
+    } else if parsed_tool.is_archive {
         run_archive_tool_passthrough(tool, &compiler_args, cwd, env, &lineage).await
     } else {
         run_tool_passthrough(
@@ -534,16 +620,20 @@ pub(super) async fn handle_link_ephemeral(
         .await
     };
 
-    let compiler_process_ns = t_compiler_process
-        .map(|t| t.elapsed().as_nanos() as u64)
-        .unwrap_or(0);
+    let compiler_process_ns = speculative_process_ns.unwrap_or_else(|| {
+        t_compiler_process
+            .map(|t| t.elapsed().as_nanos() as u64)
+            .unwrap_or(0)
+    });
     if staged_plan.is_some() || directory_plan.is_some() {
         state.profiler.staged.count(StagedCounter::CompilerStaged);
         state.profiler.staged.timing(
             StagedTiming::Compiler,
-            staged_compiler_started
-                .map(|started| started.elapsed().as_nanos() as u64)
-                .unwrap_or(0),
+            speculative_process_ns.unwrap_or_else(|| {
+                staged_compiler_started
+                    .map(|started| started.elapsed().as_nanos() as u64)
+                    .unwrap_or(0)
+            }),
         );
     }
 
@@ -881,6 +971,7 @@ pub(super) async fn handle_link_ephemeral(
             compiler_process_ns,
             output_read_ns,
             artifact_store_ns,
+            hash_tool_overlapped: archive_hash_tool_overlapped,
         });
     }
 
@@ -890,193 +981,3 @@ pub(super) async fn handle_link_ephemeral(
 #[cfg(test)]
 #[path = "handle_link_tests.rs"]
 mod tests;
-/// Run a tool directly (passthrough) and return a LinkResult response.
-///
-/// `tmp_dir` is where the synthesized Windows response file lands when the
-/// command line exceeds the OS limit. Production callers pass the daemon's
-/// `state.depfile_tmpdir` (under the cache root) so the contents are
-/// covered by the wrapper's Defender exclusion — see issue #275.
-pub(super) async fn run_tool_passthrough(
-    tool: &Path,
-    args: &[String],
-    cwd: &Path,
-    env: Option<Vec<(String, String)>>,
-    lineage: &super::super::lineage::Lineage,
-    tmp_dir: &Path,
-) -> Response {
-    // Family hint controls response-file dialect (#634); detect from
-    // the tool path. Rustc driver linking can land here too (cargo's
-    // `--crate-type bin` link step shells out to rustc, which uses
-    // file.lines() to parse @rsp). `detect_family` falls back to Gcc
-    // for unknown names, which matches the historical behaviour.
-    let family_hint = crate::compiler::detect_family(&tool.to_string_lossy());
-    let _rsp_guard = match crate::compiler::response_file::write_response_file_if_needed(
-        args,
-        tmp_dir,
-        family_hint,
-    ) {
-        Ok(guard) => guard,
-        Err(e) => {
-            return Response::Error {
-                message: format!("failed to write response file for {}: {e}", tool.display()),
-            };
-        }
-    };
-
-    let mut cmd = tokio::process::Command::new(tool);
-    if let Some(ref rsp) = _rsp_guard {
-        cmd.arg(rsp.at_arg());
-    } else {
-        cmd.args(args);
-    }
-    cmd.current_dir(cwd);
-
-    apply_client_env(&mut cmd, &env, lineage);
-
-    let priority = CompilePriority::from_client_env(env.as_deref());
-    match super::super::process::tokio_command_output_with_priority(&mut cmd, priority).await {
-        Ok(output) => Response::LinkResult {
-            exit_code: output.status.code().unwrap_or(1),
-            stdout: Arc::new(output.stdout),
-            stderr: Arc::new(output.stderr),
-            cached: false,
-            warning: None,
-        },
-        Err(e) => Response::Error {
-            message: format!("failed to run {}: {e}", tool.display()),
-        },
-    }
-}
-
-/// Run a parsed pure archiver without the general compiler-child watchdog.
-///
-/// Archivers are leaf processes: they only read declared inputs and write the
-/// requested archive. Waiting on the Tokio child directly avoids watchdog and
-/// blocking-pool setup costs that are material for a 10-20 ms `ar` run.
-async fn run_archive_tool_passthrough(
-    tool: &Path,
-    args: &[String],
-    cwd: &Path,
-    env: Option<Vec<(String, String)>>,
-    lineage: &super::super::lineage::Lineage,
-) -> Response {
-    let mut cmd = tokio::process::Command::new(tool);
-    cmd.args(args);
-    cmd.current_dir(cwd);
-    apply_client_env(&mut cmd, &env, lineage);
-    let priority = CompilePriority::from_client_env(env.as_deref());
-    match super::super::process::tokio_leaf_command_output_with_priority(&mut cmd, priority).await {
-        Ok(output) => Response::LinkResult {
-            exit_code: output.status.code().unwrap_or(1),
-            stdout: Arc::new(output.stdout),
-            stderr: Arc::new(output.stderr),
-            cached: false,
-            warning: None,
-        },
-        Err(error) => Response::Error {
-            message: format!("failed to run {}: {error}", tool.display()),
-        },
-    }
-}
-
-/// Run an optional post-link deploy command on the link output.
-///
-/// Invoked when `ZCCACHE_LINK_DEPLOY_CMD` is set in the client's env. The
-/// command is expected to be a tool like `clang-tool-chain-libdeploy` that
-/// takes one positional argument — the path to the just-linked binary — and
-/// deploys any runtime dependencies (runtime DLLs on Windows, libc++/libunwind
-/// on Linux/macOS) alongside it.
-///
-/// This fills a gap that exists when the compiler driver does not auto-deploy
-/// runtime dependencies during link (for example a native-compiled trampoline
-/// that bypasses the driver's post-link Python hooks). The subsequent
-/// `side_effect::detect_side_effects` scan in the caller will then pick up
-/// whatever this hook deployed and cache it alongside the primary output.
-///
-/// Failures are non-fatal: we log a warning and return. The link itself has
-/// already succeeded — the build will continue, just without the deployed
-/// runtime files cached. Consumers relying on the hook should surface
-/// failures at their own layer (e.g. via a separate post-build lint).
-///
-/// The command is parsed as shell-style (split on whitespace) with one trailing
-/// argument appended: the output path. For example:
-/// ```text
-/// ZCCACHE_LINK_DEPLOY_CMD=clang-tool-chain-libdeploy
-/// # runs: clang-tool-chain-libdeploy <output_path>
-/// ZCCACHE_LINK_DEPLOY_CMD="clang-tool-chain-libdeploy --quiet"
-/// # runs: clang-tool-chain-libdeploy --quiet <output_path>
-/// ```
-pub(super) async fn run_post_link_deploy_hook(
-    cmd_str: &str,
-    output_path: &Path,
-    env: Option<&[(String, String)]>,
-    lineage: &super::super::lineage::Lineage,
-) {
-    // Split command string on whitespace — first token is the executable,
-    // remaining tokens are extra args. We don't support quoted args yet;
-    // keep it simple.
-    let mut parts = cmd_str.split_whitespace();
-    let program = match parts.next() {
-        Some(p) => p,
-        None => {
-            tracing::warn!("ZCCACHE_LINK_DEPLOY_CMD is empty — skipping deploy hook");
-            return;
-        }
-    };
-    let extra_args: Vec<&str> = parts.collect();
-
-    let mut cmd = tokio::process::Command::new(program);
-    cmd.args(&extra_args);
-    cmd.arg(output_path);
-
-    // Run the hook in the output directory so any relative paths the deploy
-    // tool emits land sensibly next to the binary.
-    if let Some(parent) = output_path.parent() {
-        cmd.current_dir(parent);
-    }
-
-    // Propagate the client's env — the deploy tool may rely on PATH, TMP,
-    // language-specific vars (CLANG_TOOL_CHAIN_*), etc. Spawn-lineage env
-    // vars are layered on top so the hook (and anything it spawns) can be
-    // attributed back to the daemon.
-    if let Some(vars) = env {
-        cmd.env_clear();
-        for (key, val) in vars {
-            if client_env_var_is_safe_to_replay(key) {
-                cmd.env(key, val);
-            }
-        }
-    }
-    lineage.apply_to_tokio(&mut cmd, env);
-
-    tracing::debug!(
-        program = %program,
-        output = %output_path.display(),
-        "running post-link deploy hook"
-    );
-
-    let priority = CompilePriority::from_client_env(env);
-    match super::super::process::tokio_command_output_with_priority(&mut cmd, priority).await {
-        Ok(out) if out.status.success() => {
-            tracing::debug!(
-                program = %program,
-                "post-link deploy hook succeeded"
-            );
-        }
-        Ok(out) => {
-            tracing::warn!(
-                program = %program,
-                exit_code = out.status.code().unwrap_or(-1),
-                stderr = %String::from_utf8_lossy(&out.stderr),
-                "post-link deploy hook exited non-zero"
-            );
-        }
-        Err(e) => {
-            tracing::warn!(
-                program = %program,
-                error = %e,
-                "post-link deploy hook failed to start"
-            );
-        }
-    }
-}
