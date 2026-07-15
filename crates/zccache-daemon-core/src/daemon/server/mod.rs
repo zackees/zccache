@@ -132,8 +132,8 @@ mod in_flight;
 mod inner_trace;
 mod keys;
 mod lifecycle;
-mod link_helpers;
 mod link_hash;
+mod link_helpers;
 mod link_process;
 mod loaders;
 mod pch;
@@ -165,13 +165,13 @@ use handle_compile_ephemeral::*;
 use handle_compile_multi::handle_compile_multi;
 use handle_exec::handle_generic_tool_exec;
 use handle_link::handle_link_ephemeral;
-#[cfg(test)]
-use link_process::run_post_link_deploy_hook;
 use handle_release_worktree_handles::handle_release_worktree_handles;
 use in_flight::*;
 use keys::*;
 use lifecycle::*;
 use link_helpers::*;
+#[cfg(test)]
+use link_process::run_post_link_deploy_hook;
 use pch::*;
 use persist::*;
 
