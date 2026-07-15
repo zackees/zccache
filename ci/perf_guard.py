@@ -10,11 +10,11 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ci import benchmark_stats
+from ci import benchmark_stats, perf_distribution
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +62,14 @@ class ScenarioKey:
     baseline: str
 
 
+@dataclass(frozen=True)
+class ScenarioSample:
+    attempt: int
+    ratio: float
+    zccache_seconds: float
+    baseline_seconds: float
+
+
 @dataclass
 class ScenarioStatus:
     key: ScenarioKey
@@ -77,6 +85,7 @@ class ScenarioStatus:
     attempts_seen: int = 0
     best_zccache_seconds: float | None = None
     best_baseline_seconds: float | None = None
+    samples: list[ScenarioSample] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
@@ -89,14 +98,34 @@ class GuardReport:
     missing_requirements: list[str]
     command_failures: list[int]
     attempt_count: int
+    require_all_attempts: bool = False
+
+    def status_passed(self, status: ScenarioStatus) -> bool:
+        if not status.passed:
+            return False
+        if not self.require_all_attempts:
+            return True
+        return (
+            status.attempts_seen == self.attempt_count
+            and len(status.samples) == self.attempt_count
+            and all(sample.ratio >= status.threshold for sample in status.samples)
+        )
 
     @property
     def passed(self) -> bool:
+        if self.require_all_attempts:
+            attempts_complete = not self.command_failures and all(
+                status.attempts_seen == self.attempt_count
+                and len(status.samples) == self.attempt_count
+                for status in self.statuses
+            )
+        else:
+            attempts_complete = len(self.command_failures) < self.attempt_count
         return (
             not self.missing_requirements
-            and len(self.command_failures) < self.attempt_count
+            and attempts_complete
             and bool(self.statuses)
-            and all(status.passed for status in self.statuses)
+            and all(self.status_passed(status) for status in self.statuses)
         )
 
 
@@ -295,6 +324,7 @@ def evaluate_attempts(
     command_failures: list[int] | None = None,
     languages: tuple[str, ...] = REQUIRED_LANGUAGES,
     require_coverage: bool = True,
+    require_all_attempts: bool = False,
 ) -> GuardReport:
     if threshold is not None:
         bare_threshold = threshold
@@ -351,11 +381,23 @@ def evaluate_attempts(
                 status.attempts_seen += 1
 
                 if isinstance(ratio, int | float):
+                    zccache_seconds = row.get("zccache_seconds")
+                    if isinstance(zccache_seconds, int | float) and isinstance(
+                        baseline_seconds, int | float
+                    ):
+                        status.samples.append(
+                            ScenarioSample(
+                                attempt=attempt_index,
+                                ratio=float(ratio),
+                                zccache_seconds=float(zccache_seconds),
+                                baseline_seconds=float(baseline_seconds),
+                            )
+                        )
                     if status.best_ratio is None or ratio > status.best_ratio:
                         status.best_ratio = float(ratio)
                         status.best_attempt = attempt_index
-                        if isinstance(row.get("zccache_seconds"), int | float):
-                            status.best_zccache_seconds = float(row["zccache_seconds"])
+                        if isinstance(zccache_seconds, int | float):
+                            status.best_zccache_seconds = float(zccache_seconds)
                         if isinstance(baseline_seconds, int | float):
                             status.best_baseline_seconds = float(baseline_seconds)
 
@@ -389,6 +431,7 @@ def evaluate_attempts(
         missing_requirements=missing,
         command_failures=command_failures or [],
         attempt_count=len(attempts),
+        require_all_attempts=require_all_attempts,
     )
 
 
@@ -398,6 +441,15 @@ def _format_seconds(value: float | None) -> str:
     if value >= 1.0:
         return f"{value:.3f}s"
     return f"{value * 1000:.1f}ms"
+
+
+def _selected_sample(
+    report: GuardReport, status: ScenarioStatus
+) -> ScenarioSample | None:
+    if not status.samples:
+        return None
+    selector = min if report.require_all_attempts else max
+    return selector(status.samples, key=lambda sample: sample.ratio)
 
 
 def format_report(
@@ -419,11 +471,12 @@ def format_report(
         "|---|---|---|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for status in report.statuses:
-        state = "PASS" if status.passed else "FAIL"
-        ratio = "n/a" if status.best_ratio is None else f"{status.best_ratio:.3f}x"
-        zc_time = _format_seconds(status.best_zccache_seconds)
-        bl_time = _format_seconds(status.best_baseline_seconds)
-        attempt = "n/a" if status.best_attempt is None else str(status.best_attempt)
+        sample = _selected_sample(report, status)
+        state = "PASS" if report.status_passed(status) else "FAIL"
+        ratio = "n/a" if sample is None else f"{sample.ratio:.3f}x"
+        zc_time = _format_seconds(None if sample is None else sample.zccache_seconds)
+        bl_time = _format_seconds(None if sample is None else sample.baseline_seconds)
+        attempt = "n/a" if sample is None else str(sample.attempt)
         lines.append(
             "| "
             f"{state} | {status.language} | {status.benchmark_label} | "
@@ -444,10 +497,11 @@ def format_report(
     return "\n".join(lines) + "\n"
 
 
-def _format_status_check(status: ScenarioStatus) -> str:
-    actual = "n/a" if status.best_ratio is None else f"{status.best_ratio:.3f}x"
-    zc_time = _format_seconds(status.best_zccache_seconds)
-    bl_time = _format_seconds(status.best_baseline_seconds)
+def _format_status_check(report: GuardReport, status: ScenarioStatus) -> str:
+    sample = _selected_sample(report, status)
+    actual = "n/a" if sample is None else f"{sample.ratio:.3f}x"
+    zc_time = _format_seconds(None if sample is None else sample.zccache_seconds)
+    bl_time = _format_seconds(None if sample is None else sample.baseline_seconds)
     return (
         f"{status.language} {status.benchmark_label} / {status.scenario} "
         f"vs {status.baseline_label}: expected >= {status.threshold:.2f}x, "
@@ -455,18 +509,20 @@ def _format_status_check(status: ScenarioStatus) -> str:
     )
 
 
-def _format_status_summary_line(status: ScenarioStatus) -> str:
-    attempt = "n/a" if status.best_attempt is None else str(status.best_attempt)
-    state = "PASS" if status.passed else "FAIL"
+def _format_status_summary_line(report: GuardReport, status: ScenarioStatus) -> str:
+    sample = _selected_sample(report, status)
+    attempt = "n/a" if sample is None else str(sample.attempt)
+    state = "PASS" if report.status_passed(status) else "FAIL"
+    attempt_label = "worst" if report.require_all_attempts else "best"
     return (
-        f"- {state}: {_format_status_check(status)} "
-        f"(best attempt {attempt}; seen {status.attempts_seen})"
+        f"- {state}: {_format_status_check(report, status)} "
+        f"({attempt_label} attempt {attempt}; seen {status.attempts_seen})"
     )
 
 
 def format_benchmark_summary(report: GuardReport) -> str:
-    passed = [status for status in report.statuses if status.passed]
-    failed = [status for status in report.statuses if not status.passed]
+    passed = [status for status in report.statuses if report.status_passed(status)]
+    failed = [status for status in report.statuses if not report.status_passed(status)]
     lines = [
         "### Benchmark summary",
         "",
@@ -487,11 +543,11 @@ def format_benchmark_summary(report: GuardReport) -> str:
 
     if failed:
         lines.extend(["", "#### Failed checks", ""])
-        lines.extend(_format_status_summary_line(status) for status in failed)
+        lines.extend(_format_status_summary_line(report, status) for status in failed)
 
     if passed:
         lines.extend(["", "#### Passed checks", ""])
-        lines.extend(_format_status_summary_line(status) for status in passed)
+        lines.extend(_format_status_summary_line(report, status) for status in passed)
 
     return "\n".join(lines) + "\n"
 
@@ -502,27 +558,53 @@ def format_final_status(report: GuardReport) -> str:
             report.statuses,
             key=lambda status: (
                 float("inf")
-                if status.best_ratio is None
-                else status.best_ratio / status.threshold
+                if _selected_sample(report, status) is None
+                else _selected_sample(report, status).ratio / status.threshold
             ),
         )
         return (
             "PERF GUARD OK: all checks meet configured floors; weakest check "
-            f"{_format_status_check(weakest)}."
+            f"{_format_status_check(report, weakest)}."
         )
 
-    failed_statuses = [status for status in report.statuses if not status.passed]
+    if report.require_all_attempts:
+        if report.command_failures:
+            attempts = ", ".join(str(attempt) for attempt in report.command_failures)
+            return (
+                "PERF GUARD FAILED: distribution mode requires every benchmark "
+                f"attempt to succeed; failed attempts: {attempts}."
+            )
+        incomplete = [
+            status
+            for status in report.statuses
+            if status.attempts_seen != report.attempt_count
+            or len(status.samples) != report.attempt_count
+        ]
+        if incomplete:
+            first = incomplete[0]
+            return (
+                "PERF GUARD FAILED: distribution mode requires complete numeric "
+                f"samples for every attempt; {first.language} {first.benchmark_label} / "
+                f"{first.scenario} vs {first.baseline_label} retained "
+                f"{len(first.samples)}/{report.attempt_count}."
+            )
+
+    failed_statuses = [
+        status for status in report.statuses if not report.status_passed(status)
+    ]
     if failed_statuses:
         worst = min(
             failed_statuses,
             key=lambda status: (
-                -1.0 if status.best_ratio is None else status.best_ratio / status.threshold
+                -1.0
+                if _selected_sample(report, status) is None
+                else _selected_sample(report, status).ratio / status.threshold
             ),
         )
         count = len(failed_statuses)
         return (
             f"PERF GUARD FAILED: {count} check{'s' if count != 1 else ''} "
-            f"below floor; worst {_format_status_check(worst)}."
+            f"below floor; worst {_format_status_check(report, worst)}."
         )
 
     if report.missing_requirements:
@@ -540,6 +622,19 @@ def format_final_status(report: GuardReport) -> str:
     return "PERF GUARD FAILED: no benchmark rows were parsed."
 
 
+_distribution = perf_distribution.distribution
+
+
+def _status_distributions(
+    status: ScenarioStatus,
+) -> dict[str, dict[str, float | int]]:
+    return perf_distribution.status_distributions(status)
+
+
+def format_distribution_report(report: GuardReport) -> str:
+    return perf_distribution.format_markdown(report.statuses)
+
+
 def format_report_json(
     report: GuardReport,
     bare_threshold: float,
@@ -548,10 +643,14 @@ def format_report_json(
     *,
     cold_bare_threshold: float = DEFAULT_COLD_BARE_THRESHOLD,
     cold_sccache_threshold: float = DEFAULT_COLD_SCCACHE_THRESHOLD,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
-        "schema_version": 1,
+    payload = {
+        "schema_version": 2,
         "passed": report.passed,
+        "attempt_policy": (
+            "all-required" if report.require_all_attempts else "best-passing"
+        ),
         "languages": list(languages),
         "thresholds": {
             "bare": bare_threshold,
@@ -564,7 +663,7 @@ def format_report_json(
         "missing_requirements": report.missing_requirements,
         "statuses": [
             {
-                "passed": status.passed,
+                "passed": report.status_passed(status),
                 "benchmark": status.key.benchmark,
                 "benchmark_label": status.benchmark_label,
                 "language": status.language,
@@ -576,10 +675,29 @@ def format_report_json(
                 "best_ratio": status.best_ratio,
                 "best_attempt": status.best_attempt,
                 "attempts_seen": status.attempts_seen,
+                "samples": [
+                    {
+                        "attempt": sample.attempt,
+                        "ratio": sample.ratio,
+                        "zccache_seconds": sample.zccache_seconds,
+                        "baseline_seconds": sample.baseline_seconds,
+                        "attempt_json": f"attempt-{sample.attempt}.json",
+                        "raw_log": f"attempt-{sample.attempt}.log"
+                        if report.require_all_attempts
+                        else None,
+                    }
+                    for sample in status.samples
+                ],
+                "distributions": (
+                    _status_distributions(status) if status.samples else None
+                ),
             }
             for status in report.statuses
         ],
     }
+    if metadata is not None:
+        payload["metadata"] = metadata
+    return payload
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -601,6 +719,7 @@ def write_attempt_json(
         {
             "schema_version": 1,
             "attempt": attempt,
+            "recorded_at_unix_ns": time.time_ns(),
             "source": source,
             "language": language,
             "returncode": returncode,
@@ -619,6 +738,7 @@ def write_report_json(
     *,
     cold_bare_threshold: float = DEFAULT_COLD_BARE_THRESHOLD,
     cold_sccache_threshold: float = DEFAULT_COLD_SCCACHE_THRESHOLD,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     _write_json(
         output_dir / "perf-guard-summary.json",
@@ -629,6 +749,7 @@ def write_report_json(
             languages,
             cold_bare_threshold=cold_bare_threshold,
             cold_sccache_threshold=cold_sccache_threshold,
+            metadata=metadata,
         ),
     )
 
@@ -651,6 +772,20 @@ def _load_input_log(path: Path) -> list[list[dict[str, Any]]]:
     return [benchmark_stats.parse_benchmark_log(text)]
 
 
+def collect_run_metadata(command: list[str]) -> dict[str, Any]:
+    metadata = benchmark_stats.collect_metadata()
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    metadata["dirty"] = dirty.returncode != 0 or bool(dirty.stdout.strip())
+    metadata["command"] = command
+    return metadata
+
+
 def _run_attempts(
     output_dir: Path,
     attempts: int,
@@ -663,6 +798,7 @@ def _run_attempts(
     benchmark_binary: Path | None,
     test_name: str | None = None,
     require_coverage: bool = True,
+    collect_all_attempts: bool = False,
 ) -> tuple[list[list[dict[str, Any]]], list[int]]:
     parsed_attempts: list[list[dict[str, Any]]] = []
     command_failures: list[int] = []
@@ -696,7 +832,7 @@ def _run_attempts(
             languages=languages,
             require_coverage=require_coverage,
         )
-        if returncode == 0 and interim.passed:
+        if not collect_all_attempts and returncode == 0 and interim.passed:
             break
 
     return parsed_attempts, command_failures
@@ -734,6 +870,11 @@ def main() -> int:
     )
     parser.add_argument("--attempts", type=int, default=DEFAULT_ATTEMPTS)
     parser.add_argument(
+        "--collect-all-attempts",
+        action="store_true",
+        help="Run every requested attempt and require every sample to pass.",
+    )
+    parser.add_argument(
         "--benchmark-binary",
         type=Path,
         help="Run a prebuilt perf_bench_test binary instead of invoking cargo test.",
@@ -768,6 +909,8 @@ def main() -> int:
         parser.error("use exactly one of --input-log or --run-benchmarks")
     if args.benchmark_binary and not args.run_benchmarks:
         parser.error("--benchmark-binary requires --run-benchmarks")
+    if args.collect_all_attempts and not args.run_benchmarks:
+        parser.error("--collect-all-attempts requires --run-benchmarks")
     if args.benchmark_binary and not args.benchmark_binary.is_file():
         parser.error(f"--benchmark-binary does not exist: {args.benchmark_binary}")
     if args.test and not args.language:
@@ -807,6 +950,7 @@ def main() -> int:
             args.benchmark_binary,
             test_name=args.test,
             require_coverage=require_coverage,
+            collect_all_attempts=args.collect_all_attempts,
         )
 
     report = evaluate_attempts(
@@ -818,6 +962,7 @@ def main() -> int:
         command_failures=command_failures,
         languages=languages,
         require_coverage=require_coverage,
+        require_all_attempts=args.collect_all_attempts,
     )
     markdown = format_report(
         report,
@@ -826,6 +971,8 @@ def main() -> int:
         args.cold_bare_threshold,
         args.cold_sccache_threshold,
     )
+    if args.collect_all_attempts:
+        markdown += "\n" + format_distribution_report(report)
     final_status = format_final_status(report)
     report_path = args.output_dir / "perf-guard-summary.md"
     report_path.write_text(markdown + "\n" + final_status + "\n", encoding="utf-8")
@@ -837,6 +984,9 @@ def main() -> int:
         languages,
         cold_bare_threshold=args.cold_bare_threshold,
         cold_sccache_threshold=args.cold_sccache_threshold,
+        metadata=collect_run_metadata([sys.executable, *sys.argv])
+        if args.collect_all_attempts
+        else None,
     )
     write_final_status(args.output_dir, final_status)
     print(markdown)
