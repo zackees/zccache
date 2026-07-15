@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from ci import perf_embedded
@@ -155,9 +156,22 @@ def test_sample_rejects_wrong_cache_semantics_and_artifact_drift(
 
     failures = perf_embedded.validate_embedded_result(result, tmp_path)
 
-    assert any("local-hit recorded no cache hits" in failure for failure in failures)
+    assert any("local-hit did not replay every cold miss" in failure for failure in failures)
     assert any("artifact hashes differ" in failure for failure in failures)
-    assert any("target-noop compiled" in failure for failure in failures)
+    assert any("target-noop performed compiler or cache work" in failure for failure in failures)
+
+
+def test_sample_rejects_partial_hits_and_noop_cache_work(tmp_path: Path) -> None:
+    result = _result("c")
+    result["phases"]["local-hit"]["hits"] = 3
+    result["phases"]["local-hit"]["misses"] = 1
+    result["phases"]["target-noop"]["hits"] = 1
+    _write_artifacts(tmp_path, result)
+
+    failures = perf_embedded.validate_embedded_result(result, tmp_path)
+
+    assert any("local-hit did not replay every cold miss" in failure for failure in failures)
+    assert any("target-noop performed compiler or cache work" in failure for failure in failures)
 
 
 def test_repeat_summary_has_required_distribution_and_floor_dossiers(
@@ -203,6 +217,32 @@ def test_campaign_resume_identity_rejects_source_or_fixture_drift() -> None:
         raise AssertionError("fixture drift must reject resume")
 
 
+def test_completed_sample_must_match_campaign_identity(tmp_path: Path) -> None:
+    sample_dir = tmp_path / "rust" / "sample-01"
+    sample_dir.mkdir(parents=True)
+    result = _result("rust")
+    _write_artifacts(sample_dir, result)
+    (sample_dir / "result.json").write_text(json.dumps(result), encoding="utf-8")
+    campaign = {
+        "schema_version": 1,
+        "identity": {
+            "zccache_sha": "0" * 40,
+            "soldr_sha": result["soldr_sha"],
+            "image_digest": result["image_digest"],
+            "host_fingerprint": result["host_fingerprint"],
+            "fixture_sha256": result["fixture_sha256"],
+        },
+        "samples": [{"language": "rust", "sample": 1, "path": "rust/sample-01"}],
+    }
+
+    try:
+        perf_embedded.validate_completed_samples(tmp_path, campaign)
+    except ValueError as error:
+        assert "zccache_sha drifted" in str(error)
+    else:
+        raise AssertionError("sample identity drift must reject resume")
+
+
 def test_fixture_hash_changes_with_content(tmp_path: Path) -> None:
     (tmp_path / "Cargo.toml").write_text("[package]\nname='fixture'\n")
     first = perf_embedded.fixture_sha256(tmp_path)
@@ -229,10 +269,34 @@ def test_embedded_runner_uses_pinned_compiler_complete_base() -> None:
     assert "soldr toolchain prepare" not in entrypoint
     assert "cp -a /opt/soldr-seed/.soldr/." in entrypoint
     assert 'sentinel=".embedded-toolchain-${IMAGE_DIGEST#sha256:}"' in entrypoint
+    assert "org.zccache.embedded-perf.standalone-image" in dockerfile
     assert "embedded-lifecycle/run.sh" in entrypoint
     assert "compiler-artifact" in scenario
     assert 'target="${repo}/target"' in scenario
     assert 'rust_binary="${target}/release/embedded-fixture"' in scenario
+
+
+def test_embedded_image_rebuilds_when_prepared_parent_changes(monkeypatch) -> None:
+    recipe = perf_embedded.recipe_sha256()
+    labels = {
+        "org.zccache.embedded-perf.recipe": recipe,
+        "org.zccache.embedded-perf.standalone-image": "sha256:" + "1" * 64,
+    }
+    built: list[list[str]] = []
+
+    class InspectResult:
+        returncode = 0
+        stdout = json.dumps(labels)
+
+    monkeypatch.setattr(perf_embedded.perf_standalone, "_build_image", lambda rebuild: None)
+    monkeypatch.setattr(perf_embedded, "_image_digest", lambda image=perf_embedded.IMAGE: "sha256:" + "2" * 64)
+    monkeypatch.setattr(perf_embedded.subprocess, "run", lambda *args, **kwargs: InspectResult())
+    monkeypatch.setattr(perf_embedded.perf_local, "run", built.append)
+
+    command = perf_embedded.build_images(rebuild=False)
+
+    assert built == [command]
+    assert f"STANDALONE_IMAGE_DIGEST=sha256:{'2' * 64}" in command
 
 
 def test_runtime_is_offline_and_uses_exact_soldr_binary(tmp_path: Path) -> None:

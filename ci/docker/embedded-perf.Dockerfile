@@ -9,6 +9,8 @@ COPY ci/docker/embedded_perf_entrypoint.sh /usr/local/bin/embedded-perf
 RUN chmod 0755 /usr/local/bin/embedded-perf
 
 ARG EMBEDDED_RECIPE_SHA=unknown
-LABEL org.zccache.embedded-perf.recipe="${EMBEDDED_RECIPE_SHA}"
+ARG STANDALONE_IMAGE_DIGEST=unknown
+LABEL org.zccache.embedded-perf.recipe="${EMBEDDED_RECIPE_SHA}" \
+      org.zccache.embedded-perf.standalone-image="${STANDALONE_IMAGE_DIGEST}"
 
 ENTRYPOINT ["/usr/local/bin/embedded-perf"]

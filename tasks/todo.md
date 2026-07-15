@@ -149,5 +149,5 @@ Issue: https://github.com/zackees/zccache/issues/1117
 - [x] Add a deterministic Cargo fixture covering Rust, C, C++, and Emscripten outputs.
 - [x] Add `perf_local.py --embedded-matrix` with repeat/resume campaign evidence.
 - [x] Retain wall/CPU/TTFB/output, RSS, cache/artifact, phase, command, and identity data.
-- [ ] Run focused tests, Linux Docker diagnostics, and five valid samples per cell.
+- [x] Run focused tests, Linux Docker diagnostics, and five valid samples per cell.
 - [ ] Publish floor dossiers, merge the PR, and close #1117.

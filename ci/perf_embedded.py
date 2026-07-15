@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import statistics
 import subprocess
@@ -66,6 +67,10 @@ def _is_nonnegative_int(value: Any) -> bool:
     return type(value) is int and value >= 0
 
 
+def _is_hex(value: Any, length: int) -> bool:
+    return isinstance(value, str) and re.fullmatch(rf"[0-9a-f]{{{length}}}", value) is not None
+
+
 def _validate_phase(
     phase_name: str,
     phase: Any,
@@ -92,6 +97,12 @@ def _validate_phase(
     for field in required_nonnegative:
         if not _is_nonnegative_int(phase.get(field)):
             failures.append(f"{phase_name} has invalid {field}")
+    if phase.get("name") != phase_name:
+        failures.append(f"{phase_name} phase name does not match its key")
+    if phase.get("wall_ms") == 0:
+        failures.append(f"{phase_name} wall time is zero")
+    if phase.get("peak_command_rss_bytes") == 0:
+        failures.append(f"{phase_name} command RSS is zero")
     wall_ms = phase.get("wall_ms")
     ttfb_ms = phase.get("ttfb_ms")
     if _is_nonnegative_int(wall_ms) and _is_nonnegative_int(ttfb_ms):
@@ -105,7 +116,7 @@ def _validate_phase(
     if not isinstance(phase.get("phase_profile"), dict):
         failures.append(f"{phase_name} phase profile is missing")
     digest = phase.get("artifact_sha256")
-    if not isinstance(digest, str) or len(digest) != 64:
+    if not _is_hex(digest, 64):
         failures.append(f"{phase_name} artifact SHA-256 is invalid")
     artifacts = phase.get("artifacts")
     if not isinstance(artifacts, dict):
@@ -144,20 +155,15 @@ def validate_embedded_result(result: dict[str, Any], results_dir: Path) -> list[
     if result.get("embedded_zccache_observed") is not True:
         failures.append("fixture did not prove an embedded zccache invocation")
 
-    for field, expected_length in (
-        ("fixture_sha256", 64),
-        ("host_fingerprint", 64),
-        ("soldr_sha", 40),
-        ("zccache_sha", 40),
-    ):
+    for field, expected_length in (("fixture_sha256", 64), ("host_fingerprint", 64), ("soldr_sha", 40), ("zccache_sha", 40)):
         value = result.get(field)
-        if not isinstance(value, str) or len(value) != expected_length:
+        if not _is_hex(value, expected_length):
             failures.append(f"invalid {field}")
     image_digest = result.get("image_digest")
-    if not isinstance(image_digest, str) or not image_digest.startswith("sha256:"):
+    if not isinstance(image_digest, str) or not image_digest.startswith("sha256:") or not _is_hex(image_digest.removeprefix("sha256:"), 64):
         failures.append("invalid image_digest")
     versions = result.get("tool_versions")
-    if not isinstance(versions, dict) or not all(isinstance(versions.get(tool), str) for tool in ("soldr", "rustc", "clang", "emscripten")):
+    if not isinstance(versions, dict) or not all(isinstance(versions.get(tool), str) and versions[tool].strip() for tool in ("soldr", "rustc", "clang", "emscripten")):
         failures.append("tool version provenance is incomplete")
     for field in ("peak_daemon_rss_bytes", "peak_compile_rss_bytes"):
         if not _is_nonnegative_int(result.get(field)) or result[field] == 0:
@@ -175,14 +181,17 @@ def validate_embedded_result(result: dict[str, Any], results_dir: Path) -> list[
     local_hit = phases.get("local-hit", {})
     sibling_hit = phases.get("sibling-hit", {})
     noop = phases.get("target-noop", {})
-    if isinstance(cold, dict) and cold.get("misses", 0) <= 0:
-        failures.append("daemon-cold recorded no cache misses")
-    if isinstance(local_hit, dict) and local_hit.get("hits", 0) <= 0:
-        failures.append("local-hit recorded no cache hits")
-    if isinstance(sibling_hit, dict) and sibling_hit.get("hits", 0) <= 0:
-        failures.append("sibling-hit recorded no cache hits")
-    if isinstance(noop, dict) and noop.get("compilations") != 0:
-        failures.append("target-noop compiled one or more units")
+    cold_misses = cold.get("misses") if isinstance(cold, dict) else None
+    if isinstance(cold, dict) and (cold_misses is None or cold_misses <= 0 or cold.get("hits") != 0):
+        failures.append("daemon-cold did not record a pure cache miss")
+    for phase_name, phase in (("local-hit", local_hit), ("sibling-hit", sibling_hit)):
+        if isinstance(phase, dict) and (phase.get("hits") != cold_misses or phase.get("misses") != 0):
+            failures.append(f"{phase_name} did not replay every cold miss as a cache hit")
+    if isinstance(noop, dict) and any(noop.get(field) != 0 for field in ("compilations", "hits", "misses", "non_cacheable")):
+        failures.append("target-noop performed compiler or cache work")
+    for phase_name, phase in (("daemon-cold", cold), ("local-hit", local_hit), ("sibling-hit", sibling_hit), ("target-noop", noop)):
+        if isinstance(phase, dict) and (phase.get("artifact_count", 0) <= 0 or phase.get("artifact_bytes", 0) <= 0):
+            failures.append(f"{phase_name} recorded no build artifacts")
 
     comparable = [phase.get("artifact_sha256") for phase in (cold, local_hit, sibling_hit, noop) if isinstance(phase, dict)]
     if comparable and len(set(comparable)) != 1:
@@ -230,7 +239,7 @@ def build_repeat_summary(
     return {
         "schema_version": 1,
         "language": language,
-        "samples": [str(path.relative_to(base_dir)) for path, _ in samples],
+        "samples": [path.relative_to(base_dir).as_posix() for path, _ in samples],
         "distributions": distributions,
         "floor_dossiers": floor_dossiers,
     }
@@ -250,9 +259,9 @@ def recipe_sha256() -> str:
     return digest.hexdigest()
 
 
-def _image_digest() -> str:
+def _image_digest(image: str = IMAGE) -> str:
     return subprocess.run(
-        ["docker", "image", "inspect", "--format", "{{.Id}}", IMAGE],
+        ["docker", "image", "inspect", "--format", "{{.Id}}", image],
         capture_output=True,
         text=True,
         check=True,
@@ -262,32 +271,39 @@ def _image_digest() -> str:
 def build_images(*, rebuild: bool) -> list[str]:
     """Ensure the prepared standalone base and embedded runner are current."""
     perf_standalone._build_image(rebuild)
+    standalone_digest = _image_digest(perf_standalone.IMAGE)
     inspected = subprocess.run(
         [
             "docker",
             "image",
             "inspect",
             "--format",
-            '{{index .Config.Labels "org.zccache.embedded-perf.recipe"}}',
+            "{{json .Config.Labels}}",
             IMAGE,
         ],
         capture_output=True,
         text=True,
         check=False,
     )
-    current = inspected.stdout.strip() if inspected.returncode == 0 else None
+    try:
+        labels = json.loads(inspected.stdout) if inspected.returncode == 0 else {}
+    except json.JSONDecodeError:
+        labels = {}
+    recipe = recipe_sha256()
     command = [
         "docker",
         "build",
         "--build-arg",
-        f"EMBEDDED_RECIPE_SHA={recipe_sha256()}",
+        f"EMBEDDED_RECIPE_SHA={recipe}",
+        "--build-arg",
+        f"STANDALONE_IMAGE_DIGEST={standalone_digest}",
         "--file",
         str(DOCKERFILE),
         "--tag",
         IMAGE,
         str(REPO_ROOT),
     ]
-    if rebuild or current != recipe_sha256():
+    if rebuild or labels.get("org.zccache.embedded-perf.recipe") != recipe or labels.get("org.zccache.embedded-perf.standalone-image") != standalone_digest:
         perf_local.run(command)
     return command
 
@@ -359,14 +375,30 @@ def _load_sample(sample_dir: Path) -> dict[str, Any]:
 
 
 def validate_completed_samples(campaign_dir: Path, campaign: dict[str, Any]) -> None:
+    if campaign.get("schema_version") != 1 or not isinstance(campaign.get("identity"), dict):
+        raise ValueError("embedded campaign metadata is malformed")
+    identity = campaign["identity"]
+    seen: set[tuple[str, int]] = set()
     for item in campaign.get("samples", []):
         relative = item.get("path")
-        if not isinstance(relative, str):
+        language = item.get("language")
+        sample = item.get("sample")
+        if language not in LANGUAGES or type(sample) is not int or sample < 1:
+            raise ValueError("completed embedded sample metadata is malformed")
+        expected = f"{language}/sample-{sample:02d}"
+        if not isinstance(relative, str) or relative != expected:
             raise ValueError("completed embedded sample has no relative path")
+        key = (language, sample)
+        if key in seen:
+            raise ValueError("completed embedded sample is duplicated")
+        seen.add(key)
         sample_dir = campaign_dir / relative
         result = _load_sample(sample_dir)
-        if result.get("language") != item.get("language"):
+        if result.get("language") != language:
             raise ValueError("completed embedded sample language drifted")
+        for field in ("zccache_sha", "soldr_sha", "image_digest", "host_fingerprint", "fixture_sha256"):
+            if result.get(field) != identity.get(field):
+                raise ValueError(f"completed embedded sample {field} drifted")
 
 
 def _render_markdown(campaign: dict[str, Any]) -> str:
@@ -433,6 +465,7 @@ def run_embedded_campaign(
     campaign_path = campaign_dir / "campaign.json"
     if resume and campaign_path.exists():
         campaign = json.loads(campaign_path.read_text(encoding="utf-8"))
+        validate_resume_identity(campaign.get("identity", {}), identity)
         validate_completed_samples(campaign_dir, campaign)
     else:
         campaign = {
