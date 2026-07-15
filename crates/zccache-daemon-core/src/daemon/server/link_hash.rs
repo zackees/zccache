@@ -74,9 +74,7 @@ pub(super) fn archive_hash_cache_is_cold(
             .any(|input| metadata.get_cached_hash(input).is_none())
 }
 
-pub(super) fn discard_speculative_archive(
-    speculative: &mut Option<CompletedSpeculativeArchive>,
-) {
+pub(super) fn discard_speculative_archive(speculative: &mut Option<CompletedSpeculativeArchive>) {
     if let Some(speculative) = speculative.take() {
         let _ = speculative.plan.cleanup();
     }

@@ -1,8 +1,8 @@
 //! Ephemeral link/archive request handler.
 
-use super::*;
 use super::link_hash::*;
 use super::link_process::*;
+use super::*;
 
 fn publish_and_materialize_staged_link(
     state: &SharedState,
