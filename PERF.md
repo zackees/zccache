@@ -192,6 +192,36 @@ Evidence is retained under `.perf-standalone/results/`. Each campaign has a
 JSON index and Markdown table linking raw logs, parsed rows, cache phase/byte
 telemetry, command provenance, and resource usage for every test.
 
+## Soldr-embedded lifecycle campaign
+
+The embedded campaign uses the exact locally built soldr binary containing the
+current committed zccache revision. For Rust, C, C++, and Emscripten it records
+daemon startup, an already-running cold build, a local cache hit, a sibling
+worktree hit, and a target-intact no-op.
+
+The runner derives from the standalone image, whose Docker build executes
+`soldr toolchain prepare` with a 600-second command-output window. Runtime
+containers seed that prepared soldr home into a named volume and run with the
+network disabled, so a sample cannot bootstrap missing dependencies.
+
+Run one correctness sample while iterating:
+
+```powershell
+uv run --no-project ci/perf_local.py --embedded-matrix --language rust
+```
+
+Run or resume the required five-sample matrix from a clean commit:
+
+```powershell
+uv run --no-project ci/perf_local.py --embedded-matrix --repeat 5
+uv run --no-project ci/perf_local.py --embedded-matrix --repeat 5 --resume
+```
+
+Each sample rejects soldr aborts, timeouts, no-cache retries, daemon fallbacks,
+missing cache semantics, wrapper bypass, artifact drift, output replay failure,
+or incomplete provenance. Results and per-lifecycle median/MAD/min/max floor
+dossiers are retained under `.perf-local/results/embedded-mixed/`.
+
 ## Cross-platform responsibility
 
 Linux Docker is the sanctioned timing environment. Native Windows, macOS, and

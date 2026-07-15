@@ -18,6 +18,8 @@ infrastructure, and staged-telemetry gates, and retains evidence under
 - `medium`: representative pure-Rust dependency graph.
 - `sqlite-link`: Rust plus bundled `libsqlite3` through `cc-rs`. It validates
   mixed compiler coverage; it is not a mutable SQLite database test.
+- `embedded-mixed`: dependency-free Rust, C, C++, and Emscripten source used
+  by the explicit soldr lifecycle campaign.
 
 Fixture archives are generated from the sibling source directories by
 [`fixtures/regen.sh`](fixtures/regen.sh).
@@ -31,6 +33,7 @@ Fixture archives are generated from the sibling source directories by
 | `worktree-share` | Path remapping or sibling-worktree sharing |
 | `touch-no-change` | Content-hash robustness after metadata-only changes |
 | `restore-no-clean-warm` | Restore/no-op behavior or downstream cache misses |
+| `embedded-lifecycle` | Explicit soldr daemon startup, cold, local-hit, sibling-hit, and no-op phases |
 
 Every rollout scenario wraps both measured builds with
 `measure::run_guarded_soldr_command`. There is no fixed child wall-clock

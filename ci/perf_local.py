@@ -1163,6 +1163,11 @@ def main() -> int:
         help="Run the sanctioned 2-fixture x 4-scenario local Linux gate.",
     )
     parser.add_argument(
+        "--embedded-matrix",
+        action="store_true",
+        help="Run the soldr-embedded Rust/C/C++/Emscripten lifecycle matrix.",
+    )
+    parser.add_argument(
         "--fixture",
         choices=VALID_FIXTURES,
         default=DEFAULT_FIXTURE,
@@ -1190,12 +1195,28 @@ def main() -> int:
         default=1,
         help="Repeat each matrix cell and retain distribution summaries (default: 1).",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume and revalidate an existing embedded campaign.",
+    )
+    parser.add_argument(
+        "--language",
+        choices=("rust", "c", "cpp", "emscripten"),
+        help="Limit --embedded-matrix to one language.",
+    )
     args = parser.parse_args()
 
     if args.jobs < 1:
         parser.error("--jobs must be at least 1")
     if args.repeat < 1:
         parser.error("--repeat must be at least 1")
+    if args.matrix and args.embedded_matrix:
+        parser.error("--matrix and --embedded-matrix are mutually exclusive")
+    if args.language and not args.embedded_matrix:
+        parser.error("--language requires --embedded-matrix")
+    if args.resume and not args.embedded_matrix:
+        parser.error("--resume requires --embedded-matrix")
 
     if not docker_available():
         print(
@@ -1215,6 +1236,23 @@ def main() -> int:
 
     if args.matrix:
         return run_rollout_matrix(layout, args.jobs, args.repeat)
+    if args.embedded_matrix:
+        # Direct `ci/perf_local.py` execution puts `ci/`, not the repository
+        # root, first on sys.path. Prefer this checkout over any older installed
+        # `ci` package before importing the sibling campaign module.
+        sys.path.insert(0, str(REPO_ROOT))
+        from ci.perf_embedded import run_embedded_campaign
+
+        output = run_embedded_campaign(
+            layout,
+            jobs=args.jobs,
+            repeat=args.repeat,
+            rebuild_images=args.rebuild_images,
+            resume=args.resume,
+            language=args.language,
+        )
+        print(f"[perf-local] embedded campaign complete: {output}")
+        return 0
 
     results_dir = run_scenario(layout, args.scenario, args.fixture, args.jobs)
     return render_summary(results_dir, args.scenario, args.fixture)
