@@ -223,14 +223,22 @@ async fn perf_warm_cache_zccache_vs_sccache() {
     warmup_compiler(&compiler, zc_dir.path());
 
     eprint!("        multi cold:   ");
-    let zc_cold_multi =
-        zccache_compile_multi(&mut client, &session_id, &compiler, &zc_cwd, &sources).await;
+    let zc_cold_multi = zccache_compile_multi(
+        &mut client,
+        &session_id,
+        &compiler,
+        &zc_cwd,
+        &sources,
+        false,
+    )
+    .await;
     eprintln!("{}", fmt_dur(zc_cold_multi));
 
     let mut zc_multi_times = Vec::with_capacity(WARM_TRIALS);
     for _ in 0..WARM_TRIALS {
         zc_multi_times.push(
-            zccache_compile_multi(&mut client, &session_id, &compiler, &zc_cwd, &sources).await,
+            zccache_compile_multi(&mut client, &session_id, &compiler, &zc_cwd, &sources, true)
+                .await,
         );
     }
     print_trials("multi warm:", &zc_multi_times);

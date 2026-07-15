@@ -1,6 +1,7 @@
 //! All-or-nothing private execution for cache-missed multi-source units.
 
 use super::args::filter_multi_source_args;
+use super::preflight::InputStampSet;
 use super::*;
 use crate::daemon::{lineage::Lineage, process};
 
@@ -26,6 +27,12 @@ struct PublishedMiss {
     dep_dirs: Vec<NormalizedPath>,
     artifact_bytes: u64,
     validation_clock: Clock,
+}
+
+struct StagedCompilerOutput {
+    unit_index: usize,
+    output: std::process::Output,
+    elapsed_ns: u64,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -137,10 +144,11 @@ pub(super) async fn try_handle_staged_misses(
         })
         .collect();
     let mut failed_exit_code = None;
-
     let lineage = Lineage::current(session_client_pid(state, sid), Some(sid.to_string()));
-    for miss in &mut misses {
-        let compiler_started = std::time::Instant::now();
+    let client_pid = lineage.client_pid.unwrap_or(0);
+    let priority = CompilePriority::from_client_env(client_env.as_deref());
+    let mut compiler_set = tokio::task::JoinSet::new();
+    for miss in &misses {
         let mut compiler_args = miss.plan.rewritten_args.clone();
         if miss.plan.msvc_syntax
             && !compiler_args
@@ -172,15 +180,87 @@ pub(super) async fn try_handle_staged_misses(
             command.args(&compiler_args).current_dir(cwd);
         }
         apply_client_env(&mut command, client_env, &lineage);
-        let priority = CompilePriority::from_client_env(client_env.as_deref());
-        let output = match process::tokio_command_output_with_priority(&mut command, priority).await
-        {
-            Ok(output) => output,
+        command.kill_on_drop(true);
+        let compile_concurrency = state.compile_concurrency.clone();
+        let unit_index = miss.unit_index;
+        compiler_set.spawn(async move {
+            let available_before = compile_concurrency
+                .as_ref()
+                .map_or(usize::MAX, |semaphore| semaphore.available_permits());
+            let _permit = if let Some(semaphore) = compile_concurrency.as_ref() {
+                Arc::clone(semaphore).acquire_owned().await.ok()
+            } else {
+                None
+            };
+            if compile_concurrency.is_some() {
+                tracing::info!(
+                    event = "compile_start",
+                    client_pid,
+                    available_before,
+                    "compile_start client_pid={client_pid} available_before={available_before}",
+                );
+            }
+            let compiler_started = std::time::Instant::now();
+            let output = process::tokio_command_output_with_priority(&mut command, priority).await;
+            let elapsed_ns = compiler_started.elapsed().as_nanos() as u64;
+            if compile_concurrency.is_some() {
+                let exit_code = output
+                    .as_ref()
+                    .ok()
+                    .and_then(|value| value.status.code())
+                    .unwrap_or(-1);
+                tracing::info!(
+                    event = "compile_end",
+                    client_pid,
+                    duration_ns = elapsed_ns,
+                    exit_code,
+                    "compile_end client_pid={client_pid} duration_ns={elapsed_ns} exit_code={exit_code}",
+                );
+            }
+            let output = output.map_err(|error| {
+                format!("failed to run staged multi-source compiler: {error}")
+            })?;
+            drop(rsp_guard);
+            Ok::<_, String>(StagedCompilerOutput {
+                unit_index,
+                output,
+                elapsed_ns,
+            })
+        });
+    }
+
+    let mut compiler_outputs: Vec<Option<StagedCompilerOutput>> = std::iter::repeat_with(|| None)
+        .take(unit_results.len())
+        .collect();
+    let mut compiler_error = None;
+    while let Some(result) = compiler_set.join_next().await {
+        match result {
+            Ok(Ok(output)) => {
+                let unit_index = output.unit_index;
+                compiler_outputs[unit_index] = Some(output);
+            }
+            Ok(Err(error)) => {
+                compiler_error.get_or_insert(error);
+            }
             Err(error) => {
-                return Some(Response::Error {
-                    message: format!("failed to run staged multi-source compiler: {error}"),
+                compiler_error.get_or_insert_with(|| {
+                    format!("staged multi-source compiler task failed: {error}")
                 });
             }
+        };
+    }
+    if let Some(message) = compiler_error {
+        return Some(Response::Error { message });
+    }
+
+    for miss in &mut misses {
+        let Some(StagedCompilerOutput {
+            output, elapsed_ns, ..
+        }) = compiler_outputs[miss.unit_index].take()
+        else {
+            return Some(Response::Error {
+                message: "staged multi-source compiler produced no result".to_string(),
+            });
         };
         state
             .profiler
@@ -188,7 +268,7 @@ pub(super) async fn try_handle_staged_misses(
             .count(crate::daemon::staged_stats::StagedCounter::CompilerStaged);
         state.profiler.staged.timing(
             crate::daemon::staged_stats::StagedTiming::Compiler,
-            compiler_started.elapsed().as_nanos() as u64,
+            elapsed_ns,
         );
         let exit_code = output.status.code().unwrap_or(-1);
         let stderr = if miss.plan.msvc_syntax {
@@ -237,31 +317,29 @@ pub(super) async fn try_handle_staged_misses(
         }
     }
 
-    let mut published = Vec::with_capacity(misses.len());
-    for (miss, output_sizes) in misses.into_iter().zip(validated_sizes) {
-        let artifact_bytes = output_sizes.iter().sum();
-        let mut scan_result =
-            miss.scan_result
-                .unwrap_or_else(|| {
-                    match crate::depgraph::depfile::parse_depfile_path(
-                        &miss.plan.depfile,
+    let mut validation_inputs = Vec::with_capacity(misses.len());
+    let mut tracked_union = HashSet::new();
+    for miss in &mut misses {
+        let mut scan_result = miss.scan_result.take().unwrap_or_else(|| {
+            match crate::depgraph::depfile::parse_depfile_path(
+                &miss.plan.depfile,
+                &miss.source_path,
+                cwd,
+            ) {
+                Ok(result) => result,
+                Err(error) => {
+                    tracing::warn!(
+                        source = %miss.source_path.display(),
+                        %error,
+                        "staged multi-source depfile parse failed; using recursive scan"
+                    );
+                    crate::depgraph::scanner::scan_recursive(
                         &miss.source_path,
-                        cwd,
-                    ) {
-                        Ok(result) => result,
-                        Err(error) => {
-                            tracing::warn!(
-                                source = %miss.source_path.display(),
-                                %error,
-                                "staged multi-source depfile parse failed; using recursive scan"
-                            );
-                            crate::depgraph::scanner::scan_recursive(
-                                &miss.source_path,
-                                &miss.ctx.include_search,
-                            )
-                        }
-                    }
-                });
+                        &miss.ctx.include_search,
+                    )
+                }
+            }
+        });
         let mut tracked: HashSet<NormalizedPath> =
             miss.input_snapshot.hashes.keys().cloned().collect();
         tracked.insert(miss.source_path.clone());
@@ -278,24 +356,56 @@ pub(super) async fn try_handle_staged_misses(
                 })
                 .cloned(),
         );
-        state.cache_system.register_tracked(&tracked_paths);
         let dep_dirs = tracked_paths
             .iter()
             .filter_map(|path| path.parent().map(NormalizedPath::from))
             .collect();
-        let current_clock = state.cache_system.current_clock();
-        let hash_map: HashMap<NormalizedPath, ContentHash> = {
-            use rayon::prelude::*;
-            tracked_paths
-                .par_iter()
-                .filter_map(|path| {
-                    hash_file(&state.cache_system, path, current_clock)
-                        .ok()
-                        .map(|hash| (path.clone(), hash))
-                })
-                .collect()
-        };
-        let stable = miss.input_snapshot.stable(state, &tracked_paths, &hash_map);
+        tracked_union.extend(tracked_paths.iter().cloned());
+        validation_inputs.push((scan_result, tracked_paths, dep_dirs));
+    }
+
+    let tracked_union: Vec<NormalizedPath> = tracked_union.into_iter().collect();
+    state.cache_system.register_tracked(&tracked_union);
+    let current_clock = state.cache_system.current_clock();
+    let shared_hashes: HashMap<NormalizedPath, ContentHash> = {
+        use rayon::prelude::*;
+        tracked_union
+            .par_iter()
+            .filter_map(|path| {
+                hash_file(&state.cache_system, path, current_clock)
+                    .ok()
+                    .map(|hash| (path.clone(), hash))
+            })
+            .collect()
+    };
+    let current_stamps = InputStampSet::capture(&tracked_union);
+
+    let mut published = Vec::with_capacity(misses.len());
+    for ((miss, output_sizes), (scan_result, tracked_paths, dep_dirs)) in misses
+        .into_iter()
+        .zip(validated_sizes)
+        .zip(validation_inputs)
+    {
+        let artifact_bytes = output_sizes.iter().sum();
+        let hash_map: HashMap<NormalizedPath, ContentHash> = tracked_paths
+            .iter()
+            .filter_map(|path| shared_hashes.get(path).map(|hash| (path.clone(), *hash)))
+            .collect();
+        let snapshot_issue = miss.input_snapshot.issue_with_stamps(
+            state,
+            &tracked_paths,
+            &hash_map,
+            &current_stamps,
+        );
+        if let Some(issue) = snapshot_issue {
+            state.profiler.staged.failure(issue.failure());
+            tracing::debug!(
+                source = %miss.source_path.display(),
+                reason = issue.id(),
+                "multi-source cache publication suppressed because inputs were unstable"
+            );
+        }
+        let stable = snapshot_issue.is_none();
         let mut cache_entry = None;
         let mut graph_update = None;
         if stable {

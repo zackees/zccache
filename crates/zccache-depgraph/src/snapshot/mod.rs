@@ -63,7 +63,7 @@ pub struct FileEntrySnapshot {
 
 #[derive(Archive, Serialize, Deserialize)]
 pub struct IncludeDirectiveSnapshot {
-    /// 0=Quoted, 1=AngleBracket, 2=Computed
+    /// 0=Quoted, 1=AngleBracket, 2=Computed, 3=QuotedNext, 4=AngleBracketNext
     pub kind: u8,
     pub path: String,
     pub line: u32,
@@ -154,6 +154,8 @@ impl DepGraph {
                             IncludeKind::Quoted => 0,
                             IncludeKind::AngleBracket => 1,
                             IncludeKind::Computed(_) => 2,
+                            IncludeKind::QuotedNext => 3,
+                            IncludeKind::AngleBracketNext => 4,
                         },
                         path: d.path.clone(),
                         line: d.line,
@@ -247,6 +249,8 @@ impl DepGraph {
                     let kind = match d.kind {
                         0 => IncludeKind::Quoted,
                         1 => IncludeKind::AngleBracket,
+                        3 => IncludeKind::QuotedNext,
+                        4 => IncludeKind::AngleBracketNext,
                         _ => IncludeKind::Computed(d.path.clone()),
                     };
                     IncludeDirective {

@@ -42,6 +42,151 @@ fn assert_compile(response: Option<Response>, expected_cached: bool) {
     }
 }
 
+#[cfg(not(windows))]
+async fn assert_staged_multi_source_include_heavy_hit(compiler: NormalizedPath) {
+    crate::test_support::test_timeout(async move {
+        let temp = tempfile::tempdir().unwrap();
+        let work_dir = temp.path().join("work");
+        let cache_dir: NormalizedPath = temp.path().join("cache").into();
+        let generate_project = || {
+            std::fs::create_dir_all(work_dir.join("include")).unwrap();
+            std::fs::write(
+                work_dir.join("include/common.h"),
+                "#pragma once\ninline int shared_value() { return 7; }\n",
+            )
+            .unwrap();
+            for (name, offset) in [("first", 1), ("second", 2)] {
+                std::fs::write(
+                    work_dir.join(format!("{name}.cpp")),
+                    format!(
+                        "#include \"common.h\"\n#include <cmath>\nint {name}() {{ return shared_value() + static_cast<int>(std::sin({offset}.0)); }}\n"
+                    ),
+                )
+                .unwrap();
+            }
+        };
+        generate_project();
+
+        let (endpoint, server, shutdown, state) = start_daemon(&cache_dir).await;
+        let mut client = crate::ipc::connect(&endpoint).await.unwrap();
+        let cwd: NormalizedPath = work_dir.clone().into();
+        client
+            .send(&Request::SessionStart {
+                client_pid: std::process::id(),
+                working_dir: cwd.clone(),
+                log_file: None,
+                track_stats: true,
+                journal_path: None,
+                profile: false,
+                private_daemon: None,
+            })
+            .await
+            .unwrap();
+        let session_id = match client.recv().await.unwrap() {
+            Some(Response::SessionStarted { session_id, .. }) => session_id,
+            other => panic!("expected SessionStarted, got {other:?}"),
+        };
+
+        client
+            .send(&Request::Compile {
+                session_id: session_id.clone(),
+                args: vec![
+                    "-c".into(),
+                    "first.cpp".into(),
+                    "-Iinclude".into(),
+                    "-O2".into(),
+                    "-std=c++17".into(),
+                ],
+                cwd: cwd.clone(),
+                compiler: compiler.clone(),
+                env: None,
+                stdin: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert_compile(client.recv().await.unwrap(), false);
+
+        client.send(&Request::Clear).await.unwrap();
+        assert!(matches!(
+            client.recv().await.unwrap(),
+            Some(Response::Cleared { .. })
+        ));
+        std::fs::remove_dir_all(&work_dir).unwrap();
+        generate_project();
+
+        let request = || Request::Compile {
+            session_id: session_id.clone(),
+            args: vec![
+                "-c".into(),
+                "first.cpp".into(),
+                "second.cpp".into(),
+                "-Iinclude".into(),
+                "-O2".into(),
+                "-std=c++17".into(),
+            ],
+            cwd: cwd.clone(),
+            compiler: compiler.clone(),
+            env: None,
+            stdin: Vec::new(),
+        };
+        client.send(&request()).await.unwrap();
+        assert_compile(client.recv().await.unwrap(), false);
+        let first_object = work_dir.join("first.o");
+        let second_object = work_dir.join("second.o");
+        let expected_first = std::fs::read(&first_object).unwrap();
+        let expected_second = std::fs::read(&second_object).unwrap();
+        let compiler_staged = state.profiler.staged.snapshot().counters["compiler_staged"];
+
+        std::fs::remove_file(&first_object).unwrap();
+        std::fs::remove_file(&second_object).unwrap();
+        client.send(&request()).await.unwrap();
+        let warm_response = client.recv().await.unwrap();
+        assert_eq!(std::fs::read(&first_object).unwrap(), expected_first);
+        assert_eq!(std::fs::read(&second_object).unwrap(), expected_second);
+        let staged = state.profiler.staged.snapshot();
+        for reason in [
+            "snapshot_incomplete",
+            "snapshot_input_set_changed",
+            "snapshot_stamp_set_changed",
+            "snapshot_content_changed",
+            "snapshot_stamp_changed",
+            "snapshot_journal_changed",
+        ] {
+            assert_eq!(staged.failures[reason], 0, "unexpected {reason}");
+        }
+        assert_eq!(
+            staged.counters["compiler_staged"],
+            compiler_staged,
+            "warm multi-source hit must not execute the compiler"
+        );
+        assert_compile(warm_response, true);
+
+        shutdown.notify_one();
+        server.await.unwrap();
+    })
+    .await;
+}
+
+#[cfg(not(windows))]
+#[tokio::test]
+#[ignore = "integration: real clang++ + daemon IPC"]
+async fn staged_multi_source_hits_after_clear_and_include_heavy_cold_compile() {
+    let Some(compiler) = crate::test_support::find_clang() else {
+        return;
+    };
+    assert_staged_multi_source_include_heavy_hit(compiler).await;
+}
+
+#[cfg(not(windows))]
+#[tokio::test]
+#[ignore = "integration: real em++ + daemon IPC"]
+async fn staged_empp_multi_source_hits_after_include_heavy_cold_compile() {
+    let Some(compiler) = crate::test_support::find_on_path("em++") else {
+        return;
+    };
+    assert_staged_multi_source_include_heavy_hit(compiler).await;
+}
+
 #[cfg(windows)]
 #[tokio::test]
 #[ignore = "integration: real clang-cl + daemon IPC"]
