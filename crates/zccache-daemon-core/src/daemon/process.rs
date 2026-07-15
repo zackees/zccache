@@ -222,7 +222,7 @@ impl CompilePriority {
         let cpu_usage_percent = matches!(self, Self::Auto)
             .then(current_cpu_usage_percent)
             .flatten();
-        let in_flight = current_in_flight_compiles().saturating_add(current_host_in_flight());
+        let in_flight = total_in_flight(current_in_flight_compiles());
         self.resolve_with_cpu_usage_and_ci(cpu_usage_percent, is_ci_host().is_some(), in_flight)
     }
 
@@ -245,9 +245,7 @@ impl CompilePriority {
         let cpu_usage_percent = matches!(self, Self::Auto)
             .then(current_cpu_usage_percent)
             .flatten();
-        let in_flight = ticket
-            .in_flight_before()
-            .saturating_add(current_host_in_flight());
+        let in_flight = total_in_flight(ticket.in_flight_before());
         let decision = self.resolve_with_cpu_usage_and_ci(
             cpu_usage_percent,
             is_ci_host().is_some(),
@@ -482,6 +480,10 @@ fn current_host_in_flight() -> usize {
         .as_ref()
         .map(|counter| counter.load(Ordering::Acquire))
         .unwrap_or(0)
+}
+
+fn total_in_flight(zccache_in_flight: usize) -> usize {
+    zccache_in_flight.saturating_add(current_host_in_flight())
 }
 
 /// Register a host-supplied in-flight counter (zccache#924). Called
@@ -1137,8 +1139,8 @@ mod tests {
         let _registration_guard = register_host_in_flight_counter(Arc::clone(&counter));
         assert_eq!(current_host_in_flight(), 5);
 
-        let summed = current_in_flight_compiles().saturating_add(current_host_in_flight());
-        assert!(summed >= 5, "host counter must be summed into in-flight");
+        let summed = total_in_flight(0);
+        assert_eq!(summed, 5, "host counter must be summed into in-flight");
         let decision =
             CompilePriority::Auto.resolve_with_cpu_usage_and_ci(Some(10.0), false, summed);
         assert_eq!(
@@ -1151,11 +1153,12 @@ mod tests {
         // sees the change.
         counter.store(0, Ordering::Release);
         assert_eq!(current_host_in_flight(), 0);
-        let summed = current_in_flight_compiles().saturating_add(current_host_in_flight());
+        let summed = total_in_flight(0);
         let decision =
             CompilePriority::Auto.resolve_with_cpu_usage_and_ci(Some(10.0), false, summed);
-        // With host_in_flight = 0 and no concurrent zccache ticket held,
-        // the summed count is 0 and interactive Auto picks Normal.
+        // The injected zccache count is deliberately 0, so unrelated
+        // concurrent tests holding real compile tickets cannot affect this
+        // host-counter contract.
         assert_eq!(
             decision.effective,
             CompilePriority::Normal,
@@ -1197,7 +1200,7 @@ mod tests {
         // CI runners and interactive hosts.
         let counter = Arc::new(AtomicUsize::new(usize::MAX));
         let _guard = register_host_in_flight_counter(Arc::clone(&counter));
-        let summed = 1usize.saturating_add(current_host_in_flight());
+        let summed = total_in_flight(1);
         assert_eq!(
             summed,
             usize::MAX,
