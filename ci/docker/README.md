@@ -72,3 +72,17 @@ The scenario container defaults to `--jobs 2`. This avoids exhausting the
 typical 8 GiB Docker Desktop VM during the medium fixture's cold build while
 keeping the same concurrency for both sides of every comparison. Increase it
 explicitly on larger Docker VMs.
+
+## Compiler-complete campaign images
+
+`standalone-perf.Dockerfile` pins the native and Emscripten compilers, soldr,
+and Rust version used by local baseline campaigns. Its build executes `soldr
+toolchain prepare` with `SOLDR_COMMAND_OUTPUT_TIMEOUT_SECS=600`, verifies the
+prepared compiler, and stores the complete soldr home under `/opt/soldr-seed`.
+
+`embedded-perf.Dockerfile` derives from that image. At runtime its entrypoint
+requires the prepared-layer sentinel, seeds a named soldr-home volume, mounts
+the exact soldr binary built by `perf_local.py`, and runs the mixed-language
+lifecycle scenario with Docker networking disabled. Runtime preparation is
+intentionally absent: an incomplete image fails rather than downloading a
+toolchain during a measured sample.

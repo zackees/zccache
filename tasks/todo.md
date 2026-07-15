@@ -139,3 +139,15 @@ Current child: https://github.com/zackees/zccache/issues/1071
 - [x] Format the #1049 Rust changes and update the performance documentation.
 - [x] Run focused tests, formatting, clippy, and review gates.
 - [ ] Merge upstream, bump soldr's submodule, validate, and merge downstream.
+# #1117 soldr-embedded mixed-language baseline
+
+Issue: https://github.com/zackees/zccache/issues/1117
+
+- [x] Add RED contracts for four languages, five lifecycle phases, provenance,
+  strict infrastructure validity, wrapped native compilers, and artifact fidelity.
+- [x] Add a compiler-complete embedded runner derived from the pinned #1116 image.
+- [x] Add a deterministic Cargo fixture covering Rust, C, C++, and Emscripten outputs.
+- [x] Add `perf_local.py --embedded-matrix` with repeat/resume campaign evidence.
+- [x] Retain wall/CPU/TTFB/output, RSS, cache/artifact, phase, command, and identity data.
+- [x] Run focused tests, Linux Docker diagnostics, and five valid samples per cell.
+- [ ] Publish floor dossiers, merge the PR, and close #1117.
