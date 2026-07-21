@@ -32,10 +32,13 @@ def test_dylint_env_puts_selected_toolchain_first(monkeypatch):
     assert captured["env"] is env
 
 
-def test_dylint_command_bypasses_soldr_toolchain_selection(monkeypatch):
-    monkeypatch.setattr(
-        lint,
-        "which",
-        lambda name: "/opt/cargo-dylint" if name == "cargo-dylint" else None,
-    )
-    assert lint.dylint_command() == ["/opt/cargo-dylint", "--all", "--workspace"]
+def test_dylint_command_keeps_the_plugin_subcommand(monkeypatch):
+    executable = "/opt/dylint"
+    monkeypatch.setattr(lint, "which", lambda _: executable)
+
+    assert lint.dylint_command() == [
+        executable,
+        "dylint",
+        "--all",
+        "--workspace",
+    ]

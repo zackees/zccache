@@ -80,11 +80,13 @@ def dylint_env():
 
 
 def dylint_command() -> list[str]:
-    """Run cargo-dylint directly so soldr cannot reselect stable Rust."""
+    """Run the Dylint executable while preserving its Cargo subcommand argv."""
     executable = which("cargo-dylint")
     if executable is None:
         raise FileNotFoundError("cargo-dylint is required for workspace linting")
-    return [executable, "--all", "--workspace"]
+    # The standalone executable parses the same argv shape as the Cargo plugin.
+    # Keep the subcommand: without it, Clap delegates `--all` to Cargo itself.
+    return [executable, "dylint", "--all", "--workspace"]
 
 
 def ensure_dylint_aliases():
