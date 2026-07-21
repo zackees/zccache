@@ -594,8 +594,15 @@ pub(super) fn request_cache_artifact_matches(
         file_hashes.push((path, hash));
     }
 
+    let Some(logical_context_key) = state
+        .dep_graph
+        .load()
+        .logical_context_key(&entry.context_key)
+    else {
+        return false;
+    };
     let artifact_key = crate::depgraph::compute_artifact_key(
-        &entry.context_key,
+        &logical_context_key,
         &mut file_hashes,
         Some(root.as_path()),
     );

@@ -94,7 +94,7 @@ impl DepGraph {
         key_root: Option<NormalizedPath>,
     ) -> ContextRegistration {
         let registration = self.register_context_entry(key, ctx, key_root);
-        self.rustc_externs.remove(&registration.key);
+        self.rustc_externs.remove(&registration.map_key);
         registration
     }
 
@@ -111,13 +111,20 @@ impl DepGraph {
         externs: Vec<(String, NormalizedPath)>,
         check_metadata_compat_key: Option<ContextKey>,
     ) -> ContextRegistration {
-        let registration = self.register_context_entry(key, ctx, key_root);
-        self.rustc_externs.insert(registration.key, externs);
-        if let Some(compat_key) = check_metadata_compat_key {
+        let source_file = ctx.source_file.clone();
+        let registration = self.register_context_entry(key, ctx, key_root.clone());
+        self.rustc_externs.insert(registration.map_key, externs);
+        let metadata_compat_map_key = check_metadata_compat_key.map(|compat_key| {
+            super::ContextInstanceKey::new(compat_key, &source_file, key_root.as_ref()).map_key()
+        });
+        if let Some(compat_map_key) = metadata_compat_map_key {
             self.rustc_check_metadata_compat
-                .insert(compat_key, registration.key);
+                .insert(compat_map_key, registration.map_key);
         }
-        registration
+        ContextRegistration {
+            metadata_compat_map_key,
+            ..registration
+        }
     }
 
     pub(super) fn register_context_entry(
@@ -126,37 +133,38 @@ impl DepGraph {
         ctx: CompileContext,
         key_root: Option<NormalizedPath>,
     ) -> ContextRegistration {
-        let mut rebased_from_equivalent_root = false;
-        self.contexts
-            .entry(key)
-            .and_modify(|entry| {
-                if entry.context.source_file != ctx.source_file || entry.key_root != key_root {
-                    let old_root = entry.key_root.clone();
-                    rebased_from_equivalent_root =
-                        old_root.is_some() && key_root.is_some() && old_root != key_root;
-                    entry.resolved_includes = entry
-                        .resolved_includes
-                        .iter()
-                        .map(|path| rebase_project_path(path, old_root.as_ref(), key_root.as_ref()))
-                        .collect();
-                    entry.last_file_hashes = entry
-                        .last_file_hashes
-                        .iter()
-                        .map(|(path, hash)| {
-                            (
-                                rebase_project_path(path, old_root.as_ref(), key_root.as_ref()),
-                                *hash,
-                            )
-                        })
-                        .collect();
-                    entry.context = ctx.clone();
-                    entry.key_root = key_root.clone();
-                }
-                entry.last_accessed = Instant::now();
-            })
-            .or_insert_with(|| ContextEntry {
-                context: ctx,
-                key_root,
+        const MAX_EQUIVALENT_CONTEXTS: usize = 4;
+
+        let instance = super::ContextInstanceKey::new(key, &ctx.source_file, key_root.as_ref());
+        let instance_key = instance.map_key();
+        if let Some(mut existing) = self.contexts.get_mut(&instance_key) {
+            existing.last_accessed = Instant::now();
+            return ContextRegistration {
+                key,
+                map_key: instance_key,
+                instance,
+                metadata_compat_map_key: None,
+                rebased_from_equivalent_root: false,
+            };
+        }
+
+        let candidate = self
+            .indexes
+            .equivalent_contexts
+            .get(&key)
+            .and_then(|instances| {
+                instances
+                    .iter()
+                    .find_map(|candidate| self.contexts.get(candidate).map(|entry| entry.clone()))
+            });
+        let rebased_from_equivalent_root = candidate.as_ref().is_some_and(|entry| {
+            entry.key_root.is_some() && key_root.is_some() && entry.key_root != key_root
+        });
+        let entry = candidate.map_or_else(
+            || ContextEntry {
+                logical_key: key,
+                context: ctx.clone(),
+                key_root: key_root.clone(),
                 resolved_includes: Vec::new(),
                 unresolved_includes: Vec::new(),
                 has_computed_includes: false,
@@ -164,10 +172,66 @@ impl DepGraph {
                 last_file_hashes: Vec::new(),
                 last_accessed: Instant::now(),
                 state: ContextState::Cold,
-            });
+            },
+            |mut candidate| {
+                let old_root = candidate.key_root.clone();
+                candidate.resolved_includes = candidate
+                    .resolved_includes
+                    .iter()
+                    .map(|path| rebase_project_path(path, old_root.as_ref(), key_root.as_ref()))
+                    .collect();
+                candidate.last_file_hashes = candidate
+                    .last_file_hashes
+                    .iter()
+                    .map(|(path, hash)| {
+                        (
+                            rebase_project_path(path, old_root.as_ref(), key_root.as_ref()),
+                            *hash,
+                        )
+                    })
+                    .collect();
+                candidate.context = ctx.clone();
+                candidate.key_root = key_root.clone();
+                candidate.last_accessed = Instant::now();
+                candidate
+            },
+        );
+        self.contexts.entry(instance_key).or_insert(entry);
+
+        let mut evicted = self
+            .indexes
+            .equivalent_contexts
+            .entry(key)
+            .and_modify(|instances| {
+                if !instances.contains(&instance_key) {
+                    instances.push(instance_key);
+                }
+            })
+            .or_insert_with(|| vec![instance_key]);
+        let evicted = if evicted.len() > MAX_EQUIVALENT_CONTEXTS {
+            Some(evicted.remove(0))
+        } else {
+            None
+        };
+        if let Some(evicted) = evicted {
+            self.contexts.remove(&evicted);
+            self.rustc_externs.remove(&evicted);
+            self.rustc_env_deps.remove(&evicted);
+            let stale_compat: Vec<ContextKey> = self
+                .rustc_check_metadata_compat
+                .iter()
+                .filter_map(|entry| (*entry.value() == evicted).then_some(*entry.key()))
+                .collect();
+            for compat_key in stale_compat {
+                self.rustc_check_metadata_compat.remove(&compat_key);
+            }
+        }
 
         ContextRegistration {
             key,
+            map_key: instance_key,
+            instance,
+            metadata_compat_map_key: None,
             rebased_from_equivalent_root,
         }
     }
@@ -177,7 +241,10 @@ impl DepGraph {
     /// `check_diagnostic` would return `Cold` without examining any hashes.
     #[must_use]
     pub fn is_cold(&self, key: &ContextKey) -> bool {
-        match self.contexts.get(key) {
+        let Some(key) = self.resolve_instance_key(key) else {
+            return true;
+        };
+        match self.contexts.get(&key) {
             Some(entry) => entry.state == ContextState::Cold,
             None => true,
         }

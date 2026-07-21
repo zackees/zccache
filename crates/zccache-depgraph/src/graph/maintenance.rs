@@ -100,6 +100,11 @@ impl DepGraph {
             }
         }
 
+        self.indexes.equivalent_contexts.retain(|_, instances| {
+            instances.retain(|instance| self.contexts.contains_key(instance));
+            !instances.is_empty()
+        });
+
         let live_contexts: std::collections::HashSet<ContextKey> =
             self.contexts.iter().map(|entry| *entry.key()).collect();
         let stale_externs: Vec<ContextKey> = self
@@ -130,6 +135,21 @@ impl DepGraph {
             .collect();
         for key in stale_env_deps {
             self.rustc_env_deps.remove(&key);
+        }
+
+        let stale_compat: Vec<ContextKey> = self
+            .rustc_check_metadata_compat
+            .iter()
+            .filter_map(|entry| {
+                if live_contexts.contains(entry.value()) {
+                    None
+                } else {
+                    Some(*entry.key())
+                }
+            })
+            .collect();
+        for key in stale_compat {
+            self.rustc_check_metadata_compat.remove(&key);
         }
 
         // Also trim file entries not referenced by any context.
@@ -167,9 +187,11 @@ impl DepGraph {
     pub fn clear(&self) {
         self.files.clear();
         self.contexts.clear();
+        self.indexes.equivalent_contexts.clear();
         self.rustc_externs.clear();
         self.rustc_env_deps.clear();
-        self.path_key_cache.clear();
+        self.rustc_check_metadata_compat.clear();
+        self.indexes.path_key_cache.clear();
         self.checks.store(0, Ordering::Relaxed);
         self.hits.store(0, Ordering::Relaxed);
         self.misses.store(0, Ordering::Relaxed);
@@ -190,7 +212,18 @@ impl DepGraph {
     /// Get the state of a context entry.
     #[must_use]
     pub fn get_state(&self, key: &ContextKey) -> Option<ContextState> {
-        self.contexts.get(key).map(|e| e.state)
+        self.resolve_instance_key(key)
+            .and_then(|key| self.contexts.get(&key).map(|e| e.state))
+    }
+
+    /// Return the root-normalized identity for an exact mutable instance.
+    /// Request-cache validation uses this to recompute the content-addressed
+    /// artifact key without accidentally folding the checkout discriminator
+    /// into cache identity.
+    #[must_use]
+    pub fn logical_context_key(&self, key: &ContextKey) -> Option<ContextKey> {
+        self.resolve_instance_key(key)
+            .and_then(|key| self.contexts.get(&key).map(|e| e.logical_key))
     }
 
     /// Count contexts by state. Returned as `(cold, warm, stale)`.
@@ -231,13 +264,15 @@ impl DepGraph {
     /// Get the resolved includes for a context.
     #[must_use]
     pub fn get_includes(&self, key: &ContextKey) -> Option<Vec<NormalizedPath>> {
-        self.contexts.get(key).map(|e| e.resolved_includes.clone())
+        self.resolve_instance_key(key)
+            .and_then(|key| self.contexts.get(&key).map(|e| e.resolved_includes.clone()))
     }
 
     /// Get rustc extern input paths for a context.
     #[must_use]
     pub fn get_rustc_externs(&self, key: &ContextKey) -> Option<Vec<(String, NormalizedPath)>> {
-        self.rustc_extern_inputs(key)
+        self.resolve_instance_key(key)
+            .and_then(|key| self.rustc_extern_inputs(&key))
     }
 
     /// Get the recorded rustc env-dep snapshot for a context
@@ -249,12 +284,16 @@ impl DepGraph {
         &self,
         key: &ContextKey,
     ) -> Option<Vec<(String, Option<ContentHash>)>> {
-        self.rustc_env_dep_inputs(key)
+        self.resolve_instance_key(key)
+            .and_then(|key| self.rustc_env_dep_inputs(&key))
     }
 
     /// Replace the recorded rustc env-dep snapshot for a context
     /// (zccache#1021). An empty `deps` removes the entry.
     pub fn set_rustc_env_deps(&self, key: ContextKey, deps: Vec<(String, Option<ContentHash>)>) {
+        let Some(key) = self.resolve_instance_key(&key) else {
+            return;
+        };
         if deps.is_empty() {
             self.rustc_env_deps.remove(&key);
         } else {
@@ -292,7 +331,10 @@ impl DepGraph {
     /// Mark a context as stale, requiring rescan on next check.
     /// Returns `true` if the context existed and was marked stale.
     pub fn mark_stale(&self, key: &ContextKey) -> bool {
-        if let Some(mut entry) = self.contexts.get_mut(key) {
+        let Some(key) = self.resolve_instance_key(key) else {
+            return false;
+        };
+        if let Some(mut entry) = self.contexts.get_mut(&key) {
             entry.state = ContextState::Stale;
             true
         } else {

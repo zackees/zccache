@@ -269,7 +269,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 ctx,
                 dep_flags,
                 None,
-                registration.key,
+                registration.map_key,
                 None,
                 registration.rebased_from_equivalent_root,
             )
@@ -316,8 +316,8 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 compat_ctx,
                 UserDepFlags::default(),
                 Some(rustc_args),
-                registration.key,
-                compat_key,
+                registration.map_key,
+                registration.metadata_compat_map_key,
                 registration.rebased_from_equivalent_root,
             )
         }

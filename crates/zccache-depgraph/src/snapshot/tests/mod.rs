@@ -13,6 +13,7 @@ use super::super::search_paths::IncludeSearchPaths;
 mod behavioral;
 mod persistence;
 mod round_trip;
+mod worktree_variants;
 
 /// Default snapshot path inside a tempdir.
 pub(super) fn test_path(dir: &TempDir) -> NormalizedPath {

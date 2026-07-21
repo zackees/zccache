@@ -37,6 +37,25 @@ async fn start_daemon() -> (
     (endpoint, handle, shutdown)
 }
 
+/// Start an isolated daemon so content-addressed artifacts from a prior test
+/// run cannot turn this test's first observation of a new source into a hit.
+async fn start_daemon_with_cache_dir(
+    cache_dir: &std::path::Path,
+) -> (
+    String,
+    tokio::task::JoinHandle<()>,
+    std::sync::Arc<tokio::sync::Notify>,
+) {
+    let endpoint = zccache::ipc::unique_test_endpoint();
+    let mut server =
+        DaemonServer::bind_with_cache_dir(&endpoint, &NormalizedPath::new(cache_dir)).unwrap();
+    let shutdown = server.shutdown_handle();
+    let handle = tokio::spawn(async move {
+        server.run(0).await.unwrap();
+    });
+    (endpoint, handle, shutdown)
+}
+
 /// Helper: start session with an explicit working directory.
 async fn start_session_in(client: &mut ClientConn, working_dir: &std::path::Path) -> String {
     client
@@ -353,175 +372,189 @@ async fn compile_worktree_app_to_target_with_env(
 ///
 /// This intentionally leaves `ZCCACHE_WORKTREE_ROOT` unset so the automatic Git
 /// root path is covered.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration-level: starts real daemon with IPC + rustc
-async fn test_rustc_sibling_git_worktree_equivalent_cache_sharing() {
-    let rustc = match zccache::test_support::find_rustc() {
-        Some(p) => p,
-        None => {
-            eprintln!("skipping test: rustc not found");
-            return;
-        }
-    };
+#[test]
+fn test_rustc_sibling_git_worktree_equivalent_cache_sharing() {
+    // This test keeps two IPC clients, daemon handles, and several artifact
+    // byte buffers live in one generated async future. That is a test-harness
+    // stack shape; the production daemon owns a separate runtime and spawns
+    // request work independently. Give this integration runtime enough worker
+    // stack explicitly instead of requiring the ambient RUST_MIN_STACK knob.
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_stack_size(16 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let rustc = match zccache::test_support::find_rustc() {
+                Some(p) => p,
+                None => {
+                    eprintln!("skipping test: rustc not found");
+                    return;
+                }
+            };
 
-    zccache::test_support::test_timeout(async move {
-        let tmp = tempfile::tempdir().unwrap();
-        let root_a = tmp.path().join("worktree-a");
-        let root_b = tmp.path().join("worktree-b");
+            zccache::test_support::test_timeout(async move {
+                let tmp = tempfile::tempdir().unwrap();
+                let root_a = tmp.path().join("worktree-a");
+                let root_b = tmp.path().join("worktree-b");
 
-        if !init_git_root(&root_a) || !init_git_root(&root_b) {
-            return;
-        }
+                if !init_git_root(&root_a) || !init_git_root(&root_b) {
+                    return;
+                }
 
-        write_worktree_project(&root_a, 7, 1);
-        write_worktree_project(&root_b, 7, 1);
+                write_worktree_project(&root_a, 7, 1);
+                write_worktree_project(&root_b, 7, 1);
 
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
-        let mut client_a = zccache::ipc::connect(&endpoint).await.unwrap();
-        let mut client_b = zccache::ipc::connect(&endpoint).await.unwrap();
-        let session_a = start_session_in(&mut client_a, &root_a).await;
-        let session_b = start_session_in(&mut client_b, &root_b).await;
+                let (endpoint, server_handle, shutdown) =
+                    start_daemon_with_cache_dir(&tmp.path().join("cache")).await;
+                let mut client_a = zccache::ipc::connect(&endpoint).await.unwrap();
+                let mut client_b = zccache::ipc::connect(&endpoint).await.unwrap();
+                let session_a = start_session_in(&mut client_a, &root_a).await;
+                let session_b = start_session_in(&mut client_b, &root_b).await;
 
-        let rustc_str = rustc.to_string_lossy().to_string();
-        let dep_a = root_a.join("target/libdep.rlib");
-        let dep_b = root_b.join("target/libdep.rlib");
-        let app_a = root_a.join("target/libapp.rlib");
-        let app_b = root_b.join("target/libapp.rlib");
+                let rustc_str = rustc.to_string_lossy().to_string();
+                let dep_a = root_a.join("target/libdep.rlib");
+                let dep_b = root_b.join("target/libdep.rlib");
+                let app_a = root_a.join("target/libapp.rlib");
+                let app_b = root_b.join("target/libapp.rlib");
 
-        let (exit_code, cached) = compile_worktree_dep_with_env(
-            &mut client_a,
-            &session_a,
-            &rustc_str,
-            &root_a,
-            Some(path_remap_auto_env()),
-        )
-        .await;
-        assert_eq!(exit_code, 0, "A dependency compile should succeed");
-        assert!(!cached, "A dependency compile should be a cold miss");
-        assert!(dep_a.exists(), "A dependency output should exist");
+                let (exit_code, cached) = compile_worktree_dep_with_env(
+                    &mut client_a,
+                    &session_a,
+                    &rustc_str,
+                    &root_a,
+                    Some(path_remap_auto_env()),
+                )
+                .await;
+                assert_eq!(exit_code, 0, "A dependency compile should succeed");
+                assert!(!cached, "A dependency compile should be a cold miss");
+                assert!(dep_a.exists(), "A dependency output should exist");
 
-        let (exit_code, cached) = compile_worktree_app_with_env(
-            &mut client_a,
-            &session_a,
-            &rustc_str,
-            &root_a,
-            Some(path_remap_auto_env()),
-        )
-        .await;
-        assert_eq!(exit_code, 0, "A app compile should succeed");
-        assert!(!cached, "A app compile should be a cold miss");
-        let app_a_original = std::fs::read(&app_a).unwrap();
+                let (exit_code, cached) = compile_worktree_app_with_env(
+                    &mut client_a,
+                    &session_a,
+                    &rustc_str,
+                    &root_a,
+                    Some(path_remap_auto_env()),
+                )
+                .await;
+                assert_eq!(exit_code, 0, "A app compile should succeed");
+                assert!(!cached, "A app compile should be a cold miss");
+                let app_a_original = std::fs::read(&app_a).unwrap();
 
-        let (exit_code, cached) = compile_worktree_dep_with_env(
-            &mut client_b,
-            &session_b,
-            &rustc_str,
-            &root_b,
-            Some(path_remap_auto_env()),
-        )
-        .await;
-        assert_eq!(
-            exit_code, 0,
-            "B equivalent dependency compile should succeed"
-        );
-        assert!(
-            cached,
-            "B equivalent dependency compile should hit A's worktree-equivalent entry"
-        );
-        assert!(dep_b.exists(), "B dependency output should be restored");
+                let (exit_code, cached) = compile_worktree_dep_with_env(
+                    &mut client_b,
+                    &session_b,
+                    &rustc_str,
+                    &root_b,
+                    Some(path_remap_auto_env()),
+                )
+                .await;
+                assert_eq!(
+                    exit_code, 0,
+                    "B equivalent dependency compile should succeed"
+                );
+                assert!(
+                    cached,
+                    "B equivalent dependency compile should hit A's worktree-equivalent entry"
+                );
+                assert!(dep_b.exists(), "B dependency output should be restored");
 
-        let (exit_code, cached) = compile_worktree_app_with_env(
-            &mut client_b,
-            &session_b,
-            &rustc_str,
-            &root_b,
-            Some(path_remap_auto_env()),
-        )
-        .await;
-        assert_eq!(exit_code, 0, "B equivalent app compile should succeed");
-        assert!(
-            cached,
-            "B equivalent app compile should hit A's worktree-equivalent entry"
-        );
-        assert!(app_b.exists(), "B app output should be restored");
+                let (exit_code, cached) = compile_worktree_app_with_env(
+                    &mut client_b,
+                    &session_b,
+                    &rustc_str,
+                    &root_b,
+                    Some(path_remap_auto_env()),
+                )
+                .await;
+                assert_eq!(exit_code, 0, "B equivalent app compile should succeed");
+                assert!(
+                    cached,
+                    "B equivalent app compile should hit A's worktree-equivalent entry"
+                );
+                assert!(app_b.exists(), "B app output should be restored");
 
-        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-        write_worktree_project(&root_b, 7, 2);
-        remove_file_if_exists(&app_b);
-        let (exit_code, cached) = compile_worktree_app_with_env(
-            &mut client_b,
-            &session_b,
-            &rustc_str,
-            &root_b,
-            Some(path_remap_auto_env()),
-        )
-        .await;
-        assert_eq!(
-            exit_code, 0,
-            "B app compile after source edit should succeed"
-        );
-        assert!(!cached, "B source edit should force a conservative miss");
+                tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+                write_worktree_project(&root_b, 7, 2);
+                remove_file_if_exists(&app_b);
+                let (exit_code, cached) = compile_worktree_app_with_env(
+                    &mut client_b,
+                    &session_b,
+                    &rustc_str,
+                    &root_b,
+                    Some(path_remap_auto_env()),
+                )
+                .await;
+                assert_eq!(
+                    exit_code, 0,
+                    "B app compile after source edit should succeed"
+                );
+                assert!(!cached, "B source edit should force a conservative miss");
 
-        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-        write_worktree_project(&root_b, 99, 1);
-        remove_file_if_exists(&dep_b);
-        remove_file_if_exists(&app_b);
+                tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+                write_worktree_project(&root_b, 99, 1);
+                remove_file_if_exists(&dep_b);
+                remove_file_if_exists(&app_b);
 
-        let (exit_code, cached) = compile_worktree_dep_with_env(
-            &mut client_b,
-            &session_b,
-            &rustc_str,
-            &root_b,
-            Some(path_remap_auto_env()),
-        )
-        .await;
-        assert_eq!(
-            exit_code, 0,
-            "B dependency compile after dependency edit should succeed"
-        );
-        assert!(!cached, "B dependency edit should miss");
+                let (exit_code, cached) = compile_worktree_dep_with_env(
+                    &mut client_b,
+                    &session_b,
+                    &rustc_str,
+                    &root_b,
+                    Some(path_remap_auto_env()),
+                )
+                .await;
+                assert_eq!(
+                    exit_code, 0,
+                    "B dependency compile after dependency edit should succeed"
+                );
+                assert!(!cached, "B dependency edit should miss");
 
-        let (exit_code, cached) = compile_worktree_app_with_env(
-            &mut client_b,
-            &session_b,
-            &rustc_str,
-            &root_b,
-            Some(path_remap_auto_env()),
-        )
-        .await;
-        assert_eq!(
-            exit_code, 0,
-            "B app compile after dependency edit should succeed"
-        );
-        assert!(
-            !cached,
-            "B app should miss when its root-relative dependency content changes"
-        );
+                let (exit_code, cached) = compile_worktree_app_with_env(
+                    &mut client_b,
+                    &session_b,
+                    &rustc_str,
+                    &root_b,
+                    Some(path_remap_auto_env()),
+                )
+                .await;
+                assert_eq!(
+                    exit_code, 0,
+                    "B app compile after dependency edit should succeed"
+                );
+                assert!(
+                    !cached,
+                    "B app should miss when its root-relative dependency content changes"
+                );
 
-        remove_file_if_exists(&app_a);
-        let (exit_code, cached) = compile_worktree_app_with_env(
-            &mut client_a,
-            &session_a,
-            &rustc_str,
-            &root_a,
-            Some(path_remap_auto_env()),
-        )
-        .await;
-        assert_eq!(exit_code, 0, "A original app compile should still succeed");
-        assert!(
-            cached,
-            "B edits must not poison A's original worktree-equivalent cache entry"
-        );
-        assert_eq!(
-            std::fs::read(&app_a).unwrap(),
-            app_a_original,
-            "A cached output should remain byte-identical after B misses"
-        );
+                remove_file_if_exists(&app_a);
+                let (exit_code, cached) = compile_worktree_app_with_env(
+                    &mut client_a,
+                    &session_a,
+                    &rustc_str,
+                    &root_a,
+                    Some(path_remap_auto_env()),
+                )
+                .await;
+                assert_eq!(exit_code, 0, "A original app compile should still succeed");
+                assert!(
+                    cached,
+                    "B edits must not poison A's original worktree-equivalent cache entry"
+                );
+                assert_eq!(
+                    std::fs::read(&app_a).unwrap(),
+                    app_a_original,
+                    "A cached output should remain byte-identical after B misses"
+                );
 
-        shutdown.notify_one();
-        server_handle.await.unwrap();
-    })
-    .await;
+                shutdown.notify_one();
+                server_handle.await.unwrap();
+            })
+            .await;
+        });
 }
 
 /// Issue #396: a real `git worktree` pair should share rustc artifacts even
