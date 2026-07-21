@@ -449,16 +449,14 @@ async fn cmd_compile_ephemeral_with_stdin(
             ExitCode::FAILURE
         }
         CompileRecvOutcome::Failed(msg) => match msg.phase {
-                FailurePhase::PreDispatch => {
-                super::passthrough::run_locally(
-                    compiler,
-                    &args,
-                    &cwd,
-                    &client_env,
-                    &stdin_bytes,
-                    &msg.message,
-                )
-            }
+            FailurePhase::PreDispatch => super::passthrough::run_locally(
+                compiler,
+                &args,
+                &cwd,
+                &client_env,
+                &stdin_bytes,
+                &msg.message,
+            ),
             FailurePhase::DeliveryUnknown => {
                 eprintln!("zccache[err][R]: {}", msg.message);
                 ExitCode::FAILURE
@@ -511,16 +509,14 @@ pub(super) async fn cmd_link_ephemeral(
             ExitCode::FAILURE
         }
         CompileRecvOutcome::Failed(msg) => match msg.phase {
-            FailurePhase::PreDispatch => {
-                super::passthrough::run_locally(
-                    tool,
-                    &local_args,
-                    &cwd,
-                    &local_env,
-                    &[],
-                    &msg.message,
-                )
-            }
+            FailurePhase::PreDispatch => super::passthrough::run_locally(
+                tool,
+                &local_args,
+                &cwd,
+                &local_env,
+                &[],
+                &msg.message,
+            ),
             FailurePhase::DeliveryUnknown => {
                 eprintln!("zccache[err][R]: {}", msg.message);
                 ExitCode::FAILURE
@@ -736,7 +732,9 @@ mod tests {
             &mut stderr,
         );
 
-        assert!(matches!(outcome, RelayOutcome::NoVerdict(message) if message.contains("cache staging failed")));
+        assert!(
+            matches!(outcome, RelayOutcome::NoVerdict(message) if message.contains("cache staging failed"))
+        );
         assert!(stdout.is_empty());
         assert!(stderr.is_empty());
     }

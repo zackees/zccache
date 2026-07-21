@@ -81,7 +81,9 @@ pub(super) fn run_locally(
     );
 
     let mut command = std::process::Command::new(tool);
-    command.args(args).envs(env.iter().map(|(key, value)| (key, value)));
+    command
+        .args(args)
+        .envs(env.iter().map(|(key, value)| (key, value)));
     command.stdin(if stdin_bytes.is_empty() {
         std::process::Stdio::inherit()
     } else {
