@@ -36,7 +36,7 @@ pub use persistence::{
 };
 
 /// On-disk format version. Bump when snapshot layout changes.
-pub const DEPGRAPH_VERSION: u32 = 6;
+pub const DEPGRAPH_VERSION: u32 = 7;
 
 /// Magic bytes identifying a depgraph snapshot file ("ZCDG").
 pub const DEPGRAPH_MAGIC: [u8; 4] = [0x5A, 0x43, 0x44, 0x47];
@@ -71,7 +71,10 @@ pub struct IncludeDirectiveSnapshot {
 
 #[derive(Archive, Serialize, Deserialize)]
 pub struct ContextEntrySnapshot {
+    /// Checkout-specific map key for mutable graph state.
     pub context_key: [u8; 32],
+    /// Root-normalized identity used for artifact-key computation.
+    pub logical_context_key: [u8; 32],
     pub key_root: Option<String>,
     pub source_file: String,
     pub iquote: Vec<String>,
@@ -190,6 +193,7 @@ impl DepGraph {
                     .collect();
                 ContextEntrySnapshot {
                     context_key: *key.hash().as_bytes(),
+                    logical_context_key: *ctx.logical_key.hash().as_bytes(),
                     key_root: ctx
                         .key_root
                         .as_ref()
@@ -270,11 +274,13 @@ impl DepGraph {
         });
 
         let contexts: DashMap<ContextKey, ContextEntry> = DashMap::new();
+        let equivalent_contexts: DashMap<ContextKey, Vec<ContextKey>> = DashMap::new();
         let rustc_externs: DashMap<ContextKey, Vec<(String, NormalizedPath)>> = DashMap::new();
         let rustc_env_deps: DashMap<ContextKey, Vec<(String, Option<ContentHash>)>> =
             DashMap::new();
         snap.contexts.into_par_iter().for_each(|c| {
             let key = ContextKey::from_raw(c.context_key);
+            let logical_key = ContextKey::from_raw(c.logical_context_key);
             let externs: Vec<(String, NormalizedPath)> = c
                 .rustc_externs
                 .into_iter()
@@ -299,6 +305,7 @@ impl DepGraph {
                 unknown_flags: c.unknown_flags,
             };
             let entry = ContextEntry {
+                logical_key,
                 context,
                 key_root: c.key_root.map(|root| NormalizedPath::from(root.as_str())),
                 resolved_includes: strings_to_paths(c.resolved_includes),
@@ -318,6 +325,10 @@ impl DepGraph {
                 },
             };
             contexts.insert(key, entry);
+            equivalent_contexts
+                .entry(logical_key)
+                .and_modify(|instances| instances.push(key))
+                .or_insert_with(|| vec![key]);
             if !externs.is_empty() {
                 rustc_externs.insert(key, externs);
             }
@@ -326,12 +337,14 @@ impl DepGraph {
             }
         });
 
-        DepGraph::from_maps_with_rustc_externs_and_env_deps(
+        let mut graph = DepGraph::from_maps_with_rustc_externs_and_env_deps(
             files,
             contexts,
             rustc_externs,
             rustc_env_deps,
-        )
+        );
+        graph.indexes.equivalent_contexts = equivalent_contexts;
+        graph
     }
 }
 

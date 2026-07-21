@@ -110,11 +110,21 @@ fn invalidate_artifact_keys_clears_only_matching() {
 
     // Pre-condition: both contexts have artifact_key populated.
     assert!(
-        graph.contexts.get(&key_a).unwrap().artifact_key.is_some(),
+        graph
+            .contexts
+            .get(&graph.resolve_instance_key(&key_a).unwrap())
+            .unwrap()
+            .artifact_key
+            .is_some(),
         "fixture: A must start with artifact_key set"
     );
     assert!(
-        graph.contexts.get(&key_b).unwrap().artifact_key.is_some(),
+        graph
+            .contexts
+            .get(&graph.resolve_instance_key(&key_b).unwrap())
+            .unwrap()
+            .artifact_key
+            .is_some(),
         "fixture: B must start with artifact_key set"
     );
 
@@ -127,11 +137,19 @@ fn invalidate_artifact_keys_clears_only_matching() {
     // Post-condition: A's artifact_key is None; B's is intact (and still
     // equals its original hex).
     assert!(
-        graph.contexts.get(&key_a).unwrap().artifact_key.is_none(),
+        graph
+            .contexts
+            .get(&graph.resolve_instance_key(&key_a).unwrap())
+            .unwrap()
+            .artifact_key
+            .is_none(),
         "issue #680: A's artifact_key must be cleared — pre-fix this stayed \
          populated and surfaced as a wasted hit"
     );
-    let surviving = graph.contexts.get(&key_b).unwrap();
+    let surviving = graph
+        .contexts
+        .get(&graph.resolve_instance_key(&key_b).unwrap())
+        .unwrap();
     assert_eq!(
         surviving
             .artifact_key
@@ -782,6 +800,7 @@ fn warm_context_with_no_artifact_returns_cold_on_check() {
     graph.contexts.insert(
         key,
         ContextEntry {
+            logical_key: key,
             context: ctx,
             key_root: None,
             resolved_includes: vec![NormalizedPath::from("/inc/b.h")],

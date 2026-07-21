@@ -189,7 +189,8 @@ impl DepGraph {
     }
 
     /// Check if a newly created file shadows any existing resolved include
-    /// in any context. Returns context keys that should be marked stale.
+    /// in any context. Returns exact mutable-instance keys that should be
+    /// marked stale.
     ///
     /// A shadow occurs when `new_file` has the same filename as an existing
     /// resolved include, and `new_file`'s directory appears earlier (higher
@@ -243,7 +244,7 @@ impl DepGraph {
     }
 
     /// Check if a newly created file resolves any previously unresolved
-    /// `#include` in any context. Returns affected context keys.
+    /// `#include` in any context. Returns affected mutable-instance keys.
     #[must_use]
     pub fn check_new_resolve(&self, new_file: &Path) -> Vec<ContextKey> {
         let new_name = match new_file.file_name() {
@@ -473,7 +474,7 @@ mod tests {
 
         // New foo.h appears in /high (higher priority).
         let affected = graph.check_shadow(Path::new("/high/foo.h"));
-        assert_eq!(affected, vec![key]);
+        assert_eq!(affected, vec![graph.resolve_instance_key(&key).unwrap()]);
     }
 
     #[test]
@@ -564,7 +565,7 @@ mod tests {
 
         // New foo.h in -iquote dir (higher priority).
         let affected = graph.check_shadow(Path::new("/iquote/foo.h"));
-        assert_eq!(affected, vec![key]);
+        assert_eq!(affected, vec![graph.resolve_instance_key(&key).unwrap()]);
     }
 
     #[test]
@@ -598,7 +599,7 @@ mod tests {
         graph.update(&key, scan, dummy_hash);
 
         let affected = graph.check_new_resolve(Path::new("/inc/missing.h"));
-        assert_eq!(affected, vec![key]);
+        assert_eq!(affected, vec![graph.resolve_instance_key(&key).unwrap()]);
     }
 
     #[test]
@@ -634,7 +635,7 @@ mod tests {
 
         // New file with matching filename.
         let affected = graph.check_new_resolve(Path::new("/inc/sub/missing.h"));
-        assert_eq!(affected, vec![key]);
+        assert_eq!(affected, vec![graph.resolve_instance_key(&key).unwrap()]);
     }
 
     // --- mark_stale tests ---

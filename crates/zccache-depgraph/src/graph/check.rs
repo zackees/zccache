@@ -266,10 +266,14 @@ impl DepGraph {
         G: Fn(&Path) -> Option<ContentHash>,
         E: Fn(&str) -> Option<String>,
     {
+        let Some(key) = self.resolve_instance_key(key) else {
+            self.misses.fetch_add(1, Ordering::Relaxed);
+            return CacheVerdict::Cold;
+        };
         self.checks.fetch_add(1, Ordering::Relaxed);
 
-        let rustc_externs = self.rustc_extern_inputs(key);
-        let mut entry = match self.contexts.get_mut(key) {
+        let rustc_externs = self.rustc_extern_inputs(&key);
+        let mut entry = match self.contexts.get_mut(&key) {
             Some(e) => e,
             None => {
                 self.misses.fetch_add(1, Ordering::Relaxed);
@@ -373,16 +377,16 @@ impl DepGraph {
                 return CacheVerdict::Cold;
             };
             let base = compute_rustc_artifact_key_with_root_with(
-                key,
+                &entry.logical_key,
                 &mut file_hashes,
                 &mut extern_hashes,
                 entry.key_root.as_deref(),
                 |path, key_root| self.cached_normalize_key_path(path, key_root),
             );
-            self.fold_env_deps_for_key(key, base, &env_value)
+            self.fold_env_deps_for_key(&key, base, &env_value)
         } else {
             compute_artifact_key_with(
-                key,
+                &entry.logical_key,
                 &mut file_hashes,
                 entry.key_root.as_deref(),
                 |path, key_root| self.cached_normalize_key_path(path, key_root),
@@ -464,10 +468,14 @@ impl DepGraph {
         G: Fn(&Path) -> Option<ContentHash>,
         E: Fn(&str) -> Option<String>,
     {
+        let Some(key) = self.resolve_instance_key(key) else {
+            self.misses.fetch_add(1, Ordering::Relaxed);
+            return (CacheVerdict::Cold, "context_key not registered".to_string());
+        };
         self.checks.fetch_add(1, Ordering::Relaxed);
 
-        let rustc_externs = self.rustc_extern_inputs(key);
-        let mut entry = match self.contexts.get_mut(key) {
+        let rustc_externs = self.rustc_extern_inputs(&key);
+        let mut entry = match self.contexts.get_mut(&key) {
             Some(e) => e,
             None => {
                 self.misses.fetch_add(1, Ordering::Relaxed);
@@ -591,16 +599,16 @@ impl DepGraph {
                 return (CacheVerdict::Cold, "rustc extern hash missing".to_string());
             };
             let base = compute_rustc_artifact_key_with_root_with(
-                key,
+                &entry.logical_key,
                 &mut file_hashes,
                 &mut extern_hashes,
                 entry.key_root.as_deref(),
                 |path, key_root| self.cached_normalize_key_path(path, key_root),
             );
-            self.fold_env_deps_for_key(key, base, &env_value)
+            self.fold_env_deps_for_key(&key, base, &env_value)
         } else {
             compute_artifact_key_with(
-                key,
+                &entry.logical_key,
                 &mut file_hashes,
                 entry.key_root.as_deref(),
                 |path, key_root| self.cached_normalize_key_path(path, key_root),
@@ -704,8 +712,9 @@ impl DepGraph {
         G: Fn(&Path) -> Option<ContentHash>,
         E: Fn(&str) -> Option<String>,
     {
-        let rustc_externs = self.rustc_extern_inputs(key);
-        let entry = self.contexts.get(key)?;
+        let key = self.resolve_instance_key(key)?;
+        let rustc_externs = self.rustc_extern_inputs(&key);
+        let entry = self.contexts.get(&key)?;
 
         if entry.state == ContextState::Cold || entry.has_computed_includes {
             return None;
@@ -731,16 +740,16 @@ impl DepGraph {
         let computed = if let Some(externs) = rustc_externs.as_deref() {
             let mut extern_hashes = collect_rustc_extern_hashes(externs, &get_hash)?;
             let base = compute_rustc_artifact_key_with_root_with(
-                key,
+                &entry.logical_key,
                 &mut file_hashes,
                 &mut extern_hashes,
                 entry.key_root.as_deref(),
                 |path, key_root| self.cached_normalize_key_path(path, key_root),
             );
-            self.fold_env_deps_for_key(key, base, &env_value)
+            self.fold_env_deps_for_key(&key, base, &env_value)
         } else {
             compute_artifact_key_with(
-                key,
+                &entry.logical_key,
                 &mut file_hashes,
                 entry.key_root.as_deref(),
                 |path, key_root| self.cached_normalize_key_path(path, key_root),

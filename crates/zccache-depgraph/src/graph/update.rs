@@ -52,6 +52,7 @@ impl DepGraph {
         G: Fn(&std::path::Path) -> Option<ContentHash>,
         E: Fn(&str) -> Option<String>,
     {
+        let key = self.resolve_instance_key(key)?;
         // Snapshot the env-dep values the compile actually saw, replacing
         // any prior snapshot (the name set can change across compiles).
         let mut env_hashes: Vec<(String, Option<ContentHash>)> = env_dep_names
@@ -61,7 +62,7 @@ impl DepGraph {
                 (name.clone(), hash_env_dep_value(value.as_deref()))
             })
             .collect();
-        self.set_rustc_env_deps(*key, env_hashes.clone());
+        self.set_rustc_env_deps(key, env_hashes.clone());
         // Issue #582: emit a `zccache_depgraph_update_breakdown` line when
         // `ZCCACHE_PROFILE_CC_MISS` is set so the next perf iteration has
         // sub-phase data for the remaining ~2.4 ms mean `depgraph_update_ns`.
@@ -70,8 +71,8 @@ impl DepGraph {
         let t_total = profile_enabled.then(Instant::now);
 
         let t_entry = profile_enabled.then(Instant::now);
-        let rustc_externs = self.rustc_extern_inputs(key);
-        let mut entry = self.contexts.get_mut(key)?;
+        let rustc_externs = self.rustc_extern_inputs(&key);
+        let mut entry = self.contexts.get_mut(&key)?;
         let entry_get_ns = t_entry.map(|t| t.elapsed().as_nanos() as u64).unwrap_or(0);
 
         // Always update include lists (useful for diagnostics even if hashing fails).
@@ -115,7 +116,7 @@ impl DepGraph {
         let artifact_key = if let Some(externs) = rustc_externs.as_deref() {
             let mut extern_hashes = collect_rustc_extern_hashes(externs, &get_hash)?;
             let base = compute_rustc_artifact_key_with_root_with(
-                key,
+                &entry.logical_key,
                 &mut file_hashes,
                 &mut extern_hashes,
                 entry.key_root.as_deref(),
@@ -131,7 +132,7 @@ impl DepGraph {
             // `key_root: None` (was #585's compute_artifact_key_normalized_inplace)
             // and `key_root: Some` in one shape.
             crate::context::compute_artifact_key_normalized_with_root(
-                key,
+                &entry.logical_key,
                 &file_hashes,
                 entry.key_root.as_deref(),
             )

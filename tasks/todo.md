@@ -104,6 +104,15 @@ Wave 6 status:
 - Marked internal and PyPI extension crates `publish = false`; crates.io publish order is now only the public `zccache` crate.
 - Release publish now performs a real `cargo package` verification on the transformed crate before upload.
 - Verified on 2026-07-09: focused release Python tests, full `ci/tests`, `bash ./test`, workspace clippy all-target/all-feature, and transformed `zccache` package verification with `RUSTFLAGS=-D warnings`.
+# #1131 remaining cache-isolation bugs
+
+- [x] #912: merge and validate output-directory side-effect isolation (#1132).
+- [x] #1028: keep distinct mutable dependency-graph variants per worktree
+  while retaining root-normalized artifact identity.
+- [x] Add A/B/A, concurrent registration, bounded-variant, and snapshot
+  round-trip coverage; validate the Windows worktree integration without
+  `RUST_MIN_STACK`.
+
 # #1039 capability-driven COW materialization
 
 Issue: https://github.com/zackees/zccache/issues/1039

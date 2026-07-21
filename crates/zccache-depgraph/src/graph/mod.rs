@@ -22,7 +22,7 @@ use std::time::Instant;
 
 use dashmap::DashMap;
 use zccache_core::NormalizedPath;
-use zccache_hash::ContentHash;
+use zccache_hash::{ContentHash, StreamHasher};
 
 use super::context::{ArtifactKey, CompileContext, ContextKey};
 use super::scanner::IncludeDirective;
@@ -50,6 +50,8 @@ pub enum ContextState {
 /// A compilation context entry in the graph.
 #[derive(Debug, Clone)]
 pub struct ContextEntry {
+    /// Root-normalized identity used for content-addressed artifact keys.
+    pub logical_key: ContextKey,
     /// The compilation context (source + flags).
     pub context: CompileContext,
     /// Optional root used to normalize project-local paths in cache keys.
@@ -68,6 +70,53 @@ pub struct ContextEntry {
     pub last_accessed: Instant,
     /// Current state.
     pub state: ContextState,
+}
+
+/// Checkout-specific identity for mutable dependency-graph state.
+///
+/// Its logical component remains root-normalized for artifact sharing. Its
+/// concrete component is deliberately excluded from artifact-key computation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ContextInstanceKey {
+    logical: ContextKey,
+    concrete: ContentHash,
+}
+
+impl ContextInstanceKey {
+    #[must_use]
+    pub fn logical(self) -> ContextKey {
+        self.logical
+    }
+
+    #[must_use]
+    pub fn concrete(self) -> ContentHash {
+        self.concrete
+    }
+
+    pub(crate) fn new(
+        logical: ContextKey,
+        source_file: &NormalizedPath,
+        key_root: Option<&NormalizedPath>,
+    ) -> Self {
+        let mut hash = StreamHasher::new();
+        hash.update(b"zccache-context-instance-v1\0");
+        hash.update(logical.hash().as_bytes());
+        hash.update(source_file.case_key().unwrap_or_default().as_bytes());
+        hash.update(b"\0");
+        match key_root {
+            Some(root) => hash.update(root.case_key().unwrap_or_default().as_bytes()),
+            None => hash.update(b"no-key-root"),
+        };
+        Self {
+            logical,
+            concrete: hash.finalize(),
+        }
+    }
+
+    #[must_use]
+    pub fn map_key(self) -> ContextKey {
+        ContextKey::from_raw(*self.concrete.as_bytes())
+    }
 }
 
 /// Result of checking a context against the file cache.
@@ -112,7 +161,7 @@ impl std::fmt::Debug for DepGraph {
 
 pub struct DepGraph {
     /// Shared file nodes: path → scanned includes.
-    pub(super) files: DashMap<NormalizedPath, FileEntry>,
+    pub(super) files: Box<DashMap<NormalizedPath, FileEntry>>,
     /// Per-context entries: context key → include list + state.
     pub(super) contexts: DashMap<ContextKey, ContextEntry>,
     /// Rustc-only extern inputs keyed by context.
@@ -135,8 +184,9 @@ pub struct DepGraph {
     pub(super) rustc_env_deps: DashMap<ContextKey, Vec<(String, Option<ContentHash>)>>,
     /// Rustc check/build metadata compatibility alias.
     ///
-    /// Keyed by `RustcCompileContext::check_metadata_compat_key_with_root`.
-    /// Values are exact build-style context keys that can supply `.rmeta`
+    /// Keyed by the checkout-specific form of
+    /// `RustcCompileContext::check_metadata_compat_key_with_root`.
+    /// Values are exact build-style instance keys that can supply `.rmeta`
     /// and dep-info outputs to a check-style request.
     pub(super) rustc_check_metadata_compat: DashMap<ContextKey, ContextKey>,
     /// Issue #550: cached normalize_key_path results, keyed by
@@ -147,7 +197,7 @@ pub struct DepGraph {
     /// `Arc<str>` result lets subsequent compiles in the same daemon
     /// session reuse the work — measured at ~2 ms saved per cpp-inline
     /// cold compile after the cache is warm. Capped to bound memory.
-    pub(super) path_key_cache: DashMap<PathKeyCacheKey, Arc<str>>,
+    pub(super) indexes: Box<GraphIndexes>,
     /// Stats counters.
     pub(super) checks: AtomicU64,
     pub(super) hits: AtomicU64,
@@ -163,9 +213,33 @@ pub(super) struct PathKeyCacheKey {
     pub(super) key_root: Option<NormalizedPath>,
 }
 
+/// Heap-owned auxiliary indexes so their growth does not enlarge `DepGraph`
+/// values carried by the persisted-load result enum.
+pub(super) struct GraphIndexes {
+    pub(super) equivalent_contexts: DashMap<ContextKey, Vec<ContextKey>>,
+    pub(super) path_key_cache: DashMap<PathKeyCacheKey, Arc<str>>,
+}
+
+impl GraphIndexes {
+    fn new() -> Self {
+        Self {
+            equivalent_contexts: DashMap::new(),
+            path_key_cache: DashMap::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ContextRegistration {
+    /// Root-normalized key used only for content-addressed artifact identity.
     pub key: ContextKey,
+    /// Checkout-specific key used for all mutable dependency-graph access.
+    pub map_key: ContextKey,
+    pub instance: ContextInstanceKey,
+    /// Checkout-specific metadata-compatibility alias, when rustc registered
+    /// one. The public compatibility key remains root-normalized, while this
+    /// map key prevents one checkout from replacing another's alias target.
+    pub metadata_compat_map_key: Option<ContextKey>,
     pub rebased_from_equivalent_root: bool,
 }
 
@@ -306,12 +380,12 @@ impl DepGraph {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            files: DashMap::new(),
+            files: Box::new(DashMap::new()),
             contexts: DashMap::new(),
             rustc_externs: DashMap::new(),
             rustc_env_deps: DashMap::new(),
             rustc_check_metadata_compat: DashMap::new(),
-            path_key_cache: DashMap::new(),
+            indexes: Box::new(GraphIndexes::new()),
             checks: AtomicU64::new(0),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
@@ -347,7 +421,7 @@ impl DepGraph {
     /// Number of cached entries in `path_key_cache`. Test-only.
     #[cfg(test)]
     pub fn path_key_cache_len(&self) -> usize {
-        self.path_key_cache.len()
+        self.indexes.path_key_cache.len()
     }
 
     pub(super) fn rustc_extern_inputs(
@@ -368,6 +442,18 @@ impl DepGraph {
         self.rustc_env_deps.get(key).map(|deps| deps.clone())
     }
 
+    /// Resolve a public logical key only when it identifies one safe mutable
+    /// instance. Callers that hold a registration pass its instance map key,
+    /// which takes the first branch. Ambiguous legacy lookups conservatively
+    /// miss instead of selecting another checkout's state.
+    pub(super) fn resolve_instance_key(&self, key: &ContextKey) -> Option<ContextKey> {
+        if self.contexts.contains_key(key) {
+            return Some(*key);
+        }
+        let instances = self.indexes.equivalent_contexts.get(key)?;
+        (instances.len() == 1).then_some(instances[0])
+    }
+
     /// Construct a `DepGraph` from pre-built maps, including rustc extern
     /// inputs and env-dep snapshots (zccache#1021).
     pub(crate) fn from_maps_with_rustc_externs_and_env_deps(
@@ -377,12 +463,12 @@ impl DepGraph {
         rustc_env_deps: DashMap<ContextKey, Vec<(String, Option<ContentHash>)>>,
     ) -> Self {
         Self {
-            files,
+            files: Box::new(files),
             contexts,
             rustc_externs,
             rustc_env_deps,
             rustc_check_metadata_compat: DashMap::new(),
-            path_key_cache: DashMap::new(),
+            indexes: Box::new(GraphIndexes::new()),
             checks: AtomicU64::new(0),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
@@ -398,3 +484,6 @@ impl Default for DepGraph {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+#[path = "tests/worktree_variants.rs"]
+mod worktree_variants;
