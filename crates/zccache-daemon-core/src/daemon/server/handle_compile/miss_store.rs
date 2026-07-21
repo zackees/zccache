@@ -152,6 +152,74 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
     stats
 }
 
+const MAX_STAGED_PUBLICATION_ERROR_CHARS: usize = 512;
+
+/// Record the full persistence failure at the stage where publication is
+/// abandoned. The profiler retains the compact reason ID; the lifecycle and
+/// session logs retain a bounded OS error so an operator can identify the
+/// failed operation and path after the compiler output has been salvaged.
+fn report_staged_publication_failure(
+    state: &SharedState,
+    sid: &SessionId,
+    artifact_key_hex: &str,
+    reason: StagedPublishFailure,
+    error: impl std::fmt::Display,
+) {
+    let error = truncate_staged_publication_error(&error.to_string());
+    let reason_id = reason.id();
+    tracing::warn!(
+        key = %artifact_key_hex,
+        reason = reason_id,
+        error = %error,
+        "staged artifact publication failed"
+    );
+    crate::core::lifecycle::write_event(
+        "staged_publication_failed",
+        serde_json::json!({
+            "reason": reason_id,
+            "error": error,
+            "artifact_key": artifact_key_hex,
+        }),
+    );
+    write_session_log(
+        &state.sessions,
+        sid,
+        &format!(
+            "[DIAG] staged_publication_failed: reason={reason_id} key={artifact_key_hex} error={error}"
+        ),
+    );
+}
+
+fn truncate_staged_publication_error(error: &str) -> String {
+    let mut chars = error.chars();
+    let truncated: String = chars
+        .by_ref()
+        .take(MAX_STAGED_PUBLICATION_ERROR_CHARS)
+        .collect();
+    if chars.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
+}
+
+#[cfg(test)]
+mod staged_publication_diagnostic_tests {
+    use super::{truncate_staged_publication_error, MAX_STAGED_PUBLICATION_ERROR_CHARS};
+
+    #[test]
+    fn publication_error_is_bounded_without_splitting_utf8() {
+        let error = format!("{}suffix", "å".repeat(MAX_STAGED_PUBLICATION_ERROR_CHARS));
+        let rendered = truncate_staged_publication_error(&error);
+
+        assert!(rendered.ends_with('…'));
+        assert_eq!(
+            rendered.trim_end_matches('…').chars().count(),
+            MAX_STAGED_PUBLICATION_ERROR_CHARS
+        );
+    }
+}
+
 fn record_pch_source_mapping(
     state: &SharedState,
     source_path: &NormalizedPath,
@@ -243,10 +311,12 @@ fn store_rustc_outputs(
                 record_staged_publication_failure(state, reason);
                 stats.staged_failure_reason = Some(reason.id());
                 stats.rust_snapshot_error_count = stats.rust_snapshot_error_count.saturating_add(1);
-                tracing::warn!(
-                    key = %artifact_key_hex,
-                    reason = "index_commit",
-                    "staged artifact generation published but index commit failed"
+                report_staged_publication_failure(
+                    state,
+                    sid,
+                    artifact_key_hex,
+                    reason,
+                    "staged artifact generation published but index commit failed",
                 );
                 false
             } else {
@@ -282,15 +352,7 @@ fn store_rustc_outputs(
             }
             stats.staged_failure_reason = Some(failure_reason.id());
             stats.rust_snapshot_error_count = stats.rust_snapshot_error_count.saturating_add(1);
-            tracing::warn!(
-                key = %artifact_key_hex,
-                "failed to synchronously persist rustc artifact outputs: {e}"
-            );
-            write_session_log(
-                &state.sessions,
-                sid,
-                &format!("[DIAG] rustc_persist_failed: key={artifact_key_hex} error={e}"),
-            );
+            report_staged_publication_failure(state, sid, artifact_key_hex, failure_reason, &e);
             false
         }
     };
