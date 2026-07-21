@@ -167,7 +167,9 @@ mod tests {
     fn complete(scan: SideEffectScan) -> Vec<SideEffectFile> {
         match scan {
             SideEffectScan::Complete(files) => files,
-            SideEffectScan::Uncacheable { reason } => panic!("unexpected uncacheable scan: {reason}"),
+            SideEffectScan::Uncacheable { reason } => {
+                panic!("unexpected uncacheable scan: {reason}")
+            }
         }
     }
 

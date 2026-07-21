@@ -604,9 +604,8 @@ pub(super) async fn handle_link_ephemeral(
             Ok(snapshot) => Some(snapshot),
             Err(error) => {
                 side_effects_cacheable = false;
-                side_effects_uncacheable_reason = Some(format!(
-                    "failed to snapshot link output directory: {error}"
-                ));
+                side_effects_uncacheable_reason =
+                    Some(format!("failed to snapshot link output directory: {error}"));
                 None
             }
         }
@@ -788,7 +787,9 @@ pub(super) async fn handle_link_ephemeral(
 
         if !side_effects_cacheable {
             tracing::warn!(
-                reason = side_effects_uncacheable_reason.as_deref().unwrap_or("unknown"),
+                reason = side_effects_uncacheable_reason
+                    .as_deref()
+                    .unwrap_or("unknown"),
                 "successful link is uncacheable because side-effect capture was incomplete"
             );
         }
@@ -798,7 +799,8 @@ pub(super) async fn handle_link_ephemeral(
                 tracing::warn!(%error, "failed to inspect staged linker output set");
                 vec![plan.primary_staged().as_path().to_path_buf()]
             });
-            if !side_effects_cacheable || !side_effects.is_empty() || !unexpected_staged.is_empty() {
+            if !side_effects_cacheable || !side_effects.is_empty() || !unexpected_staged.is_empty()
+            {
                 tracing::warn!(
                     external_count = side_effects.len(),
                     staged_count = unexpected_staged.len(),

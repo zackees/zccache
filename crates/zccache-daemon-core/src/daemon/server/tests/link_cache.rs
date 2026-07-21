@@ -404,25 +404,16 @@ async fn parallel_same_directory_links_are_isolated() {
 async fn side_effect_lock_allows_different_output_directories() {
     let tmp = tempfile::tempdir().unwrap();
     let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
-    let lock_a = server
-        .state
-        .link_output_lock(tmp.path().join("a").into());
-    let same_lock_a = server
-        .state
-        .link_output_lock(tmp.path().join("a").into());
-    let lock_b = server
-        .state
-        .link_output_lock(tmp.path().join("b").into());
+    let lock_a = server.state.link_output_lock(tmp.path().join("a").into());
+    let same_lock_a = server.state.link_output_lock(tmp.path().join("a").into());
+    let lock_b = server.state.link_output_lock(tmp.path().join("b").into());
     assert!(std::sync::Arc::ptr_eq(&lock_a, &same_lock_a));
     assert!(!std::sync::Arc::ptr_eq(&lock_a, &lock_b));
 
     let _guard_a = lock_a.lock_owned().await;
-    let _guard_b = tokio::time::timeout(
-        std::time::Duration::from_millis(50),
-        lock_b.lock_owned(),
-    )
-    .await
-    .expect("a lock held for one output directory must not block another");
+    let _guard_b = tokio::time::timeout(std::time::Duration::from_millis(50), lock_b.lock_owned())
+        .await
+        .expect("a lock held for one output directory must not block another");
     assert!(
         tokio::time::timeout(
             std::time::Duration::from_millis(50),
