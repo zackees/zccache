@@ -241,7 +241,10 @@ impl DepGraph {
     /// `check_diagnostic` would return `Cold` without examining any hashes.
     #[must_use]
     pub fn is_cold(&self, key: &ContextKey) -> bool {
-        match self.contexts.get(key) {
+        let Some(key) = self.resolve_instance_key(key) else {
+            return true;
+        };
+        match self.contexts.get(&key) {
             Some(entry) => entry.state == ContextState::Cold,
             None => true,
         }
