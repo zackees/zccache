@@ -72,7 +72,6 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_N: usize = 16;
 const DEFAULT_BUDGET_SECS: u64 = 90;
-const GATE_ENV: &str = "ZCCACHE_RUN_REPRO_691";
 const N_ENV: &str = "ZCCACHE_SPAWN_STORM_N";
 const BUDGET_ENV: &str = "ZCCACHE_SPAWN_STORM_BUDGET_SECS";
 
@@ -178,16 +177,8 @@ fn env_secs(name: &str, default: u64) -> Duration {
 /// N parallel wrapper invocations against one fresh cache dir must
 /// converge on a single daemon.
 #[test]
-#[ignore = "reproducer for #691 — gated on ZCCACHE_RUN_REPRO_691"]
+#[ignore = "integration test: launches concurrent wrapper subprocesses"]
 fn parallel_wrappers_must_share_one_daemon() {
-    if std::env::var(GATE_ENV).is_err() {
-        eprintln!(
-            "skipping: set {GATE_ENV}=1 to run this reproducer (it is expected to FAIL on \
-             main until the #691 spawn-coordination fix lands)"
-        );
-        return;
-    }
-
     let zccache = binary_path("zccache");
     let echo_shim = binary_path("echo_shim");
     if !zccache.exists() || !echo_shim.exists() {
@@ -260,7 +251,12 @@ fn parallel_wrappers_must_share_one_daemon() {
 
     stop_daemon(&zccache, cache_dir.path());
 
-    let logs_dir = cache_dir.path().join("logs");
+    // Persistent daemon state is version-namespaced below the caller's
+    // top-level cache root (issues #759/#761).
+    let logs_dir = cache_dir
+        .path()
+        .join(format!("v{}", env!("CARGO_PKG_VERSION")))
+        .join("logs");
     assert!(
         logs_dir.exists(),
         "logs/ directory must exist after running the wrapper"
