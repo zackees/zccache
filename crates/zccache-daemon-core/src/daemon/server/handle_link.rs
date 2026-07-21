@@ -202,6 +202,21 @@ pub(super) async fn handle_link_ephemeral(
     } else {
         cwd_path.join(&parsed_tool.output_file).into()
     };
+    let output_dir = output_path.parent().unwrap_or(cwd_path);
+
+    // A cache hit also writes the complete artifact set into the output
+    // directory. It must therefore share the same exclusion window as a cold
+    // link's snapshot/link/capture sequence.
+    let _side_effect_guard = if parsed_tool.is_archive {
+        None
+    } else {
+        Some(
+            state
+                .link_output_lock(NormalizedPath::from(output_dir))
+                .lock_owned()
+                .await,
+        )
+    };
     let archive_hash_speculating =
         parsed_tool.is_archive && archive_hash_cache_is_cold(state, tool_path, &inputs);
     let mut speculative_archive_plan = None;
@@ -573,8 +588,6 @@ pub(super) async fn handle_link_ephemeral(
         },
         |plan| plan.rewritten_args.clone(),
     );
-    let output_dir = output_path.parent().unwrap_or(cwd_path);
-
     // Snapshot the output directory before the link so we can detect
     // side-effect files (e.g., runtime DLLs deployed by compiler wrappers).
     // Issue #605 pass 1: archive tools (ar, lib, llvm-ar) only bundle their
@@ -582,10 +595,20 @@ pub(super) async fn handle_link_ephemeral(
     // side-effect files. Skip both pre-link snapshot and post-link rescan
     // for archives — saves a `read_dir` + per-entry `stat` on every archive
     // cold-miss.
+    let mut side_effects_cacheable = true;
+    let mut side_effects_uncacheable_reason = None;
     let dir_snapshot = if parsed_tool.is_archive || directory_plan.is_some() {
-        super::super::side_effect::DirSnapshot::default()
+        None
     } else {
-        super::super::side_effect::snapshot_directory(output_dir)
+        match super::super::side_effect::snapshot_directory(output_dir) {
+            Ok(snapshot) => Some(snapshot),
+            Err(error) => {
+                side_effects_cacheable = false;
+                side_effects_uncacheable_reason =
+                    Some(format!("failed to snapshot link output directory: {error}"));
+                None
+            }
+        }
     };
 
     // Extract post-link deploy command from env (if any) BEFORE we consume
@@ -713,12 +736,10 @@ pub(super) async fn handle_link_ephemeral(
             return with_link_warning(result, nd_warning);
         }
 
-        // Enumerate (name, path) for primary + declared secondaries +
-        // detected side-effects in cache-index order so that `outputs[i]`
-        // maps to `{key}_i` on disk after the parallel reads below. Missing
-        // secondaries and read errors are dropped (preserves the prior
-        // serial behavior). Side-effect detection uses the full set of
-        // declared output names so it doesn't double-capture them.
+        // Enumerate primary, declared secondaries, and detected side effects
+        // in cache-index order so `outputs[i]` maps to `{key}_i` on disk.
+        // Every entry must be captured successfully; partial artifacts are
+        // uncacheable. Declared names are excluded from implicit discovery.
         let primary_name_os = parsed_tool
             .output_file
             .file_name()
@@ -735,24 +756,51 @@ pub(super) async fn handle_link_ephemeral(
                 .collect();
         // Issue #605 pass 1: matches the pre-link snapshot skip above —
         // archives have no side-effect files to detect.
-        let side_effects = if parsed_tool.is_archive {
+        let side_effects = if parsed_tool.is_archive || !side_effects_cacheable {
             Vec::new()
-        } else {
-            super::super::side_effect::detect_side_effects(
-                &dir_snapshot,
+        } else if let Some(snapshot) = dir_snapshot.as_ref() {
+            match super::super::side_effect::detect_side_effects(
+                snapshot,
                 output_dir,
                 &primary_name_os,
                 &already_captured,
-            )
-            .unwrap_or_default()
+            ) {
+                Ok(super::super::side_effect::SideEffectScan::Complete(files)) => files,
+                Ok(super::super::side_effect::SideEffectScan::Uncacheable { reason }) => {
+                    side_effects_cacheable = false;
+                    side_effects_uncacheable_reason = Some(reason);
+                    Vec::new()
+                }
+                Err(error) => {
+                    side_effects_cacheable = false;
+                    side_effects_uncacheable_reason =
+                        Some(format!("failed to scan link side effects: {error}"));
+                    Vec::new()
+                }
+            }
+        } else {
+            side_effects_cacheable = false;
+            side_effects_uncacheable_reason =
+                Some("link output directory snapshot was unavailable".to_string());
+            Vec::new()
         };
+
+        if !side_effects_cacheable {
+            tracing::warn!(
+                reason = side_effects_uncacheable_reason
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                "successful link is uncacheable because side-effect capture was incomplete"
+            );
+        }
 
         if let Some(plan) = staged_plan.as_ref() {
             let unexpected_staged = plan.unexpected_staged_entries().unwrap_or_else(|error| {
                 tracing::warn!(%error, "failed to inspect staged linker output set");
                 vec![plan.primary_staged().as_path().to_path_buf()]
             });
-            if !side_effects.is_empty() || !unexpected_staged.is_empty() {
+            if !side_effects_cacheable || !side_effects.is_empty() || !unexpected_staged.is_empty()
+            {
                 tracing::warn!(
                     external_count = side_effects.len(),
                     staged_count = unexpected_staged.len(),
@@ -767,7 +815,7 @@ pub(super) async fn handle_link_ephemeral(
             }
         }
 
-        let mut read_targets: Vec<(String, std::path::PathBuf)> =
+        let mut read_targets: Vec<(String, std::path::PathBuf, Option<ContentHash>)> =
             Vec::with_capacity(1 + parsed_tool.secondary_outputs.len() + side_effects.len());
         read_targets.push((
             primary_name_os.to_string_lossy().into_owned(),
@@ -775,6 +823,7 @@ pub(super) async fn handle_link_ephemeral(
                 || std::path::PathBuf::from(output_path.as_path()),
                 |plan| std::path::PathBuf::from(plan.primary_staged().as_path()),
             ),
+            None,
         ));
         for secondary in &parsed_tool.secondary_outputs {
             let sec_path = if secondary.is_absolute() {
@@ -791,12 +840,13 @@ pub(super) async fn handle_link_ephemeral(
                 .as_ref()
                 .and_then(|plan| plan.staged_for_requested(&sec_path))
                 .map_or(sec_path.clone(), |path| path.into_path_buf());
-            read_targets.push((name, read_path));
+            read_targets.push((name, read_path, None));
         }
         for se in &side_effects {
             read_targets.push((
                 se.file_name.to_string_lossy().into_owned(),
                 std::path::PathBuf::from(se.path.as_path()),
+                Some(se.content_hash),
             ));
         }
 
@@ -804,44 +854,47 @@ pub(super) async fn handle_link_ephemeral(
         // loop when there's only the primary output — rayon dispatch cost
         // (~150 µs) is comparable to one fs::read for small outputs.
         let output_read_started = profile_enabled.then(std::time::Instant::now);
-        let reads: Vec<Option<ArtifactOutput>> = if read_targets.len() <= 1 {
-            read_targets
-                .iter()
-                .map(|(name, path)| {
-                    std::fs::read(path).ok().map(|data| ArtifactOutput {
-                        name: name.clone(),
-                        payload: ArtifactPayload::Bytes(Arc::new(data)),
-                    })
+        let reads: std::io::Result<Vec<ArtifactOutput>> = read_targets
+            .iter()
+            .map(|(name, path, expected_hash)| {
+                let data = std::fs::read(path)?;
+                if let Some(expected_hash) = expected_hash {
+                    if crate::hash::hash_bytes(&data) != *expected_hash {
+                        return Err(std::io::Error::other(format!(
+                            "side-effect changed after scan: {}",
+                            path.display()
+                        )));
+                    }
+                }
+                Ok(ArtifactOutput {
+                    name: name.clone(),
+                    payload: ArtifactPayload::Bytes(Arc::new(data)),
                 })
-                .collect()
-        } else {
-            use rayon::prelude::*;
-            read_targets
-                .par_iter()
-                .map(|(name, path)| {
-                    std::fs::read(path).ok().map(|data| ArtifactOutput {
-                        name: name.clone(),
-                        payload: ArtifactPayload::Bytes(Arc::new(data)),
-                    })
-                })
-                .collect()
-        };
+            })
+            .collect();
         output_read_ns = output_read_started
             .map(|started| started.elapsed().as_nanos() as u64)
             .unwrap_or(0);
 
-        if staged_plan.is_some() && reads.iter().any(Option::is_none) {
-            let _ = staged_plan.as_ref().map(StagedCompilePlan::cleanup);
-            return Response::Error {
-                message: "successful linker omitted a staged output".to_string(),
-            };
-        }
+        let outputs = match reads {
+            Ok(outputs) if side_effects_cacheable => Some(outputs),
+            Ok(_) => None,
+            Err(error) if staged_plan.is_some() => {
+                let _ = staged_plan.as_ref().map(StagedCompilePlan::cleanup);
+                return Response::Error {
+                    message: format!("successful linker omitted a staged output: {error}"),
+                };
+            }
+            Err(error) => {
+                tracing::warn!(%error, "successful link is uncacheable because output capture failed");
+                None
+            }
+        };
 
         // Primary read gates the cache populate. If it fails, the link
         // succeeded but the output file is no longer readable — skip
         // caching, same as the prior serial behavior.
-        if reads.first().and_then(|r| r.as_ref()).is_some() {
-            let outputs: Vec<ArtifactOutput> = reads.into_iter().flatten().collect();
+        if let Some(outputs) = outputs {
             // Log side-effect captures (preserves prior tracing).
             let side_effect_start = 1 + parsed_tool.secondary_outputs.len();
             for o in outputs.iter().skip(side_effect_start) {
@@ -874,8 +927,16 @@ pub(super) async fn handle_link_ephemeral(
                 let persist_meta = cached.meta.clone();
                 let source_paths: Vec<NormalizedPath> = read_targets
                     .iter()
-                    .map(|(_, p)| NormalizedPath::from(p.as_path()))
+                    .map(|(_, path, _)| NormalizedPath::from(path.as_path()))
                     .collect();
+                let mut payloads = Vec::with_capacity(artifact.outputs.len());
+                for output in &artifact.outputs {
+                    let Some(bytes) = output.payload.as_bytes() else {
+                        tracing::warn!(file = %output.name, "link output lacks immutable bytes");
+                        return result;
+                    };
+                    payloads.push(Arc::clone(bytes));
+                }
                 let payload_size: usize = artifact
                     .outputs
                     .iter()
@@ -920,7 +981,7 @@ pub(super) async fn handle_link_ephemeral(
                             .expect("persist_semaphore is owned by ServerState and never closed");
                         let written = tokio::task::spawn_blocking(move || {
                             let _guard = guard;
-                            let _ = persist_artifact_paths(&artifact_dir, &kh, &source_paths);
+                            let _ = persist_artifact_payloads(&artifact_dir, &kh, &payloads);
                             (kh, persist_meta)
                         })
                         .await;
