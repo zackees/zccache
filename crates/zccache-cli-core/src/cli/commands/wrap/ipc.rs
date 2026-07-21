@@ -21,8 +21,21 @@ pub(super) async fn cmd_compile(
     let mut conn = match connect(endpoint).await {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("zccache[err][C]: cannot connect to daemon at {endpoint}: {e}");
-            return ExitCode::FAILURE;
+            let reason = format!("cannot connect to daemon at {endpoint}: {e}");
+            emit_client_disconnected_event(
+                endpoint,
+                crate::core::lifecycle::CAUSE_COMM_ERROR,
+                &reason,
+            );
+            return cmd_compile_ephemeral_with_stdin(
+                endpoint,
+                compiler.as_path(),
+                args,
+                cwd,
+                client_env,
+                stdin_bytes,
+            )
+            .await;
         }
     };
 
@@ -36,14 +49,25 @@ pub(super) async fn cmd_compile(
         stdin: stdin_bytes.clone(),
     };
     if let Err(e) = conn.send_request(&request, wire).await {
-        eprintln!("zccache[err][S]: failed to send to daemon: {e}");
+        let failure = TransportFailure {
+            message: format!("failed to send to daemon: {e}"),
+            phase: FailurePhase::DeliveryUnknown,
+        };
+        emit_client_disconnected_event(
+            endpoint,
+            crate::core::lifecycle::CAUSE_PIPE_CLOSED_MID_WRITE,
+            &failure.message,
+        );
+        eprintln!("zccache[err][S]: {}", failure.message);
         return ExitCode::FAILURE;
     }
 
     match compile_recv_with_wedge_detection(&mut conn, wedge_recv_timeout()).await {
-        CompileRecvOutcome::Done(recv_result) => {
-            relay_compile_response(recv_result, &mut std::io::stdout(), &mut std::io::stderr())
-        }
+        CompileRecvOutcome::Done(recv_result) => report_relay_outcome(relay_compile_response(
+            recv_result,
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+        )),
         CompileRecvOutcome::Wedged => {
             // Daemon went past the wedge budget for *this* request. Pre-#753
             // we always killed it; #726 / FastLED/#3011 showed that under
@@ -101,9 +125,9 @@ pub(super) async fn cmd_compile(
             emit_client_disconnected_event(
                 endpoint,
                 crate::core::lifecycle::CAUSE_COMM_ERROR,
-                &msg,
+                &msg.message,
             );
-            eprintln!("zccache[err][R]: {msg}");
+            eprintln!("zccache[err][R]: {}", msg.message);
             ExitCode::FAILURE
         }
     }
@@ -119,7 +143,40 @@ enum CompileRecvOutcome {
     /// Daemon stopped responding within the configured wedge budget.
     Wedged,
     /// Non-timeout recv failure (broken pipe, deserialization error, etc.).
-    Failed(String),
+    Failed(TransportFailure),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailurePhase {
+    /// No request bytes were handed to a daemon.
+    PreDispatch,
+    /// The request may have reached the daemon; direct execution is unsafe.
+    DeliveryUnknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TransportFailure {
+    message: String,
+    phase: FailurePhase,
+}
+
+#[derive(Debug, PartialEq)]
+enum RelayOutcome {
+    Verdict(ExitCode),
+    /// The daemon completed the request without returning a compiler/tool
+    /// verdict. This is intentionally not eligible for local fallback: the
+    /// daemon may have already executed the tool or changed output state.
+    NoVerdict(String),
+}
+
+fn report_relay_outcome(outcome: RelayOutcome) -> ExitCode {
+    match outcome {
+        RelayOutcome::Verdict(code) => code,
+        RelayOutcome::NoVerdict(message) => {
+            eprintln!("{message}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Wrap a compile-response recv with an optional wedge budget.
@@ -143,14 +200,20 @@ async fn compile_recv_with_wedge_detection<C: ConnRecv>(
         Some(budget) => match conn.recv_with_timeout(budget).await {
             Ok(opt) => CompileRecvOutcome::Done(opt),
             Err(crate::ipc::IpcError::Timeout(_)) => CompileRecvOutcome::Wedged,
-            Err(e) => CompileRecvOutcome::Failed(format!("broken connection to daemon: {e}")),
+            Err(e) => CompileRecvOutcome::Failed(TransportFailure {
+                message: format!("broken connection to daemon: {e}"),
+                phase: FailurePhase::DeliveryUnknown,
+            }),
         },
         None => match conn
             .recv_with_timeout(crate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT)
             .await
         {
             Ok(opt) => CompileRecvOutcome::Done(opt),
-            Err(e) => CompileRecvOutcome::Failed(format!("broken connection to daemon: {e}")),
+            Err(e) => CompileRecvOutcome::Failed(TransportFailure {
+                message: format!("broken connection to daemon: {e}"),
+                phase: FailurePhase::DeliveryUnknown,
+            }),
         },
     }
 }
@@ -337,14 +400,25 @@ pub(super) async fn cmd_compile_ephemeral(
     client_env: Vec<(String, String)>,
 ) -> ExitCode {
     let stdin_bytes = slurp_stdin_if_piped();
+    cmd_compile_ephemeral_with_stdin(endpoint, compiler, args, cwd, client_env, stdin_bytes).await
+}
+
+async fn cmd_compile_ephemeral_with_stdin(
+    endpoint: &str,
+    compiler: &Path,
+    args: Vec<String>,
+    cwd: NormalizedPath,
+    client_env: Vec<(String, String)>,
+    stdin_bytes: Vec<u8>,
+) -> ExitCode {
     let request = crate::protocol::Request::CompileEphemeral {
         client_pid: std::process::id(),
         working_dir: cwd.clone(),
         compiler: compiler.into(),
-        args,
-        cwd,
-        env: Some(client_env),
-        stdin: stdin_bytes,
+        args: args.clone(),
+        cwd: cwd.clone(),
+        env: Some(client_env.clone()),
+        stdin: stdin_bytes.clone(),
     };
 
     // Issue #752: retry once on transport failure
@@ -361,9 +435,11 @@ pub(super) async fn cmd_compile_ephemeral(
     .await;
 
     match outcome {
-        CompileRecvOutcome::Done(recv_result) => {
-            relay_compile_response(recv_result, &mut std::io::stdout(), &mut std::io::stderr())
-        }
+        CompileRecvOutcome::Done(recv_result) => report_relay_outcome(relay_compile_response(
+            recv_result,
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+        )),
         CompileRecvOutcome::Wedged => {
             eprintln!(
                 "zccache[err][W]: daemon at {endpoint} stopped responding within \
@@ -372,10 +448,22 @@ pub(super) async fn cmd_compile_ephemeral(
             stop_stale_daemon(endpoint).await;
             ExitCode::FAILURE
         }
-        CompileRecvOutcome::Failed(msg) => {
-            eprintln!("zccache[err][R]: {msg}");
-            ExitCode::FAILURE
-        }
+        CompileRecvOutcome::Failed(msg) => match msg.phase {
+                FailurePhase::PreDispatch => {
+                super::passthrough::run_locally(
+                    compiler,
+                    &args,
+                    &cwd,
+                    &client_env,
+                    &stdin_bytes,
+                    &msg.message,
+                )
+            }
+            FailurePhase::DeliveryUnknown => {
+                eprintln!("zccache[err][R]: {}", msg.message);
+                ExitCode::FAILURE
+            }
+        },
     }
 }
 
@@ -387,11 +475,13 @@ pub(super) async fn cmd_link_ephemeral(
     cwd: NormalizedPath,
     client_env: Vec<(String, String)>,
 ) -> ExitCode {
+    let local_args = args.clone();
+    let local_env = client_env.clone();
     let request = crate::protocol::Request::LinkEphemeral {
         client_pid: std::process::id(),
         tool: tool.into(),
         args,
-        cwd,
+        cwd: cwd.clone(),
         env: Some(client_env),
     };
 
@@ -406,9 +496,11 @@ pub(super) async fn cmd_link_ephemeral(
     .await;
 
     match outcome {
-        CompileRecvOutcome::Done(recv_result) => {
-            relay_link_response(recv_result, &mut std::io::stdout(), &mut std::io::stderr())
-        }
+        CompileRecvOutcome::Done(recv_result) => report_relay_outcome(relay_link_response(
+            recv_result,
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+        )),
         CompileRecvOutcome::Wedged => {
             eprintln!(
                 "zccache[err][W]: daemon at {endpoint} stopped responding within \
@@ -418,10 +510,22 @@ pub(super) async fn cmd_link_ephemeral(
             stop_stale_daemon(endpoint).await;
             ExitCode::FAILURE
         }
-        CompileRecvOutcome::Failed(msg) => {
-            eprintln!("zccache[err][R]: {msg}");
-            ExitCode::FAILURE
-        }
+        CompileRecvOutcome::Failed(msg) => match msg.phase {
+            FailurePhase::PreDispatch => {
+                super::passthrough::run_locally(
+                    tool,
+                    &local_args,
+                    &cwd,
+                    &local_env,
+                    &[],
+                    &msg.message,
+                )
+            }
+            FailurePhase::DeliveryUnknown => {
+                eprintln!("zccache[err][R]: {}", msg.message);
+                ExitCode::FAILURE
+            }
+        },
     }
 }
 
@@ -457,6 +561,7 @@ async fn run_ephemeral_attempt(
         return failed_with_disconnect_event(
             endpoint,
             crate::core::lifecycle::CAUSE_COMM_ERROR,
+            FailurePhase::PreDispatch,
             format!("cannot start daemon at {endpoint}: {e}"),
         );
     }
@@ -466,6 +571,7 @@ async fn run_ephemeral_attempt(
             return failed_with_disconnect_event(
                 endpoint,
                 crate::core::lifecycle::CAUSE_COMM_ERROR,
+                FailurePhase::PreDispatch,
                 format!("cannot connect to daemon at {endpoint}: {e}"),
             );
         }
@@ -475,12 +581,17 @@ async fn run_ephemeral_attempt(
         return failed_with_disconnect_event(
             endpoint,
             crate::core::lifecycle::CAUSE_PIPE_CLOSED_MID_WRITE,
+            FailurePhase::DeliveryUnknown,
             format!("failed to send to daemon: {e}"),
         );
     }
     let outcome = compile_recv_with_wedge_detection(&mut conn, wedge_recv_timeout()).await;
     if let CompileRecvOutcome::Failed(msg) = &outcome {
-        emit_client_disconnected_event(endpoint, crate::core::lifecycle::CAUSE_COMM_ERROR, msg);
+        emit_client_disconnected_event(
+            endpoint,
+            crate::core::lifecycle::CAUSE_COMM_ERROR,
+            &msg.message,
+        );
     }
     outcome
 }
@@ -488,9 +599,17 @@ async fn run_ephemeral_attempt(
 /// Build a `Failed` outcome and emit the matching `client-disconnected`
 /// event in one call so the JSONL row is written at the exact moment
 /// the dropout was observed. #755 acceptance #3.
-fn failed_with_disconnect_event(endpoint: &str, cause: &str, msg: String) -> CompileRecvOutcome {
+fn failed_with_disconnect_event(
+    endpoint: &str,
+    cause: &str,
+    phase: FailurePhase,
+    msg: String,
+) -> CompileRecvOutcome {
     emit_client_disconnected_event(endpoint, cause, &msg);
-    CompileRecvOutcome::Failed(msg)
+    CompileRecvOutcome::Failed(TransportFailure {
+        message: msg,
+        phase,
+    })
 }
 
 /// Write a `client-disconnected` JSONL row carrying the client's
@@ -520,7 +639,7 @@ fn relay_compile_response<W: Write, E: Write>(
     recv_result: Option<crate::protocol::Response>,
     stdout: &mut W,
     stderr: &mut E,
-) -> ExitCode {
+) -> RelayOutcome {
     match recv_result {
         Some(crate::protocol::Response::CompileResult {
             exit_code,
@@ -530,23 +649,15 @@ fn relay_compile_response<W: Write, E: Write>(
         }) => {
             let _ = stdout.write_all(&out);
             let _ = stderr.write_all(&err);
-            exit_code_from_i32(exit_code)
+            RelayOutcome::Verdict(exit_code_from_i32(exit_code))
         }
         Some(crate::protocol::Response::Error { message }) => {
-            let _ = writeln!(stderr, "zccache[err][E]: daemon error: {message}");
-            ExitCode::FAILURE
+            RelayOutcome::NoVerdict(format!("zccache[err][E]: daemon error: {message}"))
         }
-        None => {
-            let _ = writeln!(stderr, "{LOST_CONNECTION_MSG}");
-            ExitCode::FAILURE
-        }
-        Some(other) => {
-            let _ = writeln!(
-                stderr,
-                "zccache[err][U]: unexpected response from daemon: {other:?}"
-            );
-            ExitCode::FAILURE
-        }
+        None => RelayOutcome::NoVerdict(LOST_CONNECTION_MSG.to_string()),
+        Some(other) => RelayOutcome::NoVerdict(format!(
+            "zccache[err][U]: unexpected response from daemon: {other:?}"
+        )),
     }
 }
 
@@ -554,7 +665,7 @@ fn relay_link_response<W: Write, E: Write>(
     recv_result: Option<crate::protocol::Response>,
     stdout: &mut W,
     stderr: &mut E,
-) -> ExitCode {
+) -> RelayOutcome {
     match recv_result {
         Some(crate::protocol::Response::LinkResult {
             exit_code,
@@ -568,23 +679,15 @@ fn relay_link_response<W: Write, E: Write>(
             if let Some(w) = warning {
                 let _ = writeln!(stderr, "zccache warning: {w}");
             }
-            exit_code_from_i32(exit_code)
+            RelayOutcome::Verdict(exit_code_from_i32(exit_code))
         }
         Some(crate::protocol::Response::Error { message }) => {
-            let _ = writeln!(stderr, "zccache[err][E]: daemon error: {message}");
-            ExitCode::FAILURE
+            RelayOutcome::NoVerdict(format!("zccache[err][E]: daemon error: {message}"))
         }
-        None => {
-            let _ = writeln!(stderr, "{LOST_CONNECTION_MSG}");
-            ExitCode::FAILURE
-        }
-        Some(other) => {
-            let _ = writeln!(
-                stderr,
-                "zccache[err][U]: unexpected response from daemon: {other:?}"
-            );
-            ExitCode::FAILURE
-        }
+        None => RelayOutcome::NoVerdict(LOST_CONNECTION_MSG.to_string()),
+        Some(other) => RelayOutcome::NoVerdict(format!(
+            "zccache[err][U]: unexpected response from daemon: {other:?}"
+        )),
     }
 }
 
@@ -592,6 +695,13 @@ fn relay_link_response<W: Write, E: Write>(
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    fn failed(message: &str) -> CompileRecvOutcome {
+        CompileRecvOutcome::Failed(TransportFailure {
+            message: message.to_string(),
+            phase: FailurePhase::DeliveryUnknown,
+        })
+    }
 
     #[test]
     fn compile_response_relay_writes_stdout_stderr_and_exit_code() {
@@ -609,9 +719,35 @@ mod tests {
             &mut stderr,
         );
 
-        assert_eq!(exit, ExitCode::from(7));
+        assert_eq!(exit, RelayOutcome::Verdict(ExitCode::from(7)));
         assert_eq!(stdout, b"compiler-out");
         assert_eq!(stderr, b"compiler-err");
+    }
+
+    #[test]
+    fn daemon_error_is_a_no_verdict_failure_not_a_local_fallback_signal() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let outcome = relay_compile_response(
+            Some(crate::protocol::Response::Error {
+                message: "cache staging failed".to_string(),
+            }),
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert!(matches!(outcome, RelayOutcome::NoVerdict(message) if message.contains("cache staging failed")));
+        assert!(stdout.is_empty());
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn missing_response_is_a_no_verdict_failure() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let outcome = relay_compile_response(None, &mut stdout, &mut stderr);
+
+        assert!(matches!(outcome, RelayOutcome::NoVerdict(_)));
     }
 
     // ── Issue #666: wedge-detection helper ──────────────────────────────
@@ -756,7 +892,7 @@ mod tests {
                 let n = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
                 async move {
                     if n == 1 {
-                        CompileRecvOutcome::Failed("lost connection to daemon".to_string())
+                        failed("lost connection to daemon")
                     } else {
                         CompileRecvOutcome::Done(Some(crate::protocol::Response::Pong))
                     }
@@ -787,7 +923,7 @@ mod tests {
         let outcome = link_with_retry(
             || {
                 attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                async { CompileRecvOutcome::Failed("daemon really gone".to_string()) }
+                async { failed("daemon really gone") }
             },
             || {
                 recoveries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -838,7 +974,7 @@ mod tests {
         let outcome = link_with_retry(
             || {
                 attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                async { CompileRecvOutcome::Failed("once".to_string()) }
+                async { failed("once") }
             },
             || {
                 recoveries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -956,7 +1092,7 @@ mod tests {
             &mut stderr,
         );
 
-        assert_eq!(exit, ExitCode::SUCCESS);
+        assert_eq!(exit, RelayOutcome::Verdict(ExitCode::SUCCESS));
         assert_eq!(stdout, b"link-out");
         assert_eq!(
             String::from_utf8(stderr).unwrap(),

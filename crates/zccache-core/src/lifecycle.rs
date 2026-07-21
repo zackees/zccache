@@ -116,6 +116,9 @@ pub const EVENT_PIPE_HANDOVER: &str = "pipe-handover";
 /// — splitting it out as its own event makes the dropout observable
 /// at the timestamp where it actually happened.
 pub const EVENT_CLIENT_DISCONNECTED: &str = "client-disconnected";
+/// Emitted when a wrapper invocation runs the real tool locally after a
+/// daemon failure that occurred before request dispatch.
+pub const EVENT_WRAPPER_LOCAL_FALLBACK: &str = "wrapper-local-fallback";
 
 /// Reasons the CLI emits with `spawn-attempt`. Matches the branches
 /// in `ensure_daemon` — keep in sync.
