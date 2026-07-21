@@ -65,6 +65,67 @@ printf 'binary\n' > "$out"
     tool
 }
 
+/// A linker that leaves a marker only when two linker processes run in the
+/// same output directory at once. Its active marker is a directory, which the
+/// side-effect scanner intentionally ignores; the collision marker is a file.
+#[cfg(unix)]
+fn write_overlap_detecting_linker(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tool = dir.join("overlap-clang");
+    std::fs::write(
+        &tool,
+        r#"#!/bin/sh
+out=
+while [ "$#" -gt 0 ]; do
+if [ "$1" = "-o" ]; then
+    shift
+    out=$1
+fi
+shift || true
+done
+if [ -z "$out" ]; then
+exit 2
+fi
+out_dir=$(dirname "$out")
+if ! mkdir "$out_dir/.zccache-link-active" 2>/dev/null; then
+    printf 'overlap\n' > "$out_dir/parallel-link-collision"
+fi
+sleep 0.2
+printf 'binary-%s\n' "$(basename "$out")" > "$out"
+printf 'sidecar-%s\n' "$(basename "$out")" > "$out.sidecar"
+rmdir "$out_dir/.zccache-link-active" 2>/dev/null || true
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&tool).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&tool, permissions).unwrap();
+    tool
+}
+
+#[cfg(windows)]
+fn write_overlap_detecting_linker(dir: &Path) -> std::path::PathBuf {
+    let tool = dir.join("overlap-clang.cmd");
+    std::fs::write(
+        &tool,
+        r#"@echo off
+set "OUT=%~2"
+if "%OUT%"=="" exit /b 2
+for %%I in ("%OUT%") do set "OUTDIR=%%~dpI"
+mkdir "%OUTDIR%\.zccache-link-active" >nul 2>nul
+if errorlevel 1 > "%OUTDIR%parallel-link-collision" echo overlap
+ping -n 2 127.0.0.1 >nul
+> "%OUT%" echo binary-%~nx2
+> "%OUT%.sidecar" echo sidecar-%~nx2
+rmdir "%OUTDIR%\.zccache-link-active" >nul 2>nul
+exit /b 0
+"#,
+    )
+    .unwrap();
+    tool
+}
+
 #[cfg(unix)]
 fn write_fake_dsymutil(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -235,6 +296,141 @@ async fn link_cache_hit_restores_sibling_side_effects() {
     assert!(
         wasm_map.exists(),
         "cache hit should restore the wasm map sidecar"
+    );
+}
+
+/// #912: two cold links in the same output directory must not overlap their
+/// snapshot/link/rescan windows. Otherwise each can claim the other's newly
+/// created sidecar as part of its own cached artifact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn parallel_same_directory_links_are_isolated() {
+    if staged_link_lane_enabled() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let fake_linker = write_overlap_detecting_linker(tmp.path());
+    let input_a = tmp.path().join("a.o");
+    let input_b = tmp.path().join("b.o");
+    let output_a = tmp.path().join("a.exe");
+    let output_b = tmp.path().join("b.exe");
+    let sidecar_a = output_a.with_extension("exe.sidecar");
+    let sidecar_b = output_b.with_extension("exe.sidecar");
+    std::fs::write(&input_a, b"input-a").unwrap();
+    std::fs::write(&input_b, b"input-b").unwrap();
+
+    let _cache_dir = CacheDirEnvGuard::set(&tmp.path().join("zccache-cache"));
+    let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+    let args_a = vec![
+        "-o".to_string(),
+        output_a.to_string_lossy().into_owned(),
+        input_a.to_string_lossy().into_owned(),
+    ];
+    let args_b = vec![
+        "-o".to_string(),
+        output_b.to_string_lossy().into_owned(),
+        input_b.to_string_lossy().into_owned(),
+    ];
+
+    let (first_a, first_b) = tokio::join!(
+        handle_link_ephemeral(
+            &server.state,
+            std::process::id(),
+            &fake_linker,
+            &args_a,
+            tmp.path(),
+            None,
+        ),
+        handle_link_ephemeral(
+            &server.state,
+            std::process::id(),
+            &fake_linker,
+            &args_b,
+            tmp.path(),
+            None,
+        )
+    );
+    assert!(matches!(
+        first_a,
+        Response::LinkResult {
+            exit_code: 0,
+            cached: false,
+            ..
+        }
+    ));
+    assert!(matches!(
+        first_b,
+        Response::LinkResult {
+            exit_code: 0,
+            cached: false,
+            ..
+        }
+    ));
+    assert!(
+        !tmp.path().join("parallel-link-collision").exists(),
+        "links sharing an output directory must not overlap"
+    );
+
+    std::fs::remove_file(&output_a).unwrap();
+    std::fs::remove_file(&sidecar_a).unwrap();
+    std::fs::remove_file(&sidecar_b).unwrap();
+    let hit_a = handle_link_ephemeral(
+        &server.state,
+        std::process::id(),
+        &fake_linker,
+        &args_a,
+        tmp.path(),
+        None,
+    )
+    .await;
+    assert!(matches!(
+        hit_a,
+        Response::LinkResult {
+            exit_code: 0,
+            cached: true,
+            ..
+        }
+    ));
+    assert!(std::fs::read(sidecar_a)
+        .unwrap()
+        .starts_with(b"sidecar-a.exe"));
+    assert!(
+        !sidecar_b.exists(),
+        "a cache hit must not restore b's sidecar"
+    );
+}
+
+/// #912: the side-effect lock is keyed by output directory, not globally.
+#[tokio::test]
+async fn side_effect_lock_allows_different_output_directories() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+    let lock_a = server
+        .state
+        .link_output_lock(tmp.path().join("a").into());
+    let same_lock_a = server
+        .state
+        .link_output_lock(tmp.path().join("a").into());
+    let lock_b = server
+        .state
+        .link_output_lock(tmp.path().join("b").into());
+    assert!(std::sync::Arc::ptr_eq(&lock_a, &same_lock_a));
+    assert!(!std::sync::Arc::ptr_eq(&lock_a, &lock_b));
+
+    let _guard_a = lock_a.lock_owned().await;
+    let _guard_b = tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        lock_b.lock_owned(),
+    )
+    .await
+    .expect("a lock held for one output directory must not block another");
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            same_lock_a.lock_owned(),
+        )
+        .await
+        .is_err(),
+        "the same output directory must remain exclusive"
     );
 }
 

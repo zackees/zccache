@@ -114,6 +114,12 @@ pub(super) struct SharedState {
     /// Request-owned staged telemetry for active tracked sessions.
     pub(super) session_staged_profiles:
         DashMap<SessionId, Arc<crate::daemon::staged_stats::StagedProfiler>>,
+    /// Per-output-directory exclusion for the legacy link side-effect scan.
+    ///
+    /// The scan attributes every changed sibling to one link invocation, so
+    /// two managed links must not overlap their snapshot/link/capture windows
+    /// in the same directory. Weak values let idle directory locks disappear.
+    pub(super) link_output_locks: DashMap<NormalizedPath, std::sync::Weak<Mutex<()>>>,
     pub(super) system_includes: Mutex<SystemIncludeCache>,
     /// Dependency graph: tracks include relationships and cache verdicts.
     ///
@@ -374,6 +380,31 @@ pub(super) struct SharedState {
     /// `Request::ExecStore`. Slice 1 keeps this in-memory only; a
     /// follow-up slice swaps to `KvStore` for persistence.
     pub(super) exec_cache: DashMap<String, Arc<Vec<u8>>>,
+}
+
+impl SharedState {
+    /// Return the lock that owns legacy side-effect capture for `output_dir`.
+    ///
+    /// The returned `Arc` is independent of the DashMap entry guard so callers
+    /// can await `lock_owned` without retaining a map shard lock.
+    pub(super) fn link_output_lock(&self, output_dir: NormalizedPath) -> Arc<Mutex<()>> {
+        match self.link_output_locks.entry(output_dir) {
+            dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+                if let Some(lock) = entry.get().upgrade() {
+                    lock
+                } else {
+                    let lock = Arc::new(Mutex::new(()));
+                    entry.insert(Arc::downgrade(&lock));
+                    lock
+                }
+            }
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                let lock = Arc::new(Mutex::new(()));
+                entry.insert(Arc::downgrade(&lock));
+                lock
+            }
+        }
+    }
 }
 
 #[cfg(test)]
