@@ -152,12 +152,14 @@ impl DepGraph {
             .indexes
             .equivalent_contexts
             .get(&key)
-            .and_then(|instances| instances.iter().find_map(|candidate| {
-                self.contexts.get(candidate).map(|entry| entry.clone())
-            }));
-        let rebased_from_equivalent_root = candidate
-            .as_ref()
-            .is_some_and(|entry| entry.key_root.is_some() && key_root.is_some() && entry.key_root != key_root);
+            .and_then(|instances| {
+                instances
+                    .iter()
+                    .find_map(|candidate| self.contexts.get(candidate).map(|entry| entry.clone()))
+            });
+        let rebased_from_equivalent_root = candidate.as_ref().is_some_and(|entry| {
+            entry.key_root.is_some() && key_root.is_some() && entry.key_root != key_root
+        });
         let entry = candidate.map_or_else(
             || ContextEntry {
                 logical_key: key,
@@ -182,7 +184,10 @@ impl DepGraph {
                     .last_file_hashes
                     .iter()
                     .map(|(path, hash)| {
-                        (rebase_project_path(path, old_root.as_ref(), key_root.as_ref()), *hash)
+                        (
+                            rebase_project_path(path, old_root.as_ref(), key_root.as_ref()),
+                            *hash,
+                        )
                     })
                     .collect();
                 candidate.context = ctx.clone();
@@ -193,11 +198,16 @@ impl DepGraph {
         );
         self.contexts.entry(instance_key).or_insert(entry);
 
-        let mut evicted = self.indexes.equivalent_contexts.entry(key).and_modify(|instances| {
-            if !instances.contains(&instance_key) {
-                instances.push(instance_key);
-            }
-        }).or_insert_with(|| vec![instance_key]);
+        let mut evicted = self
+            .indexes
+            .equivalent_contexts
+            .entry(key)
+            .and_modify(|instances| {
+                if !instances.contains(&instance_key) {
+                    instances.push(instance_key);
+                }
+            })
+            .or_insert_with(|| vec![instance_key]);
         let evicted = if evicted.len() > MAX_EQUIVALENT_CONTEXTS {
             Some(evicted.remove(0))
         } else {

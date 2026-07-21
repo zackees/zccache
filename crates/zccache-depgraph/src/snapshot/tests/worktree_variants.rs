@@ -11,7 +11,7 @@ use super::super::super::graph::{CacheVerdict, DepGraph};
 use super::super::super::scanner::ScanResult;
 use super::super::super::search_paths::IncludeSearchPaths;
 use super::super::super::snapshot::{load_from_file, save_to_file};
-use super::{test_path, always_fresh};
+use super::{always_fresh, test_path};
 
 fn context(root: &str) -> CompileContext {
     CompileContext {
@@ -26,7 +26,9 @@ fn context(root: &str) -> CompileContext {
 
 fn scan(root: &str) -> ScanResult {
     ScanResult {
-        resolved: vec![NormalizedPath::from(format!("{root}/include/shared.h").as_str())],
+        resolved: vec![NormalizedPath::from(
+            format!("{root}/include/shared.h").as_str(),
+        )],
         unresolved: Vec::new(),
         has_computed: false,
     }
@@ -58,7 +60,11 @@ fn equivalent_worktree_variants_survive_snapshot_roundtrip() {
         Some(NormalizedPath::from("/snapshot-b")),
     );
     let changed_b = |path: &Path| {
-        let bytes: &[u8] = if path.ends_with("lib.rs") { b"changed B" } else { b"header" };
+        let bytes: &[u8] = if path.ends_with("lib.rs") {
+            b"changed B"
+        } else {
+            b"header"
+        };
         Some(hash_bytes(bytes))
     };
     let artifact_b = graph

@@ -24,7 +24,9 @@ fn context(root: &str) -> CompileContext {
 
 fn scan(root: &str) -> ScanResult {
     ScanResult {
-        resolved: vec![NormalizedPath::from(format!("{root}/include/shared.h").as_str())],
+        resolved: vec![NormalizedPath::from(
+            format!("{root}/include/shared.h").as_str(),
+        )],
         unresolved: Vec::new(),
         has_computed: false,
     }
@@ -50,8 +52,14 @@ fn equivalent_worktree_b_update_preserves_a_artifact() {
         .expect("A must become warm");
 
     let b = graph.register_with_root_result(context("/worktree-b"), Some(root_b));
-    assert_eq!(a.key, b.key, "equivalent roots retain one artifact identity");
-    assert_ne!(a.map_key, b.map_key, "mutable state must be checkout-specific");
+    assert_eq!(
+        a.key, b.key,
+        "equivalent roots retain one artifact identity"
+    );
+    assert_ne!(
+        a.map_key, b.map_key,
+        "mutable state must be checkout-specific"
+    );
     assert!(matches!(
         graph.check(&b.map_key, |_| true, equivalent_hash),
         CacheVerdict::Hit { artifact_key } if artifact_key == artifact_a
@@ -86,10 +94,8 @@ fn concurrent_equivalent_registration_keeps_independent_instances() {
         let graph = Arc::clone(&graph);
         let barrier = Arc::clone(&barrier);
         joins.push(std::thread::spawn(move || {
-            let registration = graph.register_with_root_result(
-                context(root),
-                Some(NormalizedPath::from(root)),
-            );
+            let registration =
+                graph.register_with_root_result(context(root), Some(NormalizedPath::from(root)));
             barrier.wait();
             graph
                 .update(&registration.map_key, scan(root), equivalent_hash)
@@ -112,10 +118,8 @@ fn equivalent_variant_bound_evicts_to_a_conservative_miss() {
     let mut registrations = Vec::new();
     for index in 0..5 {
         let root = format!("/evict-{index}");
-        let registration = graph.register_with_root_result(
-            context(&root),
-            Some(NormalizedPath::from(root.as_str())),
-        );
+        let registration = graph
+            .register_with_root_result(context(&root), Some(NormalizedPath::from(root.as_str())));
         graph.update(&registration.map_key, scan(&root), equivalent_hash);
         registrations.push(registration);
     }
@@ -125,7 +129,10 @@ fn equivalent_variant_bound_evicts_to_a_conservative_miss() {
         CacheVerdict::Cold
     ));
     for registration in registrations.iter().skip(1) {
-        assert_eq!(graph.get_state(&registration.map_key), Some(ContextState::Warm));
+        assert_eq!(
+            graph.get_state(&registration.map_key),
+            Some(ContextState::Warm)
+        );
     }
 }
 
@@ -156,11 +163,17 @@ fn rustc_metadata_compatibility_aliases_are_checkout_specific() {
     let alias_b = b.metadata_compat_map_key.expect("B compat alias");
     assert_ne!(alias_a, alias_b);
     assert_eq!(
-        graph.rustc_check_metadata_compat.get(&alias_a).map(|entry| *entry),
+        graph
+            .rustc_check_metadata_compat
+            .get(&alias_a)
+            .map(|entry| *entry),
         Some(a.map_key)
     );
     assert_eq!(
-        graph.rustc_check_metadata_compat.get(&alias_b).map(|entry| *entry),
+        graph
+            .rustc_check_metadata_compat
+            .get(&alias_b)
+            .map(|entry| *entry),
         Some(b.map_key)
     );
 }
