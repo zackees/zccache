@@ -1,5 +1,6 @@
 //! Direct execution paths used when wrapper caching is disabled or unsupported.
 
+use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -47,6 +48,72 @@ pub(super) fn run_passthrough(args: &[String]) -> ExitCode {
         Ok(status) => exit_code_from_i32(status.code().unwrap_or(1)),
         Err(e) => {
             eprintln!("zccache: failed to run {}: {e}", resolved.display());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Run the wrapped tool directly after a daemon failure that is known to have
+/// happened before request dispatch. The caller must not use this for a
+/// transport failure after a request may have reached the daemon: that would
+/// allow two compiler processes to write the same outputs.
+pub(super) fn run_locally(
+    tool: &Path,
+    args: &[String],
+    cwd: &Path,
+    env: &[(String, String)],
+    stdin_bytes: &[u8],
+    reason: &str,
+) -> ExitCode {
+    eprintln!(
+        "zccache[warn][F]: {reason}; running {} directly, uncached",
+        tool.display()
+    );
+    crate::core::lifecycle::write_event(
+        crate::core::lifecycle::EVENT_WRAPPER_LOCAL_FALLBACK,
+        serde_json::json!({
+            "tool": tool.to_string_lossy(),
+            "cwd": cwd.to_string_lossy(),
+            "reason": reason,
+            "phase": "pre-dispatch",
+            "route": "wrapper",
+        }),
+    );
+
+    let mut command = std::process::Command::new(tool);
+    command.args(args).envs(env.iter().map(|(key, value)| (key, value)));
+    command.stdin(if stdin_bytes.is_empty() {
+        std::process::Stdio::inherit()
+    } else {
+        std::process::Stdio::piped()
+    });
+    release_cwd_for_command(&mut command, cwd);
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            eprintln!(
+                "zccache[err][F]: failed to run {} locally: {error}",
+                tool.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    if !stdin_bytes.is_empty() {
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(error) = stdin.write_all(stdin_bytes) {
+                eprintln!("zccache[err][F]: failed to replay compiler stdin: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    match child.wait() {
+        Ok(status) => exit_code_from_i32(status.code().unwrap_or(1)),
+        Err(error) => {
+            eprintln!(
+                "zccache[err][F]: failed waiting for {}: {error}",
+                tool.display()
+            );
             ExitCode::FAILURE
         }
     }
@@ -132,6 +199,27 @@ mod tests {
             "issue #555: direct rustfmt execution must release the wrapper's CWD",
         );
 
+        if let Some(cwd) = original_cwd {
+            let _ = std::env::set_current_dir(cwd);
+        }
+    }
+
+    #[test]
+    fn local_fallback_preserves_tool_exit_code() {
+        let _guard = CWD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_cwd = std::env::current_dir().ok();
+        let tool = noop_tool();
+        let args = noop_args();
+        let exit = run_locally(
+            &tool,
+            &args,
+            &std::env::current_dir().unwrap(),
+            &[("ZCCACHE_TEST_FALLBACK".to_string(), "1".to_string())],
+            &[],
+            "test pre-dispatch failure",
+        );
+
+        assert_eq!(exit, ExitCode::SUCCESS);
         if let Some(cwd) = original_cwd {
             let _ = std::env::set_current_dir(cwd);
         }
