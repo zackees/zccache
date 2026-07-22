@@ -8,6 +8,7 @@ fn staged_rollout_defaults_to_rust_and_preserves_compatibility_switches() {
     assert!(staged_artifacts_enabled_for(None));
     assert!(staged_lane_enabled_for(None, Rustc));
     assert!(!staged_lane_enabled_for(None, Clang));
+    assert!(staged_archive_lane_enabled_for(None));
     assert!(!staged_link_lane_enabled_for(None));
     assert!(!staged_exec_lane_enabled_for(None));
 
@@ -15,6 +16,7 @@ fn staged_rollout_defaults_to_rust_and_preserves_compatibility_switches() {
         assert!(!staged_artifacts_enabled_for(Some(disabled)));
         assert!(!staged_lane_enabled_for(Some(disabled), Rustc));
         assert!(!staged_lane_enabled_for(Some(disabled), Clang));
+        assert!(!staged_archive_lane_enabled_for(Some(disabled)));
         assert!(!staged_link_lane_enabled_for(Some(disabled)));
         assert!(!staged_exec_lane_enabled_for(Some(disabled)));
     }
@@ -23,6 +25,8 @@ fn staged_rollout_defaults_to_rust_and_preserves_compatibility_switches() {
     assert!(!staged_lane_enabled_for(Some("rust"), Clang));
     assert!(!staged_lane_enabled_for(Some("c-cpp"), Rustc));
     assert!(staged_lane_enabled_for(Some("c-cpp"), Clang));
+    assert!(!staged_archive_lane_enabled_for(Some("rust")));
+    assert!(staged_archive_lane_enabled_for(Some("c-cpp")));
     assert!(staged_link_lane_enabled_for(Some("all")));
     assert!(staged_exec_lane_enabled_for(Some("all")));
     assert!(staged_exec_lane_enabled_for(Some("exec")));

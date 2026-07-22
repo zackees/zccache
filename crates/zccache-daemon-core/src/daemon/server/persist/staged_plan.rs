@@ -505,7 +505,7 @@ impl StagedCompilePlan {
         primary_output: &NormalizedPath,
         cwd: &Path,
     ) -> StagedPlanOutcome<Self> {
-        if !staged_lane_enabled(crate::compiler::CompilerFamily::Gcc) {
+        if !super::staged_archive_lane_enabled() {
             return StagedPlanOutcome::Unsupported(StagedPlanReason::LaneDisabled);
         }
         let root: NormalizedPath = staging_dir

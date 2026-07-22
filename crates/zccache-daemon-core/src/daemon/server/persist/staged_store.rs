@@ -177,6 +177,20 @@ pub(in crate::daemon::server) fn staged_link_lane_enabled() -> bool {
     staged_link_lane_enabled_for(std::env::var(STAGED_ARTIFACTS_ENV).ok().as_deref())
 }
 
+pub(in crate::daemon::server) fn staged_archive_lane_enabled() -> bool {
+    staged_archive_lane_enabled_for(std::env::var(STAGED_ARTIFACTS_ENV).ok().as_deref())
+}
+
+fn staged_archive_lane_enabled_for(value: Option<&str>) -> bool {
+    let Some(value) = value else {
+        return true;
+    };
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "all" | "1" | "true" | "yes" | "on" | "c" | "cc" | "c-cpp" | "cpp"
+    )
+}
+
 fn staged_link_lane_enabled_for(value: Option<&str>) -> bool {
     value.is_some_and(|value| {
         matches!(
