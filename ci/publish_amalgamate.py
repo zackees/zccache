@@ -22,6 +22,7 @@ class AmalgamatedModule:
 INTERNAL_MODULES: tuple[AmalgamatedModule, ...] = (
     AmalgamatedModule("zccache-artifact", "artifact", "pub mod artifact;"),
     AmalgamatedModule("zccache-audit", "audit", "pub mod audit;"),
+    AmalgamatedModule("zccache-cli-core", "cli_core", "pub mod cli_core;"),
     AmalgamatedModule(
         "zccache-compile-trace",
         "compile_trace",
@@ -29,6 +30,7 @@ INTERNAL_MODULES: tuple[AmalgamatedModule, ...] = (
     ),
     AmalgamatedModule("zccache-compiler", "compiler", "pub mod compiler;"),
     AmalgamatedModule("zccache-core", "core", "pub mod core;"),
+    AmalgamatedModule("zccache-daemon-core", "daemon_core", "mod daemon_core;"),
     AmalgamatedModule("zccache-depgraph", "depgraph", "pub mod depgraph;"),
     AmalgamatedModule(
         "zccache-download",
@@ -69,13 +71,35 @@ INTERNAL_MODULES: tuple[AmalgamatedModule, ...] = (
 )
 
 INTERNAL_FEATURE_REMOVALS: dict[str, set[str]] = {
-    "cli": {"zccache-artifact/cli"},
+    "test-support": {"zccache-daemon-core/test-support"},
+    "daemon-entry": {"zccache-daemon-core/daemon-entry"},
+    "cli": {
+        "zccache-artifact/cli",
+        "dep:zccache-cli-core",
+        "zccache-cli-core/cli",
+    },
     "download": {"dep:zccache-download"},
+    "download-client": {
+        "dep:zccache-cli-core",
+        "zccache-cli-core/download-client",
+    },
+    "download-daemon": {
+        "dep:zccache-cli-core",
+        "zccache-cli-core/download-daemon",
+    },
     "download-protocol": {"dep:zccache-download-protocol"},
     "gha": {"dep:zccache-gha", "zccache-artifact/gha"},
     "symbols": {"dep:zccache-symbols"},
+    "tokio-console": {"zccache-daemon-core/tokio-console"},
 }
 INTERNAL_FEATURE_ADDITIONS: dict[str, tuple[str, ...]] = {
+    "download-client": (
+        "dep:lzma-rs",
+        "dep:ruzstd",
+        "dep:sevenz-rust",
+        "dep:sha2",
+        "dep:zip",
+    ),
     "gha": ("dep:reqwest", "dep:sha2"),
 }
 
@@ -143,20 +167,20 @@ def write_publish_lib_rs(
 
 {internal_declarations}
 /// Issue zccache#926 - durable audit JSONL writer for the embedded service.
-pub mod audit_writer;
+pub use daemon_core::audit_writer;
 #[cfg(feature = "ci")]
 pub mod ci;
 #[cfg(feature = "cli")]
-pub mod cli;
-pub mod daemon;
+pub use cli_core::cli;
+pub use daemon_core::daemon;
 #[cfg(feature = "download-client")]
-pub mod download_client;
+pub use cli_core::download_client;
 #[cfg(feature = "download-daemon")]
-pub mod download_daemon;
-pub mod embedded;
+pub use cli_core::download_daemon;
+pub use daemon_core::embedded;
 
 #[cfg(feature = "test-support")]
-pub mod test_support;
+pub use daemon_core::test_support;
 """
     (zccache_src / "lib.rs").write_text(text, encoding="utf-8")
 

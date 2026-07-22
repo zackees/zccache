@@ -144,13 +144,16 @@ fs2 = { workspace = true }
 # exec (issue #272): regex compiles `--key-args-filter` patterns
 regex = { workspace = true }
 
-# download stack. The archive/decompress deps (zip, ruzstd, lzma-rs,
-# sevenz-rust, sha2) moved to zccache-cli-core with the download_client module
-# (#1022 Split A); only the crate re-exports + bins remain here.
+# download stack. These remain declared here because the crates.io release
+# amalgamates zccache-cli-core into this public crate.
 futures = { workspace = true, optional = true }
 tokio-util = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
+zip = { workspace = true, optional = true }
+ruzstd = { workspace = true, optional = true }
+lzma-rs = { workspace = true, optional = true }
+sevenz-rust = { workspace = true, optional = true }
 
 # daemon
 running-process = { workspace = true }
@@ -162,6 +165,7 @@ running-process = { workspace = true }
 # it explicit in [dependencies] does not add a new resolved crate.
 interprocess = "2.4.2"
 filetime = { workspace = true }
+reflink-copy = { workspace = true }
 sysinfo = "0.30.13"
 sadness-generator = { version = "0.6", optional = true }
 
@@ -190,6 +194,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_JobObjects",
+    "Win32_System_Ioctl",
     "Win32_System_Threading",
 ] }
 
