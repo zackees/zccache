@@ -382,7 +382,7 @@ fn mac_image(name: &'static str, filesystem: &str) -> FixtureResult {
     }
     Ok(FsFixture {
         name,
-        root: mount.clone(),
+        root: mount.clone().into(),
         backing: Backing::MacImage { temp, mount },
     })
 }
