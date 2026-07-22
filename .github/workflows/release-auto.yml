@@ -149,7 +149,12 @@ jobs:
           else
             TAG="${RAW_TAG#refs/tags/}"
             if [ -z "$TAG" ]; then
-              if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+              if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+                # A manual recovery run must build the selected revision, not
+                # an existing release tag that may predate its workflow fix.
+                TAG="$VERSION"
+                CHECKOUT_REF="$GITHUB_SHA"
+              elif git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
                 TAG="$VERSION"
                 CHECKOUT_REF="$VERSION"
               elif git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
