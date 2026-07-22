@@ -53,7 +53,7 @@ jobs:
 
   build-perf-benchmark:
     name: Build perf benchmark binary
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -96,7 +96,7 @@ jobs:
 
   perf-guard:
     name: ${{ matrix.label }} speed floor
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     needs: build-perf-benchmark
     runs-on: ubuntu-24.04
     timeout-minutes: 90

@@ -844,8 +844,11 @@ def test_perf_workflow_has_dedicated_cow_materialization_gate():
     )[0]
     speed_floor_job = workflow.split("\n  perf-guard:\n", 1)[1]
     assert not any(line.startswith("    if:") for line in job.splitlines())
-    assert "    if: github.ref == 'refs/heads/main'" in build_job
-    assert "    if: github.ref == 'refs/heads/main'" in speed_floor_job
+    manual_dispatch_condition = (
+        "    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'"
+    )
+    assert manual_dispatch_condition in build_job
+    assert manual_dispatch_condition in speed_floor_job
     assert "name: COW materialization hit budget" in job
     assert (
         "soldr cargo test -p zccache-daemon-core "
