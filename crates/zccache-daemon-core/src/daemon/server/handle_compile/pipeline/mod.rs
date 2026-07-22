@@ -725,6 +725,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         cwd_path: &cwd_path,
         source_path: &source_path,
         output_path: &output_path,
+        include_search: &ctx.include_search,
         compilation: &compilation,
         dep_flags: &dep_flags,
         rustc_args_opt: rustc_args_opt.as_deref(),
@@ -742,6 +743,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         stderr,
         depfile_strategy,
         show_includes_scan,
+        mmd_static_scan_task,
         pre_hash_task,
         compiler_priority_decision,
         pre_exec_ns,
@@ -820,6 +822,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             exit_code,
             depfile_strategy,
             show_includes_scan,
+            mmd_static_scan_task,
             pre_hash_task,
             // Issue #401: hand the cc/cpp miss path the hashes already
             // computed in `hash_and_verify` so `store_outcome.rs` skips

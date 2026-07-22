@@ -14,6 +14,7 @@ pub(super) struct CompileExecRequest<'a> {
     pub(super) cwd_path: &'a NormalizedPath,
     pub(super) source_path: &'a NormalizedPath,
     pub(super) output_path: &'a NormalizedPath,
+    pub(super) include_search: &'a crate::depgraph::IncludeSearchPaths,
     pub(super) compilation: &'a crate::compiler::CacheableCompilation,
     pub(super) dep_flags: &'a UserDepFlags,
     pub(super) rustc_args_opt: Option<&'a crate::depgraph::RustcParsedArgs>,
@@ -31,6 +32,9 @@ pub(super) struct CompileExecOutcome {
     pub(super) stderr: Arc<Vec<u8>>,
     pub(super) depfile_strategy: DepfileStrategy,
     pub(super) show_includes_scan: Option<crate::depgraph::ScanResult>,
+    /// MMD omits system headers, so scan them while the compiler is running
+    /// rather than extending the visible miss tail after it exits.
+    pub(super) mmd_static_scan_task: Option<tokio::task::JoinHandle<crate::depgraph::ScanResult>>,
     pub(super) pre_hash_task: Option<tokio::task::JoinHandle<HashMap<NormalizedPath, ContentHash>>>,
     pub(super) compiler_priority_decision: crate::daemon::process::CompilePriorityDecision,
     pub(super) pre_exec_ns: u64,
@@ -60,6 +64,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         cwd_path,
         source_path,
         output_path,
+        include_search,
         compilation,
         dep_flags,
         rustc_args_opt,
@@ -248,6 +253,20 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
             None
         };
 
+    // `-MMD` is compact because it leaves out system headers. Preserve the
+    // complete invalidation graph by scanning those headers daemon-side, but
+    // overlap that I/O and parsing with the compiler child. The result is
+    // joined in the store phase and discarded on a failed compile.
+    let mmd_static_scan_task = if matches!(depfile_strategy, DepfileStrategy::InjectedMmd { .. }) {
+        let scan_source = source_path.clone();
+        let scan_search = include_search.clone();
+        Some(tokio::task::spawn_blocking(move || {
+            crate::depgraph::scanner::scan_recursive(&scan_source, &scan_search)
+        }))
+    } else {
+        None
+    };
+
     // Issue #813 / #816: acquire a compile-concurrency permit before
     // spawning the compiler. The semaphore (when present — None means
     // ZCCACHE_MAX_PARALLEL_COMPILES=0 opt-out) gates total in-flight
@@ -385,6 +404,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         stderr,
         depfile_strategy,
         show_includes_scan,
+        mmd_static_scan_task,
         pre_hash_task,
         compiler_priority_decision,
         pre_exec_ns,
@@ -397,16 +417,16 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     })
 }
 
-/// MMD omits system headers, so use it only for compiler invocations whose
-/// system include search roots are exactly the daemon's compiler-default
-/// discovery. Any caller-controlled include-root selection falls back to MD.
+/// MMD omits system headers, so use it only when the daemon can still discover
+/// the system search roots itself. Ordinary `-I` and `-iquote` roots are safe:
+/// MMD records every header found through them, and the daemon-side scanner
+/// resolves them in compiler search order. Caller-controlled *system* roots
+/// still fall back to MD because MMD would omit their headers.
 fn mmd_static_scan_is_proven(args: &[String]) -> bool {
     !args.iter().any(|arg| {
         matches!(
             arg.as_str(),
-            "-I" | "-isystem"
-                | "-iquote"
-                | "-idirafter"
+            "-isystem" | "-idirafter"
                 | "-include"
                 | "-include-pch"
                 | "-nostdinc"
@@ -418,9 +438,7 @@ fn mmd_static_scan_is_proven(args: &[String]) -> bool {
                 | "-resource-dir"
                 | "-stdlib"
         ) || [
-            "-I",
             "-isystem",
-            "-iquote",
             "-idirafter",
             "-isysroot",
             "--sysroot=",
@@ -439,8 +457,15 @@ mod tests {
     use super::mmd_static_scan_is_proven;
 
     #[test]
-    fn mmd_static_scan_requires_compiler_default_include_roots() {
+    fn mmd_static_scan_allows_user_include_roots_but_rejects_system_roots() {
         assert!(mmd_static_scan_is_proven(&["-c".into(), "main.c".into()]));
+        assert!(mmd_static_scan_is_proven(&[
+            "-I".into(),
+            "project/include".into(),
+            "-iquotegenerated".into(),
+            "-c".into(),
+            "main.c".into(),
+        ]));
         assert!(!mmd_static_scan_is_proven(&[
             "-isystem".into(),
             "/sdk".into()

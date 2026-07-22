@@ -461,6 +461,81 @@ async fn mutation_system_header_forces_miss() {
     h.shutdown().await;
 }
 
+/// MMD must retain exact dependencies from ordinary `-I` roots. This exercises
+/// the compact depfile route used by the C performance fixture, rather than
+/// the conservative full-MD fallback reserved for `-isystem` roots above.
+#[tokio::test]
+#[ignore] // integration: spawns clang, run with --full
+async fn mutation_user_include_header_forces_miss() {
+    let mut h = match TestHarness::new().await {
+        Some(h) => h,
+        None => return,
+    };
+    let include_dir = h.path("project-include");
+    std::fs::create_dir_all(&include_dir).unwrap();
+    let header = include_dir.join("user_value.h");
+    std::fs::write(&header, "#define USER_VALUE 7\n").unwrap();
+    h.write_file(
+        "user_include_header.c",
+        "#include <user_value.h>\nint user_value(void) { return USER_VALUE; }\n",
+    );
+    let include_arg = format!("-I{}", include_dir.display());
+    let compiler = h.compiler_str();
+    let cwd = h.cwd();
+    let object = h.path("user_include_header.o");
+    let args = [
+        "-c",
+        "user_include_header.c",
+        "-o",
+        "user_include_header.o",
+        include_arg.as_str(),
+    ];
+
+    let (exit_code, cached, first_object) = compile_and_read(
+        &mut h.client,
+        &h.session_id,
+        &args,
+        &cwd,
+        &object,
+        &compiler,
+    )
+    .await;
+    assert_eq!(exit_code, 0);
+    assert!(!cached, "first compile must be a miss");
+
+    std::fs::remove_file(&object).unwrap();
+    let (exit_code, cached, warm_object) = compile_and_read(
+        &mut h.client,
+        &h.session_id,
+        &args,
+        &cwd,
+        &object,
+        &compiler,
+    )
+    .await;
+    assert_eq!(exit_code, 0);
+    assert!(cached, "unchanged -I header must allow a hit");
+    assert_eq!(first_object, warm_object);
+
+    std::fs::write(&header, "#define USER_VALUE 11\n").unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    std::fs::remove_file(&object).unwrap();
+    let (exit_code, cached, changed_object) = compile_and_read(
+        &mut h.client,
+        &h.session_id,
+        &args,
+        &cwd,
+        &object,
+        &compiler,
+    )
+    .await;
+    assert_eq!(exit_code, 0);
+    assert!(!cached, "changed -I header must invalidate the artifact");
+    assert_ne!(first_object, changed_object);
+
+    h.shutdown().await;
+}
+
 /// Add -D flag → different cache entry. Remove -D → original entry.
 #[tokio::test]
 #[ignore] // integration: spawns clang, run with --full

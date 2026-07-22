@@ -38,6 +38,7 @@ pub(super) struct StoreOutcomeRequest<'a> {
     pub(super) exit_code: i32,
     pub(super) depfile_strategy: DepfileStrategy,
     pub(super) show_includes_scan: Option<crate::depgraph::ScanResult>,
+    pub(super) mmd_static_scan_task: Option<tokio::task::JoinHandle<crate::depgraph::ScanResult>>,
     pub(super) pre_hash_task: Option<tokio::task::JoinHandle<HashMap<NormalizedPath, ContentHash>>>,
     /// Issue #401: pre-compile hashes already produced by `hash_and_verify`
     /// on the cc/cpp miss path. `None` means the pre-compile hash phase did
@@ -127,6 +128,7 @@ struct CompileScanRequest {
     cwd_path: NormalizedPath,
     depfile_strategy: DepfileStrategy,
     show_includes_scan: Option<crate::depgraph::ScanResult>,
+    mmd_static_scan: Option<crate::depgraph::ScanResult>,
     include_search: crate::depgraph::IncludeSearchPaths,
 }
 
@@ -161,6 +163,7 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
         cwd_path,
         depfile_strategy,
         show_includes_scan,
+        mmd_static_scan,
         include_search,
     } = req;
 
@@ -228,13 +231,20 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
                     let _ = std::fs::remove_file(path);
                     crate::depgraph::depfile::merge_scan_results(
                         result,
-                        crate::depgraph::scanner::scan_recursive(&source_path, &include_search),
+                        mmd_static_scan.unwrap_or_else(|| {
+                            crate::depgraph::scanner::scan_recursive(
+                                &source_path,
+                                &include_search,
+                            )
+                        }),
                     )
                 }
                 Err(e) => {
                     depfile_parse_warning = Some(format!("path={} error={e}", path.display()));
                     let _ = std::fs::remove_file(path);
-                    crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
+                    mmd_static_scan.unwrap_or_else(|| {
+                        crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
+                    })
                 }
             }
         }
@@ -284,6 +294,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         exit_code,
         depfile_strategy,
         show_includes_scan,
+        mmd_static_scan_task,
         pre_hash_task,
         pre_hashed,
         compiler_priority_decision,
@@ -375,6 +386,10 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
     // *current* build's `-MF` target, even after `git clean` or
     // worktree-rename — closing the stale-incremental-build bug.
     let t_scan = std::time::Instant::now();
+    let mmd_static_scan = match mmd_static_scan_task {
+        Some(task) => task.await.ok(),
+        None => None,
+    };
     let scan_rustc_args = rustc_args_owned.clone().map(|mut args| {
         if let Some(paths) = staged_plan.as_ref().map(StagedCompilePlan::output_paths) {
             if let Some(parent) = paths.first().and_then(|path| path.as_path().parent()) {
@@ -395,6 +410,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         cwd_path: cwd_path.clone(),
         depfile_strategy,
         show_includes_scan,
+        mmd_static_scan,
         include_search: ctx.include_search.clone(),
     })
     .await;
