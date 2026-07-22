@@ -1,6 +1,8 @@
 //! Disposable real-filesystem fixtures with loud skip accounting (#1039).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(windows, target_os = "macos"))]
+use std::path::PathBuf;
 use std::process::{Command, Output};
 use zccache_core::NormalizedPath;
 
@@ -331,7 +333,7 @@ fn linux_loop(name: &'static str, filesystem: &str, mkfs: &str) -> FixtureResult
     }
     Ok(FsFixture {
         name,
-        root: mount,
+        root: mount.into(),
         backing: Backing::LinuxLoop { temp, device },
     })
 }
