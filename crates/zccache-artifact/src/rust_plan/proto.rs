@@ -453,7 +453,10 @@ pub(super) fn manifest_to_proto(
                 size: artifact.size,
                 content_hash: artifact.content_hash.clone(),
                 mtime_unix_nanos: artifact.mtime_unix_nanos,
-                owner: artifact.owner.map(artifact_owner_to_proto).unwrap_or_default(),
+                owner: artifact
+                    .owner
+                    .map(artifact_owner_to_proto)
+                    .unwrap_or_default(),
             })
             .collect(),
         layer_kind: layer_kind_to_proto(manifest.layer_kind),

@@ -9,9 +9,8 @@ use zccache_core::NormalizedPath;
 use super::local::rust_plan_identity_hash;
 use super::proto::{manifest_from_proto, manifest_to_proto, rust_plan_proto};
 use super::schema::{
-    RustArtifactClass, RustArtifactPlanV1, RustPlanArtifactOwnerKind, RustPlanError,
-    RustPlanMode, RustPlanOwnershipMode,
-    RUST_ARTIFACT_CACHE_SCHEMA_VERSION,
+    RustArtifactClass, RustArtifactPlanV1, RustPlanArtifactOwnerKind, RustPlanError, RustPlanMode,
+    RustPlanOwnershipMode, RUST_ARTIFACT_CACHE_SCHEMA_VERSION,
 };
 use super::summary::RustPlanSummary;
 
@@ -143,9 +142,11 @@ pub(super) fn validate_manifest(
     match plan.packages.ownership_mode {
         None => {}
         Some(RustPlanOwnershipMode::CookPartitionedV1) => {
-            if manifest.artifacts.iter().any(|artifact| {
-                artifact.owner != Some(RustPlanArtifactOwnerKind::Zccache)
-            }) {
+            if manifest
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.owner != Some(RustPlanArtifactOwnerKind::Zccache))
+            {
                 summary
                     .key_input_mismatches
                     .push("partitioned bundle contains a non-zccache owner".to_string());
@@ -153,9 +154,11 @@ pub(super) fn validate_manifest(
             }
         }
         Some(RustPlanOwnershipMode::ZccacheAllV1) => {
-            if manifest.artifacts.iter().any(|artifact| {
-                artifact.owner != Some(RustPlanArtifactOwnerKind::Zccache)
-            }) {
+            if manifest
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.owner != Some(RustPlanArtifactOwnerKind::Zccache))
+            {
                 summary
                     .key_input_mismatches
                     .push("zccache-all bundle contains a non-zccache owner".to_string());
