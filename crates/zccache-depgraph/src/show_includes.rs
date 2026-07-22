@@ -12,7 +12,7 @@
 //! locale, producing a [`ScanResult`] with `has_computed = false`.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use zccache_core::NormalizedPath;
 
@@ -35,7 +35,7 @@ const MAX_PARTIAL_LINE_BYTES: usize = 64 * 1024;
 /// endings, while include paths are accumulated for [`ScanResult`].
 pub struct ShowIncludesParser {
     source_canonical: NormalizedPath,
-    cwd: PathBuf,
+    cwd: NormalizedPath,
     prefix: Option<String>,
     seen: HashSet<NormalizedPath>,
     resolved: Vec<NormalizedPath>,
@@ -47,7 +47,7 @@ impl ShowIncludesParser {
     pub fn new(source: &Path, cwd: &Path) -> Self {
         Self {
             source_canonical: canonicalize_path(source, cwd),
-            cwd: cwd.to_path_buf(),
+            cwd: NormalizedPath::new(cwd),
             prefix: None,
             seen: HashSet::new(),
             resolved: Vec::new(),
@@ -130,9 +130,10 @@ impl ShowIncludesParser {
         }
         let dep_path = Path::new(path_str);
         let abs_path = if dep_path.is_absolute() {
-            canonicalize_path(dep_path, &self.cwd)
+            canonicalize_path(dep_path, self.cwd.as_path())
         } else {
-            canonicalize_path(&self.cwd.join(dep_path), &self.cwd)
+            let path = self.cwd.join(dep_path);
+            canonicalize_path(path.as_path(), self.cwd.as_path())
         };
         if abs_path != self.source_canonical && self.seen.insert(abs_path.clone()) {
             self.resolved.push(abs_path);
