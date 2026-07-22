@@ -64,18 +64,12 @@ pub(crate) fn current() -> Option<OutputContext> {
 pub(crate) enum StderrFilter<'a> {
     None,
     ShowIncludes { source: &'a Path, cwd: &'a Path },
-    HeaderTrace { source: &'a Path, cwd: &'a Path },
 }
 
 pub(crate) struct CapturedOutput {
     pub(crate) stdout: Vec<u8>,
     pub(crate) stderr: Vec<u8>,
     pub(crate) show_includes_scan: Option<crate::depgraph::ScanResult>,
-}
-
-enum IncludeOutputParser {
-    ShowIncludes(crate::depgraph::show_includes::ShowIncludesParser),
-    HeaderTrace(crate::depgraph::header_trace::HeaderTraceParser),
 }
 
 pub(crate) async fn consume(
@@ -86,14 +80,11 @@ pub(crate) async fn consume(
     context.mark_live();
     let mut stdout = BoundedCapture::new(context.capture_limit, "stdout");
     let mut stderr = BoundedCapture::new(context.capture_limit, "stderr");
-    let mut include_parser = match stderr_filter {
+    let mut show_includes = match stderr_filter {
         StderrFilter::None => None,
-        StderrFilter::ShowIncludes { source, cwd } => Some(IncludeOutputParser::ShowIncludes(
+        StderrFilter::ShowIncludes { source, cwd } => Some(
             crate::depgraph::show_includes::ShowIncludesParser::new(source, cwd),
-        )),
-        StderrFilter::HeaderTrace { source, cwd } => Some(IncludeOutputParser::HeaderTrace(
-            crate::depgraph::header_trace::HeaderTraceParser::new(source, cwd),
-        )),
+        ),
     };
 
     while let Some(chunk) = receiver.recv().await {
@@ -105,11 +96,8 @@ pub(crate) async fn consume(
             }
             RawOutputChunk::Stderr(bytes) => {
                 let mut filtered = Vec::new();
-                if let Some(parser) = include_parser.as_mut() {
-                    match parser {
-                        IncludeOutputParser::ShowIncludes(parser) => parser.push(&bytes, &mut filtered),
-                        IncludeOutputParser::HeaderTrace(parser) => parser.push(&bytes, &mut filtered),
-                    }
+                if let Some(parser) = show_includes.as_mut() {
+                    parser.push(&bytes, &mut filtered);
                 } else {
                     filtered = bytes;
                 }
@@ -120,12 +108,9 @@ pub(crate) async fn consume(
         }
     }
 
-    let show_includes_scan = if let Some(parser) = include_parser {
+    let show_includes_scan = if let Some(parser) = show_includes {
         let mut filtered = Vec::new();
-        let scan = match parser {
-            IncludeOutputParser::ShowIncludes(parser) => parser.finish(&mut filtered),
-            IncludeOutputParser::HeaderTrace(parser) => parser.finish(&mut filtered),
-        };
+        let scan = parser.finish(&mut filtered);
         if let Some(bytes) = stderr.push(&filtered) {
             send(&context.sender, OutputChunk::Stderr(bytes)).await?;
         }

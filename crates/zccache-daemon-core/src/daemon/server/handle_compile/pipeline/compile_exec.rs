@@ -93,11 +93,9 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         output_path,
         &state.depfile_tmpdir,
     );
-    // Clang's documented `-H` include trace supplies the compiler-resolved
-    // graph. In combination with the private `-MMD -MF` depfile, Clang emits
-    // a complete dependency file, avoiding a competing daemon-side recursive
-    // scan. GCC keeps the conservative static-scan path because its MMD
-    // depfile remains user-header-only under `-H`.
+    // Clang can write its exact compiler-resolved headers to a private file.
+    // This avoids both the full `-MD` depfile and `-H`'s stderr traffic. GCC
+    // keeps the conservative static-scan path because it lacks this file sink.
     if compilation.family == crate::compiler::CompilerFamily::Clang
         && matches!(depfile_strategy, DepfileStrategy::InjectedMmd { .. })
     {
@@ -105,7 +103,15 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
             DepfileStrategy::InjectedMmd { ref path } => path.clone(),
             _ => unreachable!("MMD strategy matched above"),
         };
-        extra_args.push("-H".to_string());
+        let trace_path = header_trace_path(&path);
+        extra_args.extend([
+            "-Xclang".to_string(),
+            "-header-include-file".to_string(),
+            "-Xclang".to_string(),
+            trace_path.to_string_lossy().into_owned(),
+            "-Xclang".to_string(),
+            "-sys-header-deps".to_string(),
+        ]);
         depfile_strategy = DepfileStrategy::InjectedMmdHeaderTrace { path };
     }
 
@@ -317,11 +323,6 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
                 source: source_path.as_path(),
                 cwd: cwd_path.as_path(),
             }
-        } else if matches!(depfile_strategy, DepfileStrategy::InjectedMmdHeaderTrace { .. }) {
-            crate::daemon::compile_output::StderrFilter::HeaderTrace {
-                source: source_path.as_path(),
-                cwd: cwd_path.as_path(),
-            }
         } else {
             crate::daemon::compile_output::StderrFilter::None
         };
@@ -404,13 +405,15 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
             cwd_path,
         );
         (output.stdout, Some(scan), filtered)
-    } else if matches!(depfile_strategy, DepfileStrategy::InjectedMmdHeaderTrace { .. }) {
-        let (scan, filtered) = crate::depgraph::header_trace::parse_header_trace(
-            &output.stderr,
+    } else if let DepfileStrategy::InjectedMmdHeaderTrace { path } = &depfile_strategy {
+        let trace_path = header_trace_path(path);
+        let scan = crate::depgraph::header_trace::parse_header_trace(
+            &trace_path,
             source_path,
             cwd_path,
         );
-        (output.stdout, Some(scan), filtered)
+        let _ = std::fs::remove_file(trace_path);
+        (output.stdout, Some(scan), output.stderr)
     } else {
         (output.stdout, None, output.stderr)
     };
@@ -442,6 +445,12 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         post_exec_ns,
         staged_plan,
     })
+}
+
+/// Derive a collision-free private include-trace path from the already unique
+/// injected MMD depfile destination.
+fn header_trace_path(depfile: &NormalizedPath) -> NormalizedPath {
+    depfile.as_path().with_extension("headers").into()
 }
 
 /// MMD omits system headers, so use it only when the daemon can still discover
@@ -485,7 +494,7 @@ mod tests {
 
     #[cfg(feature = "test-support")]
     #[test]
-    fn clang_header_trace_makes_private_mmd_depfile_complete() {
+    fn clang_private_header_trace_captures_system_headers_without_stderr() {
         let Some(clang) = crate::test_support::find_clang() else {
             return;
         };
@@ -494,17 +503,32 @@ mod tests {
         let depfile = dir.path().join("main.d");
         let object = dir.path().join("main.o");
         std::fs::write(&source, "#include <cstdint>\nint main() { return 0; }\n").unwrap();
+        let trace = dir.path().join("main.headers");
         let output = std::process::Command::new(clang.as_path())
             .args([
-                "-c", "main.cpp", "-MMD", "-MF", "main.d", "-H", "-o", "main.o",
+                "-c",
+                "main.cpp",
+                "-MMD",
+                "-MF",
+                "main.d",
+                "-Xclang",
+                "-header-include-file",
+                "-Xclang",
+            ])
+            .arg(&trace)
+            .args([
+                "-Xclang",
+                "-sys-header-deps",
+                "-o",
+                "main.o",
             ])
             .current_dir(dir.path())
             .output()
             .unwrap();
         assert!(output.status.success(), "clang failed: {:?}", output.stderr);
 
-        let (trace, filtered) = crate::depgraph::header_trace::parse_header_trace(
-            &output.stderr,
+        let trace_scan = crate::depgraph::header_trace::parse_header_trace(
+            &trace,
             &source,
             dir.path(),
         );
@@ -518,18 +542,21 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!trace.resolved.is_empty(), "clang -H emitted no headers");
         assert!(
-            trace
-                .resolved
-                .iter()
-                .all(|path| depfile_scan.resolved.contains(path)),
-            "the private MMD depfile must contain every compiler-traced header"
+            !trace_scan.resolved.is_empty(),
+            "clang private trace emitted no headers"
         );
         assert!(
-            filtered.is_empty(),
-            "injected header trace escaped stderr: {}",
-            String::from_utf8_lossy(&filtered)
+            trace_scan
+                .resolved
+                .iter()
+                .all(|path| !depfile_scan.resolved.contains(path)),
+            "MMD must omit the system headers supplied by the private trace"
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "private header trace escaped compiler stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
         assert!(object.is_file());
     }
