@@ -2,6 +2,17 @@
 
 Meta: https://github.com/zackees/zccache/issues/968
 
+# #1136 PathBuf Dylint backlog
+
+Issue: https://github.com/zackees/zccache/issues/1136
+
+- [x] Classify and migrate persistent filesystem identities to `NormalizedPath`.
+- [x] Preserve bundle-relative paths without treating them as filesystem identities.
+- [x] Add regression coverage for normalized identity and relative bundle behavior.
+- [x] Run targeted daemon/test-support checks.
+- [ ] Validate the Linux Dylint CI job after merge.
+- [ ] Ship, merge, and validate the resolving PR; close #1136.
+
 ## Merged to main ✅
 - #967 (PR #969) client-disconnect cancellation
 - #962 (PR #970) orphan-pipe post-exit watchdog (Mode A)

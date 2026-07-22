@@ -223,8 +223,8 @@ pub(super) fn persist_depfile_sidecar(
     }
 }
 
-pub(super) fn depfile_sidecar_path(artifact_dir: &Path, primary_hex: &str) -> PathBuf {
-    artifact_dir.join(format!("{primary_hex}.deps"))
+pub(super) fn depfile_sidecar_path(artifact_dir: &Path, primary_hex: &str) -> NormalizedPath {
+    artifact_dir.join(format!("{primary_hex}.deps")).into()
 }
 
 /// Parse the depfile the tool emitted, hash each listed file. `inputs` is

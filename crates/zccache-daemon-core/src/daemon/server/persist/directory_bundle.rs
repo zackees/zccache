@@ -3,7 +3,7 @@
 use super::*;
 use bincode::Options;
 use serde::{Deserialize, Serialize};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -41,17 +41,18 @@ pub(in crate::daemon::server) struct StagedDirectoryPlan {
     requested: NormalizedPath,
     staged: NormalizedPath,
     archive: NormalizedPath,
-    root: PathBuf,
+    root: NormalizedPath,
 }
 
 impl StagedDirectoryPlan {
     #[cfg(test)]
     pub(in crate::daemon::server) fn for_test(
-        root: PathBuf,
+        root: impl Into<NormalizedPath>,
         requested: NormalizedPath,
         staged: NormalizedPath,
     ) -> Self {
-        let archive = root.join("directory.bundle").into();
+        let root = root.into();
+        let archive = root.join("directory.bundle");
         Self {
             rewritten_args: Vec::new(),
             requested,
@@ -94,8 +95,8 @@ impl StagedDirectoryPlan {
                 });
             }
         };
-        let staged: NormalizedPath = root.join(filename).into();
-        let archive: NormalizedPath = root.join("directory.bundle").into();
+        let staged: NormalizedPath = root.join(filename);
+        let archive: NormalizedPath = root.join("directory.bundle");
         let rewritten_args = rewrite_dsymutil_args(args, staged.as_path());
         StagedPlanOutcome::Enabled(Self {
             rewritten_args,
@@ -133,7 +134,7 @@ impl StagedDirectoryPlan {
     }
 }
 
-fn create_private_directory(parent: &Path) -> std::io::Result<PathBuf> {
+fn create_private_directory(parent: &Path) -> std::io::Result<NormalizedPath> {
     for _ in 0..1_024 {
         let path = parent.join(format!(
             ".zccache-directory-{}-{}",
@@ -141,7 +142,7 @@ fn create_private_directory(parent: &Path) -> std::io::Result<PathBuf> {
             DIRECTORY_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
         match std::fs::create_dir(&path) {
-            Ok(()) => return Ok(path),
+            Ok(()) => return Ok(path.into()),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
         }
@@ -345,7 +346,9 @@ fn modified_since_epoch(metadata: &std::fs::Metadata) -> Duration {
         .unwrap_or_default()
 }
 
-fn validated_relative_path(path: &str) -> std::io::Result<PathBuf> {
+/// A validated bundle member is deliberately relative, so it must not be
+/// normalized as a filesystem identity before it is joined to its target.
+fn validated_relative_path(path: &str) -> std::io::Result<Box<Path>> {
     let path = Path::new(path);
     if path.as_os_str().is_empty()
         || path
@@ -357,7 +360,7 @@ fn validated_relative_path(path: &str) -> std::io::Result<PathBuf> {
             "directory bundle contains an unsafe path",
         ));
     }
-    Ok(path.to_path_buf())
+    Ok(path.into())
 }
 
 fn install_directory(staged: &Path, requested: &Path) -> std::io::Result<()> {
@@ -530,6 +533,14 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         assert!(unpack_directory(&bytes, &temp.path().join("target")).is_err());
         assert!(!temp.path().join("escape").exists());
+    }
+
+    #[test]
+    fn validated_bundle_member_stays_relative() {
+        let member = validated_relative_path("Contents/Resources/DWARF/app").unwrap();
+
+        assert!(member.is_relative());
+        assert_eq!(member.as_ref(), Path::new("Contents/Resources/DWARF/app"));
     }
 
     #[test]

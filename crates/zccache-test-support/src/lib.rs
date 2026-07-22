@@ -2,11 +2,12 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use zccache_core::NormalizedPath;
 
 #[derive(Debug)]
 pub struct FsFixture {
     name: &'static str,
-    root: PathBuf,
+    root: NormalizedPath,
     backing: Backing,
 }
 
@@ -61,7 +62,7 @@ impl FsFixture {
             .map_err(|error| skip(name, format!("native tempdir failed: {error}")))?;
         Ok(Self {
             name,
-            root: temp.path().to_path_buf(),
+            root: temp.path().into(),
             backing: Backing::Temp(temp),
         })
     }
@@ -110,7 +111,7 @@ impl FsFixture {
                 .map_err(|error| skip("tmpfs", format!("tempdir failed: {error}")))?;
             return Ok(Self {
                 name: "tmpfs",
-                root: temp.path().to_path_buf(),
+                root: temp.path().into(),
                 backing: Backing::Temp(temp),
             });
         }
@@ -159,7 +160,7 @@ impl FsFixture {
             let root = PathBuf::from(format!(r"\\localhost\{share}"));
             Ok(Self {
                 name: "smb-loopback",
-                root,
+                root: root.into(),
                 backing: Backing::WindowsSmb { temp, share },
             })
         }
@@ -257,7 +258,7 @@ fn windows_vhd_sized(name: &'static str, filesystem: &str, maximum_mb: u32) -> F
     }
     Ok(FsFixture {
         name,
-        root: mount,
+        root: mount.into(),
         backing: Backing::WindowsVhd { temp, image },
     })
 }

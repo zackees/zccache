@@ -797,7 +797,7 @@ pub(super) async fn handle_link_ephemeral(
         if let Some(plan) = staged_plan.as_ref() {
             let unexpected_staged = plan.unexpected_staged_entries().unwrap_or_else(|error| {
                 tracing::warn!(%error, "failed to inspect staged linker output set");
-                vec![plan.primary_staged().as_path().to_path_buf()]
+                vec![plan.primary_staged().clone()]
             });
             if !side_effects_cacheable || !side_effects.is_empty() || !unexpected_staged.is_empty()
             {

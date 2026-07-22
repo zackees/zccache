@@ -4452,6 +4452,7 @@ name = "zccache-test-support"
 version = "1.12.15"
 dependencies = [
  "tempfile",
+ "zccache-core",
 ]
 
 [[package]]

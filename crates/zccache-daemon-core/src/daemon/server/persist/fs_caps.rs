@@ -70,7 +70,7 @@ pub(in crate::daemon::server) fn apply_reflink_switch(
 // differs across distinct mounts, including ones that reuse a device
 // id, because mount points are never reused verbatim.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct VolumePair(u128, u128, PathBuf);
+struct VolumePair(u128, u128, NormalizedPath);
 
 static CAPS: OnceLock<dashmap::DashMap<VolumePair, VolumeCaps>> = OnceLock::new();
 static CAPS_INSERT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -124,7 +124,7 @@ pub(in crate::daemon::server) fn fs_caps(src: &Path, dst: &Path) -> VolumeCaps {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if cache().len() >= CAPS_CACHE_LIMIT {
         // Coarse bound on unbounded growth (issue #1042): the cache key
-        // includes a destination-parent PathBuf so distinct build-output
+        // includes a normalized destination parent so distinct build-output
         // directories never collide, but a daemon servicing many thousands
         // of distinct directories over its lifetime would otherwise grow
         // this map without limit. A full clear is simpler than LRU
@@ -173,13 +173,26 @@ fn probe_caps(src: &Path, dst: &Path) -> VolumeCaps {
     }
 }
 
-fn existing_path(path: &Path) -> Option<PathBuf> {
+fn existing_path(path: &Path) -> Option<NormalizedPath> {
     let mut candidate = path;
     loop {
         if candidate.exists() {
-            return Some(candidate.to_path_buf());
+            return Some(candidate.into());
         }
         candidate = candidate.parent()?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn volume_pair_normalizes_equivalent_probe_paths() {
+        let canonical = VolumePair(1, 1, NormalizedPath::new("probe/out"));
+        let equivalent = VolumePair(1, 1, NormalizedPath::new("probe/./out"));
+
+        assert_eq!(canonical, equivalent);
     }
 }
 
