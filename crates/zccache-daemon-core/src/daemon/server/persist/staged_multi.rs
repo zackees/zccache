@@ -12,9 +12,6 @@ pub(in crate::daemon::server) fn classify_staged_multi_invocation(
     requested_outputs: &[NormalizedPath],
     cwd: &Path,
 ) -> StagedPlanOutcome<()> {
-    if !staged_lane_enabled(family) {
-        return StagedPlanOutcome::Unsupported(StagedPlanReason::LaneDisabled);
-    }
     if !matches!(
         family,
         crate::compiler::CompilerFamily::Gcc
@@ -198,6 +195,19 @@ pub(in crate::daemon::server) struct StagedMultiUnitPlan {
 
 impl StagedMultiUnitPlan {
     pub(in crate::daemon::server) fn build(
+        staging_dir: &Path,
+        family: crate::compiler::CompilerFamily,
+        args: Vec<String>,
+        requested_output: &NormalizedPath,
+        cwd: &Path,
+    ) -> StagedPlanOutcome<Self> {
+        if !staged_lane_enabled(family) {
+            return StagedPlanOutcome::Unsupported(StagedPlanReason::LaneDisabled);
+        }
+        Self::build_enabled(staging_dir, family, args, requested_output, cwd)
+    }
+
+    fn build_enabled(
         staging_dir: &Path,
         family: crate::compiler::CompilerFamily,
         args: Vec<String>,
@@ -601,7 +611,7 @@ mod tests {
     fn multi_unit_plan_keeps_one_source_and_redirects_private_outputs() {
         let temp = tempfile::tempdir().unwrap();
         let requested: NormalizedPath = temp.path().join("first.o").into();
-        let plan = match StagedMultiUnitPlan::build(
+        let plan = match StagedMultiUnitPlan::build_enabled(
             temp.path(),
             crate::compiler::CompilerFamily::Clang,
             vec!["-c".into(), "first.c".into(), "-Iinc".into()],
@@ -623,7 +633,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let requested: NormalizedPath = temp.path().join("first.o").into();
         assert!(matches!(
-            StagedMultiUnitPlan::build(
+            StagedMultiUnitPlan::build_enabled(
                 temp.path(),
                 crate::compiler::CompilerFamily::Clang,
                 vec!["-c".into(), "first.c".into(), "-MFshared.d".into()],
@@ -638,7 +648,7 @@ mod tests {
     fn multi_unit_plan_injects_output_flags_before_end_of_options() {
         let temp = tempfile::tempdir().unwrap();
         let requested: NormalizedPath = temp.path().join("dash.o").into();
-        let plan = match StagedMultiUnitPlan::build(
+        let plan = match StagedMultiUnitPlan::build_enabled(
             temp.path(),
             crate::compiler::CompilerFamily::Clang,
             vec!["-c".into(), "--".into(), "-dash.c".into()],
@@ -681,7 +691,7 @@ mod tests {
             let mut args = vec!["-c".to_string(), "first.c".to_string()];
             args.extend(output_args.into_iter().map(str::to_string));
             assert!(matches!(
-                StagedMultiUnitPlan::build(
+                StagedMultiUnitPlan::build_enabled(
                     temp.path(),
                     crate::compiler::CompilerFamily::Clang,
                     args,
@@ -718,7 +728,7 @@ mod tests {
             "interface.cppm",
         ] {
             assert!(matches!(
-                StagedMultiUnitPlan::build(
+                StagedMultiUnitPlan::build_enabled(
                     temp.path(),
                     crate::compiler::CompilerFamily::Clang,
                     vec!["-c".into(), "first.c".into(), side_output.into()],
@@ -734,7 +744,7 @@ mod tests {
     fn multi_unit_plan_models_default_user_depfile() {
         let temp = tempfile::tempdir().unwrap();
         let requested: NormalizedPath = temp.path().join("obj/first.o").into();
-        let plan = match StagedMultiUnitPlan::build(
+        let plan = match StagedMultiUnitPlan::build_enabled(
             temp.path(),
             crate::compiler::CompilerFamily::Clang,
             vec!["-c".into(), "first.c".into(), "-MMD".into()],
@@ -754,7 +764,7 @@ mod tests {
     fn multi_unit_plan_rewrites_msvc_fo_directory() {
         let temp = tempfile::tempdir().unwrap();
         let requested: NormalizedPath = temp.path().join("obj/first.obj").into();
-        let plan = match StagedMultiUnitPlan::build(
+        let plan = match StagedMultiUnitPlan::build_enabled(
             temp.path(),
             crate::compiler::CompilerFamily::Msvc,
             vec![
@@ -793,7 +803,7 @@ mod tests {
             "/sourceDependenciesdeps.json",
         ] {
             assert!(matches!(
-                StagedMultiUnitPlan::build(
+                StagedMultiUnitPlan::build_enabled(
                     temp.path(),
                     crate::compiler::CompilerFamily::Msvc,
                     vec!["/c".into(), "first.c".into(), side_output.into()],
@@ -809,7 +819,7 @@ mod tests {
     fn multi_unit_plan_rejects_empty_output_before_publication() {
         let temp = tempfile::tempdir().unwrap();
         let requested: NormalizedPath = temp.path().join("first.o").into();
-        let plan = match StagedMultiUnitPlan::build(
+        let plan = match StagedMultiUnitPlan::build_enabled(
             temp.path(),
             crate::compiler::CompilerFamily::Clang,
             vec!["-c".into(), "first.c".into()],
