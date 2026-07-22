@@ -10,6 +10,7 @@ use std::path::Path;
 
 mod classes_and_packages;
 mod delta;
+mod ownership;
 mod restore_errors;
 mod restore_mutation_isolation;
 mod save_restore;
@@ -44,6 +45,10 @@ pub(super) fn sample_plan(root: &Path, mode: RustPlanMode) -> RustArtifactPlanV1
             selected_package_ids: vec!["app 0.1.0".to_string()],
             workspace_package_ids: vec!["app 0.1.0".to_string()],
             excluded_path_package_ids: vec!["local_dep 0.1.0".to_string()],
+            ownership_policy: None,
+            ownership_mode: None,
+            artifact_owners: Vec::new(),
+            ownership_complete: false,
         },
         allowed_artifact_classes: vec![
             RustArtifactClass::Rlib,

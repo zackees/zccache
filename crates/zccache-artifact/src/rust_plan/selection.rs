@@ -7,7 +7,8 @@ use std::path::{Component, Path};
 use zccache_core::NormalizedPath;
 
 use super::schema::{
-    RustArtifactClass, RustArtifactPlanV1, RustPlanError, RustPlanMode, RustPlanPackages,
+    RustArtifactClass, RustArtifactPlanV1, RustPlanArtifactOwnerKind, RustPlanError, RustPlanMode,
+    RustPlanOwnershipMode, RustPlanPackages,
 };
 use super::summary::RustPlanSummary;
 
@@ -16,6 +17,7 @@ pub(super) struct SelectedArtifact {
     pub(super) source_path: NormalizedPath,
     pub(super) relative_path: String,
     pub(super) class: RustArtifactClass,
+    pub(super) owner: Option<RustPlanArtifactOwnerKind>,
 }
 
 pub(super) fn select_artifacts(
@@ -68,27 +70,94 @@ pub(super) fn select_artifacts(
                 summary.skip(rel, "artifact_class_disallowed_by_plan");
                 continue;
             }
-            if artifact_matches_excluded_package(rel_path, &excluded_names) {
-                summary.skip(rel, "workspace_or_path_dependency_excluded_by_plan");
+            if !durable_export_allows(plan, &rel, &excluded_names, summary) {
                 continue;
             }
+            let owner = durable_export_owner(plan, &rel);
             selected.push(SelectedArtifact {
                 source_path: path,
                 relative_path: rel,
                 class,
+                owner,
             });
             continue;
         }
 
+        let owner = durable_export_owner(plan, &rel);
         selected.push(SelectedArtifact {
             source_path: path,
             relative_path: rel,
             class: class.unwrap_or(RustArtifactClass::FullTarget),
+            owner,
         });
     }
 
     selected.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
     selected
+}
+
+fn durable_export_owner(
+    plan: &RustArtifactPlanV1,
+    relative_path: &str,
+) -> Option<RustPlanArtifactOwnerKind> {
+    match plan.packages.ownership_mode {
+        None => None,
+        Some(RustPlanOwnershipMode::ZccacheAllV1) => Some(RustPlanArtifactOwnerKind::Zccache),
+        Some(RustPlanOwnershipMode::CookPartitionedV1) => plan
+            .packages
+            .artifact_owners
+            .iter()
+            .find(|record| record.relative_path == relative_path)
+            .map(|record| record.owner),
+    }
+}
+
+/// Apply the ownership policy only to durable thin-v3 exports. Runtime cache
+/// lookup is intentionally outside this selector and may serve every compile.
+fn durable_export_allows(
+    plan: &RustArtifactPlanV1,
+    relative_path: &str,
+    excluded_names: &BTreeSet<String>,
+    summary: &mut RustPlanSummary,
+) -> bool {
+    match plan.packages.ownership_mode {
+        None => {
+            if artifact_matches_excluded_package(Path::new(relative_path), excluded_names) {
+                summary.skip(
+                    relative_path,
+                    "workspace_or_path_dependency_excluded_by_plan",
+                );
+                false
+            } else {
+                true
+            }
+        }
+        Some(RustPlanOwnershipMode::ZccacheAllV1) => true,
+        Some(RustPlanOwnershipMode::CookPartitionedV1) => match plan
+            .packages
+            .artifact_owners
+            .iter()
+            .find(|record| record.relative_path == relative_path)
+            .map(|record| record.owner)
+        {
+            Some(RustPlanArtifactOwnerKind::Zccache) => true,
+            Some(RustPlanArtifactOwnerKind::Cook) => {
+                summary.skip(
+                    relative_path,
+                    "cook_owned_artifact_excluded_from_durable_export",
+                );
+                false
+            }
+            Some(_) => {
+                summary.skip(relative_path, "artifact_owner_not_durable_in_zccache");
+                false
+            }
+            None => {
+                summary.skip(relative_path, "ownership_unknown");
+                false
+            }
+        },
+    }
 }
 
 pub(super) fn classify_artifact(

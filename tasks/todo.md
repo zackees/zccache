@@ -1,3 +1,13 @@
+# #1063 thin-v3 ownership-aware durable export
+
+Parent: zackees/soldr#1609 · Policy: `thin-v3-lifetime-partition-v1`
+
+- [ ] Add cache-schema v3 ownership policy/mode and per-artifact owner metadata.
+- [ ] Make identity/cache keys and bundle compatibility reject cross-mode payloads.
+- [ ] Filter cook-owned outputs from `cook-partitioned-v1` durable exports; fail closed on unknown ownership.
+- [ ] Expose verified owner-qualified materialization and machine-readable diagnostics/metrics.
+- [ ] Add adversarial save/restore coverage, then validate the public CLI and embedded soldr consumer.
+
 # #968 wedge/timeout burn-down — near complete
 
 Meta: https://github.com/zackees/zccache/issues/968

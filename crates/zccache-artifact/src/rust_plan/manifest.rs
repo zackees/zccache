@@ -9,7 +9,8 @@ use zccache_core::NormalizedPath;
 use super::local::rust_plan_identity_hash;
 use super::proto::{manifest_from_proto, manifest_to_proto, rust_plan_proto};
 use super::schema::{
-    RustArtifactClass, RustArtifactPlanV1, RustPlanError, RustPlanMode,
+    RustArtifactClass, RustArtifactPlanV1, RustPlanArtifactOwnerKind, RustPlanError,
+    RustPlanMode, RustPlanOwnershipMode,
     RUST_ARTIFACT_CACHE_SCHEMA_VERSION,
 };
 use super::summary::RustPlanSummary;
@@ -27,6 +28,9 @@ pub struct RustBundledArtifact {
     pub content_hash: String,
     #[serde(default)]
     pub mtime_unix_nanos: u64,
+    /// Durable owner recorded with the content identifier for thin-v3.
+    #[serde(default)]
+    pub owner: Option<RustPlanArtifactOwnerKind>,
 }
 
 /// Layer kind for a Rust artifact bundle manifest.
@@ -135,6 +139,29 @@ pub(super) fn validate_manifest(
             .key_input_mismatches
             .push("delta base cache key does not match requested plan".to_string());
         compatible = false;
+    }
+    match plan.packages.ownership_mode {
+        None => {}
+        Some(RustPlanOwnershipMode::CookPartitionedV1) => {
+            if manifest.artifacts.iter().any(|artifact| {
+                artifact.owner != Some(RustPlanArtifactOwnerKind::Zccache)
+            }) {
+                summary
+                    .key_input_mismatches
+                    .push("partitioned bundle contains a non-zccache owner".to_string());
+                compatible = false;
+            }
+        }
+        Some(RustPlanOwnershipMode::ZccacheAllV1) => {
+            if manifest.artifacts.iter().any(|artifact| {
+                artifact.owner != Some(RustPlanArtifactOwnerKind::Zccache)
+            }) {
+                summary
+                    .key_input_mismatches
+                    .push("zccache-all bundle contains a non-zccache owner".to_string());
+                compatible = false;
+            }
+        }
     }
     if compatible {
         Ok(true)

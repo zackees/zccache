@@ -165,6 +165,22 @@ failures also emit durable lifecycle records.
 
 ## Directory Layout
 
+## Thin-v3 durable ownership
+
+`save_rust_plan_local` and `restore_rust_plan_local` are the public durable
+export/materialization API for Rust-plan bundles. Callers supply a plan and
+cache root; they never derive bundle storage paths. A cache-schema-v3 plan may
+select `thin-v3-lifetime-partition-v1` with either `cook-partitioned-v1` or
+`zccache-all-v1`. In the partitioned mode, only artifacts explicitly owned by
+zccache are exported; cook-owned or unknown artifacts are excluded. The
+fallback mode exports all compiler outputs as zccache-owned.
+
+Each manifest entry carries its verified content hash, original mtime, and
+durable owner. Restore verifies those fields and rejects a bundle whose owner
+metadata does not match the requested mode before materializing any output.
+Save/restore summaries expose exported bytes and the stable skip reasons
+`cook_owned_artifact_excluded_from_durable_export` and `ownership_unknown`.
+
 ```
 {cache_root}/
   artifacts/

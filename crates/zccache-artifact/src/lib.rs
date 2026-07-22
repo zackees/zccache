@@ -19,20 +19,22 @@ pub use rust_plan::{
     rust_plan_bundle_dir, rust_plan_cache_key, rust_plan_gha_version, save_rust_plan_delta_local,
     save_rust_plan_gha, save_rust_plan_local, RustArtifactBundleLayerKind,
     RustArtifactBundleManifest, RustArtifactClass, RustArtifactPlanV1, RustBundledArtifact,
-    RustPlanArtifactEffectiveness, RustPlanCompatibility, RustPlanError, RustPlanGhaError,
-    RustPlanInputs, RustPlanMode, RustPlanOperation, RustPlanPackages, RustPlanSkippedSample,
+    RustPlanArtifactEffectiveness, RustPlanArtifactOwner, RustPlanArtifactOwnerKind,
+    RustPlanCompatibility, RustPlanError, RustPlanGhaError, RustPlanInputs, RustPlanMode,
+    RustPlanOperation, RustPlanOwnershipMode, RustPlanPackages, RustPlanSkippedSample,
     RustPlanSummary, RustToolchainIdentity, RUST_ARTIFACT_CACHE_SCHEMA_VERSION,
-    RUST_ARTIFACT_PLAN_SCHEMA_VERSION,
+    RUST_ARTIFACT_PLAN_SCHEMA_VERSION, THIN_V3_OWNERSHIP_POLICY_ID,
 };
 #[cfg(not(feature = "gha"))]
 pub use rust_plan::{
     restore_rust_plan_layered_local, restore_rust_plan_local, rust_plan_bundle_dir,
     rust_plan_cache_key, save_rust_plan_delta_local, save_rust_plan_local,
     RustArtifactBundleLayerKind, RustArtifactBundleManifest, RustArtifactClass, RustArtifactPlanV1,
-    RustBundledArtifact, RustPlanArtifactEffectiveness, RustPlanCompatibility, RustPlanError,
-    RustPlanInputs, RustPlanMode, RustPlanOperation, RustPlanPackages, RustPlanSkippedSample,
+    RustBundledArtifact, RustPlanArtifactEffectiveness, RustPlanArtifactOwner,
+    RustPlanArtifactOwnerKind, RustPlanCompatibility, RustPlanError, RustPlanInputs, RustPlanMode,
+    RustPlanOperation, RustPlanOwnershipMode, RustPlanPackages, RustPlanSkippedSample,
     RustPlanSummary, RustToolchainIdentity, RUST_ARTIFACT_CACHE_SCHEMA_VERSION,
-    RUST_ARTIFACT_PLAN_SCHEMA_VERSION,
+    RUST_ARTIFACT_PLAN_SCHEMA_VERSION, THIN_V3_OWNERSHIP_POLICY_ID,
 };
 #[cfg(feature = "cli")]
 #[allow(unused_imports)]

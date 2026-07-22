@@ -6,8 +6,9 @@ use super::manifest::{
     RustArtifactBundleLayerKind, RustArtifactBundleManifest, RustBundledArtifact,
 };
 use super::schema::{
-    ensure_supported_cache_schema_version, RustArtifactClass, RustArtifactPlanV1, RustPlanError,
-    RustPlanInputs, RustPlanMode, RustPlanPackages, RustToolchainIdentity,
+    ensure_supported_cache_schema_version, RustArtifactClass, RustArtifactPlanV1,
+    RustPlanArtifactOwner, RustPlanArtifactOwnerKind, RustPlanError, RustPlanInputs, RustPlanMode,
+    RustPlanOwnershipMode, RustPlanPackages, RustToolchainIdentity,
     RUST_ARTIFACT_PLAN_SCHEMA_VERSION,
 };
 
@@ -84,6 +85,24 @@ pub(super) mod rust_plan_proto {
         pub workspace_package_ids: Vec<String>,
         #[prost(string, repeated, tag = "3")]
         pub excluded_path_package_ids: Vec<String>,
+        #[prost(string, tag = "4")]
+        pub ownership_policy: String,
+        #[prost(uint32, tag = "5")]
+        pub ownership_mode: u32,
+        #[prost(message, repeated, tag = "6")]
+        pub artifact_owners: Vec<RustPlanArtifactOwner>,
+        #[prost(bool, tag = "7")]
+        pub ownership_complete: bool,
+    }
+
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct RustPlanArtifactOwner {
+        #[prost(string, tag = "1")]
+        pub relative_path: String,
+        #[prost(string, tag = "2")]
+        pub package_id: String,
+        #[prost(uint32, tag = "3")]
+        pub owner: u32,
     }
 
     #[derive(Clone, PartialEq, ::prost::Message)]
@@ -124,6 +143,8 @@ pub(super) mod rust_plan_proto {
         pub content_hash: String,
         #[prost(uint64, tag = "5")]
         pub mtime_unix_nanos: u64,
+        #[prost(uint32, tag = "6")]
+        pub owner: u32,
     }
 }
 
@@ -234,6 +255,46 @@ fn optional_string_from_proto(raw: String) -> Option<String> {
     }
 }
 
+fn ownership_mode_to_proto(mode: Option<RustPlanOwnershipMode>) -> u32 {
+    match mode {
+        None => 0,
+        Some(RustPlanOwnershipMode::CookPartitionedV1) => 1,
+        Some(RustPlanOwnershipMode::ZccacheAllV1) => 2,
+    }
+}
+
+fn ownership_mode_from_proto(value: u32) -> Result<Option<RustPlanOwnershipMode>, RustPlanError> {
+    match value {
+        0 => Ok(None),
+        1 => Ok(Some(RustPlanOwnershipMode::CookPartitionedV1)),
+        2 => Ok(Some(RustPlanOwnershipMode::ZccacheAllV1)),
+        other => Err(RustPlanError::InvalidPlan(format!(
+            "unknown ownership mode code {other}"
+        ))),
+    }
+}
+
+fn artifact_owner_to_proto(owner: RustPlanArtifactOwnerKind) -> u32 {
+    match owner {
+        RustPlanArtifactOwnerKind::Cook => 1,
+        RustPlanArtifactOwnerKind::Zccache => 2,
+        RustPlanArtifactOwnerKind::ThinV3 => 3,
+        RustPlanArtifactOwnerKind::None => 4,
+    }
+}
+
+fn artifact_owner_from_proto(value: u32) -> Result<RustPlanArtifactOwnerKind, RustPlanError> {
+    match value {
+        1 => Ok(RustPlanArtifactOwnerKind::Cook),
+        2 => Ok(RustPlanArtifactOwnerKind::Zccache),
+        3 => Ok(RustPlanArtifactOwnerKind::ThinV3),
+        4 => Ok(RustPlanArtifactOwnerKind::None),
+        other => Err(RustPlanError::InvalidPlan(format!(
+            "unknown artifact owner code {other}"
+        ))),
+    }
+}
+
 pub(super) fn plan_to_proto(plan: &RustArtifactPlanV1) -> rust_plan_proto::RustArtifactPlanV1 {
     rust_plan_proto::RustArtifactPlanV1 {
         schema_version: plan.schema_version,
@@ -260,6 +321,19 @@ pub(super) fn plan_to_proto(plan: &RustArtifactPlanV1) -> rust_plan_proto::RustA
             selected_package_ids: plan.packages.selected_package_ids.clone(),
             workspace_package_ids: plan.packages.workspace_package_ids.clone(),
             excluded_path_package_ids: plan.packages.excluded_path_package_ids.clone(),
+            ownership_policy: plan.packages.ownership_policy.clone().unwrap_or_default(),
+            ownership_mode: ownership_mode_to_proto(plan.packages.ownership_mode),
+            artifact_owners: plan
+                .packages
+                .artifact_owners
+                .iter()
+                .map(|record| rust_plan_proto::RustPlanArtifactOwner {
+                    relative_path: record.relative_path.clone(),
+                    package_id: record.package_id.clone(),
+                    owner: artifact_owner_to_proto(record.owner),
+                })
+                .collect(),
+            ownership_complete: plan.packages.ownership_complete,
         }),
         allowed_artifact_classes: plan
             .allowed_artifact_classes
@@ -324,6 +398,20 @@ pub(super) fn plan_from_proto(
             selected_package_ids: packages.selected_package_ids,
             workspace_package_ids: packages.workspace_package_ids,
             excluded_path_package_ids: packages.excluded_path_package_ids,
+            ownership_policy: optional_string_from_proto(packages.ownership_policy),
+            ownership_mode: ownership_mode_from_proto(packages.ownership_mode)?,
+            artifact_owners: packages
+                .artifact_owners
+                .into_iter()
+                .map(|record| {
+                    Ok(RustPlanArtifactOwner {
+                        relative_path: record.relative_path,
+                        package_id: record.package_id,
+                        owner: artifact_owner_from_proto(record.owner)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, RustPlanError>>()?,
+            ownership_complete: packages.ownership_complete,
         },
         allowed_artifact_classes: proto
             .allowed_artifact_classes
@@ -365,6 +453,7 @@ pub(super) fn manifest_to_proto(
                 size: artifact.size,
                 content_hash: artifact.content_hash.clone(),
                 mtime_unix_nanos: artifact.mtime_unix_nanos,
+                owner: artifact.owner.map(artifact_owner_to_proto).unwrap_or_default(),
             })
             .collect(),
         layer_kind: layer_kind_to_proto(manifest.layer_kind),
@@ -394,6 +483,10 @@ pub(super) fn manifest_from_proto(
                     size: artifact.size,
                     content_hash: artifact.content_hash,
                     mtime_unix_nanos: artifact.mtime_unix_nanos,
+                    owner: match artifact.owner {
+                        0 => None,
+                        value => Some(artifact_owner_from_proto(value)?),
+                    },
                 })
             })
             .collect::<Result<Vec<_>, RustPlanError>>()?,
