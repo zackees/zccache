@@ -93,6 +93,21 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         output_path,
         &state.depfile_tmpdir,
     );
+    // Clang's documented `-H` include trace supplies the compiler-resolved
+    // graph. In combination with the private `-MMD -MF` depfile, Clang emits
+    // a complete dependency file, avoiding a competing daemon-side recursive
+    // scan. GCC keeps the conservative static-scan path because its MMD
+    // depfile remains user-header-only under `-H`.
+    if compilation.family == crate::compiler::CompilerFamily::Clang
+        && matches!(depfile_strategy, DepfileStrategy::InjectedMmd { .. })
+    {
+        let path = match depfile_strategy {
+            DepfileStrategy::InjectedMmd { ref path } => path.clone(),
+            _ => unreachable!("MMD strategy matched above"),
+        };
+        extra_args.push("-H".to_string());
+        depfile_strategy = DepfileStrategy::InjectedMmdHeaderTrace { path };
+    }
 
     // For MSVC, use /showIncludes to get complete dependency info
     // (equivalent to depfiles for gcc/clang). This enables cache hits
@@ -302,6 +317,11 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
                 source: source_path.as_path(),
                 cwd: cwd_path.as_path(),
             }
+        } else if matches!(depfile_strategy, DepfileStrategy::InjectedMmdHeaderTrace { .. }) {
+            crate::daemon::compile_output::StderrFilter::HeaderTrace {
+                source: source_path.as_path(),
+                cwd: cwd_path.as_path(),
+            }
         } else {
             crate::daemon::compile_output::StderrFilter::None
         };
@@ -384,6 +404,13 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
             cwd_path,
         );
         (output.stdout, Some(scan), filtered)
+    } else if matches!(depfile_strategy, DepfileStrategy::InjectedMmdHeaderTrace { .. }) {
+        let (scan, filtered) = crate::depgraph::header_trace::parse_header_trace(
+            &output.stderr,
+            source_path,
+            cwd_path,
+        );
+        (output.stdout, Some(scan), filtered)
     } else {
         (output.stdout, None, output.stderr)
     };
@@ -455,6 +482,57 @@ fn mmd_static_scan_is_proven(args: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::mmd_static_scan_is_proven;
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn clang_header_trace_makes_private_mmd_depfile_complete() {
+        let Some(clang) = crate::test_support::find_clang() else {
+            return;
+        };
+        let dir = tempfile::TempDir::new().unwrap();
+        let source = dir.path().join("main.cpp");
+        let depfile = dir.path().join("main.d");
+        let object = dir.path().join("main.o");
+        std::fs::write(&source, "#include <cstdint>\nint main() { return 0; }\n").unwrap();
+        let output = std::process::Command::new(clang.as_path())
+            .args([
+                "-c", "main.cpp", "-MMD", "-MF", "main.d", "-H", "-o", "main.o",
+            ])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "clang failed: {:?}", output.stderr);
+
+        let (trace, filtered) = crate::depgraph::header_trace::parse_header_trace(
+            &output.stderr,
+            &source,
+            dir.path(),
+        );
+        let depfile_path = zccache_core::NormalizedPath::from(depfile.clone());
+        let source_path = zccache_core::NormalizedPath::from(source.clone());
+        let cwd_path = zccache_core::NormalizedPath::from(dir.path());
+        let depfile_scan = crate::depgraph::depfile::parse_depfile_path(
+            &depfile_path,
+            &source_path,
+            &cwd_path,
+        )
+        .unwrap();
+
+        assert!(!trace.resolved.is_empty(), "clang -H emitted no headers");
+        assert!(
+            trace
+                .resolved
+                .iter()
+                .all(|path| depfile_scan.resolved.contains(path)),
+            "the private MMD depfile must contain every compiler-traced header"
+        );
+        assert!(
+            filtered.is_empty(),
+            "injected header trace escaped stderr: {}",
+            String::from_utf8_lossy(&filtered)
+        );
+        assert!(object.is_file());
+    }
 
     #[test]
     fn mmd_static_scan_allows_user_include_roots_but_rejects_system_roots() {

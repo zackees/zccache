@@ -9,6 +9,7 @@ pub mod compile_commands;
 pub mod context;
 pub mod depfile;
 pub mod graph;
+pub mod header_trace;
 pub mod msvc_args;
 pub mod rustc_args;
 pub mod scanner;

@@ -248,6 +248,26 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
                 }
             }
         }
+        DepfileStrategy::InjectedMmdHeaderTrace { path } => {
+            match crate::depgraph::depfile::parse_depfile_path(path, &source_path, &cwd_path) {
+                Ok(result) => {
+                    let _ = std::fs::remove_file(path);
+                    crate::depgraph::depfile::merge_scan_results(
+                        result,
+                        show_includes_scan.unwrap_or_else(|| {
+                            crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
+                        }),
+                    )
+                }
+                Err(e) => {
+                    depfile_parse_warning = Some(format!("path={} error={e}", path.display()));
+                    let _ = std::fs::remove_file(path);
+                    show_includes_scan.unwrap_or_else(|| {
+                        crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
+                    })
+                }
+            }
+        }
         DepfileStrategy::ShowIncludes => show_includes_scan.unwrap_or_else(|| {
             crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
         }),

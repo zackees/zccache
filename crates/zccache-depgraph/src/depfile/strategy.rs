@@ -15,6 +15,8 @@ pub enum DepfileStrategy {
     Injected { path: NormalizedPath },
     /// We injected a private MMD depfile; merge a conservative local include scan.
     InjectedMmd { path: NormalizedPath },
+    /// Clang's injected `-H` trace makes the private MMD depfile complete.
+    InjectedMmdHeaderTrace { path: NormalizedPath },
     /// User already had `-MF <path>` — read it (don't delete).
     UserSpecified { path: NormalizedPath },
     /// User had `-MD` but no `-MF` — derive path from output stem.
