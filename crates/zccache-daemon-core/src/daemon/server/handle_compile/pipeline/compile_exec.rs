@@ -81,8 +81,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         compilation.family,
         crate::compiler::CompilerFamily::Gcc | crate::compiler::CompilerFamily::Clang
     ) && mmd_static_scan_is_proven(effective_args);
-    let (mut extra_args, mut depfile_strategy) =
-        crate::depgraph::depfile::prepare_depfile_with_mmd(
+    let (mut extra_args, mut depfile_strategy) = crate::depgraph::depfile::prepare_depfile_with_mmd(
         use_mmd,
         supports_depfile,
         dep_flags,
@@ -405,9 +404,19 @@ fn mmd_static_scan_is_proven(args: &[String]) -> bool {
     !args.iter().any(|arg| {
         matches!(
             arg.as_str(),
-            "-I" | "-isystem" | "-iquote" | "-idirafter" | "-include" | "-include-pch"
-                | "-nostdinc" | "-nostdinc++" | "-isysroot" | "--sysroot" | "-target"
-                | "--target" | "-resource-dir" | "-stdlib"
+            "-I" | "-isystem"
+                | "-iquote"
+                | "-idirafter"
+                | "-include"
+                | "-include-pch"
+                | "-nostdinc"
+                | "-nostdinc++"
+                | "-isysroot"
+                | "--sysroot"
+                | "-target"
+                | "--target"
+                | "-resource-dir"
+                | "-stdlib"
         ) || [
             "-I",
             "-isystem",
@@ -432,7 +441,10 @@ mod tests {
     #[test]
     fn mmd_static_scan_requires_compiler_default_include_roots() {
         assert!(mmd_static_scan_is_proven(&["-c".into(), "main.c".into()]));
-        assert!(!mmd_static_scan_is_proven(&["-isystem".into(), "/sdk".into()]));
+        assert!(!mmd_static_scan_is_proven(&[
+            "-isystem".into(),
+            "/sdk".into()
+        ]));
         assert!(!mmd_static_scan_is_proven(&["-isystem/sdk".into()]));
         assert!(!mmd_static_scan_is_proven(&["--sysroot=/sdk".into()]));
     }
