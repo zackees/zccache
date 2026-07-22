@@ -365,19 +365,8 @@ async fn cli_session_lifecycle() {
             Some(Response::SessionEnded { stats: Some(stats) }) => {
                 let staged = &stats.phase_profile.expect("phase profile").staged;
                 assert!(staged.counters["plan_attempted"] >= 1);
-                assert!(staged.counters["plan_enabled"] >= 1);
-                assert!(staged.counters["compiler_staged"] >= 1);
-                assert!(
-                    staged.counters["publication_success"] >= 1,
-                    "staged counters: {:?}; failures: {:?}",
-                    staged.counters,
-                    staged.failures
-                );
-                assert!(
-                    staged.counters["materialize_reflink"]
-                        + staged.counters["materialize_copy"]
-                        >= 1
-                );
+                assert_eq!(staged.counters["plan_enabled"], 0);
+                assert_eq!(staged.counters["compiler_staged"], 0);
             }
             other => panic!("expected SessionEnded, got: {other:?}"),
         }

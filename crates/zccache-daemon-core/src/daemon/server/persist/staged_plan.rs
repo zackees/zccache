@@ -708,6 +708,7 @@ impl StagedCompilePlan {
     ) -> crate::depgraph::DepfileStrategy {
         let path = match &strategy {
             crate::depgraph::DepfileStrategy::Injected { path }
+            | crate::depgraph::DepfileStrategy::InjectedMmd { path }
             | crate::depgraph::DepfileStrategy::UserSpecified { path }
             | crate::depgraph::DepfileStrategy::UserDefault { path } => path,
             crate::depgraph::DepfileStrategy::ShowIncludes
@@ -724,6 +725,9 @@ impl StagedCompilePlan {
         match strategy {
             crate::depgraph::DepfileStrategy::Injected { .. } => {
                 crate::depgraph::DepfileStrategy::Injected { path: staged }
+            }
+            crate::depgraph::DepfileStrategy::InjectedMmd { .. } => {
+                crate::depgraph::DepfileStrategy::InjectedMmd { path: staged }
             }
             crate::depgraph::DepfileStrategy::UserSpecified { .. } => {
                 crate::depgraph::DepfileStrategy::UserSpecified { path: staged }

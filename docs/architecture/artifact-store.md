@@ -8,8 +8,9 @@ For how cache keys are computed see [overview.md](overview.md) (section 2.8). Fo
 
 ## Immutable staged-output rollout
 
-The default-on staged-artifact lane makes the daemon's v2 generations
-the authoritative source for supported compiler misses. The compiler is
+The default-on Rust staged-artifact lane makes the daemon's v2 generations
+the authoritative source for Rust compiler misses. C/C++ compiler-output
+staging is an explicit `ZCCACHE_STAGED_ARTIFACTS=c-cpp` or `all` opt-in. The compiler is
 redirected into a private directory before spawn; after a successful compile,
 all outputs are hashed and published as one digest-stamped generation, then
 materialized to the requested paths. A failed publication can still salvage a
@@ -32,10 +33,8 @@ are parsed and included in the complete cache-hit reverse map. Inferred
 outputs for staticlibs, bins, proc macros, objects, assembly, LLVM IR/bitcode,
 MIR, and dep-info use their actual rustc extensions.
 
-This default-on decision is final for the 1.13.x release line. The `off`,
-`rust`, `c-cpp`, `exec`, and `all` compatibility values remain accepted for that full
-release window; removal is not eligible before 1.14 and requires a separate
-deprecation decision. The default does not implicitly enable linker staging:
+The `off`, `rust`, `c-cpp`, `exec`, and `all` compatibility values remain accepted
+for the full 1.13.x release window. The default does not implicitly enable linker staging:
 linkers remain explicit `all` opt-ins, while exact generic execution accepts
 `exec` or `all`, because their
 side-effect inventories require the stricter contract described below.

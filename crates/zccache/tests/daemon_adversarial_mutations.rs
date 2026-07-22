@@ -384,6 +384,83 @@ async fn mutation_include_path_creates_different_cache_entry() {
     h.shutdown().await;
 }
 
+/// A header reached only through an -isystem directory is still an exact
+/// dependency: after it changes, the same compile must not restore stale code.
+#[tokio::test]
+#[ignore] // integration: spawns clang, run with --full
+async fn mutation_system_header_forces_miss() {
+    let mut h = match TestHarness::new().await {
+        Some(h) => h,
+        None => return,
+    };
+    let system_dir = h.path("synthetic-system");
+    std::fs::create_dir_all(&system_dir).unwrap();
+    let header = system_dir.join("system_value.h");
+    std::fs::write(&header, "#define SYSTEM_VALUE 7\n").unwrap();
+    h.write_file(
+        "system_header.c",
+        "#include <system_value.h>\nint system_value(void) { return SYSTEM_VALUE; }\n",
+    );
+    let isystem_arg = format!("-isystem{}", system_dir.display());
+    let compiler = h.compiler_str();
+    let cwd = h.cwd();
+    let object = h.path("system_header.o");
+    let args = [
+        "-c",
+        "system_header.c",
+        "-o",
+        "system_header.o",
+        isystem_arg.as_str(),
+    ];
+
+    let (exit_code, cached, first_object) = compile_and_read(
+        &mut h.client,
+        &h.session_id,
+        &args,
+        &cwd,
+        &object,
+        &compiler,
+    )
+    .await;
+    assert_eq!(exit_code, 0);
+    assert!(!cached, "first compile must be a miss");
+
+    std::fs::remove_file(&object).unwrap();
+    let (exit_code, cached, warm_object) = compile_and_read(
+        &mut h.client,
+        &h.session_id,
+        &args,
+        &cwd,
+        &object,
+        &compiler,
+    )
+    .await;
+    assert_eq!(exit_code, 0);
+    assert!(cached, "unchanged system header must allow a hit");
+    assert_eq!(first_object, warm_object);
+
+    std::fs::write(&header, "#define SYSTEM_VALUE 11\n").unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    std::fs::remove_file(&object).unwrap();
+    let (exit_code, cached, changed_object) = compile_and_read(
+        &mut h.client,
+        &h.session_id,
+        &args,
+        &cwd,
+        &object,
+        &compiler,
+    )
+    .await;
+    assert_eq!(exit_code, 0);
+    assert!(
+        !cached,
+        "changed -isystem header must invalidate the artifact"
+    );
+    assert_ne!(first_object, changed_object);
+
+    h.shutdown().await;
+}
+
 /// Add -D flag → different cache entry. Remove -D → original entry.
 #[tokio::test]
 #[ignore] // integration: spawns clang, run with --full

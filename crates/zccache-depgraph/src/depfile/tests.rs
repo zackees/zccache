@@ -10,7 +10,9 @@ use super::error::DepfileError;
 use super::parse::{
     find_separator_colon, join_continuations, parse_depfile, parse_depfile_path, split_and_unescape,
 };
-use super::strategy::{prepare_depfile, user_depfile_destination, DepfileStrategy};
+use super::strategy::{
+    prepare_depfile, prepare_depfile_with_mmd, user_depfile_destination, DepfileStrategy,
+};
 use zccache_core::NormalizedPath;
 
 /// Helper: create a file with empty content inside a temp dir.
@@ -538,6 +540,47 @@ fn strategy_injected_adds_args() {
         args[2].contains("bar"),
         "expected 'bar' in path: {}",
         args[2]
+    );
+}
+
+#[test]
+fn strategy_injected_mmd_uses_user_header_depfile() {
+    let dep_flags = UserDepFlags::default();
+    let (args, strategy) = prepare_depfile_with_mmd(
+        true,
+        true,
+        &dep_flags,
+        Path::new("foo.o"),
+        Path::new("/tmp"),
+    );
+
+    assert_eq!(args.len(), 3);
+    assert_eq!(args[0], "-MMD");
+    assert_eq!(args[1], "-MF");
+    assert!(args[2].ends_with(".d"));
+    assert!(matches!(strategy, DepfileStrategy::InjectedMmd { .. }));
+}
+
+#[test]
+fn strategy_injected_mmd_never_changes_user_depfile_flags() {
+    let dep_flags = UserDepFlags {
+        has_md: true,
+        mf_path: Some(NormalizedPath::from("/build/user.d")),
+    };
+    let (args, strategy) = prepare_depfile_with_mmd(
+        true,
+        true,
+        &dep_flags,
+        Path::new("foo.o"),
+        Path::new("/tmp"),
+    );
+
+    assert!(args.is_empty());
+    assert_eq!(
+        strategy,
+        DepfileStrategy::UserSpecified {
+            path: NormalizedPath::from("/build/user.d")
+        }
     );
 }
 

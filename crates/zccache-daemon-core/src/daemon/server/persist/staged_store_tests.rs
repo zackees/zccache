@@ -2,12 +2,12 @@
 use super::*;
 
 #[test]
-fn staged_rollout_defaults_on_and_preserves_compatibility_switches() {
+fn staged_rollout_defaults_to_rust_and_preserves_compatibility_switches() {
     use crate::compiler::CompilerFamily::{Clang, Rustc};
 
     assert!(staged_artifacts_enabled_for(None));
     assert!(staged_lane_enabled_for(None, Rustc));
-    assert!(staged_lane_enabled_for(None, Clang));
+    assert!(!staged_lane_enabled_for(None, Clang));
     assert!(!staged_link_lane_enabled_for(None));
     assert!(!staged_exec_lane_enabled_for(None));
 
