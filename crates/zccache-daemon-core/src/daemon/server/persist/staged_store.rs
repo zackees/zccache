@@ -1,7 +1,7 @@
-//! Default-on immutable artifact generations for the staged-output rollout (#1056).
+//! Immutable artifact generations for the staged-output rollout (#1056).
 //!
 //! This is the storage half of the staged compiler-output design. The compiler
-//! writes supported outputs into private staging before publication. The
+//! writes opted-in compiler outputs into private staging before publication. The
 //! persisted generation is always independent: reflink when the filesystem can
 //! provide true COW, otherwise a byte copy. Unsupported plans fall back before
 //! spawn, and `ZCCACHE_STAGED_ARTIFACTS=off` is the rollout kill switch.
@@ -158,7 +158,7 @@ fn staged_artifacts_enabled_for(value: Option<&str>) -> bool {
 
 fn staged_lane_enabled_for(value: Option<&str>, family: crate::compiler::CompilerFamily) -> bool {
     let Some(value) = value else {
-        return true;
+        return family == crate::compiler::CompilerFamily::Rustc;
     };
     match value.trim().to_ascii_lowercase().as_str() {
         "all" | "1" | "true" | "yes" | "on" => true,
@@ -175,6 +175,20 @@ fn staged_lane_enabled_for(value: Option<&str>, family: crate::compiler::Compile
 
 pub(in crate::daemon::server) fn staged_link_lane_enabled() -> bool {
     staged_link_lane_enabled_for(std::env::var(STAGED_ARTIFACTS_ENV).ok().as_deref())
+}
+
+pub(in crate::daemon::server) fn staged_archive_lane_enabled() -> bool {
+    staged_archive_lane_enabled_for(std::env::var(STAGED_ARTIFACTS_ENV).ok().as_deref())
+}
+
+fn staged_archive_lane_enabled_for(value: Option<&str>) -> bool {
+    let Some(value) = value else {
+        return true;
+    };
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "all" | "1" | "true" | "yes" | "on" | "c" | "cc" | "c-cpp" | "cpp"
+    )
 }
 
 fn staged_link_lane_enabled_for(value: Option<&str>) -> bool {

@@ -25,7 +25,7 @@ pub use context::{
     compute_artifact_key, compute_rustc_artifact_key, fold_rustc_env_deps_into_artifact_key,
     ArtifactKey, CompileContext, ContextKey, RustcCompileContext,
 };
-pub use depfile::{prepare_depfile, DepfileError, DepfileStrategy};
+pub use depfile::{prepare_depfile, prepare_depfile_with_mmd, DepfileError, DepfileStrategy};
 pub use graph::{hash_env_dep_value, CacheVerdict, ContextState, DepGraph, DepGraphStats};
 pub use rustc_args::{parse_rustc_args, ExternCrate, RustcParsedArgs};
 pub use scanner::{IncludeDirective, IncludeKind, ScanResult};

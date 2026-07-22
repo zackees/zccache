@@ -13,6 +13,8 @@ use zccache_core::NormalizedPath;
 pub enum DepfileStrategy {
     /// We injected `-MD -MF <path>` — read and clean up after compilation.
     Injected { path: NormalizedPath },
+    /// We injected a private MMD depfile; merge a conservative local include scan.
+    InjectedMmd { path: NormalizedPath },
     /// User already had `-MF <path>` — read it (don't delete).
     UserSpecified { path: NormalizedPath },
     /// User had `-MD` but no `-MF` — derive path from output stem.
@@ -66,6 +68,20 @@ pub fn prepare_depfile(
     output_file: &Path,
     tmpdir: &Path,
 ) -> (Vec<String>, DepfileStrategy) {
+    prepare_depfile_with_mmd(false, supports_depfile, dep_flags, output_file, tmpdir)
+}
+
+/// Determine depfile strategy, optionally injecting a user-header depfile.
+///
+/// The caller enables MMD only when a daemon-side static scan can prove all
+/// system include search inputs. User supplied dependency flags are unchanged.
+pub fn prepare_depfile_with_mmd(
+    use_mmd: bool,
+    supports_depfile: bool,
+    dep_flags: &UserDepFlags,
+    output_file: &Path,
+    tmpdir: &Path,
+) -> (Vec<String>, DepfileStrategy) {
     if !supports_depfile {
         return (Vec::new(), DepfileStrategy::Unsupported);
     }
@@ -91,7 +107,8 @@ pub fn prepare_depfile(
         );
     }
 
-    // No user dep flags: inject -MD -MF <tmpfile>.
+    // No user dep flags: inject a private depfile. The MMD path leaves system
+    // headers to the conservative daemon-side recursive scan.
     // Re-create tmpdir if it was deleted (e.g. by Windows temp cleanup)
     // while the daemon is still running. Without this, the compiler fails
     // with "error opening ... no such file or directory".
@@ -106,6 +123,14 @@ pub fn prepare_depfile(
         .unwrap_or("depfile");
     let tmp_path = tmpdir.join(format!("{stem}_{}_{unique}.d", std::process::id()));
     let tmp_path: NormalizedPath = tmp_path.into();
+    if use_mmd {
+        let extra_args = vec![
+            "-MMD".to_string(),
+            "-MF".to_string(),
+            tmp_path.to_string_lossy().into_owned(),
+        ];
+        return (extra_args, DepfileStrategy::InjectedMmd { path: tmp_path });
+    }
     let extra_args = vec![
         "-MD".to_string(),
         "-MF".to_string(),

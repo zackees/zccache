@@ -12,6 +12,7 @@
 
 mod canonicalize;
 mod error;
+mod merge;
 mod parse;
 mod strategy;
 
@@ -20,5 +21,8 @@ mod tests;
 
 pub use canonicalize::{canonicalize_path, strip_win_prefix};
 pub use error::DepfileError;
+pub use merge::merge_scan_results;
 pub use parse::{parse_depfile, parse_depfile_path};
-pub use strategy::{prepare_depfile, user_depfile_destination, DepfileStrategy};
+pub use strategy::{
+    prepare_depfile, prepare_depfile_with_mmd, user_depfile_destination, DepfileStrategy,
+};
