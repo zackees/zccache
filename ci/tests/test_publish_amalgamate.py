@@ -34,6 +34,8 @@ def test_zccache_publish_manifest_keeps_gha_feature_dependencies(
         "workspace": True,
         "optional": True,
     }
+    assert "zccache-cli-core" not in manifest["dependencies"]
+    assert "zccache-daemon-core" not in manifest["dependencies"]
 
 
 def test_rewrite_rust_source_rebases_crate_root_and_internal_crate_paths() -> None:
