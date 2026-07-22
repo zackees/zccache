@@ -23,9 +23,10 @@ pub use local::{
 };
 pub use manifest::{RustArtifactBundleLayerKind, RustArtifactBundleManifest, RustBundledArtifact};
 pub use schema::{
-    RustArtifactClass, RustArtifactPlanV1, RustPlanError, RustPlanInputs, RustPlanMode,
-    RustPlanPackages, RustToolchainIdentity, RUST_ARTIFACT_CACHE_SCHEMA_VERSION,
-    RUST_ARTIFACT_PLAN_SCHEMA_VERSION,
+    RustArtifactClass, RustArtifactPlanV1, RustPlanArtifactOwner, RustPlanArtifactOwnerKind,
+    RustPlanError, RustPlanInputs, RustPlanMode, RustPlanOwnershipMode, RustPlanPackages,
+    RustToolchainIdentity, RUST_ARTIFACT_CACHE_SCHEMA_VERSION, RUST_ARTIFACT_PLAN_SCHEMA_VERSION,
+    THIN_V3_OWNERSHIP_POLICY_ID,
 };
 pub use summary::{
     RustPlanArtifactEffectiveness, RustPlanCompatibility, RustPlanOperation, RustPlanSkippedSample,

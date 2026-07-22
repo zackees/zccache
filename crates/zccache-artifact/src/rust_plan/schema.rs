@@ -17,7 +17,9 @@ pub const RUST_ARTIFACT_PLAN_SCHEMA_VERSION: u32 = 1;
 /// splits the legacy `cargo_fingerprint` class into `cargo_fingerprint_meta`
 /// (kept) and `cargo_fingerprint_outputs` (dropped). zccache accepts both so
 /// older soldr builds keep working unchanged.
-pub const SUPPORTED_RUST_ARTIFACT_CACHE_SCHEMA_VERSIONS: &[u32] = &[1, 2];
+pub const SUPPORTED_RUST_ARTIFACT_CACHE_SCHEMA_VERSIONS: &[u32] = &[1, 2, 3];
+/// Stable policy identifier for the thin-v3 ownership partition.
+pub const THIN_V3_OWNERSHIP_POLICY_ID: &str = "thin-v3-lifetime-partition-v1";
 /// Cache schema version zccache writes into bundle manifests it creates.
 /// Pinned at 1 so the on-disk manifest format stays stable across the
 /// thin-v2 opt-in â€” the v2 wire fields are inputs to the save walker, not
@@ -152,6 +154,48 @@ pub struct RustPlanPackages {
     pub workspace_package_ids: Vec<String>,
     #[serde(default)]
     pub excluded_path_package_ids: Vec<String>,
+    /// Policy selected by the producer for ownership-aware durable exports.
+    /// Absent for legacy thin-v1/v2 plans.
+    #[serde(default)]
+    pub ownership_policy: Option<String>,
+    /// Durable ownership mode. `None` preserves the legacy selection rules.
+    #[serde(default)]
+    pub ownership_mode: Option<RustPlanOwnershipMode>,
+    /// Resolved owner for every path the producer can classify. Paths are
+    /// target-directory-relative and are never interpreted as storage paths.
+    #[serde(default)]
+    pub artifact_owners: Vec<RustPlanArtifactOwner>,
+    /// True only when the producer has complete ownership coverage. A
+    /// cook-partitioned export fails closed when this is false.
+    #[serde(default)]
+    pub ownership_complete: bool,
+}
+
+/// Lifetime partition selected for a thin-v3 durable export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RustPlanOwnershipMode {
+    CookPartitionedV1,
+    ZccacheAllV1,
+}
+
+/// Durable owner supplied by soldr's resolved package classifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RustPlanArtifactOwnerKind {
+    Cook,
+    Zccache,
+    ThinV3,
+    None,
+}
+
+/// Ownership record for a target-directory-relative artifact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RustPlanArtifactOwner {
+    pub relative_path: String,
+    pub package_id: String,
+    pub owner: RustPlanArtifactOwnerKind,
 }
 
 /// Versioned v1 Rust artifact cache plan.
@@ -274,6 +318,26 @@ impl RustArtifactPlanV1 {
         }
         if self.target_dir.as_os_str().is_empty() {
             errors.push("target_dir must not be empty");
+        }
+        match (
+            &self.packages.ownership_policy,
+            self.packages.ownership_mode,
+        ) {
+            (None, None) => {}
+            (Some(policy), Some(RustPlanOwnershipMode::CookPartitionedV1)) => {
+                if policy != THIN_V3_OWNERSHIP_POLICY_ID {
+                    errors.push("unsupported thin-v3 ownership policy");
+                }
+                if !self.packages.ownership_complete {
+                    errors.push("cook-partitioned ownership must be complete");
+                }
+            }
+            (Some(policy), Some(RustPlanOwnershipMode::ZccacheAllV1)) => {
+                if policy != THIN_V3_OWNERSHIP_POLICY_ID {
+                    errors.push("unsupported thin-v3 ownership policy");
+                }
+            }
+            _ => errors.push("ownership policy and mode must be supplied together"),
         }
         if errors.is_empty() {
             Ok(())

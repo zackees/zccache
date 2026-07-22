@@ -183,6 +183,7 @@ fn snapshot_selected_artifact(
             .ok()
             .map(system_time_to_unix_nanos)
             .unwrap_or(0),
+        owner: sel.owner,
     })
 }
 
