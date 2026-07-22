@@ -32,13 +32,13 @@ fn rejects_unsupported_cache_schema_before_filesystem_mutation() {
     let cache = dir.path().join("cache");
 
     let err = save_rust_plan_local(&plan, &cache).unwrap_err();
-    // soldr#461: zccache now accepts both v1 (legacy) and v2 (thin-v2)
-    // wire schemas; the error reports the most-recent supported version.
+    // #1063: zccache accepts v1/v2 plus the thin-v3 ownership schema; the
+    // error reports the most-recent supported version.
     assert!(matches!(
         err,
         RustPlanError::UnsupportedCacheSchemaVersion {
             found: 99,
-            supported: 2
+            supported: 3
         }
     ));
     assert!(!cache.exists());
@@ -63,7 +63,7 @@ fn restore_rejects_unsupported_cache_schema_before_filesystem_mutation() {
         err,
         RustPlanError::UnsupportedCacheSchemaVersion {
             found: 99,
-            supported: 2
+            supported: 3
         }
     ));
     assert!(sentinel.exists());
