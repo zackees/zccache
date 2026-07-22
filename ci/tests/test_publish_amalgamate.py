@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -7,11 +9,31 @@ import pytest
 from ci import release_checks
 from ci.publish_amalgamate import (
     AmalgamatedModule,
+    INTERNAL_MODULES,
     drop_python_extension_bindings,
     prepare_zccache_crate_for_publish,
     rewrite_rust_source_for_amalgamation,
     rewrite_zccache_manifest,
 )
+
+
+def test_zccache_publish_manifest_keeps_gha_feature_dependencies(
+    tmp_path: Path,
+) -> None:
+    source = Path(__file__).parents[2] / "crates" / "zccache" / "Cargo.toml"
+    manifest_path = tmp_path / "Cargo.toml"
+    shutil.copyfile(source, manifest_path)
+    rewrite_zccache_manifest(
+        manifest_path,
+        {module.crate: module.module for module in INTERNAL_MODULES},
+    )
+    manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["features"]["gha"] == ["dep:reqwest", "dep:sha2"]
+    assert manifest["dependencies"]["sha2"] == {
+        "workspace": True,
+        "optional": True,
+    }
 
 
 def test_rewrite_rust_source_rebases_crate_root_and_internal_crate_paths() -> None:

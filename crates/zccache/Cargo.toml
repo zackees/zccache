@@ -98,6 +98,7 @@ memmap2 = { workspace = true }
 
 # gha
 reqwest = { workspace = true, features = ["json"], optional = true }
+sha2 = { workspace = true, optional = true }
 
 # protocol
 bincode = { workspace = true }
