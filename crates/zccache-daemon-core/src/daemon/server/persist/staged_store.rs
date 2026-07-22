@@ -10,7 +10,7 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 mod maintenance;
 pub(crate) use maintenance::{
@@ -239,8 +239,8 @@ pub(in crate::daemon::server) fn is_staged_artifact_root(path: &Path) -> bool {
     })
 }
 
-fn staged_root(artifact_dir: &Path) -> PathBuf {
-    artifact_dir.join(STAGED_ROOT)
+fn staged_root(artifact_dir: &Path) -> NormalizedPath {
+    artifact_dir.join(STAGED_ROOT).into()
 }
 
 fn open_store_lock(root: &Path) -> io::Result<File> {
@@ -273,23 +273,23 @@ fn validate_generation(generation_hex: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn pointer_path(artifact_dir: &Path, key_hex: &str) -> PathBuf {
+fn pointer_path(artifact_dir: &Path, key_hex: &str) -> NormalizedPath {
     staged_root(artifact_dir).join(format!("{key_hex}.current"))
 }
 
-fn generation_dir(artifact_dir: &Path, key_hex: &str, generation_hex: &str) -> PathBuf {
+fn generation_dir(artifact_dir: &Path, key_hex: &str, generation_hex: &str) -> NormalizedPath {
     staged_root(artifact_dir).join(key_hex).join(generation_hex)
 }
 
-fn output_path(generation_dir: &Path, index: usize) -> PathBuf {
-    generation_dir.join(format!("output-{index}"))
+fn output_path(generation_dir: &Path, index: usize) -> NormalizedPath {
+    generation_dir.join(format!("output-{index}")).into()
 }
 
-fn manifest_path(generation_dir: &Path) -> PathBuf {
-    generation_dir.join("manifest.bin")
+fn manifest_path(generation_dir: &Path) -> NormalizedPath {
+    generation_dir.join("manifest.bin").into()
 }
 
-fn temporary_path(path: &Path, suffix: &str) -> PathBuf {
+fn temporary_path(path: &Path, suffix: &str) -> NormalizedPath {
     let nonce = STAGED_ARTIFACT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     path.with_file_name(format!(
         ".{}.{}.{}-{}",
@@ -297,7 +297,7 @@ fn temporary_path(path: &Path, suffix: &str) -> PathBuf {
         std::process::id(),
         nonce,
         suffix
-    ))
+    )).into()
 }
 
 fn sync_file(path: &Path) -> io::Result<()> {
@@ -873,7 +873,7 @@ pub(in crate::daemon::server) fn load_staged_artifact_paths(
                 "staged output digest does not match its manifest",
             ));
         }
-        paths.push((output.index, path.into()));
+        paths.push((output.index, path));
     }
     if seen.iter().any(|was_seen| !was_seen) {
         return Err(io::Error::new(

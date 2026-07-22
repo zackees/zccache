@@ -11,7 +11,7 @@ use super::staged_store::{inject_staged_fault, StagedFaultGuard, StagedFaultPoin
 use super::staged_store::{materialization_error, staged_lane_enabled, StagedMaterializationStats};
 use crate::core::path::NormalizedPath;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static PLAN_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -131,19 +131,19 @@ pub(in crate::daemon::server) struct StagedOutputPlan {
 pub(in crate::daemon::server) struct StagedCompilePlan {
     pub(in crate::daemon::server) outputs: Vec<StagedOutputPlan>,
     pub(in crate::daemon::server) rewritten_args: Vec<String>,
-    root: PathBuf,
+    root: NormalizedPath,
 }
 
 impl StagedCompilePlan {
     #[cfg(test)]
     pub(in crate::daemon::server) fn for_test(
-        root: PathBuf,
+        root: impl Into<NormalizedPath>,
         outputs: Vec<StagedOutputPlan>,
     ) -> Self {
         Self {
             outputs,
             rewritten_args: Vec::new(),
-            root,
+            root: root.into(),
         }
     }
 
@@ -165,11 +165,11 @@ impl StagedCompilePlan {
         if rustc_has_missing_option_value(args) {
             return StagedPlanOutcome::Unsupported(StagedPlanReason::MissingOptionValue);
         }
-        let root = staging_dir.join(format!(
+        let root: NormalizedPath = staging_dir.join(format!(
             ".compile-{}-{}",
             std::process::id(),
             PLAN_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
+        )).into();
         if let Err(source) = std::fs::create_dir_all(&root) {
             return StagedPlanOutcome::Error(planning_error(
                 StagedPlanReason::StagingDirectoryCreate,
@@ -188,7 +188,7 @@ impl StagedCompilePlan {
                 let staged = root.join(file_name);
                 if outputs
                     .iter()
-                    .any(|output: &StagedOutputPlan| output.staged.as_path() == staged)
+                    .any(|output: &StagedOutputPlan| staged == output.staged.as_path())
                 {
                     return Ok(StagedPlanOutcome::Unsupported(
                         StagedPlanReason::OutputNameCollision,
@@ -196,7 +196,7 @@ impl StagedCompilePlan {
                 }
                 outputs.push(StagedOutputPlan {
                     requested: requested.clone(),
-                    staged: staged.into(),
+                    staged,
                 });
             }
             for (kind, path) in emit_specs(args) {
@@ -215,8 +215,7 @@ impl StagedCompilePlan {
                         staged: root
                             .join(Path::new(&path).file_name().ok_or_else(|| {
                                 missing_filename(StagedPlanReason::OutputMissingFilename)
-                            })?)
-                            .into(),
+                            })?),
                     });
                 }
             }
@@ -227,7 +226,7 @@ impl StagedCompilePlan {
                     .requested
                     .file_name()
                     .ok_or_else(|| missing_filename(StagedPlanReason::OutputMissingFilename))?;
-                output.staged = root.join(file_name).into();
+                output.staged = root.join(file_name);
             }
             if outputs.iter().enumerate().any(|(index, output)| {
                 outputs[..index]
@@ -363,11 +362,11 @@ impl StagedCompilePlan {
         {
             return StagedPlanOutcome::Unsupported(StagedPlanReason::MissingRequiredOutputFlag);
         }
-        let root = staging_dir.join(format!(
+        let root: NormalizedPath = staging_dir.join(format!(
             ".compile-{}-{}",
             std::process::id(),
             PLAN_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
+        )).into();
         if let Err(source) = std::fs::create_dir_all(&root) {
             return StagedPlanOutcome::Error(planning_error(
                 StagedPlanReason::StagingDirectoryCreate,
@@ -379,7 +378,7 @@ impl StagedCompilePlan {
             let file_name = requested
                 .file_name()
                 .ok_or_else(|| missing_filename(StagedPlanReason::OutputMissingFilename))?;
-            let staged: NormalizedPath = root.join(file_name).into();
+            let staged: NormalizedPath = root.join(file_name);
             let requested_depfile = dep_flags.mf_path.clone().or_else(|| {
                 dep_flags
                     .has_md
@@ -479,7 +478,7 @@ impl StagedCompilePlan {
                     })?);
                 outputs.push(StagedOutputPlan {
                     requested: requested_depfile,
-                    staged: staged_depfile.into(),
+                    staged: staged_depfile,
                 });
             }
             Ok(StagedPlanOutcome::Enabled(Self {
@@ -506,11 +505,11 @@ impl StagedCompilePlan {
         if !staged_lane_enabled(crate::compiler::CompilerFamily::Gcc) {
             return StagedPlanOutcome::Unsupported(StagedPlanReason::LaneDisabled);
         }
-        let root = staging_dir.join(format!(
+        let root: NormalizedPath = staging_dir.join(format!(
             ".compile-{}-{}",
             std::process::id(),
             PLAN_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
+        )).into();
         if let Err(source) = std::fs::create_dir_all(&root) {
             return StagedPlanOutcome::Error(planning_error(
                 StagedPlanReason::StagingDirectoryCreate,
@@ -522,7 +521,7 @@ impl StagedCompilePlan {
             let file_name = requested
                 .file_name()
                 .ok_or_else(|| missing_filename(StagedPlanReason::OutputMissingFilename))?;
-            let staged: NormalizedPath = root.join(file_name).into();
+            let staged: NormalizedPath = root.join(file_name);
             let requested_text = requested.to_string_lossy();
             let mut rewritten_args = args.to_vec();
             let mut replaced = false;
@@ -575,11 +574,11 @@ impl StagedCompilePlan {
         if has_unmodeled_link_output_option(args) {
             return StagedPlanOutcome::Unsupported(StagedPlanReason::UnmodeledSideOutput);
         }
-        let root = staging_dir.join(format!(
+        let root: NormalizedPath = staging_dir.join(format!(
             ".link-{}-{}",
             std::process::id(),
             PLAN_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
+        )).into();
         if let Err(source) = std::fs::create_dir_all(&root) {
             return StagedPlanOutcome::Error(planning_error(
                 StagedPlanReason::StagingDirectoryCreate,
@@ -602,7 +601,7 @@ impl StagedCompilePlan {
                 let filename = requested
                     .file_name()
                     .ok_or_else(|| missing_filename(StagedPlanReason::OutputMissingFilename))?;
-                let staged: NormalizedPath = root.join(filename).into();
+                let staged: NormalizedPath = root.join(filename);
                 if outputs.iter().any(|output: &StagedOutputPlan| {
                     output.requested == requested || output.staged == staged
                 }) {
@@ -680,14 +679,14 @@ impl StagedCompilePlan {
             .map(|output| output.staged.clone())
     }
 
-    pub(in crate::daemon::server) fn unexpected_staged_entries(&self) -> io::Result<Vec<PathBuf>> {
-        let declared: std::collections::HashSet<PathBuf> = self
+    pub(in crate::daemon::server) fn unexpected_staged_entries(&self) -> io::Result<Vec<NormalizedPath>> {
+        let declared: std::collections::HashSet<NormalizedPath> = self
             .outputs
             .iter()
-            .map(|output| output.staged.as_path().to_path_buf())
+            .map(|output| output.staged.clone())
             .collect();
         Ok(std::fs::read_dir(&self.root)?
-            .map(|entry| entry.map(|entry| entry.path()))
+            .map(|entry| entry.map(|entry| entry.path().into()))
             .collect::<io::Result<Vec<_>>>()?
             .into_iter()
             .filter(|path| !declared.contains(path))
@@ -918,7 +917,7 @@ impl Drop for StagedCompilePlan {
 
 fn absolute(path: &Path, cwd: &Path) -> NormalizedPath {
     if path.is_absolute() {
-        path.to_path_buf().into()
+        path.into()
     } else {
         cwd.join(path).into()
     }

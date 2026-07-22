@@ -1,27 +1,28 @@
 //! In-memory ledger for hardlink-tier materializations (#1039).
 
 use super::*;
+use crate::core::NormalizedPath;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 #[derive(Clone, Debug)]
 struct LinkRecord {
-    blob_path: PathBuf,
+    blob_path: NormalizedPath,
     expected_hash: [u8; 32],
-    outputs: BTreeSet<PathBuf>,
+    outputs: BTreeSet<NormalizedPath>,
     suspect: bool,
 }
 
 static REGISTRY: OnceLock<dashmap::DashMap<FileId, LinkRecord>> = OnceLock::new();
-static OUTPUT_IDS: OnceLock<dashmap::DashMap<PathBuf, FileId>> = OnceLock::new();
+static OUTPUT_IDS: OnceLock<dashmap::DashMap<NormalizedPath, FileId>> = OnceLock::new();
 static WATCHER_AVAILABLE: AtomicBool = AtomicBool::new(true);
 
 fn registry() -> &'static dashmap::DashMap<FileId, LinkRecord> {
     REGISTRY.get_or_init(dashmap::DashMap::new)
 }
 
-fn output_ids() -> &'static dashmap::DashMap<PathBuf, FileId> {
+fn output_ids() -> &'static dashmap::DashMap<NormalizedPath, FileId> {
     OUTPUT_IDS.get_or_init(dashmap::DashMap::new)
 }
 
@@ -41,13 +42,14 @@ fn hash_file(path: &Path) -> std::io::Result<[u8; 32]> {
     Ok(*hasher.finalize().as_bytes())
 }
 
-fn digest_path(blob_path: &Path) -> PathBuf {
+fn digest_path(blob_path: &Path) -> NormalizedPath {
     let name = blob_path.file_name().unwrap_or_default().to_string_lossy();
     let sidecar_name = format!(".cowhash-{}", blake3::hash(name.as_bytes()).to_hex());
     blob_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join(sidecar_name)
+        .into()
 }
 
 /// Writes the digest sidecar keyed by `named_as`'s digest path, but hashes
@@ -90,7 +92,7 @@ pub(in crate::daemon::server) fn register_trusted_blob_for_test(
     registry().insert(
         id,
         LinkRecord {
-            blob_path: blob_path.to_path_buf(),
+            blob_path: blob_path.into(),
             expected_hash: [0; 32],
             outputs: BTreeSet::new(),
             suspect: false,
@@ -105,7 +107,7 @@ pub(in crate::daemon::server) fn register_trusted_blob_for_test(
 /// attempt. This lets artifact_io clean up after a later blob-rename failure
 /// without deleting a sidecar that existed before the attempt started.
 pub(in crate::daemon::server) struct AuthoritativeBlobDigest {
-    path: Option<PathBuf>,
+    path: Option<NormalizedPath>,
     digest: [u8; 32],
 }
 
@@ -313,7 +315,7 @@ pub(in crate::daemon::server) fn prepare_hardlink_registration(
                 }
                 let expected_hash = hash_file(blob_path)?;
                 entry.insert(LinkRecord {
-                    blob_path: blob_path.to_path_buf(),
+                    blob_path: blob_path.into(),
                     expected_hash,
                     outputs: BTreeSet::new(),
                     suspect: false,
@@ -323,23 +325,24 @@ pub(in crate::daemon::server) fn prepare_hardlink_registration(
         dashmap::mapref::entry::Entry::Vacant(entry) => {
             let expected_hash = hash_file(blob_path)?;
             entry.insert(LinkRecord {
-                blob_path: blob_path.to_path_buf(),
+                blob_path: blob_path.into(),
                 expected_hash,
                 outputs: BTreeSet::new(),
                 suspect: false,
             });
         }
     }
-    output_ids().insert(output_path.to_path_buf(), id);
+    output_ids().insert(output_path.into(), id);
     Ok(id)
 }
 
 pub(in crate::daemon::server) fn cancel_hardlink_registration(id: FileId, output_path: &Path) {
+    let output_path = NormalizedPath::new(output_path);
     if output_ids()
-        .get(output_path)
+        .get(&output_path)
         .is_some_and(|entry| *entry == id)
     {
-        output_ids().remove(output_path);
+        output_ids().remove(&output_path);
     }
 }
 
@@ -353,7 +356,8 @@ pub(in crate::daemon::server) fn commit_hardlink_registration(
             "hardlink registration disappeared before commit",
         ));
     };
-    match get_file_id(output_path) {
+    let output_path = NormalizedPath::new(output_path);
+    match get_file_id(output_path.as_path()) {
         Some(actual) if actual == id => {}
         Some(_mismatched) => {
             // The path now resolves to a *different* file identity than the
@@ -362,7 +366,7 @@ pub(in crate::daemon::server) fn commit_hardlink_registration(
             // re-hashes it before serving it.
             record.suspect = true;
             drop(record);
-            cancel_hardlink_registration(id, output_path);
+            cancel_hardlink_registration(id, output_path.as_path());
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "hardlink output identity changed before registration commit",
@@ -378,34 +382,36 @@ pub(in crate::daemon::server) fn commit_hardlink_registration(
             // commit failure the same way it already does for a failed
             // std::fs::hard_link, instead of hard-failing (issue #1042).
             drop(record);
-            cancel_hardlink_registration(id, output_path);
+            cancel_hardlink_registration(id, output_path.as_path());
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "hardlink output identity transiently unavailable before registration commit",
             ));
         }
     }
-    record.outputs.insert(output_path.to_path_buf());
+    record.outputs.insert(output_path);
     drop(record);
     Ok(())
 }
 
 pub(in crate::daemon::server) fn prepare_registered_detach(
     path: &Path,
-) -> Option<(FileId, PathBuf)> {
+) -> Option<(FileId, NormalizedPath)> {
+    let path = NormalizedPath::new(path);
     let id = output_ids()
-        .get(path)
+        .get(&path)
         .map(|entry| *entry)
-        .or_else(|| get_file_id(path))?;
+        .or_else(|| get_file_id(path.as_path()))?;
     registry()
         .get(&id)
         .map(|record| (id, record.blob_path.clone()))
 }
 
 pub(in crate::daemon::server) fn commit_registered_detach(id: FileId, path: &Path) {
-    output_ids().remove(path);
+    let path = NormalizedPath::new(path);
+    output_ids().remove(&path);
     let remove = if let Some(mut record) = registry().get_mut(&id) {
-        record.outputs.remove(path);
+        record.outputs.remove(&path);
         record.outputs.is_empty() && !record.suspect
     } else {
         false
@@ -443,7 +449,7 @@ pub(in crate::daemon::server) fn verify_registered_blob(blob_path: &Path) -> std
                 registry().insert(
                     id,
                     LinkRecord {
-                        blob_path: blob_path.to_path_buf(),
+                        blob_path: blob_path.into(),
                         expected_hash,
                         outputs: BTreeSet::new(),
                         suspect: false,
@@ -572,12 +578,13 @@ pub(in crate::daemon::server) fn mark_removed_links_suspect<'a>(
     paths: impl IntoIterator<Item = &'a Path>,
 ) {
     for path in paths {
-        let Some((_, id)) = output_ids().remove(path) else {
+        let path = NormalizedPath::new(path);
+        let Some((_, id)) = output_ids().remove(&path) else {
             continue;
         };
         if let Some(mut record) = registry().get_mut(&id) {
             record.suspect = true;
-            record.outputs.remove(path);
+            record.outputs.remove(&path);
         }
     }
 }

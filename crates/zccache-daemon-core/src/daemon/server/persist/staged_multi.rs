@@ -1,7 +1,7 @@
 //! Private staging plan for one unit of a multi-source C/C++ invocation.
 
 use super::*;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static MULTI_PLAN_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -193,7 +193,7 @@ pub(in crate::daemon::server) struct StagedMultiUnitPlan {
     pub(in crate::daemon::server) depfile: NormalizedPath,
     pub(in crate::daemon::server) outputs: Vec<StagedOutputPlan>,
     pub(in crate::daemon::server) msvc_syntax: bool,
-    root: PathBuf,
+    root: NormalizedPath,
 }
 
 impl StagedMultiUnitPlan {
@@ -233,19 +233,19 @@ impl StagedMultiUnitPlan {
                 ),
             });
         };
-        let root = staging_dir.join(format!(
+        let root: NormalizedPath = staging_dir.join(format!(
             ".multi-{}-{}",
             std::process::id(),
             MULTI_PLAN_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
+        )).into();
         if let Err(source) = std::fs::create_dir_all(&root) {
             return StagedPlanOutcome::Error(StagedPlanError {
                 reason: StagedPlanReason::StagingDirectoryCreate,
                 source,
             });
         }
-        let staged: NormalizedPath = root.join(filename).into();
-        let depfile: NormalizedPath = root.join("unit.d").into();
+        let staged: NormalizedPath = root.join(filename);
+        let depfile: NormalizedPath = root.join("unit.d");
         let user_depfile = args
             .iter()
             .any(|arg| matches!(arg.as_str(), "-MD" | "-MMD"));
