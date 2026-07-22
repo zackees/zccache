@@ -165,11 +165,13 @@ impl StagedCompilePlan {
         if rustc_has_missing_option_value(args) {
             return StagedPlanOutcome::Unsupported(StagedPlanReason::MissingOptionValue);
         }
-        let root: NormalizedPath = staging_dir.join(format!(
-            ".compile-{}-{}",
-            std::process::id(),
-            PLAN_COUNTER.fetch_add(1, Ordering::Relaxed)
-        )).into();
+        let root: NormalizedPath = staging_dir
+            .join(format!(
+                ".compile-{}-{}",
+                std::process::id(),
+                PLAN_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ))
+            .into();
         if let Err(source) = std::fs::create_dir_all(&root) {
             return StagedPlanOutcome::Error(planning_error(
                 StagedPlanReason::StagingDirectoryCreate,
@@ -212,10 +214,9 @@ impl StagedCompilePlan {
                 } else {
                     outputs.push(StagedOutputPlan {
                         requested,
-                        staged: root
-                            .join(Path::new(&path).file_name().ok_or_else(|| {
-                                missing_filename(StagedPlanReason::OutputMissingFilename)
-                            })?),
+                        staged: root.join(Path::new(&path).file_name().ok_or_else(|| {
+                            missing_filename(StagedPlanReason::OutputMissingFilename)
+                        })?),
                     });
                 }
             }
@@ -362,11 +363,13 @@ impl StagedCompilePlan {
         {
             return StagedPlanOutcome::Unsupported(StagedPlanReason::MissingRequiredOutputFlag);
         }
-        let root: NormalizedPath = staging_dir.join(format!(
-            ".compile-{}-{}",
-            std::process::id(),
-            PLAN_COUNTER.fetch_add(1, Ordering::Relaxed)
-        )).into();
+        let root: NormalizedPath = staging_dir
+            .join(format!(
+                ".compile-{}-{}",
+                std::process::id(),
+                PLAN_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ))
+            .into();
         if let Err(source) = std::fs::create_dir_all(&root) {
             return StagedPlanOutcome::Error(planning_error(
                 StagedPlanReason::StagingDirectoryCreate,
@@ -505,11 +508,13 @@ impl StagedCompilePlan {
         if !staged_lane_enabled(crate::compiler::CompilerFamily::Gcc) {
             return StagedPlanOutcome::Unsupported(StagedPlanReason::LaneDisabled);
         }
-        let root: NormalizedPath = staging_dir.join(format!(
-            ".compile-{}-{}",
-            std::process::id(),
-            PLAN_COUNTER.fetch_add(1, Ordering::Relaxed)
-        )).into();
+        let root: NormalizedPath = staging_dir
+            .join(format!(
+                ".compile-{}-{}",
+                std::process::id(),
+                PLAN_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ))
+            .into();
         if let Err(source) = std::fs::create_dir_all(&root) {
             return StagedPlanOutcome::Error(planning_error(
                 StagedPlanReason::StagingDirectoryCreate,
@@ -574,11 +579,13 @@ impl StagedCompilePlan {
         if has_unmodeled_link_output_option(args) {
             return StagedPlanOutcome::Unsupported(StagedPlanReason::UnmodeledSideOutput);
         }
-        let root: NormalizedPath = staging_dir.join(format!(
-            ".link-{}-{}",
-            std::process::id(),
-            PLAN_COUNTER.fetch_add(1, Ordering::Relaxed)
-        )).into();
+        let root: NormalizedPath = staging_dir
+            .join(format!(
+                ".link-{}-{}",
+                std::process::id(),
+                PLAN_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ))
+            .into();
         if let Err(source) = std::fs::create_dir_all(&root) {
             return StagedPlanOutcome::Error(planning_error(
                 StagedPlanReason::StagingDirectoryCreate,
@@ -679,7 +686,9 @@ impl StagedCompilePlan {
             .map(|output| output.staged.clone())
     }
 
-    pub(in crate::daemon::server) fn unexpected_staged_entries(&self) -> io::Result<Vec<NormalizedPath>> {
+    pub(in crate::daemon::server) fn unexpected_staged_entries(
+        &self,
+    ) -> io::Result<Vec<NormalizedPath>> {
         let declared: std::collections::HashSet<NormalizedPath> = self
             .outputs
             .iter()

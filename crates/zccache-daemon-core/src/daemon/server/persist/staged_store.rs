@@ -297,7 +297,8 @@ fn temporary_path(path: &Path, suffix: &str) -> NormalizedPath {
         std::process::id(),
         nonce,
         suffix
-    )).into()
+    ))
+    .into()
 }
 
 fn sync_file(path: &Path) -> io::Result<()> {

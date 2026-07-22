@@ -233,11 +233,13 @@ impl StagedMultiUnitPlan {
                 ),
             });
         };
-        let root: NormalizedPath = staging_dir.join(format!(
-            ".multi-{}-{}",
-            std::process::id(),
-            MULTI_PLAN_COUNTER.fetch_add(1, Ordering::Relaxed)
-        )).into();
+        let root: NormalizedPath = staging_dir
+            .join(format!(
+                ".multi-{}-{}",
+                std::process::id(),
+                MULTI_PLAN_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ))
+            .into();
         if let Err(source) = std::fs::create_dir_all(&root) {
             return StagedPlanOutcome::Error(StagedPlanError {
                 reason: StagedPlanReason::StagingDirectoryCreate,
