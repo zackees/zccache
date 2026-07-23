@@ -25,6 +25,7 @@ pub(super) struct StoreOutcomeRequest<'a> {
     pub(super) cwd_path: &'a NormalizedPath,
     pub(super) ctx: &'a CompileContext,
     pub(super) compilation: &'a crate::compiler::CacheableCompilation,
+    pub(super) dependency_mode: DependencyDiscoveryMode,
     pub(super) rustc_args_opt: Option<&'a crate::depgraph::RustcParsedArgs>,
     pub(super) rustc_extern_paths: &'a [NormalizedPath],
     /// Request env the compile ran under — the value source for rustc
@@ -128,6 +129,7 @@ struct CompileScanRequest {
     depfile_strategy: DepfileStrategy,
     show_includes_scan: Option<crate::depgraph::ScanResult>,
     include_search: crate::depgraph::IncludeSearchPaths,
+    dependency_mode: DependencyDiscoveryMode,
 }
 
 struct CompileScanCollection {
@@ -162,6 +164,7 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
         depfile_strategy,
         show_includes_scan,
         include_search,
+        dependency_mode,
     } = req;
 
     if is_rustc {
@@ -193,16 +196,27 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
 
     let mut user_depfile_capture = None;
     let mut depfile_parse_warning = None;
-    let scan_result = match &depfile_strategy {
+    let mut used_static_fallback = false;
+    let mut scan_result = match &depfile_strategy {
         DepfileStrategy::Injected { path }
-        | DepfileStrategy::UserSpecified { path }
-        | DepfileStrategy::UserDefault { path } => {
+        | DepfileStrategy::UserSpecified { path, .. }
+        | DepfileStrategy::UserDefault { path, .. } => {
             let want_capture = matches!(
                 depfile_strategy,
                 DepfileStrategy::UserSpecified { .. } | DepfileStrategy::UserDefault { .. }
             );
+            let augment_system_headers = matches!(
+                depfile_strategy,
+                DepfileStrategy::UserSpecified {
+                    augment_system_headers: true,
+                    ..
+                } | DepfileStrategy::UserDefault {
+                    augment_system_headers: true,
+                    ..
+                }
+            );
             match crate::depgraph::depfile::parse_depfile_path(path, &source_path, &cwd_path) {
-                Ok(result) => {
+                Ok(mut result) => {
                     if want_capture {
                         if let Ok(bytes) = std::fs::read(path) {
                             user_depfile_capture = Some((path.clone(), bytes));
@@ -211,9 +225,19 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
                     if matches!(depfile_strategy, DepfileStrategy::Injected { .. }) {
                         let _ = std::fs::remove_file(path);
                     }
+                    if augment_system_headers {
+                        result = crate::depgraph::depfile::merge_scan_results_conservative(
+                            result,
+                            crate::depgraph::scanner::scan_recursive(
+                                &source_path,
+                                &include_search,
+                            ),
+                        );
+                    }
                     result
                 }
                 Err(e) => {
+                    used_static_fallback = true;
                     depfile_parse_warning = Some(format!("path={} error={e}", path.display()));
                     if matches!(depfile_strategy, DepfileStrategy::Injected { .. }) {
                         let _ = std::fs::remove_file(path);
@@ -226,12 +250,10 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
             match crate::depgraph::depfile::parse_depfile_path(path, &source_path, &cwd_path) {
                 Ok(result) => {
                     let _ = std::fs::remove_file(path);
-                    crate::depgraph::depfile::merge_scan_results(
-                        result,
-                        crate::depgraph::scanner::scan_recursive(&source_path, &include_search),
-                    )
+                    result
                 }
                 Err(e) => {
+                    used_static_fallback = true;
                     depfile_parse_warning = Some(format!("path={} error={e}", path.display()));
                     let _ = std::fs::remove_file(path);
                     crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
@@ -239,12 +261,20 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
             }
         }
         DepfileStrategy::ShowIncludes => show_includes_scan.unwrap_or_else(|| {
+            used_static_fallback = true;
             crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
         }),
         DepfileStrategy::Unsupported => {
+            used_static_fallback = true;
             crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
         }
     };
+    apply_static_fallback_policy(
+        dependency_mode,
+        used_static_fallback,
+        &mut scan_result,
+        &include_search,
+    );
 
     CompileScanCollection {
         scan_result,
@@ -253,6 +283,21 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
         depfile_parse_warning,
     }
 }
+
+fn apply_static_fallback_policy(
+    dependency_mode: DependencyDiscoveryMode,
+    used_static_fallback: bool,
+    result: &mut crate::depgraph::ScanResult,
+    include_search: &crate::depgraph::IncludeSearchPaths,
+) {
+    if used_static_fallback {
+        dependency_mode.apply_static_fallback(result, include_search);
+    }
+}
+
+#[cfg(test)]
+#[path = "store_outcome_tests.rs"]
+mod tests;
 
 /// Drive the post-compile success path. Returns `Some(Response)` only when an
 /// output-collection failure forces an uncached `CompileResult`; otherwise
@@ -273,6 +318,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         cwd_path,
         ctx,
         compilation,
+        dependency_mode,
         rustc_args_opt,
         rustc_extern_paths,
         client_env,
@@ -396,6 +442,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         depfile_strategy,
         show_includes_scan,
         include_search: ctx.include_search.clone(),
+        dependency_mode,
     })
     .await;
     if let Some(warning) = &scan_collection.depfile_parse_warning {

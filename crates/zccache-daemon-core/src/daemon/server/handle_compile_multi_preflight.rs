@@ -226,12 +226,32 @@ impl InputSnapshot {
         ctx: &CompileContext,
         hashes: HashMap<NormalizedPath, ContentHash>,
         scan_cache: &crate::depgraph::scanner::RecursiveScanCache,
+        dependency_mode: DependencyDiscoveryMode,
     ) -> Self {
-        let scan = crate::depgraph::scanner::scan_recursive_cached(
-            source,
-            &ctx.include_search,
-            scan_cache,
-        );
+        let scan = match dependency_mode {
+            DependencyDiscoveryMode::AllHeaders => {
+                crate::depgraph::scanner::scan_recursive_cached(
+                    source,
+                    &ctx.include_search,
+                    scan_cache,
+                )
+            }
+            DependencyDiscoveryMode::SkipSystemHeaders => {
+                crate::depgraph::scanner::scan_recursive_cached_pruned(
+                    source,
+                    &ctx.include_search,
+                    scan_cache,
+                    &|including_file, directive, path| {
+                        dependency_mode.tracks_static_include(
+                            including_file,
+                            directive,
+                            path,
+                            &ctx.include_search,
+                        )
+                    },
+                )
+            }
+        };
         let paths: HashSet<NormalizedPath> = hashes
             .into_keys()
             .chain(scan.resolved)
@@ -310,6 +330,87 @@ impl InputSnapshot {
     }
 }
 
+fn detach_direct_batch_outputs(
+    compilations: &[crate::compiler::CacheableCompilation],
+    original_args: &[String],
+    cwd: &NormalizedPath,
+) -> Result<(), Response> {
+    let response_family = direct_response_family(compilations[0].family, original_args);
+    let msvc_syntax = response_family == crate::compiler::CompilerFamily::Msvc;
+    let mut outputs: HashSet<NormalizedPath> = compilations
+        .iter()
+        .map(|compilation| {
+            if compilation.output_file.is_absolute() {
+                compilation.output_file.clone()
+            } else {
+                cwd.join(&compilation.output_file)
+            }
+        })
+        .collect();
+    outputs.extend(explicit_staged_side_outputs(
+        original_args,
+        msvc_syntax,
+        cwd,
+    ));
+    outputs.extend(derived_staged_side_outputs(
+        compilations,
+        original_args,
+        cwd,
+    ));
+    for compilation in compilations {
+        let source = if compilation.source_file.is_absolute() {
+            compilation.source_file.clone()
+        } else {
+            cwd.join(&compilation.source_file)
+        };
+        outputs.remove(&source);
+    }
+    for output in outputs {
+        if let Err(error) = break_output_hardlink_before_compile(&output) {
+            return Err(Response::Error {
+                message: format!(
+                    "failed to detach hardlinked multi-source output {}: {error}",
+                    output.display()
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+pub(super) async fn run_depfile_stdout_batch(
+    state: &Arc<SharedState>,
+    sid: &SessionId,
+    compiler: &NormalizedPath,
+    compilations: &[crate::compiler::CacheableCompilation],
+    original_args: &[String],
+    cwd: &NormalizedPath,
+    client_env: &Option<Vec<(String, String)>>,
+    stdin: &[u8],
+) -> Option<Response> {
+    if !super::types::depfile_targets_stdout(original_args) {
+        return None;
+    }
+    state.stats.record_non_cacheable();
+    record_session_stat(&state.sessions, sid, |stats| stats.record_non_cacheable());
+    if let Err(response) = detach_direct_batch_outputs(compilations, original_args, cwd) {
+        return Some(response);
+    }
+    Some(
+        run_compiler_direct(
+            compiler,
+            original_args,
+            cwd,
+            &state.sessions,
+            sid,
+            client_env,
+            stdin,
+            state.depfile_tmpdir.as_path(),
+        )
+        .await,
+    )
+}
+
 pub(super) async fn run_unsupported_batch(
     state: &Arc<SharedState>,
     sid: &SessionId,
@@ -318,8 +419,23 @@ pub(super) async fn run_unsupported_batch(
     original_args: &[String],
     cwd: &NormalizedPath,
     client_env: &Option<Vec<(String, String)>>,
+    stdin: &[u8],
 ) -> Option<Response> {
     use crate::daemon::staged_stats::{StagedCounter, StagedTiming};
+    if let Some(response) = run_depfile_stdout_batch(
+        state,
+        sid,
+        compiler,
+        compilations,
+        original_args,
+        cwd,
+        client_env,
+        stdin,
+    )
+    .await
+    {
+        return Some(response);
+    }
     if !staged_lane_enabled(compilations[0].family) {
         return None;
     }
@@ -354,49 +470,10 @@ pub(super) async fn run_unsupported_batch(
             state.profiler.staged.count(StagedCounter::PlanUnsupported);
             state.profiler.staged.failure(reason.failure());
             let response_family = direct_response_family(compilations[0].family, original_args);
-            let msvc_syntax = response_family == crate::compiler::CompilerFamily::Msvc;
-            let mut outputs: HashSet<NormalizedPath> = compilations
-                .iter()
-                .map(|compilation| {
-                    if compilation.output_file.is_absolute() {
-                        compilation.output_file.clone()
-                    } else {
-                        cwd.join(&compilation.output_file)
-                    }
-                })
-                .collect();
-            outputs.extend(explicit_staged_side_outputs(
-                original_args,
-                msvc_syntax,
-                cwd,
-            ));
-            outputs.extend(derived_staged_side_outputs(
-                compilations,
-                original_args,
-                cwd,
-            ));
-            // Primary outputs are the only paths this cache can have
-            // hardlinked on an earlier supported invocation. Unsupported
-            // side outputs are never persisted or materialized by zccache;
-            // explicit and safely derivable side paths above are detached as
-            // defense in depth, without mutating unrelated files under cwd.
-            for compilation in compilations {
-                let source = if compilation.source_file.is_absolute() {
-                    compilation.source_file.clone()
-                } else {
-                    cwd.join(&compilation.source_file)
-                };
-                outputs.remove(&source);
-            }
-            for output in outputs {
-                if let Err(error) = break_output_hardlink_before_compile(&output) {
-                    return Some(Response::Error {
-                        message: format!(
-                            "failed to detach hardlinked multi-source output {}: {error}",
-                            output.display()
-                        ),
-                    });
-                }
+            if let Err(response) =
+                detach_direct_batch_outputs(compilations, original_args, cwd)
+            {
+                return Some(response);
             }
             for _ in compilations {
                 state.stats.record_compilation();

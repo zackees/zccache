@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ci import benchmark_stats, perf_distribution
+from ci import benchmark_stats, perf_distribution, perf_watchdog
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -175,62 +174,61 @@ def run_benchmarks_once(
     language: str | None = None,
     benchmark_binary: Path | None = None,
     test_name: str | None = None,
+    watchdog_config: perf_watchdog.WatchdogConfig | None = None,
 ) -> tuple[int, str]:
-    outputs: list[str] = []
+    watchdog_config = watchdog_config or perf_watchdog.config_from_env()
     returncode = 0
     commands = _benchmark_commands(language, benchmark_binary, test_name)
     total_start = time.monotonic()
-    for cmd_index, command in enumerate(commands, start=1):
-        label = _command_label(command)
-        banner = (
-            f"[perf-guard] [{cmd_index}/{len(commands)}] "
-            f"[T+{_format_elapsed(time.monotonic() - total_start)}] "
-            f"starting {label}\n"
-        )
-        sys.stdout.write(banner)
-        sys.stdout.flush()
-        outputs.append(banner)
-
-        cache_dir = Path(tempfile.mkdtemp(prefix="zccache-perf-guard-cache-"))
-        env = _benchmark_env(cache_dir, language)
-        cmd_start = time.monotonic()
-        try:
-            with subprocess.Popen(
-                command,
-                cwd=REPO_ROOT,
-                env=env,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                bufsize=1,
-            ) as proc:
-                assert proc.stdout is not None
-                for line in proc.stdout:
-                    sys.stdout.write(line)
-                    sys.stdout.flush()
-                    outputs.append(line)
-                proc.wait()
-                cmd_returncode = proc.returncode
-            if cmd_returncode != 0 and returncode == 0:
-                returncode = cmd_returncode
-            cmd_elapsed = time.monotonic() - cmd_start
-            footer = (
-                f"[perf-guard] [{cmd_index}/{len(commands)}] "
-                f"finished {label} "
-                f"(exit={cmd_returncode}, elapsed={_format_elapsed(cmd_elapsed)})\n"
-            )
-            sys.stdout.write(footer)
-            sys.stdout.flush()
-            outputs.append(footer)
-        finally:
-            shutil.rmtree(cache_dir, ignore_errors=True)
-
-    output = "".join(outputs)
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path.write_text(output, encoding="utf-8")
-    return returncode, output
+    with log_path.open("w", encoding="utf-8", buffering=1) as log:
+        for cmd_index, command in enumerate(commands, start=1):
+            label = _command_label(command)
+            def status(message: str) -> None:
+                line = f"[perf-guard] {message}\n"
+                log.write(line)
+                log.flush()
+                sys.stdout.write(line)
+                sys.stdout.flush()
+            status(
+                f"[{cmd_index}/{len(commands)}] "
+                f"[T+{_format_elapsed(time.monotonic() - total_start)}] starting {label}"
+            )
+            cache_dir = Path(tempfile.mkdtemp(prefix="zccache-perf-guard-cache-"))
+            env = _benchmark_env(cache_dir, language)
+            cmd_start = time.monotonic()
+            timed_out = False
+            try:
+                result = perf_watchdog.run_streamed_command(
+                    command,
+                    cwd=REPO_ROOT,
+                    env=env,
+                    log=log,
+                    output_dir=log_path.parent,
+                    cache_dir=cache_dir,
+                    label=label,
+                    config=watchdog_config,
+                    status=status,
+                )
+                timed_out = result.timed_out
+                cmd_returncode = result.returncode
+                if cmd_returncode != 0 and returncode == 0:
+                    returncode = cmd_returncode
+                cmd_elapsed = time.monotonic() - cmd_start
+                status(
+                    f"[{cmd_index}/{len(commands)}] finished {label} "
+                    f"(exit={cmd_returncode}, elapsed={_format_elapsed(cmd_elapsed)})"
+                )
+            finally:
+                perf_watchdog.preserve_runtime_logs_and_remove_cache(
+                    cache_dir, log_path.parent, f"{cmd_index}-{label}"
+                )
+            if timed_out:
+                marker = log_path.parent.parent / ".watchdog-timeout"
+                marker.write_text(f"{label}\n", encoding="utf-8")
+                status(f"stopping this attempt after {label} timed out")
+                break
+    return returncode, log_path.read_text(encoding="utf-8")
 
 
 def _benchmark_env(cache_dir: Path, language: str | None) -> dict[str, str]:
@@ -821,6 +819,8 @@ def _run_attempts(
         )
         if returncode != 0:
             command_failures.append(attempt)
+        if returncode == perf_watchdog.TIMEOUT_EXIT_CODE:
+            break
 
         interim = evaluate_attempts(
             parsed_attempts,

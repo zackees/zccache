@@ -709,8 +709,8 @@ impl StagedCompilePlan {
         let path = match &strategy {
             crate::depgraph::DepfileStrategy::Injected { path }
             | crate::depgraph::DepfileStrategy::InjectedMmd { path }
-            | crate::depgraph::DepfileStrategy::UserSpecified { path }
-            | crate::depgraph::DepfileStrategy::UserDefault { path } => path,
+            | crate::depgraph::DepfileStrategy::UserSpecified { path, .. }
+            | crate::depgraph::DepfileStrategy::UserDefault { path, .. } => path,
             crate::depgraph::DepfileStrategy::ShowIncludes
             | crate::depgraph::DepfileStrategy::Unsupported => return strategy,
         };
@@ -729,11 +729,23 @@ impl StagedCompilePlan {
             crate::depgraph::DepfileStrategy::InjectedMmd { .. } => {
                 crate::depgraph::DepfileStrategy::InjectedMmd { path: staged }
             }
-            crate::depgraph::DepfileStrategy::UserSpecified { .. } => {
-                crate::depgraph::DepfileStrategy::UserSpecified { path: staged }
+            crate::depgraph::DepfileStrategy::UserSpecified {
+                augment_system_headers,
+                ..
+            } => {
+                crate::depgraph::DepfileStrategy::UserSpecified {
+                    path: staged,
+                    augment_system_headers,
+                }
             }
-            crate::depgraph::DepfileStrategy::UserDefault { .. } => {
-                crate::depgraph::DepfileStrategy::UserDefault { path: staged }
+            crate::depgraph::DepfileStrategy::UserDefault {
+                augment_system_headers,
+                ..
+            } => {
+                crate::depgraph::DepfileStrategy::UserDefault {
+                    path: staged,
+                    augment_system_headers,
+                }
             }
             crate::depgraph::DepfileStrategy::ShowIncludes
             | crate::depgraph::DepfileStrategy::Unsupported => strategy,

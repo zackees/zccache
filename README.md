@@ -700,6 +700,35 @@ A few things worth knowing:
   paths in both the diagnostic stream and (for PCH/MSVC) the artifact bytes
   themselves.
 
+### C/C++ dependency policy
+
+By default zccache asks GCC and Clang for an `-MD` dependency manifest and
+tracks every compiler-selected user and system header. The manifest is the
+pay-once cost: later C and C++ requests use the same direct-mode depgraph and
+do not rediscover the include closure.
+
+`--fast` is a broad opt-in preset. It currently omits system headers from new
+C/C++ manifests by using `-MMD`; `--skip-system-headers` selects that behavior
+directly. An explicit fine-grained setting overrides the preset:
+
+```bash
+zccache --fast clang++ -c src/main.cpp -o main.o
+zccache --skip-system-headers clang -c src/main.c -o main.o
+zccache --fast --scan-system-headers clang++ -c src/main.cpp -o main.o
+```
+
+The configuration equivalents are `ZCCACHE_FAST=1` and
+`ZCCACHE_SCAN_SYSTEM_HEADERS=0|1`. Policy flags must appear before the compiler
+name; identically named arguments after it are passed through to the compiler.
+User-supplied dependency switches remain authoritative: an explicit `-MD`
+manifest is tracked in full, while an explicit `-MMD` manifest is trusted as
+the compiler-classified user-header set.
+
+“System headers” follows the compiler's standard classification and includes
+the C library, C++ standard library, SDK, and compiler builtin headers. Skipping
+them trades correctness for speed: an SDK/header update that does not change
+the compiler executable can leave an otherwise matching cached object stale.
+
 ### Strict path validation
 
 Use `--strict-paths` or `ZCCACHE_STRICT_PATHS` to fail fast when compiler path

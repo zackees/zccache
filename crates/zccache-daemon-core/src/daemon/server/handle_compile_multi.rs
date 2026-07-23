@@ -13,29 +13,12 @@ mod types;
 
 use args::filter_multi_source_args;
 use preflight::InputSnapshot;
-use types::{PendingWrite, UnitCacheResult};
+pub(super) use types::materialize_multi_hit;
+use types::{
+    legacy_depfile_policy, owned_fast_hit_entry, MissOutcome, PendingWrite, PersistTaskParams,
+    UnitCacheCheck, UnitCacheResult,
+};
 
-struct UnitCacheCheck<'a> {
-    cwd_path: &'a Path,
-    key_root: &'a NormalizedPath,
-    system_includes: &'a [NormalizedPath],
-    shared_base: Option<&'a CompileContext>,
-    scan_cache: &'a crate::depgraph::scanner::RecursiveScanCache,
-    cache_now: Instant,
-}
-
-pub(super) fn materialize_multi_hit(
-    targets: &[(NormalizedPath, NormalizedPath)],
-    payloads: &[CachedPayload],
-) -> bool {
-    write_payloads_par(targets, payloads)
-}
-
-/// Check cache for a single compilation unit. Returns Hit (output written) or Miss.
-///
-/// If `shared_base` is provided, the CompileContext is built by cloning it and
-/// overriding the source_file, avoiding redundant arg parsing for multi-file
-/// compilations where all units share the same flags.
 fn check_unit_cache(
     state: &SharedState,
     compilation: &crate::compiler::CacheableCompilation,
@@ -46,8 +29,10 @@ fn check_unit_cache(
         key_root,
         system_includes,
         shared_base,
+        shared_dep_flags,
         scan_cache,
         cache_now,
+        dependency_mode,
     } = check;
     let t0 = std::time::Instant::now();
     let snap_clock = state.cache_system.current_clock();
@@ -64,15 +49,13 @@ fn check_unit_cache(
         cwd_path.join(&compilation.output_file).into()
     };
 
-    let (ctx, _dep_flags) = if let Some(base) = shared_base {
+    let shared_context = shared_base.is_some();
+    let (mut ctx, dep_flags) = if let Some(base) = shared_base {
         let mut ctx = base.clone();
         ctx.source_file = source_path.clone();
         (
             ctx,
-            UserDepFlags {
-                has_md: false,
-                mf_path: None,
-            },
+            shared_dep_flags.cloned().unwrap_or_default(),
         )
     } else {
         match build_compile_context(
@@ -86,11 +69,15 @@ fn check_unit_cache(
             BuildContextResult::Rustc { compat_ctx, .. } => (compat_ctx, UserDepFlags::default()),
         }
     };
+    if !shared_context {
+        dependency_mode.apply_to_cc_context(&mut ctx, &dep_flags);
+    }
+    DependencyDiscoveryMode::apply_user_depfile_content_to_cc_context(
+        &mut ctx,
+        &dep_flags,
+        &compilation.original_args,
+    );
     let t_ctx = t0.elapsed();
-    // Issue #474: PCH / MSVC compiles take a per-worktree salt so the
-    // resulting cache entry can't be cross-served between sibling
-    // worktrees. Mirror of the single-file gate in
-    // `pipeline.rs::handle_compile_request`.
     let source_mode_for_key = if matches!(
         compilation
             .output_file
@@ -116,10 +103,9 @@ fn check_unit_cache(
     let t_register = t0.elapsed();
 
     // ── Ultra-fast path: per-file freshness skip ────────────────────
-    // If the watcher is active and none of the source/header files have
-    // changed since the last verified hit, skip ALL hash/depgraph work.
     if state.watcher_active.load(Ordering::Acquire) {
-        if let Some(entry) = state.fast_hit_cache.get(&context_key) {
+        let entry = owned_fast_hit_entry(&state.fast_hit_cache, &context_key);
+        if let Some(entry) = entry {
             if cache_entry_fresh_at(cache_now, entry.cached_at, FAST_HIT_MAX_AGE)
                 && context_files_fresh(state, &context_key, &source_path, entry.clock)
             {
@@ -197,7 +183,6 @@ fn check_unit_cache(
         }
     }
 
-    // Hash source
     let source_hash = match hash_file(&state.cache_system, &source_path, snap_clock) {
         Ok(h) => h,
         Err(_) => {
@@ -212,7 +197,6 @@ fn check_unit_cache(
     };
     let t_hash_source = t0.elapsed();
 
-    // Hash known headers + force-includes in parallel
     let mut hash_map: HashMap<NormalizedPath, ContentHash> = HashMap::new();
     hash_map.insert(source_path.clone(), source_hash);
     {
@@ -235,7 +219,6 @@ fn check_unit_cache(
     }
     let t_hash_headers = t0.elapsed();
 
-    // Depgraph check
     let verdict = {
         let is_fresh = |p: &Path| {
             let path = NormalizedPath::new(p);
@@ -255,7 +238,6 @@ fn check_unit_cache(
     };
     let t_depgraph = t0.elapsed();
 
-    // Try to serve from cache
     let depgraph_claimed_hit = matches!(verdict, crate::depgraph::CacheVerdict::Hit { .. });
     if let crate::depgraph::CacheVerdict::Hit { artifact_key }
     | crate::depgraph::CacheVerdict::SourceChanged { artifact_key } = verdict
@@ -344,7 +326,14 @@ fn check_unit_cache(
     }
 
     state.fast_hit_cache.remove(&context_key);
-    let input_snapshot = InputSnapshot::capture(state, &source_path, &ctx, hash_map, scan_cache);
+    let input_snapshot = InputSnapshot::capture(
+        state,
+        &source_path,
+        &ctx,
+        hash_map,
+        scan_cache,
+        dependency_mode,
+    );
     UnitCacheResult::Miss {
         source_path,
         output_path,
@@ -367,7 +356,9 @@ pub(super) async fn handle_compile_multi(
     worktree_root: Option<NormalizedPath>,
     system_includes: Vec<NormalizedPath>,
     client_env: Option<Vec<(String, String)>>,
+    stdin: Vec<u8>,
     compile_start: Instant,
+    dependency_mode: DependencyDiscoveryMode,
 ) -> Response {
     let snap_clock = state.cache_system.current_clock();
     let mut all_stdout = Vec::new();
@@ -382,6 +373,7 @@ pub(super) async fn handle_compile_multi(
         &original_args,
         &cwd_path,
         &client_env,
+        &stdin,
     )
     .await
     {
@@ -392,7 +384,7 @@ pub(super) async fn handle_compile_multi(
     // All units share the same original_args (via Arc) — only source/output
     // differ. Parse the flags once and reuse the base CompileContext, avoiding
     // redundant arg parsing for each of the N compilation units.
-    let shared_base: Arc<CompileContext> = {
+    let (shared_base, shared_dep_flags): (Arc<CompileContext>, UserDepFlags) = {
         let first = &compilations[0];
         let parsed = if first.family == crate::compiler::CompilerFamily::Msvc
             || crate::compiler::parse_msvc::looks_like_msvc_args(&first.original_args)
@@ -401,13 +393,15 @@ pub(super) async fn handle_compile_multi(
         } else {
             crate::depgraph::args::parse_gnu_args(&first.original_args, &cwd_path)
         };
+        let dep_flags = parsed.dep_flags.clone();
         let mut base = CompileContext::from_parsed_args(parsed);
         for path in &system_includes {
             if !base.include_search.system.contains(path) {
                 base.include_search.system.push(path.clone());
             }
         }
-        Arc::new(base)
+        dependency_mode.apply_to_cc_context(&mut base, &dep_flags);
+        (Arc::new(base), dep_flags)
     };
 
     // ── Phase 1: Check cache for each unit (parallel, as-completed) ──
@@ -420,6 +414,7 @@ pub(super) async fn handle_compile_multi(
         let system_includes = system_includes.clone();
         let compilation = compilation.clone();
         let shared_base = Arc::clone(&shared_base);
+        let shared_dep_flags = shared_dep_flags.clone();
         let scan_cache = Arc::clone(&scan_cache);
         let cache_now = compile_start;
         join_set.spawn_blocking(move || {
@@ -433,15 +428,16 @@ pub(super) async fn handle_compile_multi(
                         key_root: &key_root,
                         system_includes: &system_includes,
                         shared_base: Some(&shared_base),
+                        shared_dep_flags: Some(&shared_dep_flags),
                         scan_cache: &scan_cache,
                         cache_now,
+                        dependency_mode,
                     },
                 ),
             )
         });
     }
 
-    // Collect results in original order
     let mut indexed_results: Vec<(usize, UnitCacheResult)> = Vec::with_capacity(compilations.len());
     while let Some(result) = join_set.join_next().await {
         match result {
@@ -482,7 +478,6 @@ pub(super) async fn handle_compile_multi(
                 );
             }
         }
-        // Drain pending writes from hits for batched parallel execution
         if let UnitCacheResult::Hit {
             ref mut pending_writes,
             ..
@@ -567,14 +562,13 @@ pub(super) async fn handle_compile_multi(
         &client_env,
         &mut all_stdout,
         &mut all_stderr,
+        dependency_mode,
     )
     .await
     {
         return response;
     }
 
-    // Build compiler args from original_args, removing hit source files by index.
-    // This preserves all original flags (including unknown ones) exactly as passed.
     let supports_depfile = compilations[0].family.supports_depfile();
     let hit_indices: HashSet<usize> = {
         let miss_set: HashSet<&NormalizedPath> = miss_sources.iter().copied().collect();
@@ -603,8 +597,11 @@ pub(super) async fn handle_compile_multi(
         .collect();
     let mut compiler_args =
         filter_multi_source_args(&original_args, &source_indices, &retained_source_indices);
+    let depfile_policy = legacy_depfile_policy(&original_args, dependency_mode);
     if supports_depfile {
-        compiler_args.push("-MD".to_string());
+        if let Some(flag) = depfile_policy.injected_flag {
+            compiler_args.push(flag.to_string());
+        }
     }
 
     let _rsp_guard = match crate::compiler::response_file::write_response_file_if_needed(
@@ -680,18 +677,6 @@ pub(super) async fn handle_compile_multi(
     // batch the sequential version dominated wall time (~12ms × 50 = 600ms).
     // We fan out the per-miss work onto `spawn_blocking` and batch the async
     // sync points (watch_directories, apply_changes) at the end.
-    struct MissOutcome {
-        dep_dirs: Vec<NormalizedPath>,
-        output_path: NormalizedPath,
-        persist: Option<PersistTaskParams>,
-    }
-    struct PersistTaskParams {
-        artifact_key_hex: String,
-        persist_meta: ArtifactIndex,
-        payloads: Vec<Arc<Vec<u8>>>,
-        payload_size: usize,
-    }
-
     let mut miss_set: tokio::task::JoinSet<MissOutcome> = tokio::task::JoinSet::new();
     for unit in &unit_results {
         let (source_path, output_path, context_key, ctx) = match unit {
@@ -713,6 +698,7 @@ pub(super) async fn handle_compile_multi(
         let state_task = Arc::clone(&state);
         let cwd_path_task = cwd_path.clone();
         let sid_task = sid;
+        let dependency_mode_task = dependency_mode;
         miss_set.spawn_blocking(move || {
             // The compiler just wrote `output_path`; we only need its size for
             // bookkeeping (artifact-bytes stats, ArtifactIndex.output_sizes).
@@ -725,10 +711,9 @@ pub(super) async fn handle_compile_multi(
                 .map(|m| m.len())
                 .unwrap_or(0);
 
-            // Scan includes: use depfile if available, fall back to scanner.
-            let scan_result = if supports_depfile {
+            let mut used_static_fallback = !supports_depfile;
+            let mut scan_result = if supports_depfile {
                 let d_path = source_path.with_extension("d");
-                // Multi-file -MD places .d files relative to the source
                 let cwd_d_path = cwd_path_task.join(
                     d_path
                         .file_name()
@@ -754,6 +739,7 @@ pub(super) async fn handle_compile_multi(
                         result
                     }
                     Err(e) => {
+                        used_static_fallback = true;
                         tracing::warn!(
                             "multi-file depfile parse failed for {}: {e}",
                             source_path.display()
@@ -764,13 +750,25 @@ pub(super) async fn handle_compile_multi(
             } else {
                 crate::depgraph::scanner::scan_recursive(&source_path, &ctx.include_search)
             };
+            if !used_static_fallback
+                && dependency_mode_task == DependencyDiscoveryMode::AllHeaders
+                && depfile_policy.excludes_system_headers
+            {
+                scan_result = crate::depgraph::depfile::merge_scan_results_conservative(
+                    scan_result,
+                    crate::depgraph::scanner::scan_recursive(&source_path, &ctx.include_search),
+                );
+            }
+            if used_static_fallback {
+                dependency_mode_task
+                    .apply_static_fallback(&mut scan_result, &ctx.include_search);
+            }
 
             let tracked_paths: Vec<NormalizedPath> = std::iter::once(source_path.clone())
                 .chain(scan_result.resolved.iter().cloned())
                 .collect();
             state_task.cache_system.register_tracked(&tracked_paths);
 
-            // Collect parent dirs for the batched watch_directories call.
             let dep_dirs: Vec<NormalizedPath> = {
                 let mut dirs = HashSet::new();
                 if let Some(parent) = source_path.parent() {
@@ -784,7 +782,6 @@ pub(super) async fn handle_compile_multi(
                 dirs.into_iter().collect()
             };
 
-            // Hash all files (source + headers) in parallel via rayon.
             let hash_map: HashMap<NormalizedPath, ContentHash> = {
                 use rayon::prelude::*;
                 let all_paths: Vec<&NormalizedPath> = std::iter::once(&source_path)
@@ -804,6 +801,7 @@ pub(super) async fn handle_compile_multi(
                 let path = NormalizedPath::new(p);
                 hash_map.get(&path).copied()
             };
+            let allow_fast_hit = !scan_result.has_computed;
             let update_result =
                 state_task
                     .dep_graph
@@ -877,15 +875,17 @@ pub(super) async fn handle_compile_multi(
                     .artifacts
                     .insert(artifact_key_hex.clone(), cached);
 
-                let current_clock = state_task.cache_system.current_clock();
-                state_task.fast_hit_cache.insert(
-                    context_key,
-                    FastHitEntry {
-                        clock: current_clock,
-                        artifact_key_hex: artifact_key_hex.clone(),
-                        cached_at: std::time::Instant::now(),
-                    },
-                );
+                if allow_fast_hit {
+                    let current_clock = state_task.cache_system.current_clock();
+                    state_task.fast_hit_cache.insert(
+                        context_key,
+                        FastHitEntry {
+                            clock: current_clock,
+                            artifact_key_hex: artifact_key_hex.clone(),
+                            cached_at: std::time::Instant::now(),
+                        },
+                    );
+                }
 
                 state_task.stats.record_miss(0, artifact_bytes);
                 let src = source_path.clone();
@@ -911,7 +911,6 @@ pub(super) async fn handle_compile_multi(
         });
     }
 
-    // Collect outcomes and batch the async sync points.
     let mut all_dep_dirs: HashSet<NormalizedPath> = HashSet::new();
     let mut all_miss_outputs: Vec<NormalizedPath> = Vec::new();
     let mut persist_jobs: Vec<PersistTaskParams> = Vec::new();
@@ -932,11 +931,9 @@ pub(super) async fn handle_compile_multi(
         }
     }
 
-    // Single batched watch_directories call (was 1 per miss).
     let dep_dirs_vec: Vec<NormalizedPath> = all_dep_dirs.into_iter().collect();
     watch_directories(&state, &dep_dirs_vec).await;
 
-    // Spawn the artifact-persist tasks now that locks are released.
     for job in persist_jobs {
         let artifact_dir = state.artifact_dir.clone();
         let key_hex = job.artifact_key_hex;

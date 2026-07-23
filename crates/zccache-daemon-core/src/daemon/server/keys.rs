@@ -371,12 +371,13 @@ pub(super) fn request_env_fingerprint_vars(
             // fast-path miss/hit decision diverges from the slow-path key
             // computation and worktrees with different target-dir leaf names
             // never reach the artifact lookup (issue #396).
-            let include = key.starts_with("CARGO_")
+            let include = (key.starts_with("CARGO_")
                 && key != "CARGO_MAKEFLAGS"
                 && key != "CARGO_INCREMENTAL"
                 && key != "CARGO_MANIFEST_DIR"
                 && key != "CARGO_MANIFEST_PATH"
-                && key != "CARGO_TARGET_DIR";
+                && key != "CARGO_TARGET_DIR")
+                || matches!(key, "ZCCACHE_FAST" | "ZCCACHE_SCAN_SYSTEM_HEADERS");
             include.then_some((key, value.as_str()))
         })
         .collect();
@@ -422,6 +423,7 @@ pub(super) fn request_fingerprint(
         h.update(&[0]);
         i += 1;
     }
+    update_user_depfile_raw_fingerprint(&mut h, args);
     let cwd = normalize_path_for_request_key(cwd, key_root);
     h.update(cwd.as_bytes());
     h.update(&[0]);
@@ -432,6 +434,34 @@ pub(super) fn request_fingerprint(
         h.update(&[0]);
     }
     h.finalize()
+}
+
+fn update_user_depfile_raw_fingerprint(
+    hasher: &mut crate::hash::StreamHasher,
+    args: &[String],
+) {
+    if !args.iter().any(|arg| matches!(arg.as_str(), "-MD" | "-MMD")) {
+        return;
+    }
+    hasher.update(b"user-depfile-raw-argv\0");
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "-MF" {
+            if args.get(index + 1).is_some_and(|value| value == "-") {
+                hasher.update(b"-MF-stdout\0");
+            }
+            index += 2;
+            continue;
+        }
+        if arg == "-MF-" {
+            hasher.update(b"-MF-stdout\0");
+        } else if !arg.starts_with("-MF") {
+            hasher.update(arg.as_bytes());
+            hasher.update(&[0]);
+        }
+        index += 1;
+    }
 }
 
 pub(super) fn request_cache_input_paths(

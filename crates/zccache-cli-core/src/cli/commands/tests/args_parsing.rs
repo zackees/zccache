@@ -15,6 +15,42 @@ use super::super::session::{
 use crate::artifact::rust_plan_gha_version;
 
 #[test]
+fn compile_policy_flags_parse_at_global_and_explicit_wrap_paths() {
+    use clap::Parser;
+
+    let global = Cli::try_parse_from([
+        "zccache",
+        "--fast",
+        "--skip-system-headers",
+        "status",
+    ])
+    .unwrap();
+    assert!(global.fast);
+    assert!(global.skip_system_headers);
+    assert!(!global.scan_system_headers);
+
+    let explicit = Cli::try_parse_from([
+        "zccache",
+        "wrap",
+        "--fast",
+        "--scan-system-headers",
+        "clang",
+        "-c",
+        "main.c",
+    ])
+    .unwrap();
+    assert!(matches!(
+        explicit.command,
+        Some(Commands::Wrap {
+            fast: true,
+            scan_system_headers: true,
+            skip_system_headers: false,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn rust_plan_cli_parses_validate_restore_save() {
     use clap::Parser;
     let validate = Cli::try_parse_from([

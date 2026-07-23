@@ -190,29 +190,57 @@ pub(in crate::daemon::server) struct StagedMultiUnitPlan {
     pub(in crate::daemon::server) depfile: NormalizedPath,
     pub(in crate::daemon::server) outputs: Vec<StagedOutputPlan>,
     pub(in crate::daemon::server) msvc_syntax: bool,
+    pub(in crate::daemon::server) depfile_excludes_system_headers: bool,
     root: NormalizedPath,
 }
 
 impl StagedMultiUnitPlan {
-    pub(in crate::daemon::server) fn build(
+    pub(in crate::daemon::server) fn build_with_depfile_flag(
         staging_dir: &Path,
         family: crate::compiler::CompilerFamily,
         args: Vec<String>,
         requested_output: &NormalizedPath,
         cwd: &Path,
+        depfile_flag: &str,
     ) -> StagedPlanOutcome<Self> {
         if !staged_lane_enabled(family) {
             return StagedPlanOutcome::Unsupported(StagedPlanReason::LaneDisabled);
         }
-        Self::build_enabled(staging_dir, family, args, requested_output, cwd)
+        Self::build_enabled_with_depfile_flag(
+            staging_dir,
+            family,
+            args,
+            requested_output,
+            cwd,
+            depfile_flag,
+        )
     }
 
+    #[cfg(test)]
     fn build_enabled(
         staging_dir: &Path,
         family: crate::compiler::CompilerFamily,
         args: Vec<String>,
         requested_output: &NormalizedPath,
         cwd: &Path,
+    ) -> StagedPlanOutcome<Self> {
+        Self::build_enabled_with_depfile_flag(
+            staging_dir,
+            family,
+            args,
+            requested_output,
+            cwd,
+            "-MD",
+        )
+    }
+
+    fn build_enabled_with_depfile_flag(
+        staging_dir: &Path,
+        family: crate::compiler::CompilerFamily,
+        args: Vec<String>,
+        requested_output: &NormalizedPath,
+        cwd: &Path,
+        depfile_flag: &str,
     ) -> StagedPlanOutcome<Self> {
         match classify_staged_multi_invocation(
             family,
@@ -261,13 +289,22 @@ impl StagedMultiUnitPlan {
         let user_depfile = args
             .iter()
             .any(|arg| matches!(arg.as_str(), "-MD" | "-MMD"));
+        let depfile_excludes_system_headers = args.iter().fold(false, |current, arg| {
+            if arg == "-MMD" {
+                true
+            } else if arg == "-MD" {
+                false
+            } else {
+                current
+            }
+        });
         let rewritten_args = if msvc_syntax {
             rewrite_msvc_output(args, &staged)
         } else {
             let mut rewritten = args;
             let mut injected = vec!["-o".to_string(), staged.to_string_lossy().into_owned()];
             if !user_depfile {
-                injected.push("-MD".to_string());
+                injected.push(depfile_flag.to_string());
             }
             injected.extend(["-MF".to_string(), depfile.to_string_lossy().into_owned()]);
             if !has_depfile_target(&rewritten) {
@@ -292,6 +329,7 @@ impl StagedMultiUnitPlan {
             depfile,
             outputs,
             msvc_syntax,
+            depfile_excludes_system_headers,
             root,
         })
     }
@@ -757,6 +795,7 @@ mod tests {
         assert_eq!(plan.outputs.len(), 2);
         assert_eq!(plan.outputs[1].requested, requested.with_extension("d"));
         assert_eq!(plan.outputs[1].staged, plan.depfile);
+        assert!(plan.depfile_excludes_system_headers);
         assert!(!plan.rewritten_args.iter().any(|arg| arg == "-MD"));
     }
 

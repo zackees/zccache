@@ -103,7 +103,9 @@ fn cc_plan_stages_user_depfile_without_leaking_private_path() {
     let depfile: NormalizedPath = temp.path().join("deps/hello.d").into();
     let dep_flags = crate::depgraph::UserDepFlags {
         has_md: true,
+        has_mmd: false,
         mf_path: Some(depfile.clone()),
+        depfile_to_stdout: false,
     };
     let plan = StagedCompilePlan::cc(
         temp.path(),
@@ -131,10 +133,11 @@ fn cc_plan_stages_user_depfile_without_leaking_private_path() {
     let rewritten =
         plan.rewrite_depfile_strategy(crate::depgraph::DepfileStrategy::UserSpecified {
             path: depfile,
+            augment_system_headers: false,
         });
     assert!(matches!(
         rewritten,
-        crate::depgraph::DepfileStrategy::UserSpecified { path }
+        crate::depgraph::DepfileStrategy::UserSpecified { path, .. }
             if path.as_path().starts_with(temp.path())
     ));
     plan.cleanup().unwrap();

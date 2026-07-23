@@ -54,6 +54,20 @@ pub async fn start_daemon() -> (
     std::sync::Arc<tokio::sync::Notify>,
 ) {
     let cache_dir = zccache::test_support::temp_cache_dir().unwrap();
+    if let Some(sidecar) = std::env::var_os("PERF_GUARD_RUNTIME_ROOTS_FILE") {
+        use std::io::Write;
+        let sidecar = std::path::PathBuf::from(sidecar);
+        if let Some(parent) = sidecar.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(sidecar)
+        {
+            let _ = writeln!(file, "{}", cache_dir.path().display());
+        }
+    }
     let endpoint = zccache::ipc::unique_test_endpoint();
     let normalized = zccache::core::NormalizedPath::new(cache_dir.path());
     let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &normalized).unwrap();

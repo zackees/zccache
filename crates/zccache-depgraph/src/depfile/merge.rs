@@ -27,9 +27,20 @@ pub fn merge_scan_results(mut depfile: ScanResult, static_scan: ScanResult) -> S
     depfile
 }
 
+/// Merge a compiler manifest with a static scan without trusting incomplete
+/// static resolution for direct-mode hits.
+#[must_use]
+pub fn merge_scan_results_conservative(
+    depfile: ScanResult,
+    mut static_scan: ScanResult,
+) -> ScanResult {
+    static_scan.has_computed |= !static_scan.unresolved.is_empty();
+    merge_scan_results(depfile, static_scan)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::merge_scan_results;
+    use super::{merge_scan_results, merge_scan_results_conservative};
     use crate::scanner::ScanResult;
     use zccache_core::NormalizedPath;
 
@@ -55,5 +66,23 @@ mod tests {
         assert!(merged.resolved.contains(&system));
         assert_eq!(merged.unresolved, vec!["missing.h"]);
         assert!(!merged.has_computed);
+    }
+
+    #[test]
+    fn conservative_merge_disables_direct_mode_for_unresolved_static_include() {
+        let merged = merge_scan_results_conservative(
+            ScanResult {
+                resolved: Vec::new(),
+                unresolved: Vec::new(),
+                has_computed: false,
+            },
+            ScanResult {
+                resolved: Vec::new(),
+                unresolved: vec!["compiler-only-system-header.h".into()],
+                has_computed: false,
+            },
+        );
+
+        assert!(merged.has_computed);
     }
 }

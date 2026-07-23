@@ -508,6 +508,71 @@ fn request_fingerprint_includes_rust_key_env() {
     assert_ne!(a, b);
 }
 
+/// Dependency policy changes the effective C/C++ manifest and must therefore
+/// partition the request-level cache as well as the depgraph context key.
+#[test]
+fn request_fingerprint_separates_dependency_policy_env() {
+    let args = vec!["-c".to_string(), "src/main.cpp".to_string()];
+    let safe = vec![(
+        "ZCCACHE_SCAN_SYSTEM_HEADERS".to_string(),
+        "1".to_string(),
+    )];
+    let fast = vec![("ZCCACHE_FAST".to_string(), "1".to_string())];
+
+    let safe_key = request_fingerprint(
+        Path::new("/usr/bin/clang++"),
+        &args,
+        Path::new("/workspace"),
+        Some(Path::new("/workspace")),
+        Some(&safe),
+    );
+    let fast_key = request_fingerprint(
+        Path::new("/usr/bin/clang++"),
+        &args,
+        Path::new("/workspace"),
+        Some(Path::new("/workspace")),
+        Some(&fast),
+    );
+
+    assert_ne!(safe_key, fast_key);
+}
+
+#[test]
+fn request_fingerprint_preserves_raw_user_depfile_paths() {
+    let root_a = Path::new("/repo/worktree-a");
+    let root_b = Path::new("/repo/worktree-b");
+    let args_a = vec![
+        "-c".into(),
+        "/repo/worktree-a/src/main.cpp".into(),
+        "-o".into(),
+        "/repo/worktree-a/main.o".into(),
+        "-MD".into(),
+        "-MF".into(),
+        "/repo/worktree-a/deps.d".into(),
+    ];
+    let mut args_b = args_a.clone();
+    args_b[1] = "/repo/worktree-b/src/main.cpp".into();
+    args_b[3] = "/repo/worktree-b/main.o".into();
+    args_b[6] = "/repo/worktree-b/deps.d".into();
+
+    let a = request_fingerprint(Path::new("clang++"), &args_a, root_a, Some(root_a), None);
+    let b = request_fingerprint(Path::new("clang++"), &args_b, root_b, Some(root_b), None);
+    assert_ne!(a, b, "verbatim depfile prerequisites differ across roots");
+
+    args_b[1] = args_a[1].clone();
+    args_b[3] = args_a[3].clone();
+    args_b[5] = "-MF-".into();
+    args_b.remove(6);
+    let stdout = request_fingerprint(
+        Path::new("clang++"),
+        &args_b,
+        root_a,
+        Some(root_a),
+        None,
+    );
+    assert_ne!(a, stdout);
+}
+
 /// Issue #396 — `CARGO_TARGET_DIR` is output-placement state and must NOT
 /// alter the request fingerprint. Without this filter, two worktrees whose
 /// only difference is the target-dir leaf name produce divergent fingerprints

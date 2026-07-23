@@ -29,6 +29,10 @@ Environment variables:
                                 worktrees. Opt-in; default is off. See README
                                 'Path remapping' for guarantees and pitfalls.
   ZCCACHE_STRICT_PATHS=MODE     Same as --strict-paths (off | consistent | absolute).
+  ZCCACHE_FAST=BOOL             Enable the broad fast compile-policy preset.
+  ZCCACHE_SCAN_SYSTEM_HEADERS=BOOL
+                                Track system headers (default true). Overrides
+                                the --fast preset when explicitly configured.
   ZCCACHE_CACHE_DIR=PATH        Override the per-user cache root.
 ";
 
@@ -64,6 +68,24 @@ pub(crate) struct Cli {
         require_equals = true
     )]
     pub strict_paths: Option<String>,
+
+    /// Enable the broad fast compile-policy preset.
+    ///
+    /// For C/C++, this uses direct-mode manifests without system headers.
+    /// Explicit fine-grained policy flags override this preset.
+    #[arg(long)]
+    pub fast: bool,
+
+    /// Track compiler-classified system headers (the correctness-first default).
+    #[arg(long, conflicts_with = "skip_system_headers")]
+    pub scan_system_headers: bool,
+
+    /// Omit compiler-classified system headers from C/C++ dependency manifests.
+    ///
+    /// This can return stale cache entries when an SDK or toolchain's headers
+    /// change independently of its compiler executable.
+    #[arg(long, conflicts_with = "scan_system_headers")]
+    pub skip_system_headers: bool,
 
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -220,6 +242,15 @@ pub(crate) enum Commands {
             require_equals = true
         )]
         strict_paths: Option<String>,
+        /// Enable the broad fast compile-policy preset.
+        #[arg(long)]
+        fast: bool,
+        /// Track compiler-classified system headers.
+        #[arg(long, conflicts_with = "skip_system_headers")]
+        scan_system_headers: bool,
+        /// Omit compiler-classified system headers from dependency manifests.
+        #[arg(long, conflicts_with = "scan_system_headers")]
+        skip_system_headers: bool,
         /// The compiler and its arguments.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,

@@ -106,13 +106,13 @@ pub fn run_with_args(args: &[String]) -> ExitCode {
 
     // Auto-detect: if first arg isn't a known subcommand or a --flag, enter wrap mode.
     // e.g., `zccache clang++ -c foo.cpp -o foo.o`
-    match wrap::strip_leading_strict_paths_flags(&args[1..]) {
-        Ok((strict_paths, wrapper_args))
+    match wrap::strip_leading_wrapper_flags(&args[1..]) {
+        Ok((overrides, wrapper_args))
             if !wrapper_args.is_empty()
                 && !KNOWN_SUBCOMMANDS.contains(&wrapper_args[0].as_str())
                 && !wrapper_args[0].starts_with("--") =>
         {
-            return wrap::run_wrap(&wrapper_args, strict_paths);
+            return wrap::run_wrap(&wrapper_args, overrides);
         }
         Err(err) => {
             eprintln!("zccache: {err}");
@@ -123,7 +123,18 @@ pub fn run_with_args(args: &[String]) -> ExitCode {
 
     use clap::Parser;
     let cli = Cli::parse_from(args);
-    let global_strict_paths = cli.strict_paths.clone();
+    let global_overrides = match wrap::parse_wrapper_overrides(
+        cli.strict_paths.as_deref(),
+        cli.fast,
+        cli.scan_system_headers,
+        cli.skip_system_headers,
+    ) {
+        Ok(overrides) => overrides,
+        Err(err) => {
+            eprintln!("zccache: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     init_tracing();
 
@@ -147,10 +158,10 @@ pub fn run_with_args(args: &[String]) -> ExitCode {
         }
     };
 
-    dispatch(command, global_strict_paths.as_deref())
+    dispatch(command, global_overrides)
 }
 
-fn dispatch(command: Commands, global_strict_paths: Option<&str>) -> ExitCode {
+fn dispatch(command: Commands, global_overrides: wrap::WrapperOverrides) -> ExitCode {
     match command {
         Commands::Start => daemon::run_start(),
         Commands::Stop => daemon::run_stop(),
@@ -335,17 +346,26 @@ fn dispatch(command: Commands, global_strict_paths: Option<&str>) -> ExitCode {
             let endpoint = resolve_endpoint(endpoint.as_deref());
             run_async(session::cmd_session_stats(&endpoint, session_id, json))
         }
-        Commands::Wrap { strict_paths, args } => {
-            let strict_paths = match wrap::parse_optional_strict_paths(
-                strict_paths.as_deref().or(global_strict_paths),
+        Commands::Wrap {
+            strict_paths,
+            fast,
+            scan_system_headers,
+            skip_system_headers,
+            args,
+        } => {
+            let overrides = match wrap::parse_wrapper_overrides(
+                strict_paths.as_deref(),
+                fast,
+                scan_system_headers,
+                skip_system_headers,
             ) {
-                Ok(mode) => mode,
+                Ok(overrides) => overrides.overlay(global_overrides),
                 Err(err) => {
                     eprintln!("zccache: {err}");
                     return ExitCode::FAILURE;
                 }
             };
-            wrap::run_wrap(&args, strict_paths)
+            wrap::run_wrap(&args, overrides)
         }
         Commands::Inspect { key } => {
             eprintln!("zccache inspect {key}: not yet implemented");
@@ -465,14 +485,7 @@ fn dispatch(command: Commands, global_strict_paths: Option<&str>) -> ExitCode {
             let mut wrap_args: Vec<String> = Vec::with_capacity(args.len() + 1);
             wrap_args.push("cc".to_string());
             wrap_args.extend(args);
-            let strict_paths = match wrap::parse_optional_strict_paths(global_strict_paths) {
-                Ok(mode) => mode,
-                Err(err) => {
-                    eprintln!("zccache: {err}");
-                    return ExitCode::FAILURE;
-                }
-            };
-            wrap::run_wrap(&wrap_args, strict_paths)
+            wrap::run_wrap(&wrap_args, global_overrides)
         }
         Commands::Cache { command } => match command {
             args::CacheCommands::Size { json } => cache_ops::cmd_cache_size(json),

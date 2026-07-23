@@ -204,16 +204,27 @@ async fn perf_warm_cache_zccache_vs_sccache() {
 
     nuke_and_regenerate(zc_dir.path());
     warmup_compiler(&compiler, zc_dir.path());
-    eprint!("        single cold:  ");
+    eprintln!("        single cold:  starting");
     let zc_cold_single =
         zccache_compile_single(&mut client, &session_id, &compiler, &zc_cwd, &sources).await;
-    eprintln!("{}", fmt_dur(zc_cold_single));
+    eprintln!("        single cold:  {}", fmt_dur(zc_cold_single));
 
     let mut zc_single_times = Vec::with_capacity(WARM_TRIALS);
-    for _ in 0..WARM_TRIALS {
-        zc_single_times.push(
-            zccache_compile_single(&mut client, &session_id, &compiler, &zc_cwd, &sources).await,
+    for trial in 0..WARM_TRIALS {
+        eprintln!(
+            "        single warm:  trial {}/{} starting",
+            trial + 1,
+            WARM_TRIALS
         );
+        let elapsed =
+            zccache_compile_single(&mut client, &session_id, &compiler, &zc_cwd, &sources).await;
+        eprintln!(
+            "        single warm:  trial {}/{} finished in {}",
+            trial + 1,
+            WARM_TRIALS,
+            fmt_dur(elapsed)
+        );
+        zc_single_times.push(elapsed);
     }
     print_trials("single warm:", &zc_single_times);
 
@@ -222,7 +233,7 @@ async fn perf_warm_cache_zccache_vs_sccache() {
     nuke_and_regenerate(zc_dir.path());
     warmup_compiler(&compiler, zc_dir.path());
 
-    eprint!("        multi cold:   ");
+    eprintln!("        multi cold:   starting");
     let zc_cold_multi = zccache_compile_multi(
         &mut client,
         &session_id,
@@ -232,14 +243,25 @@ async fn perf_warm_cache_zccache_vs_sccache() {
         false,
     )
     .await;
-    eprintln!("{}", fmt_dur(zc_cold_multi));
+    eprintln!("        multi cold:   {}", fmt_dur(zc_cold_multi));
 
     let mut zc_multi_times = Vec::with_capacity(WARM_TRIALS);
-    for _ in 0..WARM_TRIALS {
-        zc_multi_times.push(
-            zccache_compile_multi(&mut client, &session_id, &compiler, &zc_cwd, &sources, true)
-                .await,
+    for trial in 0..WARM_TRIALS {
+        eprintln!(
+            "        multi warm:   trial {}/{} starting",
+            trial + 1,
+            WARM_TRIALS
         );
+        let elapsed =
+            zccache_compile_multi(&mut client, &session_id, &compiler, &zc_cwd, &sources, true)
+                .await;
+        eprintln!(
+            "        multi warm:   trial {}/{} finished in {}",
+            trial + 1,
+            WARM_TRIALS,
+            fmt_dur(elapsed)
+        );
+        zc_multi_times.push(elapsed);
     }
     print_trials("multi warm:", &zc_multi_times);
     let zccache_cache_bytes = dir_size_bytes(zccache_cache_dir.path());

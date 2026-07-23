@@ -16,9 +16,17 @@ pub enum DepfileStrategy {
     /// We injected a private MMD depfile; merge a conservative local include scan.
     InjectedMmd { path: NormalizedPath },
     /// User already had `-MF <path>` — read it (don't delete).
-    UserSpecified { path: NormalizedPath },
+    UserSpecified {
+        path: NormalizedPath,
+        /// Merge a full recursive scan because the user selected `-MMD`
+        /// while zccache remains in its correctness-first policy.
+        augment_system_headers: bool,
+    },
     /// User had `-MD` but no `-MF` — derive path from output stem.
-    UserDefault { path: NormalizedPath },
+    UserDefault {
+        path: NormalizedPath,
+        augment_system_headers: bool,
+    },
     /// MSVC `/showIncludes` — parse stderr after compilation.
     ShowIncludes,
     /// Compiler doesn't support depfiles — use fallback scanner.
@@ -45,6 +53,9 @@ pub fn user_depfile_destination(
     dep_flags: &UserDepFlags,
     output_file: &Path,
 ) -> Option<NormalizedPath> {
+    if dep_flags.depfile_to_stdout {
+        return None;
+    }
     if let Some(ref mf_path) = dep_flags.mf_path {
         return Some(mf_path.clone());
     }
@@ -85,6 +96,9 @@ pub fn prepare_depfile_with_mmd(
     if !supports_depfile {
         return (Vec::new(), DepfileStrategy::Unsupported);
     }
+    if dep_flags.depfile_to_stdout {
+        return (Vec::new(), DepfileStrategy::Unsupported);
+    }
 
     // User already specified -MF <path>: use their file.
     if let Some(ref mf_path) = dep_flags.mf_path {
@@ -92,6 +106,7 @@ pub fn prepare_depfile_with_mmd(
             Vec::new(),
             DepfileStrategy::UserSpecified {
                 path: mf_path.clone(),
+                augment_system_headers: dep_flags.has_mmd && !use_mmd,
             },
         );
     }
@@ -103,6 +118,7 @@ pub fn prepare_depfile_with_mmd(
             Vec::new(),
             DepfileStrategy::UserDefault {
                 path: d_path.into(),
+                augment_system_headers: dep_flags.has_mmd && !use_mmd,
             },
         );
     }
