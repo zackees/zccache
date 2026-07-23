@@ -27,6 +27,17 @@ def _load_perf_local():
 perf_local = _load_perf_local()
 
 
+def test_git_is_worktree_root_rejects_empty_submodule_directory(tmp_path):
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    subprocess.run(["git", "init", "-q", str(parent)], check=True)
+    empty_submodule = parent / "vendor" / "child"
+    empty_submodule.mkdir(parents=True)
+
+    assert perf_local.git_is_worktree_root(parent)
+    assert not perf_local.git_is_worktree_root(empty_submodule)
+
+
 def test_pin_soldr_zccache_source_initializes_and_pins_current_checkout(tmp_path, monkeypatch):
     soldr_src = tmp_path / "soldr-src"
     commands = []
@@ -36,8 +47,10 @@ def test_pin_soldr_zccache_source_initializes_and_pins_current_checkout(tmp_path
         "run",
         lambda command, **_kwargs: commands.append(command) or subprocess.CompletedProcess(command, 0),
     )
-    monkeypatch.setattr(perf_local, "git_head", lambda _repo: "abc123")
+    heads = iter(["abc123", "def456", "abc123"])
+    monkeypatch.setattr(perf_local, "git_head", lambda _repo: next(heads))
     monkeypatch.setattr(perf_local, "git_is_dirty", lambda _repo: False)
+    monkeypatch.setattr(perf_local, "git_is_worktree_root", lambda _repo: True)
 
     perf_local.pin_soldr_zccache_source(soldr_src)
 
@@ -59,10 +72,11 @@ def test_pin_soldr_zccache_source_initializes_and_pins_current_checkout(tmp_path
 
 def test_pin_soldr_zccache_source_rejects_wrong_checkout(tmp_path, monkeypatch):
     soldr_src = tmp_path / "soldr-src"
-    heads = iter(["abc123", "def456"])
+    heads = iter(["abc123", "000000", "def456"])
     monkeypatch.setattr(perf_local, "run", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(perf_local, "git_head", lambda _repo: next(heads))
     monkeypatch.setattr(perf_local, "git_is_dirty", lambda _repo: False)
+    monkeypatch.setattr(perf_local, "git_is_worktree_root", lambda _repo: True)
 
     try:
         perf_local.pin_soldr_zccache_source(soldr_src)

@@ -246,6 +246,23 @@ def git_is_dirty(repo: Path) -> bool:
     )
 
 
+def git_is_worktree_root(repo: Path) -> bool:
+    """True only when ``repo`` is the root of its own Git worktree.
+
+    An uninitialized submodule path can exist as an empty directory. Running
+    ``git -C`` there walks up to the superproject, so merely checking that the
+    directory exists can make a later checkout mutate the parent repository.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return False
+    return Path(result.stdout.strip()).resolve() == repo.resolve()
+
+
 def pin_soldr_zccache_source(soldr_src: Path, *, initialize_submodules: bool = True) -> None:
     """Build soldr with the zccache checkout under test embedded in it.
 
@@ -257,7 +274,7 @@ def pin_soldr_zccache_source(soldr_src: Path, *, initialize_submodules: bool = T
         raise RuntimeError("the zccache checkout is dirty; commit or stash changes before running perf_local.py so embedded source cannot differ from the requested run")
     zccache_sha = git_head(REPO_ROOT)
     vendored = soldr_src / "_vender" / "zccache"
-    if initialize_submodules or not vendored.exists():
+    if initialize_submodules or not git_is_worktree_root(vendored):
         run(
             [
                 "git",
@@ -269,7 +286,9 @@ def pin_soldr_zccache_source(soldr_src: Path, *, initialize_submodules: bool = T
                 "--recursive",
             ]
         )
-    if vendored.exists() and git_head(vendored) == zccache_sha:
+    if not git_is_worktree_root(vendored):
+        raise RuntimeError(f"soldr zccache submodule was not initialized at {vendored}")
+    if git_head(vendored) == zccache_sha:
         print(f"[perf-local] embedded zccache already at {zccache_sha[:12]}, skipping source mutation")
         return
     # Fetch locally so unpublished commits can be measured before push.
