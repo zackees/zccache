@@ -229,6 +229,12 @@ pub(super) struct SharedState {
     pub(super) journal: CompileJournal,
     /// Bytes currently in spawn_blocking persistence tasks, invisible to eviction.
     pub(super) in_flight_bytes: AtomicUsize,
+    /// Serializes background and host-requested disk-maintenance passes for
+    /// this exact cache root.
+    pub(super) disk_maintenance: Mutex<()>,
+    /// Shared by publishers and exclusively owned by maintenance/Clear from
+    /// cache-file mutation through index/live-map mutation.
+    pub(super) artifact_publication: Arc<tokio::sync::RwLock<()>>,
     /// Limits concurrent disk persistence tasks to prevent memory pileup
     /// when disk I/O is slow and compilation requests are fast.
     pub(super) persist_semaphore: Arc<tokio::sync::Semaphore>,

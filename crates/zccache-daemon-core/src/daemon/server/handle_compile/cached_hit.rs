@@ -84,11 +84,12 @@ pub(super) fn materialize_cached_compile_hit(
     // via `.elapsed()`); each costs ~50ns on Linux and ~500ns on Windows
     // (QueryPerformanceCounter). The phase split below now uses 4 clock
     // reads (`t0..t3`) and derives every `_ns` value by arithmetic — plus
-    // drops the `cached_ref.last_used = Instant::now()` write which was a
-    // dead store (no readers anywhere in the workspace).
+    // reuses `t0` for the maintenance-visible `last_used` write without an
+    // additional clock read (issue #1148).
     let t0 = Instant::now();
     let mut cached_ref = lookup_artifact_with_disk_fallback(state, artifact_key_hex)?;
     ensure_payloads(&mut cached_ref, &state.artifact_dir, artifact_key_hex)?;
+    record_artifact_access(state, artifact_key_hex, &mut cached_ref, t0);
     let t1 = Instant::now();
     let artifact_lookup_ns = (t1 - t0).as_nanos() as u64;
 

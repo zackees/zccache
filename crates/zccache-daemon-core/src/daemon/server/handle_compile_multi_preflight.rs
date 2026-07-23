@@ -233,11 +233,7 @@ impl InputSnapshot {
         let include_search = ctx.include_search.canonicalized();
         let scan = match dependency_mode {
             DependencyDiscoveryMode::AllHeaders => {
-                crate::depgraph::scanner::scan_recursive_cached(
-                    source,
-                    &include_search,
-                    scan_cache,
-                )
+                crate::depgraph::scanner::scan_recursive_cached(source, &include_search, scan_cache)
             }
             DependencyDiscoveryMode::SkipSystemHeaders => {
                 crate::depgraph::scanner::scan_recursive_cached_pruned(
@@ -333,6 +329,7 @@ impl InputSnapshot {
     }
 }
 
+#[allow(clippy::result_large_err)] // Response is the established handler control-flow type.
 fn detach_direct_batch_outputs(
     compilations: &[crate::compiler::CacheableCompilation],
     original_args: &[String],
@@ -381,6 +378,7 @@ fn detach_direct_batch_outputs(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // Mirrors the multi-source dispatch surface.
 pub(super) async fn run_depfile_stdout_batch(
     state: &Arc<SharedState>,
     sid: &SessionId,
@@ -414,6 +412,7 @@ pub(super) async fn run_depfile_stdout_batch(
     )
 }
 
+#[allow(clippy::too_many_arguments)] // Mirrors the multi-source dispatch surface.
 pub(super) async fn run_unsupported_batch(
     state: &Arc<SharedState>,
     sid: &SessionId,
@@ -473,9 +472,7 @@ pub(super) async fn run_unsupported_batch(
             state.profiler.staged.count(StagedCounter::PlanUnsupported);
             state.profiler.staged.failure(reason.failure());
             let response_family = direct_response_family(compilations[0].family, original_args);
-            if let Err(response) =
-                detach_direct_batch_outputs(compilations, original_args, cwd)
-            {
+            if let Err(response) = detach_direct_batch_outputs(compilations, original_args, cwd) {
                 return Some(response);
             }
             for _ in compilations {

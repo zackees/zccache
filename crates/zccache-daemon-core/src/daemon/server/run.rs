@@ -16,6 +16,8 @@ impl DaemonServer {
     /// `idle_timeout_secs`: if non-zero, the daemon shuts down after this many
     /// seconds with no client activity. Pass 0 to disable.
     pub async fn run(&mut self, idle_timeout_secs: u64) -> Result<(), crate::ipc::IpcError> {
+        let maintenance_policy =
+            MaintenancePolicy::from_env().map_err(crate::ipc::IpcError::Endpoint)?;
         tracing::info!(
             persist_workers = self.state.persist_semaphore.available_permits(),
             "daemon server running"
@@ -196,42 +198,7 @@ impl DaemonServer {
         // Start background artifact loading (non-blocking so daemon responds
         // immediately — Bug 6 fix).
         {
-            let state = Arc::clone(&self.state);
-            let state2 = Arc::clone(&self.state);
-            tokio::spawn(async move {
-                let artifact_dir = state.artifact_dir.clone();
-                let state_ref = Arc::clone(&state);
-                let loaded = tokio::task::spawn_blocking(move || {
-                    // Load the in-memory index that `ArtifactStore::open` already
-                    // hydrated from the on-disk blob.
-                    let entries = state_ref.artifact_store.load_all();
-                    if !entries.is_empty() {
-                        let count = entries.len();
-                        for (key, meta) in entries {
-                            state_ref
-                                .artifacts
-                                .insert(key, CachedArtifact::from_index(meta));
-                        }
-                        count
-                    } else {
-                        // Migration: legacy `.meta` files predate the redb index
-                        // and the current bincode blob; populate the live store
-                        // from them so the first session after upgrade still has
-                        // its warm cache.
-                        migrate_meta_files(
-                            &artifact_dir,
-                            &state_ref.artifacts,
-                            &state_ref.artifact_store,
-                        )
-                    }
-                })
-                .await
-                .unwrap_or(0);
-                if loaded > 0 {
-                    tracing::info!(loaded, "background artifact loading complete");
-                }
-                state2.artifacts_loaded.store(true, Ordering::Release);
-            });
+            std::mem::drop(spawn_artifact_loader(Arc::clone(&self.state), None).await);
         }
 
         // Start memory eviction background task.
@@ -278,26 +245,14 @@ impl DaemonServer {
             });
         }
 
-        // Start disk artifact GC background task.
-        {
-            let state = Arc::clone(&self.state);
-            let max_cache_size = crate::core::config::Config::default().max_cache_size;
-            let interval_secs = crate::core::config::Config::default().disk_gc_interval_secs;
-            tokio::spawn(async move {
-                // Run once immediately at startup to reclaim excess disk from Bug 5.
-                run_disk_gc_pass(Arc::clone(&state), max_cache_size, "initial").await;
-                loop {
-                    if state.shutdown_requested.load(Ordering::Acquire) {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
-                    if state.shutdown_requested.load(Ordering::Acquire) {
-                        break;
-                    }
-                    run_disk_gc_pass(Arc::clone(&state), max_cache_size, "periodic").await;
-                }
-            });
-        }
+        // The daemon is the primary maintenance owner. It checks this exact
+        // cache root at startup and every five minutes, with persisted daily
+        // full-age catch-up after idle periods or restarts (issue #1148).
+        let mut maintenance_handle = Some(spawn_disk_maintenance(
+            Arc::clone(&self.state),
+            maintenance_policy,
+            None,
+        ));
 
         // Start periodic depgraph save task (every 5 minutes).
         {
@@ -351,6 +306,9 @@ impl DaemonServer {
                     // notify_one(). Rebroadcast so whichever task observes the
                     // edge first wakes the rest of the shutdown path.
                     self.state.shutdown.notify_waiters();
+                    if let Some(handle) = maintenance_handle.take() {
+                        let _ = handle.await;
+                    }
                     tracing::info!("daemon server shutting down");
                     // Drop the watcher to stop the OS thread and close channels.
                     // The settle buffer and consumer tasks will exit when their
@@ -388,6 +346,13 @@ impl DaemonServer {
                             "timed out waiting for pending artifact writes before WAL drain"
                         );
                     }
+
+                    // Every detached publisher receives an owned read guard
+                    // before its request handler returns. Wait for those
+                    // handoffs before stopping the WAL writer and performing
+                    // the final index snapshot.
+                    let _publication_guard =
+                        self.state.artifact_publication.write().await;
 
                     // Signal the index-writer to drain its WAL to disk, then
                     // wait briefly for it. Without this, unflushed entries are
@@ -755,25 +720,50 @@ impl DaemonServer {
     }
 }
 
-async fn run_disk_gc_pass(state: Arc<SharedState>, max_cache_size: u64, pass: &'static str) {
-    let dir = state.artifact_dir.clone();
-    let artifacts = state.artifacts.clone();
-    // Issue #680: pass the current depgraph snapshot so contexts pointing at
-    // evicted artifacts are invalidated synchronously. Pre-fix the depgraph
-    // kept stale Hit pointers and the next compile reported `artifact_not_found`.
-    let dg = state.dep_graph.load_full();
-    let result = tokio::task::spawn_blocking(move || {
-        super::super::eviction::evict_disk_artifacts(&dir, &artifacts, max_cache_size, Some(&dg))
-    })
-    .await;
-    if let Ok((freed, removed)) = result {
-        if removed > 0 {
-            tracing::info!(
-                freed_bytes = freed,
-                artifacts_removed = removed,
-                gc_pass = pass,
-                "disk GC"
-            );
+/// Start index hydration with publication ownership acquired before spawn.
+/// The optional gate is a deterministic test seam for Clear/startup races.
+pub(super) async fn spawn_artifact_loader(
+    state: Arc<SharedState>,
+    start_gate: Option<Arc<Notify>>,
+) -> tokio::task::JoinHandle<()> {
+    // Acquire before spawning so Clear cannot overtake the startup loader and
+    // then have pre-Clear entries inserted afterward.
+    let publication_guard = Arc::clone(&state.artifact_publication).read_owned().await;
+    tokio::spawn(async move {
+        let _publication_guard = publication_guard;
+        if let Some(gate) = start_gate {
+            gate.notified().await;
         }
-    }
+        let artifact_dir = state.artifact_dir.clone();
+        let state_ref = Arc::clone(&state);
+        let loaded = tokio::task::spawn_blocking(move || {
+            // Load the in-memory index that `ArtifactStore::open` already
+            // hydrated from the on-disk blob.
+            let entries = state_ref.artifact_store.load_all();
+            if !entries.is_empty() {
+                let count = entries.len();
+                for (key, meta) in entries {
+                    state_ref
+                        .artifacts
+                        .insert(key, CachedArtifact::from_index(meta));
+                }
+                count
+            } else {
+                // Migration: legacy `.meta` files predate the redb index and
+                // the current bincode blob; populate the live store from them
+                // so the first session after upgrade still has its warm cache.
+                migrate_meta_files(
+                    &artifact_dir,
+                    &state_ref.artifacts,
+                    &state_ref.artifact_store,
+                )
+            }
+        })
+        .await
+        .unwrap_or(0);
+        if loaded > 0 {
+            tracing::info!(loaded, "background artifact loading complete");
+        }
+        state.artifacts_loaded.store(true, Ordering::Release);
+    })
 }

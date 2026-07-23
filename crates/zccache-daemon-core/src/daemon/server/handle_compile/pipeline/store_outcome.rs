@@ -232,10 +232,7 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
                     if augment_system_headers {
                         result = crate::depgraph::depfile::merge_scan_results_conservative(
                             result,
-                            crate::depgraph::scanner::scan_recursive(
-                                &source_path,
-                                &include_search,
-                            ),
+                            crate::depgraph::scanner::scan_recursive(&source_path, &include_search),
                         );
                     }
                     result
@@ -652,6 +649,38 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
     }
     let synchronous_persist = synchronous_persist && staged_cc_materialization.is_none();
 
+    // Acquire exactly one owned guard and either retain it for synchronous
+    // publication or transfer it to the detached persist task. Re-acquiring a
+    // fair RwLock while already holding a read guard can self-deadlock when a
+    // Clear/GC writer is queued between the two reads.
+    let store_stats = if let Some(publication_guard) = begin_artifact_publication(state_arc).await {
+        // #955: the miss persist (a large rustc `.rlib` copy when it can't be
+        // hardlinked cross-volume) is synchronous; run it under block_in_place
+        // so it doesn't park the tokio worker. See process::run_cpu_blocking.
+        crate::daemon::process::run_cpu_blocking(|| {
+            store_miss_artifact(MissArtifactStoreRequest {
+                state_arc,
+                sid,
+                context_key,
+                source_path,
+                output_path: &compiler_output_path,
+                scan_result,
+                rustc_env_dep_values,
+                hash_map: &hash_map,
+                output_data,
+                user_depfile: user_depfile_capture,
+                rustc_all_outputs: rustc_all_outputs.as_deref(),
+                stdout: &stdout,
+                stderr: &stderr,
+                exit_code,
+                compile_start,
+                synchronous_persist,
+                publication_guard,
+            })
+        })
+    } else {
+        MissArtifactStoreStats::default()
+    };
     let MissArtifactStoreStats {
         artifact_store_ns,
         depgraph_update_ns,
@@ -668,29 +697,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         artifact_index_build_ns,
         artifact_index_persist_ns,
         artifact_memory_insert_ns,
-        // #955: the miss persist (a large rustc `.rlib` copy when it can't be
-        // hardlinked cross-volume) is synchronous; run it under block_in_place
-        // so it doesn't park the tokio worker. See process::run_cpu_blocking.
-    } = crate::daemon::process::run_cpu_blocking(|| {
-        store_miss_artifact(MissArtifactStoreRequest {
-            state_arc,
-            sid,
-            context_key,
-            source_path,
-            output_path: &compiler_output_path,
-            scan_result,
-            rustc_env_dep_values,
-            hash_map: &hash_map,
-            output_data,
-            user_depfile: user_depfile_capture,
-            rustc_all_outputs: rustc_all_outputs.as_deref(),
-            stdout: &stdout,
-            stderr: &stderr,
-            exit_code,
-            compile_start,
-            synchronous_persist,
-        })
-    });
+    } = store_stats;
 
     if let Some(plan) = staged_plan {
         use crate::daemon::staged_stats::{

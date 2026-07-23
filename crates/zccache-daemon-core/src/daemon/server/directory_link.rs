@@ -66,3 +66,16 @@ pub(super) fn cache_staged_directory_link(
     }
     Ok(())
 }
+
+/// Deliver a successful staged directory link without admitting it to the
+/// cache. Used when shutdown has closed the publication barrier to late
+/// arrivals but the caller's requested output must still be materialized.
+pub(super) fn materialize_uncached_staged_directory_link(
+    state: &SharedState,
+    plan: &StagedDirectoryPlan,
+) -> std::io::Result<()> {
+    if let Err(error) = plan.pack() {
+        tracing::warn!(%error, "directory output is not bundle-cacheable");
+    }
+    materialize_directory_plan_observed(state, plan, None)
+}

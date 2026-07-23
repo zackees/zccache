@@ -30,6 +30,28 @@ struct PublishedMiss {
     allow_fast_hit: bool,
 }
 
+fn insert_staged_multi_cache_visibility(
+    state: &SharedState,
+    _publication_guard: &tokio::sync::OwnedRwLockReadGuard<()>,
+    context_key: ContextKey,
+    validation_clock: Clock,
+    key: String,
+    cached: CachedArtifact,
+    allow_fast_hit: bool,
+) {
+    state.artifacts.insert(key.clone(), cached);
+    if allow_fast_hit {
+        state.fast_hit_cache.insert(
+            context_key,
+            FastHitEntry {
+                clock: validation_clock,
+                artifact_key_hex: key,
+                cached_at: std::time::Instant::now(),
+            },
+        );
+    }
+}
+
 struct StagedCompilerOutput {
     unit_index: usize,
     output: std::process::Output,
@@ -358,8 +380,7 @@ pub(super) async fn try_handle_staged_misses(
             );
         }
         if depfile_parse_failed {
-            dependency_mode
-                .apply_static_fallback(&mut scan_result, &miss.ctx.include_search);
+            dependency_mode.apply_static_fallback(&mut scan_result, &miss.ctx.include_search);
         }
         let mut tracked: HashSet<NormalizedPath> =
             miss.input_snapshot.hashes.keys().cloned().collect();
@@ -495,8 +516,13 @@ pub(super) async fn try_handle_staged_misses(
         dependency_directories.extend(miss.dep_dirs.iter().cloned());
     }
 
-    let mut completed = Vec::with_capacity(published.len());
     for mut miss in published {
+        let publication_guard = begin_artifact_publication(state).await;
+        if publication_guard.is_none() {
+            miss.cache_entry = None;
+            miss.graph_update = None;
+        }
+        let _publication_guard = publication_guard;
         if let Some((key, metadata)) = miss
             .cache_entry
             .as_ref()
@@ -515,9 +541,6 @@ pub(super) async fn try_handle_staged_misses(
                 miss.cache_entry = None;
                 miss.graph_update = None;
             } else if let Some((scan_result, hash_map)) = miss.graph_update.take() {
-                if let Some((_, cached)) = miss.cache_entry.as_ref() {
-                    state.artifacts.insert(key.clone(), cached.clone());
-                }
                 let get_hash = |path: &Path| hash_map.get(&NormalizedPath::new(path)).copied();
                 let committed_key = state
                     .dep_graph
@@ -538,44 +561,29 @@ pub(super) async fn try_handle_staged_misses(
                 }
             }
         }
+        if let Some((key, cached)) = miss.cache_entry.take() {
+            insert_staged_multi_cache_visibility(
+                state,
+                _publication_guard
+                    .as_ref()
+                    .expect("cacheable staged multi miss owns a publication guard"),
+                miss.context_key,
+                miss.validation_clock,
+                key,
+                cached,
+                miss.allow_fast_hit,
+            );
+        }
+        drop(_publication_guard);
         if let Err(error) = miss.plan.cleanup() {
             tracing::warn!(%error, "failed to clean staged multi-source workspace");
         }
-        completed.push((
-            miss.source_path,
-            miss.context_key,
-            miss.cache_entry,
-            miss.artifact_bytes,
-            miss.validation_clock,
-            miss.allow_fast_hit,
-        ));
-    }
-    for (
-        source,
-        context_key,
-        cache_entry,
-        artifact_bytes,
-        validation_clock,
-        allow_fast_hit,
-    ) in completed
-    {
-        state.stats.record_miss(0, artifact_bytes);
+        state.stats.record_miss(0, miss.artifact_bytes);
+        let artifact_bytes = miss.artifact_bytes;
+        let source = miss.source_path;
         record_session_stat(&state.sessions, sid, move |stats| {
             stats.record_miss(source, artifact_bytes);
         });
-        if let Some((key, cached)) = cache_entry {
-            state.artifacts.insert(key.clone(), cached);
-            if allow_fast_hit {
-                state.fast_hit_cache.insert(
-                    context_key,
-                    FastHitEntry {
-                        clock: validation_clock,
-                        artifact_key_hex: key,
-                        cached_at: std::time::Instant::now(),
-                    },
-                );
-            }
-        }
     }
     watch_directories(
         state,
@@ -589,4 +597,67 @@ pub(super) async fn try_handle_staged_misses(
         stderr: Arc::new(std::mem::take(all_stderr)),
         cached: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn staged_multi_visibility_stays_inside_queued_clear_barrier() {
+        let temp = tempfile::tempdir().unwrap();
+        let endpoint = crate::ipc::unique_test_endpoint();
+        let cache_dir: NormalizedPath = temp.path().join("cache").into();
+        let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
+        let index_writer = tokio::spawn(run_index_writer(
+            server.index_writer_rx.take().unwrap(),
+            Arc::clone(&server.state.artifact_store),
+            Arc::clone(&server.state.index_writer_shutdown),
+        ));
+        let publication_guard = begin_artifact_publication(&server.state).await.unwrap();
+        let clear_state = Arc::clone(&server.state);
+        let mut clear =
+            tokio::spawn(
+                async move { super::super::handle_clear::handle_clear(&clear_state).await },
+            );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), &mut clear)
+                .await
+                .is_err(),
+            "Clear must queue behind staged multi publication"
+        );
+
+        let key = "5".repeat(64);
+        let context_key = ContextKey::from_raw([5; 32]);
+        let cached = CachedArtifact::from_index(ArtifactIndex::new(
+            vec!["unit.o".to_string()],
+            vec![1],
+            Vec::new(),
+            Vec::new(),
+            0,
+        ));
+        insert_staged_multi_cache_visibility(
+            &server.state,
+            &publication_guard,
+            context_key,
+            Clock::ZERO,
+            key.clone(),
+            cached,
+            true,
+        );
+        assert!(server.state.artifacts.contains_key(&key));
+        assert!(server.state.fast_hit_cache.contains_key(&context_key));
+
+        drop(publication_guard);
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), clear)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(response, Response::Cleared { .. }));
+        assert!(!server.state.artifacts.contains_key(&key));
+        assert!(!server.state.fast_hit_cache.contains_key(&context_key));
+
+        server.state.index_writer_shutdown.notify_waiters();
+        index_writer.await.unwrap();
+    }
 }

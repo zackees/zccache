@@ -425,6 +425,31 @@ daemon state, and the default daemon endpoint. Separate cache roots therefore
 use separate daemon instances unless `ZCCACHE_ENDPOINT` is explicitly set.
 Relative override paths are normalized against the current working directory.
 
+### Cache size and retention
+
+The daemon owns retention for its exact effective cache root; no system
+scheduler is required. Cached artifacts default to 5% of filesystem capacity,
+clamped to 40-200 GiB and reduced when needed to preserve recovery free space.
+On filesystems too small for the 30 GiB recovery target, at most half of the
+volume is reserved so the cache retains a useful non-zero budget.
+Choose at most one override:
+
+```bash
+# Fixed artifact-store budget in bytes
+export ZCCACHE_CACHE_SIZE_BYTES=42949672960
+
+# Or a percentage of filesystem capacity (1 through 100)
+export ZCCACHE_CACHE_SIZE_PERCENT=5
+```
+
+At 85% of budget, entries older than four days are evicted in LRU order to
+70%. At 100% or when free space is low, LRU eviction applies regardless of age
+until usage reaches 80% and recovery free space is restored. A daily full pass
+expires entries older than 30 days, including during periods with no compile
+traffic while the daemon remains alive. The budget covers allocated artifact
+files plus pending writes; small root-local indexes, logs, and metadata are
+outside it.
+
 ### Daemon namespace override
 
 Set `ZCCACHE_DAEMON_NAMESPACE` to run a second zccache daemon identity against

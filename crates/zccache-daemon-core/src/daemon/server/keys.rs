@@ -436,11 +436,11 @@ pub(super) fn request_fingerprint(
     h.finalize()
 }
 
-fn update_user_depfile_raw_fingerprint(
-    hasher: &mut crate::hash::StreamHasher,
-    args: &[String],
-) {
-    if !args.iter().any(|arg| matches!(arg.as_str(), "-MD" | "-MMD")) {
+fn update_user_depfile_raw_fingerprint(hasher: &mut crate::hash::StreamHasher, args: &[String]) {
+    if !args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-MD" | "-MMD"))
+    {
         return;
     }
     hasher.update(b"user-depfile-raw-argv\0");

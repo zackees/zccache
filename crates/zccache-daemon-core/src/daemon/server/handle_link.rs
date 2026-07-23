@@ -362,10 +362,10 @@ pub(super) async fn handle_link_ephemeral(
     // 5. Cache lookup
     let t_cache_lookup = profile_enabled.then(std::time::Instant::now);
     if let Some(mut entry) = lookup_artifact_with_disk_fallback(state, &key_hex) {
-        entry.last_used = std::time::Instant::now();
         // Load payloads from disk if not already loaded.
         let loaded = ensure_payloads(&mut entry, &state.artifact_dir, &key_hex).is_some();
         if loaded {
+            record_artifact_access(state, &key_hex, &mut entry, std::time::Instant::now());
             discard_speculative_archive(&mut speculative_archive);
             #[expect(
                 clippy::expect_used,
@@ -728,7 +728,13 @@ pub(super) async fn handle_link_ephemeral(
     } = result
     {
         if let Some(plan) = directory_plan.as_ref() {
-            if let Err(error) = cache_staged_directory_link(state, plan, &key_hex, stdout, stderr) {
+            let publication_guard = begin_artifact_publication(state).await;
+            let materialized = if publication_guard.is_some() {
+                cache_staged_directory_link(state, plan, &key_hex, stdout, stderr)
+            } else {
+                materialize_uncached_staged_directory_link(state, plan)
+            };
+            if let Err(error) = materialized {
                 return Response::Error {
                     message: format!("failed to materialize staged directory output: {error}"),
                 };
@@ -921,6 +927,21 @@ pub(super) async fn handle_link_ephemeral(
             // from 2 (compiler + cache) to 1 (compiler + hardlink). Cross-volume
             // case falls back to `std::fs::copy` — identical to prior semantics.
             let artifact_store_started = profile_enabled.then(std::time::Instant::now);
+            // One owned guard covers both the live-map insert and disk/index
+            // publication. The exact same guard is transferred to detached
+            // work, avoiding the fair-RwLock self-deadlock caused by acquiring
+            // a second read while a writer is queued.
+            let Some(guard) = begin_artifact_publication(state).await else {
+                if let Some(plan) = staged_plan.as_ref() {
+                    if let Err(error) = materialize_link_plan_observed(state, plan, None) {
+                        return Response::Error {
+                            message: format!("failed to materialize staged link output: {error}"),
+                        };
+                    }
+                }
+                return with_link_warning(result, nd_warning);
+            };
+            let mut publication_guard = Some(guard);
             let cacheable = {
                 let artifact_dir = state.artifact_dir.clone();
                 let kh = key_hex.clone();
@@ -969,7 +990,11 @@ pub(super) async fn handle_link_ephemeral(
                     }
                 } else {
                     let sem = Arc::clone(&state.persist_semaphore);
-                    let state_ref = Arc::clone(state);
+                    state.artifacts.insert(key_hex.clone(), cached.clone());
+                    let publication_guard_for_task = publication_guard
+                        .take()
+                        .expect("link publication acquired an owned guard");
+                    let index_writer_tx = state.index_writer_tx.clone();
                     tokio::spawn(async move {
                         #[expect(
                             clippy::expect_used,
@@ -981,14 +1006,15 @@ pub(super) async fn handle_link_ephemeral(
                             .expect("persist_semaphore is owned by ServerState and never closed");
                         let written = tokio::task::spawn_blocking(move || {
                             let _guard = guard;
-                            let _ = persist_artifact_payloads(&artifact_dir, &kh, &payloads);
-                            (kh, persist_meta)
+                            let _publication_guard = publication_guard_for_task;
+                            if persist_artifact_payloads(&artifact_dir, &kh, &payloads).is_ok() {
+                                let _ = index_writer_tx
+                                    .send(IndexWriterCommand::Insert(kh, persist_meta));
+                            }
                         })
                         .await;
-                        if let Ok((kh, meta)) = written {
-                            let _ = state_ref
-                                .index_writer_tx
-                                .send(IndexWriterCommand::Insert(kh, meta));
+                        if let Err(error) = written {
+                            tracing::warn!(%error, "link artifact persistence task failed to join");
                         }
                     });
                     true
@@ -998,10 +1024,11 @@ pub(super) async fn handle_link_ephemeral(
                 .map(|started| started.elapsed().as_nanos() as u64)
                 .unwrap_or(0);
 
-            if cacheable {
+            if cacheable && publication_guard.is_some() {
                 state.artifacts.insert(key_hex.clone(), cached);
                 tracing::debug!(%key_hex, "link artifact cached");
             }
+            drop(publication_guard);
         } else if staged_plan.is_some() {
             return Response::Error {
                 message: "successful archive omitted its staged output".to_string(),

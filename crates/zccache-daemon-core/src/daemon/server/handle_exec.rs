@@ -470,7 +470,19 @@ pub(super) async fn handle_generic_tool_exec(
     let cacheable_exit = true; // exit codes are part of the cached payload — even non-zero
     let mut staged_publication_failure = None;
     let mut staged_cached_artifact = None;
-    if store_allowed && all_captured && !too_large && depfile_ok && cacheable_exit {
+    let staged_publication_guard = if staged_plan.is_some() {
+        begin_artifact_publication(state).await
+    } else {
+        None
+    };
+    let publication_allowed = staged_plan.is_none() || staged_publication_guard.is_some();
+    if store_allowed
+        && all_captured
+        && !too_large
+        && depfile_ok
+        && cacheable_exit
+        && publication_allowed
+    {
         let artifact = ArtifactData {
             outputs: cache_outputs,
             stdout: Arc::clone(&stdout),
@@ -512,6 +524,7 @@ pub(super) async fn handle_generic_tool_exec(
             state.artifacts.insert(final_full_hex.clone(), cached);
         }
     }
+    drop(staged_publication_guard);
 
     drop(coalesce_guard); // Releasing the guard wakes any waiters.
 
@@ -748,7 +761,6 @@ async fn try_exec_cache_hit(
     output_streams: ExecOutputStreams,
 ) -> Option<Response> {
     let mut entry = lookup_artifact_with_disk_fallback(state, key_hex)?;
-    entry.last_used = std::time::Instant::now();
 
     let exit_code = entry.meta.exit_code;
     let stdout_full = entry.stdout.clone();
@@ -759,6 +771,7 @@ async fn try_exec_cache_hit(
     if !payloads_loaded {
         return None;
     }
+    record_artifact_access(state, key_hex, &mut entry, std::time::Instant::now());
     let payloads = Arc::clone(entry.payloads.as_ref()?);
     drop(entry);
 
@@ -836,13 +849,64 @@ async fn try_exec_cache_hit(
 
 // ─── Store ──────────────────────────────────────────────────────────────
 
-async fn store_exec_artifact(
+pub(super) struct PublicationHandoffGate {
+    acquired: Notify,
+    resume: Notify,
+}
+
+#[cfg(test)]
+impl PublicationHandoffGate {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            acquired: Notify::new(),
+            resume: Notify::new(),
+        })
+    }
+
+    async fn wait_until_acquired(&self) {
+        self.acquired.notified().await;
+    }
+
+    fn resume(&self) {
+        self.resume.notify_one();
+    }
+}
+
+pub(super) async fn store_exec_artifact(
     state: &Arc<SharedState>,
     key_hex: String,
     artifact: ArtifactData,
     staged_sources: Option<Vec<NormalizedPath>>,
 ) -> Result<Option<CachedArtifact>, StagedPublishFailure> {
+    store_exec_artifact_inner(state, key_hex, artifact, staged_sources, None).await
+}
+
+#[cfg(test)]
+pub(super) async fn store_exec_artifact_with_handoff_gate(
+    state: &Arc<SharedState>,
+    key_hex: String,
+    artifact: ArtifactData,
+    gate: Arc<PublicationHandoffGate>,
+) -> Result<Option<CachedArtifact>, StagedPublishFailure> {
+    store_exec_artifact_inner(state, key_hex, artifact, None, Some(gate)).await
+}
+
+async fn store_exec_artifact_inner(
+    state: &Arc<SharedState>,
+    key_hex: String,
+    artifact: ArtifactData,
+    staged_sources: Option<Vec<NormalizedPath>>,
+    handoff_gate: Option<Arc<PublicationHandoffGate>>,
+) -> Result<Option<CachedArtifact>, StagedPublishFailure> {
     let cached = CachedArtifact::from_artifact_data(&artifact);
+    let publication_guard = if staged_sources.is_none() {
+        let Some(guard) = begin_artifact_publication(state).await else {
+            return Ok(None);
+        };
+        Some(guard)
+    } else {
+        None
+    };
     if let Some(sources) = staged_sources {
         publish_artifact_paths_observed(state, &key_hex, cached.meta.clone(), &sources)?;
         return Ok(Some(cached));
@@ -861,8 +925,15 @@ async fn store_exec_artifact(
             // so expose their index entry to the final shutdown flush now.
             state.artifact_store.insert(&key_hex, &persist_meta);
         }
-        let state_ref = Arc::clone(state);
+        if let Some(gate) = handoff_gate {
+            gate.acquired.notify_one();
+            gate.resume.notified().await;
+        }
+        state.artifacts.insert(key_hex.clone(), cached);
         let sem = Arc::clone(&state.persist_semaphore);
+        let publication_guard_for_task =
+            publication_guard.expect("direct exec publication acquired an owned guard");
+        let index_writer_tx = state.index_writer_tx.clone();
         tokio::spawn(async move {
             #[expect(
                 clippy::expect_used,
@@ -873,18 +944,18 @@ async fn store_exec_artifact(
                 .await
                 .expect("persist_semaphore is owned by ServerState and never closed");
             let written = tokio::task::spawn_blocking(move || {
-                let _ = persist_artifact_payloads(&artifact_dir, &key_for_persist, &payloads);
-                (key_for_persist, persist_meta)
+                let _publication_guard = publication_guard_for_task;
+                if persist_artifact_payloads(&artifact_dir, &key_for_persist, &payloads).is_ok() {
+                    let _ = index_writer_tx
+                        .send(IndexWriterCommand::Insert(key_for_persist, persist_meta));
+                }
             })
             .await;
-            if let Ok((kh, meta)) = written {
-                let _ = state_ref
-                    .index_writer_tx
-                    .send(IndexWriterCommand::Insert(kh, meta));
+            if let Err(error) = written {
+                tracing::warn!(%error, "exec artifact persistence task failed to join");
             }
         });
     }
-    state.artifacts.insert(key_hex, cached);
     Ok(None)
 }
 

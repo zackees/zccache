@@ -11,7 +11,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::core::NormalizedPath;
 use crate::daemon::server::{
-    EmbeddedCompileRequest, EmbeddedDaemon, EmbeddedFlushReport, EmbeddedStatsSnapshot,
+    DiskMaintenanceReport as InternalDiskMaintenanceReport, EmbeddedCompileRequest, EmbeddedDaemon,
+    EmbeddedFlushReport, EmbeddedStatsSnapshot, MaintenanceKind as InternalMaintenanceKind,
+    MaintenancePolicy, MaintenancePressure as InternalMaintenancePressure,
 };
 
 pub use crate::audit::{AuditConfig, AuditContext};
@@ -219,6 +221,26 @@ pub struct ServiceLimits {
     pub host_in_flight: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
 
+/// Optional artifact-store limits for [`ZccacheService::start_with_disk_limits`].
+#[derive(Debug, Clone, Default)]
+pub struct DiskCacheLimits {
+    /// Maximum physical bytes for cached artifacts in this exact service root.
+    ///
+    /// Mutually exclusive with [`Self::max_cache_percent`]. `None` uses the
+    /// dynamic default: 5% of filesystem capacity, clamped to 40-200 GiB and
+    /// reduced as needed to preserve the disk-recovery reserve (capped at half
+    /// the volume on small filesystems so the cache remains useful). Small
+    /// root-local state such as indexes, logs, and daemon metadata is outside
+    /// this artifact-store budget.
+    pub max_cache_bytes: Option<u64>,
+    /// Maximum percentage of filesystem capacity for cached artifacts in this
+    /// exact service root.
+    ///
+    /// Valid values are 1 through 100. Mutually exclusive with
+    /// [`Self::max_cache_bytes`].
+    pub max_cache_percent: Option<u8>,
+}
+
 /// One compile invocation submitted to the embedded service.
 #[derive(Debug, Clone)]
 pub struct CompileRequest {
@@ -293,6 +315,42 @@ pub struct FlushReport {
     pub metadata_entries: u64,
 }
 
+/// Scope of a host-requested disk-maintenance pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiskMaintenanceKind {
+    /// Apply disk-pressure thresholds only.
+    Pressure,
+    /// Also expire entries older than 30 days.
+    Full,
+}
+
+/// Pressure tier observed during a disk-maintenance pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiskMaintenancePressure {
+    None,
+    Soft,
+    Hard,
+}
+
+/// Report returned by [`ZccacheService::maintain_disk`].
+#[derive(Debug, Clone)]
+pub struct DiskMaintenanceReport {
+    pub kind: DiskMaintenanceKind,
+    pub pressure: DiskMaintenancePressure,
+    /// Resolved artifact-store budget for this pass.
+    pub budget_bytes: u64,
+    /// Allocated artifact bytes plus in-flight writes before maintenance.
+    pub usage_before_bytes: u64,
+    /// Allocated artifact bytes plus in-flight writes after maintenance.
+    pub usage_after_bytes: u64,
+    /// Difference between `usage_before_bytes` and `usage_after_bytes`.
+    pub bytes_reclaimed: u64,
+    pub artifacts_removed: usize,
+    pub expired_artifacts_removed: usize,
+    /// In-flight artifact bytes included in both usage measurements.
+    pub pending_write_bytes: u64,
+}
+
 /// Current service statistics.
 #[derive(Debug, Clone)]
 pub struct ServiceStats {
@@ -327,12 +385,34 @@ impl ZccacheService {
     /// embedded work shares their runtime (for tokio-console attach unity,
     /// for graceful-shutdown signalling, etc.).
     pub async fn start(config: ZccacheConfig) -> Result<Self> {
+        Self::start_with_disk_limits(config, DiskCacheLimits::default()).await
+    }
+
+    /// Start an embedded service with an explicit artifact-store budget.
+    ///
+    /// This separate constructor keeps existing `ServiceLimits` struct
+    /// literals source-compatible while allowing hosts to own independent
+    /// cache budgets for each exact product root.
+    pub async fn start_with_disk_limits(
+        config: ZccacheConfig,
+        disk_limits: DiskCacheLimits,
+    ) -> Result<Self> {
         let endpoint = embedded_endpoint(&config.host);
         let cache_root =
             crate::core::config::effective_cache_root_from_top_level(&config.cache_root);
-        let daemon = EmbeddedDaemon::start(endpoint, cache_root, config.runtime.handle.clone())
-            .await
-            .map_err(|err| EmbeddedError::Start(err.to_string()))?;
+        let maintenance_policy = MaintenancePolicy::from_limits(
+            disk_limits.max_cache_bytes,
+            disk_limits.max_cache_percent,
+        )
+        .map_err(EmbeddedError::Start)?;
+        let daemon = EmbeddedDaemon::start(
+            endpoint,
+            cache_root,
+            config.runtime.handle.clone(),
+            maintenance_policy,
+        )
+        .await
+        .map_err(|err| EmbeddedError::Start(err.to_string()))?;
         // zccache#924: register the optional host-in-flight counter so
         // CompilePriority::Auto sees host-side subprocess pressure when
         // deciding Normal vs Low. The RAII guard is held on the service
@@ -509,6 +589,32 @@ impl ZccacheService {
         Ok(ServiceStats::from_snapshot(self.daemon.stats().await))
     }
 
+    /// Run disk maintenance against this service's exact configured cache root.
+    ///
+    /// The embedded service also runs pressure checks every five minutes and a
+    /// persisted full-age pass every 24 hours. Hosts can call this method after
+    /// their own activity or disk-pressure signal without scanning sibling
+    /// product roots.
+    pub async fn maintain_disk(
+        &self,
+        kind: DiskMaintenanceKind,
+    ) -> std::io::Result<DiskMaintenanceReport> {
+        if self.shutdown.load(Ordering::Acquire) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "embedded zccache service is already shut down",
+            ));
+        }
+        let kind = match kind {
+            DiskMaintenanceKind::Pressure => InternalMaintenanceKind::Pressure,
+            DiskMaintenanceKind::Full => InternalMaintenanceKind::Full,
+        };
+        self.daemon
+            .maintain_disk(kind)
+            .await
+            .map(DiskMaintenanceReport::from_report)
+    }
+
     /// Flush pending embedded service state to disk.
     ///
     /// Honors [`ZccacheConfig::cancellation`] (zccache#923) the same way
@@ -619,6 +725,29 @@ impl FlushReport {
             pending_writes_drained: report.pending_writes_drained,
             artifact_entries: report.artifact_entries,
             metadata_entries: report.metadata_entries,
+        }
+    }
+}
+
+impl DiskMaintenanceReport {
+    fn from_report(report: InternalDiskMaintenanceReport) -> Self {
+        Self {
+            kind: match report.kind {
+                InternalMaintenanceKind::Pressure => DiskMaintenanceKind::Pressure,
+                InternalMaintenanceKind::Full => DiskMaintenanceKind::Full,
+            },
+            pressure: match report.pressure {
+                InternalMaintenancePressure::None => DiskMaintenancePressure::None,
+                InternalMaintenancePressure::Soft => DiskMaintenancePressure::Soft,
+                InternalMaintenancePressure::Hard => DiskMaintenancePressure::Hard,
+            },
+            budget_bytes: report.budget_bytes,
+            usage_before_bytes: report.usage_before_bytes,
+            usage_after_bytes: report.usage_after_bytes,
+            bytes_reclaimed: report.bytes_reclaimed,
+            artifacts_removed: report.artifacts_removed,
+            expired_artifacts_removed: report.expired_artifacts_removed,
+            pending_write_bytes: report.pending_write_bytes,
         }
     }
 }

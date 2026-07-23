@@ -5,6 +5,19 @@ use super::*;
 
 /// Handle a Clear request: wipe all caches and reset stats.
 pub(super) async fn handle_clear(state: &SharedState) -> Response {
+    let _maintenance_guard = state.disk_maintenance.lock().await;
+    let pending_drained = pending_writes::await_all(
+        &state.pending_cache_writes,
+        std::time::Duration::from_secs(30),
+    )
+    .await;
+    if !pending_drained {
+        tracing::warn!(
+            pending = state.pending_cache_writes.len(),
+            "timed out waiting for pending artifact writes before Clear"
+        );
+    }
+    let _publication_guard = state.artifact_publication.write().await;
     // Snapshot counts before clearing.
     let artifacts_removed = {
         let count = state.artifacts.len() as u64;
@@ -69,9 +82,12 @@ pub(super) async fn handle_clear(state: &SharedState) -> Response {
         });
     }
 
-    // Clear the in-memory artifact index and persist the empty state.
-    state.artifact_store.clear();
-    let _ = Arc::clone(&state.artifact_store).flush_async().await;
+    // Cancel queued inserts, clear the in-memory artifact index, and persist
+    // the empty state as one index-writer command. This prevents a pre-Clear
+    // WAL row from resurrecting an artifact after its files were removed.
+    if !clear_index_writer(&state.index_writer_tx, std::time::Duration::from_secs(30)).await {
+        tracing::warn!("timed out clearing the persistent artifact index");
+    }
 
     // Persist the (now empty) metadata cache so the prior on-disk
     // snapshot stays consistent with the live state. Empty snapshots

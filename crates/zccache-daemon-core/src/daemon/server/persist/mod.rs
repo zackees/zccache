@@ -54,11 +54,19 @@ pub(crate) fn scan_v2_disk_artifacts(artifact_dir: &Path) -> std::io::Result<Vec
     staged_store::scan_staged_disk_artifacts(artifact_dir)
 }
 
+#[cfg(test)]
 pub(crate) fn evict_v2_artifact_keys(
     artifact_dir: &Path,
     keys: &std::collections::HashSet<String>,
 ) -> std::io::Result<u64> {
     staged_store::evict_staged_artifact_keys(artifact_dir, keys)
+}
+
+pub(crate) fn evict_v2_artifact_keys_if_unchanged(
+    artifact_dir: &Path,
+    expected: &std::collections::HashMap<String, Option<String>>,
+) -> std::io::Result<std::collections::HashSet<String>> {
+    staged_store::evict_staged_artifact_keys_if_unchanged(artifact_dir, expected)
 }
 
 #[cfg(test)]

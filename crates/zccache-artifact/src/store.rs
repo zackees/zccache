@@ -54,7 +54,8 @@ pub struct ArtifactIndex {
     pub exit_code: i32,
     /// Sum of all output file sizes (for eviction budget accounting).
     pub total_size: u64,
-    /// Unix epoch seconds when this artifact was stored.
+    /// Unix epoch seconds when this artifact was stored or last access was
+    /// checkpointed for retention. Reused for backward-compatible persistence.
     pub stored_at_secs: u64,
 }
 
@@ -93,6 +94,7 @@ impl ArtifactIndex {
 pub struct ArtifactStore {
     path: NormalizedPath,
     entries: DashMap<String, ArtifactIndex>,
+    flush_lock: std::sync::Mutex<()>,
 }
 
 impl ArtifactStore {
@@ -128,6 +130,7 @@ impl ArtifactStore {
         Self {
             path: NormalizedPath::new(path),
             entries: DashMap::new(),
+            flush_lock: std::sync::Mutex::new(()),
         }
     }
 
@@ -239,6 +242,13 @@ impl ArtifactStore {
             .collect()
     }
 
+    /// Sum logical payload bytes without cloning index rows.
+    pub fn total_size_bytes(&self) -> u64 {
+        self.entries.iter().fold(0_u64, |total, entry| {
+            total.saturating_add(entry.value().total_size)
+        })
+    }
+
     /// Number of entries currently held.
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -265,6 +275,10 @@ impl ArtifactStore {
     /// some serialisation of in-flight inserts (acceptable for the
     /// crash-recovery contract).
     pub fn flush(&self) -> std::io::Result<()> {
+        let _flush_guard = self
+            .flush_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let snapshot: Vec<(String, ArtifactIndex)> = self
             .entries
             .iter()

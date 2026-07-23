@@ -111,11 +111,11 @@ impl FsFixture {
                 .prefix("zccache-tmpfs-")
                 .tempdir_in(root)
                 .map_err(|error| skip("tmpfs", format!("tempdir failed: {error}")))?;
-            return Ok(Self {
+            Ok(Self {
                 name: "tmpfs",
                 root: temp.path().into(),
                 backing: Backing::Temp(temp),
-            });
+            })
         }
         #[cfg(not(target_os = "linux"))]
         Err(skip("tmpfs", "tmpfs fixture is Linux-only"))

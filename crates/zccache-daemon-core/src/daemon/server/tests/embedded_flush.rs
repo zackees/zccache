@@ -2,14 +2,43 @@
 
 use super::super::*;
 
+async fn schedule_blocked_exec_publisher(
+    state: &Arc<SharedState>,
+    key: &str,
+) -> tokio::sync::OwnedSemaphorePermit {
+    let permit_count = state.persist_semaphore.available_permits() as u32;
+    let blocked = Arc::clone(&state.persist_semaphore)
+        .acquire_many_owned(permit_count)
+        .await
+        .unwrap();
+    let artifact = ArtifactData {
+        outputs: vec![ArtifactOutput {
+            name: "result.bin".to_string(),
+            payload: ArtifactPayload::Bytes(Arc::new(b"durable before lifecycle return".to_vec())),
+        }],
+        stdout: Arc::new(Vec::new()),
+        stderr: Arc::new(Vec::new()),
+        exit_code: 0,
+    };
+    super::super::handle_exec::store_exec_artifact(state, key.to_string(), artifact, None)
+        .await
+        .unwrap();
+    blocked
+}
+
 #[tokio::test(start_paused = true)]
 async fn embedded_flush_persists_queued_index_rows_before_returning() {
     let tmp = tempfile::tempdir().unwrap();
     let cache_dir = crate::core::NormalizedPath::new(tmp.path());
     let endpoint = crate::ipc::unique_test_endpoint();
-    let daemon = EmbeddedDaemon::start(endpoint, cache_dir.clone(), None)
-        .await
-        .unwrap();
+    let daemon = EmbeddedDaemon::start(
+        endpoint,
+        cache_dir.clone(),
+        None,
+        MaintenancePolicy::default(),
+    )
+    .await
+    .unwrap();
     let state = Arc::clone(&daemon.state);
 
     let expected = 37usize;
@@ -33,6 +62,160 @@ async fn embedded_flush_persists_queued_index_rows_before_returning() {
     assert_eq!(reopened.len(), state.artifact_store.len());
     assert_eq!(reopened.len(), expected);
 
+    let _ = daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn embedded_flush_waits_for_detached_publisher_handoff() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_dir = crate::core::NormalizedPath::new(tmp.path());
+    let daemon = Arc::new(
+        EmbeddedDaemon::start(
+            crate::ipc::unique_test_endpoint(),
+            cache_dir.clone(),
+            None,
+            MaintenancePolicy::default(),
+        )
+        .await
+        .unwrap(),
+    );
+    let key = "7".repeat(64);
+    let blocked = schedule_blocked_exec_publisher(&daemon.state, &key).await;
+
+    let flush_daemon = Arc::clone(&daemon);
+    let mut flush = tokio::spawn(async move { flush_daemon.flush().await });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(25), &mut flush)
+            .await
+            .is_err(),
+        "flush must wait for a detached publisher scheduled before it"
+    );
+    drop(blocked);
+    let report = tokio::time::timeout(std::time::Duration::from_secs(5), flush)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(report.pending_writes_drained);
+    assert!(daemon.state.artifact_store.get(&key).is_some());
+    let reopened = crate::artifact::ArtifactStore::open(
+        crate::core::config::index_path_from_cache_dir(&cache_dir).as_path(),
+    )
+    .unwrap();
+    assert!(reopened.get(&key).is_some());
+    let _ = daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn embedded_shutdown_waits_for_detached_publisher_before_stopping_writer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_dir = crate::core::NormalizedPath::new(tmp.path());
+    let daemon = Arc::new(
+        EmbeddedDaemon::start(
+            crate::ipc::unique_test_endpoint(),
+            cache_dir.clone(),
+            None,
+            MaintenancePolicy::default(),
+        )
+        .await
+        .unwrap(),
+    );
+    let key = "8".repeat(64);
+    let blocked = schedule_blocked_exec_publisher(&daemon.state, &key).await;
+
+    let shutdown_daemon = Arc::clone(&daemon);
+    let mut shutdown = tokio::spawn(async move { shutdown_daemon.shutdown().await });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(25), &mut shutdown)
+            .await
+            .is_err(),
+        "shutdown must wait before stopping the index writer"
+    );
+    drop(blocked);
+    let report = tokio::time::timeout(std::time::Duration::from_secs(5), shutdown)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(report.pending_writes_drained);
+    let reopened = crate::artifact::ArtifactStore::open(
+        crate::core::config::index_path_from_cache_dir(&cache_dir).as_path(),
+    )
+    .unwrap();
+    assert!(reopened.get(&key).is_some());
+}
+
+#[tokio::test]
+async fn publisher_arriving_after_embedded_shutdown_cannot_reopen_cache() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_dir = crate::core::NormalizedPath::new(tmp.path());
+    let daemon = Arc::new(
+        EmbeddedDaemon::start(
+            crate::ipc::unique_test_endpoint(),
+            cache_dir,
+            None,
+            MaintenancePolicy::default(),
+        )
+        .await
+        .unwrap(),
+    );
+    let key = "6".repeat(64);
+    let report = daemon.shutdown().await;
+    assert!(report.pending_writes_drained);
+
+    let artifact = ArtifactData {
+        outputs: vec![ArtifactOutput {
+            name: "late.bin".to_string(),
+            payload: ArtifactPayload::Bytes(Arc::new(b"must not publish".to_vec())),
+        }],
+        stdout: Arc::new(Vec::new()),
+        stderr: Arc::new(Vec::new()),
+        exit_code: 0,
+    };
+    super::super::handle_exec::store_exec_artifact(&daemon.state, key.clone(), artifact, None)
+        .await
+        .unwrap();
+
+    assert!(!daemon.state.artifacts.contains_key(&key));
+    assert!(daemon.state.artifact_store.get(&key).is_none());
+    assert!(!daemon.state.artifact_dir.join(format!("{key}_0")).exists());
+}
+
+#[tokio::test]
+async fn publisher_queued_behind_shutdown_writer_rechecks_latched_flag() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_dir = crate::core::NormalizedPath::new(tmp.path());
+    let daemon = Arc::new(
+        EmbeddedDaemon::start(
+            crate::ipc::unique_test_endpoint(),
+            cache_dir,
+            None,
+            MaintenancePolicy::default(),
+        )
+        .await
+        .unwrap(),
+    );
+    let shutdown_writer = Arc::clone(&daemon.state.artifact_publication)
+        .write_owned()
+        .await;
+    let publisher_state = Arc::clone(&daemon.state);
+    let mut publisher =
+        tokio::spawn(async move { begin_artifact_publication(&publisher_state).await });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(25), &mut publisher)
+            .await
+            .is_err(),
+        "publisher must queue behind the shutdown writer"
+    );
+
+    daemon
+        .state
+        .shutdown_requested
+        .store(true, Ordering::Release);
+    drop(shutdown_writer);
+    let guard = tokio::time::timeout(std::time::Duration::from_secs(5), publisher)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(guard.is_none(), "queued publisher must re-check shutdown");
     let _ = daemon.shutdown().await;
 }
 

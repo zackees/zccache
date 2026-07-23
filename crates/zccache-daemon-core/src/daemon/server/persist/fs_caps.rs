@@ -184,6 +184,10 @@ fn existing_path(path: &Path) -> Option<NormalizedPath> {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_test_module,
+    reason = "platform-specific volume identity implementations follow this shared test"
+)]
 mod tests {
     use super::*;
 

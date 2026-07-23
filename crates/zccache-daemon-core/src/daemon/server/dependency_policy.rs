@@ -17,9 +17,7 @@ pub(super) enum DependencyDiscoveryMode {
 }
 
 impl DependencyDiscoveryMode {
-    pub(super) fn from_client_env(
-        client_env: Option<&[(String, String)]>,
-    ) -> Result<Self, String> {
+    pub(super) fn from_client_env(client_env: Option<&[(String, String)]>) -> Result<Self, String> {
         if let Some(value) = client_env_value(client_env, SCAN_SYSTEM_HEADERS_ENV) {
             return parse_bool(SCAN_SYSTEM_HEADERS_ENV, value).map(|scan| {
                 if scan {
@@ -54,11 +52,7 @@ impl DependencyDiscoveryMode {
 
     /// Salt C/C++ context keys so a partial fast-mode manifest can never be
     /// reused after the caller switches back to the correctness-first mode.
-    pub(super) fn apply_to_cc_context(
-        self,
-        ctx: &mut CompileContext,
-        dep_flags: &UserDepFlags,
-    ) {
+    pub(super) fn apply_to_cc_context(self, ctx: &mut CompileContext, dep_flags: &UserDepFlags) {
         let marker = match self {
             Self::AllHeaders => "zccache:dependency-discovery=all-headers",
             Self::SkipSystemHeaders => "zccache:dependency-discovery=skip-system-headers",
@@ -148,6 +142,7 @@ impl DependencyDiscoveryMode {
     /// Approximate compiler provenance before a private `-MMD` manifest exists.
     /// A quoted path resolved relative to the including file remains a user
     /// dependency even when both files happen to live beneath a broad SDK root.
+    #[allow(clippy::cmp_owned)] // Normalization is required before comparing a quoted relative path.
     pub(super) fn tracks_static_include(
         self,
         including_file: &Path,
@@ -158,9 +153,10 @@ impl DependencyDiscoveryMode {
         if matches!(
             directive.kind,
             crate::depgraph::scanner::IncludeKind::Quoted
-        ) && including_file.parent().is_some_and(|parent| {
-            NormalizedPath::from(parent.join(&directive.path)) == *path
-        }) {
+        ) && including_file
+            .parent()
+            .is_some_and(|parent| NormalizedPath::from(parent.join(&directive.path)) == *path)
+        {
             return true;
         }
         self.tracks_header(path, include_search)
@@ -250,8 +246,7 @@ mod tests {
         let system_header: NormalizedPath = "/sdk/stdlib/vector".into();
         let mut headers = vec![user_header.clone(), system_header.clone()];
 
-        DependencyDiscoveryMode::SkipSystemHeaders
-            .retain_tracked_headers(&mut headers, &search);
+        DependencyDiscoveryMode::SkipSystemHeaders.retain_tracked_headers(&mut headers, &search);
 
         assert_eq!(headers, vec![user_header]);
     }
@@ -268,12 +263,14 @@ mod tests {
             line: 1,
         };
 
-        assert!(DependencyDiscoveryMode::SkipSystemHeaders.tracks_static_include(
-            Path::new("/sdk/project/main.cpp"),
-            &directive,
-            &NormalizedPath::from("/sdk/project/config.hpp"),
-            &search,
-        ));
+        assert!(
+            DependencyDiscoveryMode::SkipSystemHeaders.tracks_static_include(
+                Path::new("/sdk/project/main.cpp"),
+                &directive,
+                &NormalizedPath::from("/sdk/project/config.hpp"),
+                &search,
+            )
+        );
     }
 
     #[test]
@@ -284,8 +281,7 @@ mod tests {
             has_computed: false,
         };
 
-        DependencyDiscoveryMode::AllHeaders
-            .apply_static_fallback(&mut result, &Default::default());
+        DependencyDiscoveryMode::AllHeaders.apply_static_fallback(&mut result, &Default::default());
 
         assert!(result.has_computed);
     }
@@ -338,11 +334,8 @@ mod tests {
             "explicit.o",
             "-MP",
         ]);
-        let moved_depfile = context_for(&[
-            "-c", "main.c", "-o", "a.o", "-MD", "-MF", "other.d",
-        ]);
-        let stdout_depfile =
-            context_for(&["-c", "main.c", "-o", "a.o", "-MD", "-MF", "-"]);
+        let moved_depfile = context_for(&["-c", "main.c", "-o", "a.o", "-MD", "-MF", "other.d"]);
+        let stdout_depfile = context_for(&["-c", "main.c", "-o", "a.o", "-MD", "-MF", "-"]);
 
         assert_ne!(output_a, output_b);
         assert_ne!(output_a, target);

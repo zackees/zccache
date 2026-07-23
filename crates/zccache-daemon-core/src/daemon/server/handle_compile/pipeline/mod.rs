@@ -265,10 +265,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         rustc_metadata_compat_key,
         worktree_equivalent_context,
     ) = match build_result {
-        BuildContextResult::Cc {
-            mut ctx,
-            dep_flags,
-        } => {
+        BuildContextResult::Cc { mut ctx, dep_flags } => {
             dependency_mode.apply_to_cc_context(&mut ctx, &dep_flags);
             DependencyDiscoveryMode::apply_user_depfile_content_to_cc_context(
                 &mut ctx,
@@ -793,7 +790,9 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 &stderr,
                 exit_code,
                 snap_clock,
-            ) {
+            )
+            .await
+            {
                 write_session_log(
                     &state.sessions,
                     &sid,

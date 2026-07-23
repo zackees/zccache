@@ -372,7 +372,7 @@ fn install_directory(staged: &Path, requested: &Path) -> std::io::Result<()> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         atomic_exchange_directories(staged, requested)?;
-        return remove_directory_if_present(staged);
+        remove_directory_if_present(staged)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {

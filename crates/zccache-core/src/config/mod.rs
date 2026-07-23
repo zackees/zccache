@@ -122,7 +122,9 @@ pub use resolve::{
 pub struct Config {
     /// Path to the artifact cache directory.
     pub cache_dir: NormalizedPath,
-    /// Maximum artifact cache size in bytes.
+    /// Deprecated compatibility value retained for serialized config/API
+    /// stability. Runtime retention ignores it and uses the dynamic budget or
+    /// `ZCCACHE_CACHE_SIZE_BYTES` / `ZCCACHE_CACHE_SIZE_PERCENT`.
     pub max_cache_size: u64,
     /// Daemon idle timeout in seconds before auto-shutdown.
     pub idle_timeout_secs: u64,
@@ -136,7 +138,9 @@ pub struct Config {
     pub max_memory_bytes: u64,
     /// How often (in seconds) the memory eviction background task runs (default: 30).
     pub eviction_interval_secs: u64,
-    /// How often (in seconds) the disk artifact GC task runs (default: 300).
+    /// Deprecated compatibility value retained for serialized config/API
+    /// stability. Daemon-owned pressure checks run every five minutes and full
+    /// age maintenance every 24 hours.
     pub disk_gc_interval_secs: u64,
 }
 
@@ -144,7 +148,10 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             cache_dir: default_cache_dir(),
-            max_cache_size: 10 * 1024 * 1024 * 1024, // 10 GB
+            // Compatibility field for callers that still inspect Config.
+            // Runtime disk maintenance now uses a dynamic 5% filesystem
+            // budget clamped to 40-200 GiB (issue #1148).
+            max_cache_size: 40 * 1024 * 1024 * 1024,
             idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
             enable_watcher: true,
             watcher_poll_fallback: false,

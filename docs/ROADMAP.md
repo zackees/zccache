@@ -118,9 +118,11 @@ This document describes the phased implementation plan for **zccache**, a high-p
   - Access time tracking (for LRU eviction)
   - Total cache size tracking
 - LRU eviction:
-  - Configurable max cache size (default: 10 GB)
-  - Eviction triggered when cache exceeds high-water mark (e.g., 95% of max)
-  - Evicts least-recently-accessed entries until below low-water mark (e.g., 80% of max)
+  - Dynamic 5% cache budget (40-200 GiB) with byte/percent overrides
+  - Soft pressure at 85% evicts entries older than 4 days to 70% of budget
+  - Hard pressure at 100% or low free space evicts LRU entries regardless of age
+    to 80% of budget and the recovery free-space target
+  - Daily full maintenance expires entries older than 30 days
 - Corruption detection:
   - Manifest includes blake3 checksum of artifact data
   - On read, verify checksum; if mismatch, delete entry and return miss

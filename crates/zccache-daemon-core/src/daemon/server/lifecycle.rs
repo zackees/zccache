@@ -207,6 +207,8 @@ pub(super) fn new_shared_state(
             pch_source_map: DashMap::new(),
             journal: CompileJournal::new(crate::core::config::log_dir_from_cache_dir(cache_dir)),
             in_flight_bytes: AtomicUsize::new(0),
+            disk_maintenance: Mutex::new(()),
+            artifact_publication: Arc::new(tokio::sync::RwLock::new(())),
             persist_semaphore: Arc::new(tokio::sync::Semaphore::new(persist_workers_default())),
             compile_concurrency,
             artifact_store,

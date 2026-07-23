@@ -4,6 +4,8 @@ use super::*;
 
 pub(super) enum IndexWriterCommand {
     Insert(String, ArtifactIndex),
+    Remove(Vec<String>),
+    Clear(tokio::sync::oneshot::Sender<()>),
     Flush(tokio::sync::oneshot::Sender<()>),
 }
 
@@ -138,6 +140,27 @@ async fn process_index_writer_command(
                 flush_wal_to_disk(store, wal).await;
             }
         }
+        IndexWriterCommand::Remove(keys) => {
+            for key in &keys {
+                wal.remove(key);
+            }
+            let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+            let removed = store.remove_batch(&refs);
+            match Arc::clone(store).flush_async().await {
+                Ok(()) => tracing::info!(removed, "artifact-index removals flushed to disk"),
+                Err(error) => {
+                    tracing::warn!(removed, %error, "artifact-index removal flush failed")
+                }
+            }
+        }
+        IndexWriterCommand::Clear(ack) => {
+            wal.clear();
+            store.clear();
+            if let Err(error) = Arc::clone(store).flush_async().await {
+                tracing::warn!(%error, "cleared artifact index flush failed");
+            }
+            let _ = ack.send(());
+        }
         IndexWriterCommand::Flush(ack) => {
             flush_wal_to_disk(store, wal).await;
             let _ = ack.send(());
@@ -151,6 +174,17 @@ pub(super) async fn flush_index_writer(
 ) -> bool {
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
     if tx.send(IndexWriterCommand::Flush(ack_tx)).is_err() {
+        return false;
+    }
+    matches!(tokio::time::timeout(timeout, ack_rx).await, Ok(Ok(())))
+}
+
+pub(super) async fn clear_index_writer(
+    tx: &tokio::sync::mpsc::UnboundedSender<IndexWriterCommand>,
+    timeout: std::time::Duration,
+) -> bool {
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    if tx.send(IndexWriterCommand::Clear(ack_tx)).is_err() {
         return false;
     }
     matches!(tokio::time::timeout(timeout, ack_rx).await, Ok(Ok(())))
@@ -173,5 +207,48 @@ pub(super) async fn flush_wal_to_disk(
     match res {
         Ok(()) => tracing::info!(committed = count, "WAL flushed to disk"),
         Err(e) => tracing::warn!(count, "WAL flush to disk failed: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn remove_cancels_pending_insert_and_persists_deletion() {
+        let temp = tempfile::tempdir().expect("temporary index directory");
+        let index_path = temp.path().join("index.bin");
+        let store = Arc::new(ArtifactStore::open_empty(&index_path));
+        let mut wal = std::collections::HashMap::new();
+        let key = "a".repeat(64);
+        let meta = ArtifactIndex::new(
+            vec!["output.o".to_string()],
+            vec![4096],
+            Vec::new(),
+            Vec::new(),
+            0,
+        );
+
+        process_index_writer_command(
+            IndexWriterCommand::Insert(key.clone(), meta),
+            &store,
+            &mut wal,
+            usize::MAX,
+        )
+        .await;
+        assert!(wal.contains_key(&key));
+
+        process_index_writer_command(
+            IndexWriterCommand::Remove(vec![key.clone()]),
+            &store,
+            &mut wal,
+            usize::MAX,
+        )
+        .await;
+
+        assert!(!wal.contains_key(&key));
+        assert!(store.get(&key).is_none());
+        let reopened = ArtifactStore::open(&index_path).expect("reopen persisted index");
+        assert!(reopened.get(&key).is_none());
     }
 }

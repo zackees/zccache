@@ -732,21 +732,17 @@ impl StagedCompilePlan {
             crate::depgraph::DepfileStrategy::UserSpecified {
                 augment_system_headers,
                 ..
-            } => {
-                crate::depgraph::DepfileStrategy::UserSpecified {
-                    path: staged,
-                    augment_system_headers,
-                }
-            }
+            } => crate::depgraph::DepfileStrategy::UserSpecified {
+                path: staged,
+                augment_system_headers,
+            },
             crate::depgraph::DepfileStrategy::UserDefault {
                 augment_system_headers,
                 ..
-            } => {
-                crate::depgraph::DepfileStrategy::UserDefault {
-                    path: staged,
-                    augment_system_headers,
-                }
-            }
+            } => crate::depgraph::DepfileStrategy::UserDefault {
+                path: staged,
+                augment_system_headers,
+            },
             crate::depgraph::DepfileStrategy::ShowIncludes
             | crate::depgraph::DepfileStrategy::Unsupported => strategy,
         }

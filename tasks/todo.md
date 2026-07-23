@@ -1,3 +1,16 @@
+# #1148 bounded embedded/standalone disk retention
+
+Issue: https://github.com/zackees/zccache/issues/1148
+
+- [x] Confirm standalone/embedded lifecycle parity gap and exact-root ownership.
+- [x] Add shared policy/scanner seams with RED tests for budgets, ages, pressure, hardlinks, and sibling sentinels.
+- [x] Wire the shared pass into standalone and embedded startup/periodic lifecycles.
+- [x] Expose host-callable embedded maintenance and structured reports.
+- [x] Persist/catch up the daily age-maintenance deadline inside the configured root.
+- [x] Update architecture/runtime documentation.
+- [x] Run focused/full tests, fmt, clippy, Windows compile, and review.
+- [ ] Open the PR, pass CI, merge, and validate main.
+
 # #1063 thin-v3 ownership-aware durable export
 
 Parent: zackees/soldr#1609 · Policy: `thin-v3-lifetime-partition-v1`

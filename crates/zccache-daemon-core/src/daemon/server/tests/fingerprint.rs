@@ -513,10 +513,7 @@ fn request_fingerprint_includes_rust_key_env() {
 #[test]
 fn request_fingerprint_separates_dependency_policy_env() {
     let args = vec!["-c".to_string(), "src/main.cpp".to_string()];
-    let safe = vec![(
-        "ZCCACHE_SCAN_SYSTEM_HEADERS".to_string(),
-        "1".to_string(),
-    )];
+    let safe = vec![("ZCCACHE_SCAN_SYSTEM_HEADERS".to_string(), "1".to_string())];
     let fast = vec![("ZCCACHE_FAST".to_string(), "1".to_string())];
 
     let safe_key = request_fingerprint(
@@ -563,13 +560,7 @@ fn request_fingerprint_preserves_raw_user_depfile_paths() {
     args_b[3] = args_a[3].clone();
     args_b[5] = "-MF-".into();
     args_b.remove(6);
-    let stdout = request_fingerprint(
-        Path::new("clang++"),
-        &args_b,
-        root_a,
-        Some(root_a),
-        None,
-    );
+    let stdout = request_fingerprint(Path::new("clang++"), &args_b, root_a, Some(root_a), None);
     assert_ne!(a, stdout);
 }
 

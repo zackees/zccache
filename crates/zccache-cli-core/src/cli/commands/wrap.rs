@@ -17,9 +17,7 @@ use std::process::ExitCode;
 
 use super::util::{resolve_endpoint, run_async};
 
-pub(crate) use env::{
-    parse_wrapper_overrides, strip_leading_wrapper_flags, WrapperOverrides,
-};
+pub(crate) use env::{parse_wrapper_overrides, strip_leading_wrapper_flags, WrapperOverrides};
 use routing::WrapperRoute;
 
 /// Wrap a compiler or tool invocation.
@@ -29,10 +27,7 @@ use routing::WrapperRoute;
 ///
 /// If `ZCCACHE_SESSION_ID` is set, uses that session and sends the tool as a
 /// per-request override. If unset, auto-creates an ephemeral session.
-pub(crate) fn run_wrap(
-    args: &[String],
-    overrides: WrapperOverrides,
-) -> ExitCode {
+pub(crate) fn run_wrap(args: &[String], overrides: WrapperOverrides) -> ExitCode {
     diag::emit(args);
 
     if args.is_empty() {

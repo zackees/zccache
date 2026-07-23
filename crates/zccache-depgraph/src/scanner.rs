@@ -305,6 +305,7 @@ fn scan_recursive_impl(
 /// per-file results are buffered locally and pushed in a single batch at
 /// the end. This keeps Mutex contention proportional to (file count) and
 /// not to (include count).
+#[allow(clippy::too_many_arguments)] // One internal frontier worker over shared scan state.
 fn scan_one_level(
     file: &Path,
     search: &IncludeSearchPaths,
