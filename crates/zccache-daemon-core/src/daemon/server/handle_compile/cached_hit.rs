@@ -205,6 +205,44 @@ pub(super) fn materialize_cached_compile_hit(
             return None;
         }
     };
+    let depfile_targets = targets
+        .iter()
+        .filter(|(target, _)| target.extension().and_then(|ext| ext.to_str()) == Some("d"))
+        .map(|(target, _)| target)
+        .collect::<Vec<_>>();
+    let rehydrate_stdout = contains_staged_output_marker(stdout.as_slice());
+    let rehydrate_stderr = contains_staged_output_marker(stderr.as_slice());
+    if !depfile_targets.is_empty() || rehydrate_stdout || rehydrate_stderr {
+        let requested_outputs = targets
+            .iter()
+            .map(|(target, _)| target.clone())
+            .collect::<Vec<_>>();
+        for target in depfile_targets {
+            if let Err(error) = rehydrate_logical_depfile(target.as_path(), &requested_outputs) {
+                write_session_log(
+                    &state.sessions,
+                    sid,
+                    &format!(
+                        "[DIAG] cached_depfile_rehydrate_failed: {}: {error}",
+                        target.display()
+                    ),
+                );
+                return None;
+            }
+        }
+        if rehydrate_stdout {
+            stdout = Arc::new(rehydrate_staged_output_bytes(
+                stdout.as_slice(),
+                &requested_outputs,
+            ));
+        }
+        if rehydrate_stderr {
+            stderr = Arc::new(rehydrate_staged_output_bytes(
+                stderr.as_slice(),
+                &requested_outputs,
+            ));
+        }
+    }
     let t2 = Instant::now();
     let write_output_ns = (t2 - t1).as_nanos() as u64;
     if has_staged_payload {
@@ -441,8 +479,14 @@ mod tests {
 
         let obj_payload = Arc::new(b"compiled object bytes".to_vec());
         let dep_payload = Arc::new(
-            b"source.o: source.cc header_a.h header_b.h\n\nheader_a.h:\n\nheader_b.h:\n".to_vec(),
+            format!(
+                "{STAGED_OUTPUT_REMAP_ROOT}/source.o: source.cc header_a.h header_b.h\n\n\
+                 header_a.h:\n\nheader_b.h:\n"
+            )
+            .into_bytes(),
         );
+        let cached_stdout =
+            Arc::new(format!("artifact:{STAGED_OUTPUT_REMAP_ROOT}/source.o\n").into_bytes());
         let obj_cache_path = cache_dir.join("depfile-key_0");
         let dep_cache_path = cache_dir.join("depfile-key_1");
         let _ = make_writable(&obj_cache_path);
@@ -469,7 +513,7 @@ mod tests {
         let meta = ArtifactIndex::new(
             vec!["source.o".to_string(), "source.o.d".to_string()],
             vec![obj_payload.len() as u64, dep_payload.len() as u64],
-            Arc::new(Vec::new()),
+            cached_stdout,
             Arc::new(Vec::new()),
             0,
         );
@@ -497,14 +541,21 @@ mod tests {
             phases: CachedHitPhases::request_cache(0, 0),
         })
         .expect("materialize_cached_compile_hit must succeed");
-        assert!(matches!(
-            response,
-            Response::CompileResult {
-                cached: true,
-                exit_code: 0,
-                ..
-            }
-        ));
+        let Response::CompileResult {
+            cached,
+            exit_code,
+            stdout,
+            ..
+        } = response
+        else {
+            panic!("expected cached compile result");
+        };
+        assert!(cached);
+        assert_eq!(exit_code, 0);
+        assert_eq!(
+            stdout.as_slice(),
+            format!("artifact:{}\n", output_path.display()).as_bytes()
+        );
 
         assert_eq!(
             std::fs::read(&output_path).unwrap(),
@@ -518,10 +569,11 @@ mod tests {
              stale-incremental-build fix",
             depfile_dest.display(),
         );
-        assert_eq!(
-            std::fs::read(depfile_dest.as_path()).unwrap(),
-            dep_payload.as_slice(),
-            "restored depfile bytes must match the cached payload",
+        let restored = std::fs::read_to_string(depfile_dest.as_path()).unwrap();
+        assert!(!restored.contains(STAGED_OUTPUT_REMAP_ROOT));
+        assert!(
+            restored.starts_with(&format!("{}:", output_path.display())),
+            "restored depfile target must use the current output path: {restored}"
         );
     }
 

@@ -227,24 +227,41 @@ pub(in crate::daemon::server) fn staged_key_supported(key_hex: &str) -> bool {
 }
 
 pub(in crate::daemon::server) fn is_staged_artifact_path(path: &Path) -> bool {
-    let components = path
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    let Some(window) = components.windows(4).last() else {
+    let mut components = path.components().rev();
+    let Some(output) = components
+        .next()
+        .and_then(|component| component.as_os_str().to_str())
+    else {
+        return false;
+    };
+    let Some(generation) = components
+        .next()
+        .and_then(|component| component.as_os_str().to_str())
+    else {
+        return false;
+    };
+    let Some(key) = components
+        .next()
+        .and_then(|component| component.as_os_str().to_str())
+    else {
+        return false;
+    };
+    let Some(root) = components
+        .next()
+        .and_then(|component| component.as_os_str().to_str())
+    else {
         return false;
     };
     let root_matches = if cfg!(windows) {
-        window[0].eq_ignore_ascii_case(STAGED_ROOT)
+        root.eq_ignore_ascii_case(STAGED_ROOT)
     } else {
-        window[0] == STAGED_ROOT
+        root == STAGED_ROOT
     };
-    let key_matches = window[1].len() <= 128
-        && !window[1].is_empty()
-        && window[1].bytes().all(|byte| byte.is_ascii_hexdigit());
+    let key_matches =
+        key.len() <= 128 && !key.is_empty() && key.bytes().all(|byte| byte.is_ascii_hexdigit());
     let generation_matches =
-        window[2].len() == 64 && window[2].bytes().all(|byte| byte.is_ascii_hexdigit());
-    let output_matches = window[3]
+        generation.len() == 64 && generation.bytes().all(|byte| byte.is_ascii_hexdigit());
+    let output_matches = output
         .strip_prefix("output-")
         .is_some_and(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()));
     root_matches && key_matches && generation_matches && output_matches

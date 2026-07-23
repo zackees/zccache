@@ -108,6 +108,17 @@ reads only the documented fields; it tolerates malformed lines
 (emits a stderr warning and skips the row) and missing journals
 (exits zero with a `(no journal)` message).
 
+## Environment redaction
+
+Compile handling and cache-miss attribution use the original request
+environment in memory. `JournalEntry::new` replaces every environment value
+with the literal `<redacted>`, and the field's custom serializer repeats that
+redaction for directly constructed entries. This prevents bearer tokens, API
+keys, passwords, and other ambient credentials from being copied into
+long-lived global or per-session JSONL files. A journal therefore identifies
+which variables influenced a request, but it is intentionally not a
+credential-complete replay script.
+
 ## Engine phase profiling
 
 `session-stats --json` and `session-end --json` include `phase_profile` when

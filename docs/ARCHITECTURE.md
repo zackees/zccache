@@ -29,6 +29,7 @@ This document is the index for zccache's architecture specification. Each subsys
 - **Reflink / hardlink COW safety** → [artifact-store.md](architecture/artifact-store.md#capability-driven-cow-materialization)
 - **soldr target artifact contract** → [rust-artifact-plan.md](architecture/rust-artifact-plan.md)
 - **Embedded soldr/fbuild service integration** → [embedded-service.md](architecture/embedded-service.md)
+- **Embedded maintenance limits and shutdown reporting** → [embedded-service.md § Maintenance limits and task ownership](architecture/embedded-service.md#maintenance-limits-and-task-ownership)
 - **Legacy action target snapshots** → [target-cache.md](architecture/target-cache.md)
 - **Thread safety & crash safety** → [runtime.md](architecture/runtime.md)
 - **Async/process bridge — watchdogs, cancellation & timeouts (deadlock hardening)** → [runtime.md § Async / process bridge](architecture/runtime.md#async--process-bridge-watchdogs-cancellation--timeouts)
@@ -39,4 +40,7 @@ This document is the index for zccache's architecture specification. Each subsys
 - **Compile journal fields & `miss_reason` enum** → [journal-schema.md](journal-schema.md)
 
 See also: [DESIGN_DECISIONS.md](DESIGN_DECISIONS.md) for rationale behind key choices, [ROADMAP.md](ROADMAP.md) for implementation phases.
-For embedded mode, start with [architecture/embedded-service.md](architecture/embedded-service.md), especially the MVP status section for the landed documentation contract versus open soldr/fbuild integration work.
+For embedded mode, start with
+[architecture/embedded-service.md](architecture/embedded-service.md),
+especially the MVP status table: Soldr integration is landed; fbuild remains
+open.

@@ -212,3 +212,16 @@ fn volume_identity(path: &Path) -> Option<u128> {
 fn volume_identity(path: &Path) -> Option<u128> {
     get_file_id(path).map(|id| u128::from(id.volume_serial))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn volume_pair_normalizes_equivalent_probe_paths() {
+        let canonical = VolumePair(1, 1, NormalizedPath::new("probe/out"));
+        let equivalent = VolumePair(1, 1, NormalizedPath::new("probe/./out"));
+
+        assert_eq!(canonical, equivalent);
+    }
+}

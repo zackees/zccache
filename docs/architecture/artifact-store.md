@@ -118,6 +118,14 @@ each live daemon's directory: startup cleanup reclaims only unlocked crash
 debris, while cache clear and eviction cannot delete outputs still needed for
 publication salvage or requested-path materialization.
 
+Rust staging adds
+`--remap-path-prefix=<private-root>=/__zccache_staged_output__`, and depfiles
+plus captured stdout/stderr use the same stable logical marker before hashing
+or publication. Miss and hit delivery rehydrate marker paths to the current
+requested destinations. Two equivalent compiles can therefore publish
+byte-identical generations even when their private staging directories differ;
+the conflict guard below remains reserved for genuinely different output.
+
 The v2 transaction is visible only after the complete generation and manifest
 are written and the per-key pointer is switched. Readers validate the pointer,
 manifest, sizes, and every output digest before serving a hit. Startup removes

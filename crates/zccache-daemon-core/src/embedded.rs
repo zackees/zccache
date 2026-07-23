@@ -196,6 +196,18 @@ pub struct RuntimeHooks {
 #[derive(Debug, Clone, Default)]
 pub struct ServiceLimits {
     pub max_parallel_compiles: Option<usize>,
+    /// Maximum estimated memory used by metadata, dependency, and ephemeral
+    /// caches. `None` uses the standalone daemon default.
+    pub max_memory_bytes: Option<u64>,
+    /// How often the embedded daemon enforces its memory budget.
+    /// `None` uses the standalone daemon default.
+    pub memory_eviction_interval: Option<std::time::Duration>,
+    /// Maximum bytes retained by the on-disk artifact cache.
+    /// `None` uses the standalone daemon default.
+    pub max_cache_size_bytes: Option<u64>,
+    /// How often the embedded daemon enforces its disk budget.
+    /// `None` uses the standalone daemon default.
+    pub disk_gc_interval: Option<std::time::Duration>,
     /// Optional host-supplied in-flight counter (zccache#924).
     ///
     /// When the embedded service runs inside a larger host daemon
@@ -311,6 +323,8 @@ pub struct ShutdownReport {
 #[derive(Debug, Clone)]
 pub struct FlushReport {
     pub pending_writes_drained: bool,
+    pub index_writer_drained: bool,
+    pub steps: Vec<FlushStepReport>,
     pub artifact_entries: u64,
     pub metadata_entries: u64,
 }
@@ -377,13 +391,14 @@ impl ZccacheService {
     /// Start an in-process zccache service on the caller's Tokio runtime.
     ///
     /// When `config.runtime.handle` is `Some`, persistent background tasks
-    /// owned by the embedded daemon (currently the artifact-index writer)
-    /// spawn via the supplied [`tokio::runtime::Handle`]. When `None`, they
-    /// spawn on the ambient runtime — which works because this function is
-    /// `async` and therefore runs inside one. The explicit form is the
-    /// zccache#922 contract for host daemons that want to assert all
-    /// embedded work shares their runtime (for tokio-console attach unity,
-    /// for graceful-shutdown signalling, etc.).
+    /// owned by the embedded daemon (the artifact-index writer plus memory
+    /// and disk maintenance loops) spawn via the supplied
+    /// [`tokio::runtime::Handle`]. When `None`, they spawn on the ambient
+    /// runtime — which works because this function is `async` and therefore
+    /// runs inside one. The explicit form is the zccache#922 contract for
+    /// host daemons that want to assert all embedded work shares their
+    /// runtime (for tokio-console attach unity, graceful-shutdown signalling,
+    /// and related diagnostics).
     pub async fn start(config: ZccacheConfig) -> Result<Self> {
         Self::start_with_disk_limits(config, DiskCacheLimits::default()).await
     }
@@ -721,8 +736,37 @@ impl ServiceStats {
 
 impl FlushReport {
     fn from_report(report: EmbeddedFlushReport) -> Self {
+        debug_assert_eq!(report.is_complete(), {
+            report.pending_writes_drained
+                && report.index_writer_drained
+                && report.steps.iter().all(|step| {
+                    matches!(
+                        step.outcome,
+                        crate::daemon::server::FlushStepOutcome::Completed
+                    )
+                })
+        });
         Self {
             pending_writes_drained: report.pending_writes_drained,
+            index_writer_drained: report.index_writer_drained,
+            steps: report
+                .steps
+                .into_iter()
+                .map(|step| FlushStepReport {
+                    step: step.step,
+                    outcome: match step.outcome {
+                        crate::daemon::server::FlushStepOutcome::Completed => {
+                            FlushStepOutcome::Completed
+                        }
+                        crate::daemon::server::FlushStepOutcome::Failed(error) => {
+                            FlushStepOutcome::Failed(error)
+                        }
+                        crate::daemon::server::FlushStepOutcome::TimedOut => {
+                            FlushStepOutcome::TimedOut
+                        }
+                    },
+                })
+                .collect(),
             artifact_entries: report.artifact_entries,
             metadata_entries: report.metadata_entries,
         }

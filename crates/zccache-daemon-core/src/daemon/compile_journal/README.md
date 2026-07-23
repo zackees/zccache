@@ -10,8 +10,8 @@ requires an independently captured trusted environment; see
 `docs/journal-schema.md`.
 
 Originally a single 2,072-LOC `compile_journal.rs`; split here so each file
-stays well under 1,000 LOC. No behavior change — purely a code split. Public
-API (`pub use` re-exports from `mod.rs`) is unchanged.
+stays well under 1,000 LOC. Public API (`pub use` re-exports from `mod.rs`) is
+unchanged.
 
 ## Files
 

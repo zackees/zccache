@@ -44,6 +44,97 @@ fn rust_plan_rewrites_output_before_spawn() {
 }
 
 #[test]
+fn rust_staging_paths_do_not_change_published_output_bytes() {
+    if !staged_tests_enabled() {
+        return;
+    }
+    let Some(rustc) = crate::test_support::find_rustc() else {
+        return;
+    };
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("fixture.rs");
+    std::fs::write(&source, "pub fn answer() -> u32 { 42 }\n").unwrap();
+
+    let build = |label: &str| {
+        let logical_dir = temp.path().join(format!("target-{label}"));
+        let primary: NormalizedPath = logical_dir.join("libfixture-fixed.rlib").into();
+        let expected: Vec<NormalizedPath> = [
+            logical_dir.join("libfixture-fixed.rlib"),
+            logical_dir.join("libfixture-fixed.rmeta"),
+            logical_dir.join("fixture-fixed.d"),
+        ]
+        .into_iter()
+        .map(Into::into)
+        .collect();
+        let args = vec![
+            "--crate-name".into(),
+            "fixture".into(),
+            "--edition=2021".into(),
+            "--crate-type=rlib".into(),
+            "--emit=dep-info,metadata,link".into(),
+            "-C".into(),
+            "metadata=fixed".into(),
+            "-C".into(),
+            "extra-filename=-fixed".into(),
+            "--out-dir".into(),
+            logical_dir.to_string_lossy().into_owned(),
+            source.to_string_lossy().into_owned(),
+        ];
+        let plan = StagedCompilePlan::rustc(
+            &temp.path().join(format!("staging-{label}")),
+            &args,
+            &primary,
+            &expected,
+            temp.path(),
+        )
+        .unwrap()
+        .unwrap();
+        let output = std::process::Command::new(rustc.as_path())
+            .args(&plan.rewritten_args)
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "rustc failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        plan.rewrite_logical_side_outputs();
+        plan
+    };
+
+    let first = build("one");
+    let second = build("two");
+    for first_output in &first.outputs {
+        let name = first_output.staged.file_name().unwrap();
+        let second_output = second
+            .outputs
+            .iter()
+            .find(|output| output.staged.file_name() == Some(name))
+            .unwrap();
+        assert_eq!(
+            std::fs::read(first_output.staged.as_path()).unwrap(),
+            std::fs::read(second_output.staged.as_path()).unwrap(),
+            "staged path changed output bytes for {}",
+            name.to_string_lossy()
+        );
+    }
+    for plan in [&first, &second] {
+        let depfile = plan
+            .outputs
+            .iter()
+            .find(|output| output.requested.extension().and_then(|ext| ext.to_str()) == Some("d"))
+            .unwrap()
+            .requested
+            .clone();
+        plan.materialize().unwrap();
+        let depfile_text = std::fs::read_to_string(&depfile).unwrap();
+        assert!(!depfile_text.contains(STAGED_OUTPUT_REMAP_ROOT));
+        assert!(depfile_text.contains(depfile.parent().unwrap().to_string_lossy().as_ref()));
+    }
+}
+
+#[test]
 fn explicit_emit_destination_is_staged_and_mapped() {
     if !staged_tests_enabled() {
         return;

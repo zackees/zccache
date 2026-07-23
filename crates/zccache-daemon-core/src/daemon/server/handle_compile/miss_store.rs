@@ -618,3 +618,20 @@ fn store_single_output(
     });
     stats.artifact_insert_stats_ns = t_artifact_insert_stats.elapsed().as_nanos() as u64;
 }
+
+#[cfg(test)]
+mod staged_publication_diagnostic_tests {
+    use super::{truncate_staged_publication_error, MAX_STAGED_PUBLICATION_ERROR_CHARS};
+
+    #[test]
+    fn publication_error_is_bounded_without_splitting_utf8() {
+        let error = format!("{}suffix", "å".repeat(MAX_STAGED_PUBLICATION_ERROR_CHARS));
+        let rendered = truncate_staged_publication_error(&error);
+
+        assert!(rendered.ends_with('…'));
+        assert_eq!(
+            rendered.trim_end_matches('…').chars().count(),
+            MAX_STAGED_PUBLICATION_ERROR_CHARS
+        );
+    }
+}

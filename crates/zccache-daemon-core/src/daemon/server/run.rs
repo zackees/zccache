@@ -352,13 +352,20 @@ impl DaemonServer {
                     // Signal the index-writer to drain its WAL to disk, then
                     // wait briefly for it. Without this, unflushed entries are
                     // lost if the runtime aborts before the next interval tick.
-                    self.state.index_writer_shutdown.notify_waiters();
-                    if let Some(h) = index_writer_handle.take() {
-                        let _ = tokio::time::timeout(
+                    // Retain a permit if the writer is between polls; a
+                    // `notify_waiters` signal can be lost in that window.
+                    self.state.index_writer_shutdown.notify_one();
+                    if let Some(mut handle) = index_writer_handle.take() {
+                        if tokio::time::timeout(
                             std::time::Duration::from_secs(2),
-                            h,
+                            &mut handle,
                         )
-                        .await;
+                        .await
+                        .is_err()
+                        {
+                            handle.abort();
+                            let _ = handle.await;
+                        }
                     }
 
                     // Critical: the WAL drain above only persists entries that
@@ -883,6 +890,10 @@ async fn run_memory_eviction_pass(state: &Arc<SharedState>, budget: u64) -> (u64
         tokio::select! {
             () = state.cache_requests_idle.notified() => {}
             () = tokio::time::sleep(MEMORY_GC_GENTLE_RETRY) => {}
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(%error, gc_pass = pass, "disk GC task failed");
         }
     }
 }

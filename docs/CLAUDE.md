@@ -19,6 +19,7 @@ Architecture docs are split by subsystem. Read only what's relevant to your curr
 | `zccache-compiler` | [overview.md](architecture/overview.md) (2.9), [data-flow.md](architecture/data-flow.md) |
 | `zccache-core` | [overview.md](architecture/overview.md) |
 | Embedded host-daemon integration | [embedded-service.md](architecture/embedded-service.md) |
+| Embedded maintenance limits and shutdown | [embedded-service.md](architecture/embedded-service.md#maintenance-limits-and-task-ownership) |
 | `zccache-symbols` | Crate README — 128-byte release footer, `<dump>.symref` sidecars, `zccache-stamp` CI helper |
 | Perf measurement harness | [/PERF.md](../PERF.md) — local Docker matrix, scenarios, gate semantics |
 | Crash dumper (CLI + daemon) | [runtime.md](architecture/runtime.md) (Crash Dumper) — `zccache_core::crash::install` covers both binaries |

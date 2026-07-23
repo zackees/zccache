@@ -768,6 +768,26 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         CompileExecResult::Ok(outcome) => outcome,
         CompileExecResult::Error(resp) => return resp,
     };
+    let (artifact_stdout, artifact_stderr, response_stdout, response_stderr) =
+        if let Some(plan) = staged_plan.as_ref() {
+            let artifact_stdout = Arc::new(plan.canonicalize_output_bytes(stdout.as_slice()));
+            let artifact_stderr = Arc::new(plan.canonicalize_output_bytes(stderr.as_slice()));
+            let response_stdout = Arc::new(plan.rehydrate_output_bytes(artifact_stdout.as_slice()));
+            let response_stderr = Arc::new(plan.rehydrate_output_bytes(artifact_stderr.as_slice()));
+            (
+                artifact_stdout,
+                artifact_stderr,
+                response_stdout,
+                response_stderr,
+            )
+        } else {
+            (
+                Arc::clone(&stdout),
+                Arc::clone(&stderr),
+                Arc::clone(&stdout),
+                Arc::clone(&stderr),
+            )
+        };
 
     if exit_code != 0 {
         if let Some(plan) = staged_plan.as_ref() {
@@ -786,8 +806,8 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 &cwd_path,
                 &ctx,
                 rustc_args,
-                &stdout,
-                &stderr,
+                &artifact_stdout,
+                &artifact_stderr,
                 exit_code,
                 snap_clock,
             )
@@ -831,8 +851,8 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             is_rustc,
             rust_profile_enabled,
             rust_profile_mode,
-            stdout: Arc::clone(&stdout),
-            stderr: Arc::clone(&stderr),
+            stdout: Arc::clone(&artifact_stdout),
+            stderr: Arc::clone(&artifact_stderr),
             exit_code,
             depfile_strategy,
             show_includes_scan,
@@ -874,8 +894,8 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
 
     Response::CompileResult {
         exit_code,
-        stdout,
-        stderr,
+        stdout: response_stdout,
+        stderr: response_stderr,
         cached: false,
     }
 }

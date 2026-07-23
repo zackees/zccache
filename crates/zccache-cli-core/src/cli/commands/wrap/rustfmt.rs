@@ -7,9 +7,11 @@ use std::process::ExitCode;
 use super::super::util::exit_code_from_i32;
 /// Run rustfmt with format caching.
 ///
-/// Files whose content hash is already in the format cache are skipped entirely,
-/// preserving their mtime and avoiding unnecessary downstream rebuilds. After
-/// formatting, the new content hash of each file is stored in the cache.
+/// Explicitly non-recursive invocations can skip files whose content hash is
+/// already known formatted, preserving their mtime and avoiding unnecessary
+/// downstream rebuilds. Recursive invocations always run rustfmt because the
+/// explicit crate-root arguments do not describe child modules that rustfmt
+/// discovers and formats itself.
 pub(super) fn run_rustfmt_cached(
     rustfmt_path: &Path,
     args: &[String],
@@ -50,11 +52,23 @@ where
         }
     };
 
+    // Cargo supplies crate roots to rustfmt, which then discovers and formats
+    // child modules recursively. A cache marker for an unchanged crate root
+    // cannot prove those implicit children are unchanged. Only use the
+    // root-content shortcut when the invocation explicitly disables recursive
+    // child formatting; otherwise preserve the exact argv and run rustfmt.
+    if !explicitly_skips_children(&parsed.flags) {
+        let mut cmd = std::process::Command::new(rustfmt_path);
+        cmd.args(args);
+        super::passthrough::release_cwd_for_command(&mut cmd, cwd);
+        return runner(&mut cmd);
+    }
+
     // Build format context: rustfmt binary identity + config + flags.
     // Changes to any of these invalidate the entire format cache scope.
     let context_hash = {
         let mut hasher = crate::hash::StreamHasher::new();
-        hasher.update(b"zccache-fmt-v1");
+        hasher.update(b"zccache-fmt-v2-nonrecursive");
 
         if let Ok(bin_hash) = crate::hash::hash_file(rustfmt_path) {
             hasher.update(bin_hash.as_bytes());
@@ -145,6 +159,40 @@ where
     Ok(exit_i32)
 }
 
+fn explicitly_skips_children(flags: &[String]) -> bool {
+    let mut index = 0;
+    while index < flags.len() {
+        let flag = flags[index].as_str();
+        if flag == "--config" {
+            if flags
+                .get(index + 1)
+                .is_some_and(|value| config_enables_skip_children(value))
+            {
+                return true;
+            }
+            index += 2;
+            continue;
+        }
+        if flag
+            .strip_prefix("--config=")
+            .is_some_and(config_enables_skip_children)
+        {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
+fn config_enables_skip_children(config: &str) -> bool {
+    config.split(',').any(|entry| {
+        entry.split_once('=').is_some_and(|(key, value)| {
+            key.trim().eq_ignore_ascii_case("skip_children")
+                && value.trim().eq_ignore_ascii_case("true")
+        })
+    })
+}
+
 fn run_rustfmt_on_files<F>(
     rustfmt_path: &Path,
     original_args: &[String],
@@ -213,5 +261,107 @@ mod tests {
 
         assert!(called);
         assert_eq!(code, 37);
+    }
+
+    #[test]
+    fn recursive_invocation_does_not_hide_changed_child_modules_behind_root_hit() {
+        let _lock = super::super::passthrough::CWD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _cwd_restore = CwdRestore(std::env::current_dir().ok());
+        let root = tempfile::tempdir().unwrap();
+        let rustfmt = root.path().join("rustfmt-test-bin");
+        let source_dir = root.path().join("src");
+        let crate_root = source_dir.join("lib.rs");
+        let child = source_dir.join("child.rs");
+        let cache_root = root.path().join("cache");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::write(&rustfmt, b"fake formatter identity").unwrap();
+        std::fs::write(&crate_root, b"mod child;\n").unwrap();
+        std::fs::write(&child, b"pub fn child( ) {}\n").unwrap();
+        let args = vec![crate_root.display().to_string()];
+
+        let mut first_called = false;
+        let first_code =
+            run_rustfmt_cached_with_runner(&rustfmt, &args, root.path(), Some(&cache_root), |_| {
+                first_called = true;
+                std::fs::write(&child, b"pub fn child() {}\n")?;
+                Ok(0)
+            })
+            .unwrap();
+        assert!(first_called);
+        assert_eq!(first_code, 0);
+
+        // Cargo passes crate roots to rustfmt, and rustfmt recursively formats
+        // their modules. The explicit root is unchanged, but the implicit
+        // child now needs formatting. A root-only marker must not skip it.
+        std::fs::write(&child, b"pub fn child( ) {}\n").unwrap();
+        let mut second_called = false;
+        let second_code =
+            run_rustfmt_cached_with_runner(&rustfmt, &args, root.path(), Some(&cache_root), |_| {
+                second_called = true;
+                std::fs::write(&child, b"pub fn child() {}\n")?;
+                Ok(0)
+            })
+            .unwrap();
+
+        assert!(
+            second_called,
+            "recursive rustfmt must re-check child modules"
+        );
+        assert_eq!(second_code, 0);
+        assert_eq!(std::fs::read(&child).unwrap(), b"pub fn child() {}\n");
+    }
+
+    #[test]
+    fn explicit_skip_children_invocation_can_use_root_content_marker() {
+        let _lock = super::super::passthrough::CWD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _cwd_restore = CwdRestore(std::env::current_dir().ok());
+        let root = tempfile::tempdir().unwrap();
+        let rustfmt = root.path().join("rustfmt-test-bin");
+        let source = root.path().join("input.rs");
+        let cache_root = root.path().join("cache");
+        std::fs::write(&rustfmt, b"fake formatter identity").unwrap();
+        std::fs::write(&source, b"fn main() {}\n").unwrap();
+        let args = vec![
+            "--config".to_owned(),
+            "skip_children=true".to_owned(),
+            source.display().to_string(),
+        ];
+
+        let first_code =
+            run_rustfmt_cached_with_runner(&rustfmt, &args, root.path(), Some(&cache_root), |_| {
+                Ok(0)
+            })
+            .unwrap();
+        assert_eq!(first_code, 0);
+
+        let mut second_called = false;
+        let second_code =
+            run_rustfmt_cached_with_runner(&rustfmt, &args, root.path(), Some(&cache_root), |_| {
+                second_called = true;
+                Ok(0)
+            })
+            .unwrap();
+
+        assert!(!second_called);
+        assert_eq!(second_code, 0);
+    }
+
+    #[test]
+    fn skip_children_config_parser_accepts_common_spellings() {
+        assert!(explicitly_skips_children(&[
+            "--config".to_owned(),
+            "max_width=100, skip_children = TRUE".to_owned(),
+        ]));
+        assert!(explicitly_skips_children(&[
+            "--config=skip_children=true".to_owned(),
+        ]));
+        assert!(!explicitly_skips_children(&[
+            "--config".to_owned(),
+            "skip_children=false".to_owned(),
+        ]));
     }
 }

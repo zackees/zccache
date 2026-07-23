@@ -125,7 +125,7 @@
   feature: rustfmt
   zccache: yes
   sccache: no
-  notes: zccache caches rustfmt output. sccache caches rustc only.
+  notes: zccache routes rustfmt; recursive invocations always run so changed child modules cannot hide behind unchanged crate-root markers, while explicit skip_children=true invocations can use content markers. sccache caches rustc only.
   evidence: https://github.com/mozilla/sccache/blob/main/README.md#rust
 
 - id: clippy

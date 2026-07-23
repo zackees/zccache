@@ -28,6 +28,11 @@ fn next_inner_compile_id() -> String {
 /// not) on its own and every save uses atomic tmp+rename, so nothing partial is
 /// ever visible.
 const EMBEDDED_FLUSH_SAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const EMBEDDED_MAINTENANCE_SHUTDOWN_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(2);
+const EMBEDDED_INDEX_WRITER_SHUTDOWN_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(2);
+const MIN_MAINTENANCE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
 
 impl EmbeddedDaemon {
     pub(crate) async fn start(
@@ -61,11 +66,17 @@ impl EmbeddedDaemon {
             index_writer_handle: Mutex::new(None),
             maintenance_handle: Mutex::new(None),
         };
-        daemon.start_background_tasks(runtime_handle).await;
+        daemon
+            .start_background_tasks(runtime_handle, maintenance)
+            .await;
         Ok(daemon)
     }
 
-    async fn start_background_tasks(&mut self, runtime_handle: Option<tokio::runtime::Handle>) {
+    async fn start_background_tasks(
+        &mut self,
+        runtime_handle: Option<tokio::runtime::Handle>,
+        maintenance: EmbeddedMaintenanceConfig,
+    ) {
         if let Some(rx) = self.index_writer_rx.take() {
             let store = Arc::clone(&self.state.artifact_store);
             let shutdown = Arc::clone(&self.state.index_writer_shutdown);
@@ -321,9 +332,140 @@ impl EmbeddedDaemon {
         // the latched shutdown flag after acquiring this mutex.
         let _maintenance_guard = self.state.disk_maintenance.lock().await;
         let mut index_writer_handle = self.index_writer_handle.lock().await;
-        let report = flush_embedded_state(&self.state, &mut index_writer_handle, true).await;
+        let mut report = flush_embedded_state(&self.state, &mut index_writer_handle, true).await;
+        report.steps.insert(0, maintenance_step);
         let _ = std::fs::remove_dir_all(&self.state.depfile_tmpdir);
         report
+    }
+
+    async fn stop_maintenance_tasks(&self) -> EmbeddedFlushStepReport {
+        self.maintenance_cancel.cancel();
+        let mut handles = self.maintenance_handles.lock().await;
+        let tasks = std::mem::take(&mut *handles);
+        drop(handles);
+
+        let outcome = join_maintenance_tasks(tasks, EMBEDDED_MAINTENANCE_SHUTDOWN_TIMEOUT).await;
+        EmbeddedFlushStepReport {
+            step: "maintenance_shutdown".to_owned(),
+            outcome,
+        }
+    }
+}
+
+impl Drop for EmbeddedDaemon {
+    fn drop(&mut self) {
+        self.maintenance_cancel.cancel();
+    }
+}
+
+fn spawn_embedded_task<F>(
+    runtime_handle: &Option<tokio::runtime::Handle>,
+    task: F,
+) -> tokio::task::JoinHandle<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    match runtime_handle {
+        Some(handle) => handle.spawn(task),
+        None => tokio::spawn(task),
+    }
+}
+
+async fn join_maintenance_tasks(
+    mut tasks: Vec<tokio::task::JoinHandle<()>>,
+    timeout: std::time::Duration,
+) -> FlushStepOutcome {
+    let deadline = tokio::time::Instant::now() + timeout;
+    for index in 0..tasks.len() {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            abort_and_join_tasks(&mut tasks[index..]).await;
+            return FlushStepOutcome::TimedOut;
+        }
+        let joined = tokio::time::timeout(remaining, &mut tasks[index]).await;
+        match joined {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                abort_and_join_tasks(&mut tasks[index + 1..]).await;
+                return FlushStepOutcome::Failed(format!(
+                    "embedded maintenance task failed: {error}"
+                ));
+            }
+            Err(_) => {
+                abort_and_join_tasks(&mut tasks[index..]).await;
+                return FlushStepOutcome::TimedOut;
+            }
+        }
+    }
+    FlushStepOutcome::Completed
+}
+
+async fn abort_and_join_tasks(tasks: &mut [tokio::task::JoinHandle<()>]) {
+    for task in tasks.iter() {
+        task.abort();
+    }
+    for task in tasks.iter_mut() {
+        let _ = task.await;
+    }
+}
+
+async fn stop_index_writer_task(
+    shutdown: &tokio::sync::Notify,
+    handle: Option<tokio::task::JoinHandle<()>>,
+    timeout: std::time::Duration,
+) -> Option<EmbeddedFlushStepReport> {
+    // `notify_one` retains a permit when the writer is between polls. Using
+    // `notify_waiters` here can lose the signal in the small window after the
+    // preceding Flush acknowledgement and before the writer reaches select!,
+    // leaving graceful shutdown to time out on an otherwise healthy writer.
+    shutdown.notify_one();
+    let mut handle = handle?;
+    let outcome = match tokio::time::timeout(timeout, &mut handle).await {
+        Ok(Ok(())) => FlushStepOutcome::Completed,
+        Ok(Err(error)) => FlushStepOutcome::Failed(format!(
+            "index writer task failed while shutting down: {error}"
+        )),
+        Err(_) => {
+            handle.abort();
+            let _ = handle.await;
+            FlushStepOutcome::TimedOut
+        }
+    };
+    Some(EmbeddedFlushStepReport {
+        step: "index_writer_shutdown".to_owned(),
+        outcome,
+    })
+}
+
+fn run_memory_eviction_pass(state: &SharedState, budget: u64) {
+    let req_removed = trim_request_cache(&state.request_cache, EPHEMERAL_CACHE_MAX_AGE);
+    let req_validation_removed =
+        trim_request_validation_cache(&state.request_validation_cache, EPHEMERAL_CACHE_MAX_AGE);
+    let rsp_removed = trim_rsp_cache(&state.rsp_cache, EPHEMERAL_CACHE_MAX_AGE);
+    if req_removed > 0 || req_validation_removed > 0 || rsp_removed > 0 {
+        tracing::debug!(
+            request_cache_removed = req_removed,
+            request_validation_cache_removed = req_validation_removed,
+            rsp_cache_removed = rsp_removed,
+            "trimmed embedded ephemeral daemon caches"
+        );
+    }
+    let dep_graph_guard = state.dep_graph.load();
+    let (freed, items) = super::super::eviction::evict_to_budget(
+        budget,
+        &state.cache_system,
+        &dep_graph_guard,
+        &state.fast_hit_cache,
+        &state.artifacts,
+        state.in_flight_bytes.load(Ordering::Relaxed),
+    );
+    drop(dep_graph_guard);
+    if items > 0 {
+        tracing::info!(
+            freed_bytes = freed,
+            items_removed = items,
+            "embedded memory eviction"
+        );
     }
 }
 
@@ -372,43 +514,67 @@ async fn status_snapshot(state: &SharedState) -> crate::protocol::DaemonStatus {
     }
 }
 
-/// Await a single flush save step, bounded by [`EMBEDDED_FLUSH_SAVE_TIMEOUT`].
-/// On timeout it complains loudly (`warn!`) and writes a durable lifecycle
-/// event (forensics), then returns so flush keeps making progress instead of
-/// hanging on a stuck disk (issue #973). The step's result is intentionally
-/// discarded — flush is best-effort and its report reflects in-memory counts.
-async fn bounded_flush_step<F, T>(step: &str, fut: F)
+/// Await one persistence step and preserve whether it completed, failed, or
+/// timed out. Failures and timeouts are both surfaced in the returned flush
+/// report; the durable lifecycle event keeps the same post-mortem trail as the
+/// original timeout-only implementation.
+async fn bounded_flush_step<F>(step: &str, fut: F) -> EmbeddedFlushStepReport
 where
-    F: std::future::Future<Output = T>,
+    F: std::future::Future<Output = Result<(), String>>,
 {
-    if flush_step_timed_out(fut, EMBEDDED_FLUSH_SAVE_TIMEOUT).await {
-        tracing::warn!(
-            event = "embedded_flush_step_timeout",
-            step,
-            timeout_ms = EMBEDDED_FLUSH_SAVE_TIMEOUT.as_millis() as u64,
-            "embedded flush save step exceeded its timeout — abandoning it so \
-             ZccacheService::flush()/shutdown() stays responsive on a stuck disk \
-             (issue #973)"
-        );
-        crate::core::lifecycle::write_event(
-            "embedded_flush_step_timeout",
-            serde_json::json!({
-                "step": step,
-                "timeout_ms": EMBEDDED_FLUSH_SAVE_TIMEOUT.as_millis() as u64,
-                "reason": "flush save step exceeded timeout; abandoned to keep flush/shutdown responsive",
-            }),
-        );
+    let outcome = flush_step_outcome(fut, EMBEDDED_FLUSH_SAVE_TIMEOUT).await;
+    match &outcome {
+        FlushStepOutcome::Completed => {}
+        FlushStepOutcome::Failed(error) => {
+            tracing::warn!(
+                event = "embedded_flush_step_failed",
+                step,
+                %error,
+                "embedded flush persistence step failed"
+            );
+            crate::core::lifecycle::write_event(
+                "embedded_flush_step_failed",
+                serde_json::json!({
+                    "step": step,
+                    "error": error,
+                }),
+            );
+        }
+        FlushStepOutcome::TimedOut => {
+            tracing::warn!(
+                event = "embedded_flush_step_timeout",
+                step,
+                timeout_ms = EMBEDDED_FLUSH_SAVE_TIMEOUT.as_millis() as u64,
+                "embedded flush save step exceeded its timeout — abandoning it so \
+                 ZccacheService::flush()/shutdown() stays responsive on a stuck disk \
+                 (issue #973)"
+            );
+            crate::core::lifecycle::write_event(
+                "embedded_flush_step_timeout",
+                serde_json::json!({
+                    "step": step,
+                    "timeout_ms": EMBEDDED_FLUSH_SAVE_TIMEOUT.as_millis() as u64,
+                    "reason": "flush save step exceeded timeout; abandoned to keep flush/shutdown responsive",
+                }),
+            );
+        }
+    }
+    EmbeddedFlushStepReport {
+        step: step.to_owned(),
+        outcome,
     }
 }
 
-/// Run `fut` with a timeout, returning `true` if it timed out. Split from
-/// [`bounded_flush_step`] (which owns the logging) so the timeout wiring is
-/// deterministically unit-testable without touching the lifecycle log.
-async fn flush_step_timed_out<F, T>(fut: F, timeout: std::time::Duration) -> bool
+/// Run `fut` with a timeout while retaining its success or error result.
+async fn flush_step_outcome<F>(fut: F, timeout: std::time::Duration) -> FlushStepOutcome
 where
-    F: std::future::Future<Output = T>,
+    F: std::future::Future<Output = Result<(), String>>,
 {
-    tokio::time::timeout(timeout, fut).await.is_err()
+    match tokio::time::timeout(timeout, fut).await {
+        Ok(Ok(())) => FlushStepOutcome::Completed,
+        Ok(Err(error)) => FlushStepOutcome::Failed(error),
+        Err(_) => FlushStepOutcome::TimedOut,
+    }
 }
 
 async fn flush_embedded_state(
@@ -433,68 +599,88 @@ async fn flush_embedded_state(
         tracing::warn!("timed out waiting for artifact index writer flush");
     }
 
+    let mut steps = Vec::with_capacity(6);
     if shutdown_writer {
-        state.index_writer_shutdown.notify_waiters();
-        if let Some(handle) = index_writer_handle.as_mut() {
-            if !handle.is_finished() {
-                let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
-            }
+        if let Some(step) = stop_index_writer_task(
+            state.index_writer_shutdown.as_ref(),
+            index_writer_handle.take(),
+            EMBEDDED_INDEX_WRITER_SHUTDOWN_TIMEOUT,
+        )
+        .await
+        {
+            steps.push(step);
         }
     }
 
     let artifact_entries = state.artifact_store.len() as u64;
-    bounded_flush_step(
-        "artifact_store",
-        Arc::clone(&state.artifact_store).flush_async(),
-    )
-    .await;
+    steps.push(
+        bounded_flush_step("artifact_store", async {
+            Arc::clone(&state.artifact_store)
+                .flush_async()
+                .await
+                .map_err(|error| error.to_string())
+        })
+        .await,
+    );
 
     let dg = state.dep_graph.load_full();
     let depgraph_path = embedded_depgraph_file_path(state);
     let depgraph_state = Arc::clone(state);
-    bounded_flush_step(
-        "depgraph",
-        tokio::task::spawn_blocking(move || {
-            if let Some(parent) = depgraph_path.parent() {
-                std::fs::create_dir_all(parent).ok();
-            }
-            if crate::depgraph::save_to_file(&dg, depgraph_path.as_path()).is_ok() {
+    steps.push(
+        bounded_flush_step("depgraph", async move {
+            tokio::task::spawn_blocking(move || {
+                if let Some(parent) = depgraph_path.parent() {
+                    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+                }
+                crate::depgraph::save_to_file(&dg, depgraph_path.as_path())
+                    .map_err(|error| error.to_string())?;
                 depgraph_state
                     .dep_graph_persisted
                     .store(true, Ordering::Release);
-            }
-        }),
-    )
-    .await;
+                Ok::<(), String>(())
+            })
+            .await
+            .map_err(|error| format!("depgraph save task failed: {error}"))?
+        })
+        .await,
+    );
 
     let metadata_entries = state.cache_system.metadata().len() as u64;
     if state.metadata_cache_loaded.load(Ordering::Acquire) {
         let metadata_state = Arc::clone(state);
         let metadata_path = state.metadata_path.clone();
-        bounded_flush_step(
-            "metadata",
-            tokio::task::spawn_blocking(move || {
-                metadata_state
-                    .cache_system
-                    .metadata()
-                    .save_to_disk(metadata_path.as_path())
-            }),
-        )
-        .await;
+        steps.push(
+            bounded_flush_step("metadata", async move {
+                tokio::task::spawn_blocking(move || {
+                    metadata_state
+                        .cache_system
+                        .metadata()
+                        .save_to_disk(metadata_path.as_path())
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("metadata save task failed: {error}"))?
+            })
+            .await,
+        );
     }
 
     if state.compiler_hash_cache_loaded.load(Ordering::Acquire) {
         let compiler_state = Arc::clone(state);
         let compiler_hash_cache_path = state.compiler_hash_cache_path.clone();
-        bounded_flush_step(
-            "compiler_hash",
-            tokio::task::spawn_blocking(move || {
-                compiler_state
-                    .compiler_hash_cache
-                    .save_to_disk(compiler_hash_cache_path.as_path())
-            }),
-        )
-        .await;
+        steps.push(
+            bounded_flush_step("compiler_hash", async move {
+                tokio::task::spawn_blocking(move || {
+                    compiler_state
+                        .compiler_hash_cache
+                        .save_to_disk(compiler_hash_cache_path.as_path())
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("compiler hash save task failed: {error}"))?
+            })
+            .await,
+        );
     }
 
     if state.system_includes_loaded.load(Ordering::Acquire) {
@@ -503,17 +689,24 @@ async fn flush_embedded_state(
             includes.clone()
         };
         let system_includes_cache_path = state.system_includes_cache_path.clone();
-        bounded_flush_step(
-            "system_includes",
-            tokio::task::spawn_blocking(move || {
-                includes.save_to_disk(system_includes_cache_path.as_path())
-            }),
-        )
-        .await;
+        steps.push(
+            bounded_flush_step("system_includes", async move {
+                tokio::task::spawn_blocking(move || {
+                    includes
+                        .save_to_disk(system_includes_cache_path.as_path())
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("system includes save task failed: {error}"))?
+            })
+            .await,
+        );
     }
 
     EmbeddedFlushReport {
         pending_writes_drained,
+        index_writer_drained,
+        steps,
         artifact_entries,
         metadata_entries,
     }
@@ -527,27 +720,115 @@ fn embedded_depgraph_file_path(state: &SharedState) -> crate::core::NormalizedPa
 mod flush_timeout_tests {
     //! Issue #973: the embedded flush save steps must be bounded so a stuck
     //! disk cannot hang `ZccacheService::flush()`/`shutdown()`.
-    use super::flush_step_timed_out;
+    use super::{
+        flush_step_outcome, join_maintenance_tasks, stop_index_writer_task, FlushStepOutcome,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
     use std::time::Duration;
 
     #[tokio::test]
-    async fn ready_step_does_not_time_out() {
-        let timed_out = flush_step_timed_out(async { 42u32 }, Duration::from_secs(30)).await;
-        assert!(
-            !timed_out,
-            "a step that completes must not report a timeout"
+    async fn ready_step_reports_completion() {
+        let outcome =
+            flush_step_outcome(async { Ok::<(), String>(()) }, Duration::from_secs(30)).await;
+        assert_eq!(
+            outcome,
+            FlushStepOutcome::Completed,
+            "a completed persistence step must be reported as complete"
         );
     }
 
     #[tokio::test]
-    async fn stuck_step_times_out() {
+    async fn failed_step_preserves_error() {
+        let outcome = flush_step_outcome(
+            async { Err::<(), String>("disk full".into()) },
+            Duration::from_secs(30),
+        )
+        .await;
+        assert_eq!(outcome, FlushStepOutcome::Failed("disk full".into()));
+    }
+
+    #[tokio::test]
+    async fn stuck_step_reports_timeout() {
         // A save that never completes (stuck disk) must be abandoned at the
         // bound rather than hanging flush forever.
-        let stuck = std::future::pending::<()>();
-        let timed_out = flush_step_timed_out(stuck, Duration::from_millis(50)).await;
-        assert!(
-            timed_out,
+        let stuck = std::future::pending::<Result<(), String>>();
+        let outcome = flush_step_outcome(stuck, Duration::from_millis(50)).await;
+        assert_eq!(
+            outcome,
+            FlushStepOutcome::TimedOut,
             "a stuck step must report a timeout so flush continues"
+        );
+    }
+
+    #[tokio::test]
+    async fn maintenance_timeout_aborts_and_joins_stuck_tasks() {
+        struct DropFlag(Arc<AtomicBool>);
+
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let task_dropped = Arc::clone(&dropped);
+        let task = tokio::spawn(async move {
+            let _drop_flag = DropFlag(task_dropped);
+            std::future::pending::<()>().await;
+        });
+
+        let outcome = join_maintenance_tasks(vec![task], Duration::from_millis(20)).await;
+
+        assert_eq!(outcome, FlushStepOutcome::TimedOut);
+        assert!(
+            dropped.load(Ordering::Acquire),
+            "a timed-out maintenance task must be aborted and joined, not detached"
+        );
+    }
+
+    #[tokio::test]
+    async fn index_writer_shutdown_signal_survives_between_waits() {
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let writer_shutdown = Arc::clone(&shutdown);
+        let task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            writer_shutdown.notified().await;
+        });
+
+        let step = stop_index_writer_task(shutdown.as_ref(), Some(task), Duration::from_secs(1))
+            .await
+            .expect("writer handle produces a shutdown step");
+
+        assert_eq!(step.outcome, FlushStepOutcome::Completed);
+    }
+
+    #[tokio::test]
+    async fn index_writer_timeout_aborts_and_joins_stuck_task() {
+        struct DropFlag(Arc<AtomicBool>);
+
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let shutdown = tokio::sync::Notify::new();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let task_dropped = Arc::clone(&dropped);
+        let task = tokio::spawn(async move {
+            let _drop_flag = DropFlag(task_dropped);
+            std::future::pending::<()>().await;
+        });
+
+        let step = stop_index_writer_task(&shutdown, Some(task), Duration::from_millis(20))
+            .await
+            .expect("writer handle produces a shutdown step");
+
+        assert_eq!(step.outcome, FlushStepOutcome::TimedOut);
+        assert!(
+            dropped.load(Ordering::Acquire),
+            "a timed-out index writer must be aborted and joined, not detached"
         );
     }
 }

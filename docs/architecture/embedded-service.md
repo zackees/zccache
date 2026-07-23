@@ -21,12 +21,12 @@ The MVP boundary is:
 | Durable audit schema | MVP landed | `zccache::audit` exports serializable schema/config/event/finding/manifest types; hot-path emission and fixtures remain follow-up work. |
 | soldr embedded integration | Open | zccache#907 should switch soldr from wrapper/private-daemon use to direct embedded calls once the integration is ready. |
 | fbuild embedded integration | Open | zccache#908 follows the same service contract, adjusted for fbuild's daemon/runtime model. |
-| Vendored hotfix workflow | Open | zccache#909 documents how soldr/fbuild validate vendored zccache fixes before upstreaming. |
+| Vendored hotfix workflow | Documented | zccache#909 is recorded in [`vendored-hotfix-workflow.md`](vendored-hotfix-workflow.md). |
 | Operator audit commands | Open | zccache#910 owns `audit capabilities`, `audit run`, and post-run analysis UX. |
 
-Until soldr/fbuild integrations land, tests should stay focused on the public
-Rust service boundary and the durable audit schema, with broader host workload
-validation owned by the integration trackers.
+Tests in this repository cover the public Rust service boundary, maintenance,
+flush/shutdown reporting, and durable audit schema. Broader host workload
+validation remains owned by each consuming repository.
 
 ## Problem
 
@@ -124,6 +124,7 @@ pub struct ZccacheConfig {
     pub audit: AuditConfig,
     pub limits: ServiceLimits,
     pub runtime: RuntimeHooks,
+    pub cancellation: Option<CancellationToken>,
 }
 
 pub struct ServiceLimits {
@@ -161,6 +162,7 @@ pub struct CompileRequest {
     pub args: Vec<String>,
     pub cwd: NormalizedPath,
     pub env: Vec<(String, String)>,
+    pub stdin: Vec<u8>,
 }
 
 pub struct CompileResponse {
@@ -254,7 +256,8 @@ Embedded service lifecycle is explicit:
 4. zccache emits child spans/events under host-provided audit contexts.
 5. Host calls `flush()` before final analysis artifacts are read.
 6. Host calls graceful shutdown during daemon termination.
-7. zccache reports unflushed/dropped work if shutdown cannot complete cleanly.
+7. zccache cancels and joins maintenance tasks, drains queued writes, and
+   reports every failed or timed-out persistence phase.
 
 Cancellation must be cooperative and observable. A cancelled build should
 produce a terminal audit event with enough detail to distinguish:

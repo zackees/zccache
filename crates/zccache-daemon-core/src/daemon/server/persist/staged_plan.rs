@@ -4,6 +4,14 @@
 //! redirected before it starts, and unsupported output shapes must fall back
 //! before spawn rather than publishing a partial set afterwards.
 
+use super::staged_link_args::{
+    absolute, has_unmodeled_link_output_option, implicit_msvc_output_option, rewrite_emit_value,
+    rewrite_link_output_arg,
+};
+use super::staged_paths::{
+    canonical_output_path, canonicalize_staged_output_bytes, rehydrate_logical_depfile,
+    rehydrate_staged_output_bytes, STAGED_OUTPUT_REMAP_ROOT,
+};
 #[cfg(test)]
 use super::staged_store::materialization_error_progress;
 #[cfg(test)]
@@ -315,6 +323,14 @@ impl StagedCompilePlan {
             if outputs.len() > 1 && !replaced_out_dir {
                 rewritten_args.push("--out-dir".to_string());
                 rewritten_args.push(root.to_string_lossy().into_owned());
+            }
+            let native_root = root.to_string_lossy().into_owned();
+            rewritten_args.push("--remap-path-prefix".to_string());
+            rewritten_args.push(format!("{native_root}={STAGED_OUTPUT_REMAP_ROOT}"));
+            let slash_root = native_root.replace('\\', "/");
+            if slash_root != native_root {
+                rewritten_args.push("--remap-path-prefix".to_string());
+                rewritten_args.push(format!("{slash_root}={STAGED_OUTPUT_REMAP_ROOT}"));
             }
 
             Ok(StagedPlanOutcome::Enabled(Self {
@@ -750,6 +766,11 @@ impl StagedCompilePlan {
 
     pub(in crate::daemon::server) fn materialize(&self) -> io::Result<StagedMaterializationStats> {
         let mut stats = StagedMaterializationStats::default();
+        let requested_outputs = self
+            .outputs
+            .iter()
+            .map(|output| output.requested.clone())
+            .collect::<Vec<_>>();
         for (fault_index, output) in self.outputs.iter().enumerate() {
             #[cfg(not(test))]
             let _ = fault_index;
@@ -787,15 +808,19 @@ impl StagedCompilePlan {
                 .saturating_add(output_stats.reflink_count);
             stats.copy_count = stats.copy_count.saturating_add(output_stats.copy_count);
             stats.copy_bytes = stats.copy_bytes.saturating_add(output_stats.copy_bytes);
+            if output.requested.extension().and_then(|ext| ext.to_str()) == Some("d") {
+                rehydrate_logical_depfile(output.requested.as_path(), &requested_outputs)
+                    .map_err(|error| materialization_error(error, stats))?;
+            }
         }
         self.cleanup()
             .map_err(|error| materialization_error(error, stats))?;
         Ok(stats)
     }
 
-    /// Rust dep-info is an output too. Translate the private staging prefix
-    /// back to the logical requested destination before it is hashed and
-    /// published, so cache hits never leak cache-root paths into build files.
+    /// Dep-info is an output too. Translate the private staging prefix to one
+    /// stable cache marker before hashing and publication. Miss and hit
+    /// materialization rehydrate the marker to the current requested path.
     pub(in crate::daemon::server) fn rewrite_logical_side_outputs(&self) {
         for output in &self.outputs {
             if output.requested.extension().and_then(|ext| ext.to_str()) != Some("d") {
@@ -805,23 +830,29 @@ impl StagedCompilePlan {
                 continue;
             };
             let staged = output.staged.to_string_lossy();
-            let requested = output.requested.to_string_lossy();
-            let requested_parent = output
-                .requested
-                .parent()
-                .map_or_else(String::new, |parent| parent.to_string_lossy().into_owned());
+            let canonical = canonical_output_path(&output.requested);
             let staged_root = self.root.to_string_lossy();
             let rewritten = text
-                .replace(staged.as_ref(), requested.as_ref())
-                .replace(staged_root.as_ref(), &requested_parent)
-                .replace(
-                    &staged_root.replace('\\', "/"),
-                    &requested_parent.replace('\\', "/"),
-                );
+                .replace(staged.as_ref(), &canonical)
+                .replace(staged_root.as_ref(), STAGED_OUTPUT_REMAP_ROOT)
+                .replace(&staged_root.replace('\\', "/"), STAGED_OUTPUT_REMAP_ROOT);
             if rewritten != text {
                 let _ = std::fs::write(output.staged.as_path(), rewritten);
             }
         }
+    }
+
+    pub(in crate::daemon::server) fn canonicalize_output_bytes(&self, bytes: &[u8]) -> Vec<u8> {
+        canonicalize_staged_output_bytes(bytes, self.root.as_path())
+    }
+
+    pub(in crate::daemon::server) fn rehydrate_output_bytes(&self, bytes: &[u8]) -> Vec<u8> {
+        let requested_outputs = self
+            .outputs
+            .iter()
+            .map(|output| output.requested.clone())
+            .collect::<Vec<_>>();
+        rehydrate_staged_output_bytes(bytes, &requested_outputs)
     }
 
     pub(in crate::daemon::server) fn cleanup(&self) -> io::Result<()> {
@@ -835,112 +866,9 @@ impl StagedCompilePlan {
     }
 }
 
-/// Rewrite one exact or delimiter-bounded linker output path. Returning
-/// `None` means the token was ambiguous and the caller must use the legacy
-/// path before spawning the linker.
-fn rewrite_link_output_arg<'a>(
-    arg: &mut String,
-    candidates: impl Iterator<Item = &'a str>,
-    staged: &str,
-) -> Option<bool> {
-    let mut ranges = Vec::new();
-    for candidate in candidates.filter(|candidate| !candidate.is_empty()) {
-        if arg == candidate {
-            ranges.push((0, arg.len()));
-            continue;
-        }
-        for (start, _) in arg.match_indices(candidate) {
-            let end = start + candidate.len();
-            let before = arg[..start].chars().next_back();
-            let after = arg[end..].chars().next();
-            if before.is_some_and(|ch| matches!(ch, '=' | ':' | ','))
-                && after.is_none_or(|ch| ch == ',')
-            {
-                ranges.push((start, end));
-            }
-        }
-    }
-    ranges.sort_unstable();
-    ranges.dedup();
-    match ranges.as_slice() {
-        [] => Some(false),
-        &[(start, end)] => {
-            arg.replace_range(start..end, staged);
-            Some(true)
-        }
-        _ => None,
-    }
-}
-
-fn has_unmodeled_link_output_option(args: &[String]) -> bool {
-    args.iter().any(|arg| {
-        let lower = arg.to_ascii_lowercase();
-        [
-            "/idlout:", "-idlout:", "/tlbout:", "-tlbout:", "/midl:", "-midl:", "--stats=",
-        ]
-        .iter()
-        .any(|prefix| lower.starts_with(prefix))
-            || matches!(arg.as_str(), "-object_path_lto" | "-save-temps")
-            || matches!(
-                lower.as_str(),
-                "/ltcg:pginstrument"
-                    | "-ltcg:pginstrument"
-                    | "/ltcg:pgoptimize"
-                    | "-ltcg:pgoptimize"
-                    | "/ltcg:pgupdate"
-                    | "-ltcg:pgupdate"
-            )
-    })
-}
-
-fn implicit_msvc_output_option(args: &[String], requested: &Path, staged: &Path) -> Option<String> {
-    let extension = requested
-        .extension()
-        .and_then(|extension| extension.to_str())?
-        .to_ascii_lowercase();
-    let upper_args = args
-        .iter()
-        .map(|arg| arg.to_ascii_uppercase())
-        .collect::<Vec<_>>();
-    let has = |option: &str| upper_args.iter().any(|arg| arg == option);
-    let has_prefix = |prefix: &str| upper_args.iter().any(|arg| arg.starts_with(prefix));
-    let prefix = match extension.as_str() {
-        "pdb" if has_prefix("/DEBUG") || has_prefix("-DEBUG") => "/PDB:",
-        "ilk"
-            if has("/INCREMENTAL")
-                || has("-INCREMENTAL")
-                || has_prefix("/DEBUG")
-                || has_prefix("-DEBUG") =>
-        {
-            "/ILK:"
-        }
-        "map" if has("/MAP") || has("-MAP") => "/MAP:",
-        "iobj" if has("/LTCG:INCREMENTAL") || has("-LTCG:INCREMENTAL") => "/LTCGOUT:",
-        "pgd"
-            if has("/GENPROFILE")
-                || has("-GENPROFILE")
-                || has("/FASTGENPROFILE")
-                || has("-FASTGENPROFILE") =>
-        {
-            "/PGD:"
-        }
-        "winmd" if has("/WINMD") || has("-WINMD") => "/WINMDFILE:",
-        _ => return None,
-    };
-    Some(format!("{prefix}{}", staged.display()))
-}
-
 impl Drop for StagedCompilePlan {
     fn drop(&mut self) {
         let _ = self.cleanup();
-    }
-}
-
-fn absolute(path: &Path, cwd: &Path) -> NormalizedPath {
-    if path.is_absolute() {
-        path.into()
-    } else {
-        cwd.join(path).into()
     }
 }
 
@@ -1023,27 +951,6 @@ fn output_kind(path: &Path) -> String {
         Some(other) => other,
     }
     .to_string()
-}
-
-fn rewrite_emit_value(value: &mut String, outputs: &[StagedOutputPlan], cwd: &Path) {
-    let rewritten = value
-        .split(',')
-        .map(|part| {
-            let Some((kind, path)) = part.split_once('=') else {
-                return part.to_string();
-            };
-            let requested = absolute(Path::new(path), cwd);
-            outputs
-                .iter()
-                .find(|output| output.requested == requested)
-                .map_or_else(
-                    || part.to_string(),
-                    |output| format!("{kind}={}", output.staged.display()),
-                )
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    *value = rewritten;
 }
 
 #[cfg(test)]

@@ -26,7 +26,7 @@ sccache claims are best-effort and sourced from the upstream README and docs at 
 |---|:---:|:---:|---|---|
 | clang-tidy (static analysis results cached) | yes | no | Static analysis diagnostics cached per translation unit and replayed on hit. | [README.md](README.md) |
 | include-what-you-use (IWYU) | yes | no | IWYU output cached and replayed per translation unit. | [README.md](README.md) |
-| rustfmt | yes | no | zccache caches rustfmt output. sccache caches rustc only. | [link](https://github.com/mozilla/sccache/blob/main/README.md#rust) |
+| rustfmt | yes | no | zccache routes rustfmt; recursive invocations always run so changed child modules cannot hide behind unchanged crate-root markers, while explicit skip_children=true invocations can use content markers. sccache caches rustc only. | [link](https://github.com/mozilla/sccache/blob/main/README.md#rust) |
 | clippy | yes | no | zccache caches clippy lint output. sccache caches rustc but not the lint pass. | [link](https://github.com/mozilla/sccache/blob/main/README.md#rust) |
 | cargo check / cargo build | yes | yes | Both work as `RUSTC_WRAPPER` for `cargo check`/`cargo build`. | [link](https://github.com/mozilla/sccache/blob/main/README.md#rust) |
 
