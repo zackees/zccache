@@ -179,7 +179,7 @@ async fn failed_link_publication_salvages_output_without_becoming_cacheable() {
         stderr: Arc::new(Vec::new()),
         exit_code: 0,
     };
-    let metadata = CachedArtifact::from_artifact_data(&artifact).meta;
+    let metadata = CachedArtifact::from_artifact_data(&artifact).meta.clone();
     let fault = StagedFaultGuard::arm(&server.state.artifact_dir, [StagedFaultPoint::IndexCommit]);
 
     let key = "a".repeat(64);
@@ -224,7 +224,7 @@ async fn failed_link_publication_and_salvage_fail_closed() {
         stderr: Arc::new(Vec::new()),
         exit_code: 0,
     };
-    let metadata = CachedArtifact::from_artifact_data(&artifact).meta;
+    let metadata = CachedArtifact::from_artifact_data(&artifact).meta.clone();
     let publish_fault = StagedFaultGuard::arm(
         &server.state.artifact_dir,
         [StagedFaultPoint::PointerCommit],

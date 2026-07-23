@@ -9,6 +9,10 @@
 use super::*;
 
 const ACCEPT_STALL_WATCHDOG_INTERVAL: Duration = Duration::from_secs(600);
+const MEMORY_GC_IDLE_GRACE: Duration = Duration::from_millis(250);
+const MEMORY_GC_GENTLE_RETRY: Duration = Duration::from_millis(50);
+const MEMORY_GC_FORCE_AFTER: Duration = Duration::from_secs(5);
+const MEMORY_GC_GENTLE_BATCH: usize = 256;
 
 impl DaemonServer {
     /// Run the server, accepting connections until shutdown is signaled.
@@ -224,16 +228,7 @@ impl DaemonServer {
                             "trimmed ephemeral daemon caches"
                         );
                     }
-                    let dep_graph_guard = state.dep_graph.load();
-                    let (freed, items) = super::super::eviction::evict_to_budget(
-                        budget,
-                        &state.cache_system,
-                        &dep_graph_guard,
-                        &state.fast_hit_cache,
-                        &state.artifacts,
-                        state.in_flight_bytes.load(Ordering::Relaxed),
-                    );
-                    drop(dep_graph_guard);
+                    let (freed, items) = run_memory_eviction_pass(&state, budget).await;
                     if items > 0 {
                         tracing::info!(
                             freed_bytes = freed,
@@ -720,6 +715,186 @@ impl DaemonServer {
     }
 }
 
+async fn run_memory_eviction_pass(state: &Arc<SharedState>, budget: u64) -> (u64, usize) {
+    let started = Instant::now();
+    let mut total_freed = 0_u64;
+    let mut total_items = 0_usize;
+    let mut candidate_offset = 0_usize;
+    let plan = {
+        let dep_graph_guard = state.dep_graph.load();
+        let plan = super::super::eviction::plan_eviction_to_budget(
+            budget,
+            &state.cache_system,
+            &dep_graph_guard,
+            &state.fast_hit_cache,
+            &state.artifacts,
+            state.in_flight_bytes.load(Ordering::Relaxed),
+        );
+        drop(dep_graph_guard);
+        plan
+    };
+    let Some(plan) = plan else {
+        return (0, 0);
+    };
+    let mut gentle_finished = false;
+    let mut busy_candidates = Vec::new();
+    let mut protected_paths = std::collections::HashSet::new();
+
+    loop {
+        let active_requests = state.active_cache_requests();
+        if active_requests == 0 || started.elapsed() >= MEMORY_GC_FORCE_AFTER {
+            // Nonblocking metadata removal intentionally leaves orphaned
+            // journal rows. Settle that debt before deciding whether the
+            // original headroom target still requires destructive work.
+            let journal_removed = state.cache_system.cleanup_eviction_journal();
+            total_freed += (journal_removed
+                * super::super::eviction::JOURNAL_ENTRY_BYTES) as u64;
+            total_items += journal_removed;
+
+            let dep_graph_guard = state.dep_graph.load();
+            let current = super::super::eviction::memory_snapshot(
+                &state.cache_system,
+                &dep_graph_guard,
+                &state.fast_hit_cache,
+                &state.artifacts,
+                state.in_flight_bytes.load(Ordering::Relaxed),
+            );
+            drop(dep_graph_guard);
+            if current.total_bytes as u64 <= plan.target_bytes() {
+                return (total_freed, total_items);
+            }
+
+            // Retry lock-busy candidates in blocking mode, preserve only
+            // timestamp-refreshed entries, then replenish from a current
+            // read-only plan until the target is met or every remaining
+            // metadata candidate is protected for this sweep.
+            let mut completion_plan =
+                plan.completion_from(candidate_offset, &busy_candidates);
+            loop {
+                let completion_had_candidates =
+                    completion_plan.metadata_candidate_count() > 0;
+                let dep_graph_guard = state.dep_graph.load();
+                let outcome =
+                    super::super::eviction::evict_to_budget_with_plan_detailed(
+                        budget,
+                        &state.cache_system,
+                        &dep_graph_guard,
+                        &state.fast_hit_cache,
+                        &state.artifacts,
+                        state.in_flight_bytes.load(Ordering::Relaxed),
+                        &completion_plan,
+                    );
+                drop(dep_graph_guard);
+                total_freed += outcome.freed_bytes;
+                total_items += outcome.items_removed;
+                protected_paths.extend(
+                    outcome
+                        .refreshed
+                        .iter()
+                        .map(|candidate| candidate.path().clone()),
+                );
+
+                let dep_graph_guard = state.dep_graph.load();
+                let current = super::super::eviction::memory_snapshot(
+                    &state.cache_system,
+                    &dep_graph_guard,
+                    &state.fast_hit_cache,
+                    &state.artifacts,
+                    state.in_flight_bytes.load(Ordering::Relaxed),
+                );
+                if current.total_bytes as u64 <= plan.target_bytes() {
+                    drop(dep_graph_guard);
+                    return (total_freed, total_items);
+                }
+                let next =
+                    super::super::eviction::plan_eviction_to_target_excluding(
+                        plan.target_bytes(),
+                        &state.cache_system,
+                        &dep_graph_guard,
+                        &state.fast_hit_cache,
+                        &state.artifacts,
+                        state.in_flight_bytes.load(Ordering::Relaxed),
+                        &protected_paths,
+                    );
+                drop(dep_graph_guard);
+                let Some(next) = next else {
+                    return (total_freed, total_items);
+                };
+                if current.metadata_entries > 0
+                    && next.metadata_candidate_count() == 0
+                {
+                    return (total_freed, total_items);
+                }
+                if forced_completion_stalled(
+                    outcome.items_removed,
+                    completion_had_candidates,
+                    current.metadata_entries,
+                ) {
+                    // Remaining pressure comes only from non-evictable state
+                    // (for example in-flight persistence bytes, artifact-map
+                    // overhead, or intentionally preserved recent fast hits).
+                    return (total_freed, total_items);
+                }
+                completion_plan = next;
+            }
+        }
+
+        if started.elapsed() < MEMORY_GC_IDLE_GRACE {
+            tokio::select! {
+                () = state.cache_requests_idle.notified() => {}
+                () = tokio::time::sleep(
+                    MEMORY_GC_IDLE_GRACE.saturating_sub(started.elapsed())
+                ) => {}
+            }
+            continue;
+        }
+
+        if !gentle_finished {
+            let outcome = super::super::eviction::try_evict_metadata_plan(
+                &state.cache_system,
+                &plan,
+                candidate_offset,
+                MEMORY_GC_GENTLE_BATCH,
+            );
+            total_freed += outcome.freed_bytes;
+            total_items += outcome.items_removed;
+            busy_candidates.extend(outcome.busy);
+            protected_paths.extend(
+                outcome
+                    .refreshed
+                    .iter()
+                    .map(|candidate| candidate.path().clone()),
+            );
+            candidate_offset = candidate_offset.saturating_add(MEMORY_GC_GENTLE_BATCH);
+
+            let dep_graph_guard = state.dep_graph.load();
+            let current = super::super::eviction::memory_snapshot(
+                &state.cache_system,
+                &dep_graph_guard,
+                &state.fast_hit_cache,
+                &state.artifacts,
+                state.in_flight_bytes.load(Ordering::Relaxed),
+            );
+            drop(dep_graph_guard);
+            gentle_finished = current.total_bytes as u64 <= plan.target_bytes()
+                || candidate_offset >= plan.metadata_candidate_count();
+        }
+
+        tokio::select! {
+            () = state.cache_requests_idle.notified() => {}
+            () = tokio::time::sleep(MEMORY_GC_GENTLE_RETRY) => {}
+        }
+    }
+}
+
+fn forced_completion_stalled(
+    items_removed: usize,
+    completion_had_candidates: bool,
+    metadata_entries: usize,
+) -> bool {
+    items_removed == 0 && !completion_had_candidates && metadata_entries == 0
+}
+
 /// Start index hydration with publication ownership acquired before spawn.
 /// The optional gate is a deterministic test seam for Clear/startup races.
 pub(super) async fn spawn_artifact_loader(
@@ -766,4 +941,17 @@ pub(super) async fn spawn_artifact_loader(
         }
         state.artifacts_loaded.store(true, Ordering::Release);
     })
+}
+
+#[cfg(test)]
+mod memory_eviction_controller_tests {
+    use super::forced_completion_stalled;
+
+    #[test]
+    fn in_flight_only_pressure_terminates_after_no_progress() {
+        assert!(forced_completion_stalled(0, false, 0));
+        assert!(!forced_completion_stalled(1, false, 0));
+        assert!(!forced_completion_stalled(0, true, 0));
+        assert!(!forced_completion_stalled(0, false, 1));
+    }
 }

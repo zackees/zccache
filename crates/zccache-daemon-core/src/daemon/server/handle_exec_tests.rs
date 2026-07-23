@@ -240,7 +240,7 @@ async fn staged_exec_disk_hit_reports_physical_materialization_tier() {
         stderr: Arc::new(Vec::new()),
         exit_code: 0,
     };
-    let metadata = CachedArtifact::from_artifact_data(&artifact).meta;
+    let metadata = CachedArtifact::from_artifact_data(&artifact).meta.clone();
     let key = "d".repeat(64);
     let cached = store_exec_artifact(&server.state, key.clone(), artifact, Some(vec![source]))
         .await

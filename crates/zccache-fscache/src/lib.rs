@@ -11,6 +11,8 @@ pub mod verify;
 
 pub use cache_system::CacheSystem;
 pub use clock::{ChangeJournal, Clock};
-pub use metadata::{Confidence, FileMetadata, MetadataCache};
+pub use metadata::{
+    CandidateEvictionResult, Confidence, EvictionCandidate, FileMetadata, MetadataCache,
+};
 pub use persistence::FORMAT_VERSION;
 pub use verify::VerifyResult;

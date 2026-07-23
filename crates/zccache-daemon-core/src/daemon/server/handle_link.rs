@@ -51,6 +51,7 @@ pub(super) async fn handle_link_ephemeral(
     cwd: &Path,
     env: Option<Vec<(String, String)>>,
 ) -> Response {
+    let _active_request = state.begin_cache_request();
     // Issue #535: collect phase counters when `ZCCACHE_PROFILE_CC_MISS` is set
     // so the bench / perf-guard logs carry breakdown data for cold link/
     // archive operations (c-static-library-link, cpp-driver-link).
@@ -361,28 +362,15 @@ pub(super) async fn handle_link_ephemeral(
 
     // 5. Cache lookup
     let t_cache_lookup = profile_enabled.then(std::time::Instant::now);
-    if let Some(mut entry) = lookup_artifact_with_disk_fallback(state, &key_hex) {
+    if let Some(entry) = lookup_artifact_with_disk_fallback(state, &key_hex) {
         // Load payloads from disk if not already loaded.
-        let loaded = ensure_payloads(&mut entry, &state.artifact_dir, &key_hex).is_some();
-        if loaded {
-            record_artifact_access(state, &key_hex, &mut entry, std::time::Instant::now());
+        if let Some(payloads) = ensure_payloads(&entry, &state.artifact_dir, &key_hex) {
+            record_artifact_access(state, &key_hex, &entry, std::time::Instant::now());
             discard_speculative_archive(&mut speculative_archive);
-            #[expect(
-                clippy::expect_used,
-                reason = "ensure_payloads on the preceding line returned Some, which is the contract guaranteeing entry.payloads is now populated"
-            )]
-            let payloads = Arc::clone(
-                entry
-                    .payloads
-                    .as_ref()
-                    .expect("ensure_payloads above returned without error"),
-            );
             let names = Arc::clone(&entry.meta.output_names);
             let exit_code = entry.meta.exit_code;
             let stdout = entry.stdout.clone();
             let stderr = entry.stderr.clone();
-            drop(entry); // Release DashMap lock
-
             tracing::debug!(%key_hex, "link cache hit");
             state.stats.record_link_hit();
 

@@ -6,13 +6,13 @@
 //! The legacy fixed-size disk helper remains test-only; production disk
 //! retention is daemon-owned in `server::disk_maintenance` (issue #1148).
 
-#[cfg(test)]
 use crate::core::NormalizedPath;
 use crate::depgraph::{ContextKey, DepGraph};
-use crate::fscache::CacheSystem;
+use crate::fscache::{CacheSystem, EvictionCandidate};
 use dashmap::DashMap;
 #[cfg(test)]
 use std::collections::HashMap;
+use std::collections::HashSet;
 #[cfg(test)]
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -26,7 +26,7 @@ use super::server::{CachedArtifact, FastHitEntry};
 /// Estimated bytes per metadata cache entry.
 const METADATA_ENTRY_BYTES: usize = 400;
 /// Estimated bytes per journal `last_change` entry.
-const JOURNAL_ENTRY_BYTES: usize = 280;
+pub(crate) const JOURNAL_ENTRY_BYTES: usize = 280;
 /// Estimated bytes per depgraph file entry.
 const DEPGRAPH_FILE_BYTES: usize = 600;
 /// Estimated bytes per depgraph context entry.
@@ -44,6 +44,54 @@ const FAST_HIT_BUDGET_TRIM_MAX_AGE: Duration = Duration::from_secs(5);
 const DISK_EVICTION_SCAN_YIELD_EVERY: usize = 512;
 #[cfg(test)]
 const DISK_EVICTION_DELETE_BATCH_SIZE: usize = 64;
+
+/// Read-only observations used by the write phase of memory eviction.
+pub(crate) struct MemoryEvictionPlan {
+    metadata_candidates: Vec<EvictionCandidate>,
+    target_bytes: u64,
+}
+
+impl MemoryEvictionPlan {
+    pub(crate) fn metadata_candidate_count(&self) -> usize {
+        self.metadata_candidates.len()
+    }
+
+    pub(crate) fn target_bytes(&self) -> u64 {
+        self.target_bytes
+    }
+
+    /// Build the forced-completion plan from candidates that were busy during
+    /// gentle eviction followed by the original, unvisited suffix. Candidates
+    /// reported refreshed are intentionally absent and protected for this
+    /// sweep.
+    pub(crate) fn completion_from(
+        &self,
+        offset: usize,
+        busy: &[EvictionCandidate],
+    ) -> Self {
+        let mut metadata_candidates = busy.to_vec();
+        metadata_candidates.extend_from_slice(
+            &self.metadata_candidates[offset.min(self.metadata_candidates.len())..],
+        );
+        Self {
+            metadata_candidates,
+            target_bytes: self.target_bytes,
+        }
+    }
+}
+
+pub(crate) struct MemoryEvictionOutcome {
+    pub(crate) freed_bytes: u64,
+    pub(crate) items_removed: usize,
+    pub(crate) refreshed: Vec<EvictionCandidate>,
+}
+
+pub(crate) struct GentleEvictionOutcome {
+    pub(crate) freed_bytes: u64,
+    pub(crate) items_removed: usize,
+    pub(crate) busy: Vec<EvictionCandidate>,
+    pub(crate) refreshed: Vec<EvictionCandidate>,
+}
 
 /// Snapshot of estimated memory usage across all in-memory caches.
 #[derive(Debug, Clone)]
@@ -124,6 +172,7 @@ pub(crate) fn memory_snapshot(
 /// Evicts to 90% of budget to avoid thrashing.
 ///
 /// Returns `(estimated_freed_bytes, items_removed)`.
+#[cfg(test)]
 pub(crate) fn evict_to_budget(
     budget_bytes: u64,
     cache_system: &CacheSystem,
@@ -132,6 +181,68 @@ pub(crate) fn evict_to_budget(
     artifacts: &DashMap<String, CachedArtifact>,
     in_flight_bytes: usize,
 ) -> (u64, usize) {
+    let Some(plan) = plan_eviction_to_budget(
+        budget_bytes,
+        cache_system,
+        dep_graph,
+        fast_hit_cache,
+        artifacts,
+        in_flight_bytes,
+    ) else {
+        return (0, 0);
+    };
+    evict_to_budget_with_plan(
+        budget_bytes,
+        cache_system,
+        dep_graph,
+        fast_hit_cache,
+        artifacts,
+        in_flight_bytes,
+        &plan,
+    )
+}
+
+/// Read-only phase of memory eviction.
+pub(crate) fn plan_eviction_to_budget(
+    budget_bytes: u64,
+    cache_system: &CacheSystem,
+    dep_graph: &DepGraph,
+    fast_hit_cache: &DashMap<ContextKey, FastHitEntry>,
+    artifacts: &DashMap<String, CachedArtifact>,
+    in_flight_bytes: usize,
+) -> Option<MemoryEvictionPlan> {
+    let snap = memory_snapshot(
+        cache_system,
+        dep_graph,
+        fast_hit_cache,
+        artifacts,
+        in_flight_bytes,
+    );
+    if (snap.total_bytes as u64) <= budget_bytes {
+        return None;
+    }
+    plan_eviction_to_target_excluding(
+        (budget_bytes as f64 * 0.9) as u64,
+        cache_system,
+        dep_graph,
+        fast_hit_cache,
+        artifacts,
+        in_flight_bytes,
+        &HashSet::new(),
+    )
+}
+
+/// Re-plan from current state while preserving timestamp-refreshed paths for
+/// the duration of one GC sweep.
+pub(crate) fn plan_eviction_to_target_excluding(
+    target_bytes: u64,
+    cache_system: &CacheSystem,
+    dep_graph: &DepGraph,
+    fast_hit_cache: &DashMap<ContextKey, FastHitEntry>,
+    artifacts: &DashMap<String, CachedArtifact>,
+    in_flight_bytes: usize,
+    protected_paths: &HashSet<NormalizedPath>,
+) -> Option<MemoryEvictionPlan> {
     let snap = memory_snapshot(
         cache_system,
         dep_graph,
@@ -140,15 +251,78 @@ pub(crate) fn evict_to_budget(
         in_flight_bytes,
     );
 
-    if (snap.total_bytes as u64) <= budget_bytes {
-        return (0, 0);
+    if (snap.total_bytes as u64) <= target_bytes {
+        return None;
     }
 
-    // Target 90% of budget to avoid evicting a tiny bit every cycle.
-    let target = (budget_bytes as f64 * 0.9) as u64;
+    let to_free = snap.total_bytes as u64 - target_bytes;
+    let metadata_count = (to_free as usize)
+        .div_ceil(METADATA_ENTRY_BYTES)
+        .max(1)
+        .min(snap.metadata_entries);
+    let mut metadata_candidates =
+        cache_system.oldest_eviction_candidates(snap.metadata_entries);
+    metadata_candidates.retain(|candidate| !protected_paths.contains(candidate.path()));
+    metadata_candidates.truncate(metadata_count);
+    Some(MemoryEvictionPlan {
+        metadata_candidates,
+        target_bytes,
+    })
+}
+
+/// Write phase of memory eviction using observations made by
+/// [`plan_eviction_to_budget`].
+#[cfg(test)]
+pub(crate) fn evict_to_budget_with_plan(
+    _budget_bytes: u64,
+    cache_system: &CacheSystem,
+    dep_graph: &DepGraph,
+    fast_hit_cache: &DashMap<ContextKey, FastHitEntry>,
+    artifacts: &DashMap<String, CachedArtifact>,
+    in_flight_bytes: usize,
+    plan: &MemoryEvictionPlan,
+) -> (u64, usize) {
+    let outcome = evict_to_budget_with_plan_detailed(
+        _budget_bytes,
+        cache_system,
+        dep_graph,
+        fast_hit_cache,
+        artifacts,
+        in_flight_bytes,
+        plan,
+    );
+    (outcome.freed_bytes, outcome.items_removed)
+}
+
+pub(crate) fn evict_to_budget_with_plan_detailed(
+    _budget_bytes: u64,
+    cache_system: &CacheSystem,
+    dep_graph: &DepGraph,
+    fast_hit_cache: &DashMap<ContextKey, FastHitEntry>,
+    artifacts: &DashMap<String, CachedArtifact>,
+    in_flight_bytes: usize,
+    plan: &MemoryEvictionPlan,
+) -> MemoryEvictionOutcome {
+    let snap = memory_snapshot(
+        cache_system,
+        dep_graph,
+        fast_hit_cache,
+        artifacts,
+        in_flight_bytes,
+    );
+    if (snap.total_bytes as u64) <= plan.target_bytes {
+        return MemoryEvictionOutcome {
+            freed_bytes: 0,
+            items_removed: 0,
+            refreshed: Vec::new(),
+        };
+    }
+
+    let target = plan.target_bytes;
     let mut to_free = snap.total_bytes as u64 - target;
     let mut total_freed: u64 = 0;
     let mut total_items: usize = 0;
+    let mut refreshed = Vec::new();
 
     // Priority 1: fast-hit cache (cheapest to lose).
     //
@@ -170,15 +344,43 @@ pub(crate) fn evict_to_budget(
 
     // Priority 2: metadata + journal.
     if to_free > 0 && !cache_system.metadata().is_empty() {
-        let entries_to_evict = (to_free as usize / METADATA_ENTRY_BYTES)
+        let entries_to_evict = (to_free as usize)
+            .div_ceil(METADATA_ENTRY_BYTES)
             .max(1)
             .min(cache_system.metadata().len());
-        let (meta_removed, journal_removed) = cache_system.evict_oldest(entries_to_evict);
+        let selected = &plan.metadata_candidates[..entries_to_evict.min(
+            plan.metadata_candidates.len(),
+        )];
+        let (result, journal_removed) =
+            cache_system.evict_candidates_detailed(selected);
         let freed =
-            (meta_removed * METADATA_ENTRY_BYTES + journal_removed * JOURNAL_ENTRY_BYTES) as u64;
+            (result.removed * METADATA_ENTRY_BYTES
+                + journal_removed * JOURNAL_ENTRY_BYTES) as u64;
         total_freed += freed;
-        total_items += meta_removed + journal_removed;
+        total_items += result.removed + journal_removed;
         to_free = to_free.saturating_sub(freed);
+        refreshed.extend(result.refreshed);
+        // A refreshed candidate is deliberately preserved. Stop this pass
+        // before evicting the more expensive depgraph; a later read phase can
+        // select a replacement candidate from a current view.
+        if result.removed < selected.len() {
+            return MemoryEvictionOutcome {
+                freed_bytes: total_freed,
+                items_removed: total_items,
+                refreshed,
+            };
+        }
+        // The read phase intentionally excluded entries already examined by
+        // a gentle write phase. Do not jump to depgraph eviction merely
+        // because those protected entries made this candidate slice shorter
+        // than the current estimate asks for.
+        if selected.len() < entries_to_evict {
+            return MemoryEvictionOutcome {
+                freed_bytes: total_freed,
+                items_removed: total_items,
+                refreshed,
+            };
+        }
     }
 
     // Priority 3: depgraph contexts (trim all, then orphaned files cleaned up).
@@ -196,7 +398,36 @@ pub(crate) fn evict_to_budget(
         }
     }
 
-    (total_freed, total_items)
+    MemoryEvictionOutcome {
+        freed_bytes: total_freed,
+        items_removed: total_items,
+        refreshed,
+    }
+}
+
+/// Opportunistic write phase used while compile traffic remains active.
+///
+/// Busy shards and entries refreshed since the plan was created are skipped.
+/// Expensive fast-hit and depgraph trimming remain deferred until a quiet or
+/// forced pass.
+pub(crate) fn try_evict_metadata_plan(
+    cache_system: &CacheSystem,
+    plan: &MemoryEvictionPlan,
+    offset: usize,
+    max_candidates: usize,
+) -> GentleEvictionOutcome {
+    let start = offset.min(plan.metadata_candidates.len());
+    let end = start
+        .saturating_add(max_candidates)
+        .min(plan.metadata_candidates.len());
+    let selected = &plan.metadata_candidates[start..end];
+    let result = cache_system.try_evict_candidates_detailed(selected);
+    GentleEvictionOutcome {
+        freed_bytes: (result.removed * METADATA_ENTRY_BYTES) as u64,
+        items_removed: result.removed,
+        busy: result.busy,
+        refreshed: result.refreshed,
+    }
 }
 
 fn trim_fast_hit_cache_two_pass(
@@ -204,11 +435,11 @@ fn trim_fast_hit_cache_two_pass(
     max_age: Duration,
 ) -> usize {
     let now = Instant::now();
-    let expired: Vec<ContextKey> = cache
+    let expired: Vec<(ContextKey, Instant)> = cache
         .iter()
         .filter_map(|entry| {
             if now.saturating_duration_since(entry.value().cached_at) > max_age {
-                Some(*entry.key())
+                Some((*entry.key(), entry.value().cached_at))
             } else {
                 None
             }
@@ -216,8 +447,11 @@ fn trim_fast_hit_cache_two_pass(
         .collect();
 
     let mut removed = 0;
-    for key in expired {
-        if cache.remove(&key).is_some() {
+    for (key, observed_cached_at) in expired {
+        if cache
+            .remove_if(&key, |_, entry| entry.cached_at == observed_cached_at)
+            .is_some()
+        {
             removed += 1;
         }
     }
@@ -593,6 +827,152 @@ mod tests {
     }
 
     #[test]
+    fn planned_eviction_preserves_metadata_refreshed_before_write_pass() {
+        let (cs, dg, fh, art) = empty_caches();
+        let path = NormalizedPath::from("/tmp/refreshed-between-passes.c");
+        let selected_at = Instant::now() - Duration::from_secs(120);
+        cs.metadata().insert(
+            path.clone(),
+            FileMetadata {
+                mtime: SystemTime::now(),
+                size: 100,
+                confidence: Confidence::High,
+                last_verified: selected_at,
+                content_hash: None,
+            },
+        );
+        dg.register(make_ctx("/tmp/refreshed-between-passes.c"));
+
+        let plan = plan_eviction_to_budget(1, &cs, &dg, &fh, &art, 0)
+            .expect("tiny budget should produce an eviction plan");
+        cs.metadata().insert(
+            path.clone(),
+            FileMetadata {
+                mtime: SystemTime::now(),
+                size: 100,
+                confidence: Confidence::High,
+                last_verified: selected_at + Duration::from_secs(1),
+                content_hash: None,
+            },
+        );
+
+        let (freed, items) =
+            evict_to_budget_with_plan(1, &cs, &dg, &fh, &art, 0, &plan);
+
+        assert_eq!(freed, 0);
+        assert_eq!(items, 0);
+        assert!(cs.metadata().get(&path).is_some());
+        assert_eq!(
+            dg.stats().context_count,
+            1,
+            "a stale metadata candidate must stop this pass before depgraph eviction",
+        );
+    }
+
+    #[test]
+    fn blocking_completion_uses_only_unconsumed_gentle_candidates() {
+        let (cs, dg, fh, art) = empty_caches();
+        for i in 0..300 {
+            cs.metadata().insert(
+                NormalizedPath::from(format!("/tmp/gentle-transition-{i}.c")),
+                FileMetadata {
+                    mtime: SystemTime::now(),
+                    size: 100,
+                    confidence: Confidence::High,
+                    last_verified: Instant::now(),
+                    content_hash: None,
+                },
+            );
+        }
+
+        let budget = 10_000;
+        let plan = plan_eviction_to_budget(budget, &cs, &dg, &fh, &art, 0)
+            .expect("metadata should exceed the tiny budget");
+        assert!(plan.metadata_candidate_count() > 256);
+
+        let gentle = try_evict_metadata_plan(&cs, &plan, 0, 256);
+        assert_eq!(gentle.items_removed, 256);
+        let remaining = plan.completion_from(256, &gentle.busy);
+        let (_, blocking_items) =
+            evict_to_budget_with_plan(budget, &cs, &dg, &fh, &art, 0, &remaining);
+
+        assert!(blocking_items > 0);
+        assert!(
+            memory_snapshot(&cs, &dg, &fh, &art, 0).total_bytes as u64
+                <= plan.target_bytes(),
+            "idle/forced completion must reach the original headroom target"
+        );
+    }
+
+    #[test]
+    fn forced_completion_retries_candidates_that_were_lock_busy() {
+        let (cs, dg, fh, art) = empty_caches();
+        cs.metadata().insert(
+            NormalizedPath::from("/tmp/busy-forced-retry.c"),
+            FileMetadata {
+                mtime: SystemTime::now(),
+                size: 100,
+                confidence: Confidence::High,
+                last_verified: Instant::now(),
+                content_hash: None,
+            },
+        );
+        let budget = 1;
+        let plan = plan_eviction_to_budget(budget, &cs, &dg, &fh, &art, 0)
+            .expect("metadata should exceed the tiny budget");
+        let busy = plan.metadata_candidates.clone();
+        let completion =
+            plan.completion_from(plan.metadata_candidate_count(), &busy);
+
+        let outcome = evict_to_budget_with_plan_detailed(
+            budget,
+            &cs,
+            &dg,
+            &fh,
+            &art,
+            0,
+            &completion,
+        );
+
+        assert_eq!(outcome.items_removed, 1);
+        assert!(cs.metadata().is_empty());
+    }
+
+    #[test]
+    fn replacement_plan_keeps_original_headroom_target() {
+        let (cs, dg, fh, art) = empty_caches();
+        for i in 0..24 {
+            cs.metadata().insert(
+                NormalizedPath::from(format!("/tmp/headroom-{i}.c")),
+                FileMetadata {
+                    mtime: SystemTime::now(),
+                    size: 100,
+                    confidence: Confidence::High,
+                    last_verified: Instant::now(),
+                    content_hash: None,
+                },
+            );
+        }
+
+        assert!(
+            plan_eviction_to_budget(10_000, &cs, &dg, &fh, &art, 0).is_none(),
+            "9.6 KiB is below the configured 10 KiB trigger"
+        );
+        let replacement = plan_eviction_to_target_excluding(
+            9_000,
+            &cs,
+            &dg,
+            &fh,
+            &art,
+            0,
+            &HashSet::new(),
+        )
+        .expect("forced completion must continue toward the original 90% target");
+        assert_eq!(replacement.target_bytes(), 9_000);
+        assert!(!replacement.metadata_candidates.is_empty());
+    }
+
+    #[test]
     fn evict_cascades_to_depgraph() {
         let (cs, dg, fh, art) = empty_caches();
 
@@ -675,24 +1055,18 @@ mod tests {
 
     fn make_artifact(payload_size: usize) -> CachedArtifact {
         use crate::artifact::ArtifactIndex;
-        CachedArtifact {
-            meta: ArtifactIndex::new(
+        CachedArtifact::from_cached_payloads(
+            ArtifactIndex::new(
                 vec!["test.o".to_string()],
                 vec![payload_size as u64],
                 Vec::new(),
                 Vec::new(),
                 0,
             ),
-            stdout: std::sync::Arc::new(Vec::new()),
-            stderr: std::sync::Arc::new(Vec::new()),
-            payloads: Some(std::sync::Arc::from(vec![CachedPayload::Bytes(
+            vec![CachedPayload::Bytes(
                 std::sync::Arc::new(vec![0u8; payload_size]),
-            )])),
-            last_used: Instant::now(),
-            last_used_wall: std::time::SystemTime::now(),
-            used_in_process: true,
-            last_access_checkpoint: Some(Instant::now()),
-        }
+            )],
+        )
     }
 
     #[test]

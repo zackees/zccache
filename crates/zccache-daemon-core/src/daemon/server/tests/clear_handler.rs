@@ -238,3 +238,62 @@ async fn handle_clear_cannot_be_overtaken_by_delayed_startup_hydration() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn handle_clear_waits_for_owned_cache_lookup_lease() {
+    crate::test_support::test_timeout(async {
+        let endpoint = crate::ipc::unique_test_endpoint();
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = crate::core::NormalizedPath::new(tmp.path());
+        let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
+        let index_writer = tokio::spawn(run_index_writer(
+            server.index_writer_rx.take().unwrap(),
+            Arc::clone(&server.state.artifact_store),
+            Arc::clone(&server.state.index_writer_shutdown),
+        ));
+        let key = "7".repeat(64);
+        let meta = ArtifactIndex::new(
+            vec!["leased.o".to_string()],
+            vec![14],
+            Vec::new(),
+            Vec::new(),
+            0,
+        );
+        server.state.artifact_store.insert(&key, &meta);
+        server
+            .state
+            .artifacts
+            .insert(key.clone(), CachedArtifact::from_index(meta));
+        let payload_path = server.state.artifact_dir.join(format!("{key}_0"));
+        std::fs::write(&payload_path, b"leased payload").unwrap();
+
+        let lookup = lookup_artifact_with_disk_fallback(&server.state, &key)
+            .expect("live artifact should acquire a publication lease");
+        let clear_state = Arc::clone(&server.state);
+        let mut clear =
+            tokio::spawn(
+                async move { super::super::handle_clear::handle_clear(&clear_state).await },
+            );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), &mut clear)
+                .await
+                .is_err(),
+            "Clear must wait for an owned lookup to finish materializing"
+        );
+        record_artifact_access(&server.state, &key, &lookup, Instant::now());
+        drop(lookup);
+
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), clear)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(response, Response::Cleared { .. }));
+        assert!(!server.state.artifacts.contains_key(&key));
+        assert!(server.state.artifact_store.get(&key).is_none());
+        assert!(!payload_path.exists());
+
+        server.state.index_writer_shutdown.notify_waiters();
+        index_writer.await.unwrap();
+    })
+    .await;
+}

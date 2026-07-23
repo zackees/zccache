@@ -111,34 +111,22 @@ fn check_unit_cache(
                 // cloning all .o data (~50-200KB per file) into PendingWrite.
                 // Each check_unit_cache runs in its own spawn_blocking task,
                 // so writes are already parallel across units.
-                if let Some(mut cached_ref) =
+                if let Some(cached) =
                     lookup_artifact_with_disk_fallback(state, artifact_key_hex)
                 {
-                    let loaded =
-                        ensure_payloads(&mut cached_ref, &state.artifact_dir, artifact_key_hex)
-                            .is_some();
-                    if loaded {
+                    if let Some(payloads) =
+                        ensure_payloads(&cached, &state.artifact_dir, artifact_key_hex)
+                    {
                         record_artifact_access(
                             state,
                             artifact_key_hex,
-                            &mut cached_ref,
+                            &cached,
                             std::time::Instant::now(),
                         );
-                        #[expect(
-                            clippy::expect_used,
-                            reason = "ensure_payloads on the preceding line returned Some, which is the contract guaranteeing cached_ref.payloads is now populated"
-                        )]
-                        let payloads = Arc::clone(
-                            cached_ref
-                                .payloads
-                                .as_ref()
-                                .expect("ensure_payloads above returned without error"),
-                        );
-                        let names = Arc::clone(&cached_ref.meta.output_names);
-                        let artifact_bytes: u64 = cached_ref.meta.total_size;
-                        let stdout = cached_ref.stdout.clone();
-                        let stderr = cached_ref.stderr.clone();
-                        drop(cached_ref);
+                        let names = Arc::clone(&cached.meta.output_names);
+                        let artifact_bytes: u64 = cached.meta.total_size;
+                        let stdout = cached.stdout.clone();
+                        let stderr = cached.stderr.clone();
 
                         let targets: Vec<(NormalizedPath, NormalizedPath)> = (0..payloads.len())
                             .map(|i| {
@@ -245,32 +233,21 @@ fn check_unit_cache(
     | crate::depgraph::CacheVerdict::SourceChanged { artifact_key } = verdict
     {
         let artifact_key_hex = artifact_key.hash().to_hex();
-        if let Some(mut cached_ref) = lookup_artifact_with_disk_fallback(state, &artifact_key_hex) {
+        if let Some(cached) = lookup_artifact_with_disk_fallback(state, &artifact_key_hex) {
             let t_lookup = t0.elapsed();
-            let loaded =
-                ensure_payloads(&mut cached_ref, &state.artifact_dir, &artifact_key_hex).is_some();
-            if loaded {
+            if let Some(payloads) =
+                ensure_payloads(&cached, &state.artifact_dir, &artifact_key_hex)
+            {
                 record_artifact_access(
                     state,
                     &artifact_key_hex,
-                    &mut cached_ref,
+                    &cached,
                     std::time::Instant::now(),
                 );
-                #[expect(
-                    clippy::expect_used,
-                    reason = "ensure_payloads on the preceding line returned Some, which is the contract guaranteeing cached_ref.payloads is now populated"
-                )]
-                let payloads = Arc::clone(
-                    cached_ref
-                        .payloads
-                        .as_ref()
-                        .expect("ensure_payloads above returned without error"),
-                );
-                let names = Arc::clone(&cached_ref.meta.output_names);
-                let artifact_bytes: u64 = cached_ref.meta.total_size;
-                let stdout = cached_ref.stdout.clone();
-                let stderr = cached_ref.stderr.clone();
-                drop(cached_ref);
+                let names = Arc::clone(&cached.meta.output_names);
+                let artifact_bytes: u64 = cached.meta.total_size;
+                let stdout = cached.stdout.clone();
+                let stderr = cached.stderr.clone();
 
                 let targets: Vec<(NormalizedPath, NormalizedPath)> = (0..payloads.len())
                     .map(|i| {

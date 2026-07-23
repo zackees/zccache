@@ -1,5 +1,6 @@
 //! File metadata types and cache implementation.
 
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use rayon::prelude::*;
 use std::sync::OnceLock;
@@ -96,6 +97,37 @@ pub struct FileMetadata {
     pub last_verified: Instant,
     /// Cached content hash (blake3, 32 bytes), if computed.
     pub content_hash: Option<[u8; 32]>,
+}
+
+/// One entry selected by the read-only phase of metadata eviction.
+///
+/// The write phase must compare `last_verified` again while holding the
+/// entry's shard write lock. A lookup may refresh the entry between the two
+/// phases; in that case this candidate is stale and must not remove the newly
+/// refreshed value.
+#[derive(Debug, Clone)]
+pub struct EvictionCandidate {
+    path: NormalizedPath,
+    last_verified: Instant,
+}
+
+impl EvictionCandidate {
+    /// Path observed by the read-only candidate pass.
+    #[must_use]
+    pub fn path(&self) -> &NormalizedPath {
+        &self.path
+    }
+}
+
+/// Detailed result of conditionally deleting an eviction-candidate slice.
+#[derive(Debug, Default)]
+pub struct CandidateEvictionResult {
+    /// Candidates removed with the same timestamp observed by the read pass.
+    pub removed: usize,
+    /// Candidates whose shard could not be acquired without blocking.
+    pub busy: Vec<EvictionCandidate>,
+    /// Candidates whose verification timestamp changed after the read pass.
+    pub refreshed: Vec<EvictionCandidate>,
 }
 
 /// Concurrent file metadata cache.
@@ -314,21 +346,93 @@ impl MetadataCache {
     /// Evict the `count` oldest entries by `last_verified`.
     /// Returns the number actually removed (may be less than `count`).
     pub fn evict_oldest(&self, count: usize) -> usize {
+        let candidates = self.oldest_eviction_candidates(count);
+        self.evict_candidates(&candidates)
+    }
+
+    /// Collect the `count` oldest entries without taking any shard write lock.
+    ///
+    /// This is the read-only phase of two-pass eviction. The returned
+    /// candidates are observations, not deletion authority: callers must use
+    /// [`Self::evict_candidates`] or [`Self::try_evict_candidates`] so a
+    /// refresh between the two phases is preserved.
+    pub fn oldest_eviction_candidates(&self, count: usize) -> Vec<EvictionCandidate> {
         if count == 0 {
-            return 0;
+            return Vec::new();
         }
         // Collect (path, last_verified) then sort oldest first.
-        let mut entries: Vec<(NormalizedPath, Instant)> = self
+        let mut entries: Vec<EvictionCandidate> = self
             .entries
             .iter()
-            .map(|e| (e.key().clone(), e.value().last_verified))
+            .map(|entry| EvictionCandidate {
+                path: entry.key().clone(),
+                last_verified: entry.value().last_verified,
+            })
             .collect();
-        entries.sort_by_key(|(_path, ts)| *ts);
-        let to_remove = entries.len().min(count);
-        for (path, _) in entries.into_iter().take(to_remove) {
-            self.entries.remove(&path);
+        entries.sort_by_key(|candidate| candidate.last_verified);
+        entries.truncate(count);
+        entries
+    }
+
+    /// Remove candidates whose verification timestamp still matches the
+    /// read-only selection pass.
+    ///
+    /// Each entry is revalidated while its shard write lock is held. Entries
+    /// refreshed, replaced, or removed since candidate collection are skipped.
+    pub fn evict_candidates(&self, candidates: &[EvictionCandidate]) -> usize {
+        self.evict_candidates_detailed(candidates).removed
+    }
+
+    /// Detailed blocking write phase, including timestamp-refreshed entries.
+    pub fn evict_candidates_detailed(
+        &self,
+        candidates: &[EvictionCandidate],
+    ) -> CandidateEvictionResult {
+        let mut result = CandidateEvictionResult::default();
+        for candidate in candidates {
+            if let Entry::Occupied(entry) = self.entries.entry(candidate.path.clone()) {
+                if entry.get().last_verified == candidate.last_verified {
+                    entry.remove();
+                    result.removed += 1;
+                } else {
+                    result.refreshed.push(candidate.clone());
+                }
+            }
         }
-        to_remove
+        result
+    }
+
+    /// Nonblocking variant of [`Self::evict_candidates`].
+    ///
+    /// A candidate on a busy shard is skipped so active cache traffic wins.
+    /// A later GC pass may retry it. Timestamp revalidation has the same
+    /// semantics as the blocking variant.
+    pub fn try_evict_candidates(&self, candidates: &[EvictionCandidate]) -> usize {
+        self.try_evict_candidates_detailed(candidates).removed
+    }
+
+    /// Detailed nonblocking write phase, distinguishing lock contention from
+    /// timestamp refreshes so a later forced pass can retry only busy entries.
+    pub fn try_evict_candidates_detailed(
+        &self,
+        candidates: &[EvictionCandidate],
+    ) -> CandidateEvictionResult {
+        let mut result = CandidateEvictionResult::default();
+        for candidate in candidates {
+            let Some(entry) = self.entries.try_entry(candidate.path.clone()) else {
+                result.busy.push(candidate.clone());
+                continue;
+            };
+            if let Entry::Occupied(entry) = entry {
+                if entry.get().last_verified == candidate.last_verified {
+                    entry.remove();
+                    result.removed += 1;
+                } else {
+                    result.refreshed.push(candidate.clone());
+                }
+            }
+        }
+        result
     }
 
     /// Iterate all cached paths.
@@ -716,6 +820,101 @@ mod tests {
         let removed = cache.evict_oldest(2);
         assert_eq!(removed, 2);
         assert_eq!(cache.len(), 3);
+    }
+
+    #[test]
+    fn eviction_candidate_preserves_entry_refreshed_after_read_pass() {
+        let cache = MetadataCache::new();
+        let path = NormalizedPath::from("/tmp/refreshed.c");
+        let selected_at = Instant::now() - Duration::from_secs(120);
+        cache.insert(
+            path.clone(),
+            FileMetadata {
+                mtime: SystemTime::now(),
+                size: 10,
+                confidence: Confidence::High,
+                last_verified: selected_at,
+                content_hash: None,
+            },
+        );
+
+        let candidates = cache.oldest_eviction_candidates(1);
+        assert_eq!(candidates.len(), 1);
+
+        let refreshed_at = selected_at + Duration::from_secs(60);
+        cache.insert(
+            path.clone(),
+            FileMetadata {
+                mtime: SystemTime::now(),
+                size: 10,
+                confidence: Confidence::High,
+                last_verified: refreshed_at,
+                content_hash: None,
+            },
+        );
+
+        assert_eq!(cache.evict_candidates(&candidates), 0);
+        assert_eq!(cache.get(&path).unwrap().last_verified, refreshed_at);
+    }
+
+    #[test]
+    fn nonblocking_eviction_revalidates_candidate_timestamp() {
+        let cache = MetadataCache::new();
+        let path = NormalizedPath::from("/tmp/refreshed-try.c");
+        let selected_at = Instant::now() - Duration::from_secs(120);
+        cache.insert(
+            path.clone(),
+            FileMetadata {
+                mtime: SystemTime::now(),
+                size: 10,
+                confidence: Confidence::High,
+                last_verified: selected_at,
+                content_hash: None,
+            },
+        );
+
+        let candidates = cache.oldest_eviction_candidates(1);
+        cache.insert(
+            path.clone(),
+            FileMetadata {
+                mtime: SystemTime::now(),
+                size: 10,
+                confidence: Confidence::High,
+                last_verified: selected_at + Duration::from_secs(1),
+                content_hash: None,
+            },
+        );
+
+        assert_eq!(cache.try_evict_candidates(&candidates), 0);
+        assert!(cache.get(&path).is_some());
+    }
+
+    #[test]
+    fn nonblocking_eviction_reports_busy_candidate_for_forced_retry() {
+        let cache = MetadataCache::new();
+        let path = NormalizedPath::from("/tmp/busy-try.c");
+        cache.insert(
+            path.clone(),
+            FileMetadata {
+                mtime: SystemTime::now(),
+                size: 10,
+                confidence: Confidence::High,
+                last_verified: Instant::now(),
+                content_hash: None,
+            },
+        );
+        let candidates = cache.oldest_eviction_candidates(1);
+        let shard_guard = cache.entries.get_mut(&path).unwrap();
+
+        let gentle = cache.try_evict_candidates_detailed(&candidates);
+        assert_eq!(gentle.removed, 0);
+        assert_eq!(gentle.busy.len(), 1);
+        assert!(gentle.refreshed.is_empty());
+        drop(shard_guard);
+
+        let forced = cache.evict_candidates_detailed(&gentle.busy);
+        assert_eq!(forced.removed, 1);
+        assert!(cache.get(&path).is_none());
     }
 
     #[test]
