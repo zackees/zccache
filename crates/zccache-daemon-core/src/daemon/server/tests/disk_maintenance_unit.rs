@@ -49,11 +49,7 @@ impl MaintenanceEnvironment for GatedScanEnvironment {
     }
 
     fn filesystem_space(&self, _root: &Path) -> io::Result<FilesystemSpace> {
-        if self
-            .calls
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
-            == 0
-        {
+        if self.calls.fetch_add(1, std::sync::atomic::Ordering::AcqRel) == 0 {
             self.scan_entered.wait();
             self.release_scan.wait();
         }

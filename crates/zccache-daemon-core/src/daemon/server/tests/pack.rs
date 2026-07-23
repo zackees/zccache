@@ -142,9 +142,7 @@ fn mixed_v1_pack_v2_lookup_and_downgrade_policy_are_explicit() {
         b"legacy-flat"
     );
     assert_eq!(
-        bytes(
-            &ensure_payloads_with_staged_policy(&pack, dir.path(), &pack_key, true).unwrap()[0]
-        ),
+        bytes(&ensure_payloads_with_staged_policy(&pack, dir.path(), &pack_key, true).unwrap()[0]),
         b"legacy-pack"
     );
     assert_eq!(
@@ -158,16 +156,14 @@ fn mixed_v1_pack_v2_lookup_and_downgrade_policy_are_explicit() {
     let downgraded_pack = index("packed.o", 11);
     let downgraded_v2 = index("staged.o", 9);
     assert!(
-        ensure_payloads_with_staged_policy(&downgraded_v1, dir.path(), &v1_key, false)
-            .is_some()
+        ensure_payloads_with_staged_policy(&downgraded_v1, dir.path(), &v1_key, false).is_some()
     );
     assert!(
         ensure_payloads_with_staged_policy(&downgraded_pack, dir.path(), &pack_key, false)
             .is_some()
     );
     assert!(
-        ensure_payloads_with_staged_policy(&downgraded_v2, dir.path(), &v2_key, false)
-            .is_none()
+        ensure_payloads_with_staged_policy(&downgraded_v2, dir.path(), &v2_key, false).is_none()
     );
 }
 
