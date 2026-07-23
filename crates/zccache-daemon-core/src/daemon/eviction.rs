@@ -3,20 +3,25 @@
 //! Estimates in-memory cache size using per-entry constants and evicts
 //! entries in priority order when the total exceeds the configured budget.
 //!
-//! Disk artifact eviction (`evict_disk_artifacts`) is separate: it enforces
-//! `max_cache_size` by removing the oldest `.meta` + data files from the
-//! artifact directory.
+//! The legacy fixed-size disk helper remains test-only; production disk
+//! retention is daemon-owned in `server::disk_maintenance` (issue #1148).
 
+#[cfg(test)]
 use crate::core::NormalizedPath;
 use crate::depgraph::{ContextKey, DepGraph};
 use crate::fscache::CacheSystem;
 use dashmap::DashMap;
+#[cfg(test)]
 use std::collections::HashMap;
+#[cfg(test)]
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
 use super::server::persist::{evict_v2_artifact_keys, scan_v2_disk_artifacts};
-use super::server::{remove_cow_blob, CachedArtifact, FastHitEntry};
+#[cfg(test)]
+use super::server::remove_cow_blob;
+use super::server::{CachedArtifact, FastHitEntry};
 
 /// Estimated bytes per metadata cache entry.
 const METADATA_ENTRY_BYTES: usize = 400;
@@ -35,7 +40,9 @@ const ARTIFACT_OVERHEAD_BYTES: usize = 200;
 /// cache, but recently-cached entries — including those being filled
 /// in-flight when the trim races — survive. (#454)
 const FAST_HIT_BUDGET_TRIM_MAX_AGE: Duration = Duration::from_secs(5);
+#[cfg(test)]
 const DISK_EVICTION_SCAN_YIELD_EVERY: usize = 512;
+#[cfg(test)]
 const DISK_EVICTION_DELETE_BATCH_SIZE: usize = 64;
 
 /// Snapshot of estimated memory usage across all in-memory caches.
@@ -111,7 +118,8 @@ pub(crate) fn memory_snapshot(
 /// 3. Depgraph contexts + orphaned files (rebuilt on next compile)
 ///
 /// Artifacts are **not** evicted here — disk GC (`evict_disk_artifacts`)
-/// handles artifact lifecycle based on `max_cache_size`.
+/// is retained only for legacy unit coverage; daemon-owned disk maintenance
+/// handles production artifact lifecycle using the shared retention policy.
 ///
 /// Evicts to 90% of budget to avoid thrashing.
 ///
@@ -219,6 +227,7 @@ fn trim_fast_hit_cache_two_pass(
 // ── Disk artifact eviction ──────────────────────────────────────────────
 
 /// Info about one artifact group on disk (`.meta` + data files).
+#[cfg(test)]
 struct DiskArtifact {
     key: String,
     total_size: u64,
@@ -245,6 +254,7 @@ struct DiskArtifact {
 /// in this module) pass `None`.
 ///
 /// Returns `(bytes_freed, artifacts_removed)`.
+#[cfg(test)]
 pub(crate) fn evict_disk_artifacts(
     artifact_dir: &Path,
     artifacts: &DashMap<String, CachedArtifact>,
@@ -679,6 +689,9 @@ mod tests {
                 std::sync::Arc::new(vec![0u8; payload_size]),
             )])),
             last_used: Instant::now(),
+            last_used_wall: std::time::SystemTime::now(),
+            used_in_process: true,
+            last_access_checkpoint: Some(Instant::now()),
         }
     }
 

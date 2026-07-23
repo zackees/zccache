@@ -83,8 +83,10 @@ pub struct DaemonServer {
 /// accepting an [`IpcListener`].
 pub(crate) struct EmbeddedDaemon {
     state: Arc<SharedState>,
+    maintenance_policy: MaintenancePolicy,
     index_writer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<IndexWriterCommand>>,
     index_writer_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    maintenance_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 pub(crate) struct EmbeddedCompileRequest {
@@ -119,8 +121,9 @@ mod client_env;
 mod compile_concurrency;
 mod compiler_hash;
 mod connection;
-mod directory_link;
 mod dependency_policy;
+mod directory_link;
+mod disk_maintenance;
 mod embedded;
 mod handle_clear;
 mod handle_compile;
@@ -160,8 +163,9 @@ pub(crate) use cached_artifact::{CachedArtifact, CachedPayload};
 use client_env::*;
 use compiler_hash::*;
 use connection::handle_connection;
-use directory_link::*;
 use dependency_policy::*;
+use directory_link::*;
+pub(crate) use disk_maintenance::*;
 use handle_clear::*;
 use handle_compile::handle_compile;
 use handle_compile_ephemeral::*;

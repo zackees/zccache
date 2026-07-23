@@ -34,6 +34,7 @@ impl EmbeddedDaemon {
         endpoint: String,
         cache_dir: crate::core::NormalizedPath,
         runtime_handle: Option<tokio::runtime::Handle>,
+        maintenance_policy: MaintenancePolicy,
     ) -> Result<Self, crate::ipc::IpcError> {
         let backend_identity = crate::ipc::current_backend_identity(&endpoint)
             .map_err(|err| crate::ipc::IpcError::Endpoint(err.to_string()))?;
@@ -55,8 +56,10 @@ impl EmbeddedDaemon {
 
         let mut daemon = Self {
             state,
+            maintenance_policy,
             index_writer_rx: Some(index_writer_rx),
             index_writer_handle: Mutex::new(None),
+            maintenance_handle: Mutex::new(None),
         };
         daemon.start_background_tasks(runtime_handle).await;
         Ok(daemon)
@@ -177,6 +180,13 @@ impl EmbeddedDaemon {
             state.dep_graph_load_notify.notify_waiters();
         })
         .await;
+
+        let maintenance_handle = spawn_disk_maintenance(
+            Arc::clone(&self.state),
+            self.maintenance_policy,
+            runtime_handle.as_ref(),
+        );
+        *self.maintenance_handle.lock().await = Some(maintenance_handle);
     }
 
     pub(crate) async fn compile(
@@ -287,13 +297,29 @@ impl EmbeddedDaemon {
         }
     }
 
+    pub(crate) async fn maintain_disk(
+        &self,
+        kind: MaintenanceKind,
+    ) -> std::io::Result<DiskMaintenanceReport> {
+        maintain_state_disk(Arc::clone(&self.state), self.maintenance_policy, kind).await
+    }
+
     pub(crate) async fn flush(&self) -> EmbeddedFlushReport {
+        let _maintenance_guard = self.state.disk_maintenance.lock().await;
         let mut index_writer_handle = self.index_writer_handle.lock().await;
         flush_embedded_state(&self.state, &mut index_writer_handle, false).await
     }
 
     pub(crate) async fn shutdown(&self) -> EmbeddedFlushReport {
         self.state.shutdown_requested.store(true, Ordering::Release);
+        self.state.shutdown.notify_waiters();
+        if let Some(handle) = self.maintenance_handle.lock().await.take() {
+            let _ = handle.await;
+        }
+        // A host-requested pass can run independently of the background
+        // handle. Wait for it before the final index flush; new passes reject
+        // the latched shutdown flag after acquiring this mutex.
+        let _maintenance_guard = self.state.disk_maintenance.lock().await;
         let mut index_writer_handle = self.index_writer_handle.lock().await;
         let report = flush_embedded_state(&self.state, &mut index_writer_handle, true).await;
         let _ = std::fs::remove_dir_all(&self.state.depfile_tmpdir);
@@ -395,6 +421,11 @@ async fn flush_embedded_state(
         std::time::Duration::from_secs(30),
     )
     .await;
+
+    // Detached publishers acquire an owned read guard before their handler
+    // returns. Taking the write guard here waits for every such handoff before
+    // the index writer is flushed or stopped, so no row can arrive afterward.
+    let _publication_guard = state.artifact_publication.write().await;
 
     let index_writer_drained =
         flush_index_writer(&state.index_writer_tx, std::time::Duration::from_secs(30)).await;

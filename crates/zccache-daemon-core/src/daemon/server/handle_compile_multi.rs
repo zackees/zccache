@@ -53,10 +53,7 @@ fn check_unit_cache(
     let (mut ctx, dep_flags) = if let Some(base) = shared_base {
         let mut ctx = base.clone();
         ctx.source_file = source_path.clone();
-        (
-            ctx,
-            shared_dep_flags.cloned().unwrap_or_default(),
-        )
+        (ctx, shared_dep_flags.cloned().unwrap_or_default())
     } else {
         match build_compile_context(
             compilation,
@@ -117,11 +114,16 @@ fn check_unit_cache(
                 if let Some(mut cached_ref) =
                     lookup_artifact_with_disk_fallback(state, artifact_key_hex)
                 {
-                    cached_ref.last_used = std::time::Instant::now();
                     let loaded =
                         ensure_payloads(&mut cached_ref, &state.artifact_dir, artifact_key_hex)
                             .is_some();
                     if loaded {
+                        record_artifact_access(
+                            state,
+                            artifact_key_hex,
+                            &mut cached_ref,
+                            std::time::Instant::now(),
+                        );
                         #[expect(
                             clippy::expect_used,
                             reason = "ensure_payloads on the preceding line returned Some, which is the contract guaranteeing cached_ref.payloads is now populated"
@@ -244,11 +246,16 @@ fn check_unit_cache(
     {
         let artifact_key_hex = artifact_key.hash().to_hex();
         if let Some(mut cached_ref) = lookup_artifact_with_disk_fallback(state, &artifact_key_hex) {
-            cached_ref.last_used = std::time::Instant::now();
             let t_lookup = t0.elapsed();
             let loaded =
                 ensure_payloads(&mut cached_ref, &state.artifact_dir, &artifact_key_hex).is_some();
             if loaded {
+                record_artifact_access(
+                    state,
+                    &artifact_key_hex,
+                    &mut cached_ref,
+                    std::time::Instant::now(),
+                );
                 #[expect(
                     clippy::expect_used,
                     reason = "ensure_payloads on the preceding line returned Some, which is the contract guaranteeing cached_ref.payloads is now populated"
@@ -760,8 +767,7 @@ pub(super) async fn handle_compile_multi(
                 );
             }
             if used_static_fallback {
-                dependency_mode_task
-                    .apply_static_fallback(&mut scan_result, &ctx.include_search);
+                dependency_mode_task.apply_static_fallback(&mut scan_result, &ctx.include_search);
             }
 
             let tracked_paths: Vec<NormalizedPath> = std::iter::once(source_path.clone())
@@ -797,6 +803,13 @@ pub(super) async fn handle_compile_multi(
                     .collect()
             };
 
+            let Some(_publication_guard) = begin_artifact_publication_blocking(&state_task) else {
+                return MissOutcome {
+                    dep_dirs,
+                    output_path,
+                    persist: None,
+                };
+            };
             let get_hash = |p: &Path| {
                 let path = NormalizedPath::new(p);
                 hash_map.get(&path).copied()
@@ -922,6 +935,9 @@ pub(super) async fn handle_compile_multi(
     watch_directories(&state, &dep_dirs_vec).await;
 
     for job in persist_jobs {
+        let Some(publication_guard_for_task) = begin_artifact_publication(&state).await else {
+            continue;
+        };
         let artifact_dir = state.artifact_dir.clone();
         let key_hex = job.artifact_key_hex;
         let persist_meta = job.persist_meta;
@@ -935,7 +951,7 @@ pub(super) async fn handle_compile_multi(
             size: payload_size,
         };
         let sem = Arc::clone(&state.persist_semaphore);
-        let state_ref = Arc::clone(&state);
+        let index_writer_tx = state.index_writer_tx.clone();
         // Issue #728: capture the per-job enqueue Instant so the WARN below
         // can report `gap_ms` = "linker-success-recorded → persist-attempt-
         // started" (distinguishes queue starvation under burst load from
@@ -952,21 +968,25 @@ pub(super) async fn handle_compile_multi(
                 .expect("persist_semaphore is owned by ServerState and never closed");
             let written = tokio::task::spawn_blocking(move || {
                 let _guard = guard;
+                let _publication_guard = publication_guard_for_task;
                 let gap_ms = t_persist_enqueue.elapsed().as_millis() as u64;
-                if let Err(e) = persist_artifact_payloads(&artifact_dir, &key_hex, &payloads) {
-                    tracing::warn!(
-                        key = %key_hex,
-                        gap_ms,
-                        "failed to persist artifact output: {e}"
-                    );
+                match persist_artifact_payloads(&artifact_dir, &key_hex, &payloads) {
+                    Ok(()) => {
+                        let _ =
+                            index_writer_tx.send(IndexWriterCommand::Insert(key_hex, persist_meta));
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            key = %key_hex,
+                            gap_ms,
+                            "failed to persist artifact output: {e}"
+                        );
+                    }
                 }
-                (key_hex, persist_meta)
             })
             .await;
-            if let Ok((key_hex, meta)) = written {
-                let _ = state_ref
-                    .index_writer_tx
-                    .send(IndexWriterCommand::Insert(key_hex, meta));
+            if let Err(error) = written {
+                tracing::warn!(%error, "multi-source artifact persistence task failed to join");
             }
         });
     }

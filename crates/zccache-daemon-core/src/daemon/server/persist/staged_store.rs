@@ -13,13 +13,20 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 
 mod maintenance;
+#[cfg(test)]
+pub(crate) use maintenance::evict_staged_artifact_keys;
 pub(crate) use maintenance::{
-    evict_staged_artifact_keys, scan_staged_disk_artifacts, StagedDiskArtifact,
+    evict_staged_artifact_keys_if_unchanged, scan_staged_disk_artifacts, StagedDiskArtifact,
 };
 mod materialize;
 pub(in crate::daemon::server) use materialize::{
     materialization_error, materialization_error_progress, materialize_independent_with_stats,
     StagedMaterializationStats,
+};
+mod root_safety;
+pub(in crate::daemon::server) use root_safety::validate_staged_artifact_root;
+use root_safety::{
+    is_staged_link_or_reparse, open_store_lock, remove_staged_link_or_reparse, staged_root,
 };
 #[cfg(test)]
 mod fault;
@@ -251,20 +258,6 @@ pub(in crate::daemon::server) fn is_staged_artifact_root(path: &Path) -> bool {
             name == STAGED_ROOT
         }
     })
-}
-
-fn staged_root(artifact_dir: &Path) -> NormalizedPath {
-    artifact_dir.join(STAGED_ROOT).into()
-}
-
-fn open_store_lock(root: &Path) -> io::Result<File> {
-    fs::create_dir_all(root)?;
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(root.join(STORE_LOCK))
 }
 
 fn validate_key(key_hex: &str) -> io::Result<()> {
@@ -963,8 +956,8 @@ fn remove_staged_tree(path: &Path) -> io::Result<u64> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
         Err(error) => return Err(error),
     };
-    if metadata.file_type().is_symlink() {
-        fs::remove_file(path)?;
+    if is_staged_link_or_reparse(&metadata) {
+        remove_staged_link_or_reparse(path, &metadata)?;
         return Ok(0);
     }
     if metadata.is_dir() {
@@ -982,7 +975,7 @@ fn remove_staged_tree(path: &Path) -> io::Result<u64> {
 
 pub(in crate::daemon::server) fn clear_staged_artifacts(artifact_dir: &Path) -> io::Result<u64> {
     let root = staged_root(artifact_dir);
-    if !root.is_dir() {
+    if !validate_staged_artifact_root(artifact_dir)? {
         return Ok(0);
     }
     let store_lock = open_store_lock(&root)?;

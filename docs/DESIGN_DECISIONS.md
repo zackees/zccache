@@ -323,7 +323,7 @@ Example: cache key `a1b2c3d4...` is stored at `<cache_root>/artifacts/a1/b2/a1b2
 
 **Context:** Without eviction, the disk cache grows without bound, eventually consuming all available disk space.
 
-**Decision:** Evict artifacts by LRU (Least Recently Used) based on last-access time. Track access times in the redb index. A background eviction task runs when the cache size exceeds a configurable threshold (default: 10 GB).
+**Decision:** Evict artifacts by LRU (Least Recently Used) based on last-access time. The daemon owns periodic maintenance for its exact cache root. The default budget is 5% of filesystem capacity clamped to 40-200 GiB, with mutually-exclusive byte or percent overrides. Pressure tiers use 85%/100% high-water marks, while full passes expire entries older than 30 days. The normative policy is [the artifact-store retention section](architecture/artifact-store.md#daemon-owned-retention-policy).
 
 **Rationale:**
 - Simple and predictable. Easy to understand, easy to debug.
@@ -334,7 +334,7 @@ Example: cache key `a1b2c3d4...` is stored at `<cache_root>/artifacts/a1/b2/a1b2
 | Strategy | Why not |
 |----------|---------|
 | LFU (Least Frequently Used) | More complex to implement. Marginal benefit over LRU for this workload. |
-| TTL-based expiry | Poor fit. Artifacts do not have a natural expiration time. A rarely-changed library might be cached for weeks and still be valid. |
+| TTL-only expiry | Poor fit as the sole policy. Absolute 30-day expiry now complements LRU so idle caches are eventually reclaimed. |
 | Size-weighted LRU | Premature optimization. Adds complexity for marginal benefit in v1. |
 
 **Consequences:**
@@ -513,18 +513,12 @@ The daemon can crash at any point. The recovery strategy ensures no data corrupt
 
 ### Q9: LRU Eviction — Details
 
-**Trigger:** A background task periodically checks total cache size (sum of artifact sizes tracked in redb). When the size exceeds the configured threshold (default: 10 GB), eviction begins.
-
-**Process:**
-1. Query the `access_log` table in redb, sorted by `last_access_timestamp` ascending.
-2. Delete the oldest artifacts (remove directory from disk, remove entries from redb) until cache size drops below `threshold * 0.9` (the 90% low-water mark prevents eviction from triggering again immediately).
-3. Eviction runs in a background tokio task with lower priority. It yields between deletions to avoid starving IPC handlers.
-
-**Access time tracking:** Every cache hit writes the current timestamp to the `access_log` table. These writes are batched (e.g., flushed every 5 seconds or every 100 hits) to avoid write amplification.
-
-**Manual controls:**
-- `zccache clear` removes all artifacts and resets the index.
-- `zccache config set max_cache_size <bytes>` adjusts the threshold.
+The original fixed 10 GB / 90% sketch has been superseded by DD-013's
+daemon-owned, reserve-aware pressure and age policy. The current thresholds,
+schedule, accounting, environment overrides, embedded API, and exact-root
+ownership contract live in
+[artifact-store.md](architecture/artifact-store.md#daemon-owned-retention-policy).
+`zccache clear` remains the explicit full purge control.
 
 ---
 

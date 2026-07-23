@@ -2,6 +2,36 @@
 
 use super::*;
 
+/// Enter an artifact-publication critical section unless shutdown has closed
+/// the daemon to new publishers.
+///
+/// The shutdown flag must be checked *after* acquiring the fair Tokio lock:
+/// a request may have started before shutdown but queued behind shutdown's
+/// writer. In that case it must not publish after the writer drains and the
+/// index task has stopped.
+pub(super) async fn begin_artifact_publication(
+    state: &SharedState,
+) -> Option<tokio::sync::OwnedRwLockReadGuard<()>> {
+    let guard = Arc::clone(&state.artifact_publication).read_owned().await;
+    if state.shutdown_requested.load(Ordering::Acquire) {
+        None
+    } else {
+        Some(guard)
+    }
+}
+
+/// Blocking-worker counterpart to [`begin_artifact_publication`].
+pub(super) fn begin_artifact_publication_blocking(
+    state: &SharedState,
+) -> Option<tokio::sync::RwLockReadGuard<'_, ()>> {
+    let guard = state.artifact_publication.blocking_read();
+    if state.shutdown_requested.load(Ordering::Acquire) {
+        None
+    } else {
+        Some(guard)
+    }
+}
+
 /// How many artifact-persist tasks may be in flight concurrently.
 ///
 /// The daemon's persist path writes each cached artifact to disk via
@@ -274,6 +304,38 @@ pub(super) fn lookup_artifact_with_disk_fallback<'a>(
         .artifacts
         .insert(key_hex.to_string(), CachedArtifact::from_index(meta));
     state.artifacts.get_mut(key_hex)
+}
+
+/// Refresh an artifact's maintenance-visible access time at most once per
+/// hour. The in-memory timestamp protects hot entries immediately; the
+/// throttled index update preserves that access across daemon restarts without
+/// adding a clock read or WAL write to every cache hit (issue #1148).
+pub(super) fn record_artifact_access(
+    state: &SharedState,
+    key_hex: &str,
+    artifact: &mut CachedArtifact,
+    now: Instant,
+) {
+    const PERSIST_INTERVAL: Duration = Duration::from_secs(60 * 60);
+    artifact.last_used = now;
+    artifact.used_in_process = true;
+    if artifact
+        .last_access_checkpoint
+        .is_some_and(|checkpoint| now.saturating_duration_since(checkpoint) < PERSIST_INTERVAL)
+    {
+        return;
+    }
+    artifact.last_access_checkpoint = Some(now);
+    let wall_now = std::time::SystemTime::now();
+    artifact.last_used_wall = wall_now;
+    artifact.meta.stored_at_secs = wall_now
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let _ = state.index_writer_tx.send(IndexWriterCommand::Insert(
+        key_hex.to_string(),
+        artifact.meta.clone(),
+    ));
 }
 
 #[cfg(all(test, windows))]

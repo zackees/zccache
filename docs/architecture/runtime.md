@@ -19,7 +19,7 @@ Tokio runtime:     multi-threaded (default thread count)
     - looks up artifact store
     - on miss: spawns compiler, stores result
     - sends response
-  Background eviction task (if triggered)
+  Background disk maintenance task (startup + 5-minute pressure checks)
   Watcher event processing task
 
 Dedicated OS thread:  file watcher (notify)
@@ -398,6 +398,15 @@ persistent write escapes it**. Issue #275 closes that contract.
 
 [resolve]: ../../crates/zccache-core/src/config.rs
 
+### Maintenance ownership
+
+Each daemon maintains only its resolved effective root. Embedded soldr/fbuild
+instances therefore cannot inspect or delete standalone `~/.zccache` state or
+another product's root. The daemon is the primary scheduler; persisted daily
+catch-up removes the need for an OS scheduler. Budget, pressure, age, and
+accounting semantics are defined in
+[artifact-store.md](artifact-store.md#daemon-owned-retention-policy).
+
 ### Resolution rules
 
 | Source | When it fires | `cache-root --json` value |
@@ -469,6 +478,7 @@ cache root via one of the helpers in `zccache::core::config`:
 | Subpath | Owner | Resolver |
 |---|---|---|
 | `artifacts/` | daemon — content-addressed artifact store + sibling tmp files for atomic rename | `artifacts_dir_from_cache_dir` |
+| `.disk-maintenance-last-full-v1` | daemon — timestamp of the last successful full-age retention pass | exact effective cache root |
 | `tmp/` | daemon — recursively wiped on startup (orphaned in-progress writes) | `tmp_dir_from_cache_dir` |
 | `tmp/depfiles/<pid>-<instance>/` | daemon — compiler-injected depfiles and Windows response files (`*.rsp`) | `depfile_dir_from_cache_dir` |
 | `depgraph/depgraph.bin` | daemon — rkyv snapshot of the dep graph | `depgraph_file_path` |

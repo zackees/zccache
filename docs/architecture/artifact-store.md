@@ -268,23 +268,56 @@ redb is chosen for its properties:
 - Single-file database.
 - Good read concurrency (multiple concurrent readers, single writer).
 
-## Eviction Policy
+## Daemon-owned retention policy
 
-**Policy:** LRU by `last_access` time.
+The long-lived daemon is the primary maintenance owner. It applies one shared
+policy to the exact effective cache root used by that daemon, whether the
+service is standalone or embedded. It never discovers or scans a parent,
+sibling product directory, another version root, or a global root registry.
+No systemd, launchd, or Windows Task Scheduler installation is required.
 
-**Trigger:** After each artifact store operation, check total cache size. If it exceeds `max_size` (configurable, default 10 GB):
+The artifact-store budget covers allocated artifact files plus pending artifact
+writes. Small root-local state such as indexes, depgraphs, logs, journals, and
+daemon metadata is outside this budget. The default is 5% of filesystem
+capacity, clamped to 40-200 GiB. The resolved budget is reduced when necessary
+to preserve the recovery free-space reserve. On small filesystems the reserve
+is capped at half the volume, avoiding a zero or 10 GiB-and-below default on
+ordinary 30-40 GiB development volumes. Operators can select one
+mutually-exclusive override:
 
-1. Open a redb read transaction.
-2. Iterate all entries, sorted by `last_access` ascending.
-3. Collect entries to evict until projected size is at most `max_size * 0.9` (evict to 90% to avoid thrashing).
-4. Open a redb write transaction.
-5. For each entry to evict:
-   a. Delete the artifact directory from disk.
-   b. Remove the entry from the redb `artifacts` table.
-   c. Increment the `evictions` counter.
-6. Commit the transaction.
+- `ZCCACHE_CACHE_SIZE_BYTES=<positive bytes>` for a standalone daemon;
+- `ZCCACHE_CACHE_SIZE_PERCENT=<1..100>` for a standalone daemon;
+- `ZccacheService::start_with_disk_limits` plus
+  `DiskCacheLimits::{max_cache_bytes,max_cache_percent}` for an embedded
+  service.
 
-Eviction runs as a background tokio task and does not block lookups or stores.
+Maintenance counts allocated physical blocks on Unix and uses
+`GetCompressedFileSizeW` on Windows, then deduplicates files by native identity
+so hardlinks inside the owned root are not double-counted. Pending writes
+are charged to usage before a pass chooses a pressure tier. Cache hits refresh
+the in-memory access time and checkpoint it to the artifact index at most once
+per hour, preserving recent use across restarts without a write per hit.
+
+| Tier | Trigger | Eligible entries | Target |
+|---|---|---|---|
+| None | Usage below 85% and free space healthy | A full pass still expires entries older than 30 days | No pressure eviction |
+| Soft | Usage at least 85% of budget | LRU entries older than 4 days | 70% of budget |
+| Hard | Usage at least 100%, or free space below `min(capacity, max(5%, 20 GiB))` | LRU regardless of age | 80% of budget and `min(capacity / 2, max(8%, 30 GiB))` free where feasible |
+
+The daemon runs a pressure pass at startup and every five minutes. A full age
+pass is due every 24 hours. Successful full passes write
+`.disk-maintenance-last-full-v1` inside the exact cache root; a missing, corrupt,
+or overdue marker causes startup catch-up. Consequently the 30-day expiry is
+eventual even when no new compile requests arrive while the daemon remains
+alive, and restarts catch up after daemon downtime.
+
+Each selected logical key is removed across legacy flat/pack files and staged
+v2 generations. The live artifact map, persistent artifact index, and depgraph
+references are invalidated only after file removal succeeds. Reports rescan the
+owned root, so `usage_after_bytes` and `bytes_reclaimed` reflect what is no
+longer present rather than an eviction estimate. The embedded
+`ZccacheService::maintain_disk` method lets a host request an immediate pressure
+or full pass against that same root; it does not broaden ownership.
 
 ## Corruption Detection
 

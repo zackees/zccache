@@ -18,13 +18,8 @@ use crate::artifact::rust_plan_gha_version;
 fn compile_policy_flags_parse_at_global_and_explicit_wrap_paths() {
     use clap::Parser;
 
-    let global = Cli::try_parse_from([
-        "zccache",
-        "--fast",
-        "--skip-system-headers",
-        "status",
-    ])
-    .unwrap();
+    let global =
+        Cli::try_parse_from(["zccache", "--fast", "--skip-system-headers", "status"]).unwrap();
     assert!(global.fast);
     assert!(global.skip_system_headers);
     assert!(!global.scan_system_headers);

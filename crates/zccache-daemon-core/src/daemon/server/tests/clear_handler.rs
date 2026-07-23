@@ -115,7 +115,15 @@ async fn handle_clear_preserves_in_flight_private_staging() {
         let endpoint = crate::ipc::unique_test_endpoint();
         let tmp = tempfile::tempdir().unwrap();
         let cache_dir = crate::core::NormalizedPath::new(tmp.path());
-        let server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
+        let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
+        // `handle_clear` normally runs inside `DaemonServer::run`, where the
+        // index writer consumes and acknowledges its durable Clear command.
+        // This direct unit-level invocation must start that same worker.
+        let index_writer = tokio::spawn(run_index_writer(
+            server.index_writer_rx.take().unwrap(),
+            Arc::clone(&server.state.artifact_store),
+            Arc::clone(&server.state.index_writer_shutdown),
+        ));
         let staged = server.test_state().staging.path().join("active-output.o");
         std::fs::write(&staged, b"compiler result").unwrap();
         let published = tmp.path().join("published-output.o");
@@ -163,6 +171,70 @@ async fn handle_clear_preserves_in_flight_private_staging() {
         .is_none());
         assert!(!legacy_path.exists());
         assert!(!pack_path.exists());
+        server.state.index_writer_shutdown.notify_waiters();
+        index_writer.await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn handle_clear_cannot_be_overtaken_by_delayed_startup_hydration() {
+    crate::test_support::test_timeout(async {
+        let endpoint = crate::ipc::unique_test_endpoint();
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = crate::core::NormalizedPath::new(tmp.path());
+        let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
+        let index_writer = tokio::spawn(run_index_writer(
+            server.index_writer_rx.take().unwrap(),
+            Arc::clone(&server.state.artifact_store),
+            Arc::clone(&server.state.index_writer_shutdown),
+        ));
+        let key = "3".repeat(64);
+        let meta = ArtifactIndex::new(
+            vec!["old.o".to_string()],
+            vec![16],
+            Vec::new(),
+            Vec::new(),
+            0,
+        );
+        server.state.artifact_store.insert(&key, &meta);
+        std::fs::write(
+            server.state.artifact_dir.join(format!("{key}_0")),
+            b"old startup artifact",
+        )
+        .unwrap();
+
+        let gate = Arc::new(Notify::new());
+        let loader = super::super::run::spawn_artifact_loader(
+            Arc::clone(&server.state),
+            Some(Arc::clone(&gate)),
+        )
+        .await;
+        let clear_state = Arc::clone(&server.state);
+        let mut clear =
+            tokio::spawn(
+                async move { super::super::handle_clear::handle_clear(&clear_state).await },
+            );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), &mut clear)
+                .await
+                .is_err(),
+            "Clear must wait for startup hydration that already owns publication"
+        );
+
+        gate.notify_one();
+        loader.await.unwrap();
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), clear)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(response, Response::Cleared { .. }));
+        assert!(!server.state.artifacts.contains_key(&key));
+        assert!(server.state.artifact_store.get(&key).is_none());
+        assert!(!server.state.artifact_dir.join(format!("{key}_0")).exists());
+
+        server.state.index_writer_shutdown.notify_waiters();
+        index_writer.await.unwrap();
     })
     .await;
 }

@@ -34,7 +34,7 @@ fn should_cache_rustc_error(
 }
 
 #[allow(clippy::too_many_arguments)] // Localized error-cache insertion path.
-pub(super) fn maybe_store_rustc_error_artifact(
+pub(super) async fn maybe_store_rustc_error_artifact(
     state: &SharedState,
     context_key: &ContextKey,
     source_path: &NormalizedPath,
@@ -49,6 +49,10 @@ pub(super) fn maybe_store_rustc_error_artifact(
     if !should_cache_rustc_error(rustc_args, exit_code, cwd_path) {
         return None;
     }
+
+    // Error artifacts publish synchronously, but still participate in the
+    // same Clear/GC/flush ordering contract as successful artifacts.
+    let _publication_guard = begin_artifact_publication(state).await?;
 
     // Error-cache path ignores env-dep names: failed compiles are keyed
     // conservatively and re-validated on every replay (zccache#1021).
@@ -94,6 +98,70 @@ pub(super) fn maybe_store_rustc_error_artifact(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn rustc_error_publication_waits_for_clear_barrier() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source: NormalizedPath = tmp.path().join("probe.rs").into();
+        std::fs::write(&source, "fn main() { missing(); }\n").unwrap();
+        std::fs::write(
+            tmp.path().join("probe.d"),
+            format!("probe.d: {}\n", source.display()),
+        )
+        .unwrap();
+        let args = vec![
+            "--crate-name".to_string(),
+            "probe".to_string(),
+            "--emit=dep-info,metadata".to_string(),
+            "--out-dir".to_string(),
+            tmp.path().to_string_lossy().into_owned(),
+            source.to_string_lossy().into_owned(),
+        ];
+        let rustc_args = crate::depgraph::parse_rustc_args(&args, tmp.path());
+        let ctx = CompileContext {
+            source_file: source.clone(),
+            include_search: crate::depgraph::IncludeSearchPaths::default(),
+            defines: Vec::new(),
+            flags: Vec::new(),
+            force_includes: Vec::new(),
+            unknown_flags: Vec::new(),
+        };
+        let context_key = ctx.context_key();
+        let cache_dir: NormalizedPath = tmp.path().join("cache").into();
+        let server =
+            DaemonServer::bind_with_cache_dir(&crate::ipc::unique_test_endpoint(), &cache_dir)
+                .unwrap();
+        let state = Arc::clone(&server.state);
+        let publication_write = Arc::clone(&state.artifact_publication).write_owned().await;
+        let stdout = Arc::new(Vec::new());
+        let stderr = Arc::new(b"cannot find function `missing`".to_vec());
+        let mut publish = tokio::spawn(async move {
+            maybe_store_rustc_error_artifact(
+                &state,
+                &context_key,
+                &source,
+                &NormalizedPath::new(tmp.path()),
+                &ctx,
+                &rustc_args,
+                &stdout,
+                &stderr,
+                1,
+                state.cache_system.current_clock(),
+            )
+            .await
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), &mut publish)
+                .await
+                .is_err(),
+            "error-cache publication must wait for the Clear/GC write barrier"
+        );
+        drop(publication_write);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), publish)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 
     #[test]
     fn rustc_error_cache_requires_depinfo_and_no_link_emit() {

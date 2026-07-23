@@ -71,7 +71,10 @@ pub(crate) fn parse_wrapper_overrides(
 }
 
 fn set_scan_override(overrides: &mut WrapperOverrides, value: bool) -> Result<(), String> {
-    if overrides.scan_system_headers.is_some_and(|current| current != value) {
+    if overrides
+        .scan_system_headers
+        .is_some_and(|current| current != value)
+    {
         return Err(
             "--scan-system-headers conflicts with --skip-system-headers; choose one".to_string(),
         );
@@ -171,10 +174,7 @@ mod tests {
 
         let (overrides, rest) = strip_leading_wrapper_flags(&args).unwrap();
 
-        assert_eq!(
-            overrides.strict_paths,
-            Some(StrictPathsMode::Consistent)
-        );
+        assert_eq!(overrides.strict_paths, Some(StrictPathsMode::Consistent));
         assert_eq!(rest, vec!["rustc", "--strict-paths=absolute"]);
     }
 

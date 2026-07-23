@@ -32,6 +32,13 @@ pub(crate) struct CachedArtifact {
     pub(crate) payloads: Option<Arc<[CachedPayload]>>,
     /// When this artifact was last used (inserted or returned as a hit).
     pub(crate) last_used: std::time::Instant,
+    /// Wall-clock last use used by durable retention across reboots.
+    pub(crate) last_used_wall: std::time::SystemTime,
+    /// Whether `last_used` represents a real access in this process.
+    pub(crate) used_in_process: bool,
+    /// Last time this process checkpointed wall-clock access to the index.
+    /// Restored entries use `None`, so their first hit is persisted promptly.
+    pub(crate) last_access_checkpoint: Option<std::time::Instant>,
 }
 
 impl CachedArtifact {
@@ -50,6 +57,7 @@ impl CachedArtifact {
             Arc::clone(&artifact.stderr),
             artifact.exit_code,
         );
+        let now = std::time::Instant::now();
         Self {
             meta,
             stdout: Arc::clone(&artifact.stdout),
@@ -64,7 +72,10 @@ impl CachedArtifact {
                     })
                     .collect::<Vec<_>>(),
             )),
-            last_used: std::time::Instant::now(),
+            last_used: now,
+            last_used_wall: std::time::SystemTime::now(),
+            used_in_process: true,
+            last_access_checkpoint: Some(now),
         }
     }
 
@@ -72,6 +83,7 @@ impl CachedArtifact {
     pub(super) fn from_file_payloads(meta: ArtifactIndex, payloads: Vec<NormalizedPath>) -> Self {
         let stdout = Arc::clone(&meta.stdout);
         let stderr = Arc::clone(&meta.stderr);
+        let now = std::time::Instant::now();
         Self {
             meta,
             stdout,
@@ -82,7 +94,10 @@ impl CachedArtifact {
                     .map(CachedPayload::File)
                     .collect::<Vec<_>>(),
             )),
-            last_used: std::time::Instant::now(),
+            last_used: now,
+            last_used_wall: std::time::SystemTime::now(),
+            used_in_process: true,
+            last_access_checkpoint: Some(now),
         }
     }
 
@@ -90,12 +105,20 @@ impl CachedArtifact {
     pub(super) fn from_index(meta: ArtifactIndex) -> Self {
         let stdout = Arc::clone(&meta.stdout);
         let stderr = Arc::clone(&meta.stderr);
+        let stored_at = std::time::UNIX_EPOCH
+            .checked_add(std::time::Duration::from_secs(meta.stored_at_secs))
+            .unwrap_or(std::time::UNIX_EPOCH);
         Self {
             meta,
             stdout,
             stderr,
             payloads: None,
             last_used: std::time::Instant::now(),
+            // Keep durable age in wall-clock form. Reconstructing it as an
+            // Instant fails when the entry predates system uptime on Windows.
+            last_used_wall: stored_at.min(std::time::SystemTime::now()),
+            used_in_process: false,
+            last_access_checkpoint: None,
         }
     }
 }

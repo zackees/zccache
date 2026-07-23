@@ -9,7 +9,7 @@ zccache#903 and the implementation anchor for zccache#904 through zccache#910.
 Issue #903 defines the embedded-service direction and the MVP acceptance
 surface. In the current tree, the first public Rust API is exported as
 `zccache::embedded::ZccacheService`. It is an MVP boundary for host daemons to
-start, inspect, flush, and shut down an in-process zccache engine; soldr/fbuild
+start, inspect, maintain, flush, and shut down an in-process zccache engine; soldr/fbuild
 integration and durable event emission are still follow-up work.
 
 The MVP boundary is:
@@ -17,7 +17,7 @@ The MVP boundary is:
 | Area | Status | Notes |
 |---|---|---|
 | Architecture contract | Landed | This document records lifecycle, ownership, audit, and shutdown expectations. |
-| Public Rust API | MVP landed | `zccache::embedded` exports `ZccacheService` and stable config/request/stats types for start, compile, stats, flush, and shutdown. |
+| Public Rust API | MVP landed | `zccache::embedded` exports `ZccacheService` and stable config/request/stats types for start, compile, stats, disk maintenance, flush, and shutdown. |
 | Durable audit schema | MVP landed | `zccache::audit` exports serializable schema/config/event/finding/manifest types; hot-path emission and fixtures remain follow-up work. |
 | soldr embedded integration | Open | zccache#907 should switch soldr from wrapper/private-daemon use to direct embedded calls once the integration is ready. |
 | fbuild embedded integration | Open | zccache#908 follows the same service contract, adjusted for fbuild's daemon/runtime model. |
@@ -97,7 +97,7 @@ inside that runtime and exposes explicit handles for flush, stats, and shutdown.
 |---|---|---|
 | Product identity | Product name, instance id, workspace id | Validation of identity fields used by zccache |
 | Runtime | Tokio runtime and top-level cancellation token | Child tasks, blocking-task policy, runtime instrumentation hooks |
-| Cache | Root directory selection and namespace | Artifact store, metadata cache, depgraph, temp dirs under the cache root |
+| Cache | Root directory selection, namespace, and optional byte/percent budget | Artifact store, root-local retention, metadata cache, depgraph, temp dirs under the cache root |
 | Audit | Top-level run id, output directory, event sink | zccache child spans/events, compile journal, phase summaries |
 | Lifecycle | Build begin/plan/execute/terminate | Service start, flush, stats, graceful shutdown, forced shutdown |
 | Process execution | Host policy constraints and cancellation | Compiler/tool subprocess execution and capture semantics |
@@ -124,6 +124,21 @@ pub struct ZccacheConfig {
     pub audit: AuditConfig,
     pub limits: ServiceLimits,
     pub runtime: RuntimeHooks,
+}
+
+pub struct ServiceLimits {
+    pub max_parallel_compiles: Option<usize>,
+    // host_in_flight omitted here
+}
+
+pub struct DiskCacheLimits {
+    pub max_cache_bytes: Option<u64>,
+    pub max_cache_percent: Option<u8>,
+}
+
+pub enum DiskMaintenanceKind {
+    Pressure,
+    Full,
 }
 
 pub struct HostIdentity {
@@ -165,15 +180,36 @@ pub enum CompileChunk {
 
 impl ZccacheService {
     pub async fn start(config: ZccacheConfig) -> Result<Self>;
+    pub async fn start_with_disk_limits(
+        config: ZccacheConfig,
+        disk_limits: DiskCacheLimits,
+    ) -> Result<Self>;
     pub async fn compile(&self, request: CompileRequest) -> Result<CompileResponse>;
     pub async fn compile_streaming<F>(&self, request: CompileRequest, on_chunk: F) -> Result<()>
     where
         F: FnMut(CompileChunk);
     pub async fn stats(&self) -> Result<ServiceStats>;
+    pub async fn maintain_disk(
+        &self,
+        kind: DiskMaintenanceKind,
+    ) -> std::io::Result<DiskMaintenanceReport>;
     pub async fn flush(&self) -> Result<FlushReport>;
     pub async fn shutdown(self, mode: ShutdownMode) -> Result<ShutdownReport>;
 }
 ```
+
+`DiskCacheLimits::max_cache_bytes` and `max_cache_percent` are mutually
+exclusive. `start` uses the shared dynamic artifact-store budget;
+`start_with_disk_limits` accepts overrides without adding fields to the
+existing public `ServiceLimits` struct. The budget
+accounts for allocated artifact files and pending writes, not small root-local
+indexes, depgraphs, logs, journals, or daemon metadata. The service starts its
+own pressure/full maintenance loop on the host runtime and touches only the
+effective versioned root derived from `cache_root`. The host may request an
+immediate pass through `maintain_disk`, but that call never scans parent or
+sibling product roots. See
+[artifact-store.md](artifact-store.md#daemon-owned-retention-policy) for the
+single policy shared with standalone mode.
 
 `compile_streaming` is the canonical producer. `compile` is a buffered adapter
 that collects the same chunks. Compiler misses and direct invocations emit
@@ -196,6 +232,7 @@ without a real compiler invocation:
 - `ZccacheService::start(config)` creates an isolated in-process service rooted
   under the host-provided cache directory.
 - `stats()` returns a service-level snapshot before any compile request.
+- `maintain_disk()` reports an immediate root-local pressure or full pass.
 - `flush()` is callable before host audit/report generation.
 - `shutdown(ShutdownMode::Graceful)` releases tasks and reports whether any
   work was dropped or left unflushed.

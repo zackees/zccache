@@ -11,6 +11,122 @@ fn empty_extra() -> Arc<Vec<u8>> {
 }
 
 #[tokio::test]
+async fn detached_exec_publisher_cannot_resurrect_artifact_after_clear() {
+    let temp = tempdir().unwrap();
+    let endpoint = crate::ipc::unique_test_endpoint();
+    let cache_dir: NormalizedPath = temp.path().join("cache").into();
+    let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
+    let index_writer = tokio::spawn(run_index_writer(
+        server.index_writer_rx.take().unwrap(),
+        Arc::clone(&server.state.artifact_store),
+        Arc::clone(&server.state.index_writer_shutdown),
+    ));
+
+    let permit_count = server.state.persist_semaphore.available_permits() as u32;
+    let blocked_persist = Arc::clone(&server.state.persist_semaphore)
+        .acquire_many_owned(permit_count)
+        .await
+        .unwrap();
+    let key = "9".repeat(64);
+    let artifact = ArtifactData {
+        outputs: vec![ArtifactOutput {
+            name: "result.bin".to_string(),
+            payload: ArtifactPayload::Bytes(Arc::new(b"pre-clear artifact".to_vec())),
+        }],
+        stdout: Arc::new(Vec::new()),
+        stderr: Arc::new(Vec::new()),
+        exit_code: 0,
+    };
+    store_exec_artifact(&server.state, key.clone(), artifact, None)
+        .await
+        .unwrap();
+
+    let clear_state = Arc::clone(&server.state);
+    let mut clear =
+        tokio::spawn(async move { super::super::handle_clear::handle_clear(&clear_state).await });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(25), &mut clear)
+            .await
+            .is_err(),
+        "Clear must wait for the detached publisher's pre-spawn guard handoff"
+    );
+
+    drop(blocked_persist);
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), clear)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(response, Response::Cleared { .. }));
+    assert!(!server.state.artifacts.contains_key(&key));
+    assert!(server.state.artifact_store.get(&key).is_none());
+    assert!(!server.state.artifact_dir.join(format!("{key}_0")).exists());
+
+    server.state.index_writer_shutdown.notify_waiters();
+    index_writer.await.unwrap();
+}
+
+#[tokio::test]
+async fn detached_exec_handoff_does_not_reacquire_behind_queued_clear() {
+    let temp = tempdir().unwrap();
+    let endpoint = crate::ipc::unique_test_endpoint();
+    let cache_dir: NormalizedPath = temp.path().join("cache").into();
+    let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
+    let index_writer = tokio::spawn(run_index_writer(
+        server.index_writer_rx.take().unwrap(),
+        Arc::clone(&server.state.artifact_store),
+        Arc::clone(&server.state.index_writer_shutdown),
+    ));
+    let permit_count = server.state.persist_semaphore.available_permits() as u32;
+    let blocked_persist = Arc::clone(&server.state.persist_semaphore)
+        .acquire_many_owned(permit_count)
+        .await
+        .unwrap();
+    let key = "a".repeat(64);
+    let artifact = ArtifactData {
+        outputs: vec![ArtifactOutput {
+            name: "result.bin".to_string(),
+            payload: ArtifactPayload::Bytes(Arc::new(b"single-guard handoff".to_vec())),
+        }],
+        stdout: Arc::new(Vec::new()),
+        stderr: Arc::new(Vec::new()),
+        exit_code: 0,
+    };
+    let gate = PublicationHandoffGate::new();
+    let publisher_state = Arc::clone(&server.state);
+    let publisher_gate = Arc::clone(&gate);
+    let mut publisher = tokio::spawn(async move {
+        store_exec_artifact_with_handoff_gate(&publisher_state, key, artifact, publisher_gate).await
+    });
+    gate.wait_until_acquired().await;
+
+    let clear_state = Arc::clone(&server.state);
+    let mut clear =
+        tokio::spawn(async move { super::super::handle_clear::handle_clear(&clear_state).await });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(25), &mut clear)
+            .await
+            .is_err(),
+        "Clear must queue behind the publisher's first read guard"
+    );
+
+    gate.resume();
+    tokio::time::timeout(std::time::Duration::from_secs(5), &mut publisher)
+        .await
+        .expect("publisher must transfer its guard instead of reacquiring")
+        .unwrap()
+        .unwrap();
+    drop(blocked_persist);
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), clear)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(response, Response::Cleared { .. }));
+
+    server.state.index_writer_shutdown.notify_waiters();
+    index_writer.await.unwrap();
+}
+
+#[tokio::test]
 async fn staged_exec_publication_failure_never_inserts_cache_entry() {
     let temp = tempdir().unwrap();
     let endpoint = crate::ipc::unique_test_endpoint();

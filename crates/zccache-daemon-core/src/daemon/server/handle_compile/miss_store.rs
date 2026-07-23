@@ -28,6 +28,7 @@ pub(super) struct MissArtifactStoreRequest<'a> {
     pub(super) exit_code: i32,
     pub(super) compile_start: Instant,
     pub(super) synchronous_persist: bool,
+    pub(super) publication_guard: tokio::sync::OwnedRwLockReadGuard<()>,
 }
 
 #[derive(Default)]
@@ -67,6 +68,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
         exit_code,
         compile_start,
         synchronous_persist,
+        publication_guard,
     } = request;
     let state = state_arc.as_ref();
     let t_store = Instant::now();
@@ -127,6 +129,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
                 &mut stats,
                 t_artifact_build,
                 synchronous_persist,
+                publication_guard,
             );
         } else {
             store_single_output(
@@ -144,6 +147,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
                 &mut stats,
                 t_artifact_build,
                 synchronous_persist,
+                publication_guard,
             );
         }
     }
@@ -204,6 +208,10 @@ fn truncate_staged_publication_error(error: &str) -> String {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_test_module,
+    reason = "diagnostic helper tests stay beside the helper they exercise"
+)]
 mod staged_publication_diagnostic_tests {
     use super::{truncate_staged_publication_error, MAX_STAGED_PUBLICATION_ERROR_CHARS};
 
@@ -248,6 +256,7 @@ fn store_rustc_outputs(
     stats: &mut MissArtifactStoreStats,
     t_artifact_build: Instant,
     synchronous_persist: bool,
+    publication_guard: tokio::sync::OwnedRwLockReadGuard<()>,
 ) {
     let state = state_arc.as_ref();
     let t_artifact_meta_build = Instant::now();
@@ -374,6 +383,7 @@ fn store_rustc_outputs(
         t.record_miss(src, artifact_bytes);
     });
     stats.artifact_insert_stats_ns = t_artifact_insert_stats.elapsed().as_nanos() as u64;
+    drop(publication_guard);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -392,6 +402,7 @@ fn store_single_output(
     stats: &mut MissArtifactStoreStats,
     t_artifact_build: Instant,
     synchronous_persist: bool,
+    publication_guard: tokio::sync::OwnedRwLockReadGuard<()>,
 ) {
     let state = state_arc.as_ref();
     // Issue #643: stash the user's depfile as a second output so cache
@@ -533,11 +544,17 @@ fn store_single_output(
             t.record_miss(src, artifact_bytes)
         });
         stats.artifact_insert_stats_ns = t_persist_enqueue.elapsed().as_nanos() as u64;
+        drop(publication_guard);
         return;
     }
 
+    // Publish the live entry before transferring the same read guard to the
+    // detached task. A queued writer can never observe a gap between the map
+    // insertion and the disk/index publication it must drain.
+    state.artifacts.insert(artifact_key_hex.to_string(), cached);
     let sem = Arc::clone(&state.persist_semaphore);
     let state_ref = Arc::clone(state_arc);
+    let index_writer_tx = state.index_writer_tx.clone();
     let completion_key = artifact_key_hex.to_string();
     // Issue #610, DD-025 condition 1: pending-write registration around
     // the C/C++ cold-miss persist spawn. Concurrent lookups can observe
@@ -557,6 +574,7 @@ fn store_single_output(
             .expect("persist_semaphore is owned by ServerState and never closed");
         let written = tokio::task::spawn_blocking(move || {
             let _guard = guard;
+            let _publication_guard = publication_guard;
             // Issue #728: `gap_ms` = wall-clock between
             // "linker-success-recorded" (immediately before this spawn was
             // scheduled) and "persist-attempt-started" (now, inside the
@@ -568,20 +586,22 @@ fn store_single_output(
             // src_size_now= — is baked into the error by
             // `persist::enrich_persist_err`).
             let gap_ms = t_persist_enqueue.elapsed().as_millis() as u64;
-            if let Err(e) = persist_artifact_paths(&artifact_dir, &key_hex, &source_paths) {
-                tracing::warn!(
-                    key = %key_hex,
-                    gap_ms,
-                    "failed to persist artifact output: {e}"
-                );
+            match persist_artifact_paths(&artifact_dir, &key_hex, &source_paths) {
+                Ok(()) => {
+                    let _ = index_writer_tx.send(IndexWriterCommand::Insert(key_hex, persist_meta));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        key = %key_hex,
+                        gap_ms,
+                        "failed to persist artifact output: {e}"
+                    );
+                }
             }
-            (key_hex, persist_meta)
         })
         .await;
-        if let Ok((key_hex, meta)) = written {
-            let _ = state_ref
-                .index_writer_tx
-                .send(IndexWriterCommand::Insert(key_hex, meta));
+        if let Err(error) = written {
+            tracing::warn!(%error, "artifact persistence task failed to join");
         }
         // Always complete the pending entry, even on JoinError, so
         // waiters cannot hang past the spawn's lifetime.
@@ -590,8 +610,6 @@ fn store_single_output(
     stats.persist_enqueue_ns = t_persist_enqueue.elapsed().as_nanos() as u64;
 
     let t_artifact_insert_stats = Instant::now();
-    state.artifacts.insert(artifact_key_hex.to_string(), cached);
-
     let latency_ns = compile_start.elapsed().as_nanos() as u64;
     state.stats.record_miss(latency_ns, artifact_bytes);
     let src = source_path.clone();
