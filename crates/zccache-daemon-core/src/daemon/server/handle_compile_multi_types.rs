@@ -3,10 +3,38 @@
 use super::*;
 
 pub(in crate::daemon::server) fn materialize_multi_hit(
-    targets: &[(NormalizedPath, NormalizedPath)],
+    targets: &[NormalizedPath],
     payloads: &[CachedPayload],
-) -> bool {
-    write_payloads_par(targets, payloads)
+) -> MaterializationResult<StagedMaterializationStats> {
+    write_payloads_par_observed(targets, payloads)
+}
+
+fn invalidate_graph_after_blob_loss(
+    dep_graph: &crate::depgraph::DepGraph,
+    artifact_key: &str,
+    _evidence: &CacheBlobMissing,
+) -> usize {
+    let keys = std::collections::HashSet::from([artifact_key.to_string()]);
+    dep_graph.invalidate_artifact_keys(&keys)
+}
+
+fn invalidate_graph_after_multi_failure(
+    dep_graph: &crate::depgraph::DepGraph,
+    artifact_key: &str,
+    failure: &MaterializationFailure,
+) -> usize {
+    let MaterializationFailure::CacheBlobMissing(evidence) = failure else {
+        return 0;
+    };
+    invalidate_graph_after_blob_loss(dep_graph, artifact_key, evidence)
+}
+
+pub(in crate::daemon::server) fn invalidate_multi_artifact_after_failure(
+    state: &SharedState,
+    artifact_key: &str,
+    failure: &MaterializationFailure,
+) -> usize {
+    invalidate_graph_after_multi_failure(state.dep_graph.load().as_ref(), artifact_key, failure)
 }
 
 #[derive(Clone, Copy)]
@@ -55,12 +83,6 @@ pub(super) fn depfile_targets_stdout(args: &[String]) -> bool {
     stdout
 }
 
-pub(in crate::daemon::server) struct PendingWrite {
-    pub(in crate::daemon::server) out_path: NormalizedPath,
-    pub(in crate::daemon::server) cache_file: NormalizedPath,
-    pub(in crate::daemon::server) data: Vec<u8>,
-}
-
 pub(super) struct UnitCacheCheck<'a> {
     pub(super) cwd_path: &'a Path,
     pub(super) key_root: &'a NormalizedPath,
@@ -98,7 +120,6 @@ pub(in crate::daemon::server) enum UnitCacheResult {
         stderr: Arc<Vec<u8>>,
         artifact_bytes: u64,
         source_path: NormalizedPath,
-        pending_writes: Vec<PendingWrite>,
     },
     Miss {
         source_path: NormalizedPath,
@@ -106,12 +127,44 @@ pub(in crate::daemon::server) enum UnitCacheResult {
         context_key: ContextKey,
         ctx: Box<CompileContext>,
         input_snapshot: InputSnapshot,
+        reason: &'static str,
     },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn content_hash(path: &Path) -> Option<crate::hash::ContentHash> {
+        Some(crate::hash::hash_bytes(path.to_string_lossy().as_bytes()))
+    }
+
+    fn warm_context(
+        graph: &crate::depgraph::DepGraph,
+        source: &str,
+    ) -> (crate::depgraph::ContextKey, String) {
+        let context = CompileContext {
+            source_file: source.into(),
+            include_search: crate::depgraph::IncludeSearchPaths::default(),
+            defines: Vec::new(),
+            flags: Vec::new(),
+            force_includes: Vec::new(),
+            unknown_flags: Vec::new(),
+        };
+        let context_key = graph.register(context);
+        let artifact_key = graph
+            .update(
+                &context_key,
+                crate::depgraph::ScanResult {
+                    resolved: Vec::new(),
+                    unresolved: Vec::new(),
+                    has_computed: false,
+                },
+                content_hash,
+            )
+            .unwrap();
+        (context_key, artifact_key.hash().to_hex().to_string())
+    }
 
     #[test]
     fn owned_fast_hit_entry_releases_map_guard_before_mutation() {
@@ -129,6 +182,73 @@ mod tests {
         let entry = owned_fast_hit_entry(&cache, &key).unwrap();
         assert_eq!(entry.artifact_key_hex, "artifact");
         assert!(cache.remove(&key).is_some());
+    }
+
+    #[test]
+    fn poisoned_multi_destination_recompiles_only_that_unit_without_eviction() {
+        let dir = tempfile::tempdir().unwrap();
+        let graph = crate::depgraph::DepGraph::new();
+        let (_failed_context, failed_key) = warm_context(&graph, "/src/failed.c");
+        let (_sibling_context, _sibling_key) = warm_context(&graph, "/src/sibling.c");
+        assert_eq!(graph.contexts_with_artifact_key(), 2);
+
+        let failed_blob: NormalizedPath = dir.path().join("failed.o.cache").into();
+        let sibling_blob: NormalizedPath = dir.path().join("sibling.o.cache").into();
+        std::fs::write(&failed_blob, b"failed cached bytes").unwrap();
+        std::fs::write(&sibling_blob, b"sibling cached bytes").unwrap();
+        write_authoritative_blob_digest(&failed_blob).unwrap();
+        write_authoritative_blob_digest(&sibling_blob).unwrap();
+        let blocked_parent = dir.path().join("blocked-parent");
+        std::fs::write(&blocked_parent, b"not a directory").unwrap();
+        let failed_target: NormalizedPath = blocked_parent.join("failed.o").into();
+        let sibling_target: NormalizedPath = dir.path().join("sibling.o").into();
+
+        let failure = materialize_multi_hit(
+            &[failed_target],
+            &[CachedPayload::File(failed_blob.clone())],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            failure,
+            MaterializationFailure::DestinationWrite(_)
+        ));
+        assert_eq!(
+            invalidate_graph_after_multi_failure(&graph, &failed_key, &failure),
+            0
+        );
+        assert_eq!(
+            graph.contexts_with_artifact_key(),
+            2,
+            "destination failure must preserve both the failed TU and sibling depgraph entries"
+        );
+        assert!(
+            materialize_multi_hit(
+                &[sibling_target],
+                &[CachedPayload::File(sibling_blob.clone())],
+            )
+            .is_ok(),
+            "the unpoisoned sibling remains a warm hit"
+        );
+
+        std::fs::remove_file(&failed_blob).unwrap();
+        let missing = materialize_multi_hit(
+            &[dir.path().join("retry.o").into()],
+            &[CachedPayload::File(failed_blob)],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            missing,
+            MaterializationFailure::CacheBlobMissing(_)
+        ));
+        assert_eq!(
+            invalidate_graph_after_multi_failure(&graph, &failed_key, &missing),
+            1
+        );
+        assert_eq!(
+            graph.contexts_with_artifact_key(),
+            1,
+            "genuine blob loss invalidates only the matching TU"
+        );
     }
 
     #[test]

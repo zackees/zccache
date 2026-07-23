@@ -103,6 +103,11 @@ Every declared evidence file must exist beside `result.json`. Any soldr abort,
 timeout, automatic no-cache retry, malformed record, missing field, or missing
 evidence file invalidates the sample before timing is considered.
 
+Each attempt also runs the Rust `zccache-ci audit-logs <cache-root> --context
+perf` gate before its cache root is removed. The gate is policy-owned by
+`zccache-audit`; on failure retain the root and report so the JSONL evidence is
+available for inspection rather than silently deleting the repro.
+
 The local Linux thresholds are:
 
 | Gate | Budget |

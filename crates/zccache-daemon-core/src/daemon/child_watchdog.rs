@@ -518,7 +518,7 @@ fn emit_orphan_pipe_diagnostics(
          compile-concurrency permit (issue #962)"
     );
     crate::core::lifecycle::write_event(
-        "child_wait_watchdog_fired",
+        crate::core::lifecycle::EVENT_CHILD_WAIT_WATCHDOG_FIRED,
         serde_json::json!({
             "stage": "post_exit_pipe_drain",
             "cmd": cmd_desc,
@@ -562,7 +562,7 @@ fn emit_stall_diagnostics(
          CPU is never affected."
     );
     crate::core::lifecycle::write_event(
-        "child_wait_watchdog_fired",
+        crate::core::lifecycle::EVENT_CHILD_WAIT_WATCHDOG_FIRED,
         serde_json::json!({
             "stage": "alive_hung_no_progress",
             "cmd": cmd_desc,

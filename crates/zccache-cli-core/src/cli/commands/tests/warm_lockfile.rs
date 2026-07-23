@@ -27,7 +27,7 @@ fn make_test_store(dir: &Path) -> (PathBuf, PathBuf) {
                 "libserde-abc123.rmeta".into(),
                 "serde-abc123.d".into(),
             ],
-            vec![100, 50, 10],
+            vec![10, 11, 7],
             vec![],
             vec![],
             0,
@@ -43,7 +43,7 @@ fn make_test_store(dir: &Path) -> (PathBuf, PathBuf) {
         k2,
         &crate::artifact::ArtifactIndex::new(
             vec!["libproc_macro2-def456.rlib".into()],
-            vec![200],
+            vec![16],
             vec![],
             vec![],
             0,
@@ -57,7 +57,7 @@ fn make_test_store(dir: &Path) -> (PathBuf, PathBuf) {
         k3,
         &crate::artifact::ArtifactIndex::new(
             vec!["libtokio-ghi789.rlib".into()],
-            vec![300],
+            vec![10],
             vec![],
             vec![],
             0,
@@ -69,7 +69,7 @@ fn make_test_store(dir: &Path) -> (PathBuf, PathBuf) {
     let k4 = "aaaa0004";
     store.insert(
         k4,
-        &crate::artifact::ArtifactIndex::new(vec!["foo.o".into()], vec![50], vec![], vec![], 0),
+        &crate::artifact::ArtifactIndex::new(vec!["foo.o".into()], vec![10], vec![], vec![], 0),
     );
     std::fs::write(artifact_dir.join(format!("{k4}_0")), b"cpp-object").unwrap();
 
@@ -269,7 +269,7 @@ fn adversarial_version_bump_old_artifact_in_cache() {
         k_old,
         &crate::artifact::ArtifactIndex::new(
             vec!["libserde-old111.rlib".into()],
-            vec![100],
+            vec![9],
             vec![],
             vec![],
             0,
@@ -283,7 +283,7 @@ fn adversarial_version_bump_old_artifact_in_cache() {
         k_new,
         &crate::artifact::ArtifactIndex::new(
             vec!["libserde-new222.rlib".into()],
-            vec![100],
+            vec![9],
             vec![],
             vec![],
             0,
@@ -319,8 +319,7 @@ fn adversarial_version_bump_old_artifact_in_cache() {
 #[test]
 fn adversarial_corrupted_cache_file() {
     // Scenario: artifact payload on disk is corrupted (truncated).
-    // Warm restores it, cargo tries to use it, gets an error,
-    // and recompiles from scratch. Verify warm doesn't crash.
+    // Warm must reject it instead of restoring known-bad bytes.
     let dir = tempfile::tempdir().unwrap();
     let cache_dir = dir.path().join("cache");
     let artifact_dir = cache_dir.join("artifacts");
@@ -345,18 +344,14 @@ fn adversarial_corrupted_cache_file() {
     drop(store);
 
     let target_dir = dir.path().join("target");
-    let (restored, _, errors) =
+    let (restored, skipped, errors) =
         warm_target(&index_path, &artifact_dir, &target_dir, "debug", None).unwrap();
 
-    // Warm restores it without error (it doesn't validate content)
-    assert_eq!(restored, 1);
+    assert_eq!(restored, 0);
+    assert_eq!(skipped, 1);
     assert_eq!(errors, 0);
-    // Cargo will detect the corruption via its own hash check and rebuild
     let deps = target_dir.join("debug").join("deps");
-    assert_eq!(
-        std::fs::read(deps.join("libserde-abc123.rlib")).unwrap(),
-        b"short"
-    );
+    assert!(!deps.join("libserde-abc123.rlib").exists());
 }
 
 #[test]

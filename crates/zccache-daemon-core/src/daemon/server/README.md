@@ -26,6 +26,6 @@ Topic-focused submodules:
 - `watch.rs` — `watch_directory` / `watch_directories` helpers
 - `util.rs` — `persist_workers_default`, `hash_file`, `context_files_fresh`, `lookup_artifact_with_disk_fallback`
 
-Pre-existing splits: `connection.rs`, `handle_compile.rs`, `handle_compile_multi.rs`,
-`handle_link.rs`, `keys.rs`, `link_helpers.rs`, `persist.rs`, `rustc.rs`, `wal.rs`,
-plus the `tests/` directory.
+Pre-existing splits: `connection/` (see `connection/README.md`), `handle_compile.rs`,
+`handle_compile_multi.rs`, `handle_link.rs`, `keys.rs`, `link_helpers.rs`, `persist.rs`,
+`rustc.rs`, `wal.rs`, plus the `tests/` directory.

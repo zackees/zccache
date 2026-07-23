@@ -145,17 +145,39 @@ fn journal_context_and_entry_builder_store_only_sanitized_env() {
     );
 }
 
+/// Count occurrences of `needle` in `source` that are NOT immediately
+/// preceded by an identifier character. Plain [`str::matches`] would also
+/// match `needle` inside a longer identifier — e.g. `"JournalContext::new("`
+/// inside `"PendingJournalContext::new("` — which is a distinct,
+/// already-sanitized wrapper type, not a second raw construction site.
+fn count_bare_occurrences(source: &str, needle: &str) -> usize {
+    let mut count = 0;
+    let mut start = 0;
+    while let Some(idx) = source[start..].find(needle) {
+        let abs = start + idx;
+        let preceded_by_ident = abs > 0
+            && matches!(source.as_bytes()[abs - 1], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_');
+        if !preceded_by_ident {
+            count += 1;
+        }
+        start = abs + needle.len();
+    }
+    count
+}
+
 #[test]
 fn embedded_and_ipc_entry_points_use_the_shared_context_constructor() {
-    let connection = include_str!("../../server/connection.rs");
+    // Split out of the pre-#1154 monolithic `connection.rs`: every
+    // ephemeral/link/session IPC entry point now dispatches through
+    // `connection/dispatch.rs`; `connection/mod.rs` only forwards the
+    // already-built `(Response, Option<PendingJournalContext>)`.
+    let dispatch = include_str!("../../server/connection/dispatch.rs");
     let embedded = include_str!("../../server/embedded.rs");
-    let connection_production = connection.split("#[cfg(test)]").next().unwrap();
+    let dispatch_production = dispatch.split("#[cfg(test)]").next().unwrap();
     let embedded_production = embedded.split("#[cfg(test)]").next().unwrap();
 
     assert_eq!(
-        connection_production
-            .matches("JournalContext::new(")
-            .count(),
+        count_bare_occurrences(dispatch_production, "JournalContext::new("),
         3,
         "every ephemeral, link, and session IPC journal entry point must sanitize"
     );
@@ -164,9 +186,12 @@ fn embedded_and_ipc_entry_points_use_the_shared_context_constructor() {
         1,
         "the embedded journal entry point must sanitize"
     );
-    assert!(!connection_production.contains("JournalContext {"));
+    assert_eq!(
+        count_bare_occurrences(dispatch_production, "JournalContext {"),
+        0
+    );
     assert!(!embedded_production.contains("JournalContext {"));
-    assert_eq!(connection_production.matches("env.clone()").count(), 3);
+    assert_eq!(dispatch_production.matches("env.clone()").count(), 3);
     assert!(embedded_production.contains("request.env.clone()"));
     assert!(embedded_production.contains("request.env,"));
 

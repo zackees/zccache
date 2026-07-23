@@ -213,13 +213,9 @@ fn wrapper_passthrough_session_path() {
     let cache_dir = cache_dir_tempdir();
     let payload = random_payload(1_024, 0x1234_5678);
 
-    // Need a real session id for cmd_compile. The CLI creates one via
-    // SessionStart; for the test we set the env var with a UUID-shaped
-    // value and rely on the daemon allocating it ephemerally on first
-    // touch. Today the daemon rejects unknown session ids with
-    // Response::Error — which the wrapper relays. So the test asserts
-    // the wrapper relays the error rather than swallowing it: stdout
-    // empty, stderr contains `zccache error:`, exit non-zero.
+    // A valid UUID-shaped session ID selects cmd_compile. Unknown UUIDs are
+    // intentionally accepted as untracked sessions so wrappers survive a
+    // daemon restart without dropping the compiler invocation.
     let (code, stdout, stderr) = run_wrapper(
         &zccache,
         &echo_shim,
@@ -230,13 +226,11 @@ fn wrapper_passthrough_session_path() {
     );
     stop_daemon(&zccache, cache_dir.path());
 
-    assert!(
-        stdout.is_empty(),
-        "wrapper must not invent stdout on daemon error"
+    assert_eq!(
+        code,
+        0,
+        "session wrapper exit code wrong (stderr: {:?})",
+        String::from_utf8_lossy(&stderr)
     );
-    assert_ne!(code, 0, "wrapper exit must be non-zero when daemon errors");
-    assert!(
-        stderr.windows(b"zccache".len()).any(|w| w == b"zccache"),
-        "wrapper must surface the daemon error to stderr"
-    );
+    assert_passthrough(&payload, &stdout, &stderr);
 }

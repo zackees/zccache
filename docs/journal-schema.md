@@ -64,6 +64,7 @@ set instead of guessing. The closed set today:
 | `no_artifact_for_key`          | The cache key resolved, but the artifact bytes on disk are gone (GC'd, never persisted, or corrupted). |
 | `version_skew`                 | Compiler version, target triple, or zccache schema differs from the cached entry. |
 | `uncacheable_input`            | The invocation parsed but is intrinsically uncacheable or was rejected before cache-key construction (version probes, stdin-only probes, unsupported flags, etc.). |
+| `destination_write_failed`     | The cached artifact remains valid, but materializing it at the caller's requested output path failed. This is a soft miss and never authorizes cache eviction. |
 | `unknown`                      | Fallback. Emitted whenever the daemon detected a miss but has not yet attributed a precise reason. Follow-up work narrows `unknown` into the concrete buckets above. Consumers should still treat the field as present so dashboards don't crash on absent keys. |
 
 Hit and error records never carry `miss_reason`. `cached_error` records are
@@ -71,7 +72,8 @@ replayed rustc failures; they are distinct from fresh `error` records and
 also omit `miss_reason`.
 
 The Rust source of truth is the `miss_reason` module in
-`crates/zccache-daemon/src/compile_journal.rs`. `miss_reason::ALL` is the
+`crates/zccache-daemon-core/src/daemon/compile_journal/mod.rs`.
+`miss_reason::ALL` is the
 append-only iteration of the closed set.
 
 ## Issue #256: `session-start --profile` and the extended schema
@@ -85,7 +87,8 @@ and incurs zero new allocations on the daemon hot path.
 `crate_name`, `crate_type`, and `output_ext` are derived from the
 rustc argument vector by the `derive_crate_name` /
 `derive_crate_type` / `derive_output_ext` helpers in
-`crates/zccache-daemon/src/compile_journal.rs`. `crate_type` takes
+`crates/zccache-daemon-core/src/daemon/compile_journal/derive.rs`.
+`crate_type` takes
 one of `lib`, `bin`, `proc-macro`, `build-script`, `test`,
 `bench`, `example`; the matching `output_ext` is `rlib`, `exe`,
 `so` for proc-macro, etc.

@@ -169,6 +169,9 @@ fn handle_outcome(stage: &str, outcome: StageOutcome) -> Option<ExitCode> {
 }
 
 fn main() -> ExitCode {
+    if let Some(code) = audit_command() {
+        return code;
+    }
     let root = project_root();
 
     let level = check_level(&root);
@@ -284,4 +287,66 @@ fn main() -> ExitCode {
     runner.finish();
     eprintln!("All checks passed");
     ExitCode::SUCCESS
+}
+
+/// Small, dependency-free argv surface for CI and Python harnesses. Keeping
+/// policy in `zccache-audit` means callers never grow divergent regex rules.
+fn audit_command() -> Option<ExitCode> {
+    let args: Vec<String> = env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("dump-registry") if args.len() == 1 => match zccache::audit::registry_json() {
+            Ok(json) => {
+                print!("{json}");
+                Some(ExitCode::SUCCESS)
+            }
+            Err(error) => {
+                eprintln!("log-audit registry could not serialize: {error}");
+                Some(ExitCode::from(2))
+            }
+        },
+        Some("audit-logs") => {
+            if args.len() != 4 || args.get(2).map(String::as_str) != Some("--context") {
+                eprintln!("usage: zccache-ci audit-logs <cache_root> --context <perf|integration>");
+                return Some(ExitCode::from(2));
+            }
+            let context = match args[3].parse() {
+                Ok(context) => context,
+                Err(error) => {
+                    eprintln!("{error}");
+                    return Some(ExitCode::from(2));
+                }
+            };
+            match zccache::audit::audit_cache_root(
+                Path::new(&args[1]),
+                context,
+                &Default::default(),
+            ) {
+                Ok(report) => {
+                    let json = match serde_json::to_string(&report) {
+                        Ok(json) => json,
+                        Err(error) => {
+                            eprintln!("log audit report could not serialize: {error}");
+                            return Some(ExitCode::from(2));
+                        }
+                    };
+                    println!("{json}");
+                    eprint!("{}", report.format_human());
+                    Some(if report.passed() {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::from(1)
+                    })
+                }
+                Err(error) => {
+                    eprintln!("log audit could not scan cache root: {error}");
+                    Some(ExitCode::from(2))
+                }
+            }
+        }
+        Some("dump-registry") => {
+            eprintln!("invalid zccache-ci audit arguments");
+            Some(ExitCode::from(2))
+        }
+        _ => None,
+    }
 }

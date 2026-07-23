@@ -37,7 +37,7 @@ fn record_observed_materialization(
                     .staged
                     .bytes(StagedBytes::Salvage, observed.copy_bytes);
                 crate::core::lifecycle::write_event(
-                    "staged_salvage_complete",
+                    crate::core::lifecycle::EVENT_STAGED_SALVAGE_COMPLETE,
                     serde_json::json!({
                         "reason": reason,
                         "output_count": output_count,
@@ -88,7 +88,7 @@ fn record_observed_materialization(
                     .staged
                     .bytes(StagedBytes::Salvage, progress.copy_bytes);
                 crate::core::lifecycle::write_event(
-                    "staged_salvage_failed",
+                    crate::core::lifecycle::EVENT_STAGED_SALVAGE_FAILED,
                     serde_json::json!({
                         "reason": reason,
                         "output_count": output_count,
@@ -103,7 +103,7 @@ fn record_observed_materialization(
                     .timing(StagedTiming::MissMaterialization, elapsed_ns);
             }
             crate::core::lifecycle::write_event(
-                "staged_materialization_failed",
+                crate::core::lifecycle::EVENT_STAGED_MATERIALIZATION_FAILED,
                 serde_json::json!({
                     "reason": "requested_materialization",
                     "output_count": output_count,
@@ -127,7 +127,7 @@ fn record_salvage_start(
     use crate::daemon::staged_stats::StagedCounter;
     state.profiler.staged.count(StagedCounter::SalvageAttempt);
     crate::core::lifecycle::write_event(
-        "staged_salvage_started",
+        crate::core::lifecycle::EVENT_STAGED_SALVAGE_STARTED,
         serde_json::json!({
             "reason": reason,
             "output_count": output_count,
@@ -147,7 +147,7 @@ pub(super) fn record_prepublication_salvage_success(
     state.profiler.staged.count(StagedCounter::SalvageSuccess);
     state.profiler.staged.timing(StagedTiming::Salvage, 0);
     crate::core::lifecycle::write_event(
-        "staged_salvage_complete",
+        crate::core::lifecycle::EVENT_STAGED_SALVAGE_COMPLETE,
         serde_json::json!({
             "reason": reason,
             "output_count": output_count,

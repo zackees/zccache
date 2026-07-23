@@ -1,4 +1,4 @@
-//! Multi-file compile handler: handle_compile_multi, check_unit_cache, PendingWrite, UnitCacheResult.
+//! Multi-file compile handler: handle_compile_multi, check_unit_cache, UnitCacheResult.
 
 use super::*;
 
@@ -15,8 +15,8 @@ use args::filter_multi_source_args;
 use preflight::InputSnapshot;
 pub(super) use types::materialize_multi_hit;
 use types::{
-    legacy_depfile_policy, owned_fast_hit_entry, MissOutcome, PendingWrite, PersistTaskParams,
-    UnitCacheCheck, UnitCacheResult,
+    invalidate_multi_artifact_after_failure, legacy_depfile_policy, owned_fast_hit_entry,
+    MissOutcome, PersistTaskParams, UnitCacheCheck, UnitCacheResult,
 };
 
 fn check_unit_cache(
@@ -107,65 +107,117 @@ fn check_unit_cache(
                 && context_files_fresh(state, &context_key, &source_path, entry.clock)
             {
                 let artifact_key_hex = &entry.artifact_key_hex;
-                // Write outputs directly from DashMap reference — eliminates
-                // cloning all .o data (~50-200KB per file) into PendingWrite.
-                // Each check_unit_cache runs in its own spawn_blocking task,
-                // so writes are already parallel across units.
+                // Write outputs directly from the resolved payload Arc — no
+                // DashMap guard is held here (issue #1180's short-lock model):
+                // `lookup_artifact_with_disk_fallback` clones the owned
+                // artifact out of the map before this runs, and
+                // `ensure_payloads_for_materialization` returns an owned,
+                // typed result instead of borrowing. Each check_unit_cache
+                // runs in its own blocking task, so writes are already
+                // parallel across units.
                 if let Some(cached) = lookup_artifact_with_disk_fallback(state, artifact_key_hex) {
-                    if let Some(payloads) =
-                        ensure_payloads(&cached, &state.artifact_dir, artifact_key_hex)
-                    {
-                        record_artifact_access(
-                            state,
-                            artifact_key_hex,
-                            &cached,
-                            std::time::Instant::now(),
-                        );
-                        let names = Arc::clone(&cached.meta.output_names);
-                        let artifact_bytes: u64 = cached.meta.total_size;
-                        let stdout = cached.stdout.clone();
-                        let stderr = cached.stderr.clone();
+                    match ensure_payloads_for_materialization(
+                        &cached,
+                        &state.artifact_dir,
+                        artifact_key_hex,
+                    ) {
+                        Ok(payloads) => {
+                            record_artifact_access(
+                                state,
+                                artifact_key_hex,
+                                &cached,
+                                std::time::Instant::now(),
+                            );
+                            let names = Arc::clone(&cached.meta.output_names);
+                            let artifact_bytes: u64 = cached.meta.total_size;
+                            let stdout = cached.stdout.clone();
+                            let stderr = cached.stderr.clone();
 
-                        let targets: Vec<(NormalizedPath, NormalizedPath)> = (0..payloads.len())
-                            .map(|i| {
-                                let out: NormalizedPath = if i == 0 {
-                                    output_path.clone()
-                                } else {
-                                    cwd_path.join(&names[i]).into()
+                            let targets: Vec<NormalizedPath> = (0..payloads.len())
+                                .map(|i| {
+                                    let out: NormalizedPath = if i == 0 {
+                                        output_path.clone()
+                                    } else {
+                                        cwd_path.join(&names[i]).into()
+                                    };
+                                    out
+                                })
+                                .collect();
+                            let materialization = materialize_multi_hit(&targets, &payloads);
+                            if let Err(failure) = &materialization {
+                                report_materialization_failure(
+                                    &state.cache_dir,
+                                    artifact_key_hex,
+                                    "multi-fast-hit",
+                                    failure,
+                                );
+                            }
+                            if materialization.is_ok() {
+                                state.stats.record_hit(0, artifact_bytes);
+                                state.profiler.record_hit(&HitPhases {
+                                    parse_args_ns: 0,
+                                    build_context_ns: t_ctx.as_nanos() as u64,
+                                    hash_source_ns: 0,
+                                    hash_headers_ns: 0,
+                                    depgraph_check_ns: 0,
+                                    request_cache_lookup_ns: 0,
+                                    cross_root_validate_ns: 0,
+                                    artifact_lookup_ns: 0,
+                                    write_output_ns: 0,
+                                    bookkeeping_ns: 0,
+                                    total_ns: t0.elapsed().as_nanos() as u64,
+                                });
+                                return UnitCacheResult::Hit {
+                                    stdout,
+                                    stderr,
+                                    artifact_bytes,
+                                    source_path,
                                 };
-                                let cache_file =
-                                    state.artifact_dir.join(format!("{artifact_key_hex}_{i}"));
-                                (out, cache_file)
-                            })
-                            .collect();
-                        if materialize_multi_hit(&targets, &payloads) {
-                            state.stats.record_hit(0, artifact_bytes);
-                            state.profiler.record_hit(&HitPhases {
-                                parse_args_ns: 0,
-                                build_context_ns: t_ctx.as_nanos() as u64,
-                                hash_source_ns: 0,
-                                hash_headers_ns: 0,
-                                depgraph_check_ns: 0,
-                                request_cache_lookup_ns: 0,
-                                cross_root_validate_ns: 0,
-                                artifact_lookup_ns: 0,
-                                write_output_ns: 0,
-                                bookkeeping_ns: 0,
-                                total_ns: t0.elapsed().as_nanos() as u64,
-                            });
-                            return UnitCacheResult::Hit {
-                                stdout,
-                                stderr,
-                                artifact_bytes,
-                                source_path,
-                                pending_writes: Vec::new(),
-                            };
+                            }
+                            // A caller-owned destination failure is a soft miss:
+                            // recompile this TU but preserve the valid shared
+                            // artifact for its siblings.  Only an absent blob is
+                            // structural evidence that permits eviction.
+                            if let Err(failure) = &materialization {
+                                invalidate_multi_artifact_after_failure(
+                                    state,
+                                    artifact_key_hex,
+                                    failure,
+                                );
+                            }
+                            state.fast_hit_cache.remove(&context_key);
                         }
-                        let evicted: std::collections::HashSet<String> =
-                            std::iter::once(artifact_key_hex.clone()).collect();
-                        state.dep_graph.load().invalidate_artifact_keys(&evicted);
-                        state.fast_hit_cache.remove(&context_key);
+                        Err(failure) => {
+                            report_materialization_failure(
+                                &state.cache_dir,
+                                artifact_key_hex,
+                                "multi-fast-hit",
+                                &failure,
+                            );
+                            invalidate_multi_artifact_after_failure(
+                                state,
+                                artifact_key_hex,
+                                &failure,
+                            );
+                            state.fast_hit_cache.remove(&context_key);
+                        }
                     }
+                } else {
+                    let failure = cache_blob_missing(
+                        &state.artifact_dir.join(artifact_key_hex),
+                        std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "cached multi-source artifact metadata is unavailable",
+                        ),
+                    );
+                    report_materialization_failure(
+                        &state.cache_dir,
+                        artifact_key_hex,
+                        "multi-fast-hit",
+                        &failure,
+                    );
+                    invalidate_multi_artifact_after_failure(state, artifact_key_hex, &failure);
+                    state.fast_hit_cache.remove(&context_key);
                 }
             }
         }
@@ -180,6 +232,7 @@ fn check_unit_cache(
                 context_key,
                 ctx: Box::new(ctx),
                 input_snapshot: InputSnapshot::incomplete(snap_clock),
+                reason: miss_reason::INPUT_FINGERPRINT_MISMATCH,
             };
         }
     };
@@ -225,6 +278,15 @@ fn check_unit_cache(
             .check(&context_key, is_fresh, get_hash)
     };
     let t_depgraph = t0.elapsed();
+    let mut miss_attribution = match &verdict {
+        crate::depgraph::CacheVerdict::Hit { .. } => miss_reason::NO_ARTIFACT_FOR_KEY,
+        crate::depgraph::CacheVerdict::SourceChanged { .. }
+        | crate::depgraph::CacheVerdict::HeadersChanged { .. }
+        | crate::depgraph::CacheVerdict::NeedsPreprocessor => {
+            miss_reason::INPUT_FINGERPRINT_MISMATCH
+        }
+        crate::depgraph::CacheVerdict::Cold => miss_reason::CONTEXT_NOT_FOUND,
+    };
 
     let depgraph_claimed_hit = matches!(verdict, crate::depgraph::CacheVerdict::Hit { .. });
     if let crate::depgraph::CacheVerdict::Hit { artifact_key }
@@ -233,76 +295,137 @@ fn check_unit_cache(
         let artifact_key_hex = artifact_key.hash().to_hex();
         if let Some(cached) = lookup_artifact_with_disk_fallback(state, &artifact_key_hex) {
             let t_lookup = t0.elapsed();
-            if let Some(payloads) = ensure_payloads(&cached, &state.artifact_dir, &artifact_key_hex)
-            {
-                record_artifact_access(
-                    state,
-                    &artifact_key_hex,
-                    &cached,
-                    std::time::Instant::now(),
-                );
-                let names = Arc::clone(&cached.meta.output_names);
-                let artifact_bytes: u64 = cached.meta.total_size;
-                let stdout = cached.stdout.clone();
-                let stderr = cached.stderr.clone();
-
-                let targets: Vec<(NormalizedPath, NormalizedPath)> = (0..payloads.len())
-                    .map(|i| {
-                        let out: NormalizedPath = if i == 0 {
-                            output_path.clone()
-                        } else {
-                            cwd_path.join(&names[i]).into()
-                        };
-                        let cache_file = state.artifact_dir.join(format!("{artifact_key_hex}_{i}"));
-                        (out, cache_file)
-                    })
-                    .collect();
-                if materialize_multi_hit(&targets, &payloads) {
-                    state.stats.record_hit(0, artifact_bytes);
-
-                    // Populate fast-hit cache for future requests
-                    let tracked_paths =
-                        request_cache_input_paths(state, &context_key, &source_path, &ctx);
-                    state.cache_system.register_tracked(&tracked_paths);
-                    let current_clock = state.cache_system.current_clock();
-                    state.fast_hit_cache.insert(
-                        context_key,
-                        FastHitEntry {
-                            clock: current_clock,
-                            artifact_key_hex: artifact_key_hex.clone(),
-                            cached_at: std::time::Instant::now(),
-                        },
+            match ensure_payloads_for_materialization(
+                &cached,
+                &state.artifact_dir,
+                &artifact_key_hex,
+            ) {
+                Ok(payloads) => {
+                    record_artifact_access(
+                        state,
+                        &artifact_key_hex,
+                        &cached,
+                        std::time::Instant::now(),
                     );
+                    let names = Arc::clone(&cached.meta.output_names);
+                    let artifact_bytes: u64 = cached.meta.total_size;
+                    let stdout = cached.stdout.clone();
+                    let stderr = cached.stderr.clone();
 
-                    let total_ns = t0.elapsed().as_nanos() as u64;
-                    state.profiler.record_hit(&HitPhases {
-                        parse_args_ns: 0,
-                        build_context_ns: t_ctx.as_nanos() as u64,
-                        hash_source_ns: (t_hash_source - t_register).as_nanos() as u64,
-                        hash_headers_ns: (t_hash_headers - t_hash_source).as_nanos() as u64,
-                        depgraph_check_ns: (t_depgraph - t_hash_headers).as_nanos() as u64,
-                        request_cache_lookup_ns: 0,
-                        cross_root_validate_ns: 0,
-                        artifact_lookup_ns: (t_lookup - t_depgraph).as_nanos() as u64,
-                        write_output_ns: 0,
-                        bookkeeping_ns: 0,
-                        total_ns,
-                    });
+                    let targets: Vec<NormalizedPath> = (0..payloads.len())
+                        .map(|i| {
+                            let out: NormalizedPath = if i == 0 {
+                                output_path.clone()
+                            } else {
+                                cwd_path.join(&names[i]).into()
+                            };
+                            out
+                        })
+                        .collect();
+                    let materialization = materialize_multi_hit(&targets, &payloads);
+                    if let Err(failure) = &materialization {
+                        report_materialization_failure(
+                            &state.cache_dir,
+                            &artifact_key_hex,
+                            "multi-depgraph-hit",
+                            failure,
+                        );
+                        miss_attribution = match failure {
+                            MaterializationFailure::CacheBlobMissing(_) => {
+                                miss_reason::NO_ARTIFACT_FOR_KEY
+                            }
+                            MaterializationFailure::CacheRead(_) => {
+                                miss_reason::NO_ARTIFACT_FOR_KEY
+                            }
+                            MaterializationFailure::DestinationWrite(_) => {
+                                miss_reason::DESTINATION_WRITE_FAILED
+                            }
+                        };
+                    }
+                    if depgraph_claimed_hit {
+                        if let Err(failure) = &materialization {
+                            invalidate_multi_artifact_after_failure(
+                                state,
+                                &artifact_key_hex,
+                                failure,
+                            );
+                        }
+                    }
+                    if materialization.is_ok() {
+                        state.stats.record_hit(0, artifact_bytes);
 
-                    return UnitCacheResult::Hit {
-                        stdout,
-                        stderr,
-                        artifact_bytes,
-                        source_path,
-                        pending_writes: Vec::new(),
+                        // Populate fast-hit cache for future requests
+                        let tracked_paths =
+                            request_cache_input_paths(state, &context_key, &source_path, &ctx);
+                        state.cache_system.register_tracked(&tracked_paths);
+                        let current_clock = state.cache_system.current_clock();
+                        state.fast_hit_cache.insert(
+                            context_key,
+                            FastHitEntry {
+                                clock: current_clock,
+                                artifact_key_hex: artifact_key_hex.clone(),
+                                cached_at: std::time::Instant::now(),
+                            },
+                        );
+
+                        let total_ns = t0.elapsed().as_nanos() as u64;
+                        state.profiler.record_hit(&HitPhases {
+                            parse_args_ns: 0,
+                            build_context_ns: t_ctx.as_nanos() as u64,
+                            hash_source_ns: (t_hash_source - t_register).as_nanos() as u64,
+                            hash_headers_ns: (t_hash_headers - t_hash_source).as_nanos() as u64,
+                            depgraph_check_ns: (t_depgraph - t_hash_headers).as_nanos() as u64,
+                            request_cache_lookup_ns: 0,
+                            cross_root_validate_ns: 0,
+                            artifact_lookup_ns: (t_lookup - t_depgraph).as_nanos() as u64,
+                            write_output_ns: 0,
+                            bookkeeping_ns: 0,
+                            total_ns,
+                        });
+
+                        return UnitCacheResult::Hit {
+                            stdout,
+                            stderr,
+                            artifact_bytes,
+                            source_path,
+                        };
+                    }
+                }
+                Err(failure) => {
+                    report_materialization_failure(
+                        &state.cache_dir,
+                        &artifact_key_hex,
+                        "multi-depgraph-hit",
+                        &failure,
+                    );
+                    miss_attribution = match &failure {
+                        MaterializationFailure::DestinationWrite(_) => {
+                            miss_reason::DESTINATION_WRITE_FAILED
+                        }
+                        MaterializationFailure::CacheBlobMissing(_)
+                        | MaterializationFailure::CacheRead(_) => miss_reason::NO_ARTIFACT_FOR_KEY,
                     };
+                    if depgraph_claimed_hit {
+                        invalidate_multi_artifact_after_failure(state, &artifact_key_hex, &failure);
+                    }
                 }
             }
-        }
-        if depgraph_claimed_hit {
-            let evicted: std::collections::HashSet<String> =
-                std::iter::once(artifact_key_hex).collect();
-            state.dep_graph.load().invalidate_artifact_keys(&evicted);
+        } else if depgraph_claimed_hit {
+            let failure = cache_blob_missing(
+                &state.artifact_dir.join(artifact_key_hex.as_str()),
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "cached multi-source artifact metadata is unavailable",
+                ),
+            );
+            report_materialization_failure(
+                &state.cache_dir,
+                artifact_key_hex.as_str(),
+                "multi-depgraph-hit",
+                &failure,
+            );
+            invalidate_multi_artifact_after_failure(state, artifact_key_hex.as_str(), &failure);
+            miss_attribution = miss_reason::NO_ARTIFACT_FOR_KEY;
         }
     }
 
@@ -321,6 +444,7 @@ fn check_unit_cache(
         context_key,
         ctx: Box::new(ctx),
         input_snapshot,
+        reason: miss_attribution,
     }
 }
 
@@ -433,8 +557,7 @@ pub(super) async fn handle_compile_multi(
     indexed_results.sort_by_key(|(idx, _)| *idx);
 
     let mut unit_results: Vec<UnitCacheResult> = Vec::with_capacity(indexed_results.len());
-    let mut all_pending_writes: Vec<PendingWrite> = Vec::new();
-    for (_, mut result) in indexed_results {
+    for (_, result) in indexed_results {
         match &result {
             UnitCacheResult::Hit {
                 stdout,
@@ -459,25 +582,7 @@ pub(super) async fn handle_compile_multi(
                 );
             }
         }
-        if let UnitCacheResult::Hit {
-            ref mut pending_writes,
-            ..
-        } = result
-        {
-            all_pending_writes.append(pending_writes);
-        }
         unit_results.push(result);
-    }
-
-    // ── Phase 1b: Execute all output writes in parallel ─────────────
-    if !all_pending_writes.is_empty() {
-        let mut write_set = tokio::task::JoinSet::new();
-        for pw in all_pending_writes {
-            write_set.spawn_blocking(move || {
-                let _ = write_cached_output(&pw.out_path, &pw.cache_file, &pw.data);
-            });
-        }
-        while write_set.join_next().await.is_some() {}
     }
 
     // For cache HIT outputs: downgrade metadata without advancing clock
@@ -510,6 +615,21 @@ pub(super) async fn handle_compile_multi(
             UnitCacheResult::Hit { .. } => None,
         })
         .collect();
+    if let Some(reason) = unit_results
+        .iter()
+        .filter_map(|result| match result {
+            UnitCacheResult::Miss { reason, .. } => Some(*reason),
+            UnitCacheResult::Hit { .. } => None,
+        })
+        .min_by_key(|reason| match *reason {
+            miss_reason::DESTINATION_WRITE_FAILED => 0,
+            miss_reason::NO_ARTIFACT_FOR_KEY => 1,
+            miss_reason::INPUT_FINGERPRINT_MISMATCH => 2,
+            _ => 3,
+        })
+    {
+        record_miss_reason(reason);
+    }
 
     if miss_sources.is_empty() {
         return Response::CompileResult {

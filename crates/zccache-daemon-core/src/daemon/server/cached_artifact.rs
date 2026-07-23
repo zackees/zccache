@@ -221,73 +221,106 @@ pub(super) fn ensure_payloads(
     artifact_dir: &Path,
     key_hex: &str,
 ) -> Option<Arc<[CachedPayload]>> {
-    ensure_payloads_with_staged_policy(cached, artifact_dir, key_hex, staged_artifacts_enabled())
+    ensure_payloads_result(cached, artifact_dir, key_hex)
+        .ok()
+        .flatten()
 }
 
+pub(super) fn ensure_payloads_result(
+    cached: &CachedArtifact,
+    artifact_dir: &Path,
+    key_hex: &str,
+) -> std::io::Result<Option<Arc<[CachedPayload]>>> {
+    ensure_payloads_with_staged_policy_result(
+        cached,
+        artifact_dir,
+        key_hex,
+        staged_artifacts_enabled(),
+    )
+}
+
+/// Resolve payloads for materialization, translating a resolver failure or a
+/// missing-blob outcome into a typed [`MaterializationFailure`] the caller can
+/// report and (for genuine blob loss) use as depgraph-invalidation evidence.
+pub(super) fn ensure_payloads_for_materialization(
+    cached: &CachedArtifact,
+    artifact_dir: &Path,
+    key_hex: &str,
+) -> MaterializationResult<Arc<[CachedPayload]>> {
+    match ensure_payloads_result(cached, artifact_dir, key_hex) {
+        Ok(Some(payloads)) => Ok(payloads),
+        Ok(None) => Err(cache_blob_missing(
+            &artifact_dir.join(key_hex),
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "cached artifact metadata or payload is unavailable",
+            ),
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(cache_blob_missing(&artifact_dir.join(key_hex), error))
+        }
+        Err(error) => Err(cache_read_failure(artifact_dir, error)),
+    }
+}
+
+#[cfg(test)]
 pub(super) fn ensure_payloads_with_staged_policy(
     cached: &CachedArtifact,
     artifact_dir: &Path,
     key_hex: &str,
     staged_enabled: bool,
 ) -> Option<Arc<[CachedPayload]>> {
+    ensure_payloads_with_staged_policy_result(cached, artifact_dir, key_hex, staged_enabled)
+        .ok()
+        .flatten()
+}
+
+/// Resolve output payloads through the shared, layout-aware resolver
+/// (staged-v2 -> pack -> legacy flat-v1; see `zccache_artifact::layout`), then
+/// cache the result in the artifact's lazily-initialized `OnceLock`.
+///
+/// Keeping resolution behind the immutable `&CachedArtifact` (rather than
+/// `&mut`) preserves the short-lock/owned-clone model: a lookup releases its
+/// DashMap shard guard before this runs, and concurrent discoveries race
+/// harmlessly to initialize the same cell (#1180).
+fn ensure_payloads_with_staged_policy_result(
+    cached: &CachedArtifact,
+    artifact_dir: &Path,
+    key_hex: &str,
+    staged_enabled: bool,
+) -> std::io::Result<Option<Arc<[CachedPayload]>>> {
     if let Some(payloads) = cached.payloads.get() {
-        return Some(Arc::clone(payloads));
+        return Ok(Some(Arc::clone(payloads)));
     }
 
-    let loaded: Arc<[CachedPayload]> = if staged_enabled {
-        match load_staged_artifact_paths(artifact_dir, key_hex, &cached.meta.output_sizes) {
-            Ok(Some(payloads)) => Arc::from(
-                payloads
-                    .into_iter()
-                    .map(CachedPayload::File)
-                    .collect::<Vec<_>>(),
-            ),
-            Ok(None) => load_legacy_payloads(cached, artifact_dir, key_hex)
-                .or_else(|| cached.payloads.get().cloned())?,
-            Err(_) => return cached.payloads.get().cloned(),
-        }
-    } else {
-        load_legacy_payloads(cached, artifact_dir, key_hex)
-            .or_else(|| cached.payloads.get().cloned())?
+    let Some(resolved) = crate::artifact::resolve_artifact_payloads(
+        artifact_dir,
+        key_hex,
+        &cached.meta.output_sizes,
+        staged_enabled,
+        "daemon::cached_artifact::ensure_payloads",
+    )?
+    else {
+        return Ok(cached.payloads.get().cloned());
     };
+
+    let loaded: Arc<[CachedPayload]> = Arc::from(
+        resolved
+            .into_iter()
+            .map(|payload| match payload {
+                crate::artifact::ResolvedArtifactPayload::File(path) => CachedPayload::File(path),
+                crate::artifact::ResolvedArtifactPayload::Bytes(bytes) => {
+                    CachedPayload::Bytes(bytes)
+                }
+            })
+            .collect::<Vec<_>>(),
+    );
 
     // Another request may have completed the same discovery concurrently.
     // Whichever result initializes the cell first is canonical; both are
     // derived from the same immutable artifact index and cache files.
     let _ = cached.payloads.set(loaded);
-    cached.payloads.get().cloned()
-}
-
-fn load_legacy_payloads(
-    cached: &CachedArtifact,
-    artifact_dir: &Path,
-    key_hex: &str,
-) -> Option<Arc<[CachedPayload]>> {
-    let mut payloads = Vec::with_capacity(cached.meta.output_names.len());
-    for i in 0..cached.meta.output_names.len() {
-        let path = artifact_dir.join(format!("{key_hex}_{i}"));
-        if let Ok(meta) = std::fs::metadata(&path) {
-            if meta.is_file()
-                && cached
-                    .meta
-                    .output_sizes
-                    .get(i)
-                    .is_none_or(|expected| *expected == meta.len())
-            {
-                payloads.push(CachedPayload::File(path.into()));
-                continue;
-            }
-        }
-        // Fallback: artifact may be stored in a `.pack` file (pack mode).
-        let bytes = try_load_packed_payload(artifact_dir, key_hex, i)?;
-        if let Some(expected) = cached.meta.output_sizes.get(i) {
-            if *expected != bytes.len() as u64 {
-                return None;
-            }
-        }
-        payloads.push(CachedPayload::Bytes(Arc::new(bytes)));
-    }
-    Some(Arc::from(payloads))
+    Ok(cached.payloads.get().cloned())
 }
 
 /// Migrate legacy `.meta` files to the in-memory artifact index.
@@ -326,19 +359,22 @@ pub(super) fn migrate_meta_files(
                 .to_string_lossy()
                 .into_owned();
 
-            // Write {key}_0, {key}_1, ... data files if missing.
-            // Legacy `.meta` files only ever stored inline bytes, so we
-            // only handle the `Bytes` variant here. Any `Path` variant
-            // would be a forward-compat artefact that legacy migration
-            // can safely skip — caller treats failures as non-cacheable.
-            for (i, out) in artifact.outputs.iter().enumerate() {
-                let data_path = artifact_dir.join(format!("{stem}_{i}"));
-                if !data_path.exists() {
-                    if let Some(bytes) = out.payload.as_bytes() {
-                        std::fs::write(&data_path, bytes.as_slice()).ok();
-                    }
-                }
-            }
+            // Legacy `.meta` files only ever stored inline bytes. Publish
+            // them through the active layout; a forward-compatible `Path`
+            // payload makes this entry non-migratable and safe to skip.
+            crate::artifact::record_legacy_artifact_access(
+                path,
+                &stem,
+                0,
+                crate::artifact::LegacyArtifactAccessPurpose::Migration,
+                "cached_artifact::migrate_meta_files:meta_source",
+            );
+            let payloads: Vec<Arc<Vec<u8>>> = artifact
+                .outputs
+                .iter()
+                .map(|output| output.payload.as_bytes().cloned())
+                .collect::<Option<_>>()?;
+            persist_migrated_artifact_payloads(artifact_dir, &stem, &payloads).ok()?;
 
             let cached = CachedArtifact::from_artifact_data(&artifact);
             Some((stem, cached, path.clone()))
@@ -377,7 +413,13 @@ mod tests {
     #[test]
     fn owned_clones_share_lazy_payload_initialization() {
         let dir = tempfile::tempdir().unwrap();
-        let key = "shared-cell";
+        // Artifact keys are validated as bounded hex strings by the central
+        // resolver (`zccache_artifact::layout::validate_key`); a
+        // human-readable slug like "shared-cell" is rejected before the
+        // resolver even looks at disk, which used to be masked by the
+        // pre-#1180 ad-hoc path formatting this test predates.
+        let key = "1".repeat(64);
+        let key = key.as_str();
         std::fs::write(dir.path().join(format!("{key}_0")), b"payload").unwrap();
         let cached = lazy_artifact(7);
         let owned_clone = cached.clone();
@@ -432,7 +474,10 @@ mod tests {
     #[test]
     fn failed_payload_discovery_can_be_retried() {
         let dir = tempfile::tempdir().unwrap();
-        let key = "retry-cell";
+        // See `owned_clones_share_lazy_payload_initialization` above: the
+        // key must be a bounded hex string to satisfy `layout::validate_key`.
+        let key = "2".repeat(64);
+        let key = key.as_str();
         let cached = lazy_artifact(7);
 
         assert!(ensure_payloads_with_staged_policy(&cached, dir.path(), key, false).is_none());

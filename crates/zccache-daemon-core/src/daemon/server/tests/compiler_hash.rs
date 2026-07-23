@@ -62,6 +62,36 @@ fn compiler_hash_cache_rehashes_when_compiler_metadata_changes() {
     assert_eq!(hash_calls.load(Ordering::Relaxed), 2);
 }
 
+#[tokio::test]
+async fn changed_compiler_identity_attributes_version_skew() {
+    let tmp = tempfile::tempdir().unwrap();
+    let compiler = tmp.path().join("rustc.exe");
+    std::fs::write(&compiler, b"first compiler").unwrap();
+    filetime::set_file_mtime(
+        &compiler,
+        filetime::FileTime::from_unix_time(1_000_000_000, 0),
+    )
+    .unwrap();
+    let cache = CompilerHashCache::new();
+
+    let (_, reason) = crate::daemon::compile_journal::capture_miss_reason(Box::pin(async {
+        cache.get_or_hash_with(&compiler, |_| Some(ContentHash::from_bytes([1; 32])));
+        std::fs::write(&compiler, b"second compiler").unwrap();
+        filetime::set_file_mtime(
+            &compiler,
+            filetime::FileTime::from_unix_time(1_000_000_100, 0),
+        )
+        .unwrap();
+        cache.get_or_hash_with(&compiler, |_| Some(ContentHash::from_bytes([2; 32])));
+    }))
+    .await;
+
+    assert_eq!(
+        reason,
+        Some(crate::daemon::compile_journal::miss_reason::VERSION_SKEW)
+    );
+}
+
 #[test]
 fn rustc_context_build_reuses_compiler_hash_cache() {
     let tmp = tempfile::tempdir().unwrap();

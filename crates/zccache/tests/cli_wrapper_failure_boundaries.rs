@@ -89,7 +89,7 @@ fn lifecycle_events(cache_dir: &Path) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn assert_one_fallback(cache_dir: &Path) {
+fn assert_one_fallback(cache_dir: &Path, test_name: &'static str) {
     let events = lifecycle_events(cache_dir);
     let fallbacks: Vec<_> = events
         .iter()
@@ -101,6 +101,20 @@ fn assert_one_fallback(cache_dir: &Path) {
         "expected one fallback event: {events:#?}"
     );
     assert_eq!(fallbacks[0]["phase"], "pre-dispatch");
+
+    let effective =
+        zccache::core::config::effective_cache_root_from_top_level(&cache_dir.to_path_buf().into());
+    let report = zccache::audit::audit_cache_root(
+        &effective,
+        zccache::audit::LogAuditContext::Integration,
+        &zccache::audit::AuditOptions::default().allow_for_test(
+            test_name,
+            [zccache::audit::RuleId("no-wrapper-local-fallback")],
+        ),
+    )
+    .expect("audit intentional fallback fixture");
+    assert!(report.passed(), "{}", report.format_human());
+    assert_eq!(report.test_allow_name.as_deref(), Some(test_name));
 }
 
 fn wait_for_daemon_shutdown(cache_dir: &Path) {
@@ -145,7 +159,10 @@ fn ephemeral_pre_dispatch_fallback_preserves_process_contract() {
         1,
         "stdin must reach the local compiler exactly once"
     );
-    assert_one_fallback(cache_dir.path());
+    assert_one_fallback(
+        cache_dir.path(),
+        "ephemeral_pre_dispatch_fallback_preserves_process_contract",
+    );
 }
 
 #[test]
@@ -199,5 +216,8 @@ fn session_pre_dispatch_fallback_does_not_consume_stdin_twice() {
         1,
         "session fallback must not slurp stdin a second time"
     );
-    assert_one_fallback(cache_dir.path());
+    assert_one_fallback(
+        cache_dir.path(),
+        "session_pre_dispatch_fallback_does_not_consume_stdin_twice",
+    );
 }

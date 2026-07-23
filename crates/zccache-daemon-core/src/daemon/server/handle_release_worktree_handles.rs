@@ -15,7 +15,7 @@
 //! refusal never blocks a legitimate Tier 3 call.
 
 use super::*;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Handle a `ReleaseWorktreeHandles` request.
 ///
@@ -25,19 +25,13 @@ pub(super) async fn handle_release_worktree_handles(
     state: &SharedState,
     path: &NormalizedPath,
 ) -> Response {
-    let target = match canonicalize_for_match(path.as_path()) {
-        Some(p) => p,
-        None => path.as_path().to_path_buf(),
-    };
+    let target = normalized_for_match(path);
 
     // Refuse if the caller asked us to release our own cache root, or any
     // ancestor of it. The cache root is owned by the daemon, not by any
     // worktree, and closing those handles would corrupt unrelated sessions.
-    let cache_root = match canonicalize_for_match(state.cache_dir.as_path()) {
-        Some(p) => p,
-        None => state.cache_dir.as_path().to_path_buf(),
-    };
-    if cache_root.starts_with(&target) {
+    let cache_root = normalized_for_match(&state.cache_dir);
+    if cache_root.starts_with(target.as_path()) {
         return Response::Error {
             message: format!(
                 "refusing to release handles under {} — that path contains the daemon \
@@ -105,17 +99,21 @@ pub(super) async fn handle_release_worktree_handles(
 /// cannot be canonicalized (deleted, permission error, etc.) — callers
 /// fall back to the as-supplied path so a soldr teardown of a partially
 /// deleted worktree still sweeps sessions whose working_dir is gone.
-fn canonicalize_for_match(p: &Path) -> Option<PathBuf> {
+fn canonicalize_for_match(p: &Path) -> Option<std::path::PathBuf> {
     std::fs::canonicalize(p).ok()
+}
+
+fn normalized_for_match(path: &NormalizedPath) -> NormalizedPath {
+    canonicalize_for_match(path.as_path())
+        .map(NormalizedPath::new)
+        .unwrap_or_else(|| path.clone())
 }
 
 /// True iff `candidate` resolves to a path under `target`. Both sides are
 /// canonicalized when possible so a `\\?\C:\...` verbatim target matches
 /// a non-verbatim session working_dir (and vice versa).
-fn path_is_under(candidate: &NormalizedPath, target: &Path) -> bool {
-    let resolved = canonicalize_for_match(candidate.as_path())
-        .unwrap_or_else(|| candidate.as_path().to_path_buf());
-    resolved.starts_with(target)
+fn path_is_under(candidate: &NormalizedPath, target: &NormalizedPath) -> bool {
+    normalized_for_match(candidate).strip_prefix(target).is_ok()
 }
 
 #[cfg(test)]

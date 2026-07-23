@@ -71,6 +71,7 @@ jobs:
         run: |
           set -euo pipefail
           soldr cargo test -p zccache --test perf_bench_test --no-run
+          soldr cargo build -p zccache --features ci-bin --bin zccache-ci
           bench_bin="$(
             find target/debug/deps \
               -maxdepth 1 \
@@ -85,13 +86,15 @@ jobs:
           fi
           mkdir -p perf-guard-bin
           cp "$bench_bin" perf-guard-bin/perf_bench_test
+          cp target/debug/zccache-ci perf-guard-bin/zccache-ci
           chmod +x perf-guard-bin/perf_bench_test
+          chmod +x perf-guard-bin/zccache-ci
 
       - name: Upload perf benchmark binary
         uses: actions/upload-artifact@v7
         with:
           name: perf-guard-binary
-          path: perf-guard-bin/perf_bench_test
+          path: perf-guard-bin
           if-no-files-found: error
 
   perf-guard:
@@ -123,6 +126,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
 
       - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
         with:
@@ -150,7 +154,9 @@ jobs:
 
       - name: Prepare perf benchmark binary
         shell: bash
-        run: chmod +x perf-guard-bin/perf_bench_test
+        run: |
+          chmod +x perf-guard-bin/perf_bench_test perf-guard-bin/zccache-ci
+          echo "ZCCACHE_CI_BIN=$PWD/perf-guard-bin/zccache-ci" >> "$GITHUB_ENV"
 
       # Issue #596: the perf benchmark binary spawns rustc from worker
       # tempdirs that have no rust-toolchain.toml — without a configured
@@ -188,7 +194,7 @@ jobs:
         shell: bash
         run: |
           if [[ -f perf-guard-output/.watchdog-timeout ]]; then exit 0; fi
-          python3 -m ci.perf_guard --run-benchmarks --language c --test perf_c_zccache_vs_bare \
+          uv run python -m ci.perf_guard --run-benchmarks --language c --test perf_c_zccache_vs_bare \
             --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
             --output-dir perf-guard-output/perf_c_zccache_vs_bare || true
 
@@ -197,7 +203,7 @@ jobs:
         shell: bash
         run: |
           if [[ -f perf-guard-output/.watchdog-timeout ]]; then exit 0; fi
-          python3 -m ci.perf_guard --run-benchmarks --language c --test perf_c_archive_link \
+          uv run python -m ci.perf_guard --run-benchmarks --language c --test perf_c_archive_link \
             --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
             --output-dir perf-guard-output/perf_c_archive_link || true
 
@@ -206,7 +212,7 @@ jobs:
         shell: bash
         run: |
           if [[ -f perf-guard-output/.watchdog-timeout ]]; then exit 0; fi
-          python3 -m ci.perf_guard --run-benchmarks --language c++ --test perf_response_file \
+          uv run python -m ci.perf_guard --run-benchmarks --language c++ --test perf_response_file \
             --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
             --output-dir perf-guard-output/perf_response_file || true
 
@@ -215,7 +221,7 @@ jobs:
         shell: bash
         run: |
           if [[ -f perf-guard-output/.watchdog-timeout ]]; then exit 0; fi
-          python3 -m ci.perf_guard --run-benchmarks --language c++ --test perf_cpp_sibling_remap_warm \
+          uv run python -m ci.perf_guard --run-benchmarks --language c++ --test perf_cpp_sibling_remap_warm \
             --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
             --output-dir perf-guard-output/perf_cpp_sibling_remap_warm || true
 
@@ -224,7 +230,7 @@ jobs:
         shell: bash
         run: |
           if [[ -f perf-guard-output/.watchdog-timeout ]]; then exit 0; fi
-          python3 -m ci.perf_guard --run-benchmarks --language c++ --test perf_cpp_driver_link \
+          uv run python -m ci.perf_guard --run-benchmarks --language c++ --test perf_cpp_driver_link \
             --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
             --output-dir perf-guard-output/perf_cpp_driver_link || true
 
@@ -236,7 +242,7 @@ jobs:
         shell: bash
         run: |
           if [[ -f perf-guard-output/.watchdog-timeout ]]; then exit 0; fi
-          python3 -m ci.perf_guard --run-benchmarks --language c++ --test perf_warm_cache_zccache_vs_sccache \
+          uv run python -m ci.perf_guard --run-benchmarks --language c++ --test perf_warm_cache_zccache_vs_sccache \
             --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
             --output-dir perf-guard-output/perf_warm_cache_zccache_vs_sccache || true
 
@@ -245,7 +251,7 @@ jobs:
         shell: bash
         run: |
           if [[ -f perf-guard-output/.watchdog-timeout ]]; then exit 0; fi
-          python3 -m ci.perf_guard --run-benchmarks --language rust --test perf_rustc_zccache_vs_sccache \
+          uv run python -m ci.perf_guard --run-benchmarks --language rust --test perf_rustc_zccache_vs_sccache \
             --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
             --output-dir perf-guard-output/perf_rustc_zccache_vs_sccache || true
 
@@ -254,7 +260,7 @@ jobs:
         shell: bash
         run: |
           if [[ -f perf-guard-output/.watchdog-timeout ]]; then exit 0; fi
-          python3 -m ci.perf_guard --run-benchmarks --language rust --test perf_rustc_sibling_remap_warm \
+          uv run python -m ci.perf_guard --run-benchmarks --language rust --test perf_rustc_sibling_remap_warm \
             --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
             --output-dir perf-guard-output/perf_rustc_sibling_remap_warm || true
 
@@ -263,7 +269,7 @@ jobs:
         shell: bash
         run: |
           if [[ -f perf-guard-output/.watchdog-timeout ]]; then exit 0; fi
-          python3 -m ci.perf_guard --run-benchmarks --language rust --test perf_rust_workspace_link \
+          uv run python -m ci.perf_guard --run-benchmarks --language rust --test perf_rust_workspace_link \
             --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
             --output-dir perf-guard-output/perf_rust_workspace_link || true
 

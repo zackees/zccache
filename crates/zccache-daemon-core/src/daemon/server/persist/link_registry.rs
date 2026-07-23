@@ -194,11 +194,13 @@ fn replace_digest_sidecar(temp_path: &Path, final_path: &Path) -> std::io::Resul
     use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING};
 
     let temp = windows_verbatim_file_path(temp_path)?
+        .as_path()
         .as_os_str()
         .encode_wide()
         .chain(Some(0))
         .collect::<Vec<_>>();
     let final_path = windows_verbatim_file_path(final_path)?
+        .as_path()
         .as_os_str()
         .encode_wide()
         .chain(Some(0))
@@ -484,7 +486,7 @@ pub(in crate::daemon::server) fn verify_registered_blob(blob_path: &Path) -> std
             "unregistered cache blob failed durable verification; evicting"
         );
         crate::core::lifecycle::write_event(
-            "cow_unregistered_blob_evicted",
+            crate::core::lifecycle::EVENT_COW_UNREGISTERED_BLOB_EVICTED,
             serde_json::json!({
                 "blob_path": blob_path,
                 "link_count": link_count,
@@ -532,7 +534,7 @@ pub(in crate::daemon::server) fn verify_registered_blob(blob_path: &Path) -> std
         "suspect hardlinked cache blob failed verification; refusing to serve it"
     );
     crate::core::lifecycle::write_event(
-        "cow_blob_corruption_detected",
+        crate::core::lifecycle::EVENT_COW_BLOB_CORRUPTION_DETECTED,
         serde_json::json!({
             "blob_path": record.blob_path,
             "cache_key": cache_key,

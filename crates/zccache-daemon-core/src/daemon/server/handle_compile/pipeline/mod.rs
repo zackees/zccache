@@ -19,7 +19,7 @@ mod system_includes;
 
 use super::super::*;
 use super::cached_hit::{
-    materialize_cached_compile_hit, CachedHitMaterializeRequest, CachedHitPhases,
+    materialize_cached_compile_hit, CachedHitFailure, CachedHitMaterializeRequest, CachedHitPhases,
 };
 use super::error_cache::{compile_failure_stderr, maybe_store_rustc_error_artifact};
 use super::hit_branches::{
@@ -303,6 +303,13 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             let key = rustc_ctx.context_key_with_root(rustc_key_root.as_deref());
             let compat_key =
                 rustc_ctx.check_metadata_compat_key_with_root(rustc_key_root.as_deref());
+            let compat_map_key = compat_key.map(|compat_key| {
+                crate::depgraph::DepGraph::rustc_metadata_compat_map_key(
+                    compat_key,
+                    &compat_ctx.source_file,
+                    rustc_key_root.as_ref(),
+                )
+            });
             let published_compat_key = rustc_args
                 .emit_types
                 .iter()
@@ -329,7 +336,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 UserDepFlags::default(),
                 Some(rustc_args),
                 registration.map_key,
-                registration.metadata_compat_map_key,
+                compat_map_key,
                 registration.rebased_from_equivalent_root,
             )
         }
@@ -466,10 +473,19 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             diag_path_remap_state(client_env.as_deref(), worktree_root.is_some()),
         ),
     );
+    record_miss_reason(match &verdict {
+        crate::depgraph::CacheVerdict::Hit { .. } => miss_reason::NO_ARTIFACT_FOR_KEY,
+        crate::depgraph::CacheVerdict::SourceChanged { .. }
+        | crate::depgraph::CacheVerdict::HeadersChanged { .. }
+        | crate::depgraph::CacheVerdict::NeedsPreprocessor => {
+            miss_reason::INPUT_FINGERPRINT_MISMATCH
+        }
+        crate::depgraph::CacheVerdict::Cold => miss_reason::CONTEXT_NOT_FOUND,
+    });
     match verdict {
         crate::depgraph::CacheVerdict::Hit { artifact_key } => {
             let artifact_key_hex = artifact_key.hash().to_hex();
-            if let Some(response) = try_depgraph_cached_hit(DepgraphHitProbe {
+            let failure = match try_depgraph_cached_hit(DepgraphHitProbe {
                 state,
                 sid: &sid,
                 context_key,
@@ -497,20 +513,37 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             })
             .await
             {
-                record_session_stat(&state.sessions, &sid, |t| {
-                    t.record_depgraph_hit_artifact_hit();
-                });
-                return response;
-            }
+                Ok(response) => {
+                    record_session_stat(&state.sessions, &sid, |t| {
+                        t.record_depgraph_hit_artifact_hit();
+                    });
+                    return response;
+                }
+                Err(failure) => failure,
+            };
             // Artifact key computed but no artifact stored yet, or payload delivery
             // failed. Fall through to compile.
             record_session_stat(&state.sessions, &sid, |t| {
                 t.record_depgraph_hit_artifact_miss();
             });
+            let failure_name = match &failure {
+                CachedHitFailure::CacheBlobMissing(_) => {
+                    record_miss_reason(miss_reason::NO_ARTIFACT_FOR_KEY);
+                    "artifact_not_found"
+                }
+                CachedHitFailure::CacheRead => {
+                    record_miss_reason(miss_reason::NO_ARTIFACT_FOR_KEY);
+                    "artifact_read_failed"
+                }
+                CachedHitFailure::DestinationWrite => {
+                    record_miss_reason(miss_reason::DESTINATION_WRITE_FAILED);
+                    "destination_write_failed"
+                }
+            };
             write_session_log(
                 &state.sessions,
                 &sid,
-                &format!("[DIAG] artifact_not_found: key={artifact_key_hex}"),
+                &format!("[DIAG] {failure_name}: key={artifact_key_hex}"),
             );
             // Drop the stale depgraph entry pointing at the missing
             // payload so the next lookup for this source does not
@@ -520,11 +553,13 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             // assert the expected cleared count of 1; an earlier
             // version of this branch invalidated inline too, racing
             // the helper to `cleared=0` and breaking the test.
-            invalidate_missing_depgraph_artifact(state, &sid, &artifact_key_hex);
+            if let CachedHitFailure::CacheBlobMissing(evidence) = &failure {
+                invalidate_missing_depgraph_artifact(state, &sid, &artifact_key_hex, evidence);
+            }
         }
         crate::depgraph::CacheVerdict::SourceChanged { artifact_key } => {
             let artifact_key_hex = artifact_key.hash().to_hex();
-            if let Some(response) = try_depgraph_cached_hit(DepgraphHitProbe {
+            if let Ok(response) = try_depgraph_cached_hit(DepgraphHitProbe {
                 state,
                 sid: &sid,
                 context_key,
@@ -654,7 +689,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                     .await;
                     let requested_outputs =
                         rustc_expected_output_paths(rustc_args, output_path.as_path(), cwd);
-                    if let Some(response) =
+                    if let Ok(response) =
                         materialize_cached_compile_hit(CachedHitMaterializeRequest {
                             state,
                             sid: &sid,
@@ -884,6 +919,7 @@ fn invalidate_missing_depgraph_artifact(
     state: &SharedState,
     sid: &SessionId,
     artifact_key_hex: &str,
+    _evidence: &CacheBlobMissing,
 ) {
     let mut stale_keys = std::collections::HashSet::with_capacity(1);
     stale_keys.insert(artifact_key_hex.to_string());

@@ -65,20 +65,46 @@ pub(super) fn run_locally(
     stdin_bytes: &[u8],
     reason: &str,
 ) -> ExitCode {
-    eprintln!(
-        "zccache[warn][F]: {reason}; running {} directly, uncached",
-        tool.display()
+    run_locally_with_lifecycle_root(tool, args, cwd, env, stdin_bytes, reason, None)
+}
+
+fn run_locally_with_lifecycle_root(
+    tool: &Path,
+    args: &[String],
+    cwd: &Path,
+    env: &[(String, String)],
+    stdin_bytes: &[u8],
+    reason: &str,
+    lifecycle_root: Option<&Path>,
+) -> ExitCode {
+    let warning = format!(
+        "zccache[warn][F]: {reason}; running {} directly, uncached\n",
+        tool.display(),
     );
-    crate::core::lifecycle::write_event(
-        crate::core::lifecycle::EVENT_WRAPPER_LOCAL_FALLBACK,
-        serde_json::json!({
-            "tool": tool.to_string_lossy(),
-            "cwd": cwd.to_string_lossy(),
-            "reason": reason,
-            "phase": "pre-dispatch",
-            "route": "wrapper",
-        }),
+    let _ = super::write_wrapper_warning_line(
+        &mut std::io::stderr(),
+        warning.as_bytes(),
+        super::wrapper_stderr_color_enabled(),
     );
+    let event = serde_json::json!({
+        "tool": tool.to_string_lossy(),
+        "cwd": cwd.to_string_lossy(),
+        "reason": reason,
+        "phase": "pre-dispatch",
+        "route": "wrapper",
+    });
+    if let Some(root) = lifecycle_root {
+        crate::core::lifecycle::write_event_in_cache_root(
+            root,
+            crate::core::lifecycle::EVENT_WRAPPER_LOCAL_FALLBACK,
+            event,
+        );
+    } else {
+        crate::core::lifecycle::write_event(
+            crate::core::lifecycle::EVENT_WRAPPER_LOCAL_FALLBACK,
+            event,
+        );
+    }
 
     let mut command = std::process::Command::new(tool);
     command
@@ -210,18 +236,34 @@ mod tests {
     fn local_fallback_preserves_tool_exit_code() {
         let _guard = CWD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original_cwd = std::env::current_dir().ok();
+        let cache_root = tempfile::tempdir().unwrap();
         let tool = noop_tool();
         let args = noop_args();
-        let exit = run_locally(
+        let exit = run_locally_with_lifecycle_root(
             &tool,
             &args,
             &std::env::current_dir().unwrap(),
             &[("ZCCACHE_TEST_FALLBACK".to_string(), "1".to_string())],
             &[],
             "test pre-dispatch failure",
+            Some(cache_root.path()),
         );
 
         assert_eq!(exit, ExitCode::SUCCESS);
+        let report = zccache_audit::audit_cache_root(
+            cache_root.path(),
+            zccache_audit::LogAuditContext::Integration,
+            &zccache_audit::AuditOptions::default().allow_for_test(
+                "wrap::passthrough::local_fallback_preserves_tool_exit_code",
+                [zccache_audit::RuleId("no-wrapper-local-fallback")],
+            ),
+        )
+        .unwrap();
+        assert!(report.passed(), "{}", report.format_human());
+        assert_eq!(
+            report.test_allow_name.as_deref(),
+            Some("wrap::passthrough::local_fallback_preserves_tool_exit_code")
+        );
         if let Some(cwd) = original_cwd {
             let _ = std::env::set_current_dir(cwd);
         }

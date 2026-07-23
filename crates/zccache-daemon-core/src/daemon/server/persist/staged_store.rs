@@ -48,6 +48,14 @@ const STORE_LOCK: &str = ".store.lock";
 
 static STAGED_ARTIFACT_TMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+fn write_staged_lifecycle_event(artifact_dir: &Path, event_name: &str, extra: serde_json::Value) {
+    if let Some(cache_root) = artifact_dir.parent() {
+        crate::core::lifecycle::write_event_in_cache_root(cache_root, event_name, extra);
+    } else {
+        crate::core::lifecycle::write_event(event_name, extra);
+    }
+}
+
 fn exclusive_publication_ns(total_ns: u64, hashing_ns: u64) -> u64 {
     total_ns.saturating_sub(hashing_ns)
 }
@@ -359,11 +367,13 @@ fn replace_staged_path(source: &Path, destination: &Path) -> io::Result<()> {
         };
 
         let source_wide: Vec<u16> = windows_verbatim_file_path(source)?
+            .as_path()
             .as_os_str()
             .encode_wide()
             .chain(Some(0))
             .collect();
         let destination_wide: Vec<u16> = windows_verbatim_file_path(destination)?
+            .as_path()
             .as_os_str()
             .encode_wide()
             .chain(Some(0))
@@ -649,8 +659,9 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
             let previous = previous_value.trim();
             if !previous.is_empty() && previous != generation_hex {
                 if validate_staged_generation(artifact_dir, key_hex, previous).is_ok() {
-                    crate::core::lifecycle::write_event(
-                        "staged_publication_conflict",
+                    write_staged_lifecycle_event(
+                        artifact_dir,
+                        crate::core::lifecycle::EVENT_STAGED_PUBLICATION_CONFLICT,
                         serde_json::json!({
                             "cache_key": key_hex,
                             "existing_generation": previous,
@@ -673,8 +684,9 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
                         ),
                     ));
                 }
-                crate::core::lifecycle::write_event(
-                    "staged_publication_replaces_invalid_generation",
+                write_staged_lifecycle_event(
+                    artifact_dir,
+                    crate::core::lifecycle::EVENT_STAGED_PUBLICATION_REPLACES_INVALID_GENERATION,
                     serde_json::json!({
                         "cache_key": key_hex,
                         "invalid_generation": previous,
@@ -825,72 +837,36 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
     result
 }
 
+pub(in crate::daemon::server) fn persist_staged_artifact_payloads(
+    artifact_dir: &Path,
+    key_hex: &str,
+    payloads: &[Arc<Vec<u8>>],
+) -> io::Result<PersistArtifactFileStats> {
+    if payloads.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot publish an empty staged artifact",
+        ));
+    }
+    let staging = tempfile::Builder::new()
+        .prefix(".staged-payloads-")
+        .tempdir_in(artifact_dir)?;
+    let mut sources = Vec::with_capacity(payloads.len());
+    for (index, payload) in payloads.iter().enumerate() {
+        let source = staging.path().join(format!("output-{index}"));
+        fs::write(&source, payload.as_slice())?;
+        sources.push(source.into());
+    }
+    persist_staged_artifact_paths(artifact_dir, key_hex, &sources)
+}
+
+#[cfg(test)]
 pub(in crate::daemon::server) fn load_staged_artifact_paths(
     artifact_dir: &Path,
     key_hex: &str,
     expected_sizes: &[u64],
 ) -> io::Result<Option<Vec<NormalizedPath>>> {
-    validate_key(key_hex)?;
-    let pointer = pointer_path(artifact_dir, key_hex);
-    let generation_hex = match fs::read_to_string(pointer) {
-        Ok(value) => value.trim().to_string(),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    validate_generation(&generation_hex)?;
-    let generation = generation_dir(artifact_dir, key_hex, &generation_hex);
-    let manifest = load_manifest(&manifest_path(&generation), key_hex, &generation_hex)?;
-    if generation_digest(key_hex, &manifest.outputs) != generation_hex {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "staged generation digest does not match its manifest",
-        ));
-    }
-    if manifest.outputs.len() != expected_sizes.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "staged output count does not match artifact metadata",
-        ));
-    }
-
-    let mut paths = Vec::with_capacity(manifest.outputs.len());
-    let mut seen = vec![false; expected_sizes.len()];
-    for output in &manifest.outputs {
-        if output.index >= expected_sizes.len()
-            || seen[output.index]
-            || expected_sizes[output.index] != output.size
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "staged output size does not match artifact metadata",
-            ));
-        }
-        seen[output.index] = true;
-        let path = output_path(&generation, output.index);
-        let metadata = fs::metadata(&path)?;
-        if metadata.len() != output.size {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "staged output size does not match its manifest",
-            ));
-        }
-        let (_, digest_hex) = digest_file(&path)?;
-        if digest_hex != output.digest_hex {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "staged output digest does not match its manifest",
-            ));
-        }
-        paths.push((output.index, path));
-    }
-    if seen.iter().any(|was_seen| !was_seen) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "staged manifest has a missing output index",
-        ));
-    }
-    paths.sort_by_key(|(index, _)| *index);
-    Ok(Some(paths.into_iter().map(|(_, path)| path).collect()))
+    crate::artifact::resolve_staged_artifact_files(artifact_dir, key_hex, expected_sizes)
 }
 
 pub(in crate::daemon::server) fn cleanup_staged_artifact_temps(

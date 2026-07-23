@@ -42,3 +42,27 @@ def test_dylint_command_keeps_the_plugin_subcommand(monkeypatch):
         "--all",
         "--workspace",
     ]
+
+
+def test_ensure_dylint_aliases_honors_configured_target_dir(tmp_path, monkeypatch):
+    release_dir = (
+        tmp_path
+        / "dylint"
+        / "libraries"
+        / "nightly-2026-03-26-x86_64-unknown-linux-gnu"
+        / "release"
+    )
+    release_dir.mkdir(parents=True)
+    library = release_dir / "libexample.so"
+    library.write_bytes(b"dylint")
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path))
+
+    assert lint.ensure_dylint_aliases()
+    alias = release_dir / (
+        "libexample@nightly-2026-03-26-x86_64-unknown-linux-gnu.so"
+    )
+    assert alias.read_bytes() == b"dylint"
+
+    library.write_bytes(b"updated dylint")
+    assert lint.ensure_dylint_aliases()
+    assert alias.read_bytes() == b"updated dylint"

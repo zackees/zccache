@@ -40,21 +40,65 @@ pub const RSP_NUM_INCLUDES: usize = 50;
 pub const RUSTC_NUM_FILES: usize = 50;
 pub const RUSTC_WARM_TRIALS: usize = 5;
 
+/// Cache root whose teardown runs the canonical in-process unknown-event gate.
+///
+/// Perf guard supplies a sidecar path. In that mode the directory is retained
+/// for the outer, full-rule Rust audit and is removed only after that audit
+/// passes. Ordinary local benchmark runs retain automatic temporary cleanup.
+pub struct PerfCacheRoot {
+    directory: Option<tempfile::TempDir>,
+    retain_for_outer_audit: bool,
+}
+
+impl PerfCacheRoot {
+    fn new(directory: tempfile::TempDir, retain_for_outer_audit: bool) -> Self {
+        Self {
+            directory: Some(directory),
+            retain_for_outer_audit,
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        self.directory
+            .as_ref()
+            .expect("perf cache root is available until teardown")
+            .path()
+    }
+}
+
+impl Drop for PerfCacheRoot {
+    fn drop(&mut self) {
+        let audit_result = if std::thread::panicking() {
+            Ok(())
+        } else {
+            zccache_test_support::assert_no_unknown_events(self.path(), None)
+        };
+        if self.retain_for_outer_audit || audit_result.is_err() {
+            if let Some(directory) = self.directory.take() {
+                let _retained_path = directory.keep();
+            }
+        }
+        if let Err(error) = audit_result {
+            panic!("perf cache-root unknown-event audit failed:\n{error}");
+        }
+    }
+}
+
 /// Boot a daemon rooted at a fresh per-test cache directory.
 ///
-/// The returned `tempfile::TempDir` must be held by the caller — when it is
-/// dropped, the cache root (including the redb index) is deleted. Bind order
-/// in the returned tuple is intentional: the `TempDir` is declared first so
+/// The returned [`PerfCacheRoot`] must be held by the caller. Bind order
+/// in the returned tuple is intentional: the cache root is declared first so
 /// Rust's reverse-order drop guarantees the daemon (`server_handle`) shuts
-/// down before the cache root disappears.
+/// down before the cache root is audited.
 pub async fn start_daemon() -> (
-    tempfile::TempDir,
+    PerfCacheRoot,
     String,
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
 ) {
     let cache_dir = zccache::test_support::temp_cache_dir().unwrap();
-    if let Some(sidecar) = std::env::var_os("PERF_GUARD_RUNTIME_ROOTS_FILE") {
+    let runtime_roots_sidecar = std::env::var_os("PERF_GUARD_RUNTIME_ROOTS_FILE");
+    if let Some(sidecar) = runtime_roots_sidecar.as_ref() {
         use std::io::Write;
         let sidecar = std::path::PathBuf::from(sidecar);
         if let Some(parent) = sidecar.parent() {
@@ -75,7 +119,12 @@ pub async fn start_daemon() -> (
     let handle = tokio::spawn(async move {
         server.run(0).await.unwrap();
     });
-    (cache_dir, endpoint, handle, shutdown)
+    (
+        PerfCacheRoot::new(cache_dir, runtime_roots_sidecar.is_some()),
+        endpoint,
+        handle,
+        shutdown,
+    )
 }
 
 pub fn find_sccache() -> Option<NormalizedPath> {

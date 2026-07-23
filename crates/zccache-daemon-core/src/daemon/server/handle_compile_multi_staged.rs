@@ -100,6 +100,7 @@ pub(super) async fn try_handle_staged_misses(
             context_key,
             ctx,
             input_snapshot,
+            ..
         } = unit
         else {
             continue;

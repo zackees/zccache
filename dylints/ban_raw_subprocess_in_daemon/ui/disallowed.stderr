@@ -1,0 +1,10 @@
+error: `std::process::Command::status` bypasses the daemon's spawn discipline; route through `crate::process::command_output_with_priority` (sync) or `crate::process::tokio_command_output_with_priority` (async) so CREATE_NO_WINDOW, Job Object attach, and priority are applied
+  --> $DIR/disallowed.rs:5:13
+   |
+LL |     let _ = command.status();
+   |             ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[deny(ban_raw_subprocess_in_daemon)]` on by default
+
+error: aborting due to 1 previous error
+

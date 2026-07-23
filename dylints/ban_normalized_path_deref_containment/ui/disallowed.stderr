@@ -1,0 +1,16 @@
+error: raw Path containment bypasses NormalizedPath identity semantics; call the inherent NormalizedPath method
+  --> $DIR/disallowed.rs:16:13
+   |
+LL |     let _ = path.starts_with("sdk/include");
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[deny(ban_normalized_path_deref_containment)]` on by default
+
+error: raw Path containment bypasses NormalizedPath identity semantics; call the inherent NormalizedPath method
+  --> $DIR/disallowed.rs:17:13
+   |
+LL |     let _ = path.strip_prefix("sdk/include");
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 2 previous errors
+

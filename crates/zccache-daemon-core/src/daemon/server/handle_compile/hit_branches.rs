@@ -2,7 +2,7 @@
 
 use super::super::*;
 use super::cached_hit::{
-    materialize_cached_compile_hit, CachedHitMaterializeRequest, CachedHitPhases,
+    materialize_cached_compile_hit, CachedHitFailure, CachedHitMaterializeRequest, CachedHitPhases,
 };
 use crate::depgraph::depfile::user_depfile_destination;
 use crate::depgraph::UserDepFlags;
@@ -137,6 +137,7 @@ pub(super) fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Option<R
         rustc_archive_hardlink_eligible,
         phases: CachedHitPhases::request_cache(request_cache_lookup_ns, cross_root_validate_ns),
     })
+    .ok()
 }
 
 pub(super) struct FastHitProbe<'a> {
@@ -270,7 +271,8 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
             request_cache_lookup_ns: 0,
             cross_root_validate_ns: 0,
         },
-    })?;
+    })
+    .ok()?;
 
     let rfp = request_fingerprint(
         compiler_path,
@@ -324,7 +326,9 @@ pub(super) struct DepgraphHitProbe<'a> {
     pub(super) depgraph_check_ns: u64,
 }
 
-pub(super) async fn try_depgraph_cached_hit(probe: DepgraphHitProbe<'_>) -> Option<Response> {
+pub(super) async fn try_depgraph_cached_hit(
+    probe: DepgraphHitProbe<'_>,
+) -> Result<Response, CachedHitFailure> {
     let DepgraphHitProbe {
         state,
         sid,
@@ -442,7 +446,7 @@ pub(super) async fn try_depgraph_cached_hit(probe: DepgraphHitProbe<'_>) -> Opti
             ),
         );
     }
-    Some(response)
+    Ok(response)
 }
 
 /// Explicit Rust `--emit=kind=path` destinations are part of the request

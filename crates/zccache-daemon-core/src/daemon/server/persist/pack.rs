@@ -51,6 +51,7 @@ pub(in crate::daemon::server) fn build_pack(payloads: &[Arc<Vec<u8>>]) -> Vec<u8
     buf
 }
 
+#[cfg(test)]
 pub(in crate::daemon::server) fn parse_pack_header(
     data: &[u8],
 ) -> std::io::Result<Vec<(u64, u64)>> {
@@ -58,7 +59,12 @@ pub(in crate::daemon::server) fn parse_pack_header(
         return Err(std::io::Error::other("not a zccache pack file"));
     }
     let n = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
-    let needed = 8 + n * 16;
+    let needed = 8_usize
+        .checked_add(
+            n.checked_mul(16)
+                .ok_or_else(|| std::io::Error::other("pack header size overflow"))?,
+        )
+        .ok_or_else(|| std::io::Error::other("pack header size overflow"))?;
     if data.len() < needed {
         return Err(std::io::Error::other("pack header truncated"));
     }
@@ -75,6 +81,12 @@ pub(in crate::daemon::server) fn parse_pack_header(
                 .try_into()
                 .map_err(|_| std::io::Error::other("pack size slice not 8 bytes"))?,
         );
+        let end = offset
+            .checked_add(size)
+            .ok_or_else(|| std::io::Error::other("pack payload range overflow"))?;
+        if offset < needed as u64 || end > data.len() as u64 {
+            return Err(std::io::Error::other("pack payload range is invalid"));
+        }
         entries.push((offset, size));
     }
     Ok(entries)
@@ -82,6 +94,7 @@ pub(in crate::daemon::server) fn parse_pack_header(
 
 /// Try to extract the i-th payload from `{key_hex}.pack`. Returns None if the
 /// pack file is missing, corrupt, or doesn't have that many payloads.
+#[cfg(test)]
 pub(in crate::daemon::server) fn try_load_packed_payload(
     artifact_dir: &Path,
     key_hex: &str,
@@ -99,15 +112,51 @@ pub(in crate::daemon::server) fn try_load_packed_payload(
     Some(data[start..end].to_vec())
 }
 
-/// Persist all payloads of one artifact, either as N individual files
-/// (today's layout) or as a single `.pack` file (env-gated). Wraps every
-/// inner `std::fs::write` in `persist_artifact_output`'s tmp-then-rename
-/// atomicity.
+/// Persist all payloads through staged-v2 by default, a single `.pack` file
+/// when pack mode is enabled, or flat-v1 only behind the staged-layout kill
+/// switch. Flat writes remain atomic through `persist_artifact_output`.
 pub(in crate::daemon::server) fn persist_artifact_payloads(
     artifact_dir: &Path,
     key_hex: &str,
     payloads: &[Arc<Vec<u8>>],
 ) -> std::io::Result<()> {
+    persist_artifact_payloads_with_legacy_purpose(
+        artifact_dir,
+        key_hex,
+        payloads,
+        LegacyPathPurpose::LegacyWrite,
+        "pack::persist_artifact_payloads",
+        staged_artifacts_enabled(),
+    )
+}
+
+pub(in crate::daemon::server) fn persist_migrated_artifact_payloads(
+    artifact_dir: &Path,
+    key_hex: &str,
+    payloads: &[Arc<Vec<u8>>],
+) -> std::io::Result<()> {
+    persist_artifact_payloads_with_legacy_purpose(
+        artifact_dir,
+        key_hex,
+        payloads,
+        LegacyPathPurpose::Migration,
+        "cached_artifact::migrate_meta_files",
+        staged_artifacts_enabled(),
+    )
+}
+
+pub(in crate::daemon::server) fn persist_artifact_payloads_with_legacy_purpose(
+    artifact_dir: &Path,
+    key_hex: &str,
+    payloads: &[Arc<Vec<u8>>],
+    legacy_purpose: LegacyPathPurpose,
+    call_site: &'static str,
+    staged_enabled: bool,
+) -> std::io::Result<()> {
+    if staged_enabled && staged_key_supported(key_hex) && !pack_mode_enabled() {
+        persist_staged_artifact_payloads(artifact_dir, key_hex, payloads)?;
+        return Ok(());
+    }
     if pack_mode_enabled() {
         let pack = build_pack(payloads);
         return persist_artifact_output(&pack_path_for(artifact_dir, key_hex), &pack);
@@ -118,7 +167,8 @@ pub(in crate::daemon::server) fn persist_artifact_payloads(
     // `crates/zccache-daemon/benches/persist_payloads.rs`.
     if payloads.len() < PAR_WRITE_THRESHOLD {
         for (i, payload) in payloads.iter().enumerate() {
-            let cache_path = artifact_dir.join(format!("{key_hex}_{i}"));
+            let cache_path =
+                legacy_artifact_path(artifact_dir, key_hex, i, legacy_purpose, call_site);
             persist_artifact_output(&cache_path, payload)?;
         }
         return Ok(());
@@ -130,7 +180,8 @@ pub(in crate::daemon::server) fn persist_artifact_payloads(
         .par_iter()
         .enumerate()
         .map(|(i, payload)| {
-            let cache_path = artifact_dir.join(format!("{key_hex}_{i}"));
+            let cache_path =
+                legacy_artifact_path(artifact_dir, key_hex, i, legacy_purpose, call_site);
             persist_artifact_output(&cache_path, payload)
         })
         .reduce(|| Ok(()), |a, b| a.and(b))

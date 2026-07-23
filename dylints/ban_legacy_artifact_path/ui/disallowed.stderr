@@ -1,0 +1,22 @@
+error: flat-v1 artifact names are persistence policy; call the shared artifact-layout resolver instead of constructing `<key>_<index>`
+  --> $DIR/disallowed.rs:4:31
+   |
+LL |     let _ = artifact_dir.join(format!("{key_hex}_{i}"));
+   |                               ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[deny(ban_legacy_artifact_path)]` on by default
+
+error: flat-v1 artifact names are persistence policy; call the shared artifact-layout resolver instead of constructing `<key>_<index>`
+  --> $DIR/disallowed.rs:8:23
+   |
+LL |     let legacy_name = format!("{artifact_key}_{index}");
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: flat-v1 artifact names are persistence policy; call the shared artifact-layout resolver instead of constructing `<key>_<index>`
+  --> $DIR/disallowed.rs:13:23
+   |
+LL |     let legacy_name = key_hex.to_string() + "_" + &index.to_string();
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 3 previous errors
+

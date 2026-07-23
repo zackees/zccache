@@ -9,7 +9,7 @@
   that pre-date the lint or legitimately need to call the banned APIs (the
   blessed helpers themselves; in-source `#[cfg(test)]` modules). New
   production code should NEVER be added here — route the spawn through
-  `crates/zccache-daemon/src/process.rs` helpers instead.
+  `crates/zccache-daemon-core/src/daemon/process.rs` helpers instead.
 
 See the parent directory's `README.md` for the user-facing rationale and
 the table of replacements.

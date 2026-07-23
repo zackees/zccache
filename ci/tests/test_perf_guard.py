@@ -861,6 +861,7 @@ def test_run_benchmarks_once_uses_fresh_cache_per_command(tmp_path, monkeypatch)
     made_cache_dirs: list[str] = []
     removed_cache_dirs: list[Path] = []
     command_cache_dirs: list[str] = []
+    audited_cache_dirs: list[Path] = []
 
     monkeypatch.setattr(
         perf_guard,
@@ -886,6 +887,13 @@ def test_run_benchmarks_once_uses_fresh_cache_per_command(tmp_path, monkeypatch)
     monkeypatch.setattr(perf_guard.tempfile, "mkdtemp", fake_mkdtemp)
     monkeypatch.setattr(perf_watchdog.shutil, "rmtree", fake_rmtree)
     monkeypatch.setattr(perf_watchdog, "run_streamed_command", fake_streamed_command)
+    monkeypatch.setattr(
+        perf_guard,
+        "audit_cache_logs",
+        lambda cache_dir, output_dir, label, context: (
+            audited_cache_dirs.append(Path(cache_dir)) or True
+        ),
+    )
 
     returncode, output = perf_guard.run_benchmarks_once(tmp_path / "attempt.log", "c++")
 
@@ -897,6 +905,7 @@ def test_run_benchmarks_once_uses_fresh_cache_per_command(tmp_path, monkeypatch)
     assert "finished one" in output
     assert "finished two" in output
     assert command_cache_dirs == made_cache_dirs
+    assert audited_cache_dirs == cache_dirs
     assert removed_cache_dirs == cache_dirs
 
 
@@ -914,6 +923,11 @@ def test_run_benchmarks_once_stops_after_first_timeout(tmp_path, monkeypatch):
         return perf_watchdog.CommandResult(124, timed_out=True)
 
     monkeypatch.setattr(perf_watchdog, "run_streamed_command", fake_streamed_command)
+    monkeypatch.setattr(
+        perf_guard,
+        "audit_cache_logs",
+        lambda cache_dir, output_dir, label, context: True,
+    )
     output_dir = tmp_path / "perf-guard-output" / "synthetic"
 
     returncode, _ = perf_guard.run_benchmarks_once(
@@ -923,6 +937,103 @@ def test_run_benchmarks_once_stops_after_first_timeout(tmp_path, monkeypatch):
     assert returncode == 124
     assert started == ["one"]
     assert (tmp_path / "perf-guard-output" / ".watchdog-timeout").is_file()
+
+
+def test_run_benchmarks_audits_reported_runtime_roots_before_cleanup(
+    tmp_path, monkeypatch
+):
+    configured = tmp_path / "configured"
+    runtime = tmp_path / "zccache-test-runtime"
+    configured.mkdir()
+    runtime.mkdir()
+    audited: list[tuple[Path, str]] = []
+    removed: list[Path] = []
+    monkeypatch.setattr(
+        perf_guard,
+        "_benchmark_commands",
+        lambda language, benchmark_binary, test_name=None: [["bench", "one"]],
+    )
+    monkeypatch.setattr(
+        perf_guard.tempfile, "mkdtemp", lambda prefix: str(configured)
+    )
+
+    def fake_streamed_command(command, **kwargs):
+        sidecar = kwargs["output_dir"] / "runtime-roots" / "one.txt"
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_text(f"{runtime}\n", encoding="utf-8")
+        return perf_watchdog.CommandResult(0, timed_out=False)
+
+    monkeypatch.setattr(perf_watchdog, "run_streamed_command", fake_streamed_command)
+    monkeypatch.setattr(
+        perf_guard,
+        "audit_cache_logs",
+        lambda cache_dir, output_dir, label, context: (
+            audited.append((Path(cache_dir), context)) or True
+        ),
+    )
+    monkeypatch.setattr(
+        perf_watchdog, "_is_owned_runtime_cache_root", lambda root: True
+    )
+    monkeypatch.setattr(
+        perf_watchdog.shutil,
+        "rmtree",
+        lambda path, ignore_errors: removed.append(Path(path)),
+    )
+
+    returncode, _ = perf_guard.run_benchmarks_once(tmp_path / "attempt.log", "c++")
+
+    assert returncode == 0
+    assert audited == [
+        (configured.resolve(), "integration"),
+        (runtime.resolve(), "perf"),
+    ]
+    assert removed == [configured.resolve(), runtime.resolve()]
+
+
+def test_run_benchmarks_retains_every_root_when_runtime_audit_fails(
+    tmp_path, monkeypatch
+):
+    configured = tmp_path / "configured"
+    runtime = tmp_path / "zccache-test-runtime"
+    configured.mkdir()
+    runtime.mkdir()
+    removed: list[Path] = []
+    monkeypatch.setattr(
+        perf_guard,
+        "_benchmark_commands",
+        lambda language, benchmark_binary, test_name=None: [["bench", "one"]],
+    )
+    monkeypatch.setattr(
+        perf_guard.tempfile, "mkdtemp", lambda prefix: str(configured)
+    )
+
+    def fake_streamed_command(command, **kwargs):
+        sidecar = kwargs["output_dir"] / "runtime-roots" / "one.txt"
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_text(f"{runtime}\n", encoding="utf-8")
+        return perf_watchdog.CommandResult(0, timed_out=False)
+
+    monkeypatch.setattr(perf_watchdog, "run_streamed_command", fake_streamed_command)
+    monkeypatch.setattr(
+        perf_guard,
+        "audit_cache_logs",
+        lambda cache_dir, output_dir, label, context: (
+            Path(cache_dir) != runtime.resolve()
+        ),
+    )
+    monkeypatch.setattr(
+        perf_watchdog.shutil,
+        "rmtree",
+        lambda path, ignore_errors: removed.append(Path(path)),
+    )
+
+    returncode, output = perf_guard.run_benchmarks_once(
+        tmp_path / "attempt.log", "c++"
+    )
+
+    assert returncode == 1
+    assert removed == []
+    assert "retaining cache roots after log audit failure" in output
 
 
 def test_benchmark_env_uses_auto_priority_and_profiles_rust(

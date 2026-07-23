@@ -220,15 +220,98 @@ def run_benchmarks_once(
                     f"(exit={cmd_returncode}, elapsed={_format_elapsed(cmd_elapsed)})"
                 )
             finally:
-                perf_watchdog.preserve_runtime_logs_and_remove_cache(
-                    cache_dir, log_path.parent, f"{cmd_index}-{label}"
+                audit_label = f"{cmd_index}-{label}"
+                audit_targets = perf_watchdog.audit_cache_targets(
+                    cache_dir, log_path.parent, label
                 )
+                audit_ok = True
+                for root_index, (root, context) in enumerate(audit_targets):
+                    root_ok = audit_cache_logs(
+                        root,
+                        log_path.parent,
+                        f"{audit_label}-root-{root_index}",
+                        context,
+                    )
+                    audit_ok = root_ok and audit_ok
+                if not audit_ok and returncode == 0:
+                    returncode = 1
+                if audit_ok:
+                    perf_watchdog.preserve_runtime_logs_and_remove_cache(
+                        cache_dir, log_path.parent, label
+                    )
+                else:
+                    perf_watchdog.preserve_zccache_logs(
+                        cache_dir,
+                        log_path.parent / "runtime-logs" / audit_label,
+                        runtime_roots_file=perf_watchdog.runtime_roots_file(
+                            log_path.parent, label
+                        ),
+                    )
+                    retained = ", ".join(
+                        str(root) for root, _context in audit_targets
+                    )
+                    status(f"retaining cache roots after log audit failure: {retained}")
             if timed_out:
                 marker = log_path.parent.parent / ".watchdog-timeout"
                 marker.write_text(f"{label}\n", encoding="utf-8")
                 status(f"stopping this attempt after {label} timed out")
                 break
     return returncode, log_path.read_text(encoding="utf-8")
+
+
+def audit_cache_logs(
+    cache_dir: Path,
+    output_dir: Path,
+    label: str,
+    context: str,
+) -> bool:
+    """Run the Rust-owned cache-root audit before teardown.
+
+    The report is retained beside runtime evidence and copied into the Actions
+    summary by the normal perf report path; Python deliberately does not
+    interpret individual lifecycle events.
+    """
+    command = [
+        os.environ.get("ZCCACHE_CI_BIN", "zccache-ci"),
+        "audit-logs",
+        str(cache_dir),
+        "--context",
+        context,
+    ]
+    report_dir = output_dir / "log-audits"
+    json_path = report_dir / f"{label}.json"
+    human_path = report_dir / f"{label}.txt"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        result = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        json_path.write_text(
+            json.dumps({"error": str(error), "command": command}) + "\n",
+            encoding="utf-8",
+        )
+        human_path.write_text(f"log audit could not start: {error}\n", encoding="utf-8")
+        _append_step_summary(
+            f"\n### Log audit: `{label}` ({context})\n\n"
+            f"failed to start — reports: `{json_path}`, `{human_path}`\n"
+        )
+        return False
+    json_path.write_text(result.stdout, encoding="utf-8")
+    human_report = result.stderr or "log audit produced no human report\n"
+    human_path.write_text(human_report, encoding="utf-8")
+    summary_report = human_report.rstrip().replace("```", "'''")
+    _append_step_summary(
+        f"\n### Log audit: `{label}` ({context})\n\n"
+        f"{'passed' if result.returncode == 0 else 'failed'} — "
+        f"reports: `{json_path}`, `{human_path}`\n\n"
+        f"```text\n{summary_report}\n```\n"
+    )
+    return result.returncode == 0
 
 
 def _benchmark_env(cache_dir: Path, language: str | None) -> dict[str, str]:

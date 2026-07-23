@@ -6,7 +6,7 @@
 use super::*;
 use std::collections::{HashMap, HashSet};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 pub(crate) const CACHE_BYTES_ENV: &str = "ZCCACHE_CACHE_SIZE_BYTES";
@@ -15,6 +15,7 @@ const GIB: u64 = 1024 * 1024 * 1024;
 const SOFT_AGE: Duration = Duration::from_secs(4 * 24 * 60 * 60);
 const EXPIRE_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const PRESSURE_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const FULL_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const FULL_MARKER: &str = ".disk-maintenance-last-full-v1";
 
@@ -178,7 +179,7 @@ struct DiskArtifact {
     key: String,
     allocated_bytes: u64,
     last_access: SystemTime,
-    legacy_files: Vec<PathBuf>,
+    legacy_files: Vec<NormalizedPath>,
     staged: bool,
     staged_generation: Option<String>,
 }
@@ -359,8 +360,13 @@ fn allocated_bytes(path: &Path, metadata: &std::fs::Metadata) -> u64 {
     use windows_sys::Win32::Foundation::{GetLastError, SetLastError};
     use windows_sys::Win32::Storage::FileSystem::GetCompressedFileSizeW;
 
-    let path = windows_verbatim_file_path(path).unwrap_or_else(|_| path.to_path_buf());
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let path = windows_verbatim_file_path(path).unwrap_or_else(|_| path.into());
+    let wide: Vec<u16> = path
+        .as_path()
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
     let mut high = 0_u32;
     unsafe {
         SetLastError(0);
@@ -440,21 +446,20 @@ fn add_tree(
     Ok(())
 }
 
-fn legacy_key(name: &str) -> Option<&str> {
+fn legacy_key(name: &str) -> Option<(&str, Option<usize>)> {
     if name.starts_with('.') {
         return None;
     }
-    let key = name
-        .strip_suffix(".meta")
-        .or_else(|| name.strip_suffix(".pack"))
-        .or_else(|| {
-            let (key, output) = name.rsplit_once('_')?;
-            output
-                .bytes()
-                .all(|byte| byte.is_ascii_digit())
-                .then_some(key)
-        })?;
-    (key.len() <= 128 && !key.is_empty()).then_some(key)
+    let (key, output_index) = if let Some(key) = name.strip_suffix(".meta") {
+        (key, None)
+    } else if let Some(key) = name.strip_suffix(".pack") {
+        (key, None)
+    } else {
+        let (key, output) = name.rsplit_once('_')?;
+        let output_index = output.parse::<usize>().ok()?;
+        (key, Some(output_index))
+    };
+    (key.len() <= 128 && !key.is_empty()).then_some((key, output_index))
 }
 
 fn scan_artifacts(artifact_dir: &Path) -> io::Result<Vec<DiskArtifact>> {
@@ -469,9 +474,18 @@ fn scan_artifacts(artifact_dir: &Path) -> io::Result<Vec<DiskArtifact>> {
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        let Some(key) = legacy_key(&name) else {
+        let Some((key, output_index)) = legacy_key(&name) else {
             continue;
         };
+        if let Some(output_index) = output_index {
+            crate::artifact::record_legacy_artifact_access(
+                &path,
+                key,
+                output_index,
+                crate::artifact::LegacyArtifactAccessPurpose::EvictionScan,
+                "daemon::disk_maintenance::scan_artifacts",
+            );
+        }
         let artifact = groups
             .entry(key.to_string())
             .or_insert_with(|| DiskArtifact {
@@ -483,7 +497,7 @@ fn scan_artifacts(artifact_dir: &Path) -> io::Result<Vec<DiskArtifact>> {
                 staged_generation: None,
             });
         add_file(&path, artifact, &mut seen)?;
-        artifact.legacy_files.push(path);
+        artifact.legacy_files.push(path.into());
     }
 
     let staged_root = artifact_dir.join(".staged-v2");
@@ -722,8 +736,8 @@ fn maintain_disk_artifacts_with_barrier(
     })
 }
 
-fn full_marker_path(cache_dir: &Path) -> PathBuf {
-    cache_dir.join(FULL_MARKER)
+fn full_marker_path(cache_dir: &Path) -> NormalizedPath {
+    cache_dir.join(FULL_MARKER).into()
 }
 
 fn full_maintenance_due(cache_dir: &Path, now: SystemTime) -> bool {
@@ -851,6 +865,32 @@ fn pressure_scan_needed(state: &SharedState, policy: MaintenancePolicy) -> io::R
         >= policy.budget_bytes(space.capacity_bytes).saturating_mul(50) / 100)
 }
 
+/// Wait for the next maintenance pass without consuming the daemon's shared
+/// shutdown notification.
+///
+/// The accept loop also waits on `state.shutdown`. Waiting on that same
+/// edge-triggered `Notify` here can both steal a legacy `notify_one()` signal
+/// and miss `notify_waiters()` between checking `shutdown_requested` and
+/// registering the waiter. Polling the durable atomic flag keeps shutdown
+/// bounded without either race.
+async fn wait_for_next_pass_or_shutdown(
+    shutdown_requested: &AtomicBool,
+    interval: Duration,
+    poll_interval: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + interval;
+    loop {
+        if shutdown_requested.load(Ordering::Acquire) {
+            return true;
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        tokio::time::sleep(remaining.min(poll_interval)).await;
+    }
+}
+
 pub(super) fn spawn_disk_maintenance(
     state: Arc<SharedState>,
     policy: MaintenancePolicy,
@@ -876,9 +916,14 @@ pub(super) fn spawn_disk_maintenance(
                             cache_root = %state.cache_dir.display(),
                             "disk maintenance skipped exact scan below logical preflight threshold"
                         );
-                        tokio::select! {
-                            () = tokio::time::sleep(PRESSURE_INTERVAL) => {}
-                            () = state.shutdown.notified() => {}
+                        if wait_for_next_pass_or_shutdown(
+                            &state.shutdown_requested,
+                            PRESSURE_INTERVAL,
+                            SHUTDOWN_POLL_INTERVAL,
+                        )
+                        .await
+                        {
+                            break;
                         }
                         continue;
                     }
@@ -897,15 +942,13 @@ pub(super) fn spawn_disk_maintenance(
             if state.shutdown_requested.load(Ordering::Acquire) {
                 break;
             }
-            tokio::select! {
-                () = tokio::time::sleep(PRESSURE_INTERVAL) => {}
-                () = state.shutdown.notified() => {
-                    if state.shutdown_requested.load(Ordering::Acquire) {
-                        break;
-                    }
-                }
-            }
-            if state.shutdown_requested.load(Ordering::Acquire) {
+            if wait_for_next_pass_or_shutdown(
+                &state.shutdown_requested,
+                PRESSURE_INTERVAL,
+                SHUTDOWN_POLL_INTERVAL,
+            )
+            .await
+            {
                 break;
             }
         }

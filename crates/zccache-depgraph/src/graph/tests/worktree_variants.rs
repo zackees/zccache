@@ -161,6 +161,22 @@ fn rustc_metadata_compatibility_aliases_are_checkout_specific() {
 
     let alias_a = a.metadata_compat_map_key.expect("A compat alias");
     let alias_b = b.metadata_compat_map_key.expect("B compat alias");
+    assert_eq!(
+        alias_a,
+        DepGraph::rustc_metadata_compat_map_key(
+            compat_key,
+            &context("/compat-a").source_file,
+            Some(&NormalizedPath::from("/compat-a")),
+        )
+    );
+    assert_eq!(
+        alias_b,
+        DepGraph::rustc_metadata_compat_map_key(
+            compat_key,
+            &context("/compat-b").source_file,
+            Some(&NormalizedPath::from("/compat-b")),
+        )
+    );
     assert_ne!(alias_a, alias_b);
     assert_eq!(
         graph

@@ -306,7 +306,7 @@ fn staged_generation_hardlinks_only_when_semantically_authorized() {
         .unwrap()
         .unwrap();
     let payload = CachedPayload::File(payloads[0].clone());
-    let targets = vec![(&output, &payloads[0])];
+    let targets = vec![&output];
     let observed = write_payloads_par_with_mtime_floor_and_policies_observed(
         &targets,
         &[payload],
@@ -361,7 +361,7 @@ fn staged_hit_tier_faults_fall_through_without_misattribution() {
         ],
     );
     let payload = CachedPayload::File(payloads[0].clone());
-    let targets = vec![(&output, &payloads[0])];
+    let targets = vec![&output];
     let observed = write_payloads_par_with_mtime_floor_and_policies_observed(
         &targets,
         &[payload],
@@ -817,6 +817,7 @@ fn failed_restart_eviction_restores_readonly_and_retries_after_alias_delete() {
 fn multi_hit_materialization_failure_is_reported_to_the_handler() {
     let dir = tempfile::tempdir().unwrap();
     let mut targets = Vec::new();
+    let mut blobs = Vec::new();
     let mut payloads = Vec::new();
     for index in 0..2 {
         let blob: NormalizedPath = dir.path().join(format!("blob-{index}.o")).into();
@@ -825,14 +826,145 @@ fn multi_hit_materialization_failure_is_reported_to_the_handler() {
         std::fs::hard_link(&blob, &output).unwrap();
         register_hardlink(&blob, &output).unwrap();
         forget_blob_registration_for_restart_test(&blob);
-        targets.push((output, blob.clone()));
+        targets.push(output);
+        blobs.push(blob.clone());
         payloads.push(CachedPayload::File(blob));
     }
 
-    assert!(!materialize_multi_hit(&targets, &payloads));
+    assert!(matches!(
+        materialize_multi_hit(&targets, &payloads),
+        Err(MaterializationFailure::CacheBlobMissing(_))
+    ));
     assert!(
-        targets.iter().any(|(_, blob)| !blob.exists()),
+        blobs.iter().any(|blob| !blob.exists()),
         "at least the rejected blob must be evicted before the handler rebuilds"
+    );
+}
+
+#[test]
+fn multi_hit_destination_failure_is_not_cache_blob_loss() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob: NormalizedPath = dir.path().join("blob.o").into();
+    let blocked_parent = dir.path().join("not-a-directory");
+    std::fs::write(&blob, b"cached").unwrap();
+    write_authoritative_blob_digest(&blob).unwrap();
+    std::fs::write(&blocked_parent, b"blocker").unwrap();
+    let target: NormalizedPath = blocked_parent.join("output.o").into();
+
+    let result = materialize_multi_hit(&[target], &[CachedPayload::File(blob.clone())]);
+
+    assert!(matches!(
+        result,
+        Err(MaterializationFailure::DestinationWrite(_))
+    ));
+    assert!(
+        blob.exists(),
+        "destination failures must preserve the cache blob"
+    );
+}
+
+#[tokio::test]
+async fn destination_failure_survives_and_journals_concrete_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob: NormalizedPath = dir.path().join("artifacts").join("blob.o").into();
+    std::fs::create_dir_all(blob.parent().unwrap()).unwrap();
+    seed_persisted_blob(&blob, b"cached");
+    let blocker = dir.path().join("not-a-directory");
+    std::fs::write(&blocker, b"blocker").unwrap();
+    let target: NormalizedPath = blocker.join("output.o").into();
+
+    let (failure, reason) = capture_miss_reason(Box::pin(async {
+        let failure =
+            materialize_multi_hit(&[target], &[CachedPayload::File(blob.clone())]).unwrap_err();
+        report_materialization_failure(dir.path(), "artifact-key", "unit-test", &failure);
+        failure
+    }))
+    .await;
+
+    assert!(matches!(
+        failure,
+        MaterializationFailure::DestinationWrite(_)
+    ));
+    assert!(
+        blob.exists(),
+        "destination failure must preserve cache data"
+    );
+    assert_eq!(reason, Some(miss_reason::DESTINATION_WRITE_FAILED));
+    let entry = JournalEntry::new(
+        JournalContext {
+            compiler: "clang".to_string(),
+            args: vec!["-c".to_string(), "source.c".to_string()],
+            cwd: dir.path().to_string_lossy().into_owned(),
+            env: None,
+            session_id: None,
+        },
+        "miss",
+        0,
+        1,
+        reason,
+    );
+    assert_eq!(
+        entry.miss_reason.as_deref(),
+        Some(miss_reason::DESTINATION_WRITE_FAILED)
+    );
+
+    let lifecycle = std::fs::read_to_string(
+        dir.path()
+            .join("logs")
+            .join(crate::core::lifecycle::LIVE_LOG_FILENAME),
+    )
+    .unwrap();
+    let event = lifecycle
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|row| row["event"] == crate::core::lifecycle::EVENT_DESTINATION_WRITE_FAILED)
+        .expect("destination lifecycle event");
+    assert_eq!(event["evicted"], false);
+    assert_eq!(event["artifact_key"], "artifact-key");
+    let report = crate::audit::audit_cache_root(
+        dir.path(),
+        crate::audit::LogAuditContext::Integration,
+        &crate::audit::AuditOptions::default(),
+    )
+    .unwrap();
+    assert!(report.passed(), "{}", report.format_human());
+}
+
+#[tokio::test]
+async fn deleted_cache_blob_invalidates_with_no_artifact_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing: NormalizedPath = dir.path().join("gone.o").into();
+    let target: NormalizedPath = dir.path().join("restored.o").into();
+
+    let (failure, reason) = capture_miss_reason(Box::pin(async {
+        let failure =
+            materialize_multi_hit(&[target], &[CachedPayload::File(missing)]).unwrap_err();
+        report_materialization_failure(dir.path(), "artifact-key", "unit-test", &failure);
+        failure
+    }))
+    .await;
+
+    assert!(matches!(
+        failure,
+        MaterializationFailure::CacheBlobMissing(_)
+    ));
+    assert_eq!(reason, Some(miss_reason::NO_ARTIFACT_FOR_KEY));
+    let entry = JournalEntry::new(
+        JournalContext {
+            compiler: "clang".to_string(),
+            args: vec!["-c".to_string(), "source.c".to_string()],
+            cwd: dir.path().to_string_lossy().into_owned(),
+            env: None,
+            session_id: None,
+        },
+        "miss",
+        0,
+        1,
+        reason,
+    );
+    assert_eq!(
+        entry.miss_reason.as_deref(),
+        Some(miss_reason::NO_ARTIFACT_FOR_KEY)
     );
 }
 

@@ -26,6 +26,28 @@ struct FixedEnvironment {
     space: FilesystemSpace,
 }
 
+#[tokio::test]
+async fn shutdown_wait_observes_atomic_request_without_notify_edge() {
+    let shutdown_requested = Arc::new(AtomicBool::new(false));
+    let waiter_flag = Arc::clone(&shutdown_requested);
+    let waiter = tokio::spawn(async move {
+        wait_for_next_pass_or_shutdown(
+            &waiter_flag,
+            Duration::from_secs(5 * 60),
+            Duration::from_millis(1),
+        )
+        .await
+    });
+
+    tokio::task::yield_now().await;
+    shutdown_requested.store(true, Ordering::Release);
+
+    assert!(tokio::time::timeout(Duration::from_millis(100), waiter)
+        .await
+        .expect("shutdown waiter should not sleep until the maintenance interval")
+        .expect("shutdown waiter task should complete"));
+}
+
 impl MaintenanceEnvironment for FixedEnvironment {
     fn now(&self) -> SystemTime {
         self.now

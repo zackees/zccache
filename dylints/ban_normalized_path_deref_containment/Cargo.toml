@@ -1,0 +1,20 @@
+[package]
+name = "ban_normalized_path_deref_containment"
+version = "0.1.0"
+description = "Ban std::path containment selected through NormalizedPath autoderef"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+dylint_linting = "6.0.1"
+
+[dev-dependencies]
+dylint_testing = "6.0.1"
+
+[package.metadata.rust-analyzer]
+rustc_private = true
+
+[workspace]

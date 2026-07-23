@@ -17,6 +17,10 @@ This document is the index for zccache's architecture specification. Each subsys
 | [architecture/runtime.md](architecture/runtime.md) | ~130 | Concurrency model, correctness guarantees, failure modes, crash recovery |
 | [architecture/portability.md](architecture/portability.md) | ~110 | Platform differences, path handling, file identity, future extensions |
 
+Cache-root lifecycle logs are verified by the shared `zccache-audit` catalog at
+perf and integration boundaries. This keeps CI policy in Rust and makes a
+failed cache-root audit retain its diagnostic JSONL evidence.
+
 ## Quick Reference
 
 - **High-level design** → [overview.md](architecture/overview.md)

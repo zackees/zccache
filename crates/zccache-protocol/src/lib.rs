@@ -9,6 +9,14 @@ pub mod wire_prost;
 
 pub use messages::*;
 
+/// Wrapper stderr prefix for a cache miss that reached the maximal
+/// classification fallback.
+///
+/// The daemon emits this exact marker and the wrapper recognizes it when
+/// applying terminal-only warning color. Keeping it here prevents the two
+/// sides from silently drifting.
+pub const UNKNOWN_MISS_WARNING_PREFIX: &str = "zccache[warn][M]:";
+
 /// Current bincode daemon wire version.
 ///
 /// This remains the active compatibility version until the v16 prost dispatcher

@@ -13,12 +13,43 @@ mod rustfmt;
 mod tool_resolution;
 
 use crate::compiler::strict_paths::StrictPathsMode;
+use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
 use super::util::{resolve_endpoint, run_async};
 
 pub(crate) use env::{parse_wrapper_overrides, strip_leading_wrapper_flags, WrapperOverrides};
 use routing::WrapperRoute;
+
+const ANSI_YELLOW: &[u8] = b"\x1b[33m";
+const ANSI_RESET: &[u8] = b"\x1b[0m";
+
+fn wrapper_stderr_color_enabled() -> bool {
+    std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+}
+
+fn write_wrapper_warning_line(
+    writer: &mut dyn Write,
+    line: &[u8],
+    color: bool,
+) -> std::io::Result<()> {
+    let (body, newline) = line.strip_suffix(b"\r\n").map_or_else(
+        || {
+            line.strip_suffix(b"\n")
+                .map_or((line, &b""[..]), |body| (body, &b"\n"[..]))
+        },
+        |body| (body, &b"\r\n"[..]),
+    );
+
+    if color {
+        writer.write_all(ANSI_YELLOW)?;
+    }
+    writer.write_all(body)?;
+    if color {
+        writer.write_all(ANSI_RESET)?;
+    }
+    writer.write_all(newline)
+}
 
 /// Wrap a compiler or tool invocation.
 ///

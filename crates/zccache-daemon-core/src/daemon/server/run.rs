@@ -183,8 +183,8 @@ impl DaemonServer {
                     }
                     if prune.should_shutdown {
                         tracing::info!("private daemon has no live owner PIDs - shutting down");
-                        super::super::lifecycle::write_event(
-                            "died-private-owner-exit",
+                        crate::core::lifecycle::write_event(
+                            crate::core::lifecycle::EVENT_DIED_PRIVATE_OWNER_EXIT,
                             serde_json::json!({
                                 "reason": "private-owner-pids-exited",
                                 "uptime_secs": now_secs().saturating_sub(state.start_time),

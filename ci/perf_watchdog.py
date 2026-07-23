@@ -9,6 +9,7 @@ import re
 import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from collections import deque
@@ -373,12 +374,72 @@ def preserve_zccache_logs(
 def preserve_runtime_logs_and_remove_cache(
     cache_dir: Path, output_dir: Path, label: str
 ) -> None:
+    runtime_roots_file = _runtime_roots_file(output_dir, label)
     preserve_zccache_logs(
         cache_dir,
         output_dir / "runtime-logs" / label,
-        runtime_roots_file=_runtime_roots_file(output_dir, label),
+        runtime_roots_file=runtime_roots_file,
     )
-    shutil.rmtree(cache_dir, ignore_errors=True)
+    configured_root = cache_dir.resolve()
+    for root in runtime_cache_roots(cache_dir, output_dir, label):
+        if root == configured_root or _is_owned_runtime_cache_root(root):
+            shutil.rmtree(root, ignore_errors=True)
+
+
+def runtime_cache_roots(cache_dir: Path, output_dir: Path, label: str) -> list[Path]:
+    """Return the configured root plus unique roots reported by the benchmark."""
+    roots = [cache_dir, *_reported_runtime_cache_roots(output_dir, label)]
+    return list(dict.fromkeys(root.resolve() for root in roots))
+
+
+def audit_cache_targets(
+    cache_dir: Path, output_dir: Path, label: str
+) -> list[tuple[Path, str]]:
+    """Return every evidence root and the policy context it needs.
+
+    In-process benchmark daemons write compile journals under their reported
+    temp roots, while process-global lifecycle events follow the configured
+    `ZCCACHE_CACHE_DIR`. The configured root gets non-warm integration rules
+    and every reported daemon root gets the strict perf rule set. Without a
+    reported root, the configured root hosted the daemon and gets perf rules.
+    """
+    configured = cache_dir.resolve()
+    reported = list(
+        dict.fromkeys(
+            root.resolve()
+            for root in _reported_runtime_cache_roots(output_dir, label)
+        )
+    )
+    if not reported:
+        return [(configured, "perf")]
+    if configured in reported:
+        return [
+            (configured, "perf"),
+            *((root, "perf") for root in reported if root != configured),
+        ]
+    return [(configured, "integration"), *((root, "perf") for root in reported)]
+
+
+def _reported_runtime_cache_roots(output_dir: Path, label: str) -> list[Path]:
+    try:
+        return [
+            Path(line.strip())
+            for line in runtime_roots_file(output_dir, label)
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip()
+        ]
+    except OSError:
+        return []
+
+
+def _is_owned_runtime_cache_root(root: Path) -> bool:
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    return root.parent == temp_root and root.name.startswith("zccache-test-")
+
+
+def runtime_roots_file(output_dir: Path, label: str) -> Path:
+    return _runtime_roots_file(output_dir, label)
 
 
 def _capture_process_snapshot(pids: list[int], destination: Path) -> None:
