@@ -1,9 +1,8 @@
 """Tests for ci/perf_local.py — the local Docker perf harness orchestrator.
 
-Scope: pure functions only (formatting helpers + result-summary rendering).
-Docker invocation, image build, and container run are NOT tested here —
-they'd require a working Docker daemon and would duplicate what the local
-Docker matrix already covers end-to-end.
+Most cases use pre-written fixture files. Focused contract tests also create
+temporary Git repositories and assert exact Docker argv without running a
+container.
 """
 
 from __future__ import annotations
@@ -245,9 +244,8 @@ def test_threshold_manifest_is_authoritative_for_evaluation_and_rendering():
     assert perf_local.PERF_THRESHOLDS_PATH.is_file()
     assert perf_local.LOCAL_MIN_SPEEDUP == perf_local.PERF_THRESHOLDS["minimum_speedup"]
     assert perf_local.LOCAL_MAX_WARM_MS == perf_local.PERF_THRESHOLDS["maximum_warm_ms"]
-    assert (
-        perf_local.LOCAL_MAX_STAGED_OVERHEAD_MS
-        == perf_local.PERF_THRESHOLDS["maximum_staged_overhead_ms"]
+    assert perf_local.LOCAL_MAX_STAGED_OVERHEAD_MS_PER_PUBLICATION == (
+        perf_local.PERF_THRESHOLDS["maximum_staged_overhead_ms_per_publication"]
     )
 
 
@@ -576,6 +574,59 @@ def test_rollout_evaluator_accepts_complete_local_cell(tmp_path):
     results = _write_gated_results(tmp_path)
 
     assert perf_local.evaluate_rollout_result(results, "cold-tar-untar-warm", "medium") == []
+
+
+def test_rollout_evaluator_normalizes_staged_overhead_by_publication_count(tmp_path):
+    def failures_for(publications: int) -> list[str]:
+        fixture_root = tmp_path / f"publications-{publications}"
+        fixture_root.mkdir()
+        results = _write_gated_results(
+            fixture_root,
+            "cold-tar-untar-warm",
+        )
+        report_path = results / "cold-cache-report.json"
+        report = json.loads(report_path.read_text())
+        staged = report["last_session"]["phase_profile"]["staged"]
+        staged["counters"]["publication_success"] = publications
+        staged["timings_ns"] = {
+            "hashing": publications * 20_000_000,
+            "publication": publications * 70_000_000,
+            "miss_materialization": publications * 10_000_000,
+        }
+        report_path.write_text(json.dumps(report))
+        return perf_local.evaluate_rollout_result(
+            results,
+            "cold-tar-untar-warm",
+            "medium",
+        )
+
+    assert failures_for(4) == []
+    assert failures_for(143) == []
+
+
+def test_rollout_evaluator_rejects_per_publication_staged_regression(tmp_path):
+    results = _write_gated_results(tmp_path)
+    report_path = results / "cold-cache-report.json"
+    report = json.loads(report_path.read_text())
+    staged = report["last_session"]["phase_profile"]["staged"]
+    staged["counters"]["publication_success"] = 4
+    staged["timings_ns"] = {
+        "hashing": 400_000_000,
+        "publication": 3_000_000_000,
+        "miss_materialization": 0,
+    }
+    report_path.write_text(json.dumps(report))
+
+    failures = perf_local.evaluate_rollout_result(
+        results,
+        "cold-tar-untar-warm",
+        "medium",
+    )
+
+    assert (
+        "staged miss overhead 850ms/publication exceeds "
+        "750ms/publication for medium"
+    ) in failures
 
 
 def test_rollout_evaluator_rejects_missing_tier_and_staged_failure(tmp_path):

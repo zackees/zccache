@@ -150,7 +150,10 @@ fn embedded_and_ipc_entry_points_use_the_shared_context_constructor() {
     let connection = include_str!("../../server/connection.rs");
     let embedded = include_str!("../../server/embedded.rs");
     let connection_production = connection.split("#[cfg(test)]").next().unwrap();
-    let embedded_production = embedded.split("#[cfg(test)]").next().unwrap();
+    // `embedded.rs` has a small test-only constructor near its top, before
+    // the production compile entry point. Unlike connection.rs, splitting at
+    // the first cfg(test) would therefore discard the code under review.
+    let embedded_production = embedded;
 
     assert_eq!(
         connection_production

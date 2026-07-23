@@ -496,6 +496,12 @@ delivery observable in session `phase_profile.staged` telemetry. Rust output
 paths are remapped to a stable logical marker before publication; depfiles and
 captured streams are rehydrated to each caller's requested destination, so
 private staging-root differences do not create false publication conflicts.
+Multi-source compiler publication additionally requires a native per-file
+mutation sequence so an A-to-B-to-A input rewrite cannot masquerade as an
+unchanged snapshot. Windows uses the file USN. Unix ctime is only a timestamp
+and can repeat within a coarse clock tick, so Unix executes the staged compiler
+result but conservatively suppresses its multi-source cache publication until
+a true change counter is available.
 
 `ZCCACHE_STAGED_ARTIFACTS=off` is the rollout kill switch. Diagnostic values
 `rust` and `c-cpp` limit staging to one compiler family; `exec` enables exact

@@ -138,13 +138,22 @@ def load_perf_thresholds() -> dict:
         raise ValueError("threshold manifest must define every rollout scenario")
     if not isinstance(thresholds.get("minimum_speedup"), (int, float)):
         raise ValueError("threshold manifest minimum_speedup must be numeric")
+    staged_limits = thresholds.get("maximum_staged_overhead_ms_per_publication")
+    if not isinstance(staged_limits, dict) or set(staged_limits) != set(VALID_FIXTURES):
+        raise ValueError(
+            "threshold manifest must define staged overhead per publication for every fixture"
+        )
+    if not all(type(value) is int and value > 0 for value in staged_limits.values()):
+        raise ValueError("staged overhead per-publication limits must be positive integers")
     return thresholds
 
 
 PERF_THRESHOLDS = load_perf_thresholds()
 LOCAL_MIN_SPEEDUP = float(PERF_THRESHOLDS["minimum_speedup"])
 LOCAL_MAX_WARM_MS = PERF_THRESHOLDS["maximum_warm_ms"]
-LOCAL_MAX_STAGED_OVERHEAD_MS = int(PERF_THRESHOLDS["maximum_staged_overhead_ms"])
+LOCAL_MAX_STAGED_OVERHEAD_MS_PER_PUBLICATION = PERF_THRESHOLDS[
+    "maximum_staged_overhead_ms_per_publication"
+]
 LOCAL_MAX_MATERIALIZATION_COPIED_BYTES = int(
     PERF_THRESHOLDS["maximum_materialization_copied_bytes"]
 )
@@ -685,12 +694,27 @@ def evaluate_rollout_result(results_dir: Path, scenario: str, fixture: str) -> l
     if not isinstance(cold_timings, dict) or not isinstance(cold_counters, dict):
         failures.append("malformed cold staged telemetry")
         return failures
-    overhead_ns = sum(int(cold_timings.get(name, 0) or 0) for name in ("hashing", "publication", "miss_materialization"))
-    overhead_ms = (overhead_ns + 999_999) // 1_000_000
-    if int(cold_counters.get("publication_success", 0) or 0) <= 0:
+    overhead_ns = sum(
+        int(cold_timings.get(name, 0) or 0)
+        for name in ("hashing", "publication", "miss_materialization")
+    )
+    publications = int(cold_counters.get("publication_success", 0) or 0)
+    if publications <= 0:
         failures.append("cold path published no staged generations")
-    if overhead_ms > LOCAL_MAX_STAGED_OVERHEAD_MS:
-        failures.append(f"staged miss overhead {overhead_ms}ms exceeds {LOCAL_MAX_STAGED_OVERHEAD_MS}ms")
+    else:
+        # These timings accumulate independently across concurrent compiler
+        # requests. Normalize their sum so an identical per-publication cost
+        # receives the same verdict in a four-crate and a 143-crate fixture.
+        overhead_ms_per_publication = (
+            overhead_ns + publications * 1_000_000 - 1
+        ) // (publications * 1_000_000)
+        overhead_limit = int(LOCAL_MAX_STAGED_OVERHEAD_MS_PER_PUBLICATION[fixture])
+        if overhead_ms_per_publication > overhead_limit:
+            failures.append(
+                "staged miss overhead "
+                f"{overhead_ms_per_publication}ms/publication exceeds "
+                f"{overhead_limit}ms/publication for {fixture}"
+            )
 
     counter_sets = [cold_counters]
     if warm_staged is not None:

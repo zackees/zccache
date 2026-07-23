@@ -543,10 +543,6 @@ mod tests {
         let original_mtime =
             filetime::FileTime::from_last_modification_time(&std::fs::metadata(&input).unwrap());
 
-        // Some Unix filesystems source ctime from a coarse cached clock even
-        // though stat exposes nanoseconds. Cross at least one clock tick so
-        // this test exercises ABA detection instead of timestamp granularity.
-        std::thread::sleep(std::time::Duration::from_millis(2));
         std::fs::write(&input, b"BBBB").unwrap();
         std::fs::write(&input, b"AAAA").unwrap();
         filetime::set_file_mtime(&input, original_mtime).unwrap();
@@ -555,10 +551,17 @@ mod tests {
         assert_eq!(std::fs::read(&input).unwrap(), b"AAAA");
         assert_eq!(after.modified, before.modified);
         assert_eq!(after.file_id, before.file_id);
-        assert_ne!(
-            after, before,
-            "native change marker must detect A-to-B-to-A mutation"
-        );
+        if before.change_marker.is_some() && after.change_marker.is_some() {
+            assert_ne!(
+                after, before,
+                "a published native marker must detect A-to-B-to-A mutation"
+            );
+        } else {
+            assert!(
+                !stamps_have_native_markers(&HashMap::from([(input.into(), after)])),
+                "coarse marker capability must fail snapshot completeness closed"
+            );
+        }
     }
 
     #[tokio::test]

@@ -160,36 +160,42 @@ where
 }
 
 fn explicitly_skips_children(flags: &[String]) -> bool {
+    let mut effective = None;
     let mut index = 0;
     while index < flags.len() {
         let flag = flags[index].as_str();
         if flag == "--config" {
-            if flags
-                .get(index + 1)
-                .is_some_and(|value| config_enables_skip_children(value))
-            {
-                return true;
+            if let Some(value) = flags.get(index + 1) {
+                if let Some(assignment) = config_skip_children_assignment(value) {
+                    effective = Some(assignment);
+                }
             }
             index += 2;
             continue;
         }
-        if flag
-            .strip_prefix("--config=")
-            .is_some_and(config_enables_skip_children)
-        {
-            return true;
+        if let Some(value) = flag.strip_prefix("--config=") {
+            if let Some(assignment) = config_skip_children_assignment(value) {
+                effective = Some(assignment);
+            }
         }
         index += 1;
     }
-    false
+    effective == Some(true)
 }
 
-fn config_enables_skip_children(config: &str) -> bool {
-    config.split(',').any(|entry| {
-        entry.split_once('=').is_some_and(|(key, value)| {
-            key.trim().eq_ignore_ascii_case("skip_children")
-                && value.trim().eq_ignore_ascii_case("true")
-        })
+fn config_skip_children_assignment(config: &str) -> Option<bool> {
+    config.split(',').fold(None, |effective, entry| {
+        let Some((key, value)) = entry.split_once('=') else {
+            return effective;
+        };
+        if !key.trim().eq_ignore_ascii_case("skip_children") {
+            return effective;
+        }
+        match value.trim().to_ascii_lowercase().as_str() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => effective,
+        }
     })
 }
 
@@ -362,6 +368,26 @@ mod tests {
         assert!(!explicitly_skips_children(&[
             "--config".to_owned(),
             "skip_children=false".to_owned(),
+        ]));
+    }
+
+    #[test]
+    fn skip_children_config_parser_uses_the_last_assignment() {
+        assert!(!explicitly_skips_children(&[
+            "--config".to_owned(),
+            "skip_children=true".to_owned(),
+            "--config=skip_children=false".to_owned(),
+        ]));
+        assert!(explicitly_skips_children(&[
+            "--config=skip_children=false".to_owned(),
+            "--config".to_owned(),
+            "max_width=100,skip_children=true".to_owned(),
+        ]));
+        assert!(!explicitly_skips_children(&[
+            "--config=skip_children=true,skip_children=false".to_owned(),
+        ]));
+        assert!(explicitly_skips_children(&[
+            "--config=skip_children=false,skip_children=true".to_owned(),
         ]));
     }
 }

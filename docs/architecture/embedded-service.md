@@ -9,8 +9,9 @@ zccache#903 and the implementation anchor for zccache#904 through zccache#910.
 Issue #903 defines the embedded-service direction and the MVP acceptance
 surface. In the current tree, the first public Rust API is exported as
 `zccache::embedded::ZccacheService`. It is an MVP boundary for host daemons to
-start, inspect, maintain, flush, and shut down an in-process zccache engine; soldr/fbuild
-integration and durable event emission are still follow-up work.
+start, inspect, maintain, flush, and shut down an in-process zccache engine.
+Soldr's embedded integration is landed; fbuild integration and the remaining
+audit/operator surfaces are follow-up work.
 
 The MVP boundary is:
 
@@ -144,6 +145,12 @@ pub enum DiskMaintenanceKind {
 
 pub struct FlushReport {
     pub pending_writes_drained: bool,
+    pub artifact_entries: u64,
+    pub metadata_entries: u64,
+}
+
+pub struct DetailedFlushReport {
+    pub pending_writes_drained: bool,
     pub index_writer_drained: bool,
     pub steps: Vec<FlushStepReport>,
     pub artifact_entries: u64,
@@ -154,6 +161,11 @@ pub enum FlushStepOutcome {
     Completed,
     Failed(String),
     TimedOut,
+}
+
+pub enum MaintenanceOwnership {
+    Embedded,
+    Host,
 }
 
 pub struct HostIdentity {
@@ -200,6 +212,11 @@ impl ZccacheService {
         config: ZccacheConfig,
         disk_limits: DiskCacheLimits,
     ) -> Result<Self>;
+    pub async fn start_with_disk_limits_and_maintenance(
+        config: ZccacheConfig,
+        disk_limits: DiskCacheLimits,
+        maintenance_ownership: MaintenanceOwnership,
+    ) -> Result<Self>;
     pub async fn compile(&self, request: CompileRequest) -> Result<CompileResponse>;
     pub async fn compile_streaming<F>(&self, request: CompileRequest, on_chunk: F) -> Result<()>
     where
@@ -210,7 +227,12 @@ impl ZccacheService {
         kind: DiskMaintenanceKind,
     ) -> std::io::Result<DiskMaintenanceReport>;
     pub async fn flush(&self) -> Result<FlushReport>;
+    pub async fn flush_detailed(&self) -> Result<DetailedFlushReport>;
     pub async fn shutdown(self, mode: ShutdownMode) -> Result<ShutdownReport>;
+    pub async fn shutdown_detailed(
+        self,
+        mode: ShutdownMode,
+    ) -> Result<DetailedShutdownReport>;
 }
 ```
 
@@ -219,35 +241,40 @@ exclusive. `start` uses the shared dynamic artifact-store budget;
 `start_with_disk_limits` accepts overrides without adding fields to the
 existing public `ServiceLimits` struct. The budget
 accounts for allocated artifact files and pending writes, not small root-local
-indexes, depgraphs, logs, journals, or daemon metadata. The service starts its
-own pressure/full maintenance loop on the host runtime and touches only the
-effective versioned root derived from `cache_root`. The host may request an
-immediate pass through `maintain_disk`, but that call never scans parent or
-sibling product roots. See
+indexes, depgraphs, logs, journals, or daemon metadata. By default the service
+starts its own pressure/full maintenance loop on the host runtime. A host that
+already has a lifecycle scheduler selects `MaintenanceOwnership::Host` to
+suppress that duplicate loop and calls `maintain_disk` itself. Both forms touch
+only the effective versioned root derived from `cache_root`; an immediate pass
+never scans parent or sibling product roots. See
 [artifact-store.md](artifact-store.md#daemon-owned-retention-policy) for the
 single policy shared with standalone mode.
 
 ### Maintenance limits and task ownership
 
-Embedded mode owns one disk-maintenance task in addition to the artifact-index
-writer. Both tasks spawn through `RuntimeHooks::handle` when the host supplies
-one, so persistent work stays on the host-selected Tokio runtime. Maintenance
-waits for artifact-index hydration, runs an initial pressure or due full pass,
-performs cheap pressure preflights every five minutes, and performs a full age
-pass at least daily. It uses the same bounded, root-local policy as standalone
-mode; it does not introduce a second embedded-only retention algorithm.
+With `MaintenanceOwnership::Embedded`, embedded mode owns one disk-maintenance
+task in addition to the artifact-index writer. Both tasks spawn through
+`RuntimeHooks::handle` when the host supplies one, so persistent work stays on
+the host-selected Tokio runtime. Maintenance waits for artifact-index
+hydration, runs an initial pressure or due full pass, performs cheap pressure
+preflights every five minutes, and performs a full age pass at least daily. It
+uses the same bounded, root-local policy as standalone mode; it does not
+introduce a second embedded-only retention algorithm.
 
 Graceful shutdown latches the shared shutdown flag and sends a retained wakeup
-to the maintenance task. It waits up to two seconds for that task, aborts and
-joins the outer task on timeout, and records the result as the named
-`maintenance_shutdown` step. Shutdown then waits for any host-requested
+to an embedded-owned maintenance task, then joins it without abandoning any
+nested blocking deletion worker. It also waits for any host-requested
 maintenance pass holding the root-local maintenance lock before draining
 artifact publications and the index writer.
 
-`FlushReport::is_complete()` is true only when pending publications and the
-index writer drained and every named persistence step completed. Failures and
-timeouts remain visible as `FlushStepOutcome` values; callers must not infer a
-complete flush from the method returning successfully.
+The original three-field `FlushReport` remains source-compatible for 1.x
+consumers. Hosts that need durability proof use `flush_detailed()` or
+`shutdown_detailed()`. `DetailedFlushReport::is_complete()` is true only when
+pending publications and the index writer drained and every named persistence
+step completed. Persistence workers are awaited to completion rather than
+detached on timeout, preventing an older snapshot from overwriting a later
+one. A regular non-shutdown flush can report a timed-out publication barrier;
+graceful shutdown waits for publication quiescence.
 
 `compile_streaming` is the canonical producer. `compile` is a buffered adapter
 that collects the same chunks. Compiler misses and direct invocations emit
@@ -290,10 +317,10 @@ Embedded service lifecycle is explicit:
 2. Host starts `ZccacheService` with `ZccacheConfig`.
 3. Host calls service methods from build phases.
 4. zccache emits child spans/events under host-provided audit contexts.
-5. Host calls `flush()` before final analysis artifacts are read.
+5. Host calls `flush_detailed()` before final analysis artifacts are read.
 6. Host calls graceful shutdown during daemon termination.
-7. zccache cancels and joins maintenance tasks, drains queued writes, and
-   reports every failed or timed-out persistence phase.
+7. zccache joins maintenance tasks, drains queued writes, and reports every
+   failed or timed-out phase through the detailed shutdown report.
 
 Cancellation must be cooperative and observable. A cancelled build should
 produce a terminal audit event with enough detail to distinguish:

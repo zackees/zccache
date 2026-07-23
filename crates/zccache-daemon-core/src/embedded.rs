@@ -311,15 +311,29 @@ pub struct ShutdownReport {
 #[derive(Debug, Clone)]
 pub struct FlushReport {
     pub pending_writes_drained: bool,
+    pub artifact_entries: u64,
+    pub metadata_entries: u64,
+}
+
+/// Detailed report returned by [`ZccacheService::flush_detailed`].
+///
+/// This separate additive type preserves the source-compatible shape of the
+/// original public [`FlushReport`] for downstream 1.x users that construct or
+/// exhaustively destructure it.
+#[derive(Debug, Clone)]
+pub struct DetailedFlushReport {
+    pub pending_writes_drained: bool,
     pub index_writer_drained: bool,
     pub steps: Vec<FlushStepReport>,
     pub artifact_entries: u64,
     pub metadata_entries: u64,
 }
 
-impl FlushReport {
+impl DetailedFlushReport {
     /// `true` only when every queued write, index update, and persistence step
-    /// completed successfully before its bound.
+    /// completed successfully. Regular flushes bound acquisition of the
+    /// publication barrier; once persistence starts its workers are awaited
+    /// to completion.
     pub fn is_complete(&self) -> bool {
         self.pending_writes_drained
             && self.index_writer_drained
@@ -328,6 +342,13 @@ impl FlushReport {
                 .iter()
                 .all(|step| matches!(step.outcome, FlushStepOutcome::Completed))
     }
+}
+
+/// Detailed report returned by [`ZccacheService::shutdown_detailed`].
+#[derive(Debug, Clone)]
+pub struct DetailedShutdownReport {
+    pub mode: ShutdownMode,
+    pub flushed: DetailedFlushReport,
 }
 
 /// Outcome of one cache-persistence step.
@@ -352,6 +373,16 @@ pub enum DiskMaintenanceKind {
     Pressure,
     /// Also expire entries older than 30 days.
     Full,
+}
+
+/// Selects who schedules periodic disk-maintenance passes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaintenanceOwnership {
+    /// The embedded service runs its own pressure and daily full passes.
+    Embedded,
+    /// The embedding host calls [`ZccacheService::maintain_disk`] from its
+    /// existing lifecycle scheduler.
+    Host,
 }
 
 /// Pressure tier observed during a disk-maintenance pass.
@@ -428,6 +459,20 @@ impl ZccacheService {
         config: ZccacheConfig,
         disk_limits: DiskCacheLimits,
     ) -> Result<Self> {
+        Self::start_with_disk_limits_and_maintenance(
+            config,
+            disk_limits,
+            MaintenanceOwnership::Embedded,
+        )
+        .await
+    }
+
+    /// Start an embedded service whose periodic maintenance owner is explicit.
+    pub async fn start_with_disk_limits_and_maintenance(
+        config: ZccacheConfig,
+        disk_limits: DiskCacheLimits,
+        maintenance_ownership: MaintenanceOwnership,
+    ) -> Result<Self> {
         let endpoint = embedded_endpoint(&config.host);
         let cache_root =
             crate::core::config::effective_cache_root_from_top_level(&config.cache_root);
@@ -436,11 +481,12 @@ impl ZccacheService {
             disk_limits.max_cache_percent,
         )
         .map_err(EmbeddedError::Start)?;
-        let daemon = EmbeddedDaemon::start(
+        let daemon = EmbeddedDaemon::start_with_maintenance(
             endpoint,
             cache_root,
             config.runtime.handle.clone(),
             maintenance_policy,
+            maintenance_ownership == MaintenanceOwnership::Embedded,
         )
         .await
         .map_err(|err| EmbeddedError::Start(err.to_string()))?;
@@ -622,10 +668,11 @@ impl ZccacheService {
 
     /// Run disk maintenance against this service's exact configured cache root.
     ///
-    /// The embedded service also runs pressure checks every five minutes and a
-    /// persisted full-age pass every 24 hours. Hosts can call this method after
-    /// their own activity or disk-pressure signal without scanning sibling
-    /// product roots.
+    /// [`MaintenanceOwnership::Embedded`] also runs pressure checks every five
+    /// minutes and a persisted full-age pass every 24 hours.
+    /// [`MaintenanceOwnership::Host`] suppresses that scheduler so the host
+    /// calls this method from its own lifecycle loop. Neither form scans
+    /// sibling product roots.
     pub async fn maintain_disk(
         &self,
         kind: DiskMaintenanceKind,
@@ -648,13 +695,12 @@ impl ZccacheService {
 
     /// Flush pending embedded service state to disk.
     ///
-    /// Honors [`ZccacheConfig::cancellation`] (zccache#923) the same way
-    /// [`Self::compile`] does: a cancel mid-flush returns
-    /// [`EmbeddedError::Cancelled`] and drops the in-progress flush
-    /// future. The artifact-index writer task continues to drain on its
-    /// next normal tick; nothing on disk is left half-written because
-    /// the flush calls down to atomic batch commits.
-    pub async fn flush(&self) -> Result<FlushReport> {
+    /// A token cancelled before the flush starts returns
+    /// [`EmbeddedError::Cancelled`]. Once persistence begins it remains owned
+    /// until completion: dropping an awaited `spawn_blocking` join does not
+    /// cancel the disk write and could let an older checkpoint race a later
+    /// archive.
+    async fn flush_internal(&self) -> Result<EmbeddedFlushReport> {
         if self.shutdown.load(Ordering::Acquire) {
             return Err(EmbeddedError::ShutDown);
         }
@@ -663,18 +709,7 @@ impl ZccacheService {
                 return Err(EmbeddedError::Cancelled);
             }
         }
-        let flush_future = self.daemon.flush();
-        let report = match &self.cancellation {
-            Some(token) => {
-                let cancelled = token.cancelled();
-                tokio::select! {
-                    biased;
-                    () = cancelled => return Err(EmbeddedError::Cancelled),
-                    report = flush_future => report,
-                }
-            }
-            None => flush_future.await,
-        };
+        let report = self.daemon.flush().await;
         // zccache#926: drain pending audit events to disk along with
         // the cache state. Best-effort — a failure to flush the audit
         // sink does not block the embedded service flush from
@@ -683,7 +718,22 @@ impl ZccacheService {
         if let Some(sink) = &self.audit_sink {
             let _ = sink.flush().await;
         }
-        Ok(FlushReport::from_report(report))
+        Ok(report)
+    }
+
+    pub async fn flush(&self) -> Result<FlushReport> {
+        self.flush_internal().await.map(FlushReport::from_report)
+    }
+
+    /// Flush pending embedded state and report every durability phase.
+    ///
+    /// Persistence workers remain owned until they complete. A non-shutdown
+    /// flush can still return an incomplete report if its publication barrier
+    /// cannot be acquired before the safety deadline.
+    pub async fn flush_detailed(&self) -> Result<DetailedFlushReport> {
+        self.flush_internal()
+            .await
+            .map(DetailedFlushReport::from_report)
     }
 
     /// Shut down the service and flush relevant persisted state.
@@ -691,7 +741,7 @@ impl ZccacheService {
     /// `ShutdownMode::Graceful` waits for the durable audit sink to
     /// drain before returning. `ShutdownMode::Force` does not — the
     /// host signalled "stop now, lost events are acceptable."
-    pub async fn shutdown(self, mode: ShutdownMode) -> Result<ShutdownReport> {
+    async fn shutdown_internal(self, mode: ShutdownMode) -> Result<EmbeddedFlushReport> {
         if self.shutdown.swap(true, Ordering::AcqRel) {
             return Err(EmbeddedError::ShutDown);
         }
@@ -704,9 +754,23 @@ impl ZccacheService {
                 let _ = sink.shutdown().await;
             }
         }
+        Ok(report)
+    }
+
+    pub async fn shutdown(self, mode: ShutdownMode) -> Result<ShutdownReport> {
+        let report = self.shutdown_internal(mode).await?;
         Ok(ShutdownReport {
             mode,
             flushed: FlushReport::from_report(report),
+        })
+    }
+
+    /// Shut down the service and report every durability phase.
+    pub async fn shutdown_detailed(self, mode: ShutdownMode) -> Result<DetailedShutdownReport> {
+        let report = self.shutdown_internal(mode).await?;
+        Ok(DetailedShutdownReport {
+            mode,
+            flushed: DetailedFlushReport::from_report(report),
         })
     }
 }
@@ -751,6 +815,37 @@ impl ServiceStats {
 }
 
 impl FlushReport {
+    fn from_report(report: EmbeddedFlushReport) -> Self {
+        Self {
+            pending_writes_drained: report.pending_writes_drained,
+            artifact_entries: report.artifact_entries,
+            metadata_entries: report.metadata_entries,
+        }
+    }
+}
+
+#[cfg(test)]
+mod flush_report_compatibility_tests {
+    use super::FlushReport;
+
+    #[test]
+    fn legacy_flush_report_literal_and_exhaustive_pattern_still_compile() {
+        let report = FlushReport {
+            pending_writes_drained: true,
+            artifact_entries: 2,
+            metadata_entries: 3,
+        };
+        let FlushReport {
+            pending_writes_drained,
+            artifact_entries,
+            metadata_entries,
+        } = report;
+        assert!(pending_writes_drained);
+        assert_eq!((artifact_entries, metadata_entries), (2, 3));
+    }
+}
+
+impl DetailedFlushReport {
     fn from_report(report: EmbeddedFlushReport) -> Self {
         debug_assert_eq!(report.is_complete(), {
             report.pending_writes_drained
@@ -973,9 +1068,8 @@ mod streaming_tests {
 #[cfg(test)]
 mod cancellation_tests {
     //! zccache#923: tests that `ZccacheConfig::cancellation`, when
-    //! supplied, aborts `compile()` and `flush()` cooperatively via a
-    //! `tokio::select!` race rather than waiting for the inner future
-    //! to finish.
+    //! supplied, aborts `compile()` cooperatively and short-circuits a flush
+    //! only when cancellation is already latched before persistence begins.
 
     use super::*;
     use std::path::PathBuf;
@@ -1124,11 +1218,8 @@ mod cancellation_tests {
 
     #[tokio::test]
     async fn precancelled_token_short_circuits_flush() {
-        // Same fast-path as compile() but on the flush path. Important
-        // because soldr's BuildSessionEnd handler calls flush() before
-        // its own session aggregate write — a cancel-during-shutdown
-        // must let the flush return immediately rather than blocking
-        // soldr's exit on a stalled disk write.
+        // A pre-cancelled token is safe to honor because no persistence worker
+        // has started. Once a flush begins, it remains owned to quiescence.
         let temp = TempDir::new().expect("temp cache root");
         let token = CancellationToken::new();
         token.cancel();

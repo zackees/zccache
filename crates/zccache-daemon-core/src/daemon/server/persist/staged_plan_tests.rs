@@ -45,9 +45,6 @@ fn rust_plan_rewrites_output_before_spawn() {
 
 #[test]
 fn rust_staging_paths_do_not_change_published_output_bytes() {
-    if !staged_tests_enabled() {
-        return;
-    }
     let Some(rustc) = crate::test_support::find_rustc() else {
         return;
     };
