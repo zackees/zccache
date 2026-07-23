@@ -514,7 +514,17 @@ pub(crate) fn evict_disk_artifacts(
             stem.to_string()
         } else if let Some(pos) = fname.rfind('_') {
             // Data file: key_hex_{index}
-            fname[..pos].to_string()
+            let key = fname[..pos].to_string();
+            if let Ok(output_index) = fname[pos + 1..].parse::<usize>() {
+                crate::artifact::record_legacy_artifact_access(
+                    &path,
+                    &key,
+                    output_index,
+                    crate::artifact::LegacyArtifactAccessPurpose::EvictionScan,
+                    "daemon::eviction::evict_disk_artifacts",
+                );
+            }
+            key
         } else {
             continue;
         };

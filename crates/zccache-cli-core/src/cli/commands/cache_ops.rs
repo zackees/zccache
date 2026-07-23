@@ -380,48 +380,58 @@ pub(crate) fn warm_target(
         .set_accessed(now)
         .set_modified(now);
 
-    // Flatten the artifact → output-name nesting into a single Vec of
-    // (src, dst, name) so we can parallelize the per-file work below.
-    // Each entry is independent: a hardlink + touch of one cache file
-    // into one output path. CI cache restores can be 1k–5k entries, and
-    // the per-file syscalls (remove_file + hard_link + open + set_times)
-    // dominate; rayon takes us from ~100 µs/file serial to N_cores-way
-    // parallel on warm OS cache.
+    // Resolve the layout once, then flatten artifact/output nesting so
+    // workers receive payload capabilities rather than inferred cache paths.
+    // CI cache restores can be 1k–5k entries, and per-file syscalls dominate,
+    // so materialization remains parallel.
     let total_outputs: usize = artifacts
         .iter()
         .map(|(_, idx)| idx.output_names.len())
         .sum();
-    let mut work: Vec<(std::path::PathBuf, std::path::PathBuf, String)> =
-        Vec::with_capacity(total_outputs);
+    let mut work: Vec<(
+        crate::artifact::ResolvedArtifactPayload,
+        std::path::PathBuf,
+        String,
+    )> = Vec::with_capacity(total_outputs);
+    let mut unresolved = 0_u64;
     for (key_hex, idx) in &artifacts {
-        for (i, name) in idx.output_names.iter().enumerate() {
-            work.push((
-                artifact_dir.join(format!("{key_hex}_{i}")),
-                deps_dir.join(name.as_str()),
-                name.clone(),
+        let payloads = crate::artifact::resolve_artifact_payloads(
+            artifact_dir,
+            key_hex,
+            &idx.output_sizes,
+            true,
+            "cli::warm_target",
+        )
+        .map_err(|error| format!("failed to resolve artifact {key_hex}: {error}"))?;
+        let Some(payloads) = payloads else {
+            unresolved = unresolved.saturating_add(idx.output_names.len() as u64);
+            continue;
+        };
+        if payloads.len() != idx.output_names.len() {
+            return Err(format!(
+                "artifact {key_hex} metadata has {} names but {} payloads",
+                idx.output_names.len(),
+                payloads.len()
             ));
+        }
+        for (payload, name) in payloads.into_iter().zip(idx.output_names.iter()) {
+            work.push((payload, deps_dir.join(name.as_str()), name.clone()));
         }
     }
 
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicU64, Ordering};
     let restored = AtomicU64::new(0);
-    let skipped = AtomicU64::new(0);
+    let skipped = AtomicU64::new(unresolved);
     let errors = AtomicU64::new(0);
 
-    work.par_iter().for_each(|(src, dst, name)| {
+    work.par_iter().for_each(|(payload, dst, name)| {
         // Skip if artifact doesn't match any crate in the lockfile.
         if let Some(ref allowed) = allowed_crates {
             if !artifact_matches_lockfile(name, allowed) {
                 skipped.fetch_add(1, Ordering::Relaxed);
                 return;
             }
-        }
-
-        // Skip if source payload does not exist on disk.
-        if !src.exists() {
-            skipped.fetch_add(1, Ordering::Relaxed);
-            return;
         }
 
         // Remove existing file at destination (hardlink will fail if it exists).
@@ -436,27 +446,42 @@ pub(crate) fn warm_target(
             }
         }
 
-        // Try hardlink first, fall back to copy.
-        let linked = std::fs::hard_link(src, dst).is_ok();
-        if !linked {
-            if let Err(e) = std::fs::copy(src, dst) {
-                eprintln!(
-                    "zccache warm: failed to copy {} -> {}: {e}",
-                    src.display(),
-                    dst.display()
-                );
-                errors.fetch_add(1, Ordering::Relaxed);
-                return;
-            }
-        }
+        match payload {
+            crate::artifact::ResolvedArtifactPayload::File(src) => {
+                // The file can still disappear after resolution.
+                if !src.exists() {
+                    skipped.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+                let linked = std::fs::hard_link(src, dst).is_ok();
+                if !linked {
+                    if let Err(e) = std::fs::copy(src, dst) {
+                        eprintln!(
+                            "zccache warm: failed to copy {} -> {}: {e}",
+                            src.display(),
+                            dst.display()
+                        );
+                        errors.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+                }
 
-        // Touch the just-hardlinked dst to bump the underlying inode's
-        // mtime, which propagates to the artifact-cache file via the
-        // shared-inode hardlink. See the comment on `file_times` above
-        // — this is the LRU recency signal for eviction, not a
-        // cargo-freshness hack.
-        if let Ok(f) = std::fs::File::open(dst) {
-            let _ = f.set_times(file_times);
+                // The mtime shared with a file payload is zccache's LRU
+                // signal, not a cargo freshness signal.
+                if let Ok(f) = std::fs::File::open(dst) {
+                    let _ = f.set_times(file_times);
+                }
+            }
+            crate::artifact::ResolvedArtifactPayload::Bytes(data) => {
+                if let Err(e) = std::fs::write(dst, data.as_slice()) {
+                    eprintln!(
+                        "zccache warm: failed to write packed payload {}: {e}",
+                        dst.display()
+                    );
+                    errors.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            }
         }
 
         restored.fetch_add(1, Ordering::Relaxed);

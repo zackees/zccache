@@ -2,7 +2,7 @@
 name = "ban_raw_subprocess_in_daemon"
 # 2026-06-15: bumped to bust the dylint .so cache when allowlist.txt
 # changes — see ban_std_pathbuf for the same workaround rationale.
-version = "0.2.0"
+version = "0.2.1"
 description = "Ban raw std/tokio Command spawn/output/status in zccache-daemon production code"
 edition = "2021"
 publish = false

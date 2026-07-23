@@ -22,6 +22,23 @@ enum ResponseWire {
 
 const SERVER_REQUEST_RECV_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
+struct PendingJournalContext {
+    context: JournalContext,
+    attributed_miss_reason: Option<&'static str>,
+}
+
+impl PendingJournalContext {
+    fn new(
+        context: JournalContext,
+        attributed_miss_reason: Option<&'static str>,
+    ) -> Self {
+        Self {
+            context,
+            attributed_miss_reason,
+        }
+    }
+}
+
 pub(super) fn session_phase_profile(
     state: &SharedState,
     session_id: &SessionId,
@@ -60,9 +77,9 @@ pub(super) fn session_phase_profile(
 async fn guarded_dispatch<F>(
     conn: &mut IpcConnection,
     handler: F,
-) -> Option<(Response, Option<JournalContext>)>
+) -> Option<(Response, Option<PendingJournalContext>)>
 where
-    F: std::future::Future<Output = (Response, Option<JournalContext>)>,
+    F: std::future::Future<Output = (Response, Option<PendingJournalContext>)>,
 {
     tokio::select! {
         biased;
@@ -91,7 +108,7 @@ fn log_client_cancelled(kind: &str) {
          compile-concurrency permit released"
     );
     super::super::lifecycle::write_event(
-        "client_cancelled",
+        crate::core::lifecycle::EVENT_CLIENT_CANCELLED,
         serde_json::json!({
             "kind": kind,
             "reason": "client disconnected before response; daemon child reaped, permit released",
@@ -154,7 +171,7 @@ pub(super) async fn handle_connection(
                 // CARGO_PKG_VERSION on every spawn — this entry adds the
                 // mismatch context.
                 super::super::lifecycle::write_event(
-                    "version_mismatch",
+                    crate::core::lifecycle::EVENT_VERSION_MISMATCH,
                     serde_json::json!({
                         "daemon_crate_version": daemon_crate,
                         "daemon_protocol_version": expected,
@@ -249,7 +266,7 @@ pub(super) async fn handle_connection(
         // to move args/session_id into JournalContext without cloning.
         // Only env needs cloning because handlers consume it.
         let journal_start = std::time::Instant::now();
-        let (response, journal_ctx): (Response, Option<JournalContext>) = match request {
+        let (mut response, journal_ctx): (Response, Option<PendingJournalContext>) = match request {
             Request::Ping => (Response::Pong, None),
             Request::Shutdown => {
                 send_response_for_wire(&mut conn, &response_wire, &Response::ShuttingDown).await?;
@@ -431,18 +448,23 @@ pub(super) async fn handle_connection(
                         env.clone(),
                         None,
                     );
-                    let resp = handle_compile_ephemeral(
-                        &state,
-                        client_pid,
-                        &working_dir,
-                        &compiler,
-                        &ctx.args,
-                        &cwd,
-                        env,
-                        stdin,
-                    )
+                    let (resp, attributed_miss_reason) = capture_miss_reason(Box::pin(
+                        handle_compile_ephemeral(
+                            &state,
+                            client_pid,
+                            &working_dir,
+                            &compiler,
+                            &ctx.args,
+                            &cwd,
+                            env,
+                            stdin,
+                        ),
+                    ))
                     .await;
-                    (resp, Some(ctx))
+                    (
+                        resp,
+                        Some(PendingJournalContext::new(ctx, attributed_miss_reason)),
+                    )
                 };
                 match guarded_dispatch(&mut conn, handler).await {
                     Some((response, ctx)) => (response, ctx),
@@ -562,7 +584,7 @@ pub(super) async fn handle_connection(
                     let resp =
                         handle_link_ephemeral(&state, client_pid, &tool, &ctx.args, &cwd, env)
                             .await;
-                    (resp, Some(ctx))
+                    (resp, Some(PendingJournalContext::new(ctx, None)))
                 };
                 match guarded_dispatch(&mut conn, handler).await {
                     Some((response, ctx)) => (response, ctx),
@@ -725,10 +747,20 @@ pub(super) async fn handle_connection(
         // sccache doesn't pay this on the warm path. `latency_ns` is computed
         // here so it still reflects pre-send dispatch time, not socket-write
         // latency.
-        let journal_payload = journal_ctx.and_then(|ctx| {
+        let journal_payload = journal_ctx.and_then(|pending| {
+            let PendingJournalContext {
+                context: ctx,
+                attributed_miss_reason,
+            } = pending;
             let (outcome, exit_code, miss_reason) = extract_outcome(&response)?;
-            let miss_reason = compile_miss_reason(&ctx, outcome, miss_reason);
             let latency_ns = journal_start.elapsed().as_nanos();
+            let miss_reason = compile_miss_reason(
+                &ctx,
+                outcome,
+                attributed_miss_reason.or(miss_reason),
+                latency_ns,
+                state.cache_dir.as_path(),
+            );
             // Look up session journal path + extended-journal opt-in in the
             // same query so the session map is touched once.
             let (session_journal_path, profile_on) = ctx
@@ -748,6 +780,11 @@ pub(super) async fn handle_connection(
                 profile_on,
             ))
         });
+        if let Some((ctx, _, _, latency_ns, reason, _, _)) = journal_payload.as_ref() {
+            if *reason == Some(miss_reason::UNKNOWN) {
+                append_unknown_miss_warning(&mut response, ctx, *latency_ns);
+            }
+        }
 
         // Send the response BEFORE logging the journal entry. Errors from
         // the send are captured and propagated after the journal block so
@@ -801,7 +838,7 @@ async fn compile_response_for_session(
     compiler: NormalizedPath,
     env: Option<Vec<(String, String)>>,
     stdin: Vec<u8>,
-) -> (Response, Option<JournalContext>) {
+) -> (Response, Option<PendingJournalContext>) {
     let env = match parsed_session_id {
         Some(sid) => merge_session_private_env(&state.sessions, &sid, env),
         None => env,
@@ -821,7 +858,7 @@ async fn compile_response_for_session(
         clippy::expect_used,
         reason = "ctx.session_id is set to Some(session_id) immediately above (line 704); the Option wrap is purely for the JournalContext return field"
     )]
-    let resp = handle_compile(
+    let (resp, attributed_miss_reason) = capture_miss_reason(Box::pin(handle_compile(
         state,
         ctx.session_id
             .as_deref()
@@ -831,9 +868,45 @@ async fn compile_response_for_session(
         &compiler,
         env,
         stdin,
-    )
+    )))
     .await;
-    (resp, Some(ctx))
+    (
+        resp,
+        Some(PendingJournalContext::new(ctx, attributed_miss_reason)),
+    )
+}
+
+pub(super) fn append_unknown_miss_warning(
+    response: &mut Response,
+    ctx: &JournalContext,
+    latency_ns: u128,
+) {
+    let stderr = match response {
+        Response::CompileResult { stderr, .. } | Response::LinkResult { stderr, .. } => stderr,
+        _ => return,
+    };
+    let args_preview = serde_json::to_string(&redacted_args_preview(&ctx.args))
+        .unwrap_or_else(|_| "[]".to_string());
+    let compiler =
+        serde_json::to_string(&ctx.compiler).unwrap_or_else(|_| "\"<unavailable>\"".to_string());
+    let cwd = serde_json::to_string(&ctx.cwd).unwrap_or_else(|_| "\"<unavailable>\"".to_string());
+    let session_id =
+        serde_json::to_string(&ctx.session_id).unwrap_or_else(|_| "null".to_string());
+    let warning = format!(
+        "{} cache miss reason is unknown; \
+artifact_key=<unavailable> compiler={compiler} args_preview={args_preview} \
+args_digest={} args_count={} cwd={cwd} session_id={session_id} \
+verdict=unclassified branch=connection::compile_miss_reason latency_ns={latency_ns} \
+path=<unavailable> errno=<unavailable>; inspect daemon lifecycle logs\n",
+        crate::protocol::UNKNOWN_MISS_WARNING_PREFIX,
+        digest_args(&ctx.args),
+        ctx.args.len(),
+    );
+    let stderr = Arc::make_mut(stderr);
+    if !stderr.is_empty() && !stderr.ends_with(b"\n") {
+        stderr.push(b'\n');
+    }
+    stderr.extend_from_slice(warning.as_bytes());
 }
 
 async fn send_response_for_wire(
@@ -864,9 +937,16 @@ pub(super) fn compile_miss_reason(
     ctx: &JournalContext,
     outcome: &str,
     default_reason: Option<&'static str>,
+    latency_ns: u128,
+    cache_root: &std::path::Path,
 ) -> Option<&'static str> {
-    if outcome != "miss" || default_reason != Some(miss_reason::UNKNOWN) {
+    if !matches!(outcome, "miss" | "link_miss")
+        || default_reason != Some(miss_reason::UNKNOWN)
+    {
         return default_reason;
+    }
+    if outcome == "link_miss" {
+        return Some(miss_reason::CONTEXT_NOT_FOUND);
     }
     // Issue #951: expand `@response-file` args before parsing. The
     // compile pipeline expands them (`expand_args_cached`) and caches
@@ -878,16 +958,119 @@ pub(super) fn compile_miss_reason(
     // If the response file is already gone by journal time, keep the
     // honest `unknown` default instead of guessing uncacheable.
     let base_dir = std::path::Path::new(&ctx.cwd);
-    let expanded =
-        match crate::compiler::response_file::expand_response_files_in(&ctx.args, base_dir) {
-            Ok(expanded) => expanded,
-            Err(_) => return default_reason,
-        };
-    match crate::compiler::parse_invocation(&ctx.compiler, &expanded) {
-        crate::compiler::ParsedInvocation::NonCacheable { .. } => {
-            Some(miss_reason::UNCACHEABLE_INPUT)
-        }
-        _ => default_reason,
+    let reason = match crate::compiler::response_file::expand_response_files_in(
+        &ctx.args,
+        base_dir,
+    ) {
+        Ok(expanded) => match crate::compiler::parse_invocation(&ctx.compiler, &expanded) {
+            crate::compiler::ParsedInvocation::NonCacheable { .. } => {
+                Some(miss_reason::UNCACHEABLE_INPUT)
+            }
+            _ => default_reason,
+        },
+        Err(_) => default_reason,
+    };
+    if reason == Some(miss_reason::UNKNOWN) {
+        let args_preview = redacted_args_preview(&ctx.args);
+        let args_digest = digest_args(&ctx.args);
+        const BRANCH: &str = "connection::compile_miss_reason";
+        tracing::warn!(
+            event = crate::core::lifecycle::EVENT_MISS_REASON_UNKNOWN,
+            artifact_key = "<unavailable>",
+            branch = BRANCH,
+            verdict = "unclassified",
+            compiler = %ctx.compiler,
+            cwd = %ctx.cwd,
+            args_preview = ?args_preview,
+            args_digest,
+            args_count = ctx.args.len(),
+            session_id = ?ctx.session_id,
+            latency_ns = %latency_ns,
+            path = "<unavailable>",
+            errno = -1_i32,
+            "cache miss reached the journal without a concrete attribution"
+        );
+        crate::core::lifecycle::write_event_in_cache_root(
+            cache_root,
+            crate::core::lifecycle::EVENT_MISS_REASON_UNKNOWN,
+            serde_json::json!({
+                "artifact_key": serde_json::Value::Null,
+                "branch": BRANCH,
+                "verdict": "unclassified",
+                "compiler": &ctx.compiler,
+                "args_preview": args_preview,
+                "args_digest": args_digest,
+                "args_count": ctx.args.len(),
+                "cwd": &ctx.cwd,
+                "session_id": &ctx.session_id,
+                "outcome": outcome,
+                "latency_ns": latency_ns,
+                "path": serde_json::Value::Null,
+                "errno": serde_json::Value::Null,
+            }),
+        );
+    }
+    reason
+}
+
+fn digest_args(args: &[String]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for arg in args {
+        hasher.update(&(arg.len() as u64).to_le_bytes());
+        hasher.update(arg.as_bytes());
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+fn redacted_args_preview(args: &[String]) -> Vec<String> {
+    const MAX_ARGS: usize = 8;
+    const MAX_ARG_CHARS: usize = 256;
+    const SENSITIVE_NAMES: &[&str] = &[
+        "token",
+        "password",
+        "passwd",
+        "secret",
+        "api_key",
+        "apikey",
+        "authorization",
+        "credential",
+        "private_key",
+        "access_key",
+        "bearer",
+    ];
+    let mut redact_next = false;
+    args.iter()
+        .take(MAX_ARGS)
+        .map(|arg| {
+            if redact_next {
+                redact_next = false;
+                return "<redacted-sensitive-value>".to_string();
+            }
+            let lower = arg.to_ascii_lowercase();
+            if SENSITIVE_NAMES
+                .iter()
+                .any(|needle| lower.contains(needle))
+            {
+                return arg.split_once('=').map_or_else(
+                    || {
+                        redact_next = true;
+                        truncate_preview(arg, MAX_ARG_CHARS)
+                    },
+                    |(name, _)| format!("{name}=<redacted>"),
+                );
+            }
+            truncate_preview(arg, MAX_ARG_CHARS)
+        })
+        .collect()
+}
+
+fn truncate_preview(value: &str, maximum_chars: usize) -> String {
+    let mut chars = value.chars();
+    let preview: String = chars.by_ref().take(maximum_chars).collect();
+    if chars.next().is_some() {
+        format!("{preview}…")
+    } else {
+        preview
     }
 }
 
@@ -1100,22 +1283,141 @@ mod self_profile_tests {
         }
     }
 
+    fn compile_miss_reason(
+        ctx: &JournalContext,
+        outcome: &str,
+        default_reason: Option<&'static str>,
+        latency_ns: u128,
+    ) -> Option<&'static str> {
+        let cache_root = tempfile::tempdir().unwrap();
+        super::compile_miss_reason(
+            ctx,
+            outcome,
+            default_reason,
+            latency_ns,
+            cache_root.path(),
+        )
+    }
+
     #[test]
     fn parse_time_non_cacheable_miss_is_attributed() {
         let ctx = test_journal_ctx("rustc", &["--version"]);
         assert_eq!(
-            compile_miss_reason(&ctx, "miss", Some(miss_reason::UNKNOWN)),
+            compile_miss_reason(&ctx, "miss", Some(miss_reason::UNKNOWN), 0),
             Some(miss_reason::UNCACHEABLE_INPUT)
         );
     }
 
     #[test]
     fn cacheable_miss_keeps_default_reason() {
-        let ctx = test_journal_ctx("rustc", &["--crate-name", "demo", "src/lib.rs"]);
+        let cache = tempfile::tempdir().unwrap();
+        let ctx = test_journal_ctx(
+            "rustc",
+            &[
+                "--crate-name",
+                "demo",
+                "src/lib.rs",
+                "--extern",
+                "api_token=do-not-log-this",
+            ],
+        );
         assert_eq!(
-            compile_miss_reason(&ctx, "miss", Some(miss_reason::UNKNOWN)),
+            super::compile_miss_reason(
+                &ctx,
+                "miss",
+                Some(miss_reason::UNKNOWN),
+                42,
+                cache.path(),
+            ),
             Some(miss_reason::UNKNOWN)
         );
+        let lifecycle = std::fs::read_to_string(
+            cache
+                .path()
+                .join("logs")
+                .join(crate::core::lifecycle::LIVE_LOG_FILENAME),
+        )
+        .unwrap();
+        let event: serde_json::Value = lifecycle
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .find(|event: &serde_json::Value| {
+                event["event"] == crate::core::lifecycle::EVENT_MISS_REASON_UNKNOWN
+            })
+            .expect("unknown event");
+        assert_eq!(event["branch"], "connection::compile_miss_reason");
+        assert_eq!(event["latency_ns"], 42);
+        assert_eq!(event["artifact_key"], serde_json::Value::Null);
+        let serialized = event.to_string();
+        assert!(serialized.contains("api_token=<redacted>"));
+        assert!(!serialized.contains("do-not-log-this"));
+
+        let mut response = Response::CompileResult {
+            exit_code: 0,
+            stdout: Arc::new(Vec::new()),
+            stderr: Arc::new(Vec::new()),
+            cached: false,
+        };
+        append_unknown_miss_warning(&mut response, &ctx, 42);
+        let Response::CompileResult { stderr, .. } = response else {
+            unreachable!()
+        };
+        let warning = String::from_utf8(stderr.as_ref().clone()).unwrap();
+        assert!(warning.contains("artifact_key=<unavailable>"));
+        assert!(warning.contains("branch=connection::compile_miss_reason"));
+
+        let report = crate::audit::audit_cache_root(
+            cache.path(),
+            crate::audit::LogAuditContext::Integration,
+            &crate::audit::AuditOptions::default().allow_for_test(
+                "connection::cacheable_miss_keeps_default_reason",
+                [crate::audit::RuleId("no-unknown-miss-reason")],
+            ),
+        )
+        .unwrap();
+        assert!(report.passed(), "{}", report.format_human());
+        assert_eq!(
+            report.test_allow_name.as_deref(),
+            Some("connection::cacheable_miss_keeps_default_reason")
+        );
+    }
+
+    #[test]
+    fn classified_miss_does_not_request_unknown_warning() {
+        let ctx = test_journal_ctx("rustc", &["--crate-name", "demo", "src/lib.rs"]);
+        let reason = compile_miss_reason(
+            &ctx,
+            "miss",
+            Some(miss_reason::CONTEXT_NOT_FOUND),
+            1,
+        );
+        let mut response = Response::CompileResult {
+            exit_code: 0,
+            stdout: Arc::new(Vec::new()),
+            stderr: Arc::new(Vec::new()),
+            cached: false,
+        };
+        if reason == Some(miss_reason::UNKNOWN) {
+            append_unknown_miss_warning(&mut response, &ctx, 1);
+        }
+        let Response::CompileResult { stderr, .. } = response else {
+            unreachable!()
+        };
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn unknown_preview_redacts_separate_sensitive_values() {
+        let args = vec![
+            "--authorization".to_string(),
+            "Bearer should-not-appear".to_string(),
+            "src/lib.rs".to_string(),
+        ];
+        let preview = redacted_args_preview(&args);
+        assert_eq!(preview[0], "--authorization");
+        assert_eq!(preview[1], "<redacted-sensitive-value>");
+        assert_eq!(preview[2], "src/lib.rs");
+        assert!(!preview.join(" ").contains("should-not-appear"));
     }
 
     // Issue #951: fbuild-style invocations pass the whole cacheable
@@ -1133,7 +1435,7 @@ mod self_profile_tests {
         let mut ctx = test_journal_ctx("/usr/bin/g++", &[arg.as_str()]);
         ctx.cwd = dir.path().to_string_lossy().into_owned();
         assert_eq!(
-            compile_miss_reason(&ctx, "miss", Some(miss_reason::UNKNOWN)),
+            compile_miss_reason(&ctx, "miss", Some(miss_reason::UNKNOWN), 0),
             Some(miss_reason::UNKNOWN),
             "a cacheable compile behind @rsp must not be stamped uncacheable_input"
         );
@@ -1150,7 +1452,7 @@ mod self_profile_tests {
         let mut ctx = test_journal_ctx("/usr/bin/g++", &[arg.as_str()]);
         ctx.cwd = dir.path().to_string_lossy().into_owned();
         assert_eq!(
-            compile_miss_reason(&ctx, "miss", Some(miss_reason::UNKNOWN)),
+            compile_miss_reason(&ctx, "miss", Some(miss_reason::UNKNOWN), 0),
             Some(miss_reason::UNCACHEABLE_INPUT)
         );
     }
@@ -1162,7 +1464,7 @@ mod self_profile_tests {
     fn rsp_missing_at_journal_time_keeps_default_reason() {
         let ctx = test_journal_ctx("/usr/bin/g++", &["@/nonexistent/gone.rsp"]);
         assert_eq!(
-            compile_miss_reason(&ctx, "miss", Some(miss_reason::UNKNOWN)),
+            compile_miss_reason(&ctx, "miss", Some(miss_reason::UNKNOWN), 0),
             Some(miss_reason::UNKNOWN)
         );
     }
@@ -1232,7 +1534,8 @@ mod disconnect_cancellation_tests {
             // Handler that never finishes — stands in for a compile parked in
             // `child.wait_with_output()`. The guard must abandon it once the
             // client disconnects.
-            let handler = std::future::pending::<(Response, Option<JournalContext>)>();
+            let handler =
+                std::future::pending::<(Response, Option<PendingJournalContext>)>();
 
             let dropper = tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(30)).await;

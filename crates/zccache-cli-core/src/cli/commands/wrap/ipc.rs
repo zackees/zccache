@@ -1,7 +1,7 @@
 //! Wrapper IPC request construction and response relay.
 
 use crate::core::NormalizedPath;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -63,11 +63,9 @@ pub(super) async fn cmd_compile(
     }
 
     match compile_recv_with_wedge_detection(&mut conn, wedge_recv_timeout()).await {
-        CompileRecvOutcome::Done(recv_result) => report_relay_outcome(relay_compile_response(
-            recv_result,
-            &mut std::io::stdout(),
-            &mut std::io::stderr(),
-        )),
+        CompileRecvOutcome::Done(recv_result) => {
+            report_relay_outcome(relay_compile_response_to_stdio(recv_result))
+        }
         CompileRecvOutcome::Wedged => {
             // Daemon went past the wedge budget for *this* request. Pre-#753
             // we always killed it; #726 / FastLED/#3011 showed that under
@@ -435,11 +433,9 @@ async fn cmd_compile_ephemeral_with_stdin(
     .await;
 
     match outcome {
-        CompileRecvOutcome::Done(recv_result) => report_relay_outcome(relay_compile_response(
-            recv_result,
-            &mut std::io::stdout(),
-            &mut std::io::stderr(),
-        )),
+        CompileRecvOutcome::Done(recv_result) => {
+            report_relay_outcome(relay_compile_response_to_stdio(recv_result))
+        }
         CompileRecvOutcome::Wedged => {
             eprintln!(
                 "zccache[err][W]: daemon at {endpoint} stopped responding within \
@@ -494,11 +490,9 @@ pub(super) async fn cmd_link_ephemeral(
     .await;
 
     match outcome {
-        CompileRecvOutcome::Done(recv_result) => report_relay_outcome(relay_link_response(
-            recv_result,
-            &mut std::io::stdout(),
-            &mut std::io::stderr(),
-        )),
+        CompileRecvOutcome::Done(recv_result) => {
+            report_relay_outcome(relay_link_response_to_stdio(recv_result))
+        }
         CompileRecvOutcome::Wedged => {
             eprintln!(
                 "zccache[err][W]: daemon at {endpoint} stopped responding within \
@@ -631,10 +625,29 @@ fn emit_client_disconnected_event(endpoint: &str, cause: &str, detail: &str) {
     );
 }
 
+#[cfg(test)]
 fn relay_compile_response<W: Write, E: Write>(
     recv_result: Option<crate::protocol::Response>,
     stdout: &mut W,
     stderr: &mut E,
+) -> RelayOutcome {
+    relay_compile_response_with_color(recv_result, stdout, stderr, false)
+}
+
+fn relay_compile_response_to_stdio(
+    recv_result: Option<crate::protocol::Response>,
+) -> RelayOutcome {
+    let mut stdout = std::io::stdout();
+    let mut stderr = std::io::stderr();
+    let color = stderr.is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    relay_compile_response_with_color(recv_result, &mut stdout, &mut stderr, color)
+}
+
+fn relay_compile_response_with_color<W: Write, E: Write>(
+    recv_result: Option<crate::protocol::Response>,
+    stdout: &mut W,
+    stderr: &mut E,
+    color_unknown_warning: bool,
 ) -> RelayOutcome {
     match recv_result {
         Some(crate::protocol::Response::CompileResult {
@@ -644,7 +657,7 @@ fn relay_compile_response<W: Write, E: Write>(
             ..
         }) => {
             let _ = stdout.write_all(&out);
-            let _ = stderr.write_all(&err);
+            let _ = write_relay_stderr(stderr, &err, color_unknown_warning);
             RelayOutcome::Verdict(exit_code_from_i32(exit_code))
         }
         Some(crate::protocol::Response::Error { message }) => {
@@ -657,10 +670,29 @@ fn relay_compile_response<W: Write, E: Write>(
     }
 }
 
+#[cfg(test)]
 fn relay_link_response<W: Write, E: Write>(
     recv_result: Option<crate::protocol::Response>,
     stdout: &mut W,
     stderr: &mut E,
+) -> RelayOutcome {
+    relay_link_response_with_color(recv_result, stdout, stderr, false)
+}
+
+fn relay_link_response_to_stdio(
+    recv_result: Option<crate::protocol::Response>,
+) -> RelayOutcome {
+    let mut stdout = std::io::stdout();
+    let mut stderr = std::io::stderr();
+    let color = stderr.is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    relay_link_response_with_color(recv_result, &mut stdout, &mut stderr, color)
+}
+
+fn relay_link_response_with_color<W: Write, E: Write>(
+    recv_result: Option<crate::protocol::Response>,
+    stdout: &mut W,
+    stderr: &mut E,
+    color_unknown_warning: bool,
 ) -> RelayOutcome {
     match recv_result {
         Some(crate::protocol::Response::LinkResult {
@@ -671,7 +703,7 @@ fn relay_link_response<W: Write, E: Write>(
             ..
         }) => {
             let _ = stdout.write_all(&out);
-            let _ = stderr.write_all(&err);
+            let _ = write_relay_stderr(stderr, &err, color_unknown_warning);
             if let Some(w) = warning {
                 let _ = writeln!(stderr, "zccache warning: {w}");
             }
@@ -685,6 +717,33 @@ fn relay_link_response<W: Write, E: Write>(
             "zccache[err][U]: unexpected response from daemon: {other:?}"
         )),
     }
+}
+
+fn write_relay_stderr(
+    writer: &mut dyn Write,
+    bytes: &[u8],
+    color_unknown_warning: bool,
+) -> std::io::Result<()> {
+    let marker = crate::protocol::UNKNOWN_MISS_WARNING_PREFIX.as_bytes();
+    if !color_unknown_warning {
+        return writer.write_all(bytes);
+    }
+
+    let mut remaining = bytes;
+    while let Some(start) = remaining
+        .windows(marker.len())
+        .position(|window| window == marker)
+    {
+        writer.write_all(&remaining[..start])?;
+        let warning = &remaining[start..];
+        let end = warning
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(warning.len(), |index| index + 1);
+        super::write_wrapper_warning_line(writer, &warning[..end], true)?;
+        remaining = &warning[end..];
+    }
+    writer.write_all(remaining)
 }
 
 #[cfg(test)]
@@ -718,6 +777,31 @@ mod tests {
         assert_eq!(exit, RelayOutcome::Verdict(ExitCode::from(7)));
         assert_eq!(stdout, b"compiler-out");
         assert_eq!(stderr, b"compiler-err");
+    }
+
+    #[test]
+    fn compile_response_relay_colors_only_unknown_warning_on_terminal() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let warning = b"compiler-err\nzccache[warn][M]: unknown branch=test\n";
+
+        let outcome = relay_compile_response_with_color(
+            Some(crate::protocol::Response::CompileResult {
+                exit_code: 0,
+                stdout: Arc::new(Vec::new()),
+                stderr: Arc::new(warning.to_vec()),
+                cached: false,
+            }),
+            &mut stdout,
+            &mut stderr,
+            true,
+        );
+
+        assert_eq!(outcome, RelayOutcome::Verdict(ExitCode::SUCCESS));
+        assert_eq!(
+            String::from_utf8(stderr).unwrap(),
+            "compiler-err\n\x1b[33mzccache[warn][M]: unknown branch=test\x1b[0m\n"
+        );
     }
 
     #[test]

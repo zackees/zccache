@@ -201,6 +201,7 @@ windows-sys = { version = "0.59", features = [
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 futures = { workspace = true }
+zccache-test-support = { workspace = true }
 # tests/cli_installers.rs builds sample archives to exercise the installer.
 zip = { workspace = true }
 # Self-dep so zccache's own integration tests can pull in the gated

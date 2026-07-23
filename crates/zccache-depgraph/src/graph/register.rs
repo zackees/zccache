@@ -98,6 +98,16 @@ impl DepGraph {
         registration
     }
 
+    /// Derive the checkout-specific map key used by rustc metadata aliases.
+    #[must_use]
+    pub fn rustc_metadata_compat_map_key(
+        compat_key: ContextKey,
+        source_file: &NormalizedPath,
+        key_root: Option<&NormalizedPath>,
+    ) -> ContextKey {
+        super::ContextInstanceKey::new(compat_key, source_file, key_root).map_key()
+    }
+
     /// Register a rustc context with its current `--extern` file inputs.
     ///
     /// Rustc context keys already reduce extern path prefixes to filename
@@ -115,7 +125,7 @@ impl DepGraph {
         let registration = self.register_context_entry(key, ctx, key_root.clone());
         self.rustc_externs.insert(registration.map_key, externs);
         let metadata_compat_map_key = check_metadata_compat_key.map(|compat_key| {
-            super::ContextInstanceKey::new(compat_key, &source_file, key_root.as_ref()).map_key()
+            Self::rustc_metadata_compat_map_key(compat_key, &source_file, key_root.as_ref())
         });
         if let Some(compat_map_key) = metadata_compat_map_key {
             self.rustc_check_metadata_compat

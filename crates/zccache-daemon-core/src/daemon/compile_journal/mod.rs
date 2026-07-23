@@ -17,7 +17,9 @@
 //! - `tests/` — all `#[cfg(test)]` tests, grouped per subject
 
 use std::fs;
+use std::future::Future;
 use std::path::Path;
+use std::cell::Cell;
 use std::sync::{mpsc, Mutex};
 use std::time::SystemTime;
 
@@ -70,6 +72,7 @@ pub mod miss_reason {
     pub const NO_ARTIFACT_FOR_KEY: &str = "no_artifact_for_key";
     pub const VERSION_SKEW: &str = "version_skew";
     pub const UNCACHEABLE_INPUT: &str = "uncacheable_input";
+    pub const DESTINATION_WRITE_FAILED: &str = "destination_write_failed";
     pub const UNKNOWN: &str = "unknown";
 
     /// Closed iteration over all documented buckets. Append-only.
@@ -79,8 +82,57 @@ pub mod miss_reason {
         NO_ARTIFACT_FOR_KEY,
         VERSION_SKEW,
         UNCACHEABLE_INPUT,
+        DESTINATION_WRITE_FAILED,
         UNKNOWN,
     ];
+}
+
+tokio::task_local! {
+    static ACTIVE_MISS_REASON: Cell<Option<&'static str>>;
+}
+
+/// Run one request with an isolated miss-attribution slot.
+///
+/// The caller heap-pins the request future before entering this wrapper.
+/// Compile futures are large in debug builds, and keeping one inline in the
+/// task-local scope can exhaust Tokio's default worker stack on Windows.
+pub async fn capture_miss_reason<F>(
+    future: std::pin::Pin<Box<F>>,
+) -> (F::Output, Option<&'static str>)
+where
+    F: Future + ?Sized,
+{
+    ACTIVE_MISS_REASON
+        .scope(Cell::new(None), async move {
+            let output = future.await;
+            let reason = ACTIVE_MISS_REASON.with(Cell::get);
+            (output, reason)
+        })
+        .await
+}
+
+/// Record the most specific reason known by the active compile pipeline.
+pub fn record_miss_reason(reason: &'static str) {
+    let _ = ACTIVE_MISS_REASON.try_with(|slot| {
+        let replace = slot
+            .get()
+            .is_none_or(|current| miss_reason_priority(reason) < miss_reason_priority(current));
+        if replace {
+            slot.set(Some(reason));
+        }
+    });
+}
+
+fn miss_reason_priority(reason: &str) -> u8 {
+    match reason.as_bytes() {
+        b"destination_write_failed" => 0,
+        b"no_artifact_for_key" => 1,
+        b"version_skew" => 2,
+        b"input_fingerprint_mismatch" => 3,
+        b"context_not_found" => 4,
+        b"uncacheable_input" => 5,
+        _ => 6,
+    }
 }
 
 /// A single journal entry serialized as one JSON line.

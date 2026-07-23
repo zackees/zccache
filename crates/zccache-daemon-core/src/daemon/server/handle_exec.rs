@@ -610,7 +610,7 @@ async fn acquire_in_flight(state: &Arc<SharedState>, key_hex: &str) -> InFlightG
              the owner may be wedged — running our own copy instead of hanging (issue #971)"
         );
         crate::core::lifecycle::write_event(
-            "in_flight_exec_wait_timeout",
+            crate::core::lifecycle::EVENT_IN_FLIGHT_EXEC_WAIT_TIMEOUT,
             serde_json::json!({
                 "key": key,
                 "budget_ms": budget.as_millis() as u64,
@@ -784,14 +784,8 @@ async fn try_exec_cache_hit(
         paired.push((abs, payload));
     }
 
-    let targets: Vec<(NormalizedPath, NormalizedPath)> = paired
-        .iter()
-        .enumerate()
-        .map(|(i, (abs, _))| {
-            let cache_file = state.artifact_dir.join(format!("{key_hex}_{i}"));
-            (abs.clone(), cache_file)
-        })
-        .collect();
+    let targets: Vec<NormalizedPath> =
+        paired.iter().map(|(absolute, _)| absolute.clone()).collect();
     let payloads_for_write: Vec<CachedPayload> =
         paired.into_iter().map(|(_, p)| p.clone()).collect();
     let has_staged_payload = payloads_for_write.iter().any(|payload| {
@@ -799,11 +793,19 @@ async fn try_exec_cache_hit(
     });
     let materialize_started = std::time::Instant::now();
     let observed = write_payloads_par_observed(&targets, &payloads_for_write);
+    if let Err(failure) = &observed {
+        report_materialization_failure(&state.cache_dir, key_hex, "exec-hit", failure);
+    }
     if has_staged_payload {
-        if !record_staged_hit_materialization(state, targets.len(), materialize_started, observed) {
+        if !record_staged_hit_materialization(
+            state,
+            targets.len(),
+            materialize_started,
+            observed.ok(),
+        ) {
             return None;
         }
-    } else if observed.is_none() {
+    } else if observed.is_err() {
         return None;
     }
 
@@ -819,7 +821,7 @@ async fn try_exec_cache_hit(
     };
 
     let mut response_outputs: Vec<ArtifactOutput> = Vec::with_capacity(targets.len());
-    for ((abs, _), payload) in targets.iter().zip(payloads_for_write.iter()) {
+    for (abs, payload) in targets.iter().zip(payloads_for_write.iter()) {
         let bytes: Arc<Vec<u8>> = match payload {
             CachedPayload::Bytes(b) => Arc::clone(b),
             CachedPayload::File(p) => match std::fs::read(p.as_path()) {

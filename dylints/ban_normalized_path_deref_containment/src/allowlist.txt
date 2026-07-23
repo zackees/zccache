@@ -1,0 +1,1 @@
+# Explicit compatibility exemptions belong here with a rationale.

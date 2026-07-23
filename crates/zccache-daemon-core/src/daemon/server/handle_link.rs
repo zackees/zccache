@@ -415,7 +415,7 @@ pub(super) async fn handle_link_ephemeral(
                 )
                 .await;
             }
-            let targets: Vec<(NormalizedPath, NormalizedPath)> = (0..payloads.len())
+            let targets: Vec<NormalizedPath> = (0..payloads.len())
                 .map(|i| {
                     let target: NormalizedPath = if i == 0 {
                         output_path.clone()
@@ -432,8 +432,7 @@ pub(super) async fn handle_link_ephemeral(
                             .join(&names[i])
                             .into()
                     };
-                    let cache_file = state.artifact_dir.join(format!("{key_hex}_{i}"));
-                    (target, cache_file)
+                    target
                 })
                 .collect();
             let has_staged_payload = payloads.iter().any(|payload| {
@@ -441,15 +440,23 @@ pub(super) async fn handle_link_ephemeral(
             });
             let materialize_started = std::time::Instant::now();
             let observed = write_payloads_par_observed(&targets, &payloads);
+            if let Err(failure) = &observed {
+                report_materialization_failure(
+                    &state.cache_dir,
+                    &key_hex,
+                    "link-hit",
+                    failure,
+                );
+            }
             let write_ok = if has_staged_payload {
                 record_staged_hit_materialization(
                     state,
                     targets.len(),
                     materialize_started,
-                    observed,
+                    observed.ok(),
                 )
             } else {
-                observed.is_some()
+                observed.is_ok()
             };
             if write_ok {
                 return Response::LinkResult {

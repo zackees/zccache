@@ -9,6 +9,10 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fmt;
 
+mod log_audit;
+
+pub use log_audit::*;
+
 /// Current durable audit event schema identifier.
 pub const AUDIT_SCHEMA: &str = "soldr.audit.v1";
 

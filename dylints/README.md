@@ -6,8 +6,10 @@ Custom Rust lints used by this workspace.
 - `ban_unrooted_tempdir`: bans tempdir/temp-file creation under `$TMPDIR` instead of `zccache_core::config::default_cache_dir()`.
 - `ban_raw_subprocess_in_daemon`: bans raw subprocess spawns in daemon code paths.
 - `ban_tmp_literal`: bans hardcoded `/tmp` path string literals — they only exist on POSIX (#828).
+- `ban_legacy_artifact_path`: bans ad-hoc reconstruction of the flat-v1 `<key>_<index>` artifact filename convention outside the artifact-layout owner.
+- `ban_normalized_path_deref_containment`: bans `std::path::Path` containment methods (`starts_with`, `strip_prefix`) resolved through `NormalizedPath`'s `Deref` autoderef instead of its inherent normalized methods.
 
-All four libraries use the published Dylint 6.0.1 crates and the pinned
+All six libraries use the published Dylint 6.0.1 crates and the pinned
 `nightly-2026-05-26` toolchain. The supported `cargo-dylint` driver is used
 directly; no custom driver checkout or library alias repair is required.
 

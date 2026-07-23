@@ -57,9 +57,26 @@ pub(super) struct CachedHitMaterializeRequest<'a> {
     pub(super) phases: CachedHitPhases,
 }
 
+#[derive(Debug)]
+pub(super) enum CachedHitFailure {
+    CacheBlobMissing(CacheBlobMissing),
+    CacheRead,
+    DestinationWrite,
+}
+
+impl From<MaterializationFailure> for CachedHitFailure {
+    fn from(failure: MaterializationFailure) -> Self {
+        match failure {
+            MaterializationFailure::CacheBlobMissing(missing) => Self::CacheBlobMissing(missing),
+            MaterializationFailure::CacheRead(_) => Self::CacheRead,
+            MaterializationFailure::DestinationWrite(_) => Self::DestinationWrite,
+        }
+    }
+}
+
 pub(super) fn materialize_cached_compile_hit(
     request: CachedHitMaterializeRequest<'_>,
-) -> Option<Response> {
+) -> Result<Response, CachedHitFailure> {
     let CachedHitMaterializeRequest {
         state,
         sid,
@@ -87,8 +104,30 @@ pub(super) fn materialize_cached_compile_hit(
     // reuses `t0` for the maintenance-visible `last_used` write without an
     // additional clock read (issue #1148).
     let t0 = Instant::now();
-    let cached = lookup_artifact_with_disk_fallback(state, artifact_key_hex)?;
-    let payloads = ensure_payloads(&cached, &state.artifact_dir, artifact_key_hex)?;
+    let missing_artifact = || {
+        let failure = cache_blob_missing(
+            &state.artifact_dir.join(artifact_key_hex),
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "cached artifact metadata or payload is unavailable",
+            ),
+        );
+        report_materialization_failure(&state.cache_dir, artifact_key_hex, "compile-hit", &failure);
+        failure.into()
+    };
+    let cached = lookup_artifact_with_disk_fallback(state, artifact_key_hex)
+        .ok_or_else(&missing_artifact)?;
+    let payloads =
+        ensure_payloads_for_materialization(&cached, &state.artifact_dir, artifact_key_hex)
+            .map_err(|error| {
+                report_materialization_failure(
+                    &state.cache_dir,
+                    artifact_key_hex,
+                    "compile-hit",
+                    &error,
+                );
+                CachedHitFailure::from(error)
+            })?;
     record_artifact_access(state, artifact_key_hex, &cached, t0);
     let t1 = Instant::now();
     let artifact_lookup_ns = (t1 - t0).as_nanos() as u64;
@@ -104,6 +143,7 @@ pub(super) fn materialize_cached_compile_hit(
     let stdout = cached.stdout.clone();
     let stderr = cached.stderr.clone();
     let artifact_bytes = cached.meta.total_size;
+    drop(cached);
 
     // Issue #643: when the miss path stashed the user's depfile bytes as a
     // second output and the current request supplies a `-MF` destination,
@@ -116,7 +156,7 @@ pub(super) fn materialize_cached_compile_hit(
     // build tool is looking for, leaving the user's `-MF` target absent
     // and reproducing the exact stale-incremental-build bug this fix
     // closes.
-    let (targets, payloads_to_write): (Vec<(NormalizedPath, NormalizedPath)>, Vec<CachedPayload>) =
+    let (targets, payloads_to_write): (Vec<NormalizedPath>, Vec<CachedPayload>) =
         if let Some(requested_outputs) = rustc_metadata_compat_outputs {
             let mut targets = Vec::with_capacity(requested_outputs.len());
             let mut selected_payloads = Vec::with_capacity(requested_outputs.len());
@@ -130,10 +170,9 @@ pub(super) fn materialize_cached_compile_hit(
                             requested.display()
                         ),
                     );
-                    return None;
+                    return Err(missing_artifact());
                 };
-                let cache_file = state.artifact_dir.join(format!("{artifact_key_hex}_{i}"));
-                targets.push((requested, cache_file));
+                targets.push(requested);
                 selected_payloads.push(payloads[i].clone());
             }
             (targets, selected_payloads)
@@ -149,15 +188,14 @@ pub(super) fn materialize_cached_compile_hit(
                     } else {
                         secondary_output_dir.join(&names[i])
                     };
-                    let cache_file = state.artifact_dir.join(format!("{artifact_key_hex}_{i}"));
-                    (out, cache_file)
+                    out
                 })
                 .collect();
             (targets, payloads.iter().cloned().collect())
         };
     let delivery_policies = targets
         .iter()
-        .map(|(target, _)| {
+        .map(|target| {
             rustc_archive_hardlink_eligible.map_or(
                 crate::compiler::DeliveryPolicy::IndependentOnly,
                 |archive_eligible| {
@@ -175,8 +213,14 @@ pub(super) fn materialize_cached_compile_hit(
         &mtime_floor_paths,
         &delivery_policies,
     ) {
-        Some(observed) => observed,
-        None => {
+        Ok(observed) => observed,
+        Err(error) => {
+            report_materialization_failure(
+                &state.cache_dir,
+                artifact_key_hex,
+                "compile-hit",
+                &error,
+            );
             if has_staged_payload {
                 use crate::daemon::staged_stats::{StagedCounter, StagedFailure, StagedTiming};
                 let elapsed_ns = t1.elapsed().as_nanos() as u64;
@@ -193,7 +237,7 @@ pub(super) fn materialize_cached_compile_hit(
                     .staged
                     .timing(StagedTiming::HitMaterialization, elapsed_ns);
                 crate::core::lifecycle::write_event(
-                    "staged_materialization_failed",
+                    crate::core::lifecycle::EVENT_STAGED_MATERIALIZATION_FAILED,
                     serde_json::json!({
                         "reason": "requested_materialization",
                         "output_count": targets.len(),
@@ -202,7 +246,7 @@ pub(super) fn materialize_cached_compile_hit(
                     }),
                 );
             }
-            return None;
+            return Err(error.into());
         }
     };
     let t2 = Instant::now();
@@ -289,7 +333,7 @@ pub(super) fn materialize_cached_compile_hit(
         });
     }
 
-    Some(Response::CompileResult {
+    Ok(Response::CompileResult {
         exit_code,
         stdout,
         stderr,

@@ -170,6 +170,21 @@ impl NormalizedPath {
         let base = Self::new(base);
         Path::new(self.key.as_ref()).starts_with(Path::new(base.key.as_ref()))
     }
+
+    /// Remove a normalized component prefix from this path.
+    ///
+    /// This is deliberately inherent rather than relying on `Deref<Path>`:
+    /// the latter silently selects `Path::strip_prefix`, which compares the
+    /// original spelling and can disagree with this type's case and extended
+    /// Windows-prefix normalization.
+    pub fn strip_prefix(
+        &self,
+        base: impl AsRef<Path>,
+    ) -> Result<&Path, std::path::StripPrefixError> {
+        let base = Self::new(base);
+        Path::new(self.key.as_ref())
+            .strip_prefix(Path::new(base.key.as_ref()))
+    }
 }
 
 impl AsRef<Path> for NormalizedPath {
@@ -371,11 +386,31 @@ mod tests {
         assert!(!path.starts_with("/sdk/inc"));
     }
 
+    #[test]
+    fn normalized_strip_prefix_preserves_component_boundaries() {
+        let path = NormalizedPath::new("/sdk/include/vector");
+        assert_eq!(path.strip_prefix("/sdk/include"), Ok(Path::new("vector")));
+        assert!(path.strip_prefix("/sdk/inc").is_err());
+    }
+
+    #[test]
+    fn normalized_strip_prefix_normalizes_dot_components() {
+        let path = NormalizedPath::new("/sdk/include/../include/vector");
+        assert_eq!(
+            path.strip_prefix("/sdk/./include"),
+            Ok(Path::new("vector"))
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn normalized_starts_with_accepts_extended_prefix_and_case_variants() {
         let path = NormalizedPath::new(r"C:\Users\Builder\include\vector");
         assert!(path.starts_with(r"\\?\c:\users\BUILDER\include"));
+        assert_eq!(
+            path.strip_prefix(r"\\?\c:\users\BUILDER\include"),
+            Ok(Path::new("vector"))
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -383,6 +418,10 @@ mod tests {
     fn normalized_starts_with_accepts_macos_case_variants() {
         let path = NormalizedPath::new("/private/var/folders/T/include/vector");
         assert!(path.starts_with("/PRIVATE/VAR/FOLDERS/t/include"));
+        assert_eq!(
+            path.strip_prefix("/PRIVATE/VAR/FOLDERS/t/include"),
+            Ok(Path::new("vector"))
+        );
     }
 
     #[test]

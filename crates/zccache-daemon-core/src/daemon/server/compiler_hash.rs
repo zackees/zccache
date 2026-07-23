@@ -61,7 +61,7 @@ fn warn_probe_timeout(path: &Path, timeout: std::time::Duration) {
          binary so cache-key computation is not blocked (issue #972)"
     );
     crate::core::lifecycle::write_event(
-        "rustc_identity_probe_timeout",
+        crate::core::lifecycle::EVENT_RUSTC_IDENTITY_PROBE_TIMEOUT,
         serde_json::json!({
             "compiler": path.display().to_string(),
             "timeout_ms": timeout.as_millis() as u64,
@@ -167,13 +167,19 @@ impl CompilerHashCache {
         let size = metadata.len();
         let key = NormalizedPath::new(path);
 
-        if let Some(entry) = self.entries.get(&key) {
+        let previous = self.entries.get(&key).map(|entry| entry.clone());
+        if let Some(entry) = &previous {
             if entry.mtime == mtime && entry.size == size {
                 return Some(entry.hash);
             }
         }
 
         let hash = hasher(path)?;
+        if previous.is_some_and(|entry| entry.hash != hash) {
+            crate::daemon::compile_journal::record_miss_reason(
+                crate::daemon::compile_journal::miss_reason::VERSION_SKEW,
+            );
+        }
         let post_metadata = std::fs::metadata(path).ok()?;
         let post_mtime = post_metadata.modified().ok()?;
         let post_size = post_metadata.len();
@@ -200,13 +206,19 @@ impl CompilerHashCache {
         let size = metadata.len();
         let key = NormalizedPath::new(path);
 
-        if let Some(entry) = self.entries.get(&key) {
+        let previous = self.entries.get(&key).map(|entry| entry.clone());
+        if let Some(entry) = &previous {
             if entry.mtime == mtime && entry.size == size {
                 return Some(entry.hash);
             }
         }
 
         let hash = hasher(path.to_path_buf()).await?;
+        if previous.is_some_and(|entry| entry.hash != hash) {
+            crate::daemon::compile_journal::record_miss_reason(
+                crate::daemon::compile_journal::miss_reason::VERSION_SKEW,
+            );
+        }
         let post_metadata = std::fs::metadata(path).ok()?;
         let post_mtime = post_metadata.modified().ok()?;
         let post_size = post_metadata.len();

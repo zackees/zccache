@@ -126,18 +126,18 @@ pub(super) fn hash_file(
 ) -> Result<ContentHash, String> {
     let lookup_path = path_for_cache_lookup(path);
     cache_system
-        .lookup_since(&NormalizedPath::new(lookup_path.as_ref()), clock)
+        .lookup_since(&lookup_path, clock)
         .map(|r| r.hash)
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn path_for_cache_lookup(path: &Path) -> std::borrow::Cow<'_, Path> {
+fn path_for_cache_lookup(path: &Path) -> NormalizedPath {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
         if !path.as_os_str().as_encoded_bytes().starts_with(br"\\?\") {
-            return std::borrow::Cow::Borrowed(path);
+            return path.into();
         }
         let encoded: Vec<u16> = path.as_os_str().encode_wide().collect();
 
@@ -163,12 +163,11 @@ fn path_for_cache_lookup(path: &Path) -> std::borrow::Cow<'_, Path> {
             None
         };
         if let Some(normalized) = normalized {
-            return std::borrow::Cow::Owned(PathBuf::from(std::ffi::OsString::from_wide(
-                &normalized,
-            )));
+            let path = std::ffi::OsString::from_wide(&normalized);
+            return NormalizedPath::new(Path::new(&path));
         }
     }
-    std::borrow::Cow::Borrowed(path)
+    path.into()
 }
 
 /// Check if all files in a context's dependency list are unchanged since
@@ -368,13 +367,13 @@ mod tests {
     fn cache_lookup_path_strips_windows_verbatim_prefix() {
         let input = Path::new(r"\\?\C:\workspace\clippy.toml");
         assert_eq!(
-            path_for_cache_lookup(input).as_ref(),
+            path_for_cache_lookup(input).as_path(),
             Path::new(r"C:\workspace\clippy.toml")
         );
 
         let unc = Path::new(r"\\?\UNC\server\share\clippy.toml");
         assert_eq!(
-            path_for_cache_lookup(unc).as_ref(),
+            path_for_cache_lookup(unc).as_path(),
             Path::new(r"\\server\share\clippy.toml")
         );
 
@@ -391,6 +390,7 @@ mod tests {
         let non_unicode = PathBuf::from(std::ffi::OsString::from_wide(&encoded));
         assert_eq!(
             path_for_cache_lookup(&non_unicode)
+                .as_path()
                 .as_os_str()
                 .encode_wide()
                 .collect::<Vec<_>>(),

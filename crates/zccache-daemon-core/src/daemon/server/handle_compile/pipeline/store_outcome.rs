@@ -710,7 +710,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         if salvage {
             state.profiler.staged.count(StagedCounter::SalvageAttempt);
             crate::core::lifecycle::write_event(
-                "staged_salvage_started",
+                crate::core::lifecycle::EVENT_STAGED_SALVAGE_STARTED,
                 serde_json::json!({
                     "reason": salvage_reason,
                     "output_count": output_count,
@@ -745,7 +745,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
                         .staged
                         .bytes(StagedBytes::Salvage, materialized.copy_bytes);
                     crate::core::lifecycle::write_event(
-                        "staged_salvage_complete",
+                        crate::core::lifecycle::EVENT_STAGED_SALVAGE_COMPLETE,
                         serde_json::json!({
                             "reason": salvage_reason,
                             "output_count": output_count,
@@ -795,7 +795,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
                         .staged
                         .bytes(StagedBytes::Salvage, progress.copy_bytes);
                     crate::core::lifecycle::write_event(
-                        "staged_salvage_failed",
+                        crate::core::lifecycle::EVENT_STAGED_SALVAGE_FAILED,
                         serde_json::json!({
                             "reason": "requested_materialization",
                             "output_count": output_count,
@@ -809,7 +809,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
                         .staged
                         .timing(StagedTiming::MissMaterialization, elapsed_ns);
                     crate::core::lifecycle::write_event(
-                        "staged_materialization_failed",
+                        crate::core::lifecycle::EVENT_STAGED_MATERIALIZATION_FAILED,
                         serde_json::json!({
                             "reason": "requested_materialization",
                             "output_count": output_count,

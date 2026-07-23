@@ -54,15 +54,45 @@ fn try_load_packed_payload_round_trip() {
 
 #[test]
 fn persist_artifact_payloads_unpacked_layout() {
-    // Default: not packed.
-    std::env::remove_var("ZCCACHE_PACK_ARTIFACTS");
     let dir = tempfile::tempdir().unwrap();
     let key = "abc123";
     let payloads = vec![Arc::new(b"one".to_vec()), Arc::new(b"two".to_vec())];
-    persist_artifact_payloads(dir.path(), key, &payloads).unwrap();
+    persist_artifact_payloads_with_legacy_purpose(
+        dir.path(),
+        key,
+        &payloads,
+        LegacyPathPurpose::LegacyWrite,
+        "test",
+        false,
+    )
+    .unwrap();
     assert_eq!(std::fs::read(dir.path().join("abc123_0")).unwrap(), b"one");
     assert_eq!(std::fs::read(dir.path().join("abc123_1")).unwrap(), b"two");
     assert!(!dir.path().join("abc123.pack").exists());
+}
+
+#[test]
+fn persist_artifact_payloads_staged_layout_creates_no_flat_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = "a".repeat(64);
+    let payloads = vec![Arc::new(b"one".to_vec()), Arc::new(b"two".to_vec())];
+    persist_artifact_payloads_with_legacy_purpose(
+        dir.path(),
+        &key,
+        &payloads,
+        LegacyPathPurpose::LegacyWrite,
+        "test",
+        true,
+    )
+    .unwrap();
+
+    let resolved = load_staged_artifact_paths(dir.path(), &key, &[3, 3])
+        .unwrap()
+        .unwrap();
+    assert_eq!(std::fs::read(&resolved[0]).unwrap(), b"one");
+    assert_eq!(std::fs::read(&resolved[1]).unwrap(), b"two");
+    assert!(!dir.path().join(format!("{key}_0")).exists());
+    assert!(!dir.path().join(format!("{key}_1")).exists());
 }
 
 #[test]

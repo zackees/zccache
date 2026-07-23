@@ -4,7 +4,7 @@ This lint forbids the daemon production code from spawning child processes
 via `std::process::Command::{spawn, output, status}` or
 `tokio::process::Command::{spawn, output, status}` directly. Every child
 process the daemon launches **must** go through the blessed helpers in
-`crates/zccache-daemon/src/process.rs`:
+`crates/zccache-daemon-core/src/daemon/process.rs`:
 
 | Use case          | Helper                                |
 | ----------------- | ------------------------------------- |
@@ -26,7 +26,7 @@ the bypass at compile time.
 
 ## Scope
 
-The lint fires only on source files under `crates/zccache-daemon/src/`.
+The lint fires only on source files under `crates/zccache-daemon-core/src/daemon/`.
 Other crates (cli, ci, fingerprint, …) are out of scope: the cli already
 has its own sanitized spawn (`spawn_daemon_windows::spawn_daemon_sanitized`)
 for the daemon-launching hop, and the other crates don't spawn compilers.

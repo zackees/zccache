@@ -640,18 +640,20 @@ async fn exec_cache_survives_daemon_restart() {
 
     // Run 1 — populate cache, then shutdown daemon.
     {
-        let (endpoint, _srv, shutdown) = start_daemon_with_cache(cache.path()).await;
+        let (endpoint, server, shutdown) = start_daemon_with_cache(cache.path()).await;
         let mut client = connect_client(&endpoint).await;
         let first = send_exec(&mut client, make()).await;
         assert!(!first.cached);
         let _ = client.shutdown_owned().await;
         shutdown.notify_one();
-        // Tiny yield so the daemon flushes its index.
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("first daemon shutdown timed out")
+            .expect("first daemon task failed");
     }
 
     // Run 2 — fresh daemon, same cache dir → should hit.
-    let (endpoint, _srv, shutdown) = start_daemon_with_cache(cache.path()).await;
+    let (endpoint, server, shutdown) = start_daemon_with_cache(cache.path()).await;
     let mut client = connect_client(&endpoint).await;
     let second = send_exec(&mut client, make()).await;
     assert!(
@@ -660,6 +662,10 @@ async fn exec_cache_survives_daemon_restart() {
     );
     let _ = client.shutdown_owned().await;
     shutdown.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(10), server)
+        .await
+        .expect("second daemon shutdown timed out")
+        .expect("second daemon task failed");
 }
 
 /// Output-stream toggles: `output_streams.stdout=false` should not capture

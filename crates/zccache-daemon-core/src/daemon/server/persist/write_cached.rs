@@ -2,6 +2,94 @@
 
 use super::*;
 
+/// Evidence that a cache payload disappeared after its metadata was selected.
+/// Only this type authorizes a caller to invalidate a depgraph entry.
+#[derive(Debug)]
+pub(in crate::daemon::server) struct CacheBlobMissing {
+    pub(in crate::daemon::server) path: NormalizedPath,
+    pub(in crate::daemon::server) error: std::io::Error,
+}
+
+/// The cache payload still exists, but it could not be verified or read.
+/// This is a soft miss and is deliberately not evidence for invalidation.
+#[derive(Debug)]
+pub(in crate::daemon::server) struct CacheReadFailure {
+    pub(in crate::daemon::server) path: NormalizedPath,
+    pub(in crate::daemon::server) error: std::io::Error,
+}
+
+/// A write to the current invocation's requested output failed. The cached
+/// artifact remains valid and must not be evicted.
+#[derive(Debug)]
+pub(in crate::daemon::server) struct DestinationWriteFailure {
+    pub(in crate::daemon::server) path: NormalizedPath,
+    pub(in crate::daemon::server) error: std::io::Error,
+}
+
+#[derive(Debug)]
+pub(in crate::daemon::server) enum MaterializationFailure {
+    CacheBlobMissing(CacheBlobMissing),
+    CacheRead(CacheReadFailure),
+    DestinationWrite(DestinationWriteFailure),
+}
+
+pub(in crate::daemon::server) type MaterializationResult<T> = Result<T, MaterializationFailure>;
+
+pub(in crate::daemon::server) fn report_materialization_failure(
+    cache_root: &Path,
+    artifact_key: &str,
+    consumer: &'static str,
+    failure: &MaterializationFailure,
+) {
+    match failure {
+        MaterializationFailure::CacheBlobMissing(missing) => {
+            record_miss_reason(miss_reason::NO_ARTIFACT_FOR_KEY);
+            tracing::warn!(
+                event = "cache_blob_missing",
+                artifact_key,
+                consumer,
+                cache_path = %missing.path.display(),
+                error = %missing.error,
+                "cached artifact payload disappeared during materialization"
+            );
+        }
+        MaterializationFailure::CacheRead(cache_read) => {
+            record_miss_reason(miss_reason::NO_ARTIFACT_FOR_KEY);
+            tracing::warn!(
+                event = "cache_payload_read_failed",
+                artifact_key,
+                consumer,
+                cache_path = %cache_read.path.display(),
+                error = %cache_read.error,
+                "cached artifact payload could not be verified or read"
+            );
+        }
+        MaterializationFailure::DestinationWrite(destination) => {
+            record_miss_reason(miss_reason::DESTINATION_WRITE_FAILED);
+            tracing::warn!(
+                event = "destination_write_failed",
+                artifact_key,
+                consumer,
+                output_path = %destination.path.display(),
+                error = %destination.error,
+                "cached artifact could not be written to the requested destination"
+            );
+            crate::core::lifecycle::write_event_in_cache_root(
+                cache_root,
+                crate::core::lifecycle::EVENT_DESTINATION_WRITE_FAILED,
+                serde_json::json!({
+                    "artifact_key": artifact_key,
+                    "consumer": consumer,
+                    "path": destination.path.display().to_string(),
+                    "errno": destination.error.raw_os_error(),
+                    "evicted": false,
+                }),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 pub(in crate::daemon::server) fn write_cached_output(
     out_path: &Path,
     cache_file: &Path,
@@ -32,6 +120,7 @@ pub(in crate::daemon::server) fn write_cached_file(
     .map(|_| ())
 }
 
+#[cfg(test)]
 fn materialize_cached_file(
     out_path: &Path,
     cache_file: &Path,
@@ -40,7 +129,23 @@ fn materialize_cached_file(
     materialize_cached_file_observed(out_path, cache_file, delivery, false)
 }
 
+#[cfg(test)]
 fn materialize_cached_file_observed(
+    out_path: &Path,
+    cache_file: &Path,
+    delivery: crate::compiler::DeliveryPolicy,
+    force_observation: bool,
+) -> std::io::Result<StagedMaterializationStats> {
+    verify_registered_blob(cache_file)?;
+    materialize_verified_cached_file_observed(
+        out_path,
+        cache_file,
+        delivery,
+        force_observation,
+    )
+}
+
+fn materialize_verified_cached_file_observed(
     out_path: &Path,
     cache_file: &Path,
     delivery: crate::compiler::DeliveryPolicy,
@@ -60,7 +165,6 @@ fn materialize_cached_file_observed(
             StagedMaterializationStats::default()
         }
     };
-    verify_registered_blob(cache_file)?;
     let hardlink_allowed =
         !staged || matches!(delivery, crate::compiler::DeliveryPolicy::HardlinkEligible);
     if same_file(out_path, cache_file) {
@@ -276,83 +380,76 @@ fn remove_materialized_output(path: &Path) -> std::io::Result<()> {
 
 pub(in crate::daemon::server) fn write_cached_payload_with_policy_stats(
     out_path: &Path,
-    cache_file: &Path,
     payload: &CachedPayload,
     delivery: crate::compiler::DeliveryPolicy,
-) -> std::io::Result<StagedMaterializationStats> {
+) -> MaterializationResult<StagedMaterializationStats> {
     match payload {
         CachedPayload::Bytes(data) => {
-            write_cached_output(out_path, cache_file, data)?;
+            remove_materialized_output(out_path)
+                .map_err(|error| destination_write_failure(out_path, error))?;
+            std::fs::write(out_path, data.as_slice())
+                .map_err(|error| destination_write_failure(out_path, error))?;
             Ok(StagedMaterializationStats::default())
         }
-        CachedPayload::File(path) => materialize_cached_file(out_path, path, delivery),
+        CachedPayload::File(path) => {
+            verify_registered_blob(path)
+                .map_err(|error| classify_cache_read_error(path, error))?;
+            materialize_verified_cached_file_observed(out_path, path, delivery, false)
+                .map_err(|error| classify_file_materialization_error(out_path, path, error))
+        }
     }
 }
 
 pub(in crate::daemon::server) const PAR_WRITE_THRESHOLD: usize = 4;
 
-pub(in crate::daemon::server) fn write_payloads_par<P, Q>(
-    targets: &[(P, Q)],
+pub(in crate::daemon::server) fn write_payloads_par_observed<P>(
+    targets: &[P],
     payloads: &[CachedPayload],
-) -> bool
+) -> MaterializationResult<StagedMaterializationStats>
 where
     P: AsRef<Path> + Sync,
-    Q: AsRef<Path> + Sync,
 {
-    write_payloads_par_observed(targets, payloads).is_some()
-}
-
-pub(in crate::daemon::server) fn write_payloads_par_observed<P, Q>(
-    targets: &[(P, Q)],
-    payloads: &[CachedPayload],
-) -> Option<StagedMaterializationStats>
-where
-    P: AsRef<Path> + Sync,
-    Q: AsRef<Path> + Sync,
-{
-    debug_assert_eq!(targets.len(), payloads.len());
-    let write_one = |out: &Path,
-                     cache: &Path,
-                     payload: &CachedPayload|
-     -> std::io::Result<StagedMaterializationStats> {
+    if targets.len() != payloads.len() {
+        return Err(payload_count_mismatch(targets.len(), payloads.len()));
+    }
+    let write_one = |out: &Path, payload: &CachedPayload|
+     -> MaterializationResult<StagedMaterializationStats> {
         if let Some(parent) = out.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)
+                .map_err(|error| destination_write_failure(out, error))?;
         }
         write_cached_payload_with_policy_stats(
             out,
-            cache,
             payload,
             crate::compiler::DeliveryPolicy::IndependentOnly,
         )
     };
     if targets.len() < PAR_WRITE_THRESHOLD {
         let mut observed = StagedMaterializationStats::default();
-        for ((out, cache), payload) in targets.iter().zip(payloads) {
-            observed.add(write_one(out.as_ref(), cache.as_ref(), payload).ok()?);
+        for (out, payload) in targets.iter().zip(payloads) {
+            observed.add(write_one(out.as_ref(), payload)?);
         }
-        return Some(observed);
+        return Ok(observed);
     }
     use rayon::prelude::*;
     targets
         .par_iter()
         .zip(payloads.par_iter())
-        .map(|((out, cache), payload)| write_one(out.as_ref(), cache.as_ref(), payload))
+        .map(|(out, payload)| write_one(out.as_ref(), payload))
         .try_reduce(StagedMaterializationStats::default, |mut total, one| {
             total.add(one);
             Ok(total)
         })
-        .ok()
 }
 
 #[cfg(test)]
-pub(in crate::daemon::server) fn write_payloads_par_with_mtime_floor<P, Q, R>(
-    targets: &[(P, Q)],
+pub(in crate::daemon::server) fn write_payloads_par_with_mtime_floor<P, R>(
+    targets: &[P],
     payloads: &[CachedPayload],
     floor_paths: &[R],
 ) -> bool
 where
     P: AsRef<Path> + Sync,
-    Q: AsRef<Path> + Sync,
     R: AsRef<Path>,
 {
     let policies = vec![crate::compiler::DeliveryPolicy::IndependentOnly; targets.len()];
@@ -360,15 +457,14 @@ where
 }
 
 #[cfg(test)]
-pub(in crate::daemon::server) fn write_payloads_par_with_mtime_floor_and_policies<P, Q, R>(
-    targets: &[(P, Q)],
+pub(in crate::daemon::server) fn write_payloads_par_with_mtime_floor_and_policies<P, R>(
+    targets: &[P],
     payloads: &[CachedPayload],
     floor_paths: &[R],
     policies: &[crate::compiler::DeliveryPolicy],
 ) -> bool
 where
     P: AsRef<Path> + Sync,
-    Q: AsRef<Path> + Sync,
     R: AsRef<Path>,
 {
     write_payloads_par_with_mtime_floor_and_policies_observed(
@@ -377,40 +473,52 @@ where
         floor_paths,
         policies,
     )
-    .is_some()
+    .is_ok()
 }
 
 pub(in crate::daemon::server) fn write_payloads_par_with_mtime_floor_and_policies_observed<
     P,
-    Q,
     R,
 >(
-    targets: &[(P, Q)],
+    targets: &[P],
     payloads: &[CachedPayload],
     floor_paths: &[R],
     policies: &[crate::compiler::DeliveryPolicy],
-) -> Option<StagedMaterializationStats>
+) -> MaterializationResult<StagedMaterializationStats>
 where
     P: AsRef<Path> + Sync,
-    Q: AsRef<Path> + Sync,
     R: AsRef<Path>,
 {
-    debug_assert_eq!(targets.len(), payloads.len());
-    debug_assert_eq!(targets.len(), policies.len());
+    if targets.len() != payloads.len() {
+        return Err(payload_count_mismatch(targets.len(), payloads.len()));
+    }
+    if targets.len() != policies.len() {
+        return Err(cache_read_failure(
+            Path::new("<cached-delivery-policy-set>"),
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "cached target count {} does not match delivery-policy count {}",
+                    targets.len(),
+                    policies.len()
+                ),
+            ),
+        ));
+    }
     let write_one = |out: &Path,
-                     cache: &Path,
                      payload: &CachedPayload,
                      policy: crate::compiler::DeliveryPolicy|
-     -> std::io::Result<StagedMaterializationStats> {
+     -> MaterializationResult<StagedMaterializationStats> {
         if let Some(parent) = out.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)
+                .map_err(|error| destination_write_failure(out, error))?;
         }
-        write_cached_payload_with_policy_stats(out, cache, payload, policy)
+        write_cached_payload_with_policy_stats(out, payload, policy)
     };
     let observed = if targets.len() < PAR_WRITE_THRESHOLD {
         let mut observed = StagedMaterializationStats::default();
-        for (((out, cache), payload), policy) in targets.iter().zip(payloads).zip(policies) {
-            observed.add(write_one(out.as_ref(), cache.as_ref(), payload, *policy).ok()?);
+        for ((out, payload), policy) in targets.iter().zip(payloads).zip(policies) {
+            observed.add(write_one(out.as_ref(), payload, *policy)?);
         }
         observed
     } else {
@@ -419,20 +527,81 @@ where
             .par_iter()
             .zip(payloads.par_iter())
             .zip(policies.par_iter())
-            .map(|(((out, cache), payload), policy)| {
-                write_one(out.as_ref(), cache.as_ref(), payload, *policy)
-            })
+            .map(|((out, payload), policy)| write_one(out.as_ref(), payload, *policy))
             .try_reduce(StagedMaterializationStats::default, |mut total, one| {
                 total.add(one);
                 Ok(total)
-            })
-            .ok()?
+            })?
     };
     let batch_floor = std::time::SystemTime::now();
     floor_materialized_outputs_to_input_max(
-        targets.iter().map(|(out, _)| out.as_ref()),
+        targets.iter().map(|out| out.as_ref()),
         floor_paths.iter().map(|path| path.as_ref()),
         batch_floor,
     );
-    Some(observed)
+    Ok(observed)
+}
+
+pub(in crate::daemon::server) fn cache_blob_missing(
+    path: &Path,
+    error: std::io::Error,
+) -> MaterializationFailure {
+    MaterializationFailure::CacheBlobMissing(CacheBlobMissing {
+        path: path.into(),
+        error,
+    })
+}
+
+fn payload_count_mismatch(target_count: usize, payload_count: usize) -> MaterializationFailure {
+    cache_read_failure(
+        Path::new("<cached-payload-set>"),
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "cached target count {target_count} does not match payload count {payload_count}"
+            ),
+        ),
+    )
+}
+
+pub(in crate::daemon::server) fn cache_read_failure(
+    path: &Path,
+    error: std::io::Error,
+) -> MaterializationFailure {
+    MaterializationFailure::CacheRead(CacheReadFailure {
+        path: path.into(),
+        error,
+    })
+}
+
+fn destination_write_failure(path: &Path, error: std::io::Error) -> MaterializationFailure {
+    MaterializationFailure::DestinationWrite(DestinationWriteFailure {
+        path: path.into(),
+        error,
+    })
+}
+
+fn classify_file_materialization_error(
+    output_path: &Path,
+    cache_path: &Path,
+    error: std::io::Error,
+) -> MaterializationFailure {
+    match std::fs::metadata(cache_path) {
+        Err(source_error) if source_error.kind() == std::io::ErrorKind::NotFound => {
+            cache_blob_missing(cache_path, source_error)
+        }
+        _ => destination_write_failure(output_path, error),
+    }
+}
+
+fn classify_cache_read_error(
+    cache_path: &Path,
+    error: std::io::Error,
+) -> MaterializationFailure {
+    match std::fs::metadata(cache_path) {
+        Err(source_error) if source_error.kind() == std::io::ErrorKind::NotFound => {
+            cache_blob_missing(cache_path, source_error)
+        }
+        _ => cache_read_failure(cache_path, error),
+    }
 }

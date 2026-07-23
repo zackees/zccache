@@ -7,7 +7,8 @@ use std::sync::Arc;
 use crate::protocol::Response;
 
 use super::super::{
-    extract_outcome, miss_reason, CompileJournal, JournalContext, JournalEntry, MissDiff,
+    capture_miss_reason, extract_outcome, miss_reason, record_miss_reason, CompileJournal,
+    JournalContext, JournalEntry, MissDiff,
 };
 use super::wait_for_lines;
 
@@ -72,10 +73,76 @@ fn miss_reason_constants_match_documented_schema() {
     assert_eq!(miss_reason::NO_ARTIFACT_FOR_KEY, "no_artifact_for_key");
     assert_eq!(miss_reason::VERSION_SKEW, "version_skew");
     assert_eq!(miss_reason::UNCACHEABLE_INPUT, "uncacheable_input");
+    assert_eq!(
+        miss_reason::DESTINATION_WRITE_FAILED,
+        "destination_write_failed"
+    );
     assert_eq!(miss_reason::UNKNOWN, "unknown");
     // The all-values slice lets consumers iterate the closed set.
     assert!(miss_reason::ALL.contains(&miss_reason::UNKNOWN));
     assert!(miss_reason::ALL.contains(&miss_reason::CONTEXT_NOT_FOUND));
+}
+
+#[test]
+fn every_miss_reason_has_a_production_emitter() {
+    let production_sources = [
+        include_str!("../../server/connection.rs"),
+        include_str!("../../server/compiler_hash.rs"),
+        include_str!("../../server/handle_compile/pipeline/mod.rs"),
+        include_str!("../../server/handle_compile_multi.rs"),
+        include_str!("../outcome.rs"),
+    ]
+    .into_iter()
+    .map(|source| {
+        source
+            .split("\n#[cfg(test)]\nmod ")
+            .next()
+            .unwrap_or(source)
+    })
+    .collect::<String>();
+    let emitters = [
+        (
+            miss_reason::CONTEXT_NOT_FOUND,
+            "miss_reason::CONTEXT_NOT_FOUND",
+        ),
+        (
+            miss_reason::INPUT_FINGERPRINT_MISMATCH,
+            "miss_reason::INPUT_FINGERPRINT_MISMATCH",
+        ),
+        (
+            miss_reason::NO_ARTIFACT_FOR_KEY,
+            "miss_reason::NO_ARTIFACT_FOR_KEY",
+        ),
+        (miss_reason::VERSION_SKEW, "miss_reason::VERSION_SKEW"),
+        (
+            miss_reason::UNCACHEABLE_INPUT,
+            "miss_reason::UNCACHEABLE_INPUT",
+        ),
+        (
+            miss_reason::DESTINATION_WRITE_FAILED,
+            "miss_reason::DESTINATION_WRITE_FAILED",
+        ),
+        (miss_reason::UNKNOWN, "miss_reason::UNKNOWN"),
+    ];
+    assert_eq!(emitters.len(), miss_reason::ALL.len());
+    for (reason, source_pattern) in emitters {
+        assert!(
+            production_sources.contains(source_pattern),
+            "miss reason {reason:?} has no production emitter"
+        );
+    }
+}
+
+#[tokio::test]
+async fn miss_attribution_keeps_the_most_specific_observation() {
+    let (_, reason) = capture_miss_reason(Box::pin(async {
+        record_miss_reason(miss_reason::CONTEXT_NOT_FOUND);
+        record_miss_reason(miss_reason::VERSION_SKEW);
+        record_miss_reason(miss_reason::INPUT_FINGERPRINT_MISMATCH);
+        record_miss_reason(miss_reason::DESTINATION_WRITE_FAILED);
+    }))
+    .await;
+    assert_eq!(reason, Some(miss_reason::DESTINATION_WRITE_FAILED));
 }
 
 // ─── JournalEntry::new miss_reason threading ──────────────────────────────

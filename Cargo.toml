@@ -28,6 +28,8 @@ exclude = [
     "dylints/ban_unrooted_tempdir",
     "dylints/ban_raw_subprocess_in_daemon",
     "dylints/ban_tmp_literal",
+    "dylints/ban_legacy_artifact_path",
+    "dylints/ban_normalized_path_deref_containment",
 ]
 
 [workspace.package]

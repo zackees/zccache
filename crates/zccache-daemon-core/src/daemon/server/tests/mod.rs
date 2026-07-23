@@ -39,28 +39,39 @@ mod write_cached;
 /// per-test cache dir so they don't clash with any production daemon
 /// writing the global index blob.
 pub(super) struct CacheDirEnvGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
     previous_cache_dir: Option<std::ffi::OsString>,
     previous_namespace: Option<std::ffi::OsString>,
 }
 
+static CACHE_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 impl CacheDirEnvGuard {
     pub(super) fn set(path: &Path) -> Self {
+        let lock = CACHE_DIR_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
         let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
         std::env::set_var(crate::core::config::CACHE_DIR_ENV, path);
         std::env::remove_var(crate::core::config::DAEMON_NAMESPACE_ENV);
         Self {
+            _lock: lock,
             previous_cache_dir,
             previous_namespace,
         }
     }
 
     pub(super) fn set_with_namespace(path: &Path, namespace: &str) -> Self {
+        let lock = CACHE_DIR_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
         let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
         std::env::set_var(crate::core::config::CACHE_DIR_ENV, path);
         std::env::set_var(crate::core::config::DAEMON_NAMESPACE_ENV, namespace);
         Self {
+            _lock: lock,
             previous_cache_dir,
             previous_namespace,
         }

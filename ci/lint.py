@@ -6,7 +6,9 @@ Usage:
     ./lint <file.rs>    # single-file rustfmt + per-crate clippy
 """
 
+import filecmp
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +24,14 @@ DYLINT_COMPONENTS = ["llvm-tools-preview", "rust-src", "rustc-dev"]
 DYLINT_WINDOWS_SKIP = (
     "Skipping Dylint on Windows; the dedicated Dylint CI job runs on Ubuntu."
 )
+
+
+def dylint_manifests() -> list[str]:
+    """Return every standalone Dylint library manifest in stable order."""
+    return [
+        path.relative_to(SCRIPT_DIR).as_posix()
+        for path in sorted((SCRIPT_DIR / "dylints").glob("*/Cargo.toml"))
+    ]
 
 
 def is_soldr_cargo_command(cmd):
@@ -87,6 +97,42 @@ def dylint_command() -> list[str]:
     # The standalone executable parses the same argv shape as the Cargo plugin.
     # Keep the subcommand: without it, Clap delegates `--all` to Cargo itself.
     return [executable, "dylint", "--all", "--workspace"]
+
+
+def ensure_dylint_aliases():
+    """Create cargo-dylint's expected `name@toolchain` aliases when missing."""
+    configured_target = Path(os.environ.get("CARGO_TARGET_DIR", "target"))
+    target_dir = (
+        configured_target
+        if configured_target.is_absolute()
+        else SCRIPT_DIR / configured_target
+    )
+    libraries_root = target_dir / "dylint" / "libraries"
+    if not libraries_root.is_dir():
+        return False
+
+    created = False
+    for toolchain_dir in libraries_root.iterdir():
+        if not toolchain_dir.is_dir():
+            continue
+        release_dir = toolchain_dir / "release"
+        if not release_dir.is_dir():
+            continue
+        for library in release_dir.iterdir():
+            if not library.is_file():
+                continue
+            if library.suffix not in {".dll", ".dylib", ".so"}:
+                continue
+            if "@" in library.stem:
+                continue
+            alias = library.with_name(
+                f"{library.stem}@{toolchain_dir.name}{library.suffix}"
+            )
+            if alias.exists() and filecmp.cmp(library, alias, shallow=False):
+                continue
+            shutil.copy2(library, alias)
+            created = True
+    return created
 
 
 def ensure_dylint_components():
@@ -162,15 +208,30 @@ def lint_dylint_only():
     # alias the just-built libraries and retry. With N dylints in the
     # workspace the worst case is N+1 invocations — each retry compiles the
     # next library fresh, so we loop until no new aliases need creating.
-    result = subprocess.run(
-        dylint_cmd,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        cwd=str(SCRIPT_DIR),
-        env=dylint_env(),
-    )
-    return result.returncode
+    max_attempts = len(dylint_manifests()) + 1
+    last_result = None
+    for attempt in range(1, max_attempts + 1):
+        capture = attempt < max_attempts
+        result = subprocess.run(
+            dylint_cmd,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(SCRIPT_DIR),
+            env=dylint_env(),
+            capture_output=capture,
+        )
+        if capture:
+            sys.stdout.write(result.stdout or "")
+            sys.stderr.write(result.stderr or "")
+        last_result = result
+        if result.returncode == 0:
+            break
+        if not ensure_dylint_aliases():
+            # No new aliases to create — the failure isn't a missing-alias
+            # one, so further retries won't help.
+            break
+    return last_result.returncode if last_result is not None else 1
 
 
 def detect_crate(file_path):
@@ -227,6 +288,8 @@ def lint_workspace():
             "dylints/ban_unrooted_tempdir/Cargo.toml",
             "dylints/ban_tmp_literal/Cargo.toml",
             "dylints/ban_raw_subprocess_in_daemon/Cargo.toml",
+            "dylints/ban_legacy_artifact_path/Cargo.toml",
+            "dylints/ban_normalized_path_deref_containment/Cargo.toml",
         ):
             result = run_cmd(cargo_command(
                 "fmt",

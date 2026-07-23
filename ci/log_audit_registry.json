@@ -1,0 +1,59 @@
+{
+  "rules": [
+    {
+      "id": "malformed-log-line",
+      "owner_issue": 1159,
+      "contexts": [
+        "perf",
+        "integration"
+      ]
+    },
+    {
+      "id": "no-unknown-miss-reason",
+      "owner_issue": 1155,
+      "contexts": [
+        "perf",
+        "integration"
+      ]
+    },
+    {
+      "id": "no-legacy-path-access",
+      "owner_issue": 1152,
+      "contexts": [
+        "perf",
+        "integration"
+      ]
+    },
+    {
+      "id": "no-destination-error-eviction",
+      "owner_issue": 1155,
+      "contexts": [
+        "perf",
+        "integration"
+      ]
+    },
+    {
+      "id": "no-wrapper-local-fallback",
+      "owner_issue": 1159,
+      "contexts": [
+        "perf",
+        "integration"
+      ]
+    },
+    {
+      "id": "bounded-publication-conflicts",
+      "owner_issue": 1159,
+      "contexts": [
+        "perf",
+        "integration"
+      ]
+    },
+    {
+      "id": "warm-run-has-hits",
+      "owner_issue": 1159,
+      "contexts": [
+        "perf"
+      ]
+    }
+  ]
+}

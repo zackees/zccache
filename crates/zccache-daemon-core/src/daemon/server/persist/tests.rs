@@ -142,7 +142,7 @@ fn batch_floor_bumps_build_script_output_to_extern_mtime() {
     let dep_mtime = mtime_of(&extern_dep);
 
     let output = build_dir.join("build-script-build");
-    let targets = vec![(output.clone(), cache.clone())];
+    let targets = vec![output.clone()];
     let payloads = vec![CachedPayload::File(cache.clone().into())];
     let floor_paths = vec![extern_dep.clone()];
 
@@ -176,7 +176,7 @@ fn batch_floor_freshens_materialized_outputs_without_floor_paths() {
     filetime::set_file_mtime(&cache, filetime::FileTime::from_system_time(old_mtime)).unwrap();
 
     let output = dir.path().join("target/debug/deps/libcrate.rlib");
-    let targets = vec![(output.clone(), cache.clone())];
+    let targets = vec![output.clone()];
     let payloads = vec![CachedPayload::File(cache.clone().into())];
     let floor_paths: Vec<PathBuf> = Vec::new();
 

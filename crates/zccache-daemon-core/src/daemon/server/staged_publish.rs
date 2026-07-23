@@ -143,7 +143,7 @@ pub(super) fn record_staged_hit_materialization(
                 .staged
                 .timing(StagedTiming::HitMaterialization, elapsed_ns);
             crate::core::lifecycle::write_event(
-                "staged_materialization_failed",
+                crate::core::lifecycle::EVENT_STAGED_MATERIALIZATION_FAILED,
                 serde_json::json!({
                     "reason": "requested_materialization",
                     "output_count": output_count,

@@ -237,6 +237,72 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum FdProbe {
+        Closed,
+        Open { dev: libc::dev_t, ino: libc::ino_t },
+        Error(i32),
+    }
+
+    #[cfg(unix)]
+    impl FdProbe {
+        fn capture(fd: RawFd) -> Self {
+            let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+            let result = unsafe { libc::fstat(fd, stat.as_mut_ptr()) };
+            if result == 0 {
+                let stat = unsafe { stat.assume_init() };
+                return Self::Open { dev: stat.st_dev, ino: stat.st_ino };
+            }
+            match std::io::Error::last_os_error().raw_os_error() {
+                Some(libc::EBADF) => Self::Closed,
+                Some(errno) => Self::Error(errno),
+                None => Self::Error(0),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_pool_drop_closes_endpoints() {
+        let endpoints;
+        {
+            let pool = JobserverPool::create(1).expect("jobserver pool should be created");
+            endpoints = [
+                (
+                    "read",
+                    pool.inner.read.as_raw_fd(),
+                    FdProbe::capture(pool.inner.read.as_raw_fd()),
+                ),
+                (
+                    "write",
+                    pool.inner.write.as_raw_fd(),
+                    FdProbe::capture(pool.inner.write.as_raw_fd()),
+                ),
+            ];
+            for (name, fd, before) in endpoints {
+                assert!(
+                    matches!(before, FdProbe::Open { .. }),
+                    "pre-drop {name} endpoint fd {fd} must be open, observed {before:?}"
+                );
+            }
+        }
+        for (name, fd, before) in endpoints {
+            let after = FdProbe::capture(fd);
+            match after {
+                FdProbe::Closed => {}
+                FdProbe::Open { .. } => assert_ne!(
+                    after, before,
+                    "jobserver {name} endpoint fd {fd} still identifies the dropped pipe; \
+                     before={before:?}, after={after:?}"
+                ),
+                FdProbe::Error(errno) => panic!(
+                    "post-drop fstat for jobserver {name} endpoint fd {fd} failed with \
+                     unexpected errno {errno}; before={before:?}, after={after:?}"
+                ),
+            }
+        }
+    }
+
+    #[cfg(unix)]
     #[test]
     fn create_with_capacity_succeeds() {
         let pool = JobserverPool::create(8).unwrap();
@@ -281,20 +347,45 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn dropping_pool_closes_pipe() {
-        use std::os::fd::AsRawFd;
-        let read_fd;
-        {
-            let pool = JobserverPool::create(1).unwrap();
-            read_fd = pool.inner.read.as_raw_fd();
-            // pool drops at end of block.
+        assert_pool_drop_closes_endpoints();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "stress: fd-number reuse while jobserver pools drop"]
+    fn stress_dropping_pool_identity_under_fd_churn() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        const CHURN_THREADS: usize = 4;
+        const ITERATIONS: usize = 2_000;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let churners: Vec<_> = (0..CHURN_THREADS)
+            .map(|_| {
+                let stop = Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let mut fds = [0 as libc::c_int; 2];
+                        if unsafe { libc::pipe(fds.as_mut_ptr()) } == 0 {
+                            unsafe {
+                                libc::close(fds[0]);
+                                libc::close(fds[1]);
+                            }
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        for _ in 0..ITERATIONS {
+            assert_pool_drop_closes_endpoints();
         }
-        // The dropped pool's OwnedFds close their FDs. A subsequent
-        // read against the (now-closed) FD should fail with EBADF.
-        let mut buf = [0_u8; 1];
-        let n = unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-        assert_eq!(n, -1, "read on closed fd should fail");
-        let err = std::io::Error::last_os_error();
-        assert_eq!(err.raw_os_error(), Some(libc::EBADF));
+
+        stop.store(true, Ordering::Relaxed);
+        for churner in churners {
+            churner.join().expect("fd churn worker panicked");
+        }
     }
 
     #[cfg(not(unix))]

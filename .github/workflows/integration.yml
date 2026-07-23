@@ -68,7 +68,9 @@ jobs:
           solo-toolchain-cache: true
       - name: Build integration test binaries
         shell: bash
-        run: soldr cargo test --workspace --features "$ZCCACHE_INTEGRATION_FEATURES" --no-fail-fast --no-run
+        run: |
+          soldr cargo test --workspace --features "$ZCCACHE_INTEGRATION_FEATURES" --no-fail-fast --no-run
+          soldr cargo build -p zccache --features ci-bin --bin zccache-ci
       - name: Stop setup-soldr builder cache before tests
         uses: zackees/setup-soldr/cleanup@01aea6d47db8fedcafd350e2d42e19290c68824e
       - name: Test (full workspace)
@@ -96,6 +98,13 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
           exit $status
+      - name: Strict artifact-layout validation
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/integration
+        run: |
+          unset ZCCACHE_CACHE_DIR
+          soldr cargo test -p zccache-daemon-core --test legacy_path_validation -- --ignored --test-threads=1
       - name: Stop isolated test cache
         if: always()
         shell: bash
@@ -104,3 +113,10 @@ jobs:
         run: |
           unset ZCCACHE_CACHE_DIR
           soldr cache shutdown --archive-logs "$SOLDR_CACHE_DIR/cache/zccache/logs/archive" || true
+      - name: Audit isolated integration cache
+        if: always()
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/integration
+        run: |
+          target/debug/zccache-ci audit-logs "$SOLDR_CACHE_DIR/cache/zccache" --context integration

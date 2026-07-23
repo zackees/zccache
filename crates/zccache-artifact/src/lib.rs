@@ -7,11 +7,16 @@
 #![allow(clippy::missing_errors_doc)] // TODO: add error docs
 
 pub mod kv;
+mod layout;
 mod rust_plan;
 mod store;
 
 pub use kv::{
     is_valid_namespace, Key, KvError, KvResult, KvStore, INLINE_THRESHOLD, MAX_VALUE_BYTES,
+};
+pub use layout::{
+    record_legacy_artifact_access, resolve_artifact_payloads, resolve_staged_artifact_files,
+    LegacyArtifactAccessPurpose, ResolvedArtifactPayload, LEGACY_PATH_VALIDATE_ENV,
 };
 #[cfg(feature = "gha")]
 pub use rust_plan::{

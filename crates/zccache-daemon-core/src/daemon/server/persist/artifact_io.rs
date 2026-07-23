@@ -193,7 +193,13 @@ pub(in crate::daemon::server) fn persist_artifact_paths_with_stats(
     if sources.len() < PAR_WRITE_THRESHOLD {
         let mut stats = PersistArtifactFileStats::default();
         for (i, source) in sources.iter().enumerate() {
-            let cache_path = artifact_dir.join(format!("{key_hex}_{i}"));
+            let cache_path = legacy_artifact_path(
+                artifact_dir,
+                key_hex,
+                i,
+                LegacyPathPurpose::LegacyWrite,
+                "artifact_io::persist_artifact_paths_with_stats:inline",
+            );
             let one = persist_artifact_file(&cache_path, source.as_path())?;
             stats.hardlink_count += one.hardlink_count;
             stats.copy_count += one.copy_count;
@@ -206,7 +212,13 @@ pub(in crate::daemon::server) fn persist_artifact_paths_with_stats(
         .par_iter()
         .enumerate()
         .map(|(i, source)| {
-            let cache_path = artifact_dir.join(format!("{key_hex}_{i}"));
+            let cache_path = legacy_artifact_path(
+                artifact_dir,
+                key_hex,
+                i,
+                LegacyPathPurpose::LegacyWrite,
+                "artifact_io::persist_artifact_paths_with_stats:parallel",
+            );
             persist_artifact_file(&cache_path, source.as_path())
         })
         .reduce(

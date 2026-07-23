@@ -4118,6 +4118,7 @@ dependencies = [
  "zccache-ipc",
  "zccache-protocol",
  "zccache-symbols",
+ "zccache-test-support",
  "zccache-watcher",
  "zip",
 ]
@@ -4152,6 +4153,8 @@ version = "1.12.17"
 dependencies = [
  "serde",
  "serde_json",
+ "tempfile",
+ "zccache-core",
 ]
 
 [[package]]
@@ -4457,6 +4460,7 @@ name = "zccache-test-support"
 version = "1.12.17"
 dependencies = [
  "tempfile",
+ "zccache-audit",
  "zccache-core",
 ]
 

@@ -183,7 +183,7 @@ pub(in crate::daemon::server) fn make_writable(path: &Path) -> std::io::Result<(
 #[cfg(windows)]
 pub(in crate::daemon::server) fn windows_verbatim_file_path(
     path: &Path,
-) -> std::io::Result<PathBuf> {
+) -> std::io::Result<NormalizedPath> {
     let file_name = path.file_name().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -194,7 +194,7 @@ pub(in crate::daemon::server) fn windows_verbatim_file_path(
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    Ok(std::fs::canonicalize(parent)?.join(file_name))
+    Ok(std::fs::canonicalize(parent)?.join(file_name).into())
 }
 
 #[cfg(unix)]

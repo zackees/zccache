@@ -223,19 +223,21 @@ impl EmbeddedDaemon {
         // cache_store) attribute their sub-phase records to this compile_id.
         // No-op unless ZCCACHE_INNER_TRACE is set; the IPC wrapper path does
         // not open a scope, so only embedded compiles emit sub-phase records.
-        let response = super::inner_trace::scope(
-            compile_id.clone(),
-            handle_compile_ephemeral(
-                &self.state,
-                std::process::id(),
-                &request.cwd,
-                &request.compiler,
-                &request.args,
-                &request.cwd,
-                request.env,
-                request.stdin,
+        let (mut response, attributed_miss_reason) = capture_miss_reason(Box::pin(
+            super::inner_trace::scope(
+                compile_id.clone(),
+                handle_compile_ephemeral(
+                    &self.state,
+                    std::process::id(),
+                    &request.cwd,
+                    &request.compiler,
+                    &request.args,
+                    &request.cwd,
+                    request.env,
+                    request.stdin,
+                ),
             ),
-        )
+        ))
         .await;
         crate::compile_trace::record(
             "embedded_daemon_compile",
@@ -248,13 +250,26 @@ impl EmbeddedDaemon {
         // above plus serde serialization — parity with the IPC path's
         // accepted cost (issue #459).
         if let Some((outcome, exit_code, default_reason)) = extract_outcome(&response) {
-            let miss_reason =
-                super::connection::compile_miss_reason(&journal_ctx, outcome, default_reason);
+            let latency_ns = total.elapsed().as_nanos();
+            let miss_reason = super::connection::compile_miss_reason(
+                &journal_ctx,
+                outcome,
+                attributed_miss_reason.or(default_reason),
+                latency_ns,
+                self.state.cache_dir.as_path(),
+            );
+            if miss_reason == Some(miss_reason::UNKNOWN) {
+                super::connection::append_unknown_miss_warning(
+                    &mut response,
+                    &journal_ctx,
+                    latency_ns,
+                );
+            }
             let entry = JournalEntry::new(
                 journal_ctx,
                 outcome,
                 exit_code,
-                total.elapsed().as_nanos(),
+                latency_ns,
                 miss_reason,
             );
             self.state.journal.log(&entry, None);
@@ -391,7 +406,7 @@ where
              (issue #973)"
         );
         crate::core::lifecycle::write_event(
-            "embedded_flush_step_timeout",
+            crate::core::lifecycle::EVENT_EMBEDDED_FLUSH_STEP_TIMEOUT,
             serde_json::json!({
                 "step": step,
                 "timeout_ms": EMBEDDED_FLUSH_SAVE_TIMEOUT.as_millis() as u64,

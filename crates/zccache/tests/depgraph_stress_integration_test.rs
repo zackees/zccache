@@ -354,7 +354,8 @@ fn integration_new_resolve_real_files() {
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
     };
-    let key = graph.register(ctx);
+    let registration = graph.register_with_root_result(ctx, None);
+    let key = registration.map_key;
 
     // Cold scan — missing.h is unresolved.
     let scan = scanner::scan_recursive(&main_cpp, &search);

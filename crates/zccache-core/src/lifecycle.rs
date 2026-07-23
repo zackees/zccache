@@ -41,6 +41,7 @@
 //! | `daemon-died` (#755) | CLI (on takeover) or daemon (self-reported) | predecessor was killed and replaced — see `reason` for the cause class | `pid` (the dying daemon), `endpoint`, `reason`, `replaced_by_pid`, `replaced_by_version`, `client_pid` |
 //! | `pipe-handover` (#755) | CLI (on takeover) | new daemon claimed the endpoint a previous daemon held | `pid` (the new daemon), `inbound_pid`, `inbound_version`, `outbound_pid`, `reason`, `client_pid` |
 //! | `client-disconnected` (#755) | client | IPC connection broke mid-request | `endpoint`, `client_pid`, `client_version`, `client_binary_path`, `cause`, `detail` |
+//! | `wrapper-local-fallback` | CLI wrapper | daemon dispatch failed before request delivery and the tool ran locally | `reason`, tool fields |
 //! | `version_mismatch` | daemon | client / daemon protocol versions disagree | `daemon_protocol_version`, `client_protocol_version`, `reason` |
 //! | `staged_publication_conflict` | daemon | one cache key produced two different valid generations; first generation retained | `cache_key`, `existing_generation`, `candidate_generation`, `elapsed_ns` |
 //! | `staged_publication_replaces_invalid_generation` | daemon | a corrupt/incomplete selected generation was replaced by a validated compile result | `cache_key`, `invalid_generation`, `replacement_generation` |
@@ -48,6 +49,18 @@
 //! | `staged_salvage_complete` | daemon | every requested output was independently recovered | `reason`, `output_count`, `copied_bytes`, `elapsed_ns` |
 //! | `staged_salvage_failed` | daemon | recovery stopped before the complete requested output set existed | `reason`, `output_count`, `copied_bytes`, `elapsed_ns` |
 //! | `staged_materialization_failed` | daemon | a published miss/hit could not fulfill every requested output path | `reason`, `output_count`, `copied_bytes`, `elapsed_ns` |
+//! | `child_wait_watchdog_fired` | daemon | child drain or progress watchdog released a wedged compile slot | `stage`, `pid`, `reason` |
+//! | `client_cancelled` | daemon | the client disconnected before its child result could be returned | `kind`, `reason` |
+//! | `died-private-owner-exit` | daemon | a private daemon exited after all registered owners disappeared | `reason`, `uptime_secs`, `removed_pids` |
+//! | `embedded_flush_step_timeout` | daemon | one embedded flush/save step exceeded its shutdown budget | `step`, `timeout_ms`, `reason` |
+//! | `in_flight_exec_wait_timeout` | daemon | an exec-cache waiter stopped coalescing and ran its own copy | `key`, `budget_ms`, `reason` |
+//! | `rustc_identity_probe_timeout` | daemon | the rustc identity probe timed out and hashing fell back to file bytes | `compiler`, `timeout_ms`, `reason` |
+//! | `staged_publication_failed` | daemon | a successful compile could not publish its staged generation | `reason`, `error`, `artifact_key` |
+//! | `cow_unregistered_blob_evicted` | daemon | an unregistered COW blob was rejected and removed | `blob_path`, `link_count` |
+//! | `cow_blob_corruption_detected` | daemon | a registered COW blob no longer matched its expected digest | blob/hash/link fields |
+//! | `destination_write_failed` | daemon | cached artifact could not be written to its requested output | `artifact_key`, `path`, `errno` |
+//! | `legacy_artifact_path_accessed` | daemon | legacy artifact layout was reached (Phase 0 audit failure) | path-specific fields |
+//! | `miss_reason_unknown` | daemon | miss classification was not recognized (Phase 0 audit failure) | miss-specific fields |
 //!
 //! ## Forensic walkthrough: the two-versions-on-one-pipe wedge
 //!
@@ -119,6 +132,60 @@ pub const EVENT_CLIENT_DISCONNECTED: &str = "client-disconnected";
 /// Emitted when a wrapper invocation runs the real tool locally after a
 /// daemon failure that occurred before request dispatch.
 pub const EVENT_WRAPPER_LOCAL_FALLBACK: &str = "wrapper-local-fallback";
+/// Phase 0 log-audit event names. These are emitted by the owning cache paths;
+/// the audit catalog consumes the stable spellings rather than source regexes.
+pub const EVENT_LEGACY_ARTIFACT_PATH_ACCESSED: &str = "legacy_artifact_path_accessed";
+pub const EVENT_DESTINATION_WRITE_FAILED: &str = "destination_write_failed";
+pub const EVENT_MISS_REASON_UNKNOWN: &str = "miss_reason_unknown";
+pub const EVENT_STAGED_PUBLICATION_CONFLICT: &str = "staged_publication_conflict";
+pub const EVENT_STAGED_PUBLICATION_REPLACES_INVALID_GENERATION: &str =
+    "staged_publication_replaces_invalid_generation";
+pub const EVENT_STAGED_PUBLICATION_FAILED: &str = "staged_publication_failed";
+pub const EVENT_STAGED_SALVAGE_STARTED: &str = "staged_salvage_started";
+pub const EVENT_STAGED_SALVAGE_COMPLETE: &str = "staged_salvage_complete";
+pub const EVENT_STAGED_SALVAGE_FAILED: &str = "staged_salvage_failed";
+pub const EVENT_STAGED_MATERIALIZATION_FAILED: &str = "staged_materialization_failed";
+pub const EVENT_CHILD_WAIT_WATCHDOG_FIRED: &str = "child_wait_watchdog_fired";
+pub const EVENT_CLIENT_CANCELLED: &str = "client_cancelled";
+pub const EVENT_DIED_PRIVATE_OWNER_EXIT: &str = "died-private-owner-exit";
+pub const EVENT_EMBEDDED_FLUSH_STEP_TIMEOUT: &str = "embedded_flush_step_timeout";
+pub const EVENT_IN_FLIGHT_EXEC_WAIT_TIMEOUT: &str = "in_flight_exec_wait_timeout";
+pub const EVENT_RUSTC_IDENTITY_PROBE_TIMEOUT: &str = "rustc_identity_probe_timeout";
+pub const EVENT_COW_UNREGISTERED_BLOB_EVICTED: &str = "cow_unregistered_blob_evicted";
+pub const EVENT_COW_BLOB_CORRUPTION_DETECTED: &str = "cow_blob_corruption_detected";
+
+/// Complete lifecycle-event catalog. Keep this additive and update the module
+/// schema table with every new event; log-audit and operator docs depend on it.
+pub const EVENT_ALL: &[&str] = &[
+    EVENT_SPAWN,
+    EVENT_SPAWN_ATTEMPT,
+    EVENT_SPAWN_PARKED,
+    EVENT_DIED_IDLE,
+    EVENT_DIED_SHUTDOWN,
+    EVENT_DIED_PRIVATE_OWNER_EXIT,
+    EVENT_VERSION_MISMATCH,
+    EVENT_DAEMON_DIED,
+    EVENT_PIPE_HANDOVER,
+    EVENT_CLIENT_DISCONNECTED,
+    EVENT_CLIENT_CANCELLED,
+    EVENT_WRAPPER_LOCAL_FALLBACK,
+    EVENT_STAGED_PUBLICATION_CONFLICT,
+    EVENT_STAGED_PUBLICATION_REPLACES_INVALID_GENERATION,
+    EVENT_STAGED_PUBLICATION_FAILED,
+    EVENT_STAGED_SALVAGE_STARTED,
+    EVENT_STAGED_SALVAGE_COMPLETE,
+    EVENT_STAGED_SALVAGE_FAILED,
+    EVENT_STAGED_MATERIALIZATION_FAILED,
+    EVENT_CHILD_WAIT_WATCHDOG_FIRED,
+    EVENT_EMBEDDED_FLUSH_STEP_TIMEOUT,
+    EVENT_IN_FLIGHT_EXEC_WAIT_TIMEOUT,
+    EVENT_RUSTC_IDENTITY_PROBE_TIMEOUT,
+    EVENT_COW_UNREGISTERED_BLOB_EVICTED,
+    EVENT_COW_BLOB_CORRUPTION_DETECTED,
+    EVENT_LEGACY_ARTIFACT_PATH_ACCESSED,
+    EVENT_DESTINATION_WRITE_FAILED,
+    EVENT_MISS_REASON_UNKNOWN,
+];
 
 /// Reasons the CLI emits with `spawn-attempt`. Matches the branches
 /// in `ensure_daemon` — keep in sync.
@@ -264,13 +331,37 @@ pub fn is_live_lifecycle_log_name(name: &str) -> bool {
 /// process). On any failure it logs at `tracing::warn` and returns —
 /// lifecycle logging is best-effort.
 pub fn write_event(event_name: &str, extra: serde_json::Value) {
-    if let Err(e) = try_write(event_name, &extra) {
+    if let Err(e) = try_write_to_path(log_file_path().as_path(), event_name, &extra) {
         tracing::warn!(event = event_name, "failed to write lifecycle event: {e}");
     }
 }
 
-fn try_write(event_name: &str, extra: &serde_json::Value) -> std::io::Result<()> {
-    let log_path = log_file_path();
+/// Write an event beneath an explicitly selected daemon-state root.
+///
+/// Daemons embedded in tests and hosts can use a cache root that differs from
+/// the process-global `ZCCACHE_CACHE_DIR`. State-owned events must use this
+/// entry point so cache-root audits inspect the same root that produced the
+/// artifact or failure.
+pub fn write_event_in_cache_root(
+    cache_root: &Path,
+    event_name: &str,
+    extra: serde_json::Value,
+) {
+    let log_path = cache_root.join("logs").join(live_log_filename());
+    if let Err(e) = try_write_to_path(&log_path, event_name, &extra) {
+        tracing::warn!(
+            event = event_name,
+            cache_root = %cache_root.display(),
+            "failed to write lifecycle event: {e}"
+        );
+    }
+}
+
+fn try_write_to_path(
+    log_path: &Path,
+    event_name: &str,
+    extra: &serde_json::Value,
+) -> std::io::Result<()> {
     if let Some(parent) = log_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -278,7 +369,7 @@ fn try_write(event_name: &str, extra: &serde_json::Value) -> std::io::Result<()>
     // Soft-cap rotation. We have no long-lived file handle to juggle
     // (each write opens and closes one), so a plain rename works on
     // every OS without the Windows handle-replacement dance.
-    let _ = rotate_if_oversized(&log_path);
+    let _ = rotate_if_oversized(log_path);
 
     let mut envelope = serde_json::Map::new();
     envelope.insert("ts_ms".to_string(), serde_json::Value::from(now_ms()));
@@ -303,7 +394,7 @@ fn try_write(event_name: &str, extra: &serde_json::Value) -> std::io::Result<()>
     let mut line = serde_json::to_string(&serde_json::Value::Object(envelope))?;
     line.push('\n');
 
-    let mut file = open_append(&log_path)?;
+    let mut file = open_append(log_path)?;
     file.write_all(line.as_bytes())?;
     file.flush()?;
     Ok(())
@@ -569,6 +660,42 @@ mod tests {
         assert_eq!(EVENT_DAEMON_DIED, "daemon-died");
         assert_eq!(EVENT_PIPE_HANDOVER, "pipe-handover");
         assert_eq!(EVENT_CLIENT_DISCONNECTED, "client-disconnected");
+    }
+
+    #[test]
+    fn event_catalog_contains_phase_zero_and_existing_events_once() {
+        let unique: std::collections::BTreeSet<_> = EVENT_ALL.iter().copied().collect();
+        assert_eq!(unique.len(), EVENT_ALL.len(), "EVENT_ALL must not duplicate names");
+        assert!(unique.contains(EVENT_DESTINATION_WRITE_FAILED));
+        assert!(unique.contains(EVENT_LEGACY_ARTIFACT_PATH_ACCESSED));
+        assert!(unique.contains(EVENT_MISS_REASON_UNKNOWN));
+        assert!(unique.contains(EVENT_CHILD_WAIT_WATCHDOG_FIRED));
+
+        // Every emitted lifecycle event has a named constant. Parse this module's
+        // declarations so adding a constant without updating EVENT_ALL fails in CI.
+        let declared: std::collections::BTreeSet<_> = include_str!("lifecycle.rs")
+            .split("pub const EVENT_")
+            .skip(1)
+            .filter_map(|tail| {
+                let declaration = tail.split_once(';')?.0;
+                declaration
+                    .contains(": &str")
+                    .then(|| declaration.split('"').nth(1))
+                    .flatten()
+            })
+            .collect();
+        assert_eq!(unique, declared, "EVENT_ALL must contain every EVENT_* constant");
+
+        let module_docs = include_str!("lifecycle.rs")
+            .split_once("pub const EVENT_SPAWN")
+            .map(|(docs, _)| docs)
+            .expect("EVENT_SPAWN declaration should delimit the module docs");
+        for event in EVENT_ALL {
+            assert!(
+                module_docs.contains(&format!("| `{event}`")),
+                "module event-schema table is missing {event}"
+            );
+        }
     }
 
     /// Issue #755: new reason/cause constants pin the wire-visible

@@ -178,7 +178,7 @@ fn report_staged_publication_failure(
         "staged artifact publication failed"
     );
     crate::core::lifecycle::write_event(
-        "staged_publication_failed",
+        crate::core::lifecycle::EVENT_STAGED_PUBLICATION_FAILED,
         serde_json::json!({
             "reason": reason_id,
             "error": error,

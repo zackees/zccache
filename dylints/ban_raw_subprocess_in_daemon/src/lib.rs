@@ -25,7 +25,7 @@ dylint_linting::declare_late_lint! {
     /// compile in the `soldr -> cargo -> rustc -> zccache-cli -> daemon
     /// -> rustc` chain.
     ///
-    /// The blessed helpers in `crates/zccache-daemon/src/process.rs`
+    /// The blessed helpers in `crates/zccache-daemon-core/src/daemon/process.rs`
     /// (`command_output_with_priority`, `tokio_command_output_with_priority`)
     /// apply `CREATE_NO_WINDOW` along with consistent stdio piping, a
     /// Job Object attach, and child-priority adjustment. Bypassing them
@@ -82,7 +82,7 @@ const ALLOWLIST: &str = include_str!("allowlist.txt");
 /// Only daemon production code is in scope. Other crates have their own
 /// spawn discipline (cli has `spawn_daemon_windows::spawn_daemon_sanitized`;
 /// the ci/fingerprint crates don't spawn compilers).
-const DAEMON_SOURCE_PREFIX: &str = "crates/zccache/src/daemon/";
+const DAEMON_SOURCE_PREFIX: &str = "crates/zccache-daemon-core/src/daemon/";
 
 impl<'tcx> LateLintPass<'tcx> for BanRawSubprocessInDaemon {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'tcx>) {
@@ -90,7 +90,11 @@ impl<'tcx> LateLintPass<'tcx> for BanRawSubprocessInDaemon {
         let normalized = normalize_slashes(&filename);
 
         // Out-of-scope file → never fires.
-        if !normalized.contains(DAEMON_SOURCE_PREFIX) {
+        // UI fixtures live beside this lint rather than beneath the daemon
+        // crate. Keeping that narrow exception lets the real UI test exercise
+        // both the resolved-method matcher and the production scope guard.
+        let is_ui_fixture = normalized.starts_with("ui/") || normalized.contains("/ui/");
+        if !normalized.contains(DAEMON_SOURCE_PREFIX) && !is_ui_fixture {
             return;
         }
 
@@ -175,4 +179,14 @@ fn def_path_equals(
         .iter()
         .zip(expected.iter())
         .all(|(actual, expected_segment)| *actual == Symbol::intern(expected_segment))
+}
+
+#[cfg(test)]
+mod ui_test_support {
+    include!("../../ui_test_support.rs");
+}
+
+#[test]
+fn ui() {
+    ui_test_support::run(env!("CARGO_PKG_NAME"), env!("CARGO_MANIFEST_DIR"));
 }

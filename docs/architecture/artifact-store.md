@@ -164,6 +164,17 @@ failures also emit durable lifecycle records.
 
 ## Directory Layout
 
+### Layout resolver ownership
+
+Runtime code does not construct artifact paths from a cache key at its call
+site. The persistence layer owns the resolver for every supported storage
+shape and selects staged v2 first, then pack, then the flat-v1 compatibility
+readers. This preserves the rollout's mixed-format contract while keeping new
+writes independent of legacy filename spelling. Direct legacy key/index
+formatting is confined to those compatibility readers and narrowly-scoped
+fixtures; an explicit Dylint allowlist records each temporary escape hatch and
+its rationale.
+
 ## Thin-v3 durable ownership
 
 `save_rust_plan_local` and `restore_rust_plan_local` are the public durable

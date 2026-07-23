@@ -1,0 +1,20 @@
+[package]
+name = "ban_legacy_artifact_path"
+version = "0.1.1"
+description = "Ban ad-hoc legacy artifact cache-path formatting"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+dylint_linting = "6.0.1"
+
+[dev-dependencies]
+dylint_testing = "6.0.1"
+
+[package.metadata.rust-analyzer]
+rustc_private = true
+
+[workspace]

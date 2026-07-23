@@ -1,0 +1,26 @@
+# The central layout owner is the only production module allowed to spell the
+# flat-v1 filename. Every caller supplies a reviewed purpose/tag.
+crates/zccache-daemon-core/src/daemon/server/persist/layout.rs
+crates/zccache-artifact/src/layout.rs
+
+# Storage compatibility tests intentionally seed or assert flat-v1 fixtures.
+crates/zccache/benches/persist_payloads.rs
+crates/zccache/tests/daemon_perf_artifact_fallback_test.rs
+crates/zccache/tests/daemon_persist_pool_bench.rs
+crates/zccache-cli-core/src/cli/commands/tests/cache_ops.rs
+crates/zccache-cli-core/src/cli/commands/tests/warm_lockfile.rs
+crates/zccache-daemon-core/src/daemon/eviction.rs
+crates/zccache-daemon-core/src/daemon/server/handle_exec_tests.rs
+crates/zccache-daemon-core/src/daemon/server/tests/artifact_store_deferred.rs
+crates/zccache-daemon-core/src/daemon/server/tests/clear_handler.rs
+crates/zccache-daemon-core/src/daemon/server/tests/disk_maintenance.rs
+crates/zccache-daemon-core/src/daemon/server/tests/disk_maintenance_unit.rs
+crates/zccache-daemon-core/src/daemon/server/tests/embedded_flush.rs
+crates/zccache-daemon-core/src/daemon/server/tests/pack.rs
+crates/zccache-daemon-core/src/daemon/server/tests/write_cached.rs
+crates/zccache-daemon-core/src/daemon/server/persist/staged_store_tests.rs
+
+# Aggregate integration fixture seeds a flat-v1 artifact solely to prove the
+# central resolver retains upgrade compatibility; strict runtime validation
+# runs against a separate staged-only cache root.
+crates/zccache-daemon-core/tests/legacy_path_validation.rs

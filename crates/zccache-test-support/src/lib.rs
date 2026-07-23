@@ -1,10 +1,41 @@
 //! Disposable real-filesystem fixtures with loud skip accounting (#1039).
 
 use std::path::Path;
-#[cfg(any(windows, target_os = "macos"))]
-use std::path::PathBuf;
 use std::process::{Command, Output};
 use zccache_core::NormalizedPath;
+
+pub use zccache_audit::{CacheRootAuditGuard, RuleId};
+
+/// Apply the canonical Rust log-audit definition of an unknown miss.
+///
+/// `intentional_test` is the visible, per-test escape hatch for the one
+/// negative fixture that deliberately emits an unknown event. It must never
+/// be supplied by a suite-wide teardown.
+pub fn assert_no_unknown_events(
+    cache_root: &Path,
+    intentional_test: Option<&str>,
+) -> Result<(), String> {
+    let mut options = zccache_audit::AuditOptions::default();
+    if let Some(test_name) = intentional_test {
+        options =
+            options.allow_for_test(test_name, [zccache_audit::RuleId("no-unknown-miss-reason")]);
+    }
+    let report = zccache_audit::audit_cache_root(
+        cache_root,
+        zccache_audit::LogAuditContext::Integration,
+        &options,
+    )
+    .map_err(|error| error.to_string())?;
+    let unknowns = report
+        .violations
+        .iter()
+        .filter(|violation| violation.rule_id.0 == "no-unknown-miss-reason")
+        .collect::<Vec<_>>();
+    if unknowns.is_empty() {
+        return Ok(());
+    }
+    Err(report.format_human())
+}
 
 #[derive(Debug)]
 pub struct FsFixture {
@@ -19,7 +50,7 @@ enum Backing {
     #[cfg(windows)]
     WindowsVhd {
         temp: tempfile::TempDir,
-        image: PathBuf,
+        image: NormalizedPath,
     },
     #[cfg(windows)]
     WindowsSmb {
@@ -34,7 +65,7 @@ enum Backing {
     #[cfg(target_os = "macos")]
     MacImage {
         temp: tempfile::TempDir,
-        mount: PathBuf,
+        mount: NormalizedPath,
     },
 }
 
@@ -159,10 +190,10 @@ impl FsFixture {
             if !output.status.success() {
                 return Err(skip("smb-loopback", command_error("net share", &output)));
             }
-            let root = PathBuf::from(format!(r"\\localhost\{share}"));
+            let root = NormalizedPath::from(format!(r"\\localhost\{share}"));
             Ok(Self {
                 name: "smb-loopback",
-                root: root.into(),
+                root,
                 backing: Backing::WindowsSmb { temp, share },
             })
         }
@@ -182,7 +213,7 @@ impl Drop for FsFixture {
                 let script = temp.path().join("detach.txt");
                 let body = format!(
                     "select vdisk file=\"{}\"\r\ndetach vdisk\r\n",
-                    image.display()
+                    image.as_path().display()
                 );
                 let _ = std::fs::write(&script, body);
                 let _ = Command::new("diskpart")
@@ -205,7 +236,7 @@ impl Drop for FsFixture {
             Backing::MacImage { temp, mount } => {
                 let _ = temp.path();
                 let _ = Command::new("hdiutil")
-                    .args(["detach", &mount.to_string_lossy()])
+                    .args(["detach", &mount.as_path().to_string_lossy()])
                     .output();
             }
         }
@@ -261,7 +292,10 @@ fn windows_vhd_sized(name: &'static str, filesystem: &str, maximum_mb: u32) -> F
     Ok(FsFixture {
         name,
         root: mount.into(),
-        backing: Backing::WindowsVhd { temp, image },
+        backing: Backing::WindowsVhd {
+            temp,
+            image: image.into(),
+        },
     })
 }
 
@@ -382,8 +416,11 @@ fn mac_image(name: &'static str, filesystem: &str) -> FixtureResult {
     }
     Ok(FsFixture {
         name,
-        root: mount.clone().into(),
-        backing: Backing::MacImage { temp, mount },
+        root: mount.as_path().into(),
+        backing: Backing::MacImage {
+            temp,
+            mount: mount.into(),
+        },
     })
 }
 
@@ -420,5 +457,26 @@ fn run_privileged(program: &str, args: &[&str]) -> std::io::Result<Output> {
             .arg(program)
             .args(args)
             .output()
+    }
+}
+
+#[cfg(test)]
+mod log_audit_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_event_helper_is_strict_and_has_a_named_escape_hatch() {
+        let root = tempfile::tempdir().unwrap();
+        let logs = root.path().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(
+            logs.join("compile_journal.jsonl"),
+            "{\"outcome\":\"miss\",\"miss_reason\":\"unknown\"}\n",
+        )
+        .unwrap();
+
+        let error = assert_no_unknown_events(root.path(), None).unwrap_err();
+        assert!(error.contains("no-unknown-miss-reason"));
+        assert_no_unknown_events(root.path(), Some("intentional_unknown_fixture")).unwrap();
     }
 }

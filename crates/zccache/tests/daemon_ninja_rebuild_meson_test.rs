@@ -15,7 +15,7 @@
     clippy::unwrap_in_result
 )]
 
-use std::sync::{Arc, Once};
+use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use zccache::core::NormalizedPath;
@@ -25,44 +25,12 @@ use zccache::test_support::{MesonProject, TestProject};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Build the release CLI binary once across all tests.
-/// Release is critical for meson tests because meson probes the compiler ~12
-/// times during setup — each invocation goes through the zccache wrapper, so
-/// debug overhead (~1.5s/call) dominates.
-static BUILD_RELEASE_CLI: Once = Once::new();
-
-fn build_and_find_release_cli() -> NormalizedPath {
-    BUILD_RELEASE_CLI.call_once(|| {
-        let status = std::process::Command::new("soldr")
-            .args([
-                "cargo",
-                "build",
-                "--release",
-                "-p",
-                "zccache",
-                "--bin",
-                "zccache",
-                "--features",
-                "zccache-bin",
-            ])
-            .env_remove("RUSTC_WRAPPER")
-            .env_remove("RUSTC_WORKSPACE_WRAPPER")
-            .status()
-            .expect("failed to run cargo build --release");
-        assert!(status.success(), "cargo build --release failed");
-    });
-
-    // Release binary is in target/release/, not target/debug/
-    let debug_dir = std::path::Path::new(env!("CARGO_BIN_EXE_zccache-daemon"))
-        .parent()
-        .unwrap();
-    // debug_dir is target/debug/ — go up to target/ then into release/
-    let release_dir = debug_dir.parent().unwrap().join("release");
-    if cfg!(windows) {
-        release_dir.join("zccache.exe").into()
-    } else {
-        release_dir.join("zccache").into()
-    }
+/// Use the CLI binary Cargo already built for this integration-test profile.
+///
+/// Spawning a nested release build here made the integration suite rebuild the
+/// workspace from scratch and serialized it behind Cargo's target lock.
+fn find_cli_binary() -> NormalizedPath {
+    std::path::Path::new(env!("CARGO_BIN_EXE_zccache")).into()
 }
 
 async fn start_daemon(endpoint: &str) -> (JoinHandle<()>, Arc<Notify>) {
@@ -174,10 +142,7 @@ async fn meson_ninja_cold_then_warm_rebuild() {
         }
     };
 
-    // Build release CLI binary — release is critical because meson probes the
-    // compiler ~12 times during setup, each through the zccache wrapper.
-    // Debug wrapper: ~1.5s/probe → 18s setup. Release: ~0.1s/probe → 1.2s setup.
-    let cli = build_and_find_release_cli();
+    let cli = find_cli_binary();
 
     let project = TestProject::integration();
     let file_count = project.source_count;
@@ -201,7 +166,7 @@ async fn meson_ninja_cold_then_warm_rebuild() {
     eprintln!("  meson: {}", meson_bin.display());
     eprintln!("  ninja: {}", ninja_bin.display());
     eprintln!("  clang: {}", clang.display());
-    eprintln!("  zccache: {} (release)", cli.display());
+    eprintln!("  zccache: {}", cli.display());
     eprintln!("  endpoint: {endpoint}");
 
     let env = [("ZCCACHE_ENDPOINT", endpoint.as_str())];
@@ -289,7 +254,7 @@ async fn meson_ninja_bench_warm_iterations() {
         }
     };
 
-    let cli = build_and_find_release_cli();
+    let cli = find_cli_binary();
 
     let project = TestProject::benchmark();
     let file_count = project.source_count;

@@ -36,7 +36,8 @@ use zccache_core::NormalizedPath;
 /// Lightweight metadata stored in the index for each cached artifact.
 ///
 /// Contains everything needed to serve a cache hit response EXCEPT the output
-/// file bytes (which are loaded lazily from `{key}_i` files on disk).
+/// file bytes (which are loaded lazily through the shared staged/pack/flat
+/// layout resolver).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArtifactIndex {
     /// Output filenames, e.g. `["foo.o"]`.

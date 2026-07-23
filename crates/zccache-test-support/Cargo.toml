@@ -11,6 +11,7 @@ publish = false
 
 [dependencies]
 tempfile = { workspace = true }
+zccache-audit = { workspace = true }
 zccache-core = { workspace = true }
 
 [lints]

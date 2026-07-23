@@ -1,10 +1,10 @@
 # Each non-empty, non-comment line is matched against the tail of each
 # source file path (slashes normalized to /). The lint only fires on
-# files under `crates/zccache/src/daemon/`; anywhere else is out of
+# files under `crates/zccache-daemon-core/src/daemon/`; anywhere else is out of
 # scope and does not need an entry here.
 #
 # Add an entry ONLY for files that legitimately need to bypass the
-# helpers in `crates/zccache/src/daemon/process.rs`. Include an inline
+# helpers in `crates/zccache-daemon-core/src/daemon/process.rs`. Include an inline
 # comment explaining why.
 
 # The blessed helpers themselves call `.spawn()` / `.output()` /

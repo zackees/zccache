@@ -138,7 +138,12 @@ fn staged_publication_rejects_nondeterministic_same_key_output() {
     assert_eq!(fs::read(&payloads[1]).unwrap(), b"second immutable payload");
     assert!(!same_file(sources[0].as_path(), payloads[0].as_path()));
 
-    let log = fs::read_to_string(crate::core::lifecycle::log_file_path()).unwrap();
+    let log = fs::read_to_string(
+        dir.path()
+            .join("logs")
+            .join(crate::core::lifecycle::live_log_filename()),
+    )
+    .unwrap();
     let event: serde_json::Value = log
         .lines()
         .filter_map(|line| serde_json::from_str(line).ok())
