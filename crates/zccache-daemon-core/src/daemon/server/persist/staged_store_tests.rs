@@ -164,6 +164,11 @@ fn publication_fault_matrix_never_exposes_partial_generation() {
             "publication_output_copy",
         ),
         (
+            StagedFaultPoint::OutputSync(1),
+            StagedPublishFailure::OutputDurability,
+            "publication_output_durability",
+        ),
+        (
             StagedFaultPoint::OutputHash(1),
             StagedPublishFailure::Hash,
             "hashing",
@@ -423,6 +428,7 @@ fn clear_during_salvage_cannot_remove_private_compiler_outputs() {
         vec![StagedOutputPlan {
             requested: requested.clone(),
             staged,
+            role: StagedOutputRole::Regular,
         }],
     );
     let hook = StagedHookGuard::arm(&requested, StagedHookPoint::MaterializeOutput);

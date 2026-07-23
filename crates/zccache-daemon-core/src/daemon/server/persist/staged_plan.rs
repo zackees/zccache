@@ -9,7 +9,7 @@ use super::staged_link_args::{
     rewrite_link_output_arg,
 };
 use super::staged_paths::{
-    canonical_output_path, canonicalize_staged_output_bytes, rehydrate_logical_depfile,
+    canonicalize_logical_depfile, canonicalize_staged_output_bytes, rehydrate_logical_depfile,
     rehydrate_staged_output_bytes, STAGED_OUTPUT_REMAP_ROOT,
 };
 #[cfg(test)]
@@ -129,10 +129,27 @@ fn missing_filename(reason: StagedPlanReason) -> StagedPlanError {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::daemon::server) enum StagedOutputRole {
+    Regular,
+    Depfile,
+}
+
+impl StagedOutputRole {
+    fn from_kind(kind: &str) -> Self {
+        if kind == "dep-info" {
+            Self::Depfile
+        } else {
+            Self::Regular
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(in crate::daemon::server) struct StagedOutputPlan {
     pub(in crate::daemon::server) requested: NormalizedPath,
     pub(in crate::daemon::server) staged: NormalizedPath,
+    pub(in crate::daemon::server) role: StagedOutputRole,
 }
 
 #[derive(Debug)]
@@ -207,10 +224,12 @@ impl StagedCompilePlan {
                 outputs.push(StagedOutputPlan {
                     requested: requested.clone(),
                     staged,
+                    role: StagedOutputRole::from_kind(&output_kind(&requested)),
                 });
             }
             for (kind, path) in emit_specs(args) {
                 let requested = absolute(Path::new(&path), cwd);
+                let role = StagedOutputRole::from_kind(&kind);
                 if kind == "link" {
                     primary = requested.clone();
                 }
@@ -219,12 +238,14 @@ impl StagedCompilePlan {
                 });
                 if let Some(index) = replacement {
                     outputs[index].requested = requested;
+                    outputs[index].role = role;
                 } else {
                     outputs.push(StagedOutputPlan {
                         requested,
                         staged: root.join(Path::new(&path).file_name().ok_or_else(|| {
                             missing_filename(StagedPlanReason::OutputMissingFilename)
                         })?),
+                        role,
                     });
                 }
             }
@@ -489,7 +510,11 @@ impl StagedCompilePlan {
                 rewritten_args.push("-o".to_string());
                 rewritten_args.push(staged.to_string_lossy().into_owned());
             }
-            let mut outputs = vec![StagedOutputPlan { requested, staged }];
+            let mut outputs = vec![StagedOutputPlan {
+                requested,
+                staged,
+                role: StagedOutputRole::Regular,
+            }];
             if let Some(requested_depfile) = requested_depfile {
                 let staged_depfile =
                     root.join(requested_depfile.file_name().ok_or_else(|| {
@@ -498,6 +523,7 @@ impl StagedCompilePlan {
                 outputs.push(StagedOutputPlan {
                     requested: requested_depfile,
                     staged: staged_depfile,
+                    role: StagedOutputRole::Depfile,
                 });
             }
             Ok(StagedPlanOutcome::Enabled(Self {
@@ -568,7 +594,11 @@ impl StagedCompilePlan {
                 ));
             }
             Ok(StagedPlanOutcome::Enabled(Self {
-                outputs: vec![StagedOutputPlan { requested, staged }],
+                outputs: vec![StagedOutputPlan {
+                    requested,
+                    staged,
+                    role: StagedOutputRole::Regular,
+                }],
                 rewritten_args,
                 root: root.clone(),
             }))
@@ -667,7 +697,11 @@ impl StagedCompilePlan {
                         StagedPlanReason::OutputNotInArguments,
                     ));
                 }
-                outputs.push(StagedOutputPlan { requested, staged });
+                outputs.push(StagedOutputPlan {
+                    requested,
+                    staged,
+                    role: StagedOutputRole::Regular,
+                });
             }
             Ok(StagedPlanOutcome::Enabled(Self {
                 outputs,
@@ -808,7 +842,7 @@ impl StagedCompilePlan {
                 .saturating_add(output_stats.reflink_count);
             stats.copy_count = stats.copy_count.saturating_add(output_stats.copy_count);
             stats.copy_bytes = stats.copy_bytes.saturating_add(output_stats.copy_bytes);
-            if output.requested.extension().and_then(|ext| ext.to_str()) == Some("d") {
+            if output.role == StagedOutputRole::Depfile {
                 rehydrate_logical_depfile(output.requested.as_path(), &requested_outputs)
                     .map_err(|error| materialization_error(error, stats))?;
             }
@@ -821,25 +855,27 @@ impl StagedCompilePlan {
     /// Dep-info is an output too. Translate the private staging prefix to one
     /// stable cache marker before hashing and publication. Miss and hit
     /// materialization rehydrate the marker to the current requested path.
-    pub(in crate::daemon::server) fn rewrite_logical_side_outputs(&self) {
-        for output in &self.outputs {
-            if output.requested.extension().and_then(|ext| ext.to_str()) != Some("d") {
+    pub(in crate::daemon::server) fn rewrite_logical_side_outputs(&self) -> io::Result<()> {
+        for (fault_index, output) in self.outputs.iter().enumerate() {
+            if output.role != StagedOutputRole::Depfile {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(output.staged.as_path()) else {
-                continue;
-            };
-            let staged = output.staged.to_string_lossy();
-            let canonical = canonical_output_path(&output.requested);
-            let staged_root = self.root.to_string_lossy();
-            let rewritten = text
-                .replace(staged.as_ref(), &canonical)
-                .replace(staged_root.as_ref(), STAGED_OUTPUT_REMAP_ROOT)
-                .replace(&staged_root.replace('\\', "/"), STAGED_OUTPUT_REMAP_ROOT);
-            if rewritten != text {
-                let _ = std::fs::write(output.staged.as_path(), rewritten);
+            #[cfg(not(test))]
+            let _ = fault_index;
+            #[cfg(test)]
+            {
+                inject_staged_fault(
+                    output.staged.as_path(),
+                    StagedFaultPoint::LogicalDepfileRewrite(fault_index),
+                )?;
             }
+            canonicalize_logical_depfile(
+                output.staged.as_path(),
+                self.root.as_path(),
+                &output.requested,
+            )?;
         }
+        Ok(())
     }
 
     pub(in crate::daemon::server) fn canonicalize_output_bytes(&self, bytes: &[u8]) -> Vec<u8> {

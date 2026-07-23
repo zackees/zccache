@@ -94,6 +94,43 @@ pub(in crate::daemon::server) fn rehydrate_staged_output_bytes(
     )
 }
 
+fn rehydrate_logical_depfile_bytes(bytes: &[u8], requested_outputs: &[NormalizedPath]) -> Vec<u8> {
+    let mut rewritten = bytes.to_vec();
+    let mut requested_outputs = requested_outputs.iter().collect::<Vec<_>>();
+    requested_outputs
+        .sort_by_cached_key(|requested| std::cmp::Reverse(canonical_output_path(requested).len()));
+    for requested in &requested_outputs {
+        let canonical = canonical_output_path(requested);
+        let requested_path = requested.to_string_lossy();
+        rewritten =
+            replace_make_depfile_path(&rewritten, canonical.as_bytes(), requested_path.as_bytes());
+
+        let canonical_backslash = canonical.replace('/', "\\");
+        if canonical_backslash != canonical {
+            rewritten = replace_make_depfile_path(
+                &rewritten,
+                canonical_backslash.as_bytes(),
+                requested_path.as_bytes(),
+            );
+        }
+    }
+
+    let requested_parent = requested_outputs
+        .first()
+        .and_then(|output| output.parent())
+        .map_or_else(String::new, |parent| parent.to_string_lossy().into_owned());
+    rewritten = replace_make_depfile_path(
+        &rewritten,
+        STAGED_OUTPUT_REMAP_ROOT.as_bytes(),
+        requested_parent.as_bytes(),
+    );
+    replace_make_depfile_path(
+        &rewritten,
+        STAGED_OUTPUT_REMAP_ROOT_WINDOWS.as_bytes(),
+        requested_parent.as_bytes(),
+    )
+}
+
 pub(in crate::daemon::server) fn contains_staged_output_marker(bytes: &[u8]) -> bool {
     let marker = STAGED_OUTPUT_REMAP_ROOT.as_bytes();
     bytes.windows(marker.len()).any(|window| window == marker) || {
@@ -102,12 +139,51 @@ pub(in crate::daemon::server) fn contains_staged_output_marker(bytes: &[u8]) -> 
     }
 }
 
+pub(in crate::daemon::server) fn canonicalize_logical_depfile(
+    path: &Path,
+    private_root: &Path,
+    requested: &NormalizedPath,
+) -> io::Result<()> {
+    let bytes = std::fs::read(path)?;
+    let staged_path = path.to_string_lossy();
+    let canonical_path = canonical_output_path(requested);
+    let mut rewritten =
+        replace_make_depfile_path(&bytes, staged_path.as_bytes(), canonical_path.as_bytes());
+    let staged_path_slashes = staged_path.replace('\\', "/");
+    if staged_path_slashes != staged_path {
+        rewritten = replace_make_depfile_path(
+            &rewritten,
+            staged_path_slashes.as_bytes(),
+            canonical_path.as_bytes(),
+        );
+    }
+
+    let native_root = private_root.to_string_lossy();
+    rewritten = replace_make_depfile_path(
+        &rewritten,
+        native_root.as_bytes(),
+        STAGED_OUTPUT_REMAP_ROOT.as_bytes(),
+    );
+    let slash_root = native_root.replace('\\', "/");
+    if slash_root != native_root {
+        rewritten = replace_make_depfile_path(
+            &rewritten,
+            slash_root.as_bytes(),
+            STAGED_OUTPUT_REMAP_ROOT.as_bytes(),
+        );
+    }
+    if rewritten != bytes {
+        atomic_replace_bytes(path, &rewritten)?;
+    }
+    Ok(())
+}
+
 pub(in crate::daemon::server) fn rehydrate_logical_depfile(
     path: &Path,
     requested_outputs: &[NormalizedPath],
 ) -> io::Result<()> {
     let bytes = std::fs::read(path)?;
-    let rewritten = rehydrate_staged_output_bytes(&bytes, requested_outputs);
+    let rewritten = rehydrate_logical_depfile_bytes(&bytes, requested_outputs);
     if rewritten != bytes {
         atomic_replace_bytes(path, &rewritten)?;
     }
@@ -147,6 +223,50 @@ fn atomic_replace_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let _ = std::fs::remove_file(&temporary);
     }
     result
+}
+
+/// Quote one path token using the Make depfile spelling emitted by Clang and
+/// GCC. Dollar signs are doubled, `#` is backslash-escaped, and whitespace is
+/// backslash-escaped after duplicating any immediately preceding backslashes.
+pub(crate) fn quote_make_depfile_path(path: &[u8]) -> Vec<u8> {
+    let mut quoted = Vec::with_capacity(path.len().saturating_mul(2));
+    let mut preceding_backslashes = 0usize;
+    for &byte in path {
+        match byte {
+            b'\\' => {
+                quoted.push(byte);
+                preceding_backslashes += 1;
+            }
+            b' ' | b'\t' => {
+                quoted.extend(std::iter::repeat_n(b'\\', preceding_backslashes + 1));
+                quoted.push(byte);
+                preceding_backslashes = 0;
+            }
+            b'#' => {
+                quoted.extend_from_slice(br"\#");
+                preceding_backslashes = 0;
+            }
+            b'$' => {
+                quoted.extend_from_slice(b"$$");
+                preceding_backslashes = 0;
+            }
+            _ => {
+                quoted.push(byte);
+                preceding_backslashes = 0;
+            }
+        }
+    }
+    quoted
+}
+
+fn replace_make_depfile_path(bytes: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
+    let quoted_needle = quote_make_depfile_path(needle);
+    let quoted_replacement = quote_make_depfile_path(replacement);
+    let mut rewritten = replace_all(bytes, &quoted_needle, &quoted_replacement);
+    if quoted_needle != needle {
+        rewritten = replace_all(&rewritten, needle, &quoted_replacement);
+    }
+    rewritten
 }
 
 #[cfg(not(windows))]
@@ -288,5 +408,90 @@ mod tests {
             1,
             "temporary replacement files must not remain visible"
         );
+    }
+
+    #[test]
+    fn make_depfile_quoting_matches_clang_for_special_bytes() {
+        assert_eq!(
+            quote_make_depfile_path(br"/cache root/#hash/$dollar/back\slash/with\ space.o"),
+            br"/cache\ root/\#hash/$$dollar/back\slash/with\\\ space.o"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn depfile_round_trip_preserves_make_escaped_special_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let private_root = temp.path().join("cache root # $");
+        std::fs::create_dir_all(&private_root).unwrap();
+        let staged_depfile = private_root.join("custom deps.mk");
+        let escaped_staged_output = format!(
+            r"{}/cache\ root\ \#\ $$/object\ name\ \#\ $$.o: source.h",
+            temp.path().display()
+        );
+        std::fs::write(&staged_depfile, format!("{escaped_staged_output}\n")).unwrap();
+
+        let requested_root = temp.path().join("workspace root # $");
+        let requested_depfile: NormalizedPath = requested_root.join("custom deps.mk").into();
+        let requested_output: NormalizedPath = requested_root.join("object name # $.o").into();
+
+        canonicalize_logical_depfile(&staged_depfile, &private_root, &requested_depfile).unwrap();
+        let canonical = std::fs::read_to_string(&staged_depfile).unwrap();
+        assert!(
+            canonical.contains(STAGED_OUTPUT_REMAP_ROOT),
+            "escaped private root must be canonicalized: {canonical}"
+        );
+        assert!(
+            !canonical.contains(r"cache\ root"),
+            "canonical depfile must not retain the private root: {canonical}"
+        );
+
+        rehydrate_logical_depfile(&staged_depfile, &[requested_depfile, requested_output]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&staged_depfile).unwrap(),
+            format!(
+                r"{}/workspace\ root\ \#\ $$/object\ name\ \#\ $$.o: source.h{}",
+                temp.path().display(),
+                '\n'
+            )
+        );
+    }
+
+    #[test]
+    fn logical_depfile_canonicalization_preserves_non_utf8_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let private_root = temp.path().join("private");
+        std::fs::create_dir_all(&private_root).unwrap();
+        let staged_depfile = private_root.join("custom.mk");
+        let staged_output = private_root.join("libfixture.rlib");
+        let requested_depfile: NormalizedPath = temp.path().join("requested/custom.mk").into();
+        let requested_output: NormalizedPath = temp.path().join("requested/libfixture.rlib").into();
+        let mut bytes = vec![0xff];
+        bytes.extend_from_slice(staged_depfile.to_string_lossy().as_bytes());
+        bytes.extend_from_slice(b": ");
+        bytes.extend_from_slice(staged_output.to_string_lossy().as_bytes());
+        std::fs::write(&staged_depfile, bytes).unwrap();
+
+        canonicalize_logical_depfile(&staged_depfile, &private_root, &requested_depfile).unwrap();
+        let canonical = std::fs::read(&staged_depfile).unwrap();
+        assert_eq!(canonical[0], 0xff);
+        assert!(contains_staged_output_marker(&canonical));
+        assert!(!canonical
+            .windows(private_root.to_string_lossy().len())
+            .any(|window| window == private_root.to_string_lossy().as_bytes()));
+
+        rehydrate_logical_depfile(
+            &staged_depfile,
+            &[requested_depfile.clone(), requested_output.clone()],
+        )
+        .unwrap();
+        let rehydrated = std::fs::read(&staged_depfile).unwrap();
+        assert_eq!(rehydrated[0], 0xff);
+        assert!(rehydrated
+            .windows(requested_depfile.to_string_lossy().len())
+            .any(|window| window == requested_depfile.to_string_lossy().as_bytes()));
+        assert!(rehydrated
+            .windows(requested_output.to_string_lossy().len())
+            .any(|window| window == requested_output.to_string_lossy().as_bytes()));
     }
 }

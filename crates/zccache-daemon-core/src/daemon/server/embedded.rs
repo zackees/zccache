@@ -681,9 +681,13 @@ mod flush_ownership_tests {
             writer_shutdown.notified().await;
         });
 
-        let step = stop_index_writer_task(shutdown.as_ref(), Some(task))
-            .await
-            .expect("writer handle produces a shutdown step");
+        let step = tokio::time::timeout(
+            Duration::from_secs(1),
+            stop_index_writer_task(shutdown.as_ref(), Some(task)),
+        )
+        .await
+        .expect("index writer shutdown signal was lost")
+        .expect("writer handle produces a shutdown step");
 
         assert_eq!(step.outcome, FlushStepOutcome::Completed);
     }

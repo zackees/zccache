@@ -207,7 +207,7 @@ pub(super) fn materialize_cached_compile_hit(
     };
     let depfile_targets = targets
         .iter()
-        .filter(|(target, _)| target.extension().and_then(|ext| ext.to_str()) == Some("d"))
+        .filter(|(target, _)| current_depfile_dest.as_ref() == Some(target))
         .map(|(target, _)| target)
         .collect::<Vec<_>>();
     let rehydrate_stdout = contains_staged_output_marker(stdout.as_slice());
@@ -455,7 +455,7 @@ mod tests {
     /// mysterious `undefined symbol` link errors after `git pull`.
     ///
     /// This test pins the fix: a cached artifact with two payloads (`.obj`
-    /// at index 0, `.d` at index 1) plus an explicit current-build depfile
+    /// at index 0, depfile at index 1) plus an explicit current-build depfile
     /// destination must restore BOTH files. The cached `name` of the
     /// depfile output is just an identifier — the real destination on hit
     /// is supplied by the caller (it comes from the current compile's
@@ -475,7 +475,7 @@ mod tests {
         // the current invocation's `-MF` (or default `<output>.d`) and
         // passes it in. Use a different filename to prove the fix routes
         // bytes by request, not by stored name.
-        let depfile_dest: NormalizedPath = dir.path().join("build/out/source.o.d").into();
+        let depfile_dest: NormalizedPath = dir.path().join("build/out/deps.mk").into();
 
         let obj_payload = Arc::new(b"compiled object bytes".to_vec());
         let dep_payload = Arc::new(

@@ -145,8 +145,9 @@ pub(super) fn find_separator_colon(line: &str) -> Result<usize, DepfileError> {
     ))
 }
 
-/// Split the dependency string on unescaped whitespace, then unescape each
-/// token (`\ ` → ` `, `\#` → `#`).
+/// Split the dependency string on unescaped whitespace, then decode the Make
+/// quoting emitted by GCC and Clang. This includes escaped whitespace and
+/// `#`, doubled dollar signs, and doubled backslash runs before whitespace.
 pub(super) fn split_and_unescape(deps: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -154,20 +155,39 @@ pub(super) fn split_and_unescape(deps: &str) -> Vec<String> {
 
     while let Some(ch) = chars.next() {
         if ch == '\\' {
-            match chars.peek() {
-                Some(' ') => {
+            let mut run_len = 1usize;
+            while chars.peek() == Some(&'\\') {
+                chars.next();
+                run_len += 1;
+            }
+            match chars.peek().copied() {
+                Some(next @ (' ' | '\t')) => {
                     chars.next();
-                    current.push(' ');
+                    for _ in 0..(run_len / 2) {
+                        current.push('\\');
+                    }
+                    if run_len % 2 == 1 {
+                        current.push(next);
+                    } else if !current.is_empty() {
+                        tokens.push(std::mem::take(&mut current));
+                    }
                 }
                 Some('#') => {
                     chars.next();
+                    for _ in 1..run_len {
+                        current.push('\\');
+                    }
                     current.push('#');
                 }
                 _ => {
-                    // Preserve other backslashes (e.g., Windows path separators).
-                    current.push(ch);
+                    for _ in 0..run_len {
+                        current.push('\\');
+                    }
                 }
             }
+        } else if ch == '$' && chars.peek() == Some(&'$') {
+            chars.next();
+            current.push('$');
         } else if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
             if !current.is_empty() {
                 tokens.push(std::mem::take(&mut current));

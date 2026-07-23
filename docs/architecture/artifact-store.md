@@ -119,10 +119,13 @@ debris, while cache clear and eviction cannot delete outputs still needed for
 publication salvage or requested-path materialization.
 
 Rust staging adds
-`--remap-path-prefix=<private-root>=/__zccache_staged_output__`, and depfiles
+`--remap-path-prefix=<private-root>=/__zccache_staged_output_7b6d6f0c5a944e8ba1c7e9634b287d91__`,
+and depfiles
 plus captured stdout/stderr use the same stable logical marker before hashing
-or publication. Miss and hit delivery rehydrate marker paths to the current
-requested destinations. Two equivalent compiles can therefore publish
+or publication. Depfile canonicalization and rehydration preserve GCC/Clang
+Make quoting for whitespace, `#`, `$`, and backslash runs. Miss and hit delivery
+rehydrate marker paths to the current requested destinations. Two equivalent
+compiles can therefore publish
 byte-identical generations even when their private staging directories differ;
 the conflict guard below remains reserved for genuinely different output.
 

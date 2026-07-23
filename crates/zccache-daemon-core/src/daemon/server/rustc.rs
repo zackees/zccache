@@ -201,20 +201,11 @@ pub(super) fn scan_rustc_deps(
     cwd: &Path,
 ) -> RustcDepScan {
     if rustc_args.emit_types.iter().any(|t| t == "dep-info") {
-        let name = rustc_args.crate_name.as_deref().unwrap_or("unknown");
-        let ext_suffix = rustc_args.extra_filename.as_deref().unwrap_or("");
-        let dir = rustc_args.out_dir.as_deref().unwrap_or(cwd);
-        let depfile_path = rustc_args
-            .explicit_emit_paths
-            .iter()
-            .find(|(kind, _)| kind == "dep-info")
-            .map_or_else(
-                || dir.join(format!("{name}{ext_suffix}.d")),
-                |(_, path)| path.as_path().to_path_buf(),
-            );
-        if depfile_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&depfile_path) {
-                return parse_rustc_depinfo(&content, source_path, cwd);
+        if let Some(depfile_path) = rustc_depfile_output_path(rustc_args, cwd) {
+            if depfile_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&depfile_path) {
+                    return parse_rustc_depinfo(&content, source_path, cwd);
+                }
             }
         }
     }
@@ -352,6 +343,30 @@ pub(super) fn push_unique_output_path(paths: &mut Vec<NormalizedPath>, path: Nor
     if !paths.iter().any(|existing| existing == &path) {
         paths.push(path);
     }
+}
+
+pub(super) fn rustc_depfile_output_path(
+    rustc_args: &crate::depgraph::RustcParsedArgs,
+    cwd: &Path,
+) -> Option<NormalizedPath> {
+    if !rustc_args.emit_types.iter().any(|kind| kind == "dep-info") {
+        return None;
+    }
+    if let Some((_, path)) = rustc_args
+        .explicit_emit_paths
+        .iter()
+        .find(|(kind, _)| kind == "dep-info")
+    {
+        return Some(path.clone());
+    }
+    let crate_name = rustc_args.crate_name.as_deref().unwrap_or("unknown");
+    let extra_filename = rustc_args.extra_filename.as_deref().unwrap_or("");
+    let output_dir = rustc_args.out_dir.as_deref().unwrap_or(cwd);
+    Some(
+        output_dir
+            .join(format!("{crate_name}{extra_filename}.d"))
+            .into(),
+    )
 }
 
 #[derive(Clone)]

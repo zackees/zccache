@@ -429,6 +429,24 @@ fn split_and_unescape_escaped_hash() {
     assert_eq!(tokens, vec!["file#1.h"]);
 }
 
+#[test]
+fn split_and_unescape_doubled_dollar() {
+    let tokens = split_and_unescape(r" price$$dir/header.h ");
+    assert_eq!(tokens, vec!["price$dir/header.h"]);
+}
+
+#[test]
+fn split_and_unescape_make_quoted_backslashes_before_space() {
+    let tokens = split_and_unescape(r" path\\\ with\\\ slashes/header.h ");
+    assert_eq!(tokens, vec![r"path\ with\ slashes/header.h"]);
+}
+
+#[test]
+fn split_and_unescape_tab_even_backslashes_and_unmatched_dollar() {
+    let tokens = split_and_unescape(" tab\\\tname first\\\\ second single$ ");
+    assert_eq!(tokens, vec!["tab\tname", "first\\", "second", "single$"]);
+}
+
 // ── Strategy tests ───────────────────────────────────────────────────
 
 #[test]

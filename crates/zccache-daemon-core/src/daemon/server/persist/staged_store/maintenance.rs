@@ -1,8 +1,9 @@
 //! Disk-budget scanning and eviction for staged v2 artifact generations.
 
 use super::{
-    is_staged_link_or_reparse, open_store_lock, pointer_path, remove_staged_tree,
-    staged_key_supported, staged_root, validate_staged_artifact_root,
+    is_staged_link_or_reparse, open_store_lock, pointer_path, remove_registered_blob,
+    remove_staged_link_or_reparse, staged_key_supported, staged_root,
+    validate_staged_artifact_root, STORE_LOCK,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -182,6 +183,46 @@ fn evict_staged_artifact_keys_locked(
         bytes_removed = bytes_removed.saturating_add(remove_staged_tree(&root.join(key))?);
         bytes_removed =
             bytes_removed.saturating_add(remove_staged_tree(&pointer_path(artifact_dir, key))?);
+    }
+    Ok(bytes_removed)
+}
+
+pub(super) fn remove_staged_tree(path: &Path) -> io::Result<u64> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    if is_staged_link_or_reparse(&metadata) {
+        remove_staged_link_or_reparse(path, &metadata)?;
+        return Ok(0);
+    }
+    if metadata.is_dir() {
+        let mut removed = 0;
+        for entry in fs::read_dir(path)?.flatten() {
+            removed += remove_staged_tree(&entry.path())?;
+        }
+        fs::remove_dir(path)?;
+        return Ok(removed);
+    }
+    let size = metadata.len();
+    remove_registered_blob(path)?;
+    Ok(size)
+}
+
+pub(in crate::daemon::server) fn clear_staged_artifacts(artifact_dir: &Path) -> io::Result<u64> {
+    let root = staged_root(artifact_dir);
+    if !validate_staged_artifact_root(artifact_dir)? {
+        return Ok(0);
+    }
+    let store_lock = open_store_lock(&root)?;
+    fs2::FileExt::lock_exclusive(&store_lock)?;
+    let mut bytes_removed = 0;
+    for entry in fs::read_dir(&root)?.flatten() {
+        if entry.file_name() == STORE_LOCK {
+            continue;
+        }
+        bytes_removed += remove_staged_tree(&entry.path())?;
     }
     Ok(bytes_removed)
 }

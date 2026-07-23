@@ -48,6 +48,8 @@ pub(in crate::daemon::server) use mtime::*;
 pub(in crate::daemon::server) use object_store::*;
 pub(in crate::daemon::server) use pack::*;
 pub(in crate::daemon::server) use staged_multi::*;
+#[cfg(all(test, not(windows)))]
+pub(crate) use staged_paths::quote_make_depfile_path;
 pub(in crate::daemon::server) use staged_paths::*;
 pub(in crate::daemon::server) use staged_plan::*;
 pub(in crate::daemon::server) use staged_store::*;

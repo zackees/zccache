@@ -163,6 +163,16 @@ pub enum FlushStepOutcome {
     TimedOut,
 }
 
+pub struct FlushStepReport {
+    pub step: String,
+    pub outcome: FlushStepOutcome,
+}
+
+pub struct DetailedShutdownReport {
+    pub mode: ShutdownMode,
+    pub flushed: DetailedFlushReport,
+}
+
 pub enum MaintenanceOwnership {
     Embedded,
     Host,

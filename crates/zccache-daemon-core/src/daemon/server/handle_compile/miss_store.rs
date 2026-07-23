@@ -22,6 +22,9 @@ pub(super) struct MissArtifactStoreRequest<'a> {
     /// MSVC `/showIncludes` (parsed from stderr, not on disk), and for
     /// rustc (separate persist path).
     pub(super) user_depfile: Option<(NormalizedPath, Vec<u8>)>,
+    /// Owns the private canonical depfile source until detached persistence
+    /// has copied it. `None` for non-staged compiles.
+    pub(super) user_depfile_persist_temp: Option<tempfile::TempDir>,
     pub(super) rustc_all_outputs: Option<&'a [RustcOutputFile]>,
     pub(super) stdout: &'a Arc<Vec<u8>>,
     pub(super) stderr: &'a Arc<Vec<u8>>,
@@ -62,6 +65,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
         hash_map,
         output_data,
         user_depfile,
+        user_depfile_persist_temp,
         rustc_all_outputs,
         stdout,
         stderr,
@@ -139,6 +143,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
                 output_path,
                 output_data,
                 user_depfile,
+                user_depfile_persist_temp,
                 &artifact_key_hex,
                 stdout,
                 stderr,
@@ -365,6 +370,36 @@ fn store_rustc_outputs(
     drop(publication_guard);
 }
 
+/// Preserve canonical staged depfile bytes after requested-output
+/// materialization removes the compiler's private staging root.
+///
+/// The returned directory is an ownership guard: callers must keep it alive
+/// through synchronous persistence or move it into the detached persist task.
+pub(super) fn preserve_staged_depfile_for_persistence(
+    capture: &mut Option<(NormalizedPath, Vec<u8>)>,
+    requested_path: Option<&NormalizedPath>,
+    temp_root: &Path,
+) -> std::io::Result<Option<tempfile::TempDir>> {
+    let (Some((source_path, bytes)), Some(requested_path)) = (capture.as_mut(), requested_path)
+    else {
+        return Ok(None);
+    };
+    let file_name = requested_path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "staged user depfile has no file name",
+        )
+    })?;
+    std::fs::create_dir_all(temp_root)?;
+    let temp = tempfile::Builder::new()
+        .prefix("staged-depfile-persist-")
+        .tempdir_in(temp_root)?;
+    let persisted_source = temp.path().join(file_name);
+    std::fs::write(&persisted_source, bytes)?;
+    *source_path = persisted_source.into();
+    Ok(Some(temp))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn store_single_output(
     state_arc: &Arc<SharedState>,
@@ -373,6 +408,7 @@ fn store_single_output(
     output_path: &NormalizedPath,
     output_data: Vec<u8>,
     user_depfile: Option<(NormalizedPath, Vec<u8>)>,
+    user_depfile_persist_temp: Option<tempfile::TempDir>,
     artifact_key_hex: &str,
     stdout: &Arc<Vec<u8>>,
     stderr: &Arc<Vec<u8>>,
@@ -554,6 +590,7 @@ fn store_single_output(
         let written = tokio::task::spawn_blocking(move || {
             let _guard = guard;
             let _publication_guard = publication_guard;
+            let _user_depfile_persist_temp = user_depfile_persist_temp;
             // Issue #728: `gap_ms` = wall-clock between
             // "linker-success-recorded" (immediately before this spawn was
             // scheduled) and "persist-attempt-started" (now, inside the
@@ -600,7 +637,11 @@ fn store_single_output(
 
 #[cfg(test)]
 mod staged_publication_diagnostic_tests {
-    use super::{truncate_staged_publication_error, MAX_STAGED_PUBLICATION_ERROR_CHARS};
+    use super::{
+        preserve_staged_depfile_for_persistence, truncate_staged_publication_error,
+        MAX_STAGED_PUBLICATION_ERROR_CHARS,
+    };
+    use crate::core::NormalizedPath;
 
     #[test]
     fn publication_error_is_bounded_without_splitting_utf8() {
@@ -612,5 +653,38 @@ mod staged_publication_diagnostic_tests {
             rendered.trim_end_matches('…').chars().count(),
             MAX_STAGED_PUBLICATION_ERROR_CHARS
         );
+    }
+
+    #[test]
+    fn staged_depfile_persistence_source_survives_plan_cleanup() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let private_root = temp.path().join("private");
+        let staged_depfile: NormalizedPath = private_root.join("output-1").into();
+        let requested_depfile: NormalizedPath = temp.path().join("build/custom.mk").into();
+        std::fs::create_dir_all(&private_root).expect("private root");
+        std::fs::write(&staged_depfile, b"staged object: logical source\n")
+            .expect("staged depfile");
+        let mut capture = Some((staged_depfile, b"staged object: logical source\n".to_vec()));
+
+        let guard = preserve_staged_depfile_for_persistence(
+            &mut capture,
+            Some(&requested_depfile),
+            temp.path(),
+        )
+        .expect("preserve depfile")
+        .expect("persistence guard");
+        let preserved = capture.as_ref().expect("capture").0.clone();
+        assert_eq!(
+            preserved.file_name().and_then(|name| name.to_str()),
+            Some("custom.mk")
+        );
+
+        std::fs::remove_dir_all(&private_root).expect("simulate staged-plan cleanup");
+        assert_eq!(
+            std::fs::read(&preserved).expect("preserved canonical bytes"),
+            b"staged object: logical source\n"
+        );
+        drop(guard);
+        assert!(!preserved.as_path().exists());
     }
 }

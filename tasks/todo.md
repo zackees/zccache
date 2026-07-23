@@ -1,3 +1,14 @@
+# Soldr embedded durability Lavra follow-up
+
+- [x] Split oversized embedded/staged-store source files without changing public API.
+- [x] Correct embedded cancellation and report-shape documentation.
+- [x] Bound the index-writer lost-wakeup regression test.
+- [x] Repair Dylint environment tests and cover alias/retry recovery.
+- [x] Complete staged persistence module and marker documentation.
+- [x] Track depfile role independently from suffix, rewrite bytes atomically, and propagate failures.
+- [x] Cover arbitrary-extension and non-UTF-8 depfiles plus rewrite failures.
+- [x] Run focused/full Rust, Python, docs, lint, and cross-target verification.
+
 # #1149 secret-safe compile journal environment
 
 Issue: https://github.com/zackees/zccache/issues/1149

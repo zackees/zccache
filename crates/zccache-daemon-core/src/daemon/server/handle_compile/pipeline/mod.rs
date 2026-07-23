@@ -7,7 +7,8 @@
 //! - `system_includes.rs` — per-compiler system include discovery + watch
 //! - `hash_verify.rs` — source + header hashing and depgraph verdict
 //! - `compile_exec.rs` — depfile/response-file prep + compiler spawn
-//! - `store_outcome.rs` — successful-compile post path (scan, hash all, store, profiles)
+//! - `store_outcome.rs` — successful-compile post path (hash all, store, profiles)
+//! - `store_outcome_scan.rs` — depfile/include scan collection and fallback policy
 //!
 //! This module is the orchestrator: it threads local timings + per-phase
 //! results through the early-return tree and finally returns the `Response`.
@@ -665,7 +666,9 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                                 .parent()
                                 .unwrap_or(cwd_path.as_path())
                                 .into(),
-                            current_depfile_dest: None,
+                            current_depfile_dest: crate::daemon::server::rustc_depfile_output_path(
+                                rustc_args, cwd,
+                            ),
                             compile_start,
                             hit_label: "HIT_RUSTC_EMIT_COMPAT",
                             cached_error_label: "CACHED_ERROR_RUSTC_EMIT_COMPAT",
