@@ -95,21 +95,25 @@ jobs:
       - name: Test Dylint Library (ban_std_pathbuf)
         run: |
           export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-26 rustc)"
+          export RUSTUP_TOOLCHAIN=nightly-2026-05-26
           export PATH="$(dirname "${RUSTC}"):${CARGO_HOME}/bin:${PATH}"
           soldr rustup run nightly-2026-05-26 cargo test --manifest-path dylints/ban_std_pathbuf/Cargo.toml
       - name: Test Dylint Library (ban_unrooted_tempdir)
         run: |
           export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-26 rustc)"
+          export RUSTUP_TOOLCHAIN=nightly-2026-05-26
           export PATH="$(dirname "${RUSTC}"):${CARGO_HOME}/bin:${PATH}"
           soldr rustup run nightly-2026-05-26 cargo test --manifest-path dylints/ban_unrooted_tempdir/Cargo.toml
       - name: Test Dylint Library (ban_tmp_literal)
         run: |
           export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-26 rustc)"
+          export RUSTUP_TOOLCHAIN=nightly-2026-05-26
           export PATH="$(dirname "${RUSTC}"):${CARGO_HOME}/bin:${PATH}"
           soldr rustup run nightly-2026-05-26 cargo test --manifest-path dylints/ban_tmp_literal/Cargo.toml
       - name: Test Dylint Library (ban_raw_subprocess_in_daemon)
         run: |
           export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-26 rustc)"
+          export RUSTUP_TOOLCHAIN=nightly-2026-05-26
           export PATH="$(dirname "${RUSTC}"):${CARGO_HOME}/bin:${PATH}"
           soldr rustup run nightly-2026-05-26 cargo test --manifest-path dylints/ban_raw_subprocess_in_daemon/Cargo.toml
       - name: Run Dylint
