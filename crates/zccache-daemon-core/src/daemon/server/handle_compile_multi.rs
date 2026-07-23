@@ -111,9 +111,7 @@ fn check_unit_cache(
                 // cloning all .o data (~50-200KB per file) into PendingWrite.
                 // Each check_unit_cache runs in its own spawn_blocking task,
                 // so writes are already parallel across units.
-                if let Some(cached) =
-                    lookup_artifact_with_disk_fallback(state, artifact_key_hex)
-                {
+                if let Some(cached) = lookup_artifact_with_disk_fallback(state, artifact_key_hex) {
                     if let Some(payloads) =
                         ensure_payloads(&cached, &state.artifact_dir, artifact_key_hex)
                     {
@@ -235,8 +233,7 @@ fn check_unit_cache(
         let artifact_key_hex = artifact_key.hash().to_hex();
         if let Some(cached) = lookup_artifact_with_disk_fallback(state, &artifact_key_hex) {
             let t_lookup = t0.elapsed();
-            if let Some(payloads) =
-                ensure_payloads(&cached, &state.artifact_dir, &artifact_key_hex)
+            if let Some(payloads) = ensure_payloads(&cached, &state.artifact_dir, &artifact_key_hex)
             {
                 record_artifact_access(
                     state,

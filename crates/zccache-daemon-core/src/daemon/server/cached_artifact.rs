@@ -138,10 +138,7 @@ impl CachedArtifact {
 
     /// Create from index metadata and an already-resolved payload list.
     #[cfg(test)]
-    pub(crate) fn from_cached_payloads(
-        meta: ArtifactIndex,
-        payloads: Vec<CachedPayload>,
-    ) -> Self {
+    pub(crate) fn from_cached_payloads(meta: ArtifactIndex, payloads: Vec<CachedPayload>) -> Self {
         Self::with_payloads(meta, Arc::from(payloads))
     }
 
@@ -189,10 +186,7 @@ impl CachedArtifact {
 
     /// Record one hit and return updated index metadata when its durable
     /// checkpoint is due.
-    pub(crate) fn record_access(
-        &self,
-        now: std::time::Instant,
-    ) -> Option<ArtifactIndex> {
+    pub(crate) fn record_access(&self, now: std::time::Instant) -> Option<ArtifactIndex> {
         const PERSIST_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
         let mut access = self.access();
@@ -388,8 +382,7 @@ mod tests {
         let cached = lazy_artifact(7);
         let owned_clone = cached.clone();
 
-        let first =
-            ensure_payloads_with_staged_policy(&cached, dir.path(), key, false).unwrap();
+        let first = ensure_payloads_with_staged_policy(&cached, dir.path(), key, false).unwrap();
         let second =
             ensure_payloads_with_staged_policy(&owned_clone, dir.path(), key, false).unwrap();
 
@@ -442,12 +435,8 @@ mod tests {
         let key = "retry-cell";
         let cached = lazy_artifact(7);
 
-        assert!(
-            ensure_payloads_with_staged_policy(&cached, dir.path(), key, false).is_none()
-        );
+        assert!(ensure_payloads_with_staged_policy(&cached, dir.path(), key, false).is_none());
         std::fs::write(dir.path().join(format!("{key}_0")), b"payload").unwrap();
-        assert!(
-            ensure_payloads_with_staged_policy(&cached, dir.path(), key, false).is_some()
-        );
+        assert!(ensure_payloads_with_staged_policy(&cached, dir.path(), key, false).is_some());
     }
 }

@@ -6,16 +6,26 @@
 //! object name.  The counter is stored as little-endian bytes so the low byte
 //! naturally distributes sequential objects across the fixed bucket set.
 
-use super::*;
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
 use std::collections::HashSet;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+use std::fs::{File, OpenOptions};
+#[cfg(test)]
+use std::io::{Read, Write};
 
 const OBJECTS_ROOT: &str = "objects";
 const DELETING_ROOT: &str = "deleting";
 const POINTERS_ROOT: &str = ".object-pointers";
+// The allocation/pointer half of this module (counter, `allocate_object_id`,
+// pointer read/write/remove) is exercised only by the in-file tests until the
+// #1164 publication path lands its real consumers; it is `#[cfg(test)]`-gated
+// so `-D warnings` non-test builds see no dead code.
+#[cfg(test)]
 const COUNTER_FILE: &str = ".object-counter";
+#[cfg(test)]
 const COUNTER_LOCK: &str = ".object-counter.lock";
 const BUCKET_COUNT: u16 = 256;
 const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -75,14 +85,18 @@ fn pointer_root(artifact_dir: &Path) -> PathBuf {
     artifact_dir.join(POINTERS_ROOT)
 }
 
+#[cfg(test)]
 pub(crate) fn object_path(artifact_dir: &Path, id: ArtifactObjectId) -> PathBuf {
     object_root(artifact_dir).join(id.bucket()).join(id.leaf())
 }
 
 pub(crate) fn deleting_object_path(artifact_dir: &Path, id: ArtifactObjectId) -> PathBuf {
-    deleting_root(artifact_dir).join(id.bucket()).join(id.leaf())
+    deleting_root(artifact_dir)
+        .join(id.bucket())
+        .join(id.leaf())
 }
 
+#[cfg(test)]
 pub(crate) fn object_pointer_path(artifact_dir: &Path, key: &str) -> PathBuf {
     pointer_root(artifact_dir).join(format!("{key}.object"))
 }
@@ -104,10 +118,16 @@ pub(crate) fn ensure_object_layout(artifact_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn sync_file(path: &Path) -> io::Result<()> {
-    OpenOptions::new().read(true).write(true).open(path)?.sync_all()
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?
+        .sync_all()
 }
 
+#[cfg(test)]
 fn write_counter(path: &Path, value: u64) -> io::Result<()> {
     let temporary = path.with_file_name(format!(".{COUNTER_FILE}.tmp-{}", std::process::id()));
     {
@@ -125,6 +145,7 @@ fn write_counter(path: &Path, value: u64) -> io::Result<()> {
     result
 }
 
+#[cfg(test)]
 fn read_counter(path: &Path) -> io::Result<Option<u64>> {
     let mut bytes = [0_u8; 8];
     let mut file = match File::open(path) {
@@ -136,6 +157,7 @@ fn read_counter(path: &Path) -> io::Result<Option<u64>> {
     Ok(Some(u64::from_le_bytes(bytes)))
 }
 
+#[cfg(test)]
 fn path_occupied(artifact_dir: &Path, id: ArtifactObjectId) -> bool {
     object_path(artifact_dir, id).exists()
         || deleting_object_path(artifact_dir, id).exists()
@@ -148,6 +170,7 @@ fn path_occupied(artifact_dir: &Path, id: ArtifactObjectId) -> bool {
 /// Allocate and durably checkpoint one object ID. The lock is intentionally
 /// separate from the publication lock: unrelated keys can publish in
 /// parallel, while ID allocation remains serialized across processes.
+#[cfg(test)]
 pub(crate) fn allocate_object_id(artifact_dir: &Path) -> io::Result<ArtifactObjectId> {
     ensure_object_layout(artifact_dir)?;
     let lock_path = artifact_dir.join(COUNTER_LOCK);
@@ -190,6 +213,7 @@ pub(crate) fn allocate_object_id(artifact_dir: &Path) -> io::Result<ArtifactObje
     }
 }
 
+#[cfg(test)]
 pub(crate) fn read_object_pointer(
     artifact_dir: &Path,
     key: &str,
@@ -202,11 +226,15 @@ pub(crate) fn read_object_pointer(
     };
     let value = value.trim();
     let id = ArtifactObjectId::parse(value).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "invalid artifact object pointer")
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid artifact object pointer",
+        )
     })?;
     Ok(Some(id))
 }
 
+#[cfg(test)]
 pub(crate) fn write_object_pointer(
     artifact_dir: &Path,
     key: &str,
@@ -214,7 +242,11 @@ pub(crate) fn write_object_pointer(
 ) -> io::Result<()> {
     ensure_object_layout(artifact_dir)?;
     let target = object_pointer_path(artifact_dir, key);
-    let temporary = target.with_file_name(format!(".{}.tmp-{}", target.file_name().unwrap_or_default().to_string_lossy(), std::process::id()));
+    let temporary = target.with_file_name(format!(
+        ".{}.tmp-{}",
+        target.file_name().unwrap_or_default().to_string_lossy(),
+        std::process::id()
+    ));
     {
         let mut file = OpenOptions::new()
             .create_new(true)
@@ -234,6 +266,7 @@ pub(crate) fn write_object_pointer(
     result
 }
 
+#[cfg(test)]
 pub(crate) fn remove_object_pointer_if_matches(
     artifact_dir: &Path,
     key: &str,
@@ -305,7 +338,10 @@ mod tests {
     fn little_endian_names_spread_low_byte_first() {
         assert_eq!(ArtifactObjectId(0).name(), "0000000000000000");
         assert_eq!(ArtifactObjectId(1).name(), "0100000000000000");
-        assert_eq!(ArtifactObjectId(0x0123_4567_89ab_cdef).name(), "efcdab8967452301");
+        assert_eq!(
+            ArtifactObjectId(0x0123_4567_89ab_cdef).name(),
+            "efcdab8967452301"
+        );
         assert_eq!(
             ArtifactObjectId::parse("efcdab8967452301"),
             Some(ArtifactObjectId(0x0123_4567_89ab_cdef))
@@ -332,7 +368,10 @@ mod tests {
         fs::create_dir_all(object_path(dir.path(), stale)).unwrap();
         let allocated = allocate_object_id(dir.path()).unwrap();
         assert_eq!(allocated, ArtifactObjectId(9));
-        assert_eq!(read_counter(&dir.path().join(COUNTER_FILE)).unwrap(), Some(9));
+        assert_eq!(
+            read_counter(&dir.path().join(COUNTER_FILE)).unwrap(),
+            Some(9)
+        );
     }
 
     #[test]
