@@ -83,7 +83,7 @@ def test_bare_rustup_blocked():
     """Pre-existing escape hatch: `rustup run <toolchain> cargo ...` bypassed
     soldr's toolchain selection. After this fix, rustup itself must be
     prefixed with `soldr `."""
-    result = _check("rustup run nightly-2026-03-26 cargo check")
+    result = _check("rustup run nightly-2026-05-26 cargo check")
     assert result is not None
     assert result[0] == "rustup"
 
@@ -95,7 +95,7 @@ def test_bare_rustup_which_blocked():
 
 def test_rustup_via_soldr_passes():
     """`soldr rustup` is a documented passthrough — allowed."""
-    assert _check("soldr rustup run nightly-2026-03-26 cargo check") is None
+    assert _check("soldr rustup run nightly-2026-05-26 cargo check") is None
 
 
 # ── cargo +toolchain escape ─────────────────────────────────────────────────
@@ -104,7 +104,7 @@ def test_rustup_via_soldr_passes():
 def test_cargo_plus_toolchain_blocked():
     """`cargo +nightly check` invokes the rustup shim's toolchain selector
     directly, bypassing soldr."""
-    assert _check("cargo +nightly-2026-03-26 check") is not None
+    assert _check("cargo +nightly-2026-05-26 check") is not None
 
 
 # ── related rust tools ──────────────────────────────────────────────────────

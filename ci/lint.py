@@ -17,7 +17,7 @@ from ci.release_checks import ReleaseCheckError, validate_release_metadata
 from ci.soldr import cargo_command, rust_tool_command, self_build_env
 
 SCRIPT_DIR = Path(__file__).parent.parent.resolve()
-DYLINT_TOOLCHAIN = "nightly-2026-03-26"
+DYLINT_TOOLCHAIN = "nightly-2026-05-26"
 DYLINT_COMPONENTS = ["llvm-tools-preview", "rust-src", "rustc-dev"]
 DYLINT_WINDOWS_SKIP = (
     "Skipping Dylint on Windows; the dedicated Dylint CI job runs on Ubuntu."
@@ -89,36 +89,6 @@ def dylint_command() -> list[str]:
     return [executable, "dylint", "--all", "--workspace"]
 
 
-def ensure_dylint_aliases():
-    """Create cargo-dylint's expected `name@toolchain` aliases when missing."""
-    libraries_root = SCRIPT_DIR / "target" / "dylint" / "libraries"
-    if not libraries_root.is_dir():
-        return False
-
-    created = False
-    for toolchain_dir in libraries_root.iterdir():
-        if not toolchain_dir.is_dir():
-            continue
-        release_dir = toolchain_dir / "release"
-        if not release_dir.is_dir():
-            continue
-        for library in release_dir.iterdir():
-            if not library.is_file():
-                continue
-            if library.suffix not in {".dll", ".dylib", ".so"}:
-                continue
-            if "@" in library.stem:
-                continue
-            alias = library.with_name(
-                f"{library.stem}@{toolchain_dir.name}{library.suffix}"
-            )
-            if alias.exists():
-                continue
-            alias.write_bytes(library.read_bytes())
-            created = True
-    return created
-
-
 def ensure_dylint_components():
     """Install the Rust components required to build the workspace dylint."""
     if which("rustup") is None:
@@ -168,7 +138,7 @@ def skip_dylint_on_windows():
 
 
 def lint_dylint_only():
-    """Run workspace dylint, retrying after alias repair if cargo-dylint misses it."""
+    """Run workspace Dylint 6 using its supported driver path."""
     if skip_dylint_on_windows():
         return 0
 
@@ -192,30 +162,15 @@ def lint_dylint_only():
     # alias the just-built libraries and retry. With N dylints in the
     # workspace the worst case is N+1 invocations — each retry compiles the
     # next library fresh, so we loop until no new aliases need creating.
-    max_attempts = 6
-    last_result = None
-    for attempt in range(1, max_attempts + 1):
-        capture = attempt < max_attempts
-        result = subprocess.run(
-            dylint_cmd,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=str(SCRIPT_DIR),
-            env=dylint_env(),
-            capture_output=capture,
-        )
-        if capture:
-            sys.stdout.write(result.stdout or "")
-            sys.stderr.write(result.stderr or "")
-        last_result = result
-        if result.returncode == 0:
-            break
-        if not ensure_dylint_aliases():
-            # No new aliases to create — the failure isn't a missing-alias
-            # one, so further retries won't help.
-            break
-    return last_result.returncode if last_result is not None else 1
+    result = subprocess.run(
+        dylint_cmd,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=str(SCRIPT_DIR),
+        env=dylint_env(),
+    )
+    return result.returncode
 
 
 def detect_crate(file_path):
@@ -271,6 +226,7 @@ def lint_workspace():
             "dylints/ban_std_pathbuf/Cargo.toml",
             "dylints/ban_unrooted_tempdir/Cargo.toml",
             "dylints/ban_tmp_literal/Cargo.toml",
+            "dylints/ban_raw_subprocess_in_daemon/Cargo.toml",
         ):
             result = run_cmd(cargo_command(
                 "fmt",
