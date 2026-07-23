@@ -206,6 +206,7 @@ pub(super) async fn handle_generic_tool_exec(
     non_deterministic: bool,
     key_args_filter: &[String],
 ) -> Response {
+    let _active_request = state.begin_cache_request();
     // 1. Filtered args for the cache key (the tool always sees the raw args).
     let key_args = match apply_key_args_filter(args, key_args_filter) {
         Ok(v) => v,
@@ -760,20 +761,15 @@ async fn try_exec_cache_hit(
     output_files: &[NormalizedPath],
     output_streams: ExecOutputStreams,
 ) -> Option<Response> {
-    let mut entry = lookup_artifact_with_disk_fallback(state, key_hex)?;
+    let entry = lookup_artifact_with_disk_fallback(state, key_hex)?;
 
     let exit_code = entry.meta.exit_code;
     let stdout_full = entry.stdout.clone();
     let stderr_full = entry.stderr.clone();
     let names = Arc::clone(&entry.meta.output_names);
 
-    let payloads_loaded = ensure_payloads(&mut entry, &state.artifact_dir, key_hex).is_some();
-    if !payloads_loaded {
-        return None;
-    }
-    record_artifact_access(state, key_hex, &mut entry, std::time::Instant::now());
-    let payloads = Arc::clone(entry.payloads.as_ref()?);
-    drop(entry);
+    let payloads = ensure_payloads(&entry, &state.artifact_dir, key_hex)?;
+    record_artifact_access(state, key_hex, &entry, std::time::Instant::now());
 
     let mut paired: Vec<(NormalizedPath, &CachedPayload)> = Vec::with_capacity(output_files.len());
     for declared in output_files {

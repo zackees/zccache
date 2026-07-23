@@ -37,6 +37,7 @@ pub(super) fn handle_exec_probe(
     input_env: &[(String, String)],
     input_extra: &Arc<Vec<u8>>,
 ) -> Response {
+    let _active_request = state.begin_cache_request();
     let cache_key_hex =
         match compose_exec_probe_key(state, name, input_files, input_env, input_extra) {
             Ok(hex) => hex,

@@ -6,7 +6,7 @@
 //! lookups that eliminate redundant stat calls across concurrent clients.
 
 use super::clock::{ChangeJournal, Clock};
-use super::metadata::MetadataCache;
+use super::metadata::{CandidateEvictionResult, EvictionCandidate, MetadataCache};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Semaphore;
 use zccache_core::{NormalizedPath, Result};
@@ -283,6 +283,61 @@ impl CacheSystem {
         let meta_removed = self.metadata.evict_oldest(count);
         let journal_removed = self.cleanup_journal();
         (meta_removed, journal_removed)
+    }
+
+    /// Read-only phase of two-pass metadata eviction.
+    #[must_use]
+    pub fn oldest_eviction_candidates(&self, count: usize) -> Vec<EvictionCandidate> {
+        self.metadata.oldest_eviction_candidates(count)
+    }
+
+    /// Blocking write phase of two-pass metadata eviction.
+    ///
+    /// Candidates refreshed since the read phase are preserved.
+    pub fn evict_candidates(&self, candidates: &[EvictionCandidate]) -> (usize, usize) {
+        let (result, journal_removed) = self.evict_candidates_detailed(candidates);
+        (result.removed, journal_removed)
+    }
+
+    /// Detailed blocking write phase for traffic-aware eviction.
+    pub fn evict_candidates_detailed(
+        &self,
+        candidates: &[EvictionCandidate],
+    ) -> (CandidateEvictionResult, usize) {
+        let result = self.metadata.evict_candidates_detailed(candidates);
+        // A prior nonblocking pass may have removed metadata while
+        // deliberately deferring journal shard writes. Always settle that
+        // debt on a blocking pass, even when every candidate in this slice
+        // was already removed or refreshed.
+        let journal_removed = self.cleanup_journal();
+        (result, journal_removed)
+    }
+
+    /// Nonblocking write phase of two-pass metadata eviction.
+    ///
+    /// Busy shards and candidates refreshed since the read phase are skipped.
+    /// Journal cleanup is deferred to a blocking pass because `retain_paths`
+    /// would take write locks across that map; orphaned journal entries remain
+    /// correctness-safe in the meantime.
+    pub fn try_evict_candidates(&self, candidates: &[EvictionCandidate]) -> (usize, usize) {
+        let result = self.try_evict_candidates_detailed(candidates);
+        (result.removed, 0)
+    }
+
+    /// Detailed nonblocking write phase for traffic-aware eviction.
+    pub fn try_evict_candidates_detailed(
+        &self,
+        candidates: &[EvictionCandidate],
+    ) -> CandidateEvictionResult {
+        self.metadata.try_evict_candidates_detailed(candidates)
+    }
+
+    /// Settle orphaned journal rows left by nonblocking eviction.
+    ///
+    /// This takes blocking write locks and is therefore reserved for the idle
+    /// or forced completion phase of traffic-aware GC.
+    pub fn cleanup_eviction_journal(&self) -> usize {
+        self.cleanup_journal()
     }
 
     /// Remove journal `last_change` entries not in the metadata cache.
@@ -672,6 +727,23 @@ mod tests {
         assert_eq!(meta_removed, 1);
         assert_eq!(journal_removed, 1);
         assert!(cache.metadata().is_empty());
+    }
+
+    #[test]
+    fn blocking_cleanup_settles_journal_debt_after_gentle_eviction() {
+        let cache = CacheSystem::new();
+        let dir = TempDir::new().unwrap();
+        let path = create_file(&dir, "gentle.c", "data");
+        cache.lookup_since(&path, Clock::ZERO).unwrap();
+        cache.apply_changes(vec![path]);
+
+        let candidates = cache.oldest_eviction_candidates(1);
+        assert_eq!(cache.try_evict_candidates(&candidates), (1, 0));
+        assert!(cache.metadata().is_empty());
+        assert_eq!(cache.journal().last_change_len(), 1);
+
+        assert_eq!(cache.cleanup_eviction_journal(), 1);
+        assert_eq!(cache.journal().last_change_len(), 0);
     }
 
     #[test]

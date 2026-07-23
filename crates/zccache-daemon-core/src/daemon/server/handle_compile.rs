@@ -30,6 +30,7 @@ pub(super) async fn handle_compile(
     client_env: Option<Vec<(String, String)>>,
     stdin: Vec<u8>,
 ) -> Response {
+    let _active_request = state_arc.begin_cache_request();
     pipeline::handle_compile_request(CompileRequest {
         state_arc,
         session_id,

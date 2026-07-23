@@ -530,10 +530,11 @@ fn refresh_live_access(
 ) {
     for artifact in scanned {
         if let Some(cached) = artifacts.get(&artifact.key) {
-            let live_last_use = if cached.used_in_process {
-                now.checked_sub(cached.last_used.elapsed()).unwrap_or(now)
+            let access = cached.access_snapshot();
+            let live_last_use = if access.used_in_process {
+                now.checked_sub(access.last_used.elapsed()).unwrap_or(now)
             } else {
-                cached.last_used_wall.min(now)
+                access.last_used_wall.min(now)
             };
             artifact.last_access = artifact.last_access.max(live_last_use);
         }
@@ -587,10 +588,10 @@ fn remove_planned_artifacts(
     }
 
     let keys: Vec<&str> = removed_keys.iter().map(String::as_str).collect();
-    // Remove the fallback source before the live map. A cache hit that
-    // already holds a DashMap guard can finish and enqueue its access
-    // checkpoint; `remove` waits for that guard, and the subsequent Remove
-    // command is ordered after every such Insert. New lookups cannot
+    // The caller owns the publication barrier's write side. Every cache hit
+    // that acquired an owned read lease has therefore finished payload
+    // discovery and enqueued its access checkpoint; the subsequent Remove is
+    // ordered after every such Insert. New lookups cannot acquire a lease and
     // rehydrate the entry from ArtifactStore in the gap.
     artifact_store.remove_batch(&keys);
     dep_graph.invalidate_artifact_keys(&removed_keys.iter().cloned().collect());
@@ -603,7 +604,15 @@ fn remove_planned_artifacts(
     Ok(removed_keys)
 }
 
+#[cfg(test)]
 fn maintain_disk_artifacts(pass: MaintenancePass<'_>) -> io::Result<DiskMaintenanceReport> {
+    maintain_disk_artifacts_with_barrier(pass, None)
+}
+
+fn maintain_disk_artifacts_with_barrier(
+    pass: MaintenancePass<'_>,
+    publication_barrier: Option<&Arc<tokio::sync::RwLock<()>>>,
+) -> io::Result<DiskMaintenanceReport> {
     let MaintenancePass {
         artifact_dir,
         artifacts,
@@ -639,16 +648,51 @@ fn maintain_disk_artifacts(pass: MaintenancePass<'_>) -> io::Result<DiskMaintena
             pending_write_bytes,
             pressure,
         );
+        if plan.selected.is_empty() {
+            pressure = plan.pressure;
+            break;
+        }
+        let (plan, removed_this_round) = if let Some(publication_barrier) = publication_barrier {
+            // Filesystem scanning and candidate planning are read-only and may
+            // take seconds on a large cache. Only exclude cache hits for the
+            // short destructive commit, then refresh live access and re-plan
+            // under the writer so a hit/publication that raced the scan is
+            // not evicted as stale.
+            let _publication_guard = publication_barrier.blocking_write();
+            refresh_live_access(&mut scanned, artifacts, now);
+            let commit_space = environment.filesystem_space(artifact_dir)?;
+            let commit_plan = plan_maintenance_at_least(
+                policy,
+                kind,
+                now,
+                commit_space,
+                &scanned,
+                pending_write_bytes,
+                pressure,
+            );
+            let removed = remove_planned_artifacts(
+                artifact_dir,
+                &scanned,
+                &commit_plan,
+                artifacts,
+                artifact_store,
+                index_writer_tx,
+                dep_graph,
+            )?;
+            (commit_plan, removed)
+        } else {
+            let removed = remove_planned_artifacts(
+                artifact_dir,
+                &scanned,
+                &plan,
+                artifacts,
+                artifact_store,
+                index_writer_tx,
+                dep_graph,
+            )?;
+            (plan, removed)
+        };
         pressure = plan.pressure;
-        let removed_this_round = remove_planned_artifacts(
-            artifact_dir,
-            &scanned,
-            &plan,
-            artifacts,
-            artifact_store,
-            index_writer_tx,
-            dep_graph,
-        )?;
         if removed_this_round.is_empty() {
             break;
         }
@@ -727,7 +771,6 @@ pub(super) async fn maintain_state_disk(
             "disk maintenance skipped because daemon shutdown is in progress",
         ));
     }
-    let _publication_guard = state.artifact_publication.write().await;
     let cache_dir = state.cache_dir.clone();
     let index_writer_tx = state.index_writer_tx.clone();
     let maintenance_index_writer_tx = index_writer_tx.clone();
@@ -735,17 +778,20 @@ pub(super) async fn maintain_state_disk(
     let maintenance_state = Arc::clone(&state);
     let report = tokio::task::spawn_blocking(move || {
         let dep_graph = maintenance_state.dep_graph.load_full();
-        maintain_disk_artifacts(MaintenancePass {
-            artifact_dir: maintenance_state.artifact_dir.as_path(),
-            artifacts: &maintenance_state.artifacts,
-            artifact_store: &maintenance_state.artifact_store,
-            index_writer_tx: Some(&maintenance_index_writer_tx),
-            dep_graph: &dep_graph,
-            pending_write_bytes,
-            policy,
-            kind,
-            environment: &RealMaintenanceEnvironment,
-        })
+        maintain_disk_artifacts_with_barrier(
+            MaintenancePass {
+                artifact_dir: maintenance_state.artifact_dir.as_path(),
+                artifacts: &maintenance_state.artifacts,
+                artifact_store: &maintenance_state.artifact_store,
+                index_writer_tx: Some(&maintenance_index_writer_tx),
+                dep_graph: &dep_graph,
+                pending_write_bytes,
+                policy,
+                kind,
+                environment: &RealMaintenanceEnvironment,
+            },
+            Some(&maintenance_state.artifact_publication),
+        )
     })
     .await
     .map_err(io::Error::other)??;

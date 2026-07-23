@@ -134,39 +134,39 @@ fn mixed_v1_pack_v2_lookup_and_downgrade_policy_are_explicit() {
         CachedPayload::Bytes(bytes) => bytes.as_ref().clone(),
     };
 
-    let mut v1 = index("legacy.o", 11);
-    let mut pack = index("packed.o", 11);
-    let mut v2 = index("staged.o", 9);
+    let v1 = index("legacy.o", 11);
+    let pack = index("packed.o", 11);
+    let v2 = index("staged.o", 9);
     assert_eq!(
-        bytes(&ensure_payloads_with_staged_policy(&mut v1, dir.path(), &v1_key, true).unwrap()[0]),
+        bytes(&ensure_payloads_with_staged_policy(&v1, dir.path(), &v1_key, true).unwrap()[0]),
         b"legacy-flat"
     );
     assert_eq!(
         bytes(
-            &ensure_payloads_with_staged_policy(&mut pack, dir.path(), &pack_key, true).unwrap()[0]
+            &ensure_payloads_with_staged_policy(&pack, dir.path(), &pack_key, true).unwrap()[0]
         ),
         b"legacy-pack"
     );
     assert_eq!(
-        bytes(&ensure_payloads_with_staged_policy(&mut v2, dir.path(), &v2_key, true).unwrap()[0]),
+        bytes(&ensure_payloads_with_staged_policy(&v2, dir.path(), &v2_key, true).unwrap()[0]),
         b"staged-v2"
     );
 
     // Downgrade/kill-switch policy: legacy layouts remain readable, while a
     // v2-only entry is a safe miss rather than being reinterpreted.
-    let mut downgraded_v1 = index("legacy.o", 11);
-    let mut downgraded_pack = index("packed.o", 11);
-    let mut downgraded_v2 = index("staged.o", 9);
+    let downgraded_v1 = index("legacy.o", 11);
+    let downgraded_pack = index("packed.o", 11);
+    let downgraded_v2 = index("staged.o", 9);
     assert!(
-        ensure_payloads_with_staged_policy(&mut downgraded_v1, dir.path(), &v1_key, false)
+        ensure_payloads_with_staged_policy(&downgraded_v1, dir.path(), &v1_key, false)
             .is_some()
     );
     assert!(
-        ensure_payloads_with_staged_policy(&mut downgraded_pack, dir.path(), &pack_key, false)
+        ensure_payloads_with_staged_policy(&downgraded_pack, dir.path(), &pack_key, false)
             .is_some()
     );
     assert!(
-        ensure_payloads_with_staged_policy(&mut downgraded_v2, dir.path(), &v2_key, false)
+        ensure_payloads_with_staged_policy(&downgraded_v2, dir.path(), &v2_key, false)
             .is_none()
     );
 }

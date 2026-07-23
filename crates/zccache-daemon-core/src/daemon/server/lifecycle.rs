@@ -182,6 +182,8 @@ pub(super) fn new_shared_state(
             watched_dirs: Mutex::new(HashSet::new()),
             shutdown,
             last_activity: AtomicU64::new(now),
+            active_cache_requests: AtomicUsize::new(0),
+            cache_requests_idle: Notify::new(),
             start_time: now,
             stats: StatsCollector::new(),
             profiler: PhaseProfiler::new(),

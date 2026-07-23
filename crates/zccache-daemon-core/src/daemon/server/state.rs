@@ -93,6 +93,29 @@ impl Drop for StagingRoot {
     }
 }
 
+/// RAII marker covering one complete compile-cache request.
+///
+/// The compiler-child counter in `daemon::process` is intentionally narrower:
+/// it excludes cache hits, pre-hashing, and post-compile publication. Metadata
+/// GC uses this request-level counter to prefer quiet periods without making
+/// correctness depend on finding one.
+pub(super) struct ActiveCacheRequest<'a> {
+    state: &'a SharedState,
+}
+
+impl Drop for ActiveCacheRequest<'_> {
+    fn drop(&mut self) {
+        if self
+            .state
+            .active_cache_requests
+            .fetch_sub(1, Ordering::AcqRel)
+            == 1
+        {
+            self.state.cache_requests_idle.notify_one();
+        }
+    }
+}
+
 /// Shared state accessible by all connection handlers.
 pub(super) struct SharedState {
     /// IPC endpoint this daemon bound. Reported through `zccache status` so
@@ -154,6 +177,12 @@ pub(super) struct SharedState {
     pub(super) shutdown: Arc<Notify>,
     /// Epoch seconds of last client activity (for idle timeout).
     pub(super) last_activity: AtomicU64,
+    /// Metadata-cache consumers active from request entry through hit
+    /// materialization or miss publication (compile, link, generic exec, and
+    /// caller-owned exec probes).
+    pub(super) active_cache_requests: AtomicUsize,
+    /// Wakes deferred metadata GC when the active request count reaches zero.
+    pub(super) cache_requests_idle: Notify,
     /// Daemon start time (epoch seconds).
     pub(super) start_time: u64,
     /// Global stats collector.
@@ -389,6 +418,15 @@ pub(super) struct SharedState {
 }
 
 impl SharedState {
+    pub(super) fn begin_cache_request(&self) -> ActiveCacheRequest<'_> {
+        self.active_cache_requests.fetch_add(1, Ordering::AcqRel);
+        ActiveCacheRequest { state: self }
+    }
+
+    pub(super) fn active_cache_requests(&self) -> usize {
+        self.active_cache_requests.load(Ordering::Acquire)
+    }
+
     /// Return the lock that owns legacy side-effect capture for `output_dir`.
     ///
     /// The returned `Arc` is independent of the DashMap entry guard so callers

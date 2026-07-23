@@ -205,3 +205,46 @@ Issue: https://github.com/zackees/zccache/issues/1117
 - [x] Retain wall/CPU/TTFB/output, RSS, cache/artifact, phase, command, and identity data.
 - [x] Run focused tests, Linux Docker diagnostics, and five valid samples per cell.
 - [ ] Publish floor dossiers, merge the PR, and close #1117.
+
+# DashMap read-snapshot investigation
+
+- [x] Classify DashMaps by lookup/write semantics and select viable candidates.
+- [x] Inspect existing performance evidence for lock or lookup overhead.
+- [x] Bound the possible win from retained warm-path phase profiles.
+- [x] Evaluate merge cost, stale-read correctness, memory, and operational complexity.
+- [x] Report whether the design is worth implementing and where.
+- [x] Shorten artifact lookup guards before considering a two-map redesign.
+- [x] Share lazy payload and access state across owned cache-entry clones.
+
+# Source-cache session immutability and GC investigation
+
+- [x] Define source immutability boundaries for one compile and a build session.
+- [x] Trace watcher, lookup, hashing, and metadata-cache mutations.
+- [x] Audit periodic memory GC and explicit clear during active compiles.
+- [x] Check regression tests and history for concurrent-change contracts.
+- [x] Report whether an immutable per-session snapshot is safe.
+
+# Traffic-aware source metadata GC investigation
+
+- [x] Find existing compile/activity and memory-pressure signals.
+- [x] Determine how to split candidate discovery from conditional deletion.
+- [x] Design idle deferral with bounded starvation and memory-pressure escalation.
+- [x] Identify candidate freshness, hot-entry, and journal cleanup requirements.
+- [x] Report the recommended implementation shape.
+
+# Traffic-aware source metadata GC implementation
+
+- [x] Track complete compile-cache requests with an RAII activity guard.
+- [x] Split metadata eviction into read-only candidate collection and conditional deletion.
+- [x] Preserve entries whose verification timestamp changes between the two passes.
+- [x] Defer blocking deletion for an idle grace period, then use nonblocking batches.
+- [x] Force a blocking pass after bounded persistent traffic.
+- [x] Distinguish lock-busy candidates from timestamp-refreshed candidates so
+  forced completion retries only the former.
+- [x] Settle deferred journal cleanup when traffic becomes idle or escalation fires.
+- [x] Keep disk-maintenance scans read-only and take the publication writer
+  only for the revalidated destructive commit.
+- [x] Count compile, link, generic-exec, and exec-probe metadata consumers.
+- [x] Cover blocking and nonblocking timestamp races with focused tests.
+- [x] Cover gentle-to-forced handoff, held-shard retry, and maintenance/Clear
+  artifact-lease ordering with deterministic tests.

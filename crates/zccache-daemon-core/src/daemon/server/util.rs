@@ -263,21 +263,54 @@ pub(super) fn context_env_deps_fresh(
 /// 3. On disk-store hit, hydrate the DashMap so subsequent lookups
 ///    skip the fallback entirely.
 ///
-/// # Why two `get_mut` calls
+/// # Guard lifetime
 ///
-/// DashMap forbids holding a shard lock (`get_mut` returns a guard
-/// holding it) across an `insert` on the same map — that would
-/// deadlock. We release the first guard's `None` arm, do the
-/// disk-store lookup + insert, then take a fresh `get_mut` to hand
-/// back. The `insert` + re-`get_mut` is on the cold path (DashMap
-/// miss + disk-store hit), so the extra hash is dwarfed by the
-/// hardlink/write work that follows.
-pub(super) fn lookup_artifact_with_disk_fallback<'a>(
-    state: &'a SharedState,
+/// The returned value owns an allocation-free artifact clone and a read lease
+/// on the artifact-publication barrier. The DashMap guard therefore exists
+/// only long enough to clone one `Arc`; filesystem payload discovery and
+/// access checkpointing never hold a shard lock. Disk maintenance and Clear
+/// take the barrier's write side, so they cannot delete files or order an
+/// index removal ahead of an already-started hit.
+pub(super) struct CachedArtifactLookup {
+    cached: CachedArtifact,
+    _publication_guard: tokio::sync::OwnedRwLockReadGuard<()>,
+}
+
+impl CachedArtifactLookup {
+    fn new(
+        cached: CachedArtifact,
+        publication_guard: tokio::sync::OwnedRwLockReadGuard<()>,
+    ) -> Self {
+        Self {
+            cached,
+            _publication_guard: publication_guard,
+        }
+    }
+}
+
+impl std::ops::Deref for CachedArtifactLookup {
+    type Target = CachedArtifact;
+
+    fn deref(&self) -> &Self::Target {
+        &self.cached
+    }
+}
+
+pub(super) fn lookup_artifact_with_disk_fallback(
+    state: &SharedState,
     key_hex: &str,
-) -> Option<dashmap::mapref::one::RefMut<'a, String, CachedArtifact>> {
-    if let Some(entry) = state.artifacts.get_mut(key_hex) {
-        return Some(entry);
+) -> Option<CachedArtifactLookup> {
+    // Maintenance/Clear already owns or is queued for the write side. Treat
+    // this as a cache miss instead of making a request wait behind destructive
+    // work. Tokio's fair RwLock also rejects new readers once a writer queues.
+    let publication_guard = Arc::clone(&state.artifact_publication)
+        .try_read_owned()
+        .ok()?;
+    if let Some(entry) = state.artifacts.get(key_hex) {
+        return Some(CachedArtifactLookup::new(
+            entry.value().clone(),
+            publication_guard,
+        ));
     }
     // Issue #784 phase 2d: the artifact-index blob is no longer read at
     // bind time — `bind_with_cache_dir` constructs an empty store and a
@@ -300,10 +333,13 @@ pub(super) fn lookup_artifact_with_disk_fallback<'a>(
             .store(true, std::sync::atomic::Ordering::Release);
     }
     let meta = state.artifact_store.get(key_hex)?;
-    state
+    let cached = CachedArtifact::from_index(meta);
+    let cached = state
         .artifacts
-        .insert(key_hex.to_string(), CachedArtifact::from_index(meta));
-    state.artifacts.get_mut(key_hex)
+        .entry(key_hex.to_string())
+        .or_insert(cached)
+        .clone();
+    Some(CachedArtifactLookup::new(cached, publication_guard))
 }
 
 /// Refresh an artifact's maintenance-visible access time at most once per
@@ -313,29 +349,14 @@ pub(super) fn lookup_artifact_with_disk_fallback<'a>(
 pub(super) fn record_artifact_access(
     state: &SharedState,
     key_hex: &str,
-    artifact: &mut CachedArtifact,
+    artifact: &CachedArtifact,
     now: Instant,
 ) {
-    const PERSIST_INTERVAL: Duration = Duration::from_secs(60 * 60);
-    artifact.last_used = now;
-    artifact.used_in_process = true;
-    if artifact
-        .last_access_checkpoint
-        .is_some_and(|checkpoint| now.saturating_duration_since(checkpoint) < PERSIST_INTERVAL)
-    {
-        return;
+    if let Some(meta) = artifact.record_access(now) {
+        let _ = state
+            .index_writer_tx
+            .send(IndexWriterCommand::Insert(key_hex.to_string(), meta));
     }
-    artifact.last_access_checkpoint = Some(now);
-    let wall_now = std::time::SystemTime::now();
-    artifact.last_used_wall = wall_now;
-    artifact.meta.stored_at_secs = wall_now
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let _ = state.index_writer_tx.send(IndexWriterCommand::Insert(
-        key_hex.to_string(),
-        artifact.meta.clone(),
-    ));
 }
 
 #[cfg(all(test, windows))]

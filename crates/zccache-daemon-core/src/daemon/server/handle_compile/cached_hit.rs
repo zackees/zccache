@@ -87,9 +87,9 @@ pub(super) fn materialize_cached_compile_hit(
     // reuses `t0` for the maintenance-visible `last_used` write without an
     // additional clock read (issue #1148).
     let t0 = Instant::now();
-    let mut cached_ref = lookup_artifact_with_disk_fallback(state, artifact_key_hex)?;
-    ensure_payloads(&mut cached_ref, &state.artifact_dir, artifact_key_hex)?;
-    record_artifact_access(state, artifact_key_hex, &mut cached_ref, t0);
+    let cached = lookup_artifact_with_disk_fallback(state, artifact_key_hex)?;
+    let payloads = ensure_payloads(&cached, &state.artifact_dir, artifact_key_hex)?;
+    record_artifact_access(state, artifact_key_hex, &cached, t0);
     let t1 = Instant::now();
     let artifact_lookup_ns = (t1 - t0).as_nanos() as u64;
 
@@ -99,13 +99,11 @@ pub(super) fn materialize_cached_compile_hit(
     // set.
     crate::daemon::server::inner_trace::record_ns("cache_load", artifact_lookup_ns);
 
-    let payloads = Arc::clone(cached_ref.payloads.as_ref()?);
-    let names = Arc::clone(&cached_ref.meta.output_names);
-    let exit_code = cached_ref.meta.exit_code;
-    let stdout = cached_ref.stdout.clone();
-    let stderr = cached_ref.stderr.clone();
-    let artifact_bytes = cached_ref.meta.total_size;
-    drop(cached_ref);
+    let names = Arc::clone(&cached.meta.output_names);
+    let exit_code = cached.meta.exit_code;
+    let stdout = cached.stdout.clone();
+    let stderr = cached.stderr.clone();
+    let artifact_bytes = cached.meta.total_size;
 
     // Issue #643: when the miss path stashed the user's depfile bytes as a
     // second output and the current request supplies a `-MF` destination,

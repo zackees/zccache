@@ -36,6 +36,34 @@ impl MaintenanceEnvironment for FixedEnvironment {
     }
 }
 
+struct GatedScanEnvironment {
+    now: SystemTime,
+    calls: std::sync::atomic::AtomicUsize,
+    scan_entered: std::sync::Barrier,
+    release_scan: std::sync::Barrier,
+}
+
+impl MaintenanceEnvironment for GatedScanEnvironment {
+    fn now(&self) -> SystemTime {
+        self.now
+    }
+
+    fn filesystem_space(&self, _root: &Path) -> io::Result<FilesystemSpace> {
+        if self
+            .calls
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            == 0
+        {
+            self.scan_entered.wait();
+            self.release_scan.wait();
+        }
+        Ok(FilesystemSpace {
+            capacity_bytes: 1000 * GIB,
+            free_bytes: 500 * GIB,
+        })
+    }
+}
+
 #[test]
 fn issue_1148_default_budget_is_five_percent_clamped_to_40_200_gib() {
     let policy = MaintenancePolicy::default();
@@ -142,6 +170,51 @@ fn issue_1148_eviction_updates_files_live_map_index_and_only_owned_root() {
         std::fs::read(sibling.join("sentinel")).unwrap(),
         b"owned by another product"
     );
+}
+
+#[test]
+fn read_only_maintenance_scan_does_not_exclude_cache_hit_leases() {
+    let root = tempfile::tempdir().unwrap();
+    let artifact_dir = root.path().join("artifacts");
+    std::fs::create_dir_all(&artifact_dir).unwrap();
+    std::fs::write(artifact_dir.join("old.meta"), vec![0_u8; 4096]).unwrap();
+    let artifacts = DashMap::new();
+    let store = ArtifactStore::open_empty(&root.path().join("index.bin"));
+    let dep_graph = DepGraph::new();
+    let publication_barrier = Arc::new(tokio::sync::RwLock::new(()));
+    let environment = GatedScanEnvironment {
+        now: SystemTime::UNIX_EPOCH + 100 * DAY,
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        scan_entered: std::sync::Barrier::new(2),
+        release_scan: std::sync::Barrier::new(2),
+    };
+
+    std::thread::scope(|scope| {
+        let maintenance = scope.spawn(|| {
+            maintain_disk_artifacts_with_barrier(
+                MaintenancePass {
+                    artifact_dir: &artifact_dir,
+                    artifacts: &artifacts,
+                    artifact_store: &store,
+                    index_writer_tx: None,
+                    dep_graph: &dep_graph,
+                    pending_write_bytes: 0,
+                    policy: bytes_policy(1),
+                    kind: MaintenanceKind::Pressure,
+                    environment: &environment,
+                },
+                Some(&publication_barrier),
+            )
+        });
+
+        environment.scan_entered.wait();
+        let cache_hit_lease = Arc::clone(&publication_barrier)
+            .try_read_owned()
+            .expect("read-only scan must not queue or hold the publication writer");
+        drop(cache_hit_lease);
+        environment.release_scan.wait();
+        maintenance.join().unwrap().unwrap();
+    });
 }
 
 #[test]
@@ -543,9 +616,10 @@ fn issue_1148_future_persisted_access_is_clamped_at_restore() {
         .unwrap()
         .as_secs();
     let restored = CachedArtifact::from_index(meta);
-    assert!(restored.last_used_wall <= SystemTime::now());
-    assert!(!restored.used_in_process);
-    assert!(restored.last_access_checkpoint.is_none());
+    let access = restored.access_snapshot();
+    assert!(access.last_used_wall <= SystemTime::now());
+    assert!(!access.used_in_process);
+    assert!(access.last_access_checkpoint.is_none());
 }
 
 #[test]
@@ -558,7 +632,7 @@ fn issue_1148_windows_allocated_size_combines_high_low_and_falls_back() {
 }
 
 #[tokio::test]
-async fn issue_1148_publication_barrier_orders_insert_before_gc_remove() {
+async fn artifact_lookup_lease_orders_access_insert_before_gc_remove() {
     let root = tempfile::tempdir().unwrap();
     let cache_dir: crate::core::NormalizedPath = root.path().join("cache").into();
     let daemon = Arc::new(
@@ -583,7 +657,6 @@ async fn issue_1148_publication_barrier_orders_insert_before_gc_remove() {
     std::fs::write(artifact_dir.join(format!("{key}.meta")), vec![0_u8; 4096]).unwrap();
     let meta = ArtifactIndex::new(vec![], vec![], Vec::new(), Vec::new(), 0);
 
-    let publication_guard = daemon.state.artifact_publication.read().await;
     daemon
         .state
         .artifacts
@@ -593,14 +666,22 @@ async fn issue_1148_publication_barrier_orders_insert_before_gc_remove() {
         .index_writer_tx
         .send(IndexWriterCommand::Insert(key.clone(), meta))
         .unwrap();
+    let lookup = lookup_artifact_with_disk_fallback(&daemon.state, &key)
+        .expect("live artifact should acquire a publication lease");
     let maintenance_daemon = Arc::clone(&daemon);
-    let maintenance = tokio::spawn(async move {
+    let mut maintenance = tokio::spawn(async move {
         maintenance_daemon
             .maintain_disk(MaintenanceKind::Pressure)
             .await
     });
-    tokio::task::yield_now().await;
-    drop(publication_guard);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(25), &mut maintenance)
+            .await
+            .is_err(),
+        "maintenance must wait while an owned cache lookup is materializing"
+    );
+    record_artifact_access(&daemon.state, &key, &lookup, Instant::now());
+    drop(lookup);
 
     let report = maintenance.await.unwrap().unwrap();
     assert_eq!(report.artifacts_removed, 1);
