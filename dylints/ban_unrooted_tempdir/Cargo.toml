@@ -2,7 +2,7 @@
 name = "ban_unrooted_tempdir"
 # 2026-06-15: bumped to bust the dylint .so cache when allowlist.txt
 # changes — see ban_std_pathbuf for the same workaround rationale.
-version = "0.2.0"
+version = "0.3.0"
 description = "Ban tempdir/temp_dir calls that aren't rooted under zccache's cache dir"
 edition = "2021"
 publish = false
@@ -14,10 +14,10 @@ crate-type = ["cdylib"]
 # Match the dylint_linting pin used by ban_std_pathbuf — same toolchain, same
 # upstream commit until a crates.io release ships the post-2026-03-18
 # rustc_session fix.
-dylint_linting = { git = "https://github.com/trailofbits/dylint", rev = "4bd91ce7729b74c7ee5664bbb588f7baf30b4a09" }
+dylint_linting = "6.0.1"
 
 [dev-dependencies]
-dylint_testing = { git = "https://github.com/trailofbits/dylint", rev = "4bd91ce7729b74c7ee5664bbb588f7baf30b4a09" }
+dylint_testing = "6.0.1"
 
 [package.metadata.rust-analyzer]
 rustc_private = true

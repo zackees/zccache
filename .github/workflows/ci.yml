@@ -72,40 +72,46 @@ jobs:
           linker: fast
           prebuild-deps: soldr-cook
           dylint-cache: true
-          dylint-toolchain: nightly-2026-03-26
-          dylint-driver-rev: 4bd91ce7729b74c7ee5664bbb588f7baf30b4a09
-          cargo-dylint-version: 5.0.0
-          dylint-link-version: 5.0.0
+          dylint-toolchain: nightly-2026-05-26
+          cargo-dylint-version: 6.0.1
+          dylint-link-version: 6.0.1
       - name: Install Dylint nightly toolchain
-        run: soldr rustup toolchain install nightly-2026-03-26 --component llvm-tools-preview --component rust-src --component rustc-dev --profile minimal
+        run: soldr rustup toolchain install nightly-2026-05-26 --component llvm-tools-preview --component rust-src --component rustc-dev --profile minimal
       - name: Install stable Rust components
         run: soldr rustup component add rustfmt
       - name: Install Dylint
         if: steps.setup-soldr.outputs.dylint-cache-hit != 'true'
         run: |
-          soldr cargo install cargo-dylint --version 5.0.0 --locked
-          soldr cargo install dylint-link --version 5.0.0 --locked
-      - name: Build compatible Dylint driver
-        if: steps.setup-soldr.outputs.dylint-cache-hit != 'true'
-        run: python3 ci/build_dylint_driver.py
+          soldr cargo install cargo-dylint --version 6.0.1 --locked
+          soldr cargo install dylint-link --version 6.0.1 --locked
       - name: Check Dylint Library Formatting (ban_std_pathbuf)
         run: soldr cargo fmt --manifest-path dylints/ban_std_pathbuf/Cargo.toml --all -- --check
       - name: Check Dylint Library Formatting (ban_unrooted_tempdir)
         run: soldr cargo fmt --manifest-path dylints/ban_unrooted_tempdir/Cargo.toml --all -- --check
       - name: Check Dylint Library Formatting (ban_tmp_literal)
         run: soldr cargo fmt --manifest-path dylints/ban_tmp_literal/Cargo.toml --all -- --check
+      - name: Check Dylint Library Formatting (ban_raw_subprocess_in_daemon)
+        run: soldr cargo fmt --manifest-path dylints/ban_raw_subprocess_in_daemon/Cargo.toml --all -- --check
       - name: Test Dylint Library (ban_std_pathbuf)
         run: |
-          export PATH="${CARGO_HOME}/bin:${PATH}"
-          soldr rustup run nightly-2026-03-26 cargo test --manifest-path dylints/ban_std_pathbuf/Cargo.toml
+          export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-26 rustc)"
+          export PATH="$(dirname "${RUSTC}"):${CARGO_HOME}/bin:${PATH}"
+          soldr rustup run nightly-2026-05-26 cargo test --manifest-path dylints/ban_std_pathbuf/Cargo.toml
       - name: Test Dylint Library (ban_unrooted_tempdir)
         run: |
-          export PATH="${CARGO_HOME}/bin:${PATH}"
-          soldr rustup run nightly-2026-03-26 cargo test --manifest-path dylints/ban_unrooted_tempdir/Cargo.toml
+          export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-26 rustc)"
+          export PATH="$(dirname "${RUSTC}"):${CARGO_HOME}/bin:${PATH}"
+          soldr rustup run nightly-2026-05-26 cargo test --manifest-path dylints/ban_unrooted_tempdir/Cargo.toml
       - name: Test Dylint Library (ban_tmp_literal)
         run: |
-          export PATH="${CARGO_HOME}/bin:${PATH}"
-          soldr rustup run nightly-2026-03-26 cargo test --manifest-path dylints/ban_tmp_literal/Cargo.toml
+          export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-26 rustc)"
+          export PATH="$(dirname "${RUSTC}"):${CARGO_HOME}/bin:${PATH}"
+          soldr rustup run nightly-2026-05-26 cargo test --manifest-path dylints/ban_tmp_literal/Cargo.toml
+      - name: Test Dylint Library (ban_raw_subprocess_in_daemon)
+        run: |
+          export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-26 rustc)"
+          export PATH="$(dirname "${RUSTC}"):${CARGO_HOME}/bin:${PATH}"
+          soldr rustup run nightly-2026-05-26 cargo test --manifest-path dylints/ban_raw_subprocess_in_daemon/Cargo.toml
       - name: Run Dylint
         run: |
           export PATH="${CARGO_HOME}/bin:${PATH}"

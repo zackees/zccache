@@ -7,9 +7,9 @@ Custom Rust lints used by this workspace.
 - `ban_raw_subprocess_in_daemon`: bans raw subprocess spawns in daemon code paths.
 - `ban_tmp_literal`: bans hardcoded `/tmp` path string literals — they only exist on POSIX (#828).
 
-Note:
-
-- `ban_std_pathbuf` currently pins `dylint_linting` / `dylint_testing` to an upstream `trailofbits/dylint` commit instead of the `5.0.0` crates.io release. That release predates the March 18, 2026 `rustc_session` API change and fails against the newer toolchains this repo uses. Remove the git pin once a newer crates.io release includes that compatibility fix.
+All four libraries use the published Dylint 6.0.1 crates and the pinned
+`nightly-2026-05-26` toolchain. The supported `cargo-dylint` driver is used
+directly; no custom driver checkout or library alias repair is required.
 
 Run from the repository root:
 
