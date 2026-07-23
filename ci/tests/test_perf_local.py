@@ -27,6 +27,50 @@ def _load_perf_local():
 perf_local = _load_perf_local()
 
 
+def test_remove_previous_results_repairs_container_owned_tree(tmp_path, monkeypatch):
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    (results_dir / "result.json").write_text("{}")
+    real_rmtree = perf_local.shutil.rmtree
+    attempts = 0
+    commands = []
+
+    def permission_then_remove(path):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError("container-owned directory")
+        real_rmtree(path)
+
+    monkeypatch.setattr(perf_local.shutil, "rmtree", permission_then_remove)
+    monkeypatch.setattr(
+        perf_local,
+        "run",
+        lambda command, **_kwargs: commands.append(command)
+        or subprocess.CompletedProcess(command, 0),
+    )
+
+    perf_local.remove_previous_results(results_dir)
+
+    assert attempts == 2
+    assert commands == [
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            perf_local.host_volume(results_dir, "/results"),
+            "--entrypoint",
+            "/bin/chmod",
+            perf_local.IMAGE_RUNNER,
+            "-R",
+            "a+rwX",
+            "/results",
+        ]
+    ]
+    assert not results_dir.exists()
+
+
 def test_git_is_worktree_root_rejects_empty_submodule_directory(tmp_path):
     parent = tmp_path / "parent"
     parent.mkdir()

@@ -435,7 +435,7 @@ def run_scenario(
     # Wipe last run's results so partial output from a crashing run doesn't
     # masquerade as a complete result.
     if results_dir.exists():
-        shutil.rmtree(results_dir)
+        remove_previous_results(results_dir)
     results_dir.mkdir(parents=True)
 
     soldr_bin = layout["bin_soldr"] / "soldr"
@@ -485,6 +485,39 @@ def run_scenario(
     elapsed = time.monotonic() - start
     print(f"[perf-local] scenario completed in {elapsed:.1f}s")
     return results_dir
+
+
+def remove_previous_results(results_dir: Path) -> None:
+    """Remove prior bind-mount output, repairing container ownership once.
+
+    The scenario container runs as root and may create nested result
+    directories with mode 0755. A normal host-side ``shutil.rmtree`` can then
+    remove writable files around them but fail when it reaches a root-owned
+    directory. Bind only the exact results directory into the same local
+    runner image, make that tree host-removable, and retry. The container
+    command is constant; destructive removal stays in Python against the
+    already-resolved path.
+    """
+    try:
+        shutil.rmtree(results_dir)
+        return
+    except PermissionError:
+        run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "-v",
+                host_volume(results_dir, "/results"),
+                "--entrypoint",
+                "/bin/chmod",
+                IMAGE_RUNNER,
+                "-R",
+                "a+rwX",
+                "/results",
+            ]
+        )
+    shutil.rmtree(results_dir)
 
 
 # ---------------------------------------------------------------------------
