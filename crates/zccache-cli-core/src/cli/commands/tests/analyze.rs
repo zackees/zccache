@@ -202,6 +202,25 @@ fn analyze_journal_reads_jsonl_file() {
 }
 
 #[test]
+fn analyze_accepts_pre_sanitization_full_env_record() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../zccache-daemon-core/src/daemon/compile_journal/tests/compile_journal_env_security_v1.json"
+    ))
+    .expect("shared journal security fixture must parse");
+    let legacy = fixture
+        .get("legacy_record")
+        .expect("fixture must carry a pre-sanitization record");
+    assert_eq!(legacy["env"].as_array().unwrap().len(), 2);
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("legacy.jsonl");
+    std::fs::write(&path, format!("{legacy}\n")).unwrap();
+    let report = analyze_journal(path.to_str().unwrap()).expect("legacy record remains readable");
+    assert_eq!(report.parsed_count, 1);
+    assert_eq!(report.hit_count, 1);
+}
+
+#[test]
 fn analyze_journal_missing_file_has_structured_error_hint() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = tmp.path().join("missing.jsonl");

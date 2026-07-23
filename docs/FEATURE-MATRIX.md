@@ -53,7 +53,7 @@ sccache claims are best-effort and sourced from the upstream README and docs at 
 | Filesystem watcher (notify-backed) | yes | no | Background `notify` watcher tracks file changes in real time, so the daemon already knows whether inputs are dirty before compile is invoked. | [README.md#why-is-zccache-so-much-faster-on-warm-hits](README.md#why-is-zccache-so-much-faster-on-warm-hits) |
 | Content-addressed artifact store | yes | yes | Both hash-key cache entries by input content. | [link](https://github.com/mozilla/sccache/blob/main/README.md) |
 | Protocol versioning (wire-format bump policy) | yes | partial | zccache embeds `PROTOCOL_VERSION` in every IPC frame and bumps it on any wire-format change. sccache versions its server but the policy is less explicit. | [link](https://github.com/mozilla/sccache/blob/main/README.md) |
-| Compile journal (JSONL replay log) | yes | no | Every compile is recorded as JSONL, enabling offline replay and debugging. | [docs/journal-schema.md](docs/journal-schema.md) |
+| Compile journal (JSONL diagnostics) | yes | no | Every compile is recorded as secret-safe JSONL for diagnostics and partial replay; exact replay requires an independently captured trusted environment. | [docs/journal-schema.md](docs/journal-schema.md) |
 | Session stats / per-build hit rates | yes | partial | sccache exposes lifetime `--show-stats`. zccache adds per-session/per-build hit rates over the daemon connection. | [link](https://github.com/mozilla/sccache/blob/main/README.md) |
 | Crash dumper (CLI + daemon) | yes | no | `zccache_core::crash::install` captures structured crash dumps for both binaries. | [docs/architecture/runtime.md](docs/architecture/runtime.md) |
 

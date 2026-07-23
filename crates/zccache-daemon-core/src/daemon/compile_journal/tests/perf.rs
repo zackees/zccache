@@ -13,7 +13,7 @@
 
 use std::time::{Duration, Instant};
 
-use super::super::JournalEntry;
+use super::super::{JournalContext, JournalEntry};
 use super::make_ctx;
 
 /// Building a `JournalEntry` should stay allocation-bounded. The old
@@ -39,5 +39,42 @@ fn journal_entry_new_stays_under_budget() {
         "JournalEntry::new regressed beyond budget: {elapsed:?} for {iterations} iterations \
          (avg {:?}/call)",
         elapsed / iterations as u32
+    );
+}
+
+#[test]
+fn env_sanitization_and_serialization_stay_under_budget() {
+    let mut request_env = vec![
+        ("CC".to_string(), "clang".to_string()),
+        ("CARGO_CRATE_NAME".to_string(), "demo".to_string()),
+        ("CARGO_CFG_TARGET_ARCH".to_string(), "x86_64".to_string()),
+        ("RUSTFLAGS".to_string(), "-Cdebuginfo=1".to_string()),
+        ("TARGET".to_string(), "x86_64-unknown-linux-gnu".to_string()),
+        ("GITHUB_TOKEN".to_string(), "ghp_synthetic".to_string()),
+        ("AWS_SECRET_ACCESS_KEY".to_string(), "synthetic".to_string()),
+        ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+    ];
+    request_env
+        .extend((0..32).map(|index| (format!("UNRELATED_{index}"), format!("ordinary-{index}"))));
+
+    let iterations = 2_000;
+    let start = Instant::now();
+    for _ in 0..iterations {
+        let ctx = JournalContext::new(
+            "rustc".to_string(),
+            vec!["--crate-name".to_string(), "demo".to_string()],
+            "/project".to_string(),
+            Some(request_env.clone()),
+            None,
+        );
+        let entry = JournalEntry::new(ctx, "hit", 0, 1_000_000, None);
+        let _json = serde_json::to_vec(&entry).unwrap();
+    }
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(750),
+        "env-present journal path regressed beyond budget: {elapsed:?} for {iterations} \
+         iterations (avg {:?}/call)",
+        elapsed / iterations
     );
 }

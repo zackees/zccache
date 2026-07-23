@@ -211,13 +211,13 @@ impl EmbeddedDaemon {
         // soldr since zccache became an embedded service — was invisible
         // to hit/miss telemetry: `zccache analyze`, dashboards, and
         // post-mortem scripts saw zero rustc records.
-        let journal_ctx = JournalContext {
-            compiler: request.compiler.to_string_lossy().into_owned(),
-            args: request.args.clone(),
-            cwd: request.cwd.to_string_lossy().into_owned(),
-            env: request.env.clone(),
-            session_id: None,
-        };
+        let journal_ctx = JournalContext::new(
+            request.compiler.to_string_lossy().into_owned(),
+            request.args.clone(),
+            request.cwd.to_string_lossy().into_owned(),
+            request.env.clone(),
+            None,
+        );
         // zccache#940: open the inner-trace scope so the deep pipeline seams
         // (input_hash, cache_lookup, cache_load, rustc_spawn/wait, output_read,
         // cache_store) attribute their sub-phase records to this compile_id.

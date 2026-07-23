@@ -1,3 +1,14 @@
+# #1149 secret-safe compile journal environment
+
+Issue: https://github.com/zackees/zccache/issues/1149
+
+- [x] Define one deny-first diagnostic allowlist for embedded and IPC journals.
+- [x] Enforce filtering in context capture, entry construction, and serialization.
+- [x] Add a versioned cross-repo fixture and representative secret/value tests.
+- [x] Document the security and replay compatibility contract.
+- [x] Run focused/full tests, fmt, clippy, rustdoc, and review.
+- [ ] Open the PR, pass CI, merge, and validate main.
+
 # #1148 bounded embedded/standalone disk retention
 
 Issue: https://github.com/zackees/zccache/issues/1148
@@ -9,7 +20,7 @@ Issue: https://github.com/zackees/zccache/issues/1148
 - [x] Persist/catch up the daily age-maintenance deadline inside the configured root.
 - [x] Update architecture/runtime documentation.
 - [x] Run focused/full tests, fmt, clippy, Windows compile, and review.
-- [ ] Open the PR, pass CI, merge, and validate main.
+- [x] Open the PR, pass CI, merge, and validate main.
 
 # #1063 thin-v3 ownership-aware durable export
 

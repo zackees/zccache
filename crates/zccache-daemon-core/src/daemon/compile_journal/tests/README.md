@@ -19,3 +19,6 @@ well under 1,000 LOC. Originally part of a single 2,072-LOC
   fields), `SelfProfileSpans`, `with_profile_fields`.
 - **journal_file.rs** — `CompileJournal` end-to-end: file writes,
   per-session journals, close/reopen, concurrent logging, rotation, GC.
+- **env.rs** and **compile_journal_env_security_v1.json** cover secret-safe
+  environment filtering, serialization-boundary enforcement, embedded/IPC
+  wiring, and the versioned fixture shared with soldr regression tests.

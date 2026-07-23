@@ -1,7 +1,9 @@
 //! JSONL compile journal for build replay.
 //!
-//! Records every compile/link command with enough detail to replay the entire
-//! build. One JSON object per line, written to `{cache_dir}/logs/compile_journal.jsonl`.
+//! Records every compile/link command for diagnostics and partial replay. One
+//! JSON object per line, written to `{cache_dir}/logs/compile_journal.jsonl`.
+//! Exact replay requires an independently captured trusted environment because
+//! durable journal environment values are secret-filtered.
 //!
 //! Architecture: same lock-free channel + background `std::thread` pattern as
 //! `EventLogger`. Serialization happens on the caller's tokio task; the
@@ -25,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use super::event_log::{format_timestamp, open_append};
 
 mod derive;
+mod env;
 mod journal_thread;
 mod outcome;
 
@@ -32,6 +35,7 @@ mod outcome;
 mod tests;
 
 pub use derive::{derive_crate_name, derive_crate_type, derive_output_ext};
+pub use env::{sanitize_journal_env, SanitizedJournalEnv};
 pub use outcome::extract_outcome;
 
 use journal_thread::{journal_thread, JournalMessage};
@@ -96,9 +100,10 @@ pub struct JournalEntry {
     pub args: Vec<String>,
     /// Working directory.
     pub cwd: String,
-    /// Environment variables as `[key, value]` pairs. Omitted when `None`.
+    /// Sanitized build-diagnostic environment variables as `[key, value]`
+    /// pairs. Secret-bearing and non-allowlisted variables are omitted.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub env: Option<Vec<(String, String)>>,
+    pub env: Option<SanitizedJournalEnv>,
     /// Process exit code (-1 for errors).
     pub exit_code: i32,
     /// Session UUID or null for ephemeral.
@@ -163,8 +168,31 @@ pub struct JournalContext {
     pub compiler: String,
     pub args: Vec<String>,
     pub cwd: String,
-    pub env: Option<Vec<(String, String)>>,
+    pub env: Option<SanitizedJournalEnv>,
     pub session_id: Option<String>,
+}
+
+impl JournalContext {
+    /// Capture request metadata for durable journal logging.
+    ///
+    /// The compiler request retains its original environment. Only this
+    /// diagnostic copy is filtered, before it can be retained in memory or
+    /// serialized by the global/per-session journal writers.
+    pub fn new(
+        compiler: String,
+        args: Vec<String>,
+        cwd: String,
+        env: Option<Vec<(String, String)>>,
+        session_id: Option<String>,
+    ) -> Self {
+        Self {
+            compiler,
+            args,
+            cwd,
+            env: sanitize_journal_env(env),
+            session_id,
+        }
+    }
 }
 
 impl JournalEntry {
