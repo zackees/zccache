@@ -70,6 +70,10 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         let compiler = compiler_path.display().to_string();
         return compile_failure_stderr(err.diagnostic(&compiler, &expanded_args));
     }
+    let dependency_mode = match DependencyDiscoveryMode::from_client_env(client_env.as_deref()) {
+        Ok(mode) => mode,
+        Err(err) => return compile_failure_stderr(format!("zccache: {err}")),
+    };
 
     let worktree_root = compile_worktree_root(state, &sid, cwd, client_env.as_deref());
     let effective_args = effective_compile_args(
@@ -190,7 +194,9 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 worktree_root.clone(),
                 system_includes,
                 client_env,
+                stdin,
                 compile_start,
+                dependency_mode,
             )
             .await;
         }
@@ -259,7 +265,16 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         rustc_metadata_compat_key,
         worktree_equivalent_context,
     ) = match build_result {
-        BuildContextResult::Cc { ctx, dep_flags } => {
+        BuildContextResult::Cc {
+            mut ctx,
+            dep_flags,
+        } => {
+            dependency_mode.apply_to_cc_context(&mut ctx, &dep_flags);
+            DependencyDiscoveryMode::apply_user_depfile_content_to_cc_context(
+                &mut ctx,
+                &dep_flags,
+                &compilation.original_args,
+            );
             let registration = state.dep_graph.load().register_with_root_and_salt_result(
                 ctx.clone(),
                 Some(default_key_root.clone()),
@@ -734,6 +749,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         lineage: &lineage,
         compile_start,
         snap_clock,
+        dependency_mode,
     })
     .await;
     let CompileExecOutcome {
@@ -809,6 +825,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             cwd_path: &cwd_path,
             ctx: &ctx,
             compilation: &compilation,
+            dependency_mode,
             rustc_args_opt: rustc_args_opt.as_deref(),
             rustc_extern_paths: &rustc_extern_paths,
             client_env: client_env.as_deref(),

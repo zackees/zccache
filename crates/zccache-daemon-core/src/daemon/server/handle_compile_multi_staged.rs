@@ -27,6 +27,7 @@ struct PublishedMiss {
     dep_dirs: Vec<NormalizedPath>,
     artifact_bytes: u64,
     validation_clock: Clock,
+    allow_fast_hit: bool,
 }
 
 struct StagedCompilerOutput {
@@ -49,6 +50,7 @@ pub(super) async fn try_handle_staged_misses(
     client_env: &Option<Vec<(String, String)>>,
     all_stdout: &mut Vec<u8>,
     all_stderr: &mut Vec<u8>,
+    dependency_mode: DependencyDiscoveryMode,
 ) -> Option<Response> {
     let mut requested_outputs = HashSet::new();
     for compilation in compilations {
@@ -88,12 +90,13 @@ pub(super) async fn try_handle_staged_misses(
         use crate::daemon::staged_stats::{StagedCounter, StagedTiming};
         let planning_started = std::time::Instant::now();
         state.profiler.staged.count(StagedCounter::PlanAttempted);
-        let outcome = StagedMultiUnitPlan::build(
+        let outcome = StagedMultiUnitPlan::build_with_depfile_flag(
             state.staging.path(),
             compilations[index].family,
             unit_args,
             output_path,
             cwd,
+            dependency_mode.injected_depfile_flag(),
         );
         state.profiler.staged.timing(
             StagedTiming::Planning,
@@ -320,6 +323,7 @@ pub(super) async fn try_handle_staged_misses(
     let mut validation_inputs = Vec::with_capacity(misses.len());
     let mut tracked_union = HashSet::new();
     for miss in &mut misses {
+        let mut depfile_parse_failed = false;
         let mut scan_result = miss.scan_result.take().unwrap_or_else(|| {
             match crate::depgraph::depfile::parse_depfile_path(
                 &miss.plan.depfile,
@@ -328,6 +332,7 @@ pub(super) async fn try_handle_staged_misses(
             ) {
                 Ok(result) => result,
                 Err(error) => {
+                    depfile_parse_failed = true;
                     tracing::warn!(
                         source = %miss.source_path.display(),
                         %error,
@@ -340,6 +345,22 @@ pub(super) async fn try_handle_staged_misses(
                 }
             }
         });
+        if !depfile_parse_failed
+            && dependency_mode == DependencyDiscoveryMode::AllHeaders
+            && miss.plan.depfile_excludes_system_headers
+        {
+            scan_result = crate::depgraph::depfile::merge_scan_results_conservative(
+                scan_result,
+                crate::depgraph::scanner::scan_recursive(
+                    &miss.source_path,
+                    &miss.ctx.include_search,
+                ),
+            );
+        }
+        if depfile_parse_failed {
+            dependency_mode
+                .apply_static_fallback(&mut scan_result, &miss.ctx.include_search);
+        }
         let mut tracked: HashSet<NormalizedPath> =
             miss.input_snapshot.hashes.keys().cloned().collect();
         tracked.insert(miss.source_path.clone());
@@ -386,6 +407,7 @@ pub(super) async fn try_handle_staged_misses(
         .zip(validated_sizes)
         .zip(validation_inputs)
     {
+        let allow_fast_hit = !scan_result.has_computed;
         let artifact_bytes = output_sizes.iter().sum();
         let hash_map: HashMap<NormalizedPath, ContentHash> = tracked_paths
             .iter()
@@ -452,6 +474,7 @@ pub(super) async fn try_handle_staged_misses(
             dep_dirs,
             artifact_bytes,
             validation_clock: current_clock,
+            allow_fast_hit,
         });
     }
 
@@ -524,23 +547,34 @@ pub(super) async fn try_handle_staged_misses(
             miss.cache_entry,
             miss.artifact_bytes,
             miss.validation_clock,
+            miss.allow_fast_hit,
         ));
     }
-    for (source, context_key, cache_entry, artifact_bytes, validation_clock) in completed {
+    for (
+        source,
+        context_key,
+        cache_entry,
+        artifact_bytes,
+        validation_clock,
+        allow_fast_hit,
+    ) in completed
+    {
         state.stats.record_miss(0, artifact_bytes);
         record_session_stat(&state.sessions, sid, move |stats| {
             stats.record_miss(source, artifact_bytes);
         });
         if let Some((key, cached)) = cache_entry {
             state.artifacts.insert(key.clone(), cached);
-            state.fast_hit_cache.insert(
-                context_key,
-                FastHitEntry {
-                    clock: validation_clock,
-                    artifact_key_hex: key,
-                    cached_at: std::time::Instant::now(),
-                },
-            );
+            if allow_fast_hit {
+                state.fast_hit_cache.insert(
+                    context_key,
+                    FastHitEntry {
+                        clock: validation_clock,
+                        artifact_key_hex: key,
+                        cached_at: std::time::Instant::now(),
+                    },
+                );
+            }
         }
     }
     watch_directories(

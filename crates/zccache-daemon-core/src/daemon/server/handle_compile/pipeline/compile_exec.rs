@@ -23,6 +23,7 @@ pub(super) struct CompileExecRequest<'a> {
     pub(super) lineage: &'a crate::daemon::lineage::Lineage,
     pub(super) compile_start: std::time::Instant,
     pub(super) snap_clock: Clock,
+    pub(super) dependency_mode: DependencyDiscoveryMode,
 }
 
 pub(super) struct CompileExecOutcome {
@@ -69,6 +70,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         lineage,
         compile_start,
         snap_clock,
+        dependency_mode,
     } = req;
 
     let state = state_arc.as_ref();
@@ -80,7 +82,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     let use_mmd = matches!(
         compilation.family,
         crate::compiler::CompilerFamily::Gcc | crate::compiler::CompilerFamily::Clang
-    ) && mmd_static_scan_is_proven(effective_args);
+    ) && dependency_mode.use_mmd();
     let (mut extra_args, mut depfile_strategy) = crate::depgraph::depfile::prepare_depfile_with_mmd(
         use_mmd,
         supports_depfile,
@@ -395,57 +397,4 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         post_exec_ns,
         staged_plan,
     })
-}
-
-/// MMD omits system headers, so use it only for compiler invocations whose
-/// system include search roots are exactly the daemon's compiler-default
-/// discovery. Any caller-controlled include-root selection falls back to MD.
-fn mmd_static_scan_is_proven(args: &[String]) -> bool {
-    !args.iter().any(|arg| {
-        matches!(
-            arg.as_str(),
-            "-I" | "-isystem"
-                | "-iquote"
-                | "-idirafter"
-                | "-include"
-                | "-include-pch"
-                | "-nostdinc"
-                | "-nostdinc++"
-                | "-isysroot"
-                | "--sysroot"
-                | "-target"
-                | "--target"
-                | "-resource-dir"
-                | "-stdlib"
-        ) || [
-            "-I",
-            "-isystem",
-            "-iquote",
-            "-idirafter",
-            "-isysroot",
-            "--sysroot=",
-            "-target=",
-            "--target=",
-            "-resource-dir=",
-            "-stdlib=",
-        ]
-        .iter()
-        .any(|prefix| arg.starts_with(prefix) && arg.len() > prefix.len())
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::mmd_static_scan_is_proven;
-
-    #[test]
-    fn mmd_static_scan_requires_compiler_default_include_roots() {
-        assert!(mmd_static_scan_is_proven(&["-c".into(), "main.c".into()]));
-        assert!(!mmd_static_scan_is_proven(&[
-            "-isystem".into(),
-            "/sdk".into()
-        ]));
-        assert!(!mmd_static_scan_is_proven(&["-isystem/sdk".into()]));
-        assert!(!mmd_static_scan_is_proven(&["--sysroot=/sdk".into()]));
-    }
 }

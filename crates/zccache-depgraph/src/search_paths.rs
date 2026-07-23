@@ -30,6 +30,35 @@ pub struct IncludeSearchPaths {
 }
 
 impl IncludeSearchPaths {
+    /// Resolve existing search roots once so scanner results and root-policy
+    /// comparisons use the same filesystem spelling.
+    ///
+    /// Recursive scans canonicalize resolved headers. On Windows and macOS,
+    /// temporary and user-provided paths may reach the same directory through
+    /// different casing, short names, or symlink aliases. Keeping raw roots in
+    /// that situation makes a header resolve successfully and then fail its
+    /// user-vs-system root classification.
+    #[must_use]
+    pub fn canonicalized(&self) -> Self {
+        fn roots(paths: &[NormalizedPath]) -> Vec<NormalizedPath> {
+            paths
+                .iter()
+                .map(|path| {
+                    std::fs::canonicalize(path.as_path())
+                        .map(NormalizedPath::from)
+                        .unwrap_or_else(|_| path.clone())
+                })
+                .collect()
+        }
+
+        Self {
+            iquote: roots(&self.iquote),
+            user: roots(&self.user),
+            system: roots(&self.system),
+            after: roots(&self.after),
+        }
+    }
+
     /// Iterate search dirs for a quoted include (`#include "foo.h"`),
     /// starting after the including file's own directory.
     pub fn quoted_search_dirs(&self) -> impl Iterator<Item = &Path> {

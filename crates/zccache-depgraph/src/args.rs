@@ -13,8 +13,12 @@ use zccache_core::NormalizedPath;
 pub struct UserDepFlags {
     /// User has -MD or -MMD (emit depfile as side-effect of compilation).
     pub has_md: bool,
+    /// User selected -MMD, so their depfile intentionally omits system headers.
+    pub has_mmd: bool,
     /// User has -MF `<path>` (explicit depfile output path).
     pub mf_path: Option<NormalizedPath>,
+    /// User selected `-MF -`, so dependency output is part of compiler stdout.
+    pub depfile_to_stdout: bool,
 }
 
 /// Result of parsing compiler arguments.
@@ -210,6 +214,7 @@ pub fn parse_gnu_args(args: &[String], cwd: &Path) -> ParsedArgs {
         // Dependency-generation flags: track but don't include in cache key.
         if arg == "-MD" || arg == "-MMD" {
             result.dep_flags.has_md = true;
+            result.dep_flags.has_mmd = arg == "-MMD";
             i += 1;
             continue;
         }
@@ -217,9 +222,15 @@ pub fn parse_gnu_args(args: &[String], cwd: &Path) -> ParsedArgs {
         // -MF takes a following argument â€” capture path.
         if arg == "-MF" {
             if let Some(next) = args.get(i + 1) {
-                result.dep_flags.mf_path = Some(resolve_path(next, cwd));
+                result.dep_flags.depfile_to_stdout = next == "-";
+                result.dep_flags.mf_path = (next != "-").then(|| resolve_path(next, cwd));
             }
             i += 2;
+            continue;
+        } else if let Some(path) = arg.strip_prefix("-MF").filter(|path| !path.is_empty()) {
+            result.dep_flags.depfile_to_stdout = path == "-";
+            result.dep_flags.mf_path = (path != "-").then(|| resolve_path(path, cwd));
+            i += 1;
             continue;
         }
 
@@ -599,6 +610,7 @@ mod tests {
     fn dep_flags_md_detected() {
         let parsed = parse_gnu_args(&args(&["-MMD", "-c", "foo.c"]), Path::new("/p"));
         assert!(parsed.dep_flags.has_md);
+        assert!(parsed.dep_flags.has_mmd);
     }
 
     #[test]
@@ -608,6 +620,20 @@ mod tests {
             parsed.dep_flags.mf_path.as_deref(),
             Some(Path::new("/p/deps.d"))
         );
+    }
+
+    #[test]
+    fn dep_flags_joined_mf_and_stdout_detected() {
+        let joined = parse_gnu_args(&args(&["-MFdeps.d", "-c", "foo.c"]), Path::new("/p"));
+        assert_eq!(
+            joined.dep_flags.mf_path.as_deref(),
+            Some(Path::new("/p/deps.d"))
+        );
+        assert!(!joined.dep_flags.depfile_to_stdout);
+
+        let stdout = parse_gnu_args(&args(&["-MF-", "-c", "foo.c"]), Path::new("/p"));
+        assert!(stdout.dep_flags.mf_path.is_none());
+        assert!(stdout.dep_flags.depfile_to_stdout);
     }
 
     #[test]

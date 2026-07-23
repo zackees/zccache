@@ -444,14 +444,17 @@ fn strategy_unsupported() {
 fn strategy_user_mf() {
     let dep_flags = UserDepFlags {
         has_md: true,
+        has_mmd: false,
         mf_path: Some(NormalizedPath::from("/build/deps.d")),
+        depfile_to_stdout: false,
     };
     let (args, strategy) = prepare_depfile(true, &dep_flags, Path::new("foo.o"), Path::new("/tmp"));
     assert!(args.is_empty());
     assert_eq!(
         strategy,
         DepfileStrategy::UserSpecified {
-            path: NormalizedPath::from("/build/deps.d")
+            path: NormalizedPath::from("/build/deps.d"),
+            augment_system_headers: false,
         }
     );
 }
@@ -460,14 +463,17 @@ fn strategy_user_mf() {
 fn strategy_user_md_no_mf() {
     let dep_flags = UserDepFlags {
         has_md: true,
+        has_mmd: false,
         mf_path: None,
+        depfile_to_stdout: false,
     };
     let (args, strategy) = prepare_depfile(true, &dep_flags, Path::new("foo.o"), Path::new("/tmp"));
     assert!(args.is_empty());
     assert_eq!(
         strategy,
         DepfileStrategy::UserDefault {
-            path: NormalizedPath::from("foo.d")
+            path: NormalizedPath::from("foo.d"),
+            augment_system_headers: false,
         }
     );
 }
@@ -478,7 +484,9 @@ fn strategy_user_md_no_mf() {
 fn user_depfile_destination_returns_mf_path_when_present() {
     let dep_flags = UserDepFlags {
         has_md: true,
+        has_mmd: false,
         mf_path: Some(NormalizedPath::from("/build/explicit.d")),
+        depfile_to_stdout: false,
     };
     assert_eq!(
         user_depfile_destination(&dep_flags, Path::new("/out/foo.o")),
@@ -491,7 +499,9 @@ fn user_depfile_destination_returns_mf_path_when_present() {
 fn user_depfile_destination_derives_default_from_output_when_md_only() {
     let dep_flags = UserDepFlags {
         has_md: true,
+        has_mmd: false,
         mf_path: None,
+        depfile_to_stdout: false,
     };
     assert_eq!(
         user_depfile_destination(&dep_flags, Path::new("/out/foo.o")),
@@ -508,6 +518,24 @@ fn user_depfile_destination_none_when_user_has_no_dep_flags() {
         None,
         "no user dep flags = injected strategy = not the user's depfile",
     );
+}
+
+#[test]
+fn depfile_stdout_is_not_treated_as_a_materialized_file() {
+    let dep_flags = UserDepFlags {
+        has_md: true,
+        has_mmd: false,
+        mf_path: None,
+        depfile_to_stdout: true,
+    };
+    assert_eq!(
+        user_depfile_destination(&dep_flags, Path::new("/out/foo.o")),
+        None
+    );
+    let (args, strategy) =
+        prepare_depfile(true, &dep_flags, Path::new("/out/foo.o"), Path::new("/tmp"));
+    assert!(args.is_empty());
+    assert_eq!(strategy, DepfileStrategy::Unsupported);
 }
 
 #[test]
@@ -565,7 +593,9 @@ fn strategy_injected_mmd_uses_user_header_depfile() {
 fn strategy_injected_mmd_never_changes_user_depfile_flags() {
     let dep_flags = UserDepFlags {
         has_md: true,
+        has_mmd: false,
         mf_path: Some(NormalizedPath::from("/build/user.d")),
+        depfile_to_stdout: false,
     };
     let (args, strategy) = prepare_depfile_with_mmd(
         true,
@@ -579,7 +609,35 @@ fn strategy_injected_mmd_never_changes_user_depfile_flags() {
     assert_eq!(
         strategy,
         DepfileStrategy::UserSpecified {
-            path: NormalizedPath::from("/build/user.d")
+            path: NormalizedPath::from("/build/user.d"),
+            augment_system_headers: false,
+        }
+    );
+}
+
+#[test]
+fn safe_policy_augments_user_mmd_manifest() {
+    let dep_flags = UserDepFlags {
+        has_md: true,
+        has_mmd: true,
+        mf_path: Some(NormalizedPath::from("/build/user.d")),
+        depfile_to_stdout: false,
+    };
+
+    let (args, strategy) = prepare_depfile_with_mmd(
+        false,
+        true,
+        &dep_flags,
+        Path::new("foo.o"),
+        Path::new("/tmp"),
+    );
+
+    assert!(args.is_empty());
+    assert_eq!(
+        strategy,
+        DepfileStrategy::UserSpecified {
+            path: NormalizedPath::from("/build/user.d"),
+            augment_system_headers: true,
         }
     );
 }

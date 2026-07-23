@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from ci import benchmark_stats, perf_guard
+from ci import benchmark_stats, perf_guard, perf_watchdog
 
 
 PASSING_LOG = """
@@ -877,24 +877,15 @@ def test_run_benchmarks_once_uses_fresh_cache_per_command(tmp_path, monkeypatch)
     def fake_rmtree(path: Path, ignore_errors: bool) -> None:
         removed_cache_dirs.append(Path(path))
 
-    class FakePopen:
-        def __init__(self, command, **kwargs) -> None:
-            command_cache_dirs.append(kwargs["env"]["ZCCACHE_CACHE_DIR"])
-            self.returncode = 0
-            self.stdout = iter([f"{command[-1]}\n"])
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
-
-        def wait(self) -> int:
-            return self.returncode
+    def fake_streamed_command(command, **kwargs):
+        command_cache_dirs.append(kwargs["env"]["ZCCACHE_CACHE_DIR"])
+        kwargs["log"].write(f"{command[-1]}\n")
+        kwargs["log"].flush()
+        return perf_watchdog.CommandResult(0, timed_out=False)
 
     monkeypatch.setattr(perf_guard.tempfile, "mkdtemp", fake_mkdtemp)
-    monkeypatch.setattr(perf_guard.shutil, "rmtree", fake_rmtree)
-    monkeypatch.setattr(perf_guard.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(perf_watchdog.shutil, "rmtree", fake_rmtree)
+    monkeypatch.setattr(perf_watchdog, "run_streamed_command", fake_streamed_command)
 
     returncode, output = perf_guard.run_benchmarks_once(tmp_path / "attempt.log", "c++")
 
@@ -907,6 +898,31 @@ def test_run_benchmarks_once_uses_fresh_cache_per_command(tmp_path, monkeypatch)
     assert "finished two" in output
     assert command_cache_dirs == made_cache_dirs
     assert removed_cache_dirs == cache_dirs
+
+
+def test_run_benchmarks_once_stops_after_first_timeout(tmp_path, monkeypatch):
+    commands = [["bench", "one"], ["bench", "two"]]
+    started: list[str] = []
+    monkeypatch.setattr(
+        perf_guard,
+        "_benchmark_commands",
+        lambda language, benchmark_binary, test_name=None: commands,
+    )
+
+    def fake_streamed_command(command, **kwargs):
+        started.append(command[-1])
+        return perf_watchdog.CommandResult(124, timed_out=True)
+
+    monkeypatch.setattr(perf_watchdog, "run_streamed_command", fake_streamed_command)
+    output_dir = tmp_path / "perf-guard-output" / "synthetic"
+
+    returncode, _ = perf_guard.run_benchmarks_once(
+        output_dir / "attempt.log", "c++"
+    )
+
+    assert returncode == 124
+    assert started == ["one"]
+    assert (tmp_path / "perf-guard-output" / ".watchdog-timeout").is_file()
 
 
 def test_benchmark_env_uses_auto_priority_and_profiles_rust(

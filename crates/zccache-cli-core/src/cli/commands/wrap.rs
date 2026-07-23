@@ -17,7 +17,9 @@ use std::process::ExitCode;
 
 use super::util::{resolve_endpoint, run_async};
 
-pub(crate) use env::{parse_optional_strict_paths, strip_leading_strict_paths_flags};
+pub(crate) use env::{
+    parse_wrapper_overrides, strip_leading_wrapper_flags, WrapperOverrides,
+};
 use routing::WrapperRoute;
 
 /// Wrap a compiler or tool invocation.
@@ -29,7 +31,7 @@ use routing::WrapperRoute;
 /// per-request override. If unset, auto-creates an ephemeral session.
 pub(crate) fn run_wrap(
     args: &[String],
-    strict_paths_override: Option<StrictPathsMode>,
+    overrides: WrapperOverrides,
 ) -> ExitCode {
     diag::emit(args);
 
@@ -42,7 +44,7 @@ pub(crate) fn run_wrap(
         return passthrough::run_passthrough(args);
     }
 
-    let strict_paths_mode = match env::effective_strict_paths_mode(strict_paths_override) {
+    let strict_paths_mode = match env::effective_strict_paths_mode(overrides) {
         Ok(mode) => mode,
         Err(err) => {
             eprintln!("zccache: {err}");
@@ -53,7 +55,7 @@ pub(crate) fn run_wrap(
     let wrapped_tool = tool_resolution::resolve_compiler_path(&args[0]);
     let tool_args: Vec<String> = args.get(1..).unwrap_or(&[]).to_vec();
     let cwd = std::env::current_dir().unwrap_or_default();
-    let client_env = env::client_env(strict_paths_override);
+    let client_env = env::client_env(overrides);
     let endpoint = resolve_endpoint(None);
 
     // Release the CWD handle on the build directory. On Windows, a process's

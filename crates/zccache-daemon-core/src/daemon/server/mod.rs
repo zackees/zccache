@@ -37,6 +37,7 @@ use super::stats::{HitPhases, MissPhases, PhaseProfiler, StatsCollector};
 /// When the journal clock hasn't advanced since the last verified hit for a
 /// context, we can skip all stat/hash/depgraph work and jump straight to
 /// artifact lookup.
+#[derive(Clone)]
 pub(crate) struct FastHitEntry {
     pub(crate) clock: Clock,
     pub(crate) artifact_key_hex: String,
@@ -119,6 +120,7 @@ mod compile_concurrency;
 mod compiler_hash;
 mod connection;
 mod directory_link;
+mod dependency_policy;
 mod embedded;
 mod handle_clear;
 mod handle_compile;
@@ -159,6 +161,7 @@ use client_env::*;
 use compiler_hash::*;
 use connection::handle_connection;
 use directory_link::*;
+use dependency_policy::*;
 use handle_clear::*;
 use handle_compile::handle_compile;
 use handle_compile_ephemeral::*;

@@ -220,7 +220,7 @@ fn resolve_include_next<'a>(
 /// parallelization). Callers in `graph.rs` only iterate the list to hash
 /// all files; no order invariant is broken.
 pub fn scan_recursive(source: &Path, search: &IncludeSearchPaths) -> ScanResult {
-    scan_recursive_impl(source, search, None)
+    scan_recursive_impl(source, search, None, &|_, _, _| true)
 }
 
 /// Recursively scan with a request-scoped parsed-directive memo.
@@ -229,13 +229,28 @@ pub fn scan_recursive_cached(
     search: &IncludeSearchPaths,
     cache: &RecursiveScanCache,
 ) -> ScanResult {
-    scan_recursive_impl(source, search, Some(cache))
+    scan_recursive_impl(source, search, Some(cache), &|_, _, _| true)
+}
+
+/// Recursively scan with a request-scoped memo, pruning rejected headers.
+///
+/// A rejected header is neither returned nor scanned for transitive includes.
+/// This is useful when a caller intentionally excludes an entire include-root
+/// class and wants to avoid paying to read and parse that subtree.
+pub fn scan_recursive_cached_pruned(
+    source: &Path,
+    search: &IncludeSearchPaths,
+    cache: &RecursiveScanCache,
+    retain: &(dyn Fn(&Path, &IncludeDirective, &NormalizedPath) -> bool + Sync),
+) -> ScanResult {
+    scan_recursive_impl(source, search, Some(cache), retain)
 }
 
 fn scan_recursive_impl(
     source: &Path,
     search: &IncludeSearchPaths,
     cache: Option<&RecursiveScanCache>,
+    retain: &(dyn Fn(&Path, &IncludeDirective, &NormalizedPath) -> bool + Sync),
 ) -> ScanResult {
     use dashmap::DashSet;
     use rayon::prelude::*;
@@ -266,6 +281,7 @@ fn scan_recursive_impl(
                     &unresolved,
                     &has_computed,
                     cache,
+                    retain,
                 )
             })
             .collect();
@@ -297,6 +313,7 @@ fn scan_one_level(
     unresolved: &std::sync::Mutex<Vec<String>>,
     has_computed: &std::sync::atomic::AtomicBool,
     cache: Option<&RecursiveScanCache>,
+    retain: &(dyn Fn(&Path, &IncludeDirective, &NormalizedPath) -> bool + Sync),
 ) -> Vec<NormalizedPath> {
     let directives = if let Some(cache) = cache {
         let key = NormalizedPath::from(file);
@@ -328,7 +345,7 @@ fn scan_one_level(
             }
             _ => {
                 if let Some(abs_path) = resolve_include(directive, search, file_dir) {
-                    if visited.insert(abs_path.clone()) {
+                    if retain(file, directive, &abs_path) && visited.insert(abs_path.clone()) {
                         local_resolved.push(abs_path.clone());
                         new_for_next.push(abs_path);
                     }
@@ -1036,6 +1053,41 @@ mod tests {
         assert_eq!(one.resolved.len(), 2);
         assert_eq!(two.resolved.len(), 2);
         assert_eq!(cache.directives.len(), 4);
+    }
+
+    #[test]
+    fn recursive_scan_prunes_rejected_header_subtrees() {
+        let dir = TempDir::new().unwrap();
+        let user_dir = dir.path().join("user");
+        let system_dir = dir.path().join("system");
+        std::fs::create_dir_all(&user_dir).unwrap();
+        std::fs::create_dir_all(&system_dir).unwrap();
+        std::fs::write(
+            dir.path().join("main.c"),
+            "#include <user.h>\n#include <system.h>\n",
+        )
+        .unwrap();
+        std::fs::write(user_dir.join("user.h"), "// user\n").unwrap();
+        std::fs::write(system_dir.join("system.h"), "#include SYSTEM_COMPUTED\n").unwrap();
+        let search = IncludeSearchPaths {
+            user: vec![user_dir.clone().into()],
+            system: vec![system_dir.clone().into()],
+            ..Default::default()
+        }
+        .canonicalized();
+        let user_dir = std::fs::canonicalize(user_dir).unwrap();
+        let cache = RecursiveScanCache::default();
+
+        let result = scan_recursive_cached_pruned(
+            &dir.path().join("main.c"),
+            &search,
+            &cache,
+            &|_, _, path| path.starts_with(&user_dir),
+        );
+
+        assert_eq!(result.resolved, vec![normalize(&user_dir.join("user.h"))]);
+        assert!(!result.has_computed);
+        assert_eq!(cache.directives.len(), 2);
     }
 
     #[test]

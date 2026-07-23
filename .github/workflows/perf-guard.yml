@@ -53,7 +53,7 @@ jobs:
 
   build-perf-benchmark:
     name: Build perf benchmark binary
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -96,10 +96,17 @@ jobs:
 
   perf-guard:
     name: ${{ matrix.label }} speed floor
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     needs: build-perf-benchmark
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    # The watchdog terminates one command at 75 minutes. Leave room for job
+    # setup, earlier matrix tests, summaries, and always-run artifact uploads.
+    timeout-minutes: 120
+    env:
+      PERF_GUARD_CONSOLE_OUTPUT: lite
+      PERF_GUARD_DIAGNOSTIC_AFTER_SECONDS: "3600"
+      PERF_GUARD_TIMEOUT_SECONDS: "4500"
+      PERF_GUARD_HEARTBEAT_SECONDS: "300"
     strategy:
       fail-fast: false
       matrix:
@@ -132,7 +139,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y clang
+          sudo apt-get install -y clang gdb
+          sudo sysctl -w kernel.yama.ptrace_scope=0
 
       - name: Download perf benchmark binary
         uses: actions/download-artifact@v7
@@ -179,6 +187,7 @@ jobs:
         if: matrix.language == 'c'
         shell: bash
         run: |
+          if [[ -f perf-guard-output/.watchdog-timeout ]]; then exit 0; fi
           python3 -m ci.perf_guard --run-benchmarks --language c --test perf_c_zccache_vs_bare \
             --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
             --output-dir perf-guard-output/perf_c_zccache_vs_bare || true
@@ -187,22 +196,16 @@ jobs:
         if: matrix.language == 'c'
         shell: bash
         run: |
+          if [[ -f perf-guard-output/.watchdog-timeout ]]; then exit 0; fi
           python3 -m ci.perf_guard --run-benchmarks --language c --test perf_c_archive_link \
             --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
             --output-dir perf-guard-output/perf_c_archive_link || true
-
-      - name: "C++ — perf_warm_cache_zccache_vs_sccache"
-        if: matrix.language == 'c++'
-        shell: bash
-        run: |
-          python3 -m ci.perf_guard --run-benchmarks --language c++ --test perf_warm_cache_zccache_vs_sccache \
-            --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
-            --output-dir perf-guard-output/perf_warm_cache_zccache_vs_sccache || true
 
       - name: "C++ — perf_response_file"
         if: matrix.language == 'c++'
         shell: bash
         run: |
+          if [[ -f perf-guard-output/.watchdog-timeout ]]; then exit 0; fi
           python3 -m ci.perf_guard --run-benchmarks --language c++ --test perf_response_file \
             --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
             --output-dir perf-guard-output/perf_response_file || true
@@ -211,6 +214,7 @@ jobs:
         if: matrix.language == 'c++'
         shell: bash
         run: |
+          if [[ -f perf-guard-output/.watchdog-timeout ]]; then exit 0; fi
           python3 -m ci.perf_guard --run-benchmarks --language c++ --test perf_cpp_sibling_remap_warm \
             --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
             --output-dir perf-guard-output/perf_cpp_sibling_remap_warm || true
@@ -219,14 +223,28 @@ jobs:
         if: matrix.language == 'c++'
         shell: bash
         run: |
+          if [[ -f perf-guard-output/.watchdog-timeout ]]; then exit 0; fi
           python3 -m ci.perf_guard --run-benchmarks --language c++ --test perf_cpp_driver_link \
             --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
             --output-dir perf-guard-output/perf_cpp_driver_link || true
+
+      # Keep the historically hanging multi-source benchmark last. A timeout
+      # marker skips every later benchmark in the job so summaries and the
+      # always-run artifact upload retain headroom.
+      - name: "C++ — perf_warm_cache_zccache_vs_sccache"
+        if: matrix.language == 'c++'
+        shell: bash
+        run: |
+          if [[ -f perf-guard-output/.watchdog-timeout ]]; then exit 0; fi
+          python3 -m ci.perf_guard --run-benchmarks --language c++ --test perf_warm_cache_zccache_vs_sccache \
+            --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
+            --output-dir perf-guard-output/perf_warm_cache_zccache_vs_sccache || true
 
       - name: "Rust — perf_rustc_zccache_vs_sccache"
         if: matrix.language == 'rust'
         shell: bash
         run: |
+          if [[ -f perf-guard-output/.watchdog-timeout ]]; then exit 0; fi
           python3 -m ci.perf_guard --run-benchmarks --language rust --test perf_rustc_zccache_vs_sccache \
             --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
             --output-dir perf-guard-output/perf_rustc_zccache_vs_sccache || true
@@ -235,6 +253,7 @@ jobs:
         if: matrix.language == 'rust'
         shell: bash
         run: |
+          if [[ -f perf-guard-output/.watchdog-timeout ]]; then exit 0; fi
           python3 -m ci.perf_guard --run-benchmarks --language rust --test perf_rustc_sibling_remap_warm \
             --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
             --output-dir perf-guard-output/perf_rustc_sibling_remap_warm || true
@@ -243,6 +262,7 @@ jobs:
         if: matrix.language == 'rust'
         shell: bash
         run: |
+          if [[ -f perf-guard-output/.watchdog-timeout ]]; then exit 0; fi
           python3 -m ci.perf_guard --run-benchmarks --language rust --test perf_rust_workspace_link \
             --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
             --output-dir perf-guard-output/perf_rust_workspace_link || true
@@ -267,9 +287,19 @@ jobs:
               fi
             done
           }
-          shopt -s nullglob
-          for dir in perf-guard-output/*/; do
-            name="$(basename "$dir")"
+          case "${{ matrix.language }}" in
+            c)
+              expected=(perf_c_zccache_vs_bare perf_c_archive_link)
+              ;;
+            c++)
+              expected=(perf_response_file perf_cpp_sibling_remap_warm perf_cpp_driver_link perf_warm_cache_zccache_vs_sccache)
+              ;;
+            rust)
+              expected=(perf_rustc_zccache_vs_sccache perf_rustc_sibling_remap_warm perf_rust_workspace_link)
+              ;;
+          esac
+          for name in "${expected[@]}"; do
+            dir="perf-guard-output/$name"
             result_file="$dir/perf-guard-result.txt"
             summary_file="$dir/perf-guard-summary.md"
             echo "::group::$name"
@@ -291,7 +321,6 @@ jobs:
             fi
             echo "::endgroup::"
           done
-          shopt -u nullglob
           echo "status=$overall" >> "$GITHUB_OUTPUT"
 
       - name: Upload perf guard artifacts
@@ -320,7 +349,7 @@ jobs:
             linux-tools-generic \
             "linux-tools-$(uname -r)" \
             || sudo apt-get install -y -qq linux-tools-common linux-tools-generic
-          cargo install inferno --locked --quiet
+          soldr cargo install inferno --locked --quiet
 
           # Allow `perf record` to capture without elevated privileges.
           echo 1 | sudo tee /proc/sys/kernel/perf_event_paranoid >/dev/null
@@ -342,7 +371,7 @@ jobs:
 
           for test_name in $FAILED_TESTS; do
             echo "::group::perf record: $test_name"
-            perf record \
+            timeout 10m perf record \
               -F 999 \
               -g --call-graph dwarf \
               -o "$test_name.perf.data" \

@@ -2,25 +2,82 @@
 
 use crate::compiler::strict_paths::StrictPathsMode;
 
-pub(crate) fn strip_leading_strict_paths_flags(
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct WrapperOverrides {
+    pub(crate) strict_paths: Option<StrictPathsMode>,
+    pub(crate) fast: bool,
+    pub(crate) scan_system_headers: Option<bool>,
+}
+
+impl WrapperOverrides {
+    pub(crate) fn overlay(self, base: Self) -> Self {
+        Self {
+            strict_paths: self.strict_paths.or(base.strict_paths),
+            fast: self.fast || base.fast,
+            scan_system_headers: self.scan_system_headers.or(base.scan_system_headers),
+        }
+    }
+}
+
+pub(crate) fn strip_leading_wrapper_flags(
     args: &[String],
-) -> Result<(Option<StrictPathsMode>, Vec<String>), String> {
-    let mut strict_paths = None;
+) -> Result<(WrapperOverrides, Vec<String>), String> {
+    let mut overrides = WrapperOverrides::default();
     let mut index = 0;
 
     while let Some(arg) = args.get(index) {
         if arg == "--strict-paths" {
-            strict_paths = Some(StrictPathsMode::Absolute);
+            overrides.strict_paths = Some(StrictPathsMode::Absolute);
             index += 1;
         } else if let Some(value) = arg.strip_prefix("--strict-paths=") {
-            strict_paths = Some(StrictPathsMode::parse(value).map_err(|err| err.to_string())?);
+            overrides.strict_paths =
+                Some(StrictPathsMode::parse(value).map_err(|err| err.to_string())?);
+            index += 1;
+        } else if arg == "--fast" {
+            overrides.fast = true;
+            index += 1;
+        } else if arg == "--scan-system-headers" {
+            set_scan_override(&mut overrides, true)?;
+            index += 1;
+        } else if arg == "--skip-system-headers" {
+            set_scan_override(&mut overrides, false)?;
             index += 1;
         } else {
             break;
         }
     }
 
-    Ok((strict_paths, args[index..].to_vec()))
+    Ok((overrides, args[index..].to_vec()))
+}
+
+pub(crate) fn parse_wrapper_overrides(
+    strict_paths: Option<&str>,
+    fast: bool,
+    scan_system_headers: bool,
+    skip_system_headers: bool,
+) -> Result<WrapperOverrides, String> {
+    let mut overrides = WrapperOverrides {
+        strict_paths: parse_optional_strict_paths(strict_paths)?,
+        fast,
+        scan_system_headers: None,
+    };
+    if scan_system_headers {
+        set_scan_override(&mut overrides, true)?;
+    }
+    if skip_system_headers {
+        set_scan_override(&mut overrides, false)?;
+    }
+    Ok(overrides)
+}
+
+fn set_scan_override(overrides: &mut WrapperOverrides, value: bool) -> Result<(), String> {
+    if overrides.scan_system_headers.is_some_and(|current| current != value) {
+        return Err(
+            "--scan-system-headers conflicts with --skip-system-headers; choose one".to_string(),
+        );
+    }
+    overrides.scan_system_headers = Some(value);
+    Ok(())
 }
 
 pub(crate) fn parse_optional_strict_paths(
@@ -32,9 +89,9 @@ pub(crate) fn parse_optional_strict_paths(
 }
 
 pub(super) fn effective_strict_paths_mode(
-    strict_paths_override: Option<StrictPathsMode>,
+    overrides: WrapperOverrides,
 ) -> Result<StrictPathsMode, String> {
-    if let Some(mode) = strict_paths_override {
+    if let Some(mode) = overrides.strict_paths {
         return Ok(mode);
     }
 
@@ -70,10 +127,20 @@ fn windows_pch_guard_default_for(is_windows: bool, guard_value: Option<&str>) ->
     }
 }
 
-pub(super) fn client_env(strict_paths_override: Option<StrictPathsMode>) -> Vec<(String, String)> {
+pub(super) fn client_env(overrides: WrapperOverrides) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = std::env::vars().collect();
-    if let Some(mode) = strict_paths_override {
+    if let Some(mode) = overrides.strict_paths {
         set_client_env(&mut env, "ZCCACHE_STRICT_PATHS", mode.as_str().to_string());
+    }
+    if overrides.fast {
+        set_client_env(&mut env, "ZCCACHE_FAST", "1".to_string());
+    }
+    if let Some(scan) = overrides.scan_system_headers {
+        set_client_env(
+            &mut env,
+            "ZCCACHE_SCAN_SYSTEM_HEADERS",
+            if scan { "1" } else { "0" }.to_string(),
+        );
     }
     env
 }
@@ -95,17 +162,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn strip_leading_strict_paths_flags_consumes_only_prefix() {
+    fn strip_leading_wrapper_flags_consumes_only_prefix() {
         let args = vec![
             "--strict-paths=consistent".to_string(),
             "rustc".to_string(),
             "--strict-paths=absolute".to_string(),
         ];
 
-        let (mode, rest) = strip_leading_strict_paths_flags(&args).unwrap();
+        let (overrides, rest) = strip_leading_wrapper_flags(&args).unwrap();
 
-        assert_eq!(mode, Some(StrictPathsMode::Consistent));
+        assert_eq!(
+            overrides.strict_paths,
+            Some(StrictPathsMode::Consistent)
+        );
         assert_eq!(rest, vec!["rustc", "--strict-paths=absolute"]);
+    }
+
+    #[test]
+    fn fast_and_header_policy_flags_are_consumed_before_compiler() {
+        let args = vec![
+            "--fast".to_string(),
+            "--skip-system-headers".to_string(),
+            "clang".to_string(),
+            "--fast".to_string(),
+        ];
+        let (overrides, rest) = strip_leading_wrapper_flags(&args).unwrap();
+        assert!(overrides.fast);
+        assert_eq!(overrides.scan_system_headers, Some(false));
+        assert_eq!(rest, vec!["clang", "--fast"]);
+    }
+
+    #[test]
+    fn explicit_scan_setting_overrides_fast_preset() {
+        let overrides = parse_wrapper_overrides(None, true, true, false).unwrap();
+        assert!(overrides.fast);
+        assert_eq!(overrides.scan_system_headers, Some(true));
+    }
+
+    #[test]
+    fn contradictory_scan_flags_are_rejected() {
+        let error = parse_wrapper_overrides(None, false, true, true).unwrap_err();
+        assert!(error.contains("conflicts"));
     }
 
     #[test]
