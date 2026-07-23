@@ -12,6 +12,7 @@ Python scripts for development tooling. Rust commands go through `soldr <tool>` 
 - **`python -m ci.benchmark_stats`** - Generates `index.html`, `latest.json`, and per-language benchmark JPGs from perf output for the published benchmark report
 - **`python -m ci.perf_guard`** - Fails CI when Rust, C, or C++ zccache benchmark rows fall below the bare-compiler or pinned-sccache speed floors
 - **`uv run --with pyyaml python ci/render_feature_matrix.py`** - Renders the zccache vs sccache feature matrix from `docs/feature-matrix.yaml` into the README headline/full tables and `docs/FEATURE-MATRIX.md`. Pass `--check` to verify outputs are up-to-date (CI gate)
+- **`uv run python -m ci.host_diag`** - single-mode host validation diagnostic (issue #1186): timestamped streamed gates, per-gate compile-journal miss-reason summaries, overlapping-session detection, JSON report under `.cache/host-diag/`
 
 ## Release Automation
 
