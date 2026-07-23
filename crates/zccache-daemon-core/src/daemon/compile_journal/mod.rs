@@ -22,7 +22,7 @@ use std::sync::{mpsc, Mutex};
 use std::time::SystemTime;
 
 use crate::core::NormalizedPath;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
 use super::event_log::{format_timestamp, open_append};
 
@@ -215,7 +215,7 @@ impl JournalEntry {
             compiler: ctx.compiler,
             args: ctx.args,
             cwd: ctx.cwd,
-            env: redact_journal_env(ctx.env),
+            env: ctx.env,
             exit_code,
             session_id: ctx.session_id,
             latency_ns,
@@ -255,29 +255,6 @@ impl JournalEntry {
         }
         self
     }
-}
-
-fn redact_journal_env(env: Option<Vec<(String, String)>>) -> Option<Vec<(String, String)>> {
-    env.map(|vars| {
-        vars.into_iter()
-            .map(|(key, _)| (key, "<redacted>".to_string()))
-            .collect()
-    })
-}
-
-fn serialize_redacted_env<S>(
-    env: &Option<Vec<(String, String)>>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    let redacted = env.as_ref().map(|vars| {
-        vars.iter()
-            .map(|(name, _)| (name.as_str(), "<redacted>"))
-            .collect::<Vec<_>>()
-    });
-    redacted.serialize(serializer)
 }
 
 /// Issue #256: accumulator for the four `self_profile_ns` span buckets.

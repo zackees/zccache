@@ -6,7 +6,7 @@
 use super::*;
 use std::collections::{HashMap, HashSet};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 pub(crate) const CACHE_BYTES_ENV: &str = "ZCCACHE_CACHE_SIZE_BYTES";
@@ -178,7 +178,7 @@ struct DiskArtifact {
     key: String,
     allocated_bytes: u64,
     last_access: SystemTime,
-    legacy_files: Vec<PathBuf>,
+    legacy_files: Vec<NormalizedPath>,
     staged: bool,
     staged_generation: Option<String>,
 }
@@ -483,7 +483,7 @@ fn scan_artifacts(artifact_dir: &Path) -> io::Result<Vec<DiskArtifact>> {
                 staged_generation: None,
             });
         add_file(&path, artifact, &mut seen)?;
-        artifact.legacy_files.push(path);
+        artifact.legacy_files.push(path.into());
     }
 
     let staged_root = artifact_dir.join(".staged-v2");
@@ -722,8 +722,8 @@ fn maintain_disk_artifacts_with_barrier(
     })
 }
 
-fn full_marker_path(cache_dir: &Path) -> PathBuf {
-    cache_dir.join(FULL_MARKER)
+fn full_marker_path(cache_dir: &Path) -> NormalizedPath {
+    NormalizedPath::new(cache_dir).join(FULL_MARKER)
 }
 
 fn full_maintenance_due(cache_dir: &Path, now: SystemTime) -> bool {

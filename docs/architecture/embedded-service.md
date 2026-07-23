@@ -19,7 +19,7 @@ The MVP boundary is:
 | Architecture contract | Landed | This document records lifecycle, ownership, audit, and shutdown expectations. |
 | Public Rust API | MVP landed | `zccache::embedded` exports `ZccacheService` and stable config/request/stats types for start, compile, stats, disk maintenance, flush, and shutdown. |
 | Durable audit schema | MVP landed | `zccache::audit` exports serializable schema/config/event/finding/manifest types; hot-path emission and fixtures remain follow-up work. |
-| soldr embedded integration | Open | zccache#907 should switch soldr from wrapper/private-daemon use to direct embedded calls once the integration is ready. |
+| soldr embedded integration | Landed | soldr uses the direct embedded service and owns its cache root, runtime handle, audit context, and shutdown sequence. |
 | fbuild embedded integration | Open | zccache#908 follows the same service contract, adjusted for fbuild's daemon/runtime model. |
 | Vendored hotfix workflow | Documented | zccache#909 is recorded in [`vendored-hotfix-workflow.md`](vendored-hotfix-workflow.md). |
 | Operator audit commands | Open | zccache#910 owns `audit capabilities`, `audit run`, and post-run analysis UX. |
@@ -142,6 +142,20 @@ pub enum DiskMaintenanceKind {
     Full,
 }
 
+pub struct FlushReport {
+    pub pending_writes_drained: bool,
+    pub index_writer_drained: bool,
+    pub steps: Vec<FlushStepReport>,
+    pub artifact_entries: u64,
+    pub metadata_entries: u64,
+}
+
+pub enum FlushStepOutcome {
+    Completed,
+    Failed(String),
+    TimedOut,
+}
+
 pub struct HostIdentity {
     pub product: String,
     pub instance_id: String,
@@ -212,6 +226,28 @@ immediate pass through `maintain_disk`, but that call never scans parent or
 sibling product roots. See
 [artifact-store.md](artifact-store.md#daemon-owned-retention-policy) for the
 single policy shared with standalone mode.
+
+### Maintenance limits and task ownership
+
+Embedded mode owns one disk-maintenance task in addition to the artifact-index
+writer. Both tasks spawn through `RuntimeHooks::handle` when the host supplies
+one, so persistent work stays on the host-selected Tokio runtime. Maintenance
+waits for artifact-index hydration, runs an initial pressure or due full pass,
+performs cheap pressure preflights every five minutes, and performs a full age
+pass at least daily. It uses the same bounded, root-local policy as standalone
+mode; it does not introduce a second embedded-only retention algorithm.
+
+Graceful shutdown latches the shared shutdown flag and sends a retained wakeup
+to the maintenance task. It waits up to two seconds for that task, aborts and
+joins the outer task on timeout, and records the result as the named
+`maintenance_shutdown` step. Shutdown then waits for any host-requested
+maintenance pass holding the root-local maintenance lock before draining
+artifact publications and the index writer.
+
+`FlushReport::is_complete()` is true only when pending publications and the
+index writer drained and every named persistence step completed. Failures and
+timeouts remain visible as `FlushStepOutcome` values; callers must not infer a
+complete flush from the method returning successfully.
 
 `compile_streaming` is the canonical producer. `compile` is a buffered adapter
 that collects the same chunks. Compiler misses and direct invocations emit

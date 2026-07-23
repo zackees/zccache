@@ -6,6 +6,12 @@
 //! `use ...::*` re-exports) that lets every submodule use `use super::*;` to
 //! see the common type vocabulary.
 
+use super::compile_journal::{
+    extract_outcome, miss_reason, CompileJournal, JournalContext, JournalEntry, SelfProfileSpans,
+};
+use super::fingerprint::FingerprintManager;
+use super::process::CompilePriority;
+use super::stats::{HitPhases, MissPhases, PhaseProfiler, StatsCollector};
 use crate::artifact::{ArtifactIndex, ArtifactStore};
 use crate::core::NormalizedPath;
 use crate::depgraph::{
@@ -24,14 +30,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify};
-use tokio_util::sync::CancellationToken;
-
-use super::compile_journal::{
-    extract_outcome, miss_reason, CompileJournal, JournalContext, JournalEntry, SelfProfileSpans,
-};
-use super::fingerprint::FingerprintManager;
-use super::process::CompilePriority;
-use super::stats::{HitPhases, MissPhases, PhaseProfiler, StatsCollector};
 
 /// Cached result of a verified cache hit, enabling zero-hash fast path.
 ///

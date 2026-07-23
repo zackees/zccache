@@ -196,18 +196,6 @@ pub struct RuntimeHooks {
 #[derive(Debug, Clone, Default)]
 pub struct ServiceLimits {
     pub max_parallel_compiles: Option<usize>,
-    /// Maximum estimated memory used by metadata, dependency, and ephemeral
-    /// caches. `None` uses the standalone daemon default.
-    pub max_memory_bytes: Option<u64>,
-    /// How often the embedded daemon enforces its memory budget.
-    /// `None` uses the standalone daemon default.
-    pub memory_eviction_interval: Option<std::time::Duration>,
-    /// Maximum bytes retained by the on-disk artifact cache.
-    /// `None` uses the standalone daemon default.
-    pub max_cache_size_bytes: Option<u64>,
-    /// How often the embedded daemon enforces its disk budget.
-    /// `None` uses the standalone daemon default.
-    pub disk_gc_interval: Option<std::time::Duration>,
     /// Optional host-supplied in-flight counter (zccache#924).
     ///
     /// When the embedded service runs inside a larger host daemon
@@ -327,6 +315,34 @@ pub struct FlushReport {
     pub steps: Vec<FlushStepReport>,
     pub artifact_entries: u64,
     pub metadata_entries: u64,
+}
+
+impl FlushReport {
+    /// `true` only when every queued write, index update, and persistence step
+    /// completed successfully before its bound.
+    pub fn is_complete(&self) -> bool {
+        self.pending_writes_drained
+            && self.index_writer_drained
+            && self
+                .steps
+                .iter()
+                .all(|step| matches!(step.outcome, FlushStepOutcome::Completed))
+    }
+}
+
+/// Outcome of one cache-persistence step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FlushStepOutcome {
+    Completed,
+    Failed(String),
+    TimedOut,
+}
+
+/// Named result for one cache-persistence step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlushStepReport {
+    pub step: String,
+    pub outcome: FlushStepOutcome,
 }
 
 /// Scope of a host-requested disk-maintenance pass.

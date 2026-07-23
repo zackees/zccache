@@ -64,11 +64,7 @@ impl MemoryEvictionPlan {
     /// gentle eviction followed by the original, unvisited suffix. Candidates
     /// reported refreshed are intentionally absent and protected for this
     /// sweep.
-    pub(crate) fn completion_from(
-        &self,
-        offset: usize,
-        busy: &[EvictionCandidate],
-    ) -> Self {
+    pub(crate) fn completion_from(&self, offset: usize, busy: &[EvictionCandidate]) -> Self {
         let mut metadata_candidates = busy.to_vec();
         metadata_candidates.extend_from_slice(
             &self.metadata_candidates[offset.min(self.metadata_candidates.len())..],
@@ -260,8 +256,7 @@ pub(crate) fn plan_eviction_to_target_excluding(
         .div_ceil(METADATA_ENTRY_BYTES)
         .max(1)
         .min(snap.metadata_entries);
-    let mut metadata_candidates =
-        cache_system.oldest_eviction_candidates(snap.metadata_entries);
+    let mut metadata_candidates = cache_system.oldest_eviction_candidates(snap.metadata_entries);
     metadata_candidates.retain(|candidate| !protected_paths.contains(candidate.path()));
     metadata_candidates.truncate(metadata_count);
     Some(MemoryEvictionPlan {
@@ -348,14 +343,11 @@ pub(crate) fn evict_to_budget_with_plan_detailed(
             .div_ceil(METADATA_ENTRY_BYTES)
             .max(1)
             .min(cache_system.metadata().len());
-        let selected = &plan.metadata_candidates[..entries_to_evict.min(
-            plan.metadata_candidates.len(),
-        )];
-        let (result, journal_removed) =
-            cache_system.evict_candidates_detailed(selected);
+        let selected =
+            &plan.metadata_candidates[..entries_to_evict.min(plan.metadata_candidates.len())];
+        let (result, journal_removed) = cache_system.evict_candidates_detailed(selected);
         let freed =
-            (result.removed * METADATA_ENTRY_BYTES
-                + journal_removed * JOURNAL_ENTRY_BYTES) as u64;
+            (result.removed * METADATA_ENTRY_BYTES + journal_removed * JOURNAL_ENTRY_BYTES) as u64;
         total_freed += freed;
         total_items += result.removed + journal_removed;
         to_free = to_free.saturating_sub(freed);
@@ -856,8 +848,7 @@ mod tests {
             },
         );
 
-        let (freed, items) =
-            evict_to_budget_with_plan(1, &cs, &dg, &fh, &art, 0, &plan);
+        let (freed, items) = evict_to_budget_with_plan(1, &cs, &dg, &fh, &art, 0, &plan);
 
         assert_eq!(freed, 0);
         assert_eq!(items, 0);
@@ -898,8 +889,7 @@ mod tests {
 
         assert!(blocking_items > 0);
         assert!(
-            memory_snapshot(&cs, &dg, &fh, &art, 0).total_bytes as u64
-                <= plan.target_bytes(),
+            memory_snapshot(&cs, &dg, &fh, &art, 0).total_bytes as u64 <= plan.target_bytes(),
             "idle/forced completion must reach the original headroom target"
         );
     }
@@ -921,18 +911,10 @@ mod tests {
         let plan = plan_eviction_to_budget(budget, &cs, &dg, &fh, &art, 0)
             .expect("metadata should exceed the tiny budget");
         let busy = plan.metadata_candidates.clone();
-        let completion =
-            plan.completion_from(plan.metadata_candidate_count(), &busy);
+        let completion = plan.completion_from(plan.metadata_candidate_count(), &busy);
 
-        let outcome = evict_to_budget_with_plan_detailed(
-            budget,
-            &cs,
-            &dg,
-            &fh,
-            &art,
-            0,
-            &completion,
-        );
+        let outcome =
+            evict_to_budget_with_plan_detailed(budget, &cs, &dg, &fh, &art, 0, &completion);
 
         assert_eq!(outcome.items_removed, 1);
         assert!(cs.metadata().is_empty());
@@ -958,16 +940,9 @@ mod tests {
             plan_eviction_to_budget(10_000, &cs, &dg, &fh, &art, 0).is_none(),
             "9.6 KiB is below the configured 10 KiB trigger"
         );
-        let replacement = plan_eviction_to_target_excluding(
-            9_000,
-            &cs,
-            &dg,
-            &fh,
-            &art,
-            0,
-            &HashSet::new(),
-        )
-        .expect("forced completion must continue toward the original 90% target");
+        let replacement =
+            plan_eviction_to_target_excluding(9_000, &cs, &dg, &fh, &art, 0, &HashSet::new())
+                .expect("forced completion must continue toward the original 90% target");
         assert_eq!(replacement.target_bytes(), 9_000);
         assert!(!replacement.metadata_candidates.is_empty());
     }
@@ -1063,9 +1038,10 @@ mod tests {
                 Vec::new(),
                 0,
             ),
-            vec![CachedPayload::Bytes(
-                std::sync::Arc::new(vec![0u8; payload_size]),
-            )],
+            vec![CachedPayload::Bytes(std::sync::Arc::new(vec![
+                0u8;
+                payload_size
+            ]))],
         )
     }
 

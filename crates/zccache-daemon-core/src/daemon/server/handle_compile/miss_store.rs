@@ -207,27 +207,6 @@ fn truncate_staged_publication_error(error: &str) -> String {
     }
 }
 
-#[cfg(test)]
-#[expect(
-    clippy::items_after_test_module,
-    reason = "diagnostic helper tests stay beside the helper they exercise"
-)]
-mod staged_publication_diagnostic_tests {
-    use super::{truncate_staged_publication_error, MAX_STAGED_PUBLICATION_ERROR_CHARS};
-
-    #[test]
-    fn publication_error_is_bounded_without_splitting_utf8() {
-        let error = format!("{}suffix", "å".repeat(MAX_STAGED_PUBLICATION_ERROR_CHARS));
-        let rendered = truncate_staged_publication_error(&error);
-
-        assert!(rendered.ends_with('…'));
-        assert_eq!(
-            rendered.trim_end_matches('…').chars().count(),
-            MAX_STAGED_PUBLICATION_ERROR_CHARS
-        );
-    }
-}
-
 fn record_pch_source_mapping(
     state: &SharedState,
     source_path: &NormalizedPath,

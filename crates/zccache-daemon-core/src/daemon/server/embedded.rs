@@ -32,7 +32,6 @@ const EMBEDDED_MAINTENANCE_SHUTDOWN_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(2);
 const EMBEDDED_INDEX_WRITER_SHUTDOWN_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(2);
-const MIN_MAINTENANCE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
 
 impl EmbeddedDaemon {
     pub(crate) async fn start(
@@ -66,17 +65,11 @@ impl EmbeddedDaemon {
             index_writer_handle: Mutex::new(None),
             maintenance_handle: Mutex::new(None),
         };
-        daemon
-            .start_background_tasks(runtime_handle, maintenance)
-            .await;
+        daemon.start_background_tasks(runtime_handle).await;
         Ok(daemon)
     }
 
-    async fn start_background_tasks(
-        &mut self,
-        runtime_handle: Option<tokio::runtime::Handle>,
-        maintenance: EmbeddedMaintenanceConfig,
-    ) {
+    async fn start_background_tasks(&mut self, runtime_handle: Option<tokio::runtime::Handle>) {
         if let Some(rx) = self.index_writer_rx.take() {
             let store = Arc::clone(&self.state.artifact_store);
             let shutdown = Arc::clone(&self.state.index_writer_shutdown);
@@ -323,10 +316,7 @@ impl EmbeddedDaemon {
 
     pub(crate) async fn shutdown(&self) -> EmbeddedFlushReport {
         self.state.shutdown_requested.store(true, Ordering::Release);
-        self.state.shutdown.notify_waiters();
-        if let Some(handle) = self.maintenance_handle.lock().await.take() {
-            let _ = handle.await;
-        }
+        let maintenance_step = self.stop_maintenance_task().await;
         // A host-requested pass can run independently of the background
         // handle. Wait for it before the final index flush; new passes reject
         // the latched shutdown flag after acquiring this mutex.
@@ -338,13 +328,23 @@ impl EmbeddedDaemon {
         report
     }
 
-    async fn stop_maintenance_tasks(&self) -> EmbeddedFlushStepReport {
-        self.maintenance_cancel.cancel();
-        let mut handles = self.maintenance_handles.lock().await;
-        let tasks = std::mem::take(&mut *handles);
-        drop(handles);
-
-        let outcome = join_maintenance_tasks(tasks, EMBEDDED_MAINTENANCE_SHUTDOWN_TIMEOUT).await;
+    async fn stop_maintenance_task(&self) -> EmbeddedFlushStepReport {
+        // `notify_one` retains a permit if the maintenance loop is between
+        // polls. The latched shutdown flag remains the authoritative stop
+        // condition.
+        self.state.shutdown.notify_one();
+        let handle = self.maintenance_handle.lock().await.take();
+        let outcome = match handle {
+            Some(handle) => {
+                join_task_with_timeout(
+                    handle,
+                    EMBEDDED_MAINTENANCE_SHUTDOWN_TIMEOUT,
+                    "embedded maintenance",
+                )
+                .await
+            }
+            None => FlushStepOutcome::Completed,
+        };
         EmbeddedFlushStepReport {
             step: "maintenance_shutdown".to_owned(),
             outcome,
@@ -352,60 +352,19 @@ impl EmbeddedDaemon {
     }
 }
 
-impl Drop for EmbeddedDaemon {
-    fn drop(&mut self) {
-        self.maintenance_cancel.cancel();
-    }
-}
-
-fn spawn_embedded_task<F>(
-    runtime_handle: &Option<tokio::runtime::Handle>,
-    task: F,
-) -> tokio::task::JoinHandle<()>
-where
-    F: std::future::Future<Output = ()> + Send + 'static,
-{
-    match runtime_handle {
-        Some(handle) => handle.spawn(task),
-        None => tokio::spawn(task),
-    }
-}
-
-async fn join_maintenance_tasks(
-    mut tasks: Vec<tokio::task::JoinHandle<()>>,
+async fn join_task_with_timeout(
+    mut task: tokio::task::JoinHandle<()>,
     timeout: std::time::Duration,
+    task_name: &str,
 ) -> FlushStepOutcome {
-    let deadline = tokio::time::Instant::now() + timeout;
-    for index in 0..tasks.len() {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            abort_and_join_tasks(&mut tasks[index..]).await;
-            return FlushStepOutcome::TimedOut;
+    match tokio::time::timeout(timeout, &mut task).await {
+        Ok(Ok(())) => FlushStepOutcome::Completed,
+        Ok(Err(error)) => FlushStepOutcome::Failed(format!("{task_name} task failed: {error}")),
+        Err(_) => {
+            task.abort();
+            let _ = task.await;
+            FlushStepOutcome::TimedOut
         }
-        let joined = tokio::time::timeout(remaining, &mut tasks[index]).await;
-        match joined {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                abort_and_join_tasks(&mut tasks[index + 1..]).await;
-                return FlushStepOutcome::Failed(format!(
-                    "embedded maintenance task failed: {error}"
-                ));
-            }
-            Err(_) => {
-                abort_and_join_tasks(&mut tasks[index..]).await;
-                return FlushStepOutcome::TimedOut;
-            }
-        }
-    }
-    FlushStepOutcome::Completed
-}
-
-async fn abort_and_join_tasks(tasks: &mut [tokio::task::JoinHandle<()>]) {
-    for task in tasks.iter() {
-        task.abort();
-    }
-    for task in tasks.iter_mut() {
-        let _ = task.await;
     }
 }
 
@@ -419,54 +378,12 @@ async fn stop_index_writer_task(
     // preceding Flush acknowledgement and before the writer reaches select!,
     // leaving graceful shutdown to time out on an otherwise healthy writer.
     shutdown.notify_one();
-    let mut handle = handle?;
-    let outcome = match tokio::time::timeout(timeout, &mut handle).await {
-        Ok(Ok(())) => FlushStepOutcome::Completed,
-        Ok(Err(error)) => FlushStepOutcome::Failed(format!(
-            "index writer task failed while shutting down: {error}"
-        )),
-        Err(_) => {
-            handle.abort();
-            let _ = handle.await;
-            FlushStepOutcome::TimedOut
-        }
-    };
+    let handle = handle?;
+    let outcome = join_task_with_timeout(handle, timeout, "index writer").await;
     Some(EmbeddedFlushStepReport {
         step: "index_writer_shutdown".to_owned(),
         outcome,
     })
-}
-
-fn run_memory_eviction_pass(state: &SharedState, budget: u64) {
-    let req_removed = trim_request_cache(&state.request_cache, EPHEMERAL_CACHE_MAX_AGE);
-    let req_validation_removed =
-        trim_request_validation_cache(&state.request_validation_cache, EPHEMERAL_CACHE_MAX_AGE);
-    let rsp_removed = trim_rsp_cache(&state.rsp_cache, EPHEMERAL_CACHE_MAX_AGE);
-    if req_removed > 0 || req_validation_removed > 0 || rsp_removed > 0 {
-        tracing::debug!(
-            request_cache_removed = req_removed,
-            request_validation_cache_removed = req_validation_removed,
-            rsp_cache_removed = rsp_removed,
-            "trimmed embedded ephemeral daemon caches"
-        );
-    }
-    let dep_graph_guard = state.dep_graph.load();
-    let (freed, items) = super::super::eviction::evict_to_budget(
-        budget,
-        &state.cache_system,
-        &dep_graph_guard,
-        &state.fast_hit_cache,
-        &state.artifacts,
-        state.in_flight_bytes.load(Ordering::Relaxed),
-    );
-    drop(dep_graph_guard);
-    if items > 0 {
-        tracing::info!(
-            freed_bytes = freed,
-            items_removed = items,
-            "embedded memory eviction"
-        );
-    }
 }
 
 async fn status_snapshot(state: &SharedState) -> crate::protocol::DaemonStatus {
@@ -721,7 +638,7 @@ mod flush_timeout_tests {
     //! Issue #973: the embedded flush save steps must be bounded so a stuck
     //! disk cannot hang `ZccacheService::flush()`/`shutdown()`.
     use super::{
-        flush_step_outcome, join_maintenance_tasks, stop_index_writer_task, FlushStepOutcome,
+        flush_step_outcome, join_task_with_timeout, stop_index_writer_task, FlushStepOutcome,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -762,7 +679,7 @@ mod flush_timeout_tests {
     }
 
     #[tokio::test]
-    async fn maintenance_timeout_aborts_and_joins_stuck_tasks() {
+    async fn task_shutdown_timeout_aborts_and_joins_stuck_task() {
         struct DropFlag(Arc<AtomicBool>);
 
         impl Drop for DropFlag {
@@ -778,12 +695,12 @@ mod flush_timeout_tests {
             std::future::pending::<()>().await;
         });
 
-        let outcome = join_maintenance_tasks(vec![task], Duration::from_millis(20)).await;
+        let outcome = join_task_with_timeout(task, Duration::from_millis(20), "test task").await;
 
         assert_eq!(outcome, FlushStepOutcome::TimedOut);
         assert!(
             dropped.load(Ordering::Acquire),
-            "a timed-out maintenance task must be aborted and joined, not detached"
+            "a timed-out task must be aborted and joined, not detached"
         );
     }
 

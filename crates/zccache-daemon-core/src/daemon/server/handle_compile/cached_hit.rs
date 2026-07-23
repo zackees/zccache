@@ -101,8 +101,8 @@ pub(super) fn materialize_cached_compile_hit(
 
     let names = Arc::clone(&cached.meta.output_names);
     let exit_code = cached.meta.exit_code;
-    let stdout = cached.stdout.clone();
-    let stderr = cached.stderr.clone();
+    let mut stdout = cached.stdout.clone();
+    let mut stderr = cached.stderr.clone();
     let artifact_bytes = cached.meta.total_size;
 
     // Issue #643: when the miss path stashed the user's depfile bytes as a

@@ -754,8 +754,7 @@ async fn run_memory_eviction_pass(state: &Arc<SharedState>, budget: u64) -> (u64
             // journal rows. Settle that debt before deciding whether the
             // original headroom target still requires destructive work.
             let journal_removed = state.cache_system.cleanup_eviction_journal();
-            total_freed += (journal_removed
-                * super::super::eviction::JOURNAL_ENTRY_BYTES) as u64;
+            total_freed += (journal_removed * super::super::eviction::JOURNAL_ENTRY_BYTES) as u64;
             total_items += journal_removed;
 
             let dep_graph_guard = state.dep_graph.load();
@@ -775,22 +774,19 @@ async fn run_memory_eviction_pass(state: &Arc<SharedState>, budget: u64) -> (u64
             // timestamp-refreshed entries, then replenish from a current
             // read-only plan until the target is met or every remaining
             // metadata candidate is protected for this sweep.
-            let mut completion_plan =
-                plan.completion_from(candidate_offset, &busy_candidates);
+            let mut completion_plan = plan.completion_from(candidate_offset, &busy_candidates);
             loop {
-                let completion_had_candidates =
-                    completion_plan.metadata_candidate_count() > 0;
+                let completion_had_candidates = completion_plan.metadata_candidate_count() > 0;
                 let dep_graph_guard = state.dep_graph.load();
-                let outcome =
-                    super::super::eviction::evict_to_budget_with_plan_detailed(
-                        budget,
-                        &state.cache_system,
-                        &dep_graph_guard,
-                        &state.fast_hit_cache,
-                        &state.artifacts,
-                        state.in_flight_bytes.load(Ordering::Relaxed),
-                        &completion_plan,
-                    );
+                let outcome = super::super::eviction::evict_to_budget_with_plan_detailed(
+                    budget,
+                    &state.cache_system,
+                    &dep_graph_guard,
+                    &state.fast_hit_cache,
+                    &state.artifacts,
+                    state.in_flight_bytes.load(Ordering::Relaxed),
+                    &completion_plan,
+                );
                 drop(dep_graph_guard);
                 total_freed += outcome.freed_bytes;
                 total_items += outcome.items_removed;
@@ -813,23 +809,20 @@ async fn run_memory_eviction_pass(state: &Arc<SharedState>, budget: u64) -> (u64
                     drop(dep_graph_guard);
                     return (total_freed, total_items);
                 }
-                let next =
-                    super::super::eviction::plan_eviction_to_target_excluding(
-                        plan.target_bytes(),
-                        &state.cache_system,
-                        &dep_graph_guard,
-                        &state.fast_hit_cache,
-                        &state.artifacts,
-                        state.in_flight_bytes.load(Ordering::Relaxed),
-                        &protected_paths,
-                    );
+                let next = super::super::eviction::plan_eviction_to_target_excluding(
+                    plan.target_bytes(),
+                    &state.cache_system,
+                    &dep_graph_guard,
+                    &state.fast_hit_cache,
+                    &state.artifacts,
+                    state.in_flight_bytes.load(Ordering::Relaxed),
+                    &protected_paths,
+                );
                 drop(dep_graph_guard);
                 let Some(next) = next else {
                     return (total_freed, total_items);
                 };
-                if current.metadata_entries > 0
-                    && next.metadata_candidate_count() == 0
-                {
+                if current.metadata_entries > 0 && next.metadata_candidate_count() == 0 {
                     return (total_freed, total_items);
                 }
                 if forced_completion_stalled(
@@ -890,10 +883,6 @@ async fn run_memory_eviction_pass(state: &Arc<SharedState>, budget: u64) -> (u64
         tokio::select! {
             () = state.cache_requests_idle.notified() => {}
             () = tokio::time::sleep(MEMORY_GC_GENTLE_RETRY) => {}
-        }
-        Ok(_) => {}
-        Err(error) => {
-            tracing::warn!(%error, gc_pass = pass, "disk GC task failed");
         }
     }
 }

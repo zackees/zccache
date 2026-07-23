@@ -6,11 +6,17 @@
 //! object name.  The counter is stored as little-endian bytes so the low byte
 //! naturally distributes sequential objects across the fixed bucket set.
 
-use super::*;
+#![allow(
+    dead_code,
+    reason = "the object allocator and pointer API landed ahead of publication wiring in #1182"
+)]
+
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
-use std::collections::HashSet;
+use std::path::Path;
+
+use crate::core::NormalizedPath;
 
 const OBJECTS_ROOT: &str = "objects";
 const DELETING_ROOT: &str = "deleting";
@@ -63,27 +69,29 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-pub(crate) fn object_root(artifact_dir: &Path) -> PathBuf {
-    artifact_dir.join(OBJECTS_ROOT)
+pub(crate) fn object_root(artifact_dir: &Path) -> NormalizedPath {
+    NormalizedPath::new(artifact_dir).join(OBJECTS_ROOT)
 }
 
-pub(crate) fn deleting_root(artifact_dir: &Path) -> PathBuf {
-    artifact_dir.join(DELETING_ROOT)
+pub(crate) fn deleting_root(artifact_dir: &Path) -> NormalizedPath {
+    NormalizedPath::new(artifact_dir).join(DELETING_ROOT)
 }
 
-fn pointer_root(artifact_dir: &Path) -> PathBuf {
-    artifact_dir.join(POINTERS_ROOT)
+fn pointer_root(artifact_dir: &Path) -> NormalizedPath {
+    NormalizedPath::new(artifact_dir).join(POINTERS_ROOT)
 }
 
-pub(crate) fn object_path(artifact_dir: &Path, id: ArtifactObjectId) -> PathBuf {
+pub(crate) fn object_path(artifact_dir: &Path, id: ArtifactObjectId) -> NormalizedPath {
     object_root(artifact_dir).join(id.bucket()).join(id.leaf())
 }
 
-pub(crate) fn deleting_object_path(artifact_dir: &Path, id: ArtifactObjectId) -> PathBuf {
-    deleting_root(artifact_dir).join(id.bucket()).join(id.leaf())
+pub(crate) fn deleting_object_path(artifact_dir: &Path, id: ArtifactObjectId) -> NormalizedPath {
+    deleting_root(artifact_dir)
+        .join(id.bucket())
+        .join(id.leaf())
 }
 
-pub(crate) fn object_pointer_path(artifact_dir: &Path, key: &str) -> PathBuf {
+pub(crate) fn object_pointer_path(artifact_dir: &Path, key: &str) -> NormalizedPath {
     pointer_root(artifact_dir).join(format!("{key}.object"))
 }
 
@@ -105,7 +113,11 @@ pub(crate) fn ensure_object_layout(artifact_dir: &Path) -> io::Result<()> {
 }
 
 fn sync_file(path: &Path) -> io::Result<()> {
-    OpenOptions::new().read(true).write(true).open(path)?.sync_all()
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?
+        .sync_all()
 }
 
 fn write_counter(path: &Path, value: u64) -> io::Result<()> {
@@ -202,7 +214,10 @@ pub(crate) fn read_object_pointer(
     };
     let value = value.trim();
     let id = ArtifactObjectId::parse(value).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "invalid artifact object pointer")
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid artifact object pointer",
+        )
     })?;
     Ok(Some(id))
 }
@@ -214,7 +229,11 @@ pub(crate) fn write_object_pointer(
 ) -> io::Result<()> {
     ensure_object_layout(artifact_dir)?;
     let target = object_pointer_path(artifact_dir, key);
-    let temporary = target.with_file_name(format!(".{}.tmp-{}", target.file_name().unwrap_or_default().to_string_lossy(), std::process::id()));
+    let temporary = target.with_file_name(format!(
+        ".{}.tmp-{}",
+        target.file_name().unwrap_or_default().to_string_lossy(),
+        std::process::id()
+    ));
     {
         let mut file = OpenOptions::new()
             .create_new(true)
@@ -305,7 +324,10 @@ mod tests {
     fn little_endian_names_spread_low_byte_first() {
         assert_eq!(ArtifactObjectId(0).name(), "0000000000000000");
         assert_eq!(ArtifactObjectId(1).name(), "0100000000000000");
-        assert_eq!(ArtifactObjectId(0x0123_4567_89ab_cdef).name(), "efcdab8967452301");
+        assert_eq!(
+            ArtifactObjectId(0x0123_4567_89ab_cdef).name(),
+            "efcdab8967452301"
+        );
         assert_eq!(
             ArtifactObjectId::parse("efcdab8967452301"),
             Some(ArtifactObjectId(0x0123_4567_89ab_cdef))
@@ -332,7 +354,10 @@ mod tests {
         fs::create_dir_all(object_path(dir.path(), stale)).unwrap();
         let allocated = allocate_object_id(dir.path()).unwrap();
         assert_eq!(allocated, ArtifactObjectId(9));
-        assert_eq!(read_counter(&dir.path().join(COUNTER_FILE)).unwrap(), Some(9));
+        assert_eq!(
+            read_counter(&dir.path().join(COUNTER_FILE)).unwrap(),
+            Some(9)
+        );
     }
 
     #[test]
