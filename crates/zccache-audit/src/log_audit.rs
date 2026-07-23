@@ -1124,9 +1124,11 @@ mod tests {
         for registration in REGISTRY {
             let _ = (registration.rule)();
         }
+        // Normalize CRLF: on Windows CI runners git checkout may convert the
+        // registry file to CRLF while `registry_json()` always emits LF.
         assert_eq!(
             registry_json().unwrap(),
-            include_str!("../../../ci/log_audit_registry.json")
+            include_str!("../../../ci/log_audit_registry.json").replace("\r\n", "\n")
         );
     }
 }
