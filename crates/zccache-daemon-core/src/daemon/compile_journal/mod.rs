@@ -16,10 +16,10 @@
 //! - `journal_thread` — background writer thread, rotation, GC
 //! - `tests/` — all `#[cfg(test)]` tests, grouped per subject
 
+use std::cell::Cell;
 use std::fs;
 use std::future::Future;
 use std::path::Path;
-use std::cell::Cell;
 use std::sync::{mpsc, Mutex};
 use std::time::SystemTime;
 

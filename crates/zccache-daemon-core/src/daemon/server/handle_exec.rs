@@ -784,8 +784,10 @@ async fn try_exec_cache_hit(
         paired.push((abs, payload));
     }
 
-    let targets: Vec<NormalizedPath> =
-        paired.iter().map(|(absolute, _)| absolute.clone()).collect();
+    let targets: Vec<NormalizedPath> = paired
+        .iter()
+        .map(|(absolute, _)| absolute.clone())
+        .collect();
     let payloads_for_write: Vec<CachedPayload> =
         paired.into_iter().map(|(_, p)| p.clone()).collect();
     let has_staged_payload = payloads_for_write.iter().any(|payload| {

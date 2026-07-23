@@ -251,7 +251,10 @@ mod tests {
             let result = unsafe { libc::fstat(fd, stat.as_mut_ptr()) };
             if result == 0 {
                 let stat = unsafe { stat.assume_init() };
-                return Self::Open { dev: stat.st_dev, ino: stat.st_ino };
+                return Self::Open {
+                    dev: stat.st_dev,
+                    ino: stat.st_ino,
+                };
             }
             match std::io::Error::last_os_error().raw_os_error() {
                 Some(libc::EBADF) => Self::Closed,

@@ -342,11 +342,7 @@ pub fn write_event(event_name: &str, extra: serde_json::Value) {
 /// the process-global `ZCCACHE_CACHE_DIR`. State-owned events must use this
 /// entry point so cache-root audits inspect the same root that produced the
 /// artifact or failure.
-pub fn write_event_in_cache_root(
-    cache_root: &Path,
-    event_name: &str,
-    extra: serde_json::Value,
-) {
+pub fn write_event_in_cache_root(cache_root: &Path, event_name: &str, extra: serde_json::Value) {
     let log_path = cache_root.join("logs").join(live_log_filename());
     if let Err(e) = try_write_to_path(&log_path, event_name, &extra) {
         tracing::warn!(
@@ -665,7 +661,11 @@ mod tests {
     #[test]
     fn event_catalog_contains_phase_zero_and_existing_events_once() {
         let unique: std::collections::BTreeSet<_> = EVENT_ALL.iter().copied().collect();
-        assert_eq!(unique.len(), EVENT_ALL.len(), "EVENT_ALL must not duplicate names");
+        assert_eq!(
+            unique.len(),
+            EVENT_ALL.len(),
+            "EVENT_ALL must not duplicate names"
+        );
         assert!(unique.contains(EVENT_DESTINATION_WRITE_FAILED));
         assert!(unique.contains(EVENT_LEGACY_ARTIFACT_PATH_ACCESSED));
         assert!(unique.contains(EVENT_MISS_REASON_UNKNOWN));
@@ -684,7 +684,10 @@ mod tests {
                     .flatten()
             })
             .collect();
-        assert_eq!(unique, declared, "EVENT_ALL must contain every EVENT_* constant");
+        assert_eq!(
+            unique, declared,
+            "EVENT_ALL must contain every EVENT_* constant"
+        );
 
         let module_docs = include_str!("lifecycle.rs")
             .split_once("pub const EVENT_SPAWN")

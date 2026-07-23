@@ -216,11 +216,7 @@ fn check_unit_cache(
                         "multi-fast-hit",
                         &failure,
                     );
-                    invalidate_multi_artifact_after_failure(
-                        state,
-                        artifact_key_hex,
-                        &failure,
-                    );
+                    invalidate_multi_artifact_after_failure(state, artifact_key_hex, &failure);
                     state.fast_hit_cache.remove(&context_key);
                 }
             }
@@ -407,16 +403,10 @@ fn check_unit_cache(
                             miss_reason::DESTINATION_WRITE_FAILED
                         }
                         MaterializationFailure::CacheBlobMissing(_)
-                        | MaterializationFailure::CacheRead(_) => {
-                            miss_reason::NO_ARTIFACT_FOR_KEY
-                        }
+                        | MaterializationFailure::CacheRead(_) => miss_reason::NO_ARTIFACT_FOR_KEY,
                     };
                     if depgraph_claimed_hit {
-                        invalidate_multi_artifact_after_failure(
-                            state,
-                            &artifact_key_hex,
-                            &failure,
-                        );
+                        invalidate_multi_artifact_after_failure(state, &artifact_key_hex, &failure);
                     }
                 }
             }
@@ -434,11 +424,7 @@ fn check_unit_cache(
                 "multi-depgraph-hit",
                 &failure,
             );
-            invalidate_multi_artifact_after_failure(
-                state,
-                artifact_key_hex.as_str(),
-                &failure,
-            );
+            invalidate_multi_artifact_after_failure(state, artifact_key_hex.as_str(), &failure);
             miss_attribution = miss_reason::NO_ARTIFACT_FOR_KEY;
         }
     }

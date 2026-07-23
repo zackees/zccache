@@ -137,12 +137,7 @@ fn materialize_cached_file_observed(
     force_observation: bool,
 ) -> std::io::Result<StagedMaterializationStats> {
     verify_registered_blob(cache_file)?;
-    materialize_verified_cached_file_observed(
-        out_path,
-        cache_file,
-        delivery,
-        force_observation,
-    )
+    materialize_verified_cached_file_observed(out_path, cache_file, delivery, force_observation)
 }
 
 fn materialize_verified_cached_file_observed(
@@ -392,8 +387,7 @@ pub(in crate::daemon::server) fn write_cached_payload_with_policy_stats(
             Ok(StagedMaterializationStats::default())
         }
         CachedPayload::File(path) => {
-            verify_registered_blob(path)
-                .map_err(|error| classify_cache_read_error(path, error))?;
+            verify_registered_blob(path).map_err(|error| classify_cache_read_error(path, error))?;
             materialize_verified_cached_file_observed(out_path, path, delivery, false)
                 .map_err(|error| classify_file_materialization_error(out_path, path, error))
         }
@@ -412,7 +406,8 @@ where
     if targets.len() != payloads.len() {
         return Err(payload_count_mismatch(targets.len(), payloads.len()));
     }
-    let write_one = |out: &Path, payload: &CachedPayload|
+    let write_one = |out: &Path,
+                     payload: &CachedPayload|
      -> MaterializationResult<StagedMaterializationStats> {
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent)
@@ -476,10 +471,7 @@ where
     .is_ok()
 }
 
-pub(in crate::daemon::server) fn write_payloads_par_with_mtime_floor_and_policies_observed<
-    P,
-    R,
->(
+pub(in crate::daemon::server) fn write_payloads_par_with_mtime_floor_and_policies_observed<P, R>(
     targets: &[P],
     payloads: &[CachedPayload],
     floor_paths: &[R],
@@ -594,10 +586,7 @@ fn classify_file_materialization_error(
     }
 }
 
-fn classify_cache_read_error(
-    cache_path: &Path,
-    error: std::io::Error,
-) -> MaterializationFailure {
+fn classify_cache_read_error(cache_path: &Path, error: std::io::Error) -> MaterializationFailure {
     match std::fs::metadata(cache_path) {
         Err(source_error) if source_error.kind() == std::io::ErrorKind::NotFound => {
             cache_blob_missing(cache_path, source_error)

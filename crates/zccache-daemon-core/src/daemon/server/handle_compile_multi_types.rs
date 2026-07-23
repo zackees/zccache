@@ -136,9 +136,7 @@ mod tests {
     use super::*;
 
     fn content_hash(path: &Path) -> Option<crate::hash::ContentHash> {
-        Some(crate::hash::hash_bytes(
-            path.to_string_lossy().as_bytes(),
-        ))
+        Some(crate::hash::hash_bytes(path.to_string_lossy().as_bytes()))
     }
 
     fn warm_context(

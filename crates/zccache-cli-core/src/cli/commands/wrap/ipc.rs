@@ -634,9 +634,7 @@ fn relay_compile_response<W: Write, E: Write>(
     relay_compile_response_with_color(recv_result, stdout, stderr, false)
 }
 
-fn relay_compile_response_to_stdio(
-    recv_result: Option<crate::protocol::Response>,
-) -> RelayOutcome {
+fn relay_compile_response_to_stdio(recv_result: Option<crate::protocol::Response>) -> RelayOutcome {
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
     let color = stderr.is_terminal() && std::env::var_os("NO_COLOR").is_none();
@@ -679,9 +677,7 @@ fn relay_link_response<W: Write, E: Write>(
     relay_link_response_with_color(recv_result, stdout, stderr, false)
 }
 
-fn relay_link_response_to_stdio(
-    recv_result: Option<crate::protocol::Response>,
-) -> RelayOutcome {
+fn relay_link_response_to_stdio(recv_result: Option<crate::protocol::Response>) -> RelayOutcome {
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
     let color = stderr.is_terminal() && std::env::var_os("NO_COLOR").is_none();

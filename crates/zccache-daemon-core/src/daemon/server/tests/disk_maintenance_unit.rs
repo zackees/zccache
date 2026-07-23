@@ -42,12 +42,10 @@ async fn shutdown_wait_observes_atomic_request_without_notify_edge() {
     tokio::task::yield_now().await;
     shutdown_requested.store(true, Ordering::Release);
 
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), waiter)
-            .await
-            .expect("shutdown waiter should not sleep until the maintenance interval")
-            .expect("shutdown waiter task should complete")
-    );
+    assert!(tokio::time::timeout(Duration::from_millis(100), waiter)
+        .await
+        .expect("shutdown waiter should not sleep until the maintenance interval")
+        .expect("shutdown waiter task should complete"));
 }
 
 impl MaintenanceEnvironment for FixedEnvironment {

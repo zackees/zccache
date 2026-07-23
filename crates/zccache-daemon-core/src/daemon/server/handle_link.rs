@@ -441,12 +441,7 @@ pub(super) async fn handle_link_ephemeral(
             let materialize_started = std::time::Instant::now();
             let observed = write_payloads_par_observed(&targets, &payloads);
             if let Err(failure) = &observed {
-                report_materialization_failure(
-                    &state.cache_dir,
-                    &key_hex,
-                    "link-hit",
-                    failure,
-                );
+                report_materialization_failure(&state.cache_dir, &key_hex, "link-hit", failure);
             }
             let write_ok = if has_staged_payload {
                 record_staged_hit_materialization(

@@ -16,13 +16,7 @@ pub(in crate::daemon::server) fn legacy_artifact_path(
     call_site: &'static str,
 ) -> NormalizedPath {
     let path: NormalizedPath = artifact_dir.join(format!("{key_hex}_{index}")).into();
-    crate::artifact::record_legacy_artifact_access(
-        &path,
-        key_hex,
-        index,
-        purpose,
-        call_site,
-    );
+    crate::artifact::record_legacy_artifact_access(&path, key_hex, index, purpose, call_site);
     path
 }
 

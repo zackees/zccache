@@ -48,11 +48,7 @@ const STORE_LOCK: &str = ".store.lock";
 
 static STAGED_ARTIFACT_TMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-fn write_staged_lifecycle_event(
-    artifact_dir: &Path,
-    event_name: &str,
-    extra: serde_json::Value,
-) {
+fn write_staged_lifecycle_event(artifact_dir: &Path, event_name: &str, extra: serde_json::Value) {
     if let Some(cache_root) = artifact_dir.parent() {
         crate::core::lifecycle::write_event_in_cache_root(cache_root, event_name, extra);
     } else {

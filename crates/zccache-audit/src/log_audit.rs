@@ -878,8 +878,7 @@ impl CacheRootAuditGuard {
         test_name: impl Into<String>,
         rule_ids: impl IntoIterator<Item = RuleId>,
     ) -> Self {
-        self.options =
-            std::mem::take(&mut self.options).allow_for_test(test_name, rule_ids);
+        self.options = std::mem::take(&mut self.options).allow_for_test(test_name, rule_ids);
         self
     }
 

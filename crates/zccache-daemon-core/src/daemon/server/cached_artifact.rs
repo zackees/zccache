@@ -308,9 +308,7 @@ fn ensure_payloads_with_staged_policy_result(
         resolved
             .into_iter()
             .map(|payload| match payload {
-                crate::artifact::ResolvedArtifactPayload::File(path) => {
-                    CachedPayload::File(path)
-                }
+                crate::artifact::ResolvedArtifactPayload::File(path) => CachedPayload::File(path),
                 crate::artifact::ResolvedArtifactPayload::Bytes(bytes) => {
                     CachedPayload::Bytes(bytes)
                 }
@@ -415,7 +413,13 @@ mod tests {
     #[test]
     fn owned_clones_share_lazy_payload_initialization() {
         let dir = tempfile::tempdir().unwrap();
-        let key = "shared-cell";
+        // Artifact keys are validated as bounded hex strings by the central
+        // resolver (`zccache_artifact::layout::validate_key`); a
+        // human-readable slug like "shared-cell" is rejected before the
+        // resolver even looks at disk, which used to be masked by the
+        // pre-#1180 ad-hoc path formatting this test predates.
+        let key = "1".repeat(64);
+        let key = key.as_str();
         std::fs::write(dir.path().join(format!("{key}_0")), b"payload").unwrap();
         let cached = lazy_artifact(7);
         let owned_clone = cached.clone();
@@ -470,7 +474,10 @@ mod tests {
     #[test]
     fn failed_payload_discovery_can_be_retried() {
         let dir = tempfile::tempdir().unwrap();
-        let key = "retry-cell";
+        // See `owned_clones_share_lazy_payload_initialization` above: the
+        // key must be a bounded hex string to satisfy `layout::validate_key`.
+        let key = "2".repeat(64);
+        let key = key.as_str();
         let cached = lazy_artifact(7);
 
         assert!(ensure_payloads_with_staged_policy(&cached, dir.path(), key, false).is_none());

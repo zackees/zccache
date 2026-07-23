@@ -86,7 +86,9 @@ fn miss_reason_constants_match_documented_schema() {
 #[test]
 fn every_miss_reason_has_a_production_emitter() {
     let production_sources = [
-        include_str!("../../server/connection.rs"),
+        include_str!("../../server/connection/mod.rs"),
+        include_str!("../../server/connection/dispatch.rs"),
+        include_str!("../../server/connection/attribution.rs"),
         include_str!("../../server/compiler_hash.rs"),
         include_str!("../../server/handle_compile/pipeline/mod.rs"),
         include_str!("../../server/handle_compile_multi.rs"),

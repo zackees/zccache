@@ -19,8 +19,7 @@ mod system_includes;
 
 use super::super::*;
 use super::cached_hit::{
-    materialize_cached_compile_hit, CachedHitFailure, CachedHitMaterializeRequest,
-    CachedHitPhases,
+    materialize_cached_compile_hit, CachedHitFailure, CachedHitMaterializeRequest, CachedHitPhases,
 };
 use super::error_cache::{compile_failure_stderr, maybe_store_rustc_error_artifact};
 use super::hit_branches::{
@@ -512,7 +511,8 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 hash_headers_ns,
                 depgraph_check_ns,
             })
-            .await {
+            .await
+            {
                 Ok(response) => {
                     record_session_stat(&state.sessions, &sid, |t| {
                         t.record_depgraph_hit_artifact_hit();
@@ -554,12 +554,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             // version of this branch invalidated inline too, racing
             // the helper to `cleared=0` and breaking the test.
             if let CachedHitFailure::CacheBlobMissing(evidence) = &failure {
-                invalidate_missing_depgraph_artifact(
-                    state,
-                    &sid,
-                    &artifact_key_hex,
-                    evidence,
-                );
+                invalidate_missing_depgraph_artifact(state, &sid, &artifact_key_hex, evidence);
             }
         }
         crate::depgraph::CacheVerdict::SourceChanged { artifact_key } => {

@@ -857,7 +857,10 @@ fn multi_hit_destination_failure_is_not_cache_blob_loss() {
         result,
         Err(MaterializationFailure::DestinationWrite(_))
     ));
-    assert!(blob.exists(), "destination failures must preserve the cache blob");
+    assert!(
+        blob.exists(),
+        "destination failures must preserve the cache blob"
+    );
 }
 
 #[tokio::test]
@@ -882,7 +885,10 @@ async fn destination_failure_survives_and_journals_concrete_reason() {
         failure,
         MaterializationFailure::DestinationWrite(_)
     ));
-    assert!(blob.exists(), "destination failure must preserve cache data");
+    assert!(
+        blob.exists(),
+        "destination failure must preserve cache data"
+    );
     assert_eq!(reason, Some(miss_reason::DESTINATION_WRITE_FAILED));
     let entry = JournalEntry::new(
         JournalContext {
@@ -911,9 +917,7 @@ async fn destination_failure_survives_and_journals_concrete_reason() {
     let event = lifecycle
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .find(|row| {
-            row["event"] == crate::core::lifecycle::EVENT_DESTINATION_WRITE_FAILED
-        })
+        .find(|row| row["event"] == crate::core::lifecycle::EVENT_DESTINATION_WRITE_FAILED)
         .expect("destination lifecycle event");
     assert_eq!(event["evicted"], false);
     assert_eq!(event["artifact_key"], "artifact-key");

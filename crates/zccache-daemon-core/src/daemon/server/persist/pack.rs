@@ -167,13 +167,8 @@ pub(in crate::daemon::server) fn persist_artifact_payloads_with_legacy_purpose(
     // `crates/zccache-daemon/benches/persist_payloads.rs`.
     if payloads.len() < PAR_WRITE_THRESHOLD {
         for (i, payload) in payloads.iter().enumerate() {
-            let cache_path = legacy_artifact_path(
-                artifact_dir,
-                key_hex,
-                i,
-                legacy_purpose,
-                call_site,
-            );
+            let cache_path =
+                legacy_artifact_path(artifact_dir, key_hex, i, legacy_purpose, call_site);
             persist_artifact_output(&cache_path, payload)?;
         }
         return Ok(());
@@ -185,13 +180,8 @@ pub(in crate::daemon::server) fn persist_artifact_payloads_with_legacy_purpose(
         .par_iter()
         .enumerate()
         .map(|(i, payload)| {
-            let cache_path = legacy_artifact_path(
-                artifact_dir,
-                key_hex,
-                i,
-                legacy_purpose,
-                call_site,
-            );
+            let cache_path =
+                legacy_artifact_path(artifact_dir, key_hex, i, legacy_purpose, call_site);
             persist_artifact_output(&cache_path, payload)
         })
         .reduce(|| Ok(()), |a, b| a.and(b))

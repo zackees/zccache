@@ -114,13 +114,8 @@ fn warm_restores_rust_artifacts_to_correct_paths() {
 
     // Artifact 3: NOT Rust (C++ object file) — should be filtered out
     let key3 = "eeeeeeeeffffffff";
-    let idx3 = crate::artifact::ArtifactIndex::new(
-        vec!["foo.o".to_string()],
-        vec![11],
-        vec![],
-        vec![],
-        0,
-    );
+    let idx3 =
+        crate::artifact::ArtifactIndex::new(vec!["foo.o".to_string()], vec![11], vec![], vec![], 0);
     store.insert(key3, &idx3);
     std::fs::write(artifact_dir.join(format!("{key3}_0")), b"object-file").unwrap();
 

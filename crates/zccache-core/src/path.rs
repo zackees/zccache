@@ -182,8 +182,7 @@ impl NormalizedPath {
         base: impl AsRef<Path>,
     ) -> Result<&Path, std::path::StripPrefixError> {
         let base = Self::new(base);
-        Path::new(self.key.as_ref())
-            .strip_prefix(Path::new(base.key.as_ref()))
+        Path::new(self.key.as_ref()).strip_prefix(Path::new(base.key.as_ref()))
     }
 }
 
@@ -396,10 +395,7 @@ mod tests {
     #[test]
     fn normalized_strip_prefix_normalizes_dot_components() {
         let path = NormalizedPath::new("/sdk/include/../include/vector");
-        assert_eq!(
-            path.strip_prefix("/sdk/./include"),
-            Ok(Path::new("vector"))
-        );
+        assert_eq!(path.strip_prefix("/sdk/./include"), Ok(Path::new("vector")));
     }
 
     #[cfg(windows)]

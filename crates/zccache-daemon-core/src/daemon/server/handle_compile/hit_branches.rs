@@ -2,8 +2,7 @@
 
 use super::super::*;
 use super::cached_hit::{
-    materialize_cached_compile_hit, CachedHitFailure, CachedHitMaterializeRequest,
-    CachedHitPhases,
+    materialize_cached_compile_hit, CachedHitFailure, CachedHitMaterializeRequest, CachedHitPhases,
 };
 use crate::depgraph::depfile::user_depfile_destination;
 use crate::depgraph::UserDepFlags;
