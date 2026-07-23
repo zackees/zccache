@@ -843,18 +843,11 @@ pub(super) async fn handle_compile_multi(
                         persist: None,
                     };
                 }
-                let cache_file_path = state_task
-                    .artifact_dir
-                    .join(format!("{artifact_key_hex}_0"));
-
                 // Build the cached artifact directly (avoid constructing the
                 // full ArtifactData wrapper just to compute the same fields).
-                // Payloads point at the *cache* file (the just-hardlinked
-                // copy), not the original output path: cargo may rewrite
-                // the output on the next build via tmp+rename, which would
-                // detach the old inode from the user-visible path while the
-                // cache-side hardlink keeps it alive — the cache copy is the
-                // stable reference.
+                // Keep payloads lazy so the first hit resolves whichever
+                // persistence layout is active. Staged artifacts do not live
+                // at the legacy `{key}_0` path.
                 let empty = Arc::new(Vec::new());
                 let meta = ArtifactIndex::new(
                     vec![output_name],
@@ -863,13 +856,7 @@ pub(super) async fn handle_compile_multi(
                     Arc::clone(&empty),
                     0,
                 );
-                let cached = CachedArtifact {
-                    meta: meta.clone(),
-                    stdout: Arc::clone(&empty),
-                    stderr: Arc::clone(&empty),
-                    payloads: Some(Arc::from(vec![CachedPayload::File(cache_file_path)])),
-                    last_used: std::time::Instant::now(),
-                };
+                let cached = CachedArtifact::from_index(meta.clone());
 
                 state_task
                     .artifacts

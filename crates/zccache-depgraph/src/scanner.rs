@@ -1073,7 +1073,9 @@ mod tests {
             user: vec![user_dir.clone().into()],
             system: vec![system_dir.clone().into()],
             ..Default::default()
-        };
+        }
+        .canonicalized();
+        let user_dir = std::fs::canonicalize(user_dir).unwrap();
         let cache = RecursiveScanCache::default();
 
         let result = scan_recursive_cached_pruned(

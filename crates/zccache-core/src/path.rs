@@ -155,6 +155,21 @@ impl NormalizedPath {
     pub fn join(&self, path: impl AsRef<Path>) -> Self {
         Self::new(self.path.join(path))
     }
+
+    /// Return whether this path is contained beneath `base`, using the same
+    /// platform-aware representation as equality and hashing.
+    ///
+    /// `Path::starts_with` compares the stored spelling directly. That is not
+    /// sufficient for a `NormalizedPath`: Windows canonicalization can add an
+    /// extended-length prefix, and Windows/macOS paths can differ only in
+    /// casing while still naming the same location. Parsing the normalized
+    /// keys back into paths preserves component boundaries, avoiding ordinary
+    /// string-prefix false positives such as `/include2` beneath `/include`.
+    #[must_use]
+    pub fn starts_with(&self, base: impl AsRef<Path>) -> bool {
+        let base = Self::new(base);
+        Path::new(self.key.as_ref()).starts_with(Path::new(base.key.as_ref()))
+    }
 }
 
 impl AsRef<Path> for NormalizedPath {
@@ -348,6 +363,27 @@ pub fn normalize_msys_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalized_starts_with_preserves_component_boundaries() {
+        let path = NormalizedPath::new("/sdk/include/vector");
+        assert!(path.starts_with("/sdk/include"));
+        assert!(!path.starts_with("/sdk/inc"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normalized_starts_with_accepts_extended_prefix_and_case_variants() {
+        let path = NormalizedPath::new(r"C:\Users\Builder\include\vector");
+        assert!(path.starts_with(r"\\?\c:\users\BUILDER\include"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn normalized_starts_with_accepts_macos_case_variants() {
+        let path = NormalizedPath::new("/private/var/folders/T/include/vector");
+        assert!(path.starts_with("/PRIVATE/VAR/FOLDERS/t/include"));
+    }
 
     #[test]
     fn normalize_removes_dot() {

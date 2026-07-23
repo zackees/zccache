@@ -194,6 +194,10 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
         };
     }
 
+    // Static scans canonicalize resolved headers. Resolve include roots once
+    // so fallback filtering uses the same path spelling on every platform.
+    let include_search = include_search.canonicalized();
+
     let mut user_depfile_capture = None;
     let mut depfile_parse_warning = None;
     let mut used_static_fallback = false;

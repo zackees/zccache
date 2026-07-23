@@ -228,25 +228,28 @@ impl InputSnapshot {
         scan_cache: &crate::depgraph::scanner::RecursiveScanCache,
         dependency_mode: DependencyDiscoveryMode,
     ) -> Self {
+        // `scan_recursive*` canonicalizes resolved headers. Canonicalize the
+        // roots once as well so pruning compares equivalent path spellings.
+        let include_search = ctx.include_search.canonicalized();
         let scan = match dependency_mode {
             DependencyDiscoveryMode::AllHeaders => {
                 crate::depgraph::scanner::scan_recursive_cached(
                     source,
-                    &ctx.include_search,
+                    &include_search,
                     scan_cache,
                 )
             }
             DependencyDiscoveryMode::SkipSystemHeaders => {
                 crate::depgraph::scanner::scan_recursive_cached_pruned(
                     source,
-                    &ctx.include_search,
+                    &include_search,
                     scan_cache,
                     &|including_file, directive, path| {
                         dependency_mode.tracks_static_include(
                             including_file,
                             directive,
                             path,
-                            &ctx.include_search,
+                            &include_search,
                         )
                     },
                 )
