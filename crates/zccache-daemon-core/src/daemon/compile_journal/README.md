@@ -1,8 +1,13 @@
 # compile_journal
 
-JSONL compile journal for build replay. Records every compile/link command
-with enough detail to replay the entire build. One JSON object per line,
-written to `{cache_dir}/logs/compile_journal.jsonl`.
+JSONL compile journal for build diagnostics and partial replay. Records every
+compile/link command as one JSON object per line, written to
+`{cache_dir}/logs/compile_journal.jsonl`.
+
+The compiler receives its original environment, while the durable `env` field
+is restricted to a secret-safe diagnostic allowlist. Exact replay therefore
+requires an independently captured trusted environment; see
+`docs/journal-schema.md`.
 
 Originally a single 2,072-LOC `compile_journal.rs`; split here so each file
 stays well under 1,000 LOC. No behavior change — purely a code split. Public

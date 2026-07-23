@@ -13,9 +13,9 @@ scripts) can rely on.
 | `ts`           | string          | yes            | ISO 8601 UTC timestamp of the record write. |
 | `outcome`      | string          | yes            | One of `hit`, `miss`, `error`, `cached_error`, `link_hit`, `link_miss`. |
 | `compiler`     | string          | yes            | Absolute path to the compiler binary as the client invoked it. |
-| `args`         | array of string | yes            | Full argument list, suitable for replay. |
+| `args`         | array of string | yes            | Full argument list, suitable for diagnostic replay when combined with an independently captured environment. |
 | `cwd`          | string          | yes            | Working directory at request time. |
-| `env`          | array of `[k, v]` | no           | Omitted when the client passed `None`. |
+| `env`          | array of `[k, v]` | no           | Sanitized build-diagnostic allowlist. Secret-looking names/values and all non-allowlisted variables are omitted. |
 | `exit_code`    | integer         | yes            | Process exit code. `-1` is reserved for daemon-side errors. |
 | `session_id`   | string \| null  | yes            | UUID for session-attached requests; `null` for ephemeral. |
 | `latency_ns`   | integer         | yes            | Wall-clock nanoseconds (per the project's `_ns` convention). |
@@ -25,6 +25,31 @@ scripts) can rely on.
 | `miss_reason`  | string          | on misses only | See below. |
 | `miss_diff`    | object          | no             | Evidence bucket; only the dimension that changed is populated. |
 | `self_profile_ns` | object       | no             | Sub-phase timings (`hash_inputs`, `lookup`, `decompress`, `store`). |
+
+## Environment security and replay
+
+The journal is a durable diagnostic record, not a credential store. zccache
+passes the original request environment to the compiler unchanged, but writes
+only a narrow diagnostic subset to `env`: compiler/linker selections and
+flags, Cargo package/configuration metadata, target/profile fields, and a few
+platform SDK paths. The exact allowlist is defined in
+`daemon/compile_journal/env.rs`.
+
+Filtering is deny-first. Names that indicate tokens, passwords, secrets, keys,
+authentication, credentials, or cookies are omitted even when they have an
+otherwise allowed prefix such as `CARGO_FEATURE_` or `DEP_`. Values resembling
+GitHub/PyPI/npm/cloud tokens, bearer/basic credentials, JWTs, private keys,
+credential-bearing URLs, or opaque high-entropy tokens are also omitted.
+Omission is preferred to a redaction marker because credential variable names
+can themselves reveal sensitive service usage.
+
+This is a compatibility change for replay consumers: the persisted `env` is
+not sufficient to reconstruct the complete compiler process environment.
+Consumers may continue to use `compiler`, `args`, and `cwd`, but exact replay
+must supply an independently captured trusted environment. Existing records
+with a full `env` remain parseable; consumers should already tolerate a missing
+optional `env` field. The versioned cross-repo regression fixture is
+`crates/zccache-daemon-core/src/daemon/compile_journal/tests/compile_journal_env_security_v1.json`.
 
 ## `miss_reason` enum
 

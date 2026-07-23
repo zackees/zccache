@@ -163,7 +163,7 @@ See [`docs/FEATURE-MATRIX.md`](docs/FEATURE-MATRIX.md) for the long-form view wi
 | Filesystem watcher (notify-backed) | yes | no |
 | Content-addressed artifact store | yes | yes |
 | Protocol versioning (wire-format bump policy) | yes | partial |
-| Compile journal (JSONL replay log) | yes | no |
+| Compile journal (JSONL diagnostics) | yes | no |
 | Session stats / per-build hit rates | yes | partial |
 | Crash dumper (CLI + daemon) | yes | no |
 
@@ -1149,19 +1149,19 @@ contention.
 **Persistent cache:** Artifacts are stored in `~/.zccache/artifacts/`
 and survive daemon restarts. No need to re-warm the cache after a reboot.
 
-**Compile journal (build replay):** Every compile and link command is recorded
-to `~/.zccache/logs/compile_journal.jsonl` as a JSONL file with enough
-detail to replay the entire build:
+**Compile journal (diagnostics and partial replay):** Every compile and link
+command is recorded to `~/.zccache/logs/compile_journal.jsonl` as JSONL:
 
 ```json
 {"ts":"2026-03-17T10:30:00.123Z","outcome":"hit","compiler":"/usr/bin/clang++","args":["-c","foo.cpp","-o","foo.o"],"cwd":"/project/build","env":[["CC","clang"]],"exit_code":0,"session_id":"uuid","latency_ns":1234567}
 ```
 
 Fields: `ts` (ISO 8601 UTC), `outcome` (`hit`/`miss`/`error`/`link_hit`/`link_miss`),
-`compiler` (full path), `args` (full argument list), `cwd`, `env` (omitted when
-inheriting daemon env), `exit_code`, `session_id` (null for ephemeral),
+`compiler` (full path), `args` (full argument list), `cwd`, `env` (a narrow,
+secret-safe build-diagnostic allowlist), `exit_code`, `session_id` (null for ephemeral),
 `latency_ns` (wall-clock nanoseconds). One JSON object per line — pipe through
-`jq` to filter, or replay builds by extracting compiler + args + cwd.
+`jq` to filter. Exact replay requires an independently captured trusted
+environment; zccache never changes the environment passed to the compiler.
 
 **Per-session compile journal:** Pass `--journal <path>` to `session-start` to
 write a dedicated JSONL log containing only the commands from that session.

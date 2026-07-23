@@ -424,13 +424,13 @@ pub(super) async fn handle_connection(
                 stdin,
             } => {
                 let handler = async {
-                    let ctx = JournalContext {
-                        compiler: compiler.to_string_lossy().into_owned(),
+                    let ctx = JournalContext::new(
+                        compiler.to_string_lossy().into_owned(),
                         args,
-                        cwd: cwd.to_string_lossy().into_owned(),
-                        env: env.clone(),
-                        session_id: None,
-                    };
+                        cwd.to_string_lossy().into_owned(),
+                        env.clone(),
+                        None,
+                    );
                     let resp = handle_compile_ephemeral(
                         &state,
                         client_pid,
@@ -552,13 +552,13 @@ pub(super) async fn handle_connection(
                 env,
             } => {
                 let handler = async {
-                    let ctx = JournalContext {
-                        compiler: tool.to_string_lossy().into_owned(),
+                    let ctx = JournalContext::new(
+                        tool.to_string_lossy().into_owned(),
                         args,
-                        cwd: cwd.to_string_lossy().into_owned(),
-                        env: env.clone(),
-                        session_id: None,
-                    };
+                        cwd.to_string_lossy().into_owned(),
+                        env.clone(),
+                        None,
+                    );
                     let resp =
                         handle_link_ephemeral(&state, client_pid, &tool, &ctx.args, &cwd, env)
                             .await;
@@ -810,13 +810,13 @@ async fn compile_response_for_session(
         Some(sid) => redact_session_private_env_for_journal(&state.sessions, &sid, &env),
         None => env.clone(),
     };
-    let ctx = JournalContext {
-        compiler: compiler.to_string_lossy().into_owned(),
+    let ctx = JournalContext::new(
+        compiler.to_string_lossy().into_owned(),
         args,
-        cwd: cwd.to_string_lossy().into_owned(),
-        env: journal_env,
-        session_id: Some(session_id),
-    };
+        cwd.to_string_lossy().into_owned(),
+        journal_env,
+        Some(session_id),
+    );
     #[expect(
         clippy::expect_used,
         reason = "ctx.session_id is set to Some(session_id) immediately above (line 704); the Option wrap is purely for the JournalContext return field"

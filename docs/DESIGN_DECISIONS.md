@@ -630,11 +630,11 @@ v1 is deliberately minimal. The goal is a correct, useful tool for the most comm
 
 **Context:** Debugging build failures, auditing cache behavior, and replaying builds all require knowing the exact commands that were executed. The daemon's `daemon.log` is human-readable but not machine-parseable, and it doesn't capture enough detail (full args, env, working directory) to replay a build.
 
-**Decision:** Record every compile and link command to `~/.zccache/logs/compile_journal.jsonl` as one JSON object per line. The schema captures: ISO 8601 timestamp, outcome (`hit`/`miss`/`error`/`cached_error`/`link_hit`/`link_miss`), full compiler path, full argument list, working directory, environment variables (when explicitly passed), exit code, session ID, and wall-clock latency in nanoseconds.
+**Decision:** Record every compile and link command to `~/.zccache/logs/compile_journal.jsonl` as one JSON object per line. The schema captures: ISO 8601 timestamp, outcome (`hit`/`miss`/`error`/`cached_error`/`link_hit`/`link_miss`), full compiler path, full argument list, working directory, a secret-safe build-diagnostic environment allowlist, exit code, session ID, and wall-clock latency in nanoseconds. The compiler still receives the original environment unchanged; only the durable journal copy is filtered.
 
 **Rationale:**
 - **JSONL** is trivially parseable by `jq`, Python, and any JSON library. One object per line means no framing issues and the file is append-only.
-- **Full argument list + cwd + env** is sufficient to replay any recorded command exactly: `cd $cwd && env $env $compiler $args`.
+- **Full argument list + cwd + sanitized env** supports diagnostics and partial replay without making the journal a credential store. Exact replay must provide an independently captured trusted environment; non-allowlisted variables and secret-looking names/values are deliberately omitted.
 - **Lock-free channel + background thread** pattern (same as `EventLogger`) means zero contention on the compilation hot path. Serialization (`serde_json`) happens on the caller's tokio task; the background thread only does file I/O.
 - **Shared delete on Windows** (`FILE_SHARE_DELETE`) allows log rotation or deletion while the daemon holds the file open.
 

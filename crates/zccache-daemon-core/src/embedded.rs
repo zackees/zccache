@@ -1246,7 +1246,13 @@ mod journal_tests {
             compiler: PathBuf::from("/nonexistent/compiler-that-never-runs").into(),
             args: vec!["--version".into()],
             cwd: std::env::current_dir().expect("cwd").into(),
-            env: Vec::new(),
+            env: vec![
+                ("CC".into(), "clang".into()),
+                (
+                    "GITHUB_TOKEN".into(),
+                    "ghp_11AA22BB33CC44DD55EE66FF77GG88HH".into(),
+                ),
+            ],
             stdin: Vec::new(),
         }
     }
@@ -1319,6 +1325,15 @@ mod journal_tests {
                 .unwrap_or_default()
                 .contains("compiler-that-never-runs"),
             "journal must record the embedded compiler path: {v}"
+        );
+        assert_eq!(
+            v["env"],
+            serde_json::json!([["CC", "clang"]]),
+            "embedded journal must retain safe diagnostics and omit secrets: {v}"
+        );
+        assert!(
+            !line.contains("GITHUB_TOKEN") && !line.contains("ghp_"),
+            "embedded journal leaked a secret: {line}"
         );
 
         let report = service.shutdown(ShutdownMode::Graceful).await;

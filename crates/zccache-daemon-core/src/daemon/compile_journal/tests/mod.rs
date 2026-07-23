@@ -5,10 +5,11 @@
 use std::fs;
 use std::time::{Duration, Instant};
 
-use super::{JournalContext, JournalEntry};
+use super::{sanitize_journal_env, JournalContext, JournalEntry};
 
 mod derive;
 mod entry;
+mod env;
 mod journal_file;
 mod miss_reason;
 mod outcome;
@@ -54,7 +55,7 @@ pub(super) fn legacy_entry(
         compiler: compiler.to_string(),
         args,
         cwd: cwd.to_string(),
-        env,
+        env: sanitize_journal_env(env),
         exit_code,
         session_id,
         latency_ns,

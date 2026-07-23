@@ -268,10 +268,10 @@
 
 - id: compile-journal
   category: Architecture
-  feature: Compile journal (JSONL replay log)
+  feature: Compile journal (JSONL diagnostics)
   zccache: yes
   sccache: no
-  notes: Every compile is recorded as JSONL, enabling offline replay and debugging.
+  notes: Every compile is recorded as secret-safe JSONL for diagnostics and partial replay; exact replay requires an independently captured trusted environment.
   evidence: docs/journal-schema.md
 
 - id: session-stats
