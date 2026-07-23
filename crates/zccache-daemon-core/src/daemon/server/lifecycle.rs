@@ -57,6 +57,10 @@ pub(super) fn new_shared_state(
     let instance = SERVER_INSTANCE.fetch_add(1, Ordering::Relaxed);
     let artifact_dir = crate::core::config::artifacts_dir_from_cache_dir(cache_dir);
     std::fs::create_dir_all(&artifact_dir).ok();
+    ensure_object_layout(&artifact_dir)?;
+    if let Err(error) = queue_orphaned_objects(&artifact_dir) {
+        tracing::warn!(%error, "failed to queue orphaned artifact objects");
+    }
 
     // Artifact loading is deferred to a background task in run() so the
     // daemon starts accepting connections immediately (Bug 6 fix).
