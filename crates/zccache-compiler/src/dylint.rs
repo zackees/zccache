@@ -4,7 +4,7 @@
 //! dependency graph. A nested driver request is cacheable only when every
 //! library named by `DYLINT_LIBS` can be content-hashed.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use zccache_core::NormalizedPath;
 use zccache_hash::ContentHash;
@@ -84,7 +84,7 @@ where
         .rev()
         .find_map(|(name, value)| (name == DYLINT_LIBS_ENV).then_some(value))
         .ok_or_else(|| format!("{DYLINT_LIBS_ENV} is missing; running uncached"))?;
-    let libraries: Vec<PathBuf> = serde_json::from_str(encoded)
+    let libraries: Vec<NormalizedPath> = serde_json::from_str(encoded)
         .map_err(|error| format!("{DYLINT_LIBS_ENV} is invalid JSON: {error}; running uncached"))?;
     if libraries.is_empty() {
         return Err(format!(
@@ -99,18 +99,18 @@ where
     hasher.update(inner_rustc_identity.as_bytes());
     hasher.update(&[0]);
     for library in libraries {
-        let path = if library.is_absolute() {
+        let path = if library.as_path().is_absolute() {
             library
         } else {
-            cwd.join(library)
+            NormalizedPath::from(cwd.join(library.as_path()))
         };
-        let library_name = path.file_name().ok_or_else(|| {
+        let library_name = path.as_path().file_name().ok_or_else(|| {
             format!(
                 "Dylint library {} has no file name; running uncached",
                 path.display()
             )
         })?;
-        let content = hash_library(&path)?;
+        let content = hash_library(path.as_path())?;
         hasher.update(library_name.to_string_lossy().as_bytes());
         hasher.update(b"=");
         hasher.update(content.as_bytes());
@@ -137,12 +137,12 @@ where
     Ok(true)
 }
 
-fn resolve_input_path(input: &str, cwd: &Path) -> PathBuf {
+fn resolve_input_path(input: &str, cwd: &Path) -> NormalizedPath {
     let path = Path::new(input);
     if path.is_absolute() {
-        path.to_path_buf()
+        NormalizedPath::from(path)
     } else {
-        cwd.join(path)
+        NormalizedPath::from(cwd.join(path))
     }
 }
 
