@@ -148,64 +148,25 @@ fn spawn_index_writer(server: &mut DaemonServer) -> tokio::task::JoinHandle<()> 
     tokio::spawn(run_index_writer(rx, store, shutdown))
 }
 
-/// Mirrors the production graceful-shutdown drain (`server::run`'s Shutdown
-/// arm): signal + join the index-writer task, flush the artifact store, and
-/// only then persist the depgraph. Without this — the same class of gap
-/// issue #1161 describes for the real integration harness — a bare
-/// `drop(server)` right after a compile response races durability: the
-/// WAL send is async and unconsumed outside `run()`, so the on-disk index
-/// can lag the in-memory `state.artifacts` insert made by the miss path.
+/// Graceful-shutdown equivalent for this harness: run the EXACT production
+/// durability drain (`wal::drain_durable_state_for_shutdown`, the same
+/// function `DaemonServer::run`'s Shutdown arm calls — pending persist
+/// tasks → publication write barrier → index-writer WAL flush ack → writer
+/// stop → final store flush), then snapshot the depgraph while the returned
+/// publication guard is still held, mirroring `run()`'s ordering.
+///
+/// Using the shared production function (not a test-side approximation) is
+/// the point: the single-file miss path backgrounds its artifact persist
+/// behind `persist_semaphore` (`handle_compile/miss_store.rs`) and only its
+/// `pending_cache_writes` registration makes that observable — a previous
+/// version of this helper polled `in_flight_bytes` instead and still raced
+/// CI timing on the Linux runner (#1161).
 async fn quiesce_and_persist(
     server: &DaemonServer,
     index_writer_handle: tokio::task::JoinHandle<()>,
-    expected_contexts_with_artifact: usize,
 ) {
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
-        loop {
-            if server.state.dep_graph.load().contexts_with_artifact_key()
-                >= expected_contexts_with_artifact
-            {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("timed out waiting for depgraph contexts to gain artifact keys");
-
-    // The single-file miss path backgrounds its artifact persist behind
-    // `persist_semaphore` (`handle_compile/miss_store.rs`), unlike the
-    // multi-file path's synchronous inline hardlink. Wait for
-    // `in_flight_bytes` to drain to zero so the artifact bytes are actually
-    // on disk before we flush the index / snapshot the depgraph — otherwise
-    // this harness reproduces issue #1161's publish-vs-shutdown race instead
-    // of the bug under test.
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
-        loop {
-            if server
-                .state
-                .in_flight_bytes
-                .load(std::sync::atomic::Ordering::Relaxed)
-                == 0
-            {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("timed out waiting for in-flight artifact persistence to drain");
-
-    server.state.index_writer_shutdown.notify_one();
-    tokio::time::timeout(std::time::Duration::from_secs(5), index_writer_handle)
-        .await
-        .expect("index writer task must drain within timeout")
-        .expect("index writer task must not panic");
-
-    std::sync::Arc::clone(&server.state.artifact_store)
-        .flush_async()
-        .await
-        .expect("artifact index flush must succeed");
+    let _publication_guard =
+        drain_durable_state_for_shutdown(&server.state, Some(index_writer_handle)).await;
     save_dep_graph_to_disk(server);
 }
 
@@ -263,9 +224,9 @@ async fn multi_file_compile_hits_warm_after_restart() {
     let cold_a = std::fs::read(&out_a).expect("cold multi_a.o must exist");
     let cold_b = std::fs::read(&out_b).expect("cold multi_b.o must exist");
 
-    // Quiesce async publication + persist the depgraph exactly like a
-    // graceful daemon shutdown does (2 contexts: multi_a.c + multi_b.c).
-    quiesce_and_persist(&cold_server, index_writer_handle, 2).await;
+    // Run the production shutdown drain + persist the depgraph, exactly
+    // like `DaemonServer::run`'s Shutdown arm does.
+    quiesce_and_persist(&cold_server, index_writer_handle).await;
     drop(cold_server);
 
     // Clear outputs so the warm assertion below can only pass via a real
@@ -379,7 +340,7 @@ async fn single_file_compile_hits_warm_after_restart() {
     }
     let cold_bytes = std::fs::read(&out).expect("cold single.o must exist");
 
-    quiesce_and_persist(&cold_server, index_writer_handle, 1).await;
+    quiesce_and_persist(&cold_server, index_writer_handle).await;
     drop(cold_server);
     std::fs::remove_file(&out).unwrap();
 

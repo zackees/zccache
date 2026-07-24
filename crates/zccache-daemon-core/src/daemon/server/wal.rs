@@ -44,6 +44,160 @@ pub(super) fn wal_max_pending() -> usize {
         .max(1)
 }
 
+/// Shutdown budget for the deterministic index-writer WAL drain (#1161).
+/// Matches the embedded engine's 30 s flush bound (`embedded.rs`); a full
+/// WAL flush snapshots the whole in-memory index to disk, which can take
+/// seconds under I/O contention on a small (2-core CI) host.
+const INDEX_WRITER_SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Shutdown budget for joining the index-writer task after a successful
+/// drain. The drain ack proves the WAL is already empty and flushed, so the
+/// join is normally instantaneous; the bound only guards a wedged task.
+const INDEX_WRITER_SHUTDOWN_JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Shutdown budget for the deferred-persist drain (`pending_cache_writes`).
+/// Matches the pre-existing bound in `run.rs`'s Shutdown arm (#799).
+const PENDING_WRITES_SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
+/// Shutdown-time durability drain (#1161).
+///
+/// Everything a graceful shutdown must quiesce BEFORE snapshotting the
+/// depgraph, in dependency order:
+///
+/// 1. `pending_cache_writes` — deferred rustc/C++ persist tasks publish
+///    their durable `ArtifactIndex` rows only after the cache files land on
+///    disk (#799). They register before the compile response and complete
+///    after their `IndexWriterCommand::Insert` send, so awaiting them
+///    guarantees every backgrounded persist has finished its disk write and
+///    queued its index row.
+/// 2. The publication write guard — every detached publisher holds a read
+///    guard until it finishes, so acquiring the write guard proves no new
+///    index row can arrive after this point.
+/// 3. The index-writer WAL flush ack — `IndexWriterCommand::Flush` is
+///    FIFO-ordered behind every queued Insert, so its acknowledgement proves
+///    every durable-index row has been applied to the in-memory store AND
+///    snapshotted to disk. Mirrors the embedded engine's flush-then-stop
+///    sequence (`embedded.rs`).
+/// 4. Stop the writer task (bounded join; the WAL is already empty).
+/// 5. Final `ArtifactStore` flush — covers call sites that insert directly
+///    into the store without going through the WAL.
+///
+/// Returns the held publication write guard so the caller can keep
+/// publishers blocked through its own depgraph/metadata snapshotting.
+///
+/// Called from `DaemonServer::run`'s Shutdown arm AND from restart-shaped
+/// tests that drive the compile pipeline without `run()`
+/// (`tests/multi_restart_context_key.rs`) — the tests exercise this exact
+/// production drain rather than a parallel approximation.
+///
+/// Loud-forensics rule: every budget breach emits BOTH a `tracing::warn!`
+/// AND a durable lifecycle event.
+pub(super) async fn drain_durable_state_for_shutdown(
+    state: &SharedState,
+    index_writer_handle: Option<tokio::task::JoinHandle<()>>,
+) -> tokio::sync::RwLockWriteGuard<'_, ()> {
+    // 1. Deferred persist tasks (#799).
+    let pending_drained = pending_writes::await_all(
+        &state.pending_cache_writes,
+        PENDING_WRITES_SHUTDOWN_DRAIN_TIMEOUT,
+    )
+    .await;
+    if !pending_drained {
+        tracing::warn!(
+            pending = state.pending_cache_writes.len(),
+            "timed out waiting for pending artifact writes before WAL drain"
+        );
+    }
+
+    // 2. Block all publishers for the remainder of shutdown.
+    let publication_guard = state.artifact_publication.write().await;
+
+    // 3. Deterministic WAL drain. The standalone daemon previously went
+    // straight to notify + 2 s join + silent `abort()`, which on a slow
+    // 2-core host could abort the writer mid-drain and lose queued rows —
+    // the warm daemon after restart then misses the artifacts the cold
+    // daemon had already persisted (observed as the Integration
+    // `legacy_path_validation` warm-multi miss).
+    let drain_start = std::time::Instant::now();
+    let index_writer_drained =
+        flush_index_writer(&state.index_writer_tx, INDEX_WRITER_SHUTDOWN_DRAIN_TIMEOUT).await;
+    if !index_writer_drained {
+        tracing::warn!(
+            event = crate::core::lifecycle::EVENT_EMBEDDED_FLUSH_STEP_TIMEOUT,
+            step = "index_writer_drain",
+            timeout_ms = INDEX_WRITER_SHUTDOWN_DRAIN_TIMEOUT.as_millis() as u64,
+            elapsed_ms = drain_start.elapsed().as_millis() as u64,
+            "index-writer WAL drain did not acknowledge within its \
+             shutdown budget; queued durable-index rows may be lost"
+        );
+        crate::core::lifecycle::write_event_in_cache_root(
+            state.cache_dir.as_path(),
+            crate::core::lifecycle::EVENT_EMBEDDED_FLUSH_STEP_TIMEOUT,
+            serde_json::json!({
+                "step": "index_writer_drain",
+                "timeout_ms": INDEX_WRITER_SHUTDOWN_DRAIN_TIMEOUT.as_millis() as u64,
+                "reason": "shutdown WAL drain ack timed out; durable \
+                           index rows queued behind the flush may be lost",
+            }),
+        );
+    }
+
+    // 4. Stop the writer task. `notify_one` retains a permit if the writer
+    // is between polls; `notify_waiters` could lose the signal in that
+    // window.
+    state.index_writer_shutdown.notify_one();
+    if let Some(mut handle) = index_writer_handle {
+        if tokio::time::timeout(INDEX_WRITER_SHUTDOWN_JOIN_TIMEOUT, &mut handle)
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                event = crate::core::lifecycle::EVENT_EMBEDDED_FLUSH_STEP_TIMEOUT,
+                step = "index_writer_join",
+                timeout_ms = INDEX_WRITER_SHUTDOWN_JOIN_TIMEOUT.as_millis() as u64,
+                "index-writer task did not exit within its shutdown \
+                 budget; aborting it"
+            );
+            crate::core::lifecycle::write_event_in_cache_root(
+                state.cache_dir.as_path(),
+                crate::core::lifecycle::EVENT_EMBEDDED_FLUSH_STEP_TIMEOUT,
+                serde_json::json!({
+                    "step": "index_writer_join",
+                    "timeout_ms": INDEX_WRITER_SHUTDOWN_JOIN_TIMEOUT.as_millis() as u64,
+                    "reason": "index-writer task join timed out after a \
+                               drain attempt; task aborted",
+                }),
+            );
+            handle.abort();
+            let _ = handle.await;
+        }
+    }
+
+    // 5. Final store flush: the WAL drain above only persists entries that
+    // went through `index_writer_tx`. Some compile-success paths insert
+    // DIRECTLY into `artifact_store` without sending to the WAL, and
+    // `flush_wal_to_disk` early-returns on an empty WAL — so those
+    // direct-inserts never reach disk on a WAL-only-empty shutdown.
+    // Reproduced historically: a fresh medium-fixture build wrote 271 MB of
+    // CAS payloads but no index.bin, leaving the warm-side daemon (and
+    // every other `soldr load` consumer) with an empty index even though
+    // all artifacts were on disk.
+    let store = Arc::clone(&state.artifact_store);
+    let entries = store.len();
+    let flush_start = std::time::Instant::now();
+    match store.flush_async().await {
+        Ok(()) => tracing::info!(
+            entries,
+            elapsed_ms = flush_start.elapsed().as_millis() as u64,
+            "artifact store final flush complete"
+        ),
+        Err(e) => tracing::warn!(entries, "artifact store final flush failed: {e}"),
+    }
+
+    publication_guard
+}
+
 /// Background index-writer task.
 ///
 /// Acts as an in-memory WAL in front of the on-disk bincode blob:
