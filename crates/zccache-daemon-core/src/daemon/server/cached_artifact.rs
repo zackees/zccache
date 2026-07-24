@@ -21,6 +21,7 @@ struct ArtifactAccess {
     last_used: std::time::Instant,
     last_used_wall: std::time::SystemTime,
     used_in_process: bool,
+    published_in_process: bool,
     last_access_checkpoint: Option<std::time::Instant>,
 }
 
@@ -28,6 +29,7 @@ pub(crate) struct ArtifactAccessSnapshot {
     pub(crate) last_used: std::time::Instant,
     pub(crate) last_used_wall: std::time::SystemTime,
     pub(crate) used_in_process: bool,
+    pub(crate) published_in_process: bool,
     #[cfg(test)]
     pub(crate) last_access_checkpoint: Option<std::time::Instant>,
 }
@@ -87,6 +89,7 @@ impl CachedArtifact {
                     last_used: now,
                     last_used_wall: std::time::SystemTime::now(),
                     used_in_process: true,
+                    published_in_process: true,
                     last_access_checkpoint: Some(now),
                 }),
             }),
@@ -161,6 +164,7 @@ impl CachedArtifact {
                     // Instant fails when the entry predates system uptime on Windows.
                     last_used_wall: stored_at.min(std::time::SystemTime::now()),
                     used_in_process: false,
+                    published_in_process: false,
                     last_access_checkpoint: None,
                 }),
             }),
@@ -179,6 +183,7 @@ impl CachedArtifact {
             last_used: access.last_used,
             last_used_wall: access.last_used_wall,
             used_in_process: access.used_in_process,
+            published_in_process: access.published_in_process,
             #[cfg(test)]
             last_access_checkpoint: access.last_access_checkpoint,
         }
