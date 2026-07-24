@@ -187,6 +187,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
     let compiler_priority = CompilePriority::from_client_env(client_env.as_deref());
     let SystemIncludesOutcome {
         includes: system_includes,
+        empty_discovery,
         system_includes_ns,
         system_watch_ns,
     } = discover_system_includes(
@@ -197,6 +198,32 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         want_rust_miss_profile,
     )
     .await;
+
+    if empty_discovery {
+        // Issue #1167: an empty successful C/C++ probe is ambiguous, not an
+        // assertion that the compiler has no default includes. Do not build a
+        // context or artifact key from it; run this request directly and let
+        // the next request re-probe.
+        state.stats.record_compilation();
+        state.stats.record_non_cacheable();
+        record_session_stat(&state.sessions, &sid, |t| t.record_non_cacheable());
+        write_session_log(
+            &state.sessions,
+            &sid,
+            "non-cacheable: system include discovery returned zero paths",
+        );
+        return run_compiler_direct(
+            &compiler,
+            args,
+            cwd,
+            &state.sessions,
+            &sid,
+            &client_env,
+            &stdin,
+            state.depfile_tmpdir.as_path(),
+        )
+        .await;
+    }
 
     state.sessions.touch(&sid);
 

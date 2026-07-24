@@ -82,6 +82,12 @@ out=
 srcs=
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        -v)
+            printf '%s\n' '#include <...> search starts here:' >&2
+            printf '%s\n' ' /usr/include' >&2
+            printf '%s\n' 'End of search list.' >&2
+            exit 0
+            ;;
         -o) shift; out=$1 ;;
         -MF|-MT) shift ;;
         *.c) srcs="$srcs $1" ;;
@@ -123,6 +129,12 @@ if "%~1"=="-o" (
     shift
     shift
     goto loop
+)
+if "%~1"=="-v" (
+    >&2 echo #include ^<...^> search starts here:
+    >&2 echo  C:\fake-system-include
+    >&2 echo End of search list.
+    exit /b 0
 )
 if "%~1"=="-MF" (
     shift

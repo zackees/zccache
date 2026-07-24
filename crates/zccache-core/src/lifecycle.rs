@@ -55,6 +55,7 @@
 //! | `embedded_flush_step_timeout` | daemon | one embedded flush/save step exceeded its shutdown budget | `step`, `timeout_ms`, `reason` |
 //! | `in_flight_exec_wait_timeout` | daemon | an exec-cache waiter stopped coalescing and ran its own copy | `key`, `budget_ms`, `reason` |
 //! | `rustc_identity_probe_timeout` | daemon | the rustc identity probe timed out and hashing fell back to file bytes | `compiler`, `timeout_ms`, `reason` |
+//! | `compiler_identity_fallback_flavor` | daemon | a rustc identity probe fell back to file bytes for one request; the fallback is not persisted | `compiler`, `compiler_family`, `reason` |
 //! | `staged_publication_failed` | daemon | a successful compile could not publish its staged generation | `reason`, `error`, `artifact_key` |
 //! | `cow_unregistered_blob_evicted` | daemon | an unregistered COW blob was rejected and removed | `blob_path`, `link_count` |
 //! | `cow_blob_corruption_detected` | daemon | a registered COW blob no longer matched its expected digest | blob/hash/link fields |
@@ -63,6 +64,7 @@
 //! | `miss_reason_unknown` | daemon | miss classification was not recognized (Phase 0 audit failure) | miss-specific fields |
 //! | `native_flag_host_salted` | daemon | a `native` CPU-selection flag made the compile key host-specific | `compiler_family` |
 //! | `time_macro_noncacheable` | daemon | a C/C++ time macro bypassed the compile cache | `source`, `input`, `macro_name` |
+//! | `system_include_discovery_empty` | daemon | a C/C++ include probe returned no paths, so its compile bypassed the cache | `compiler`, `reason` |
 //!
 //! ## Forensic walkthrough: the two-versions-on-one-pipe wedge
 //!
@@ -153,10 +155,12 @@ pub const EVENT_DIED_PRIVATE_OWNER_EXIT: &str = "died-private-owner-exit";
 pub const EVENT_EMBEDDED_FLUSH_STEP_TIMEOUT: &str = "embedded_flush_step_timeout";
 pub const EVENT_IN_FLIGHT_EXEC_WAIT_TIMEOUT: &str = "in_flight_exec_wait_timeout";
 pub const EVENT_RUSTC_IDENTITY_PROBE_TIMEOUT: &str = "rustc_identity_probe_timeout";
+pub const EVENT_COMPILER_IDENTITY_FALLBACK_FLAVOR: &str = "compiler_identity_fallback_flavor";
 pub const EVENT_COW_UNREGISTERED_BLOB_EVICTED: &str = "cow_unregistered_blob_evicted";
 pub const EVENT_COW_BLOB_CORRUPTION_DETECTED: &str = "cow_blob_corruption_detected";
 pub const EVENT_NATIVE_FLAG_HOST_SALTED: &str = "native_flag_host_salted";
 pub const EVENT_TIME_MACRO_NONCACHEABLE: &str = "time_macro_noncacheable";
+pub const EVENT_SYSTEM_INCLUDE_DISCOVERY_EMPTY: &str = "system_include_discovery_empty";
 
 /// Complete lifecycle-event catalog. Keep this additive and update the module
 /// schema table with every new event; log-audit and operator docs depend on it.
@@ -184,10 +188,12 @@ pub const EVENT_ALL: &[&str] = &[
     EVENT_EMBEDDED_FLUSH_STEP_TIMEOUT,
     EVENT_IN_FLIGHT_EXEC_WAIT_TIMEOUT,
     EVENT_RUSTC_IDENTITY_PROBE_TIMEOUT,
+    EVENT_COMPILER_IDENTITY_FALLBACK_FLAVOR,
     EVENT_COW_UNREGISTERED_BLOB_EVICTED,
     EVENT_COW_BLOB_CORRUPTION_DETECTED,
     EVENT_NATIVE_FLAG_HOST_SALTED,
     EVENT_TIME_MACRO_NONCACHEABLE,
+    EVENT_SYSTEM_INCLUDE_DISCOVERY_EMPTY,
     EVENT_LEGACY_ARTIFACT_PATH_ACCESSED,
     EVENT_DESTINATION_WRITE_FAILED,
     EVENT_MISS_REASON_UNKNOWN,

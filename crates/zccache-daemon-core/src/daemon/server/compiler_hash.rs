@@ -24,7 +24,7 @@ use std::io::Write as _;
 ///
 /// Bump on any layout change to the `Persisted*` types so the loader
 /// rejects older / newer snapshots instead of mis-decoding them.
-pub(super) const FORMAT_VERSION: u32 = 1;
+pub(super) const FORMAT_VERSION: u32 = 2;
 
 /// Env override (milliseconds) for the `<compiler> -vV` identity probe
 /// timeout. See [`rustc_probe_timeout`].
@@ -112,11 +112,24 @@ fn output_within(mut cmd: std::process::Command, timeout: std::time::Duration) -
     }
 }
 
+/// The provenance of a cached compiler identity.
+///
+/// A rustc `-vV` identity is the only rustc flavor that may survive a
+/// daemon restart. File-content fallbacks are intentionally ephemeral: a
+/// transient probe failure must not pin an otherwise healthy toolchain into
+/// a second cache-key space (#1167).
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) enum CompilerIdentityFlavor {
+    Generic,
+    RustcVv,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct CompilerHashEntry {
     pub(super) mtime: std::time::SystemTime,
     pub(super) size: u64,
     pub(super) hash: ContentHash,
+    pub(super) flavor: CompilerIdentityFlavor,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -187,8 +200,15 @@ impl CompilerHashCache {
             return Some(hash);
         }
 
-        self.entries
-            .insert(key, CompilerHashEntry { mtime, size, hash });
+        self.entries.insert(
+            key,
+            CompilerHashEntry {
+                mtime,
+                size,
+                hash,
+                flavor: CompilerIdentityFlavor::Generic,
+            },
+        );
         Some(hash)
     }
 
@@ -226,8 +246,132 @@ impl CompilerHashCache {
             return Some(hash);
         }
 
-        self.entries
-            .insert(key, CompilerHashEntry { mtime, size, hash });
+        self.entries.insert(
+            key,
+            CompilerHashEntry {
+                mtime,
+                size,
+                hash,
+                flavor: CompilerIdentityFlavor::Generic,
+            },
+        );
+        Some(hash)
+    }
+
+    /// Resolve a rustc identity while only caching a confirmed `-vV` result.
+    ///
+    /// A file hash is safe for the request that observed a failed or timed-out
+    /// probe, but caching it would make that transient outcome a durable cache
+    /// split. The persisted `RustcVv` flavor is therefore also a preference:
+    /// once a binary has produced a valid `-vV` result, restarts reuse that
+    /// result; a fallback is always retried on the next request.
+    pub(super) fn get_or_hash_rustc_with<F>(&self, path: &Path, hasher: F) -> Option<ContentHash>
+    where
+        F: FnOnce(&Path) -> Option<RustcIdentity>,
+    {
+        let metadata = std::fs::metadata(path).ok()?;
+        let mtime = metadata.modified().ok()?;
+        let size = metadata.len();
+        let key = NormalizedPath::new(path);
+
+        let previous = self.entries.get(&key).map(|entry| entry.clone());
+        if let Some(entry) = &previous {
+            if entry.mtime == mtime
+                && entry.size == size
+                && entry.flavor == CompilerIdentityFlavor::RustcVv
+            {
+                return Some(entry.hash);
+            }
+        }
+
+        let identity = hasher(path)?;
+        let hash = identity.hash();
+        if previous.is_some_and(|entry| {
+            entry.flavor == CompilerIdentityFlavor::RustcVv && entry.hash != hash
+        }) {
+            crate::daemon::compile_journal::record_miss_reason(
+                crate::daemon::compile_journal::miss_reason::VERSION_SKEW,
+            );
+        }
+        let post_metadata = std::fs::metadata(path).ok()?;
+        let post_mtime = post_metadata.modified().ok()?;
+        let post_size = post_metadata.len();
+        if post_mtime != mtime || post_size != size {
+            return Some(hash);
+        }
+
+        self.entries.insert(
+            key,
+            CompilerHashEntry {
+                mtime,
+                size,
+                hash,
+                flavor: if identity.is_verified_vv() {
+                    CompilerIdentityFlavor::RustcVv
+                } else {
+                    // Keep the fallback value stable for a broken/stub
+                    // compiler and across a restart, but never fast-hit it:
+                    // the `RustcVv`-only early return above retries `-vV`
+                    // on every request and upgrades this marker on success.
+                    CompilerIdentityFlavor::Generic
+                },
+            },
+        );
+        Some(hash)
+    }
+
+    pub(super) fn get_or_hash_rustc_identity(&self, path: &Path) -> Option<ContentHash> {
+        self.get_or_hash_rustc_with(path, rustc_identity)
+    }
+
+    pub(super) async fn get_or_hash_rustc_identity_async(
+        &self,
+        path: &Path,
+    ) -> Option<ContentHash> {
+        let metadata = std::fs::metadata(path).ok()?;
+        let mtime = metadata.modified().ok()?;
+        let size = metadata.len();
+        let key = NormalizedPath::new(path);
+
+        let previous = self.entries.get(&key).map(|entry| entry.clone());
+        if let Some(entry) = &previous {
+            if entry.mtime == mtime
+                && entry.size == size
+                && entry.flavor == CompilerIdentityFlavor::RustcVv
+            {
+                return Some(entry.hash);
+            }
+        }
+
+        let identity = rustc_identity_async(path.to_path_buf()).await?;
+        let hash = identity.hash();
+        if previous.is_some_and(|entry| {
+            entry.flavor == CompilerIdentityFlavor::RustcVv && entry.hash != hash
+        }) {
+            crate::daemon::compile_journal::record_miss_reason(
+                crate::daemon::compile_journal::miss_reason::VERSION_SKEW,
+            );
+        }
+        let post_metadata = std::fs::metadata(path).ok()?;
+        let post_mtime = post_metadata.modified().ok()?;
+        let post_size = post_metadata.len();
+        if post_mtime != mtime || post_size != size {
+            return Some(hash);
+        }
+
+        self.entries.insert(
+            key,
+            CompilerHashEntry {
+                mtime,
+                size,
+                hash,
+                flavor: if identity.is_verified_vv() {
+                    CompilerIdentityFlavor::RustcVv
+                } else {
+                    CompilerIdentityFlavor::Generic
+                },
+            },
+        );
         Some(hash)
     }
 
@@ -354,6 +498,107 @@ fn write_atomic_durable(tmp: &Path, target: &Path, bytes: &[u8]) -> std::io::Res
     Ok(())
 }
 
+/// A rustc identity together with whether it was proven by `-vV`.
+pub(super) enum RustcIdentity {
+    VerifiedVv(ContentHash),
+    FileFallback(ContentHash),
+}
+
+impl RustcIdentity {
+    fn hash(&self) -> ContentHash {
+        match self {
+            Self::VerifiedVv(hash) | Self::FileFallback(hash) => *hash,
+        }
+    }
+
+    fn is_verified_vv(&self) -> bool {
+        matches!(self, Self::VerifiedVv(_))
+    }
+}
+
+fn warn_rustc_identity_fallback(path: &Path, reason: &'static str) {
+    tracing::warn!(
+        event = "compiler_identity_fallback_flavor",
+        compiler = %path.display(),
+        compiler_family = "rustc",
+        reason,
+        "rustc identity probe did not yield `-vV`; using an uncached file-hash fallback for this request"
+    );
+    crate::core::lifecycle::write_event(
+        crate::core::lifecycle::EVENT_COMPILER_IDENTITY_FALLBACK_FLAVOR,
+        serde_json::json!({
+            "compiler": path.display().to_string(),
+            "compiler_family": "rustc",
+            "reason": reason,
+        }),
+    );
+}
+
+fn rustc_identity(path: &Path) -> Option<RustcIdentity> {
+    let mut cmd = std::process::Command::new(path);
+    cmd.arg("-vV");
+    crate::daemon::process::suppress_child_console(&mut cmd);
+    let timeout = rustc_probe_timeout();
+    match output_within(cmd, timeout) {
+        ProbeOutcome::Completed(output) if output.status.success() && !output.stdout.is_empty() => {
+            Some(RustcIdentity::VerifiedVv(crate::hash::hash_bytes(
+                &output.stdout,
+            )))
+        }
+        ProbeOutcome::TimedOut => {
+            warn_probe_timeout(path, timeout);
+            warn_rustc_identity_fallback(path, "probe_timeout");
+            crate::hash::hash_file(path)
+                .ok()
+                .map(RustcIdentity::FileFallback)
+        }
+        ProbeOutcome::SpawnFailed => {
+            warn_rustc_identity_fallback(path, "probe_spawn_failed");
+            crate::hash::hash_file(path)
+                .ok()
+                .map(RustcIdentity::FileFallback)
+        }
+        ProbeOutcome::Completed(_) => {
+            warn_rustc_identity_fallback(path, "probe_degenerate_output");
+            crate::hash::hash_file(path)
+                .ok()
+                .map(RustcIdentity::FileFallback)
+        }
+    }
+}
+
+async fn rustc_identity_async(path: std::path::PathBuf) -> Option<RustcIdentity> {
+    let mut cmd = tokio::process::Command::new(&path);
+    cmd.arg("-vV");
+    crate::daemon::process::suppress_child_console_tokio(&mut cmd);
+    cmd.kill_on_drop(true);
+    let timeout = rustc_probe_timeout();
+    match tokio::time::timeout(timeout, cmd.output()).await {
+        Ok(Ok(output)) if output.status.success() && !output.stdout.is_empty() => Some(
+            RustcIdentity::VerifiedVv(crate::hash::hash_bytes(&output.stdout)),
+        ),
+        Err(_) => {
+            warn_probe_timeout(&path, timeout);
+            warn_rustc_identity_fallback(&path, "probe_timeout");
+            crate::hash::hash_file(&path)
+                .ok()
+                .map(RustcIdentity::FileFallback)
+        }
+        Ok(Err(_)) => {
+            warn_rustc_identity_fallback(&path, "probe_spawn_failed");
+            crate::hash::hash_file(&path)
+                .ok()
+                .map(RustcIdentity::FileFallback)
+        }
+        Ok(Ok(_)) => {
+            warn_rustc_identity_fallback(&path, "probe_degenerate_output");
+            crate::hash::hash_file(&path)
+                .ok()
+                .map(RustcIdentity::FileFallback)
+        }
+    }
+}
+
 /// Compute a content hash that uniquely identifies a rustc /
 /// clippy-driver / rustfmt build, preferring `<compiler> -vV` output
 /// over a full blake3 over the binary. `-vV` prints the toolchain
@@ -364,6 +609,7 @@ fn write_atomic_durable(tmp: &Path, target: &Path, bytes: &[u8]) -> std::io::Res
 /// Falls back to the file-content hash on spawn failure, non-zero
 /// exit, or empty stdout so cache keys are still well-defined for
 /// stubbed binaries (unit tests) or broken toolchains.
+#[allow(dead_code)] // Direct helper retained for the identity-output unit test.
 pub(super) fn hash_rustc_identity(path: &Path) -> Option<ContentHash> {
     let mut cmd = std::process::Command::new(path);
     cmd.arg("-vV");
@@ -450,6 +696,7 @@ pub(super) async fn hash_cc_identity_async(path: std::path::PathBuf) -> Option<C
     }
 }
 
+#[allow(dead_code)] // The cache calls `rustc_identity_async` to retain provenance.
 pub(super) async fn hash_rustc_identity_async(path: std::path::PathBuf) -> Option<ContentHash> {
     let mut cmd = tokio::process::Command::new(&path);
     cmd.arg("-vV");
