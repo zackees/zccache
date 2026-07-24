@@ -5,6 +5,17 @@ from pathlib import Path
 from ci import lint
 
 
+def test_dylint_workflow_rehydrates_the_pinned_toolchain_for_driver_builds():
+    workflow = (lint.SCRIPT_DIR / ".github/workflows/ci.yml").read_text(
+        encoding="utf-8"
+    )
+    dylint_job = workflow.split("\n  dylint:\n", 1)[1].split("\n  msrv:\n", 1)[0]
+
+    assert (
+        f"CARGO_ENV_RUSTUP_TOOLCHAIN: {lint.DYLINT_TOOLCHAIN}" in dylint_job
+    )
+
+
 def test_dylint_env_puts_selected_toolchain_first(monkeypatch):
     base_env = {"PATH": os.pathsep.join(["stable-bin", "other-bin"])}
     rustup = Path("host-shims") / "rustup"
