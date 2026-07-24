@@ -539,6 +539,13 @@ fn flat_artifact_files(artifact_dir: &Path) -> Vec<PathBuf> {
 #[tokio::test]
 #[ignore = "integration: real clang/ar, daemon restart, and full cache-log audit"]
 async fn strict_layout_validation_aggregates_all_runtime_flows() {
+    // Diagnostic (#1154 / PR #1198): the daemons run in-process, so a
+    // stderr subscriber captures the depgraph register logs; the harness
+    // prints them only when the test fails.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new("zccache_depgraph=debug"))
+        .with_writer(std::io::stderr)
+        .try_init();
     let Some(clang) = find_tool("clang") else {
         eprintln!("skipping strict layout validation: clang not found");
         return;
