@@ -30,6 +30,8 @@ def test_dylint_workflow_rehydrates_the_pinned_toolchain_for_driver_builds():
 
     assert "Configure Dylint driver Cargo shim" in dylint_job
     assert "export RUSTUP_TOOLCHAIN=nightly-2026-05-26" in dylint_job
+    assert "nightly_bin=" in dylint_job
+    assert 'export PATH="%s:${PATH}"' in dylint_job
     assert "--target x86_64-unknown-linux-gnu" in dylint_job
     library_tests = dylint_job.split("\n      - name: Run Dylint\n", 1)[0]
     assert "export PATH=\"${CARGO_HOME}/bin:${PATH}\"" not in library_tests
