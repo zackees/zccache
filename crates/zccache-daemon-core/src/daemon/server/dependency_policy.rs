@@ -292,7 +292,8 @@ mod tests {
             let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
             let parsed = crate::depgraph::args::parse_gnu_args(&args, Path::new("/work"));
             let dep_flags = parsed.dep_flags.clone();
-            let mut context = CompileContext::from_parsed_args(parsed);
+            let mut context =
+                CompileContext::from_parsed_args(parsed, crate::hash::hash_bytes(b"test-fixture"));
             DependencyDiscoveryMode::AllHeaders.apply_to_cc_context(&mut context, &dep_flags);
             context.context_key()
         };
@@ -312,7 +313,8 @@ mod tests {
             let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
             let parsed = crate::depgraph::args::parse_gnu_args(&args, Path::new("/work"));
             let dep_flags = parsed.dep_flags.clone();
-            let mut context = CompileContext::from_parsed_args(parsed);
+            let mut context =
+                CompileContext::from_parsed_args(parsed, crate::hash::hash_bytes(b"test-fixture"));
             DependencyDiscoveryMode::AllHeaders.apply_to_cc_context(&mut context, &dep_flags);
             DependencyDiscoveryMode::apply_user_depfile_content_to_cc_context(
                 &mut context,

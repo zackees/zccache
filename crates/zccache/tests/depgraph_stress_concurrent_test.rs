@@ -105,6 +105,7 @@ fn stress_concurrent_register_scan_check() {
                     flags: vec!["-O2".into()],
                     force_includes: Vec::new(),
                     unknown_flags: Vec::new(),
+                    compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
                 };
 
                 let key = graph.register(ctx);
@@ -157,6 +158,7 @@ fn stress_concurrent_register_and_trim() {
                     flags: Vec::new(),
                     force_includes: Vec::new(),
                     unknown_flags: Vec::new(),
+                    compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
                 };
                 let key = graph.register(ctx);
 
@@ -215,6 +217,7 @@ fn stress_concurrent_shadow_detection() {
                     flags: Vec::new(),
                     force_includes: Vec::new(),
                     unknown_flags: Vec::new(),
+                    compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
                 };
                 let key = graph.register(ctx);
 

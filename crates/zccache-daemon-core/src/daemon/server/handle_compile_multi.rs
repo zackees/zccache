@@ -499,7 +499,14 @@ pub(super) async fn handle_compile_multi(
             crate::depgraph::args::parse_gnu_args(&first.original_args, &cwd_path)
         };
         let dep_flags = parsed.dep_flags.clone();
-        let mut base = CompileContext::from_parsed_args(parsed);
+        // Issue #1166: compiler identity must vary the shared base
+        // context's key too, mirroring the non-shared per-unit path's
+        // `build_compile_context` call above.
+        let compiler_hash = state
+            .compiler_hash_cache
+            .get_or_hash_with(&first.compiler, hash_cc_identity)
+            .unwrap_or(COMPILER_HASH_UNAVAILABLE);
+        let mut base = CompileContext::from_parsed_args(parsed, compiler_hash);
         for path in &system_includes {
             if !base.include_search.system.contains(path) {
                 base.include_search.system.push(path.clone());

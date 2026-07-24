@@ -11,7 +11,7 @@ use zccache_core::NormalizedPath;
 use super::super::{
     compute_rustc_artifact_key, compute_rustc_artifact_key_with_root, RustcCompileContext,
 };
-use super::{make_context, make_rustc_context, make_rustc_context_with_env};
+use super::{make_context, make_rustc_context, make_rustc_context_with_env, test_compiler_hash};
 
 #[cfg(windows)]
 #[test]
@@ -34,7 +34,7 @@ fn windows_rustc_context_key_normalizes_equivalent_source_path_spellings() {
         unknown_flags: Vec::new(),
         remap_path_prefixes: Vec::new(),
         env_vars: Vec::new(),
-        compiler_hash: None,
+        compiler_hash: test_compiler_hash(),
     };
     let mut ctx2 = ctx1.clone();
     ctx2.source_file = NormalizedPath::from("c:/work/src/lib.rs");
@@ -277,7 +277,7 @@ fn rustc_context_key_differs_from_cc() {
 fn rustc_compiler_hash_affects_key() {
     let ctx1 = make_rustc_context("/src/lib.rs", "2021");
     let mut ctx2 = make_rustc_context("/src/lib.rs", "2021");
-    ctx2.compiler_hash = Some(zccache_hash::hash_bytes(b"rustc-1.94.1"));
+    ctx2.compiler_hash = zccache_hash::hash_bytes(b"rustc-1.94.1");
     assert_ne!(
         ctx1.context_key(),
         ctx2.context_key(),
@@ -288,9 +288,9 @@ fn rustc_compiler_hash_affects_key() {
 #[test]
 fn rustc_different_compiler_versions_different_key() {
     let mut ctx1 = make_rustc_context("/src/lib.rs", "2021");
-    ctx1.compiler_hash = Some(zccache_hash::hash_bytes(b"rustc-1.94.1"));
+    ctx1.compiler_hash = zccache_hash::hash_bytes(b"rustc-1.94.1");
     let mut ctx2 = make_rustc_context("/src/lib.rs", "2021");
-    ctx2.compiler_hash = Some(zccache_hash::hash_bytes(b"rustc-1.94.2"));
+    ctx2.compiler_hash = zccache_hash::hash_bytes(b"rustc-1.94.2");
     assert_ne!(ctx1.context_key(), ctx2.context_key());
 }
 
@@ -354,7 +354,7 @@ fn rustc_from_parsed_args() {
         sysroot: None,
         output_file: None,
     };
-    let ctx = RustcCompileContext::from_parsed_args(&args, &[], None);
+    let ctx = RustcCompileContext::from_parsed_args(&args, &[], test_compiler_hash());
     // Crate types sorted
     assert_eq!(ctx.crate_types, vec!["lib", "rlib"]);
     // Emit types sorted
@@ -522,7 +522,7 @@ fn rustc_from_parsed_args_drops_cargo_target_dir() {
         ("CARGO_PKG_NAME".to_string(), "foo".to_string()),
         ("CARGO_PKG_VERSION".to_string(), "1.2.3".to_string()),
     ];
-    let ctx = RustcCompileContext::from_parsed_args(&args, &client_env, None);
+    let ctx = RustcCompileContext::from_parsed_args(&args, &client_env, test_compiler_hash());
     assert!(
         !ctx.env_vars.iter().any(|(k, _)| k == "CARGO_TARGET_DIR"),
         "from_parsed_args must drop CARGO_TARGET_DIR from env_vars; got {:?}",

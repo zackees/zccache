@@ -303,6 +303,28 @@ impl DepGraph {
                 flags: c.flags,
                 force_includes: strings_to_paths(c.force_includes),
                 unknown_flags: c.unknown_flags,
+                // Issue #1166 snapshot compatibility: `ContextEntrySnapshot`
+                // persists only the already-computed `context_key` /
+                // `artifact_key` raw bytes (see the struct above), never a
+                // serialized `CompileContext`. This reconstructed
+                // `CompileContext` is used post-load only for freshness
+                // bookkeeping (`entry.context.source_file`,
+                // `.force_includes`, `.include_search` — see
+                // `graph/check.rs`, `graph/update.rs`,
+                // `graph/maintenance.rs`, `watcher_support.rs`); it is
+                // NEVER re-hashed via `.context_key()` to recompute a
+                // lookup key. So this placeholder value cannot cause a
+                // wrong hit: any live compile request computes a *fresh*
+                // context key via `compute_context_key_with`, which now
+                // unconditionally folds the real compiler_hash. A snapshot
+                // written by a pre-#1166 binary has stale on-disk
+                // `context_key` bytes computed WITHOUT compiler identity;
+                // those bytes will never match a freshly computed
+                // (compiler-hash-including) key, so old entries are simply
+                // never looked up again post-upgrade — cold-miss and
+                // re-register, not silently-wrong-hit. No snapshot schema
+                // version bump or explicit migration is needed.
+                compiler_hash: ContentHash::from_bytes([0u8; 32]),
             };
             let entry = ContextEntry {
                 logical_key,

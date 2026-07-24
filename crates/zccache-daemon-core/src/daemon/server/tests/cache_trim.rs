@@ -14,6 +14,7 @@ fn test_context_key(source: &str) -> ContextKey {
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: crate::hash::hash_bytes(b"test-fixture"),
     }
     .context_key()
 }

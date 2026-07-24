@@ -18,6 +18,7 @@ fn make_ctx(source: &str) -> CompileContext {
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     }
 }
 
@@ -960,6 +961,7 @@ fn register_context_produces_deterministic_key() {
         flags: vec!["-O2".to_string()],
         force_includes: vec![NormalizedPath::from("/proj/include/prefix.h")],
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
 
     let first = graph.register_with_root_and_salt_result(ctx.clone(), None, None);
@@ -993,6 +995,7 @@ fn cached_context_key_matches_uncached_for_identical_inputs() {
         flags: vec!["-O2".to_string()],
         force_includes: vec![NormalizedPath::from("/proj/include/prefix.h")],
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
 
     let uncached = compute_context_key(&ctx, None, None);

@@ -150,6 +150,7 @@ mod tests {
             flags: Vec::new(),
             force_includes: Vec::new(),
             unknown_flags: Vec::new(),
+            compiler_hash: crate::hash::hash_bytes(b"test-fixture"),
         };
         let context_key = graph.register(context);
         let artifact_key = graph

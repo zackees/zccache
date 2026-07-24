@@ -5,11 +5,20 @@
 
 use zccache_core::NormalizedPath;
 
+use zccache_hash::ContentHash;
+
 use super::{CompileContext, RustcCompileContext};
 use crate::search_paths::IncludeSearchPaths;
 
 mod cc;
 mod rustc;
+
+/// Fixed test `ContentHash` used by shared fixtures below that don't care
+/// about a specific compiler-identity value. Tests that assert
+/// compiler-hash-affects-key behavior build their own distinct values.
+pub(super) fn test_compiler_hash() -> ContentHash {
+    zccache_hash::hash_bytes(b"test-compiler-fixture")
+}
 
 /// Minimal C/C++ `CompileContext` with the given source, optional user-include
 /// dirs and defines. Defines are sorted to match `from_parsed_args` invariant.
@@ -31,6 +40,7 @@ pub(super) fn make_context(source: &str, user_dirs: &[&str], defines: &[&str]) -
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: test_compiler_hash(),
     }
 }
 
@@ -56,7 +66,7 @@ pub(super) fn make_rustc_context(source: &str, edition: &str) -> RustcCompileCon
         unknown_flags: Vec::new(),
         remap_path_prefixes: Vec::new(),
         env_vars: Vec::new(),
-        compiler_hash: None,
+        compiler_hash: test_compiler_hash(),
     }
 }
 

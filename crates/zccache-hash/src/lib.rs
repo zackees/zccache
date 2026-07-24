@@ -15,7 +15,7 @@ pub struct ContentHash([u8; 32]);
 impl ContentHash {
     /// Create a `ContentHash` from raw bytes.
     #[must_use]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 

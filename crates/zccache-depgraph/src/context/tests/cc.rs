@@ -63,6 +63,7 @@ fn windows_context_key_normalizes_equivalent_path_spellings() {
         flags: Vec::new(),
         force_includes: vec![NormalizedPath::from(r"C:\work\pch\base.h")],
         unknown_flags: Vec::new(),
+        compiler_hash: super::test_compiler_hash(),
     };
     let ctx2 = CompileContext {
         source_file: NormalizedPath::from("c:/work/src/main.cpp"),
@@ -74,6 +75,7 @@ fn windows_context_key_normalizes_equivalent_path_spellings() {
         flags: Vec::new(),
         force_includes: vec![NormalizedPath::from("c:/work/pch/base.h")],
         unknown_flags: Vec::new(),
+        compiler_hash: super::test_compiler_hash(),
     };
 
     assert_eq!(ctx1.context_key(), ctx2.context_key());
@@ -89,6 +91,7 @@ fn windows_artifact_key_normalizes_equivalent_path_spellings() {
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: super::test_compiler_hash(),
     };
     let key = ctx.context_key();
 
@@ -310,10 +313,28 @@ fn from_parsed_args_sorts() {
         dep_flags: UserDepFlags::default(),
         unknown_flags: vec!["--zzz".into(), "--aaa".into()],
     };
-    let ctx = CompileContext::from_parsed_args(args);
+    let ctx = CompileContext::from_parsed_args(args, super::test_compiler_hash());
     assert_eq!(ctx.defines, vec!["AAA", "ZZZ"]);
     assert_eq!(ctx.flags, vec!["-O2", "-Wall"]);
     assert_eq!(ctx.unknown_flags, vec!["--aaa", "--zzz"]);
+}
+
+/// Issue #1166: the C/C++ compile cache key must vary on compiler binary
+/// identity, mirroring `rustc_compiler_hash_affects_key` /
+/// `rustc_different_compiler_versions_different_key` in
+/// `context/tests/rustc.rs`. An in-place toolchain upgrade (same path, new
+/// clang/gcc/cl.exe binary content) must not reuse a stale cache key.
+#[test]
+fn different_compiler_binaries_different_key() {
+    let mut ctx1 = make_context("/src/a.c", &[], &[]);
+    ctx1.compiler_hash = zccache_hash::hash_bytes(b"clang-17.0.0");
+    let mut ctx2 = make_context("/src/a.c", &[], &[]);
+    ctx2.compiler_hash = zccache_hash::hash_bytes(b"clang-18.0.0");
+    assert_ne!(
+        ctx1.context_key(),
+        ctx2.context_key(),
+        "different compiler hash must produce different context key"
+    );
 }
 
 #[test]

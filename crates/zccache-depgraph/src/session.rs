@@ -550,6 +550,7 @@ mod tests {
             flags: Vec::new(),
             force_includes: Vec::new(),
             unknown_flags: Vec::new(),
+            compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
         };
         let key = ctx.context_key();
 
@@ -571,6 +572,7 @@ mod tests {
             flags: Vec::new(),
             force_includes: Vec::new(),
             unknown_flags: Vec::new(),
+            compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
         };
         assert!(!mgr.add_context(&SessionId::new(), ctx.context_key()));
     }
