@@ -9,7 +9,9 @@
 use std::collections::HashSet;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+use crate::core::NormalizedPath;
 
 #[cfg(test)]
 use std::fs::{File, OpenOptions};
@@ -73,31 +75,31 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-pub(crate) fn object_root(artifact_dir: &Path) -> PathBuf {
-    artifact_dir.join(OBJECTS_ROOT)
+pub(crate) fn object_root(artifact_dir: &Path) -> NormalizedPath {
+    NormalizedPath::new(artifact_dir).join(OBJECTS_ROOT)
 }
 
-pub(crate) fn deleting_root(artifact_dir: &Path) -> PathBuf {
-    artifact_dir.join(DELETING_ROOT)
+pub(crate) fn deleting_root(artifact_dir: &Path) -> NormalizedPath {
+    NormalizedPath::new(artifact_dir).join(DELETING_ROOT)
 }
 
-fn pointer_root(artifact_dir: &Path) -> PathBuf {
-    artifact_dir.join(POINTERS_ROOT)
+fn pointer_root(artifact_dir: &Path) -> NormalizedPath {
+    NormalizedPath::new(artifact_dir).join(POINTERS_ROOT)
 }
 
 #[cfg(test)]
-pub(crate) fn object_path(artifact_dir: &Path, id: ArtifactObjectId) -> PathBuf {
+pub(crate) fn object_path(artifact_dir: &Path, id: ArtifactObjectId) -> NormalizedPath {
     object_root(artifact_dir).join(id.bucket()).join(id.leaf())
 }
 
-pub(crate) fn deleting_object_path(artifact_dir: &Path, id: ArtifactObjectId) -> PathBuf {
+pub(crate) fn deleting_object_path(artifact_dir: &Path, id: ArtifactObjectId) -> NormalizedPath {
     deleting_root(artifact_dir)
         .join(id.bucket())
         .join(id.leaf())
 }
 
 #[cfg(test)]
-pub(crate) fn object_pointer_path(artifact_dir: &Path, key: &str) -> PathBuf {
+pub(crate) fn object_pointer_path(artifact_dir: &Path, key: &str) -> NormalizedPath {
     pointer_root(artifact_dir).join(format!("{key}.object"))
 }
 

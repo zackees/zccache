@@ -7,7 +7,8 @@
 //! - `system_includes.rs` — per-compiler system include discovery + watch
 //! - `hash_verify.rs` — source + header hashing and depgraph verdict
 //! - `compile_exec.rs` — depfile/response-file prep + compiler spawn
-//! - `store_outcome.rs` — successful-compile post path (scan, hash all, store, profiles)
+//! - `store_outcome.rs` — successful-compile post path (hash all, store, profiles)
+//! - `store_outcome_scan.rs` — depfile/include scan collection and fallback policy
 //!
 //! This module is the orchestrator: it threads local timings + per-phase
 //! results through the early-return tree and finally returns the `Response`.
@@ -700,7 +701,9 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                                 .parent()
                                 .unwrap_or(cwd_path.as_path())
                                 .into(),
-                            current_depfile_dest: None,
+                            current_depfile_dest: crate::daemon::server::rustc_depfile_output_path(
+                                rustc_args, cwd,
+                            ),
                             compile_start,
                             hit_label: "HIT_RUSTC_EMIT_COMPAT",
                             cached_error_label: "CACHED_ERROR_RUSTC_EMIT_COMPAT",
@@ -803,6 +806,26 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         CompileExecResult::Ok(outcome) => outcome,
         CompileExecResult::Error(resp) => return resp,
     };
+    let (artifact_stdout, artifact_stderr, response_stdout, response_stderr) =
+        if let Some(plan) = staged_plan.as_ref() {
+            let artifact_stdout = Arc::new(plan.canonicalize_output_bytes(stdout.as_slice()));
+            let artifact_stderr = Arc::new(plan.canonicalize_output_bytes(stderr.as_slice()));
+            let response_stdout = Arc::new(plan.rehydrate_output_bytes(artifact_stdout.as_slice()));
+            let response_stderr = Arc::new(plan.rehydrate_output_bytes(artifact_stderr.as_slice()));
+            (
+                artifact_stdout,
+                artifact_stderr,
+                response_stdout,
+                response_stderr,
+            )
+        } else {
+            (
+                Arc::clone(&stdout),
+                Arc::clone(&stderr),
+                Arc::clone(&stdout),
+                Arc::clone(&stderr),
+            )
+        };
 
     if exit_code != 0 {
         if let Some(plan) = staged_plan.as_ref() {
@@ -821,8 +844,8 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 &cwd_path,
                 &ctx,
                 rustc_args,
-                &stdout,
-                &stderr,
+                &artifact_stdout,
+                &artifact_stderr,
                 exit_code,
                 snap_clock,
             )
@@ -866,8 +889,8 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             is_rustc,
             rust_profile_enabled,
             rust_profile_mode,
-            stdout: Arc::clone(&stdout),
-            stderr: Arc::clone(&stderr),
+            stdout: Arc::clone(&artifact_stdout),
+            stderr: Arc::clone(&artifact_stderr),
             exit_code,
             depfile_strategy,
             show_includes_scan,
@@ -909,8 +932,8 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
 
     Response::CompileResult {
         exit_code,
-        stdout,
-        stderr,
+        stdout: response_stdout,
+        stderr: response_stderr,
         cached: false,
     }
 }

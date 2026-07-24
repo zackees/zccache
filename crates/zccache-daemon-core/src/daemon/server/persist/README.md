@@ -33,5 +33,14 @@ re-exports `*` from each submodule.
   (`touch_mtime`, `floor_materialized_outputs_to_input_max`,
   `floor_artifact_mtime_to_sibling_max`). See the iter7 invariant in
   `CLAUDE.md` and issues #466 / #467.
+- **[`staged_paths.rs`](staged_paths.rs)** — Collision-resistant logical
+  staging marker normalization and requested-path rehydration.
+- **[`staged_link_args.rs`](staged_link_args.rs)** — Linker argument planning
+  for private staged outputs.
+- **[`staged_plan.rs`](staged_plan.rs)** / **[`staged_multi.rs`](staged_multi.rs)** —
+  Compiler output-role planning and multi-output staging.
+- **[`staged_store.rs`](staged_store.rs)** and
+  **[`staged_store/`](staged_store/)** — Immutable generations, atomic pointer
+  publication, materialization, root safety, maintenance, and test fault hooks.
 - **[`tests.rs`](tests.rs)** — Unit tests for the mtime-floor + batch
   materializer paths (issues #466 / #467 / #599).

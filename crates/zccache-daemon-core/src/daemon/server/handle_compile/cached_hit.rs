@@ -140,8 +140,8 @@ pub(super) fn materialize_cached_compile_hit(
 
     let names = Arc::clone(&cached.meta.output_names);
     let exit_code = cached.meta.exit_code;
-    let stdout = cached.stdout.clone();
-    let stderr = cached.stderr.clone();
+    let mut stdout = cached.stdout.clone();
+    let mut stderr = cached.stderr.clone();
     let artifact_bytes = cached.meta.total_size;
     drop(cached);
 
@@ -249,6 +249,36 @@ pub(super) fn materialize_cached_compile_hit(
             return Err(error.into());
         }
     };
+    let depfile_targets = targets
+        .iter()
+        .filter(|target| current_depfile_dest.as_ref() == Some(*target))
+        .collect::<Vec<_>>();
+    let rehydrate_stdout = contains_staged_output_marker(stdout.as_slice());
+    let rehydrate_stderr = contains_staged_output_marker(stderr.as_slice());
+    if !depfile_targets.is_empty() || rehydrate_stdout || rehydrate_stderr {
+        for target in depfile_targets {
+            if let Err(error) = rehydrate_logical_depfile(target.as_path(), &targets) {
+                write_session_log(
+                    &state.sessions,
+                    sid,
+                    &format!(
+                        "[DIAG] cached_depfile_rehydrate_failed: {}: {error}",
+                        target.display()
+                    ),
+                );
+                // The destination depfile could not be rewritten with real
+                // output paths; treat it like any destination write failure
+                // (soft miss — the shared artifact stays valid).
+                return Err(CachedHitFailure::DestinationWrite);
+            }
+        }
+        if rehydrate_stdout {
+            stdout = Arc::new(rehydrate_staged_output_bytes(stdout.as_slice(), &targets));
+        }
+        if rehydrate_stderr {
+            stderr = Arc::new(rehydrate_staged_output_bytes(stderr.as_slice(), &targets));
+        }
+    }
     let t2 = Instant::now();
     let write_output_ns = (t2 - t1).as_nanos() as u64;
     if has_staged_payload {
@@ -461,7 +491,7 @@ mod tests {
     /// mysterious `undefined symbol` link errors after `git pull`.
     ///
     /// This test pins the fix: a cached artifact with two payloads (`.obj`
-    /// at index 0, `.d` at index 1) plus an explicit current-build depfile
+    /// at index 0, depfile at index 1) plus an explicit current-build depfile
     /// destination must restore BOTH files. The cached `name` of the
     /// depfile output is just an identifier — the real destination on hit
     /// is supplied by the caller (it comes from the current compile's
@@ -481,12 +511,18 @@ mod tests {
         // the current invocation's `-MF` (or default `<output>.d`) and
         // passes it in. Use a different filename to prove the fix routes
         // bytes by request, not by stored name.
-        let depfile_dest: NormalizedPath = dir.path().join("build/out/source.o.d").into();
+        let depfile_dest: NormalizedPath = dir.path().join("build/out/deps.mk").into();
 
         let obj_payload = Arc::new(b"compiled object bytes".to_vec());
         let dep_payload = Arc::new(
-            b"source.o: source.cc header_a.h header_b.h\n\nheader_a.h:\n\nheader_b.h:\n".to_vec(),
+            format!(
+                "{STAGED_OUTPUT_REMAP_ROOT}/source.o: source.cc header_a.h header_b.h\n\n\
+                 header_a.h:\n\nheader_b.h:\n"
+            )
+            .into_bytes(),
         );
+        let cached_stdout =
+            Arc::new(format!("artifact:{STAGED_OUTPUT_REMAP_ROOT}/source.o\n").into_bytes());
         let obj_cache_path = cache_dir.join("depfile-key_0");
         let dep_cache_path = cache_dir.join("depfile-key_1");
         let _ = make_writable(&obj_cache_path);
@@ -513,7 +549,7 @@ mod tests {
         let meta = ArtifactIndex::new(
             vec!["source.o".to_string(), "source.o.d".to_string()],
             vec![obj_payload.len() as u64, dep_payload.len() as u64],
-            Arc::new(Vec::new()),
+            cached_stdout,
             Arc::new(Vec::new()),
             0,
         );
@@ -541,14 +577,21 @@ mod tests {
             phases: CachedHitPhases::request_cache(0, 0),
         })
         .expect("materialize_cached_compile_hit must succeed");
-        assert!(matches!(
-            response,
-            Response::CompileResult {
-                cached: true,
-                exit_code: 0,
-                ..
-            }
-        ));
+        let Response::CompileResult {
+            cached,
+            exit_code,
+            stdout,
+            ..
+        } = response
+        else {
+            panic!("expected cached compile result");
+        };
+        assert!(cached);
+        assert_eq!(exit_code, 0);
+        assert_eq!(
+            stdout.as_slice(),
+            format!("artifact:{}\n", output_path.display()).as_bytes()
+        );
 
         assert_eq!(
             std::fs::read(&output_path).unwrap(),
@@ -562,10 +605,11 @@ mod tests {
              stale-incremental-build fix",
             depfile_dest.display(),
         );
-        assert_eq!(
-            std::fs::read(depfile_dest.as_path()).unwrap(),
-            dep_payload.as_slice(),
-            "restored depfile bytes must match the cached payload",
+        let restored = std::fs::read_to_string(depfile_dest.as_path()).unwrap();
+        assert!(!restored.contains(STAGED_OUTPUT_REMAP_ROOT));
+        assert!(
+            restored.starts_with(&format!("{}:", output_path.display())),
+            "restored depfile target must use the current output path: {restored}"
         );
     }
 

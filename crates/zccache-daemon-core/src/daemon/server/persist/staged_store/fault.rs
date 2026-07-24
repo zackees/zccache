@@ -9,6 +9,7 @@ use std::sync::{Mutex, OnceLock};
 pub(in crate::daemon::server) enum StagedFaultPoint {
     GenerationCreate,
     OutputCopy(usize),
+    OutputSync(usize),
     OutputHash(usize),
     DurableDigest(usize),
     ManifestWrite,
@@ -18,6 +19,7 @@ pub(in crate::daemon::server) enum StagedFaultPoint {
     PointerCommit,
     PointerSync,
     IndexCommit,
+    LogicalDepfileRewrite(usize),
     MaterializeOutput(usize),
     MaterializeReflink,
     MaterializeHardlink,

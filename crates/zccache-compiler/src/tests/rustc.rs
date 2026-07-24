@@ -395,6 +395,30 @@ fn rustc_non_link_emit_uses_its_real_primary_extension() {
 }
 
 #[test]
+fn rustc_randomized_autocfg_probe_is_non_cacheable() {
+    let result = parse_invocation(
+        "rustc",
+        &args(&[
+            "--crate-name",
+            "autocfg_4dddca434e09bacf_0",
+            "--crate-type=lib",
+            "--out-dir",
+            "/tmp/target/release/build/num-traits/out",
+            "--emit=llvm-ir",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "/tmp/soldr-stdin-af1349b9f5f9a1a6.rs",
+        ]),
+    );
+    match result {
+        ParsedInvocation::NonCacheable { reason } => {
+            assert!(reason.contains("randomized autocfg probe"));
+        }
+        other => panic!("expected randomized autocfg probe to be non-cacheable, got: {other:?}"),
+    }
+}
+
+#[test]
 fn rustc_full_cargo_invocation_cacheable() {
     // Realistic cargo-generated rustc command
     let result = parse_invocation(

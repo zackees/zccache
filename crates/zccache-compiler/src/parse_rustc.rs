@@ -50,6 +50,19 @@ fn rustc_bin_filename(crate_name: &str, extra: &str, target: Option<&str>) -> St
     }
 }
 
+fn is_randomized_autocfg_crate_name(crate_name: &str) -> bool {
+    let Some((uuid, probe_id)) = crate_name
+        .strip_prefix("autocfg_")
+        .and_then(|suffix| suffix.split_once('_'))
+    else {
+        return false;
+    };
+    uuid.len() == 16
+        && uuid.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && !probe_id.is_empty()
+        && probe_id.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 /// Rustc flags that take a following argument (value in next argv element).
 const RUSTC_FLAGS_WITH_VALUE: &[&str] = &[
     "--edition",
@@ -256,6 +269,21 @@ pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedI
             };
         }
     };
+
+    // autocfg 1.5+ deliberately puts a process-random UUID in each probe
+    // crate name. rustc embeds that identity in the emitted LLVM IR, so the
+    // invocation cannot hit across build-script processes even when a wrapper
+    // has made the stdin source content-addressed.
+    if crate_types == ["lib"]
+        && emit_types.iter().any(|emit| emit == "llvm-ir")
+        && crate_name
+            .as_deref()
+            .is_some_and(is_randomized_autocfg_crate_name)
+    {
+        return ParsedInvocation::NonCacheable {
+            reason: "randomized autocfg probe crate name".to_string(),
+        };
+    }
 
     // Note: -C incremental is ignored for caching purposes (zccache#1021).
     // The incremental dir is excluded from the cache key, and we let rustc

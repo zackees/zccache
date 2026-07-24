@@ -8,6 +8,9 @@
     "touch-no-change": 10000,
     "restore-no-clean-warm": 10000
   },
-  "maximum_staged_overhead_ms": 15000,
+  "maximum_staged_overhead_ms_per_publication": {
+    "medium": 750,
+    "sqlite-link": 250
+  },
   "maximum_materialization_copied_bytes": 2147483648
 }

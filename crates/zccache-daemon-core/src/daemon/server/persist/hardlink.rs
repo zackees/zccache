@@ -267,10 +267,18 @@ pub(in crate::daemon::server) fn get_file_id(path: &Path) -> Option<FileId> {
 }
 
 #[cfg(unix)]
-pub(in crate::daemon::server) fn get_file_change_marker(path: &Path) -> Option<i128> {
-    use std::os::unix::fs::MetadataExt;
-    let metadata = std::fs::metadata(path).ok()?;
-    Some(i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec()))
+pub(in crate::daemon::server) fn get_file_change_marker(_path: &Path) -> Option<i128> {
+    // Unix ctime is a timestamp, not a mutation sequence. Filesystems may
+    // source it from a coarse cached clock even when `stat` exposes a
+    // nanosecond-shaped value, so multiple writes in one tick can retain the
+    // exact same ctime. That makes it incapable of proving that an A -> B -> A
+    // rewrite did not occur while the compiler was reading its inputs.
+    //
+    // Until the platform offers a true per-file change counter (the Windows
+    // implementation below uses USN), decline to publish staged multi-source
+    // results on Unix. The compiler result is still returned; only the unsafe
+    // cache publication is suppressed.
+    None
 }
 
 #[cfg(windows)]

@@ -168,6 +168,7 @@ async fn failed_link_publication_salvages_output_without_becoming_cacheable() {
         vec![StagedOutputPlan {
             requested: requested.clone(),
             staged: staged.clone(),
+            role: StagedOutputRole::Regular,
         }],
     );
     let artifact = ArtifactData {
@@ -213,6 +214,7 @@ async fn failed_link_publication_and_salvage_fail_closed() {
         vec![StagedOutputPlan {
             requested: requested.clone(),
             staged: staged.clone(),
+            role: StagedOutputRole::Regular,
         }],
     );
     let artifact = ArtifactData {

@@ -9,8 +9,9 @@ zccache#903 and the implementation anchor for zccache#904 through zccache#910.
 Issue #903 defines the embedded-service direction and the MVP acceptance
 surface. In the current tree, the first public Rust API is exported as
 `zccache::embedded::ZccacheService`. It is an MVP boundary for host daemons to
-start, inspect, maintain, flush, and shut down an in-process zccache engine; soldr/fbuild
-integration and durable event emission are still follow-up work.
+start, inspect, maintain, flush, and shut down an in-process zccache engine.
+Soldr's embedded integration is landed; fbuild integration and the remaining
+audit/operator surfaces are follow-up work.
 
 The MVP boundary is:
 
@@ -19,14 +20,14 @@ The MVP boundary is:
 | Architecture contract | Landed | This document records lifecycle, ownership, audit, and shutdown expectations. |
 | Public Rust API | MVP landed | `zccache::embedded` exports `ZccacheService` and stable config/request/stats types for start, compile, stats, disk maintenance, flush, and shutdown. |
 | Durable audit schema | MVP landed | `zccache::audit` exports serializable schema/config/event/finding/manifest types; hot-path emission and fixtures remain follow-up work. |
-| soldr embedded integration | Open | zccache#907 should switch soldr from wrapper/private-daemon use to direct embedded calls once the integration is ready. |
+| soldr embedded integration | Landed | soldr uses the direct embedded service and owns its cache root, runtime handle, audit context, and shutdown sequence. |
 | fbuild embedded integration | Open | zccache#908 follows the same service contract, adjusted for fbuild's daemon/runtime model. |
-| Vendored hotfix workflow | Open | zccache#909 documents how soldr/fbuild validate vendored zccache fixes before upstreaming. |
+| Vendored hotfix workflow | Documented | zccache#909 is recorded in [`vendored-hotfix-workflow.md`](vendored-hotfix-workflow.md). |
 | Operator audit commands | Open | zccache#910 owns `audit capabilities`, `audit run`, and post-run analysis UX. |
 
-Until soldr/fbuild integrations land, tests should stay focused on the public
-Rust service boundary and the durable audit schema, with broader host workload
-validation owned by the integration trackers.
+Tests in this repository cover the public Rust service boundary, maintenance,
+flush/shutdown reporting, and durable audit schema. Broader host workload
+validation remains owned by each consuming repository.
 
 ## Problem
 
@@ -124,6 +125,7 @@ pub struct ZccacheConfig {
     pub audit: AuditConfig,
     pub limits: ServiceLimits,
     pub runtime: RuntimeHooks,
+    pub cancellation: Option<CancellationToken>,
 }
 
 pub struct ServiceLimits {
@@ -139,6 +141,41 @@ pub struct DiskCacheLimits {
 pub enum DiskMaintenanceKind {
     Pressure,
     Full,
+}
+
+pub struct FlushReport {
+    pub pending_writes_drained: bool,
+    pub artifact_entries: u64,
+    pub metadata_entries: u64,
+}
+
+pub struct DetailedFlushReport {
+    pub pending_writes_drained: bool,
+    pub index_writer_drained: bool,
+    pub steps: Vec<FlushStepReport>,
+    pub artifact_entries: u64,
+    pub metadata_entries: u64,
+}
+
+pub enum FlushStepOutcome {
+    Completed,
+    Failed(String),
+    TimedOut,
+}
+
+pub struct FlushStepReport {
+    pub step: String,
+    pub outcome: FlushStepOutcome,
+}
+
+pub struct DetailedShutdownReport {
+    pub mode: ShutdownMode,
+    pub flushed: DetailedFlushReport,
+}
+
+pub enum MaintenanceOwnership {
+    Embedded,
+    Host,
 }
 
 pub struct HostIdentity {
@@ -161,6 +198,7 @@ pub struct CompileRequest {
     pub args: Vec<String>,
     pub cwd: NormalizedPath,
     pub env: Vec<(String, String)>,
+    pub stdin: Vec<u8>,
 }
 
 pub struct CompileResponse {
@@ -184,6 +222,11 @@ impl ZccacheService {
         config: ZccacheConfig,
         disk_limits: DiskCacheLimits,
     ) -> Result<Self>;
+    pub async fn start_with_disk_limits_and_maintenance(
+        config: ZccacheConfig,
+        disk_limits: DiskCacheLimits,
+        maintenance_ownership: MaintenanceOwnership,
+    ) -> Result<Self>;
     pub async fn compile(&self, request: CompileRequest) -> Result<CompileResponse>;
     pub async fn compile_streaming<F>(&self, request: CompileRequest, on_chunk: F) -> Result<()>
     where
@@ -194,7 +237,12 @@ impl ZccacheService {
         kind: DiskMaintenanceKind,
     ) -> std::io::Result<DiskMaintenanceReport>;
     pub async fn flush(&self) -> Result<FlushReport>;
+    pub async fn flush_detailed(&self) -> Result<DetailedFlushReport>;
     pub async fn shutdown(self, mode: ShutdownMode) -> Result<ShutdownReport>;
+    pub async fn shutdown_detailed(
+        self,
+        mode: ShutdownMode,
+    ) -> Result<DetailedShutdownReport>;
 }
 ```
 
@@ -203,13 +251,40 @@ exclusive. `start` uses the shared dynamic artifact-store budget;
 `start_with_disk_limits` accepts overrides without adding fields to the
 existing public `ServiceLimits` struct. The budget
 accounts for allocated artifact files and pending writes, not small root-local
-indexes, depgraphs, logs, journals, or daemon metadata. The service starts its
-own pressure/full maintenance loop on the host runtime and touches only the
-effective versioned root derived from `cache_root`. The host may request an
-immediate pass through `maintain_disk`, but that call never scans parent or
-sibling product roots. See
+indexes, depgraphs, logs, journals, or daemon metadata. By default the service
+starts its own pressure/full maintenance loop on the host runtime. A host that
+already has a lifecycle scheduler selects `MaintenanceOwnership::Host` to
+suppress that duplicate loop and calls `maintain_disk` itself. Both forms touch
+only the effective versioned root derived from `cache_root`; an immediate pass
+never scans parent or sibling product roots. See
 [artifact-store.md](artifact-store.md#daemon-owned-retention-policy) for the
 single policy shared with standalone mode.
+
+### Maintenance limits and task ownership
+
+With `MaintenanceOwnership::Embedded`, embedded mode owns one disk-maintenance
+task in addition to the artifact-index writer. Both tasks spawn through
+`RuntimeHooks::handle` when the host supplies one, so persistent work stays on
+the host-selected Tokio runtime. Maintenance waits for artifact-index
+hydration, runs an initial pressure or due full pass, performs cheap pressure
+preflights every five minutes, and performs a full age pass at least daily. It
+uses the same bounded, root-local policy as standalone mode; it does not
+introduce a second embedded-only retention algorithm.
+
+Graceful shutdown latches the shared shutdown flag and sends a retained wakeup
+to an embedded-owned maintenance task, then joins it without abandoning any
+nested blocking deletion worker. It also waits for any host-requested
+maintenance pass holding the root-local maintenance lock before draining
+artifact publications and the index writer.
+
+The original three-field `FlushReport` remains source-compatible for 1.x
+consumers. Hosts that need durability proof use `flush_detailed()` or
+`shutdown_detailed()`. `DetailedFlushReport::is_complete()` is true only when
+pending publications and the index writer drained and every named persistence
+step completed. Persistence workers are awaited to completion rather than
+detached on timeout, preventing an older snapshot from overwriting a later
+one. A regular non-shutdown flush can report a timed-out publication barrier;
+graceful shutdown waits for publication quiescence.
 
 `compile_streaming` is the canonical producer. `compile` is a buffered adapter
 that collects the same chunks. Compiler misses and direct invocations emit
@@ -252,9 +327,10 @@ Embedded service lifecycle is explicit:
 2. Host starts `ZccacheService` with `ZccacheConfig`.
 3. Host calls service methods from build phases.
 4. zccache emits child spans/events under host-provided audit contexts.
-5. Host calls `flush()` before final analysis artifacts are read.
+5. Host calls `flush_detailed()` before final analysis artifacts are read.
 6. Host calls graceful shutdown during daemon termination.
-7. zccache reports unflushed/dropped work if shutdown cannot complete cleanly.
+7. zccache joins maintenance tasks, drains queued writes, and reports every
+   failed or timed-out phase through the detailed shutdown report.
 
 Cancellation must be cooperative and observable. A cancelled build should
 produce a terminal audit event with enough detail to distinguish:

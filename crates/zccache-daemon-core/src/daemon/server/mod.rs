@@ -6,6 +6,13 @@
 //! `use ...::*` re-exports) that lets every submodule use `use super::*;` to
 //! see the common type vocabulary.
 
+use super::compile_journal::{
+    capture_miss_reason, extract_outcome, miss_reason, record_miss_reason, CompileJournal,
+    JournalContext, JournalEntry, SelfProfileSpans,
+};
+use super::fingerprint::FingerprintManager;
+use super::process::CompilePriority;
+use super::stats::{HitPhases, MissPhases, PhaseProfiler, StatsCollector};
 use crate::artifact::{ArtifactIndex, ArtifactStore};
 use crate::core::NormalizedPath;
 use crate::depgraph::{
@@ -24,14 +31,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify};
-
-use super::compile_journal::{
-    capture_miss_reason, extract_outcome, miss_reason, record_miss_reason, CompileJournal,
-    JournalContext, JournalEntry, SelfProfileSpans,
-};
-use super::fingerprint::FingerprintManager;
-use super::process::CompilePriority;
-use super::stats::{HitPhases, MissPhases, PhaseProfiler, StatsCollector};
 
 /// Cached result of a verified cache hit, enabling zero-hash fast path.
 ///
@@ -110,10 +109,37 @@ pub(crate) struct EmbeddedStatsSnapshot {
     pub(crate) phase_profile: crate::protocol::PhaseProfileSummary,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FlushStepOutcome {
+    Completed,
+    Failed(String),
+    TimedOut,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EmbeddedFlushStepReport {
+    pub(crate) step: String,
+    pub(crate) outcome: FlushStepOutcome,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct EmbeddedFlushReport {
     pub(crate) pending_writes_drained: bool,
+    pub(crate) index_writer_drained: bool,
+    pub(crate) steps: Vec<EmbeddedFlushStepReport>,
     pub(crate) artifact_entries: u64,
     pub(crate) metadata_entries: u64,
+}
+
+impl EmbeddedFlushReport {
+    pub(crate) fn is_complete(&self) -> bool {
+        self.pending_writes_drained
+            && self.index_writer_drained
+            && self
+                .steps
+                .iter()
+                .all(|step| matches!(step.outcome, FlushStepOutcome::Completed))
+    }
 }
 
 mod cache_trim;

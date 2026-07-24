@@ -1,7 +1,4 @@
-//! Source-level scaffolding for the embedded-service MVP from zccache#903.
-//!
-//! The service-shape test below stays behind `cfg(any())` until the MVP API is
-//! fully wired into durable audit emission and limit enforcement.
+//! Public embedded-service contract coverage from zccache#903.
 
 #![allow(
     clippy::unwrap_used,
@@ -12,19 +9,17 @@
 )]
 
 #[test]
-#[ignore = "documentation guard only; embedded public API is not exported yet"]
 fn embedded_service_docs_record_mvp_boundary() {
     let docs = include_str!("../../../docs/architecture/embedded-service.md");
 
     assert!(docs.contains("## MVP Status"));
     assert!(docs.contains("Public Rust API | MVP landed"));
-    assert!(docs.contains("soldr embedded integration | Open"));
+    assert!(docs.contains("soldr embedded integration | Landed"));
     assert!(docs.contains("fbuild embedded integration | Open"));
     assert!(docs.contains("ZccacheService::start(config)"));
     assert!(docs.contains("shutdown(ShutdownMode::Graceful)"));
 }
 
-#[cfg(any())]
 mod expected_public_api_shape {
     use tempfile::TempDir;
     use zccache::embedded::{
@@ -44,7 +39,7 @@ mod expected_public_api_shape {
                 instance_id: "embedded-service-test".to_owned(),
                 workspace_id: "workspace".to_owned(),
             },
-            cache_root,
+            cache_root: cache_root.into(),
             audit: AuditConfig {
                 output_root: Some(audit_root.to_string_lossy().into_owned()),
                 ..AuditConfig::default()

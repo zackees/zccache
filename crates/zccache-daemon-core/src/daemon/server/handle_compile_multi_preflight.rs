@@ -551,10 +551,17 @@ mod tests {
         assert_eq!(std::fs::read(&input).unwrap(), b"AAAA");
         assert_eq!(after.modified, before.modified);
         assert_eq!(after.file_id, before.file_id);
-        assert_ne!(
-            after, before,
-            "native change marker must detect A-to-B-to-A mutation"
-        );
+        if before.change_marker.is_some() && after.change_marker.is_some() {
+            assert_ne!(
+                after, before,
+                "a published native marker must detect A-to-B-to-A mutation"
+            );
+        } else {
+            assert!(
+                !stamps_have_native_markers(&HashMap::from([(input.into(), after)])),
+                "coarse marker capability must fail snapshot completeness closed"
+            );
+        }
     }
 
     #[tokio::test]

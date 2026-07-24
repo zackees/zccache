@@ -54,6 +54,15 @@ async fn embedded_flush_persists_queued_index_rows_before_returning() {
     let report = daemon.flush().await;
 
     assert!(report.pending_writes_drained);
+    assert!(report.index_writer_drained);
+    assert!(
+        report.is_complete(),
+        "every durable flush step must complete in the healthy path: {report:?}"
+    );
+    assert!(report
+        .steps
+        .iter()
+        .all(|step| matches!(step.outcome, FlushStepOutcome::Completed)));
     assert_eq!(report.artifact_entries, expected as u64);
     assert_eq!(state.artifact_store.len(), expected);
 

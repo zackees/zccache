@@ -331,6 +331,16 @@ pub(super) async fn try_handle_staged_misses(
         });
     }
 
+    for miss in &misses {
+        if let Err(error) = miss.plan.rewrite_logical_side_outputs() {
+            return Some(Response::Error {
+                message: format!(
+                    "failed to canonicalize staged multi-source depfile before publication: {error}"
+                ),
+            });
+        }
+    }
+
     let mut validated_sizes = Vec::with_capacity(misses.len());
     for miss in &misses {
         match miss.plan.validated_output_sizes() {
