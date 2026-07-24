@@ -46,6 +46,13 @@ jobs:
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
           solo-toolchain-cache: true
+      - name: Build zccache log auditor through the broker
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-broker-stress
+          SOLDR_CACHE_LIFECYCLE: command
+          SOLDR_DAEMON_REQUIRED: "1"
+        run: soldr cargo build -p zccache --features ci-bin --bin zccache-ci --locked
       - name: Stress the shared soldr broker
         shell: bash
         env:
@@ -89,11 +96,9 @@ jobs:
         shell: bash
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-broker-stress
-          SOLDR_DAEMON_REQUIRED: "1"
         run: |
           set -euo pipefail
-          soldr cargo run -p zccache --features ci-bin --bin zccache-ci -- \
-            audit-logs "$SOLDR_CACHE_DIR/cache/zccache" --context integration
+          target/debug/zccache-ci audit-logs "$SOLDR_CACHE_DIR/cache/zccache" --context integration
       - name: Archive broker evidence
         if: always()
         uses: actions/upload-artifact@v7
