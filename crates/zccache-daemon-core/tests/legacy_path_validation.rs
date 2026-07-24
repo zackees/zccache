@@ -405,6 +405,36 @@ fn exec_request(tool: &Path, work: &Path, output: &Path) -> Request {
     }
 }
 
+/// Print the compile journal when the test panics: each row carries the
+/// #1155 `miss_reason`, turning a bare warm-phase `cached: false` failure
+/// into a self-explaining CI log.
+struct JournalDumpOnPanic {
+    journal: PathBuf,
+}
+
+impl Drop for JournalDumpOnPanic {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        match std::fs::read_to_string(&self.journal) {
+            Ok(contents) => {
+                eprintln!("--- compile_journal.jsonl ({}) ---", self.journal.display());
+                for line in contents.lines() {
+                    eprintln!("{line}");
+                }
+                eprintln!("--- end compile_journal.jsonl ---");
+            }
+            Err(error) => {
+                eprintln!(
+                    "could not read compile journal {}: {error}",
+                    self.journal.display()
+                );
+            }
+        }
+    }
+}
+
 #[track_caller]
 fn assert_compile(response: Response, cached: bool) {
     match response {
@@ -702,6 +732,11 @@ async fn strict_layout_validation_aggregates_all_runtime_flows() {
         std::fs::remove_file(output).unwrap();
     }
 
+    // On any warm-phase panic, dump the compile journal so CI logs carry
+    // the concrete #1155 miss_reason instead of a bare `cached: false`.
+    let _journal_dump = JournalDumpOnPanic {
+        journal: cache_root.join("logs").join("compile_journal.jsonl"),
+    };
     let mut warm = Daemon::start(&cache_root).await;
     let warm_session = session_start(&mut warm, &work).await;
     assert_compile(
