@@ -182,7 +182,7 @@ struct DiskArtifact {
     key: String,
     allocated_bytes: u64,
     last_access: SystemTime,
-    recent_live_access: bool,
+    recently_published: bool,
     legacy_files: Vec<NormalizedPath>,
     staged: bool,
     staged_generation: Option<String>,
@@ -311,7 +311,7 @@ fn plan_maintenance_at_least(
             .filter(|artifact| {
                 let artifact_age = age(now, artifact.last_access);
                 (pressure == MaintenancePressure::Hard
-                    && (!artifact.recent_live_access || artifact_age > HARD_PRESSURE_MIN_AGE))
+                    && (!artifact.recently_published || artifact_age > HARD_PRESSURE_MIN_AGE))
                     || artifact_age > SOFT_AGE
             })
             .collect();
@@ -499,7 +499,7 @@ fn scan_artifacts(artifact_dir: &Path) -> io::Result<Vec<DiskArtifact>> {
                 key: key.to_string(),
                 allocated_bytes: 0,
                 last_access: SystemTime::UNIX_EPOCH,
-                recent_live_access: false,
+                recently_published: false,
                 legacy_files: Vec::new(),
                 staged: false,
                 staged_generation: None,
@@ -515,7 +515,7 @@ fn scan_artifacts(artifact_dir: &Path) -> io::Result<Vec<DiskArtifact>> {
             key: key.clone(),
             allocated_bytes: 0,
             last_access: SystemTime::UNIX_EPOCH,
-            recent_live_access: false,
+            recently_published: false,
             legacy_files: Vec::new(),
             staged: true,
             staged_generation: None,
@@ -560,7 +560,15 @@ fn refresh_live_access(
                 access.last_used_wall.min(now)
             };
             artifact.last_access = artifact.last_access.max(live_last_use);
-            artifact.recent_live_access = age(now, live_last_use) <= HARD_PRESSURE_MIN_AGE;
+            let published_at = SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_secs(cached.meta.stored_at_secs))
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            // `stored_at_secs` doubles as the durable access checkpoint, so
+            // only an artifact published by this daemon generation earns the
+            // freshness window. A cache hit remains reclaimable once its
+            // lookup lease releases under hard pressure.
+            artifact.recently_published =
+                access.published_in_process && age(now, published_at) <= HARD_PRESSURE_MIN_AGE;
         }
     }
 }
