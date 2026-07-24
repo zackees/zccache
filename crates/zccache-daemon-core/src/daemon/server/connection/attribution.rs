@@ -19,7 +19,20 @@ pub(in crate::daemon::server) fn compile_miss_reason(
     latency_ns: u128,
     cache_root: &std::path::Path,
 ) -> Option<&'static str> {
-    if !matches!(outcome, "miss" | "link_miss") || default_reason != Some(miss_reason::UNKNOWN) {
+    // #1155 attribution leakage: `record_miss_reason` writes into a single
+    // task-local slot for the whole request scope (`capture_miss_reason`),
+    // and earlier probes along the hit path (e.g. the depgraph-verdict
+    // classifier in `pipeline/mod.rs`) call it for bookkeeping even when the
+    // request ultimately resolves as a genuine hit. That task-local value
+    // must never surface on a non-miss journal row — a `hit` row carrying
+    // `miss_reason: "no_artifact_for_key"` is a self-contradiction that
+    // confuses CI triage (the reason describes a probe that was superseded
+    // by a real cache hit later in the same request). Only `miss` /
+    // `link_miss` outcomes may carry a `miss_reason` at all.
+    if !matches!(outcome, "miss" | "link_miss") {
+        return None;
+    }
+    if default_reason != Some(miss_reason::UNKNOWN) {
         return default_reason;
     }
     if outcome == "link_miss" {

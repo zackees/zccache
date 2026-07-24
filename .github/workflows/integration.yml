@@ -68,11 +68,32 @@ jobs:
           solo-toolchain-cache: true
       - name: Build integration test binaries
         shell: bash
+        env:
+          # This step only produces binaries for the following test steps.
+          # It can rebuild the full workspace when setup-soldr restores a
+          # cross-target fallback cache; caching those disposable compiler
+          # outputs duplicates target/ and can exhaust the hosted runner.
+          # The actual integration tests below still run through zccache.
+          ZCCACHE_DISABLE: "1"
+          # The no-run workspace prebuild restores a cross-target cache on
+          # hosted runners. Its disposable outputs leave roughly 2 GiB free,
+          # so use the same guard as the isolated test phase below rather
+          # than setup-soldr's 5 GiB default.
+          SOLDR_TARGET_BLOCK_FREE_GB: "2"
         run: |
           soldr cargo test --workspace --features "$ZCCACHE_INTEGRATION_FEATURES" --no-fail-fast --no-run
           soldr cargo build -p zccache --features ci-bin --bin zccache-ci
       - name: Stop setup-soldr builder cache before tests
         uses: zackees/setup-soldr/cleanup@01aea6d47db8fedcafd350e2d42e19290c68824e
+      - name: Remove seeded runtime journals before tests
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/integration
+        run: |
+          # The isolated cache is seeded with build artifacts, but runtime
+          # journals describe a prior job. Keep the artifacts warm while
+          # ensuring the audit below evaluates only this job's behavior.
+          find "$SOLDR_CACHE_DIR/cache/zccache/daemon-state" -type f -path '*/logs/*.jsonl' -print -delete
       - name: Test (full workspace)
         shell: bash
         env:
@@ -98,10 +119,27 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
           exit $status
+      - name: Remove build-harness journals before strict audit
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/integration
+        run: |
+          # The full-suite command above can invoke the seeded build wrapper
+          # while compiling test harnesses. Those journals describe build
+          # orchestration, whereas the strict fixture below owns and audits
+          # its own runtime cache. Preserve artifacts but exclude harness
+          # telemetry from the integration runtime audit.
+          find "$SOLDR_CACHE_DIR/cache/zccache/daemon-state" -type f -path '*/logs/*.jsonl' -print -delete
       - name: Strict artifact-layout validation
         shell: bash
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/integration
+          # This command recompiles its test harness with a feature set that
+          # differs from the no-run prebuild. Its Rust wrapper telemetry is
+          # build orchestration, not the daemon runtime exercised by the
+          # fixture (which owns an independent tempfile cache and audits it
+          # directly). Keep those rows out of the integration runtime audit.
+          ZCCACHE_DISABLE: "1"
         run: |
           unset ZCCACHE_CACHE_DIR
           soldr cargo test -p zccache-daemon-core --test legacy_path_validation -- --ignored --test-threads=1

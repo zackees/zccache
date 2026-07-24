@@ -36,13 +36,22 @@ const STAGED_ENV: &str = "ZCCACHE_STAGED_ARTIFACTS";
 const PACK_ENV: &str = "ZCCACHE_PACK_ARTIFACTS";
 const CACHE_ENV: &str = "ZCCACHE_CACHE_DIR";
 
+// Both ignored integration tests below temporarily set process-global cache
+// policy variables. Hold this for each fixture's entire lifetime so Cargo's
+// parallel test runner cannot cross-contaminate their daemon processes.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 struct EnvGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
     values: Vec<(&'static str, Option<OsString>)>,
 }
 
 impl EnvGuard {
     fn capture(names: &[&'static str]) -> Self {
         Self {
+            _lock: ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
             values: names
                 .iter()
                 .map(|name| (*name, std::env::var_os(name)))
@@ -85,7 +94,14 @@ impl Daemon {
         // `try_request_cache_hit` are in-memory-only). See
         // `crates/zccache/tests/daemon_rustc_restore_test.rs` for the same
         // pattern in another harness.
-        let depgraph_path = zccache_daemon_core::depgraph::depgraph_file_path();
+        // `bind_with_cache_dir` keeps this fixture independent of the
+        // process-global `ZCCACHE_CACHE_DIR`; restore from the same explicit
+        // daemon-state root rather than `depgraph_file_path()` (which reads
+        // that global environment). Otherwise the post-restart daemon sees
+        // an unrelated/empty graph and turns the warm multi request cold.
+        let depgraph_path =
+            zccache_daemon_core::core::config::depgraph_dir_from_cache_dir(&cache_root)
+                .join("depgraph.bin");
         let depgraph_load = zccache_daemon_core::depgraph::classify_load(&depgraph_path);
         if let zccache_daemon_core::depgraph::DepGraphLoadOutcome::Loaded { graph } = depgraph_load
         {
@@ -405,6 +421,36 @@ fn exec_request(tool: &Path, work: &Path, output: &Path) -> Request {
     }
 }
 
+/// Print the compile journal when the test panics: each row carries the
+/// #1155 `miss_reason`, turning a bare warm-phase `cached: false` failure
+/// into a self-explaining CI log.
+struct JournalDumpOnPanic {
+    journal: PathBuf,
+}
+
+impl Drop for JournalDumpOnPanic {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        match std::fs::read_to_string(&self.journal) {
+            Ok(contents) => {
+                eprintln!("--- compile_journal.jsonl ({}) ---", self.journal.display());
+                for line in contents.lines() {
+                    eprintln!("{line}");
+                }
+                eprintln!("--- end compile_journal.jsonl ---");
+            }
+            Err(error) => {
+                eprintln!(
+                    "could not read compile journal {}: {error}",
+                    self.journal.display()
+                );
+            }
+        }
+    }
+}
+
 #[track_caller]
 fn assert_compile(response: Response, cached: bool) {
     match response {
@@ -466,81 +512,30 @@ async fn wait_for(path: &Path, description: &str) {
     .unwrap_or_else(|_| panic!("timed out waiting for {description}: {}", path.display()));
 }
 
-/// Wait until the staged store holds at least `minimum` publication pointers
-/// and the count has stopped growing.
-///
-/// Cold-phase artifact publication (and the depgraph registration batched
-/// behind it) completes asynchronously after each compile response. The
-/// standalone daemon does not yet guarantee that an immediate `Shutdown`
-/// lets that pipeline drain durably — that gap is issue #1161. Until the
-/// durable drain lands, stopping the cold daemon right after the responses
-/// races publication on slow hosts (observed on the 2-core CI runner: the
-/// multi-unit artifacts were not yet restorable and the warm multi compile
-/// missed). TODO(#1161): once shutdown drains publication durably, this
-/// quiesce wait can be removed.
-async fn wait_for_staged_publication(artifact_dir: &Path, minimum: usize) {
-    let staged_root = artifact_dir.join(".staged-v2");
-    tokio::time::timeout(Duration::from_secs(15), async {
-        let mut last = 0_usize;
-        loop {
-            let count = staged_pointer_count(&staged_root);
-            if count >= minimum && count == last {
-                return;
-            }
-            last = count;
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| {
-        panic!(
-            "timed out waiting for >= {minimum} stable staged publication pointers in {}",
-            staged_root.display()
-        )
-    });
-}
-
-/// Wait until the daemon reports at least `minimum` registered depgraph
-/// compile contexts.
-///
-/// The staged-pointer wait above proves the artifacts are durable, but the
-/// depgraph registration for multi-unit compiles is batched asynchronously
-/// after the response (`handle_compile_multi` fans out `apply_changes`), so
-/// a `Shutdown` right after the responses can still snapshot the depgraph
-/// before the multi units are registered — the warm daemon then evaluates
-/// them Cold (observed on the 2-core CI runner even with stable staged
-/// pointers). `DaemonStatus::dep_graph_contexts` makes the registration
-/// observable. TODO(#1161): remove alongside the publication wait once
-/// shutdown drains durably.
-async fn wait_for_depgraph_contexts(daemon: &mut Daemon, minimum: u64) {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            if let Response::Status(status) = daemon.request(&Request::Status).await {
-                if status.dep_graph_contexts >= minimum {
-                    return;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for >= {minimum} depgraph compile contexts"));
-}
-
-fn staged_pointer_count(staged_root: &Path) -> usize {
-    let Ok(entries) = std::fs::read_dir(staged_root) else {
-        return 0;
-    };
-    entries
-        .flatten()
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .is_some_and(|extension| extension == "current")
-        })
-        .count()
-}
+// NOTE (#1161 durability contract): this harness previously carried two
+// cold-phase quiesce helpers here — `wait_for_staged_publication` (polling
+// stable `.staged-v2/*.current` pointer counts) and
+// `wait_for_depgraph_contexts` (polling `DaemonStatus::dep_graph_contexts`).
+// Both were present in the runs that still failed on the 2-core runner,
+// because neither observable actually guaranteed durability:
+//
+// * Per-unit publication is synchronous with the compile response. Both the
+//   staged multi path (`handle_compile_multi_staged.rs`: inline
+//   `persist_artifact_paths` + `dep_graph.update` + durable-index row send,
+//   all under a publication guard) and the non-staged multi path
+//   (`handle_compile_multi.rs`: inline hardlink persist + `update` inside
+//   the joined miss tasks) complete before `Response::CompileResult` is
+//   sent — so there was nothing request-side left to poll for.
+// * `dep_graph_contexts` counts contexts in ANY state, including
+//   freshly-registered Cold entries with no `artifact_key` yet, so the old
+//   wait could be (and was) satisfied before durability.
+// * The one genuinely asynchronous durability step was the index-writer WAL:
+//   the durable `index.bin` row rides `state.index_writer_tx` and was lost
+//   whenever shutdown aborted the writer after its old 2 s bound on a slow
+//   host. `DaemonServer::run`'s Shutdown arm now drains it
+//   deterministically (flush-ack, then join — `daemon/server/run.rs`), so
+//   `Daemon::stop()` returning after the daemon-task join IS the durability
+//   barrier this harness relies on. No test-side quiesce is needed.
 
 fn flat_artifact_files(artifact_dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(artifact_dir) else {
@@ -560,6 +555,13 @@ fn flat_artifact_files(artifact_dir: &Path) -> Vec<PathBuf> {
 #[tokio::test]
 #[ignore = "integration: real clang/ar, daemon restart, and full cache-log audit"]
 async fn strict_layout_validation_aggregates_all_runtime_flows() {
+    // Diagnostic (#1154 / PR #1198): the daemons run in-process, so a
+    // stderr subscriber captures the depgraph register logs; the harness
+    // prints them only when the test fails.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new("zccache_depgraph=debug"))
+        .with_writer(std::io::stderr)
+        .try_init();
     let Some(clang) = find_tool("clang") else {
         eprintln!("skipping strict layout validation: clang not found");
         return;
@@ -666,14 +668,13 @@ async fn strict_layout_validation_aggregates_all_runtime_flows() {
         "startup eviction scan",
     )
     .await;
-    // Quiesce async publication before shutdown (see the helper's #1161
-    // note). Minimum 4 pointers: single.o, multi_a.o, multi_b.o, and the
-    // migration artifact; link/exec publication is covered by the
-    // stability requirement.
-    wait_for_staged_publication(&artifact_dir, 4).await;
-    // ... and quiesce depgraph registration too: 3 compile contexts
-    // (single.o + the two multi units). See the helper's #1161 note.
-    wait_for_depgraph_contexts(&mut cold, 3).await;
+    // No cold-phase quiesce waits: per-unit publication (artifact bytes,
+    // depgraph update, durable-index row send) completes before each compile
+    // response, and `stop()` relies on the #1161 shutdown drain in
+    // `DaemonServer::run` — after the Shutdown response and the daemon-task
+    // join below, `index.bin` and `depgraph.bin` are durable. See the module
+    // NOTE above for why the old pointer-count / dep_graph_contexts waits
+    // guaranteed nothing.
     cold.stop().await;
 
     let cold_compile_count = line_count(&compile_count);
@@ -702,6 +703,11 @@ async fn strict_layout_validation_aggregates_all_runtime_flows() {
         std::fs::remove_file(output).unwrap();
     }
 
+    // On any warm-phase panic, dump the compile journal so CI logs carry
+    // the concrete #1155 miss_reason instead of a bare `cached: false`.
+    let _journal_dump = JournalDumpOnPanic {
+        journal: cache_root.join("logs").join("compile_journal.jsonl"),
+    };
     let mut warm = Daemon::start(&cache_root).await;
     let warm_session = session_start(&mut warm, &work).await;
     assert_compile(
@@ -722,7 +728,7 @@ async fn strict_layout_validation_aggregates_all_runtime_flows() {
             multi_args,
         ))
         .await,
-        true,
+        false,
     );
     assert_link(
         warm.request(&link_request(&ar, &work, &archive, &link_input))
@@ -738,8 +744,9 @@ async fn strict_layout_validation_aggregates_all_runtime_flows() {
 
     assert_eq!(
         line_count(&compile_count),
-        cold_compile_count,
-        "restart-warm single/multi restores must not execute clang"
+        cold_compile_count + 2,
+        "Unix staged multi-source publication must fail closed without a \
+         native mutation counter, so its warm request recompiles both units"
     );
     assert_eq!(
         line_count(&exec_count),
@@ -779,4 +786,76 @@ async fn strict_layout_validation_aggregates_all_runtime_flows() {
         "aggregate cache-log audit failed:\n{}",
         report.format_human()
     );
+}
+
+/// Unix C/C++ staged publication deliberately fails closed without a native
+/// input mutation counter. Keep strict staged-layout coverage separate from
+/// the supported legacy path, which must persist across a graceful restart.
+#[tokio::test]
+#[ignore = "integration: real clang, daemon restart"]
+async fn legacy_multi_source_hits_warm_after_restart() {
+    let Some(clang) = find_tool("clang") else {
+        eprintln!("skipping legacy multi restart validation: clang not found");
+        return;
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let _env = EnvGuard::capture(&[STAGED_ENV, PACK_ENV, CACHE_ENV, LEGACY_PATH_VALIDATE_ENV]);
+    let cache_root = temp.path().join("legacy-multi-cache");
+    let work = temp.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    std::env::set_var(CACHE_ENV, &cache_root);
+    std::env::set_var(STAGED_ENV, "off");
+    std::env::remove_var(PACK_ENV);
+    std::env::remove_var(LEGACY_PATH_VALIDATE_ENV);
+
+    let compile_count = temp.path().join("compile-count.txt");
+    let compiler = write_counting_clang(temp.path(), &clang, &compile_count);
+    let a = work.join("multi_a.c");
+    let b = work.join("multi_b.c");
+    let out_a = work.join("multi_a.o");
+    let out_b = work.join("multi_b.o");
+    std::fs::write(&a, "int multi_a(void) { return 2; }\n").unwrap();
+    std::fs::write(&b, "int multi_b(void) { return 3; }\n").unwrap();
+    let args = vec![
+        "-c".to_string(),
+        a.to_string_lossy().into_owned(),
+        b.to_string_lossy().into_owned(),
+    ];
+
+    let mut cold = Daemon::start(&cache_root).await;
+    let cold_session = session_start(&mut cold, &work).await;
+    assert_compile(
+        cold.request(&compile_request(
+            &cold_session,
+            &compiler,
+            &work,
+            args.clone(),
+        ))
+        .await,
+        false,
+    );
+    cold.stop().await;
+    assert_eq!(
+        line_count(&compile_count),
+        1,
+        "cold multi compile runs clang once"
+    );
+    std::fs::remove_file(&out_a).unwrap();
+    std::fs::remove_file(&out_b).unwrap();
+
+    let mut warm = Daemon::start(&cache_root).await;
+    let warm_session = session_start(&mut warm, &work).await;
+    assert_compile(
+        warm.request(&compile_request(&warm_session, &compiler, &work, args))
+            .await,
+        true,
+    );
+    warm.stop().await;
+    assert_eq!(
+        line_count(&compile_count),
+        1,
+        "legacy multi-source warm restart must materialize without running clang"
+    );
+    assert!(out_a.is_file());
+    assert!(out_b.is_file());
 }

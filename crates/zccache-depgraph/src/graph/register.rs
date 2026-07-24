@@ -65,6 +65,22 @@ impl DepGraph {
             compute_context_key_with(&ctx, key_root.as_deref(), worktree_salt, |path, root| {
                 self.cached_normalize_key_path(path, root)
             });
+        // Diagnostic for the warm-multi context_not_found investigation
+        // (#1154 stabilization, PR #1198): log every key input so cold and
+        // warm daemons' computations can be diffed from captured test output.
+        tracing::debug!(
+            key = %key.hash().to_hex(),
+            source_file = %ctx.source_file.to_string_lossy(),
+            key_root = ?key_root.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            worktree_salt = ?worktree_salt,
+            system = ?ctx.include_search.system,
+            user = ?ctx.include_search.user,
+            defines = ?ctx.defines,
+            flags = ?ctx.flags,
+            unknown_flags = ?ctx.unknown_flags,
+            force_includes = ?ctx.force_includes,
+            "register_with_root_and_salt"
+        );
         self.register_with_key_and_root_result(key, ctx, key_root)
     }
 

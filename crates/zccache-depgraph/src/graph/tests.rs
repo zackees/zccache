@@ -1010,3 +1010,46 @@ fn cached_context_key_matches_uncached_for_identical_inputs() {
          — divergence would invalidate every existing cache entry",
     );
 }
+
+#[test]
+fn diag_multi_style_register_survives_snapshot_roundtrip() {
+    // Simulates handle_compile_multi's check_unit_cache: registers using the
+    // bare `.key` (logical key) accessor exactly like the multi-file path
+    // does, instead of `.map_key` (instance key) like the single-file path.
+    let graph = DepGraph::new();
+    let ctx = make_ctx("/src/multi_a.c");
+
+    // Cold: register (bare logical key, multi-file style) + update (miss->store).
+    let key = graph.register_with_root_and_salt(ctx.clone(), None, None);
+    let scan = ScanResult {
+        resolved: Vec::new(),
+        unresolved: Vec::new(),
+        has_computed: false,
+    };
+    let artifact = graph.update(&key, scan, dummy_hash);
+    assert!(
+        artifact.is_some(),
+        "cold update must produce an artifact key"
+    );
+
+    let cold_verdict = graph.check(&key, always_fresh, dummy_hash);
+    assert!(
+        matches!(cold_verdict, CacheVerdict::Hit { .. }),
+        "same-process check after update must hit"
+    );
+
+    // Snapshot round-trip (simulates daemon restart).
+    let snapshot = graph.to_snapshot();
+    let restored = DepGraph::from_snapshot(snapshot);
+
+    // Warm: re-register with the SAME ctx, bare logical key (multi-file style).
+    let warm_key = restored.register_with_root_and_salt(ctx, None, None);
+    assert_eq!(key, warm_key, "logical key must be deterministic");
+
+    let warm_verdict = restored.check(&warm_key, always_fresh, dummy_hash);
+    assert!(
+        matches!(warm_verdict, CacheVerdict::Hit { .. }),
+        "post-restart check using the multi-file path's logical key must \
+         still hit; got {warm_verdict:?}"
+    );
+}

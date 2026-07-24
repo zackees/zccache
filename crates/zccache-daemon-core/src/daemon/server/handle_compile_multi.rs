@@ -1058,6 +1058,16 @@ pub(super) async fn handle_compile_multi(
         // started" (distinguishes queue starvation under burst load from
         // src/dst failures already enriched by `persist::enrich_persist_err`).
         let t_persist_enqueue = std::time::Instant::now();
+        // Track this deferred persist in pending_cache_writes so the
+        // shutdown drain (wal::drain_durable_state_for_shutdown) awaits it
+        // — the single-file path registers its deferred persist the same
+        // way (miss_store.rs). Untracked, a 2-core host can shut down
+        // between the compile response and persist_artifact_payloads,
+        // losing the artifact + index row and downgrading the next
+        // daemon's warm multi hits to recompiles (#1154 stabilization).
+        let _pending = pending_writes::register(&state.pending_cache_writes, &key_hex);
+        let completion_key = key_hex.clone();
+        let pending_state = Arc::clone(&state);
         tokio::spawn(async move {
             #[expect(
                 clippy::expect_used,
@@ -1089,6 +1099,7 @@ pub(super) async fn handle_compile_multi(
             if let Err(error) = written {
                 tracing::warn!(%error, "multi-source artifact persistence task failed to join");
             }
+            pending_writes::complete(&pending_state.pending_cache_writes, &completion_key);
         });
     }
 

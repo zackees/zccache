@@ -235,9 +235,7 @@ impl Drop for FsFixture {
             #[cfg(target_os = "macos")]
             Backing::MacImage { temp, mount } => {
                 let _ = temp.path();
-                let _ = Command::new("hdiutil")
-                    .args(["detach", &mount.as_path().to_string_lossy()])
-                    .output();
+                detach_macos_image(mount.as_path());
             }
         }
     }
@@ -383,25 +381,9 @@ fn mac_image(name: &'static str, filesystem: &str) -> FixtureResult {
         .prefix("zccache-hdi-")
         .tempdir()
         .map_err(|error| skip(name, error.to_string()))?;
-    let image = temp.path().join(format!("{filesystem}.dmg"));
     let mount = temp.path().join("mount");
     std::fs::create_dir(&mount).map_err(|error| skip(name, error.to_string()))?;
-    let create = Command::new("hdiutil")
-        .args([
-            "create",
-            "-size",
-            "512m",
-            "-fs",
-            filesystem,
-            "-volname",
-            "zccache",
-            &image.to_string_lossy(),
-        ])
-        .output()
-        .map_err(|error| skip(name, error.to_string()))?;
-    if !create.status.success() {
-        return Err(skip(name, command_error("hdiutil create", &create)));
-    }
+    let image = create_macos_image(&temp, filesystem).map_err(|reason| skip(name, reason))?;
     let attach = Command::new("hdiutil")
         .args([
             "attach",
@@ -422,6 +404,82 @@ fn mac_image(name: &'static str, filesystem: &str) -> FixtureResult {
             mount: mount.into(),
         },
     })
+}
+
+#[cfg(target_os = "macos")]
+const MAC_HDIUTIL_ATTEMPTS: u32 = 5;
+
+#[cfg(target_os = "macos")]
+fn hdiutil_resource_busy(output: &Output) -> bool {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+    .to_ascii_lowercase()
+    .contains("resource busy")
+}
+
+#[cfg(target_os = "macos")]
+fn hdiutil_retry_pause(attempt: u32) {
+    std::thread::sleep(std::time::Duration::from_millis(200_u64 << attempt));
+}
+
+#[cfg(target_os = "macos")]
+fn create_macos_image(
+    temp: &tempfile::TempDir,
+    filesystem: &str,
+) -> Result<std::path::PathBuf, String> {
+    let mut last_error = None;
+    for attempt in 0..MAC_HDIUTIL_ATTEMPTS {
+        // A failed create can leave a partially registered image. Use a fresh
+        // path on retry so DiskImages only needs to release its transient
+        // resource, not reconcile that partial file.
+        let image = temp.path().join(format!("{filesystem}-{attempt}.dmg"));
+        let output = Command::new("hdiutil")
+            .args([
+                "create",
+                "-size",
+                "512m",
+                "-fs",
+                filesystem,
+                "-volname",
+                "zccache",
+                &image.to_string_lossy(),
+            ])
+            .output()
+            .map_err(|error| error.to_string())?;
+        if output.status.success() {
+            return Ok(image);
+        }
+        last_error = Some(command_error("hdiutil create", &output));
+        if !hdiutil_resource_busy(&output) || attempt + 1 == MAC_HDIUTIL_ATTEMPTS {
+            break;
+        }
+        hdiutil_retry_pause(attempt);
+    }
+    Err(last_error.unwrap_or_else(|| "hdiutil create did not run".to_string()))
+}
+
+#[cfg(target_os = "macos")]
+fn detach_macos_image(mount: &Path) {
+    for attempt in 0..MAC_HDIUTIL_ATTEMPTS {
+        let Ok(output) = Command::new("hdiutil")
+            .args(["detach", &mount.to_string_lossy()])
+            .output()
+        else {
+            return;
+        };
+        if output.status.success() || !hdiutil_resource_busy(&output) {
+            return;
+        }
+        if attempt + 1 < MAC_HDIUTIL_ATTEMPTS {
+            hdiutil_retry_pause(attempt);
+        }
+    }
+    let _ = Command::new("hdiutil")
+        .args(["detach", "-force", &mount.to_string_lossy()])
+        .output();
 }
 
 #[cfg(not(target_os = "macos"))]

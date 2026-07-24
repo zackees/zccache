@@ -21,6 +21,7 @@ mod fingerprint;
 mod fs_matrix;
 mod link_cache;
 mod metadata_deferred;
+mod multi_restart_context_key;
 mod pack;
 mod path_remap;
 mod pch;
@@ -50,10 +51,17 @@ pub(super) struct CacheDirEnvGuard {
 static CACHE_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl CacheDirEnvGuard {
-    pub(super) fn set(path: &Path) -> Self {
-        let lock = CACHE_DIR_ENV_LOCK
+    /// Serializes tests that read or mutate daemon process environment without
+    /// changing any variables itself. Tests with explicit cache roots use
+    /// this when they must remain immune to concurrent staged-policy changes.
+    pub(super) fn lock() -> std::sync::MutexGuard<'static, ()> {
+        CACHE_DIR_ENV_LOCK
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(super) fn set(path: &Path) -> Self {
+        let lock = Self::lock();
         let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
         let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
         std::env::set_var(crate::core::config::CACHE_DIR_ENV, path);
@@ -66,9 +74,7 @@ impl CacheDirEnvGuard {
     }
 
     pub(super) fn set_with_namespace(path: &Path, namespace: &str) -> Self {
-        let lock = CACHE_DIR_ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let lock = Self::lock();
         let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
         let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
         std::env::set_var(crate::core::config::CACHE_DIR_ENV, path);

@@ -108,7 +108,7 @@ pub(super) async fn dispatch_request(
                     sessions_active: state.sessions.active_count() as u64,
                     cache_dir: state.cache_dir.clone(),
                     dep_graph_version: crate::depgraph::DEPGRAPH_VERSION,
-                    dep_graph_disk_size: crate::depgraph::depgraph_file_path()
+                    dep_graph_disk_size: depgraph_file_path_for_cache_dir(&state.cache_dir)
                         .metadata()
                         .map(|m| m.len())
                         .unwrap_or(0),

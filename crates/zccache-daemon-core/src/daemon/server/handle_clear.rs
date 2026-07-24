@@ -107,7 +107,7 @@ pub(super) async fn handle_clear(state: &SharedState) -> Response {
     let _ = std::fs::remove_file(state.metadata_path.as_path());
 
     // Delete on-disk depgraph snapshot.
-    let _ = std::fs::remove_file(crate::depgraph::depgraph_file_path());
+    let _ = std::fs::remove_file(depgraph_file_path_for_cache_dir(&state.cache_dir));
 
     // Purge the CLI-side meson-configure cache (issue #710). The daemon
     // does not write this directory itself — `zccache meson configure`

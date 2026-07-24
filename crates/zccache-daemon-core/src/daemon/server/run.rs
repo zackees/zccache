@@ -253,9 +253,9 @@ impl DaemonServer {
         {
             let state = Arc::clone(&self.state);
             tokio::spawn(async move {
+                let path = depgraph_file_path_for_cache_dir(&state.cache_dir);
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(300)).await;
-                    let path = crate::depgraph::depgraph_file_path();
                     if let Some(parent) = path.parent() {
                         std::fs::create_dir_all(parent).ok();
                     }
@@ -325,87 +325,27 @@ impl DaemonServer {
                         }
                     }
 
-                    // Deferred rustc/C++ persist tasks publish their durable
-                    // `ArtifactIndex` rows only after the cache files land on
-                    // disk. Wait for those tasks before draining the WAL;
-                    // otherwise shutdown can save a warm depgraph whose
-                    // artifact keys have not reached index.bin yet (#799).
-                    let pending_drained = pending_writes::await_all(
-                        &self.state.pending_cache_writes,
-                        std::time::Duration::from_secs(30),
+                    // Durability drain (#1161): pending persist tasks →
+                    // publication write barrier → index-writer WAL flush ack
+                    // → writer stop → final store flush. Shared with the
+                    // restart-shaped tests so they exercise this exact
+                    // production sequence — see
+                    // `wal::drain_durable_state_for_shutdown` for the full
+                    // ordering rationale and loud-forensics behavior. The
+                    // returned publication write guard stays held so no
+                    // publisher can mutate the cache while the depgraph and
+                    // metadata snapshots below are taken.
+                    let _publication_guard = drain_durable_state_for_shutdown(
+                        &self.state,
+                        index_writer_handle.take(),
                     )
                     .await;
-                    if !pending_drained {
-                        tracing::warn!(
-                            pending = self.state.pending_cache_writes.len(),
-                            "timed out waiting for pending artifact writes before WAL drain"
-                        );
-                    }
-
-                    // Every detached publisher receives an owned read guard
-                    // before its request handler returns. Wait for those
-                    // handoffs before stopping the WAL writer and performing
-                    // the final index snapshot.
-                    let _publication_guard =
-                        self.state.artifact_publication.write().await;
-
-                    // Signal the index-writer to drain its WAL to disk, then
-                    // wait briefly for it. Without this, unflushed entries are
-                    // lost if the runtime aborts before the next interval tick.
-                    // Retain a permit if the writer is between polls; a
-                    // `notify_waiters` signal can be lost in that window.
-                    self.state.index_writer_shutdown.notify_one();
-                    if let Some(mut handle) = index_writer_handle.take() {
-                        if tokio::time::timeout(
-                            std::time::Duration::from_secs(2),
-                            &mut handle,
-                        )
-                        .await
-                        .is_err()
-                        {
-                            handle.abort();
-                            let _ = handle.await;
-                        }
-                    }
-
-                    // Critical: the WAL drain above only persists entries that
-                    // went through `index_writer_tx`. The compile-success path
-                    // at server.rs:6122 (and friends) inserts DIRECTLY into
-                    // `artifact_store` without sending to the WAL, and
-                    // `flush_wal_to_disk` early-returns on an empty WAL —
-                    // so those direct-inserts never reach disk on a
-                    // WAL-only-empty shutdown. Reproduced locally: a fresh
-                    // medium-fixture build wrote 271 MB of CAS payloads
-                    // but no index.bin, leaving the warm-side daemon (and
-                    // every other `soldr load` consumer) with an empty index
-                    // even though all artifacts are on disk.
-                    //
-                    // Force a final `store.flush()` here so the in-memory
-                    // DashMap snapshot lands on disk regardless of WAL state.
-                    // spawn_blocking keeps the synchronous I/O off the
-                    // runtime; the await is bounded by the same 2s pattern
-                    // as the WAL drain above.
-                    let store = Arc::clone(&self.state.artifact_store);
-                    let entries = store.len();
-                    let flush_start = std::time::Instant::now();
-                    let res = store.flush_async().await;
-                    match res {
-                        Ok(()) => tracing::info!(
-                            entries,
-                            elapsed_ms = flush_start.elapsed().as_millis() as u64,
-                            "artifact store final flush complete"
-                        ),
-                        Err(e) => tracing::warn!(
-                            entries,
-                            "artifact store final flush failed: {e}"
-                        ),
-                    }
 
                     // Save depgraph to disk before exiting. The serializer and
                     // atomic write path are synchronous, so run them off the
                     // Tokio runtime thread.
                     let start = std::time::Instant::now();
-                    let path = crate::depgraph::depgraph_file_path();
+                    let path = depgraph_file_path_for_cache_dir(&self.state.cache_dir);
                     let dg = self.state.dep_graph.load_full();
                     let depgraph_save = tokio::task::spawn_blocking(move || {
                         if let Some(parent) = path.parent() {
