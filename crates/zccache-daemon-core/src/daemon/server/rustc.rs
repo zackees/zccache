@@ -145,7 +145,7 @@ pub(super) fn build_rustc_compile_context(
     // this request but deliberately not memoized, so a transient failure
     // cannot persist a second toolchain identity flavor (#1167).
     let compiler_hash = compiler_hash_cache
-        .get_or_hash_rustc_identity(&compiler_identity_path)
+        .get_or_hash_rustc_identity(compiler_identity_path.as_path())
         .unwrap_or(COMPILER_HASH_UNAVAILABLE);
 
     let rustc_ctx = crate::depgraph::RustcCompileContext::from_parsed_args(
@@ -183,7 +183,7 @@ pub(super) async fn build_rustc_compile_context_async(
     let compiler_identity_path = rustc_identity_path(compilation, cwd);
 
     let compiler_hash = compiler_hash_cache
-        .get_or_hash_rustc_identity_async(&compiler_identity_path)
+        .get_or_hash_rustc_identity_async(compiler_identity_path.as_path())
         .await
         .unwrap_or(COMPILER_HASH_UNAVAILABLE);
 
@@ -223,7 +223,7 @@ fn rustc_args(compilation: &crate::compiler::CacheableCompilation) -> &[String] 
 fn rustc_identity_path(
     compilation: &crate::compiler::CacheableCompilation,
     cwd: &Path,
-) -> std::path::PathBuf {
+) -> NormalizedPath {
     let inner = crate::compiler::dylint_inner_rustc_args(
         compilation.compiler.to_str().unwrap_or(""),
         &compilation.original_args,
@@ -233,9 +233,9 @@ fn rustc_identity_path(
     .map(|(inner, _)| Path::new(inner))
     .unwrap_or(compilation.compiler.as_path());
     if inner.is_absolute() {
-        inner.to_path_buf()
+        NormalizedPath::new(inner)
     } else {
-        cwd.join(inner)
+        NormalizedPath::new(cwd).join(inner)
     }
 }
 
