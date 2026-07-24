@@ -163,6 +163,56 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
 
 const MAX_STAGED_PUBLICATION_ERROR_CHARS: usize = 512;
 
+/// Result of the detached single-output persist operation.
+///
+/// The background task is deliberately required to hand this back to its
+/// async parent: an index row is only valid after the artifact files have
+/// been published.  Keeping this as a named, must-use outcome prevents a
+/// future logging-only error branch from silently turning a failed persist
+/// into a durable dangling index entry.
+#[derive(Debug)]
+#[must_use = "a persist outcome must gate index publication"]
+struct PersistOutcome {
+    published: bool,
+    meta: Option<ArtifactIndex>,
+}
+
+impl PersistOutcome {
+    const fn published(meta: ArtifactIndex) -> Self {
+        Self {
+            published: true,
+            meta: Some(meta),
+        }
+    }
+
+    const fn failed() -> Self {
+        Self {
+            published: false,
+            meta: None,
+        }
+    }
+}
+
+/// The only async single-output index-publication gate.
+///
+/// Keep the outcome consumption next to the channel send: a failed persist
+/// must remain a clean miss rather than becoming an index row whose payload
+/// never existed.
+fn enqueue_persisted_index(
+    outcome: PersistOutcome,
+    index_writer_tx: &tokio::sync::mpsc::UnboundedSender<IndexWriterCommand>,
+    key_hex: String,
+) -> bool {
+    if !outcome.published {
+        return false;
+    }
+    let Some(meta) = outcome.meta else {
+        return false;
+    };
+    let _ = index_writer_tx.send(IndexWriterCommand::Insert(key_hex, meta));
+    true
+}
+
 /// Record the full persistence failure at the stage where publication is
 /// abandoned. The profiler retains the compact reason ID; the lifecycle and
 /// session logs retain a bounded OS error so an operator can identify the
@@ -462,6 +512,11 @@ fn store_single_output(
         .map(|o| o.payload.size_bytes())
         .sum();
     let cached = CachedArtifact::from_artifact_data(&artifact);
+    let persist_payloads: Vec<Arc<Vec<u8>>> = artifact
+        .outputs
+        .iter()
+        .filter_map(|output| output.payload.as_bytes().cloned())
+        .collect();
     stats.artifact_build_ns = t_artifact_build.elapsed().as_nanos() as u64;
     let t_persist_enqueue = Instant::now();
 
@@ -563,21 +618,22 @@ fn store_single_output(
         return;
     }
 
-    // Publish the live entry before transferring the same read guard to the
-    // detached task. A queued writer can never observe a gap between the map
-    // insertion and the disk/index publication it must drain.
-    state.artifacts.insert(artifact_key_hex.to_string(), cached);
-    let sem = Arc::clone(&state.persist_semaphore);
-    let state_ref = Arc::clone(state_arc);
-    let index_writer_tx = state.index_writer_tx.clone();
-    let completion_key = artifact_key_hex.to_string();
     // Issue #610, DD-025 condition 1: pending-write registration around
     // the C/C++ cold-miss persist spawn. Concurrent lookups can observe
     // that disk publication is in flight and (optionally) wait briefly
     // for it instead of recompiling-on-race. Completion is signalled on
     // both success and failure paths (failure wakes waiters → re-lookup
     // misses → recompile; the DD-025 failure-mode-is-miss invariant).
+    // Publish the in-process payload before handing persistence to the
+    // detached task. A failed persist removes this provisional entry, while
+    // the typed outcome below prevents the durable index publication.
+    state.artifacts.insert(artifact_key_hex.to_string(), cached);
     let _pending = pending_writes::register(&state.pending_cache_writes, artifact_key_hex);
+    let sem = Arc::clone(&state.persist_semaphore);
+    let state_ref = Arc::clone(state_arc);
+    let index_writer_tx = state.index_writer_tx.clone();
+    let lifecycle_cache_root = state.cache_dir.clone();
+    let completion_key = artifact_key_hex.to_string();
     tokio::spawn(async move {
         #[expect(
             clippy::expect_used,
@@ -602,22 +658,45 @@ fn store_single_output(
             // src_size_now= — is baked into the error by
             // `persist::enrich_persist_err`).
             let gap_ms = t_persist_enqueue.elapsed().as_millis() as u64;
-            match persist_artifact_paths(&artifact_dir, &key_hex, &source_paths) {
-                Ok(()) => {
-                    let _ = index_writer_tx.send(IndexWriterCommand::Insert(key_hex, persist_meta));
-                }
+            match persist_artifact_payloads(&artifact_dir, &key_hex, &persist_payloads) {
+                Ok(()) => PersistOutcome::published(persist_meta),
                 Err(e) => {
                     tracing::warn!(
                         key = %key_hex,
+                        paths = ?source_paths,
+                        errno = ?e.raw_os_error(),
                         gap_ms,
                         "failed to persist artifact output: {e}"
                     );
+                    crate::core::lifecycle::write_event_in_cache_root(
+                        lifecycle_cache_root.as_path(),
+                        crate::core::lifecycle::EVENT_PERSIST_FAILED,
+                        serde_json::json!({
+                            "artifact_key": key_hex,
+                            "paths": source_paths.iter().map(|path| path.as_path().display().to_string()).collect::<Vec<_>>(),
+                            "errno": e.raw_os_error(),
+                            "error": e.to_string(),
+                            "gap_ms": gap_ms,
+                        }),
+                    );
+                    PersistOutcome::failed()
                 }
             }
         })
         .await;
-        if let Err(error) = written {
-            tracing::warn!(%error, "artifact persistence task failed to join");
+        match written {
+            Ok(outcome) => {
+                if !enqueue_persisted_index(outcome, &index_writer_tx, completion_key.clone()) {
+                    // This entry was only provisional while the filesystem
+                    // publish ran. Do not retain a lookup row for a failed
+                    // persist, or a later hit could point at missing payloads.
+                    state_ref.artifacts.remove(&completion_key);
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "artifact persistence task failed to join");
+                state_ref.artifacts.remove(&completion_key);
+            }
         }
         // Always complete the pending entry, even on JoinError, so
         // waiters cannot hang past the spawn's lifetime.
@@ -638,10 +717,26 @@ fn store_single_output(
 #[cfg(test)]
 mod staged_publication_diagnostic_tests {
     use super::{
-        preserve_staged_depfile_for_persistence, truncate_staged_publication_error,
-        MAX_STAGED_PUBLICATION_ERROR_CHARS,
+        enqueue_persisted_index, preserve_staged_depfile_for_persistence,
+        truncate_staged_publication_error, PersistOutcome, MAX_STAGED_PUBLICATION_ERROR_CHARS,
     };
     use crate::core::NormalizedPath;
+
+    #[test]
+    fn failed_async_persist_never_enqueues_an_index_insert() {
+        let (index_tx, mut index_rx) = tokio::sync::mpsc::unbounded_channel();
+        let queued = enqueue_persisted_index(
+            PersistOutcome::failed(),
+            &index_tx,
+            "failed-persist-key".to_string(),
+        );
+
+        assert!(!queued, "a failed persist must not be indexed");
+        assert!(
+            index_rx.try_recv().is_err(),
+            "failed persist must not send IndexWriterCommand::Insert"
+        );
+    }
 
     #[test]
     fn publication_error_is_bounded_without_splitting_utf8() {
