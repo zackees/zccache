@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 
-use super::{CacheableCompilation, CompilerFamily, ParsedInvocation};
+use super::{unmodeled_side_output_flag, CacheableCompilation, CompilerFamily, ParsedInvocation};
 use zccache_core::NormalizedPath;
 
 /// Source file extensions recognised by the MSVC / clang-cl parser.
@@ -143,6 +143,7 @@ pub fn parse_msvc_invocation(
     let mut output_file: Option<String> = None;
     let mut source_files: Vec<(String, usize)> = Vec::new();
     let mut unknown_flags: Vec<String> = Vec::new();
+    let mut has_external_pdb_debug_info = false;
     // Pending source-language override from /Tc<file> / /Tp<file>.
     // Those flags both name and language-tag the file in one go.
 
@@ -181,6 +182,18 @@ pub fn parse_msvc_invocation(
         // pass this verbatim. Both prefixes accepted.
         if is_exact_flag(arg, "c") {
             has_c_flag = true;
+            i += 1;
+            continue;
+        }
+
+        // `/Zi` and `/ZI` put debug type information in a shared PDB. A
+        // single-file cache entry contains only the object, so replaying one
+        // would silently omit (or stale) that side output. `/Z7` would be
+        // self-contained, but changing the caller's requested debug format
+        // here would require an argv rewrite before both keying and execution.
+        if flag_body(arg).eq_ignore_ascii_case("zi") {
+            has_external_pdb_debug_info = true;
+            unknown_flags.push(arg.clone());
             i += 1;
             continue;
         }
@@ -355,6 +368,16 @@ pub fn parse_msvc_invocation(
     if source_files.is_empty() {
         return ParsedInvocation::NonCacheable {
             reason: "no source file found in MSVC/clang-cl invocation".to_string(),
+        };
+    }
+    if source_files.len() == 1 && has_external_pdb_debug_info {
+        return ParsedInvocation::NonCacheable {
+            reason: "MSVC /Zi debug info writes an external PDB side output".to_string(),
+        };
+    }
+    if let Some(flag) = unmodeled_side_output_flag(args, true) {
+        return ParsedInvocation::NonCacheable {
+            reason: format!("unmodeled compiler side output requested by {flag}"),
         };
     }
 
@@ -683,19 +706,54 @@ mod tests {
     }
 
     #[test]
-    fn debug_info_flags() {
+    fn zi_debug_info_is_non_cacheable_because_it_writes_a_pdb() {
         let result = parse_msvc_invocation(
             "clang-cl",
             &args(&["/c", "/Zi", "/Fd:vc.pdb", "/Fo:hello.obj", "hello.c"]),
             CompilerFamily::Msvc,
         );
         match result {
-            ParsedInvocation::Cacheable(c) => {
-                assert_eq!(c.output_file, NormalizedPath::new("hello.obj"));
-                assert!(c.unknown_flags.contains(&"/Zi".to_string()));
-                assert!(c.unknown_flags.contains(&"/Fd:vc.pdb".to_string()));
+            ParsedInvocation::NonCacheable { reason } => {
+                assert_eq!(
+                    reason,
+                    "MSVC /Zi debug info writes an external PDB side output"
+                );
             }
-            other => panic!("expected cacheable, got: {other:?}"),
+            other => panic!("expected non-cacheable, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn zi_is_case_insensitive() {
+        let result = parse_msvc_invocation(
+            "cl.exe",
+            &args(&["/c", "/ZI", "/Fo:hello.obj", "hello.c"]),
+            CompilerFamily::Msvc,
+        );
+        assert!(matches!(
+            result,
+            ParsedInvocation::NonCacheable { ref reason }
+                if reason == "MSVC /Zi debug info writes an external PDB side output"
+        ));
+    }
+
+    #[test]
+    fn msvc_side_output_flags_are_non_cacheable_for_single_file_compiles() {
+        for flag in [
+            "/Fd:unit.pdb",
+            "/Fp:unit.pch",
+            "/FAcs",
+            "/sourceDependencies",
+        ] {
+            let result = parse_msvc_invocation(
+                "cl.exe",
+                &args(&["/c", flag, "/Fo:hello.obj", "hello.c"]),
+                CompilerFamily::Msvc,
+            );
+            assert!(
+                matches!(result, ParsedInvocation::NonCacheable { .. }),
+                "{flag}"
+            );
         }
     }
 

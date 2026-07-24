@@ -52,6 +52,25 @@ fn implicit_profile_use_is_non_cacheable() {
 }
 
 #[test]
+fn side_output_flags_are_non_cacheable_for_single_file_compiles() {
+    for flag in [
+        "-gsplit-dwarf",
+        "--coverage",
+        "-ftime-trace",
+        "-fstack-usage",
+        "-save-temps",
+        "-fmodules",
+    ] {
+        let result = parse_invocation("gcc", &args(&["-c", flag, "hello.cpp"]));
+        assert!(matches!(
+            result,
+            ParsedInvocation::NonCacheable { ref reason }
+                if reason == &format!("unmodeled compiler side output requested by {flag}")
+        ));
+    }
+}
+
+#[test]
 fn multi_file_split() {
     let result = parse_invocation("gcc", &args(&["-c", "a.cpp", "b.cpp"]));
     match result {

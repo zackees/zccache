@@ -479,65 +479,27 @@ fn has_file_valued_msvc_output(args: &[String]) -> bool {
 }
 
 fn has_unmodeled_multi_output(args: &[String], msvc_syntax: bool) -> bool {
+    if crate::compiler::unmodeled_side_output_flag(args, msvc_syntax).is_some() {
+        return true;
+    }
+    // Multi-source PCH/module shapes have compiler-owned output maps.  They
+    // are distinct from the single-file primary-output forms, which remain
+    // cacheable because they do not create an unmodeled side artifact.
     args.iter().any(|arg| {
         let lower = arg.to_ascii_lowercase();
         if msvc_syntax {
-            let body = arg
-                .strip_prefix('/')
-                .or_else(|| arg.strip_prefix('-'))
-                .unwrap_or(arg);
-            let lower_body = body.to_ascii_lowercase();
-            body.starts_with("Fd")
-                || body.starts_with("Fp")
-                || body.starts_with("Fr")
-                || body.starts_with("FR")
-                || body.starts_with("Fi")
-                || body.starts_with("Fa")
-                || matches!(lower_body.as_str(), "fa" | "fac" | "fas" | "facs")
-                || body.starts_with("Yc")
-                || lower_body.starts_with("doc")
-                || lower_body.starts_with("module:")
-                || lower_body.starts_with("headerunit")
-                || lower_body.starts_with("sourcedependencies")
-                || matches!(lower.as_str(), "/zi" | "-zi")
-                || lower.starts_with("/ifc")
-                || lower.starts_with("-ifc")
-                || lower == "/interface"
-                || lower == "-interface"
+            false
         } else {
-            lower.starts_with("--serialize-diagnostics")
-                || lower.starts_with("-dependency-file")
-                || lower.starts_with("-mj")
-                || lower.starts_with("-fmodule")
-                || lower == "-save-temps"
-                || lower.starts_with("-save-temps=")
-                || lower.starts_with("-gsplit-dwarf")
-                || lower.starts_with("-fdump-")
-                || lower == "--coverage"
-                || lower == "-coverage"
-                || lower == "-fprofile-arcs"
-                || lower == "-ftest-coverage"
-                || lower == "-ftime-trace"
-                || lower.starts_with("-ftime-trace=")
-                || lower == "-fstack-usage"
-                || lower.starts_with("-fcallgraph-info")
-                || lower == "-fsave-optimization-record"
-                || lower.starts_with("-foptimization-record-file")
-                || lower.starts_with("-fopt-info")
-                || lower.starts_with("-fdiagnostics-file=")
-                || lower.starts_with("-fdiagnostics-format=sarif-file")
-                || (lower.starts_with("-wa,") && lower.contains("="))
-                || matches!(
-                    lower.as_str(),
-                    "c++-module"
-                        | "c-header"
-                        | "c++-header"
-                        | "objective-c-header"
-                        | "objective-c++-header"
-                        | "c-header-unit"
-                        | "c++-header-unit"
-                )
-                || lower.ends_with(".cppm")
+            matches!(
+                lower.as_str(),
+                "c++-module"
+                    | "c-header"
+                    | "c++-header"
+                    | "objective-c-header"
+                    | "objective-c++-header"
+                    | "c-header-unit"
+                    | "c++-header-unit"
+            ) || lower.ends_with(".cppm")
                 || lower.ends_with(".ixx")
         }
     })
