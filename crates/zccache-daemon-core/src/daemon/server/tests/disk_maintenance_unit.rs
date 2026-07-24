@@ -426,7 +426,7 @@ fn issue_1148_under_budget_and_healthy_disk_is_a_noop() {
 }
 
 #[test]
-fn issue_1148_low_free_space_forces_hard_pressure_below_budget() {
+fn issue_1191_hard_pressure_preserves_seconds_old_artifacts() {
     let now = SystemTime::UNIX_EPOCH + 100 * DAY;
     let entries = vec![artifact("fresh", 10, now, Duration::from_secs(1))];
     let plan = plan_maintenance(
@@ -441,7 +441,7 @@ fn issue_1148_low_free_space_forces_hard_pressure_below_budget() {
         0,
     );
     assert_eq!(plan.pressure, MaintenancePressure::Hard);
-    assert_eq!(plan.selected, vec!["fresh"]);
+    assert!(plan.selected.is_empty());
 }
 
 #[test]

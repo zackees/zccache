@@ -15,6 +15,9 @@ const GIB: u64 = 1024 * 1024 * 1024;
 const SOFT_AGE: Duration = Duration::from_secs(4 * 24 * 60 * 60);
 const EXPIRE_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const PRESSURE_INTERVAL: Duration = Duration::from_secs(5 * 60);
+// A maintenance pass must not invalidate a result that was just published.
+// The next pressure pass can reclaim it if the disk is still constrained.
+const HARD_PRESSURE_MIN_AGE: Duration = PRESSURE_INTERVAL;
 const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const FULL_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const FULL_MARKER: &str = ".disk-maintenance-last-full-v1";
@@ -305,7 +308,10 @@ fn plan_maintenance_at_least(
             .iter()
             .filter(|artifact| !selected.contains(&artifact.key))
             .filter(|artifact| {
-                pressure == MaintenancePressure::Hard || age(now, artifact.last_access) > SOFT_AGE
+                let artifact_age = age(now, artifact.last_access);
+                (pressure == MaintenancePressure::Hard
+                    && artifact_age > HARD_PRESSURE_MIN_AGE)
+                    || artifact_age > SOFT_AGE
             })
             .collect();
         candidates.sort_by_key(|artifact| artifact.last_access);
