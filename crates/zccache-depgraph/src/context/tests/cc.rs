@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use crate::args::{ParsedArgs, UserDepFlags};
+use crate::args::{parse_gnu_args, ParsedArgs, UserDepFlags};
 use crate::search_paths::IncludeSearchPaths;
 use zccache_core::NormalizedPath;
 
@@ -344,6 +344,43 @@ fn different_flags_different_key() {
     let mut ctx2 = make_context("/src/a.c", &[], &[]);
     ctx2.flags = vec!["-std=c++20".into()];
     assert_ne!(ctx1.context_key(), ctx2.context_key());
+}
+
+/// Issue #1173: value-taking GNU flags must not discard their value while
+/// translating argv into a cache context. Every pair below used to collide.
+#[test]
+fn gnu_value_flags_are_context_key_sensitive() {
+    for (flag, first, second) in [
+        ("-target", "armv7-none-eabi", "x86_64-unknown-linux-gnu"),
+        ("--target", "armv7-none-eabi", "x86_64-unknown-linux-gnu"),
+        ("-arch", "arm64", "x86_64"),
+        ("-isysroot", "/sdk/one", "/sdk/two"),
+        ("-g", "", "3"),
+    ] {
+        let first_args = if flag == "-g" {
+            vec!["-g".into(), "-c".into(), "src/main.c".into()]
+        } else {
+            vec![flag.into(), first.into(), "-c".into(), "src/main.c".into()]
+        };
+        let second_args = if flag == "-g" {
+            vec!["-g3".into(), "-c".into(), "src/main.c".into()]
+        } else {
+            vec![flag.into(), second.into(), "-c".into(), "src/main.c".into()]
+        };
+        let first = CompileContext::from_parsed_args(
+            parse_gnu_args(&first_args, Path::new("/work")),
+            super::test_compiler_hash(),
+        );
+        let second = CompileContext::from_parsed_args(
+            parse_gnu_args(&second_args, Path::new("/work")),
+            super::test_compiler_hash(),
+        );
+        assert_ne!(
+            first.context_key(),
+            second.context_key(),
+            "{flag} must affect the key"
+        );
+    }
 }
 
 #[test]

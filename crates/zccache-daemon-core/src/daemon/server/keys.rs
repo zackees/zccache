@@ -365,6 +365,17 @@ pub(super) fn request_env_fingerprint_vars(
         .flatten()
         .filter_map(|(key, value)| {
             let key = key.as_str();
+            // MSVC reads these variables as extra compiler arguments (`CL`
+            // before argv, `_CL_` after it). They therefore affect both the
+            // request cache and the depgraph context even though zccache does
+            // not synthesize them into argv. Windows environment names are
+            // case-insensitive, so canonicalize their names before hashing.
+            if key.eq_ignore_ascii_case("CL") || key.eq_ignore_ascii_case("_CL_") {
+                // Added below from the final matching entry. This mirrors
+                // `Command::env` replacement semantics if an untrusted IPC
+                // payload contains duplicate case variants.
+                return None;
+            }
             // Mirror `VOLATILE_CARGO_ENV_VARS` in `depgraph::context`: the
             // request-level fingerprint must drop the same path-cascading
             // CARGO_* vars the rustc context key drops, otherwise the
@@ -381,8 +392,44 @@ pub(super) fn request_env_fingerprint_vars(
             include.then_some((key, value.as_str()))
         })
         .collect();
+    for name in ["CL", "_CL_"] {
+        if let Some(value) = client_env.and_then(|env| {
+            env.iter()
+                .rev()
+                .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(value.as_str()))
+        }) {
+            vars.push((name, value));
+        }
+    }
     vars.sort_unstable();
     vars
+}
+
+/// Return cache-key flags for MSVC's command-line environment variables.
+///
+/// `cl.exe` reads `CL` and `_CL_` in addition to argv. Preserve their raw
+/// values rather than expanding them: the compiler remains the authority for
+/// its quoting and precedence semantics, while distinct environments cannot
+/// share a cached artifact. The names are case-insensitive on Windows.
+pub(super) fn msvc_env_key_flags(
+    family: crate::compiler::CompilerFamily,
+    client_env: &[(String, String)],
+) -> Vec<String> {
+    if family != crate::compiler::CompilerFamily::Msvc {
+        return Vec::new();
+    }
+
+    let mut flags = Vec::with_capacity(2);
+    for name in ["CL", "_CL_"] {
+        if let Some(value) = client_env
+            .iter()
+            .rev()
+            .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(value))
+        {
+            flags.push(format!("zccache:msvc-env:{name}={value}"));
+        }
+    }
+    flags
 }
 
 /// Compute a fast fingerprint of a compile request for the request-level cache.

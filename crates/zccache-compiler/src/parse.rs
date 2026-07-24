@@ -7,7 +7,10 @@ use std::sync::Arc;
 use zccache_core::NormalizedPath;
 
 use super::detect::{detect_family, is_source_file, MODULE_EXTENSIONS};
-use super::{parse_msvc, CacheableCompilation, CompilerFamily, ParsedInvocation, SourceMode};
+use super::{
+    gnu_flag_takes_value, parse_msvc, CacheableCompilation, CompilerFamily, ParsedInvocation,
+    SourceMode,
+};
 
 /// Map a `-x <lang>` value to the corresponding source mode.
 /// Returns `None` for unrecognized language values (no special mode).
@@ -91,31 +94,6 @@ pub(crate) fn default_output(
         .unwrap_or("a");
     format!("{stem}.o")
 }
-
-/// Flags that take a following argument (value in next argv element).
-const FLAGS_WITH_VALUE: &[&str] = &[
-    "-o",
-    "-D",
-    "-U",
-    "-I",
-    "-isystem",
-    "-iquote",
-    "-idirafter",
-    "-include",
-    "-include-pch",
-    "-isysroot",
-    "-target",
-    "--target",
-    "-MF",
-    "-MQ",
-    "-MT",
-    "-std",
-    "-x",
-    "-arch",
-    "-Xclang",
-    "-mllvm",
-    "--serialize-diagnostics",
-];
 
 /// Parse a compiler invocation's arguments to determine cacheability.
 ///
@@ -224,8 +202,8 @@ pub fn parse_invocation(compiler: &str, args: &[String]) -> ParsedInvocation {
         }
 
         // Flags that take a value in the next arg — skip both flag and value
-        if let Some(&flag) = FLAGS_WITH_VALUE.iter().find(|&&f| f == arg.as_str()) {
-            if flag == "-x" && i + 1 < args.len() {
+        if gnu_flag_takes_value(arg) {
+            if arg == "-x" && i + 1 < args.len() {
                 current_mode =
                     source_mode_from_language(&args[i + 1]).unwrap_or(SourceMode::Normal);
             }

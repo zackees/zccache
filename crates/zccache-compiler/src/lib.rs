@@ -20,6 +20,7 @@
 
 pub mod arduino;
 mod detect;
+mod gnu_flags;
 pub mod output_policy;
 mod parse;
 pub mod parse_archiver;
@@ -37,6 +38,7 @@ use std::sync::Arc;
 use zccache_core::NormalizedPath;
 
 pub use detect::detect_family;
+pub use gnu_flags::{gnu_flag_takes_value, GNU_FLAGS_WITH_VALUE};
 pub use output_policy::{
     rustc_archive_hardlink_eligible, rustc_output_delivery, DeliveryPolicy, MutationContract,
     OutputClassification, OutputRole,

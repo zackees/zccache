@@ -6,6 +6,7 @@
 use std::path::Path;
 
 use super::search_paths::IncludeSearchPaths;
+use zccache_compiler::gnu_flag_takes_value;
 use zccache_core::NormalizedPath;
 
 /// Dependency-generation flags already present in the user's compiler args.
@@ -80,10 +81,12 @@ pub fn parse_gnu_args(args: &[String], cwd: &Path) -> ParsedArgs {
                 i += 2;
                 continue;
             }
-        } else if let Some(dir) = arg.strip_prefix("-I") {
-            result.include_search.user.push(resolve_path(dir, cwd));
-            i += 1;
-            continue;
+        } else if !matches!(arg.as_str(), "-isystem" | "-isysroot") {
+            if let Some(dir) = arg.strip_prefix("-I") {
+                result.include_search.user.push(resolve_path(dir, cwd));
+                i += 1;
+                continue;
+            }
         }
 
         // -isystem <dir>
@@ -170,6 +173,47 @@ pub fn parse_gnu_args(args: &[String], cwd: &Path) -> ParsedArgs {
             }
         }
 
+        // -imacros <file> is a force-included macro input whose contents
+        // must participate in depgraph invalidation just like -include.
+        if arg == "-imacros" {
+            if let Some(next) = args.get(i + 1) {
+                result.force_includes.push(resolve_path(next, cwd));
+                i += 2;
+                continue;
+            }
+        }
+
+        // GCC's -Wp, form forwards comma-separated options directly to the
+        // preprocessor. Retain the raw argument in the key, but also surface
+        // include and macro inputs to dependency discovery so a header that
+        // is reachable only through this spelling cannot become invisible.
+        if let Some(options) = arg.strip_prefix("-Wp,") {
+            let mut parts = options.split(',');
+            while let Some(option) = parts.next() {
+                match option {
+                    "-I" => {
+                        if let Some(path) = parts.next() {
+                            result.include_search.user.push(resolve_path(path, cwd));
+                        }
+                    }
+                    "-isystem" => {
+                        if let Some(path) = parts.next() {
+                            result.include_search.system.push(resolve_path(path, cwd));
+                        }
+                    }
+                    "-imacros" | "-include" => {
+                        if let Some(path) = parts.next() {
+                            result.force_includes.push(resolve_path(path, cwd));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            result.flags.push(arg.clone());
+            i += 1;
+            continue;
+        }
+
         // Cache-relevant flags.
         if arg.starts_with("-std=") || arg.starts_with("--std=") {
             result.flags.push(arg.clone());
@@ -202,7 +246,8 @@ pub fn parse_gnu_args(args: &[String], cwd: &Path) -> ParsedArgs {
             || arg.starts_with("-f")
             || arg.starts_with("-m")
             || arg.starts_with("-W")
-            || arg.starts_with("--target")
+            || arg.starts_with("-g")
+            || arg.starts_with("--target=")
             || arg == "-pthread"
             || arg == "-pipe"
         {
@@ -240,13 +285,22 @@ pub fn parse_gnu_args(args: &[String], cwd: &Path) -> ParsedArgs {
             continue;
         }
 
+        // The invocation classifier owns this table. Preserve both tokens in
+        // the context key for every remaining value-taking flag so a
+        // classifier update cannot make distinct argv shapes collide.
+        if gnu_flag_takes_value(arg) {
+            if let Some(next) = args.get(i + 1) {
+                result.flags.push(format!("{arg}={next}"));
+                i += 2;
+                continue;
+            }
+        }
+
         if arg == "-c"
             || arg == "-S"
             || arg == "-E"
             || arg == "-v"
             || arg == "-w"
-            || arg == "-g"
-            || arg.starts_with("-g")
             || arg.starts_with("-M")
             || arg == "-MP"
         {
@@ -258,7 +312,16 @@ pub fn parse_gnu_args(args: &[String], cwd: &Path) -> ParsedArgs {
         if !arg.starts_with('-') {
             source_candidates.push(resolve_path(arg, cwd));
         } else {
-            // Unrecognized flag â€” track for cache invalidation.
+            // Unknown flags fail safe: preserve a following non-source token
+            // too, so an unclassified value-taking compiler flag cannot
+            // silently collide with a different value.
+            if let Some(next) = args.get(i + 1) {
+                if !next.starts_with('-') && !is_source_file(&resolve_path(next, cwd)) {
+                    result.unknown_flags.push(format!("{arg}={next}"));
+                    i += 2;
+                    continue;
+                }
+            }
             result.unknown_flags.push(arg.clone());
         }
 
@@ -367,6 +430,7 @@ fn is_source_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zccache_compiler::GNU_FLAGS_WITH_VALUE;
 
     fn args(s: &[&str]) -> Vec<String> {
         s.iter().map(|x| x.to_string()).collect()
@@ -484,6 +548,77 @@ mod tests {
     }
 
     #[test]
+    fn cross_compile_and_debug_flags_preserve_their_values() {
+        let parsed = parse_gnu_args(
+            &args(&[
+                "-target",
+                "armv7-none-eabi",
+                "-arch",
+                "arm64",
+                "-isysroot",
+                "/sdk/a",
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "-g3",
+                "-c",
+                "x.c",
+            ]),
+            Path::new("/p"),
+        );
+        for flag in [
+            "-target=armv7-none-eabi",
+            "-arch=arm64",
+            "-isysroot=/sdk/a",
+            "--target=x86_64-unknown-linux-gnu",
+            "-g3",
+        ] {
+            assert!(parsed.flags.contains(&flag.to_string()), "missing {flag}");
+        }
+    }
+
+    #[test]
+    fn imacros_is_a_force_include() {
+        let parsed = parse_gnu_args(
+            &args(&["-imacros", "macros.h", "-c", "x.c"]),
+            Path::new("/p"),
+        );
+        assert_eq!(parsed.force_includes, vec![Path::new("/p/macros.h")]);
+    }
+
+    #[test]
+    fn wp_forwarded_include_and_macro_inputs_are_discovered() {
+        let parsed = parse_gnu_args(
+            &args(&["-Wp,-I,generated,-imacros,config.h", "-c", "x.c"]),
+            Path::new("/p"),
+        );
+        assert_eq!(parsed.include_search.user, vec![Path::new("/p/generated")]);
+        assert_eq!(parsed.force_includes, vec![Path::new("/p/config.h")]);
+        assert!(parsed
+            .flags
+            .contains(&"-Wp,-I,generated,-imacros,config.h".to_string()));
+    }
+
+    /// Mechanical #1173 drift guard: the invocation classifier owns the
+    /// value-taking table, and the key parser must consume every listed
+    /// value rather than reprocessing it as an unrelated positional token.
+    #[test]
+    fn classifier_value_flag_table_is_consumed_by_key_parser() {
+        for flag in GNU_FLAGS_WITH_VALUE {
+            let parsed = parse_gnu_args(
+                &[
+                    (*flag).into(),
+                    "classifier-value".into(),
+                    "-c".into(),
+                    "x.c".into(),
+                ],
+                Path::new("/p"),
+            );
+            assert_eq!(parsed.source_file, Path::new("/p/x.c"), "{flag}");
+            assert!(parsed.unknown_flags.is_empty(), "{flag}");
+        }
+    }
+
+    #[test]
     fn absolute_paths_not_prefixed() {
         let parsed = parse_gnu_args(
             &args(&["-I", "/usr/include", "-c", "/src/foo.c"]),
@@ -547,6 +682,15 @@ mod tests {
         assert!(parsed
             .unknown_flags
             .contains(&"--custom-flag=value".to_string()));
+    }
+
+    #[test]
+    fn unknown_flag_preserves_a_non_source_value() {
+        let parsed = parse_gnu_args(
+            &args(&["--vendor-mode", "strict", "-c", "foo.c"]),
+            Path::new("/p"),
+        );
+        assert_eq!(parsed.unknown_flags, vec!["--vendor-mode=strict"]);
     }
 
     #[test]

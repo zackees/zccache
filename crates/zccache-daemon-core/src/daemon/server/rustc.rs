@@ -50,7 +50,7 @@ pub(super) fn build_compile_context(
         .get_or_hash_with(&compilation.compiler, hash_cc_identity)
         .unwrap_or(COMPILER_HASH_UNAVAILABLE);
 
-    build_cc_compile_context(compilation, cwd, system_includes, compiler_hash)
+    build_cc_compile_context(compilation, cwd, system_includes, client_env, compiler_hash)
 }
 
 /// Shared by the sync and async C/C++ context builders once the compiler
@@ -59,6 +59,7 @@ fn build_cc_compile_context(
     compilation: &crate::compiler::CacheableCompilation,
     cwd: &Path,
     system_includes: &[NormalizedPath],
+    client_env: &[(String, String)],
     compiler_hash: ContentHash,
 ) -> BuildContextResult {
     // Dispatch to the correct parser based on compiler family.
@@ -70,6 +71,9 @@ fn build_cc_compile_context(
     };
     let dep_flags = parsed.dep_flags.clone();
     let mut ctx = CompileContext::from_parsed_args(parsed, compiler_hash);
+    ctx.flags
+        .extend(msvc_env_key_flags(compilation.family, client_env));
+    ctx.flags.sort();
 
     // For multi-file compilations, the parsed source_file might be wrong
     // (it picks the first source from original_args). Override with the
@@ -117,7 +121,7 @@ pub(super) async fn build_compile_context_async(
         .await
         .unwrap_or(COMPILER_HASH_UNAVAILABLE);
 
-    build_cc_compile_context(compilation, cwd, system_includes, compiler_hash)
+    build_cc_compile_context(compilation, cwd, system_includes, client_env, compiler_hash)
 }
 
 /// Build compile context for a Rustc invocation.
