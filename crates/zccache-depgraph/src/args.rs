@@ -3,7 +3,7 @@
 //! Extracts include paths, defines, and cache-relevant flags from
 //! compiler command-line arguments.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::search_paths::IncludeSearchPaths;
 use zccache_compiler::gnu_flag_takes_value;
@@ -215,6 +215,20 @@ pub fn parse_gnu_args(args: &[String], cwd: &Path) -> ParsedArgs {
         }
 
         // Cache-relevant flags.
+        //
+        // PGO profile data is a non-argv compiler input. Keep the raw flag in
+        // the context key and feed its referenced file(s) through the same
+        // content-hashed path as `-include`: changing a `.profdata` / `.gcda`
+        // file in place must produce a new artifact key.
+        if let Some(path) = arg
+            .strip_prefix("-fprofile-use=")
+            .or_else(|| arg.strip_prefix("-fprofile-dir="))
+        {
+            result.flags.push(arg.clone());
+            result.force_includes.extend(profile_input_files(path, cwd));
+            i += 1;
+            continue;
+        }
         if arg.starts_with("-std=") || arg.starts_with("--std=") {
             result.flags.push(arg.clone());
             i += 1;
@@ -239,6 +253,18 @@ pub fn parse_gnu_args(args: &[String], cwd: &Path) -> ParsedArgs {
             result.flags.push(arg.clone());
             i += 1;
             continue;
+        }
+
+        // Exact GNU flags with a separate value must be recognized before
+        // the broad `-m*` / `-f*` branches below. In particular,
+        // `-march native` is host-dependent just like `-march=native`, so
+        // preserve the pair as one canonical cache-key flag.
+        if matches!(arg.as_str(), "-march" | "-mtune" | "-mcpu") {
+            if let Some(next) = args.get(i + 1) {
+                result.flags.push(format!("{arg}={next}"));
+                i += 2;
+                continue;
+            }
         }
 
         // Optimization, target, feature flags.
@@ -415,6 +441,54 @@ fn resolve_path(path: &str, cwd: &Path) -> NormalizedPath {
     }
 }
 
+/// Return the regular profile-data files rooted at `path`.
+///
+/// `-fprofile-use=<file>` commonly names a Clang `.profdata` file, while
+/// GCC's `-fprofile-use=<dir>` / `-fprofile-dir=<dir>` forms name a directory
+/// of `.gcda` files. The depgraph's established force-include input path
+/// content-hashes every returned file on both update and hit checks, so PGO
+/// data regenerated at the same pathname cannot serve a stale object.
+///
+/// A nonexistent or non-file root is retained as a single input. That makes
+/// the hash lookup fail and safely keeps the context cold rather than treating
+/// an unavailable profile input as irrelevant.
+fn profile_input_files(path: &str, cwd: &Path) -> Vec<NormalizedPath> {
+    let root = resolve_path(path, cwd);
+    let root_path = root.as_path();
+    if root_path.is_file() {
+        return vec![root];
+    }
+    if !root_path.is_dir() {
+        return vec![root];
+    }
+
+    fn visit(dir: &Path, files: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                files.push(path);
+            } else if path.is_dir() {
+                visit(&path, files);
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    visit(root_path, &mut files);
+    files.sort();
+    if files.is_empty() {
+        // An empty profile directory is not an input file yet. Retaining the
+        // directory itself makes the compilation cold instead of incorrectly
+        // treating `-fprofile-use` as cacheable without profile data.
+        vec![root]
+    } else {
+        files.into_iter().map(NormalizedPath::new).collect()
+    }
+}
+
 fn is_source_file(path: &Path) -> bool {
     let ext = path
         .extension()
@@ -430,6 +504,9 @@ fn is_source_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::compute_artifact_key;
+    use crate::CompileContext;
+    use tempfile::tempdir;
     use zccache_compiler::GNU_FLAGS_WITH_VALUE;
 
     fn args(s: &[&str]) -> Vec<String> {
@@ -517,6 +594,84 @@ mod tests {
     fn force_include() {
         let parsed = parse_gnu_args(&args(&["-include", "pch.h", "-c", "x.c"]), Path::new("/p"));
         assert_eq!(parsed.force_includes, vec![Path::new("/p/pch.h")]);
+    }
+
+    #[test]
+    fn profile_use_file_is_content_hashed_input() {
+        let temp = tempdir().expect("temp profile directory");
+        let source = temp.path().join("unit.c");
+        let profile = temp.path().join("unit.profdata");
+        std::fs::write(&source, "int unit(void) { return 1; }").expect("write source");
+        std::fs::write(&profile, "profile one").expect("write profile");
+
+        let parsed = parse_gnu_args(
+            &args(&[
+                &format!("-fprofile-use={}", profile.display()),
+                "-c",
+                &source.to_string_lossy(),
+            ]),
+            temp.path(),
+        );
+        assert_eq!(parsed.force_includes, vec![profile.as_path()]);
+        assert!(parsed
+            .flags
+            .contains(&format!("-fprofile-use={}", profile.display())));
+
+        let context = CompileContext::from_parsed_args(
+            parsed,
+            zccache_hash::hash_bytes(b"profile-test-compiler"),
+        );
+        let context_key = context.context_key();
+        let source_hash = zccache_hash::hash_file(&source).expect("hash source");
+        let first_profile_hash = zccache_hash::hash_file(&profile).expect("hash first profile");
+        let first = compute_artifact_key(
+            &context_key,
+            &mut [
+                (context.source_file.clone(), source_hash),
+                (context.force_includes[0].clone(), first_profile_hash),
+            ],
+            None,
+        );
+
+        std::fs::write(&profile, "profile two").expect("rewrite profile");
+        let second_profile_hash = zccache_hash::hash_file(&profile).expect("hash second profile");
+        let second = compute_artifact_key(
+            &context_key,
+            &mut [
+                (context.source_file.clone(), source_hash),
+                (context.force_includes[0].clone(), second_profile_hash),
+            ],
+            None,
+        );
+        assert_ne!(
+            first, second,
+            "profile content must change the artifact key"
+        );
+    }
+
+    #[test]
+    fn profile_dir_recursively_discovers_gcc_profile_inputs() {
+        let temp = tempdir().expect("temp profile directory");
+        let profile_dir = temp.path().join("profiles");
+        let nested = profile_dir.join("nested");
+        std::fs::create_dir_all(&nested).expect("create nested profile directory");
+        let first = profile_dir.join("first.gcda");
+        let second = nested.join("second.gcda");
+        std::fs::write(&first, "one").expect("write first profile");
+        std::fs::write(&second, "two").expect("write second profile");
+
+        let parsed = parse_gnu_args(
+            &args(&[
+                &format!("-fprofile-dir={}", profile_dir.display()),
+                "-c",
+                "unit.c",
+            ]),
+            temp.path(),
+        );
+        assert_eq!(
+            parsed.force_includes,
+            vec![first.as_path(), second.as_path()]
+        );
     }
 
     #[test]

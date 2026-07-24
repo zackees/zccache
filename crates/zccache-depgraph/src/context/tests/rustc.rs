@@ -194,6 +194,30 @@ fn rustc_different_codegen_different_key() {
     assert_ne!(ctx1.context_key(), ctx2.context_key());
 }
 
+/// Issue #1174: `target-cpu=native` resolves against the host. An injectable
+/// salt proves that two different synthetic hosts cannot share its key.
+#[test]
+fn rustc_native_cpu_is_host_salted() {
+    let mut ctx = make_rustc_context("/src/lib.rs", "2021");
+    ctx.codegen_flags = vec!["target-cpu=native".to_string()];
+    let host_a = ctx.context_key_with_root_and_native_cpu_salt(None, Some("host-a-avx2"));
+    let host_a_again = ctx.context_key_with_root_and_native_cpu_salt(None, Some("host-a-avx2"));
+    let host_b = ctx.context_key_with_root_and_native_cpu_salt(None, Some("host-b-sse2"));
+
+    assert_eq!(host_a, host_a_again);
+    assert_ne!(host_a, host_b);
+}
+
+#[test]
+fn rustc_explicit_target_cpu_is_not_host_salted() {
+    let mut ctx = make_rustc_context("/src/lib.rs", "2021");
+    ctx.codegen_flags = vec!["target-cpu=x86-64-v3".to_string()];
+    assert_eq!(
+        ctx.context_key_with_root_and_native_cpu_salt(None, Some("host-a")),
+        ctx.context_key_with_root_and_native_cpu_salt(None, Some("host-b"))
+    );
+}
+
 #[test]
 fn rustc_cargo_metadata_affects_key() {
     let mut ctx1 = make_rustc_context("/src/lib.rs", "2021");

@@ -46,6 +46,12 @@ fn preprocessing_only_non_cacheable() {
 }
 
 #[test]
+fn implicit_profile_use_is_non_cacheable() {
+    let result = parse_invocation("gcc", &args(&["-c", "-fprofile-use", "hello.cpp"]));
+    assert!(matches!(result, ParsedInvocation::NonCacheable { .. }));
+}
+
+#[test]
 fn multi_file_split() {
     let result = parse_invocation("gcc", &args(&["-c", "a.cpp", "b.cpp"]));
     match result {

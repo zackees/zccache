@@ -14,6 +14,7 @@ parent `handle_compile.rs` need no changes.
 | `hash_verify.rs` | Hash source + headers in parallel, run depgraph verdict |
 | `compile_exec.rs` | Prepare depfile / response file, spawn compiler, parse output |
 | `store_outcome.rs` | Successful-compile post path: scan deps, hash all, store artifact, emit miss profiles, schedule background watcher updates |
+| `time_macros.rs` | Detect nondeterministic C/C++ time macros before any cache lookup |
 
 ## Why a phase-per-file split
 

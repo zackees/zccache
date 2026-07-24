@@ -18,6 +18,7 @@ use zccache_core::NormalizedPath;
 use zccache_hash::ContentHash;
 
 use super::args::ParsedArgs;
+use super::native_cpu::{host_cpu_identity_salt, is_cxx_native_cpu_flag, is_rustc_native_cpu_flag};
 use super::rustc_args::RustcParsedArgs;
 use super::search_paths::IncludeSearchPaths;
 
@@ -224,7 +225,7 @@ pub fn compute_context_key(
     key_root: Option<&Path>,
     worktree_salt: Option<&Path>,
 ) -> ContextKey {
-    compute_context_key_with(ctx, key_root, worktree_salt, |path, root| {
+    compute_context_key_with_native_cpu_salt(ctx, key_root, worktree_salt, None, |path, root| {
         normalize_key_path(path, root).into()
     })
 }
@@ -245,6 +246,26 @@ pub fn compute_context_key_with<F>(
     ctx: &CompileContext,
     key_root: Option<&Path>,
     worktree_salt: Option<&Path>,
+    normalize: F,
+) -> ContextKey
+where
+    F: FnMut(&Path, Option<&Path>) -> Arc<str>,
+{
+    compute_context_key_with_native_cpu_salt(ctx, key_root, worktree_salt, None, normalize)
+}
+
+/// Variant of [`compute_context_key_with`] with an injectable opaque host-CPU
+/// salt for `-march=native`-style invocations.
+///
+/// Production callers pass `None`, which obtains the current host's stable
+/// salt. Tests and embedding applications can supply a synthetic salt to prove
+/// cross-host behavior without depending on the CPU that runs the test.
+#[must_use]
+pub fn compute_context_key_with_native_cpu_salt<F>(
+    ctx: &CompileContext,
+    key_root: Option<&Path>,
+    worktree_salt: Option<&Path>,
+    native_cpu_salt: Option<&str>,
     mut normalize: F,
 ) -> ContextKey
 where
@@ -260,6 +281,21 @@ where
     hasher.update(b"compiler\0");
     hasher.update(ctx.compiler_hash.as_bytes());
     hasher.update(b"\0");
+
+    if ctx
+        .flags
+        .iter()
+        .chain(&ctx.unknown_flags)
+        .any(|flag| is_cxx_native_cpu_flag(flag))
+    {
+        let salt = match native_cpu_salt {
+            Some(salt) => salt,
+            None => host_cpu_identity_salt(),
+        };
+        hasher.update(b"native-cpu-host\0");
+        hasher.update(salt.as_bytes());
+        hasher.update(b"\0");
+    }
 
     if let Some(salt) = worktree_salt {
         // Domain-tagged so the salt can't collide with any future hash
@@ -627,7 +663,7 @@ impl RustcCompileContext {
     /// Uses a different domain tag from C/C++ to avoid collisions.
     #[must_use]
     pub fn context_key(&self) -> ContextKey {
-        self.context_key_with_root(None)
+        self.context_key_with_root_and_native_cpu_salt(None, None)
     }
 
     /// Compute the context key, optionally normalizing project-local paths.
@@ -637,6 +673,20 @@ impl RustcCompileContext {
     /// workspaces can share cache keys across root-directory renames.
     #[must_use]
     pub fn context_key_with_root(&self, key_root: Option<&Path>) -> ContextKey {
+        self.context_key_with_root_and_native_cpu_salt(key_root, None)
+    }
+
+    /// Computes a context key with an injectable opaque native-CPU salt.
+    ///
+    /// A salt is folded in only for `-C target-cpu=native` (or the defensive
+    /// `target-feature=native` spelling), so explicit portable feature lists
+    /// retain their ordinary cross-host reuse behavior.
+    #[must_use]
+    pub fn context_key_with_root_and_native_cpu_salt(
+        &self,
+        key_root: Option<&Path>,
+        native_cpu_salt: Option<&str>,
+    ) -> ContextKey {
         let mut hasher = blake3::Hasher::new();
 
         hasher.update(b"zccache-rustc-context-key-v2\0");
@@ -646,6 +696,20 @@ impl RustcCompileContext {
         hasher.update(b"compiler\0");
         hasher.update(self.compiler_hash.as_bytes());
         hasher.update(b"\0");
+
+        if self
+            .codegen_flags
+            .iter()
+            .any(|flag| is_rustc_native_cpu_flag(flag))
+        {
+            let salt = match native_cpu_salt {
+                Some(salt) => salt,
+                None => host_cpu_identity_salt(),
+            };
+            hasher.update(b"native-cpu-host\0");
+            hasher.update(salt.as_bytes());
+            hasher.update(b"\0");
+        }
 
         // Source file.
         let source_file = normalize_key_path(&self.source_file, key_root);
@@ -817,6 +881,17 @@ impl RustcCompileContext {
         &self,
         key_root: Option<&Path>,
     ) -> Option<ContextKey> {
+        self.check_metadata_compat_key_with_root_and_native_cpu_salt(key_root, None)
+    }
+
+    /// Native-CPU-salt-injectable variant of
+    /// [`Self::check_metadata_compat_key_with_root`].
+    #[must_use]
+    pub fn check_metadata_compat_key_with_root_and_native_cpu_salt(
+        &self,
+        key_root: Option<&Path>,
+        native_cpu_salt: Option<&str>,
+    ) -> Option<ContextKey> {
         let normalized_emit = normalized_check_metadata_emit(&self.emit_types)?;
         if self.crate_types.iter().any(|ct| {
             matches!(
@@ -835,6 +910,20 @@ impl RustcCompileContext {
         hasher.update(b"compiler\0");
         hasher.update(self.compiler_hash.as_bytes());
         hasher.update(b"\0");
+
+        if self
+            .codegen_flags
+            .iter()
+            .any(|flag| is_rustc_native_cpu_flag(flag))
+        {
+            let salt = match native_cpu_salt {
+                Some(salt) => salt,
+                None => host_cpu_identity_salt(),
+            };
+            hasher.update(b"native-cpu-host\0");
+            hasher.update(salt.as_bytes());
+            hasher.update(b"\0");
+        }
 
         let source_file = normalize_key_path(&self.source_file, key_root);
         hasher.update(source_file.as_bytes());

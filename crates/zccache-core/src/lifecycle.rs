@@ -61,6 +61,8 @@
 //! | `destination_write_failed` | daemon | cached artifact could not be written to its requested output | `artifact_key`, `path`, `errno` |
 //! | `legacy_artifact_path_accessed` | daemon | legacy artifact layout was reached (Phase 0 audit failure) | path-specific fields |
 //! | `miss_reason_unknown` | daemon | miss classification was not recognized (Phase 0 audit failure) | miss-specific fields |
+//! | `native_flag_host_salted` | daemon | a `native` CPU-selection flag made the compile key host-specific | `compiler_family` |
+//! | `time_macro_noncacheable` | daemon | a C/C++ time macro bypassed the compile cache | `source`, `input`, `macro_name` |
 //!
 //! ## Forensic walkthrough: the two-versions-on-one-pipe wedge
 //!
@@ -153,6 +155,8 @@ pub const EVENT_IN_FLIGHT_EXEC_WAIT_TIMEOUT: &str = "in_flight_exec_wait_timeout
 pub const EVENT_RUSTC_IDENTITY_PROBE_TIMEOUT: &str = "rustc_identity_probe_timeout";
 pub const EVENT_COW_UNREGISTERED_BLOB_EVICTED: &str = "cow_unregistered_blob_evicted";
 pub const EVENT_COW_BLOB_CORRUPTION_DETECTED: &str = "cow_blob_corruption_detected";
+pub const EVENT_NATIVE_FLAG_HOST_SALTED: &str = "native_flag_host_salted";
+pub const EVENT_TIME_MACRO_NONCACHEABLE: &str = "time_macro_noncacheable";
 
 /// Complete lifecycle-event catalog. Keep this additive and update the module
 /// schema table with every new event; log-audit and operator docs depend on it.
@@ -182,6 +186,8 @@ pub const EVENT_ALL: &[&str] = &[
     EVENT_RUSTC_IDENTITY_PROBE_TIMEOUT,
     EVENT_COW_UNREGISTERED_BLOB_EVICTED,
     EVENT_COW_BLOB_CORRUPTION_DETECTED,
+    EVENT_NATIVE_FLAG_HOST_SALTED,
+    EVENT_TIME_MACRO_NONCACHEABLE,
     EVENT_LEGACY_ARTIFACT_PATH_ACCESSED,
     EVENT_DESTINATION_WRITE_FAILED,
     EVENT_MISS_REASON_UNKNOWN,

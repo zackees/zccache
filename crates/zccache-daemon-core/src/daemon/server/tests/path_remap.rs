@@ -268,6 +268,63 @@ fn requires_worktree_in_key_false_for_rustc() {
     ));
 }
 
+#[test]
+fn normal_clang_without_prefix_maps_requires_worktree_salt() {
+    let root = Path::new("/repo/worktree-a");
+    let args = vec!["-c".to_string(), "src/main.cpp".to_string()];
+
+    assert!(cc_requires_worktree_salt(
+        CompilerFamily::Clang,
+        SourceMode::Normal,
+        &args,
+        root,
+    ));
+}
+
+#[test]
+fn rustc_keeps_its_existing_remap_gate() {
+    let root = Path::new("/repo/worktree-a");
+    assert!(!cc_requires_worktree_salt(
+        CompilerFamily::Rustc,
+        SourceMode::Normal,
+        &[],
+        root,
+    ));
+}
+
+#[test]
+fn normal_clang_with_complete_prefix_maps_can_share() {
+    let root = Path::new("/repo/worktree-a");
+    let args = [
+        "-ffile-prefix-map",
+        "-fmacro-prefix-map",
+        "-fdebug-prefix-map",
+    ]
+    .into_iter()
+    .map(|flag| format!("{flag}={}=.", root.display()))
+    .collect::<Vec<_>>();
+
+    assert!(!cc_requires_worktree_salt(
+        CompilerFamily::Clang,
+        SourceMode::Normal,
+        &args,
+        root,
+    ));
+}
+
+#[test]
+fn partial_prefix_mapping_remains_worktree_bound() {
+    let root = Path::new("/repo/worktree-a");
+    let args = vec![format!("-ffile-prefix-map={}=.", root.display())];
+
+    assert!(cc_requires_worktree_salt(
+        CompilerFamily::Gcc,
+        SourceMode::Normal,
+        &args,
+        root,
+    ));
+}
+
 // ── Piece B: `compute_context_key` worktree-salt behaviour ─────────────────
 //
 // The salt lives on the context key (not the artifact key) so all artifact
