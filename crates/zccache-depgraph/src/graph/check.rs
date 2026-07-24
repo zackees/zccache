@@ -267,6 +267,8 @@ impl DepGraph {
         E: Fn(&str) -> Option<String>,
     {
         let Some(key) = self.resolve_instance_key(key) else {
+            // Diagnostic (#1154 / PR #1198): distinguish the three Cold exits.
+            tracing::debug!(key = %key.hash().to_hex(), "check: cold (resolve_instance_key failed)");
             self.misses.fetch_add(1, Ordering::Relaxed);
             return CacheVerdict::Cold;
         };
@@ -276,6 +278,7 @@ impl DepGraph {
         let mut entry = match self.contexts.get_mut(&key) {
             Some(e) => e,
             None => {
+                tracing::debug!(key = %key.hash().to_hex(), "check: cold (no context entry for resolved key)");
                 self.misses.fetch_add(1, Ordering::Relaxed);
                 return CacheVerdict::Cold;
             }
@@ -284,6 +287,11 @@ impl DepGraph {
         entry.last_accessed = Instant::now();
 
         if entry.state == ContextState::Cold {
+            tracing::debug!(
+                key = %key.hash().to_hex(),
+                artifact_key = ?entry.artifact_key.map(|k| k.hash().to_hex()),
+                "check: cold (entry state is Cold)"
+            );
             self.misses.fetch_add(1, Ordering::Relaxed);
             return CacheVerdict::Cold;
         }
