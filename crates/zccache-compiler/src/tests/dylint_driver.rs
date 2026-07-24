@@ -42,7 +42,7 @@ fn parses_inner_rustc_args_but_preserves_nested_execution_argv() {
     match parse_invocation("/tmp/dylint-driver", &nested) {
         ParsedInvocation::Cacheable(compilation) => {
             assert_eq!(compilation.family, CompilerFamily::Rustc);
-            assert_eq!(compilation.source_file.to_string_lossy(), "src/lib.rs");
+            assert_eq!(compilation.source_file, NormalizedPath::new("src/lib.rs"));
             assert_eq!(
                 compilation.original_args.as_ref(),
                 nested.as_slice(),
