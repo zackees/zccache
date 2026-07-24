@@ -176,6 +176,34 @@ fn save_dep_graph_to_disk(server: &DaemonServer) {
     crate::depgraph::save_to_file(&dg, &path).expect("depgraph save must succeed");
 }
 
+/// Compact, failure-only restart state.  The warm assertion below is meant to
+/// prove a cross-process hit; when it fails on a platform we do not have
+/// locally, these fields distinguish a missing durable index row from a
+/// depgraph snapshot that restored cold/stale.  Keep keys truncated: their
+/// prefixes correlate the two snapshots without turning a test panic into a
+/// large cache dump.
+fn restart_diagnostics(server: &DaemonServer) -> String {
+    let graph = server.state.dep_graph.load();
+    let (cold, warm, stale) = graph.state_breakdown();
+    let mut key_prefixes: Vec<String> = server
+        .state
+        .artifact_store
+        .load_all()
+        .into_iter()
+        .map(|(key, _)| key.chars().take(12).collect())
+        .collect();
+    key_prefixes.sort_unstable();
+    format!(
+        "pending={} index_entries={} index_keys={key_prefixes:?} \
+         depgraph_contexts={} depgraph_with_artifact_key={} \
+         depgraph_states=(cold={cold},warm={warm},stale={stale})",
+        server.state.pending_cache_writes.len(),
+        server.state.artifact_store.len(),
+        graph.stats().context_count,
+        graph.contexts_with_artifact_key(),
+    )
+}
+
 /// `DaemonServer::run` spawns the background index-writer task (drains
 /// `index_writer_tx` into the durable `ArtifactStore`/redb index) as its
 /// first action. Tests that drive the compile pipeline directly via
@@ -375,6 +403,7 @@ async fn single_file_compile_hits_warm_after_restart() {
     let cold_bytes = std::fs::read(&out).expect("cold single.o must exist");
 
     quiesce_and_persist(&cold_server, index_writer_handle).await;
+    let cold_restart_diagnostics = restart_diagnostics(&cold_server);
     drop(cold_server);
     std::fs::remove_file(&out).unwrap();
 
@@ -384,6 +413,12 @@ async fn single_file_compile_hits_warm_after_restart() {
     )
     .unwrap();
     restore_dep_graph_from_disk(&warm_server);
+    // Production's first lookup performs this same on-demand load when the
+    // background loader has not completed. Do it explicitly here so a failed
+    // assertion records whether the durable index was actually present before
+    // the warm request could create a replacement row on a miss.
+    let warm_index_load = warm_server.state.artifact_store.load_from_disk();
+    let warm_restart_diagnostics = restart_diagnostics(&warm_server);
 
     let warm_resp = handle_compile_ephemeral(
         &warm_server.state,
@@ -401,7 +436,12 @@ async fn single_file_compile_hits_warm_after_restart() {
             exit_code, cached, ..
         } => {
             assert_eq!(*exit_code, 0);
-            assert!(*cached, "single-source path must hit warm after restart");
+            assert!(
+                *cached,
+                "single-source path must hit warm after restart; \
+                 index_load={warm_index_load:?}; cold=[{cold_restart_diagnostics}]; \
+                 warm_before_request=[{warm_restart_diagnostics}]"
+            );
         }
         other => panic!("expected CompileResult on warm path, got {other:?}"),
     }
