@@ -68,6 +68,13 @@ jobs:
           solo-toolchain-cache: true
       - name: Build integration test binaries
         shell: bash
+        env:
+          # This step only produces binaries for the following test steps.
+          # It can rebuild the full workspace when setup-soldr restores a
+          # cross-target fallback cache; caching those disposable compiler
+          # outputs duplicates target/ and can exhaust the hosted runner.
+          # The actual integration tests below still run through zccache.
+          ZCCACHE_DISABLE: "1"
         run: |
           soldr cargo test --workspace --features "$ZCCACHE_INTEGRATION_FEATURES" --no-fail-fast --no-run
           soldr cargo build -p zccache --features ci-bin --bin zccache-ci
