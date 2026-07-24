@@ -9,6 +9,7 @@ fn artifact(key: &str, bytes: u64, now: SystemTime, age: Duration) -> DiskArtifa
         key: key.to_string(),
         allocated_bytes: bytes,
         last_access: now - age,
+        recent_live_access: false,
         legacy_files: Vec::new(),
         staged: false,
         staged_generation: None,
@@ -428,7 +429,8 @@ fn issue_1148_under_budget_and_healthy_disk_is_a_noop() {
 #[test]
 fn issue_1191_hard_pressure_preserves_seconds_old_artifacts() {
     let now = SystemTime::UNIX_EPOCH + 100 * DAY;
-    let entries = vec![artifact("fresh", 10, now, Duration::from_secs(1))];
+    let mut entries = vec![artifact("fresh", 10, now, Duration::from_secs(1))];
+    entries[0].recent_live_access = true;
     let plan = plan_maintenance(
         bytes_policy(40 * GIB),
         MaintenanceKind::Pressure,
