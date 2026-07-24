@@ -253,9 +253,9 @@ impl DaemonServer {
         {
             let state = Arc::clone(&self.state);
             tokio::spawn(async move {
+                let path = depgraph_file_path_for_cache_dir(&state.cache_dir);
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(300)).await;
-                    let path = crate::depgraph::depgraph_file_path();
                     if let Some(parent) = path.parent() {
                         std::fs::create_dir_all(parent).ok();
                     }
@@ -345,7 +345,7 @@ impl DaemonServer {
                     // atomic write path are synchronous, so run them off the
                     // Tokio runtime thread.
                     let start = std::time::Instant::now();
-                    let path = crate::depgraph::depgraph_file_path();
+                    let path = depgraph_file_path_for_cache_dir(&self.state.cache_dir);
                     let dg = self.state.dep_graph.load_full();
                     let depgraph_save = tokio::task::spawn_blocking(move || {
                         if let Some(parent) = path.parent() {

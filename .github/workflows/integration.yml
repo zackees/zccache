@@ -114,6 +114,17 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
           exit $status
+      - name: Remove build-harness journals before strict audit
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/integration
+        run: |
+          # The full-suite command above can invoke the seeded build wrapper
+          # while compiling test harnesses. Those journals describe build
+          # orchestration, whereas the strict fixture below owns and audits
+          # its own runtime cache. Preserve artifacts but exclude harness
+          # telemetry from the integration runtime audit.
+          find "$SOLDR_CACHE_DIR/cache/zccache/daemon-state" -type f -path '*/logs/*.jsonl' -print -delete
       - name: Strict artifact-layout validation
         shell: bash
         env:

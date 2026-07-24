@@ -434,7 +434,7 @@ fn run_server(args: Args) {
         // the graph + warning via #642's ArcSwap.
         server.mark_dep_graph_load_pending();
         let setter = server.dep_graph_setter();
-        let depgraph_path = crate::depgraph::depgraph_file_path();
+        let depgraph_path = server.depgraph_file_path();
         let load_handle = tokio::task::spawn_blocking(move || {
             if no_depgraph_cache {
                 let _ = std::fs::remove_file(&depgraph_path);

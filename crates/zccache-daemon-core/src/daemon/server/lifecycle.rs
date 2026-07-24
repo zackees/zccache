@@ -42,6 +42,23 @@ impl DaemonServer {
             state,
         })
     }
+
+    /// Return the dependency-graph snapshot owned by this server's cache
+    /// root. This must not consult `ZCCACHE_CACHE_DIR`: test harnesses and
+    /// embedded callers may bind a daemon to an explicit root while another
+    /// daemon shares the process with a different environment-derived root.
+    #[allow(dead_code)] // Used by the standalone daemon entrypoint feature set.
+    #[must_use]
+    pub(crate) fn depgraph_file_path(&self) -> crate::core::NormalizedPath {
+        depgraph_file_path_for_cache_dir(&self.state.cache_dir)
+    }
+}
+
+/// Return the dependency-graph snapshot path for one daemon cache root.
+pub(super) fn depgraph_file_path_for_cache_dir(
+    cache_dir: &crate::core::NormalizedPath,
+) -> crate::core::NormalizedPath {
+    crate::core::config::depgraph_dir_from_cache_dir(cache_dir).join("depgraph.bin")
 }
 
 pub(super) fn new_shared_state(
@@ -415,6 +432,20 @@ mod tests {
 
     fn dummy_hash(path: &std::path::Path) -> Option<crate::hash::ContentHash> {
         Some(crate::hash::hash_bytes(path.to_string_lossy().as_bytes()))
+    }
+
+    #[test]
+    fn depgraph_snapshot_path_uses_explicit_cache_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = crate::core::NormalizedPath::new(tmp.path());
+
+        let path = depgraph_file_path_for_cache_dir(&cache_dir);
+
+        assert_eq!(
+            path,
+            crate::core::config::depgraph_dir_from_cache_dir(&cache_dir).join("depgraph.bin")
+        );
+        assert!(path.starts_with(&cache_dir));
     }
 
     #[tokio::test]

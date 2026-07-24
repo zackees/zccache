@@ -638,7 +638,7 @@ async fn flush_embedded_state(
 }
 
 fn embedded_depgraph_file_path(state: &SharedState) -> crate::core::NormalizedPath {
-    state.cache_dir.join("depgraph").join("depgraph.bin")
+    depgraph_file_path_for_cache_dir(&state.cache_dir)
 }
 
 #[cfg(test)]
