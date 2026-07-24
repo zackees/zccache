@@ -63,9 +63,9 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     env:
-      # Dylint removes RUSTUP_TOOLCHAIN before its nested driver build. Cargo
-      # rehydrates this configuration value for that build script without
-      # changing the shared CARGO_HOME cache.
+      # Dylint removes RUSTUP_TOOLCHAIN before its nested driver build. The
+      # cargo shim below pins both cargo and rustc without changing the shared
+      # CARGO_HOME cache.
       CARGO_ENV_RUSTUP_TOOLCHAIN: nightly-2026-05-26
     steps:
       - uses: actions/checkout@v6
@@ -88,8 +88,9 @@ jobs:
         run: |
           shim_dir="${RUNNER_TEMP}/dylint-cargo-shim"
           mkdir -p "${shim_dir}"
-          nightly_cargo="$(dirname "$(soldr rustup which --toolchain nightly-2026-05-26 rustc)")/cargo"
-          printf '#!/usr/bin/env bash\nexport RUSTUP_TOOLCHAIN=nightly-2026-05-26\nexec "%s" "$@"\n' "${nightly_cargo}" > "${shim_dir}/cargo"
+          nightly_bin="$(dirname "$(soldr rustup which --toolchain nightly-2026-05-26 rustc)")"
+          nightly_cargo="${nightly_bin}/cargo"
+          printf '#!/usr/bin/env bash\nexport RUSTUP_TOOLCHAIN=nightly-2026-05-26\nexport PATH="%s:${PATH}"\nexec "%s" "$@"\n' "${nightly_bin}" "${nightly_cargo}" > "${shim_dir}/cargo"
           chmod +x "${shim_dir}/cargo"
           echo "${shim_dir}" >> "${GITHUB_PATH}"
       - name: Install Dylint nightly toolchain
