@@ -8,6 +8,7 @@ GitHub Actions workflow definitions.
 - **clippy.yml** - Runs Clippy on pushes to main for the README status badge.
 - **benchmark-stats.yml** - Manual/scheduled zccache vs bare compiler vs sccache benchmark publisher for the README images and rendered stats page.
 - **perf-guard.yml** - Main-only Rust, C, and C++ perf-regression guard that runs language jobs in parallel, fails below the zccache vs bare compiler or pinned-sccache speed floors, and uploads Markdown/JSON run artifacts.
+- **broker-stress.yml** - Exercises concurrent soldr clients against the shared broker, requires the daemon path, and rejects broker-error and uncached-fallback telemetry.
 
 Normal build/test workflows use `zackees/setup-soldr` for Rust build acceleration, excluding `release-auto.yml`. These setup-soldr steps enable strict zccache seeding so missing managed zccache releases fail immediately instead of falling back to `cargo install`, and they set `linker: fast` explicitly to keep the intended fast-linker behavior without warning noise. Jobs that run zccache self-tests stop the setup-soldr builder daemon before the test phase, run tests with a fresh `SOLDR_CACHE_DIR`, and request `SOLDR_CACHE_LIFECYCLE=command` for the isolated test cache when supported by soldr.
 

@@ -1,0 +1,93 @@
+name: Soldr Broker Stress
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - ".cargo/**"
+      - ".rustup/**"
+      - ".github/workflows/broker-stress.yml"
+      - "crates/**"
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - ".cargo/**"
+      - ".rustup/**"
+      - ".github/workflows/broker-stress.yml"
+      - "crates/**"
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: soldr-broker-stress-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  broker-stress:
+    name: Broker stress (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+        with:
+          zccache-seed-strict: true
+          toolchain: 1.94.1
+          cache: true
+          linker: fast
+          prebuild-deps: soldr-cook
+          prebuild-deps-flags: ""
+          solo-toolchain-cache: true
+      - name: Stress the shared soldr broker
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-broker-stress
+          SOLDR_CACHE_LIFECYCLE: command
+          SOLDR_DAEMON_REQUIRED: "1"
+        run: |
+          set -euo pipefail
+          # Separate target directories force independent compiler clients
+          # while all workers share the one soldr/zccache daemon.
+          for worker in $(seq 1 4); do
+            (
+              export CARGO_TARGET_DIR="$RUNNER_TEMP/broker-stress-target/$worker"
+              for attempt in $(seq 1 12); do
+                soldr cargo check -p zccache-ipc --lib --locked
+              done
+            ) &
+          done
+          wait
+      - name: Stop and archive the isolated broker session
+        if: always()
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-broker-stress
+        run: |
+          soldr cache shutdown --archive-logs "$RUNNER_TEMP/soldr-broker-evidence"
+      - name: Reject broker errors and uncached fallback
+        if: always()
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-broker-stress
+        run: |
+          set -euo pipefail
+          fallback_logs=$(find "$SOLDR_CACHE_DIR" "$RUNNER_TEMP/soldr-broker-evidence" -type f \( -name 'compile-daemon-fallbacks.jsonl' -o -name 'compile-daemon-aborts.jsonl' \) -print)
+          if [ -n "$fallback_logs" ] && grep -H -E 'compile_daemon_fallback|no_cache_retry|timeout|abort' $fallback_logs; then
+            echo "soldr broker recorded an error or uncached fallback" >&2
+            exit 1
+          fi
+      - name: Archive broker evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: soldr-broker-stress-${{ github.run_id }}
+          path: ${{ runner.temp }}/soldr-broker-evidence/**
+          if-no-files-found: warn
