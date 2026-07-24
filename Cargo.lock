@@ -4359,6 +4359,7 @@ dependencies = [
 name = "zccache-fingerprint"
 version = "1.12.17"
 dependencies = [
+ "filetime",
  "fs2",
  "globset",
  "jwalk",
@@ -4380,6 +4381,7 @@ version = "1.12.17"
 dependencies = [
  "bincode",
  "dashmap",
+ "filetime",
  "rayon",
  "serde",
  "tempfile",

@@ -71,7 +71,7 @@ impl CacheKeyBuilder {
         let mut hasher = blake3::Hasher::new();
 
         // Domain separation tag
-        hasher.update(b"zccache-cache-key-v1");
+        hasher.update(b"zccache-cache-key-v2\0");
 
         // Compiler identity
         #[expect(
@@ -107,7 +107,9 @@ impl CacheKeyBuilder {
         // Dependency hashes (BTreeMap is already sorted)
         for (name, hash) in &self.dependency_hashes {
             hasher.update(name.as_bytes());
+            hasher.update(b"\0");
             hasher.update(hash.as_bytes());
+            hasher.update(b"\0");
         }
 
         ContentHash::from_bytes(*hasher.finalize().as_bytes())
@@ -118,6 +120,22 @@ impl CacheKeyBuilder {
 mod tests {
     use super::super::hash_bytes;
     use super::*;
+
+    fn legacy_v1_key(
+        compiler: ContentHash,
+        source: ContentHash,
+        dependencies: &[(&str, ContentHash)],
+    ) -> ContentHash {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"zccache-cache-key-v1");
+        hasher.update(compiler.as_bytes());
+        hasher.update(source.as_bytes());
+        for (name, hash) in dependencies {
+            hasher.update(name.as_bytes());
+            hasher.update(hash.as_bytes());
+        }
+        ContentHash::from_bytes(*hasher.finalize().as_bytes())
+    }
 
     #[test]
     fn cache_key_deterministic() {
@@ -201,5 +219,43 @@ mod tests {
             .build();
 
         assert_ne!(k1, k2, "swapping compile arg order must change the key");
+    }
+
+    #[test]
+    fn dependency_boundaries_cannot_shift_into_hash_bytes() {
+        let compiler = hash_bytes(b"gcc-12");
+        let source = hash_bytes(b"int main() {}");
+        let tail = ContentHash::from_bytes([9; 32]);
+
+        // Under v1, the leading `b` moves from a hash into the dependency
+        // name, while the leading `c` of the next name moves into that hash.
+        let first_dependencies = [("a", ContentHash::from_bytes([b'b'; 32])), ("cd", tail)];
+        let mut shifted_hash = [b'b'; 32];
+        shifted_hash[31] = b'c';
+        let second_dependencies = [("ab", ContentHash::from_bytes(shifted_hash)), ("d", tail)];
+        assert_eq!(
+            legacy_v1_key(compiler, source, &first_dependencies),
+            legacy_v1_key(compiler, source, &second_dependencies)
+        );
+
+        let first = CacheKeyBuilder::new()
+            .compiler(compiler)
+            .source(source)
+            .dependency(first_dependencies[0].0, first_dependencies[0].1)
+            .dependency(first_dependencies[1].0, first_dependencies[1].1)
+            .build();
+        let second = CacheKeyBuilder::new()
+            .compiler(compiler)
+            .source(source)
+            .dependency(second_dependencies[0].0, second_dependencies[0].1)
+            .dependency(second_dependencies[1].0, second_dependencies[1].1)
+            .build();
+
+        assert_ne!(first, second);
+        assert_ne!(
+            first,
+            legacy_v1_key(compiler, source, &first_dependencies),
+            "the v2 domain tag must invalidate v1 link-cache keys"
+        );
     }
 }
