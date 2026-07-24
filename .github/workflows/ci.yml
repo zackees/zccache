@@ -185,6 +185,8 @@ jobs:
           cache-eviction-policy: protect-foundations
       - name: Check MSRV
         run: soldr cargo check --workspace
+      - name: Verify nested Dylint cache contract
+        run: soldr cargo test -p zccache --test daemon_dylint_cache_test -- --ignored
 
   docs:
     name: Documentation

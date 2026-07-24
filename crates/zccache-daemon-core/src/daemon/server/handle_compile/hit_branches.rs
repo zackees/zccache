@@ -62,14 +62,11 @@ pub(super) async fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Op
     // hits, this routes the depfile to worktree B's path even though the
     // entry was created from worktree A — same semantics as
     // `source_path` / `output_path`.
-    let compiler_name = compiler_path
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let is_rustc = compiler_name.contains("rustc") || compiler_name == "clippy-driver";
+    let is_rustc = crate::compiler::detect_family(&compiler_path.to_string_lossy())
+        == crate::compiler::CompilerFamily::Rustc;
+    let rustc_args = effective_rustc_args(compiler_path, effective_args);
     let current_depfile_dest: Option<NormalizedPath> = if is_rustc {
-        rustc_requested_depfile(effective_args, cwd)
+        rustc_requested_depfile(rustc_args, cwd)
     } else {
         None
     }
@@ -134,10 +131,9 @@ pub(super) async fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Op
     } else {
         "HIT_WORKTREE_REQUEST"
     };
-    let rustc_requested_outputs =
-        rustc_explicit_requested_outputs(effective_args, &output_path, cwd);
+    let rustc_requested_outputs = rustc_explicit_requested_outputs(rustc_args, &output_path, cwd);
     let rustc_archive_hardlink_eligible =
-        is_rustc.then(|| crate::compiler::rustc_archive_hardlink_eligible(effective_args));
+        is_rustc.then(|| crate::compiler::rustc_archive_hardlink_eligible(rustc_args));
     materialize_cached_compile_hit(CachedHitMaterializeRequest {
         state,
         sid,
@@ -259,14 +255,15 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
     } else {
         "HIT_FAST"
     };
+    let rustc_args = effective_rustc_args(compiler_path, effective_args);
     let input_paths = request_cache_input_paths(state, &context_key, source_path, ctx);
     let current_depfile_dest: Option<NormalizedPath> = if is_rustc {
-        rustc_requested_depfile(effective_args, cwd_path.as_path())
+        rustc_requested_depfile(rustc_args, cwd_path.as_path())
     } else {
         dep_flags.and_then(|flags| user_depfile_destination(flags, output_path.as_path()))
     };
     let rustc_requested_outputs = if is_rustc {
-        rustc_explicit_requested_outputs(effective_args, output_path, cwd_path)
+        rustc_explicit_requested_outputs(rustc_args, output_path, cwd_path)
     } else {
         None
     };
@@ -286,7 +283,7 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
         mtime_floor_paths: input_paths.clone(),
         rustc_metadata_compat_outputs: rustc_requested_outputs,
         rustc_archive_hardlink_eligible: is_rustc
-            .then(|| crate::compiler::rustc_archive_hardlink_eligible(effective_args)),
+            .then(|| crate::compiler::rustc_archive_hardlink_eligible(rustc_args)),
         phases: CachedHitPhases {
             parse_args_ns,
             build_context_ns,
@@ -390,14 +387,15 @@ pub(super) async fn try_depgraph_cached_hit(
     } else {
         "HIT"
     };
+    let rustc_args = effective_rustc_args(compiler_path, effective_args);
     let input_paths = request_cache_input_paths(state, &context_key, source_path, ctx);
     let current_depfile_dest: Option<NormalizedPath> = if is_rustc {
-        rustc_requested_depfile(effective_args, cwd_path.as_path())
+        rustc_requested_depfile(rustc_args, cwd_path.as_path())
     } else {
         dep_flags.and_then(|flags| user_depfile_destination(flags, output_path.as_path()))
     };
     let rustc_requested_outputs = if is_rustc {
-        rustc_explicit_requested_outputs(effective_args, output_path, cwd_path)
+        rustc_explicit_requested_outputs(rustc_args, output_path, cwd_path)
     } else {
         None
     };
@@ -430,7 +428,7 @@ pub(super) async fn try_depgraph_cached_hit(
         mtime_floor_paths: input_paths.clone(),
         rustc_metadata_compat_outputs: rustc_requested_outputs,
         rustc_archive_hardlink_eligible: is_rustc
-            .then(|| crate::compiler::rustc_archive_hardlink_eligible(effective_args)),
+            .then(|| crate::compiler::rustc_archive_hardlink_eligible(rustc_args)),
         phases: CachedHitPhases {
             parse_args_ns,
             build_context_ns,
@@ -500,4 +498,11 @@ fn rustc_explicit_requested_outputs(
 fn rustc_requested_depfile(effective_args: &[String], cwd: &Path) -> Option<NormalizedPath> {
     let parsed = crate::depgraph::parse_rustc_args(effective_args, cwd);
     crate::daemon::server::rustc_depfile_output_path(&parsed, cwd)
+}
+
+fn effective_rustc_args<'a>(compiler_path: &Path, effective_args: &'a [String]) -> &'a [String] {
+    crate::compiler::dylint_inner_rustc_args(&compiler_path.to_string_lossy(), effective_args)
+        .ok()
+        .flatten()
+        .map_or(effective_args, |(_, args)| args)
 }

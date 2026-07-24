@@ -627,10 +627,11 @@ impl RustcCompileContext {
         let mut env_vars: Vec<(String, String)> = client_env
             .iter()
             .filter(|(k, _)| {
-                k.starts_with("CARGO_")
+                (k.starts_with("CARGO_")
                     && k != "CARGO_MAKEFLAGS"
                     && k != "CARGO_INCREMENTAL"
-                    && !VOLATILE_CARGO_ENV_VARS.contains(&k.as_str())
+                    && !VOLATILE_CARGO_ENV_VARS.contains(&k.as_str()))
+                    || k == "ZCCACHE_DYLINT_CACHE_INPUT_HASH"
             })
             .cloned()
             .collect();

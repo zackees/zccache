@@ -34,7 +34,10 @@ pub(super) fn apply_client_env(
 /// receives those names through IPC, not the fds themselves, so replaying them
 /// into daemon-spawned compilers produces Cargo's stale-jobserver warning.
 pub(super) fn client_env_var_is_safe_to_replay(key: &str) -> bool {
-    !matches!(key, "MAKEFLAGS" | "CARGO_MAKEFLAGS")
+    !matches!(
+        key,
+        "MAKEFLAGS" | "CARGO_MAKEFLAGS" | crate::compiler::DYLINT_CACHE_INPUT_HASH_ENV
+    )
 }
 
 /// Sync-command counterpart of [`apply_client_env`].

@@ -508,6 +508,39 @@ fn request_fingerprint_includes_rust_key_env() {
     assert_ne!(a, b);
 }
 
+#[test]
+fn request_fingerprint_includes_internal_dylint_cache_salt() {
+    let args = vec![
+        "/toolchains/nightly/bin/rustc".to_string(),
+        "src/lib.rs".to_string(),
+    ];
+    let env_a = vec![(
+        crate::compiler::DYLINT_CACHE_INPUT_HASH_ENV.to_string(),
+        "library-v1".to_string(),
+    )];
+    let env_b = vec![(
+        crate::compiler::DYLINT_CACHE_INPUT_HASH_ENV.to_string(),
+        "library-v2".to_string(),
+    )];
+
+    let a = request_fingerprint(
+        Path::new("/tmp/dylint-driver"),
+        &args,
+        Path::new("/workspace"),
+        Some(Path::new("/workspace")),
+        Some(&env_a),
+    );
+    let b = request_fingerprint(
+        Path::new("/tmp/dylint-driver"),
+        &args,
+        Path::new("/workspace"),
+        Some(Path::new("/workspace")),
+        Some(&env_b),
+    );
+
+    assert_ne!(a, b);
+}
+
 /// Dependency policy changes the effective C/C++ manifest and must therefore
 /// partition the request-level cache as well as the depgraph context key.
 #[test]

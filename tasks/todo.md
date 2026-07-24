@@ -1,3 +1,16 @@
+# soldr#1783 safe nested Dylint caching
+
+- [x] RED: model only the explicit nested Dylint compiler shape as Rust.
+- [x] Hash driver, inner compiler, loaded lint-library contents, and output-affecting environment.
+- [x] Fail open with a diagnostic for missing, malformed, or unhashable lint-library state.
+- [x] Cover warm hits, invalidations, diagnostics, output/exit status, and ordinary Rust regressions.
+- [x] Remove process-global dated-nightly overrides and guard against their return.
+- [ ] Exercise the supported Soldr front door in upstream CI.
+- [ ] After Soldr lands its shim, follow up upstream to run Dylint CI and the real benchmark through `soldr cargo dylint`.
+- [x] Document Cargo incremental reuse versus cross-target/worktree cache reuse.
+- [ ] Run focused tests, Linux Docker integration, lint/docs, and sanctioned performance evidence.
+- [ ] Open, drive, merge, and validate the upstream PR before updating Soldr.
+
 # Soldr embedded durability Lavra follow-up
 
 - [x] Split oversized embedded/staged-store source files without changing public API.

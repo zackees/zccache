@@ -88,3 +88,23 @@ fn apply_client_env_sync_filters_stale_jobserver_vars_for_tool_spawns() {
         Some("100")
     );
 }
+
+#[test]
+fn internal_dylint_cache_salt_is_never_replayed() {
+    let env = vec![
+        (
+            crate::compiler::DYLINT_CACHE_INPUT_HASH_ENV.to_string(),
+            "internal-only".to_string(),
+        ),
+        ("DYLINT_METADATA".to_string(), "user-value".to_string()),
+    ];
+    let mut cmd = std::process::Command::new("env");
+    apply_client_env_sync(&mut cmd, Some(&env), &test_lineage());
+
+    let envs = collect_command_env(cmd.get_envs());
+    assert_eq!(
+        env_value(&envs, crate::compiler::DYLINT_CACHE_INPUT_HASH_ENV),
+        None
+    );
+    assert_eq!(env_value(&envs, "DYLINT_METADATA"), Some("user-value"));
+}

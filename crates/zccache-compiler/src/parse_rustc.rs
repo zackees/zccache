@@ -97,6 +97,16 @@ const RUSTC_FLAGS_WITH_VALUE: &[&str] = &[
 /// Cacheable: `--crate-type` is `lib`, `rlib`, `staticlib`, `proc-macro`, or `bin`.
 /// Non-cacheable: `dylib`, `cdylib`.
 pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedInvocation {
+    let execution_args = args;
+    let args = match super::dylint_inner_rustc_args(compiler, args) {
+        Ok(Some((_inner_rustc, rustc_args))) => rustc_args,
+        Ok(None) => args,
+        Err(reason) => {
+            return ParsedInvocation::NonCacheable {
+                reason: reason.to_string(),
+            };
+        }
+    };
     let mut crate_types: Vec<String> = Vec::new();
     let mut source_file: Option<String> = None;
     let mut output_file: Option<String> = None;
@@ -417,7 +427,7 @@ pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedI
         family: CompilerFamily::Rustc,
         source_file: NormalizedPath::new(source),
         output_file: NormalizedPath::new(output),
-        original_args: Arc::from(args.to_vec()),
+        original_args: Arc::from(execution_args.to_vec()),
         unknown_flags,
     })
 }

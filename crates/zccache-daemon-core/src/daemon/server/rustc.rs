@@ -131,7 +131,8 @@ pub(super) fn build_rustc_compile_context(
     client_env: &[(String, String)],
     compiler_hash_cache: &CompilerHashCache,
 ) -> BuildContextResult {
-    let rustc_args = crate::depgraph::parse_rustc_args(&compilation.original_args, cwd);
+    let rustc_args = crate::depgraph::parse_rustc_args(rustc_args(compilation), cwd);
+    let compiler_identity_path = rustc_identity_path(compilation, cwd);
 
     // Compiler identity for the cache key. Different rustc versions
     // produce different output for the same source, so the identity
@@ -144,7 +145,7 @@ pub(super) fn build_rustc_compile_context(
     // this request but deliberately not memoized, so a transient failure
     // cannot persist a second toolchain identity flavor (#1167).
     let compiler_hash = compiler_hash_cache
-        .get_or_hash_rustc_identity(&compilation.compiler)
+        .get_or_hash_rustc_identity(compiler_identity_path.as_path())
         .unwrap_or(COMPILER_HASH_UNAVAILABLE);
 
     let rustc_ctx = crate::depgraph::RustcCompileContext::from_parsed_args(
@@ -178,10 +179,11 @@ pub(super) async fn build_rustc_compile_context_async(
     client_env: &[(String, String)],
     compiler_hash_cache: &CompilerHashCache,
 ) -> BuildContextResult {
-    let rustc_args = crate::depgraph::parse_rustc_args(&compilation.original_args, cwd);
+    let rustc_args = crate::depgraph::parse_rustc_args(rustc_args(compilation), cwd);
+    let compiler_identity_path = rustc_identity_path(compilation, cwd);
 
     let compiler_hash = compiler_hash_cache
-        .get_or_hash_rustc_identity_async(&compilation.compiler)
+        .get_or_hash_rustc_identity_async(compiler_identity_path.as_path())
         .await
         .unwrap_or(COMPILER_HASH_UNAVAILABLE);
 
@@ -205,6 +207,35 @@ pub(super) async fn build_rustc_compile_context_async(
         rustc_ctx: Box::new(rustc_ctx),
         compat_ctx,
         rustc_args: Box::new(rustc_args),
+    }
+}
+
+fn rustc_args(compilation: &crate::compiler::CacheableCompilation) -> &[String] {
+    crate::compiler::dylint_inner_rustc_args(
+        compilation.compiler.to_str().unwrap_or(""),
+        &compilation.original_args,
+    )
+    .ok()
+    .flatten()
+    .map_or(compilation.original_args.as_ref(), |(_, args)| args)
+}
+
+fn rustc_identity_path(
+    compilation: &crate::compiler::CacheableCompilation,
+    cwd: &Path,
+) -> NormalizedPath {
+    let inner = crate::compiler::dylint_inner_rustc_args(
+        compilation.compiler.to_str().unwrap_or(""),
+        &compilation.original_args,
+    )
+    .ok()
+    .flatten()
+    .map(|(inner, _)| Path::new(inner))
+    .unwrap_or(compilation.compiler.as_path());
+    if inner.is_absolute() {
+        NormalizedPath::new(inner)
+    } else {
+        NormalizedPath::new(cwd).join(inner)
     }
 }
 

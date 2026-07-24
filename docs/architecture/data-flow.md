@@ -167,3 +167,47 @@ its own:
   serve a stale binary; the accepted trade-off avoids per-link hashing
   of large system libraries. Revisit if a real-world stale-bin report
   lands.
+
+## Nested Dylint Driver Caching
+
+Dylint invokes Rust through a two-level compiler command:
+
+```text
+dylint-driver <rustc> <rustc arguments...>
+```
+
+zccache recognizes only the exact `dylint-driver` executable basename. It
+preserves the outer executable and nested argv layout, while parsing the
+arguments after the inner rustc path as an ordinary Rust compilation. When
+automatic path remapping is enabled and a mapping is needed, its rustc flag is
+inserted after the inner compiler path so the nested command shape remains
+valid.
+
+The cache identity adds the content identities of the outer driver, inner
+rustc, and the name plus content of every dynamic library listed in the JSON
+`DYLINT_LIBS` array (the name controls Dylint's injected `dylint_lib` cfg). It
+also includes `RUSTUP_HOME`, `RUSTUP_TOOLCHAIN`, and all output-affecting
+`DYLINT_*` variables. Dylint's diagnostic-link control
+`CLIPPY_DISABLE_DOCS_LINKS` is keyed as well. The daemon folds those inputs into an internal
+`ZCCACHE_DYLINT_CACHE_INPUT_HASH` salt used by both the request cache and Rust
+artifact context; the salt is never replayed to the driver process. Executable
+and library identities use the daemon's metadata-backed identity cache, so a
+warm lint unit does not re-hash a large rustc binary.
+
+Missing, malformed, empty, or unhashable `DYLINT_LIBS` state disables caching
+for that invocation. The driver still runs with its original argv,
+environment, stdin, stdout, stderr, and exit status, and stderr receives a
+visible `Dylint cache disabled` reason. Successful misses store the driver's
+diagnostics, so a hit replays the same stdout and stderr rather than suppressing
+lint output.
+
+This cache is separate from Cargo incremental compilation:
+
+- Cargo incremental state accelerates work inside one target directory and
+  toolchain invocation.
+- zccache restores whole Dylint-produced Rust artifacts across clean target
+  directories. Equivalent worktrees can share those artifacts when effective
+  path remapping normalizes their roots and source, toolchain, driver,
+  libraries, and output-affecting environment all match.
+- Different targets or different Dylint/rustc identities intentionally do not
+  share artifacts.

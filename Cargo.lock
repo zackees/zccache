@@ -4233,6 +4233,7 @@ name = "zccache-compiler"
 version = "1.12.17"
 dependencies = [
  "clang",
+ "serde_json",
  "tempfile",
  "thiserror",
  "zccache-core",

@@ -10,6 +10,7 @@ pub mod clippy_driver;
 pub mod cpp_output;
 pub mod cpp_parse;
 pub mod detect;
+pub mod dylint_driver;
 pub mod modules;
 pub mod rustc;
 
