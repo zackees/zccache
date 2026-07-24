@@ -28,6 +28,7 @@ mod pch;
 mod pending_cache_writes;
 mod post_link_hook;
 mod release_worktree_handles;
+mod rsp_cache;
 mod rustc_depinfo;
 mod server_ipc;
 mod session_errors;

@@ -132,10 +132,16 @@ pub(super) fn expand_rsp_recursive(
         hash: content_hash,
     });
 
+    // Keep daemon-side key expansion byte-for-byte aligned with the compiler
+    // response-file reader. In particular, MSVC commonly emits UTF-16LE
+    // response files; `read_to_string` rejected those and left the raw
+    // `@file` invisible to parsing and cache keys.
     let content =
-        std::fs::read_to_string(&canonical).map_err(|e| ResponseFileError::ReadError {
-            path: canonical.clone(),
-            source: e,
+        crate::compiler::response_file::read_response_file_text(&canonical).map_err(|e| {
+            ResponseFileError::ReadError {
+                path: canonical.clone(),
+                source: e,
+            }
         })?;
     let base_dir = canonical.parent().unwrap_or_else(|| Path::new("."));
     let mut expanded = Vec::new();

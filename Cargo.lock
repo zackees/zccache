@@ -4323,6 +4323,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "uuid",
+ "zccache-compiler",
  "zccache-core",
  "zccache-hash",
 ]

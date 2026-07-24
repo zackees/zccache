@@ -611,6 +611,51 @@ fn request_fingerprint_ignores_cargo_target_dir() {
 }
 
 #[test]
+fn msvc_cl_environment_salts_request_fingerprint_case_insensitively() {
+    let args = vec!["/c".to_string(), "main.c".to_string()];
+    let common = vec![("PATH".to_string(), "C:\\msvc".to_string())];
+    let with_cl = vec![
+        ("cl".to_string(), "/DANSWER=42".to_string()),
+        ("_CL_".to_string(), "/Z7".to_string()),
+    ];
+    let equivalent_case = vec![
+        ("CL".to_string(), "/DANSWER=42".to_string()),
+        ("_cl_".to_string(), "/Z7".to_string()),
+    ];
+
+    let base = request_fingerprint(
+        Path::new("cl.exe"),
+        &args,
+        Path::new("."),
+        None,
+        Some(&common),
+    );
+    let keyed = request_fingerprint(
+        Path::new("cl.exe"),
+        &args,
+        Path::new("."),
+        None,
+        Some(&with_cl),
+    );
+    let same = request_fingerprint(
+        Path::new("cl.exe"),
+        &args,
+        Path::new("."),
+        None,
+        Some(&equivalent_case),
+    );
+
+    assert_ne!(
+        base, keyed,
+        "CL and _CL_ affect cl.exe output and must salt the request key"
+    );
+    assert_eq!(
+        keyed, same,
+        "Windows CL environment names are case-insensitive"
+    );
+}
+
+#[test]
 fn request_fingerprint_keeps_external_out_dirs_distinct() {
     let args_a = vec![
         "--crate-name".to_string(),
