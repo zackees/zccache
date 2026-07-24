@@ -30,7 +30,7 @@ def test_dylint_workflow_rehydrates_the_pinned_toolchain_for_driver_builds():
 
     assert "Configure Dylint driver Cargo shim" in dylint_job
     assert "nightly_bin=" in dylint_job
-    assert 'nightly_toolchain="$(basename "${nightly_bin}")"' in dylint_job
+    assert 'nightly_toolchain="$(basename "$(dirname "${nightly_bin}")")"' in dylint_job
     assert 'subcommand="ru""stup"' in dylint_job
     assert 'export RUSTUP_TOOLCHAIN="%s"' in dylint_job
     assert 'exec soldr "${subcommand}" run "%s" cargo "$@"' in dylint_job
