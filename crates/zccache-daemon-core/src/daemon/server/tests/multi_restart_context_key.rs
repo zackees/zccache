@@ -58,8 +58,8 @@ use std::path::{Path, PathBuf};
 use super::super::*;
 use super::CacheDirEnvGuard;
 
-/// Writes a fake `cc` that mirrors what the staged compile lane needs from
-/// a real compiler:
+/// Writes a fake `cc` that mirrors the C/C++ compile shape needed by this
+/// test:
 ///
 /// * With `-o <path>` (the staged per-unit invocation shape): writes a
 ///   deterministic `object-for:<abs source>` payload to `<path>`.
@@ -217,17 +217,15 @@ async fn quiesce_and_persist(
     save_dep_graph_to_disk(server);
 }
 
-/// A two-source multi-file compile must hit warm after a graceful daemon
-/// restart, exactly like an equivalent single-source compile already does.
+/// A two-source legacy C/C++ compile must hit warm after a graceful daemon
+/// restart. Unix intentionally suppresses staged multi-source publication
+/// without a trustworthy per-file change sequence, so this verifies the
+/// supported durable path on every platform.
 #[tokio::test]
 async fn multi_file_compile_hits_warm_after_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let cache_root = tmp.path().join("zccache-cache");
-    let _guard = CacheDirEnvGuard::set_with_staged_artifacts(&cache_root, "all");
-    // Mirror the Integration workflow's `legacy_path_validation.rs` flow:
-    // ZCCACHE_STAGED_ARTIFACTS=all routes the multi misses through
-    // `staged::try_handle_staged_misses` (per-unit staged compile with an
-    // explicit `-o`), not the inline hardlink lane.
+    let _guard = CacheDirEnvGuard::set_with_staged_artifacts(&cache_root, "off");
 
     let cc = write_fake_multi_cc(tmp.path());
     let work = tmp.path().join("work");
@@ -278,15 +276,6 @@ async fn multi_file_compile_hits_warm_after_restart() {
     // Run the production shutdown drain + persist the depgraph, exactly
     // like `DaemonServer::run`'s Shutdown arm does.
     quiesce_and_persist(&cold_server, index_writer_handle).await;
-    eprintln!(
-        "[diag] cold shutdown artifact_index_entries={} depgraph_contexts_with_artifact_key={}",
-        cold_server.state.artifact_store.len(),
-        cold_server
-            .state
-            .dep_graph
-            .load()
-            .contexts_with_artifact_key(),
-    );
     drop(cold_server);
 
     // Clear outputs so the warm assertion below can only pass via a real
@@ -301,17 +290,6 @@ async fn multi_file_compile_hits_warm_after_restart() {
     )
     .unwrap();
     restore_dep_graph_from_disk(&warm_server);
-    eprintln!(
-        "[diag] warm daemon depgraph contexts_with_artifact_key = {}",
-        warm_server
-            .state
-            .dep_graph
-            .load()
-            .contexts_with_artifact_key()
-    );
-
-    let diag_log = tmp.path().join("ephemeral.log");
-    std::env::set_var("ZCCACHE_EPHEMERAL_LOG", &diag_log);
     let warm_resp = handle_compile_ephemeral(
         &warm_server.state,
         std::process::id(),
@@ -323,10 +301,6 @@ async fn multi_file_compile_hits_warm_after_restart() {
         Vec::new(),
     )
     .await;
-    std::env::remove_var("ZCCACHE_EPHEMERAL_LOG");
-    if let Ok(contents) = std::fs::read_to_string(&diag_log) {
-        eprintln!("[diag] session log:\n{contents}");
-    }
     match &warm_resp {
         Response::CompileResult {
             exit_code, cached, ..
@@ -361,8 +335,7 @@ async fn multi_file_compile_hits_warm_after_restart() {
 async fn single_file_compile_hits_warm_after_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let cache_root = tmp.path().join("zccache-cache");
-    let _guard = CacheDirEnvGuard::set_with_staged_artifacts(&cache_root, "all");
-    // Same staged lane as the multi variant + the Integration workflow.
+    let _guard = CacheDirEnvGuard::set_with_staged_artifacts(&cache_root, "off");
 
     let cc = write_fake_multi_cc(tmp.path());
     let work = tmp.path().join("work");
@@ -412,8 +385,6 @@ async fn single_file_compile_hits_warm_after_restart() {
     .unwrap();
     restore_dep_graph_from_disk(&warm_server);
 
-    let diag_log = tmp.path().join("ephemeral-single.log");
-    std::env::set_var("ZCCACHE_EPHEMERAL_LOG", &diag_log);
     let warm_resp = handle_compile_ephemeral(
         &warm_server.state,
         std::process::id(),
@@ -425,10 +396,6 @@ async fn single_file_compile_hits_warm_after_restart() {
         Vec::new(),
     )
     .await;
-    std::env::remove_var("ZCCACHE_EPHEMERAL_LOG");
-    if let Ok(contents) = std::fs::read_to_string(&diag_log) {
-        eprintln!("[diag] single session log:\n{contents}");
-    }
     match &warm_resp {
         Response::CompileResult {
             exit_code, cached, ..
