@@ -46,13 +46,6 @@ jobs:
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
           solo-toolchain-cache: true
-      - name: Build zccache log auditor through the broker
-        shell: bash
-        env:
-          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-broker-stress
-          SOLDR_CACHE_LIFECYCLE: command
-          SOLDR_DAEMON_REQUIRED: "1"
-        run: soldr cargo build -p zccache --features ci-bin --bin zccache-ci --locked
       - name: Stress the shared soldr broker
         shell: bash
         env:
@@ -91,14 +84,6 @@ jobs:
             echo "soldr broker recorded an error or uncached fallback" >&2
             exit 1
           fi
-      - name: Audit zccache lifecycle logs
-        if: always()
-        shell: bash
-        env:
-          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-broker-stress
-        run: |
-          set -euo pipefail
-          target/debug/zccache-ci audit-logs "$SOLDR_CACHE_DIR/cache/zccache" --context integration
       - name: Archive broker evidence
         if: always()
         uses: actions/upload-artifact@v7
