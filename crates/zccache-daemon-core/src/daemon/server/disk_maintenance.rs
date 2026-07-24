@@ -309,8 +309,7 @@ fn plan_maintenance_at_least(
             .filter(|artifact| !selected.contains(&artifact.key))
             .filter(|artifact| {
                 let artifact_age = age(now, artifact.last_access);
-                (pressure == MaintenancePressure::Hard
-                    && artifact_age > HARD_PRESSURE_MIN_AGE)
+                (pressure == MaintenancePressure::Hard && artifact_age > HARD_PRESSURE_MIN_AGE)
                     || artifact_age > SOFT_AGE
             })
             .collect();
