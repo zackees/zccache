@@ -466,6 +466,55 @@ async fn wait_for(path: &Path, description: &str) {
     .unwrap_or_else(|_| panic!("timed out waiting for {description}: {}", path.display()));
 }
 
+/// Wait until the staged store holds at least `minimum` publication pointers
+/// and the count has stopped growing.
+///
+/// Cold-phase artifact publication (and the depgraph registration batched
+/// behind it) completes asynchronously after each compile response. The
+/// standalone daemon does not yet guarantee that an immediate `Shutdown`
+/// lets that pipeline drain durably — that gap is issue #1161. Until the
+/// durable drain lands, stopping the cold daemon right after the responses
+/// races publication on slow hosts (observed on the 2-core CI runner: the
+/// multi-unit artifacts were not yet restorable and the warm multi compile
+/// missed). TODO(#1161): once shutdown drains publication durably, this
+/// quiesce wait can be removed.
+async fn wait_for_staged_publication(artifact_dir: &Path, minimum: usize) {
+    let staged_root = artifact_dir.join(".staged-v2");
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let mut last = 0_usize;
+        loop {
+            let count = staged_pointer_count(&staged_root);
+            if count >= minimum && count == last {
+                return;
+            }
+            last = count;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "timed out waiting for >= {minimum} stable staged publication pointers in {}",
+            staged_root.display()
+        )
+    });
+}
+
+fn staged_pointer_count(staged_root: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(staged_root) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "current")
+        })
+        .count()
+}
+
 fn flat_artifact_files(artifact_dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(artifact_dir) else {
         return Vec::new();
@@ -590,6 +639,11 @@ async fn strict_layout_validation_aggregates_all_runtime_flows() {
         "startup eviction scan",
     )
     .await;
+    // Quiesce async publication before shutdown (see the helper's #1161
+    // note). Minimum 4 pointers: single.o, multi_a.o, multi_b.o, and the
+    // migration artifact; link/exec publication is covered by the
+    // stability requirement.
+    wait_for_staged_publication(&artifact_dir, 4).await;
     cold.stop().await;
 
     let cold_compile_count = line_count(&compile_count);
