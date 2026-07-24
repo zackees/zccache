@@ -3,7 +3,7 @@
 //! Extracts include paths, defines, and cache-relevant flags from
 //! compiler command-line arguments.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::search_paths::IncludeSearchPaths;
 use zccache_compiler::gnu_flag_takes_value;
@@ -462,14 +462,14 @@ fn profile_input_files(path: &str, cwd: &Path) -> Vec<NormalizedPath> {
         return vec![root];
     }
 
-    fn visit(dir: &Path, files: &mut Vec<PathBuf>) {
+    fn visit(dir: &Path, files: &mut Vec<NormalizedPath>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_file() {
-                files.push(path);
+                files.push(NormalizedPath::new(path));
             } else if path.is_dir() {
                 visit(&path, files);
             }
@@ -485,7 +485,7 @@ fn profile_input_files(path: &str, cwd: &Path) -> Vec<NormalizedPath> {
         // treating `-fprofile-use` as cacheable without profile data.
         vec![root]
     } else {
-        files.into_iter().map(NormalizedPath::new).collect()
+        files
     }
 }
 
