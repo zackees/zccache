@@ -1,5 +1,7 @@
 //! Stable path identities for privately staged compiler outputs.
 
+#[cfg(windows)]
+use super::break_output_hardlink_before_compile;
 use crate::core::path::NormalizedPath;
 use std::io;
 use std::io::Write;
@@ -213,6 +215,29 @@ fn atomic_replace_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
+        // The destination depfile is often the COW-lite hardlink materialized
+        // for the current build's output (persist/hardlink.rs marks
+        // materialized destinations read-only to protect the shared cache
+        // blob, and a hardlinked destination shares that read-only bit with
+        // the blob's inode/MFT record). `MoveFileExW(...,
+        // MOVEFILE_REPLACE_EXISTING)` fails with ERROR_ACCESS_DENIED on
+        // Windows when the existing destination is read-only. Naively
+        // clearing the attribute in place would also clear it on the shared
+        // blob; use the existing detach helper instead, which — when the
+        // destination is actually hardlinked to a blob — copies the content
+        // out, breaks the link, and restores read-only on the blob
+        // afterward. When not shared, it just clears the local bit.
+        //
+        // `std::fs::rename` (the non-Windows `replace_path`) needs no such
+        // dance: POSIX rename() only requires write access to the
+        // containing directory, never to the target file being replaced, so
+        // it already swaps the directory entry without touching the shared
+        // inode. Gate the detach to Windows to avoid the extra metadata
+        // stat + hard-link-count check on the Linux/macOS hot path.
+        #[cfg(windows)]
+        {
+            let _ = break_output_hardlink_before_compile(path);
+        }
         replace_path(&temporary, path)?;
         if let Ok(directory) = std::fs::File::open(parent) {
             let _ = directory.sync_all();
@@ -339,8 +364,13 @@ mod tests {
         expected
             .extend_from_slice(format!("{STAGED_OUTPUT_REMAP_ROOT}/libfixture.rlib").as_bytes());
         assert_eq!(canonical, expected);
-        let logical = rehydrate_staged_output_bytes(&canonical, &[output]);
-        assert_eq!(logical, b"\xff/current/target/libfixture.rlib");
+        let logical = rehydrate_staged_output_bytes(&canonical, std::slice::from_ref(&output));
+        // Rehydration writes the platform-native spelling of the requested
+        // output path (backslashes on Windows), not a slash-normalized one —
+        // depfiles are consumed by native build tooling on that platform.
+        let mut expected_logical = vec![0xff];
+        expected_logical.extend_from_slice(output.to_string_lossy().as_bytes());
+        assert_eq!(logical, expected_logical);
     }
 
     #[test]
@@ -366,9 +396,19 @@ mod tests {
         let depfile: NormalizedPath = "/target-b/foo.d".into();
         let canonical = format!("{STAGED_OUTPUT_REMAP_ROOT}/foo {STAGED_OUTPUT_REMAP_ROOT}/foo.d");
 
-        let logical = rehydrate_staged_output_bytes(canonical.as_bytes(), &[primary, depfile]);
+        let logical = rehydrate_staged_output_bytes(
+            canonical.as_bytes(),
+            &[primary.clone(), depfile.clone()],
+        );
 
-        assert_eq!(logical, b"/target-a/foo /target-b/foo.d");
+        // Native spelling, same rationale as
+        // `output_references_round_trip_without_utf8_conversion`.
+        let expected = format!(
+            "{} {}",
+            primary.to_string_lossy(),
+            depfile.to_string_lossy()
+        );
+        assert_eq!(logical, expected.as_bytes());
     }
 
     #[test]

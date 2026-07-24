@@ -500,6 +500,33 @@ async fn wait_for_staged_publication(artifact_dir: &Path, minimum: usize) {
     });
 }
 
+/// Wait until the daemon reports at least `minimum` registered depgraph
+/// compile contexts.
+///
+/// The staged-pointer wait above proves the artifacts are durable, but the
+/// depgraph registration for multi-unit compiles is batched asynchronously
+/// after the response (`handle_compile_multi` fans out `apply_changes`), so
+/// a `Shutdown` right after the responses can still snapshot the depgraph
+/// before the multi units are registered — the warm daemon then evaluates
+/// them Cold (observed on the 2-core CI runner even with stable staged
+/// pointers). `DaemonStatus::dep_graph_contexts` makes the registration
+/// observable. TODO(#1161): remove alongside the publication wait once
+/// shutdown drains durably.
+async fn wait_for_depgraph_contexts(daemon: &mut Daemon, minimum: u64) {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if let Response::Status(status) = daemon.request(&Request::Status).await {
+                if status.dep_graph_contexts >= minimum {
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for >= {minimum} depgraph compile contexts"));
+}
+
 fn staged_pointer_count(staged_root: &Path) -> usize {
     let Ok(entries) = std::fs::read_dir(staged_root) else {
         return 0;
@@ -644,6 +671,9 @@ async fn strict_layout_validation_aggregates_all_runtime_flows() {
     // migration artifact; link/exec publication is covered by the
     // stability requirement.
     wait_for_staged_publication(&artifact_dir, 4).await;
+    // ... and quiesce depgraph registration too: 3 compile contexts
+    // (single.o + the two multi units). See the helper's #1161 note.
+    wait_for_depgraph_contexts(&mut cold, 3).await;
     cold.stop().await;
 
     let cold_compile_count = line_count(&compile_count);
