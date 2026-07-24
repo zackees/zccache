@@ -356,7 +356,22 @@ impl DepGraph {
             .iter()
             .map(|cmd| {
                 let parsed = cmd.parse();
-                let mut ctx = CompileContext::from_parsed_args(parsed);
+                // Issue #1166: compiler identity must be part of the
+                // context key. `compile_commands.json` ingestion is a
+                // bulk warm-priming path (not the live IPC hot path,
+                // which always recomputes via the daemon's
+                // probe-then-fallback `CompilerHashCache`), so a plain
+                // file-content hash is used here. If it doesn't bit-match
+                // the live probe-based hash for the same compiler, the
+                // primed entry simply won't be hit (cheap extra miss,
+                // never a wrong hit — the daemon's own compile-time hash
+                // is always the source of truth for real cache lookups).
+                let compiler_hash = parsed
+                    .compiler
+                    .as_ref()
+                    .and_then(|p| zccache_hash::hash_file(p.as_path()).ok())
+                    .unwrap_or_else(|| zccache_hash::hash_bytes(b"unknown-compiler"));
+                let mut ctx = CompileContext::from_parsed_args(parsed, compiler_hash);
 
                 // Merge system includes into the context's search paths.
                 // These go into the `system` field, appended after any

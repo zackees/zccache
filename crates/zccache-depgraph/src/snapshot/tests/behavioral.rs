@@ -49,6 +49,7 @@ fn loaded_graph_serves_cache_hits() {
         flags: vec!["-O2".into(), "-std=c++17".into()],
         force_includes: vec![NormalizedPath::from("/pch.h")],
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let key = graph.register(ctx);
 
@@ -122,6 +123,7 @@ fn context_key_consistent_after_roundtrip() {
         flags: vec!["-Wall".into()],
         force_includes: vec![NormalizedPath::from("/fi/pch.h")],
         unknown_flags: vec!["--custom".into()],
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let original_key = ctx.context_key();
     graph.register(ctx);
@@ -168,6 +170,7 @@ fn context_key_consistent_after_roundtrip() {
         flags: snap.contexts[0].flags.clone(),
         force_includes: strings_to_paths(snap.contexts[0].force_includes.clone()),
         unknown_flags: snap.contexts[0].unknown_flags.clone(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let recomputed_key = loaded_ctx.context_key();
     assert_eq!(
@@ -203,6 +206,7 @@ fn unicode_paths_roundtrip() {
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let key = graph.register(ctx);
     let hash = zccache_hash::hash_bytes(b"x");
@@ -279,6 +283,7 @@ fn double_roundtrip_idempotent() {
             flags: vec!["-O2".into()],
             force_includes: Vec::new(),
             unknown_flags: Vec::new(),
+            compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
         };
         let key = graph.register(ctx);
         graph.update(
@@ -353,6 +358,7 @@ fn overlapping_contexts_roundtrip() {
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let ctx_b = CompileContext {
         source_file: NormalizedPath::from("/src/b.cpp"),
@@ -364,6 +370,7 @@ fn overlapping_contexts_roundtrip() {
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
 
     let key_a = graph.register(ctx_a);
@@ -554,6 +561,7 @@ fn large_graph_roundtrip() {
             flags: vec!["-O2".into(), format!("-std=c++{}", 14 + (i % 4) * 3)],
             force_includes: Vec::new(),
             unknown_flags: Vec::new(),
+            compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
         };
         let key = graph.register(ctx);
 
@@ -608,6 +616,7 @@ fn register_after_load_finds_existing() {
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let original_key = graph.register(ctx.clone());
     graph.update(

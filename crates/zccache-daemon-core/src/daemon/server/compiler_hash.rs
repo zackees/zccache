@@ -389,6 +389,67 @@ pub(super) fn hash_rustc_identity(path: &Path) -> Option<ContentHash> {
     }
 }
 
+/// Compute a content hash that uniquely identifies a C/C++ compiler build
+/// (clang, gcc, MSVC `cl.exe`), mirroring [`hash_rustc_identity`] for issue
+/// #1166: the C/C++ compile cache key did not previously vary on compiler
+/// binary identity, so an in-place toolchain upgrade (same path, new
+/// binary content) could serve stale object files from cache.
+///
+/// Prefers `<compiler> --version` output over a full blake3 over the
+/// binary, for the same cold-path cost reasons as the rustc `-vV` probe
+/// (issue #517). Falls back to the file-content hash on spawn failure,
+/// non-zero exit, or empty stdout so cache keys are still well-defined for
+/// stubbed binaries (unit tests) and broken toolchains, or for compilers
+/// (e.g. some `cl.exe` invocations) that only print version info to
+/// stderr — see the TODO below.
+pub(super) fn hash_cc_identity(path: &Path) -> Option<ContentHash> {
+    let mut cmd = std::process::Command::new(path);
+    cmd.arg("--version");
+    crate::daemon::process::suppress_child_console(&mut cmd);
+    let timeout = rustc_probe_timeout();
+    match output_within(cmd, timeout) {
+        ProbeOutcome::Completed(output) if output.status.success() && !output.stdout.is_empty() => {
+            Some(crate::hash::hash_bytes(&output.stdout))
+        }
+        ProbeOutcome::TimedOut => {
+            warn_probe_timeout(path, timeout);
+            crate::hash::hash_file(path).ok()
+        }
+        // Spawn failure (stub binaries in unit tests), non-zero exit, or
+        // empty stdout (e.g. MSVC `cl.exe`, which prints its banner to
+        // stderr and errors without input) — fall through to the
+        // file-content hash so keys stay well-defined.
+        //
+        // TODO(#1167): this degenerate-probe fallback reuses
+        // `hash_rustc_identity`'s existing shape as-is. Issue #1167 will
+        // define stricter fallback/degenerate-result policy (e.g.
+        // distinguishing "compiler present but --version unsupported"
+        // from "compiler missing entirely"); do not add new policy here.
+        _ => crate::hash::hash_file(path).ok(),
+    }
+}
+
+/// Async sibling of [`hash_cc_identity`]. See that function's doc comment
+/// for the rationale (issue #1166).
+pub(super) async fn hash_cc_identity_async(path: std::path::PathBuf) -> Option<ContentHash> {
+    let mut cmd = tokio::process::Command::new(&path);
+    cmd.arg("--version");
+    crate::daemon::process::suppress_child_console_tokio(&mut cmd);
+    cmd.kill_on_drop(true);
+    let timeout = rustc_probe_timeout();
+    match tokio::time::timeout(timeout, cmd.output()).await {
+        Ok(Ok(output)) if output.status.success() && !output.stdout.is_empty() => {
+            Some(crate::hash::hash_bytes(&output.stdout))
+        }
+        Err(_) => {
+            warn_probe_timeout(&path, timeout);
+            crate::hash::hash_file(&path).ok()
+        }
+        // TODO(#1167): see the sync `hash_cc_identity` fallback arm above.
+        _ => crate::hash::hash_file(&path).ok(),
+    }
+}
+
 pub(super) async fn hash_rustc_identity_async(path: std::path::PathBuf) -> Option<ContentHash> {
     let mut cmd = tokio::process::Command::new(&path);
     cmd.arg("-vV");

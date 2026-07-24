@@ -64,6 +64,7 @@ fn make_ctx(source: &str) -> CompileContext {
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     }
 }
 

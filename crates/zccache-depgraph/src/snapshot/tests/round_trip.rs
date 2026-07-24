@@ -81,6 +81,7 @@ fn populated_graph_roundtrip() {
         flags: vec!["-std=c++17".into()],
         force_includes: vec![NormalizedPath::from("/pch.h")],
         unknown_flags: vec!["--custom".into()],
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let key = graph.register(ctx);
 
@@ -469,6 +470,7 @@ fn empty_strings_roundtrip() {
         flags: vec![String::new()],
         force_includes: vec![NormalizedPath::from("")],
         unknown_flags: vec![String::new()],
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let key = graph.register(ctx);
 

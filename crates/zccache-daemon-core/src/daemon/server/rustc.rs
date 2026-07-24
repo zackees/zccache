@@ -2,6 +2,16 @@
 
 use super::*;
 
+/// Fallback compiler-identity hash used only when `CompilerHashCache`
+/// cannot even `stat` the compiler binary (the initial `std::fs::metadata`
+/// call in `get_or_hash_with[_async]` fails) — a pathological case since
+/// the compiler was already spawned to reach this code path. `compiler_hash`
+/// is a required (non-`Option`) field on `CompileContext` /
+/// `RustcCompileContext` (issue #1166), so callers need a concrete value
+/// even in this edge case; a fixed sentinel keeps the resulting context key
+/// well-defined and deterministic rather than panicking.
+pub(super) const COMPILER_HASH_UNAVAILABLE: ContentHash = ContentHash::from_bytes([0u8; 32]);
+
 /// Build a CompileContext and UserDepFlags from a CacheableCompilation and session info.
 /// Result of building a compile context — varies by compiler family.
 pub(super) enum BuildContextResult {
@@ -32,6 +42,25 @@ pub(super) fn build_compile_context(
         return build_rustc_compile_context(compilation, cwd, client_env, compiler_hash_cache);
     }
 
+    // Compiler identity for the cache key (issue #1166): an in-place
+    // toolchain upgrade (same path, new clang/gcc/cl.exe binary content)
+    // must not reuse a stale cache key. Mirrors the rustc branch's `-vV`
+    // probe (issue #517) via `hash_cc_identity` (`--version`).
+    let compiler_hash = compiler_hash_cache
+        .get_or_hash_with(&compilation.compiler, hash_cc_identity)
+        .unwrap_or(COMPILER_HASH_UNAVAILABLE);
+
+    build_cc_compile_context(compilation, cwd, system_includes, compiler_hash)
+}
+
+/// Shared by the sync and async C/C++ context builders once the compiler
+/// identity hash has been resolved (issue #1166).
+fn build_cc_compile_context(
+    compilation: &crate::compiler::CacheableCompilation,
+    cwd: &Path,
+    system_includes: &[NormalizedPath],
+    compiler_hash: ContentHash,
+) -> BuildContextResult {
     // Dispatch to the correct parser based on compiler family.
     let parsed = match compilation.family {
         crate::compiler::CompilerFamily::Msvc => {
@@ -40,7 +69,7 @@ pub(super) fn build_compile_context(
         _ => crate::depgraph::args::parse_gnu_args(&compilation.original_args, cwd),
     };
     let dep_flags = parsed.dep_flags.clone();
-    let mut ctx = CompileContext::from_parsed_args(parsed);
+    let mut ctx = CompileContext::from_parsed_args(parsed, compiler_hash);
 
     // For multi-file compilations, the parsed source_file might be wrong
     // (it picks the first source from original_args). Override with the
@@ -79,13 +108,16 @@ pub(super) async fn build_compile_context_async(
         .await;
     }
 
-    build_compile_context(
-        compilation,
-        cwd,
-        system_includes,
-        client_env,
-        compiler_hash_cache,
-    )
+    // Async sibling of the sync Cc branch above: hash the compiler binary
+    // off the blocking-spawn path so the tokio worker thread is not
+    // parked on the `--version` probe (issue #1166; mirrors the rustc
+    // async branch's use of `hash_rustc_identity_async`).
+    let compiler_hash = compiler_hash_cache
+        .get_or_hash_with_async(&compilation.compiler, hash_cc_identity_async)
+        .await
+        .unwrap_or(COMPILER_HASH_UNAVAILABLE);
+
+    build_cc_compile_context(compilation, cwd, system_includes, compiler_hash)
 }
 
 /// Build compile context for a Rustc invocation.
@@ -107,8 +139,9 @@ pub(super) fn build_rustc_compile_context(
     // identity bytes that get hashed change. Failure falls through to
     // the binary hash so cache keys stay well-defined for stub
     // binaries (unit tests) and broken toolchains.
-    let compiler_hash =
-        compiler_hash_cache.get_or_hash_with(&compilation.compiler, hash_rustc_identity);
+    let compiler_hash = compiler_hash_cache
+        .get_or_hash_with(&compilation.compiler, hash_rustc_identity)
+        .unwrap_or(COMPILER_HASH_UNAVAILABLE);
 
     let rustc_ctx = crate::depgraph::RustcCompileContext::from_parsed_args(
         &rustc_args,
@@ -125,6 +158,7 @@ pub(super) fn build_rustc_compile_context(
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash,
     };
 
     BuildContextResult::Rustc {
@@ -144,7 +178,8 @@ pub(super) async fn build_rustc_compile_context_async(
 
     let compiler_hash = compiler_hash_cache
         .get_or_hash_with_async(&compilation.compiler, hash_rustc_identity_async)
-        .await;
+        .await
+        .unwrap_or(COMPILER_HASH_UNAVAILABLE);
 
     let rustc_ctx = crate::depgraph::RustcCompileContext::from_parsed_args(
         &rustc_args,
@@ -159,6 +194,7 @@ pub(super) async fn build_rustc_compile_context_async(
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash,
     };
 
     BuildContextResult::Rustc {

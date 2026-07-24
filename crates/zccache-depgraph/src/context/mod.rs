@@ -90,12 +90,20 @@ pub struct CompileContext {
     /// Sorted unknown flags — not recognized by the parser but still
     /// affect compilation output, so they must be part of the cache key.
     pub unknown_flags: Vec<String>,
+    /// Hash of the compiler binary identity (issue #1166). Non-`Option` by
+    /// design: making this field required means "compute a context key
+    /// without compiler identity" is unrepresentable at the type level. An
+    /// in-place toolchain upgrade (same path, new binary content) must
+    /// always change this hash and therefore the resulting context key —
+    /// otherwise a stale cache entry can be served for a compiler that no
+    /// longer produces the same output.
+    pub compiler_hash: ContentHash,
 }
 
 impl CompileContext {
     /// Build a `CompileContext` from parsed arguments (consumes the args to avoid cloning).
     #[must_use]
-    pub fn from_parsed_args(args: ParsedArgs) -> Self {
+    pub fn from_parsed_args(args: ParsedArgs, compiler_hash: ContentHash) -> Self {
         let mut defines = args.defines;
         defines.sort();
         let mut flags = args.flags;
@@ -110,6 +118,7 @@ impl CompileContext {
             flags,
             force_includes: args.force_includes,
             unknown_flags,
+            compiler_hash,
         }
     }
 
@@ -244,6 +253,13 @@ where
     let mut hasher = blake3::Hasher::new();
 
     hasher.update(b"zccache-context-key-v1\0");
+
+    // Compiler binary identity (issue #1166): an in-place toolchain
+    // upgrade (same path, new binary content) must change the context
+    // key. Unconditional (non-Option field) so this is impossible to omit.
+    hasher.update(b"compiler\0");
+    hasher.update(ctx.compiler_hash.as_bytes());
+    hasher.update(b"\0");
 
     if let Some(salt) = worktree_salt {
         // Domain-tagged so the salt can't collide with any future hash
@@ -536,8 +552,12 @@ pub struct RustcCompileContext {
     pub remap_path_prefixes: Vec<String>,
     /// Sorted CARGO_* environment variables that affect compilation via `env!()`.
     pub env_vars: Vec<(String, String)>,
-    /// Hash of the compiler binary (different rustc versions produce different output).
-    pub compiler_hash: Option<ContentHash>,
+    /// Hash of the compiler binary (different rustc versions produce
+    /// different output). Non-`Option` by design (issue #1166): see the
+    /// doc comment on `CompileContext::compiler_hash` for the rationale —
+    /// making this required at the type level closes the hole where a
+    /// `None` compiler_hash silently omits compiler identity from the key.
+    pub compiler_hash: ContentHash,
 }
 
 impl RustcCompileContext {
@@ -549,7 +569,7 @@ impl RustcCompileContext {
     pub fn from_parsed_args(
         args: &RustcParsedArgs,
         client_env: &[(String, String)],
-        compiler_hash: Option<ContentHash>,
+        compiler_hash: ContentHash,
     ) -> Self {
         let mut crate_types = args.crate_types.clone();
         crate_types.sort();
@@ -621,12 +641,11 @@ impl RustcCompileContext {
 
         hasher.update(b"zccache-rustc-context-key-v2\0");
 
-        // Compiler binary hash (different rustc versions -> different output).
-        if let Some(ref ch) = self.compiler_hash {
-            hasher.update(b"compiler\0");
-            hasher.update(ch.as_bytes());
-            hasher.update(b"\0");
-        }
+        // Compiler binary hash (different rustc versions -> different
+        // output). Unconditional (non-Option field, issue #1166).
+        hasher.update(b"compiler\0");
+        hasher.update(self.compiler_hash.as_bytes());
+        hasher.update(b"\0");
 
         // Source file.
         let source_file = normalize_key_path(&self.source_file, key_root);
@@ -811,11 +830,11 @@ impl RustcCompileContext {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"zccache-rustc-check-metadata-compat-key-v1\0");
 
-        if let Some(ref ch) = self.compiler_hash {
-            hasher.update(b"compiler\0");
-            hasher.update(ch.as_bytes());
-            hasher.update(b"\0");
-        }
+        // Unconditional (non-Option field, issue #1166) — see
+        // `context_key_with_root` above for the rationale.
+        hasher.update(b"compiler\0");
+        hasher.update(self.compiler_hash.as_bytes());
+        hasher.update(b"\0");
 
         let source_file = normalize_key_path(&self.source_file, key_root);
         hasher.update(source_file.as_bytes());

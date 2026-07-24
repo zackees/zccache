@@ -111,6 +111,7 @@ fn adversarial_circular_includes() {
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let key = graph.register(ctx);
     graph.update(&key, scan, disk_hash_oracle());
@@ -188,6 +189,7 @@ fn adversarial_computed_include_propagates() {
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let key = graph.register(ctx);
     graph.update(&key, scan, disk_hash_oracle());
@@ -228,6 +230,7 @@ fn adversarial_shared_header_many_contexts() {
             flags: Vec::new(),
             force_includes: Vec::new(),
             unknown_flags: Vec::new(),
+            compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
         };
         let key = graph.register(ctx);
 
@@ -286,6 +289,7 @@ fn adversarial_rapid_state_transitions() {
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let key = graph.register(ctx);
 
@@ -343,6 +347,7 @@ fn adversarial_no_includes() {
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let key = graph.register(ctx);
 
@@ -388,6 +393,7 @@ fn adversarial_all_includes_unresolved() {
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let key = graph.register(ctx);
 
@@ -427,6 +433,7 @@ fn adversarial_watch_set_large_graph() {
             flags: Vec::new(),
             force_includes: Vec::new(),
             unknown_flags: Vec::new(),
+            compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
         };
         let key = graph.register(ctx);
 
@@ -473,6 +480,7 @@ fn adversarial_trim_cleans_orphaned_files() {
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let key = graph.register(ctx);
 
@@ -539,6 +547,7 @@ fn adversarial_deterministic_artifact_keys() {
         flags: vec!["-O2".into()],
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let key1 = graph1.register(ctx1);
     let scan1 = scanner::scan_recursive(&src, &search);
@@ -553,6 +562,7 @@ fn adversarial_deterministic_artifact_keys() {
         flags: vec!["-O2".into()],
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let key2 = graph2.register(ctx2);
     let scan2 = scanner::scan_recursive(&src, &search);

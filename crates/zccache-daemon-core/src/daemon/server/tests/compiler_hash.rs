@@ -120,7 +120,7 @@ fn rustc_context_build_reuses_compiler_hash_cache() {
         unknown_flags: Vec::new(),
     };
     let cache = CompilerHashCache::new();
-    let expected_hash = crate::hash::hash_file(&compiler).ok();
+    let expected_hash = crate::hash::hash_file(&compiler).expect("hash the fake compiler binary");
 
     let first = build_rustc_compile_context(&compilation, tmp.path(), &[], &cache);
     let second = build_rustc_compile_context(&compilation, tmp.path(), &[], &cache);
@@ -136,6 +136,80 @@ fn rustc_context_build_reuses_compiler_hash_cache() {
     assert_eq!(first_hash, expected_hash);
     assert_eq!(second_hash, expected_hash);
     assert_eq!(cache.len(), 1);
+}
+
+/// Issue #1166: the C/C++ `build_compile_context` branch must fold the
+/// compiler binary's identity hash into the resulting `ContextKey`,
+/// mirroring `rustc_context_build_reuses_compiler_hash_cache` above.
+/// Swapping the on-disk "compiler" binary's content (same path, new
+/// mtime/size) must produce a different `ContextKey` for an otherwise
+/// identical compilation — the exact WRONG-HIT scenario issue #1166
+/// describes for an in-place toolchain upgrade.
+#[test]
+fn cc_context_build_reuses_compiler_hash_cache() {
+    let tmp = tempfile::tempdir().unwrap();
+    let compiler = tmp.path().join("cc");
+    let source = tmp.path().join("main.c");
+    let output = tmp.path().join("main.o");
+    std::fs::write(&compiler, b"fake cc v1").unwrap();
+    filetime::set_file_mtime(
+        &compiler,
+        filetime::FileTime::from_unix_time(1_000_000_000, 0),
+    )
+    .unwrap();
+    std::fs::write(&source, b"int main(void) { return 0; }").unwrap();
+
+    let args: Vec<String> = vec![
+        compiler.to_string_lossy().into_owned(),
+        "-c".into(),
+        source.to_string_lossy().into_owned(),
+        "-o".into(),
+        output.to_string_lossy().into_owned(),
+    ];
+    let compilation = crate::compiler::CacheableCompilation {
+        compiler: compiler.clone().into(),
+        family: crate::compiler::CompilerFamily::Gcc,
+        source_file: source.clone().into(),
+        output_file: output.into(),
+        original_args: std::sync::Arc::from(args),
+        unknown_flags: Vec::new(),
+    };
+    let cache = CompilerHashCache::new();
+
+    let first_key = match build_compile_context(&compilation, tmp.path(), &[], &[], &cache) {
+        BuildContextResult::Cc { ctx, .. } => ctx.context_key(),
+        BuildContextResult::Rustc { .. } => panic!("expected Cc context"),
+    };
+    // Re-run against the SAME binary content: must reuse the cache
+    // (proven by the cache having exactly one entry) and produce the
+    // same key.
+    let second_key = match build_compile_context(&compilation, tmp.path(), &[], &[], &cache) {
+        BuildContextResult::Cc { ctx, .. } => ctx.context_key(),
+        BuildContextResult::Rustc { .. } => panic!("expected Cc context"),
+    };
+    assert_eq!(
+        first_key, second_key,
+        "identical compiler content must produce identical context keys"
+    );
+    assert_eq!(cache.len(), 1, "compiler hash must be cached, not rehashed");
+
+    // In-place toolchain upgrade: same path, new binary content/mtime.
+    std::fs::write(&compiler, b"fake cc v2, totally different codegen").unwrap();
+    filetime::set_file_mtime(
+        &compiler,
+        filetime::FileTime::from_unix_time(1_000_000_500, 0),
+    )
+    .unwrap();
+
+    let third_key = match build_compile_context(&compilation, tmp.path(), &[], &[], &cache) {
+        BuildContextResult::Cc { ctx, .. } => ctx.context_key(),
+        BuildContextResult::Rustc { .. } => panic!("expected Cc context"),
+    };
+    assert_ne!(
+        first_key, third_key,
+        "an in-place compiler binary upgrade (same path, new content) must \
+         change the C/C++ context key — issue #1166's WRONG-HIT scenario"
+    );
 }
 
 // ── Issue #517 Option 3: rustc -vV identity instead of binary hash ─────

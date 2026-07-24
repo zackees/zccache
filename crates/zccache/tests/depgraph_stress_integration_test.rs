@@ -119,6 +119,7 @@ fn integration_full_build_pipeline() {
         flags: vec!["-std=c++17".into()],
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let ctx_util = CompileContext {
         source_file: util_cpp.clone(),
@@ -127,6 +128,7 @@ fn integration_full_build_pipeline() {
         flags: vec!["-std=c++17".into()],
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
 
     let key_main = graph.register(ctx_main);
@@ -298,6 +300,7 @@ fn integration_shadow_detection_real_files() {
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let key = graph.register(ctx);
 
@@ -353,6 +356,7 @@ fn integration_new_resolve_real_files() {
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let registration = graph.register_with_root_result(ctx, None);
     let key = registration.map_key;
@@ -430,6 +434,7 @@ End of search list.
         flags: vec!["-O2".into()],
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
+        compiler_hash: zccache_hash::hash_bytes(b"test-fixture"),
     };
     let key = graph.register(ctx);
     mgr.add_context(&session_id, key);

@@ -125,6 +125,7 @@ mod tests {
             flags: Vec::new(),
             force_includes: Vec::new(),
             unknown_flags: Vec::new(),
+            compiler_hash: crate::hash::hash_bytes(b"test-fixture"),
         };
         let context_key = ctx.context_key();
         let cache_dir: NormalizedPath = tmp.path().join("cache").into();

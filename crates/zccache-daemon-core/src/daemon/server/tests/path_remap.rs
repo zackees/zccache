@@ -291,6 +291,7 @@ mod context_key_salt {
             flags: Vec::new(),
             force_includes: Vec::new(),
             unknown_flags: Vec::new(),
+            compiler_hash: crate::hash::hash_bytes(b"test-fixture"),
         }
     }
 
