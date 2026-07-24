@@ -516,7 +516,17 @@ pub fn unique_test_endpoint() -> String {
     }
     #[cfg(windows)]
     {
-        format!(r"\\.\pipe\zccache-test-{pid}-{id}")
+        // Named pipes are global to the Windows session.  The per-process
+        // counter keeps concurrent tests in one test binary apart, but a
+        // freshly launched Cargo test executable can reuse a PID while a
+        // recently closed pipe is still being reaped.  Include a wall-clock
+        // nonce so such a pipe cannot make a later test's first-instance
+        // ownership check fail with ERROR_ACCESS_DENIED.
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        format!(r"\\.\pipe\zccache-test-{pid}-{nonce}-{id}")
     }
 }
 
