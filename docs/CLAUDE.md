@@ -17,6 +17,7 @@ Architecture docs are split by subsystem. Read only what's relevant to your curr
 | Daemon-owned disk retention | [artifact-store.md](architecture/artifact-store.md), [runtime.md](architecture/runtime.md), [embedded-service.md](architecture/embedded-service.md) |
 | `zccache-hash` | [overview.md](architecture/overview.md) (2.8) |
 | `zccache-compiler` | [overview.md](architecture/overview.md) (2.9), [data-flow.md](architecture/data-flow.md) |
+| Nested Dylint compiler caching | [data-flow.md](architecture/data-flow.md#nested-dylint-driver-caching) |
 | `zccache-core` | [overview.md](architecture/overview.md) |
 | Embedded host-daemon integration | [embedded-service.md](architecture/embedded-service.md) |
 | Embedded maintenance limits and shutdown | [embedded-service.md](architecture/embedded-service.md#maintenance-limits-and-task-ownership) |

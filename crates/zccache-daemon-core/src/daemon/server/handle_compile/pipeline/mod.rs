@@ -49,6 +49,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         client_env,
         stdin,
     } = req;
+    let mut client_env = client_env;
     let state = state_arc.as_ref();
     let compile_start = std::time::Instant::now();
     let sid = match session_id.parse::<SessionId>() {
@@ -86,6 +87,89 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         worktree_root.as_ref(),
         client_env.as_deref(),
     );
+
+    if crate::compiler::is_dylint_driver(&compiler_path.to_string_lossy()) {
+        let dylint_result = async {
+            let (inner_rustc, _) = crate::compiler::dylint_inner_rustc_args(
+                &compiler_path.to_string_lossy(),
+                &effective_args,
+            )
+            .map_err(str::to_string)?
+            .ok_or_else(|| "Dylint nested invocation was not recognized".to_string())?;
+            let inner_rustc = {
+                let path = Path::new(inner_rustc);
+                if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    cwd.join(path)
+                }
+            };
+            let driver_identity = state
+                .compiler_hash_cache
+                .get_or_hash_with_async(compiler_path, |path| async move {
+                    tokio::task::spawn_blocking(move || crate::hash::hash_file(&path).ok())
+                        .await
+                        .ok()
+                        .flatten()
+                })
+                .await
+                .ok_or_else(|| {
+                    format!("cannot identify Dylint driver {}", compiler_path.display())
+                })?;
+            let inner_rustc_identity = state
+                .compiler_hash_cache
+                .get_or_hash_rustc_identity_async(&inner_rustc)
+                .await
+                .ok_or_else(|| {
+                    format!("cannot identify Dylint inner rustc {}", inner_rustc.display())
+                })?;
+            let env = client_env.get_or_insert_with(Vec::new);
+            crate::compiler::prepare_dylint_cache_env_with_identities(
+                &NormalizedPath::new(compiler_path),
+                &effective_args,
+                cwd,
+                env,
+                driver_identity,
+                inner_rustc_identity,
+                |path| {
+                    state
+                        .compiler_hash_cache
+                        .get_or_hash_with(path, |path| crate::hash::hash_file(path).ok())
+                        .ok_or_else(|| {
+                            format!(
+                                "cannot hash Dylint library {}; running uncached",
+                                path.display()
+                            )
+                    })
+                },
+            )
+        }
+        .await;
+        if let Err(reason) = dylint_result {
+            let diagnostic = format!("zccache: Dylint cache disabled: {reason}\n");
+            let bypass_compiler: NormalizedPath = compiler_path.into();
+            state.stats.record_compilation();
+            state.stats.record_non_cacheable();
+            record_session_stat(&state.sessions, &sid, |t| t.record_non_cacheable());
+            write_session_log(
+                &state.sessions,
+                &sid,
+                &format!("non-cacheable: Dylint cache disabled: {reason}"),
+            );
+            let response = run_compiler_direct(
+                &bypass_compiler,
+                args,
+                cwd,
+                &state.sessions,
+                &sid,
+                &client_env,
+                &stdin,
+                state.depfile_tmpdir.as_path(),
+            )
+            .await;
+            return prepend_compile_stderr(response, diagnostic.as_bytes());
+        }
+    }
     let request_cache_key_root =
         request_key_root(compiler_path, &effective_args, worktree_root.as_ref());
 
@@ -1039,6 +1123,17 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         stderr: response_stderr,
         cached: false,
     }
+}
+
+fn prepend_compile_stderr(mut response: Response, diagnostic: &[u8]) -> Response {
+    if let Response::CompileResult { stderr, .. } = &mut response {
+        let existing = std::mem::take(Arc::make_mut(stderr));
+        let mut combined = Vec::with_capacity(diagnostic.len() + existing.len());
+        combined.extend_from_slice(diagnostic);
+        combined.extend(existing);
+        *Arc::make_mut(stderr) = combined;
+    }
+    response
 }
 
 fn invalidate_missing_depgraph_artifact(

@@ -545,6 +545,10 @@ fn rustc_from_parsed_args_drops_cargo_target_dir() {
         ("CARGO_TARGET_DIR".to_string(), "/repo/target-a".to_string()),
         ("CARGO_PKG_NAME".to_string(), "foo".to_string()),
         ("CARGO_PKG_VERSION".to_string(), "1.2.3".to_string()),
+        (
+            "ZCCACHE_DYLINT_CACHE_INPUT_HASH".to_string(),
+            "driver-library-and-env-identity".to_string(),
+        ),
     ];
     let ctx = RustcCompileContext::from_parsed_args(&args, &client_env, test_compiler_hash());
     assert!(
@@ -555,6 +559,13 @@ fn rustc_from_parsed_args_drops_cargo_target_dir() {
     assert!(
         ctx.env_vars.iter().any(|(k, _)| k == "CARGO_PKG_NAME"),
         "from_parsed_args must keep CARGO_PKG_NAME; got {:?}",
+        ctx.env_vars
+    );
+    assert!(
+        ctx.env_vars
+            .iter()
+            .any(|(k, _)| k == "ZCCACHE_DYLINT_CACHE_INPUT_HASH"),
+        "from_parsed_args must keep the internal Dylint cache salt; got {:?}",
         ctx.env_vars
     );
 }

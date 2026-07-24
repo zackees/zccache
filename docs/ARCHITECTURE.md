@@ -25,6 +25,7 @@ failed cache-root audit retain its diagnostic JSONL evidence.
 
 - **High-level design** → [overview.md](architecture/overview.md)
 - **"How does a cache hit work?"** → [data-flow.md](architecture/data-flow.md)
+- **Nested Dylint driver caching** → [data-flow.md](architecture/data-flow.md#nested-dylint-driver-caching)
 - **CLI↔daemon communication** → [ipc.md](architecture/ipc.md)
 - **File change detection** → [metadata-cache.md](architecture/metadata-cache.md)
 - **Disk cache & eviction** → [artifact-store.md](architecture/artifact-store.md)

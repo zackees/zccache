@@ -304,6 +304,16 @@ pub(super) fn effective_compile_args(
         }
 
         let mut effective = Vec::with_capacity(expanded_args.len() + 2);
+        if crate::compiler::is_dylint_driver(&compiler_path.to_string_lossy()) {
+            let Some((inner_rustc, rustc_args)) = expanded_args.split_first() else {
+                return expanded_args.to_vec();
+            };
+            effective.push(inner_rustc.clone());
+            effective.push("--remap-path-prefix".to_string());
+            effective.push(format!("{}=.", root_path.to_string_lossy()));
+            effective.extend_from_slice(rustc_args);
+            return effective;
+        }
         effective.push("--remap-path-prefix".to_string());
         effective.push(format!("{}=.", root_path.to_string_lossy()));
         effective.extend_from_slice(expanded_args);
@@ -427,7 +437,12 @@ pub(super) fn request_env_fingerprint_vars(
                 && key != "CARGO_MANIFEST_DIR"
                 && key != "CARGO_MANIFEST_PATH"
                 && key != "CARGO_TARGET_DIR")
-                || matches!(key, "ZCCACHE_FAST" | "ZCCACHE_SCAN_SYSTEM_HEADERS");
+                || matches!(
+                    key,
+                    "ZCCACHE_FAST"
+                        | "ZCCACHE_SCAN_SYSTEM_HEADERS"
+                        | crate::compiler::DYLINT_CACHE_INPUT_HASH_ENV
+                );
             include.then_some((key, value.as_str()))
         })
         .collect();

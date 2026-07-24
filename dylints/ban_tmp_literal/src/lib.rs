@@ -199,7 +199,6 @@ impl Drop for CurrentDirGuard {
 #[ignore = "no .stderr snapshots yet — verify via `cargo dylint --all --workspace`"]
 fn ui() {
     let _guard = CurrentDirGuard::set(std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
-    std::env::set_var("RUSTUP_TOOLCHAIN", "nightly-2026-05-26");
     prepare_dylint_library();
     dylint_testing::ui_test(env!("CARGO_PKG_NAME"), "ui");
 }

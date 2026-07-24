@@ -1,8 +1,25 @@
 import os
-from types import SimpleNamespace
+import re
 from pathlib import Path
+from types import SimpleNamespace
 
 from ci import lint
+
+
+def test_dylint_sources_do_not_set_a_dated_toolchain_globally():
+    forbidden = re.compile(
+        r"""set_var\s*\(\s*["']RUSTUP_TOOLCHAIN["']\s*,\s*["']nightly-\d{4}-\d{2}-\d{2}"""
+    )
+    violations = [
+        str(path.relative_to(lint.SCRIPT_DIR))
+        for path in (lint.SCRIPT_DIR / "dylints").rglob("*.rs")
+        if forbidden.search(path.read_text(encoding="utf-8"))
+    ]
+
+    assert not violations, (
+        "Dylint tests must inherit the front-door toolchain instead of mutating "
+        f"process-global RUSTUP_TOOLCHAIN: {violations}"
+    )
 
 
 def test_dylint_env_puts_selected_toolchain_first(monkeypatch):

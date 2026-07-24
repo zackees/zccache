@@ -23,6 +23,33 @@
 use super::super::*;
 use crate::compiler::{CompilerFamily, SourceMode};
 
+#[test]
+fn dylint_remap_is_injected_after_the_inner_rustc() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root_path = tmp.path().join("workspace");
+    let root = NormalizedPath::new(&root_path);
+    let env = vec![(PATH_REMAP_ENV.to_string(), "auto".to_string())];
+    let args = vec![
+        "/toolchains/nightly/bin/rustc".to_string(),
+        "--crate-name".to_string(),
+        "lint_target".to_string(),
+        "src/lib.rs".to_string(),
+    ];
+
+    let effective = effective_compile_args(
+        &args,
+        Path::new("/tmp/dylint-driver"),
+        &root_path,
+        Some(&root),
+        Some(&env),
+    );
+
+    assert_eq!(effective[0], args[0]);
+    assert_eq!(effective[1], "--remap-path-prefix");
+    assert_eq!(effective[2], format!("{}=.", root_path.display()));
+    assert_eq!(&effective[3..], &args[1..]);
+}
+
 // ── Piece A: flag injection ────────────────────────────────────────────────
 
 #[test]
