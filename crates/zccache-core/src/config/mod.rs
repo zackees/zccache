@@ -102,10 +102,11 @@ pub use namespace::{
 pub use paths::{
     artifacts_dir, artifacts_dir_from_cache_dir, cargo_registry_cache_dir,
     cargo_registry_cache_dir_from_cache_dir, compiler_hash_cache_path_from_cache_dir,
-    crash_dump_dir, depfile_dir, depfile_dir_from_cache_dir, depgraph_dir, index_path,
-    index_path_from_cache_dir, log_dir, log_dir_from_cache_dir, metadata_path_from_cache_dir,
-    symbols_cache_dir, symbols_cache_dir_from_cache_dir, system_includes_cache_path_from_cache_dir,
-    tmp_dir, tmp_dir_from_cache_dir,
+    crash_dump_dir, depfile_dir, depfile_dir_from_cache_dir, depgraph_dir,
+    depgraph_dir_from_cache_dir, index_path, index_path_from_cache_dir, log_dir,
+    log_dir_from_cache_dir, metadata_path_from_cache_dir, symbols_cache_dir,
+    symbols_cache_dir_from_cache_dir, system_includes_cache_path_from_cache_dir, tmp_dir,
+    tmp_dir_from_cache_dir,
 };
 pub use resolve::{
     cache_dir_override, daemon_state_dir, daemon_state_dir_from_cache_dir,

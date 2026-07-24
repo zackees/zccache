@@ -158,18 +158,16 @@ exit /b 0
 /// Reload the on-disk depgraph snapshot into a freshly-bound `DaemonServer`,
 /// mirroring the production startup path (`daemon::entry`) and the pattern
 /// already used by `legacy_path_validation.rs`'s `Daemon::start`.
-fn restore_dep_graph_from_disk(server: &DaemonServer) {
-    let path = crate::depgraph::depgraph_file_path();
+fn restore_dep_graph_from_disk(server: &DaemonServer, path: &Path) {
     if let crate::depgraph::DepGraphLoadOutcome::Loaded { graph } =
-        crate::depgraph::classify_load(&path)
+        crate::depgraph::classify_load(path)
     {
         server.set_dep_graph(graph);
     }
 }
 
-fn save_dep_graph_to_disk(server: &DaemonServer) {
+fn save_dep_graph_to_disk(server: &DaemonServer, path: &Path) {
     let dg = server.state.dep_graph.load_full();
-    let path = crate::depgraph::depgraph_file_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
@@ -211,10 +209,11 @@ fn spawn_index_writer(server: &mut DaemonServer) -> tokio::task::JoinHandle<()> 
 async fn quiesce_and_persist(
     server: &DaemonServer,
     index_writer_handle: tokio::task::JoinHandle<()>,
+    depgraph_path: &Path,
 ) {
     let _publication_guard =
         drain_durable_state_for_shutdown(&server.state, Some(index_writer_handle)).await;
-    save_dep_graph_to_disk(server);
+    save_dep_graph_to_disk(server, depgraph_path);
 }
 
 /// A two-source legacy C/C++ compile must hit warm after a graceful daemon
@@ -224,8 +223,15 @@ async fn quiesce_and_persist(
 #[tokio::test]
 async fn multi_file_compile_hits_warm_after_restart() {
     let tmp = tempfile::tempdir().unwrap();
-    let cache_root = tmp.path().join("zccache-cache");
-    let _guard = CacheDirEnvGuard::set_with_staged_artifacts(&cache_root, "off");
+    let cache_root: crate::core::NormalizedPath = tmp.path().join("zccache-cache").into();
+    // Both servers use explicit cache roots.  Do not set ZCCACHE_CACHE_DIR:
+    // unrelated parallel tests that call `DaemonServer::bind()` would then
+    // accidentally adopt this test's cache and corrupt its restart fixture.
+    // The lock only prevents other tests from changing the process-global
+    // staged-artifact policy while this C/C++ (default-disabled) lane runs.
+    let _env_lock = CacheDirEnvGuard::lock();
+    let depgraph_path =
+        crate::core::config::depgraph_dir_from_cache_dir(&cache_root).join("depgraph.bin");
 
     let cc = write_fake_multi_cc(tmp.path());
     let work = tmp.path().join("work");
@@ -244,11 +250,9 @@ async fn multi_file_compile_hits_warm_after_restart() {
     ];
 
     // ── Cold daemon: multi-file compile is a cold miss ──────────────────
-    let mut cold_server = DaemonServer::bind_with_cache_dir(
-        &crate::ipc::unique_test_endpoint(),
-        &cache_root.clone().into(),
-    )
-    .unwrap();
+    let mut cold_server =
+        DaemonServer::bind_with_cache_dir(&crate::ipc::unique_test_endpoint(), &cache_root)
+            .unwrap();
     let index_writer_handle = spawn_index_writer(&mut cold_server);
     let cold_resp = handle_compile_ephemeral(
         &cold_server.state,
@@ -275,7 +279,7 @@ async fn multi_file_compile_hits_warm_after_restart() {
 
     // Run the production shutdown drain + persist the depgraph, exactly
     // like `DaemonServer::run`'s Shutdown arm does.
-    quiesce_and_persist(&cold_server, index_writer_handle).await;
+    quiesce_and_persist(&cold_server, index_writer_handle, &depgraph_path).await;
     drop(cold_server);
 
     // Clear outputs so the warm assertion below can only pass via a real
@@ -284,12 +288,10 @@ async fn multi_file_compile_hits_warm_after_restart() {
     std::fs::remove_file(&out_b).unwrap();
 
     // ── Warm daemon: fresh process-equivalent state, same cache root ────
-    let warm_server = DaemonServer::bind_with_cache_dir(
-        &crate::ipc::unique_test_endpoint(),
-        &cache_root.clone().into(),
-    )
-    .unwrap();
-    restore_dep_graph_from_disk(&warm_server);
+    let warm_server =
+        DaemonServer::bind_with_cache_dir(&crate::ipc::unique_test_endpoint(), &cache_root)
+            .unwrap();
+    restore_dep_graph_from_disk(&warm_server, &depgraph_path);
     let warm_resp = handle_compile_ephemeral(
         &warm_server.state,
         std::process::id(),
@@ -334,8 +336,10 @@ async fn multi_file_compile_hits_warm_after_restart() {
 #[tokio::test]
 async fn single_file_compile_hits_warm_after_restart() {
     let tmp = tempfile::tempdir().unwrap();
-    let cache_root = tmp.path().join("zccache-cache");
-    let _guard = CacheDirEnvGuard::set_with_staged_artifacts(&cache_root, "off");
+    let cache_root: crate::core::NormalizedPath = tmp.path().join("zccache-cache").into();
+    let _env_lock = CacheDirEnvGuard::lock();
+    let depgraph_path =
+        crate::core::config::depgraph_dir_from_cache_dir(&cache_root).join("depgraph.bin");
 
     let cc = write_fake_multi_cc(tmp.path());
     let work = tmp.path().join("work");
@@ -346,11 +350,9 @@ async fn single_file_compile_hits_warm_after_restart() {
 
     let args = vec!["-c".to_string(), single.to_string_lossy().into_owned()];
 
-    let mut cold_server = DaemonServer::bind_with_cache_dir(
-        &crate::ipc::unique_test_endpoint(),
-        &cache_root.clone().into(),
-    )
-    .unwrap();
+    let mut cold_server =
+        DaemonServer::bind_with_cache_dir(&crate::ipc::unique_test_endpoint(), &cache_root)
+            .unwrap();
     let index_writer_handle = spawn_index_writer(&mut cold_server);
     let cold_resp = handle_compile_ephemeral(
         &cold_server.state,
@@ -374,16 +376,14 @@ async fn single_file_compile_hits_warm_after_restart() {
     }
     let cold_bytes = std::fs::read(&out).expect("cold single.o must exist");
 
-    quiesce_and_persist(&cold_server, index_writer_handle).await;
+    quiesce_and_persist(&cold_server, index_writer_handle, &depgraph_path).await;
     drop(cold_server);
     std::fs::remove_file(&out).unwrap();
 
-    let warm_server = DaemonServer::bind_with_cache_dir(
-        &crate::ipc::unique_test_endpoint(),
-        &cache_root.clone().into(),
-    )
-    .unwrap();
-    restore_dep_graph_from_disk(&warm_server);
+    let warm_server =
+        DaemonServer::bind_with_cache_dir(&crate::ipc::unique_test_endpoint(), &cache_root)
+            .unwrap();
+    restore_dep_graph_from_disk(&warm_server, &depgraph_path);
 
     let warm_resp = handle_compile_ephemeral(
         &warm_server.state,

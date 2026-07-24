@@ -5,8 +5,6 @@
 
 use std::path::Path;
 
-use super::persist;
-
 mod artifact_store_deferred;
 mod cache_trim;
 mod clear_handler;
@@ -48,61 +46,43 @@ pub(super) struct CacheDirEnvGuard {
     _lock: std::sync::MutexGuard<'static, ()>,
     previous_cache_dir: Option<std::ffi::OsString>,
     previous_namespace: Option<std::ffi::OsString>,
-    previous_staged_artifacts: Option<std::ffi::OsString>,
 }
 
 static CACHE_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl CacheDirEnvGuard {
-    pub(super) fn set(path: &Path) -> Self {
-        let lock = CACHE_DIR_ENV_LOCK
+    /// Serializes tests that read or mutate daemon process environment without
+    /// changing any variables itself. Tests with explicit cache roots use
+    /// this when they must remain immune to concurrent staged-policy changes.
+    pub(super) fn lock() -> std::sync::MutexGuard<'static, ()> {
+        CACHE_DIR_ENV_LOCK
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(super) fn set(path: &Path) -> Self {
+        let lock = Self::lock();
         let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
         let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
-        let previous_staged_artifacts = std::env::var_os(persist::STAGED_ARTIFACTS_ENV);
         std::env::set_var(crate::core::config::CACHE_DIR_ENV, path);
         std::env::remove_var(crate::core::config::DAEMON_NAMESPACE_ENV);
         Self {
             _lock: lock,
             previous_cache_dir,
             previous_namespace,
-            previous_staged_artifacts,
         }
     }
 
     pub(super) fn set_with_namespace(path: &Path, namespace: &str) -> Self {
-        let lock = CACHE_DIR_ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let lock = Self::lock();
         let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
         let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
-        let previous_staged_artifacts = std::env::var_os(persist::STAGED_ARTIFACTS_ENV);
         std::env::set_var(crate::core::config::CACHE_DIR_ENV, path);
         std::env::set_var(crate::core::config::DAEMON_NAMESPACE_ENV, namespace);
         Self {
             _lock: lock,
             previous_cache_dir,
             previous_namespace,
-            previous_staged_artifacts,
-        }
-    }
-
-    pub(super) fn set_with_staged_artifacts(path: &Path, staged_artifacts: &str) -> Self {
-        let lock = CACHE_DIR_ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
-        let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
-        let previous_staged_artifacts = std::env::var_os(persist::STAGED_ARTIFACTS_ENV);
-        std::env::set_var(crate::core::config::CACHE_DIR_ENV, path);
-        std::env::remove_var(crate::core::config::DAEMON_NAMESPACE_ENV);
-        std::env::set_var(persist::STAGED_ARTIFACTS_ENV, staged_artifacts);
-        Self {
-            _lock: lock,
-            previous_cache_dir,
-            previous_namespace,
-            previous_staged_artifacts,
         }
     }
 }
@@ -118,10 +98,6 @@ impl Drop for CacheDirEnvGuard {
                 std::env::set_var(crate::core::config::DAEMON_NAMESPACE_ENV, previous);
             }
             None => std::env::remove_var(crate::core::config::DAEMON_NAMESPACE_ENV),
-        }
-        match &self.previous_staged_artifacts {
-            Some(previous) => std::env::set_var(persist::STAGED_ARTIFACTS_ENV, previous),
-            None => std::env::remove_var(persist::STAGED_ARTIFACTS_ENV),
         }
     }
 }

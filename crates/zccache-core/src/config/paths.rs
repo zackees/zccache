@@ -113,7 +113,7 @@ pub fn depfile_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath 
     tmp_dir_from_cache_dir(cache_dir).join("depfiles")
 }
 
-pub(super) fn depgraph_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
+pub fn depgraph_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
     daemon_state_dir_from_cache_dir(cache_dir).join("depgraph")
 }
 
