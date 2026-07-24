@@ -58,10 +58,18 @@ use std::path::{Path, PathBuf};
 use super::super::*;
 use super::CacheDirEnvGuard;
 
-/// Writes a fake `cc` that, for every `<stem>.c` positional argument, writes
-/// a deterministic `<stem>.o` next to it (relative to `cwd`) so cold vs
-/// warm outputs are directly comparable. Discovery probes (`-v -E ...`,
-/// `-###`) see no `.c` args and become no-ops.
+/// Writes a fake `cc` that mirrors what the staged compile lane needs from
+/// a real compiler:
+///
+/// * With `-o <path>` (the staged per-unit invocation shape): writes a
+///   deterministic `object-for:<abs source>` payload to `<path>`.
+/// * Without `-o` (bare `cc -c a.c b.c`): writes `<stem>.o` next to each
+///   `.c` argument, exactly like gcc/clang.
+/// * Discovery probes (`-v -E ...`, `-###`) see no `.c` args and no `-o`,
+///   and become successful no-ops.
+///
+/// `-MF`/`-MT` values are skipped so a depfile path ending in a source-like
+/// name can never be mistaken for an input.
 #[cfg(unix)]
 fn write_fake_multi_cc(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -70,14 +78,25 @@ fn write_fake_multi_cc(dir: &Path) -> PathBuf {
     std::fs::write(
         &tool,
         r#"#!/bin/sh
-for arg in "$@"; do
-    case "$arg" in
-        *.c)
-            stem="${arg%.c}"
-            printf 'object-for:%s\n' "$arg" > "${stem}.o"
-            ;;
+out=
+srcs=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -o) shift; out=$1 ;;
+        -MF|-MT) shift ;;
+        *.c) srcs="$srcs $1" ;;
     esac
+    shift || true
 done
+if [ -n "$out" ]; then
+    for s in $srcs; do
+        printf 'object-for:%s\n' "$s" > "$out"
+    done
+else
+    for s in $srcs; do
+        printf 'object-for:%s\n' "$s" > "${s%.c}.o"
+    done
+fi
 exit 0
 "#,
     )
@@ -95,17 +114,69 @@ fn write_fake_multi_cc(dir: &Path) -> PathBuf {
         &tool,
         r#"@echo off
 setlocal enabledelayedexpansion
-for %%A in (%*) do (
-    set "ARG=%%~A"
-    if /I "!ARG:~-2!"==".c" (
-        > "%%~dpnA.o" echo object-for:%%~fA
+set "OUT="
+set "SRCS="
+:loop
+if "%~1"=="" goto run
+if "%~1"=="-o" (
+    set "OUT=%~2"
+    shift
+    shift
+    goto loop
+)
+if "%~1"=="-MF" (
+    shift
+    shift
+    goto loop
+)
+if "%~1"=="-MT" (
+    shift
+    shift
+    goto loop
+)
+set "ARG=%~1"
+if /I "!ARG:~-2!"==".c" set SRCS=!SRCS! "%~f1"
+shift
+goto loop
+:run
+if defined OUT (
+    for %%S in (!SRCS!) do (
+        > "!OUT!" echo object-for:%%~S
     )
+    exit /b 0
+)
+for %%S in (!SRCS!) do (
+    > "%%~dpnS.o" echo object-for:%%~S
 )
 exit /b 0
 "#,
     )
     .unwrap();
     tool
+}
+
+/// RAII guard for `ZCCACHE_STAGED_ARTIFACTS`, restoring the prior value on
+/// drop. Always used INSIDE a `CacheDirEnvGuard` scope, whose global mutex
+/// serializes env-mutating tests.
+struct StagedArtifactsEnvGuard {
+    previous: Option<std::ffi::OsString>,
+}
+
+impl StagedArtifactsEnvGuard {
+    fn set(value: &str) -> Self {
+        let previous = std::env::var_os(persist::STAGED_ARTIFACTS_ENV);
+        std::env::set_var(persist::STAGED_ARTIFACTS_ENV, value);
+        Self { previous }
+    }
+}
+
+impl Drop for StagedArtifactsEnvGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(persist::STAGED_ARTIFACTS_ENV, value),
+            None => std::env::remove_var(persist::STAGED_ARTIFACTS_ENV),
+        }
+    }
 }
 
 /// Reload the on-disk depgraph snapshot into a freshly-bound `DaemonServer`,
@@ -177,6 +248,11 @@ async fn multi_file_compile_hits_warm_after_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let cache_root = tmp.path().join("zccache-cache");
     let _guard = CacheDirEnvGuard::set(&cache_root);
+    // Mirror the Integration workflow's `legacy_path_validation.rs` flow:
+    // ZCCACHE_STAGED_ARTIFACTS=all routes the multi misses through
+    // `staged::try_handle_staged_misses` (per-unit staged compile with an
+    // explicit `-o`), not the inline hardlink lane.
+    let _staged = StagedArtifactsEnvGuard::set("all");
 
     let cc = write_fake_multi_cc(tmp.path());
     let work = tmp.path().join("work");
@@ -302,6 +378,8 @@ async fn single_file_compile_hits_warm_after_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let cache_root = tmp.path().join("zccache-cache");
     let _guard = CacheDirEnvGuard::set(&cache_root);
+    // Same staged lane as the multi variant + the Integration workflow.
+    let _staged = StagedArtifactsEnvGuard::set("all");
 
     let cc = write_fake_multi_cc(tmp.path());
     let work = tmp.path().join("work");
