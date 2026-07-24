@@ -16,6 +16,14 @@ impl Drop for CurrentDirGuard {
 }
 
 fn prepare_dylint_library(manifest_dir: &std::path::Path, crate_name: &str) {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let status = std::process::Command::new(cargo)
+        .arg("build")
+        .current_dir(manifest_dir)
+        .status()
+        .expect("cargo build should start");
+    assert!(status.success(), "cargo build should succeed");
+
     let toolchain = std::env::var("RUSTUP_TOOLCHAIN").expect("RUSTUP_TOOLCHAIN should be set");
     let library_name = crate_name.replace('-', "_");
     let target_root = std::env::var_os("CARGO_TARGET_DIR")
