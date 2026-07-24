@@ -183,7 +183,7 @@ fn save_dep_graph_to_disk(server: &DaemonServer, path: &Path) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    crate::depgraph::save_to_file(&dg, &path).expect("depgraph save must succeed");
+    crate::depgraph::save_to_file(&dg, path).expect("depgraph save must succeed");
 }
 
 /// `DaemonServer::run` spawns the background index-writer task (drains
@@ -233,6 +233,10 @@ async fn quiesce_and_persist(
 /// without a trustworthy per-file change sequence, so this verifies the
 /// supported durable path on every platform.
 #[tokio::test]
+// Holding the env-policy lock across the whole async test IS the point:
+// it serializes the process-global staged-artifact policy for the test's
+// full duration. Single-threaded test runtime, no lock-ordering hazard.
+#[allow(clippy::await_holding_lock)]
 async fn multi_file_compile_hits_warm_after_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let cache_root: crate::core::NormalizedPath = tmp.path().join("zccache-cache").into();
@@ -346,6 +350,9 @@ async fn multi_file_compile_hits_warm_after_restart() {
 /// honest — if this one ever goes RED too, the bug moved somewhere shared
 /// (e.g. depgraph snapshot round-trip) rather than being multi-file-specific.
 #[tokio::test]
+// Same rationale as multi_file_compile_hits_warm_after_restart: the env
+// lock must span every await in the test body.
+#[allow(clippy::await_holding_lock)]
 async fn single_file_compile_hits_warm_after_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let cache_root: crate::core::NormalizedPath = tmp.path().join("zccache-cache").into();
