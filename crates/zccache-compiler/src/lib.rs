@@ -29,6 +29,7 @@ pub mod parse_msvc;
 mod parse_rustc;
 pub mod parse_rustfmt;
 pub mod response_file;
+pub mod side_outputs;
 pub mod strict_paths;
 
 #[cfg(test)]
@@ -44,6 +45,7 @@ pub use output_policy::{
     OutputClassification, OutputRole,
 };
 pub use parse::parse_invocation;
+pub use side_outputs::unmodeled_side_output_flag;
 
 /// Supported compiler families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

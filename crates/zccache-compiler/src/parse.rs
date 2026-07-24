@@ -8,8 +8,8 @@ use zccache_core::NormalizedPath;
 
 use super::detect::{detect_family, is_source_file, MODULE_EXTENSIONS};
 use super::{
-    gnu_flag_takes_value, parse_msvc, CacheableCompilation, CompilerFamily, ParsedInvocation,
-    SourceMode,
+    gnu_flag_takes_value, parse_msvc, unmodeled_side_output_flag, CacheableCompilation,
+    CompilerFamily, ParsedInvocation, SourceMode,
 };
 
 /// Map a `-x <lang>` value to the corresponding source mode.
@@ -258,6 +258,12 @@ pub fn parse_invocation(compiler: &str, args: &[String]) -> ParsedInvocation {
     if source_files.is_empty() {
         return ParsedInvocation::NonCacheable {
             reason: "no source file found".to_string(),
+        };
+    }
+
+    if let Some(flag) = unmodeled_side_output_flag(args, false) {
+        return ParsedInvocation::NonCacheable {
+            reason: format!("unmodeled compiler side output requested by {flag}"),
         };
     }
 
