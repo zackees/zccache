@@ -118,6 +118,12 @@ jobs:
         shell: bash
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/integration
+          # This command recompiles its test harness with a feature set that
+          # differs from the no-run prebuild. Its Rust wrapper telemetry is
+          # build orchestration, not the daemon runtime exercised by the
+          # fixture (which owns an independent tempfile cache and audits it
+          # directly). Keep those rows out of the integration runtime audit.
+          ZCCACHE_DISABLE: "1"
         run: |
           unset ZCCACHE_CACHE_DIR
           soldr cargo test -p zccache-daemon-core --test legacy_path_validation -- --ignored --test-threads=1

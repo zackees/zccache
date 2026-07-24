@@ -85,7 +85,14 @@ impl Daemon {
         // `try_request_cache_hit` are in-memory-only). See
         // `crates/zccache/tests/daemon_rustc_restore_test.rs` for the same
         // pattern in another harness.
-        let depgraph_path = zccache_daemon_core::depgraph::depgraph_file_path();
+        // `bind_with_cache_dir` keeps this fixture independent of the
+        // process-global `ZCCACHE_CACHE_DIR`; restore from the same explicit
+        // daemon-state root rather than `depgraph_file_path()` (which reads
+        // that global environment). Otherwise the post-restart daemon sees
+        // an unrelated/empty graph and turns the warm multi request cold.
+        let depgraph_path =
+            zccache_daemon_core::core::config::depgraph_dir_from_cache_dir(&cache_root)
+                .join("depgraph.bin");
         let depgraph_load = zccache_daemon_core::depgraph::classify_load(&depgraph_path);
         if let zccache_daemon_core::depgraph::DepGraphLoadOutcome::Loaded { graph } = depgraph_load
         {
