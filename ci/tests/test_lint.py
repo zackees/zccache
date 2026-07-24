@@ -29,9 +29,11 @@ def test_dylint_workflow_rehydrates_the_pinned_toolchain_for_driver_builds():
     dylint_job = workflow.split("\n  dylint:\n", 1)[1].split("\n  msrv:\n", 1)[0]
 
     assert "Configure Dylint driver Cargo shim" in dylint_job
-    assert "export RUSTUP_TOOLCHAIN=nightly-2026-05-26" in dylint_job
     assert "nightly_bin=" in dylint_job
-    assert 'export PATH="%s:${PATH}"' in dylint_job
+    assert 'nightly_toolchain="$(basename "${nightly_bin}")"' in dylint_job
+    assert 'subcommand="ru""stup"' in dylint_job
+    assert 'export RUSTUP_TOOLCHAIN="%s"' in dylint_job
+    assert 'exec soldr "${subcommand}" run "%s" cargo "$@"' in dylint_job
     assert 'echo "DYLINT_CARGO_SHIM=${shim_dir}" >> "${GITHUB_ENV}"' in dylint_job
     assert 'export PATH="${DYLINT_CARGO_SHIM}:${PATH}"' in dylint_job
     assert "--target x86_64-unknown-linux-gnu" in dylint_job
