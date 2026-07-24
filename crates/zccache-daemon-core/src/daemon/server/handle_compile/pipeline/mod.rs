@@ -148,7 +148,9 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         client_env: client_env.as_deref(),
         compile_start,
         snap_clock,
-    }) {
+    })
+    .await
+    {
         return response;
     }
 

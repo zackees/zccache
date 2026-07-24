@@ -19,7 +19,7 @@ pub(super) struct RequestCacheHitProbe<'a> {
     pub(super) snap_clock: Clock,
 }
 
-pub(super) fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Option<Response> {
+pub(super) async fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Option<Response> {
     let RequestCacheHitProbe {
         state,
         sid,
@@ -115,6 +115,18 @@ pub(super) fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Option<R
         || !inputs_match
     {
         return None;
+    }
+
+    // A cold miss may have installed a provisional in-memory payload while
+    // its durable write is pending. It is immediately usable in-process; only
+    // wait when that entry is not yet visible, then re-lookup after publish.
+    if !state.artifacts.contains_key(artifact_key_hex) {
+        pending_writes::await_pending(
+            &state.pending_cache_writes,
+            artifact_key_hex,
+            pending_writes::PENDING_PAYLOAD_WAIT_TIMEOUT,
+        )
+        .await;
     }
 
     let hit_label = if same_root {
@@ -223,16 +235,19 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
     // Issue #610, DD-025: if a cold-miss for this artifact key is still
     // publishing to the in-memory cache, briefly wait so the materialize
     // step below hits instead of falling through to a recompile-on-race.
-    // Capped at PENDING_WAIT_TIMEOUT (5 ms) inside the helper; common case
-    // (no pending entry) returns immediately. `await_pending` clones the
-    // inner `Arc<Notify>` before yielding so no DashMap shard lock
+    // A provisional in-memory payload remains usable for this process while
+    // persistence is in flight. Wait only if it is not yet visible; then a
+    // completion can publish it before we re-lookup. `await_pending` clones
+    // the inner `Arc<Notify>` before yielding so no DashMap shard lock
     // straddles the await.
-    pending_writes::await_pending(
-        &state.pending_cache_writes,
-        &entry_artifact_key_hex,
-        pending_writes::PENDING_WAIT_TIMEOUT,
-    )
-    .await;
+    if !state.artifacts.contains_key(&entry_artifact_key_hex) {
+        pending_writes::await_pending(
+            &state.pending_cache_writes,
+            &entry_artifact_key_hex,
+            pending_writes::PENDING_PAYLOAD_WAIT_TIMEOUT,
+        )
+        .await;
+    }
 
     let secondary_output_dir = if is_rustc {
         output_path.parent().unwrap_or(cwd_path).into()
