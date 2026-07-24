@@ -93,7 +93,10 @@ jobs:
           # The isolated cache is seeded with build artifacts, but runtime
           # journals describe a prior job. Keep the artifacts warm while
           # ensuring the audit below evaluates only this job's behavior.
-          find "$SOLDR_CACHE_DIR/cache/zccache/daemon-state" -type f -path '*/logs/*.jsonl' -print -delete
+          journal_root="$SOLDR_CACHE_DIR/cache/zccache/daemon-state"
+          if [[ -d "$journal_root" ]]; then
+            find "$journal_root" -type f -path '*/logs/*.jsonl' -print -delete
+          fi
       - name: Test (full workspace)
         shell: bash
         env:
@@ -129,7 +132,10 @@ jobs:
           # orchestration, whereas the strict fixture below owns and audits
           # its own runtime cache. Preserve artifacts but exclude harness
           # telemetry from the integration runtime audit.
-          find "$SOLDR_CACHE_DIR/cache/zccache/daemon-state" -type f -path '*/logs/*.jsonl' -print -delete
+          journal_root="$SOLDR_CACHE_DIR/cache/zccache/daemon-state"
+          if [[ -d "$journal_root" ]]; then
+            find "$journal_root" -type f -path '*/logs/*.jsonl' -print -delete
+          fi
       - name: Strict artifact-layout validation
         shell: bash
         env:
