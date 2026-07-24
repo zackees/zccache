@@ -278,6 +278,15 @@ async fn multi_file_compile_hits_warm_after_restart() {
     // Run the production shutdown drain + persist the depgraph, exactly
     // like `DaemonServer::run`'s Shutdown arm does.
     quiesce_and_persist(&cold_server, index_writer_handle).await;
+    eprintln!(
+        "[diag] cold shutdown artifact_index_entries={} depgraph_contexts_with_artifact_key={}",
+        cold_server.state.artifact_store.len(),
+        cold_server
+            .state
+            .dep_graph
+            .load()
+            .contexts_with_artifact_key(),
+    );
     drop(cold_server);
 
     // Clear outputs so the warm assertion below can only pass via a real
