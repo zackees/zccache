@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, feat/dylint-nested-cache]
+    branches: [main]
     paths-ignore:
       - "**/*.md"
       - "LICENSE*"
