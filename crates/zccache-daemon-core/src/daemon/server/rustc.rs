@@ -140,11 +140,11 @@ pub(super) fn build_rustc_compile_context(
     // Issue #517: prefer `rustc -vV` output (~10 ms spawn) over a full
     // blake3 over the ~150 MB binary (~50-60 ms on Linux). The cache
     // is still keyed by the binary's (path, mtime, size); only the
-    // identity bytes that get hashed change. Failure falls through to
-    // the binary hash so cache keys stay well-defined for stub
-    // binaries (unit tests) and broken toolchains.
+    // identity bytes that get hashed change. A probe fallback is safe for
+    // this request but deliberately not memoized, so a transient failure
+    // cannot persist a second toolchain identity flavor (#1167).
     let compiler_hash = compiler_hash_cache
-        .get_or_hash_with(&compilation.compiler, hash_rustc_identity)
+        .get_or_hash_rustc_identity(&compilation.compiler)
         .unwrap_or(COMPILER_HASH_UNAVAILABLE);
 
     let rustc_ctx = crate::depgraph::RustcCompileContext::from_parsed_args(
@@ -181,7 +181,7 @@ pub(super) async fn build_rustc_compile_context_async(
     let rustc_args = crate::depgraph::parse_rustc_args(&compilation.original_args, cwd);
 
     let compiler_hash = compiler_hash_cache
-        .get_or_hash_with_async(&compilation.compiler, hash_rustc_identity_async)
+        .get_or_hash_rustc_identity_async(&compilation.compiler)
         .await
         .unwrap_or(COMPILER_HASH_UNAVAILABLE);
 

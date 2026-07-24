@@ -259,6 +259,79 @@ fn hash_rustc_identity_falls_back_to_file_hash_when_spawn_fails() {
 
 // ── Issue #517: persisted compiler hash cache ───────────────────────────
 
+/// #1167: a transient `-vV` failure may use a file hash for the current
+/// request, but it must not be memoized. The next request retries and a good
+/// probe converges on the durable `-vV` identity instead of pinning a second
+/// cache-key flavor.
+#[test]
+fn rustc_identity_fallback_is_not_cached_and_next_success_converges() {
+    let tmp = tempfile::tempdir().unwrap();
+    let compiler = tmp.path().join("rustc.exe");
+    std::fs::write(&compiler, b"fake rustc").unwrap();
+    let cache = CompilerHashCache::new();
+    let fallback = ContentHash::from_bytes([1; 32]);
+    let verified = ContentHash::from_bytes([2; 32]);
+
+    assert_eq!(
+        cache.get_or_hash_rustc_with(&compiler, |_| Some(RustcIdentity::FileFallback(fallback))),
+        Some(fallback),
+    );
+    assert_eq!(
+        cache.len(),
+        1,
+        "fallback marker keeps repeated failures stable"
+    );
+
+    assert_eq!(
+        cache.get_or_hash_rustc_with(&compiler, |_| Some(RustcIdentity::VerifiedVv(verified))),
+        Some(verified),
+    );
+    assert_eq!(cache.len(), 1, "verified -vV identity must be memoized");
+
+    let calls = AtomicUsize::new(0);
+    assert_eq!(
+        cache.get_or_hash_rustc_with(&compiler, |_| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Some(RustcIdentity::FileFallback(fallback))
+        }),
+        Some(verified),
+    );
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        0,
+        "verified identity must win"
+    );
+}
+
+/// The durable `-vV` preference survives a daemon restart. This is the
+/// convergence guarantee for cache-sharing runners: a one-off later timeout
+/// cannot replace the already proven identity with a file-hash flavor.
+#[test]
+fn rustc_verified_identity_persists_across_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let compiler = tmp.path().join("rustc.exe");
+    let snapshot = tmp.path().join("compiler_hash.bin");
+    std::fs::write(&compiler, b"fake rustc").unwrap();
+    let verified = ContentHash::from_bytes([3; 32]);
+
+    let cache = CompilerHashCache::new();
+    cache.get_or_hash_rustc_with(&compiler, |_| Some(RustcIdentity::VerifiedVv(verified)));
+    cache.save_to_disk(&snapshot).unwrap();
+
+    let restored = CompilerHashCache::load_from_disk(&snapshot).unwrap();
+    let calls = AtomicUsize::new(0);
+    assert_eq!(
+        restored.get_or_hash_rustc_with(&compiler, |_| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Some(RustcIdentity::FileFallback(ContentHash::from_bytes(
+                [4; 32],
+            )))
+        }),
+        Some(verified),
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+}
+
 #[test]
 fn compiler_hash_cache_save_then_load_roundtrip_preserves_entries() {
     let tmp = tempfile::tempdir().unwrap();
@@ -478,6 +551,7 @@ fn compiler_hash_cache_merge_from_drains_other() {
             mtime,
             size: 1,
             hash: ContentHash::from_bytes([1; 32]),
+            flavor: CompilerIdentityFlavor::Generic,
         },
     );
 
@@ -488,6 +562,7 @@ fn compiler_hash_cache_merge_from_drains_other() {
             mtime,
             size: 1,
             hash: ContentHash::from_bytes([2; 32]),
+            flavor: CompilerIdentityFlavor::Generic,
         },
     );
 

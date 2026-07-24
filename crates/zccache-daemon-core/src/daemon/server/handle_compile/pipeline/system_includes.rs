@@ -27,6 +27,9 @@ const SYSTEM_INCLUDE_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duratio
 
 pub(super) struct SystemIncludesOutcome {
     pub(super) includes: Vec<NormalizedPath>,
+    /// A C/C++ probe ran but did not yield any include roots. This is an
+    /// unknown/degraded result, not proof that the compiler has no defaults.
+    pub(super) empty_discovery: bool,
     pub(super) system_includes_ns: u64,
     pub(super) system_watch_ns: u64,
 }
@@ -55,8 +58,8 @@ pub(super) async fn discover_system_includes(
     let t_system_includes = want_rust_miss_profile.then(std::time::Instant::now);
     let compiler_family = crate::compiler::detect_family(&compiler.to_string_lossy());
     let needs_discovery = compiler_family.needs_system_include_discovery();
-    let system_includes = if !needs_discovery {
-        Vec::new()
+    let (system_includes, empty_discovery) = if !needs_discovery {
+        (Vec::new(), false)
     } else {
         // Issue #541 option B: for the clang family the daemon prefers
         // `clang -###` discovery (~3-5 ms) over the slower `-v -E`
@@ -72,7 +75,7 @@ pub(super) async fn discover_system_includes(
             cache.get(compiler).map(|paths| paths.to_vec())
         };
         if let Some(paths) = cached {
-            paths
+            (paths, false)
         } else {
             let discovered =
                 discover_system_include_paths(compiler, lineage, compiler_priority, use_fast).await;
@@ -82,11 +85,12 @@ pub(super) async fn discover_system_includes(
             // `tokio::task::spawn_blocking` and any failure is logged but
             // does not surface to the compile request (the in-memory L1
             // entry is still authoritative for this daemon's lifetime).
-            let (resolved, inserted_snapshot) = {
+            let (resolved, inserted_snapshot, empty_discovery) = {
                 let mut cache = state.system_includes.lock().await;
                 if let Some(paths) = cache.get(compiler) {
-                    (paths.to_vec(), None)
-                } else if let Some(discovered) = discovered {
+                    (paths.to_vec(), None, false)
+                } else if discovery_result_is_cacheable(discovered.as_deref()) {
+                    let discovered = discovered.expect("checked non-empty discovery result");
                     cache.insert(compiler.clone(), discovered);
                     let paths = cache
                         .get(compiler)
@@ -101,11 +105,19 @@ pub(super) async fn discover_system_includes(
                     // practice) — orders of magnitude cheaper than the
                     // `<compiler> -###` / `-v -E` spawn we just paid for.
                     let snapshot = cache.clone();
-                    (paths, Some(snapshot))
+                    (paths, Some(snapshot), false)
+                } else if discovered.is_some() {
+                    // Issue #1167: a process that succeeds but reports zero
+                    // paths is not a stable compiler property. Never put it
+                    // in L1/L2; the next request must probe again.
+                    (Vec::new(), None, true)
                 } else {
-                    (Vec::new(), None)
+                    (Vec::new(), None, false)
                 }
             };
+            if empty_discovery {
+                warn_empty_system_include_discovery(compiler);
+            }
             // Issue #784 phase 2c invariant: don't write-through until
             // the on-disk snapshot has been merged into the live cache.
             // Saving a subset over the loaded-from-disk superset would
@@ -125,7 +137,7 @@ pub(super) async fn discover_system_includes(
                     });
                 }
             }
-            resolved
+            (resolved, empty_discovery)
         }
     };
     let system_includes_ns = t_system_includes
@@ -141,9 +153,34 @@ pub(super) async fn discover_system_includes(
 
     SystemIncludesOutcome {
         includes: system_includes,
+        empty_discovery,
         system_includes_ns,
         system_watch_ns,
     }
+}
+
+/// Record an ambiguous C/C++ probe result. Repeated events deliberately stay
+/// loud: they indicate an unhealthy wrapper, shim, or security product rather
+/// than a one-time compiler property.
+fn warn_empty_system_include_discovery(compiler: &NormalizedPath) {
+    tracing::warn!(
+        event = "system_include_discovery_empty",
+        compiler = %compiler.display(),
+        "compiler system-include discovery returned no paths; bypassing the compile cache and retrying discovery on the next request"
+    );
+    crate::core::lifecycle::write_event(
+        crate::core::lifecycle::EVENT_SYSTEM_INCLUDE_DISCOVERY_EMPTY,
+        serde_json::json!({
+            "compiler": compiler.display().to_string(),
+            "reason": "probe succeeded but yielded zero system include paths",
+        }),
+    );
+}
+
+/// Only a non-empty C/C++ probe result proves an include-root set that can be
+/// safely reused by future requests or persisted across daemon restarts.
+fn discovery_result_is_cacheable(paths: Option<&[NormalizedPath]>) -> bool {
+    paths.is_some_and(|paths| !paths.is_empty())
 }
 
 async fn discover_system_include_paths(
@@ -210,4 +247,23 @@ async fn run_discovery_command(
         SYSTEM_INCLUDE_DISCOVERY_TIMEOUT,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_successful_discovery_is_not_cacheable() {
+        // Issue #1167: accepting this result would persist an incompatible
+        // context key until the compiler binary itself changes.
+        assert!(!discovery_result_is_cacheable(Some(&[])));
+        assert!(!discovery_result_is_cacheable(None));
+    }
+
+    #[test]
+    fn nonempty_discovery_is_cacheable() {
+        let paths = [NormalizedPath::new("/toolchain/include")];
+        assert!(discovery_result_is_cacheable(Some(&paths)));
+    }
 }

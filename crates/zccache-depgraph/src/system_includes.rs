@@ -266,10 +266,12 @@ impl SystemIncludeCache {
 
     /// Look up cached system include paths for a compiler, verifying stat.
     ///
-    /// Returns `None` when either the cache has no entry OR the compiler
-    /// binary's (mtime, size) no longer matches the entry's fingerprint.
-    /// Stat errors (e.g., compiler removed) also return `None` so the
-    /// caller falls through to rediscovery.
+    /// Returns `None` when either the cache has no entry, its path list is
+    /// empty, OR the compiler binary's (mtime, size) no longer matches the
+    /// entry's fingerprint. An empty probe result is ambiguous rather than
+    /// proof that a compiler has no defaults, so it must force rediscovery.
+    /// Stat errors (e.g., compiler removed) also return `None` so the caller
+    /// falls through to rediscovery.
     #[must_use]
     pub fn get(&self, compiler: &Path) -> Option<&[NormalizedPath]> {
         let key = NormalizedPath::new(compiler);
@@ -277,7 +279,7 @@ impl SystemIncludeCache {
         let metadata = std::fs::metadata(compiler).ok()?;
         let mtime = metadata.modified().ok()?;
         let size = metadata.len();
-        if entry.mtime == mtime && entry.size == size {
+        if !entry.paths.is_empty() && entry.mtime == mtime && entry.size == size {
             Some(entry.paths.as_slice())
         } else {
             None
@@ -287,10 +289,15 @@ impl SystemIncludeCache {
     /// Store discovered system include paths for a compiler.
     ///
     /// Captures the compiler binary's (mtime, size) at insert time so a
-    /// subsequent `get` can stat-verify. If the stat fails (compiler
+    /// subsequent `get` can stat-verify. Empty results are deliberately not
+    /// cached: an apparently successful probe with no paths is degraded and
+    /// must be retried on the next compile. If the stat fails (compiler
     /// removed mid-insert), the entry is silently dropped — better to
     /// re-discover than to cache without a valid fingerprint.
     pub fn insert(&mut self, compiler: NormalizedPath, paths: Vec<NormalizedPath>) {
+        if paths.is_empty() {
+            return;
+        }
         let Ok(metadata) = std::fs::metadata(compiler.as_path()) else {
             return;
         };
@@ -314,10 +321,11 @@ impl SystemIncludeCache {
     {
         let compiler_key = NormalizedPath::new(compiler);
         let stat_match = self.cache.get(&compiler_key).is_some_and(|entry| {
-            std::fs::metadata(compiler)
-                .ok()
-                .and_then(|m| m.modified().ok().map(|mt| (mt, m.len())))
-                .is_some_and(|(mt, size)| mt == entry.mtime && size == entry.size)
+            !entry.paths.is_empty()
+                && std::fs::metadata(compiler)
+                    .ok()
+                    .and_then(|m| m.modified().ok().map(|mt| (mt, m.len())))
+                    .is_some_and(|(mt, size)| mt == entry.mtime && size == entry.size)
         });
         if !stat_match {
             let paths = discover(compiler);
@@ -335,7 +343,9 @@ impl SystemIncludeCache {
     }
 
     /// Drain entries from a freshly loaded `SystemIncludeCache` into
-    /// `self` using `HashMap::extend`.
+    /// `self` using `HashMap::extend`. Empty entries from snapshots written
+    /// by older releases are discarded because they are not valid reusable
+    /// discovery results.
     ///
     /// Issue #784 phase 2c: lets a background `spawn_blocking` task
     /// load the on-disk snapshot AFTER the daemon has written its
@@ -346,7 +356,12 @@ impl SystemIncludeCache {
     /// rejects a stale `(mtime, size)` before trusting the cached
     /// paths, so a partially-loaded snapshot cannot poison results).
     pub fn merge_from(&mut self, other: Self) {
-        self.cache.extend(other.cache);
+        self.cache.extend(
+            other
+                .cache
+                .into_iter()
+                .filter(|(_, entry)| !entry.paths.is_empty()),
+        );
     }
 
     /// Number of cached entries.
@@ -377,6 +392,7 @@ impl SystemIncludeCache {
         let entries: Vec<(NormalizedPath, SystemIncludeEntry)> = self
             .cache
             .iter()
+            .filter(|(_, entry)| !entry.paths.is_empty())
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
@@ -458,7 +474,9 @@ impl SystemIncludeCache {
             HashMap::with_capacity(snapshot.entries.len());
         let entry_count = snapshot.entries.len();
         for (key, value) in snapshot.entries {
-            cache.insert(key, value);
+            if !value.paths.is_empty() {
+                cache.insert(key, value);
+            }
         }
         tracing::info!(
             path = %path.display(),
@@ -623,6 +641,34 @@ End of search list.
         let cache = SystemIncludeCache::new();
         cache.save_to_disk(&snapshot).unwrap();
         assert!(!snapshot.exists());
+    }
+
+    #[test]
+    fn empty_discovery_entries_are_never_reused_or_persisted() {
+        // Issue #1167: snapshots from older releases may contain an empty
+        // result. It is degraded probe state, not a reusable assertion that
+        // the compiler has no system includes.
+        let tmp = tempfile::tempdir().unwrap();
+        let compiler = tmp.path().join("clang++");
+        let snapshot = tmp.path().join("system_includes.bin");
+        touch(&compiler, b"#!/bin/sh\n# compiler\n");
+        let metadata = std::fs::metadata(&compiler).unwrap();
+        let mut cache = SystemIncludeCache::new();
+        cache.cache.insert(
+            NormalizedPath::new(&compiler),
+            SystemIncludeEntry {
+                mtime: metadata.modified().unwrap(),
+                size: metadata.len(),
+                paths: Vec::new(),
+            },
+        );
+
+        assert!(cache.get(&compiler).is_none());
+        cache.save_to_disk(&snapshot).unwrap();
+        assert!(
+            !snapshot.exists(),
+            "empty discoveries must not be written back to disk"
+        );
     }
 
     #[test]
