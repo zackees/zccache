@@ -46,9 +46,10 @@ pub struct ZccacheService {
     daemon: Arc<EmbeddedDaemon>,
     shutdown: Arc<AtomicBool>,
     /// Snapshot of the host-supplied cancellation token captured at
-    /// [`ZccacheService::start`]. Cloned per call into the `tokio::select!`
-    /// races inside [`ZccacheService::compile`] / [`ZccacheService::flush`].
-    /// `None` preserves the pre-#923 behavior where only
+    /// [`ZccacheService::start`]. Compile calls race it via `tokio::select!`;
+    /// flush checks only whether it was already latched before persistence
+    /// begins, then keeps ownership until the flush completes. `None`
+    /// preserves the pre-#923 behavior where only
     /// `shutdown(ShutdownMode::Force)` aborts in-flight work.
     cancellation: Option<CancellationToken>,
     /// RAII handle for the optional host-in-flight counter registration
@@ -74,12 +75,14 @@ pub struct ZccacheConfig {
     pub runtime: RuntimeHooks,
     /// Optional cooperative cancellation token (zccache#923).
     ///
-    /// When set, every long-running embedded-service operation (compile
-    /// dispatch, flush) races the token via `tokio::select!`. If the
-    /// token is cancelled before the operation finishes, the operation
-    /// returns [`EmbeddedError::Cancelled`] and the suspended future is
-    /// dropped — which in turn drops any [`tokio::process::Child`]
-    /// configured with `kill_on_drop(true)`, killing the subprocess.
+    /// Compile dispatch races the token via `tokio::select!`. If the token is
+    /// cancelled before a compile finishes, the operation returns
+    /// [`EmbeddedError::Cancelled`] and the suspended future is dropped —
+    /// which in turn drops any [`tokio::process::Child`] configured with
+    /// `kill_on_drop(true)`, killing the subprocess. Flush checks for an
+    /// already-cancelled token before entering persistence, but an accepted
+    /// flush is owned to completion so cancellation cannot strand a partial
+    /// checkpoint.
     ///
     /// `None` preserves the pre-#923 behavior: the service participates
     /// in cancellation only via `shutdown(ShutdownMode::Force)`, which
@@ -315,6 +318,57 @@ pub struct FlushReport {
     pub metadata_entries: u64,
 }
 
+/// Detailed report returned by [`ZccacheService::flush_detailed`].
+///
+/// This separate additive type preserves the source-compatible shape of the
+/// original public [`FlushReport`] for downstream 1.x users that construct or
+/// exhaustively destructure it.
+#[derive(Debug, Clone)]
+pub struct DetailedFlushReport {
+    pub pending_writes_drained: bool,
+    pub index_writer_drained: bool,
+    pub steps: Vec<FlushStepReport>,
+    pub artifact_entries: u64,
+    pub metadata_entries: u64,
+}
+
+impl DetailedFlushReport {
+    /// `true` only when every queued write, index update, and persistence step
+    /// completed successfully. Regular flushes bound acquisition of the
+    /// publication barrier; once persistence starts its workers are awaited
+    /// to completion.
+    pub fn is_complete(&self) -> bool {
+        self.pending_writes_drained
+            && self.index_writer_drained
+            && self
+                .steps
+                .iter()
+                .all(|step| matches!(step.outcome, FlushStepOutcome::Completed))
+    }
+}
+
+/// Detailed report returned by [`ZccacheService::shutdown_detailed`].
+#[derive(Debug, Clone)]
+pub struct DetailedShutdownReport {
+    pub mode: ShutdownMode,
+    pub flushed: DetailedFlushReport,
+}
+
+/// Outcome of one cache-persistence step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FlushStepOutcome {
+    Completed,
+    Failed(String),
+    TimedOut,
+}
+
+/// Named result for one cache-persistence step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlushStepReport {
+    pub step: String,
+    pub outcome: FlushStepOutcome,
+}
+
 /// Scope of a host-requested disk-maintenance pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiskMaintenanceKind {
@@ -322,6 +376,16 @@ pub enum DiskMaintenanceKind {
     Pressure,
     /// Also expire entries older than 30 days.
     Full,
+}
+
+/// Selects who schedules periodic disk-maintenance passes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaintenanceOwnership {
+    /// The embedded service runs its own pressure and daily full passes.
+    Embedded,
+    /// The embedding host calls [`ZccacheService::maintain_disk`] from its
+    /// existing lifecycle scheduler.
+    Host,
 }
 
 /// Pressure tier observed during a disk-maintenance pass.
@@ -377,13 +441,14 @@ impl ZccacheService {
     /// Start an in-process zccache service on the caller's Tokio runtime.
     ///
     /// When `config.runtime.handle` is `Some`, persistent background tasks
-    /// owned by the embedded daemon (currently the artifact-index writer)
-    /// spawn via the supplied [`tokio::runtime::Handle`]. When `None`, they
-    /// spawn on the ambient runtime — which works because this function is
-    /// `async` and therefore runs inside one. The explicit form is the
-    /// zccache#922 contract for host daemons that want to assert all
-    /// embedded work shares their runtime (for tokio-console attach unity,
-    /// for graceful-shutdown signalling, etc.).
+    /// owned by the embedded daemon (the artifact-index writer plus memory
+    /// and disk maintenance loops) spawn via the supplied
+    /// [`tokio::runtime::Handle`]. When `None`, they spawn on the ambient
+    /// runtime — which works because this function is `async` and therefore
+    /// runs inside one. The explicit form is the zccache#922 contract for
+    /// host daemons that want to assert all embedded work shares their
+    /// runtime (for tokio-console attach unity, graceful-shutdown signalling,
+    /// and related diagnostics).
     pub async fn start(config: ZccacheConfig) -> Result<Self> {
         Self::start_with_disk_limits(config, DiskCacheLimits::default()).await
     }
@@ -397,6 +462,20 @@ impl ZccacheService {
         config: ZccacheConfig,
         disk_limits: DiskCacheLimits,
     ) -> Result<Self> {
+        Self::start_with_disk_limits_and_maintenance(
+            config,
+            disk_limits,
+            MaintenanceOwnership::Embedded,
+        )
+        .await
+    }
+
+    /// Start an embedded service whose periodic maintenance owner is explicit.
+    pub async fn start_with_disk_limits_and_maintenance(
+        config: ZccacheConfig,
+        disk_limits: DiskCacheLimits,
+        maintenance_ownership: MaintenanceOwnership,
+    ) -> Result<Self> {
         let endpoint = embedded_endpoint(&config.host);
         let cache_root =
             crate::core::config::effective_cache_root_from_top_level(&config.cache_root);
@@ -405,11 +484,12 @@ impl ZccacheService {
             disk_limits.max_cache_percent,
         )
         .map_err(EmbeddedError::Start)?;
-        let daemon = EmbeddedDaemon::start(
+        let daemon = EmbeddedDaemon::start_with_maintenance(
             endpoint,
             cache_root,
             config.runtime.handle.clone(),
             maintenance_policy,
+            maintenance_ownership == MaintenanceOwnership::Embedded,
         )
         .await
         .map_err(|err| EmbeddedError::Start(err.to_string()))?;
@@ -591,10 +671,11 @@ impl ZccacheService {
 
     /// Run disk maintenance against this service's exact configured cache root.
     ///
-    /// The embedded service also runs pressure checks every five minutes and a
-    /// persisted full-age pass every 24 hours. Hosts can call this method after
-    /// their own activity or disk-pressure signal without scanning sibling
-    /// product roots.
+    /// [`MaintenanceOwnership::Embedded`] also runs pressure checks every five
+    /// minutes and a persisted full-age pass every 24 hours.
+    /// [`MaintenanceOwnership::Host`] suppresses that scheduler so the host
+    /// calls this method from its own lifecycle loop. Neither form scans
+    /// sibling product roots.
     pub async fn maintain_disk(
         &self,
         kind: DiskMaintenanceKind,
@@ -617,13 +698,12 @@ impl ZccacheService {
 
     /// Flush pending embedded service state to disk.
     ///
-    /// Honors [`ZccacheConfig::cancellation`] (zccache#923) the same way
-    /// [`Self::compile`] does: a cancel mid-flush returns
-    /// [`EmbeddedError::Cancelled`] and drops the in-progress flush
-    /// future. The artifact-index writer task continues to drain on its
-    /// next normal tick; nothing on disk is left half-written because
-    /// the flush calls down to atomic batch commits.
-    pub async fn flush(&self) -> Result<FlushReport> {
+    /// A token cancelled before the flush starts returns
+    /// [`EmbeddedError::Cancelled`]. Once persistence begins it remains owned
+    /// until completion: dropping an awaited `spawn_blocking` join does not
+    /// cancel the disk write and could let an older checkpoint race a later
+    /// archive.
+    async fn flush_internal(&self) -> Result<EmbeddedFlushReport> {
         if self.shutdown.load(Ordering::Acquire) {
             return Err(EmbeddedError::ShutDown);
         }
@@ -632,18 +712,7 @@ impl ZccacheService {
                 return Err(EmbeddedError::Cancelled);
             }
         }
-        let flush_future = self.daemon.flush();
-        let report = match &self.cancellation {
-            Some(token) => {
-                let cancelled = token.cancelled();
-                tokio::select! {
-                    biased;
-                    () = cancelled => return Err(EmbeddedError::Cancelled),
-                    report = flush_future => report,
-                }
-            }
-            None => flush_future.await,
-        };
+        let report = self.daemon.flush().await;
         // zccache#926: drain pending audit events to disk along with
         // the cache state. Best-effort — a failure to flush the audit
         // sink does not block the embedded service flush from
@@ -652,7 +721,22 @@ impl ZccacheService {
         if let Some(sink) = &self.audit_sink {
             let _ = sink.flush().await;
         }
-        Ok(FlushReport::from_report(report))
+        Ok(report)
+    }
+
+    pub async fn flush(&self) -> Result<FlushReport> {
+        self.flush_internal().await.map(FlushReport::from_report)
+    }
+
+    /// Flush pending embedded state and report every durability phase.
+    ///
+    /// Persistence workers remain owned until they complete. A non-shutdown
+    /// flush can still return an incomplete report if its publication barrier
+    /// cannot be acquired before the safety deadline.
+    pub async fn flush_detailed(&self) -> Result<DetailedFlushReport> {
+        self.flush_internal()
+            .await
+            .map(DetailedFlushReport::from_report)
     }
 
     /// Shut down the service and flush relevant persisted state.
@@ -660,7 +744,7 @@ impl ZccacheService {
     /// `ShutdownMode::Graceful` waits for the durable audit sink to
     /// drain before returning. `ShutdownMode::Force` does not — the
     /// host signalled "stop now, lost events are acceptable."
-    pub async fn shutdown(self, mode: ShutdownMode) -> Result<ShutdownReport> {
+    async fn shutdown_internal(self, mode: ShutdownMode) -> Result<EmbeddedFlushReport> {
         if self.shutdown.swap(true, Ordering::AcqRel) {
             return Err(EmbeddedError::ShutDown);
         }
@@ -673,9 +757,23 @@ impl ZccacheService {
                 let _ = sink.shutdown().await;
             }
         }
+        Ok(report)
+    }
+
+    pub async fn shutdown(self, mode: ShutdownMode) -> Result<ShutdownReport> {
+        let report = self.shutdown_internal(mode).await?;
         Ok(ShutdownReport {
             mode,
             flushed: FlushReport::from_report(report),
+        })
+    }
+
+    /// Shut down the service and report every durability phase.
+    pub async fn shutdown_detailed(self, mode: ShutdownMode) -> Result<DetailedShutdownReport> {
+        let report = self.shutdown_internal(mode).await?;
+        Ok(DetailedShutdownReport {
+            mode,
+            flushed: DetailedFlushReport::from_report(report),
         })
     }
 }
@@ -729,6 +827,66 @@ impl FlushReport {
     }
 }
 
+#[cfg(test)]
+mod flush_report_compatibility_tests {
+    use super::FlushReport;
+
+    #[test]
+    fn legacy_flush_report_literal_and_exhaustive_pattern_still_compile() {
+        let report = FlushReport {
+            pending_writes_drained: true,
+            artifact_entries: 2,
+            metadata_entries: 3,
+        };
+        let FlushReport {
+            pending_writes_drained,
+            artifact_entries,
+            metadata_entries,
+        } = report;
+        assert!(pending_writes_drained);
+        assert_eq!((artifact_entries, metadata_entries), (2, 3));
+    }
+}
+
+impl DetailedFlushReport {
+    fn from_report(report: EmbeddedFlushReport) -> Self {
+        debug_assert_eq!(report.is_complete(), {
+            report.pending_writes_drained
+                && report.index_writer_drained
+                && report.steps.iter().all(|step| {
+                    matches!(
+                        step.outcome,
+                        crate::daemon::server::FlushStepOutcome::Completed
+                    )
+                })
+        });
+        Self {
+            pending_writes_drained: report.pending_writes_drained,
+            index_writer_drained: report.index_writer_drained,
+            steps: report
+                .steps
+                .into_iter()
+                .map(|step| FlushStepReport {
+                    step: step.step,
+                    outcome: match step.outcome {
+                        crate::daemon::server::FlushStepOutcome::Completed => {
+                            FlushStepOutcome::Completed
+                        }
+                        crate::daemon::server::FlushStepOutcome::Failed(error) => {
+                            FlushStepOutcome::Failed(error)
+                        }
+                        crate::daemon::server::FlushStepOutcome::TimedOut => {
+                            FlushStepOutcome::TimedOut
+                        }
+                    },
+                })
+                .collect(),
+            artifact_entries: report.artifact_entries,
+            metadata_entries: report.metadata_entries,
+        }
+    }
+}
+
 impl DiskMaintenanceReport {
     fn from_report(report: InternalDiskMaintenanceReport) -> Self {
         Self {
@@ -775,568 +933,5 @@ fn sanitize_identity(value: &str) -> String {
 }
 
 #[cfg(test)]
-mod streaming_tests {
-    //! zccache#937: tests for the MVP streaming compile API. The
-    //! producer side is currently a pass-through over the buffered
-    //! `compile`; these tests pin the public contract so the
-    //! upcoming daemon-pipeline refactor (the cross-cutting piece
-    //! tracked in #937) can swap the producer without changing the
-    //! consumer-visible event order.
-
-    use super::*;
-    use tempfile::TempDir;
-
-    async fn start_test_service(temp: &TempDir) -> ZccacheService {
-        let mut audit = AuditConfig::default();
-        audit.mode = crate::audit::AuditMode::Off;
-        ZccacheService::start(ZccacheConfig {
-            host: HostIdentity {
-                product: "streaming-test".into(),
-                instance_id: uuid::Uuid::new_v4().to_string(),
-                workspace_id: "streaming-workspace".into(),
-            },
-            cache_root: temp.path().join("cache").into(),
-            audit,
-            limits: ServiceLimits::default(),
-            runtime: RuntimeHooks::default(),
-            cancellation: None,
-        })
-        .await
-        .expect("service start")
-    }
-
-    #[test]
-    fn compile_chunk_done_carries_outcome_fields() {
-        // Pin the public shape of the terminal Done event.
-        let done = CompileChunk::Done {
-            exit_code: 0,
-            cached: true,
-            cache_outcome: CacheOutcome::Hit,
-            compile_id: "test-id".to_string(),
-        };
-        let CompileChunk::Done {
-            exit_code,
-            cached,
-            cache_outcome,
-            compile_id,
-        } = done
-        else {
-            panic!("constructor must produce a Done variant");
-        };
-        assert_eq!(exit_code, 0);
-        assert!(cached);
-        assert_eq!(cache_outcome, CacheOutcome::Hit);
-        assert_eq!(compile_id, "test-id");
-    }
-
-    #[test]
-    fn compile_chunk_stdout_stderr_carry_bytes() {
-        match CompileChunk::Stdout(b"hello".to_vec()) {
-            CompileChunk::Stdout(bytes) => assert_eq!(bytes, b"hello"),
-            other => panic!("expected Stdout, got {other:?}"),
-        }
-        match CompileChunk::Stderr(b"warn".to_vec()) {
-            CompileChunk::Stderr(bytes) => assert_eq!(bytes, b"warn"),
-            other => panic!("expected Stderr, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn cache_hit_replays_byte_identical_streams() {
-        let Some(compiler) = crate::test_support::find_clang() else {
-            return;
-        };
-        let temp = TempDir::new().expect("tempdir");
-        let source = temp.path().join("warning.c");
-        let output = temp.path().join("warning.o");
-        std::fs::write(
-            &source,
-            "#warning stream-replay\nint value(void) { return 1; }\n",
-        )
-        .expect("source");
-        let service = start_test_service(&temp).await;
-        let request = CompileRequest {
-            audit: AuditContext::new(
-                crate::audit::AuditId::new("stream-run").expect("id"),
-                crate::audit::AuditId::new("stream-trace").expect("id"),
-            ),
-            compiler,
-            args: vec![
-                "-c".into(),
-                source.to_string_lossy().into_owned(),
-                "-o".into(),
-                output.to_string_lossy().into_owned(),
-            ],
-            cwd: temp.path().into(),
-            env: Vec::new(),
-            stdin: Vec::new(),
-        };
-
-        let mut miss_stdout = Vec::new();
-        let mut miss_stderr = Vec::new();
-        let mut miss_cached = None;
-        service
-            .compile_streaming(request.clone(), |chunk| match chunk {
-                CompileChunk::Stdout(bytes) => miss_stdout.extend(bytes),
-                CompileChunk::Stderr(bytes) => miss_stderr.extend(bytes),
-                CompileChunk::Done { cached, .. } => miss_cached = Some(cached),
-            })
-            .await
-            .expect("cache miss compile");
-        assert_eq!(miss_cached, Some(false));
-        assert!(!miss_stderr.is_empty());
-
-        std::fs::remove_file(&output).expect("remove first output");
-        let mut hit_stdout = Vec::new();
-        let mut hit_stderr = Vec::new();
-        let mut hit_cached = None;
-        service
-            .compile_streaming(request, |chunk| match chunk {
-                CompileChunk::Stdout(bytes) => hit_stdout.extend(bytes),
-                CompileChunk::Stderr(bytes) => hit_stderr.extend(bytes),
-                CompileChunk::Done { cached, .. } => hit_cached = Some(cached),
-            })
-            .await
-            .expect("cache hit compile");
-
-        assert_eq!(hit_cached, Some(true));
-        assert_eq!(hit_stdout, miss_stdout);
-        assert_eq!(hit_stderr, miss_stderr);
-        assert!(output.exists(), "cache hit must restore the output file");
-        service
-            .shutdown(ShutdownMode::Graceful)
-            .await
-            .expect("shutdown");
-    }
-}
-
-#[cfg(test)]
-mod cancellation_tests {
-    //! zccache#923: tests that `ZccacheConfig::cancellation`, when
-    //! supplied, aborts `compile()` and `flush()` cooperatively via a
-    //! `tokio::select!` race rather than waiting for the inner future
-    //! to finish.
-
-    use super::*;
-    use std::path::PathBuf;
-    use tempfile::TempDir;
-    use tokio_util::sync::CancellationToken;
-
-    fn fake_compile_request() -> CompileRequest {
-        // Compiler path that does not exist on disk — the embedded
-        // daemon's spawn step is what we're trying to *not* run, so any
-        // unreachable PathBuf works. The cancellation race fires before
-        // the spawn even attempts to launch the process.
-        CompileRequest {
-            audit: AuditContext::new(
-                crate::audit::AuditId::new("test-run").expect("non-empty"),
-                crate::audit::AuditId::new("test-trace").expect("non-empty"),
-            ),
-            compiler: PathBuf::from("/nonexistent/compiler-that-never-runs").into(),
-            args: vec!["--version".into()],
-            cwd: std::env::current_dir().expect("cwd").into(),
-            env: Vec::new(),
-            stdin: Vec::new(),
-        }
-    }
-
-    async fn start_service_with_token(
-        temp: &TempDir,
-        token: Option<CancellationToken>,
-        instance_id: &str,
-    ) -> Result<ZccacheService> {
-        // These tests exercise cancellation/runtime plumbing, not the
-        // audit sink, so disable audit (`AuditMode::Off`) to avoid the
-        // production `output_root` validation introduced after the
-        // tests were written. The audit sink is exercised in
-        // `audit_writer.rs` tests with a proper tempdir-backed
-        // `output_root`.
-        let mut audit = AuditConfig::default();
-        audit.mode = crate::audit::AuditMode::Off;
-        ZccacheService::start(ZccacheConfig {
-            host: HostIdentity {
-                product: "zccache-test".into(),
-                instance_id: instance_id.into(),
-                workspace_id: instance_id.into(),
-            },
-            cache_root: temp.path().join("zccache").into(),
-            audit,
-            limits: ServiceLimits::default(),
-            runtime: RuntimeHooks::default(),
-            cancellation: token,
-        })
-        .await
-    }
-
-    #[tokio::test]
-    async fn precancelled_token_returns_cancelled_immediately() {
-        // Fast-path: token cancelled before the compile call lands. We
-        // should never reach the daemon's spawn step. The acceptance
-        // criterion in zccache#923 — "Err(Cancelled) from compile() so
-        // soldr's request handler can short-circuit" — is exactly this
-        // path.
-        let temp = TempDir::new().expect("temp cache root");
-        let token = CancellationToken::new();
-        token.cancel();
-        let service = start_service_with_token(&temp, Some(token), "precancel")
-            .await
-            .expect("service start");
-
-        let outcome = service.compile(fake_compile_request()).await;
-        assert!(
-            matches!(outcome, Err(EmbeddedError::Cancelled)),
-            "pre-cancelled token must short-circuit compile(), got {outcome:?}"
-        );
-
-        // Tear down: shutdown still works after a cancelled compile.
-        // Important — the host's exit path needs this to be clean.
-        let report = service.shutdown(ShutdownMode::Graceful).await;
-        assert!(report.is_ok(), "shutdown after Cancelled must succeed");
-    }
-
-    #[tokio::test]
-    async fn token_fired_during_compile_returns_cancelled() {
-        // Mid-flight cancellation: the compile begins (the inner
-        // EmbeddedDaemon::compile future is polled at least once) and
-        // the token fires while it's in flight. The `tokio::select!`
-        // race must win for the cancel branch.
-        //
-        // We use a token that is cancelled by a sibling task with a
-        // very short delay so the compile future is guaranteed to have
-        // been polled before the cancel arrives. The fake compiler
-        // path is non-existent so the compile would otherwise fail
-        // with a Compile error after spawn — we want Cancelled instead.
-        let temp = TempDir::new().expect("temp cache root");
-        let token = CancellationToken::new();
-        let token_clone = token.clone();
-        let service = start_service_with_token(&temp, Some(token), "midflight")
-            .await
-            .expect("service start");
-
-        let canceller = tokio::spawn(async move {
-            // Tiny delay so the compile future starts being polled.
-            // 10 ms is a generous floor on Windows scheduling jitter
-            // while still being a snappy test.
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            token_clone.cancel();
-        });
-
-        let outcome = service.compile(fake_compile_request()).await;
-        canceller.await.expect("canceller task joined");
-
-        // The race can resolve either way: cancel wins (Cancelled) or
-        // the spawn fails first because the compiler binary doesn't
-        // exist (Compile). Both prove the cancellation path is wired —
-        // the assertion we MUST NOT see is "Ok" because that would
-        // mean the fake compiler somehow succeeded.
-        match outcome {
-            Err(EmbeddedError::Cancelled) | Err(EmbeddedError::Compile(_)) => {}
-            other => panic!("mid-flight cancel must yield Cancelled or Compile, got {other:?}"),
-        }
-
-        let report = service.shutdown(ShutdownMode::Graceful).await;
-        assert!(
-            report.is_ok(),
-            "shutdown after mid-flight cancel must succeed"
-        );
-    }
-
-    #[tokio::test]
-    async fn no_token_preserves_pre_923_behavior() {
-        // Backward-compat: `cancellation: None` must keep today's
-        // semantics — compile() runs to completion (success or error)
-        // and never returns Cancelled. The fake compiler path makes
-        // this a Compile error, not an Ok, which is fine — the point
-        // is that the new error variant is opt-in.
-        let temp = TempDir::new().expect("temp cache root");
-        let service = start_service_with_token(&temp, None, "no-token")
-            .await
-            .expect("service start");
-
-        let outcome = service.compile(fake_compile_request()).await;
-        if let Err(EmbeddedError::Cancelled) = outcome {
-            panic!("cancellation: None must never yield Cancelled");
-        }
-
-        let report = service.shutdown(ShutdownMode::Graceful).await;
-        assert!(report.is_ok());
-    }
-
-    #[tokio::test]
-    async fn precancelled_token_short_circuits_flush() {
-        // Same fast-path as compile() but on the flush path. Important
-        // because soldr's BuildSessionEnd handler calls flush() before
-        // its own session aggregate write — a cancel-during-shutdown
-        // must let the flush return immediately rather than blocking
-        // soldr's exit on a stalled disk write.
-        let temp = TempDir::new().expect("temp cache root");
-        let token = CancellationToken::new();
-        token.cancel();
-        let service = start_service_with_token(&temp, Some(token), "flush-cancel")
-            .await
-            .expect("service start");
-
-        let outcome = service.flush().await;
-        assert!(
-            matches!(outcome, Err(EmbeddedError::Cancelled)),
-            "pre-cancelled token must short-circuit flush(), got {outcome:?}"
-        );
-
-        let _ = service.shutdown(ShutdownMode::Graceful).await;
-    }
-}
-
-#[cfg(test)]
-mod host_identity_tests {
-    //! zccache#925: tests for `HostIdentity::default_for_product` and the
-    //! documented stability contract.
-
-    use super::*;
-
-    #[test]
-    fn default_for_product_is_stable_within_one_process() {
-        // Two calls in the same process must yield byte-identical
-        // identities. This is the "cache continuity across daemon
-        // restarts on the same install" contract — within a process the
-        // current_exe path and product string don't change, so the hash
-        // doesn't change.
-        let a = HostIdentity::default_for_product("soldr");
-        let b = HostIdentity::default_for_product("soldr");
-        assert_eq!(a, b, "same product must yield same identity");
-        assert_eq!(a.product, "soldr");
-        assert_eq!(a.workspace_id, a.instance_id);
-    }
-
-    #[test]
-    fn default_for_product_differs_per_product() {
-        // Two different products must yield distinct identities so they
-        // don't collide in the per-process backend-identity DashMap.
-        let soldr = HostIdentity::default_for_product("soldr");
-        let fbuild = HostIdentity::default_for_product("fbuild");
-        assert_ne!(soldr, fbuild);
-        assert_ne!(soldr.instance_id, fbuild.instance_id);
-    }
-
-    #[test]
-    fn default_for_product_instance_id_is_16_bytes_of_hex() {
-        // 32 hex chars = 16 bytes. The format is part of the
-        // diagnostic surface (`embedded_endpoint` prints it) so freezing
-        // it here catches accidental changes.
-        let id = HostIdentity::default_for_product("zccache-test");
-        assert_eq!(id.instance_id.len(), 32);
-        assert!(id.instance_id.chars().all(|c| c.is_ascii_hexdigit()));
-    }
-}
-
-#[cfg(test)]
-mod runtime_hooks_tests {
-    //! zccache#922: tests that `RuntimeHooks::handle`, when supplied,
-    //! is the runtime where the embedded daemon's background tasks land.
-
-    use super::*;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::Arc;
-    use tempfile::TempDir;
-
-    #[test]
-    fn runtime_hooks_default_is_none() {
-        // Backward-compat assertion: the default constructor has not
-        // changed, the new field is `None`, and callers that don't
-        // populate it get today's implicit-runtime behaviour.
-        let hooks = RuntimeHooks::default();
-        assert!(hooks.handle.is_none());
-        assert!(hooks.service_name.is_none());
-    }
-
-    #[test]
-    fn explicit_handle_owns_background_spawns() {
-        // Build a dedicated multi-threaded runtime, hand its handle to
-        // ZccacheService::start, and assert that a probe spawned via the
-        // service's runtime context lands on THAT runtime — not on the
-        // outer runtime that drives the test.
-        let host_rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .thread_name("host-runtime-worker")
-            .build()
-            .expect("failed to build host runtime");
-        let host_handle = host_rt.handle().clone();
-
-        // Sentinel: a thread-local-style atomic that increments when a
-        // task observes it's on the host runtime.
-        let landed_on_host: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
-
-        // Start the embedded service from inside the host runtime so the
-        // `async` start function has *some* ambient runtime to live on,
-        // and pass the host handle in via RuntimeHooks. The contract is:
-        // any persistent background task spawned by ZccacheService::start
-        // runs on the supplied handle when one is provided.
-        let temp = TempDir::new().expect("temp cache root");
-        let cache_root: NormalizedPath = temp.path().join("zccache").into();
-
-        let landed_clone = Arc::clone(&landed_on_host);
-        let host_handle_clone = host_handle.clone();
-        let service = host_rt.block_on(async move {
-            // Disable audit (`AuditMode::Off`) so the production
-            // `output_root` validation does not reject this fixture; the
-            // test exercises runtime hooks, not the audit sink.
-            let mut audit = AuditConfig::default();
-            audit.mode = crate::audit::AuditMode::Off;
-            ZccacheService::start(ZccacheConfig {
-                host: HostIdentity {
-                    product: "zccache-test".into(),
-                    instance_id: "runtime-hooks".into(),
-                    workspace_id: "runtime-hooks".into(),
-                },
-                cache_root,
-                audit,
-                limits: ServiceLimits::default(),
-                runtime: RuntimeHooks {
-                    service_name: Some("runtime-hooks-test".into()),
-                    handle: Some(host_handle_clone),
-                },
-                cancellation: None,
-            })
-            .await
-        });
-        let service = service.expect("service start");
-
-        // Probe: spawn a no-op task via the host handle and confirm we
-        // can observe the worker's thread name — this proves the handle
-        // we passed in is the one running our work.
-        let landed_clone2 = Arc::clone(&landed_clone);
-        let probe = host_handle.spawn(async move {
-            if std::thread::current()
-                .name()
-                .map(|n| n.starts_with("host-runtime-worker"))
-                .unwrap_or(false)
-            {
-                landed_clone2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-        });
-        host_rt.block_on(probe).expect("probe ran on host runtime");
-        assert!(
-            landed_on_host.load(std::sync::atomic::Ordering::Relaxed) >= 1,
-            "task spawned via supplied handle must run on host runtime workers"
-        );
-
-        // Tear down the service cleanly so the index writer task exits.
-        let _ = host_rt.block_on(service.shutdown(ShutdownMode::Graceful));
-    }
-}
-
-#[cfg(test)]
-mod journal_tests {
-    //! soldr#1286: the embedded backend must journal every compile
-    //! outcome to `logs/compile_journal.jsonl` exactly like the daemon
-    //! IPC path. Before this test existed, embedded compiles (the only
-    //! compile path for soldr hosts) produced zero journal records, so
-    //! hit-ratio and miss-reason telemetry was blind on dev machines.
-
-    use super::*;
-    use std::path::PathBuf;
-    use tempfile::TempDir;
-
-    fn unreachable_compile_request() -> CompileRequest {
-        CompileRequest {
-            audit: AuditContext::new(
-                crate::audit::AuditId::new("journal-run").expect("non-empty"),
-                crate::audit::AuditId::new("journal-trace").expect("non-empty"),
-            ),
-            compiler: PathBuf::from("/nonexistent/compiler-that-never-runs").into(),
-            args: vec!["--version".into()],
-            cwd: std::env::current_dir().expect("cwd").into(),
-            env: vec![
-                ("CC".into(), "clang".into()),
-                (
-                    "GITHUB_TOKEN".into(),
-                    "ghp_11AA22BB33CC44DD55EE66FF77GG88HH".into(),
-                ),
-            ],
-            stdin: Vec::new(),
-        }
-    }
-
-    #[tokio::test]
-    async fn embedded_compile_writes_compile_journal() {
-        let temp = TempDir::new().expect("temp cache root");
-        let mut audit = AuditConfig::default();
-        audit.mode = crate::audit::AuditMode::Off;
-        let service = ZccacheService::start(ZccacheConfig {
-            host: HostIdentity {
-                product: "zccache-test".into(),
-                instance_id: "embedded-journal".into(),
-                workspace_id: "embedded-journal".into(),
-            },
-            cache_root: temp.path().join("zccache").into(),
-            audit,
-            limits: ServiceLimits::default(),
-            runtime: RuntimeHooks::default(),
-            cancellation: None,
-        })
-        .await
-        .expect("service start");
-
-        // The fake compiler cannot spawn, which still exercises the
-        // journal write path (outcome "error", exit_code -1) without
-        // needing a real compiler on the test host.
-        let _ = service.compile(unreachable_compile_request()).await;
-
-        // `CompileJournal` writes on a background thread, and the
-        // effective cache root gains a versioned subdir — locate
-        // `logs/compile_journal.jsonl` by walking the temp tree and
-        // poll briefly for the async write.
-        fn find_journal(dir: &std::path::Path) -> Option<std::path::PathBuf> {
-            let entries = std::fs::read_dir(dir).ok()?;
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    if let Some(found) = find_journal(&path) {
-                        return Some(found);
-                    }
-                } else if path.file_name().and_then(|n| n.to_str()) == Some("compile_journal.jsonl")
-                {
-                    return Some(path);
-                }
-            }
-            None
-        }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let content = loop {
-            let content = find_journal(temp.path()).and_then(|p| std::fs::read_to_string(p).ok());
-            match content {
-                Some(c) if !c.trim().is_empty() => break c,
-                _ if std::time::Instant::now() > deadline => {
-                    panic!("embedded compile produced no compile_journal.jsonl record")
-                }
-                _ => tokio::time::sleep(std::time::Duration::from_millis(25)).await,
-            }
-        };
-
-        let line = content.lines().next().expect("at least one journal line");
-        let v: serde_json::Value = serde_json::from_str(line).expect("valid JSON journal line");
-        assert_eq!(
-            v["outcome"], "error",
-            "unspawnable compiler must journal as error: {v}"
-        );
-        assert!(
-            v["compiler"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("compiler-that-never-runs"),
-            "journal must record the embedded compiler path: {v}"
-        );
-        assert_eq!(
-            v["env"],
-            serde_json::json!([["CC", "clang"]]),
-            "embedded journal must retain safe diagnostics and omit secrets: {v}"
-        );
-        assert!(
-            !line.contains("GITHUB_TOKEN") && !line.contains("ghp_"),
-            "embedded journal leaked a secret: {line}"
-        );
-
-        let report = service.shutdown(ShutdownMode::Graceful).await;
-        assert!(report.is_ok(), "shutdown after journaled compile succeeds");
-    }
-}
+#[path = "embedded/tests.rs"]
+mod tests;

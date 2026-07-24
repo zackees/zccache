@@ -173,11 +173,17 @@ def test_build_target_stamps_release_binaries_with_python_footer() -> None:
 
 def test_build_target_compiles_release_artifacts_without_compile_cache() -> None:
     action = _repo_text(".github/actions/build-target/action.yml")
+    compact_action = " ".join(action.replace("\\\n", "").split())
 
     assert "cargo_build=(soldr --no-cache cargo build)" in action
     assert 'cargo_build=(rustup run "$RELEASE_RUST_TOOLCHAIN" cargo build)' in action
     assert "Release artifacts are distribution outputs" in action
-    assert '"${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache --bin zccache' in action
+    assert (
+        '"${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache '
+        "--features zccache-bin,daemon-bin,fingerprint-bin "
+        "--bin zccache --bin zccache-daemon --bin zccache-fp"
+        in compact_action
+    )
     assert '"${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-cli --features python --lib' in action
 
 

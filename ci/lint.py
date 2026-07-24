@@ -70,22 +70,21 @@ def run_cmd_capture(cmd):
 
 
 def dylint_env():
-    """Run cargo-dylint with the nightly toolchain ahead of stable shims.
+    """Run cargo-dylint through rustup's shim with the pinned nightly selected.
 
-    cargo-dylint deliberately removes ``RUSTUP_TOOLCHAIN`` before compiling a
-    lint library. Put the selected toolchain's bin directory first on PATH so
-    those sanitized child commands still use the driver-compatible cargo and
-    rustc binaries.
+    Dylint deliberately removes ``RUSTUP_TOOLCHAIN`` before building its
+    temporary driver crate. The child ``cargo`` must therefore be rustup's
+    shim, which rehydrates the variable from that crate's ``rust-toolchain``
+    file. A direct toolchain ``cargo`` binary cannot do that, and the Soldr
+    front-door shim would route the nested build back through the host wrapper.
     """
     env = self_build_env()
     env["RUSTUP_TOOLCHAIN"] = DYLINT_TOOLCHAIN
-    rustc = subprocess.check_output(
-        ["rustup", "which", "--toolchain", DYLINT_TOOLCHAIN, "rustc"],
-        env=env,
-        text=True,
-    ).strip()
-    toolchain_bin = str(Path(rustc).resolve().parent)
-    env["PATH"] = os.pathsep.join([toolchain_bin, env.get("PATH", "")])
+    rustup = which("rustup")
+    if rustup is None:
+        raise FileNotFoundError("rustup is required for workspace dylint")
+    rustup_shim_dir = str(Path(rustup).parent)
+    env["PATH"] = os.pathsep.join([rustup_shim_dir, env.get("PATH", "")])
     return env
 
 
@@ -155,11 +154,14 @@ def ensure_dylint_components():
         return result.returncode
 
     installed = result.stdout.splitlines()
-    missing = [
-        component
-        for component in DYLINT_COMPONENTS
-        if not any(line.startswith(component) for line in installed)
-    ]
+    missing = []
+    for component in DYLINT_COMPONENTS:
+        installed_name = component.removesuffix("-preview")
+        if not any(
+            line == installed_name or line.startswith(f"{installed_name}-")
+            for line in installed
+        ):
+            missing.append(component)
     if not missing:
         return 0
 
@@ -184,7 +186,7 @@ def skip_dylint_on_windows():
 
 
 def lint_dylint_only():
-    """Run workspace Dylint 6 using its supported driver path."""
+    """Run workspace dylint, retrying after alias repair if cargo-dylint misses it."""
     if skip_dylint_on_windows():
         return 0
 

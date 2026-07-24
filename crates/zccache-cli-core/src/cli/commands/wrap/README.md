@@ -21,9 +21,11 @@ here based on tool family and environment.
   so the build dir is not pinned by a kernel handle (issue #555 / #134).
 - **`routing.rs`** — classifies an argv into `Formatter | LinkOrArchive |
   Compile` without doing the full parse.
-- **`rustfmt.rs`** — format-cache wrapper for rustfmt: skip files whose
-  content hash is already cached (avoids mtime churn that triggers downstream
-  rebuilds).
+- **`rustfmt.rs`** — correctness-first rustfmt wrapper. Normal Cargo/rustfmt
+  invocations always run because rustfmt recursively discovers child modules
+  that are absent from the explicit argv. Invocations that explicitly set
+  `skip_children=true` are non-recursive and may skip source files whose
+  content hash is already known formatted.
 - **`tool_resolution.rs`** — resolves bare tool names (`clang++`, `ar`, ...)
   to absolute paths via `PATH`, with the policy decision about when to leave
   the original spelling alone for the daemon to error on.

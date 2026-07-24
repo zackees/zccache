@@ -317,11 +317,16 @@ impl StagedMultiUnitPlan {
             rewritten.splice(insert_at..insert_at, injected);
             rewritten
         };
-        let mut outputs = vec![StagedOutputPlan { requested, staged }];
+        let mut outputs = vec![StagedOutputPlan {
+            requested,
+            staged,
+            role: StagedOutputRole::Regular,
+        }];
         if user_depfile {
             outputs.push(StagedOutputPlan {
                 requested: outputs[0].requested.with_extension("d").into(),
                 staged: depfile.clone(),
+                role: StagedOutputRole::Depfile,
             });
         }
         StagedPlanOutcome::Enabled(Self {
@@ -338,6 +343,11 @@ impl StagedMultiUnitPlan {
         &self,
     ) -> std::io::Result<StagedMaterializationStats> {
         let mut observed = StagedMaterializationStats::default();
+        let requested_outputs = self
+            .outputs
+            .iter()
+            .map(|output| output.requested.clone())
+            .collect::<Vec<_>>();
         for (fault_index, output) in self.outputs.iter().enumerate() {
             #[cfg(not(test))]
             let _ = fault_index;
@@ -363,8 +373,33 @@ impl StagedMultiUnitPlan {
                 .saturating_add(output_stats.reflink_count);
             observed.copy_count = observed.copy_count.saturating_add(output_stats.copy_count);
             observed.copy_bytes = observed.copy_bytes.saturating_add(output_stats.copy_bytes);
+            if output.role == StagedOutputRole::Depfile {
+                rehydrate_logical_depfile(output.requested.as_path(), &requested_outputs)
+                    .map_err(|error| materialization_error(error, observed))?;
+            }
         }
         Ok(observed)
+    }
+
+    pub(in crate::daemon::server) fn rewrite_logical_side_outputs(&self) -> std::io::Result<()> {
+        for (fault_index, output) in self.outputs.iter().enumerate() {
+            if output.role != StagedOutputRole::Depfile {
+                continue;
+            }
+            #[cfg(not(test))]
+            let _ = fault_index;
+            #[cfg(test)]
+            inject_staged_fault(
+                output.staged.as_path(),
+                StagedFaultPoint::LogicalDepfileRewrite(fault_index),
+            )?;
+            canonicalize_logical_depfile(
+                output.staged.as_path(),
+                self.root.as_path(),
+                &output.requested,
+            )?;
+        }
+        Ok(())
     }
 
     pub(in crate::daemon::server) fn validated_output_sizes(&self) -> std::io::Result<Vec<u64>> {

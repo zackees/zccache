@@ -107,6 +107,8 @@ pub(crate) enum StagedFailure {
     Manifest,
     Publication,
     PublicationOutputCopy,
+    PublicationOutputDurability,
+    LogicalDepfileRewrite,
     GenerationPublish,
     PointerCommit,
     IndexCommit,
@@ -179,6 +181,14 @@ const FAILURES: &[(StagedFailure, &str)] = &[
     (
         StagedFailure::PublicationOutputCopy,
         "publication_output_copy",
+    ),
+    (
+        StagedFailure::PublicationOutputDurability,
+        "publication_output_durability",
+    ),
+    (
+        StagedFailure::LogicalDepfileRewrite,
+        "logical_depfile_rewrite",
     ),
     (StagedFailure::GenerationPublish, "generation_publish"),
     (StagedFailure::PointerCommit, "pointer_commit"),

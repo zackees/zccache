@@ -44,6 +44,107 @@ fn rust_plan_rewrites_output_before_spawn() {
 }
 
 #[test]
+fn rust_staging_paths_do_not_change_published_output_bytes() {
+    let Some(rustc) = crate::test_support::find_rustc() else {
+        return;
+    };
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("fixture.rs");
+    std::fs::write(&source, "pub fn answer() -> u32 { 42 }\n").unwrap();
+
+    let build = |label: &str| {
+        let logical_dir = temp.path().join(format!("target-{label}"));
+        let primary: NormalizedPath = logical_dir.join("libfixture-fixed.rlib").into();
+        let expected: Vec<NormalizedPath> = [
+            logical_dir.join("libfixture-fixed.rlib"),
+            logical_dir.join("libfixture-fixed.rmeta"),
+            logical_dir.join("fixture-fixed.d"),
+        ]
+        .into_iter()
+        .map(Into::into)
+        .collect();
+        let args = vec![
+            "--crate-name".into(),
+            "fixture".into(),
+            "--edition=2021".into(),
+            "--crate-type=rlib".into(),
+            "--emit=dep-info,metadata,link".into(),
+            "-C".into(),
+            "metadata=fixed".into(),
+            "-C".into(),
+            "extra-filename=-fixed".into(),
+            "--out-dir".into(),
+            logical_dir.to_string_lossy().into_owned(),
+            source.to_string_lossy().into_owned(),
+        ];
+        let plan = StagedCompilePlan::rustc(
+            &temp.path().join(format!("staging-{label}")),
+            &args,
+            &primary,
+            &expected,
+            temp.path(),
+        )
+        .unwrap()
+        .unwrap();
+        let output = std::process::Command::new(rustc.as_path())
+            .args(&plan.rewritten_args)
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "rustc failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        plan.rewrite_logical_side_outputs().unwrap();
+        plan
+    };
+
+    let first = build("one path # $");
+    let second = build("two path # $");
+    for first_output in &first.outputs {
+        let name = first_output.staged.file_name().unwrap();
+        let second_output = second
+            .outputs
+            .iter()
+            .find(|output| output.staged.file_name() == Some(name))
+            .unwrap();
+        assert_eq!(
+            std::fs::read(first_output.staged.as_path()).unwrap(),
+            std::fs::read(second_output.staged.as_path()).unwrap(),
+            "staged path changed output bytes for {}",
+            name.to_string_lossy()
+        );
+    }
+    for plan in [&first, &second] {
+        let depfile = plan
+            .outputs
+            .iter()
+            .find(|output| output.role == StagedOutputRole::Depfile)
+            .unwrap()
+            .requested
+            .clone();
+        plan.materialize().unwrap();
+        let depfile_text = std::fs::read_to_string(&depfile).unwrap();
+        assert!(!depfile_text.contains(STAGED_OUTPUT_REMAP_ROOT));
+        let requested_parent = depfile.parent().unwrap().to_string_lossy();
+        let quoted_parent =
+            super::super::staged_paths::quote_make_depfile_path(requested_parent.as_bytes());
+        assert!(
+            depfile_text
+                .as_bytes()
+                .windows(quoted_parent.len())
+                .any(|window| window == quoted_parent),
+            "rustc dep-info must retain a Make-escaped requested target: {depfile_text}"
+        );
+        assert!(
+            !depfile_text.contains(requested_parent.as_ref()),
+            "special requested parent must not be emitted as an unescaped Make token: {depfile_text}"
+        );
+    }
+}
+
+#[test]
 fn explicit_emit_destination_is_staged_and_mapped() {
     if !staged_tests_enabled() {
         return;
@@ -52,7 +153,7 @@ fn explicit_emit_destination_is_staged_and_mapped() {
     let output: NormalizedPath = temp.path().join("x.rlib").into();
     let plan = StagedCompilePlan::rustc(
         temp.path(),
-        &["--emit=link,dep-info=custom.d".into()],
+        &["--emit=link,dep-info=custom.mk".into()],
         &output,
         std::slice::from_ref(&output),
         temp.path(),
@@ -60,12 +161,75 @@ fn explicit_emit_destination_is_staged_and_mapped() {
     .unwrap()
     .unwrap();
     assert!(plan.outputs.iter().any(|output| {
-        output.requested.file_name().and_then(|name| name.to_str()) == Some("custom.d")
+        output.requested.file_name().and_then(|name| name.to_str()) == Some("custom.mk")
+            && output.role == StagedOutputRole::Depfile
     }));
     assert!(plan
         .rewritten_args
         .iter()
         .any(|arg| arg.contains("dep-info=") && arg.contains(".compile-")));
+    plan.cleanup().unwrap();
+}
+
+#[test]
+fn logical_depfile_rewrite_failure_is_propagated_before_publication() {
+    let temp = tempdir().unwrap();
+    let root = temp.path().join("private");
+    std::fs::create_dir_all(&root).unwrap();
+    let requested: NormalizedPath = temp.path().join("requested/deps.mk").into();
+    let staged: NormalizedPath = root.join("deps.mk").into();
+    let original = format!("{}: source.rs\n", staged.display()).into_bytes();
+    std::fs::write(&staged, &original).unwrap();
+    let plan = StagedCompilePlan::for_test(
+        root,
+        vec![StagedOutputPlan {
+            requested,
+            staged: staged.clone(),
+            role: StagedOutputRole::Depfile,
+        }],
+    );
+    let fault = StagedFaultGuard::arm(temp.path(), [StagedFaultPoint::LogicalDepfileRewrite(0)]);
+
+    plan.rewrite_logical_side_outputs()
+        .expect_err("rewrite failure must propagate");
+    assert_eq!(std::fs::read(&staged).unwrap(), original);
+    fault.assert_all_consumed();
+}
+
+#[test]
+fn cc_custom_mf_destination_is_classified_as_a_depfile() {
+    if !staged_tests_enabled() {
+        return;
+    }
+    let temp = tempdir().unwrap();
+    let output: NormalizedPath = temp.path().join("hello.o").into();
+    let depfile: NormalizedPath = temp.path().join("deps.mk").into();
+    let plan = StagedCompilePlan::cc(
+        temp.path(),
+        crate::compiler::CompilerFamily::Clang,
+        &[
+            "-c".into(),
+            "hello.cpp".into(),
+            "-o".into(),
+            output.to_string_lossy().into_owned(),
+            "-MD".into(),
+            "-MF".into(),
+            depfile.to_string_lossy().into_owned(),
+        ],
+        &output,
+        temp.path(),
+        &crate::depgraph::UserDepFlags {
+            has_md: true,
+            mf_path: Some(depfile.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert!(plan
+        .outputs
+        .iter()
+        .any(|output| { output.requested == depfile && output.role == StagedOutputRole::Depfile }));
     plan.cleanup().unwrap();
 }
 

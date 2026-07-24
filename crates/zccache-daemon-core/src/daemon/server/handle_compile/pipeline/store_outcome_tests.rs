@@ -1,4 +1,5 @@
-use super::*;
+use crate::core::NormalizedPath;
+use crate::daemon::server::dependency_policy::DependencyDiscoveryMode;
 
 #[test]
 fn mmd_fallback_tracks_user_headers_but_omits_system_roots() {
@@ -24,7 +25,7 @@ fn mmd_fallback_tracks_user_headers_but_omits_system_roots() {
     .canonicalized();
 
     let mut result = crate::depgraph::scanner::scan_recursive(&source, &search);
-    apply_static_fallback_policy(
+    super::scan::apply_static_fallback_policy(
         DependencyDiscoveryMode::SkipSystemHeaders,
         true,
         &mut result,
@@ -50,7 +51,7 @@ fn compiler_manifest_keeps_user_header_beneath_system_root() {
         has_computed: false,
     };
 
-    apply_static_fallback_policy(
+    super::scan::apply_static_fallback_policy(
         DependencyDiscoveryMode::SkipSystemHeaders,
         false,
         &mut result,

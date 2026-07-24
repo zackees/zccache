@@ -183,23 +183,6 @@ fn existing_path(path: &Path) -> Option<NormalizedPath> {
     }
 }
 
-#[cfg(test)]
-#[expect(
-    clippy::items_after_test_module,
-    reason = "platform-specific volume identity implementations follow this shared test"
-)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn volume_pair_normalizes_equivalent_probe_paths() {
-        let canonical = VolumePair(1, 1, NormalizedPath::new("probe/out"));
-        let equivalent = VolumePair(1, 1, NormalizedPath::new("probe/./out"));
-
-        assert_eq!(canonical, equivalent);
-    }
-}
-
 #[cfg(unix)]
 fn volume_identity(path: &Path) -> Option<u128> {
     use std::os::unix::fs::MetadataExt;
@@ -211,4 +194,17 @@ fn volume_identity(path: &Path) -> Option<u128> {
 #[cfg(windows)]
 fn volume_identity(path: &Path) -> Option<u128> {
     get_file_id(path).map(|id| u128::from(id.volume_serial))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn volume_pair_normalizes_equivalent_probe_paths() {
+        let canonical = VolumePair(1, 1, NormalizedPath::new("probe/out"));
+        let equivalent = VolumePair(1, 1, NormalizedPath::new("probe/./out"));
+
+        assert_eq!(canonical, equivalent);
+    }
 }

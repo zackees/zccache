@@ -232,7 +232,7 @@ See [`docs/FEATURE-MATRIX.md`](docs/FEATURE-MATRIX.md) for the long-form view wi
 | **include-what-you-use** | IWYU output cached per translation unit |
 | **Emscripten (emcc/em++)** | WebAssembly compilation cached end-to-end |
 | **wasm-ld** | WebAssembly linking cached |
-| **rustfmt** | Formatting results cached |
+| **rustfmt** | Recursive formatting always runs; explicitly non-recursive formatting can use content markers |
 | **clippy** | Lint results cached |
 | **Rust check & build** | `cargo check` and `cargo build` with extern crate content hashing |
 
@@ -492,7 +492,16 @@ Supported compiler and archive outputs use the immutable staged lane by
 default. zccache redirects the tool into a private directory, publishes the
 complete output set as one generation, and only then materializes requested
 paths. This prevents partial cache entries and makes publication, salvage, and
-delivery observable in session `phase_profile.staged` telemetry.
+delivery observable in session `phase_profile.staged` telemetry. Rust output
+paths are remapped to a stable logical marker before publication; depfiles and
+captured streams are rehydrated to each caller's requested destination, so
+private staging-root differences do not create false publication conflicts.
+Multi-source compiler publication additionally requires a native per-file
+mutation sequence so an A-to-B-to-A input rewrite cannot masquerade as an
+unchanged snapshot. Windows uses the file USN. Unix ctime is only a timestamp
+and can repeat within a coarse clock tick, so Unix executes the staged compiler
+result but conservatively suppresses its multi-source cache publication until
+a true change counter is available.
 
 `ZCCACHE_STAGED_ARTIFACTS=off` is the rollout kill switch. Diagnostic values
 `rust` and `c-cpp` limit staging to one compiler family; `exec` enables exact

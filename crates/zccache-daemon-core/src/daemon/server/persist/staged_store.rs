@@ -1,10 +1,7 @@
 //! Immutable artifact generations for the staged-output rollout (#1056).
 //!
-//! This is the storage half of the staged compiler-output design. The compiler
-//! writes opted-in compiler outputs into private staging before publication. The
-//! persisted generation is always independent: reflink when the filesystem can
-//! provide true COW, otherwise a byte copy. Unsupported plans fall back before
-//! spawn, and `ZCCACHE_STAGED_ARTIFACTS=off` is the rollout kill switch.
+//! Opted-in outputs enter private staging; persisted generations use true-COW
+//! reflinks or copies, and `ZCCACHE_STAGED_ARTIFACTS=off` remains the kill switch.
 
 use super::*;
 use serde::{Deserialize, Serialize};
@@ -13,8 +10,10 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 
 mod maintenance;
+pub(in crate::daemon::server) use maintenance::clear_staged_artifacts;
 #[cfg(test)]
 pub(crate) use maintenance::evict_staged_artifact_keys;
+use maintenance::remove_staged_tree;
 pub(crate) use maintenance::{
     evict_staged_artifact_keys_if_unchanged, scan_staged_disk_artifacts, StagedDiskArtifact,
 };
@@ -64,6 +63,7 @@ fn exclusive_publication_ns(total_ns: u64, hashing_ns: u64) -> u64 {
 pub(in crate::daemon::server) enum StagedPublishFailure {
     StoreSetup,
     OutputCopy,
+    OutputDurability,
     Hash,
     DurableDigest,
     Manifest,
@@ -78,6 +78,7 @@ impl StagedPublishFailure {
         match self {
             Self::StoreSetup => "publication",
             Self::OutputCopy => "publication_output_copy",
+            Self::OutputDurability => "publication_output_durability",
             Self::Hash => "hashing",
             Self::DurableDigest => "durable_digest",
             Self::Manifest => "manifest",
@@ -95,6 +96,7 @@ impl StagedPublishFailure {
         match self {
             Self::StoreSetup => StagedFailure::Publication,
             Self::OutputCopy => StagedFailure::PublicationOutputCopy,
+            Self::OutputDurability => StagedFailure::PublicationOutputDurability,
             Self::Hash => StagedFailure::Hashing,
             Self::DurableDigest => StagedFailure::DurableDigest,
             Self::Manifest => StagedFailure::Manifest,
@@ -235,24 +237,41 @@ pub(in crate::daemon::server) fn staged_key_supported(key_hex: &str) -> bool {
 }
 
 pub(in crate::daemon::server) fn is_staged_artifact_path(path: &Path) -> bool {
-    let components = path
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    let Some(window) = components.windows(4).last() else {
+    let mut components = path.components().rev();
+    let Some(output) = components
+        .next()
+        .and_then(|component| component.as_os_str().to_str())
+    else {
+        return false;
+    };
+    let Some(generation) = components
+        .next()
+        .and_then(|component| component.as_os_str().to_str())
+    else {
+        return false;
+    };
+    let Some(key) = components
+        .next()
+        .and_then(|component| component.as_os_str().to_str())
+    else {
+        return false;
+    };
+    let Some(root) = components
+        .next()
+        .and_then(|component| component.as_os_str().to_str())
+    else {
         return false;
     };
     let root_matches = if cfg!(windows) {
-        window[0].eq_ignore_ascii_case(STAGED_ROOT)
+        root.eq_ignore_ascii_case(STAGED_ROOT)
     } else {
-        window[0] == STAGED_ROOT
+        root == STAGED_ROOT
     };
-    let key_matches = window[1].len() <= 128
-        && !window[1].is_empty()
-        && window[1].bytes().all(|byte| byte.is_ascii_hexdigit());
+    let key_matches =
+        key.len() <= 128 && !key.is_empty() && key.bytes().all(|byte| byte.is_ascii_hexdigit());
     let generation_matches =
-        window[2].len() == 64 && window[2].bytes().all(|byte| byte.is_ascii_hexdigit());
-    let output_matches = window[3]
+        generation.len() == 64 && generation.bytes().all(|byte| byte.is_ascii_hexdigit());
+    let output_matches = output
         .strip_prefix("output-")
         .is_some_and(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()));
     root_matches && key_matches && generation_matches && output_matches
@@ -434,7 +453,6 @@ fn copy_output(source: &Path, destination: &Path) -> io::Result<(bool, u64)> {
     make_writable(destination)?;
     let mtime = filetime::FileTime::from_last_modification_time(&source_metadata);
     filetime::set_file_mtime(destination, mtime)?;
-    set_readonly(destination, true)?;
     result
 }
 
@@ -604,6 +622,33 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
                         ),
                     )
                 })?;
+            #[cfg(test)]
+            fault::inject(artifact_dir, StagedFaultPoint::OutputSync(index))
+                .map_err(|error| publish_error(StagedPublishFailure::OutputDurability, error))?;
+            sync_file(&destination).map_err(|error| {
+                publish_error(
+                    StagedPublishFailure::OutputDurability,
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "staged output durability sync failed: {}: {error}",
+                            destination.display()
+                        ),
+                    ),
+                )
+            })?;
+            set_readonly(&destination, true).map_err(|error| {
+                publish_error(
+                    StagedPublishFailure::OutputCopy,
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "staged output read-only finalization failed: {}: {error}",
+                            destination.display()
+                        ),
+                    ),
+                )
+            })?;
             let hash_started = std::time::Instant::now();
             #[cfg(test)]
             fault::inject(artifact_dir, StagedFaultPoint::OutputHash(index))
@@ -924,46 +969,6 @@ pub(in crate::daemon::server) fn cleanup_staged_artifact_temps(
         }
     }
     Ok(removed)
-}
-
-fn remove_staged_tree(path: &Path) -> io::Result<u64> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
-        Err(error) => return Err(error),
-    };
-    if is_staged_link_or_reparse(&metadata) {
-        remove_staged_link_or_reparse(path, &metadata)?;
-        return Ok(0);
-    }
-    if metadata.is_dir() {
-        let mut removed = 0;
-        for entry in fs::read_dir(path)?.flatten() {
-            removed += remove_staged_tree(&entry.path())?;
-        }
-        fs::remove_dir(path)?;
-        return Ok(removed);
-    }
-    let size = metadata.len();
-    remove_registered_blob(path)?;
-    Ok(size)
-}
-
-pub(in crate::daemon::server) fn clear_staged_artifacts(artifact_dir: &Path) -> io::Result<u64> {
-    let root = staged_root(artifact_dir);
-    if !validate_staged_artifact_root(artifact_dir)? {
-        return Ok(0);
-    }
-    let store_lock = open_store_lock(&root)?;
-    fs2::FileExt::lock_exclusive(&store_lock)?;
-    let mut bytes_removed = 0;
-    for entry in fs::read_dir(&root)?.flatten() {
-        if entry.file_name() == STORE_LOCK {
-            continue;
-        }
-        bytes_removed += remove_staged_tree(&entry.path())?;
-    }
-    Ok(bytes_removed)
 }
 
 #[cfg(test)]
