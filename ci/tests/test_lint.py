@@ -11,9 +11,9 @@ def test_dylint_workflow_rehydrates_the_pinned_toolchain_for_driver_builds():
     )
     dylint_job = workflow.split("\n  dylint:\n", 1)[1].split("\n  msrv:\n", 1)[0]
 
-    assert (
-        f"CARGO_ENV_RUSTUP_TOOLCHAIN: {lint.DYLINT_TOOLCHAIN}" in dylint_job
-    )
+    assert "Configure Dylint driver Cargo shim" in dylint_job
+    assert "export RUSTUP_TOOLCHAIN=nightly-2026-05-26" in dylint_job
+    assert "$(dirname \"${RUSTC}\")" not in dylint_job
 
 
 def test_dylint_env_puts_selected_toolchain_first(monkeypatch):
