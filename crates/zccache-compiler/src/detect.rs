@@ -11,10 +11,7 @@ pub(crate) const SOURCE_EXTENSIONS: &[&str] = &[
 pub(crate) const MODULE_EXTENSIONS: &[&str] = &["cppm", "ixx"];
 
 fn executable_stem(executable: &str) -> &str {
-    let basename = executable
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(executable);
+    let basename = executable.rsplit(['/', '\\']).next().unwrap_or(executable);
     basename
         .strip_suffix(".exe")
         .or_else(|| basename.strip_suffix(".EXE"))

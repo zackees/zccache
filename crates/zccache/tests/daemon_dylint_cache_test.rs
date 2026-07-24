@@ -220,10 +220,8 @@ async fn nested_dylint_hits_and_invalidates_every_external_input() {
         )
         .await;
         assert!(!driver_changed.1, "driver bytes must invalidate");
-        assert!(
-            String::from_utf8_lossy(&driver_changed.3)
-                .contains("workspace lint diagnostic version two")
-        );
+        assert!(String::from_utf8_lossy(&driver_changed.3)
+            .contains("workspace lint diagnostic version two"));
 
         std::fs::remove_file(&output).unwrap();
         let malformed = compile(

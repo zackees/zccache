@@ -501,11 +501,8 @@ fn rustc_requested_depfile(effective_args: &[String], cwd: &Path) -> Option<Norm
 }
 
 fn effective_rustc_args<'a>(compiler_path: &Path, effective_args: &'a [String]) -> &'a [String] {
-    crate::compiler::dylint_inner_rustc_args(
-        &compiler_path.to_string_lossy(),
-        effective_args,
-    )
-    .ok()
-    .flatten()
-    .map_or(effective_args, |(_, args)| args)
+    crate::compiler::dylint_inner_rustc_args(&compiler_path.to_string_lossy(), effective_args)
+        .ok()
+        .flatten()
+        .map_or(effective_args, |(_, args)| args)
 }

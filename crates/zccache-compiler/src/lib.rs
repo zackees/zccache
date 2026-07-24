@@ -41,8 +41,8 @@ use zccache_core::NormalizedPath;
 
 pub use detect::{detect_family, dylint_inner_rustc_args, is_dylint_driver};
 pub use dylint::{
-    dylint_env_affects_output, prepare_dylint_cache_env,
-    prepare_dylint_cache_env_with_identities, DYLINT_CACHE_INPUT_HASH_ENV, DYLINT_LIBS_ENV,
+    dylint_env_affects_output, prepare_dylint_cache_env, prepare_dylint_cache_env_with_identities,
+    DYLINT_CACHE_INPUT_HASH_ENV, DYLINT_LIBS_ENV,
 };
 pub use gnu_flags::{gnu_flag_takes_value, GNU_FLAGS_WITH_VALUE};
 pub use output_policy::{

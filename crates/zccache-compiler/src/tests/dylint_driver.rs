@@ -1,8 +1,8 @@
 //! Dylint's nested driver adapter.
 
 use super::super::{
-    detect_family, parse_invocation, prepare_dylint_cache_env, CompilerFamily,
-    ParsedInvocation, DYLINT_CACHE_INPUT_HASH_ENV, DYLINT_LIBS_ENV,
+    detect_family, parse_invocation, prepare_dylint_cache_env, CompilerFamily, ParsedInvocation,
+    DYLINT_CACHE_INPUT_HASH_ENV, DYLINT_LIBS_ENV,
 };
 use zccache_core::NormalizedPath;
 
@@ -68,9 +68,7 @@ fn rejects_dylint_driver_without_an_inner_rustc() {
 
 fn cache_input_hash(env: &[(String, String)]) -> &str {
     env.iter()
-        .find_map(|(key, value)| {
-            (key == DYLINT_CACHE_INPUT_HASH_ENV).then_some(value.as_str())
-        })
+        .find_map(|(key, value)| (key == DYLINT_CACHE_INPUT_HASH_ENV).then_some(value.as_str()))
         .expect("prepared Dylint env must contain a content hash")
 }
 
@@ -94,15 +92,15 @@ fn library_content_and_output_environment_invalidate_the_input_hash() {
     let libs = serde_json::to_string(&[library.clone()]).unwrap();
     let make_env =
         |metadata: &str, no_deps: &str, rustup_home: &str, toolchain: &str, docs_links: &str| {
-        vec![
-            (DYLINT_LIBS_ENV.into(), libs.clone()),
-            ("DYLINT_METADATA".into(), metadata.into()),
-            ("DYLINT_NO_DEPS".into(), no_deps.into()),
-            ("RUSTUP_HOME".into(), rustup_home.into()),
-            ("RUSTUP_TOOLCHAIN".into(), toolchain.into()),
-            ("CLIPPY_DISABLE_DOCS_LINKS".into(), docs_links.into()),
-        ]
-    };
+            vec![
+                (DYLINT_LIBS_ENV.into(), libs.clone()),
+                ("DYLINT_METADATA".into(), metadata.into()),
+                ("DYLINT_NO_DEPS".into(), no_deps.into()),
+                ("RUSTUP_HOME".into(), rustup_home.into()),
+                ("RUSTUP_TOOLCHAIN".into(), toolchain.into()),
+                ("CLIPPY_DISABLE_DOCS_LINKS".into(), docs_links.into()),
+            ]
+        };
 
     let mut baseline = make_env(
         r#"{"mode":"one"}"#,
@@ -293,8 +291,7 @@ fn library_state_fails_open_when_missing_malformed_or_unhashable() {
         DYLINT_LIBS_ENV.into(),
         serde_json::to_string(&[absent_path]).unwrap(),
     )];
-    let error =
-        prepare_dylint_cache_env(&driver, &args, temp.path(), &mut unhashable).unwrap_err();
+    let error = prepare_dylint_cache_env(&driver, &args, temp.path(), &mut unhashable).unwrap_err();
     assert!(error.contains("uncached"));
     assert!(error.contains("missing.so"));
 }

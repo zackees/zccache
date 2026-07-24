@@ -121,7 +121,10 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 .get_or_hash_rustc_identity_async(&inner_rustc)
                 .await
                 .ok_or_else(|| {
-                    format!("cannot identify Dylint inner rustc {}", inner_rustc.display())
+                    format!(
+                        "cannot identify Dylint inner rustc {}",
+                        inner_rustc.display()
+                    )
                 })?;
             let env = client_env.get_or_insert_with(Vec::new);
             crate::compiler::prepare_dylint_cache_env_with_identities(
@@ -140,7 +143,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                                 "cannot hash Dylint library {}; running uncached",
                                 path.display()
                             )
-                    })
+                        })
                 },
             )
         }
