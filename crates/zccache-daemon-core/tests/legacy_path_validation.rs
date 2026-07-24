@@ -496,81 +496,30 @@ async fn wait_for(path: &Path, description: &str) {
     .unwrap_or_else(|_| panic!("timed out waiting for {description}: {}", path.display()));
 }
 
-/// Wait until the staged store holds at least `minimum` publication pointers
-/// and the count has stopped growing.
-///
-/// Cold-phase artifact publication (and the depgraph registration batched
-/// behind it) completes asynchronously after each compile response. The
-/// standalone daemon does not yet guarantee that an immediate `Shutdown`
-/// lets that pipeline drain durably — that gap is issue #1161. Until the
-/// durable drain lands, stopping the cold daemon right after the responses
-/// races publication on slow hosts (observed on the 2-core CI runner: the
-/// multi-unit artifacts were not yet restorable and the warm multi compile
-/// missed). TODO(#1161): once shutdown drains publication durably, this
-/// quiesce wait can be removed.
-async fn wait_for_staged_publication(artifact_dir: &Path, minimum: usize) {
-    let staged_root = artifact_dir.join(".staged-v2");
-    tokio::time::timeout(Duration::from_secs(15), async {
-        let mut last = 0_usize;
-        loop {
-            let count = staged_pointer_count(&staged_root);
-            if count >= minimum && count == last {
-                return;
-            }
-            last = count;
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| {
-        panic!(
-            "timed out waiting for >= {minimum} stable staged publication pointers in {}",
-            staged_root.display()
-        )
-    });
-}
-
-/// Wait until the daemon reports at least `minimum` registered depgraph
-/// compile contexts.
-///
-/// The staged-pointer wait above proves the artifacts are durable, but the
-/// depgraph registration for multi-unit compiles is batched asynchronously
-/// after the response (`handle_compile_multi` fans out `apply_changes`), so
-/// a `Shutdown` right after the responses can still snapshot the depgraph
-/// before the multi units are registered — the warm daemon then evaluates
-/// them Cold (observed on the 2-core CI runner even with stable staged
-/// pointers). `DaemonStatus::dep_graph_contexts` makes the registration
-/// observable. TODO(#1161): remove alongside the publication wait once
-/// shutdown drains durably.
-async fn wait_for_depgraph_contexts(daemon: &mut Daemon, minimum: u64) {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            if let Response::Status(status) = daemon.request(&Request::Status).await {
-                if status.dep_graph_contexts >= minimum {
-                    return;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for >= {minimum} depgraph compile contexts"));
-}
-
-fn staged_pointer_count(staged_root: &Path) -> usize {
-    let Ok(entries) = std::fs::read_dir(staged_root) else {
-        return 0;
-    };
-    entries
-        .flatten()
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .is_some_and(|extension| extension == "current")
-        })
-        .count()
-}
+// NOTE (#1161 durability contract): this harness previously carried two
+// cold-phase quiesce helpers here — `wait_for_staged_publication` (polling
+// stable `.staged-v2/*.current` pointer counts) and
+// `wait_for_depgraph_contexts` (polling `DaemonStatus::dep_graph_contexts`).
+// Both were present in the runs that still failed on the 2-core runner,
+// because neither observable actually guaranteed durability:
+//
+// * Per-unit publication is synchronous with the compile response. Both the
+//   staged multi path (`handle_compile_multi_staged.rs`: inline
+//   `persist_artifact_paths` + `dep_graph.update` + durable-index row send,
+//   all under a publication guard) and the non-staged multi path
+//   (`handle_compile_multi.rs`: inline hardlink persist + `update` inside
+//   the joined miss tasks) complete before `Response::CompileResult` is
+//   sent — so there was nothing request-side left to poll for.
+// * `dep_graph_contexts` counts contexts in ANY state, including
+//   freshly-registered Cold entries with no `artifact_key` yet, so the old
+//   wait could be (and was) satisfied before durability.
+// * The one genuinely asynchronous durability step was the index-writer WAL:
+//   the durable `index.bin` row rides `state.index_writer_tx` and was lost
+//   whenever shutdown aborted the writer after its old 2 s bound on a slow
+//   host. `DaemonServer::run`'s Shutdown arm now drains it
+//   deterministically (flush-ack, then join — `daemon/server/run.rs`), so
+//   `Daemon::stop()` returning after the daemon-task join IS the durability
+//   barrier this harness relies on. No test-side quiesce is needed.
 
 fn flat_artifact_files(artifact_dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(artifact_dir) else {
@@ -696,14 +645,13 @@ async fn strict_layout_validation_aggregates_all_runtime_flows() {
         "startup eviction scan",
     )
     .await;
-    // Quiesce async publication before shutdown (see the helper's #1161
-    // note). Minimum 4 pointers: single.o, multi_a.o, multi_b.o, and the
-    // migration artifact; link/exec publication is covered by the
-    // stability requirement.
-    wait_for_staged_publication(&artifact_dir, 4).await;
-    // ... and quiesce depgraph registration too: 3 compile contexts
-    // (single.o + the two multi units). See the helper's #1161 note.
-    wait_for_depgraph_contexts(&mut cold, 3).await;
+    // No cold-phase quiesce waits: per-unit publication (artifact bytes,
+    // depgraph update, durable-index row send) completes before each compile
+    // response, and `stop()` relies on the #1161 shutdown drain in
+    // `DaemonServer::run` — after the Shutdown response and the daemon-task
+    // join below, `index.bin` and `depgraph.bin` are durable. See the module
+    // NOTE above for why the old pointer-count / dep_graph_contexts waits
+    // guaranteed nothing.
     cold.stop().await;
 
     let cold_compile_count = line_count(&compile_count);

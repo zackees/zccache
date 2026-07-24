@@ -21,6 +21,7 @@ mod fingerprint;
 mod fs_matrix;
 mod link_cache;
 mod metadata_deferred;
+mod multi_restart_context_key;
 mod pack;
 mod path_remap;
 mod pch;

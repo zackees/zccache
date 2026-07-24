@@ -125,6 +125,49 @@ fn classified_miss_does_not_request_unknown_warning() {
     assert!(stderr.is_empty());
 }
 
+// Root cause: `record_miss_reason` writes into a single task-local slot for
+// the whole request (`capture_miss_reason`'s scope), and the depgraph-verdict
+// classifier in `pipeline/mod.rs` calls it for every verdict — including
+// `CacheVerdict::Hit` — purely for bookkeeping, before the hit path even
+// tries to materialize the artifact. When that materialization succeeds, the
+// request resolves as a genuine hit, but the task-local slot is left holding
+// `no_artifact_for_key` from the earlier verdict-classification call. Without
+// this guard that stale value leaks straight into the journal row's
+// `miss_reason` field even though `outcome == "hit"` — a self-contradictory
+// row ("cached: true" with a miss reason) that confused CI triage.
+#[test]
+fn hit_outcome_never_carries_a_leaked_miss_reason() {
+    let ctx = test_journal_ctx("cc", &["-c", "main.c", "-o", "main.o"]);
+    // `default_reason` simulates `attributed_miss_reason.or(miss_reason)` at
+    // the call site in `connection/mod.rs`: the depgraph-verdict classifier
+    // stamped `no_artifact_for_key` on the task-local slot before the hit
+    // path found the artifact and returned successfully.
+    for leaked in [
+        miss_reason::NO_ARTIFACT_FOR_KEY,
+        miss_reason::CONTEXT_NOT_FOUND,
+        miss_reason::INPUT_FINGERPRINT_MISMATCH,
+    ] {
+        assert_eq!(
+            compile_miss_reason_with_tmp_root(&ctx, "hit", Some(leaked), 0),
+            None,
+            "a hit outcome must never surface a leaked miss_reason ({leaked})"
+        );
+    }
+    // Same invariant for the other non-miss outcomes.
+    for outcome in ["link_hit", "error", "cached_error"] {
+        assert_eq!(
+            compile_miss_reason_with_tmp_root(
+                &ctx,
+                outcome,
+                Some(miss_reason::NO_ARTIFACT_FOR_KEY),
+                0
+            ),
+            None,
+            "outcome {outcome} must never surface a leaked miss_reason"
+        );
+    }
+}
+
 #[test]
 fn unknown_preview_redacts_separate_sensitive_values() {
     let args = vec![

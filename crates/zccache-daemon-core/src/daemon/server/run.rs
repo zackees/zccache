@@ -14,6 +14,17 @@ const MEMORY_GC_GENTLE_RETRY: Duration = Duration::from_millis(50);
 const MEMORY_GC_FORCE_AFTER: Duration = Duration::from_secs(5);
 const MEMORY_GC_GENTLE_BATCH: usize = 256;
 
+/// Shutdown budget for the deterministic index-writer WAL drain (#1161).
+/// Matches the embedded engine's 30 s flush bound (`embedded.rs`); a full
+/// WAL flush snapshots the whole in-memory index to disk, which can take
+/// seconds under I/O contention on a small (2-core CI) host.
+const INDEX_WRITER_SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Shutdown budget for joining the index-writer task after a successful
+/// drain. The drain ack proves the WAL is already empty and flushed, so the
+/// join is normally instantaneous; the bound only guards a wedged task.
+const INDEX_WRITER_SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+
 impl DaemonServer {
     /// Run the server, accepting connections until shutdown is signaled.
     ///
@@ -349,20 +360,85 @@ impl DaemonServer {
                     let _publication_guard =
                         self.state.artifact_publication.write().await;
 
-                    // Signal the index-writer to drain its WAL to disk, then
-                    // wait briefly for it. Without this, unflushed entries are
-                    // lost if the runtime aborts before the next interval tick.
-                    // Retain a permit if the writer is between polls; a
-                    // `notify_waiters` signal can be lost in that window.
+                    // Deterministically drain the index-writer WAL BEFORE
+                    // stopping the task (#1161). The Flush command is
+                    // FIFO-ordered behind every `IndexWriterCommand::Insert`
+                    // already queued — and no new row can arrive because the
+                    // publication write guard above blocks all publishers —
+                    // so its acknowledgement proves every queued durable-index
+                    // row has been applied to the in-memory store AND
+                    // snapshotted to disk. Mirrors the embedded engine's
+                    // flush-then-stop sequence (`embedded.rs`). The standalone
+                    // daemon previously went straight to notify + 2 s join +
+                    // silent `abort()`, which on a slow 2-core host could
+                    // abort the writer mid-drain and lose queued rows — the
+                    // warm daemon after restart then misses the artifacts the
+                    // cold daemon had already persisted (observed as the
+                    // Integration `legacy_path_validation` warm-multi miss).
+                    let drain_start = std::time::Instant::now();
+                    let index_writer_drained = flush_index_writer(
+                        &self.state.index_writer_tx,
+                        INDEX_WRITER_SHUTDOWN_DRAIN_TIMEOUT,
+                    )
+                    .await;
+                    if !index_writer_drained {
+                        // Loud-forensics rule: a shutdown-budget breach emits
+                        // BOTH a tracing::warn! AND a durable lifecycle event.
+                        tracing::warn!(
+                            event = crate::core::lifecycle::EVENT_EMBEDDED_FLUSH_STEP_TIMEOUT,
+                            step = "index_writer_drain",
+                            timeout_ms =
+                                INDEX_WRITER_SHUTDOWN_DRAIN_TIMEOUT.as_millis() as u64,
+                            elapsed_ms = drain_start.elapsed().as_millis() as u64,
+                            "index-writer WAL drain did not acknowledge within its \
+                             shutdown budget; queued durable-index rows may be lost"
+                        );
+                        crate::core::lifecycle::write_event_in_cache_root(
+                            self.state.cache_dir.as_path(),
+                            crate::core::lifecycle::EVENT_EMBEDDED_FLUSH_STEP_TIMEOUT,
+                            serde_json::json!({
+                                "step": "index_writer_drain",
+                                "timeout_ms":
+                                    INDEX_WRITER_SHUTDOWN_DRAIN_TIMEOUT.as_millis() as u64,
+                                "reason": "shutdown WAL drain ack timed out; durable \
+                                           index rows queued behind the flush may be lost",
+                            }),
+                        );
+                    }
+
+                    // Stop the writer task. After a successful drain the WAL
+                    // is empty and this join is instantaneous; the bound only
+                    // guards a wedged task. `notify_one` retains a permit if
+                    // the writer is between polls; `notify_waiters` could lose
+                    // the signal in that window.
                     self.state.index_writer_shutdown.notify_one();
                     if let Some(mut handle) = index_writer_handle.take() {
                         if tokio::time::timeout(
-                            std::time::Duration::from_secs(2),
+                            INDEX_WRITER_SHUTDOWN_JOIN_TIMEOUT,
                             &mut handle,
                         )
                         .await
                         .is_err()
                         {
+                            tracing::warn!(
+                                event = crate::core::lifecycle::EVENT_EMBEDDED_FLUSH_STEP_TIMEOUT,
+                                step = "index_writer_join",
+                                timeout_ms =
+                                    INDEX_WRITER_SHUTDOWN_JOIN_TIMEOUT.as_millis() as u64,
+                                "index-writer task did not exit within its shutdown \
+                                 budget; aborting it"
+                            );
+                            crate::core::lifecycle::write_event_in_cache_root(
+                                self.state.cache_dir.as_path(),
+                                crate::core::lifecycle::EVENT_EMBEDDED_FLUSH_STEP_TIMEOUT,
+                                serde_json::json!({
+                                    "step": "index_writer_join",
+                                    "timeout_ms":
+                                        INDEX_WRITER_SHUTDOWN_JOIN_TIMEOUT.as_millis() as u64,
+                                    "reason": "index-writer task join timed out after a \
+                                               drain attempt; task aborted",
+                                }),
+                            );
                             handle.abort();
                             let _ = handle.await;
                         }
