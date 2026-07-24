@@ -36,13 +36,22 @@ const STAGED_ENV: &str = "ZCCACHE_STAGED_ARTIFACTS";
 const PACK_ENV: &str = "ZCCACHE_PACK_ARTIFACTS";
 const CACHE_ENV: &str = "ZCCACHE_CACHE_DIR";
 
+// Both ignored integration tests below temporarily set process-global cache
+// policy variables. Hold this for each fixture's entire lifetime so Cargo's
+// parallel test runner cannot cross-contaminate their daemon processes.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 struct EnvGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
     values: Vec<(&'static str, Option<OsString>)>,
 }
 
 impl EnvGuard {
     fn capture(names: &[&'static str]) -> Self {
         Self {
+            _lock: ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
             values: names
                 .iter()
                 .map(|name| (*name, std::env::var_os(name)))
@@ -719,7 +728,7 @@ async fn strict_layout_validation_aggregates_all_runtime_flows() {
             multi_args,
         ))
         .await,
-        true,
+        false,
     );
     assert_link(
         warm.request(&link_request(&ar, &work, &archive, &link_input))
@@ -735,8 +744,9 @@ async fn strict_layout_validation_aggregates_all_runtime_flows() {
 
     assert_eq!(
         line_count(&compile_count),
-        cold_compile_count,
-        "restart-warm single/multi restores must not execute clang"
+        cold_compile_count + 2,
+        "Unix staged multi-source publication must fail closed without a \
+         native mutation counter, so its warm request recompiles both units"
     );
     assert_eq!(
         line_count(&exec_count),
@@ -776,4 +786,76 @@ async fn strict_layout_validation_aggregates_all_runtime_flows() {
         "aggregate cache-log audit failed:\n{}",
         report.format_human()
     );
+}
+
+/// Unix C/C++ staged publication deliberately fails closed without a native
+/// input mutation counter. Keep strict staged-layout coverage separate from
+/// the supported legacy path, which must persist across a graceful restart.
+#[tokio::test]
+#[ignore = "integration: real clang, daemon restart"]
+async fn legacy_multi_source_hits_warm_after_restart() {
+    let Some(clang) = find_tool("clang") else {
+        eprintln!("skipping legacy multi restart validation: clang not found");
+        return;
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let _env = EnvGuard::capture(&[STAGED_ENV, PACK_ENV, CACHE_ENV, LEGACY_PATH_VALIDATE_ENV]);
+    let cache_root = temp.path().join("legacy-multi-cache");
+    let work = temp.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    std::env::set_var(CACHE_ENV, &cache_root);
+    std::env::set_var(STAGED_ENV, "off");
+    std::env::remove_var(PACK_ENV);
+    std::env::remove_var(LEGACY_PATH_VALIDATE_ENV);
+
+    let compile_count = temp.path().join("compile-count.txt");
+    let compiler = write_counting_clang(temp.path(), &clang, &compile_count);
+    let a = work.join("multi_a.c");
+    let b = work.join("multi_b.c");
+    let out_a = work.join("multi_a.o");
+    let out_b = work.join("multi_b.o");
+    std::fs::write(&a, "int multi_a(void) { return 2; }\n").unwrap();
+    std::fs::write(&b, "int multi_b(void) { return 3; }\n").unwrap();
+    let args = vec![
+        "-c".to_string(),
+        a.to_string_lossy().into_owned(),
+        b.to_string_lossy().into_owned(),
+    ];
+
+    let mut cold = Daemon::start(&cache_root).await;
+    let cold_session = session_start(&mut cold, &work).await;
+    assert_compile(
+        cold.request(&compile_request(
+            &cold_session,
+            &compiler,
+            &work,
+            args.clone(),
+        ))
+        .await,
+        false,
+    );
+    cold.stop().await;
+    assert_eq!(
+        line_count(&compile_count),
+        1,
+        "cold multi compile runs clang once"
+    );
+    std::fs::remove_file(&out_a).unwrap();
+    std::fs::remove_file(&out_b).unwrap();
+
+    let mut warm = Daemon::start(&cache_root).await;
+    let warm_session = session_start(&mut warm, &work).await;
+    assert_compile(
+        warm.request(&compile_request(&warm_session, &compiler, &work, args))
+            .await,
+        true,
+    );
+    warm.stop().await;
+    assert_eq!(
+        line_count(&compile_count),
+        1,
+        "legacy multi-source warm restart must materialize without running clang"
+    );
+    assert!(out_a.is_file());
+    assert!(out_b.is_file());
 }
