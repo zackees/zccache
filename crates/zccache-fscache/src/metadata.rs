@@ -13,10 +13,10 @@ use zccache_core::NormalizedPath;
 /// metadata entry against a fresh `stat()` (`get_cached_hash_if_stat_valid`).
 ///
 /// Set to 1 full second so archive-extraction truncation (tar / zstd-tar /
-/// soldr-save-load all flatten sub-second nanos to 0) and FAT32-style 2-sec
-/// granularity drift are both absorbed. Two real content changes inside a
-/// 1-second window are rare in normal builds; the journal + watcher catch
-/// them via mtime-independent paths.
+/// soldr-save-load all flatten sub-second nanos to 0) is absorbed. The
+/// tolerance applies only when either timestamp has a zero sub-second field,
+/// which is the signature of that truncation. Native fine-grained timestamps
+/// remain exact so a same-size edit cannot be mistaken for an archive restore.
 ///
 /// Override at daemon startup via `ZCCACHE_MTIME_TOLERANCE_NS`:
 /// - `0` → strict byte-equal mtime match (pre-issue-#469 behavior).
@@ -43,7 +43,8 @@ fn mtime_tolerance_ns() -> u64 {
 ///
 /// Match if:
 /// - The two values are byte-equal (no truncation happened), OR
-/// - `|a - b| <= mtime_tolerance_ns()`.
+/// - `|a - b| < mtime_tolerance_ns()` and either timestamp has a zero
+///   sub-second field, the archive-truncation signature.
 ///
 /// Setting the tolerance to `0` (via `ZCCACHE_MTIME_TOLERANCE_NS=0`)
 /// disables the second branch entirely and restores strict byte-equal
@@ -58,9 +59,12 @@ fn mtimes_match(a: SystemTime, b: SystemTime) -> bool {
     }
     let (a_secs, a_nanos) = mtime_components(a);
     let (b_secs, b_nanos) = mtime_components(b);
+    if a_nanos != 0 && b_nanos != 0 {
+        return false;
+    }
     let a_total = (a_secs as u128) * 1_000_000_000 + (a_nanos as u128);
     let b_total = (b_secs as u128) * 1_000_000_000 + (b_nanos as u128);
-    a_total.abs_diff(b_total) <= tolerance_ns as u128
+    a_total.abs_diff(b_total) < tolerance_ns as u128
 }
 
 fn mtime_components(t: SystemTime) -> (u64, u32) {
@@ -461,7 +465,9 @@ impl Default for MetadataCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use filetime::{set_file_mtime, FileTime};
     use std::collections::HashSet;
+    use std::fs;
 
     // ── mtime tolerance (issue #469) ─────────────────────────────────────
 
@@ -492,13 +498,21 @@ mod tests {
     }
 
     #[test]
-    fn mtimes_match_within_default_tolerance_window() {
-        // Drift = 500 ms (half the 1 s tolerance) → match.
+    fn mtimes_match_only_with_archive_truncation_signature() {
+        // A timestamp at a whole second can be an archive-restored version of
+        // the other timestamp, so the sub-second drift is tolerated.
         assert!(mtimes_match(ts(1_000, 0), ts(1_000, 500_000_000)));
-        // Drift = 999 ms — just inside the boundary.
         assert!(mtimes_match(ts(1_000, 0), ts(1_000, 999_999_999)));
-        // Equal to the tolerance boundary — `<=` accepts.
-        assert!(mtimes_match(ts(1_000, 0), ts(1_001, 0)));
+
+        // Fine-grained timestamps are exact, even when the difference is
+        // much smaller than the one-second archive tolerance.
+        assert!(!mtimes_match(
+            ts(1_000, 100_000_000),
+            ts(1_000, 500_000_000)
+        ));
+
+        // The tolerance is strictly less than one second.
+        assert!(!mtimes_match(ts(1_000, 0), ts(1_001, 0)));
     }
 
     #[test]
@@ -519,6 +533,60 @@ mod tests {
         // not panic, should compare equal to other pre-epoch values.
         let pre = SystemTime::UNIX_EPOCH - Duration::from_secs(1);
         assert!(mtimes_match(pre, pre));
+    }
+
+    #[test]
+    fn stat_fast_path_rejects_same_size_fine_grained_mtime_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("input.c");
+        fs::write(&file, b"old!").unwrap();
+
+        let cached_mtime = ts(1_000, 100_000_000);
+        let fresh_mtime = ts(1_000, 500_000_000);
+        set_file_mtime(&file, FileTime::from_system_time(fresh_mtime)).unwrap();
+
+        let path = NormalizedPath::from(file.as_path());
+        let cache = MetadataCache::new();
+        cache.insert(
+            path.clone(),
+            FileMetadata {
+                mtime: cached_mtime,
+                size: 4,
+                confidence: Confidence::High,
+                last_verified: Instant::now(),
+                content_hash: Some([42; 32]),
+            },
+        );
+
+        // A watcher event may not have arrived yet, but the stat safety net
+        // must not return the stale hash for a same-size native-resolution
+        // timestamp change within the former one-second blanket window.
+        assert!(cache.get_cached_hash_if_stat_valid(&path).is_none());
+    }
+
+    #[test]
+    fn stat_fast_path_accepts_archive_truncated_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("input.c");
+        fs::write(&file, b"same").unwrap();
+
+        let cached_mtime = ts(1_000, 141_490_982);
+        set_file_mtime(&file, FileTime::from_system_time(ts(1_000, 0))).unwrap();
+
+        let path = NormalizedPath::from(file.as_path());
+        let cache = MetadataCache::new();
+        cache.insert(
+            path.clone(),
+            FileMetadata {
+                mtime: cached_mtime,
+                size: 4,
+                confidence: Confidence::High,
+                last_verified: Instant::now(),
+                content_hash: Some([42; 32]),
+            },
+        );
+
+        assert!(cache.get_cached_hash_if_stat_valid(&path).is_some());
     }
 
     #[test]

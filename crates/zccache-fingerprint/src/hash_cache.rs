@@ -62,9 +62,9 @@ impl HashCache {
     /// Computes an aggregate blake3 hash of all files (sorted by relative path)
     /// and compares against the cached hash.
     ///
-    /// Uses an mtime fast-path: if the cache file is newer than all source files
-    /// and the previous status was success with the same file count, returns
-    /// `Skip` without reading any file contents.
+    /// Uses an mtime fast-path: if the cache file is newer than all source files,
+    /// their maximum mtime is unchanged since the successful snapshot, and the
+    /// file count is unchanged, returns `Skip` without reading any file contents.
     pub fn check(&self, files: &[ScannedFile]) -> Result<CacheDecision> {
         // Mtime fast-path: skip content hashing when cache is newer than all sources.
         if let Some(decision) = self.try_mtime_fast_path(files)? {
@@ -159,7 +159,11 @@ impl HashCache {
         // Read the cache to check status and file count.
         let cached: Option<HashCacheData> = persist::read_json(&self.cache_file)?;
         match cached {
-            Some(data) if data.status == "success" && data.file_count == files.len() => {
+            Some(data)
+                if data.status == "success"
+                    && data.file_count == files.len()
+                    && data.max_source_mtime_ns == max_source_mtime =>
+            {
                 tracing::debug!("mtime fast-path: cache is newer than all sources, skipping");
                 Ok(Some(CacheDecision::Skip))
             }
@@ -176,6 +180,7 @@ impl HashCache {
 mod tests {
     use super::super::scan;
     use super::*;
+    use filetime::{set_file_mtime, FileTime};
     use std::fs;
     use tempfile::TempDir;
 
@@ -230,6 +235,25 @@ mod tests {
         cache.mark_success().unwrap();
 
         create_file(src.path(), "a.rs", "v2");
+        let decision = cache.check(&scan_dir(src.path())).unwrap();
+        assert_eq!(decision, CacheDecision::Run(RunReason::ContentChanged));
+    }
+
+    #[test]
+    fn backwards_mtime_with_changed_content_does_not_take_fast_path() {
+        let (src, cache_dir) = setup();
+        let source = src.path().join("a.rs");
+        create_file(src.path(), "a.rs", "v1");
+
+        let cache = HashCache::new(cache_dir.path().join("fp.json"));
+        cache.check(&scan_dir(src.path())).unwrap();
+        cache.mark_success().unwrap();
+
+        create_file(src.path(), "a.rs", "v2");
+        // A clock rollback (or checkout) can make changed content older than
+        // the cache file. The stored source mtime must reject the fast path.
+        set_file_mtime(&source, FileTime::from_unix_time(1, 0)).unwrap();
+
         let decision = cache.check(&scan_dir(src.path())).unwrap();
         assert_eq!(decision, CacheDecision::Run(RunReason::ContentChanged));
     }

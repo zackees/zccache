@@ -31,9 +31,9 @@ impl TwoLayerCache {
     /// Compares each file against cached state. Writes a `.pending` file with
     /// the current snapshot so that `mark_success()` can promote it atomically.
     ///
-    /// Uses an mtime fast-path: if the cache file is newer than all source files
-    /// and the previous status was success with the same file count, returns
-    /// `Skip` without per-file stat+hash checks.
+    /// Uses an mtime fast-path: if the cache file is newer than all source files,
+    /// their maximum mtime is unchanged since the successful snapshot, and the
+    /// file count is unchanged, returns `Skip` without per-file stat+hash checks.
     pub fn check(&self, files: &[ScannedFile]) -> Result<CacheDecision> {
         // Mtime fast-path: skip per-file checks when cache is newer than all sources.
         if let Some(decision) = self.try_mtime_fast_path(files)? {
@@ -169,7 +169,11 @@ impl TwoLayerCache {
 
         let cached: Option<TwoLayerData> = persist::read_json(&self.cache_file)?;
         match cached {
-            Some(data) if data.status == "success" && data.files.len() == files.len() => {
+            Some(data)
+                if data.status == "success"
+                    && data.files.len() == files.len()
+                    && data.max_source_mtime_ns == max_source_mtime =>
+            {
                 tracing::debug!("mtime fast-path: cache is newer than all sources, skipping");
                 Ok(Some(CacheDecision::Skip))
             }
@@ -217,6 +221,7 @@ impl TwoLayerCache {
 mod tests {
     use super::super::{persist, scan};
     use super::*;
+    use filetime::{set_file_mtime, FileTime};
     use std::fs;
     use tempfile::TempDir;
 
@@ -279,6 +284,25 @@ mod tests {
         // Ensure mtime changes (filesystem granularity).
         std::thread::sleep(std::time::Duration::from_millis(1100));
         create_file(src.path(), "a.rs", "version 2");
+
+        let decision = cache.check(&scan(src.path())).unwrap();
+        assert_eq!(decision, CacheDecision::Run(RunReason::ContentChanged));
+    }
+
+    #[test]
+    fn backwards_mtime_with_changed_content_does_not_take_fast_path() {
+        let (src, cache_dir) = setup();
+        let source = src.path().join("a.rs");
+        create_file(src.path(), "a.rs", "version 1");
+
+        let cache = TwoLayerCache::new(cache_dir.path().join("fp.json"));
+        cache.check(&scan(src.path())).unwrap();
+        cache.mark_success().unwrap();
+
+        create_file(src.path(), "a.rs", "version 2");
+        // A clock rollback (or checkout) can make changed content older than
+        // the cache file. The stored source mtime must reject the fast path.
+        set_file_mtime(&source, FileTime::from_unix_time(1, 0)).unwrap();
 
         let decision = cache.check(&scan(src.path())).unwrap();
         assert_eq!(decision, CacheDecision::Run(RunReason::ContentChanged));

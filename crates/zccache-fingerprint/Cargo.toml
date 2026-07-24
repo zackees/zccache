@@ -35,6 +35,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+filetime = { workspace = true }
 tempfile = { workspace = true }
 
 [build-dependencies]
