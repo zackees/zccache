@@ -5,6 +5,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use super::super::util::exit_code_from_i32;
+use super::fallback::{FallbackPolicy, ResolvedFallbackPolicy};
 use super::tool_resolution::resolve_compiler_path;
 
 #[cfg(test)]
@@ -36,11 +37,29 @@ fn run_with_released_cwd(
     cmd.status()
 }
 
-/// Run the compiler/tool directly without caching (`ZCCACHE_DISABLE` mode).
-pub(super) fn run_passthrough(args: &[String]) -> ExitCode {
+/// Run the compiler/tool directly without caching.
+///
+/// `reason`: `Some` for user-visible bypasses (`ZCCACHE_DISABLE`) — a yellow
+/// warning names the cause so the uncached path is never silent (issue
+/// #1211). `None` for the probe bypass (`ZCCACHE_PROBE_BYPASS`), which is
+/// machine-invoked: probe callers parse the tool's stderr (`clang -###`
+/// writes there), so injecting a warning line would corrupt the probe.
+pub(super) fn run_passthrough(args: &[String], reason: Option<&str>) -> ExitCode {
     let tool = &args[0];
     let tool_args = args.get(1..).unwrap_or(&[]);
     let resolved = resolve_compiler_path(tool);
+
+    if let Some(reason) = reason {
+        let warning = format!(
+            "zccache[warn][F]: {reason}; running {} directly, uncached\n",
+            resolved.display(),
+        );
+        let _ = super::write_wrapper_warning_line(
+            &mut std::io::stderr(),
+            warning.as_bytes(),
+            super::wrapper_stderr_color_enabled(),
+        );
+    }
 
     let mut cmd = std::process::Command::new(&resolved);
     cmd.args(tool_args);
@@ -65,33 +84,38 @@ pub(super) fn run_locally(
     stdin_bytes: &[u8],
     reason: &str,
 ) -> ExitCode {
-    run_locally_with_lifecycle_root(tool, args, cwd, env, stdin_bytes, reason, None)
+    run_locally_with_policy(
+        tool,
+        args,
+        cwd,
+        env,
+        stdin_bytes,
+        reason,
+        &super::fallback::resolve_fallback_policy(),
+        None,
+    )
 }
 
-fn run_locally_with_lifecycle_root(
+#[allow(clippy::too_many_arguments)]
+fn run_locally_with_policy(
     tool: &Path,
     args: &[String],
     cwd: &Path,
     env: &[(String, String)],
     stdin_bytes: &[u8],
     reason: &str,
+    policy: &ResolvedFallbackPolicy,
     lifecycle_root: Option<&Path>,
 ) -> ExitCode {
-    let warning = format!(
-        "zccache[warn][F]: {reason}; running {} directly, uncached\n",
-        tool.display(),
-    );
-    let _ = super::write_wrapper_warning_line(
-        &mut std::io::stderr(),
-        warning.as_bytes(),
-        super::wrapper_stderr_color_enabled(),
-    );
+    let blocked = policy.policy == FallbackPolicy::Error;
     let event = serde_json::json!({
         "tool": tool.to_string_lossy(),
         "cwd": cwd.to_string_lossy(),
         "reason": reason,
         "phase": "pre-dispatch",
         "route": "wrapper",
+        "outcome": if blocked { "blocked" } else { "ran" },
+        "policy_source": policy.source,
     });
     if let Some(root) = lifecycle_root {
         crate::core::lifecycle::write_event_in_cache_root(
@@ -105,6 +129,24 @@ fn run_locally_with_lifecycle_root(
             event,
         );
     }
+
+    if blocked {
+        eprintln!(
+            "zccache[err][F]: {reason}; refusing uncached fallback ({})",
+            policy.source,
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let warning = format!(
+        "zccache[warn][F]: {reason}; running {} directly, uncached\n",
+        tool.display(),
+    );
+    let _ = super::write_wrapper_warning_line(
+        &mut std::io::stderr(),
+        warning.as_bytes(),
+        super::wrapper_stderr_color_enabled(),
+    );
 
     let mut command = std::process::Command::new(tool);
     command
@@ -182,7 +224,7 @@ mod tests {
 
         let mut args = vec![noop_tool().to_string_lossy().into_owned()];
         args.extend(noop_args());
-        let _ = run_passthrough(&args);
+        let _ = run_passthrough(&args, None);
 
         let after = std::env::current_dir().unwrap();
         // `tempfile`'s tempdir under `%TEMP%` would itself canonicalize
@@ -239,13 +281,19 @@ mod tests {
         let cache_root = tempfile::tempdir().unwrap();
         let tool = noop_tool();
         let args = noop_args();
-        let exit = run_locally_with_lifecycle_root(
+        // Explicit Warn policy: this test asserts the *run* branch, and must
+        // not flip to the blocked branch when the test itself runs on CI.
+        let exit = run_locally_with_policy(
             &tool,
             &args,
             &std::env::current_dir().unwrap(),
             &[("ZCCACHE_TEST_FALLBACK".to_string(), "1".to_string())],
             &[],
             "test pre-dispatch failure",
+            &ResolvedFallbackPolicy {
+                policy: FallbackPolicy::Warn,
+                source: "test override".to_string(),
+            },
             Some(cache_root.path()),
         );
 
@@ -267,5 +315,66 @@ mod tests {
         if let Some(cwd) = original_cwd {
             let _ = std::env::set_current_dir(cwd);
         }
+    }
+
+    /// Issue #1211: under the `Error` policy (the default everywhere) the
+    /// wrapper must refuse the uncached fallback — the tool is never
+    /// spawned and the compile fails, even though the tool itself would
+    /// exit 0.
+    #[test]
+    fn error_policy_blocks_local_fallback_without_running_tool() {
+        let _guard = CWD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let cache_root = tempfile::tempdir().unwrap();
+        let tool = noop_tool();
+        let args = noop_args();
+        let exit = run_locally_with_policy(
+            &tool,
+            &args,
+            &std::env::current_dir().unwrap(),
+            &[],
+            &[],
+            "cannot connect to daemon at test-endpoint: refused",
+            &ResolvedFallbackPolicy {
+                policy: FallbackPolicy::Error,
+                source: "test strict policy".to_string(),
+            },
+            Some(cache_root.path()),
+        );
+
+        assert_eq!(
+            exit,
+            ExitCode::FAILURE,
+            "blocked fallback must fail the compile even though the tool exits 0",
+        );
+        let logs_dir = cache_root.path().join("logs");
+        let mut events = String::new();
+        for entry in std::fs::read_dir(&logs_dir).unwrap() {
+            events.push_str(&std::fs::read_to_string(entry.unwrap().path()).unwrap_or_default());
+        }
+        assert!(
+            events.contains("wrapper-local-fallback"),
+            "blocked fallback must still emit the lifecycle event: {events}",
+        );
+        assert!(
+            events.contains("\"outcome\":\"blocked\""),
+            "event must record outcome:blocked: {events}",
+        );
+        assert!(
+            events.contains("cannot connect to daemon at test-endpoint"),
+            "event must carry the daemon-failure reason: {events}",
+        );
+
+        // The lifecycle event is still emitted (outcome:"blocked") for
+        // forensics, so the audit rule fires unless allow-listed.
+        let report = zccache_audit::audit_cache_root(
+            cache_root.path(),
+            zccache_audit::LogAuditContext::Integration,
+            &zccache_audit::AuditOptions::default().allow_for_test(
+                "wrap::passthrough::error_policy_blocks_local_fallback_without_running_tool",
+                [zccache_audit::RuleId("no-wrapper-local-fallback")],
+            ),
+        )
+        .unwrap();
+        assert!(report.passed(), "{}", report.format_human());
     }
 }

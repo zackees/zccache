@@ -27,6 +27,9 @@ pub(super) async fn cmd_compile(
                 crate::core::lifecycle::CAUSE_COMM_ERROR,
                 &reason,
             );
+            super::emit_wrapper_warning(&format!(
+                "zccache[warn][S]: {reason}; retrying via ephemeral session"
+            ));
             return cmd_compile_ephemeral_with_stdin(
                 endpoint,
                 compiler.as_path(),
@@ -89,12 +92,12 @@ pub(super) async fn cmd_compile(
             };
             match action {
                 WedgeAction::DowngradeNoKill => {
-                    eprintln!(
+                    super::emit_wrapper_warning(&format!(
                         "zccache[warn][W]: daemon at {endpoint} answered probe within \
                          budget but missed the per-request wedge budget — burst load, \
                          not a hung daemon. Recovering via ephemeral without killing — \
                          issue #753"
-                    );
+                    ));
                     cmd_compile_ephemeral(endpoint, compiler.as_path(), args, cwd, client_env).await
                 }
                 WedgeAction::EscalateKill | WedgeAction::EscalateKillProbeError => {
