@@ -426,7 +426,10 @@ fn hdiutil_retry_pause(attempt: u32) {
 }
 
 #[cfg(target_os = "macos")]
-fn create_macos_image(temp: &tempfile::TempDir, filesystem: &str) -> Result<std::path::PathBuf, String> {
+fn create_macos_image(
+    temp: &tempfile::TempDir,
+    filesystem: &str,
+) -> Result<std::path::PathBuf, String> {
     let mut last_error = None;
     for attempt in 0..MAC_HDIUTIL_ATTEMPTS {
         // A failed create can leave a partially registered image. Use a fresh
