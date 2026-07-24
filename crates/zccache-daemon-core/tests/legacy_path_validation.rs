@@ -74,6 +74,23 @@ impl Daemon {
         let cache_root = NormalizedPath::new(cache_root);
         let mut server =
             DaemonServer::bind_with_cache_dir(&endpoint, &cache_root).expect("bind daemon");
+        // Mirror the production daemon's startup path (`daemon::entry`):
+        // restore the persisted depgraph snapshot from disk *before*
+        // `run()` starts accepting compile requests. Without this, the
+        // in-memory depgraph starts empty on every `Daemon::start` call
+        // (including the post-restart "warm" daemon), so every C/C++
+        // compile after restart evaluates to `CacheVerdict::Cold` and the
+        // warm-hit assertions below deterministically fail — the depgraph
+        // check is the only cross-restart hit path (`try_fast_hit` /
+        // `try_request_cache_hit` are in-memory-only). See
+        // `crates/zccache/tests/daemon_rustc_restore_test.rs` for the same
+        // pattern in another harness.
+        let depgraph_path = zccache_daemon_core::depgraph::depgraph_file_path();
+        let depgraph_load = zccache_daemon_core::depgraph::classify_load(&depgraph_path);
+        if let zccache_daemon_core::depgraph::DepGraphLoadOutcome::Loaded { graph } = depgraph_load
+        {
+            server.set_dep_graph(graph);
+        }
         let shutdown = server.shutdown_handle();
         let task = tokio::spawn(async move {
             server.run(0).await.expect("run daemon");
@@ -229,7 +246,7 @@ fn write_counting_clang(root: &Path, clang: &Path, count_file: &Path) -> PathBuf
     write_executable(
         &wrapper,
         &format!(
-            "#!/bin/sh\nfor arg in \"$@\"; do\n  if [ \"$arg\" = \"-c\" ]; then\n    printf 'compile\\n' >> {}\n    break\n  fi\ndone\nexec {} \"$@\"\n",
+            "#!/bin/sh\nfor arg in \"$@\"; do\n  if [ \"$arg\" = \"-c\" ]; then\n    printf 'compile: %s\\n' \"$*\" >> {}\n    break\n  fi\ndone\nexec {} \"$@\"\n",
             shell_quote(count_file),
             shell_quote(clang)
         ),
@@ -388,6 +405,7 @@ fn exec_request(tool: &Path, work: &Path, output: &Path) -> Request {
     }
 }
 
+#[track_caller]
 fn assert_compile(response: Response, cached: bool) {
     match response {
         Response::CompileResult {
@@ -408,6 +426,7 @@ fn assert_compile(response: Response, cached: bool) {
     }
 }
 
+#[track_caller]
 fn assert_link(response: Response, cached: bool) {
     assert!(
         matches!(
@@ -422,6 +441,7 @@ fn assert_link(response: Response, cached: bool) {
     );
 }
 
+#[track_caller]
 fn assert_exec(response: Response, cached: bool) {
     assert!(
         matches!(
@@ -574,7 +594,18 @@ async fn strict_layout_validation_aggregates_all_runtime_flows() {
 
     let cold_compile_count = line_count(&compile_count);
     let cold_exec_count = line_count(&exec_count);
-    assert_eq!(cold_compile_count, 2, "single + multi cold compiler runs");
+    // 3 = one single-file compile + one per unit of the two-source multi
+    // compile. A cold multi-source miss is executed per unit by design: each
+    // unit is compiled into its own staging generation with an explicit `-o`
+    // and its own `-MD -MF <staging>/unit.d -MT <cwd output>` depfile so the
+    // artifacts publish independently (a single clang invocation could not
+    // emit per-unit staged outputs — it accepts only one `-o`).
+    assert_eq!(
+        cold_compile_count,
+        3,
+        "single + per-unit multi cold compiler runs; log:\n{}",
+        std::fs::read_to_string(&compile_count).unwrap_or_default()
+    );
     assert_eq!(cold_exec_count, 1, "one cold generic-tool run");
 
     for output in [
