@@ -56,10 +56,10 @@ jobs:
           set -euo pipefail
           # Separate target directories force independent compiler clients
           # while all workers share the one soldr/zccache daemon.
-          for worker in $(seq 1 12); do
+          for worker in $(seq 1 4); do
             (
               export CARGO_TARGET_DIR="$RUNNER_TEMP/broker-stress-target/$worker"
-              for attempt in $(seq 1 4); do
+              for attempt in $(seq 1 12); do
                 soldr cargo check -p zccache-ipc --lib --locked
               done
             ) &
