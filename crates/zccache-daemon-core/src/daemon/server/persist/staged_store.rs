@@ -397,17 +397,45 @@ fn replace_staged_path(source: &Path, destination: &Path) -> io::Result<()> {
             .encode_wide()
             .chain(Some(0))
             .collect();
-        let result = unsafe {
-            MoveFileExW(
-                source_wide.as_ptr(),
-                destination_wide.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        };
-        if result == 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
+        av_scan_retry(|| {
+            let result = unsafe {
+                MoveFileExW(
+                    source_wide.as_ptr(),
+                    destination_wide.as_ptr(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                )
+            };
+            if result == 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        })
+    }
+}
+
+fn rename_staged_generation(source: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(not(windows))]
+    {
+        fs::rename(source, destination)
+    }
+    #[cfg(windows)]
+    {
+        av_scan_retry(|| fs::rename(source, destination))
+    }
+}
+
+fn remove_uncommitted_generation(pointer: &Path, generation_hex: &str, generation: &Path) {
+    let pointer_committed = fs::read_to_string(pointer)
+        .ok()
+        .is_some_and(|value| value.trim() == generation_hex);
+    if !pointer_committed {
+        if let Err(error) = remove_staged_tree(generation) {
+            tracing::warn!(
+                path = %generation.display(),
+                %error,
+                "failed to remove staged generation after pointer commit failure"
+            );
         }
     }
 }
@@ -801,8 +829,9 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
         #[cfg(test)]
         fault::inject(artifact_dir, StagedFaultPoint::GenerationPublish)
             .map_err(|error| publish_error(StagedPublishFailure::GenerationPublish, error))?;
-        match fs::rename(&temporary_generation, &final_generation) {
-            Ok(()) => {}
+        let mut generation_renamed = false;
+        match rename_staged_generation(&temporary_generation, &final_generation) {
+            Ok(()) => generation_renamed = true,
             Err(error) if final_generation.exists() => {
                 let _ = error;
                 let _ = fs::remove_dir_all(&temporary_generation);
@@ -825,9 +854,16 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
         })?;
 
         #[cfg(test)]
-        fault::inject(artifact_dir, StagedFaultPoint::PointerCommit)
-            .map_err(|error| publish_error(StagedPublishFailure::PointerCommit, error))?;
+        if let Err(error) = fault::inject(artifact_dir, StagedFaultPoint::PointerCommit) {
+            if generation_renamed {
+                remove_uncommitted_generation(&pointer, &generation_hex, &final_generation);
+            }
+            return Err(publish_error(StagedPublishFailure::PointerCommit, error));
+        }
         atomic_write(&pointer, generation_hex.as_bytes()).map_err(|error| {
+            if generation_renamed {
+                remove_uncommitted_generation(&pointer, &generation_hex, &final_generation);
+            }
             publish_error(
                 StagedPublishFailure::PointerCommit,
                 io::Error::new(
@@ -838,9 +874,16 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
         })?;
         if let Some(parent) = pointer.parent() {
             #[cfg(test)]
-            fault::inject(artifact_dir, StagedFaultPoint::PointerSync)
-                .map_err(|error| publish_error(StagedPublishFailure::PointerCommit, error))?;
+            if let Err(error) = fault::inject(artifact_dir, StagedFaultPoint::PointerSync) {
+                if generation_renamed {
+                    remove_uncommitted_generation(&pointer, &generation_hex, &final_generation);
+                }
+                return Err(publish_error(StagedPublishFailure::PointerCommit, error));
+            }
             sync_directory(parent).map_err(|error| {
+                if generation_renamed {
+                    remove_uncommitted_generation(&pointer, &generation_hex, &final_generation);
+                }
                 publish_error(
                     StagedPublishFailure::PointerCommit,
                     io::Error::new(

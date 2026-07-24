@@ -375,7 +375,7 @@ fn is_av_scan_transient(err: &std::io::Error) -> bool {
 }
 
 #[cfg(windows)]
-fn av_scan_retry<T, F>(mut op: F) -> std::io::Result<T>
+pub(in crate::daemon::server) fn av_scan_retry<T, F>(mut op: F) -> std::io::Result<T>
 where
     F: FnMut() -> std::io::Result<T>,
 {

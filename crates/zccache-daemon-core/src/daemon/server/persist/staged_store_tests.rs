@@ -247,10 +247,19 @@ fn publication_fault_matrix_never_exposes_partial_generation() {
         }
         let key_root = staged_root(&artifact_dir).join(&key);
         if key_root.exists() {
-            assert!(fs::read_dir(key_root)
+            assert!(fs::read_dir(&key_root)
                 .unwrap()
                 .filter_map(Result::ok)
                 .all(|entry| !entry.file_name().to_string_lossy().starts_with(".tmp-")));
+            if point == StagedFaultPoint::PointerCommit {
+                assert!(
+                    fs::read_dir(&key_root)
+                        .unwrap()
+                        .filter_map(Result::ok)
+                        .all(|entry| entry.file_name() == PUBLISH_LOCK),
+                    "pointer-commit failure left an unreferenced final generation"
+                );
+            }
         }
         _fault.assert_all_consumed();
     }
