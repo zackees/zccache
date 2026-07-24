@@ -17,6 +17,7 @@ mod compile_exec;
 mod hash_verify;
 mod store_outcome;
 mod system_includes;
+mod time_macros;
 
 use super::super::*;
 use super::cached_hit::{
@@ -33,6 +34,7 @@ use compile_exec::{run_compile_exec, CompileExecOutcome, CompileExecRequest, Com
 use hash_verify::{hash_and_verify, HashSourceOutcome, HashVerifyInput, HashVerifyOutcome};
 use store_outcome::{store_successful_compile, StoreOutcomeRequest};
 use system_includes::{discover_system_includes, SystemIncludesOutcome};
+use time_macros::{find_time_macro_use, warn_time_macro_uncacheable};
 
 const DEPGRAPH_STARTUP_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -86,6 +88,49 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
     );
     let request_cache_key_root =
         request_key_root(compiler_path, &effective_args, worktree_root.as_ref());
+
+    // `__DATE__`, `__TIME__`, and `__TIMESTAMP__` are source-level inputs
+    // whose expansion changes between otherwise-identical compiler requests.
+    // This check intentionally precedes the request cache: all later cache
+    // layers would be too late to prevent replaying an old timestamp object.
+    let preflight_parsed =
+        crate::compiler::parse_invocation(compiler_path.to_str().unwrap_or(""), &effective_args);
+    let time_macro_use = match &preflight_parsed {
+        crate::compiler::ParsedInvocation::Cacheable(compilation) => {
+            find_time_macro_use(compilation, cwd)
+        }
+        crate::compiler::ParsedInvocation::MultiFile { compilations, .. } => compilations
+            .iter()
+            .find_map(|compilation| find_time_macro_use(compilation, cwd)),
+        crate::compiler::ParsedInvocation::NonCacheable { .. } => None,
+    };
+    if let Some(found) = time_macro_use {
+        let bypass_compiler: NormalizedPath = compiler_path.into();
+        state.stats.record_compilation();
+        state.stats.record_non_cacheable();
+        record_session_stat(&state.sessions, &sid, |t| t.record_non_cacheable());
+        write_session_log(
+            &state.sessions,
+            &sid,
+            &format!(
+                "non-cacheable: {} in {}",
+                found.macro_name,
+                found.input_file.display()
+            ),
+        );
+        warn_time_macro_uncacheable(&found);
+        return run_compiler_direct(
+            &bypass_compiler,
+            args,
+            cwd,
+            &state.sessions,
+            &sid,
+            &client_env,
+            &stdin,
+            state.depfile_tmpdir.as_path(),
+        )
+        .await;
+    }
 
     // Snap the journal clock once so all file hashes in this request see a
     // consistent view (avoids per-file current_clock() syscalls).
@@ -229,6 +274,30 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         &state.compiler_hash_cache,
     )
     .await;
+    let native_cpu_family = match &build_result {
+        BuildContextResult::Cc { ctx, .. } => ctx
+            .flags
+            .iter()
+            .chain(&ctx.unknown_flags)
+            .any(|flag| crate::depgraph::native_cpu::is_cxx_native_cpu_flag(flag))
+            .then_some("cxx"),
+        BuildContextResult::Rustc { rustc_ctx, .. } => rustc_ctx
+            .codegen_flags
+            .iter()
+            .any(|flag| crate::depgraph::native_cpu::is_rustc_native_cpu_flag(flag))
+            .then_some("rustc"),
+    };
+    if let Some(compiler_family) = native_cpu_family {
+        tracing::info!(
+            event = "native_flag_host_salted",
+            compiler_family,
+            "native CPU selection makes this compile key host-specific"
+        );
+        crate::core::lifecycle::write_event(
+            crate::core::lifecycle::EVENT_NATIVE_FLAG_HOST_SALTED,
+            serde_json::json!({ "compiler_family": compiler_family }),
+        );
+    }
     let default_key_root = worktree_root.clone().unwrap_or_else(|| cwd_path.clone());
     // Issue #474: PCH (output ends in .pch / .gch) and MSVC compiles must
     // get a per-worktree cache key — the compiler embeds absolute paths in
@@ -252,8 +321,13 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
     // captured paths look. `requires_worktree_in_key` is the single source
     // of truth — we mirror it here into both the context-key salt and the
     // request-cache `worktree_bound` flag so the two cache layers agree.
-    let worktree_bound = requires_worktree_in_key(compilation.family, source_mode_for_key);
-    let worktree_salt = if worktree_root.is_some() && worktree_bound {
+    let worktree_bound = cc_requires_worktree_salt(
+        compilation.family,
+        source_mode_for_key,
+        &effective_args,
+        default_key_root.as_path(),
+    );
+    let worktree_salt = if worktree_bound {
         Some(default_key_root.as_path())
     } else {
         None

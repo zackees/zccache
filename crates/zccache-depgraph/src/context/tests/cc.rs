@@ -10,7 +10,7 @@ use zccache_core::NormalizedPath;
 use super::super::{
     compute_artifact_key, compute_artifact_key_normalized_inplace,
     compute_artifact_key_normalized_with_root, compute_artifact_key_with, compute_context_key,
-    CompileContext,
+    compute_context_key_with_native_cpu_salt, normalize_key_path, CompileContext,
 };
 use super::make_context;
 
@@ -344,6 +344,76 @@ fn different_flags_different_key() {
     let mut ctx2 = make_context("/src/a.c", &[], &[]);
     ctx2.flags = vec!["-std=c++20".into()];
     assert_ne!(ctx1.context_key(), ctx2.context_key());
+}
+
+/// Issue #1174: `native` is a host-dependent compiler expansion, not a
+/// portable literal cache input. Synthetic identities make the cross-host
+/// contract executable on every test runner.
+#[test]
+fn cxx_native_cpu_flags_are_host_salted() {
+    for native_flag in ["-march=native", "-mtune=native", "-mcpu=native"] {
+        let mut ctx = make_context("/src/a.c", &[], &[]);
+        ctx.flags = vec![native_flag.to_string()];
+
+        let host_a = compute_context_key_with_native_cpu_salt(
+            &ctx,
+            None,
+            None,
+            Some("synthetic-host-a-avx2"),
+            |path, root| normalize_key_path(path, root).into(),
+        );
+        let host_a_again = compute_context_key_with_native_cpu_salt(
+            &ctx,
+            None,
+            None,
+            Some("synthetic-host-a-avx2"),
+            |path, root| normalize_key_path(path, root).into(),
+        );
+        let host_b = compute_context_key_with_native_cpu_salt(
+            &ctx,
+            None,
+            None,
+            Some("synthetic-host-b-sse2"),
+            |path, root| normalize_key_path(path, root).into(),
+        );
+
+        assert_eq!(
+            host_a, host_a_again,
+            "{native_flag} must be stable on one host"
+        );
+        assert_ne!(host_a, host_b, "{native_flag} must not share across hosts");
+    }
+}
+
+#[test]
+fn cxx_explicit_cpu_flags_are_not_host_salted() {
+    let mut ctx = make_context("/src/a.c", &[], &[]);
+    ctx.flags = vec!["-march=x86-64-v3".to_string()];
+    let host_a =
+        compute_context_key_with_native_cpu_salt(&ctx, None, None, Some("host-a"), |p, r| {
+            normalize_key_path(p, r).into()
+        });
+    let host_b =
+        compute_context_key_with_native_cpu_salt(&ctx, None, None, Some("host-b"), |p, r| {
+            normalize_key_path(p, r).into()
+        });
+    assert_eq!(host_a, host_b);
+}
+
+#[test]
+fn separated_native_cxx_cpu_flags_are_preserved_for_host_salting() {
+    for flag in ["-march", "-mtune", "-mcpu"] {
+        let parsed = parse_gnu_args(
+            &[
+                flag.to_string(),
+                "native".to_string(),
+                "-c".to_string(),
+                "src/main.c".to_string(),
+            ],
+            Path::new("/work"),
+        );
+        assert_eq!(parsed.flags, vec![format!("{flag}=native")]);
+    }
 }
 
 /// Issue #1173: value-taking GNU flags must not discard their value while

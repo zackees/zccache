@@ -30,6 +30,9 @@ pub const GNU_FLAGS_WITH_VALUE: &[&str] = &[
     "-std",
     "-x",
     "-arch",
+    "-march",
+    "-mtune",
+    "-mcpu",
     "-Xclang",
     "-mllvm",
     "--serialize-diagnostics",
@@ -47,7 +50,16 @@ mod tests {
 
     #[test]
     fn value_flags_include_cross_compilation_and_preprocessor_inputs() {
-        for flag in ["-target", "--target", "-arch", "-isysroot", "-imacros"] {
+        for flag in [
+            "-target",
+            "--target",
+            "-arch",
+            "-march",
+            "-mtune",
+            "-mcpu",
+            "-isysroot",
+            "-imacros",
+        ] {
             assert!(gnu_flag_takes_value(flag), "{flag} must consume its value");
         }
     }

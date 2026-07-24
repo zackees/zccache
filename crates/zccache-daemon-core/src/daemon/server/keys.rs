@@ -231,6 +231,45 @@ pub fn requires_worktree_in_key(
     matches!(family, CompilerFamily::Msvc) || matches!(source_mode, SourceMode::Header)
 }
 
+/// Returns whether the effective C/C++ command line remaps every path-bearing
+/// output channel from `root`.
+///
+/// `-ffile-prefix-map` covers source and file paths on current compilers, but
+/// it is not sufficient by itself for portable cache sharing: older clang and
+/// some GCC releases require the explicit macro and debug variants too. A
+/// partial user map therefore remains worktree-bound rather than allowing an
+/// artifact with an absolute checkout path to cross a checkout boundary.
+pub(super) fn cc_prefix_maps_cover_root(args: &[String], root: &Path) -> bool {
+    [
+        "-ffile-prefix-map",
+        "-fmacro-prefix-map",
+        "-fdebug-prefix-map",
+    ]
+    .iter()
+    .all(|flag| has_cc_prefix_map_for_old(args, flag, root))
+}
+
+/// Returns whether a C/C++ context needs a stable checkout-specific salt.
+///
+/// Artifacts that cannot be scrubbed are always worktree-bound (PCH/GCH and
+/// MSVC). For ordinary clang/GCC compilations, sharing is permitted only
+/// after the effective argv proves that file, macro, and debug path remapping
+/// all cover the checkout root. Without that proof, retaining the root in the
+/// context key is the safe outcome: identical sources in two clones get
+/// distinct keys instead of replaying absolute paths from the first clone.
+pub(super) fn cc_requires_worktree_salt(
+    family: crate::compiler::CompilerFamily,
+    source_mode: crate::compiler::SourceMode,
+    args: &[String],
+    root: &Path,
+) -> bool {
+    use crate::compiler::CompilerFamily;
+
+    requires_worktree_in_key(family, source_mode)
+        || matches!(family, CompilerFamily::Gcc | CompilerFamily::Clang)
+            && !cc_prefix_maps_cover_root(args, root)
+}
+
 pub(super) fn request_key_root(
     compiler_path: &Path,
     args: &[String],

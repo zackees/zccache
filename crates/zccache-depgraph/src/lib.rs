@@ -10,6 +10,7 @@ pub mod context;
 pub mod depfile;
 pub mod graph;
 pub mod msvc_args;
+pub mod native_cpu;
 pub mod rustc_args;
 pub mod scanner;
 pub mod search_paths;

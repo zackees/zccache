@@ -172,6 +172,18 @@ pub fn parse_invocation(compiler: &str, args: &[String]) -> ParsedInvocation {
             };
         }
 
+        // GCC accepts this spelling without an explicit profile path and
+        // derives the input location from compiler defaults. That implicit
+        // file cannot be registered in the depgraph as a content-hashed
+        // input, so caching it could replay an object built from regenerated
+        // PGO data. Explicit `-fprofile-use=<path>` remains cacheable and is
+        // registered by the depgraph parser.
+        if arg == "-fprofile-use" {
+            return ParsedInvocation::NonCacheable {
+                reason: "implicit -fprofile-use profile input is not cacheable".to_string(),
+            };
+        }
+
         if arg == "-c" {
             has_c_flag = true;
             i += 1;

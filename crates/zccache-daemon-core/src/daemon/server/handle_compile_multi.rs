@@ -87,7 +87,12 @@ fn check_unit_cache(
     } else {
         crate::compiler::SourceMode::Normal
     };
-    let worktree_salt = if requires_worktree_in_key(compilation.family, source_mode_for_key) {
+    let worktree_salt = if cc_requires_worktree_salt(
+        compilation.family,
+        source_mode_for_key,
+        &compilation.original_args,
+        key_root.as_path(),
+    ) {
         Some(key_root.as_path())
     } else {
         None
