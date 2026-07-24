@@ -155,30 +155,6 @@ exit /b 0
     tool
 }
 
-/// RAII guard for `ZCCACHE_STAGED_ARTIFACTS`, restoring the prior value on
-/// drop. Always used INSIDE a `CacheDirEnvGuard` scope, whose global mutex
-/// serializes env-mutating tests.
-struct StagedArtifactsEnvGuard {
-    previous: Option<std::ffi::OsString>,
-}
-
-impl StagedArtifactsEnvGuard {
-    fn set(value: &str) -> Self {
-        let previous = std::env::var_os(persist::STAGED_ARTIFACTS_ENV);
-        std::env::set_var(persist::STAGED_ARTIFACTS_ENV, value);
-        Self { previous }
-    }
-}
-
-impl Drop for StagedArtifactsEnvGuard {
-    fn drop(&mut self) {
-        match &self.previous {
-            Some(value) => std::env::set_var(persist::STAGED_ARTIFACTS_ENV, value),
-            None => std::env::remove_var(persist::STAGED_ARTIFACTS_ENV),
-        }
-    }
-}
-
 /// Reload the on-disk depgraph snapshot into a freshly-bound `DaemonServer`,
 /// mirroring the production startup path (`daemon::entry`) and the pattern
 /// already used by `legacy_path_validation.rs`'s `Daemon::start`.
@@ -247,12 +223,11 @@ async fn quiesce_and_persist(
 async fn multi_file_compile_hits_warm_after_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let cache_root = tmp.path().join("zccache-cache");
-    let _guard = CacheDirEnvGuard::set(&cache_root);
+    let _guard = CacheDirEnvGuard::set_with_staged_artifacts(&cache_root, "all");
     // Mirror the Integration workflow's `legacy_path_validation.rs` flow:
     // ZCCACHE_STAGED_ARTIFACTS=all routes the multi misses through
     // `staged::try_handle_staged_misses` (per-unit staged compile with an
     // explicit `-o`), not the inline hardlink lane.
-    let _staged = StagedArtifactsEnvGuard::set("all");
 
     let cc = write_fake_multi_cc(tmp.path());
     let work = tmp.path().join("work");
@@ -377,9 +352,8 @@ async fn multi_file_compile_hits_warm_after_restart() {
 async fn single_file_compile_hits_warm_after_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let cache_root = tmp.path().join("zccache-cache");
-    let _guard = CacheDirEnvGuard::set(&cache_root);
+    let _guard = CacheDirEnvGuard::set_with_staged_artifacts(&cache_root, "all");
     // Same staged lane as the multi variant + the Integration workflow.
-    let _staged = StagedArtifactsEnvGuard::set("all");
 
     let cc = write_fake_multi_cc(tmp.path());
     let work = tmp.path().join("work");
