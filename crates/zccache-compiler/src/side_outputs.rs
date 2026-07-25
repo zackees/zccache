@@ -10,7 +10,7 @@
 /// `msvc_syntax` is true for both `cl.exe` and clang invocations using
 /// clang-cl-style slash flags.
 #[must_use]
-pub fn unmodeled_side_output_flag<'a>(args: &'a [String], msvc_syntax: bool) -> Option<&'a str> {
+pub fn unmodeled_side_output_flag(args: &[String], msvc_syntax: bool) -> Option<&str> {
     args.iter().map(String::as_str).find(|arg| {
         let lower = arg.to_ascii_lowercase();
         if msvc_syntax {

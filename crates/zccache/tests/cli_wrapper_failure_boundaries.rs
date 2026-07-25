@@ -49,6 +49,7 @@ fn run_wrapper(
     cache_dir: &Path,
     payload: &[u8],
     session_id: Option<&str>,
+    fallback_policy: &str,
 ) -> Output {
     let mut command = Command::new(zccache);
     command
@@ -57,6 +58,10 @@ fn run_wrapper(
         .env("ZCCACHE_CACHE_DIR", cache_dir)
         .env("ZCCACHE_NO_SPAWN", "1")
         .env("ZCCACHE_DAEMON_WIRE", "bincode")
+        // Issue #1211: the default policy is Error (uncached fallback is
+        // unsafe with read-only hardlinked artifacts), so the warn-path
+        // tests must opt in explicitly to keep exercising the fallback.
+        .env("ZCCACHE_FALLBACK", fallback_policy)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -101,6 +106,10 @@ fn assert_one_fallback(cache_dir: &Path, test_name: &'static str) {
         "expected one fallback event: {events:#?}"
     );
     assert_eq!(fallbacks[0]["phase"], "pre-dispatch");
+    assert_eq!(
+        fallbacks[0]["outcome"], "ran",
+        "warn-policy fallback must record that the tool actually ran"
+    );
 
     let effective =
         zccache::core::config::effective_cache_root_from_top_level(&cache_dir.to_path_buf().into());
@@ -142,7 +151,14 @@ fn ephemeral_pre_dispatch_fallback_preserves_process_contract() {
 
     let cache_dir = tempfile::tempdir().expect("cache tempdir");
     let payload = b"pre-dispatch-stdin\0with-a-nul\n";
-    let output = run_wrapper(&zccache, &echo_shim, cache_dir.path(), payload, None);
+    let output = run_wrapper(
+        &zccache,
+        &echo_shim,
+        cache_dir.path(),
+        payload,
+        None,
+        "warn",
+    );
     stop_daemon(&zccache, cache_dir.path());
 
     assert_eq!(output.status.code(), Some(7));
@@ -203,6 +219,7 @@ fn session_pre_dispatch_fallback_does_not_consume_stdin_twice() {
         cache_dir.path(),
         payload,
         Some(&session_id),
+        "warn",
     );
     stop_daemon(&zccache, cache_dir.path());
 
@@ -220,4 +237,65 @@ fn session_pre_dispatch_fallback_does_not_consume_stdin_twice() {
         cache_dir.path(),
         "session_pre_dispatch_fallback_does_not_consume_stdin_twice",
     );
+}
+
+/// Issue #1211: under the strict policy (`ZCCACHE_FALLBACK=error`, also the
+/// default on every host) a pre-dispatch daemon failure must fail the
+/// compile with the failure reason on stderr — the tool is never run
+/// uncached (it could not overwrite read-only hardlinked artifacts anyway).
+#[test]
+#[ignore = "integration test: launches the wrapper binary"]
+fn strict_policy_refuses_pre_dispatch_fallback() {
+    let zccache = binary_path("zccache");
+    let echo_shim = binary_path("echo_shim");
+    if !zccache.exists() || !echo_shim.exists() {
+        eprintln!("skipping: required binaries are not built");
+        return;
+    }
+
+    let cache_dir = tempfile::tempdir().expect("cache tempdir");
+    let payload = b"strict-mode-stdin\n";
+    let output = run_wrapper(
+        &zccache,
+        &echo_shim,
+        cache_dir.path(),
+        payload,
+        None,
+        "error",
+    );
+    stop_daemon(&zccache, cache_dir.path());
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "strict mode must fail the compile, not mirror the tool's exit code"
+    );
+    assert!(
+        !output
+            .stdout
+            .windows(b"ZCCACHE_PASSTHROUGH_STDOUT_MARKER".len())
+            .any(|window| window == b"ZCCACHE_PASSTHROUGH_STDOUT_MARKER"),
+        "strict mode must not run the tool uncached"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("refusing uncached fallback"),
+        "stderr must announce the refusal: {stderr}"
+    );
+    assert!(
+        stderr.contains("cannot start daemon") || stderr.contains("cannot connect to daemon"),
+        "stderr must carry the daemon-failure reason: {stderr}"
+    );
+
+    let events = lifecycle_events(cache_dir.path());
+    let fallbacks: Vec<_> = events
+        .iter()
+        .filter(|event| event["event"] == "wrapper-local-fallback")
+        .collect();
+    assert_eq!(
+        fallbacks.len(),
+        1,
+        "expected one blocked event: {events:#?}"
+    );
+    assert_eq!(fallbacks[0]["outcome"], "blocked");
 }

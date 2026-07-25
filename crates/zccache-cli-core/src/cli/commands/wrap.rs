@@ -6,6 +6,7 @@
 
 mod diag;
 mod env;
+mod fallback;
 mod ipc;
 mod passthrough;
 mod routing;
@@ -51,6 +52,17 @@ fn write_wrapper_warning_line(
     writer.write_all(newline)
 }
 
+/// Emit a single wrapper warning line to stderr, yellow when the terminal
+/// supports it (issue #1211: cache/daemon degradations are never silent).
+fn emit_wrapper_warning(text: &str) {
+    let line = format!("{text}\n");
+    let _ = write_wrapper_warning_line(
+        &mut std::io::stderr(),
+        line.as_bytes(),
+        wrapper_stderr_color_enabled(),
+    );
+}
+
 /// Wrap a compiler or tool invocation.
 ///
 /// `args` is the full command: ["clang++", "-c", "foo.cpp", "-o", "foo.o"]
@@ -67,7 +79,9 @@ pub(crate) fn run_wrap(args: &[String], overrides: WrapperOverrides) -> ExitCode
     }
 
     if env::wrapper_disabled() {
-        return passthrough::run_passthrough(args);
+        // Never silent (issue #1211): the user opted out, but each uncached
+        // invocation still announces itself and the reason.
+        return passthrough::run_passthrough(args, Some("ZCCACHE_DISABLE is set"));
     }
 
     let strict_paths_mode = match env::effective_strict_paths_mode(overrides) {
@@ -100,7 +114,9 @@ pub(crate) fn run_wrap(args: &[String], overrides: WrapperOverrides) -> ExitCode
             cwd.into(),
             client_env,
         )),
-        WrapperRoute::ProbeBypass => passthrough::run_passthrough(args),
+        // Silent by design: probe callers parse the tool's stderr, so a
+        // warning line here would corrupt the probe (see run_passthrough).
+        WrapperRoute::ProbeBypass => passthrough::run_passthrough(args, None),
         WrapperRoute::Compile => run_compile_route(
             &endpoint,
             &args[0],

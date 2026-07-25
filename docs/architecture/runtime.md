@@ -327,6 +327,17 @@ The test fixture is the `exec_test_tool` binary (built under `--features test-su
 
 ---
 
+## Wrapper fallback policy (`ZCCACHE_FALLBACK`, issue #1211)
+
+When the daemon/cache pipeline fails **before request dispatch** (daemon spawn failure, connect timeout, `ZCCACHE_NO_SPAWN` refusal), the wrapper historically ran the tool directly, uncached. That degenerate fallback is now policy-gated at the single chokepoint `wrap/passthrough.rs::run_locally`:
+
+- **`Error` (the default on every host):** the wrapper refuses the uncached fallback — the tool is never spawned, stderr gets `zccache[err][F]: <reason>; refusing uncached fallback (<policy source>)`, and the compile fails with exit 1. The `wrapper-local-fallback` lifecycle event is still emitted with `outcome:"blocked"` for forensics. Hard-error is the default everywhere (not just CI) because cached artifacts are materialized as **read-only hardlinks** (COW-lite, #1038/#1039): a direct uncached compiler run cannot overwrite them, so the fallback doesn't merely lose the cache — it fails or corrupts the build.
+- **`Warn` (opt-in via `ZCCACHE_FALLBACK=warn`):** yellow `zccache[warn][F]` warning carrying the failure reason, then the tool runs uncached (`outcome:"ran"`). Escape hatch for build trees that never received hardlinked artifacts.
+
+Post-dispatch transport failures (`FailurePhase::DeliveryUnknown`) were already fail-fast and are unchanged (double-compile hazard). `ZCCACHE_DISABLE=1` passthrough warns (never silent) but stays warn-only — it is a deliberate user opt-out; the probe bypass (`ZCCACHE_PROBE_BYPASS`) stays fully silent because probe callers parse the tool's stderr. The session→ephemeral downgrade and the wedge `DowngradeNoKill` recovery also announce themselves with yellow warnings naming the cause.
+
+---
+
 ## Crash Recovery
 
 ### Daemon Crash Recovery
