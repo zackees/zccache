@@ -46,6 +46,8 @@ pub(super) struct MissArtifactStoreStats {
     pub(super) artifact_insert_stats_ns: u64,
     pub(super) artifact_meta_build_ns: u64,
     pub(super) rust_snapshot_ns: u64,
+    pub(super) rust_snapshot_digest_ns: u64,
+    pub(super) rust_snapshot_publication_ns: u64,
     pub(super) rust_snapshot_hardlink_count: u64,
     pub(super) rust_snapshot_copy_count: u64,
     pub(super) rust_snapshot_copy_bytes: u64,
@@ -444,6 +446,8 @@ fn store_rustc_outputs(
             stats.rust_snapshot_hardlink_count = snapshot_stats.hardlink_count;
             stats.rust_snapshot_copy_count = snapshot_stats.copy_count;
             stats.rust_snapshot_copy_bytes = snapshot_stats.copy_bytes;
+            stats.rust_snapshot_digest_ns = snapshot_stats.staged_hash_ns;
+            stats.rust_snapshot_publication_ns = snapshot_stats.staged_publication_ns;
             let (index_failure, index_commit_ns) = if snapshot_stats.staged {
                 match send_staged_index_insert(state, artifact_key_hex.to_string(), meta.clone()) {
                     Ok(elapsed_ns) => (None, elapsed_ns),

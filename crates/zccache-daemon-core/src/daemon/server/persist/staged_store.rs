@@ -914,6 +914,8 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
             copy_count = stats.copy_count,
             copy_bytes = stats.copy_bytes,
             elapsed_ns = total_ns,
+            digest_ns = stats.staged_hash_ns,
+            publication_ns = stats.staged_publication_ns,
             "published immutable staged artifact generation"
         );
         Ok(stats)
