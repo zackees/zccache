@@ -30,6 +30,25 @@ fn prepare_dylint_library(manifest_dir: &std::path::Path, crate_name: &str) {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| manifest_dir.join("target"));
     let target_debug = target_root.join("debug");
+    let plain_library = format!(
+        "{}{}{}",
+        std::env::consts::DLL_PREFIX,
+        library_name,
+        std::env::consts::DLL_SUFFIX
+    );
+    let target_debug = if target_debug.join(&plain_library).is_file() {
+        target_debug
+    } else {
+        std::fs::read_dir(&target_root)
+            .ok()
+            .and_then(|entries| {
+                entries.filter_map(Result::ok).find_map(|entry| {
+                    let candidate = entry.path().join("debug");
+                    candidate.join(&plain_library).is_file().then_some(candidate)
+                })
+            })
+            .unwrap_or(target_debug)
+    };
     let expected = target_debug.join(format!(
         "{}{}@{}{}",
         std::env::consts::DLL_PREFIX,
@@ -37,12 +56,7 @@ fn prepare_dylint_library(manifest_dir: &std::path::Path, crate_name: &str) {
         toolchain,
         std::env::consts::DLL_SUFFIX
     ));
-    let plain = target_debug.join(format!(
-        "{}{}{}",
-        std::env::consts::DLL_PREFIX,
-        library_name,
-        std::env::consts::DLL_SUFFIX
-    ));
+    let plain = target_debug.join(plain_library);
     if plain.exists() {
         std::fs::copy(&plain, &expected)
             .expect("toolchain-suffixed dylint library should be copied");
