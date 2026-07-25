@@ -43,6 +43,34 @@ pub(crate) fn record_ns(phase: &str, elapsed_ns: u64) {
     });
 }
 
+/// Record the dependency-graph state immediately after context registration.
+///
+/// The durable journal's `context_not_found` reason intentionally stays
+/// compact. These categorical, opt-in trace markers distinguish a genuinely
+/// new context from an equivalent worktree context and show the selected
+/// entry's state without logging paths or compiler arguments.
+pub(crate) fn record_context_registration(
+    equivalent_root: bool,
+    state: crate::depgraph::ContextState,
+) {
+    record_ns(context_registration_phase(equivalent_root, state), 0);
+}
+
+fn context_registration_phase(
+    equivalent_root: bool,
+    state: crate::depgraph::ContextState,
+) -> &'static str {
+    use crate::depgraph::ContextState::{Cold, Stale, Warm};
+    match (equivalent_root, state) {
+        (true, Cold) => "context_register_equivalent_cold",
+        (true, Warm) => "context_register_equivalent_warm",
+        (true, Stale) => "context_register_equivalent_stale",
+        (false, Cold) => "context_register_no_cross_root_cold",
+        (false, Warm) => "context_register_no_cross_root_warm",
+        (false, Stale) => "context_register_no_cross_root_stale",
+    }
+}
+
 /// Run `fut` with `id` installed as the current embedded compile's trace id so
 /// sub-phase [`record_ns`] calls emitted within it attribute to `id`.
 pub(crate) async fn scope<F>(id: String, fut: F) -> F::Output
@@ -84,5 +112,34 @@ mod tests {
             record_ns("cache_store", 12_000);
         })
         .await;
+    }
+
+    #[test]
+    fn context_registration_markers_cover_every_state() {
+        use crate::depgraph::ContextState::{Cold, Stale, Warm};
+        assert_eq!(
+            context_registration_phase(true, Warm),
+            "context_register_equivalent_warm"
+        );
+        assert_eq!(
+            context_registration_phase(true, Cold),
+            "context_register_equivalent_cold"
+        );
+        assert_eq!(
+            context_registration_phase(true, Stale),
+            "context_register_equivalent_stale"
+        );
+        assert_eq!(
+            context_registration_phase(false, Warm),
+            "context_register_no_cross_root_warm"
+        );
+        assert_eq!(
+            context_registration_phase(false, Cold),
+            "context_register_no_cross_root_cold"
+        );
+        assert_eq!(
+            context_registration_phase(false, Stale),
+            "context_register_no_cross_root_stale"
+        );
     }
 }

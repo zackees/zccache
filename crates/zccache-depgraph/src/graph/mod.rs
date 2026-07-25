@@ -241,6 +241,12 @@ pub struct ContextRegistration {
     /// map key prevents one checkout from replacing another's alias target.
     pub metadata_compat_map_key: Option<ContextKey>,
     pub rebased_from_equivalent_root: bool,
+    /// Entry state observed atomically by the registration operation.
+    ///
+    /// This is captured from the same `DashMap` guard that inserts or
+    /// refreshes the entry, so diagnostics do not need a second lookup that
+    /// could race a concurrent update.
+    pub state: ContextState,
 }
 
 /// Issue #582: cached check for `ZCCACHE_PROFILE_CC_MISS` so

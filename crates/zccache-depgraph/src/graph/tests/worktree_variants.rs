@@ -48,11 +48,18 @@ fn equivalent_worktree_b_update_preserves_a_artifact() {
     let root_a = NormalizedPath::from("/worktree-a");
     let root_b = NormalizedPath::from("/worktree-b");
     let a = graph.register_with_root_result(context("/worktree-a"), Some(root_a));
+    assert_eq!(a.state, ContextState::Cold);
     let artifact_a = graph
         .update(&a.map_key, scan("/worktree-a"), equivalent_hash)
         .expect("A must become warm");
 
     let b = graph.register_with_root_result(context("/worktree-b"), Some(root_b));
+    assert!(b.rebased_from_equivalent_root);
+    assert_eq!(
+        b.state,
+        ContextState::Warm,
+        "registration reports the state cloned from the equivalent root"
+    );
     assert_eq!(
         a.key, b.key,
         "equivalent roots retain one artifact identity"
@@ -84,6 +91,21 @@ fn equivalent_worktree_b_update_preserves_a_artifact() {
         CacheVerdict::Hit { artifact_key } if artifact_key == artifact_a
     ));
     assert_eq!(graph.stats().context_count, 2);
+}
+
+#[test]
+fn registration_reports_existing_stale_state_without_an_extra_lookup() {
+    let graph = DepGraph::new();
+    let root = NormalizedPath::from("/stale-worktree");
+    let first = graph.register_with_root_result(context("/stale-worktree"), Some(root.clone()));
+    graph
+        .update(&first.map_key, scan("/stale-worktree"), equivalent_hash)
+        .expect("context must become warm");
+    assert!(graph.mark_stale(&first.map_key));
+
+    let refreshed = graph.register_with_root_result(context("/stale-worktree"), Some(root));
+    assert_eq!(refreshed.map_key, first.map_key);
+    assert_eq!(refreshed.state, ContextState::Stale);
 }
 
 #[test]

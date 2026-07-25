@@ -165,12 +165,14 @@ impl DepGraph {
         let instance_key = instance.map_key();
         if let Some(mut existing) = self.contexts.get_mut(&instance_key) {
             existing.last_accessed = Instant::now();
+            let state = existing.state;
             return ContextRegistration {
                 key,
                 map_key: instance_key,
                 instance,
                 metadata_compat_map_key: None,
                 rebased_from_equivalent_root: false,
+                state,
             };
         }
 
@@ -222,7 +224,7 @@ impl DepGraph {
                 candidate
             },
         );
-        self.contexts.entry(instance_key).or_insert(entry);
+        let state = self.contexts.entry(instance_key).or_insert(entry).state;
 
         let mut evicted = self
             .indexes
@@ -259,6 +261,7 @@ impl DepGraph {
             instance,
             metadata_compat_map_key: None,
             rebased_from_equivalent_root,
+            state,
         }
     }
 

@@ -30,6 +30,7 @@ per-compile id and the sub-phase seams through
 | phase | path | emitted from |
 |---|---|---|
 | `embedded_daemon_compile` | always | outer span in `embedded.rs` |
+| `context_register_{equivalent,no_cross_root}_{warm,cold,stale}` | always | post-registration state in `pipeline/mod.rs` |
 | `input_hash` | miss | `pipeline/store_outcome.rs` (`hash_source_ns + hash_headers_ns`) |
 | `cache_lookup` | miss | `pipeline/store_outcome.rs` (`depgraph_check_ns`) |
 | `cache_load` | hit | `handle_compile/cached_hit.rs` (artifact index lookup + payload read) |
