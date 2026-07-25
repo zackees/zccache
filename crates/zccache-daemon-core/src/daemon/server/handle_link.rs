@@ -204,6 +204,16 @@ pub(super) async fn handle_link_ephemeral(
         cwd_path.join(&parsed_tool.output_file).into()
     };
     let output_dir = output_path.parent().unwrap_or(cwd_path);
+    // Inputs which reside directly in the output directory are declared by
+    // the linker invocation, so they cannot be implicit output side effects.
+    // Skip them in both directory scans. This avoids re-hashing every object
+    // around a large driver link while retaining full coverage of undeclared
+    // sibling files (DLLs, PDBs, wrapper-deployed runtimes, etc.).
+    let sibling_input_names: std::collections::HashSet<std::ffi::OsString> = inputs
+        .iter()
+        .filter(|input| input.as_path().parent() == Some(output_dir))
+        .filter_map(|input| input.file_name().map(std::ffi::OsStr::to_os_string))
+        .collect();
 
     // A cache hit also writes the complete artifact set into the output
     // directory. It must therefore share the same exclusion window as a cold
@@ -590,7 +600,10 @@ pub(super) async fn handle_link_ephemeral(
     let dir_snapshot = if parsed_tool.is_archive || directory_plan.is_some() {
         None
     } else {
-        match super::super::side_effect::snapshot_directory(output_dir) {
+        match super::super::side_effect::snapshot_directory_excluding(
+            output_dir,
+            &sibling_input_names,
+        ) {
             Ok(snapshot) => Some(snapshot),
             Err(error) => {
                 side_effects_cacheable = false;
@@ -749,6 +762,7 @@ pub(super) async fn handle_link_ephemeral(
                         .iter()
                         .filter_map(|s| s.file_name().map(|n| n.to_os_string())),
                 )
+                .chain(sibling_input_names.iter().cloned())
                 .collect();
         // Issue #605 pass 1: matches the pre-link snapshot skip above —
         // archives have no side-effect files to detect.
