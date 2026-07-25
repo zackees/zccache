@@ -549,9 +549,17 @@ struct MaintenancePass<'a> {
 fn refresh_live_access(
     scanned: &mut [DiskArtifact],
     artifacts: &DashMap<String, CachedArtifact>,
+    dep_graph: &DepGraph,
     now: SystemTime,
 ) {
     for artifact in scanned {
+        // A staged generation carries its own durable publication mtime. Use
+        // it before index hydration has populated `artifacts`, otherwise a
+        // low-space startup pass can evict the generation during the narrow
+        // interval before its metadata is visible.
+        artifact.recently_published = artifact.staged
+            && dep_graph.references_artifact_key(&artifact.key)
+            && age(now, artifact.last_access) <= HARD_PRESSURE_MIN_AGE;
         if let Some(cached) = artifacts.get(&artifact.key) {
             let access = cached.access_snapshot();
             let live_last_use = if access.used_in_process {
@@ -563,12 +571,13 @@ fn refresh_live_access(
             let published_at = SystemTime::UNIX_EPOCH
                 .checked_add(Duration::from_secs(cached.meta.stored_at_secs))
                 .unwrap_or(SystemTime::UNIX_EPOCH);
-            // `stored_at_secs` doubles as the durable access checkpoint, so
-            // only an artifact published by this daemon generation earns the
-            // freshness window. A cache hit remains reclaimable once its
-            // lookup lease releases under hard pressure.
-            artifact.recently_published =
-                access.published_in_process && age(now, published_at) <= HARD_PRESSURE_MIN_AGE;
+            // A staged artifact's durable generation may be restored by a
+            // new daemon before its first lookup. Retain its short
+            // publication grace window across that restart so low-space
+            // startup maintenance cannot evict it before depgraph load.
+            // Legacy artifacts keep the existing in-process-only behavior.
+            artifact.recently_published |= access.published_in_process
+                || (artifact.staged && age(now, published_at) <= HARD_PRESSURE_MIN_AGE);
         }
     }
 }
@@ -661,7 +670,7 @@ fn maintain_disk_artifacts_with_barrier(
     let now = environment.now();
     let initial_space = environment.filesystem_space(artifact_dir)?;
     let mut scanned = scan_artifacts(artifact_dir)?;
-    refresh_live_access(&mut scanned, artifacts, now);
+    refresh_live_access(&mut scanned, artifacts, dep_graph, now);
     let usage_before = scanned.iter().fold(pending_write_bytes, |total, artifact| {
         total.saturating_add(artifact.allocated_bytes)
     });
@@ -691,7 +700,7 @@ fn maintain_disk_artifacts_with_barrier(
             // under the writer so a hit/publication that raced the scan is
             // not evicted as stale.
             let _publication_guard = publication_barrier.blocking_write();
-            refresh_live_access(&mut scanned, artifacts, now);
+            refresh_live_access(&mut scanned, artifacts, dep_graph, now);
             let commit_space = environment.filesystem_space(artifact_dir)?;
             let commit_plan = plan_maintenance_at_least(
                 policy,
@@ -735,7 +744,7 @@ fn maintain_disk_artifacts_with_barrier(
             removed.insert(key);
         }
         scanned = scan_artifacts(artifact_dir)?;
-        refresh_live_access(&mut scanned, artifacts, now);
+        refresh_live_access(&mut scanned, artifacts, dep_graph, now);
     }
 
     let usage_after = scanned.iter().fold(pending_write_bytes, |total, artifact| {

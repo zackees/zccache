@@ -637,7 +637,13 @@ async fn first_compile_waits_for_background_depgraph_load_before_cold_skip() {
 
         let (endpoint1, handle1) = start_daemon_like_zccache_daemon().await;
         let mut client1 = connect(&endpoint1).await;
-        let session1 = start_session(&mut client1, &project_dir).await;
+        let first_log_path = tmp.path().join("first-compile-session.log");
+        let session1 = start_session_with_log(
+            &mut client1,
+            &project_dir,
+            Some(NormalizedPath::from(first_log_path.as_path())),
+        )
+        .await;
         let first = compile_rustc(
             &mut client1,
             &session1,
@@ -649,8 +655,9 @@ async fn first_compile_waits_for_background_depgraph_load_before_cold_skip() {
         assert_eq!(
             first.exit_code,
             0,
-            "first rustc compile failed: {}",
+            "first rustc compile failed: {}\nfirst session log:\n{}",
             String::from_utf8_lossy(&first.stderr),
+            std::fs::read_to_string(&first_log_path).unwrap_or_default(),
         );
         assert!(!first.cached, "first compile should populate the cache");
         assert_outputs_exist(&outputs, "first compile");
@@ -663,7 +670,17 @@ async fn first_compile_waits_for_background_depgraph_load_before_cold_skip() {
             "graceful shutdown should flush depgraph to {}",
             depgraph_path.display(),
         );
-
+        match classify_load(&depgraph_path) {
+            DepGraphLoadOutcome::Loaded { graph } => assert_eq!(
+                graph.contexts_with_artifact_key(),
+                1,
+                "graceful shutdown must persist the first compile's artifact key"
+            ),
+            outcome => panic!(
+                "graceful shutdown wrote an unloadable depgraph at {}: {outcome:?}",
+                depgraph_path.display()
+            ),
+        }
         let (endpoint2, handle2, load_handle) =
             start_daemon_with_delayed_background_depgraph_load(std::time::Duration::from_secs(3))
                 .await;
@@ -702,7 +719,9 @@ async fn first_compile_waits_for_background_depgraph_load_before_cold_skip() {
         );
         assert!(
             session_log.contains("verdict=Hit") || session_log.contains("verdict=SourceChanged"),
-            "first compile should consult the loaded depgraph after the wait; session log:\n{session_log}",
+            "first compile should consult the loaded depgraph after the wait; \
+             first session log:\n{}\nsecond session log:\n{session_log}",
+            std::fs::read_to_string(&first_log_path).unwrap_or_default(),
         );
         assert_outputs_exist(&outputs, "cached restore");
         load_handle.await.expect("depgraph load task join");
