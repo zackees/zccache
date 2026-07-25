@@ -7,3 +7,4 @@ LL |     if let Some(entry) = cache.get("key") {
    = note: `#[deny(ban_dashmap_guard_across_blocking)]` on by default
 
 error: aborting due to 1 previous error
+
