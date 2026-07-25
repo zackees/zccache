@@ -153,6 +153,13 @@ jobs:
           export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-26 rustc)"
           export RUSTUP_TOOLCHAIN=nightly-2026-05-26
           soldr rustup run nightly-2026-05-26 cargo test --manifest-path dylints/ban_normalized_path_deref_containment/Cargo.toml
+      - name: Check Dylint Library Formatting (ban_dashmap_guard_across_blocking)
+        run: soldr cargo fmt --manifest-path dylints/ban_dashmap_guard_across_blocking/Cargo.toml --all -- --check
+      - name: Test Dylint Library (ban_dashmap_guard_across_blocking)
+        run: |
+          export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-26 rustc)"
+          export RUSTUP_TOOLCHAIN=nightly-2026-05-26
+          soldr cargo test --manifest-path dylints/ban_dashmap_guard_across_blocking/Cargo.toml
       - name: Run Dylint
         run: |
           export PATH="${CARGO_HOME}/bin:${PATH}"
