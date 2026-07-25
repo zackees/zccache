@@ -533,7 +533,62 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
             }
         }
     }
-    let synchronous_persist = synchronous_persist && staged_cc_materialization.is_none();
+    // Rust has the same private output plan as C/C++, but publication used to
+    // run before requested-output materialization so the plan's sources could
+    // not disappear underneath the durable store. Materialize first without
+    // cleanup, then transfer plan ownership to the detached publisher.
+    let staged_rust_persist_plan =
+        if let Some(plan) = is_rustc.then(|| staged_plan.take()).flatten() {
+            use crate::daemon::staged_stats::{
+                StagedBytes, StagedCounter, StagedFailure, StagedTiming,
+            };
+            let started = std::time::Instant::now();
+            match plan.materialize_without_cleanup() {
+                Ok(materialized) => {
+                    state.profiler.staged.add_count(
+                        StagedCounter::MaterializeReflink,
+                        materialized.reflink_count,
+                    );
+                    state
+                        .profiler
+                        .staged
+                        .add_count(StagedCounter::MaterializeCopy, materialized.copy_count);
+                    state
+                        .profiler
+                        .staged
+                        .bytes(StagedBytes::Materialization, materialized.copy_bytes);
+                    state.profiler.staged.timing(
+                        StagedTiming::MissMaterialization,
+                        started.elapsed().as_nanos() as u64,
+                    );
+                    compiler_output_path = output_path.clone();
+                    state.cache_system.apply_changes(vec![output_path.clone()]);
+                    Some(plan)
+                }
+                Err(error) => {
+                    state
+                        .profiler
+                        .staged
+                        .count(StagedCounter::MaterializeFailure);
+                    state
+                        .profiler
+                        .staged
+                        .failure(StagedFailure::RequestedMaterialization);
+                    state.profiler.staged.timing(
+                        StagedTiming::MissMaterialization,
+                        started.elapsed().as_nanos() as u64,
+                    );
+                    return Some(Response::Error {
+                        message: format!("failed to materialize compiler output: {error}"),
+                    });
+                }
+            }
+        } else {
+            None
+        };
+    let synchronous_persist = synchronous_persist
+        && staged_cc_materialization.is_none()
+        && staged_rust_persist_plan.is_none();
 
     // Acquire exactly one owned guard and either retain it for synchronous
     // publication or transfer it to the detached persist task. Re-acquiring a
@@ -556,6 +611,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
                 output_data,
                 user_depfile: user_depfile_capture,
                 user_depfile_persist_temp,
+                staged_persist_plan: staged_rust_persist_plan,
                 rustc_all_outputs: rustc_all_outputs.as_deref(),
                 stdout: &stdout,
                 stderr: &stderr,
@@ -580,142 +636,11 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         rust_snapshot_copy_count,
         rust_snapshot_copy_bytes,
         rust_snapshot_error_count,
-        staged_failure_reason,
+        staged_failure_reason: _,
         artifact_index_build_ns,
         artifact_index_persist_ns,
         artifact_memory_insert_ns,
     } = store_stats;
-
-    if let Some(plan) = staged_plan {
-        use crate::daemon::staged_stats::{
-            StagedBytes, StagedCounter, StagedFailure, StagedTiming,
-        };
-        let salvage = rust_snapshot_error_count > 0;
-        let salvage_reason = staged_failure_reason.unwrap_or("publication");
-        let output_count = plan.output_paths().len();
-        let materialize_started = std::time::Instant::now();
-        if salvage {
-            state.profiler.staged.count(StagedCounter::SalvageAttempt);
-            crate::core::lifecycle::write_event(
-                crate::core::lifecycle::EVENT_STAGED_SALVAGE_STARTED,
-                serde_json::json!({
-                    "reason": salvage_reason,
-                    "output_count": output_count,
-                    "copied_bytes": 0,
-                    "elapsed_ns": 0,
-                }),
-            );
-        }
-        match plan.materialize() {
-            Ok(materialized) => {
-                let elapsed_ns = materialize_started.elapsed().as_nanos() as u64;
-                state.profiler.staged.add_count(
-                    StagedCounter::MaterializeReflink,
-                    materialized.reflink_count,
-                );
-                state
-                    .profiler
-                    .staged
-                    .add_count(StagedCounter::MaterializeCopy, materialized.copy_count);
-                state
-                    .profiler
-                    .staged
-                    .bytes(StagedBytes::Materialization, materialized.copy_bytes);
-                if salvage {
-                    state.profiler.staged.count(StagedCounter::SalvageSuccess);
-                    state
-                        .profiler
-                        .staged
-                        .timing(StagedTiming::Salvage, elapsed_ns);
-                    state
-                        .profiler
-                        .staged
-                        .bytes(StagedBytes::Salvage, materialized.copy_bytes);
-                    crate::core::lifecycle::write_event(
-                        crate::core::lifecycle::EVENT_STAGED_SALVAGE_COMPLETE,
-                        serde_json::json!({
-                            "reason": salvage_reason,
-                            "output_count": output_count,
-                            "copied_bytes": materialized.copy_bytes,
-                            "elapsed_ns": elapsed_ns,
-                        }),
-                    );
-                } else {
-                    state
-                        .profiler
-                        .staged
-                        .timing(StagedTiming::MissMaterialization, elapsed_ns);
-                }
-            }
-            Err(error) => {
-                let elapsed_ns = materialize_started.elapsed().as_nanos() as u64;
-                let progress = materialization_error_progress(&error);
-                state
-                    .profiler
-                    .staged
-                    .add_count(StagedCounter::MaterializeReflink, progress.reflink_count);
-                state
-                    .profiler
-                    .staged
-                    .add_count(StagedCounter::MaterializeCopy, progress.copy_count);
-                state
-                    .profiler
-                    .staged
-                    .bytes(StagedBytes::Materialization, progress.copy_bytes);
-                state
-                    .profiler
-                    .staged
-                    .count(StagedCounter::MaterializeFailure);
-                state
-                    .profiler
-                    .staged
-                    .failure(StagedFailure::RequestedMaterialization);
-                if salvage {
-                    state.profiler.staged.count(StagedCounter::SalvageFailure);
-                    state.profiler.staged.failure(StagedFailure::Salvage);
-                    state
-                        .profiler
-                        .staged
-                        .timing(StagedTiming::Salvage, elapsed_ns);
-                    state
-                        .profiler
-                        .staged
-                        .bytes(StagedBytes::Salvage, progress.copy_bytes);
-                    crate::core::lifecycle::write_event(
-                        crate::core::lifecycle::EVENT_STAGED_SALVAGE_FAILED,
-                        serde_json::json!({
-                            "reason": "requested_materialization",
-                            "output_count": output_count,
-                            "copied_bytes": progress.copy_bytes,
-                            "elapsed_ns": elapsed_ns,
-                        }),
-                    );
-                } else {
-                    state
-                        .profiler
-                        .staged
-                        .timing(StagedTiming::MissMaterialization, elapsed_ns);
-                    crate::core::lifecycle::write_event(
-                        crate::core::lifecycle::EVENT_STAGED_MATERIALIZATION_FAILED,
-                        serde_json::json!({
-                            "reason": "requested_materialization",
-                            "output_count": output_count,
-                            "copied_bytes": progress.copy_bytes,
-                            "elapsed_ns": elapsed_ns,
-                        }),
-                    );
-                }
-                write_session_log(
-                    &state.sessions,
-                    sid,
-                    &format!("[DIAG] staged_materialization_failed: {error}"),
-                );
-                return Some(Response::Error {
-                    message: format!("failed to materialize compiler output: {error}"),
-                });
-            }
-        }
-    }
 
     // Record miss phase profile
     let total_ns = compile_start.elapsed().as_nanos() as u64;

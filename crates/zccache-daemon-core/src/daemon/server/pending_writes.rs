@@ -70,11 +70,10 @@ use tokio::sync::Notify;
 pub(super) const PENDING_WAIT_TIMEOUT: Duration = Duration::from_millis(5);
 
 /// Longer wait used when the depgraph has already proven a cache hit and the
-/// only remaining race is rustc payload publication. This stays within the
-/// documented pending-entry blast radius while avoiding an immediate
-/// recompile if the build removes its just-produced output before the async
-/// persist task has linked/copied the cache payloads.
-pub(super) const PENDING_PAYLOAD_WAIT_TIMEOUT: Duration = Duration::from_millis(50);
+/// only remaining race is rustc staged-payload publication. This prevents an
+/// immediate duplicate compile while a large artifact is being durably
+/// snapshotted; ordinary pending-write probes retain their 5 ms bound.
+pub(super) const PENDING_PAYLOAD_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Informational upper bound on how long a pending entry is expected to
 /// live. Used by adversarial tests to flag leaked entries — not enforced
@@ -134,12 +133,37 @@ pub(super) async fn await_pending(
     key: &str,
     timeout: Duration,
 ) -> bool {
+    await_pending_capped(pending, key, timeout, PENDING_WAIT_TIMEOUT).await
+}
+
+/// Wait for a known payload-publication race. Callers use this only after a
+/// cache key has already been proven, so waiting for durable publication is
+/// preferable to recompiling the same artifact through an uncached path.
+pub(super) async fn await_pending_payload(
+    pending: &DashMap<String, Arc<Notify>>,
+    key: &str,
+) -> bool {
+    await_pending_capped(
+        pending,
+        key,
+        PENDING_PAYLOAD_WAIT_TIMEOUT,
+        PENDING_PAYLOAD_WAIT_TIMEOUT,
+    )
+    .await
+}
+
+async fn await_pending_capped(
+    pending: &DashMap<String, Arc<Notify>>,
+    key: &str,
+    timeout: Duration,
+    maximum: Duration,
+) -> bool {
     let Some(notify) = pending.get(key).map(|entry| Arc::clone(&entry)) else {
         return false;
     };
     // Cap the caller's requested timeout at the pending-entry blast radius so
     // a mis-specified caller can't extend the registry's scope indefinitely.
-    let capped = timeout.min(PENDING_PAYLOAD_WAIT_TIMEOUT);
+    let capped = timeout.min(maximum);
     if capped.is_zero() {
         return true;
     }

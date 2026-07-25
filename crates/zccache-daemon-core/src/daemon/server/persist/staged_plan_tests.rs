@@ -197,6 +197,45 @@ fn logical_depfile_rewrite_failure_is_propagated_before_publication() {
 }
 
 #[test]
+fn deferred_materialization_keeps_staged_source_for_durable_publication() {
+    let temp = tempdir().unwrap();
+    let root: NormalizedPath = temp.path().join("private").into();
+    std::fs::create_dir_all(root.as_path()).unwrap();
+    let requested: NormalizedPath = temp.path().join("requested/libfixture.rlib").into();
+    let staged: NormalizedPath = root.join("libfixture.rlib");
+    std::fs::write(staged.as_path(), b"compiled artifact").unwrap();
+    let plan = StagedCompilePlan::for_test(
+        root.clone(),
+        vec![StagedOutputPlan {
+            requested: requested.clone(),
+            staged: staged.clone(),
+            role: StagedOutputRole::Regular,
+        }],
+    );
+
+    plan.materialize_without_cleanup().unwrap();
+
+    assert_eq!(
+        std::fs::read(requested.as_path()).unwrap(),
+        b"compiled artifact"
+    );
+    assert!(
+        staged.exists(),
+        "publisher must retain access to the staged source"
+    );
+    assert!(
+        root.exists(),
+        "staging root must outlive response materialization"
+    );
+
+    plan.cleanup().unwrap();
+    assert!(
+        !root.exists(),
+        "publisher cleanup must reclaim the private staging root"
+    );
+}
+
+#[test]
 fn cc_custom_mf_destination_is_classified_as_a_depfile() {
     if !staged_tests_enabled() {
         return;
