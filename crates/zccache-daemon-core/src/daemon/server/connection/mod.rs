@@ -43,13 +43,19 @@ const SERVER_REQUEST_RECV_TIMEOUT: std::time::Duration = std::time::Duration::fr
 pub(in crate::daemon::server) struct PendingJournalContext {
     context: JournalContext,
     attributed_miss_reason: Option<&'static str>,
+    context_key: Option<String>,
 }
 
 impl PendingJournalContext {
-    fn new(context: JournalContext, attributed_miss_reason: Option<&'static str>) -> Self {
+    fn new(
+        context: JournalContext,
+        attributed_miss_reason: Option<&'static str>,
+        context_key: Option<String>,
+    ) -> Self {
         Self {
             context,
             attributed_miss_reason,
+            context_key,
         }
     }
 }
@@ -280,6 +286,7 @@ pub(super) async fn handle_connection(
             let PendingJournalContext {
                 context: ctx,
                 attributed_miss_reason,
+                context_key,
             } = pending;
             let (outcome, exit_code, miss_reason) = extract_outcome(&response)?;
             let latency_ns = journal_start.elapsed().as_nanos();
@@ -307,9 +314,10 @@ pub(super) async fn handle_connection(
                 miss_reason,
                 session_journal_path,
                 profile_on,
+                context_key,
             ))
         });
-        if let Some((ctx, _, _, latency_ns, reason, _, _)) = journal_payload.as_ref() {
+        if let Some((ctx, _, _, latency_ns, reason, _, _, _)) = journal_payload.as_ref() {
             if *reason == Some(miss_reason::UNKNOWN) {
                 append_unknown_miss_warning(&mut response, ctx, *latency_ns);
             }
@@ -328,9 +336,11 @@ pub(super) async fn handle_connection(
             miss_reason,
             session_journal_path,
             profile_on,
+            context_key,
         )) = journal_payload
         {
-            let entry = JournalEntry::new(ctx, outcome, exit_code, latency_ns, miss_reason);
+            let entry = JournalEntry::new(ctx, outcome, exit_code, latency_ns, miss_reason)
+                .with_context_key(context_key);
             // Issue #256: extended-journal fields are populated only
             // for sessions that opted in via session-start --profile.
             //

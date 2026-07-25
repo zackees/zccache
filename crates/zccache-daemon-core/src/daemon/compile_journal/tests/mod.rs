@@ -59,6 +59,7 @@ pub(super) fn legacy_entry(
         exit_code,
         session_id,
         latency_ns,
+        context_key: None,
         crate_name: None,
         crate_type: None,
         output_ext: None,

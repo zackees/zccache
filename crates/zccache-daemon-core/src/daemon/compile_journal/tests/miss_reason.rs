@@ -7,8 +7,8 @@ use std::sync::Arc;
 use crate::protocol::Response;
 
 use super::super::{
-    capture_miss_reason, extract_outcome, miss_reason, record_miss_reason, CompileJournal,
-    JournalContext, JournalEntry, MissDiff,
+    capture_miss_reason, extract_outcome, miss_reason, record_context_key, record_miss_reason,
+    CompileJournal, JournalContext, JournalEntry, MissDiff,
 };
 use super::wait_for_lines;
 
@@ -137,7 +137,7 @@ fn every_miss_reason_has_a_production_emitter() {
 
 #[tokio::test]
 async fn miss_attribution_keeps_the_most_specific_observation() {
-    let (_, reason) = capture_miss_reason(Box::pin(async {
+    let (_, reason, _) = capture_miss_reason(Box::pin(async {
         record_miss_reason(miss_reason::CONTEXT_NOT_FOUND);
         record_miss_reason(miss_reason::VERSION_SKEW);
         record_miss_reason(miss_reason::INPUT_FINGERPRINT_MISMATCH);
@@ -145,6 +145,16 @@ async fn miss_attribution_keeps_the_most_specific_observation() {
     }))
     .await;
     assert_eq!(reason, Some(miss_reason::DESTINATION_WRITE_FAILED));
+}
+
+#[tokio::test]
+async fn compile_scope_captures_the_context_key() {
+    let key = crate::depgraph::ContextKey::from_raw([0x2a; 32]);
+    let (_, _, captured) = capture_miss_reason(Box::pin(async {
+        record_context_key(&key);
+    }))
+    .await;
+    assert_eq!(captured, Some("2a".repeat(32)));
 }
 
 // ─── JournalEntry::new miss_reason threading ──────────────────────────────
