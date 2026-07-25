@@ -81,6 +81,14 @@ jobs:
           # than setup-soldr's 5 GiB default.
           SOLDR_TARGET_BLOCK_FREE_GB: "2"
         run: |
+          # The build cache can contain zccache COW materializations, whose
+          # artifacts are intentionally read-only while shared with the cache.
+          # This prebuild bypasses zccache, so rustc cannot detach them before
+          # overwriting a stale output. The restored target tree is private to
+          # this runner; make those files writable before invoking rustc.
+          if [[ -d target ]]; then
+            find target -type f ! -perm -u+w -exec chmod u+w {} +
+          fi
           soldr cargo test --workspace --features "$ZCCACHE_INTEGRATION_FEATURES" --no-fail-fast --no-run
           soldr cargo build -p zccache --features ci-bin --bin zccache-ci
       - name: Stop setup-soldr builder cache before tests
