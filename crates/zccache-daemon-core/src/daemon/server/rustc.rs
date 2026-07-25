@@ -131,7 +131,7 @@ pub(super) fn build_rustc_compile_context(
     client_env: &[(String, String)],
     compiler_hash_cache: &CompilerHashCache,
 ) -> BuildContextResult {
-    let rustc_args = crate::depgraph::parse_rustc_args(rustc_args(compilation), cwd);
+    let mut rustc_args = crate::depgraph::parse_rustc_args(rustc_args(compilation), cwd);
     let compiler_identity_path = rustc_identity_path(compilation, cwd);
 
     // Compiler identity for the cache key. Different rustc versions
@@ -147,6 +147,16 @@ pub(super) fn build_rustc_compile_context(
     let compiler_hash = compiler_hash_cache
         .get_or_hash_rustc_identity(compiler_identity_path.as_path())
         .unwrap_or(COMPILER_HASH_UNAVAILABLE);
+    if let Some(linker) = rustc_args
+        .linker
+        .clone()
+        .filter(|_| is_dylint_cdylib_args(&rustc_args))
+    {
+        let linker_hash = compiler_hash_cache
+            .get_or_hash_with(&linker, hash_cc_identity)
+            .unwrap_or(COMPILER_HASH_UNAVAILABLE);
+        add_dylint_linker_key_material(&mut rustc_args, linker_hash);
+    }
 
     let rustc_ctx = crate::depgraph::RustcCompileContext::from_parsed_args(
         &rustc_args,
@@ -179,13 +189,24 @@ pub(super) async fn build_rustc_compile_context_async(
     client_env: &[(String, String)],
     compiler_hash_cache: &CompilerHashCache,
 ) -> BuildContextResult {
-    let rustc_args = crate::depgraph::parse_rustc_args(rustc_args(compilation), cwd);
+    let mut rustc_args = crate::depgraph::parse_rustc_args(rustc_args(compilation), cwd);
     let compiler_identity_path = rustc_identity_path(compilation, cwd);
 
     let compiler_hash = compiler_hash_cache
         .get_or_hash_rustc_identity_async(compiler_identity_path.as_path())
         .await
         .unwrap_or(COMPILER_HASH_UNAVAILABLE);
+    if let Some(linker) = rustc_args
+        .linker
+        .clone()
+        .filter(|_| is_dylint_cdylib_args(&rustc_args))
+    {
+        let linker_hash = compiler_hash_cache
+            .get_or_hash_with_async(&linker, hash_cc_identity_async)
+            .await
+            .unwrap_or(COMPILER_HASH_UNAVAILABLE);
+        add_dylint_linker_key_material(&mut rustc_args, linker_hash);
+    }
 
     let rustc_ctx = crate::depgraph::RustcCompileContext::from_parsed_args(
         &rustc_args,
@@ -208,6 +229,36 @@ pub(super) async fn build_rustc_compile_context_async(
         compat_ctx,
         rustc_args: Box::new(rustc_args),
     }
+}
+
+fn is_dylint_cdylib_args(args: &crate::depgraph::RustcParsedArgs) -> bool {
+    !cfg!(target_os = "windows")
+        && args.crate_types == ["cdylib"]
+        && args.target.is_none()
+        && args.extra_filename.as_deref().is_none_or(str::is_empty)
+        && args.linker.as_ref().is_some_and(|linker| {
+            linker
+                .file_stem()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|stem| stem.eq_ignore_ascii_case("dylint-link"))
+        })
+        && args.out_dir.as_ref().is_some_and(|out_dir| {
+            let components: Vec<_> = out_dir.components().collect();
+            components.windows(2).any(|pair| {
+                pair[0].as_os_str() == std::ffi::OsStr::new("dylint")
+                    && pair[1].as_os_str() == std::ffi::OsStr::new("libraries")
+            })
+        })
+}
+
+fn add_dylint_linker_key_material(
+    args: &mut crate::depgraph::RustcParsedArgs,
+    linker_hash: ContentHash,
+) {
+    args.codegen_flags
+        .push(format!("dylint-linker-hash={linker_hash}"));
+    args.codegen_flags.extend(args.linker_args.clone());
+    args.codegen_flags.sort();
 }
 
 fn rustc_args(compilation: &crate::compiler::CacheableCompilation) -> &[String] {
@@ -451,6 +502,7 @@ pub(super) fn rustc_expected_output_paths(
     rustc_args: &crate::depgraph::RustcParsedArgs,
     primary_output_path: &Path,
     cwd: &Path,
+    client_env: Option<&[(String, String)]>,
 ) -> Vec<NormalizedPath> {
     let explicit_link = rustc_args
         .explicit_emit_paths
@@ -512,7 +564,83 @@ pub(super) fn rustc_expected_output_paths(
         }
     }
 
+    if let Some(sidecar) =
+        dylint_library_sidecar_output_path(rustc_args, primary_output_path, cwd, client_env)
+    {
+        push_unique_output_path(&mut paths, sidecar);
+    }
+
     paths
+}
+
+fn dylint_library_sidecar_output_path(
+    rustc_args: &crate::depgraph::RustcParsedArgs,
+    primary_output_path: &Path,
+    cwd: &Path,
+    client_env: Option<&[(String, String)]>,
+) -> Option<NormalizedPath> {
+    if cfg!(target_os = "windows") || rustc_args.crate_types != ["cdylib"] {
+        return None;
+    }
+    let linker_stem = rustc_args.linker.as_ref()?.file_stem()?.to_str()?;
+    if !linker_stem.eq_ignore_ascii_case("dylint-link") {
+        return None;
+    }
+    let out_dir = rustc_args.out_dir.as_ref()?;
+    let components: Vec<_> = out_dir.components().collect();
+    if !components.windows(2).any(|pair| {
+        pair[0].as_os_str() == std::ffi::OsStr::new("dylint")
+            && pair[1].as_os_str() == std::ffi::OsStr::new("libraries")
+    }) {
+        return None;
+    }
+    let env = client_env?;
+    let env_value = |name: &str| {
+        env.iter()
+            .find_map(|(key, value)| (key == name).then_some(value.as_str()))
+    };
+    let package_name = env_value("CARGO_PKG_NAME")?.replace('-', "_");
+    let crate_name = rustc_args.crate_name.as_deref()?;
+    if package_name != crate_name {
+        return None;
+    }
+    let toolchain = env_value("RUSTUP_TOOLCHAIN")?.trim();
+    if toolchain.is_empty() {
+        return None;
+    }
+
+    let primary = if primary_output_path.is_absolute() {
+        NormalizedPath::new(primary_output_path)
+    } else {
+        NormalizedPath::new(cwd).join(primary_output_path)
+    };
+    let parent = primary.parent()?;
+    let sidecar_dir = if parent.file_name() == Some(std::ffi::OsStr::new("deps")) {
+        parent.parent()?
+    } else {
+        parent
+    };
+    let suffix = if cfg!(target_os = "macos") {
+        ".dylib"
+    } else {
+        ".so"
+    };
+    Some(
+        sidecar_dir
+            .join(format!("lib{crate_name}@{toolchain}{suffix}"))
+            .into(),
+    )
+}
+
+pub(super) fn dylint_cdylib_has_complete_output_identity(
+    rustc_args: &crate::depgraph::RustcParsedArgs,
+    primary_output_path: &Path,
+    cwd: &Path,
+    client_env: Option<&[(String, String)]>,
+) -> bool {
+    rustc_args.crate_types != ["cdylib"]
+        || dylint_library_sidecar_output_path(rustc_args, primary_output_path, cwd, client_env)
+            .is_some()
 }
 
 /// Collect output file metadata from a rustc compilation without reading bytes.
@@ -733,5 +861,48 @@ pub(super) fn rust_remap_gate(
         RustRemapGate::OldOutsideRoot
     } else {
         RustRemapGate::Missing
+    }
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+mod dylint_sidecar_tests {
+    use super::*;
+
+    #[test]
+    fn perf_dylint_cdylib_models_toolchain_sidecar_as_complete_output_set() {
+        let cwd = Path::new("/repo");
+        let out_dir = "/repo/target/dylint/libraries/nightly/release/deps";
+        let args = vec![
+            "--crate-name=lint".to_string(),
+            "--crate-type=cdylib".to_string(),
+            "--emit=link".to_string(),
+            format!("--out-dir={out_dir}"),
+            "-Clinker=/tools/dylint-link".to_string(),
+            "src/lib.rs".to_string(),
+        ];
+        let parsed = crate::depgraph::parse_rustc_args(&args, cwd);
+        let extension = if cfg!(target_os = "macos") {
+            "dylib"
+        } else {
+            "so"
+        };
+        let primary = Path::new(out_dir).join(format!("liblint.{extension}"));
+        let env = vec![
+            ("CARGO_PKG_NAME".to_string(), "lint".to_string()),
+            (
+                "RUSTUP_TOOLCHAIN".to_string(),
+                "nightly-2026-01-18-x86_64-unknown-linux-gnu".to_string(),
+            ),
+        ];
+
+        let outputs = rustc_expected_output_paths(&parsed, &primary, cwd, Some(&env));
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0], NormalizedPath::new(&primary));
+        assert!(outputs[1].ends_with(format!(
+            "release/liblint@nightly-2026-01-18-x86_64-unknown-linux-gnu.{extension}"
+        )));
+
+        let without_identity = rustc_expected_output_paths(&parsed, &primary, cwd, None);
+        assert_eq!(without_identity, vec![NormalizedPath::new(primary)]);
     }
 }

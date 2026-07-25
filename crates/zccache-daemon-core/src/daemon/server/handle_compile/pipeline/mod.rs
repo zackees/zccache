@@ -376,6 +376,44 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
     } else {
         cwd_path.join(&compilation.output_file)
     };
+    if compilation.family == crate::compiler::CompilerFamily::Rustc {
+        let rustc_args = crate::depgraph::parse_rustc_args(
+            crate::compiler::dylint_inner_rustc_args(compiler_str, &effective_args)
+                .ok()
+                .flatten()
+                .map_or(effective_args.as_slice(), |(_, inner)| inner),
+            cwd,
+        );
+        if rustc_args.crate_types == ["cdylib"]
+            && !dylint_cdylib_has_complete_output_identity(
+                &rustc_args,
+                output_path.as_path(),
+                cwd,
+                client_env.as_deref(),
+            )
+        {
+            state.stats.record_non_cacheable();
+            record_session_stat(&state.sessions, &sid, |tracker| {
+                tracker.record_non_cacheable()
+            });
+            write_session_log(
+                &state.sessions,
+                &sid,
+                "non-cacheable: Dylint cdylib output identity is incomplete",
+            );
+            return run_compiler_direct(
+                &compiler,
+                args,
+                cwd,
+                &state.sessions,
+                &sid,
+                &client_env,
+                &stdin,
+                state.depfile_tmpdir.as_path(),
+            )
+            .await;
+        }
+    }
 
     // ── Phase: build context + register ──────────────────────────────
     wait_for_startup_depgraph_load(state, &sid).await;
@@ -878,8 +916,12 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                         pending_writes::PENDING_WAIT_TIMEOUT,
                     )
                     .await;
-                    let requested_outputs =
-                        rustc_expected_output_paths(rustc_args, output_path.as_path(), cwd);
+                    let requested_outputs = rustc_expected_output_paths(
+                        rustc_args,
+                        output_path.as_path(),
+                        cwd,
+                        client_env.as_deref(),
+                    );
                     if let Ok(response) =
                         materialize_cached_compile_hit(CachedHitMaterializeRequest {
                             state,

@@ -17,11 +17,13 @@ use super::{CacheableCompilation, CompilerFamily, ParsedInvocation};
 ///   content, deps, and compiler identity, so the safety contract
 ///   is the same as any other rustc invocation.
 ///   Crate types zccache caches (zccache#1021 documents the exclusions):
-///   `dylib` and `cdylib` are deliberately NOT cacheable — dynamic
+///   `dylib` and general `cdylib` are deliberately NOT cacheable — dynamic
 ///   libraries embed platform linker state (soname/install-name, import
 ///   libs) that the artifact store does not model, so PyO3/maturin
 ///   `cdylib` final artifacts recompile every time while their rlib deps
-///   still hit.
+///   still hit. A Dylint lint-library `cdylib` is the narrow exception:
+///   its declared library and toolchain-qualified byte-copy sidecar are
+///   modeled as one complete artifact set by the daemon.
 const RUSTC_CACHEABLE_CRATE_TYPES: &[&str] = &["lib", "rlib", "staticlib", "proc-macro", "bin"];
 
 /// Host dynamic-library file-name pattern for proc-macros, matching
@@ -35,6 +37,35 @@ fn rustc_proc_macro_filename(crate_name: &str, extra: &str) -> String {
     } else {
         format!("lib{crate_name}{extra}.so")
     }
+}
+
+/// Host dynamic-library file-name pattern for a Dylint lint cdylib.
+fn rustc_dylint_cdylib_filename(crate_name: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("lib{crate_name}.dylib")
+    } else {
+        format!("lib{crate_name}.so")
+    }
+}
+
+fn is_dylint_linker(linker: Option<&str>) -> bool {
+    linker.is_some_and(|linker| {
+        std::path::Path::new(linker)
+            .file_stem()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|stem| stem.eq_ignore_ascii_case("dylint-link"))
+    })
+}
+
+fn is_dylint_library_out_dir(out_dir: Option<&str>) -> bool {
+    let Some(out_dir) = out_dir else {
+        return false;
+    };
+    let components: Vec<_> = std::path::Path::new(out_dir).components().collect();
+    components.windows(2).any(|pair| {
+        pair[0].as_os_str() == std::ffi::OsStr::new("dylint")
+            && pair[1].as_os_str() == std::ffi::OsStr::new("libraries")
+    })
 }
 
 /// Host executable file-name pattern for `--crate-type bin`. Windows
@@ -113,6 +144,7 @@ pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedI
     let mut out_dir: Option<String> = None;
     let mut crate_name: Option<String> = None;
     let mut extra_filename: Option<String> = None;
+    let mut linker: Option<String> = None;
     let mut target: Option<&str> = None;
     let mut emit_types: Vec<String> = Vec::new();
     let mut explicit_link_output: Option<String> = None;
@@ -230,6 +262,9 @@ pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedI
                 if let Some(val) = next.strip_prefix("extra-filename=") {
                     extra_filename = Some(val.to_string());
                 }
+                if let Some(val) = next.strip_prefix("linker=") {
+                    linker = Some(val.to_string());
+                }
                 i += 2;
                 continue;
             }
@@ -237,6 +272,9 @@ pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedI
             if !rest.is_empty() {
                 if let Some(val) = rest.strip_prefix("extra-filename=") {
                     extra_filename = Some(val.to_string());
+                }
+                if let Some(val) = rest.strip_prefix("linker=") {
+                    linker = Some(val.to_string());
                 }
                 i += 1;
                 continue;
@@ -311,9 +349,21 @@ pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedI
         crate_types.push("bin".to_string());
     }
 
-    // Check all crate types are cacheable
+    // The Dylint bootstrap is the only cdylib form whose full output set is
+    // modeled. Keep it host-only and reject extra-filename because
+    // dylint-link's package-name guard would not create the sidecar.
+    let is_dylint_cdylib = !cfg!(target_os = "windows")
+        && crate_types == ["cdylib"]
+        && target.is_none()
+        && extra_filename.as_deref().is_none_or(str::is_empty)
+        && is_dylint_linker(linker.as_deref())
+        && is_dylint_library_out_dir(out_dir.as_deref());
+
+    // Check all crate types are cacheable.
     for ct in &crate_types {
-        if !RUSTC_CACHEABLE_CRATE_TYPES.contains(&ct.as_str()) {
+        if !(RUSTC_CACHEABLE_CRATE_TYPES.contains(&ct.as_str())
+            || ct == "cdylib" && is_dylint_cdylib)
+        {
             return ParsedInvocation::NonCacheable {
                 reason: format!("non-cacheable crate type: {ct}"),
             };
@@ -377,6 +427,8 @@ pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedI
             format!("{name}{suffix}.mir")
         } else if is_proc_macro {
             rustc_proc_macro_filename(name, suffix)
+        } else if is_dylint_cdylib {
+            rustc_dylint_cdylib_filename(name)
         } else if is_bin {
             rustc_bin_filename(name, suffix, target)
         } else if crate_types.iter().any(|t| t == "staticlib") {
@@ -412,6 +464,8 @@ pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedI
             format!("{name}.mir")
         } else if is_proc_macro {
             rustc_proc_macro_filename(name, "")
+        } else if is_dylint_cdylib {
+            rustc_dylint_cdylib_filename(name)
         } else if is_bin {
             rustc_bin_filename(name, "", target)
         } else if crate_types.iter().any(|t| t == "staticlib") {

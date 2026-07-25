@@ -131,7 +131,8 @@ pub(super) async fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Op
     } else {
         "HIT_WORKTREE_REQUEST"
     };
-    let rustc_requested_outputs = rustc_explicit_requested_outputs(rustc_args, &output_path, cwd);
+    let rustc_requested_outputs =
+        rustc_requested_outputs(rustc_args, &output_path, cwd, client_env);
     let rustc_archive_hardlink_eligible =
         is_rustc.then(|| crate::compiler::rustc_archive_hardlink_eligible(rustc_args));
     materialize_cached_compile_hit(CachedHitMaterializeRequest {
@@ -263,7 +264,7 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
         dep_flags.and_then(|flags| user_depfile_destination(flags, output_path.as_path()))
     };
     let rustc_requested_outputs = if is_rustc {
-        rustc_explicit_requested_outputs(rustc_args, output_path, cwd_path)
+        rustc_requested_outputs(rustc_args, output_path, cwd_path, client_env)
     } else {
         None
     };
@@ -395,7 +396,7 @@ pub(super) async fn try_depgraph_cached_hit(
         dep_flags.and_then(|flags| user_depfile_destination(flags, output_path.as_path()))
     };
     let rustc_requested_outputs = if is_rustc {
-        rustc_explicit_requested_outputs(rustc_args, output_path, cwd_path)
+        rustc_requested_outputs(rustc_args, output_path, cwd_path, client_env)
     } else {
         None
     };
@@ -479,20 +480,23 @@ pub(super) async fn try_depgraph_cached_hit(
 /// shape, but the cache payload names are the producer's names.  Supply the
 /// current request's complete output map so a hit restores custom destinations
 /// instead of placing payloads beside the primary output by basename.
-fn rustc_explicit_requested_outputs(
+fn rustc_requested_outputs(
     effective_args: &[String],
     output_path: &NormalizedPath,
     cwd: &Path,
+    client_env: Option<&[(String, String)]>,
 ) -> Option<Vec<NormalizedPath>> {
     let parsed = crate::depgraph::parse_rustc_args(effective_args, cwd);
-    if parsed.explicit_emit_paths.is_empty() {
-        return None;
-    }
-    Some(crate::daemon::server::rustc_expected_output_paths(
+    let outputs = crate::daemon::server::rustc_expected_output_paths(
         &parsed,
         output_path.as_path(),
         cwd,
-    ))
+        client_env,
+    );
+    if parsed.explicit_emit_paths.is_empty() && outputs.len() == 1 {
+        return None;
+    }
+    Some(outputs)
 }
 
 fn rustc_requested_depfile(effective_args: &[String], cwd: &Path) -> Option<NormalizedPath> {

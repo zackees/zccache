@@ -104,7 +104,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     }
 
     let expected_outputs = if let Some(rustc_args) = rustc_args_opt {
-        rustc_expected_output_paths(rustc_args, output_path, cwd_path)
+        rustc_expected_output_paths(rustc_args, output_path, cwd_path, client_env.as_deref())
     } else {
         vec![output_path.clone()]
     };
