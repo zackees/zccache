@@ -9,13 +9,46 @@
 )]
 
 use std::os::unix::fs::PermissionsExt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use zccache::core::NormalizedPath;
 use zccache::daemon::DaemonServer;
 use zccache::protocol::{Request, Response};
 
 type ClientConn = zccache::ipc::IpcConnection;
+
+/// These integration tests start real daemons that resolve the cache root
+/// from the process-global environment on each request. Keep their temporary
+/// cache roots isolated even when the test harness runs them concurrently.
+static CACHE_DIR_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct CacheDirEnvGuard {
+    previous: Option<std::ffi::OsString>,
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl CacheDirEnvGuard {
+    fn set(cache_dir: &std::path::Path) -> Self {
+        let lock = CACHE_DIR_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::var_os("ZCCACHE_CACHE_DIR");
+        std::env::set_var("ZCCACHE_CACHE_DIR", cache_dir);
+        Self {
+            previous,
+            _lock: lock,
+        }
+    }
+}
+
+impl Drop for CacheDirEnvGuard {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var("ZCCACHE_CACHE_DIR", value),
+            None => std::env::remove_var("ZCCACHE_CACHE_DIR"),
+        }
+    }
+}
 
 async fn start_daemon() -> (
     String,
@@ -145,8 +178,7 @@ async fn nested_dylint_hits_and_invalidates_every_external_input() {
     zccache::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
-        let previous_cache = std::env::var_os("ZCCACHE_CACHE_DIR");
-        std::env::set_var("ZCCACHE_CACHE_DIR", &cache);
+        let _cache_env = CacheDirEnvGuard::set(&cache);
 
         let driver = tmp.path().join("dylint-driver");
         let library = tmp.path().join("libworkspace_lint.so");
@@ -268,10 +300,6 @@ async fn nested_dylint_hits_and_invalidates_every_external_input() {
 
         shutdown.notify_one();
         server_handle.await.unwrap();
-        match previous_cache {
-            Some(value) => std::env::set_var("ZCCACHE_CACHE_DIR", value),
-            None => std::env::remove_var("ZCCACHE_CACHE_DIR"),
-        }
     })
     .await;
 }
@@ -287,8 +315,7 @@ async fn perf_dylint_library_cdylib_restores_primary_and_toolchain_sidecar() {
     zccache::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
-        let previous_cache = std::env::var_os("ZCCACHE_CACHE_DIR");
-        std::env::set_var("ZCCACHE_CACHE_DIR", &cache);
+        let _cache_env = CacheDirEnvGuard::set(&cache);
 
         let linker = tmp.path().join("dylint-link");
         write_dylint_link(&linker);
@@ -389,10 +416,6 @@ async fn perf_dylint_library_cdylib_restores_primary_and_toolchain_sidecar() {
 
         shutdown.notify_one();
         server_handle.await.unwrap();
-        match previous_cache {
-            Some(value) => std::env::set_var("ZCCACHE_CACHE_DIR", value),
-            None => std::env::remove_var("ZCCACHE_CACHE_DIR"),
-        }
     })
     .await;
 }
