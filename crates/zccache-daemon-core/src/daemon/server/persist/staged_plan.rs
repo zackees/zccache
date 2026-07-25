@@ -799,6 +799,18 @@ impl StagedCompilePlan {
     }
 
     pub(in crate::daemon::server) fn materialize(&self) -> io::Result<StagedMaterializationStats> {
+        let stats = self.materialize_without_cleanup()?;
+        self.cleanup()
+            .map_err(|error| materialization_error(error, stats))?;
+        Ok(stats)
+    }
+
+    /// Materialize the requested outputs while retaining the private staging
+    /// root for a detached durable publisher. The caller must keep this plan
+    /// alive until publication has consumed every staged source.
+    pub(in crate::daemon::server) fn materialize_without_cleanup(
+        &self,
+    ) -> io::Result<StagedMaterializationStats> {
         let mut stats = StagedMaterializationStats::default();
         let requested_outputs = self
             .outputs
@@ -847,8 +859,6 @@ impl StagedCompilePlan {
                     .map_err(|error| materialization_error(error, stats))?;
             }
         }
-        self.cleanup()
-            .map_err(|error| materialization_error(error, stats))?;
         Ok(stats)
     }
 

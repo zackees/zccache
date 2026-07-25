@@ -118,12 +118,7 @@ pub(super) async fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Op
     // its durable write is pending. It is immediately usable in-process; only
     // wait when that entry is not yet visible, then re-lookup after publish.
     if !state.artifacts.contains_key(artifact_key_hex) {
-        pending_writes::await_pending(
-            &state.pending_cache_writes,
-            artifact_key_hex,
-            pending_writes::PENDING_PAYLOAD_WAIT_TIMEOUT,
-        )
-        .await;
+        pending_writes::await_pending_payload(&state.pending_cache_writes, artifact_key_hex).await;
     }
 
     let hit_label = if same_root {
@@ -238,12 +233,8 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
     // the inner `Arc<Notify>` before yielding so no DashMap shard lock
     // straddles the await.
     if !state.artifacts.contains_key(&entry_artifact_key_hex) {
-        pending_writes::await_pending(
-            &state.pending_cache_writes,
-            &entry_artifact_key_hex,
-            pending_writes::PENDING_PAYLOAD_WAIT_TIMEOUT,
-        )
-        .await;
+        pending_writes::await_pending_payload(&state.pending_cache_writes, &entry_artifact_key_hex)
+            .await;
     }
 
     let secondary_output_dir = if is_rustc {
@@ -406,12 +397,7 @@ pub(super) async fn try_depgraph_cached_hit(
     // background task. If the build removes its just-produced output before
     // that task completes, a depgraph hit can otherwise fail to materialize
     // and unnecessarily recompile. The fast-hit path has the same guard.
-    pending_writes::await_pending(
-        &state.pending_cache_writes,
-        artifact_key_hex,
-        pending_writes::PENDING_PAYLOAD_WAIT_TIMEOUT,
-    )
-    .await;
+    pending_writes::await_pending_payload(&state.pending_cache_writes, artifact_key_hex).await;
 
     let response = materialize_cached_compile_hit(CachedHitMaterializeRequest {
         state,

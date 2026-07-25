@@ -25,6 +25,9 @@ pub(super) struct MissArtifactStoreRequest<'a> {
     /// Owns the private canonical depfile source until detached persistence
     /// has copied it. `None` for non-staged compiles.
     pub(super) user_depfile_persist_temp: Option<tempfile::TempDir>,
+    /// Retains private Rust compiler outputs until detached staged publication
+    /// has durably consumed them.
+    pub(super) staged_persist_plan: Option<StagedCompilePlan>,
     pub(super) rustc_all_outputs: Option<&'a [RustcOutputFile]>,
     pub(super) stdout: &'a Arc<Vec<u8>>,
     pub(super) stderr: &'a Arc<Vec<u8>>,
@@ -66,6 +69,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
         output_data,
         user_depfile,
         user_depfile_persist_temp,
+        staged_persist_plan,
         rustc_all_outputs,
         stdout,
         stderr,
@@ -133,6 +137,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
                 &mut stats,
                 t_artifact_build,
                 synchronous_persist,
+                staged_persist_plan,
                 publication_guard,
             );
         } else {
@@ -290,6 +295,7 @@ fn store_rustc_outputs(
     stats: &mut MissArtifactStoreStats,
     t_artifact_build: Instant,
     synchronous_persist: bool,
+    staged_persist_plan: Option<StagedCompilePlan>,
     publication_guard: tokio::sync::OwnedRwLockReadGuard<()>,
 ) {
     let state = state_arc.as_ref();
@@ -328,6 +334,106 @@ fn store_rustc_outputs(
     );
     stats.artifact_index_build_ns = t_artifact_index_build.elapsed().as_nanos() as u64;
     stats.artifact_build_ns = t_artifact_build.elapsed().as_nanos() as u64;
+
+    if let Some(staged_plan) = staged_persist_plan {
+        let _pending = pending_writes::register(&state.pending_cache_writes, artifact_key_hex);
+        let state_ref = Arc::clone(state_arc);
+        let state_for_publish = Arc::clone(state_arc);
+        let artifact_dir = state.artifact_dir.clone();
+        let key_hex = artifact_key_hex.to_string();
+        let sid = *sid;
+        let completion_key = artifact_key_hex.to_string();
+        let t_persist_enqueue = Instant::now();
+        tokio::spawn(async move {
+            #[expect(
+                clippy::expect_used,
+                reason = "persist_semaphore is owned by ServerState for the daemon's lifetime; AcquireError here would be a logic bug"
+            )]
+            let _permit = state_ref
+                .persist_semaphore
+                .acquire()
+                .await
+                .expect("persist_semaphore is owned by ServerState and never closed");
+            let published = tokio::task::spawn_blocking(move || {
+                let _publication_guard = publication_guard;
+                let _staged_plan = staged_plan;
+                let snapshot =
+                    persist_artifact_paths_with_stats(&artifact_dir, &key_hex, &source_paths)?;
+                if snapshot.staged {
+                    send_staged_index_insert(
+                        state_for_publish.as_ref(),
+                        key_hex.clone(),
+                        meta.clone(),
+                    )
+                    .map_err(|reason| {
+                        std::io::Error::other(format!(
+                            "staged artifact index commit failed: {}",
+                            reason.id()
+                        ))
+                    })?;
+                } else {
+                    let _ = state_for_publish
+                        .index_writer_tx
+                        .send(IndexWriterCommand::Insert(key_hex, meta.clone()));
+                }
+                Ok::<_, std::io::Error>((snapshot, meta))
+            })
+            .await;
+            match published {
+                Ok(Ok((snapshot, meta))) => {
+                    state_ref
+                        .artifacts
+                        .insert(completion_key.clone(), CachedArtifact::from_index(meta));
+                    use crate::daemon::staged_stats::{StagedBytes, StagedCounter, StagedTiming};
+                    if snapshot.staged {
+                        state_ref
+                            .profiler
+                            .staged
+                            .count(StagedCounter::PublicationSuccess);
+                        state_ref
+                            .profiler
+                            .staged
+                            .timing(StagedTiming::Hashing, snapshot.staged_hash_ns);
+                        state_ref
+                            .profiler
+                            .staged
+                            .timing(StagedTiming::Publication, snapshot.staged_publication_ns);
+                        state_ref
+                            .profiler
+                            .staged
+                            .bytes(StagedBytes::Publication, snapshot.copy_bytes);
+                    }
+                }
+                Ok(Err(error)) => {
+                    let reason =
+                        staged_publish_failure(&error).unwrap_or(StagedPublishFailure::StoreSetup);
+                    record_staged_publication_failure(state_ref.as_ref(), reason);
+                    report_staged_publication_failure(
+                        state_ref.as_ref(),
+                        &sid,
+                        &completion_key,
+                        reason,
+                        &error,
+                    );
+                    state_ref.artifacts.remove(&completion_key);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, key = %completion_key, "staged artifact persistence task failed to join");
+                    state_ref.artifacts.remove(&completion_key);
+                }
+            }
+            pending_writes::complete(&state_ref.pending_cache_writes, &completion_key);
+        });
+        stats.persist_enqueue_ns = t_persist_enqueue.elapsed().as_nanos() as u64;
+        let latency_ns = compile_start.elapsed().as_nanos() as u64;
+        state.stats.record_miss(latency_ns, artifact_bytes);
+        let src = source_path.clone();
+        record_session_stat(&state.sessions, &sid, move |t| {
+            t.record_miss(src, artifact_bytes);
+        });
+        drop(_pending);
+        return;
+    }
 
     let t_persist_sync = Instant::now();
     let sync_persist_result =
