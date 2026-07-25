@@ -291,7 +291,10 @@ async fn profiled_rust_build_miss_populates_artifact() {
         assert_eq!(exit_code, 0);
         assert!(!cached, "profiled build-mode cold compile should miss");
 
-        let artifacts = list_rust_artifacts(&mut client).await;
+        // Rust miss publication is deliberately detached from the compiler
+        // response. Wait for the daemon-visible artifact instead of making
+        // this profiling regression test depend on scheduler timing.
+        let artifacts = wait_for_rust_artifacts(&mut client).await;
         let names = artifact_names(&artifacts);
         assert!(
             names
