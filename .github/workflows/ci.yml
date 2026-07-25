@@ -160,7 +160,7 @@ jobs:
           export PATH="${DYLINT_CARGO_SHIM}:${PATH}"
           export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-26 rustc)"
           export RUSTUP_TOOLCHAIN=nightly-2026-05-26
-          soldr cargo test --manifest-path dylints/ban_dashmap_guard_across_blocking/Cargo.toml
+          soldr rustup run nightly-2026-05-26 cargo test --manifest-path dylints/ban_dashmap_guard_across_blocking/Cargo.toml
       - name: Run Dylint
         run: |
           export PATH="${CARGO_HOME}/bin:${PATH}"
