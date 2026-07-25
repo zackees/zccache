@@ -89,6 +89,7 @@ pub mod miss_reason {
 
 tokio::task_local! {
     static ACTIVE_MISS_REASON: Cell<Option<&'static str>>;
+    static ACTIVE_CONTEXT_KEY: std::cell::RefCell<Option<String>>;
 }
 
 /// Run one request with an isolated miss-attribution slot.
@@ -98,15 +99,20 @@ tokio::task_local! {
 /// task-local scope can exhaust Tokio's default worker stack on Windows.
 pub async fn capture_miss_reason<F>(
     future: std::pin::Pin<Box<F>>,
-) -> (F::Output, Option<&'static str>)
+) -> (F::Output, Option<&'static str>, Option<String>)
 where
     F: Future + ?Sized,
 {
-    ACTIVE_MISS_REASON
-        .scope(Cell::new(None), async move {
-            let output = future.await;
-            let reason = ACTIVE_MISS_REASON.with(Cell::get);
-            (output, reason)
+    ACTIVE_CONTEXT_KEY
+        .scope(std::cell::RefCell::new(None), async move {
+            ACTIVE_MISS_REASON
+                .scope(Cell::new(None), async move {
+                    let output = future.await;
+                    let reason = ACTIVE_MISS_REASON.with(Cell::get);
+                    let context_key = ACTIVE_CONTEXT_KEY.with(|slot| slot.borrow().clone());
+                    (output, reason, context_key)
+                })
+                .await
         })
         .await
 }
@@ -120,6 +126,17 @@ pub fn record_miss_reason(reason: &'static str) {
         if replace {
             slot.set(Some(reason));
         }
+    });
+}
+
+/// Attach the normalized dependency-graph context key to the active compile's
+/// durable journal entry. This makes cross-worktree miss investigations
+/// possible even when the command uses an ephemeral session whose text log is
+/// removed before an external collector can copy it.
+pub fn record_context_key(key: &crate::depgraph::ContextKey) {
+    let value = key.hash().to_hex().to_string();
+    let _ = ACTIVE_CONTEXT_KEY.try_with(|slot| {
+        *slot.borrow_mut() = Some(value);
     });
 }
 
@@ -162,6 +179,9 @@ pub struct JournalEntry {
     pub session_id: Option<String>,
     /// Wall-clock nanoseconds.
     pub latency_ns: u128,
+    /// Root-normalized dependency-graph context identity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_key: Option<String>,
 
     // ─── Extended profile-mode fields (issue #256). ─────────────────────
     // All optional; emission is gated behind `--profile` in a follow-up PR.
@@ -271,6 +291,7 @@ impl JournalEntry {
             exit_code,
             session_id: ctx.session_id,
             latency_ns,
+            context_key: None,
             crate_name: None,
             crate_type: None,
             output_ext: None,
@@ -278,6 +299,12 @@ impl JournalEntry {
             miss_diff: None,
             self_profile_ns: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_context_key(mut self, context_key: Option<String>) -> Self {
+        self.context_key = context_key;
+        self
     }
 
     /// Issue #256: populate the extended profile-mode fields on an entry.

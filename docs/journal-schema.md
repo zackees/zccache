@@ -19,6 +19,7 @@ scripts) can rely on.
 | `exit_code`    | integer         | yes            | Process exit code. `-1` is reserved for daemon-side errors. |
 | `session_id`   | string \| null  | yes            | UUID for session-attached requests; `null` for ephemeral. |
 | `latency_ns`   | integer         | yes            | Wall-clock nanoseconds (per the project's `_ns` convention). |
+| `context_key`  | string          | no             | Full root-normalized dep-graph context hash. Present once cache-key construction completes; useful for comparing ephemeral cross-worktree requests. |
 | `crate_name`   | string          | no             | Populated when parseable from `--crate-name` (rustc). |
 | `crate_type`   | string          | no             | Canonical: `lib`, `bin`, `proc-macro`, `build-script`, `test`, `bench`, `example`. |
 | `output_ext`   | string          | no             | Derived from `crate_type` — `rlib`, `exe`, `so`, etc. |

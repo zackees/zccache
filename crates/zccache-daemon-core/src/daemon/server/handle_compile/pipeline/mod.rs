@@ -569,6 +569,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         }
     };
     let is_rustc = rustc_args_opt.is_some();
+    record_context_key(&context_key);
     let rustc_extern_paths: Vec<NormalizedPath> = rustc_args_opt
         .as_ref()
         .map(|rustc_args| {

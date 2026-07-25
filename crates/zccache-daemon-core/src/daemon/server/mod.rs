@@ -7,8 +7,8 @@
 //! see the common type vocabulary.
 
 use super::compile_journal::{
-    capture_miss_reason, extract_outcome, miss_reason, record_miss_reason, CompileJournal,
-    JournalContext, JournalEntry, SelfProfileSpans,
+    capture_miss_reason, extract_outcome, miss_reason, record_context_key, record_miss_reason,
+    CompileJournal, JournalContext, JournalEntry, SelfProfileSpans,
 };
 use super::fingerprint::FingerprintManager;
 use super::process::CompilePriority;

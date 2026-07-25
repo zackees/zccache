@@ -274,6 +274,7 @@ fn serializes_extended_fields_when_present() {
         exit_code: 0,
         session_id: Some("sess-1".to_string()),
         latency_ns: 1_234_567,
+        context_key: None,
         crate_name: Some("soldr_cli".to_string()),
         crate_type: Some("bin".to_string()),
         output_ext: Some("exe".to_string()),
@@ -327,6 +328,16 @@ fn serializes_extended_fields_when_present() {
     assert_eq!(v["self_profile_ns"]["lookup"], 410_000_u64);
     assert_eq!(v["self_profile_ns"]["decompress"], 14_100_000_u64);
     assert_eq!(v["self_profile_ns"]["store"], 203_000_000_u64);
+}
+
+#[test]
+fn serializes_context_key_without_profile_mode() {
+    let key = "ab".repeat(32);
+    let entry = JournalEntry::new(make_ctx(vec!["src/lib.rs"]), "miss", 0, 10, None)
+        .with_context_key(Some(key.clone()));
+    let value = serde_json::to_value(entry).unwrap();
+    assert_eq!(value["context_key"], key);
+    assert!(value.get("crate_name").is_none());
 }
 
 #[test]

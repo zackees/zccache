@@ -873,7 +873,7 @@ async fn destination_failure_survives_and_journals_concrete_reason() {
     std::fs::write(&blocker, b"blocker").unwrap();
     let target: NormalizedPath = blocker.join("output.o").into();
 
-    let (failure, reason) = capture_miss_reason(Box::pin(async {
+    let (failure, reason, _) = capture_miss_reason(Box::pin(async {
         let failure =
             materialize_multi_hit(&[target], &[CachedPayload::File(blob.clone())]).unwrap_err();
         report_materialization_failure(dir.path(), "artifact-key", "unit-test", &failure);
@@ -936,7 +936,7 @@ async fn deleted_cache_blob_invalidates_with_no_artifact_reason() {
     let missing: NormalizedPath = dir.path().join("gone.o").into();
     let target: NormalizedPath = dir.path().join("restored.o").into();
 
-    let (failure, reason) = capture_miss_reason(Box::pin(async {
+    let (failure, reason, _) = capture_miss_reason(Box::pin(async {
         let failure =
             materialize_multi_hit(&[target], &[CachedPayload::File(missing)]).unwrap_err();
         report_materialization_failure(dir.path(), "artifact-key", "unit-test", &failure);
