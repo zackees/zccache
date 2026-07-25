@@ -201,6 +201,16 @@ visible `Dylint cache disabled` reason. Successful misses store the driver's
 diagnostics, so a hit replays the same stdout and stderr rather than suppressing
 lint output.
 
+Dylint's earlier lint-library bootstrap is a separate, narrowly modeled Rust
+`cdylib` lane on Linux and macOS. General `cdylib` and every Windows `cdylib`
+remain non-cacheable. The narrow lane requires the isolated
+`target/dylint/libraries/...` output tree, host compilation, no extra filename,
+and `dylint-link` as the linker. Its key includes the linker binary and link
+arguments. The artifact set contains both rustc's declared dynamic library and
+the toolchain-qualified sidecar that `dylint-link` byte-copies for Dylint to
+load. Missing package/toolchain identity fails back to the direct compiler
+path, so a hit cannot silently omit the sidecar.
+
 This cache is separate from Cargo incremental compilation:
 
 - Cargo incremental state accelerates work inside one target directory and

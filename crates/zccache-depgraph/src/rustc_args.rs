@@ -65,6 +65,12 @@ pub struct RustcParsedArgs {
     pub cargo_metadata: Option<String>,
     /// `-C incremental=` path.
     pub incremental_dir: Option<NormalizedPath>,
+    /// `-C linker=` path. Excluded from ordinary Rust keys, but required to
+    /// model Dylint lint-library cdylibs and hash their linker identity.
+    pub linker: Option<NormalizedPath>,
+    /// `-C link-arg=` / `-C link-args=` values. These become cache-key
+    /// material for the narrow Dylint cdylib lane.
+    pub linker_args: Vec<String>,
     /// `--error-format` value.
     pub error_format: Option<String>,
     /// `--json` value.
@@ -86,14 +92,7 @@ pub struct RustcParsedArgs {
 /// Codegen options excluded from cache key (cosmetic or path-dependent).
 /// Any `-C` option NOT in this list is included in the cache key by default,
 /// which is the safe choice: unknown options are assumed to affect output.
-const EXCLUDED_CODEGEN: &[&str] = &[
-    "incremental",
-    "linker",
-    "link-arg",
-    "link-args",
-    "save-temps",
-    "remark",
-];
+const EXCLUDED_CODEGEN: &[&str] = &["incremental", "save-temps", "remark"];
 
 /// Parse rustc arguments into structured form for cache key computation.
 ///
@@ -119,6 +118,8 @@ pub fn parse_rustc_args(args: &[String], cwd: &Path) -> RustcParsedArgs {
         extra_filename: None,
         cargo_metadata: None,
         incremental_dir: None,
+        linker: None,
+        linker_args: Vec::new(),
         error_format: None,
         json_format: None,
         color: None,
@@ -337,6 +338,7 @@ pub fn parse_rustc_args(args: &[String], cwd: &Path) -> RustcParsedArgs {
     result.cfgs.sort();
     result.check_cfgs.sort();
     result.codegen_flags.sort();
+    result.linker_args.sort();
     result.lint_flags.sort();
     result.unknown_flags.sort();
 
@@ -373,6 +375,14 @@ fn handle_codegen_option(opt: &str, cwd: &Path, result: &mut RustcParsedArgs) {
     }
     if key == "incremental" {
         result.incremental_dir = Some(resolve_path(value, cwd));
+        return;
+    }
+    if key == "linker" {
+        result.linker = Some(resolve_path(value, cwd));
+        return;
+    }
+    if matches!(key, "link-arg" | "link-args") {
+        result.linker_args.push(opt.to_string());
         return;
     }
     if EXCLUDED_CODEGEN.contains(&key) {
@@ -492,6 +502,31 @@ mod tests {
     }
 
     #[test]
+    fn dylint_linker_inputs_have_dedicated_fields() {
+        let parsed = parse_rustc_args(
+            &args(&[
+                "-Clinker=tools/dylint-link",
+                "-C",
+                "link-arg=-Wl,--build-id=none",
+                "-Clink-args=-Wl,-z,now",
+                "src/lib.rs",
+            ]),
+            &cwd(),
+        );
+        assert_eq!(
+            parsed.linker,
+            Some(NormalizedPath::from("/project/tools/dylint-link"))
+        );
+        assert_eq!(
+            parsed.linker_args,
+            vec![
+                "link-arg=-Wl,--build-id=none".to_string(),
+                "link-args=-Wl,-z,now".to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn excluded_codegen_not_in_cache_key() {
         let parsed = parse_rustc_args(
             &args(&[
@@ -507,15 +542,16 @@ mod tests {
             ]),
             &cwd(),
         );
-        // None of these should be in codegen_flags
+        // None of these should be in ordinary codegen_flags.
         assert!(parsed.codegen_flags.is_empty());
-        // But they should be in their dedicated fields
+        // But they should be in their dedicated fields.
         assert_eq!(parsed.cargo_metadata.as_deref(), Some("abc123"));
         assert_eq!(parsed.extra_filename.as_deref(), Some("-abc123"));
         assert_eq!(
             parsed.incremental_dir,
             Some(NormalizedPath::from("/tmp/incr"))
         );
+        assert_eq!(parsed.linker, Some(NormalizedPath::from("/project/cc")));
     }
 
     #[test]

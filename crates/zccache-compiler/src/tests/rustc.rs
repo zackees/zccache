@@ -220,6 +220,82 @@ fn rustc_cdylib_is_non_cacheable() {
     assert!(matches!(result, ParsedInvocation::NonCacheable { .. }));
 }
 
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn rustc_dylint_library_cdylib_is_cacheable() {
+    let result = parse_invocation(
+        "rustc",
+        &args(&[
+            "--crate-name",
+            "lint",
+            "--crate-type",
+            "cdylib",
+            "--emit=link",
+            "--out-dir",
+            "/tmp/target/dylint/libraries/nightly/release/deps",
+            "-C",
+            "linker=/tools/dylint-link",
+            "src/lib.rs",
+        ]),
+    );
+    let ParsedInvocation::Cacheable(compilation) = result else {
+        panic!("expected Dylint cdylib to be cacheable");
+    };
+    let extension = if cfg!(target_os = "macos") {
+        "dylib"
+    } else {
+        "so"
+    };
+    assert!(compilation
+        .output_file
+        .ends_with(format!("liblint.{extension}")));
+}
+
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn rustc_dylint_cdylib_requires_the_complete_narrow_shape() {
+    for invocation in [
+        vec![
+            "--crate-type=cdylib",
+            "--out-dir=/tmp/target/release/deps",
+            "-Clinker=/tools/dylint-link",
+            "src/lib.rs",
+        ],
+        vec![
+            "--crate-type=cdylib",
+            "--out-dir=/tmp/target/dylint/libraries/nightly/release/deps",
+            "-Clinker=/tools/cc",
+            "src/lib.rs",
+        ],
+        vec![
+            "--crate-type=cdylib",
+            "--out-dir=/tmp/target/dylint/libraries/nightly/release/deps",
+            "-Clinker=/tools/dylint-link",
+            "-Cextra-filename=-hash",
+            "src/lib.rs",
+        ],
+        vec![
+            "--crate-type=cdylib",
+            "--out-dir=/tmp/target/dylint/libraries/nightly/release/deps",
+            "-Clinker=/tools/dylint-link",
+            "--target=wasm32-unknown-unknown",
+            "src/lib.rs",
+        ],
+        vec![
+            "--crate-type=cdylib,rlib",
+            "--out-dir=/tmp/target/dylint/libraries/nightly/release/deps",
+            "-Clinker=/tools/dylint-link",
+            "src/lib.rs",
+        ],
+    ] {
+        let result = parse_invocation("rustc", &args(&invocation));
+        assert!(
+            matches!(result, ParsedInvocation::NonCacheable { .. }),
+            "mutation should remain non-cacheable: {invocation:?}"
+        );
+    }
+}
+
 #[test]
 fn rustc_no_crate_type_defaults_to_bin_cacheable() {
     // Without --crate-type, rustc defaults to bin. bin is cacheable
