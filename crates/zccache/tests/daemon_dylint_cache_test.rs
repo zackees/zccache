@@ -31,13 +31,13 @@ async fn start_daemon() -> (
     (endpoint, handle, shutdown)
 }
 
-async fn start_session(client: &mut ClientConn) -> String {
+async fn start_session(client: &mut ClientConn, log_file: Option<NormalizedPath>) -> String {
     client
         .send(&Request::SessionStart {
             client_pid: std::process::id(),
             working_dir: std::env::current_dir().unwrap().into(),
-            log_file: None,
-            track_stats: false,
+            log_file,
+            track_stats: true,
             journal_path: None,
             profile: false,
             private_daemon: None,
@@ -173,7 +173,7 @@ async fn nested_dylint_hits_and_invalidates_every_external_input() {
 
         let (endpoint, server_handle, shutdown) = start_daemon().await;
         let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
-        let session_id = start_session(&mut client).await;
+        let session_id = start_session(&mut client, None).await;
 
         let first = compile(
             &mut client,
@@ -318,7 +318,8 @@ async fn perf_dylint_library_cdylib_restores_primary_and_toolchain_sidecar() {
         ];
         let (endpoint, server_handle, shutdown) = start_daemon().await;
         let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
-        let session_id = start_session(&mut client).await;
+        let session_log = tmp.path().join("session.log");
+        let session_id = start_session(&mut client, Some(session_log.clone().into())).await;
         let mut env: Vec<(String, String)> = std::env::vars().collect();
         env.push(("CARGO_PKG_NAME".to_string(), "lint".to_string()));
         env.push((
@@ -367,14 +368,17 @@ async fn perf_dylint_library_cdylib_restores_primary_and_toolchain_sidecar() {
             .await
             .unwrap();
         let warm = client.recv().await.unwrap().unwrap();
-        assert!(matches!(
+        if !matches!(
             warm,
             Response::CompileResult {
                 exit_code: 0,
                 cached: true,
                 ..
             }
-        ));
+        ) {
+            let log = std::fs::read_to_string(&session_log).unwrap_or_default();
+            panic!("expected warm Dylint cdylib hit, got {warm:?}\nsession log:\n{log}");
+        }
         assert!(primary.is_file());
         assert!(sidecar.is_file());
         assert_eq!(
