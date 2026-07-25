@@ -76,6 +76,18 @@ fn stable_file_entry(path: &Path) -> std::io::Result<FileEntry> {
 /// A nonexistent directory is empty because a linker may create it. Any other
 /// scan error is returned so the caller can fail cache population closed.
 pub fn snapshot_directory(dir: &Path) -> std::io::Result<DirSnapshot> {
+    snapshot_directory_excluding(dir, &HashSet::new())
+}
+
+/// Capture the current state of `dir`, excluding declared link inputs.
+///
+/// A declared input in the output directory cannot be an implicit linker
+/// output. Excluding it avoids hashing every object twice around a large
+/// driver link while preserving detection for all undeclared siblings.
+pub fn snapshot_directory_excluding(
+    dir: &Path,
+    excluded_names: &HashSet<std::ffi::OsString>,
+) -> std::io::Result<DirSnapshot> {
     let mut snap = DirSnapshot::default();
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -84,6 +96,9 @@ pub fn snapshot_directory(dir: &Path) -> std::io::Result<DirSnapshot> {
     };
     for entry in entries {
         let entry = entry?;
+        if excluded_names.contains(&entry.file_name()) {
+            continue;
+        }
         if entry.metadata()?.is_file() {
             let path = entry.path();
             snap.entries
@@ -233,6 +248,24 @@ mod tests {
         );
 
         assert!(found.is_empty());
+    }
+
+    #[test]
+    fn declared_sibling_input_is_excluded_from_both_scans() {
+        let dir = TempDir::new().unwrap();
+        let input = dir.path().join("input.o");
+        fs::write(&input, b"old input").unwrap();
+        let ignored = HashSet::from([std::ffi::OsString::from("input.o")]);
+        let snap = snapshot_directory_excluding(dir.path(), &ignored).unwrap();
+
+        fs::write(&input, b"new input").unwrap();
+        fs::write(dir.path().join("runtime.dll"), b"runtime").unwrap();
+
+        let found = complete(
+            detect_side_effects(&snap, dir.path(), OsStr::new("app.exe"), &ignored).unwrap(),
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].file_name, OsStr::new("runtime.dll"));
     }
 
     #[test]
