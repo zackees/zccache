@@ -13,6 +13,18 @@ use super::super::scanner::IncludeDirective;
 use super::{ContextEntry, ContextState, DepGraph, DepGraphStats, FileEntry};
 
 impl DepGraph {
+    /// Whether a live context currently points at `artifact_key_hex`.
+    /// Used by disk maintenance to retain a newly-published staged
+    /// generation across daemon startup until its first lookup.
+    pub fn references_artifact_key(&self, artifact_key_hex: &str) -> bool {
+        self.contexts.iter().any(|entry| {
+            entry
+                .artifact_key
+                .as_ref()
+                .is_some_and(|key| key.hash().to_hex() == artifact_key_hex)
+        })
+    }
+
     /// Clear `artifact_key` on every context whose currently-recorded
     /// artifact key is in `evicted_hex`. Returns the number of contexts
     /// whose key was cleared.
