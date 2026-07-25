@@ -349,12 +349,15 @@ jobs:
         run: |
           set +e
 
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
+          # This is diagnostic-only and follows an already-recorded guard
+          # failure. Bound every external profiler phase so a package mirror,
+          # stuck workload, or malformed perf stream cannot strand the job.
+          timeout 5m sudo apt-get update -qq
+          timeout 5m sudo apt-get install -y -qq \
             linux-tools-common \
             linux-tools-generic \
             "linux-tools-$(uname -r)" \
-            || sudo apt-get install -y -qq linux-tools-common linux-tools-generic
+            || timeout 5m sudo apt-get install -y -qq linux-tools-common linux-tools-generic
           # Profiling is diagnostic-only. Bound the first-time Inferno build
           # so a registry/compiler stall cannot consume the entire Perf Guard
           # job after the actual benchmark result has already been recorded.
@@ -380,7 +383,7 @@ jobs:
 
           for test_name in $FAILED_TESTS; do
             echo "::group::perf record: $test_name"
-            timeout 10m perf record \
+            timeout --signal=TERM --kill-after=15s 5m perf record \
               -F 999 \
               -g --call-graph dwarf \
               -o "$test_name.perf.data" \
@@ -390,11 +393,14 @@ jobs:
             echo "perf record exit: $record_status"
 
             if [[ -f "$test_name.perf.data" ]]; then
-              perf script -i "$test_name.perf.data" > "$test_name.script.txt" 2>/dev/null
+              timeout --signal=TERM --kill-after=15s 2m perf script \
+                -i "$test_name.perf.data" > "$test_name.script.txt" 2>/dev/null
               if [[ -s "$test_name.script.txt" ]]; then
-                inferno-collapse-perf < "$test_name.script.txt" > "$test_name.collapsed.txt"
+                timeout --signal=TERM --kill-after=15s 2m inferno-collapse-perf \
+                  < "$test_name.script.txt" > "$test_name.collapsed.txt"
                 if [[ -s "$test_name.collapsed.txt" ]]; then
-                  inferno-flamegraph < "$test_name.collapsed.txt" > "$test_name.flamegraph.svg"
+                  timeout --signal=TERM --kill-after=15s 2m inferno-flamegraph \
+                    < "$test_name.collapsed.txt" > "$test_name.flamegraph.svg"
 
                   # Top 20 hot stacks (inclusive sample count).
                   sort -rn -k2 -t' ' "$test_name.collapsed.txt" \
