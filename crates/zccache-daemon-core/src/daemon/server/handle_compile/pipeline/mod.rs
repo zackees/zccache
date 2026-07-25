@@ -491,6 +491,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         context_key,
         rustc_metadata_compat_key,
         worktree_equivalent_context,
+        registered_context_state,
     ) = match build_result {
         BuildContextResult::Cc { mut ctx, dep_flags } => {
             dependency_mode.apply_to_cc_context(&mut ctx, &dep_flags);
@@ -511,6 +512,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 registration.map_key,
                 None,
                 registration.rebased_from_equivalent_root,
+                registration.state,
             )
         }
         BuildContextResult::Rustc {
@@ -565,11 +567,23 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 registration.map_key,
                 compat_map_key,
                 registration.rebased_from_equivalent_root,
+                registration.state,
             )
         }
     };
     let is_rustc = rustc_args_opt.is_some();
     record_context_key(&context_key);
+    // Make cross-worktree registration decisions visible in the existing
+    // opt-in inner trace. A `context_not_found` journal reason
+    // alone cannot distinguish "no equivalent context was indexed" from
+    // "an equivalent context was found but was itself cold". The six
+    // categorical phase names keep the disabled path allocation-free and
+    // let a production trace prove that boundary without logging source
+    // paths or compiler arguments.
+    super::super::inner_trace::record_context_registration(
+        worktree_equivalent_context,
+        registered_context_state,
+    );
     let rustc_extern_paths: Vec<NormalizedPath> = rustc_args_opt
         .as_ref()
         .map(|rustc_args| {
