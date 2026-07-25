@@ -321,6 +321,7 @@ async fn perf_dylint_library_cdylib_restores_primary_and_toolchain_sidecar() {
         let session_log = tmp.path().join("session.log");
         let session_id = start_session(&mut client, Some(session_log.clone().into())).await;
         let mut env: Vec<(String, String)> = std::env::vars().collect();
+        env.retain(|(name, _)| name != "CARGO_PKG_NAME" && name != "RUSTUP_TOOLCHAIN");
         env.push(("CARGO_PKG_NAME".to_string(), "lint".to_string()));
         env.push((
             "RUSTUP_TOOLCHAIN".to_string(),
