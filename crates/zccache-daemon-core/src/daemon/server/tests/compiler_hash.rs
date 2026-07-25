@@ -259,6 +259,43 @@ fn hash_rustc_identity_falls_back_to_file_hash_when_spawn_fails() {
 
 // ── Issue #517: persisted compiler hash cache ───────────────────────────
 
+/// Cargo Dylint creates the driver from a fresh temporary package, so build
+/// IDs and embedded source paths can change while the driver's semantic
+/// version remains identical. Such rebuilds must retain one cache identity.
+#[cfg(unix)]
+#[tokio::test]
+async fn dylint_driver_identity_uses_version_not_executable_bytes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let first = tmp.path().join("dylint-driver-a");
+    let second = tmp.path().join("dylint-driver-b");
+    std::fs::write(
+        &first,
+        b"#!/bin/sh\n# build-id: one\nprintf 'dylint-driver 6.0.1\\n'\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &second,
+        b"#!/bin/sh\n# build-id: two-and-a-different-size\nprintf 'dylint-driver 6.0.1\\n'\n",
+    )
+    .unwrap();
+    for path in [&first, &second] {
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
+
+    assert_ne!(
+        crate::hash::hash_file(&first).unwrap(),
+        crate::hash::hash_file(&second).unwrap()
+    );
+    assert_eq!(
+        hash_dylint_driver_identity_async(first, Vec::new()).await,
+        hash_dylint_driver_identity_async(second, Vec::new()).await
+    );
+}
+
 /// #1167: a transient `-vV` failure may use a file hash for the current
 /// request, but it must not be memoized. The next request retries and a good
 /// probe converges on the durable `-vV` identity instead of pinning a second

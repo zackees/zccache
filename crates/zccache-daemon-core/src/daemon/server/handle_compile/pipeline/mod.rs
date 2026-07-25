@@ -106,11 +106,9 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             };
             let driver_identity = state
                 .compiler_hash_cache
-                .get_or_hash_with_async(compiler_path, |path| async move {
-                    tokio::task::spawn_blocking(move || crate::hash::hash_file(&path).ok())
-                        .await
-                        .ok()
-                        .flatten()
+                .get_or_hash_with_async(compiler_path, {
+                    let probe_env = client_env.clone().unwrap_or_default();
+                    |path| hash_dylint_driver_identity_async(path, probe_env)
                 })
                 .await
                 .ok_or_else(|| {

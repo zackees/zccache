@@ -85,3 +85,33 @@ fn equivalent_worktree_variants_survive_snapshot_roundtrip() {
         CacheVerdict::Hit { artifact_key } if artifact_key == artifact_b
     ));
 }
+
+#[test]
+fn new_equivalent_worktree_reuses_warm_context_after_snapshot_roundtrip() {
+    let dir = TempDir::new().unwrap();
+    let path = test_path(&dir);
+    let graph = DepGraph::new();
+    let a = graph.register_with_root_result(
+        context("/snapshot-a"),
+        Some(NormalizedPath::from("/snapshot-a")),
+    );
+    let artifact_a = graph
+        .update(&a.map_key, scan("/snapshot-a"), equal_hash)
+        .unwrap();
+
+    save_to_file(&graph, &path).unwrap();
+    let loaded = load_from_file(&path).unwrap();
+    let b = loaded.register_with_root_result(
+        context("/snapshot-b"),
+        Some(NormalizedPath::from("/snapshot-b")),
+    );
+
+    assert!(
+        b.rebased_from_equivalent_root,
+        "the restored logical-key index must expose the warm context to a new worktree"
+    );
+    assert!(matches!(
+        loaded.check(&b.map_key, always_fresh, equal_hash),
+        CacheVerdict::Hit { artifact_key } if artifact_key == artifact_a
+    ));
+}

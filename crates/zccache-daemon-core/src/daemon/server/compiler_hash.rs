@@ -696,6 +696,36 @@ pub(super) async fn hash_cc_identity_async(path: std::path::PathBuf) -> Option<C
     }
 }
 
+/// Identify a generated Dylint driver by its semantic version rather than its
+/// byte-for-byte executable image.
+///
+/// Cargo Dylint builds the driver in a fresh temporary package. Equivalent
+/// rebuilds can therefore differ in debug paths or linker build IDs even
+/// though `dylint-driver -V` and behavior are unchanged. Hashing the complete
+/// image prevents cache reuse across those rebuilds. The inner rustc identity
+/// and every loaded lint-library content hash are independently included in
+/// the Dylint cache-input fingerprint.
+pub(super) async fn hash_dylint_driver_identity_async(
+    path: std::path::PathBuf,
+    client_env: Vec<(String, String)>,
+) -> Option<ContentHash> {
+    let mut cmd = tokio::process::Command::new(&path);
+    cmd.arg("-V").envs(client_env);
+    crate::daemon::process::suppress_child_console_tokio(&mut cmd);
+    cmd.kill_on_drop(true);
+    let timeout = rustc_probe_timeout();
+    match tokio::time::timeout(timeout, cmd.output()).await {
+        Ok(Ok(output)) if output.status.success() && !output.stdout.is_empty() => {
+            Some(crate::hash::hash_bytes(&output.stdout))
+        }
+        Err(_) => {
+            warn_probe_timeout(&path, timeout);
+            crate::hash::hash_file(&path).ok()
+        }
+        _ => crate::hash::hash_file(&path).ok(),
+    }
+}
+
 #[allow(dead_code)] // The cache calls `rustc_identity_async` to retain provenance.
 pub(super) async fn hash_rustc_identity_async(path: std::path::PathBuf) -> Option<ContentHash> {
     let mut cmd = tokio::process::Command::new(&path);
