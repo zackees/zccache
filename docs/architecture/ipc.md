@@ -100,6 +100,13 @@ non-terminal frame pushed on the connection that already carries the request.
   silence**, not compile duration — a queued-but-progressing compile keeps its
   original connection and cached-path result, while a daemon that emits
   nothing for a full budget still trips the existing wedge handling.
+- **Not covered: the embedded lane.** `server/embedded.rs` calls
+  `handle_compile_ephemeral` directly and has no `IpcConnection`, so an
+  in-process host (soldr/fbuild via `ZccacheService`) sees no heartbeats and
+  its own dispatch budget (30 s, soldr#1657) is unaffected. The
+  `CompileQueueGauge` counters *are* maintained on that path, since the gate
+  itself is shared — so exposing the same queue view to an embedded host is a
+  cheap follow-up (a callback or a gauge accessor), not a redesign.
 - **Compatibility.** Heartbeats are only emitted after the request has been
   decoded, so the client's wire version is already known. Both lanes were
   bumped in #1216 (bincode 18 → 20, prost 19 → 21, skipping 19 so the header
