@@ -166,9 +166,7 @@ pub(super) fn hash_and_verify(input: HashVerifyInput<'_>) -> HashSourceOutcome {
         // with the stored key.  Skips redundant journal freshness checks
         // and path clones that check_diagnostic performs.
         let env_value = |name: &str| -> Option<String> {
-            client_env
-                .and_then(|env| env.iter().find(|(k, _)| k == name))
-                .map(|(_, v)| v.clone())
+            rustc_env_dep_value(client_env, name).map(str::to_owned)
         };
         if let Some(artifact_key) = state.dep_graph.load().try_fast_hit_with_env(
             &context_key,
@@ -199,11 +197,7 @@ pub(super) fn hash_and_verify(input: HashVerifyInput<'_>) -> HashSourceOutcome {
                     &context_key,
                     is_fresh,
                     get_hash,
-                    |name| {
-                        client_env
-                            .and_then(|env| env.iter().find(|(k, _)| k == name))
-                            .map(|(_, v)| v.clone())
-                    },
+                    |name| rustc_env_dep_value(client_env, name).map(str::to_owned),
                 )
             };
             depgraph_check_ns = t4.elapsed().as_nanos() as u64;

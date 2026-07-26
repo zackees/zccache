@@ -12,6 +12,31 @@ pub(super) fn client_env_value<'a>(
         .filter(|value| !value.is_empty())
 }
 
+/// Resolve the value rustc recorded as an environment dependency.
+///
+/// A nested Dylint driver exposes `DYLINT_LIBS` to rustc as checkout-local
+/// absolute paths.  [`crate::compiler::prepare_dylint_cache_env`] has already
+/// replaced those paths with a synthetic hash covering the driver, inner
+/// rustc, lint-library names and contents, and output-affecting environment.
+/// Folding rustc's `DYLINT_LIBS` dep through that hash keeps artifact identity
+/// content-addressed across equivalent sibling worktrees.
+pub(super) fn rustc_env_dep_value<'a>(
+    client_env: Option<&'a [(String, String)]>,
+    name: &str,
+) -> Option<&'a str> {
+    let env = client_env?;
+    if name == crate::compiler::DYLINT_LIBS_ENV {
+        if let Some((_, value)) = env
+            .iter()
+            .find(|(key, _)| key == crate::compiler::DYLINT_CACHE_INPUT_HASH_ENV)
+        {
+            return Some(value);
+        }
+    }
+    env.iter()
+        .find_map(|(key, value)| (key == name).then_some(value.as_str()))
+}
+
 pub(super) fn path_remap_auto_enabled(client_env: Option<&[(String, String)]>) -> bool {
     client_env_value(client_env, PATH_REMAP_ENV)
         .is_some_and(|value| value.eq_ignore_ascii_case("auto"))

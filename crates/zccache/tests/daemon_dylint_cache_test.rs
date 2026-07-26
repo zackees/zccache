@@ -337,7 +337,8 @@ async fn nested_dylint_hits_across_sibling_worktrees() {
             std::fs::create_dir_all(root.join("src")).unwrap();
             std::fs::write(
                 root.join("src/lib.rs"),
-                "pub const METADATA: Option<&str> = option_env!(\"DYLINT_METADATA\");\n\
+                "pub const LIBS: Option<&str> = option_env!(\"DYLINT_LIBS\");\n\
+                 pub const METADATA: Option<&str> = option_env!(\"DYLINT_METADATA\");\n\
                  pub fn checked() -> u32 { 42 }\n",
             )
             .unwrap();
