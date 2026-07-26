@@ -234,6 +234,9 @@ pub(super) fn new_shared_state(
             artifact_publication: Arc::new(tokio::sync::RwLock::new(())),
             persist_semaphore: Arc::new(tokio::sync::Semaphore::new(persist_workers_default())),
             compile_concurrency,
+            compile_queue: Arc::new(
+                crate::daemon::server::compile_progress::CompileQueueGauge::default(),
+            ),
             artifact_store,
             index_writer_tx,
             index_writer_shutdown,

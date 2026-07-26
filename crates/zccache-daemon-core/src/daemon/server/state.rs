@@ -275,6 +275,12 @@ pub(super) struct SharedState {
     /// `None` when the override is `0` (or `unlimited`) — preserves the
     /// historical uncapped behavior for users who want it.
     pub(super) compile_concurrency: Option<Arc<tokio::sync::Semaphore>>,
+    /// Issue #1216 — compile-queue counters backing the `CompileProgress`
+    /// heartbeats. `tokio::sync::Semaphore` reports available permits but
+    /// not its waiter count or original capacity, so the gate maintains
+    /// its own gauge. Always present, even when the cap is disabled — an
+    /// uncapped daemon still reports in-flight compiles.
+    pub(super) compile_queue: Arc<super::compile_progress::CompileQueueGauge>,
     /// In-memory artifact index (bincode blob-backed) for fast startup and
     /// persistence. Hot-path reads and writes go through `state.artifacts`;
     /// this store holds the same data and snapshots it to disk periodically.

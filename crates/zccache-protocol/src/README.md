@@ -1,7 +1,7 @@
 # zccache-protocol
 
 Wire protocol: `Request`/`Response` enums over a length-prefixed daemon frame.
-The active compatibility path is v18 bincode. The v16-family prost schema is generated
+The active compatibility path is v20 bincode. The v16-family prost schema is generated
 from `proto/zccache_v1.proto` and scaffolded in `wire_prost.rs` so the daemon can
 later dispatch both v15 bincode and v16 prost frames during migration.
 
@@ -25,9 +25,12 @@ enum variants must still be appended in `messages/mod.rs` and require a
 
 ## Wire Migration
 
-`PROTOCOL_VERSION` is `18` while the public `encode_message` and
+`PROTOCOL_VERSION` is `20` while the public `encode_message` and
 `decode_message` helpers emit and accept bincode bodies. `PROST_PROTOCOL_VERSION`
-is `19` for the current prost schema revision. The live daemon receive path dispatches both frame
+is `21` for the current prost schema revision. Because the header version byte is
+what selects the decoding lane, a bump must never re-use a value the *other* lane
+has previously shipped — that is why #1216 moved bincode 18 → 20 and prost
+19 → 21 rather than 18 → 19. The live daemon receive path dispatches both frame
 versions, but only the control/maintenance request slice (`Ping`, `Status`,
 `Shutdown`, `Clear`, `ReleaseWorktreeHandles`) is converted from prost today,
 and only the matching control/maintenance response slice (`Pong`, `Status`,

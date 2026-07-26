@@ -126,6 +126,17 @@ pub fn response_to_prost(response: &crate::Response, request_id: &str) -> zccach
             sessions_dropped: sessions_dropped.clone(),
             unreleased: unreleased.iter().map(path_to_prost).collect(),
         }),
+        crate::Response::CompileProgress {
+            queue_position,
+            queue_depth,
+            in_flight,
+            phase,
+        } => Body::CompileProgress(zccache_v1::CompileProgress {
+            queue_position: *queue_position,
+            queue_depth: *queue_depth,
+            in_flight: *in_flight,
+            phase: phase.clone(),
+        }),
         // Issue #838: ExecProbeResult / ExecStoreAck are bincode-only in
         // slice 1. The prost wire lane will gain proto definitions once a
         // wheel consumer needs cross-protocol routing.
@@ -229,6 +240,12 @@ pub fn response_from_prost(response: zccache_v1::Response) -> Result<crate::Resp
                 unreleased: result.unreleased.into_iter().map(path_from_prost).collect(),
             })
         }
+        Some(Body::CompileProgress(progress)) => Ok(crate::Response::CompileProgress {
+            queue_position: progress.queue_position,
+            queue_depth: progress.queue_depth,
+            in_flight: progress.in_flight,
+            phase: progress.phase,
+        }),
         None => Err("v16 prost response is missing its response body".to_string()),
     }
 }

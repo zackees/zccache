@@ -208,14 +208,24 @@ pub(super) async fn try_handle_staged_misses(
         apply_client_env(&mut command, client_env, &lineage);
         command.kill_on_drop(true);
         let compile_concurrency = state.compile_concurrency.clone();
+        // Issue #1216: keep the global queue gauge accurate for the staged
+        // lane too. These waits run on spawned tasks, so the per-request
+        // task-local slot is out of reach — the daemon-wide `queue_depth` /
+        // `in_flight` counters still are not, and those are what other
+        // clients' heartbeats report.
+        let compile_queue = Arc::clone(&state.compile_queue);
         let unit_index = miss.unit_index;
         compiler_set.spawn(async move {
             let available_before = compile_concurrency
                 .as_ref()
                 .map_or(usize::MAX, |semaphore| semaphore.available_permits());
+            let mut queue_guard = compile_queue.enqueue();
             let _permit = if let Some(semaphore) = compile_concurrency.as_ref() {
-                Arc::clone(semaphore).acquire_owned().await.ok()
+                let permit = Arc::clone(semaphore).acquire_owned().await.ok();
+                queue_guard.admit();
+                permit
             } else {
+                queue_guard.admit();
                 None
             };
             if compile_concurrency.is_some() {

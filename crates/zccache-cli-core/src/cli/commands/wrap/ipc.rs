@@ -193,30 +193,76 @@ fn report_relay_outcome(outcome: RelayOutcome) -> ExitCode {
 /// pipe, protocol error) maps to [`CompileRecvOutcome::Failed`] so the
 /// caller does not respawn the daemon on errors that have nothing to do
 /// with a wedge.
+///
+/// # Progress-based wedge detection (issue #1216)
+///
+/// This is a **loop**, not a single recv: the daemon pushes non-terminal
+/// [`crate::protocol::Response::CompileProgress`] heartbeats on this same
+/// connection while the compile waits for a compile-concurrency permit. Each
+/// heartbeat is reported to the user and restarts the budget, so the budget
+/// means "the daemon has gone quiet for this long" rather than "this compile
+/// took this long". A compile legitimately queued for longer than the budget
+/// therefore completes on its original connection with its cached-path
+/// result — no probe, no ephemeral re-run, no kill — while a daemon that
+/// emits *nothing* for a full budget still trips the #753/#955 handling.
 async fn compile_recv_with_wedge_detection<C: ConnRecv>(
     conn: &mut C,
     budget: Option<std::time::Duration>,
 ) -> CompileRecvOutcome {
-    match budget {
-        Some(budget) => match conn.recv_with_timeout(budget).await {
-            Ok(opt) => CompileRecvOutcome::Done(opt),
-            Err(crate::ipc::IpcError::Timeout(_)) => CompileRecvOutcome::Wedged,
-            Err(e) => CompileRecvOutcome::Failed(TransportFailure {
-                message: format!("broken connection to daemon: {e}"),
-                phase: FailurePhase::DeliveryUnknown,
-            }),
-        },
-        None => match conn
-            .recv_with_timeout(crate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT)
-            .await
-        {
-            Ok(opt) => CompileRecvOutcome::Done(opt),
-            Err(e) => CompileRecvOutcome::Failed(TransportFailure {
-                message: format!("broken connection to daemon: {e}"),
-                phase: FailurePhase::DeliveryUnknown,
-            }),
-        },
+    let recv_timeout = budget.unwrap_or(crate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
+    loop {
+        match conn.recv_with_timeout(recv_timeout).await {
+            Ok(Some(crate::protocol::Response::CompileProgress {
+                queue_position,
+                queue_depth,
+                in_flight,
+                phase,
+            })) => {
+                report_compile_progress(queue_position, queue_depth, in_flight, &phase);
+                // Budget restarts on the next loop iteration — this is the
+                // progress reset that makes wedge detection progress-based.
+            }
+            Ok(opt) => return CompileRecvOutcome::Done(opt),
+            // Only a configured budget turns a quiet daemon into a wedge; with
+            // `budget == None` wedge classification is disabled, so the IPC
+            // default timeout is reported as a plain transport failure.
+            Err(crate::ipc::IpcError::Timeout(_)) if budget.is_some() => {
+                return CompileRecvOutcome::Wedged
+            }
+            Err(e) => {
+                return CompileRecvOutcome::Failed(TransportFailure {
+                    message: format!("broken connection to daemon: {e}"),
+                    phase: FailurePhase::DeliveryUnknown,
+                })
+            }
+        }
     }
+}
+
+/// Human-readable one-liner for a `CompileProgress` heartbeat.
+///
+/// Kept separate from the printing so it can be asserted in unit tests
+/// without capturing stderr.
+fn compile_progress_line(
+    queue_position: u32,
+    queue_depth: u32,
+    in_flight: u32,
+    phase: &str,
+) -> String {
+    if queue_depth == 0 && queue_position == 0 {
+        format!("zccache[info][Q]: daemon under load: {phase}, {in_flight} compiles in flight")
+    } else {
+        format!(
+            "zccache[info][Q]: daemon under load: {phase}, position {queue_position} of \
+             {queue_depth} queued, {in_flight} in flight"
+        )
+    }
+}
+
+fn report_compile_progress(queue_position: u32, queue_depth: u32, in_flight: u32, phase: &str) {
+    let line = compile_progress_line(queue_position, queue_depth, in_flight, phase);
+    // Diagnostic only: never let a failed status write affect the compile.
+    let _ = writeln!(std::io::stderr(), "{line}");
 }
 
 /// Tiny seam over the platform-specific IPC connection types so the
@@ -848,6 +894,11 @@ mod tests {
         Ok(crate::protocol::Response),
         TimesOut,
         BrokenPipe,
+        /// Issue #1216: a timed script of frames. Each step sleeps for its
+        /// delay and then yields its frame; once the script is exhausted the
+        /// fake behaves like [`FakeBehavior::TimesOut`], so a test only has
+        /// to enumerate the frames it cares about.
+        Scripted(std::collections::VecDeque<(std::time::Duration, crate::protocol::Response)>),
     }
 
     impl ConnRecv for FakeConn {
@@ -855,14 +906,44 @@ mod tests {
             &mut self,
             timeout: std::time::Duration,
         ) -> Result<Option<crate::protocol::Response>, crate::ipc::IpcError> {
-            match &self.behavior {
+            match &mut self.behavior {
                 FakeBehavior::Ok(r) => Ok(Some(r.clone())),
                 FakeBehavior::TimesOut => {
                     tokio::time::sleep(timeout).await;
                     Err(crate::ipc::IpcError::Timeout(timeout))
                 }
                 FakeBehavior::BrokenPipe => Err(crate::ipc::IpcError::ConnectionClosed),
+                FakeBehavior::Scripted(steps) => match steps.pop_front() {
+                    Some((delay, response)) if delay < timeout => {
+                        tokio::time::sleep(delay).await;
+                        Ok(Some(response))
+                    }
+                    // The scripted gap exceeds the caller's budget: the recv
+                    // must trip, exactly as the real transport would.
+                    Some(_) | None => {
+                        tokio::time::sleep(timeout).await;
+                        Err(crate::ipc::IpcError::Timeout(timeout))
+                    }
+                },
             }
+        }
+    }
+
+    fn progress(queue_position: u32, queue_depth: u32) -> crate::protocol::Response {
+        crate::protocol::Response::CompileProgress {
+            queue_position,
+            queue_depth,
+            in_flight: 8,
+            phase: "queued".to_string(),
+        }
+    }
+
+    fn compile_result(exit_code: i32) -> crate::protocol::Response {
+        crate::protocol::Response::CompileResult {
+            exit_code,
+            stdout: std::sync::Arc::new(Vec::new()),
+            stderr: std::sync::Arc::new(Vec::new()),
+            cached: true,
         }
     }
 
@@ -913,6 +994,105 @@ mod tests {
                 && elapsed < std::time::Duration::from_millis(1100),
             "wedge detection took {elapsed:?} against a never-responding fake; \
              issue #666 expects fail-fast at the configured budget"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn compile_progress_heartbeats_reset_the_wedge_budget() {
+        // Issue #1216: three 900 ms gaps total 2.7 s — nearly 3× the 1 s
+        // budget. Pre-#1216 the single blocking recv would have tripped at
+        // 1 s and classified a perfectly healthy, queued compile as wedged.
+        // Every frame (including non-terminal ones) restarts the budget, so
+        // the terminal result is relayed instead.
+        let gap = std::time::Duration::from_millis(900);
+        let mut conn = FakeConn {
+            behavior: FakeBehavior::Scripted(
+                [
+                    (gap, progress(2, 3)),
+                    (gap, progress(1, 2)),
+                    (gap, compile_result(0)),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+        };
+        let started = tokio::time::Instant::now();
+        let outcome = compile_recv_with_wedge_detection(&mut conn, TEST_BUDGET).await;
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(
+                outcome,
+                CompileRecvOutcome::Done(Some(crate::protocol::Response::CompileResult {
+                    exit_code: 0,
+                    cached: true,
+                    ..
+                }))
+            ),
+            "queued-but-progressing compile must deliver its terminal result on \
+             the original connection"
+        );
+        assert!(
+            elapsed >= std::time::Duration::from_millis(2700),
+            "the loop must actually have waited out all three gaps, got {elapsed:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn silence_after_heartbeats_still_trips_wedge_detection() {
+        // The complement of the test above: a daemon that heartbeats and then
+        // goes completely quiet is genuinely wedged and must still get the
+        // #753/#955 treatment. Progress-based detection must not become
+        // "never detect a wedge".
+        let mut conn = FakeConn {
+            behavior: FakeBehavior::Scripted(
+                [(std::time::Duration::from_millis(900), progress(4, 5))]
+                    .into_iter()
+                    .collect(),
+            ),
+        };
+        let outcome = compile_recv_with_wedge_detection(&mut conn, TEST_BUDGET).await;
+        assert!(
+            matches!(outcome, CompileRecvOutcome::Wedged),
+            "an exhausted script (no further frames) must trip the budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn compile_progress_is_never_relayed_as_a_terminal_response() {
+        // Belt-and-braces: `relay_compile_response` treats any unexpected
+        // variant as a hard `[U]` failure, so a heartbeat that leaked past the
+        // recv loop would fail the compile. Assert the loop swallows it.
+        let mut conn = FakeConn {
+            behavior: FakeBehavior::Scripted(
+                [
+                    (std::time::Duration::ZERO, progress(0, 0)),
+                    (std::time::Duration::ZERO, compile_result(7)),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+        };
+        let outcome = compile_recv_with_wedge_detection(&mut conn, TEST_BUDGET).await;
+        let CompileRecvOutcome::Done(response) = outcome else {
+            panic!("expected a terminal response");
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let relayed = relay_compile_response(response, &mut stdout, &mut stderr);
+        assert_eq!(relayed, RelayOutcome::Verdict(exit_code_from_i32(7)));
+    }
+
+    #[test]
+    fn compile_progress_line_names_position_depth_and_in_flight() {
+        assert_eq!(
+            compile_progress_line(2, 5, 8, "queued"),
+            "zccache[info][Q]: daemon under load: queued, position 2 of 5 queued, 8 in flight"
+        );
+        // Nothing queued: the position/depth pair carries no information, so
+        // the line drops it rather than printing "position 0 of 0".
+        assert_eq!(
+            compile_progress_line(0, 0, 3, "compiling"),
+            "zccache[info][Q]: daemon under load: compiling, 3 compiles in flight"
         );
     }
 

@@ -89,7 +89,7 @@ fn library_content_and_output_environment_invalidate_the_input_hash() {
         "lib".into(),
         "src/lib.rs".into(),
     ];
-    let libs = serde_json::to_string(&[library.clone()]).unwrap();
+    let libs = serde_json::to_string(std::slice::from_ref(&library)).unwrap();
     let make_env =
         |metadata: &str, no_deps: &str, rustup_home: &str, toolchain: &str, docs_links: &str| {
             vec![

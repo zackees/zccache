@@ -589,6 +589,18 @@ mod full_family {
         });
     }
 
+    /// Issue #1216: interim compile heartbeats must survive the prost lane —
+    /// the wrapper only resets its wedge budget on frames it can decode.
+    #[test]
+    fn compile_progress_response_roundtrips() {
+        roundtrip_response(Response::CompileProgress {
+            queue_position: 3,
+            queue_depth: 9,
+            in_flight: 16,
+            phase: "queued".to_string(),
+        });
+    }
+
     #[test]
     fn control_converters_reject_non_control_families() {
         use zccache::protocol::wire_prost::{

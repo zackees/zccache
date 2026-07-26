@@ -102,7 +102,9 @@ pub(super) fn sample_artifact() -> ArtifactData {
 
 // Compile-time check: PROTOCOL_VERSION must be positive.
 const _: () = assert!(super::super::PROTOCOL_VERSION > 0);
-// Compile-time check: PROTOCOL_VERSION == 18 after staged telemetry was added.
+// Compile-time check: PROTOCOL_VERSION == 20 after `Response::CompileProgress`
+// was appended (issue #1216: interim compile queue heartbeats). v18 was the pin
+// after staged-output telemetry was added.
 // v17 added ExecProbe/ExecStore (issue #838 slice 1) for caller-owned tool caching (e.g. the
 // PyO3 `zccache.exec` binding for Python build orchestrators). v15 was
 // the pin after `ReleaseWorktreeHandles` was added for soldr Tier 3
@@ -116,4 +118,4 @@ const _: () = assert!(super::super::PROTOCOL_VERSION > 0);
 // pin after SessionStats gained `phase_profile`. v8 was the pin after
 // Compile/CompileEphemeral gained `stdin` and ArtifactPayload replaced
 // ArtifactOutput.data: Arc<Vec<u8>> (issue #296 Option B).
-const _FINGERPRINT_VERSION: () = assert!(super::super::PROTOCOL_VERSION == 18);
+const _FINGERPRINT_VERSION: () = assert!(super::super::PROTOCOL_VERSION == 20);

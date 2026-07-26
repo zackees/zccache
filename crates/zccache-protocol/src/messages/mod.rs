@@ -497,4 +497,37 @@ pub enum Response {
         /// Operational outcome of the store.
         stored: bool,
     },
+    /// Interim, **non-terminal** progress heartbeat for an in-flight
+    /// `Compile` / `CompileEphemeral` request (issue #1216).
+    ///
+    /// The daemon pushes these on the *same* connection that carries the
+    /// request while the compile is queued behind the compile-concurrency
+    /// semaphore or otherwise still running. They exist so a legitimately
+    /// slow-but-progressing compile is distinguishable from a wedged
+    /// daemon: the wrapper resets its wedge budget on every frame it sees
+    /// (see `wrap/ipc.rs`), so wedge detection becomes progress-based
+    /// rather than wall-clock-based.
+    ///
+    /// Unlike [`Response::Backpressure`] this is **not** a retry request —
+    /// the client keeps waiting on the same connection and the daemon still
+    /// delivers a terminal `CompileResult` / `Error` afterwards. A client
+    /// that does not understand the variant must never see one: the daemon
+    /// only emits heartbeats after the request has been decoded, i.e. once
+    /// the client's own wire version is known.
+    ///
+    /// NOTE: Appended at end to preserve bincode variant indices.
+    CompileProgress {
+        /// Number of compile requests admitted ahead of this one that have
+        /// not yet been granted a concurrency permit — i.e. how many
+        /// waiters are still in front of us. `0` means this request holds a
+        /// permit (or the semaphore is disabled) and is actively compiling.
+        queue_position: u32,
+        /// Total number of requests currently waiting for a permit.
+        queue_depth: u32,
+        /// Number of compiler children currently holding a permit.
+        in_flight: u32,
+        /// Coarse phase label. Diagnostic — known values: `"queued"`,
+        /// `"compiling"`.
+        phase: String,
+    },
 }
