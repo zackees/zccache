@@ -194,6 +194,15 @@ artifact context; the salt is never replayed to the driver process. Executable
 and library identities use the daemon's metadata-backed identity cache, so a
 warm lint unit does not re-hash a large rustc binary.
 
+The real Dylint driver may cause rustc dep-info to record `DYLINT_LIBS` as an
+environment dependency. Its raw value contains checkout-local absolute library
+paths, so the daemon resolves that recorded dependency through
+`ZCCACHE_DYLINT_CACHE_INPUT_HASH` for lookup, freshness checks, and
+publication. This preserves rustc's env-dependency invalidation while making
+equivalent sibling worktrees depend on the already-validated library content
+identity instead of path spelling. Ordinary rustc requests and Dylint requests
+that did not complete input preparation continue to use the raw env value.
+
 Missing, malformed, empty, or unhashable `DYLINT_LIBS` state disables caching
 for that invocation. The driver still runs with its original argv,
 environment, stdin, stdout, stderr, and exit status, and stderr receives a

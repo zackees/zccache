@@ -230,9 +230,7 @@ pub(super) fn context_env_deps_fresh(
         return true;
     };
     deps.iter().all(|(name, recorded_hash)| {
-        let current = client_env
-            .and_then(|env| env.iter().find(|(k, _)| k == name))
-            .map(|(_, v)| v.as_str());
+        let current = rustc_env_dep_value(client_env, name);
         crate::depgraph::hash_env_dep_value(current) == *recorded_hash
     })
 }

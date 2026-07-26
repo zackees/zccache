@@ -272,3 +272,14 @@ Issue: https://github.com/zackees/zccache/issues/1117
 - [x] Cover blocking and nonblocking timestamp races with focused tests.
 - [x] Cover gentle-to-forced handoff, held-shard retry, and maintenance/Clear
   artifact-lease ordering with deterministic tests.
+
+# Dylint sibling env-dep identity follow-up
+
+- [x] Reproduce the real-driver sibling miss by making rustc record
+  `DYLINT_LIBS` as an env dependency while library paths differ by worktree.
+- [x] Fold path-valued `DYLINT_LIBS` env deps through the existing synthetic
+  Dylint content identity for lookup, freshness, and publication.
+- [x] Validate the focused integration, depgraph suite, formatting, clippy,
+  and review gate in Linux Docker.
+- [ ] Merge the upstream PR, bump soldr's vendored commit, rerun the hosted
+  real Dylint/watchdog acceptance, and close the meta issue.

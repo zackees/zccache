@@ -6,6 +6,42 @@
 
 use super::super::*;
 
+#[test]
+fn rustc_dylint_libs_env_dep_uses_synthetic_content_identity() {
+    let env = vec![
+        (
+            crate::compiler::DYLINT_LIBS_ENV.to_string(),
+            r#"["/checkout-a/target/libfixture.so"]"#.to_string(),
+        ),
+        (
+            crate::compiler::DYLINT_CACHE_INPUT_HASH_ENV.to_string(),
+            "content-identity".to_string(),
+        ),
+    ];
+
+    assert_eq!(
+        rustc_env_dep_value(Some(&env), crate::compiler::DYLINT_LIBS_ENV),
+        Some("content-identity")
+    );
+}
+
+#[test]
+fn rustc_env_dep_value_preserves_non_dylint_and_unprepared_values() {
+    let env = vec![
+        (
+            crate::compiler::DYLINT_LIBS_ENV.to_string(),
+            r#"["/checkout-a/target/libfixture.so"]"#.to_string(),
+        ),
+        ("BUILD_STAMP".to_string(), String::new()),
+    ];
+
+    assert_eq!(
+        rustc_env_dep_value(Some(&env), crate::compiler::DYLINT_LIBS_ENV),
+        Some(r#"["/checkout-a/target/libfixture.so"]"#)
+    );
+    assert_eq!(rustc_env_dep_value(Some(&env), "BUILD_STAMP"), Some(""));
+}
+
 #[cfg(windows)]
 #[test]
 fn request_fingerprint_normalizes_equivalent_windows_paths() {

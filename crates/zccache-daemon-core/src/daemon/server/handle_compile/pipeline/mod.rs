@@ -950,12 +950,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                         &rustc_current_externs,
                         is_fresh,
                         get_hash,
-                        |name| {
-                            client_env
-                                .as_deref()
-                                .and_then(|env| env.iter().find(|(k, _)| k == name))
-                                .map(|(_, v)| v.clone())
-                        },
+                        |name| rustc_env_dep_value(client_env.as_deref(), name).map(str::to_owned),
                     );
                 write_session_log(
                     &state.sessions,
