@@ -146,6 +146,16 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             )
         }
         .await;
+        if dylint_result.is_ok() {
+            if let Some(env) = client_env.as_deref() {
+                for (name, value) in env.iter().filter(|(name, _)| {
+                    crate::compiler::dylint_env_affects_output(name)
+                        || matches!(name.as_str(), "DYLINT_LIBS" | "ZCCACHE_WORKTREE_ROOT")
+                }) {
+                    record_dylint_input_hash(name, value.as_bytes());
+                }
+            }
+        }
         if let Err(reason) = dylint_result {
             let diagnostic = format!("zccache: Dylint cache disabled: {reason}\n");
             let bypass_compiler: NormalizedPath = compiler_path.into();
@@ -529,6 +539,50 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             );
             let rustc_key_root =
                 rustc_context_key_root(&rustc_args.remap_path_prefixes, worktree_root.as_ref());
+            if crate::compiler::is_dylint_driver(&compiler_path.to_string_lossy()) {
+                super::super::inner_trace::record_ns(
+                    match rust_remap_gate(&rustc_args.remap_path_prefixes, worktree_root.as_ref()) {
+                        RustRemapGate::Ok => "dylint_remap_gate_ok",
+                        RustRemapGate::Missing => "dylint_remap_gate_missing",
+                        RustRemapGate::OldOutsideRoot => "dylint_remap_gate_old_outside_root",
+                        RustRemapGate::Malformed => "dylint_remap_gate_malformed",
+                    },
+                    0,
+                );
+                super::super::inner_trace::record_ns(
+                    if rustc_key_root.is_some() {
+                        "dylint_key_root_present"
+                    } else {
+                        "dylint_key_root_missing"
+                    },
+                    0,
+                );
+                record_dylint_input_hash("context_compiler", rustc_ctx.compiler_hash.as_bytes());
+                record_dylint_input_hash(
+                    "context_source",
+                    rustc_ctx.source_file.as_path().to_string_lossy().as_bytes(),
+                );
+                record_dylint_input_hash(
+                    "context_codegen",
+                    format!("{:?}", rustc_ctx.codegen_flags).as_bytes(),
+                );
+                record_dylint_input_hash(
+                    "context_externs",
+                    format!("{:?}", rustc_ctx.extern_crates).as_bytes(),
+                );
+                record_dylint_input_hash(
+                    "context_unknown",
+                    format!("{:?}", rustc_ctx.unknown_flags).as_bytes(),
+                );
+                record_dylint_input_hash(
+                    "context_remap",
+                    format!("{:?}", rustc_ctx.remap_path_prefixes).as_bytes(),
+                );
+                record_dylint_input_hash(
+                    "context_env",
+                    format!("{:?}", rustc_ctx.env_vars).as_bytes(),
+                );
+            }
             let key = rustc_ctx.context_key_with_root(rustc_key_root.as_deref());
             let compat_key =
                 rustc_ctx.check_metadata_compat_key_with_root(rustc_key_root.as_deref());
@@ -1181,6 +1235,18 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         stderr: response_stderr,
         cached: false,
     }
+}
+
+fn record_dylint_input_hash(name: &str, value: &[u8]) {
+    let value_hash = crate::hash::hash_bytes(value).to_hex();
+    super::super::inner_trace::record_ns(
+        &format!(
+            "dylint_input_{}_{}",
+            name.to_ascii_lowercase(),
+            &value_hash[..12]
+        ),
+        0,
+    );
 }
 
 fn prepend_compile_stderr(mut response: Response, diagnostic: &[u8]) -> Response {
