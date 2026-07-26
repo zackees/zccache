@@ -134,21 +134,6 @@ impl DepGraph {
             self.rustc_externs.remove(&key);
         }
 
-        let stale_env_deps: Vec<ContextKey> = self
-            .rustc_env_deps
-            .iter()
-            .filter_map(|entry| {
-                if live_contexts.contains(entry.key()) {
-                    None
-                } else {
-                    Some(*entry.key())
-                }
-            })
-            .collect();
-        for key in stale_env_deps {
-            self.rustc_env_deps.remove(&key);
-        }
-
         let stale_compat: Vec<ContextKey> = self
             .rustc_check_metadata_compat
             .iter()
@@ -201,7 +186,6 @@ impl DepGraph {
         self.contexts.clear();
         self.indexes.equivalent_contexts.clear();
         self.rustc_externs.clear();
-        self.rustc_env_deps.clear();
         self.rustc_check_metadata_compat.clear();
         self.indexes.path_key_cache.clear();
         self.checks.store(0, Ordering::Relaxed);
@@ -301,15 +285,13 @@ impl DepGraph {
     }
 
     /// Replace the recorded rustc env-dep snapshot for a context
-    /// (zccache#1021). An empty `deps` removes the entry.
+    /// (zccache#1021).
     pub fn set_rustc_env_deps(&self, key: ContextKey, deps: Vec<(String, Option<ContentHash>)>) {
         let Some(key) = self.resolve_instance_key(&key) else {
             return;
         };
-        if deps.is_empty() {
-            self.rustc_env_deps.remove(&key);
-        } else {
-            self.rustc_env_deps.insert(key, deps);
+        if let Some(mut entry) = self.contexts.get_mut(&key) {
+            entry.rustc_env_deps = deps;
         }
     }
 

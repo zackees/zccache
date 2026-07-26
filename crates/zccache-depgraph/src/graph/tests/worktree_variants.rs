@@ -94,6 +94,66 @@ fn equivalent_worktree_b_update_preserves_a_artifact() {
 }
 
 #[test]
+fn equivalent_rustc_worktree_rebases_env_dependencies() {
+    let graph = DepGraph::new();
+    let logical_key = ContextKey::from_raw([0x31; 32]);
+    let env_names = vec!["DYLINT_METADATA".to_string()];
+    let env_value = |_: &str| Some("same-metadata".to_string());
+
+    let a = graph.register_rustc_with_key_and_root_result(
+        logical_key,
+        context("/rustc-env-a"),
+        Some(NormalizedPath::from("/rustc-env-a")),
+        Vec::new(),
+        None,
+    );
+    let artifact_a = graph
+        .update_with_env(
+            &a.map_key,
+            ScanResult {
+                resolved: Vec::new(),
+                unresolved: Vec::new(),
+                has_computed: false,
+            },
+            equivalent_hash,
+            &env_names,
+            env_value,
+        )
+        .expect("A must become warm");
+
+    let b = graph.register_rustc_with_key_and_root_result(
+        logical_key,
+        context("/rustc-env-b"),
+        Some(NormalizedPath::from("/rustc-env-b")),
+        Vec::new(),
+        None,
+    );
+    assert!(b.rebased_from_equivalent_root);
+    assert_eq!(b.state, ContextState::Warm);
+    assert_eq!(
+        graph.get_rustc_env_deps(&b.map_key),
+        graph.get_rustc_env_deps(&a.map_key),
+        "the rebased artifact key and its env inputs must stay together"
+    );
+    assert!(matches!(
+        graph.check_with_env(&b.map_key, |_| true, equivalent_hash, env_value),
+        CacheVerdict::Hit { artifact_key } if artifact_key == artifact_a
+    ));
+    assert!(
+        matches!(
+            graph.check_with_env(
+                &b.map_key,
+                |_| true,
+                equivalent_hash,
+                |_| Some("changed-metadata".to_string()),
+            ),
+            CacheVerdict::Cold
+        ),
+        "a changed compile-time env input must still miss safely"
+    );
+}
+
+#[test]
 fn registration_reports_existing_stale_state_without_an_extra_lookup() {
     let graph = DepGraph::new();
     let root = NormalizedPath::from("/stale-worktree");

@@ -181,11 +181,13 @@ impl DepGraph {
             .equivalent_contexts
             .get(&key)
             .and_then(|instances| {
-                instances
-                    .iter()
-                    .find_map(|candidate| self.contexts.get(candidate).map(|entry| entry.clone()))
+                instances.iter().find_map(|candidate_key| {
+                    self.contexts
+                        .get(candidate_key)
+                        .map(|entry| (*candidate_key, entry.clone()))
+                })
             });
-        let rebased_from_equivalent_root = candidate.as_ref().is_some_and(|entry| {
+        let rebased_from_equivalent_root = candidate.as_ref().is_some_and(|(_, entry)| {
             entry.key_root.is_some() && key_root.is_some() && entry.key_root != key_root
         });
         let entry = candidate.map_or_else(
@@ -198,10 +200,11 @@ impl DepGraph {
                 has_computed_includes: false,
                 artifact_key: None,
                 last_file_hashes: Vec::new(),
+                rustc_env_deps: Vec::new(),
                 last_accessed: Instant::now(),
                 state: ContextState::Cold,
             },
-            |mut candidate| {
+            |(_, mut candidate)| {
                 let old_root = candidate.key_root.clone();
                 candidate.resolved_includes = candidate
                     .resolved_includes
@@ -244,7 +247,6 @@ impl DepGraph {
         if let Some(evicted) = evicted {
             self.contexts.remove(&evicted);
             self.rustc_externs.remove(&evicted);
-            self.rustc_env_deps.remove(&evicted);
             let stale_compat: Vec<ContextKey> = self
                 .rustc_check_metadata_compat
                 .iter()

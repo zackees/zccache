@@ -6,7 +6,7 @@ use tempfile::TempDir;
 use zccache_core::NormalizedPath;
 use zccache_hash::{hash_bytes, ContentHash};
 
-use super::super::super::context::CompileContext;
+use super::super::super::context::{CompileContext, ContextKey};
 use super::super::super::graph::{CacheVerdict, DepGraph};
 use super::super::super::scanner::ScanResult;
 use super::super::super::search_paths::IncludeSearchPaths;
@@ -112,6 +112,52 @@ fn new_equivalent_worktree_reuses_warm_context_after_snapshot_roundtrip() {
     );
     assert!(matches!(
         loaded.check(&b.map_key, always_fresh, equal_hash),
+        CacheVerdict::Hit { artifact_key } if artifact_key == artifact_a
+    ));
+}
+
+#[test]
+fn rebased_rustc_env_dependencies_survive_snapshot_roundtrip() {
+    let dir = TempDir::new().unwrap();
+    let path = test_path(&dir);
+    let graph = DepGraph::new();
+    let logical_key = ContextKey::from_raw([0x42; 32]);
+    let env_names = vec!["DYLINT_METADATA".to_string()];
+    let env_value = |_: &str| Some("same-metadata".to_string());
+    let a = graph.register_rustc_with_key_and_root_result(
+        logical_key,
+        context("/snapshot-env-a"),
+        Some(NormalizedPath::from("/snapshot-env-a")),
+        Vec::new(),
+        None,
+    );
+    let artifact_a = graph
+        .update_with_env(
+            &a.map_key,
+            scan("/snapshot-env-a"),
+            equal_hash,
+            &env_names,
+            env_value,
+        )
+        .unwrap();
+
+    save_to_file(&graph, &path).unwrap();
+    let loaded = load_from_file(&path).unwrap();
+    let b = loaded.register_rustc_with_key_and_root_result(
+        logical_key,
+        context("/snapshot-env-b"),
+        Some(NormalizedPath::from("/snapshot-env-b")),
+        Vec::new(),
+        None,
+    );
+
+    assert!(b.rebased_from_equivalent_root);
+    assert_eq!(
+        loaded.get_rustc_env_deps(&b.map_key),
+        loaded.get_rustc_env_deps(&a.map_key),
+    );
+    assert!(matches!(
+        loaded.check_with_env(&b.map_key, always_fresh, equal_hash, env_value),
         CacheVerdict::Hit { artifact_key } if artifact_key == artifact_a
     ));
 }

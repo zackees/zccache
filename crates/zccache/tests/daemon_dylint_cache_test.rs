@@ -83,6 +83,7 @@ async fn start_session(client: &mut ClientConn, log_file: Option<NormalizedPath>
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Test request fixture mirrors the wire fields.
 async fn compile(
     client: &mut ClientConn,
     session_id: &str,
@@ -91,15 +92,21 @@ async fn compile(
     cwd: &std::path::Path,
     dylint_libs: &str,
     dylint_metadata: &str,
+    path_remap: bool,
 ) -> (i32, bool, Vec<u8>, Vec<u8>) {
     let mut env: Vec<(String, String)> = std::env::vars().collect();
     env.retain(|(name, _)| {
         name != "DYLINT_LIBS"
             && name != "DYLINT_METADATA"
+            && name != "ZCCACHE_PATH_REMAP"
+            && name != "ZCCACHE_WORKTREE_ROOT"
             && name != "ZCCACHE_DYLINT_CACHE_INPUT_HASH"
     });
     env.push(("DYLINT_LIBS".to_string(), dylint_libs.to_string()));
     env.push(("DYLINT_METADATA".to_string(), dylint_metadata.to_string()));
+    if path_remap {
+        env.push(("ZCCACHE_PATH_REMAP".to_string(), "auto".to_string()));
+    }
     client
         .send(&Request::Compile {
             session_id: session_id.to_string(),
@@ -215,6 +222,7 @@ async fn nested_dylint_hits_and_invalidates_every_external_input() {
             tmp.path(),
             &dylint_libs,
             "metadata-v1",
+            false,
         )
         .await;
         assert_eq!(first.0, 0);
@@ -230,6 +238,7 @@ async fn nested_dylint_hits_and_invalidates_every_external_input() {
             tmp.path(),
             &dylint_libs,
             "metadata-v1",
+            false,
         )
         .await;
         assert_eq!(warm.0, 0);
@@ -247,6 +256,7 @@ async fn nested_dylint_hits_and_invalidates_every_external_input() {
             tmp.path(),
             &dylint_libs,
             "metadata-v1",
+            false,
         )
         .await;
         assert!(!library_changed.1, "library bytes must invalidate the hit");
@@ -260,6 +270,7 @@ async fn nested_dylint_hits_and_invalidates_every_external_input() {
             tmp.path(),
             &dylint_libs,
             "metadata-v2",
+            false,
         )
         .await;
         assert!(!env_changed.1, "DYLINT_* output state must invalidate");
@@ -274,6 +285,7 @@ async fn nested_dylint_hits_and_invalidates_every_external_input() {
             tmp.path(),
             &dylint_libs,
             "metadata-v2",
+            false,
         )
         .await;
         assert!(!driver_changed.1, "driver bytes must invalidate");
@@ -289,6 +301,7 @@ async fn nested_dylint_hits_and_invalidates_every_external_input() {
             tmp.path(),
             "not-json",
             "metadata-v2",
+            false,
         )
         .await;
         assert_eq!(malformed.0, 0, "malformed state must fail open");
@@ -296,6 +309,108 @@ async fn nested_dylint_hits_and_invalidates_every_external_input() {
         assert!(
             String::from_utf8_lossy(&malformed.3).contains("Dylint cache disabled"),
             "fail-open reason must be visible to the user"
+        );
+
+        shutdown.notify_one();
+        server_handle.await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "integration-level: starts a real daemon and rustc"]
+async fn nested_dylint_hits_across_sibling_worktrees() {
+    let Some(rustc) = zccache::test_support::find_rustc() else {
+        eprintln!("skipping test: rustc not found");
+        return;
+    };
+
+    zccache::test_support::test_timeout(async move {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let _cache_env = CacheDirEnvGuard::set(&cache);
+        let driver = tmp.path().join("dylint-driver");
+        write_driver(&driver, "workspace lint diagnostic");
+
+        let roots = [tmp.path().join("checkout-a"), tmp.path().join("checkout-b")];
+        for root in &roots {
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            std::fs::write(
+                root.join("src/lib.rs"),
+                "pub const METADATA: Option<&str> = option_env!(\"DYLINT_METADATA\");\n\
+                 pub fn checked() -> u32 { 42 }\n",
+            )
+            .unwrap();
+            std::fs::write(root.join("libworkspace_lint.so"), b"same-lint-library").unwrap();
+        }
+        std::fs::create_dir(roots[0].join(".git")).unwrap();
+        std::fs::write(
+            roots[1].join(".git"),
+            "gitdir: ../.git/worktrees/checkout-b\n",
+        )
+        .unwrap();
+
+        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
+        let session_log = tmp.path().join("sibling-session.log");
+        let session_id = start_session(&mut client, Some(session_log.clone().into())).await;
+
+        let mut outcomes = Vec::new();
+        for root in &roots {
+            let deps = root.join("target/dylint/target/nightly/debug/deps");
+            let incremental = root.join("target/dylint/target/nightly/debug/incremental");
+            std::fs::create_dir_all(&deps).unwrap();
+            std::fs::create_dir_all(&incremental).unwrap();
+            let args = vec![
+                rustc.display().to_string(),
+                "--crate-name".to_string(),
+                "checked".to_string(),
+                "--edition=2021".to_string(),
+                "src/lib.rs".to_string(),
+                "--error-format=json".to_string(),
+                "--json=diagnostic-rendered-ansi,artifacts,future-incompat".to_string(),
+                "--crate-type".to_string(),
+                "lib".to_string(),
+                "--emit=dep-info,metadata".to_string(),
+                "-C".to_string(),
+                "embed-bitcode=no".to_string(),
+                "-C".to_string(),
+                "metadata=fixture".to_string(),
+                "-C".to_string(),
+                "extra-filename=-fixture".to_string(),
+                "--out-dir".to_string(),
+                deps.display().to_string(),
+                "-C".to_string(),
+                format!("incremental={}", incremental.display()),
+                "-C".to_string(),
+                "strip=debuginfo".to_string(),
+                "-L".to_string(),
+                format!("dependency={}", deps.display()),
+            ];
+            let dylint_libs =
+                serde_json::to_string(&vec![root.join("libworkspace_lint.so")]).unwrap();
+            outcomes.push(
+                compile(
+                    &mut client,
+                    &session_id,
+                    &driver,
+                    &args,
+                    root,
+                    &dylint_libs,
+                    "same-metadata",
+                    true,
+                )
+                .await,
+            );
+        }
+
+        assert_eq!(outcomes[0].0, 0);
+        assert!(!outcomes[0].1);
+        assert_eq!(outcomes[1].0, 0);
+        assert!(
+            outcomes[1].1,
+            "identical nested Dylint requests must hit across checkout roots\n{}",
+            std::fs::read_to_string(session_log).unwrap_or_default()
         );
 
         shutdown.notify_one();

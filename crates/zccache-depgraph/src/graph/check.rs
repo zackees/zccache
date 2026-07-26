@@ -19,29 +19,6 @@ use super::{
 };
 
 impl DepGraph {
-    /// Fold the context's recorded env-dep set (zccache#1021) into a
-    /// freshly-computed rustc artifact key using CURRENT env values from
-    /// `env_value`. No-op (returns `base` unchanged) for contexts without
-    /// recorded env-deps — the overwhelmingly common case — so their keys
-    /// stay byte-identical with prior releases.
-    fn fold_env_deps_for_key<E>(
-        &self,
-        key: &ContextKey,
-        base: ArtifactKey,
-        env_value: &E,
-    ) -> ArtifactKey
-    where
-        E: Fn(&str) -> Option<String>,
-    {
-        match self.rustc_env_dep_inputs(key) {
-            Some(deps) if !deps.is_empty() => {
-                let mut env_hashes = collect_rustc_env_hashes(&deps, env_value);
-                fold_rustc_env_deps_into_artifact_key(base, &mut env_hashes)
-            }
-            _ => base,
-        }
-    }
-
     /// [`Self::check_rustc_metadata_compat_diagnostic_with_env`] without an
     /// env lookup. For contexts with recorded env-deps this conservatively
     /// misses (safe direction); rustc callers should use the `_with_env`
@@ -213,16 +190,14 @@ impl DepGraph {
         // zccache#1021: the compat candidate serves its STORED artifact
         // key, so a changed env-dep value must refuse the alias instead of
         // shipping the artifact compiled under the old value.
-        if let Some(deps) = self.rustc_env_dep_inputs(&actual_key) {
-            if !deps.is_empty() {
-                let current = collect_rustc_env_hashes(&deps, &env_value);
-                if current != deps {
-                    return (
-                        CacheVerdict::Cold,
-                        "rustc metadata compatibility env-dep values changed".to_string(),
-                        Some(actual_key),
-                    );
-                }
+        if !entry.rustc_env_deps.is_empty() {
+            let current = collect_rustc_env_hashes(&entry.rustc_env_deps, &env_value);
+            if current != entry.rustc_env_deps {
+                return (
+                    CacheVerdict::Cold,
+                    "rustc metadata compatibility env-dep values changed".to_string(),
+                    Some(actual_key),
+                );
             }
         }
 
@@ -391,7 +366,8 @@ impl DepGraph {
                 entry.key_root.as_deref(),
                 |path, key_root| self.cached_normalize_key_path(path, key_root),
             );
-            self.fold_env_deps_for_key(&key, base, &env_value)
+            let mut env_hashes = collect_rustc_env_hashes(&entry.rustc_env_deps, &env_value);
+            fold_rustc_env_deps_into_artifact_key(base, &mut env_hashes)
         } else {
             compute_artifact_key_with(
                 &entry.logical_key,
@@ -613,7 +589,8 @@ impl DepGraph {
                 entry.key_root.as_deref(),
                 |path, key_root| self.cached_normalize_key_path(path, key_root),
             );
-            self.fold_env_deps_for_key(&key, base, &env_value)
+            let mut env_hashes = collect_rustc_env_hashes(&entry.rustc_env_deps, &env_value);
+            fold_rustc_env_deps_into_artifact_key(base, &mut env_hashes)
         } else {
             compute_artifact_key_with(
                 &entry.logical_key,
@@ -754,7 +731,8 @@ impl DepGraph {
                 entry.key_root.as_deref(),
                 |path, key_root| self.cached_normalize_key_path(path, key_root),
             );
-            self.fold_env_deps_for_key(&key, base, &env_value)
+            let mut env_hashes = collect_rustc_env_hashes(&entry.rustc_env_deps, &env_value);
+            fold_rustc_env_deps_into_artifact_key(base, &mut env_hashes)
         } else {
             compute_artifact_key_with(
                 &entry.logical_key,

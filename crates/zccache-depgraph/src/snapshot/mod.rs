@@ -182,10 +182,10 @@ impl DepGraph {
                         path: path.to_string_lossy().into_owned(),
                     })
                     .collect();
-                let rustc_env_deps = self
-                    .get_rustc_env_deps(key)
-                    .unwrap_or_default()
-                    .into_iter()
+                let rustc_env_deps = ctx
+                    .rustc_env_deps
+                    .iter()
+                    .cloned()
                     .map(|(name, value_hash)| RustcEnvDepSnapshot {
                         name,
                         value_hash: value_hash.map(|h| *h.as_bytes()),
@@ -276,8 +276,6 @@ impl DepGraph {
         let contexts: DashMap<ContextKey, ContextEntry> = DashMap::new();
         let equivalent_contexts: DashMap<ContextKey, Vec<ContextKey>> = DashMap::new();
         let rustc_externs: DashMap<ContextKey, Vec<(String, NormalizedPath)>> = DashMap::new();
-        let rustc_env_deps: DashMap<ContextKey, Vec<(String, Option<ContentHash>)>> =
-            DashMap::new();
         snap.contexts.into_par_iter().for_each(|c| {
             let key = ContextKey::from_raw(c.context_key);
             let logical_key = ContextKey::from_raw(c.logical_context_key);
@@ -339,6 +337,7 @@ impl DepGraph {
                     .into_iter()
                     .map(|(p, h)| (NormalizedPath::from(p.as_str()), ContentHash::from_bytes(h)))
                     .collect(),
+                rustc_env_deps: env_deps,
                 last_accessed: Instant::now(),
                 state: match c.state {
                     0 => ContextState::Cold,
@@ -354,17 +353,9 @@ impl DepGraph {
             if !externs.is_empty() {
                 rustc_externs.insert(key, externs);
             }
-            if !env_deps.is_empty() {
-                rustc_env_deps.insert(key, env_deps);
-            }
         });
 
-        let mut graph = DepGraph::from_maps_with_rustc_externs_and_env_deps(
-            files,
-            contexts,
-            rustc_externs,
-            rustc_env_deps,
-        );
+        let mut graph = DepGraph::from_maps_with_rustc_externs(files, contexts, rustc_externs);
         graph.indexes.equivalent_contexts = equivalent_contexts;
         graph
     }

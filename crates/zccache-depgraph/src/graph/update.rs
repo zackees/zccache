@@ -62,7 +62,6 @@ impl DepGraph {
                 (name.clone(), hash_env_dep_value(value.as_deref()))
             })
             .collect();
-        self.set_rustc_env_deps(key, env_hashes.clone());
         // Issue #582: emit a `zccache_depgraph_update_breakdown` line when
         // `ZCCACHE_PROFILE_CC_MISS` is set so the next perf iteration has
         // sub-phase data for the remaining ~2.4 ms mean `depgraph_update_ns`.
@@ -146,6 +145,7 @@ impl DepGraph {
         entry.state = ContextState::Warm;
         entry.artifact_key = Some(artifact_key);
         entry.last_file_hashes = file_hashes;
+        entry.rustc_env_deps = env_hashes;
         let finalize_ns = t_finalize
             .map(|t| t.elapsed().as_nanos() as u64)
             .unwrap_or(0);
