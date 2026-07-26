@@ -83,6 +83,7 @@ async fn start_session(client: &mut ClientConn, log_file: Option<NormalizedPath>
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Test request fixture mirrors the wire fields.
 async fn compile(
     client: &mut ClientConn,
     session_id: &str,
@@ -334,7 +335,12 @@ async fn nested_dylint_hits_across_sibling_worktrees() {
         let roots = [tmp.path().join("checkout-a"), tmp.path().join("checkout-b")];
         for root in &roots {
             std::fs::create_dir_all(root.join("src")).unwrap();
-            std::fs::write(root.join("src/lib.rs"), "pub fn checked() -> u32 { 42 }\n").unwrap();
+            std::fs::write(
+                root.join("src/lib.rs"),
+                "pub const METADATA: Option<&str> = option_env!(\"DYLINT_METADATA\");\n\
+                 pub fn checked() -> u32 { 42 }\n",
+            )
+            .unwrap();
             std::fs::write(root.join("libworkspace_lint.so"), b"same-lint-library").unwrap();
         }
         std::fs::create_dir(roots[0].join(".git")).unwrap();

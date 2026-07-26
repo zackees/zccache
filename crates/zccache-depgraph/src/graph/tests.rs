@@ -809,6 +809,7 @@ fn warm_context_with_no_artifact_returns_cold_on_check() {
             has_computed_includes: false,
             artifact_key: None,
             last_file_hashes: Vec::new(),
+            rustc_env_deps: Vec::new(),
             last_accessed: Instant::now(),
             state: ContextState::Warm,
         },

@@ -66,6 +66,11 @@ pub struct ContextEntry {
     pub artifact_key: Option<ArtifactKey>,
     /// File hashes from the last update() — used for drift diagnostics.
     pub last_file_hashes: Vec<(NormalizedPath, ContentHash)>,
+    /// Rustc `env!()`/`option_env!()` inputs folded into `artifact_key`.
+    ///
+    /// Keeping these beside the artifact key makes worktree rebasing,
+    /// persistence, and concurrent publication observe one coherent unit.
+    pub rustc_env_deps: Vec<(String, Option<ContentHash>)>,
     /// When this entry was last accessed (for trimming).
     pub last_accessed: Instant,
     /// Current state.
@@ -170,18 +175,6 @@ pub struct DepGraph {
     /// their paths are output-placement state. Their content hashes affect the
     /// rustc artifact key by crate name, but target-dir path prefixes must not.
     pub(super) rustc_externs: DashMap<ContextKey, Vec<(String, NormalizedPath)>>,
-    /// Rustc env-dep snapshots keyed by context (zccache#1021).
-    ///
-    /// rustc records every `env!()`/`option_env!()` read as a
-    /// `# env-dep:NAME[=value]` line in its dep-info. We store, per
-    /// context, the read variable NAMES with the blake3 hash of the value
-    /// each had at the last successful compile (`None` = the variable was
-    /// unset). Check paths re-resolve the CURRENT values via a
-    /// caller-supplied lookup and fold them into the artifact key, so a
-    /// changed `cargo:rustc-env` value (vergen `VERGEN_GIT_SHA` etc.)
-    /// misses instead of serving an artifact with the stale value baked
-    /// in. Non-rustc contexts never have an entry here.
-    pub(super) rustc_env_deps: DashMap<ContextKey, Vec<(String, Option<ContentHash>)>>,
     /// Rustc check/build metadata compatibility alias.
     ///
     /// Keyed by the checkout-specific form of
@@ -389,7 +382,6 @@ impl DepGraph {
             files: Box::new(DashMap::new()),
             contexts: DashMap::new(),
             rustc_externs: DashMap::new(),
-            rustc_env_deps: DashMap::new(),
             rustc_check_metadata_compat: DashMap::new(),
             indexes: Box::new(GraphIndexes::new()),
             checks: AtomicU64::new(0),
@@ -445,7 +437,9 @@ impl DepGraph {
         &self,
         key: &ContextKey,
     ) -> Option<Vec<(String, Option<ContentHash>)>> {
-        self.rustc_env_deps.get(key).map(|deps| deps.clone())
+        self.contexts
+            .get(key)
+            .map(|entry| entry.rustc_env_deps.clone())
     }
 
     /// Resolve a public logical key only when it identifies one safe mutable
@@ -462,17 +456,15 @@ impl DepGraph {
 
     /// Construct a `DepGraph` from pre-built maps, including rustc extern
     /// inputs and env-dep snapshots (zccache#1021).
-    pub(crate) fn from_maps_with_rustc_externs_and_env_deps(
+    pub(crate) fn from_maps_with_rustc_externs(
         files: DashMap<NormalizedPath, FileEntry>,
         contexts: DashMap<ContextKey, ContextEntry>,
         rustc_externs: DashMap<ContextKey, Vec<(String, NormalizedPath)>>,
-        rustc_env_deps: DashMap<ContextKey, Vec<(String, Option<ContentHash>)>>,
     ) -> Self {
         Self {
             files: Box::new(files),
             contexts,
             rustc_externs,
-            rustc_env_deps,
             rustc_check_metadata_compat: DashMap::new(),
             indexes: Box::new(GraphIndexes::new()),
             checks: AtomicU64::new(0),
