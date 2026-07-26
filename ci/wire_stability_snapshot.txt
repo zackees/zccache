@@ -44,6 +44,10 @@ CompileEphemeral	5	cwd	Path
 CompileEphemeral	6	env	EnvVar
 CompileEphemeral	7	env_is_set	bool
 CompileEphemeral	8	stdin	bytes
+CompileProgress	1	queue_position	uint32
+CompileProgress	2	queue_depth	uint32
+CompileProgress	3	in_flight	uint32
+CompileProgress	4	phase	string
 CompileResult	1	exit_code	int32
 CompileResult	2	stdout	bytes
 CompileResult	3	stderr	bytes
@@ -131,6 +135,10 @@ LinkResult	2	stdout	bytes
 LinkResult	3	stderr	bytes
 LinkResult	4	cached	bool
 Lookup	1	cache_key	string
+LookupOutcomes	1	depgraph_hit_artifact_hit	uint64
+LookupOutcomes	2	depgraph_hit_artifact_miss	uint64
+LookupOutcomes	3	depgraph_cold_skip	uint64
+LookupOutcomes	4	depgraph_other_miss	map<string, uint64>
 LookupResult	1	hit	ArtifactData
 LookupResult	2	miss	Empty
 Path	1	value	string
@@ -152,6 +160,7 @@ PhaseProfileSummary	15	include_scan_ns	uint64
 PhaseProfileSummary	16	hash_all_ns	uint64
 PhaseProfileSummary	17	artifact_store_ns	uint64
 PhaseProfileSummary	18	total_miss_ns	uint64
+PhaseProfileSummary	19	staged	StagedProfileSummary
 PrivateDaemonOwnerStatus	1	pid	uint32
 PrivateDaemonOwnerStatus	2	ref_count	uint64
 PrivateDaemonSessionOptions	4	owner_pids	uint32
@@ -202,6 +211,7 @@ Response	15	rust_artifact_list	RustArtifactList
 Response	16	generic_tool_exec_result	GenericToolExecResult
 Response	17	backpressure	Backpressure
 Response	18	release_worktree_handles_result	ReleaseWorktreeHandlesResult
+Response	19	compile_progress	CompileProgress
 Response	100	request_id	string
 RustArtifactBundleManifest	1	manifest_schema_version	uint32
 RustArtifactBundleManifest	2	plan_schema_version	uint32
@@ -232,11 +242,17 @@ RustArtifactPlanV1	11	cache_schema_version	uint32
 RustArtifactPlanV1	12	journal_log_path	string
 RustArtifactPlanV1	13	cache_profile	string
 RustArtifactPlanV1	14	dropped_artifact_classes	uint32
+RustArtifactPlanV1	15	cargo_artifact_paths	string
+RustArtifactPlanV1	16	cargo_artifacts_complete	bool
 RustBundledArtifact	1	relative_path	string
 RustBundledArtifact	2	class	uint32
 RustBundledArtifact	3	size	uint64
 RustBundledArtifact	4	content_hash	string
 RustBundledArtifact	5	mtime_unix_nanos	uint64
+RustBundledArtifact	6	owner	uint32
+RustPlanArtifactOwner	1	relative_path	string
+RustPlanArtifactOwner	2	package_id	string
+RustPlanArtifactOwner	3	owner	uint32
 RustPlanInputs	1	features_hash	string
 RustPlanInputs	2	rustflags_hash	string
 RustPlanInputs	3	env_hash	string
@@ -246,6 +262,10 @@ RustPlanInputs	6	manifest_hashes	string
 RustPlanPackages	1	selected_package_ids	string
 RustPlanPackages	2	workspace_package_ids	string
 RustPlanPackages	3	excluded_path_package_ids	string
+RustPlanPackages	4	ownership_policy	string
+RustPlanPackages	5	ownership_mode	uint32
+RustPlanPackages	6	artifact_owners	RustPlanArtifactOwner
+RustPlanPackages	7	ownership_complete	bool
 RustToolchainIdentity	1	rustc	string
 RustToolchainIdentity	2	cargo	string
 RustToolchainIdentity	3	channel	string
@@ -268,6 +288,10 @@ SessionStats	9	unique_sources	uint64
 SessionStats	10	bytes_read	uint64
 SessionStats	11	bytes_written	uint64
 SessionStatsRequest	1	session_id	string
+StagedProfileSummary	1	counters	map<string, uint64>
+StagedProfileSummary	2	timings_ns	map<string, uint64>
+StagedProfileSummary	3	bytes	map<string, uint64>
+StagedProfileSummary	4	failures	map<string, uint64>
 Store	1	cache_key	string
 Store	2	artifact	ArtifactData
 StoreResult	1	kind	StoreResultKind

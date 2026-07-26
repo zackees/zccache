@@ -196,7 +196,7 @@ pub(super) async fn dispatch_request(
                     None => request.await,
                 }
             };
-            match guarded_dispatch(conn, handler).await {
+            match guarded_dispatch_with_progress(conn, response_wire, state, handler).await {
                 Some((response, ctx)) => (response, ctx),
                 None => {
                     log_client_cancelled("compile");
@@ -242,7 +242,7 @@ pub(super) async fn dispatch_request(
                     )),
                 )
             };
-            match guarded_dispatch(conn, handler).await {
+            match guarded_dispatch_with_progress(conn, response_wire, state, handler).await {
                 Some((response, ctx)) => (response, ctx),
                 None => {
                     log_client_cancelled("compile_ephemeral");

@@ -6,7 +6,10 @@ discipline) into:
 
 - `mod.rs` — `handle_connection` (the read/dispatch/send loop), `ResponseWire`,
   `PendingJournalContext`, `guarded_dispatch` (issue #967 disconnect-cancel
-  guard), `log_client_cancelled`, `send_response_for_wire`,
+  guard), `guarded_dispatch_with_progress` (issue #1216 `CompileProgress`
+  heartbeat ticker — see [`docs/architecture/ipc.md` § Compile progress
+  heartbeats](../../../../../../docs/architecture/ipc.md#compile-progress-heartbeats-issue-1216)),
+  `log_client_cancelled`, `send_response_for_wire`,
   `session_phase_profile`. Owns the journal-entry bookkeeping that wraps each
   dispatched request.
 - `dispatch.rs` — `dispatch_request` / `DispatchOutcome`: the per-`Request`

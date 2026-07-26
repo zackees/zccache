@@ -64,6 +64,7 @@ message Response {
     GenericToolExecResult generic_tool_exec_result = 16;
     Backpressure backpressure = 17;
     ReleaseWorktreeHandlesResult release_worktree_handles_result = 18;
+    CompileProgress compile_progress = 19;
   }
   string request_id = 100;
 }
@@ -388,6 +389,13 @@ message Backpressure {
   uint32 queue_depth = 1;
   uint32 retry_after_ms = 2;
   string reason = 3;
+}
+
+message CompileProgress {
+  uint32 queue_position = 1;
+  uint32 queue_depth = 2;
+  uint32 in_flight = 3;
+  string phase = 4;
 }
 
 message ReleaseWorktreeHandlesResult {

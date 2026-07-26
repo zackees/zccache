@@ -8,7 +8,7 @@ This document is the index for zccache's architecture specification. Each subsys
 |---|---|---|
 | [architecture/overview.md](architecture/overview.md) | ~280 | System diagram, all 9 component descriptions and key interfaces |
 | [architecture/data-flow.md](architecture/data-flow.md) | ~160 | Cache hit, cache miss, passthrough traces + rustc key-scope rules (env-deps, incremental, crate types) |
-| [architecture/ipc.md](architecture/ipc.md) | ~60 | Transport abstraction, socket discovery, connection lifecycle, errors |
+| [architecture/ipc.md](architecture/ipc.md) | ~100 | Transport abstraction, socket discovery, connection lifecycle, compile progress heartbeats, errors |
 | [architecture/metadata-cache.md](architecture/metadata-cache.md) | ~130 | In-memory cache data model, confidence levels, watcher integration |
 | [architecture/artifact-store.md](architecture/artifact-store.md) | ~130 | Disk layout, redb index schema, LRU eviction, corruption detection |
 | [architecture/rust-artifact-plan.md](architecture/rust-artifact-plan.md) | ~120 | Rust plan ownership, thin/full semantics, restore hardening, backends, diagnostics, CLI contract |
@@ -27,6 +27,7 @@ failed cache-root audit retain its diagnostic JSONL evidence.
 - **"How does a cache hit work?"** → [data-flow.md](architecture/data-flow.md)
 - **Nested Dylint driver caching** → [data-flow.md](architecture/data-flow.md#nested-dylint-driver-caching)
 - **CLI↔daemon communication** → [ipc.md](architecture/ipc.md)
+- **Compile queue visibility, progress-based wedge detection** → [ipc.md § Compile progress heartbeats](architecture/ipc.md#compile-progress-heartbeats-issue-1216)
 - **File change detection** → [metadata-cache.md](architecture/metadata-cache.md)
 - **Disk cache & eviction** → [artifact-store.md](architecture/artifact-store.md)
 - **Daemon-owned bounded disk retention** → [artifact-store.md](architecture/artifact-store.md#daemon-owned-retention-policy)

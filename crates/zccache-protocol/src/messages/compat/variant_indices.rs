@@ -282,6 +282,15 @@ fn response_variant_indices_are_append_only() {
             },
         ),
         (19, Response::ExecStoreAck { stored: true }),
+        (
+            20,
+            Response::CompileProgress {
+                queue_position: 2,
+                queue_depth: 5,
+                in_flight: 8,
+                phase: "queued".to_string(),
+            },
+        ),
     ];
 
     for (expected, response) in response_cases {

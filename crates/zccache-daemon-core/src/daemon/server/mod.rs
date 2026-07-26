@@ -146,6 +146,7 @@ mod cache_trim;
 mod cached_artifact;
 mod client_env;
 mod compile_concurrency;
+mod compile_progress;
 mod compiler_hash;
 mod connection;
 mod dependency_policy;

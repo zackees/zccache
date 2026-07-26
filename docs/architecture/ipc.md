@@ -69,6 +69,51 @@ per invocation.
    A connection may carry multiple requests (session mode) or a single
    `CompileEphemeral` (drop-in mode).
 
+## Compile progress heartbeats (issue #1216)
+
+A compile can legitimately park for minutes inside the daemon's global
+compile-concurrency gate (`server/compile_concurrency.rs`). That wait used to
+be entirely silent, so the wrapper's single blocking `recv` could not tell
+"queued behind 40 other compiles" from "daemon hung" — it tripped its wedge
+budget (`ZCCACHE_WEDGE_RECV_TIMEOUT_SECS`, default 180 s) and applied the
+#753/#955 recovery, throwing away in-progress daemon work or killing the
+daemon outright.
+
+`Response::CompileProgress { queue_position, queue_depth, in_flight, phase }`
+closes that gap **without any extra roundtrip**: it is an interim,
+non-terminal frame pushed on the connection that already carries the request.
+
+- **Daemon.** `connection::guarded_dispatch_with_progress` wraps the
+  `Compile` / `CompileEphemeral` handler in a ticker
+  (`COMPILE_PROGRESS_INTERVAL`, 5 s; `ZCCACHE_COMPILE_PROGRESS_INTERVAL_MS=0`
+  disables). Each tick emits one frame plus a structured
+  `event="compile_progress"` log line. Counters come from
+  `server/compile_progress.rs`: `tokio::sync::Semaphore` reports available
+  permits but neither its waiter count nor its capacity, so the gate keeps its
+  own `CompileQueueGauge`. The *per-request* queue ticket reaches the
+  connection layer through a task-local slot rather than a progress handle
+  threaded through `handle_compile` → `pipeline` → `compile_exec` — sound
+  because the handler is awaited inline by `guarded_dispatch`, never spawned.
+- **Wrapper.** `wrap/ipc.rs::compile_recv_with_wedge_detection` is a recv
+  *loop*: a `CompileProgress` frame prints a `zccache[info][Q]` status line
+  and restarts the budget. Wedge detection therefore measures **daemon
+  silence**, not compile duration — a queued-but-progressing compile keeps its
+  original connection and cached-path result, while a daemon that emits
+  nothing for a full budget still trips the existing wedge handling.
+- **Not covered: the embedded lane.** `server/embedded.rs` calls
+  `handle_compile_ephemeral` directly and has no `IpcConnection`, so an
+  in-process host (soldr/fbuild via `ZccacheService`) sees no heartbeats and
+  its own dispatch budget (30 s, soldr#1657) is unaffected. The
+  `CompileQueueGauge` counters *are* maintained on that path, since the gate
+  itself is shared — so exposing the same queue view to an embedded host is a
+  cheap follow-up (a callback or a gauge accessor), not a redesign.
+- **Compatibility.** Heartbeats are only emitted after the request has been
+  decoded, so the client's wire version is already known. Both lanes were
+  bumped in #1216 (bincode 18 → 20, prost 19 → 21, skipping 19 so the header
+  byte that selects the lane never re-uses a value the other lane shipped), so
+  a client too old to decode `CompileProgress` fails version negotiation long
+  before a heartbeat could reach it.
+
 ## Error Handling
 
 - If the daemon crashes mid-request, the CLI receives a broken-pipe error. The CLI falls back to running the compiler directly (non-cached) and prints a warning to stderr.

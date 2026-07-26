@@ -40,6 +40,20 @@ enum ResponseWire {
 
 const SERVER_REQUEST_RECV_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// Interval between `CompileProgress` heartbeats pushed on an in-flight
+/// compile connection (issue #1216).
+///
+/// Must stay comfortably below every client-side budget it has to keep
+/// alive: the wrapper's 180 s wedge budget
+/// (`ZCCACHE_WEDGE_RECV_TIMEOUT_SECS`) and soldr's 30 s embedded dispatch
+/// budget (soldr#1657). 5 s clears both with a wide margin while costing at
+/// most a few dozen small frames over a minutes-long compile.
+const COMPILE_PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Override for [`COMPILE_PROGRESS_INTERVAL`], in milliseconds. `0`
+/// disables heartbeats entirely (the pre-#1216 behavior).
+const COMPILE_PROGRESS_INTERVAL_ENV: &str = "ZCCACHE_COMPILE_PROGRESS_INTERVAL_MS";
+
 pub(in crate::daemon::server) struct PendingJournalContext {
     context: JournalContext,
     attributed_miss_reason: Option<&'static str>,
@@ -106,6 +120,117 @@ where
         biased;
         out = handler => Some(out),
         () = conn.wait_for_disconnect() => None,
+    }
+}
+
+/// Resolve the heartbeat interval, or `None` when heartbeats are disabled.
+fn compile_progress_interval() -> Option<std::time::Duration> {
+    let Some(raw) = std::env::var(COMPILE_PROGRESS_INTERVAL_ENV).ok() else {
+        return Some(COMPILE_PROGRESS_INTERVAL);
+    };
+    match raw.trim().parse::<u64>() {
+        Ok(0) => None,
+        Ok(ms) => Some(std::time::Duration::from_millis(ms)),
+        Err(_) => {
+            tracing::warn!(
+                env = COMPILE_PROGRESS_INTERVAL_ENV,
+                value = raw,
+                "invalid {COMPILE_PROGRESS_INTERVAL_ENV}; using the default interval"
+            );
+            Some(COMPILE_PROGRESS_INTERVAL)
+        }
+    }
+}
+
+/// [`guarded_dispatch`] plus interim `CompileProgress` heartbeats (issue #1216).
+///
+/// Used for the two compile lanes, whose handlers can legitimately park for
+/// minutes inside the compile-concurrency gate. While the handler runs, a
+/// ticker pushes a non-terminal `CompileProgress` frame on the *same*
+/// connection every [`COMPILE_PROGRESS_INTERVAL`]. The wrapper resets its
+/// wedge budget on each one (`wrap/ipc.rs`), so a queued-but-progressing
+/// compile keeps its original connection and cached-path result instead of
+/// being probed, re-run ephemerally, or killed — while a daemon that emits
+/// *nothing* for a full budget still trips the #753/#955 wedge handling.
+///
+/// The per-request queue ticket is published through the
+/// [`super::compile_progress`] task-local scoped around `handler` here,
+/// which is why no progress handle has to be threaded through
+/// `handle_compile` → `pipeline` → `compile_exec`.
+///
+/// ## Old-client safety
+///
+/// Heartbeats are only emitted after the request has been decoded, so the
+/// client's wire version is already known to be one this daemon speaks. A
+/// client too old to understand `CompileProgress` fails version negotiation
+/// before reaching this function (both lanes were bumped in #1216), so it can
+/// never receive a frame it cannot decode.
+///
+/// ## Borrow shape
+///
+/// The ticker arm deliberately does *nothing* but fall out of the `select!`:
+/// `conn.wait_for_disconnect()` mutably borrows `conn` for the whole
+/// `select!` expression, so the heartbeat write has to happen after that
+/// expression ends. `wait_for_disconnect` is cancellation-safe and preserves
+/// buffered bytes, so re-entering it each iteration is sound.
+async fn guarded_dispatch_with_progress<F>(
+    conn: &mut IpcConnection,
+    response_wire: &ResponseWire,
+    state: &SharedState,
+    handler: F,
+) -> Option<(Response, Option<PendingJournalContext>)>
+where
+    F: std::future::Future<Output = (Response, Option<PendingJournalContext>)>,
+{
+    let Some(interval) = compile_progress_interval() else {
+        return guarded_dispatch(conn, handler).await;
+    };
+    let slot = Arc::new(super::compile_progress::CompileProgressSlot::default());
+    let handler = super::compile_progress::scope(Arc::clone(&slot), handler);
+    let mut handler = std::pin::pin!(handler);
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // `interval` fires immediately on first tick; burn it so the first
+    // heartbeat lands one full interval into the compile rather than at t=0.
+    ticker.tick().await;
+    loop {
+        tokio::select! {
+            biased;
+            out = &mut handler => return Some(out),
+            () = conn.wait_for_disconnect() => return None,
+            _ = ticker.tick() => {}
+        }
+        // Borrow of `conn` from the `select!` above has ended here.
+        let progress = super::compile_progress::progress_response(&slot, &state.compile_queue);
+        if let Response::CompileProgress {
+            queue_position,
+            queue_depth,
+            in_flight,
+            ref phase,
+        } = progress
+        {
+            tracing::info!(
+                event = "compile_progress",
+                queue_position,
+                queue_depth,
+                in_flight,
+                phase = phase.as_str(),
+                "compile_progress phase={phase} queue_position={queue_position} \
+                 queue_depth={queue_depth} in_flight={in_flight}",
+            );
+        }
+        if let Err(error) = send_response_for_wire(conn, response_wire, &progress).await {
+            // The client is gone or the pipe broke. Don't fail the compile
+            // over a lost diagnostic — let the handler finish and let the
+            // terminal write report the real transport error.
+            tracing::warn!(
+                event = "compile_progress_send_failed",
+                error = %error,
+                "failed to push a compile progress heartbeat; \
+                 continuing without further heartbeats"
+            );
+            return guarded_dispatch(conn, handler).await;
+        }
     }
 }
 

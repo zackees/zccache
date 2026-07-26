@@ -261,10 +261,17 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     // structured so an integration test (sub-task #817) can parse the
     // log and assert no two compile intervals overlap when the cap is
     // 1 (sub-task #5 of the meta).
+    //
+    // Issue #1216: the wait is registered in `state.compile_queue` so the
+    // connection layer can push `CompileProgress` heartbeats naming this
+    // request's queue position while it sits here. `_queue_guard` restores
+    // the counters on every exit path, including cancellation.
     let client_pid = lineage.client_pid.unwrap_or(0);
+    let mut _queue_guard = state.compile_queue.enqueue();
     let _permit = if let Some(sem) = state.compile_concurrency.as_ref() {
         let available_before = sem.available_permits();
         let permit = Arc::clone(sem).acquire_owned().await.ok();
+        _queue_guard.admit();
         tracing::info!(
             event = "compile_start",
             client_pid,
@@ -273,6 +280,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         );
         permit
     } else {
+        _queue_guard.admit();
         None
     };
     let compile_span_start = std::time::Instant::now();
