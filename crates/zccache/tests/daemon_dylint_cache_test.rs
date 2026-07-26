@@ -351,17 +351,35 @@ async fn nested_dylint_hits_across_sibling_worktrees() {
 
         let mut outcomes = Vec::new();
         for root in &roots {
-            let output = root.join("target/libchecked.rlib");
-            std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+            let deps = root.join("target/dylint/target/nightly/debug/deps");
+            let incremental = root.join("target/dylint/target/nightly/debug/incremental");
+            std::fs::create_dir_all(&deps).unwrap();
+            std::fs::create_dir_all(&incremental).unwrap();
             let args = vec![
                 rustc.display().to_string(),
+                "--crate-name".to_string(),
+                "checked".to_string(),
                 "--edition=2021".to_string(),
-                "--crate-type=lib".to_string(),
-                "--crate-name=checked".to_string(),
-                "--emit=link".to_string(),
                 "src/lib.rs".to_string(),
-                "-o".to_string(),
-                output.display().to_string(),
+                "--error-format=json".to_string(),
+                "--json=diagnostic-rendered-ansi,artifacts,future-incompat".to_string(),
+                "--crate-type".to_string(),
+                "lib".to_string(),
+                "--emit=dep-info,metadata".to_string(),
+                "-C".to_string(),
+                "embed-bitcode=no".to_string(),
+                "-C".to_string(),
+                "metadata=fixture".to_string(),
+                "-C".to_string(),
+                "extra-filename=-fixture".to_string(),
+                "--out-dir".to_string(),
+                deps.display().to_string(),
+                "-C".to_string(),
+                format!("incremental={}", incremental.display()),
+                "-C".to_string(),
+                "strip=debuginfo".to_string(),
+                "-L".to_string(),
+                format!("dependency={}", deps.display()),
             ];
             let dylint_libs =
                 serde_json::to_string(&vec![root.join("libworkspace_lint.so")]).unwrap();
