@@ -70,6 +70,11 @@ pub(in crate::daemon::server) enum StagedPublishFailure {
     GenerationPublish,
     PointerCommit,
     IndexCommit,
+    /// Two complete, internally valid generations disagree for one key.
+    ///
+    /// Since #1244 this outcome also **evicts** the key: the prior generation
+    /// and its pointer are removed rather than left as the authoritative
+    /// answer. See the conflict branch in `publish_staged_generation`.
     Conflict,
 }
 
@@ -732,6 +737,38 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
             let previous = previous_value.trim();
             if !previous.is_empty() && previous != generation_hex {
                 if validate_staged_generation(artifact_dir, key_hex, previous).is_ok() {
+                    // #1244: the key has now been *proven* not to determine
+                    // the bytes — two complete, internally valid generations
+                    // disagree. Preserving either one means serving an answer
+                    // we know might be wrong, which is a silent miscompile.
+                    //
+                    // Evict instead, so the next lookup is an honest miss.
+                    // This is the "failure mode is a miss, never a wrong
+                    // answer" invariant stated for the pending-write path.
+                    //
+                    // Removal is best-effort and deliberately non-fatal,
+                    // mirroring the replaced-invalid-generation path below: on
+                    // Windows another session may hold the generation tree
+                    // open mid-materialization, and a sharing violation must
+                    // not turn a detected conflict into a hard publish error.
+                    let mut evicted = true;
+                    let previous_path = generation_dir(artifact_dir, key_hex, previous);
+                    if let Err(error) = remove_staged_tree(&previous_path) {
+                        evicted = false;
+                        tracing::warn!(
+                            path = %previous_path.display(),
+                            %error,
+                            "failed to remove conflicting staged generation"
+                        );
+                    }
+                    if let Err(error) = remove_staged_tree(&pointer) {
+                        evicted = false;
+                        tracing::warn!(
+                            path = %pointer.display(),
+                            %error,
+                            "failed to remove staged pointer for conflicting key"
+                        );
+                    }
                     write_staged_lifecycle_event(
                         artifact_dir,
                         crate::core::lifecycle::EVENT_STAGED_PUBLICATION_CONFLICT,
@@ -739,6 +776,7 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
                             "cache_key": key_hex,
                             "existing_generation": previous,
                             "candidate_generation": generation_hex,
+                            "evicted": evicted,
                             "elapsed_ns": publish_started.elapsed().as_nanos() as u64,
                         }),
                     );
@@ -747,7 +785,8 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
                         cache_key = key_hex,
                         existing_generation = previous,
                         candidate_generation = generation_hex,
-                        "same cache key produced a different complete output generation"
+                        evicted,
+                        "same cache key produced a different complete output generation; evicting the key"
                     );
                     return Err(publish_error(
                         StagedPublishFailure::Conflict,

@@ -417,6 +417,21 @@ fn store_rustc_outputs(
                         reason,
                         &error,
                     );
+                    // #1244: the on-disk generation and pointer are already
+                    // gone. Drop the index row too, or lookups keep resolving
+                    // a key whose payload no longer exists.
+                    if reason == StagedPublishFailure::Conflict {
+                        if let Err(error) = state_ref
+                            .index_writer_tx
+                            .send(IndexWriterCommand::Remove(vec![completion_key.clone()]))
+                        {
+                            tracing::warn!(
+                                %error,
+                                key = %completion_key,
+                                "failed to enqueue index removal for evicted conflicting key"
+                            );
+                        }
+                    }
                     state_ref.artifacts.remove(&completion_key);
                 }
                 Err(error) => {
