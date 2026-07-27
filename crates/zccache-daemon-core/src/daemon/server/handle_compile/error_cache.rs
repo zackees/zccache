@@ -27,8 +27,18 @@ fn should_cache_rustc_error(
     rustc_args: &crate::depgraph::RustcParsedArgs,
     exit_code: i32,
     cwd: &Path,
+    stderr: &[u8],
 ) -> bool {
-    exit_code > 0
+    // A failure that explained nothing is not a compile error worth
+    // remembering. On Windows a child the watchdog kills exits with exactly
+    // code 1 and no stderr (`TerminateProcess(handle, 1)`), which is
+    // indistinguishable here from a genuine rustc rejection — see
+    // `child_watchdog::deliver_fault_note` and soldr#1857. Caching one of those
+    // turns a transient, load-dependent fault into a sticky replayed
+    // `cached_error` for every later build of that unit, which is far worse
+    // than simply recompiling.
+    !stderr.is_empty()
+        && exit_code > 0
         && rustc_depinfo_exists(rustc_args, cwd)
         && !rustc_args.emit_types.iter().any(|emit| emit == "link")
 }
@@ -46,7 +56,7 @@ pub(super) async fn maybe_store_rustc_error_artifact(
     exit_code: i32,
     snap_clock: Clock,
 ) -> Option<String> {
-    if !should_cache_rustc_error(rustc_args, exit_code, cwd_path) {
+    if !should_cache_rustc_error(rustc_args, exit_code, cwd_path, stderr) {
         return None;
     }
 
@@ -179,15 +189,22 @@ mod tests {
         ];
         let parsed = crate::depgraph::parse_rustc_args(&args, tmp.path());
 
-        assert!(!should_cache_rustc_error(&parsed, 1, tmp.path()));
+        assert!(!should_cache_rustc_error(&parsed, 1, tmp.path(), b"boom"));
 
         std::fs::write(tmp.path().join("probe.d"), "probe.d: probe.rs\n").unwrap();
-        assert!(should_cache_rustc_error(&parsed, 1, tmp.path()));
-        assert!(!should_cache_rustc_error(&parsed, -1, tmp.path()));
+        assert!(should_cache_rustc_error(&parsed, 1, tmp.path(), b"boom"));
+        assert!(!should_cache_rustc_error(&parsed, -1, tmp.path(), b"boom"));
+        // soldr#1857: a failure with no diagnostics must never be cached.
+        assert!(!should_cache_rustc_error(&parsed, 1, tmp.path(), b""));
 
         let mut link_args = args.clone();
         link_args[2] = "--emit=dep-info,link".to_string();
         let link_parsed = crate::depgraph::parse_rustc_args(&link_args, tmp.path());
-        assert!(!should_cache_rustc_error(&link_parsed, 1, tmp.path()));
+        assert!(!should_cache_rustc_error(
+            &link_parsed,
+            1,
+            tmp.path(),
+            b"boom"
+        ));
     }
 }
