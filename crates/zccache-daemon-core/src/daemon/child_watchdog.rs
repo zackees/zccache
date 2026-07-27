@@ -608,6 +608,23 @@ fn emit_pipe_read_error_diagnostics(
             "exit_code": status.code(),
         }),
     );
+    // Also record it in the dedicated termination stream so these are
+    // countable without grepping the interleaved lifecycle log (#1857).
+    crate::core::lifecycle::write_event_to_named_log(
+        crate::core::lifecycle::TERMINATION_LOG_FILENAME,
+        crate::core::lifecycle::EVENT_CHILD_WAIT_WATCHDOG_FIRED,
+        serde_json::json!({
+            "stage": "pipe_read_error",
+            "cmd": cmd_desc,
+            "pid": pid,
+            "error": error.to_string(),
+            "stdout_failed": stdout_failed,
+            "stderr_failed": stderr_failed,
+            "stdout_bytes": stdout_bytes,
+            "stderr_bytes": stderr_bytes,
+            "exit_code": status.code(),
+        }),
+    );
 }
 
 /// Read into `buf` from an optional reader, or pend forever when the reader is
@@ -668,6 +685,24 @@ fn emit_orphan_pipe_diagnostics(
             "reason": "orphaned grandchild inherited the pipe write handle; drain abandoned to free the compile-concurrency permit",
         }),
     );
+    // Also record it in the dedicated termination stream so these are
+    // countable without grepping the interleaved lifecycle log (#1857).
+    crate::core::lifecycle::write_event_to_named_log(
+        crate::core::lifecycle::TERMINATION_LOG_FILENAME,
+        crate::core::lifecycle::EVENT_CHILD_WAIT_WATCHDOG_FIRED,
+        serde_json::json!({
+            "stage": "post_exit_pipe_drain",
+            "cmd": cmd_desc,
+            "pid": pid,
+            "grace_ms": grace.as_millis() as u64,
+            "elapsed_since_exit_ms": elapsed_since_exit.as_millis() as u64,
+            "stdout_bytes": stdout_bytes,
+            "stderr_bytes": stderr_bytes,
+            "stdout_eof": stdout_done,
+            "stderr_eof": stderr_done,
+            "reason": "orphaned grandchild inherited the pipe write handle; drain abandoned to free the compile-concurrency permit",
+        }),
+    );
 }
 
 /// Loud + durable diagnostics for a fired alive-hung (Mode B) watchdog, per the
@@ -698,6 +733,22 @@ fn emit_stall_diagnostics(
          CPU is never affected."
     );
     crate::core::lifecycle::write_event(
+        crate::core::lifecycle::EVENT_CHILD_WAIT_WATCHDOG_FIRED,
+        serde_json::json!({
+            "stage": "alive_hung_no_progress",
+            "cmd": cmd_desc,
+            "pid": pid,
+            "stall_window_ms": stall_window.as_millis() as u64,
+            "since_progress_ms": since_progress.as_millis() as u64,
+            "stdout_bytes": stdout_bytes,
+            "stderr_bytes": stderr_bytes,
+            "reason": "no output and no CPU progress for the stall window; killed as wedged",
+        }),
+    );
+    // Also record it in the dedicated termination stream so these are
+    // countable without grepping the interleaved lifecycle log (#1857).
+    crate::core::lifecycle::write_event_to_named_log(
+        crate::core::lifecycle::TERMINATION_LOG_FILENAME,
         crate::core::lifecycle::EVENT_CHILD_WAIT_WATCHDOG_FIRED,
         serde_json::json!({
             "stage": "alive_hung_no_progress",
