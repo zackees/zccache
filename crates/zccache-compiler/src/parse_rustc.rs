@@ -70,6 +70,90 @@ fn is_dylint_library_out_dir(out_dir: Option<&str>) -> bool {
 
 /// Host executable file-name pattern for `--crate-type bin`. Windows
 /// adds `.exe`; unix has no extension.
+/// Primary-output extension for each non-link `--emit` kind.
+///
+/// The third field mirrors rustc's own asymmetry: only `metadata` carries the
+/// `lib` prefix; every other emit kind names the file after the crate alone.
+/// Keep this a table — it is a closed set defined by rustc, and expressing it
+/// as a conditional chain is what let the same twelve arms be written twice.
+const EMIT_OUTPUT_EXTENSIONS: &[(&str, &str, bool)] = &[
+    ("metadata", "rmeta", true),
+    ("dep-info", "d", false),
+    ("obj", "o", false),
+    ("asm", "s", false),
+    ("llvm-ir", "ll", false),
+    ("llvm-bc", "bc", false),
+    ("bitcode", "bc", false),
+    ("mir", "mir", false),
+];
+
+/// Everything that determines rustc's primary output filename.
+///
+/// Grouped into a struct so the two call sites — `--out-dir` present and
+/// absent — differ only in how `name` and `suffix` are resolved, instead of
+/// each restating the full dispatch.
+struct RustcOutputShape<'a> {
+    primary_emit: Option<&'a str>,
+    metadata_only: bool,
+    name: &'a str,
+    /// `-C extra-filename`, or empty when the caller does not apply one.
+    suffix: &'a str,
+    target: Option<&'a str>,
+    is_proc_macro: bool,
+    is_bin: bool,
+    is_dylint_cdylib: bool,
+    is_staticlib: bool,
+}
+
+/// Resolve the filename rustc will write for this invocation.
+///
+/// Two dispatches in priority order: an explicit non-link `--emit` names the
+/// file by emit kind, otherwise the crate type does. The platform-specific
+/// helpers stay separate on purpose — the `.dll`/`.dylib`/`.so`/`.exe` split
+/// and the `lib`-prefix asymmetry are OS facts, not cases to fold together.
+fn rustc_primary_output_filename(shape: &RustcOutputShape<'_>) -> String {
+    let RustcOutputShape {
+        primary_emit,
+        metadata_only,
+        name,
+        suffix,
+        target,
+        is_proc_macro,
+        is_bin,
+        is_dylint_cdylib,
+        is_staticlib,
+    } = *shape;
+
+    if metadata_only {
+        return format!("lib{name}{suffix}.rmeta");
+    }
+    if let Some(emit) = primary_emit {
+        if let Some(&(_, extension, lib_prefixed)) = EMIT_OUTPUT_EXTENSIONS
+            .iter()
+            .find(|(kind, _, _)| *kind == emit)
+        {
+            return if lib_prefixed {
+                format!("lib{name}{suffix}.{extension}")
+            } else {
+                format!("{name}{suffix}.{extension}")
+            };
+        }
+    }
+    if is_proc_macro {
+        return rustc_proc_macro_filename(name, suffix);
+    }
+    if is_dylint_cdylib {
+        return rustc_dylint_cdylib_filename(name);
+    }
+    if is_bin {
+        return rustc_bin_filename(name, suffix, target);
+    }
+    if is_staticlib {
+        return format!("lib{name}{suffix}.a");
+    }
+    format!("lib{name}{suffix}.rlib")
+}
+
 fn rustc_bin_filename(crate_name: &str, extra: &str, target: Option<&str>) -> String {
     let windows_target = target
         .map(|triple| triple.split('-').any(|part| part == "windows"))
@@ -408,72 +492,47 @@ pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedI
         o
     } else if let Some(o) = explicit_output {
         o
-    } else if let Some(ref dir) = out_dir {
-        let name = crate_name.as_deref().unwrap_or("unknown");
-        let suffix = extra_filename.as_deref().unwrap_or("");
-        let filename = if primary_emit == Some("metadata") || metadata_only {
-            format!("lib{name}{suffix}.rmeta")
-        } else if primary_emit == Some("dep-info") {
-            format!("{name}{suffix}.d")
-        } else if primary_emit == Some("obj") {
-            format!("{name}{suffix}.o")
-        } else if primary_emit == Some("asm") {
-            format!("{name}{suffix}.s")
-        } else if primary_emit == Some("llvm-ir") {
-            format!("{name}{suffix}.ll")
-        } else if matches!(primary_emit, Some("llvm-bc" | "bitcode")) {
-            format!("{name}{suffix}.bc")
-        } else if primary_emit == Some("mir") {
-            format!("{name}{suffix}.mir")
-        } else if is_proc_macro {
-            rustc_proc_macro_filename(name, suffix)
-        } else if is_dylint_cdylib {
-            rustc_dylint_cdylib_filename(name)
-        } else if is_bin {
-            rustc_bin_filename(name, suffix, target)
-        } else if crate_types.iter().any(|t| t == "staticlib") {
-            format!("lib{name}{suffix}.a")
-        } else {
-            format!("lib{name}{suffix}.rlib")
-        };
-        // Use NormalizedPath::join to handle platform path separators correctly
-        NormalizedPath::new(dir)
-            .join(filename)
-            .to_string_lossy()
-            .into_owned()
     } else {
-        let name = crate_name.as_deref().unwrap_or_else(|| {
-            std::path::Path::new(&source)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown")
-        });
-        let filename = if primary_emit == Some("metadata") || metadata_only {
-            format!("lib{name}.rmeta")
-        } else if primary_emit == Some("dep-info") {
-            format!("{name}.d")
-        } else if primary_emit == Some("obj") {
-            format!("{name}.o")
-        } else if primary_emit == Some("asm") {
-            format!("{name}.s")
-        } else if primary_emit == Some("llvm-ir") {
-            format!("{name}.ll")
-        } else if matches!(primary_emit, Some("llvm-bc" | "bitcode")) {
-            format!("{name}.bc")
-        } else if primary_emit == Some("mir") {
-            format!("{name}.mir")
-        } else if is_proc_macro {
-            rustc_proc_macro_filename(name, "")
-        } else if is_dylint_cdylib {
-            rustc_dylint_cdylib_filename(name)
-        } else if is_bin {
-            rustc_bin_filename(name, "", target)
-        } else if crate_types.iter().any(|t| t == "staticlib") {
-            format!("lib{name}.a")
+        // The two remaining cases differ only in how the crate name and the
+        // `-C extra-filename` suffix are resolved; the filename dispatch
+        // itself is identical, so it lives in one place.
+        //
+        // Without `--out-dir` rustc writes into the cwd, an absent
+        // `--crate-name` falls back to the source file stem, and no
+        // `extra-filename` suffix applies.
+        let (name, suffix) = if out_dir.is_some() {
+            (
+                crate_name.as_deref().unwrap_or("unknown"),
+                extra_filename.as_deref().unwrap_or(""),
+            )
         } else {
-            format!("lib{name}.rlib")
+            let name = crate_name.as_deref().unwrap_or_else(|| {
+                std::path::Path::new(&source)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+            });
+            (name, "")
         };
-        filename
+        let filename = rustc_primary_output_filename(&RustcOutputShape {
+            primary_emit,
+            metadata_only,
+            name,
+            suffix,
+            target,
+            is_proc_macro,
+            is_bin,
+            is_dylint_cdylib,
+            is_staticlib: crate_types.iter().any(|t| t == "staticlib"),
+        });
+        match out_dir {
+            // NormalizedPath::join handles platform path separators correctly.
+            Some(ref dir) => NormalizedPath::new(dir)
+                .join(filename)
+                .to_string_lossy()
+                .into_owned(),
+            None => filename,
+        }
     };
 
     ParsedInvocation::Cacheable(CacheableCompilation {
