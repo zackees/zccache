@@ -351,6 +351,36 @@ pub fn write_event(event_name: &str, extra: serde_json::Value) {
     }
 }
 
+/// Filename of the dedicated child-termination log.
+///
+/// Every process the daemon kills, and every child whose output pipe fails,
+/// is recorded here **in addition to** the main lifecycle log.
+pub const TERMINATION_LOG_FILENAME: &str = "child-terminations.jsonl";
+
+/// Append an event to a dedicated log file beside the main lifecycle log.
+///
+/// The lifecycle log interleaves every daemon event, so counting how often
+/// children are force-terminated means grepping a busy, rotating file and
+/// hoping nothing aged out. Terminations are the signal people actually chase
+/// when builds die without an explanation (soldr#1857), so they get their own
+/// stream — `logs/<file_name>` — which stays readable and countable with a
+/// plain `wc -l`.
+///
+/// Deliberately *additive*: callers still write the lifecycle event too, so
+/// existing tooling and the chronological daemon narrative are unaffected.
+/// Best-effort like the rest of this module — a failure here never disturbs
+/// the caller.
+pub fn write_event_to_named_log(file_name: &str, event_name: &str, extra: serde_json::Value) {
+    let log_path = super::config::log_dir().join(file_name);
+    if let Err(e) = try_write_to_path(log_path.as_path(), event_name, &extra) {
+        tracing::warn!(
+            event = event_name,
+            log = file_name,
+            "failed to write dedicated log event: {e}"
+        );
+    }
+}
+
 /// Write an event beneath an explicitly selected daemon-state root.
 ///
 /// Daemons embedded in tests and hosts can use a cache root that differs from
@@ -535,6 +565,47 @@ mod tests {
                 None => std::env::remove_var(crate::config::DAEMON_NAMESPACE_ENV),
             }
         }
+    }
+
+    #[test]
+    fn dedicated_log_receives_events_without_disturbing_the_lifecycle_log() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _env = EnvGuard::set_cache_dir(tmp.path());
+
+        write_event_to_named_log(
+            TERMINATION_LOG_FILENAME,
+            EVENT_CHILD_WAIT_WATCHDOG_FIRED,
+            serde_json::json!({"stage": "alive_hung_no_progress", "pid": 4242u64}),
+        );
+
+        let dedicated = crate::config::log_dir()
+            .as_path()
+            .join(TERMINATION_LOG_FILENAME);
+        let contents = std::fs::read_to_string(&dedicated).expect("dedicated log written");
+        let mine: Vec<serde_json::Value> = contents
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("line parses"))
+            .filter(|v| v["pid"] == 4242)
+            .collect();
+        assert_eq!(mine.len(), 1, "expected exactly our event: {contents}");
+        assert_eq!(mine[0]["event"], EVENT_CHILD_WAIT_WATCHDOG_FIRED);
+        assert_eq!(mine[0]["stage"], "alive_hung_no_progress");
+        // The envelope is the same as the main log's, so existing tooling
+        // parses this file unchanged.
+        assert!(mine[0]["ts_ms"].is_number(), "missing ts_ms envelope field");
+
+        // The whole point is that this is a *separate* stream: writing here
+        // must not append to the interleaved lifecycle log.
+        let lifecycle = log_file_path().as_path().to_path_buf();
+        let lifecycle_has_ours = std::fs::read_to_string(&lifecycle)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .any(|v| v["pid"] == 4242);
+        assert!(
+            !lifecycle_has_ours,
+            "dedicated-log write must not also land in the lifecycle log"
+        );
     }
 
     #[test]
