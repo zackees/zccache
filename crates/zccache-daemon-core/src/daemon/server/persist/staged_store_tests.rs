@@ -117,7 +117,7 @@ fn staged_generation_publishes_beyond_legacy_max_path() {
 }
 
 #[test]
-fn staged_publication_rejects_nondeterministic_same_key_output() {
+fn staged_publication_evicts_nondeterministic_same_key_output() {
     let dir = tempfile::tempdir().unwrap();
     let _cache_dir = crate::daemon::server::tests::CacheDirEnvGuard::set(dir.path());
     let artifact_dir = dir.path().join("artifacts");
@@ -131,12 +131,15 @@ fn staged_publication_rejects_nondeterministic_same_key_output() {
     let error = persist_staged_artifact_paths(&artifact_dir, &key, &sources).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
 
-    let payloads = load_staged_artifact_paths(&artifact_dir, &key, &[23, 24])
-        .unwrap()
-        .unwrap();
-    assert_eq!(fs::read(&payloads[0]).unwrap(), b"first immutable payload");
-    assert_eq!(fs::read(&payloads[1]).unwrap(), b"second immutable payload");
-    assert!(!same_file(sources[0].as_path(), payloads[0].as_path()));
+    // #1244: the key has been proven not to determine the bytes, so neither
+    // candidate may be served. Previously the first generation was preserved
+    // and kept being handed out — a silent miscompile. It must now be a miss.
+    assert!(
+        load_staged_artifact_paths(&artifact_dir, &key, &[23, 24])
+            .unwrap()
+            .is_none(),
+        "conflicting key must be evicted, not left resolving to the stale generation"
+    );
 
     let log = fs::read_to_string(
         dir.path()
@@ -153,6 +156,11 @@ fn staged_publication_rejects_nondeterministic_same_key_output() {
         .expect("durable staged publication conflict event");
     assert_ne!(event["existing_generation"], event["candidate_generation"]);
     assert!(event["elapsed_ns"].as_u64().is_some());
+    assert_eq!(
+        event["evicted"],
+        serde_json::Value::Bool(true),
+        "conflict event must record whether the eviction actually landed"
+    );
 }
 
 #[test]
@@ -331,13 +339,20 @@ fn concurrent_same_key_publishers_never_overwrite_each_other() {
             .count(),
         1
     );
-    let payloads = load_staged_artifact_paths(&artifact_dir, &key, &[12])
-        .unwrap()
-        .unwrap();
-    assert!(matches!(
-        fs::read(&payloads[0]).unwrap().as_slice(),
-        b"generation-a" | b"generation-b"
-    ));
+    // #1244: two publishers racing the *same* key with *different* bytes is
+    // itself the non-determinism case. The winner is no more trustworthy than
+    // the loser, so the key is evicted rather than resolving to whichever
+    // thread happened to arrive first.
+    //
+    // The invariant this test guards is unchanged: no interleaving is ever
+    // observable, and a partially-written generation is never exposed. What
+    // changed is that "one of the two survives" became "neither survives".
+    assert!(
+        load_staged_artifact_paths(&artifact_dir, &key, &[12])
+            .unwrap()
+            .is_none(),
+        "racing publishers with differing bytes must evict, not pick a winner"
+    );
 }
 
 #[test]
