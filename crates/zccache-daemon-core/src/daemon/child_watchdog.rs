@@ -311,6 +311,15 @@ async fn watchdog_inner_impl(
     let mut ebuf = vec![0u8; 64 * 1024];
     let mut stdout_done = stdout.is_none();
     let mut stderr_done = stderr.is_none();
+    // Pipe-read failures, kept rather than discarded (soldr#1857). An
+    // `io::Error` here ends the drain exactly like a clean EOF, so without
+    // recording it a broken pipe is indistinguishable from "the child printed
+    // nothing" — and the caller is left with a non-zero exit and no cause. The
+    // module contract above is explicit that the watchdog complains loudly and
+    // writes a durable event when it abandons a drain; these two arms were the
+    // one path that did neither.
+    let mut stdout_read_error: Option<std::io::Error> = None;
+    let mut stderr_read_error: Option<std::io::Error> = None;
     // Exit status + the instant the child exited, captured together so the
     // grace deadline never needs an `unwrap`.
     let mut exited: Option<(ExitStatus, Instant)> = None;
@@ -328,6 +337,26 @@ async fn watchdog_inner_impl(
     loop {
         // Clean completion: process exited AND both pipes reached EOF.
         if let (Some((status, _)), true, true) = (exited, stdout_done, stderr_done) {
+            if let Some(e) = stderr_read_error.as_ref().or(stdout_read_error.as_ref()) {
+                emit_pipe_read_error_diagnostics(
+                    cmd_desc,
+                    child_pid,
+                    e,
+                    stdout_read_error.is_some(),
+                    stderr_read_error.is_some(),
+                    stdout_bytes,
+                    stderr_bytes,
+                    &status,
+                );
+                deliver_fault_note(
+                    &status,
+                    stderr_bytes,
+                    stream.as_ref(),
+                    &mut err,
+                    &format!("reading its output pipe failed ({e})"),
+                )
+                .await;
+            }
             return Ok(Output {
                 status,
                 stdout: out,
@@ -387,7 +416,10 @@ async fn watchdog_inner_impl(
                     }
                     last_progress = Instant::now();
                 }
-                Err(_) => stdout_done = true,
+                Err(e) => {
+                    stdout_read_error = Some(e);
+                    stdout_done = true;
+                }
             },
             r = read_opt(stderr.as_mut(), &mut ebuf), if !stderr_done => match r {
                 Ok(0) => stderr_done = true,
@@ -406,7 +438,10 @@ async fn watchdog_inner_impl(
                     }
                     last_progress = Instant::now();
                 }
-                Err(_) => stderr_done = true,
+                Err(e) => {
+                    stderr_read_error = Some(e);
+                    stderr_done = true;
+                }
             },
             () = grace_deadline, if exited.is_some() => {
                 if let Some((status, at)) = exited {
@@ -461,17 +496,118 @@ async fn watchdog_inner_impl(
                     // caller holds is freed as soon as we return.
                     let _ = child.start_kill();
                     return match child.wait().await {
-                        Ok(status) => Ok(Output {
-                            status,
-                            stdout: out,
-                            stderr: err,
-                        }),
+                        Ok(status) => {
+                            deliver_fault_note(
+                                &status,
+                                stderr_bytes,
+                                stream.as_ref(),
+                                &mut err,
+                                &format!(
+                                    "zccache killed it after {}s with no output and no CPU                                      progress (ZCCACHE_STALL_WINDOW_MS)",
+                                    stall_window.as_secs()
+                                ),
+                            )
+                            .await;
+                            Ok(Output {
+                                status,
+                                stdout: out,
+                                stderr: err,
+                            })
+                        }
                         Err(e) => Err(e),
                     };
                 }
             }
         }
     }
+}
+
+/// Give a failing child's output a cause when the child itself supplied none.
+///
+/// Why this is needed at all: on Windows [`Child::start_kill`] is
+/// `TerminateProcess(handle, 1)`, so a child **we** killed reports **exactly**
+/// `exit code 1` — byte-identical to a genuine `rustc` failure. Mode B only
+/// fires when there has been no output, so stderr is empty by construction.
+/// The caller therefore saw `error: could not compile <crate>` with an empty
+/// cause and no way to tell "your code is broken" from "we shot the compiler".
+/// On Unix the same kill yields `status.code() == None` (reported as `-1`),
+/// which is precisely why this only ever reproduced on Windows (soldr#1857).
+///
+/// Only annotates when the child both failed and said nothing: `stderr_bytes`
+/// counts bytes actually read from the pipe, so it is the honest signal on the
+/// streaming path too (where `err` stays empty because bytes went to the
+/// consumer rather than the buffer). A compile that produced real diagnostics
+/// is never touched.
+async fn deliver_fault_note(
+    status: &ExitStatus,
+    stderr_bytes: usize,
+    stream: Option<&mpsc::Sender<RawOutputChunk>>,
+    err: &mut Vec<u8>,
+    reason: &str,
+) {
+    if status.success() || stderr_bytes > 0 {
+        return;
+    }
+    let note = format!(
+        "zccache: the compiler produced no diagnostics — {reason}
+"
+    )
+    .into_bytes();
+    match stream {
+        // Streaming path: the buffered `err` is discarded downstream, so the
+        // note has to travel as a chunk or it never reaches the caller.
+        Some(sender) => {
+            let _ = sender.send(RawOutputChunk::Stderr(note)).await;
+        }
+        None => err.extend_from_slice(&note),
+    }
+}
+
+/// Complain about a pipe-read failure, matching the forensics contract in this
+/// module's header: warn loudly and write a durable lifecycle event.
+///
+/// Before soldr#1857 both read arms were `Err(_) => done = true`, which ended
+/// the drain exactly like a clean EOF while discarding the error. That made a
+/// broken pipe the one output-loss path in this file with **no** telemetry at
+/// all, so a non-zero exit with empty stderr was unattributable after the fact.
+#[allow(clippy::too_many_arguments)]
+fn emit_pipe_read_error_diagnostics(
+    cmd_desc: &str,
+    pid: Option<u32>,
+    error: &std::io::Error,
+    stdout_failed: bool,
+    stderr_failed: bool,
+    stdout_bytes: usize,
+    stderr_bytes: usize,
+    status: &ExitStatus,
+) {
+    tracing::warn!(
+        event = "child_wait_watchdog_fired",
+        stage = "pipe_read_error",
+        cmd = %cmd_desc,
+        pid = pid.unwrap_or(0),
+        error = %error,
+        stdout_failed,
+        stderr_failed,
+        stdout_bytes,
+        stderr_bytes,
+        exit_code = status.code().unwrap_or(-1),
+        "reading the child's output pipe failed; the drain ended early and any          diagnostics still buffered in that pipe are lost. The exit status is          still the child's real one, so a non-zero exit here may carry no          explanation of its own (soldr#1857)."
+    );
+    crate::core::lifecycle::write_event(
+        crate::core::lifecycle::EVENT_CHILD_WAIT_WATCHDOG_FIRED,
+        serde_json::json!({
+            "stage": "pipe_read_error",
+            "cmd": cmd_desc,
+            "pid": pid,
+            "error": error.to_string(),
+            "stdout_failed": stdout_failed,
+            "stderr_failed": stderr_failed,
+            "stdout_bytes": stdout_bytes,
+            "stderr_bytes": stderr_bytes,
+            "exit_code": status.code(),
+        }),
+    );
 }
 
 /// Read into `buf` from an optional reader, or pend forever when the reader is
@@ -587,6 +723,64 @@ mod tests {
             .stdin(Stdio::null())
             .kill_on_drop(true);
         cmd
+    }
+
+    /// soldr#1857: a failing child that explained nothing must come back with a
+    /// synthesized cause, so the caller is never left with a bare non-zero exit.
+    #[tokio::test]
+    async fn silent_failure_gets_a_synthesized_cause() {
+        let status = status_of(1).await;
+        let mut err = Vec::new();
+        deliver_fault_note(&status, 0, None, &mut err, "we killed it for testing").await;
+
+        let text = String::from_utf8_lossy(&err).into_owned();
+        assert!(
+            text.contains("produced no diagnostics"),
+            "expected the silence to be named; got {text:?}"
+        );
+        assert!(
+            text.contains("we killed it for testing"),
+            "expected the reason to be carried through; got {text:?}"
+        );
+    }
+
+    /// The guard that keeps this from becoming noise: a child that already
+    /// explained itself is left byte-for-byte alone.
+    #[tokio::test]
+    async fn failure_with_diagnostics_is_not_annotated() {
+        let status = status_of(1).await;
+        let mut err = b"error[E0308]: mismatched types
+"
+        .to_vec();
+        let before = err.clone();
+        // stderr_bytes > 0 == the child said something.
+        deliver_fault_note(&status, err.len(), None, &mut err, "irrelevant").await;
+
+        assert_eq!(err, before);
+    }
+
+    /// A successful compile is silent by design and must never be annotated.
+    #[tokio::test]
+    async fn success_is_never_annotated() {
+        let status = status_of(0).await;
+        let mut err = Vec::new();
+        deliver_fault_note(&status, 0, None, &mut err, "irrelevant").await;
+
+        assert!(err.is_empty(), "exit 0 must stay silent, got {err:?}");
+    }
+
+    /// A real `ExitStatus` with the requested code. `ExitStatus` has no
+    /// portable constructor, so spawn a shell that exits with it.
+    async fn status_of(code: i32) -> ExitStatus {
+        #[cfg(windows)]
+        let mut cmd = tokio::process::Command::new("cmd");
+        #[cfg(windows)]
+        cmd.args(["/c", &format!("exit {code}")]);
+        #[cfg(unix)]
+        let mut cmd = tokio::process::Command::new("sh");
+        #[cfg(unix)]
+        cmd.args(["-c", &format!("exit {code}")]);
+        cmd.status().await.expect("spawn child")
     }
 
     /// Happy path: a well-behaved child that prints and exits must return its
