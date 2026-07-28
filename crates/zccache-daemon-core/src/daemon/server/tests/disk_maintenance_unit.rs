@@ -761,14 +761,23 @@ async fn issue_1148_shutdown_waits_for_running_maintenance() {
 // #1165 Finding 1 — session reaping
 // ---------------------------------------------------------------------------
 
-/// A PID that is not running, used to stand in for a crashed client.
+/// Stand-in PID for a crashed client.
 ///
-/// PID 0 is never a live user process on either platform: on Unix it is the
-/// kernel/swapper and `kill(0, 0)` addresses the caller's process group rather
-/// than a process, and on Windows it is the System Idle Process, which
-/// `OpenProcess` refuses. Picking a large "probably free" PID instead would be
-/// a race against the OS recycling it mid-test.
-const DEAD_CLIENT_PID: u32 = 0;
+/// Deliberately **not** fed to the real `is_process_alive`. These tests inject
+/// their own predicate, because no PID is portably dead: `is_process_alive` is
+/// `kill(pid, 0) == 0` on unix and `OpenProcess` on Windows, and PID 0
+/// disagrees between them -- `kill(0, 0)` signals the caller's own process
+/// group and *succeeds*, while `OpenProcess(0)` fails. An earlier version of
+/// this test used PID 0 against the real predicate and passed on Windows while
+/// failing on Linux for exactly that reason. A large "probably free" PID would
+/// trade the disagreement for a recycling race.
+const DEAD_CLIENT_PID: u32 = 999_999_001;
+
+/// Liveness predicate under test: everything is alive except the crashed
+/// client. Deterministic on every platform.
+fn only_dead_client_is_gone(pid: u32) -> bool {
+    pid != DEAD_CLIENT_PID
+}
 
 #[tokio::test]
 async fn reaping_removes_a_session_whose_client_died() {
@@ -813,7 +822,7 @@ async fn reaping_removes_a_session_whose_client_died() {
         });
     assert_eq!(daemon.state.sessions.active_count(), 2);
 
-    reap_finished_sessions(&daemon.state);
+    reap_finished_sessions_with(&daemon.state, only_dead_client_is_gone);
 
     // The crashed client is the case that leaked without bound: it never sent
     // SessionEnd, so nothing else would ever have removed it.
@@ -860,7 +869,7 @@ async fn reaping_is_a_noop_when_every_client_is_alive() {
     // for the life of the daemon, so a reaper that eventually evicted live
     // sessions would surface as builds mysteriously losing their session.
     for _ in 0..3 {
-        reap_finished_sessions(&daemon.state);
+        reap_finished_sessions_with(&daemon.state, only_dead_client_is_gone);
     }
 
     assert!(daemon.state.sessions.context_count(&live).is_some());

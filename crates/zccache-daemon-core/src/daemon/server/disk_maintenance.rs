@@ -936,10 +936,24 @@ async fn wait_for_next_pass_or_shutdown(
 /// first, process liveness for the second — so this cannot evict a session a
 /// live client is still using.
 fn reap_finished_sessions(state: &SharedState) {
+    reap_finished_sessions_with(state, zccache_ipc::is_process_alive);
+}
+
+/// [`reap_finished_sessions`] against an explicit liveness predicate.
+///
+/// The seam exists because "a PID that is reliably dead" is not portable.
+/// `is_process_alive` is `kill(pid, 0) == 0` on unix and `OpenProcess` on
+/// Windows, and PID 0 disagrees between them: `kill(0, 0)` signals the
+/// *caller's own process group* and succeeds, while `OpenProcess(0)` fails.
+/// A test using it passes on Windows and fails on Linux. Spawning a real
+/// process and killing it would swap that for a PID-recycling race.
+///
+/// Injecting the predicate makes the reaping logic deterministic on every
+/// platform and leaves `is_process_alive` — which has its own tests — as the
+/// only thing depending on OS behaviour.
+fn reap_finished_sessions_with(state: &SharedState, is_alive: impl Fn(u32) -> bool) {
     let expired = state.sessions.cleanup_expired();
-    let dead = state
-        .sessions
-        .cleanup_dead_pids(zccache_ipc::is_process_alive);
+    let dead = state.sessions.cleanup_dead_pids(is_alive);
     if !expired.is_empty() || !dead.is_empty() {
         tracing::info!(
             expired = expired.len(),
