@@ -5,9 +5,9 @@
 //! Exact replay requires an independently captured trusted environment because
 //! durable journal environment values are secret-filtered.
 //!
-//! Architecture: same lock-free channel + background `std::thread` pattern as
-//! `EventLogger`. Serialization happens on the caller's tokio task; the
-//! background thread does file I/O only. Zero contention on the hot path.
+//! Architecture: a lock-free channel feeding a background `std::thread`.
+//! Serialization happens on the caller's tokio task; the background thread
+//! does file I/O only. Zero contention on the hot path.
 //!
 //! Module layout (originally a single 2K-LOC file; split per `README.md`):
 //! - this `mod.rs` — public types and the [`CompileJournal`] handle
@@ -26,11 +26,12 @@ use std::time::SystemTime;
 use crate::core::NormalizedPath;
 use serde::{Deserialize, Serialize};
 
-use super::event_log::{format_timestamp, open_append};
+use log_io::{format_timestamp, open_append};
 
 mod derive;
 mod env;
 mod journal_thread;
+mod log_io;
 mod outcome;
 
 #[cfg(test)]

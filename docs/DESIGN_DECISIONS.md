@@ -635,7 +635,7 @@ v1 is deliberately minimal. The goal is a correct, useful tool for the most comm
 **Rationale:**
 - **JSONL** is trivially parseable by `jq`, Python, and any JSON library. One object per line means no framing issues and the file is append-only.
 - **Full argument list + cwd + sanitized env** supports diagnostics and partial replay without making the journal a credential store. Exact replay must provide an independently captured trusted environment; non-allowlisted variables and secret-looking names/values are deliberately omitted.
-- **Lock-free channel + background thread** pattern (same as `EventLogger`) means zero contention on the compilation hot path. Serialization (`serde_json`) happens on the caller's tokio task; the background thread only does file I/O.
+- **Lock-free channel + background thread** pattern means zero contention on the compilation hot path. Serialization (`serde_json`) happens on the caller's tokio task; the background thread only does file I/O.
 - **Shared delete on Windows** (`FILE_SHARE_DELETE`) allows log rotation or deletion while the daemon holds the file open.
 
 **Alternatives Considered:**

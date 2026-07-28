@@ -14,7 +14,6 @@ pub mod crash;
 /// binary via argv[0] dispatch) pulls in clap + tracing-subscriber.
 #[cfg(feature = "daemon-entry")]
 pub mod entry;
-pub mod event_log;
 pub mod eviction;
 pub mod fingerprint;
 pub mod jobserver;
@@ -27,6 +26,5 @@ pub(crate) mod staged_stats;
 pub mod stats;
 pub mod trampoline;
 
-pub use event_log::EventLogger;
 pub use server::{DaemonServer, DepGraphSetter};
 pub use stats::{PhaseProfiler, ProfileSnapshot, StatsCollector};
