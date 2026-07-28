@@ -70,6 +70,7 @@
 //! | `watcher_degraded` | daemon | the file watcher could not be armed, disabling both fast hit tiers | `reason`, `degradations` |
 //! | `watcher_rearmed` | daemon | a degraded daemon re-armed its file watcher | `attempt` |
 //! | `watcher_overflow` | daemon | the watcher event queue saturated; hardlink registry re-verified by stat signature | `links_unchanged`, `links_suspect` |
+//! | `embedded_dropped_without_shutdown` | daemon | a host dropped an embedded service without `shutdown()`; a best-effort checkpoint was written | `persisted`, `pid` |
 //!
 //! ## Forensic walkthrough: the two-versions-on-one-pipe wedge
 //!
@@ -183,6 +184,10 @@ pub const EVENT_WATCHER_REARMED: &str = "watcher_rearmed";
 /// The watcher event queue saturated; records how much of the hardlink
 /// registry the stat-signature sweep kept trusted versus marked suspect.
 pub const EVENT_WATCHER_OVERFLOW: &str = "watcher_overflow";
+/// A host dropped an embedded service without calling `shutdown()`. The state
+/// was salvaged by a best-effort checkpoint, but the host is misusing the API
+/// — this is the signal that says so, and log-audit rules can bound it.
+pub const EVENT_EMBEDDED_DROPPED_WITHOUT_SHUTDOWN: &str = "embedded_dropped_without_shutdown";
 
 /// Complete lifecycle-event catalog. Keep this additive and update the module
 /// schema table with every new event; log-audit and operator docs depend on it.
@@ -221,6 +226,7 @@ pub const EVENT_ALL: &[&str] = &[
     EVENT_WATCHER_DEGRADED,
     EVENT_WATCHER_REARMED,
     EVENT_WATCHER_OVERFLOW,
+    EVENT_EMBEDDED_DROPPED_WITHOUT_SHUTDOWN,
     EVENT_LEGACY_ARTIFACT_PATH_ACCESSED,
     EVENT_DESTINATION_WRITE_FAILED,
     EVENT_MISS_REASON_UNKNOWN,
