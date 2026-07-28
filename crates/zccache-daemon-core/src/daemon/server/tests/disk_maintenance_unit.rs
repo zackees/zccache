@@ -756,3 +756,113 @@ async fn issue_1148_shutdown_waits_for_running_maintenance() {
     let report = shutdown.await.unwrap();
     assert!(report.pending_writes_drained);
 }
+
+// ---------------------------------------------------------------------------
+// #1165 Finding 1 — session reaping
+// ---------------------------------------------------------------------------
+
+/// A PID that is not running, used to stand in for a crashed client.
+///
+/// PID 0 is never a live user process on either platform: on Unix it is the
+/// kernel/swapper and `kill(0, 0)` addresses the caller's process group rather
+/// than a process, and on Windows it is the System Idle Process, which
+/// `OpenProcess` refuses. Picking a large "probably free" PID instead would be
+/// a race against the OS recycling it mid-test.
+const DEAD_CLIENT_PID: u32 = 0;
+
+#[tokio::test]
+async fn reaping_removes_a_session_whose_client_died() {
+    let root = tempfile::tempdir().unwrap();
+    let cache_dir: crate::core::NormalizedPath = root.path().join("cache").into();
+    let daemon = Arc::new(
+        EmbeddedDaemon::start(
+            crate::ipc::unique_test_endpoint(),
+            cache_dir.clone(),
+            None,
+            bytes_policy(1),
+        )
+        .await
+        .unwrap(),
+    );
+
+    let dead = daemon
+        .state
+        .sessions
+        .create(crate::depgraph::SessionConfig {
+            client_pid: DEAD_CLIENT_PID,
+            working_dir: root.path().into(),
+            log_file: None,
+            track_stats: true,
+            journal_path: None,
+            profile: false,
+            private_env: Vec::new(),
+            owner_pids: Vec::new(),
+        });
+    let live = daemon
+        .state
+        .sessions
+        .create(crate::depgraph::SessionConfig {
+            client_pid: std::process::id(),
+            working_dir: root.path().into(),
+            log_file: None,
+            track_stats: true,
+            journal_path: None,
+            profile: false,
+            private_env: Vec::new(),
+            owner_pids: Vec::new(),
+        });
+    assert_eq!(daemon.state.sessions.active_count(), 2);
+
+    reap_finished_sessions(&daemon.state);
+
+    // The crashed client is the case that leaked without bound: it never sent
+    // SessionEnd, so nothing else would ever have removed it.
+    assert!(
+        daemon.state.sessions.context_count(&dead).is_none(),
+        "a session whose client process is gone must be reaped"
+    );
+    assert!(
+        daemon.state.sessions.context_count(&live).is_some(),
+        "reaping must not touch a session whose client is still running"
+    );
+    assert_eq!(daemon.state.sessions.active_count(), 1);
+}
+
+#[tokio::test]
+async fn reaping_is_a_noop_when_every_client_is_alive() {
+    let root = tempfile::tempdir().unwrap();
+    let cache_dir: crate::core::NormalizedPath = root.path().join("cache").into();
+    let daemon = Arc::new(
+        EmbeddedDaemon::start(
+            crate::ipc::unique_test_endpoint(),
+            cache_dir.clone(),
+            None,
+            bytes_policy(1),
+        )
+        .await
+        .unwrap(),
+    );
+    let live = daemon
+        .state
+        .sessions
+        .create(crate::depgraph::SessionConfig {
+            client_pid: std::process::id(),
+            working_dir: root.path().into(),
+            log_file: None,
+            track_stats: true,
+            journal_path: None,
+            profile: false,
+            private_env: Vec::new(),
+            owner_pids: Vec::new(),
+        });
+
+    // Repeated passes must stay idempotent: this runs every maintenance tick
+    // for the life of the daemon, so a reaper that eventually evicted live
+    // sessions would surface as builds mysteriously losing their session.
+    for _ in 0..3 {
+        reap_finished_sessions(&daemon.state);
+    }
+
+    assert!(daemon.state.sessions.context_count(&live).is_some());
+    assert_eq!(daemon.state.sessions.active_count(), 1);
+}
