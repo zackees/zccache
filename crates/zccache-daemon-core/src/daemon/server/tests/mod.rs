@@ -38,6 +38,28 @@ mod system_includes_deferred;
 mod watcher_lifecycle;
 mod write_cached;
 
+/// Bind a daemon server on a fresh endpoint, rooted at a cache directory
+/// under `cache_root` that no other test can reach.
+///
+/// Prefer this over [`super::DaemonServer::bind`] in tests. `bind` resolves
+/// its cache directory from the process-global `ZCCACHE_CACHE_DIR`, so a test
+/// that calls it without holding [`CacheDirEnvGuard`]'s lock reads whatever
+/// root a *concurrently running* guarded test has installed. Two daemons then
+/// share one cache root and the loser fails to acquire it — surfacing as
+/// `bind(..).unwrap()` panicking with an `Endpoint` error rather than as any
+/// assertion in the test that happened to lose (issues #1254, #1261).
+pub(super) fn bind_isolated_server(cache_root: &Path) -> super::DaemonServer {
+    bind_isolated_server_at(&crate::ipc::unique_test_endpoint(), cache_root)
+}
+
+/// As [`bind_isolated_server`], for tests that need the endpoint themselves
+/// (to connect a client) and so must mint it before binding.
+pub(super) fn bind_isolated_server_at(endpoint: &str, cache_root: &Path) -> super::DaemonServer {
+    let cache_dir: crate::core::NormalizedPath = cache_root.join("zccache-cache").into();
+    super::DaemonServer::bind_with_cache_dir(endpoint, &cache_dir)
+        .expect("bind daemon on an isolated cache root")
+}
+
 /// RAII guard that overrides `ZCCACHE_CACHE_DIR` for the duration of a
 /// single test, restoring the previous value on drop. Shared between
 /// `link_cache` (link side-effects test) and `server_ipc`

@@ -7,7 +7,7 @@ use super::server_ipc::start_daemon;
 #[ignore] // integration-level: starts real daemon with IPC
 async fn cli_session_end_invalid_id() {
     crate::test_support::test_timeout(async {
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
         let mut client = crate::ipc::connect(&endpoint).await.unwrap();
 
         client
@@ -39,7 +39,7 @@ async fn cli_session_end_invalid_id() {
 #[ignore] // integration-level: starts real daemon with IPC
 async fn cli_session_end_unknown_uuid_is_idempotent() {
     crate::test_support::test_timeout(async {
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
         let mut client = crate::ipc::connect(&endpoint).await.unwrap();
 
         client

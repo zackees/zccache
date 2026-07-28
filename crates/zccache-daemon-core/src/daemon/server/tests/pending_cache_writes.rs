@@ -12,15 +12,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::super::pending_writes;
-use super::super::*;
+use super::bind_isolated_server;
 
 /// At daemon startup the pending registry must be empty — DD-025
 /// condition 3 requires the scope be per-process. A non-empty registry
 /// at bind time would mean some other state path is leaking into it.
 #[tokio::test]
 async fn pending_cache_writes_is_empty_on_fresh_daemon() {
-    let endpoint = crate::ipc::unique_test_endpoint();
-    let server = DaemonServer::bind(&endpoint).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let server = bind_isolated_server(tmp.path());
     assert!(
         server.state.pending_cache_writes.is_empty(),
         "fresh daemon must have empty pending_cache_writes registry, found {}",
@@ -33,8 +33,8 @@ async fn pending_cache_writes_is_empty_on_fresh_daemon() {
 /// entry and waits; `complete` wakes it and clears the registry.
 #[tokio::test]
 async fn pending_registry_register_and_complete_through_shared_state() {
-    let endpoint = crate::ipc::unique_test_endpoint();
-    let server = DaemonServer::bind(&endpoint).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let server = bind_isolated_server(tmp.path());
     let state = Arc::clone(&server.state);
 
     let key = "deadbeefcafebabe0000000000000000";
@@ -75,8 +75,8 @@ async fn pending_registry_register_and_complete_through_shared_state() {
 ///    succeed.
 #[tokio::test]
 async fn pending_registry_notify_timeout_through_shared_state() {
-    let endpoint = crate::ipc::unique_test_endpoint();
-    let server = DaemonServer::bind(&endpoint).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let server = bind_isolated_server(tmp.path());
     let state = Arc::clone(&server.state);
 
     let key = "feedfacedeadbeef0000000000000000";
@@ -105,8 +105,8 @@ async fn pending_registry_notify_timeout_through_shared_state() {
 /// immediately — the registry is near-zero overhead at rest.
 #[tokio::test]
 async fn pending_registry_warm_lookup_pays_no_wait() {
-    let endpoint = crate::ipc::unique_test_endpoint();
-    let server = DaemonServer::bind(&endpoint).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let server = bind_isolated_server(tmp.path());
     let state = Arc::clone(&server.state);
 
     // #1254: this asserted `elapsed < 2ms` against a 5ms wait budget. The
