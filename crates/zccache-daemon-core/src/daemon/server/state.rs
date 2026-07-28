@@ -292,12 +292,18 @@ pub(super) struct SharedState {
     pub(super) request_cache: DashMap<ContentHash, RequestCacheEntry>,
     /// Session-level worktree-root cache resolved once at SessionStart.
     pub(super) session_worktree_roots: DashMap<SessionId, SessionWorktreeRoot>,
-    /// Session IDs that were explicitly ended in this daemon process.
+    /// Session IDs that were explicitly ended in this daemon process, stamped
+    /// with when they ended.
     ///
     /// A never-seen UUID is allowed to compile for wrapper recovery after a
     /// daemon restart, but an ID that this process already ended should not be
     /// accepted again.
-    pub(super) ended_sessions: DashMap<SessionId, ()>,
+    ///
+    /// #1165: the value was `()`, which left a reaper nothing to age against —
+    /// an entry was removed only if that exact id was created again, so a
+    /// long-lived daemon kept one tombstone per completed session forever. It
+    /// is stamped now so [`ENDED_SESSION_TTL`] can expire it.
+    pub(super) ended_sessions: DashMap<SessionId, std::time::Instant>,
     /// Cross-root request-cache validation: (request fingerprint, root) -> last
     /// verified artifact and journal clock. This lets repeated sibling hits
     /// validate with journal checks instead of re-hashing every input.

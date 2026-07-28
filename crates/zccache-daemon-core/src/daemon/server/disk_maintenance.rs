@@ -15,6 +15,19 @@ const GIB: u64 = 1024 * 1024 * 1024;
 const SOFT_AGE: Duration = Duration::from_secs(4 * 24 * 60 * 60);
 const EXPIRE_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const PRESSURE_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// How long an ended session's tombstone is kept before it is reclaimed
+/// (#1165).
+///
+/// The tombstone turns a request arriving after `SessionEnd` into a clean
+/// `unknown session` error. Expiring one does **not** resurrect the session:
+/// the id is gone from `sessions` either way, so a very late request still
+/// fails, just with a less specific message. That bounds the cost of choosing
+/// this badly to error-message quality rather than correctness.
+///
+/// An hour is orders of magnitude beyond any in-flight request a disconnected
+/// client could still deliver, while making the map proportional to recent
+/// activity instead of to daemon uptime.
+const ENDED_SESSION_TTL: Duration = Duration::from_secs(60 * 60);
 // A maintenance pass must not invalidate a result that was just published.
 // The next pressure pass can reclaim it if the disk is still constrained.
 const HARD_PRESSURE_MIN_AGE: Duration = PRESSURE_INTERVAL;
@@ -954,14 +967,32 @@ fn reap_finished_sessions(state: &SharedState) {
 fn reap_finished_sessions_with(state: &SharedState, is_alive: impl Fn(u32) -> bool) {
     let expired = state.sessions.cleanup_expired();
     let dead = state.sessions.cleanup_dead_pids(is_alive);
-    if !expired.is_empty() || !dead.is_empty() {
+    let tombstones = reap_ended_session_tombstones(state, ENDED_SESSION_TTL);
+    if !expired.is_empty() || !dead.is_empty() || tombstones > 0 {
         tracing::info!(
             expired = expired.len(),
             dead_client = dead.len(),
+            tombstones,
             remaining = state.sessions.active_count(),
+            tombstones_remaining = state.ended_sessions.len(),
             "reaped finished sessions"
         );
     }
+}
+
+/// Drop `ended_sessions` entries older than `ttl`. Returns how many went.
+///
+/// Separate from the session reapers above because it ages on the daemon's own
+/// clock rather than on client liveness — a tombstone outlives the client by
+/// definition, so "is the pid alive" says nothing about whether it is still
+/// needed.
+fn reap_ended_session_tombstones(state: &SharedState, ttl: Duration) -> usize {
+    let now = std::time::Instant::now();
+    let before = state.ended_sessions.len();
+    state
+        .ended_sessions
+        .retain(|_, ended_at| now.duration_since(*ended_at) < ttl);
+    before.saturating_sub(state.ended_sessions.len())
 }
 
 pub(super) fn spawn_disk_maintenance(

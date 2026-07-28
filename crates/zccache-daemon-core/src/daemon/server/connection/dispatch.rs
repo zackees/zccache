@@ -294,7 +294,7 @@ pub(super) async fn dispatch_request(
                     let ended_phase_profile = session_phase_profile(state, &sid);
                     state.session_staged_profiles.remove(&sid);
                     if let Some(session) = state.sessions.end(&sid) {
-                        state.ended_sessions.insert(sid, ());
+                        state.ended_sessions.insert(sid, std::time::Instant::now());
                         if !session.owner_pids.is_empty() {
                             state
                                 .private_daemon

@@ -875,3 +875,79 @@ async fn reaping_is_a_noop_when_every_client_is_alive() {
     assert!(daemon.state.sessions.context_count(&live).is_some());
     assert_eq!(daemon.state.sessions.active_count(), 1);
 }
+
+/// #1165 Finding 1b: `ended_sessions` grew one tombstone per completed
+/// session, forever.
+#[tokio::test]
+async fn ended_session_tombstones_expire_on_their_ttl() {
+    let root = tempfile::tempdir().unwrap();
+    let cache_dir: crate::core::NormalizedPath = root.path().join("cache").into();
+    let daemon = Arc::new(
+        EmbeddedDaemon::start(
+            crate::ipc::unique_test_endpoint(),
+            cache_dir.clone(),
+            None,
+            bytes_policy(1),
+        )
+        .await
+        .unwrap(),
+    );
+
+    let stale = crate::depgraph::SessionId::new();
+    let recent = crate::depgraph::SessionId::new();
+    let ttl = Duration::from_secs(60 * 60);
+    let now = std::time::Instant::now();
+    // Stamp directly rather than sleeping: the boundary is what matters, and a
+    // test that waits an hour is not a test.
+    daemon
+        .state
+        .ended_sessions
+        .insert(stale, now - ttl - Duration::from_secs(1));
+    daemon
+        .state
+        .ended_sessions
+        .insert(recent, now - Duration::from_secs(1));
+
+    let removed = reap_ended_session_tombstones(&daemon.state, ttl);
+
+    assert_eq!(removed, 1);
+    assert!(
+        !daemon.state.ended_sessions.contains_key(&stale),
+        "a tombstone past its TTL must be reclaimed"
+    );
+    assert!(
+        daemon.state.ended_sessions.contains_key(&recent),
+        "a tombstone inside its TTL still rejects late work for that session"
+    );
+}
+
+#[tokio::test]
+async fn tombstone_reaping_is_a_noop_when_nothing_is_stale() {
+    let root = tempfile::tempdir().unwrap();
+    let cache_dir: crate::core::NormalizedPath = root.path().join("cache").into();
+    let daemon = Arc::new(
+        EmbeddedDaemon::start(
+            crate::ipc::unique_test_endpoint(),
+            cache_dir.clone(),
+            None,
+            bytes_policy(1),
+        )
+        .await
+        .unwrap(),
+    );
+    let fresh = crate::depgraph::SessionId::new();
+    daemon
+        .state
+        .ended_sessions
+        .insert(fresh, std::time::Instant::now());
+
+    // Runs every maintenance tick for the daemon's whole life, so repeated
+    // passes must not eventually evict a tombstone that is still in date.
+    for _ in 0..3 {
+        assert_eq!(
+            reap_ended_session_tombstones(&daemon.state, Duration::from_secs(60 * 60)),
+            0
+        );
+    }
+    assert!(daemon.state.ended_sessions.contains_key(&fresh));
+}
