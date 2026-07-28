@@ -54,7 +54,7 @@ async fn concurrent_failed_requests_are_attributed_only_to_their_session() {
 
         let temp = tempfile::tempdir().unwrap();
         let endpoint = crate::ipc::unique_test_endpoint();
-        let mut server = DaemonServer::bind(&endpoint).unwrap();
+        let mut server = super::bind_isolated_server_at(&endpoint, temp.path());
         let state = server.test_state_arc();
         let shutdown = server.shutdown_handle();
         let server_task = tokio::spawn(async move { server.run(0).await.unwrap() });

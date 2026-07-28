@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use super::super::*;
-use super::CacheDirEnvGuard;
+use super::{bind_isolated_server, CacheDirEnvGuard};
 
 #[cfg(unix)]
 fn write_fake_linker(dir: &Path) -> std::path::PathBuf {
@@ -403,7 +403,7 @@ async fn parallel_same_directory_links_are_isolated() {
 #[tokio::test]
 async fn side_effect_lock_allows_different_output_directories() {
     let tmp = tempfile::tempdir().unwrap();
-    let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+    let server = bind_isolated_server(tmp.path());
     let lock_a = server.state.link_output_lock(tmp.path().join("a").into());
     let same_lock_a = server.state.link_output_lock(tmp.path().join("a").into());
     let lock_b = server.state.link_output_lock(tmp.path().join("b").into());

@@ -7,21 +7,30 @@
 use super::super::*;
 use super::CacheDirEnvGuard;
 
-pub(super) async fn start_daemon() -> (String, tokio::task::JoinHandle<()>, Arc<Notify>) {
+/// The returned `TempDir` owns this daemon's cache root; callers must hold it
+/// for as long as the daemon runs. See [`super::bind_isolated_server`] for why
+/// tests must not let a daemon resolve the process-global cache directory.
+pub(super) async fn start_daemon() -> (
+    String,
+    tokio::task::JoinHandle<()>,
+    Arc<Notify>,
+    tempfile::TempDir,
+) {
+    let cache_root = tempfile::tempdir().unwrap();
     let endpoint = crate::ipc::unique_test_endpoint();
-    let mut server = DaemonServer::bind(&endpoint).unwrap();
+    let mut server = super::bind_isolated_server_at(&endpoint, cache_root.path());
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
         server.run(0).await.unwrap();
     });
-    (endpoint, handle, shutdown)
+    (endpoint, handle, shutdown, cache_root)
 }
 
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + file watcher
 async fn test_server_ping_pong() {
     crate::test_support::test_timeout(async {
-        let (endpoint, server_task, shutdown) = start_daemon().await;
+        let (endpoint, server_task, shutdown, _cache_root) = start_daemon().await;
 
         let mut client = crate::ipc::connect(&endpoint).await.unwrap();
         client.send(&Request::Ping).await.unwrap();
@@ -38,7 +47,7 @@ async fn test_server_ping_pong() {
 #[ignore] // integration-level: starts real daemon with IPC + file watcher
 async fn test_server_shutdown_request() {
     crate::test_support::test_timeout(async {
-        let (endpoint, server_task, shutdown) = start_daemon().await;
+        let (endpoint, server_task, shutdown, _cache_root) = start_daemon().await;
 
         let mut client = crate::ipc::connect(&endpoint).await.unwrap();
         client.send(&Request::Shutdown).await.unwrap();
@@ -55,7 +64,7 @@ async fn test_server_shutdown_request() {
 #[ignore] // integration-level: starts real daemon with IPC + file watcher
 async fn test_server_clear_empty() {
     crate::test_support::test_timeout(async {
-        let (endpoint, server_task, shutdown) = start_daemon().await;
+        let (endpoint, server_task, shutdown, _cache_root) = start_daemon().await;
 
         let mut client = crate::ipc::connect(&endpoint).await.unwrap();
         client.send(&Request::Clear).await.unwrap();
@@ -86,7 +95,7 @@ async fn test_server_status() {
     crate::test_support::test_timeout(async {
         let tmp = tempfile::tempdir().unwrap();
         let _env = CacheDirEnvGuard::set(tmp.path());
-        let (endpoint, server_task, shutdown) = start_daemon().await;
+        let (endpoint, server_task, shutdown, _cache_root) = start_daemon().await;
 
         let mut client = crate::ipc::connect(&endpoint).await.unwrap();
         client.send(&Request::Status).await.unwrap();
@@ -117,7 +126,7 @@ async fn test_server_status_reports_explicit_daemon_namespace() {
     crate::test_support::test_timeout(async {
         let tmp = tempfile::tempdir().unwrap();
         let _env = CacheDirEnvGuard::set_with_namespace(tmp.path(), "soldr-dev");
-        let (endpoint, server_task, shutdown) = start_daemon().await;
+        let (endpoint, server_task, shutdown, _cache_root) = start_daemon().await;
 
         let mut client = crate::ipc::connect(&endpoint).await.unwrap();
         client.send(&Request::Status).await.unwrap();
@@ -142,7 +151,7 @@ async fn private_session_start_registers_redacted_status_and_owner_refs() {
     crate::test_support::test_timeout(async {
         let tmp = tempfile::tempdir().unwrap();
         let _env = CacheDirEnvGuard::set_with_namespace(tmp.path(), "soldr-dev");
-        let (endpoint, server_task, shutdown) = start_daemon().await;
+        let (endpoint, server_task, shutdown, _cache_root) = start_daemon().await;
 
         let mut client = crate::ipc::connect(&endpoint).await.unwrap();
         client
@@ -210,7 +219,7 @@ async fn private_session_start_accepts_top_level_cache_root() {
     crate::test_support::test_timeout(async {
         let tmp = tempfile::tempdir().unwrap();
         let _env = CacheDirEnvGuard::set_with_namespace(tmp.path(), "soldr-dev-parent-root");
-        let (endpoint, server_task, shutdown) = start_daemon().await;
+        let (endpoint, server_task, shutdown, _cache_root) = start_daemon().await;
 
         let mut client = crate::ipc::connect(&endpoint).await.unwrap();
         client
@@ -266,7 +275,7 @@ async fn cli_session_lifecycle() {
         )
         .unwrap();
 
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
         let mut client = crate::ipc::connect(&endpoint).await.unwrap();
 
         // session-start
@@ -640,7 +649,7 @@ async fn cli_compile_unknown_uuid_is_idempotent() {
         // production daemon writing the global index blob.
         let _cache_dir = CacheDirEnvGuard::set(&tmp.path().join("zccache-cache"));
 
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
         let mut client = crate::ipc::connect(&endpoint).await.unwrap();
 
         let cwd = tmp.path().to_string_lossy().into_owned();
@@ -696,7 +705,7 @@ async fn cli_clear_resets_cache() {
 
         std::fs::write(&src, "int main() { return 0; }\n").unwrap();
 
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
         let mut client = crate::ipc::connect(&endpoint).await.unwrap();
 
         // Start session
@@ -859,7 +868,7 @@ async fn cli_multi_file_compilation_runs_directly() {
         std::fs::write(&src_a, "int foo() { return 1; }\n").unwrap();
         std::fs::write(&src_b, "int bar() { return 2; }\n").unwrap();
 
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
         let mut client = crate::ipc::connect(&endpoint).await.unwrap();
 
         // Start session
