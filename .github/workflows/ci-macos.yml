@@ -28,13 +28,23 @@ on:
       - ".editorconfig"
       - "tasks/**"
 
-jobs:
-  x86:
-    uses: ./.github/workflows/ci-check.yml
-    with:
-      os: macos-14
+# Superseded PR runs used to keep holding macOS slots while a fresh run
+# queued behind them. Against GitHub's 5-concurrent-job macOS cap that is
+# what produced the 16 -> 32 -> 49 -> 59 minute queue staircase. Pushes to
+# main are never cancelled: release-auto.yml triggers on push-to-main
+# version bumps, so every commit that lands must be fully tested.
+concurrency:
+  group: ci-macos-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-  arm:
+jobs:
+  # macos-14 is Apple Silicon. This was previously two jobs, `x86` and `arm`,
+  # both pinned to macos-14 — byte-identical duplicates that also derived the
+  # same cache-key-suffix and so raced each other on cache save. Real Intel
+  # coverage would mean macos-13, which is deliberately avoided: see
+  # wrapper-e2e.yml, where that pool cost 15+ minutes of queue wait per run.
+  macos:
     uses: ./.github/workflows/ci-check.yml
     with:
       os: macos-14
+      run_check: false

@@ -6,6 +6,16 @@ on:
       os:
         required: true
         type: string
+      # `cargo check --workspace` is a strict subset of what the `test` job's
+      # `cargo test --workspace --lib --bins --no-run` already compiles on the
+      # same OS with the same RUSTFLAGS — it codegens and *links* the lib, the
+      # cfg(test) lib, and every bin. On macOS/Windows the extra job buys only
+      # a marginally earlier failure signal while consuming a scarce runner
+      # slot that queues for 16-32 minutes. Linux keeps it (cheap, unqueued).
+      run_check:
+        required: false
+        type: boolean
+        default: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,7 +24,9 @@ env:
 jobs:
   check:
     name: Check
+    if: inputs.run_check
     runs-on: ${{ inputs.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
@@ -44,6 +56,10 @@ jobs:
   test:
     name: Test
     runs-on: ${{ inputs.os }}
+    # Without this the job inherits GitHub's 360-minute default, so a hung
+    # test holds a scarce macOS/Windows runner slot for six hours. Observed
+    # runtime is 2-5 minutes; 45 leaves ample headroom for a cold cache.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
       - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e

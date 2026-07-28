@@ -6,8 +6,34 @@ on:
     - cron: "17 6 * * 0"
   push:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE*"
+      - "NOTICE*"
+      - "AUTHORS*"
+      - "CODEOWNERS"
+      - "CONTRIBUTING*"
+      - ".gitignore"
+      - ".gitattributes"
+      - ".editorconfig"
+      - "tasks/**"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE*"
+      - "NOTICE*"
+      - "AUTHORS*"
+      - "CODEOWNERS"
+      - "CONTRIBUTING*"
+      - ".gitignore"
+      - ".gitattributes"
+      - ".editorconfig"
+      - "tasks/**"
+
+concurrency:
+  group: fs-matrix-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   matrix:
