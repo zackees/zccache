@@ -880,3 +880,83 @@ fn is_process_alive_returns_false_for_terminated_referenced_process() {
 
     unsafe { CloseHandle(pin) };
 }
+
+// ---------------------------------------------------------------------------
+// #1161 — identity-bound kills
+// ---------------------------------------------------------------------------
+
+fn fake_identity(
+    pid: u32,
+    started_at_unix_ms: u64,
+    boot_id: &str,
+) -> running_process::broker::protocol_v2::backend_handle::DaemonProcess {
+    running_process::broker::protocol_v2::backend_handle::DaemonProcess {
+        pid,
+        exe_path: std::path::PathBuf::from("zccache-daemon"),
+        exe_sha256: [0u8; 32],
+        boot_id: boot_id.to_string(),
+        ipc_endpoint: running_process_endpoint("test-endpoint"),
+        started_at_unix_ms,
+        idle_timeout_secs: None,
+    }
+}
+
+#[test]
+fn identity_matches_only_the_same_instance() {
+    let temp = tempfile::tempdir().unwrap();
+    let _env = EnvGuard::set_cache_dir(temp.path());
+
+    let live = fake_identity(4321, 1_700_000_000_000, "boot-a");
+    write_backend_identity(&live).unwrap();
+
+    assert!(
+        daemon_identity_matches(&live),
+        "the recorded instance must match itself"
+    );
+
+    // The bug this closes: a recycled PID belonging to a *different*
+    // zccache-daemon passed the old alive+exe-stem check, so auto-recovery
+    // could kill an unrelated live daemon. Same PID, different start time.
+    let recycled = fake_identity(4321, 1_700_000_999_000, "boot-a");
+    assert!(
+        !daemon_identity_matches(&recycled),
+        "a reused PID with a different start time is a different instance"
+    );
+
+    // Across a reboot the PID *and* start time can plausibly repeat; boot_id
+    // is what separates them.
+    let after_reboot = fake_identity(4321, 1_700_000_000_000, "boot-b");
+    assert!(
+        !daemon_identity_matches(&after_reboot),
+        "a different boot is a different instance even with identical pid/start"
+    );
+}
+
+#[test]
+fn absent_identity_never_matches() {
+    let temp = tempfile::tempdir().unwrap();
+    let _env = EnvGuard::set_cache_dir(temp.path());
+    // No identity written at all.
+    assert!(read_backend_identity().is_none());
+
+    // The safe direction for a kill gate: nothing recorded means "cannot
+    // establish which instance this is", not "kill whatever is there". The
+    // opposite default is what `verify_pid_exe_stem`'s `None => true` does,
+    // and that fallback is about reading an exe path -- not authorising a kill.
+    assert!(!daemon_identity_matches(&fake_identity(1, 1, "boot-a")));
+}
+
+#[test]
+fn unparseable_identity_never_matches() {
+    let temp = tempfile::tempdir().unwrap();
+    let _env = EnvGuard::set_cache_dir(temp.path());
+    let path = backend_identity_path();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path.as_path(), b"{ truncated").unwrap();
+
+    assert!(read_backend_identity().is_none(), "garbage must not parse");
+    assert!(
+        !daemon_identity_matches(&fake_identity(1, 1, "boot-a")),
+        "a corrupt identity file must not authorise a kill"
+    );
+}

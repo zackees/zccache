@@ -380,7 +380,43 @@ pub(crate) async fn wait_for_daemon_ready_with(
 }
 
 /// Stop a stale daemon that is unreachable or version-incompatible.
-async fn stop_stale_daemon(endpoint: &str) -> Option<u32> {
+/// Replace a daemon we failed to talk to.
+///
+/// `failed_instance` is the identity captured **before** the failed exchange.
+/// #1161: without it this function re-read the lock file at kill time and
+/// killed whoever was named there *now*. Under a `ninja -j16` burst that is a
+/// kill chain — client A times out against a saturated-but-healthy daemon and
+/// replaces it, client B arrives, reads the lock, and kills the freshly
+/// spawned replacement A just created.
+///
+/// `None` means the caller could not establish which instance it was talking
+/// to, and the kill is refused rather than aimed at whatever is current.
+async fn stop_stale_daemon(
+    endpoint: &str,
+    failed_instance: Option<&running_process::broker::protocol_v2::backend_handle::DaemonProcess>,
+) -> Option<u32> {
+    // Gate before the Shutdown request, not just before the kill: asking an
+    // innocent daemon to retire is itself the damage this issue is about.
+    match failed_instance {
+        Some(expected) if crate::ipc::daemon_identity_matches(expected) => {}
+        Some(expected) => {
+            tracing::warn!(
+                expected_pid = expected.pid,
+                expected_started_at_unix_ms = expected.started_at_unix_ms,
+                current_pid = crate::ipc::read_backend_identity().map(|d| d.pid),
+                "refusing to replace the daemon: the instance on disk is not the one that failed"
+            );
+            return None;
+        }
+        None => {
+            tracing::warn!(
+                "refusing to replace the daemon: no recorded identity for the failed instance; \
+                 run `zccache stop` if a stale daemon is genuinely wedged"
+            );
+            return None;
+        }
+    }
+
     let _ = crate::ipc::daemon_control_roundtrip(
         endpoint,
         crate::ipc::DaemonControlRequest::Shutdown,
@@ -421,6 +457,10 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
             _ => Err(crate::core::config::no_spawn_error("zccache-daemon")),
         };
     }
+    // #1161: capture *before* probing. This names the instance we are about
+    // to talk to, so a later kill can be bound to it rather than to whatever
+    // the lock file says once the probe has already failed.
+    let probed_instance = crate::ipc::read_backend_identity();
     match check_daemon_version(endpoint).await {
         VersionCheck::Ok | VersionCheck::DaemonNewer => return Ok(()),
         VersionCheck::DaemonOlder { daemon_ver } => {
@@ -429,7 +469,7 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                 client_ver = crate::core::VERSION,
                 "daemon is older than client, auto-recovering"
             );
-            let killed_pid = stop_stale_daemon(endpoint).await;
+            let killed_pid = stop_stale_daemon(endpoint, probed_instance.as_ref()).await;
             return spawn_and_wait(
                 endpoint,
                 crate::core::lifecycle::REASON_REPLACED_STALE_VERSION,
@@ -439,7 +479,7 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
         }
         VersionCheck::CommError => {
             tracing::info!("cannot communicate with daemon, auto-recovering");
-            let killed_pid = stop_stale_daemon(endpoint).await;
+            let killed_pid = stop_stale_daemon(endpoint, probed_instance.as_ref()).await;
             return spawn_and_wait(
                 endpoint,
                 crate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
@@ -456,6 +496,9 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
         for _ in 0..20 {
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(std::time::Duration::from_millis(500));
+            // Re-read every iteration: a daemon replaced legitimately between
+            // attempts is a different instance, and the kill must follow.
+            let attempt_instance = crate::ipc::read_backend_identity();
             match check_daemon_version(endpoint).await {
                 VersionCheck::Ok | VersionCheck::DaemonNewer => return Ok(()),
                 VersionCheck::DaemonOlder { daemon_ver } => {
@@ -464,7 +507,7 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                         client_ver = crate::core::VERSION,
                         "daemon is older than client during startup, auto-recovering"
                     );
-                    let killed_pid = stop_stale_daemon(endpoint).await;
+                    let killed_pid = stop_stale_daemon(endpoint, attempt_instance.as_ref()).await;
                     return spawn_and_wait(
                         endpoint,
                         crate::core::lifecycle::REASON_REPLACED_STALE_VERSION,
@@ -473,7 +516,7 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                     .await;
                 }
                 VersionCheck::CommError => {
-                    let killed_pid = stop_stale_daemon(endpoint).await;
+                    let killed_pid = stop_stale_daemon(endpoint, attempt_instance.as_ref()).await;
                     return spawn_and_wait(
                         endpoint,
                         crate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
