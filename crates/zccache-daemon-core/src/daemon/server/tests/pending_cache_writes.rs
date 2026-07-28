@@ -12,7 +12,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::super::pending_writes;
-use super::super::*;
 use super::bind_isolated_server;
 
 /// At daemon startup the pending registry must be empty — DD-025
