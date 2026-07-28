@@ -157,6 +157,8 @@ fn test_extract_outcome_all_non_journalable() {
             dep_graph_version: 0,
             dep_graph_disk_size: 0,
             dep_graph_persisted: false,
+            watcher_active: true,
+            watcher_degradations: 0,
         }),
         Response::LookupResult(LR::Miss),
         Response::StoreResult(SR::Stored),

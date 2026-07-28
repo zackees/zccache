@@ -220,6 +220,7 @@ pub(super) fn new_shared_state(
             },
             fast_hit_cache: DashMap::new(),
             watcher_active: AtomicBool::new(false),
+            watcher_degradations: AtomicU64::new(0),
             rsp_cache: DashMap::new(),
             request_cache: DashMap::new(),
             session_worktree_roots: DashMap::new(),

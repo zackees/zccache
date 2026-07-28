@@ -35,6 +35,7 @@ mod session_errors;
 mod session_staged_attribution;
 mod staged_compiler_sets;
 mod system_includes_deferred;
+mod watcher_lifecycle;
 mod write_cached;
 
 /// RAII guard that overrides `ZCCACHE_CACHE_DIR` for the duration of a

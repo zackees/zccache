@@ -98,6 +98,12 @@ pub struct DaemonStatus {
     /// successfully written to disk since startup (periodic save or shutdown).
     /// `false` on a fresh daemon that has not yet flushed its first snapshot.
     pub dep_graph_persisted: bool,
+    /// Whether the file watcher is currently armed. `false` means both fast
+    /// hit tiers are disabled and shared cache blobs re-hash on every read.
+    pub watcher_active: bool,
+    /// Watcher-arm failures since daemon start (issue #1156). Non-zero with
+    /// `watcher_active == true` means the daemon recovered via a re-arm.
+    pub watcher_degradations: u64,
 }
 
 /// Per-session statistics, returned when the session opted in to tracking.

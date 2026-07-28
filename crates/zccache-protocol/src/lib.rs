@@ -22,18 +22,23 @@ pub const UNKNOWN_MISS_WARNING_PREFIX: &str = "zccache[warn][M]:";
 /// This remains the active compatibility version until the v16 prost dispatcher
 /// is wired through the IPC transport. Do not change `PROTOCOL_VERSION` to v16
 /// while `encode_message` and `decode_message` still serialize bincode bodies.
-pub const BINCODE_PROTOCOL_VERSION: u32 = 20;
+pub const BINCODE_PROTOCOL_VERSION: u32 = 21;
 
 /// Prost daemon wire version.
 ///
 /// The prost schema and frame helpers use this value. A future change will make
 /// the daemon dispatch v15 bincode and v16 prost frames concurrently.
-pub const PROST_PROTOCOL_VERSION: u32 = 21;
+pub const PROST_PROTOCOL_VERSION: u32 = 22;
 
 /// Protocol version number. Bump this when the wire format changes:
 /// new/removed/reordered enum variants or struct field changes.
 /// Patch releases that don't change the protocol keep the same version.
 ///
+/// v21 (bincode) / v22 (prost): `DaemonStatus` gained `watcher_active` and
+///                  `watcher_degradations` so an operator can see that a
+///                  daemon is running without a file watcher — both fast hit
+///                  tiers disabled — instead of inferring it from startup
+///                  logs (issue #1156).
 /// v20 (bincode) / v21 (prost): added `Response::CompileProgress` — interim,
 ///                  non-terminal queue/in-flight heartbeats pushed on the
 ///                  request connection while a compile waits for a

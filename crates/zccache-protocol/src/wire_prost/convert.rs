@@ -424,6 +424,8 @@ pub(super) fn daemon_status_to_prost(status: &crate::DaemonStatus) -> zccache_v1
         dep_graph_version: status.dep_graph_version,
         dep_graph_disk_size: status.dep_graph_disk_size,
         dep_graph_persisted: status.dep_graph_persisted,
+        watcher_active: status.watcher_active,
+        watcher_degradations: status.watcher_degradations,
     }
 }
 
@@ -464,6 +466,8 @@ pub(super) fn daemon_status_from_prost(
         dep_graph_version: status.dep_graph_version,
         dep_graph_disk_size: status.dep_graph_disk_size,
         dep_graph_persisted: status.dep_graph_persisted,
+        watcher_active: status.watcher_active,
+        watcher_degradations: status.watcher_degradations,
     })
 }
 

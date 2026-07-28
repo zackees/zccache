@@ -123,6 +123,19 @@ pub(crate) async fn cmd_status(endpoint: &str, json: bool) -> ExitCode {
                 );
             }
             println!("  Metadata:      {} entries", s.metadata_entries);
+            {
+                // Watcher state is a performance cliff, not a cosmetic detail:
+                // with no watcher both fast hit tiers are disabled and every
+                // shared cache blob is re-hashed on read (issue #1156).
+                let watcher = match (s.watcher_active, s.watcher_degradations) {
+                    (true, 0) => "active".to_string(),
+                    (true, n) => format!("active (recovered from {n} degradation(s))"),
+                    (false, n) => {
+                        format!("DEGRADED — fast hit tiers disabled ({n} failure(s), retrying)")
+                    }
+                };
+                println!("  Watcher:       {watcher}");
+            }
             println!();
             if s.total_links > 0 {
                 println!();

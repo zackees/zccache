@@ -13,6 +13,13 @@ const MEMORY_GC_IDLE_GRACE: Duration = Duration::from_millis(250);
 const MEMORY_GC_GENTLE_RETRY: Duration = Duration::from_millis(50);
 const MEMORY_GC_FORCE_AFTER: Duration = Duration::from_secs(5);
 const MEMORY_GC_GENTLE_BATCH: usize = 256;
+/// Startup budget for taking the watcher lock before declaring degradation.
+const WATCHER_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+/// First re-arm attempt after a failed watcher init (issue #1156). Cheap
+/// enough to be always-on, so no config knob is exposed.
+const WATCHER_REARM_INITIAL_DELAY: Duration = Duration::from_secs(60);
+/// Backoff ceiling for watcher re-arm retries.
+const WATCHER_REARM_MAX_DELAY: Duration = Duration::from_secs(600);
 
 impl DaemonServer {
     /// Run the server, accepting connections until shutdown is signaled.
@@ -548,31 +555,110 @@ impl DaemonServer {
     /// Initialize the file watcher pipeline:
     /// `NotifyWatcher (OS thread) → SettleBuffer (tokio task) → CacheSystem consumer (tokio task)`
     async fn start_watcher_pipeline(&self) {
-        let ignore = Arc::new(crate::watcher::IgnoreFilter::default());
-        let (watcher, raw_rx) = match NotifyWatcher::new(ignore) {
-            Ok(w) => w,
-            Err(e) => {
-                set_registry_watcher_available(false);
-                tracing::warn!("failed to start file watcher: {e} — running without watcher");
-                return;
-            }
-        };
-
-        match tokio::time::timeout(Duration::from_secs(5), self.state.watcher.lock()).await {
-            Ok(mut watcher_guard) => {
-                *watcher_guard = Some(watcher);
-            }
-            Err(_) => {
-                set_registry_watcher_available(false);
-                tracing::warn!(
-                    "timed out acquiring watcher lock during startup; running without watcher"
-                );
-                return;
-            }
+        if arm_watcher_pipeline(&self.state).await {
+            return;
         }
-        set_registry_watcher_available(true);
-        self.state.watcher_active.store(true, Ordering::Release);
+        // Watcher init failed. Without a re-arm this is a lifetime sentence:
+        // both fast hit tiers bail on `watcher_active == false` and every
+        // shared blob is fully re-hashed on every hit, forever, off a single
+        // startup warn line. The common triggers (inotify `max_user_watches`
+        // exhaustion, a momentarily contended watcher lock) are transient, so
+        // retry on a capped backoff until the daemon shuts down (issue #1156).
+        let state = Arc::clone(&self.state);
+        tokio::spawn(async move {
+            let mut delay = WATCHER_REARM_INITIAL_DELAY;
+            let mut attempt = 0_u32;
+            while !state.shutdown_requested.load(Ordering::Acquire) {
+                tokio::select! {
+                    () = tokio::time::sleep(delay) => {}
+                    () = state.shutdown.notified() => {
+                        state.shutdown_requested.store(true, Ordering::Release);
+                        state.shutdown.notify_waiters();
+                        return;
+                    }
+                }
+                if state.shutdown_requested.load(Ordering::Acquire) {
+                    return;
+                }
+                attempt += 1;
+                if arm_watcher_pipeline(&state).await {
+                    tracing::info!(
+                        event = "watcher_rearmed",
+                        attempt,
+                        "file watcher re-armed after startup failure — fast hit tiers restored"
+                    );
+                    crate::core::lifecycle::write_event(
+                        crate::core::lifecycle::EVENT_WATCHER_REARMED,
+                        serde_json::json!({ "attempt": attempt }),
+                    );
+                    return;
+                }
+                delay = (delay * 2).min(WATCHER_REARM_MAX_DELAY);
+            }
+        });
+    }
+}
 
+/// Attempts one full arm of the watcher pipeline. Returns `true` when the
+/// watcher is live and the settle/consumer tasks are running; `false` leaves
+/// the daemon in the degraded (watcher-less) mode with the degradation
+/// recorded loudly.
+pub(super) async fn arm_watcher_pipeline(state: &Arc<SharedState>) -> bool {
+    let ignore = Arc::new(crate::watcher::IgnoreFilter::default());
+    let (watcher, raw_rx) = match NotifyWatcher::new(ignore) {
+        Ok(w) => w,
+        Err(e) => {
+            record_watcher_degradation(state, &format!("watcher init failed: {e}"));
+            return false;
+        }
+    };
+
+    match tokio::time::timeout(WATCHER_LOCK_TIMEOUT, state.watcher.lock()).await {
+        Ok(mut watcher_guard) => {
+            *watcher_guard = Some(watcher);
+        }
+        Err(_) => {
+            record_watcher_degradation(state, "timed out acquiring watcher lock");
+            return false;
+        }
+    }
+    set_registry_watcher_available(true);
+    state.watcher_active.store(true, Ordering::Release);
+    start_watcher_tasks(state, raw_rx);
+    tracing::info!("file watcher pipeline started");
+    true
+}
+
+/// Loud-forensics degradation record: a `warn!` plus a durable lifecycle
+/// event plus a monotonic counter surfaced in `zccache status`, so a daemon
+/// running without a watcher is visible without trawling startup logs.
+pub(super) fn record_watcher_degradation(state: &Arc<SharedState>, reason: &str) {
+    set_registry_watcher_available(false);
+    state.watcher_active.store(false, Ordering::Release);
+    let degradations = state.watcher_degradations.fetch_add(1, Ordering::Relaxed) + 1;
+    tracing::warn!(
+        event = "watcher_degraded",
+        reason,
+        degradations,
+        "running without file watcher — fast hit tiers disabled and shared \
+         blobs re-hash on every read; will retry"
+    );
+    crate::core::lifecycle::write_event(
+        crate::core::lifecycle::EVENT_WATCHER_DEGRADED,
+        serde_json::json!({
+            "reason": reason,
+            "degradations": degradations,
+        }),
+    );
+}
+
+/// Spawns the settle buffer and the `CacheSystem` consumer over a freshly
+/// armed watcher's raw event stream.
+fn start_watcher_tasks(
+    state: &Arc<SharedState>,
+    raw_rx: tokio::sync::mpsc::UnboundedReceiver<crate::watcher::WatchEvent>,
+) {
+    {
         // Settle buffer: coalesces raw events into batches after a quiet period.
         let (settled_tx, mut settled_rx) = tokio::sync::mpsc::unbounded_channel();
         let settle = SettleBuffer::default_window();
@@ -581,7 +667,7 @@ impl DaemonServer {
         });
 
         // Consumer: feeds settled events into CacheSystem for metadata invalidation.
-        let state = Arc::clone(&self.state);
+        let state = Arc::clone(state);
         tokio::spawn(async move {
             while !state.shutdown_requested.load(Ordering::Acquire) {
                 // Race the settled-event recv against the shutdown signal
@@ -649,16 +735,27 @@ impl DaemonServer {
                         }
                     }
                     SettledEvent::Overflow => {
-                        mark_all_registered_links_suspect();
-                        tracing::warn!("watcher overflow — downgrading all metadata");
+                        let sweep = mark_changed_registered_links_suspect();
+                        tracing::warn!(
+                            event = "watcher_overflow",
+                            links_unchanged = sweep.unchanged,
+                            links_suspect = sweep.suspect,
+                            "watcher overflow — downgrading all metadata; \
+                             hardlink registry re-verified by stat signature"
+                        );
+                        crate::core::lifecycle::write_event(
+                            crate::core::lifecycle::EVENT_WATCHER_OVERFLOW,
+                            serde_json::json!({
+                                "links_unchanged": sweep.unchanged,
+                                "links_suspect": sweep.suspect,
+                            }),
+                        );
                         state.cache_system.apply_overflow();
                     }
                 }
             }
             tracing::debug!("watcher consumer task exiting");
         });
-
-        tracing::info!("file watcher pipeline started");
     }
 }
 
