@@ -51,9 +51,9 @@ impl EmbeddedDaemon {
         automatic_maintenance: bool,
     ) -> Result<Self, crate::ipc::IpcError> {
         let backend_identity = crate::ipc::current_backend_identity(&endpoint)
-            .map_err(|err| crate::ipc::IpcError::Endpoint(err.to_string()))?;
+            .map_err(|err| super::lifecycle::daemon_identity_error(&endpoint, &err))?;
         let (state, index_writer_rx) = new_shared_state(&endpoint, &cache_dir, backend_identity)
-            .map_err(|error| crate::ipc::IpcError::Endpoint(error.to_string()))?;
+            .map_err(|error| super::lifecycle::cache_root_error(&cache_dir, &error))?;
         // Arm the startup depgraph-load gate as early as possible — before
         // this state can serve any compile. The shared `dep_graph_load_complete`
         // flag inits `true` ("assume loaded"); the standalone daemon flips it
