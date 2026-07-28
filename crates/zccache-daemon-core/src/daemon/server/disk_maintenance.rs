@@ -918,6 +918,52 @@ async fn wait_for_next_pass_or_shutdown(
     }
 }
 
+/// Drop daemon-side state for sessions that are over and are never coming
+/// back (#1165 Finding 1).
+///
+/// `SessionManager` has shipped both reapers since it was written, with unit
+/// tests, and **no production caller** — so a long-lived daemon held every
+/// session's `context_keys` and `stats_tracker` for its whole life. Two ways
+/// a session ends without cleanup:
+///
+/// * the client sent `SessionEnd` and simply went idle afterwards
+/// * the client crashed or was killed, so `SessionEnd` never arrived at all
+///
+/// The second is the one that leaks unboundedly in practice: a cancelled
+/// build leaves its whole session behind, and nothing else ever removes it.
+///
+/// Both reapers are conservative by construction — idle-timeout for the
+/// first, process liveness for the second — so this cannot evict a session a
+/// live client is still using.
+fn reap_finished_sessions(state: &SharedState) {
+    reap_finished_sessions_with(state, zccache_ipc::is_process_alive);
+}
+
+/// [`reap_finished_sessions`] against an explicit liveness predicate.
+///
+/// The seam exists because "a PID that is reliably dead" is not portable.
+/// `is_process_alive` is `kill(pid, 0) == 0` on unix and `OpenProcess` on
+/// Windows, and PID 0 disagrees between them: `kill(0, 0)` signals the
+/// *caller's own process group* and succeeds, while `OpenProcess(0)` fails.
+/// A test using it passes on Windows and fails on Linux. Spawning a real
+/// process and killing it would swap that for a PID-recycling race.
+///
+/// Injecting the predicate makes the reaping logic deterministic on every
+/// platform and leaves `is_process_alive` — which has its own tests — as the
+/// only thing depending on OS behaviour.
+fn reap_finished_sessions_with(state: &SharedState, is_alive: impl Fn(u32) -> bool) {
+    let expired = state.sessions.cleanup_expired();
+    let dead = state.sessions.cleanup_dead_pids(is_alive);
+    if !expired.is_empty() || !dead.is_empty() {
+        tracing::info!(
+            expired = expired.len(),
+            dead_client = dead.len(),
+            remaining = state.sessions.active_count(),
+            "reaped finished sessions"
+        );
+    }
+}
+
 pub(super) fn spawn_disk_maintenance(
     state: Arc<SharedState>,
     policy: MaintenancePolicy,
@@ -931,6 +977,12 @@ pub(super) fn spawn_disk_maintenance(
             if state.shutdown_requested.load(Ordering::Acquire) {
                 break;
             }
+            // #1165 Finding 1: reap before the pressure gate, not after the
+            // disk pass. The `Ok(false)` branch below `continue`s when the
+            // cache is under the preflight threshold, so a reap placed after
+            // it would be skipped on exactly the quiet daemons that live
+            // longest and accumulate the most dead sessions.
+            reap_finished_sessions(&state);
             let kind = if full_maintenance_due(state.cache_dir.as_path(), SystemTime::now()) {
                 MaintenanceKind::Full
             } else {
