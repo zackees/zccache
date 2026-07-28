@@ -10,6 +10,9 @@ use super::*;
 
 const STAGING_LOCK_FILE: &str = ".active.lock";
 
+/// Lock file naming the single live writer of a cache root (#1162).
+const CACHE_ROOT_WRITER_LOCK_FILE: &str = ".writer.lock";
+
 /// How old a staging directory with no `.active.lock` must be before the
 /// cleaner may treat it as crash debris (soldr#1250).
 ///
@@ -152,6 +155,79 @@ impl Drop for StagingRoot {
     }
 }
 
+/// Exclusive claim on a cache root, held for as long as the daemon writes to
+/// it (#1162 finding 1).
+///
+/// `ArtifactStore::flush` serializes the whole in-memory index and atomically
+/// renames it over `index.bin` — no merge, no read-modify-write. Two writers on
+/// one root therefore do not interleave, they *overwrite*: each flush discards
+/// everything the other inserted. The blobs survive on disk but become
+/// unreferenced, so the damage shows up much later as unexplained cold misses.
+///
+/// Nothing else excludes them. The embedded service uses a synthetic
+/// `embedded:` endpoint and never binds IPC, so the IPC singleton lockfile does
+/// not stop a standalone daemon from opening the same root — one stray
+/// `zccache` compile against `ZCCACHE_CACHE_DIR=X` is enough.
+///
+/// Contention is a misconfiguration worth surfacing, not papering over, so
+/// acquisition is `try_lock` and a loser refuses to start rather than silently
+/// coexisting.
+pub(super) struct CacheRootWriterLock {
+    lock: Option<std::fs::File>,
+}
+
+impl CacheRootWriterLock {
+    /// Claim `cache_dir` for this process, or report who already holds it.
+    ///
+    /// Returns [`std::io::ErrorKind::WouldBlock`] when another live writer
+    /// holds the root; `lifecycle::cache_root_error` preserves that kind, so
+    /// callers can tell contention from a genuine filesystem fault.
+    pub(super) fn acquire(cache_dir: &Path) -> std::io::Result<Self> {
+        use fs2::FileExt;
+        use std::io::Write;
+
+        std::fs::create_dir_all(cache_dir)?;
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(cache_dir.join(CACHE_ROOT_WRITER_LOCK_FILE))?;
+        if file.try_lock_exclusive().is_err() {
+            crate::core::lifecycle::write_event_in_cache_root(
+                cache_dir,
+                "daemon_cache_root_contended",
+                serde_json::json!({
+                    "cache_root": cache_dir.display().to_string(),
+                    "pid": std::process::id(),
+                }),
+            );
+            tracing::warn!(
+                cache_root = %cache_dir.display(),
+                pid = std::process::id(),
+                "cache root already has a live writer; refusing to start a second one"
+            );
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "another live daemon already holds this cache root as its writer",
+            ));
+        }
+        // Best-effort provenance for whoever inspects the lock file; the lock
+        // itself is what enforces exclusion, so a failed write is not fatal.
+        let _ = file.set_len(0);
+        let _ = writeln!(file, "{}", std::process::id());
+        Ok(Self { lock: Some(file) })
+    }
+}
+
+impl Drop for CacheRootWriterLock {
+    fn drop(&mut self) {
+        if let Some(lock) = self.lock.take() {
+            let _ = fs2::FileExt::unlock(&lock);
+        }
+    }
+}
+
 /// RAII marker covering one complete compile-cache request.
 ///
 /// The compiler-child counter in `daemon::process` is intentionally narrower:
@@ -252,6 +328,11 @@ pub(super) struct SharedState {
     pub(super) artifact_dir: NormalizedPath,
     /// Private compiler/linker outputs, isolated from cache clear/eviction.
     pub(super) staging: StagingRoot,
+    /// Exclusive writer claim on this cache root, held for the lifetime of the
+    /// state so a second writer cannot clobber our flushes (#1162). Named with
+    /// a leading underscore because it is never read — holding it *is* the
+    /// effect, and dropping it releases the root.
+    pub(super) _cache_root_lock: CacheRootWriterLock,
     /// On-disk path for the persisted [`MetadataCache`] snapshot.
     ///
     /// Written on flush (`Clear`) and shutdown (`Shutdown`); read at
@@ -537,6 +618,52 @@ mod staging_tests {
     fn backdate(path: &Path, by: Duration) {
         let when = std::time::SystemTime::now() - by;
         filetime::set_file_mtime(path, filetime::FileTime::from_system_time(when)).unwrap();
+    }
+
+    /// #1162 finding 1: `index.bin` is last-writer-wins, so a second writer on
+    /// one root silently discards the first's inserts. The second must be
+    /// refused, and refused distinguishably — `cache_root_error` preserves the
+    /// `ErrorKind`, so `WouldBlock` is what tells contention apart from a real
+    /// filesystem fault.
+    #[test]
+    fn a_second_writer_is_refused_while_the_first_holds_the_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = CacheRootWriterLock::acquire(temp.path()).unwrap();
+
+        let second = CacheRootWriterLock::acquire(temp.path());
+        let error = second.err().expect("a second writer must not be granted");
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock,
+            "contention must be distinguishable from a filesystem fault, got: {error}"
+        );
+
+        drop(first);
+    }
+
+    /// The claim must be released on drop, or a daemon restart would be locked
+    /// out of its own root by its predecessor's debris.
+    #[test]
+    fn dropping_the_writer_lock_releases_the_root_for_the_next_daemon() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let first = CacheRootWriterLock::acquire(temp.path()).unwrap();
+        drop(first);
+
+        CacheRootWriterLock::acquire(temp.path())
+            .expect("a released root must be claimable by the next writer");
+    }
+
+    /// Distinct roots are independent: the lock must not serialize unrelated
+    /// daemons (or the isolated-root tests from #1254/#1261 would deadlock).
+    #[test]
+    fn distinct_cache_roots_do_not_contend() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+
+        let _first = CacheRootWriterLock::acquire(a.path()).unwrap();
+        CacheRootWriterLock::acquire(b.path())
+            .expect("a different cache root must be claimable concurrently");
     }
 
     #[test]
