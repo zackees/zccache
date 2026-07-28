@@ -1,5 +1,33 @@
 # Lessons
 
+## macOS CI is queue-bound, not compute-bound — cut job *count*, not job duration (2026-07-28)
+
+Measured on macOS run `30378201671`: four jobs queued 16/32/49/59 min and ran
+43s/44s/3m26s/2m42s. **61.7 min wall clock, 7.5 min compute** — ~88% of macOS CI
+time is waiting for a runner slot against GitHub's 5-concurrent-job macOS cap.
+
+Two amplifiers were live at once: `ci-macos.yml` declared jobs `x86` and `arm`
+that *both* pinned `os: macos-14` (byte-identical duplicates, and they derived
+the same `cache-key-suffix` so they also raced on cache save), and ~24 of ~38 PR
+jobs had no `concurrency` block, so superseded runs kept holding slots while a
+fresh run queued behind them. That is what produces a monotone queue staircase.
+
+**Rule:** when CI feels slow, compare `startedAt - createdAt` against
+`completedAt - startedAt` per job before optimizing anything:
+`gh run view <id> --json jobs -q '.jobs[] | "\(.name)\t\(.startedAt)\t\(.completedAt)"'`.
+If queue dominates, the only lever that works is removing jobs from scarce pools
+(macOS > windows-11-arm > everything else). Making a job faster barely moves a
+number that is 88% waiting. `wrapper-e2e.yml` already recorded this once —
+dropping one redundant `macos-13` leg was worth "15+ minutes of queue wait".
+
+**Corollary — don't cross-compile to dodge this.** Building test binaries on
+Linux and shipping them to mac/Windows runners was considered and rejected: it
+does not reduce the number of queued jobs at all, the ~32 debug test binaries
+are 600 MB–1.5 GB (5–15 min of artifact transfer to avoid ~60–90s of compile),
+Linux→macOS needs the Xcode SDK on non-Apple hardware (license violation on a
+public repo), and `build-target/action.yml` already hard-fails cross-built
+`pc-windows-msvc` because of the #269 CRT-skew `STATUS_DLL_INIT_FAILED` class.
+
 ## Stopping a `soldr cargo` task can orphan its cargo child and wedge the build lock (2026-07-08)
 
 `TaskStop` on a background `soldr cargo test/check` kills the bash wrapper but

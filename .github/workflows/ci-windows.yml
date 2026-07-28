@@ -28,13 +28,19 @@ on:
       - ".editorconfig"
       - "tasks/**"
 
+concurrency:
+  group: ci-windows-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   x86:
     uses: ./.github/workflows/ci-check.yml
     with:
       os: windows-latest
+      run_check: false
 
   arm:
     uses: ./.github/workflows/ci-check.yml
     with:
       os: windows-11-arm
+      run_check: false

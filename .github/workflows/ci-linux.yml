@@ -28,6 +28,10 @@ on:
       - ".editorconfig"
       - "tasks/**"
 
+concurrency:
+  group: ci-linux-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   x86:
     uses: ./.github/workflows/ci-check.yml

@@ -37,6 +37,10 @@ on:
       - ".editorconfig"
       - "tasks/**"
 
+concurrency:
+  group: wrapper-e2e-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   wrapper-e2e:
     strategy:
