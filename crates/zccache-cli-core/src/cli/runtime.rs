@@ -405,6 +405,52 @@ async fn probe_says_daemon_is_merely_busy(endpoint: &str) -> bool {
     )
 }
 
+/// How long a retiring daemon gets to finish its durable drain before the
+/// stopper escalates to a force kill (#1161 leg 3).
+///
+/// Matched to the daemon's own `INDEX_WRITER_SHUTDOWN_DRAIN_TIMEOUT` (30 s,
+/// `daemon/server/wal.rs`). The two must stay in step: a stopper budget below
+/// the daemon's drain budget guarantees killing it mid-flush, which truncates
+/// `index.bin` and costs a full recompile — the failure this leg exists to
+/// stop. The previous value was 200 ms.
+const GRACEFUL_DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long to wait for the OS to reap a process we did force-kill. Short:
+/// SIGKILL/TerminateProcess is not negotiable, so this only covers reaping
+/// latency, not any work by the daemon.
+const FORCE_KILL_REAP_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Poll interval while waiting for a process to exit. Small enough that a
+/// fast drain is not padded by the poll, coarse enough not to spin.
+const PROCESS_EXIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Wait up to `budget` for `pid` to leave. `true` if it exited.
+async fn wait_for_process_exit(pid: u32, budget: std::time::Duration) -> bool {
+    wait_for_exit_while(budget, move || crate::ipc::is_process_alive(pid)).await
+}
+
+/// [`wait_for_process_exit`] against an injected liveness predicate.
+///
+/// The seam exists because "a PID that is reliably dead" is not portable and
+/// "a PID that stays alive" is a race against the OS. `is_process_alive` is
+/// `kill(pid, 0)` on unix and `OpenProcess` on Windows, and they disagree on
+/// edge values — PID 0 reads alive on Linux and dead on Windows. Injecting the
+/// predicate makes the *waiting* logic deterministic everywhere and leaves
+/// `is_process_alive`, which has its own tests, as the only thing depending on
+/// OS behaviour.
+async fn wait_for_exit_while(budget: std::time::Duration, is_alive: impl Fn() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        if !is_alive() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(PROCESS_EXIT_POLL_INTERVAL).await;
+    }
+}
+
 /// Replace a daemon we failed to talk to.
 ///
 /// `failed_instance` is the identity captured **before** the failed exchange.
@@ -442,29 +488,63 @@ async fn stop_stale_daemon(
         }
     }
 
+    // The instance we verified above, not a fresh lock read. #1161 leg 1
+    // gated on identity; re-reading the lock here would reopen the same
+    // window on the kill itself.
+    let outgoing_pid = failed_instance.map(|instance| instance.pid);
+
     let _ = crate::ipc::daemon_control_roundtrip(
         endpoint,
         crate::ipc::DaemonControlRequest::Shutdown,
         None,
     )
     .await;
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let killed_pid = if let Some(pid) = crate::ipc::check_running_daemon() {
-        let kill_ok = crate::ipc::force_kill_process(pid).is_ok();
-        if kill_ok {
-            for _ in 0..50 {
-                if !crate::ipc::is_process_alive(pid) {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-        }
+    let pid = outgoing_pid?;
+
+    // #1161 leg 3: this used to sleep 200 ms and then SIGKILL
+    // unconditionally. The daemon's own shutdown drain is *30 s*
+    // (`INDEX_WRITER_SHUTDOWN_DRAIN_TIMEOUT`), so the old grace was two
+    // orders of magnitude short: it killed daemons mid-flush, truncating
+    // `index.bin` and turning an orderly replacement into "recompile
+    // everything". Wait for the drain the daemon is entitled to, and reserve
+    // the fast kill for one that will not leave.
+    let drained_cleanly = wait_for_process_exit(pid, GRACEFUL_DRAIN_BUDGET).await;
+    if drained_cleanly {
         crate::ipc::remove_lock_file();
-        kill_ok.then_some(pid)
-    } else {
-        None
-    };
+        // Return the pid even though nothing was killed: the caller uses it to
+        // link old -> new in the takeover lifecycle events. Previously a
+        // daemon that exited inside the 200 ms window returned `None` here and
+        // its lineage was silently lost.
+        return Some(pid);
+    }
+
+    // Loud on escalation, per the timeout-forensics convention: a durable
+    // event as well as the log line, with the stage and how long we actually
+    // waited, so "why was my warm daemon killed" is answerable afterwards.
+    tracing::warn!(
+        pid,
+        waited_secs = GRACEFUL_DRAIN_BUDGET.as_secs(),
+        stage = "post-shutdown-drain",
+        "daemon did not exit within its drain budget; escalating to force kill"
+    );
+    crate::core::lifecycle::write_event(
+        crate::core::lifecycle::EVENT_DAEMON_DIED,
+        serde_json::json!({
+            "pid": pid,
+            "reason": "drain_budget_exhausted",
+            "stage": "post-shutdown-drain",
+            "waited_secs": GRACEFUL_DRAIN_BUDGET.as_secs(),
+            "endpoint": endpoint,
+        }),
+    );
+
+    let kill_ok = crate::ipc::force_kill_process(pid).is_ok();
+    if kill_ok {
+        wait_for_process_exit(pid, FORCE_KILL_REAP_BUDGET).await;
+    }
+    crate::ipc::remove_lock_file();
+    let killed_pid = kill_ok.then_some(pid);
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     killed_pid
@@ -1125,5 +1205,57 @@ mod tests {
                 None => std::env::remove_var(self.key),
             }
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // #1161 leg 3 — drain grace
+    // ---------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn an_exited_daemon_is_observed_without_waiting_out_the_budget() {
+        // The graceful path. If the daemon finishes its drain we must notice
+        // promptly rather than sitting on the full budget -- a 30 s stall on
+        // every replacement would be its own bug.
+        let start = std::time::Instant::now();
+        let exited = wait_for_exit_while(std::time::Duration::from_secs(30), || false).await;
+        assert!(exited);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "an already-exited process must return immediately, took {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_daemon_that_never_leaves_reports_the_budget_expired() {
+        // The escalation path: the caller force-kills only on `false`, so an
+        // inverted result here would mean never reclaiming a wedged daemon.
+        let budget = std::time::Duration::from_millis(250);
+        let start = std::time::Instant::now();
+        let exited = wait_for_exit_while(budget, || true).await;
+        assert!(!exited);
+        assert!(
+            start.elapsed() >= budget,
+            "must actually wait the budget before escalating, waited {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn the_drain_budget_matches_the_daemon_side_drain() {
+        // The whole point of leg 3. The daemon's own
+        // INDEX_WRITER_SHUTDOWN_DRAIN_TIMEOUT is 30 s; a stopper budget below
+        // that guarantees SIGKILL mid-flush, which truncates index.bin and
+        // costs a full recompile. This was 200 ms. If the daemon-side value
+        // moves, this must move with it.
+        assert_eq!(
+            GRACEFUL_DRAIN_BUDGET,
+            std::time::Duration::from_secs(30),
+            "stopper grace must match the daemon's shutdown drain budget"
+        );
+        assert!(
+            FORCE_KILL_REAP_BUDGET < GRACEFUL_DRAIN_BUDGET,
+            "reaping a killed process is not the same wait as letting one drain"
+        );
     }
 }
