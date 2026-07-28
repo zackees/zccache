@@ -43,6 +43,7 @@
 //! | `client-disconnected` (#755) | client | IPC connection broke mid-request | `endpoint`, `client_pid`, `client_version`, `client_binary_path`, `cause`, `detail` |
 //! | `wrapper-local-fallback` | CLI wrapper | daemon dispatch failed before request delivery and the tool ran locally | `reason`, tool fields |
 //! | `version_mismatch` | daemon | client / daemon protocol versions disagree | `daemon_protocol_version`, `client_protocol_version`, `reason` |
+//! | `state_corrupt` (#1157) | daemon | persisted state did not parse and was dropped rather than reconciled; consequence is a full cold recompile | `subsystem`, `consequence`, `message`, `path`, `bytes` |
 //! | `staged_publication_conflict` | daemon | one cache key produced two different valid generations; first generation retained | `cache_key`, `existing_generation`, `candidate_generation`, `elapsed_ns` |
 //! | `staged_publication_replaces_invalid_generation` | daemon | a corrupt/incomplete selected generation was replaced by a validated compile result | `cache_key`, `invalid_generation`, `replacement_generation` |
 //! | `staged_salvage_started` | daemon | publication/index failed after a successful compile; requested outputs are being recovered | `reason`, `output_count`, `copied_bytes`, `elapsed_ns` |
@@ -111,6 +112,14 @@ pub const EVENT_SPAWN_PARKED: &str = "spawn-parked";
 pub const EVENT_DIED_IDLE: &str = "died-idle";
 pub const EVENT_DIED_SHUTDOWN: &str = "died-shutdown";
 pub const EVENT_VERSION_MISMATCH: &str = "version_mismatch";
+/// Persisted state was unreadable and was dropped rather than reconciled
+/// (#1157). Distinct from [`EVENT_VERSION_MISMATCH`], which is an expected
+/// schema bump; this one means the bytes on disk did not parse at all.
+///
+/// Both consequences are the same for the operator — a full cold recompile —
+/// so the event carries `subsystem` and `consequence` and is what makes a
+/// fleet-wide "everyone recompiled today" incident attributable after the fact.
+pub const EVENT_STATE_CORRUPT: &str = "state_corrupt";
 
 /// Issue #755 events — daemon death + handover + client disconnect.
 /// Additive: existing tooling that filters on `event` continues to
@@ -185,6 +194,7 @@ pub const EVENT_ALL: &[&str] = &[
     EVENT_DIED_SHUTDOWN,
     EVENT_DIED_PRIVATE_OWNER_EXIT,
     EVENT_VERSION_MISMATCH,
+    EVENT_STATE_CORRUPT,
     EVENT_DAEMON_DIED,
     EVENT_PIPE_HANDOVER,
     EVENT_CLIENT_DISCONNECTED,
