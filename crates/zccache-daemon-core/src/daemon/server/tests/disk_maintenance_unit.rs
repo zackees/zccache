@@ -896,19 +896,24 @@ async fn ended_session_tombstones_expire_on_their_ttl() {
     let stale = crate::depgraph::SessionId::new();
     let recent = crate::depgraph::SessionId::new();
     let ttl = Duration::from_secs(60 * 60);
-    let now = std::time::Instant::now();
-    // Stamp directly rather than sleeping: the boundary is what matters, and a
-    // test that waits an hour is not a test.
-    daemon
-        .state
-        .ended_sessions
-        .insert(stale, now - ttl - Duration::from_secs(1));
-    daemon
-        .state
-        .ended_sessions
-        .insert(recent, now - Duration::from_secs(1));
+    // Build stamps by ADDING to a base and moving the observation time
+    // forward, never by subtracting from `Instant::now()`. Still no sleeping:
+    // the boundary is what matters, and a test that waits an hour is not a
+    // test.
+    //
+    // The first version did `now - ttl - 1s` and panicked on CI. Subtracting
+    // an hour from a monotonic clock whose epoch is younger than an hour
+    // underflows, and a freshly booted runner is exactly that.
+    // `SessionManager::cleanup_expired` guards the same trap with
+    // `checked_sub` ("timeout exceeds uptime; nothing can be expired") -- the
+    // precedent was in the file I was already reading.
+    let base = std::time::Instant::now();
+    let observed_at = base + ttl + Duration::from_secs(1);
+    daemon.state.ended_sessions.insert(stale, base);
+    // Age at `observed_at` is 1s, comfortably inside the TTL.
+    daemon.state.ended_sessions.insert(recent, base + ttl);
 
-    let removed = reap_ended_session_tombstones(&daemon.state, ttl);
+    let removed = reap_ended_session_tombstones_at(&daemon.state, ttl, observed_at);
 
     assert_eq!(removed, 1);
     assert!(

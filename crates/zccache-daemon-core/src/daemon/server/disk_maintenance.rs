@@ -987,11 +987,31 @@ fn reap_finished_sessions_with(state: &SharedState, is_alive: impl Fn(u32) -> bo
 /// definition, so "is the pid alive" says nothing about whether it is still
 /// needed.
 fn reap_ended_session_tombstones(state: &SharedState, ttl: Duration) -> usize {
-    let now = std::time::Instant::now();
+    reap_ended_session_tombstones_at(state, ttl, std::time::Instant::now())
+}
+
+/// [`reap_ended_session_tombstones`] against an explicit observation time.
+///
+/// The seam exists so tests can place stamps relative to a base by **adding**
+/// to an `Instant` instead of subtracting from `Instant::now()`. Subtracting
+/// an hour panics when the monotonic epoch is younger than an hour — a fresh
+/// CI runner — which is the same trap `SessionManager::cleanup_expired`
+/// already guards with `checked_sub` ("timeout exceeds uptime; nothing can be
+/// expired"). Addition cannot underflow, so the test states the boundary
+/// directly with no clock arithmetic that can fail.
+fn reap_ended_session_tombstones_at(
+    state: &SharedState,
+    ttl: Duration,
+    now: std::time::Instant,
+) -> usize {
     let before = state.ended_sessions.len();
     state
         .ended_sessions
-        .retain(|_, ended_at| now.duration_since(*ended_at) < ttl);
+        // Saturating: a stamp ahead of `now` yields zero age and is kept,
+        // rather than panicking. That cannot happen from the insert site, but
+        // this runs every maintenance tick for the daemon's life and a panic
+        // here would take the maintenance task down with it.
+        .retain(|_, ended_at| now.saturating_duration_since(*ended_at) < ttl);
     before.saturating_sub(state.ended_sessions.len())
 }
 
