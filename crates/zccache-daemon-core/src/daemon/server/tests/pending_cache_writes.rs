@@ -109,18 +109,33 @@ async fn pending_registry_warm_lookup_pays_no_wait() {
     let server = DaemonServer::bind(&endpoint).unwrap();
     let state = Arc::clone(&server.state);
 
+    // #1254: this asserted `elapsed < 2ms` against a 5ms wait budget. The
+    // claim is right -- the no-wait path must not consume the budget -- but a
+    // 2 ms wall-clock margin is smaller than the scheduling jitter this
+    // crate's parallel tests produce, so it failed intermittently while the
+    // code behaved correctly.
+    //
+    // Same claim, with a margin load cannot bridge: give the call a budget of
+    // seconds and assert it returned in a fraction of it. Falling through
+    // takes microseconds, so a passing run is still instant; only a genuine
+    // regression to waiting pays the budget, and it then misses this bound by
+    // orders of magnitude rather than by jitter.
+    const WAIT_BUDGET: Duration = Duration::from_secs(10);
+    const NO_WAIT_CEILING: Duration = Duration::from_secs(2);
+
     let start = Instant::now();
     let observed = pending_writes::await_pending(
         &state.pending_cache_writes,
         "warmkey0000000000000000000000000",
-        Duration::from_millis(5),
+        WAIT_BUDGET,
     )
     .await;
     let elapsed = start.elapsed();
 
     assert!(!observed, "no pending entry must report false");
     assert!(
-        elapsed < Duration::from_millis(2),
-        "warm-lookup no-wait path took {elapsed:?}"
+        elapsed < NO_WAIT_CEILING,
+        "warm-lookup no-wait path took {elapsed:?}, so it waited on the \
+         {WAIT_BUDGET:?} budget instead of falling through"
     );
 }
