@@ -546,6 +546,13 @@ impl DaemonServer {
                     // Clean up our own depfile temp directory.
                     let _ = std::fs::remove_dir_all(&self.state.depfile_tmpdir);
 
+                    // #1162: everything durable is now on disk, so this daemon
+                    // has stopped writing and the next one may claim the root.
+                    // Releasing here rather than on `Drop` is deliberate —
+                    // background holders keep `Arc<SharedState>` alive past
+                    // this point, and a sequential restart must not be refused.
+                    self.state.cache_root_lock.release();
+
                     return Ok(());
                 }
             }

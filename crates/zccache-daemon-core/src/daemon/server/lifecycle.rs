@@ -108,6 +108,9 @@ pub(super) fn new_shared_state(
     let shutdown = Arc::new(Notify::new());
     let now = now_secs();
     let instance = SERVER_INSTANCE.fetch_add(1, Ordering::Relaxed);
+    // #1162: claim the root before touching any of its state files, so a
+    // second writer fails fast rather than part-initializing over a live one.
+    let cache_root_lock = CacheRootWriterLock::acquire(cache_dir.as_path())?;
     let artifact_dir = crate::core::config::artifacts_dir_from_cache_dir(cache_dir);
     std::fs::create_dir_all(&artifact_dir).ok();
     ensure_object_layout(&artifact_dir)?;
@@ -246,6 +249,7 @@ pub(super) fn new_shared_state(
             profiler: PhaseProfiler::new(),
             artifact_dir,
             staging: StagingRoot::new(cache_dir.as_path(), instance)?,
+            cache_root_lock,
             metadata_path,
             compiler_hash_cache_path,
             depfile_tmpdir: {
