@@ -665,6 +665,55 @@ pub fn write_backend_identity(
     std::fs::write(path, json)
 }
 
+/// Read the persisted daemon identity, if one is recorded and parseable.
+///
+/// #1161: the identity has been *written* on every daemon start for a long
+/// time, and nothing read it back except `probe_backend_handle`'s inline load.
+/// Kill decisions verified only "PID is alive and its exe stem is
+/// `zccache-daemon`" — which a recycled PID belonging to a *different*
+/// zccache-daemon satisfies, so auto-recovery could kill an unrelated live
+/// instance.
+///
+/// `DaemonProcess` already carries what distinguishes instances:
+/// `started_at_unix_ms` (PID reuse within a boot) and `boot_id` (across
+/// boots). Exposing the read is what lets a kill be bound to the instance the
+/// caller actually failed to talk to.
+///
+/// `None` means "nothing recorded, or unreadable" — deliberately *not*
+/// "matches anything". See [`daemon_identity_matches`].
+#[must_use]
+pub fn read_backend_identity(
+) -> Option<running_process::broker::protocol_v2::backend_handle::DaemonProcess> {
+    std::fs::read(backend_identity_path())
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+}
+
+/// Is the daemon recorded on disk right now the same *instance* as `expected`?
+///
+/// Compares PID **and** start time **and** boot id. PID alone is not identity:
+/// the OS reuses PIDs, aggressively so on Windows, and the exe-stem check that
+/// guarded this before is satisfied by any `zccache-daemon` — including one
+/// serving a different namespace.
+///
+/// Returns `false` when nothing is recorded. That is the safe direction for a
+/// kill gate: refusing costs one clear error about a daemon that is already
+/// not answering, while permitting costs killing a live daemon that was never
+/// the one at fault. Note this deliberately differs from
+/// [`verify_pid_exe_stem`], whose `None => true` fallback is about *reading an
+/// exe path* on platforms that cannot — not about authorising a kill.
+#[must_use]
+pub fn daemon_identity_matches(
+    expected: &running_process::broker::protocol_v2::backend_handle::DaemonProcess,
+) -> bool {
+    let Some(current) = read_backend_identity() else {
+        return false;
+    };
+    current.pid == expected.pid
+        && current.started_at_unix_ms == expected.started_at_unix_ms
+        && current.boot_id == expected.boot_id
+}
+
 /// Load and actively verify the daemon identity through `BackendHandle`.
 ///
 /// Slice 24 of zccache#782: migrated to the `protocol_v2::backend_handle`
@@ -673,9 +722,7 @@ pub fn write_backend_identity(
 pub fn probe_backend_handle(
     endpoint: &str,
 ) -> Option<running_process::broker::protocol_v2::backend_handle::BackendHandle> {
-    let daemon = std::fs::read(backend_identity_path())
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
+    let daemon = read_backend_identity()?;
     let endpoint = running_process_endpoint(endpoint);
     running_process::broker::protocol_v2::backend_handle::BackendHandle::probe_with_service(
         "zccache",
