@@ -10,6 +10,22 @@ use super::*;
 
 const STAGING_LOCK_FILE: &str = ".active.lock";
 
+/// How old a staging directory with no `.active.lock` must be before the
+/// cleaner may treat it as crash debris (soldr#1250).
+///
+/// `StagingRoot::new` creates the directory and only then opens its lock, so
+/// for a brief moment a perfectly healthy staging root exists with no lock
+/// file. A cleaner that removes lockless directories on sight deletes live
+/// roots during that window, and the creating daemon's own `open` then fails
+/// with `ENOENT`.
+///
+/// Absence of a lock file therefore cannot mean "abandoned" on its own — it
+/// means "cannot judge yet". Age is what separates a directory being born
+/// from one whose daemon died before it could write a lock: the create/lock
+/// gap is a couple of syscalls, so anything older than this by orders of
+/// magnitude is genuinely debris.
+const STAGING_ABANDONED_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Per-daemon private output staging. The held lock distinguishes an active
 /// daemon from crash debris, so startup cleanup cannot remove another live
 /// daemon's compiler outputs.
@@ -53,6 +69,13 @@ impl StagingRoot {
     }
 
     pub(super) fn cleanup_abandoned(&self) -> std::io::Result<usize> {
+        self.cleanup_abandoned_older_than(STAGING_ABANDONED_MIN_AGE)
+    }
+
+    /// [`Self::cleanup_abandoned`] with an explicit minimum age for the
+    /// lockless case, so tests can exercise both sides of the age gate
+    /// without sleeping.
+    fn cleanup_abandoned_older_than(&self, min_age: std::time::Duration) -> std::io::Result<usize> {
         use fs2::FileExt;
 
         let Some(parent) = self.path.parent() else {
@@ -64,13 +87,30 @@ impl StagingRoot {
             if !path.is_dir() || path == self.path.as_path() {
                 continue;
             }
+            // Deliberately NOT `create(true)` (soldr#1250). Creating the lock
+            // file here manufactures the very artifact whose absence should
+            // have protected the directory: the cleaner would then find its
+            // own brand-new file unlocked, conclude the root was abandoned,
+            // and delete a staging root that another daemon is mid-way
+            // through creating.
             let lock = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
-                .create(true)
-                .truncate(false)
                 .open(path.join(STAGING_LOCK_FILE));
-            let Ok(lock) = lock else { continue };
+            let lock = match lock {
+                Ok(lock) => lock,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    // No lock file: either a root being born, or debris from a
+                    // daemon that died before writing one. Only age tells them
+                    // apart, and guessing wrong deletes live output.
+                    if staging_dir_is_older_than(&path, min_age) {
+                        std::fs::remove_dir_all(&path)?;
+                        removed += 1;
+                    }
+                    continue;
+                }
+                Err(_) => continue,
+            };
             if lock.try_lock_exclusive().is_err() {
                 continue;
             }
@@ -81,6 +121,25 @@ impl StagingRoot {
         }
         Ok(removed)
     }
+}
+
+/// Is this staging directory old enough that a missing `.active.lock` can
+/// only mean crash debris?
+///
+/// Errs toward "no": an unreadable mtime, or a clock that makes the directory
+/// look like it is from the future, both return false. Skipping real debris
+/// costs disk until the next pass; removing a live root costs a failed build.
+fn staging_dir_is_older_than(path: &Path, min_age: std::time::Duration) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return false;
+    };
+    let Ok(age) = std::time::SystemTime::now().duration_since(modified) else {
+        return false;
+    };
+    age >= min_age
 }
 
 impl Drop for StagingRoot {
@@ -461,6 +520,15 @@ impl SharedState {
 mod staging_tests {
     use super::*;
 
+    use std::time::Duration;
+
+    /// Backdate a directory so the age gate sees it as debris without the
+    /// test having to sleep.
+    fn backdate(path: &Path, by: Duration) {
+        let when = std::time::SystemTime::now() - by;
+        filetime::set_file_mtime(path, filetime::FileTime::from_system_time(when)).unwrap();
+    }
+
     #[test]
     fn abandoned_cleanup_preserves_live_roots_and_removes_crash_debris() {
         let temp = tempfile::tempdir().unwrap();
@@ -471,9 +539,116 @@ mod staging_tests {
         let abandoned = temp.path().join("staging").join("abandoned");
         std::fs::create_dir_all(&abandoned).unwrap();
         std::fs::write(abandoned.join("orphan.o"), b"orphan").unwrap();
+        // Debris now has to look old. This assertion used to pass on a
+        // freshly created directory, which is exactly what made the race in
+        // soldr#1250 reachable.
+        backdate(&abandoned, Duration::from_secs(3600));
 
         assert_eq!(live_a.cleanup_abandoned().unwrap(), 1);
         assert!(live_b.path().join("active.o").exists());
         assert!(!abandoned.exists());
+    }
+
+    // soldr#1250: the window in `StagingRoot::new` between `create_dir_all`
+    // and opening the lock.
+
+    #[test]
+    fn a_staging_root_being_born_survives_a_concurrent_cleaner() {
+        let temp = tempfile::tempdir().unwrap();
+        let cleaner = StagingRoot::new(temp.path(), 1).unwrap();
+
+        // Exactly the on-disk state `StagingRoot::new` leaves behind after
+        // `create_dir_all` and before it opens `.active.lock`.
+        let being_born = temp.path().join("staging").join("999-0-12345");
+        std::fs::create_dir_all(&being_born).unwrap();
+
+        assert_eq!(
+            cleaner.cleanup_abandoned().unwrap(),
+            0,
+            "a lockless directory that is seconds old is a root being born, not debris"
+        );
+        assert!(
+            being_born.exists(),
+            "deleting this is what makes the creating daemon fail ENOENT on its own lock"
+        );
+    }
+
+    #[test]
+    fn the_cleaner_does_not_create_the_lock_file_it_tests_for() {
+        let temp = tempfile::tempdir().unwrap();
+        let cleaner = StagingRoot::new(temp.path(), 1).unwrap();
+        let being_born = temp.path().join("staging").join("999-0-12345");
+        std::fs::create_dir_all(&being_born).unwrap();
+
+        let _ = cleaner.cleanup_abandoned().unwrap();
+
+        // Survival first. Without this line the assertion below passes
+        // vacuously under the original bug -- the directory is gone, so of
+        // course its lock file is absent. Confirmed by re-introducing
+        // `create(true)`: this test passed while the other two failed.
+        assert!(being_born.exists(), "precondition: the root must survive");
+        // The original bug: `create(true)` manufactured the lock file, so the
+        // cleaner then found its own new file unlocked and judged the root
+        // abandoned. Absence must stay absence.
+        assert!(
+            !being_born.join(STAGING_LOCK_FILE).exists(),
+            "the cleaner must not fabricate the artifact whose absence protects the root"
+        );
+    }
+
+    #[test]
+    fn lockless_debris_is_still_reclaimed_once_it_is_old_enough() {
+        let temp = tempfile::tempdir().unwrap();
+        let cleaner = StagingRoot::new(temp.path(), 1).unwrap();
+
+        let debris = temp.path().join("staging").join("dead-0-1");
+        std::fs::create_dir_all(&debris).unwrap();
+        std::fs::write(debris.join("orphan.o"), b"orphan").unwrap();
+        backdate(&debris, Duration::from_secs(3600));
+
+        assert_eq!(cleaner.cleanup_abandoned().unwrap(), 1);
+        assert!(
+            !debris.exists(),
+            "the age gate must not turn a leak into permanent debris"
+        );
+    }
+
+    #[test]
+    fn the_age_gate_is_what_decides_the_lockless_case() {
+        let temp = tempfile::tempdir().unwrap();
+        let cleaner = StagingRoot::new(temp.path(), 1).unwrap();
+        let young = temp.path().join("staging").join("young-0-1");
+        std::fs::create_dir_all(&young).unwrap();
+
+        // Same directory, same run: preserved under a real threshold, taken
+        // when the threshold is zero. Nothing else distinguishes the two.
+        assert_eq!(
+            cleaner
+                .cleanup_abandoned_older_than(Duration::from_secs(60))
+                .unwrap(),
+            0
+        );
+        assert!(young.exists());
+        assert_eq!(
+            cleaner
+                .cleanup_abandoned_older_than(Duration::ZERO)
+                .unwrap(),
+            1
+        );
+        assert!(!young.exists());
+    }
+
+    #[test]
+    fn a_held_lock_still_protects_a_live_root_regardless_of_age() {
+        let temp = tempfile::tempdir().unwrap();
+        let cleaner = StagingRoot::new(temp.path(), 1).unwrap();
+        let live = StagingRoot::new(temp.path(), 2).unwrap();
+        std::fs::write(live.path().join("active.o"), b"active").unwrap();
+
+        // Age must never override a held lock: a long-running daemon is old.
+        backdate(live.path(), Duration::from_secs(3600));
+
+        assert_eq!(cleaner.cleanup_abandoned().unwrap(), 0);
+        assert!(live.path().join("active.o").exists());
     }
 }
