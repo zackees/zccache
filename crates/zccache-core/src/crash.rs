@@ -37,6 +37,14 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// How many crash dumps `<cache>/crashes/` keeps (#1165 finding 4).
+///
+/// Dumps were append-forever and only `zccache crashes --clear` removed them,
+/// so a crash *loop* — the case where dumps matter most — filled the disk with
+/// near-identical reports of the same fault. Newest-wins: the oldest dumps are
+/// the least useful ones to keep when the same crash is recurring.
+const CRASH_DUMP_KEEP: usize = 20;
+
 /// Serialises crash-dump filename selection so two near-simultaneous
 /// crashes don't both pick the same `crash-<ts>.txt` and overwrite.
 static DUMP_NAME_LOCK: Mutex<()> = Mutex::new(());
@@ -81,6 +89,15 @@ pub fn install(bin_stem: &'static str) -> CrashGuard {
     // started successfully". A crash that fires before we get here
     // looks "newer than last run" — exactly what we want.
     let _ = write_last_run_marker(bin_stem);
+    // #1165: bound `crashes/` here rather than inside `write_signal_dump`.
+    // That runs in a signal handler, where a directory scan plus a series of
+    // unlinks is exactly the kind of work this module already avoids (it
+    // skips backtraces there for the same async-signal-safety reason).
+    // Pruning at startup bounds the directory just as tightly for the case
+    // that motivates the cap: a crash *loop* restarts the process every
+    // iteration, so every new dump is preceded by a prune. The panic path
+    // prunes at write because it can run many times without a restart.
+    prune_crash_dumps(&super::config::crash_dump_dir(), CRASH_DUMP_KEEP);
 
     CrashGuard { inner: handler }
 }
@@ -340,6 +357,7 @@ fn write_panic_dump(panic_info: &str, backtrace: &str) -> Option<NormalizedPath>
     );
 
     std::fs::write(&path, body).ok()?;
+    prune_crash_dumps(&crash_dir, CRASH_DUMP_KEEP);
     Some(NormalizedPath::from(path))
 }
 
@@ -499,6 +517,58 @@ pub fn list_crash_dumps() -> Vec<NormalizedPath> {
     dumps
 }
 
+/// Drop the oldest dumps until at most `keep` remain (#1165 finding 4).
+///
+/// Enforced at write time rather than on a timer, so the bound holds for the
+/// CLI too — it crashes and exits without ever running maintenance, and a
+/// crash loop is exactly when this matters.
+///
+/// Ordering is by the timestamp embedded in the filename rather than by mtime:
+/// `unique_dump_path` already builds `crash-<unix_ts>-<bin>-<kind>(-<seq>)?`,
+/// and a lexical sort over that prefix is stable even when a restore or copy
+/// rewrites every mtime to the same instant. Files that do not parse sort
+/// first and are reclaimed first — they are debris, not reports.
+///
+/// Each dump's `.reported` marker is removed with it, so a later dump reusing
+/// that name can't inherit a stale "already reported" flag and be silently
+/// skipped by [`check_previous_crashes`].
+fn prune_crash_dumps(crash_dir: &Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(crash_dir) else {
+        return;
+    };
+
+    let mut dumps: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("txt") | Some("dmp")
+            )
+        })
+        .collect();
+    if dumps.len() <= keep {
+        return;
+    }
+
+    dumps.sort_by_key(|path| {
+        let stamp = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_prefix("crash-"))
+            .and_then(|rest| rest.split('-').next())
+            .and_then(|ts| ts.parse::<u64>().ok())
+            .unwrap_or(0);
+        (stamp, path.clone())
+    });
+
+    for path in dumps.iter().take(dumps.len() - keep) {
+        if std::fs::remove_file(path).is_ok() {
+            let _ = std::fs::remove_file(path.with_extension("reported"));
+        }
+    }
+}
+
 /// Delete all crash dump files and their `.reported` markers. Returns
 /// the number of `.txt`/`.dmp` files deleted.
 pub fn clear_crash_dumps() -> usize {
@@ -530,6 +600,106 @@ pub fn clear_crash_dumps() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Write `count` dumps whose embedded timestamps ascend, oldest first.
+    fn seed_dumps(crash_dir: &Path, count: u64) {
+        std::fs::create_dir_all(crash_dir).unwrap();
+        for ts in 1..=count {
+            std::fs::write(crash_dir.join(format!("crash-{ts}-zccache-panic.txt")), "x").unwrap();
+        }
+    }
+
+    fn dump_names(crash_dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(crash_dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// #1165 finding 4: dumps were append-forever, so a crash *loop* — the
+    /// case where they matter most — filled the disk with near-identical
+    /// reports of one fault.
+    #[test]
+    fn pruning_keeps_the_newest_dumps_and_drops_the_oldest() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed_dumps(tmp.path(), 25);
+
+        prune_crash_dumps(tmp.path(), 20);
+
+        let names = dump_names(tmp.path());
+        assert_eq!(names.len(), 20, "the cap must be enforced");
+        assert!(
+            !names.contains(&"crash-1-zccache-panic.txt".to_string()),
+            "the oldest dump must be the first reclaimed"
+        );
+        assert!(
+            names.contains(&"crash-25-zccache-panic.txt".to_string()),
+            "the newest dump must survive — it is the one describing the current fault"
+        );
+    }
+
+    /// A dump's `.reported` marker must die with it. Leaving one behind lets a
+    /// later dump that reuses the name inherit a stale "already reported" flag
+    /// and be silently skipped by `check_previous_crashes`.
+    #[test]
+    fn pruning_removes_the_reported_marker_beside_each_dump() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed_dumps(tmp.path(), 3);
+        for ts in 1..=3 {
+            std::fs::write(
+                tmp.path()
+                    .join(format!("crash-{ts}-zccache-panic.reported")),
+                "",
+            )
+            .unwrap();
+        }
+
+        prune_crash_dumps(tmp.path(), 1);
+
+        let names = dump_names(tmp.path());
+        assert_eq!(
+            names,
+            vec![
+                "crash-3-zccache-panic.reported".to_string(),
+                "crash-3-zccache-panic.txt".to_string(),
+            ],
+            "only the surviving dump and its own marker may remain"
+        );
+    }
+
+    /// Ordering comes from the filename timestamp, not mtime: a restore or a
+    /// copy can rewrite every mtime to the same instant, and the cap must
+    /// still reclaim the genuinely oldest reports.
+    #[test]
+    fn pruning_orders_by_embedded_timestamp_not_mtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Written newest-first, so creation order is the reverse of age.
+        for ts in [30u64, 20, 10] {
+            std::fs::write(
+                tmp.path().join(format!("crash-{ts}-zccache-panic.txt")),
+                "x",
+            )
+            .unwrap();
+        }
+
+        prune_crash_dumps(tmp.path(), 1);
+
+        assert_eq!(dump_names(tmp.path()), vec!["crash-30-zccache-panic.txt"]);
+    }
+
+    /// Under the cap, pruning must not touch anything.
+    #[test]
+    fn pruning_under_the_cap_is_a_no_op() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed_dumps(tmp.path(), 3);
+
+        prune_crash_dumps(tmp.path(), 20);
+
+        assert_eq!(dump_names(tmp.path()).len(), 3);
+    }
 
     /// `unique_dump_path` derives its components from globals
     /// (`BIN_STEM`, the configured crash dir). We exercise the path
