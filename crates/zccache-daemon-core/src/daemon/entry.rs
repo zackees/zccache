@@ -474,6 +474,22 @@ fn run_server(args: Args) {
                         expected_version,
                         "depgraph version mismatch — starting with empty graph"
                     );
+                    // #1157: a schema bump silently costs every workspace a
+                    // full cold recompile. A `tracing::warn!` goes to whatever
+                    // the operator happened to be capturing, so fleet-wide
+                    // "everyone recompiled today" incidents were unattributable
+                    // after the fact. The durable event is what makes them
+                    // diagnosable -- same reasoning as the spawn/death events
+                    // this log already carries.
+                    crate::daemon::lifecycle::write_event(
+                        crate::daemon::lifecycle::EVENT_VERSION_MISMATCH,
+                        serde_json::json!({
+                            "subsystem": "depgraph",
+                            "file_version": file_version,
+                            "expected_version": expected_version,
+                            "consequence": "empty_graph",
+                        }),
+                    );
                     if let Some(ref w) = warning {
                         eprintln!("{w}");
                     }
@@ -684,6 +700,59 @@ fn init_tokio_console_tracing(filter: tracing_subscriber::EnvFilter, bind: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // #1157: the durable record of a depgraph schema bump.
+    //
+    // Scope, stated plainly: this pins the *payload contract* — the event
+    // name and the fields an operator greps for — by writing the same shape
+    // through the same API into a temp cache root. It does not drive the
+    // call site, because that arm lives inside a `spawn_blocking` closure in
+    // `run_daemon` and reaching it needs a live daemon plus a version-skewed
+    // depgraph file on disk, which is integration scope. The value here is
+    // that a future edit cannot silently rename a field or drop the event
+    // from the catalog.
+    #[test]
+    fn depgraph_version_mismatch_event_is_greppable_and_catalogued() {
+        use crate::core::lifecycle as core_lifecycle;
+        use crate::daemon::lifecycle;
+
+        assert!(
+            core_lifecycle::EVENT_ALL.contains(&lifecycle::EVENT_VERSION_MISMATCH),
+            "log-audit tooling and operator docs key on the catalog; an event \
+             outside it is invisible to them"
+        );
+
+        let temp = tempfile::tempdir().unwrap();
+        core_lifecycle::write_event_in_cache_root(
+            temp.path(),
+            lifecycle::EVENT_VERSION_MISMATCH,
+            serde_json::json!({
+                "subsystem": "depgraph",
+                "file_version": 3u32,
+                "expected_version": 4u32,
+                "consequence": "empty_graph",
+            }),
+        );
+
+        let log_path = temp
+            .path()
+            .join("logs")
+            .join(core_lifecycle::live_log_filename());
+        let body = std::fs::read_to_string(&log_path)
+            .expect("the event must land in <cache_root>/logs/<live log>");
+        let record = body
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|v| v["event"] == lifecycle::EVENT_VERSION_MISMATCH)
+            .expect("the version-mismatch event must be written to the lifecycle log");
+
+        // `subsystem` is what separates a depgraph schema bump from the
+        // daemon-version mismatch that already used this event name.
+        assert_eq!(record["subsystem"], "depgraph");
+        assert_eq!(record["file_version"], 3);
+        assert_eq!(record["expected_version"], 4);
+        assert_eq!(record["consequence"], "empty_graph");
+    }
 
     // #997: the daemon arg parser is now library-testable. Before the
     // extraction this lived in a bin and could not be unit-tested.
