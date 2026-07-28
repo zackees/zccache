@@ -180,8 +180,28 @@ impl ArtifactStore {
                 Err(e) => {
                     tracing::warn!(
                         path = %path.display(),
+                        bytes = bytes.len(),
                         "artifact index blob is corrupt, starting empty: {e}"
                     );
+                    // #1157: dropping the index re-misses every key while the
+                    // content-addressed payloads are still on disk, so the
+                    // symptom is a full cold recompile with no local cause.
+                    // The durable event is what ties that back to this file.
+                    // Written into the cache root that owns the index, so the
+                    // record lands beside the state it describes.
+                    if let Some(cache_root) = path.parent() {
+                        zccache_core::lifecycle::write_event_in_cache_root(
+                            cache_root,
+                            zccache_core::lifecycle::EVENT_STATE_CORRUPT,
+                            serde_json::json!({
+                                "subsystem": "artifact_index",
+                                "path": path.display().to_string(),
+                                "bytes": bytes.len(),
+                                "message": e.to_string(),
+                                "consequence": "empty_index",
+                            }),
+                        );
+                    }
                 }
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -490,6 +510,40 @@ mod tests {
         std::fs::write(&path, b"not valid bincode").unwrap();
         let store = ArtifactStore::open(&path).unwrap();
         assert_eq!(store.len(), 0);
+    }
+
+    /// #1157: starting empty on a corrupt index re-misses every key while the
+    /// content-addressed payloads are still on disk, so the operator sees a
+    /// full cold recompile with no local cause. A `tracing::warn!` goes
+    /// wherever the operator happened to be capturing; the durable event is
+    /// what makes the incident attributable afterwards.
+    #[test]
+    fn a_corrupt_index_records_a_durable_event_beside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.bin");
+        std::fs::write(&path, b"not valid bincode").unwrap();
+
+        let store = ArtifactStore::open(&path).unwrap();
+        assert_eq!(store.len(), 0, "a corrupt blob still starts empty");
+
+        let log_path = dir
+            .path()
+            .join("logs")
+            .join(zccache_core::lifecycle::live_log_filename());
+        let body = std::fs::read_to_string(&log_path)
+            .expect("the event must land in <cache_root>/logs/<live log>");
+        let corrupt = body
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|v| v["event"] == zccache_core::lifecycle::EVENT_STATE_CORRUPT)
+            .expect("corruption must leave a durable record, not just a warn");
+        assert_eq!(corrupt["subsystem"], "artifact_index");
+        assert_eq!(corrupt["consequence"], "empty_index");
+        assert_eq!(
+            corrupt["bytes"],
+            b"not valid bincode".len(),
+            "the record must say how much unreadable state was dropped"
+        );
     }
 
     #[test]

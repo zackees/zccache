@@ -498,6 +498,19 @@ fn run_server(args: Args) {
                 crate::depgraph::DepGraphLoadOutcome::Corrupt { ref message }
                 | crate::depgraph::DepGraphLoadOutcome::IoError { ref message } => {
                     tracing::warn!("depgraph load failed: {message} — starting with empty graph");
+                    // #1157: the sibling `VersionMismatch` arm already emits a
+                    // durable event, and this arm has the same blast radius —
+                    // an empty graph means every workspace cold-recompiles.
+                    // Leaving it on `tracing::warn!` alone made the corrupt
+                    // case the one variant a post-incident log search missed.
+                    crate::daemon::lifecycle::write_event(
+                        crate::core::lifecycle::EVENT_STATE_CORRUPT,
+                        serde_json::json!({
+                            "subsystem": "depgraph",
+                            "message": message,
+                            "consequence": "empty_graph",
+                        }),
+                    );
                     if let Some(ref w) = warning {
                         eprintln!("{w}");
                     }
