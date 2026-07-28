@@ -486,6 +486,75 @@ where
     }
 }
 
+/// Last-resort persistence for a service dropped without `shutdown()`.
+///
+/// Persistence otherwise lives only in the explicit `flush()` / `shutdown()`
+/// paths, so a host error, early return, or panic-unwind that drops the handle
+/// discarded the index, depgraph and metadata outright — the same end state as
+/// SIGKILL, on the primary embedded compile path (#1162 finding 3).
+///
+/// This is deliberately *not* a graceful shutdown. It skips the coordination
+/// `flush_embedded_state` does — draining pending writes, taking the
+/// publication guard — because both are async and `Drop` cannot await. What it
+/// can do is call the persistence primitives, which are all synchronous, and
+/// that is enough to turn total loss into a checkpoint.
+///
+/// Loaded-gates are honoured for the same reason `run()` honours them: writing
+/// a partially loaded snapshot over a good on-disk one would trade this bug for
+/// a worse one.
+fn drop_time_checkpoint(state: &SharedState) {
+    let mut persisted = Vec::new();
+
+    if state.artifact_store.flush().is_ok() {
+        persisted.push("index");
+    }
+
+    let depgraph_path = depgraph_file_path_for_cache_dir(&state.cache_dir);
+    if let Some(parent) = depgraph_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    if crate::depgraph::save_to_file(&state.dep_graph.load_full(), &depgraph_path).is_ok() {
+        persisted.push("depgraph");
+    }
+
+    if state.metadata_cache_loaded.load(Ordering::Acquire)
+        && state
+            .cache_system
+            .metadata()
+            .save_to_disk(state.metadata_path.as_path())
+            .is_ok()
+    {
+        persisted.push("metadata");
+    }
+
+    // Loud, per the "no silent degradation" rule: reaching here at all means a
+    // host dropped the service without shutting it down, which is a bug in the
+    // host worth surfacing even though we recovered the state.
+    crate::core::lifecycle::write_event_in_cache_root(
+        state.cache_dir.as_path(),
+        "embedded_dropped_without_shutdown",
+        serde_json::json!({
+            "persisted": persisted,
+            "pid": std::process::id(),
+        }),
+    );
+    tracing::warn!(
+        persisted = ?persisted,
+        "embedded service dropped without shutdown(); persisted a best-effort checkpoint"
+    );
+}
+
+impl Drop for EmbeddedDaemon {
+    fn drop(&mut self) {
+        // `shutdown()` latches this before its final flush, so the graceful
+        // path skips the checkpoint instead of writing everything twice.
+        if self.state.shutdown_requested.load(Ordering::Acquire) {
+            return;
+        }
+        drop_time_checkpoint(&self.state);
+    }
+}
+
 async fn flush_embedded_state(
     state: &Arc<SharedState>,
     index_writer_handle: &mut Option<tokio::task::JoinHandle<()>>,

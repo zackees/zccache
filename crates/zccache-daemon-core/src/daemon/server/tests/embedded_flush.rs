@@ -228,6 +228,83 @@ async fn publisher_queued_behind_shutdown_writer_rechecks_latched_flag() {
     let _ = daemon.shutdown().await;
 }
 
+/// #1162 finding 3: persistence used to live only in the explicit
+/// `flush()`/`shutdown()` paths, so a host error, early return, or
+/// panic-unwind that dropped the handle discarded the index outright — the
+/// same end state as SIGKILL, on the primary embedded compile path.
+///
+/// Dropping without `shutdown()` must still leave a checkpoint on disk.
+#[tokio::test]
+async fn dropping_without_shutdown_still_checkpoints_the_index() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_dir = crate::core::NormalizedPath::new(tmp.path());
+    let index_path = crate::core::config::index_path_from_cache_dir(&cache_dir);
+    let expected = 12usize;
+
+    {
+        let daemon = EmbeddedDaemon::start(
+            crate::ipc::unique_test_endpoint(),
+            cache_dir.clone(),
+            None,
+            MaintenancePolicy::default(),
+        )
+        .await
+        .unwrap();
+
+        for i in 0..expected {
+            daemon
+                .state
+                .artifact_store
+                .insert(&format!("{i:064x}"), &synthetic_index_entry(i as u64 + 1));
+        }
+        assert_eq!(daemon.state.artifact_store.len(), expected);
+
+        // The whole point: no `shutdown()`, no `flush()` — just drop it, the
+        // way a `?` on an error path in the host would.
+    }
+
+    let reopened = crate::artifact::ArtifactStore::open(index_path.as_path())
+        .expect("drop must leave a readable index behind");
+    assert_eq!(
+        reopened.len(),
+        expected,
+        "dropping the service without shutdown() must still checkpoint the index"
+    );
+}
+
+/// The graceful path must not pay for the backstop: `shutdown()` latches
+/// `shutdown_requested` before its final flush, so the drop-time checkpoint
+/// skips rather than writing everything a second time.
+#[tokio::test]
+async fn shutdown_suppresses_the_drop_time_checkpoint() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_dir = crate::core::NormalizedPath::new(tmp.path());
+    let daemon = EmbeddedDaemon::start(
+        crate::ipc::unique_test_endpoint(),
+        cache_dir.clone(),
+        None,
+        MaintenancePolicy::default(),
+    )
+    .await
+    .unwrap();
+    daemon
+        .state
+        .artifact_store
+        .insert(&format!("{:064x}", 1), &synthetic_index_entry(1));
+
+    let _ = daemon.shutdown().await;
+    let state = Arc::clone(&daemon.state);
+    drop(daemon);
+
+    assert!(
+        state.shutdown_requested.load(Ordering::Acquire),
+        "shutdown must latch the flag the drop-time checkpoint gates on"
+    );
+    let index_path = crate::core::config::index_path_from_cache_dir(&cache_dir);
+    let reopened = crate::artifact::ArtifactStore::open(index_path.as_path()).unwrap();
+    assert_eq!(reopened.len(), 1, "the graceful flush must still be intact");
+}
+
 fn synthetic_index_entry(total_size: u64) -> crate::artifact::ArtifactIndex {
     crate::artifact::ArtifactIndex::new(
         vec!["foo.o".to_string()],
