@@ -505,16 +505,31 @@ where
 fn drop_time_checkpoint(state: &SharedState) {
     let mut persisted = Vec::new();
 
-    if state.artifact_store.flush().is_ok() {
+    // Every write below is gated on its own loaded-flag, not just metadata's.
+    // `ArtifactStore::flush` serializes the *whole* in-memory map over
+    // `index.bin`, so flushing a store whose on-disk entries have not been
+    // merged in yet would replace a populated index with an empty one — total
+    // cache loss, strictly worse than the unshut-drop this function exists to
+    // survive. The same argument applies to the depgraph snapshot.
+    //
+    // Today `start()` awaits all five loads before the handle exists, so these
+    // flags are always true here. They are checked anyway because that is a
+    // *non-local* invariant: `new_shared_state` already opens the index empty
+    // and merges it in the background (#784 phase 2d), and the moment that
+    // treatment reaches the embedded path an ungated flush here would silently
+    // destroy the accumulated index. Cheap gate, unbounded downside.
+    if state.artifact_store_loaded.load(Ordering::Acquire) && state.artifact_store.flush().is_ok() {
         persisted.push("index");
     }
 
-    let depgraph_path = depgraph_file_path_for_cache_dir(&state.cache_dir);
-    if let Some(parent) = depgraph_path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    if crate::depgraph::save_to_file(&state.dep_graph.load_full(), &depgraph_path).is_ok() {
-        persisted.push("depgraph");
+    if state.dep_graph_load_complete.load(Ordering::Acquire) {
+        let depgraph_path = depgraph_file_path_for_cache_dir(&state.cache_dir);
+        if let Some(parent) = depgraph_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        if crate::depgraph::save_to_file(&state.dep_graph.load_full(), &depgraph_path).is_ok() {
+            persisted.push("depgraph");
+        }
     }
 
     if state.metadata_cache_loaded.load(Ordering::Acquire)
@@ -532,7 +547,7 @@ fn drop_time_checkpoint(state: &SharedState) {
     // host worth surfacing even though we recovered the state.
     crate::core::lifecycle::write_event_in_cache_root(
         state.cache_dir.as_path(),
-        "embedded_dropped_without_shutdown",
+        crate::core::lifecycle::EVENT_EMBEDDED_DROPPED_WITHOUT_SHUTDOWN,
         serde_json::json!({
             "persisted": persisted,
             "pid": std::process::id(),

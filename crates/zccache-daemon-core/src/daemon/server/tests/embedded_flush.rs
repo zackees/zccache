@@ -272,6 +272,89 @@ async fn dropping_without_shutdown_still_checkpoints_the_index() {
     );
 }
 
+/// The drop-time checkpoint must never publish a snapshot it has not finished
+/// loading.
+///
+/// `ArtifactStore::flush` serializes the *entire* in-memory map over
+/// `index.bin`. If the on-disk entries have not been merged in yet, flushing
+/// replaces a populated index with an empty one — total cache loss, strictly
+/// worse than the unshut drop the checkpoint exists to survive.
+///
+/// `start()` currently awaits every load, so the production path cannot reach
+/// this state and no other test can either; that is exactly why the guard
+/// needs its own test. The invariant it protects is non-local — the standalone
+/// path already opens the index empty and merges it in the background (#784
+/// phase 2d), so the day that reaches the embedded service, an ungated flush
+/// here would silently destroy the accumulated index.
+#[tokio::test]
+async fn an_unloaded_checkpoint_leaves_on_disk_state_untouched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_dir = crate::core::NormalizedPath::new(tmp.path());
+    let index_path = crate::core::config::index_path_from_cache_dir(&cache_dir);
+    let survivors = 7usize;
+
+    // A populated index from a previous, healthy run.
+    {
+        let daemon = EmbeddedDaemon::start(
+            crate::ipc::unique_test_endpoint(),
+            cache_dir.clone(),
+            None,
+            MaintenancePolicy::default(),
+        )
+        .await
+        .unwrap();
+        for i in 0..survivors {
+            daemon
+                .state
+                .artifact_store
+                .insert(&format!("{i:064x}"), &synthetic_index_entry(i as u64 + 1));
+        }
+        let _ = daemon.shutdown().await;
+    }
+    assert_eq!(
+        crate::artifact::ArtifactStore::open(index_path.as_path())
+            .expect("seeded index")
+            .len(),
+        survivors
+    );
+
+    // A service whose loads have not landed: its in-memory store is empty and
+    // must not be published over the good on-disk one.
+    {
+        let daemon = EmbeddedDaemon::start(
+            crate::ipc::unique_test_endpoint(),
+            cache_dir.clone(),
+            None,
+            MaintenancePolicy::default(),
+        )
+        .await
+        .unwrap();
+        daemon
+            .state
+            .artifact_store_loaded
+            .store(false, Ordering::Release);
+        daemon
+            .state
+            .dep_graph_load_complete
+            .store(false, Ordering::Release);
+        daemon
+            .state
+            .metadata_cache_loaded
+            .store(false, Ordering::Release);
+        daemon.state.artifact_store.clear();
+        assert_eq!(daemon.state.artifact_store.len(), 0);
+        // Dropped unshut, so the checkpoint runs — and must decline every write.
+    }
+
+    assert_eq!(
+        crate::artifact::ArtifactStore::open(index_path.as_path())
+            .expect("index must survive an unloaded checkpoint")
+            .len(),
+        survivors,
+        "an unloaded checkpoint must not publish an empty index over a populated one"
+    );
+}
+
 /// The graceful path must not pay for the backstop: `shutdown()` latches
 /// `shutdown_requested` before its final flush, so the drop-time checkpoint
 /// skips rather than writing everything a second time.
