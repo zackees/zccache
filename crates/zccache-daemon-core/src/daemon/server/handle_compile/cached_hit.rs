@@ -407,7 +407,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn target_paths_get_fresh_mtime_through_shared_materializer() {
         let dir = tempfile::tempdir().unwrap();
-        let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+        let server = crate::daemon::server::tests::bind_isolated_server(dir.path());
         let state = server.state.as_ref();
         let cache_dir = state.artifact_dir.clone();
         let source_path: NormalizedPath = dir.path().join("source.cc").into();
@@ -500,7 +500,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn cached_hit_restores_user_depfile_alongside_object() {
         let dir = tempfile::tempdir().unwrap();
-        let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+        let server = crate::daemon::server::tests::bind_isolated_server(dir.path());
         let state = server.state.as_ref();
         let cache_dir = state.artifact_dir.clone();
 
@@ -621,7 +621,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn cached_hit_object_only_artifact_ignores_depfile_dest() {
         let dir = tempfile::tempdir().unwrap();
-        let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+        let server = crate::daemon::server::tests::bind_isolated_server(dir.path());
         let state = server.state.as_ref();
         let cache_dir = state.artifact_dir.clone();
 
@@ -702,7 +702,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn warm_hit_materialization_under_budget() {
         let dir = tempfile::tempdir().unwrap();
-        let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+        let server = crate::daemon::server::tests::bind_isolated_server(dir.path());
         let state = server.state.as_ref();
         let cache_dir = state.artifact_dir.clone();
         let source_path: NormalizedPath = dir.path().join("source.cc").into();
