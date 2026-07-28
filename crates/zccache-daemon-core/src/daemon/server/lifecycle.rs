@@ -14,10 +14,16 @@ impl DaemonServer {
     /// Create a new daemon server bound to the given endpoint, using the
     /// configured cache directory (resolved via [`crate::core::config::default_cache_dir`]).
     ///
-    /// Production callers should use this. Tests that need to isolate their
-    /// cache directory must use [`Self::bind_with_cache_dir`] instead — this
-    /// reads `ZCCACHE_CACHE_DIR` from a process-global env, which races when
-    /// multiple tests run in parallel.
+    /// Production callers should use this. Tests must not, unless they hold
+    /// `tests::CacheDirEnvGuard` for the whole call: this resolves the root
+    /// from the process-global `ZCCACHE_CACHE_DIR`, so an unguarded test
+    /// reads whatever root a *concurrently running* guarded test installed,
+    /// and the two daemons then contend for one cache root (#1254, #1261).
+    ///
+    /// The guard serializes its holders on a mutex, so guarded callers are
+    /// safe. Everything else should bind an isolated root via
+    /// `tests::bind_isolated_server`, which needs no global state at all and
+    /// therefore cannot participate in the race.
     pub fn bind(endpoint: &str) -> Result<Self, crate::ipc::IpcError> {
         Self::bind_with_cache_dir(endpoint, &crate::core::config::default_cache_dir())
     }
@@ -31,9 +37,9 @@ impl DaemonServer {
     ) -> Result<Self, crate::ipc::IpcError> {
         let listener = IpcListener::bind(endpoint)?;
         let backend_identity = crate::ipc::current_backend_identity(endpoint)
-            .map_err(|err| crate::ipc::IpcError::Endpoint(err.to_string()))?;
+            .map_err(|err| daemon_identity_error(endpoint, &err))?;
         let (state, index_writer_rx) = new_shared_state(endpoint, cache_dir, backend_identity)
-            .map_err(|error| crate::ipc::IpcError::Endpoint(error.to_string()))?;
+            .map_err(|error| cache_root_error(cache_dir, &error))?;
 
         Ok(Self {
             listener,
@@ -52,6 +58,36 @@ impl DaemonServer {
     pub(crate) fn depgraph_file_path(&self) -> crate::core::NormalizedPath {
         depgraph_file_path_for_cache_dir(&self.state.cache_dir)
     }
+}
+
+/// Report a cache-root preparation failure as the filesystem fault it is.
+///
+/// Preparing the cache root is a filesystem operation, not an endpoint one.
+/// Both bind paths used to flatten `new_shared_state`'s `io::Error` into
+/// `IpcError::Endpoint(String)`, so a cache-root collision surfaced as
+/// "endpoint error: Cannot create a file when that file already exists" —
+/// which reads as a named-pipe fault and sent the #1259 diagnosis down the
+/// wrong path entirely (#1261). Preserve the `ErrorKind` so callers can still
+/// match on it, and name the offending root so the log explains itself.
+pub(super) fn cache_root_error(
+    cache_dir: &crate::core::NormalizedPath,
+    error: &std::io::Error,
+) -> crate::ipc::IpcError {
+    crate::ipc::IpcError::Io(std::io::Error::new(
+        error.kind(),
+        format!(
+            "cache root {} unusable: {error}",
+            cache_dir.as_path().display()
+        ),
+    ))
+}
+
+/// Report a daemon-identity failure with the endpoint it was resolved for.
+pub(super) fn daemon_identity_error(
+    endpoint: &str,
+    error: &running_process::broker::protocol_v2::backend_handle::IdentityError,
+) -> crate::ipc::IpcError {
+    crate::ipc::IpcError::Endpoint(format!("daemon identity for {endpoint}: {error}"))
 }
 
 /// Return the dependency-graph snapshot path for one daemon cache root.
@@ -423,6 +459,42 @@ impl DaemonServer {
 mod tests {
     use super::*;
 
+    /// #1261: a cache root the daemon cannot prepare must report itself as a
+    /// filesystem fault naming the root, not as an opaque endpoint error.
+    ///
+    /// The old mapping flattened `new_shared_state`'s `io::Error` into
+    /// `IpcError::Endpoint(String)`, so a cache-root collision surfaced as
+    /// "endpoint error: Cannot create a file when that file already exists"
+    /// — which reads as a named-pipe fault and sent the #1259 diagnosis down
+    /// the wrong path entirely. Binding onto a *file* is the portable way to
+    /// make root preparation fail on every platform.
+    #[tokio::test]
+    async fn unusable_cache_root_reports_a_filesystem_error_naming_the_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let not_a_dir = tmp.path().join("cache-root-is-a-file");
+        std::fs::write(&not_a_dir, b"occupied").unwrap();
+
+        // `DaemonServer` is not `Debug`, so `expect_err` is unavailable here.
+        let Err(error) = DaemonServer::bind_with_cache_dir(
+            &crate::ipc::unique_test_endpoint(),
+            &not_a_dir.clone().into(),
+        ) else {
+            panic!("a cache root that is a regular file must not bind");
+        };
+
+        assert!(
+            matches!(error, crate::ipc::IpcError::Io(_)),
+            "cache-root preparation failure must not masquerade as an endpoint \
+             error; got {error:?}"
+        );
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains(&not_a_dir.display().to_string()),
+            "the error must name the offending cache root so the log is \
+             self-explanatory; got {rendered}"
+        );
+    }
+
     fn make_ctx(source: &str) -> crate::depgraph::CompileContext {
         crate::depgraph::CompileContext {
             source_file: source.into(),
@@ -455,7 +527,8 @@ mod tests {
 
     #[tokio::test]
     async fn depgraph_load_gate_waits_until_loaded_graph_is_visible() {
-        let server = DaemonServer::bind(&crate::ipc::unique_test_endpoint()).unwrap();
+        let cache_root = tempfile::tempdir().unwrap();
+        let server = crate::daemon::server::tests::bind_isolated_server(cache_root.path());
         let state = Arc::clone(&server.state);
         let setter = server.dep_graph_setter();
 
