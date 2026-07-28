@@ -172,8 +172,15 @@ impl Drop for StagingRoot {
 /// Contention is a misconfiguration worth surfacing, not papering over, so
 /// acquisition is `try_lock` and a loser refuses to start rather than silently
 /// coexisting.
+/// Release is explicit rather than `Drop`-driven because `Arc<SharedState>`
+/// outlives daemon shutdown: background holders (index writer, maintenance,
+/// loaders) keep clones alive after the server task has joined. Waiting for the
+/// last `Arc` would hold the root long past the point where the daemon stopped
+/// writing, and a sequential restart on the same root — which is legitimate,
+/// and which the integration suite does — would be refused. `Drop` remains as
+/// the crash backstop.
 pub(super) struct CacheRootWriterLock {
-    lock: Option<std::fs::File>,
+    lock: std::sync::Mutex<Option<std::fs::File>>,
 }
 
 impl CacheRootWriterLock {
@@ -216,15 +223,31 @@ impl CacheRootWriterLock {
         // itself is what enforces exclusion, so a failed write is not fatal.
         let _ = file.set_len(0);
         let _ = writeln!(file, "{}", std::process::id());
-        Ok(Self { lock: Some(file) })
+        Ok(Self {
+            lock: std::sync::Mutex::new(Some(file)),
+        })
+    }
+
+    /// Give up the claim, so the next daemon on this root can take it.
+    ///
+    /// Call this once the daemon has finished its shutdown persistence — that
+    /// is the moment it stops writing, which is what the claim actually
+    /// guards. Idempotent, so the `Drop` backstop after an explicit release is
+    /// a no-op.
+    pub(super) fn release(&self) {
+        let mut guard = self
+            .lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(file) = guard.take() {
+            let _ = fs2::FileExt::unlock(&file);
+        }
     }
 }
 
 impl Drop for CacheRootWriterLock {
     fn drop(&mut self) {
-        if let Some(lock) = self.lock.take() {
-            let _ = fs2::FileExt::unlock(&lock);
-        }
+        self.release();
     }
 }
 
@@ -328,11 +351,10 @@ pub(super) struct SharedState {
     pub(super) artifact_dir: NormalizedPath,
     /// Private compiler/linker outputs, isolated from cache clear/eviction.
     pub(super) staging: StagingRoot,
-    /// Exclusive writer claim on this cache root, held for the lifetime of the
-    /// state so a second writer cannot clobber our flushes (#1162). Named with
-    /// a leading underscore because it is never read — holding it *is* the
-    /// effect, and dropping it releases the root.
-    pub(super) _cache_root_lock: CacheRootWriterLock,
+    /// Exclusive writer claim on this cache root, so a second writer cannot
+    /// clobber our flushes (#1162). Released explicitly once the shutdown
+    /// drain has persisted everything; see [`CacheRootWriterLock::release`].
+    pub(super) cache_root_lock: CacheRootWriterLock,
     /// On-disk path for the persisted [`MetadataCache`] snapshot.
     ///
     /// Written on flush (`Clear`) and shutdown (`Shutdown`); read at
@@ -639,6 +661,39 @@ mod staging_tests {
         );
 
         drop(first);
+    }
+
+    /// A sequential restart must be able to reclaim the root *while the old
+    /// state is still alive*.
+    ///
+    /// The first cut of this released only on `Drop`, which looked fine in
+    /// unit tests and then failed five daemon-restart integration tests:
+    /// background holders keep `Arc<SharedState>` alive after the server task
+    /// has joined, so the old claim outlived the daemon that owned it and the
+    /// restart was refused with `WouldBlock`. Release is therefore explicit,
+    /// at the end of the shutdown drain, and this test holds `first` across
+    /// the reacquire to prove it does not depend on the drop.
+    #[test]
+    fn an_explicitly_released_root_is_reclaimable_while_the_old_lock_is_alive() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = CacheRootWriterLock::acquire(temp.path()).unwrap();
+
+        first.release();
+
+        let _second = CacheRootWriterLock::acquire(temp.path())
+            .expect("a released root must be reclaimable by the next daemon");
+
+        // Held deliberately: the point is that release, not drop, freed it.
+        drop(first);
+    }
+
+    /// Release runs again from `Drop`, so it must tolerate being called twice.
+    #[test]
+    fn releasing_twice_is_harmless() {
+        let temp = tempfile::tempdir().unwrap();
+        let lock = CacheRootWriterLock::acquire(temp.path()).unwrap();
+        lock.release();
+        lock.release();
     }
 
     /// The claim must be released on drop, or a daemon restart would be locked

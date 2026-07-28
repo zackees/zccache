@@ -352,6 +352,10 @@ impl EmbeddedDaemon {
         let mut report = flush_embedded_state(&self.state, &mut index_writer_handle, true).await;
         report.steps.insert(0, maintenance_step);
         let _ = std::fs::remove_dir_all(&self.state.depfile_tmpdir);
+        // #1162: the final flush is done, so this service has stopped writing
+        // and the root is free for the next writer. Only on `shutdown` — a
+        // plain `flush` keeps serving and must keep its claim.
+        self.state.cache_root_lock.release();
         report
     }
 

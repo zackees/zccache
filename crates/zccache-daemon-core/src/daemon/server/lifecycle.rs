@@ -249,7 +249,7 @@ pub(super) fn new_shared_state(
             profiler: PhaseProfiler::new(),
             artifact_dir,
             staging: StagingRoot::new(cache_dir.as_path(), instance)?,
-            _cache_root_lock: cache_root_lock,
+            cache_root_lock,
             metadata_path,
             compiler_hash_cache_path,
             depfile_tmpdir: {
