@@ -85,6 +85,8 @@ pub(super) fn sample_daemon_status() -> DaemonStatus {
         dep_graph_version: 20,
         dep_graph_disk_size: 21,
         dep_graph_persisted: true,
+        watcher_active: true,
+        watcher_degradations: 22,
     }
 }
 
@@ -102,7 +104,10 @@ pub(super) fn sample_artifact() -> ArtifactData {
 
 // Compile-time check: PROTOCOL_VERSION must be positive.
 const _: () = assert!(super::super::PROTOCOL_VERSION > 0);
-// Compile-time check: PROTOCOL_VERSION == 20 after `Response::CompileProgress`
+// Compile-time check: PROTOCOL_VERSION == 21 after `DaemonStatus` gained
+// `watcher_active` / `watcher_degradations` (issue #1156: watcher degradation
+// must be visible in status, not only in startup logs). v20 was the pin after
+// `Response::CompileProgress`
 // was appended (issue #1216: interim compile queue heartbeats). v18 was the pin
 // after staged-output telemetry was added.
 // v17 added ExecProbe/ExecStore (issue #838 slice 1) for caller-owned tool caching (e.g. the
@@ -118,4 +123,4 @@ const _: () = assert!(super::super::PROTOCOL_VERSION > 0);
 // pin after SessionStats gained `phase_profile`. v8 was the pin after
 // Compile/CompileEphemeral gained `stdin` and ArtifactPayload replaced
 // ArtifactOutput.data: Arc<Vec<u8>> (issue #296 Option B).
-const _FINGERPRINT_VERSION: () = assert!(super::super::PROTOCOL_VERSION == 20);
+const _FINGERPRINT_VERSION: () = assert!(super::super::PROTOCOL_VERSION == 21);

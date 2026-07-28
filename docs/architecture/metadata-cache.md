@@ -84,6 +84,17 @@ Three layers, from fast to slow:
 - Events are sent from the watcher thread to the daemon's tokio runtime via a `tokio::sync::mpsc::channel`.
 - Fallback: if the native watcher fails to initialize (e.g., inotify watch limit exhausted), fall back to `notify::PollWatcher` with a 2-second interval.
 
+### Degradation and Re-arm (issue #1156)
+
+Arming can still fail outright — inotify `max_user_watches` exhaustion on a large tree is common and usually transient. A watcher-less daemon is a performance cliff, not a correctness problem: both fast hit tiers bail on `watcher_active == false`, and `verify_registered_blob` fully re-hashes every shared hardlink blob on every read. Left unhandled, one failed init at startup degrades the daemon for its entire lifetime.
+
+`daemon/server/run.rs` therefore treats a failed arm as temporary:
+
+- **Loud degradation.** `record_watcher_degradation` emits a `tracing::warn!`, writes a durable `watcher_degraded` lifecycle event, and bumps a monotonic counter surfaced as `Watcher:` in `zccache status` (`DaemonStatus::watcher_active` / `watcher_degradations`, protocol v21). Degradation is visible without trawling startup logs.
+- **Bounded re-arm.** A background task retries `arm_watcher_pipeline` starting at 60 s with exponential backoff capped at 600 s, until it succeeds or the daemon shuts down. Success flips `watcher_active` / `WATCHER_AVAILABLE` back on, starts the settle + consumer tasks, and writes a `watcher_rearmed` event. The retry is cheap enough to be always-on, so no config knob is exposed.
+
+The degradation counter is deliberately *not* reset on recovery: `active (recovered from N degradation(s))` in status is the post-hoc signal that the host is near its watch limit.
+
 ### Event Processing
 
 A dedicated tokio task receives events from the channel and processes them:
@@ -121,6 +132,13 @@ When the OS event queue overflows (inotify queue full, FSEvents `kFSEventStreamE
 2. **Log a warning** indicating watcher overflow.
 3. **Re-register watches** if the watcher was in a recoverable state.
 4. Subsequent lookups will stat-verify every file — expensive but correct.
+
+**Scoped hardlink-registry recovery (issue #1156).** Overflow means "the event queue saturated", not "every file changed" — the usual triggers are a wide `git checkout` or a burst of parallel build output. Marking the whole hardlink registry suspect turns that momentary burst into a full blake3 re-hash of every shared blob on its next read. Instead, `mark_changed_registered_links_suspect` re-verifies each record against the cheap `(mtime, size)` signature captured when its `expected_hash` was computed:
+
+- **Signature unchanged** → the record stays trusted and skips the re-hash. Writing through any hardlink alias mutates the shared inode, so an unchanged signature on the blob path is positive evidence no alias touched the bytes — the same signal the metadata cache already trusts at `Medium` confidence.
+- **Signature changed, missing, or unstattable** → marked suspect, so the read path still falls back to the full re-hash and rejects/evicts a poisoned blob.
+
+The signature is captured *before* hashing, never after: a stat-after would record the post-change value and could vouch for a torn read. Correctness is unchanged — the cheap check only ever *skips* work where there is evidence the bytes are intact, and never accepts bytes that failed a hash check. The sweep's `links_unchanged` / `links_suspect` split is recorded in a `watcher_overflow` lifecycle event.
 
 ### Scope Management
 

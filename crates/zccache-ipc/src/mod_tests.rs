@@ -112,6 +112,8 @@ fn test_daemon_status(endpoint: &str) -> zccache_protocol::DaemonStatus {
         dep_graph_version: zccache_depgraph::DEPGRAPH_VERSION,
         dep_graph_disk_size: 0,
         dep_graph_persisted: false,
+        watcher_active: true,
+        watcher_degradations: 0,
     }
 }
 

@@ -66,6 +66,9 @@
 //! | `native_flag_host_salted` | daemon | a `native` CPU-selection flag made the compile key host-specific | `compiler_family` |
 //! | `time_macro_noncacheable` | daemon | a C/C++ time macro bypassed the compile cache | `source`, `input`, `macro_name` |
 //! | `system_include_discovery_empty` | daemon | a C/C++ include probe returned no paths, so its compile bypassed the cache | `compiler`, `reason` |
+//! | `watcher_degraded` | daemon | the file watcher could not be armed, disabling both fast hit tiers | `reason`, `degradations` |
+//! | `watcher_rearmed` | daemon | a degraded daemon re-armed its file watcher | `attempt` |
+//! | `watcher_overflow` | daemon | the watcher event queue saturated; hardlink registry re-verified by stat signature | `links_unchanged`, `links_suspect` |
 //!
 //! ## Forensic walkthrough: the two-versions-on-one-pipe wedge
 //!
@@ -163,6 +166,14 @@ pub const EVENT_COW_BLOB_CORRUPTION_DETECTED: &str = "cow_blob_corruption_detect
 pub const EVENT_NATIVE_FLAG_HOST_SALTED: &str = "native_flag_host_salted";
 pub const EVENT_TIME_MACRO_NONCACHEABLE: &str = "time_macro_noncacheable";
 pub const EVENT_SYSTEM_INCLUDE_DISCOVERY_EMPTY: &str = "system_include_discovery_empty";
+/// The daemon is running without a file watcher: both fast hit tiers are
+/// disabled and shared cache blobs are re-hashed on every read.
+pub const EVENT_WATCHER_DEGRADED: &str = "watcher_degraded";
+/// A degraded daemon successfully re-armed its file watcher.
+pub const EVENT_WATCHER_REARMED: &str = "watcher_rearmed";
+/// The watcher event queue saturated; records how much of the hardlink
+/// registry the stat-signature sweep kept trusted versus marked suspect.
+pub const EVENT_WATCHER_OVERFLOW: &str = "watcher_overflow";
 
 /// Complete lifecycle-event catalog. Keep this additive and update the module
 /// schema table with every new event; log-audit and operator docs depend on it.
@@ -197,6 +208,9 @@ pub const EVENT_ALL: &[&str] = &[
     EVENT_NATIVE_FLAG_HOST_SALTED,
     EVENT_TIME_MACRO_NONCACHEABLE,
     EVENT_SYSTEM_INCLUDE_DISCOVERY_EMPTY,
+    EVENT_WATCHER_DEGRADED,
+    EVENT_WATCHER_REARMED,
+    EVENT_WATCHER_OVERFLOW,
     EVENT_LEGACY_ARTIFACT_PATH_ACCESSED,
     EVENT_DESTINATION_WRITE_FAILED,
     EVENT_MISS_REASON_UNKNOWN,

@@ -256,6 +256,8 @@ message DaemonStatus {
   uint32 dep_graph_version = 25;
   uint64 dep_graph_disk_size = 26;
   bool dep_graph_persisted = 27;
+  bool watcher_active = 28;
+  uint64 watcher_degradations = 29;
 }
 
 message PrivateDaemonOwnerStatus {

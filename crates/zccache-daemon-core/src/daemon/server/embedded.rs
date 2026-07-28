@@ -438,6 +438,8 @@ async fn status_snapshot(state: &SharedState) -> crate::protocol::DaemonStatus {
             .map(|m| m.len())
             .unwrap_or(0),
         dep_graph_persisted: state.dep_graph_persisted.load(Ordering::Acquire),
+        watcher_active: state.watcher_active.load(Ordering::Acquire),
+        watcher_degradations: state.watcher_degradations.load(Ordering::Relaxed),
     }
 }
 

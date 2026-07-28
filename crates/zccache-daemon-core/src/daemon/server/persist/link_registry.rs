@@ -6,10 +6,22 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
+/// Cheap change signal for a registered blob: the `(mtime_ns, size)` pair
+/// observed at the moment its `expected_hash` was computed. Writing through
+/// any hardlink alias mutates the shared inode, so a changed signature on the
+/// blob path is evidence that some alias touched the bytes. This is the same
+/// signal the metadata cache already trusts at `Confidence::Medium`; it is
+/// used only to *avoid* work (skip a re-hash), never to accept bytes that
+/// failed a hash check.
+type StatSignature = (i128, u64);
+
 #[derive(Clone, Debug)]
 struct LinkRecord {
     blob_path: NormalizedPath,
     expected_hash: [u8; 32],
+    /// `None` when the stat could not be taken at registration time — such a
+    /// record has no cheap signal and always falls back to a full re-hash.
+    stat_signature: Option<StatSignature>,
     outputs: BTreeSet<NormalizedPath>,
     suspect: bool,
 }
@@ -17,6 +29,14 @@ struct LinkRecord {
 static REGISTRY: OnceLock<dashmap::DashMap<FileId, LinkRecord>> = OnceLock::new();
 static OUTPUT_IDS: OnceLock<dashmap::DashMap<NormalizedPath, FileId>> = OnceLock::new();
 static WATCHER_AVAILABLE: AtomicBool = AtomicBool::new(true);
+
+fn stat_signature(path: &Path) -> Option<StatSignature> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let mtime = filetime::FileTime::from_last_modification_time(&metadata);
+    let mtime_ns =
+        i128::from(mtime.unix_seconds()) * 1_000_000_000 + i128::from(mtime.nanoseconds());
+    Some((mtime_ns, metadata.len()))
+}
 
 fn registry() -> &'static dashmap::DashMap<FileId, LinkRecord> {
     REGISTRY.get_or_init(dashmap::DashMap::new)
@@ -94,6 +114,7 @@ pub(in crate::daemon::server) fn register_trusted_blob_for_test(
         LinkRecord {
             blob_path: blob_path.into(),
             expected_hash: [0; 32],
+            stat_signature: stat_signature(blob_path),
             outputs: BTreeSet::new(),
             suspect: false,
         },
@@ -315,20 +336,29 @@ pub(in crate::daemon::server) fn prepare_hardlink_registration(
                 for stale in &entry.get().outputs {
                     output_ids().remove(stale);
                 }
+                // Stat before hashing: if the bytes change mid-hash the
+                // recorded signature is the pre-change one, so a later
+                // comparison reports "changed" and falls back to the full
+                // re-hash. Stat-after would record the post-change value and
+                // could vouch for a torn read.
+                let stat_signature = stat_signature(blob_path);
                 let expected_hash = hash_file(blob_path)?;
                 entry.insert(LinkRecord {
                     blob_path: blob_path.into(),
                     expected_hash,
+                    stat_signature,
                     outputs: BTreeSet::new(),
                     suspect: false,
                 });
             }
         }
         dashmap::mapref::entry::Entry::Vacant(entry) => {
+            let stat_signature = stat_signature(blob_path);
             let expected_hash = hash_file(blob_path)?;
             entry.insert(LinkRecord {
                 blob_path: blob_path.into(),
                 expected_hash,
+                stat_signature,
                 outputs: BTreeSet::new(),
                 suspect: false,
             });
@@ -447,12 +477,14 @@ pub(in crate::daemon::server) fn verify_registered_blob(blob_path: &Path) -> std
         // digest persisted when the immutable blob was stored. Link count is
         // not evidence: a poisoned alias may have been deleted before restart.
         if let Some(expected_hash) = read_authoritative_blob_digest(blob_path)? {
+            let stat_signature = stat_signature(blob_path);
             if hash_file(blob_path)? == expected_hash {
                 registry().insert(
                     id,
                     LinkRecord {
                         blob_path: blob_path.into(),
                         expected_hash,
+                        stat_signature,
                         outputs: BTreeSet::new(),
                         suspect: false,
                     },
@@ -504,6 +536,7 @@ pub(in crate::daemon::server) fn verify_registered_blob(blob_path: &Path) -> std
     {
         return Ok(());
     }
+    let refreshed_signature = stat_signature(blob_path);
     let actual = hash_file(blob_path)?;
     if actual == record.expected_hash {
         let remove = record.outputs.is_empty();
@@ -512,6 +545,7 @@ pub(in crate::daemon::server) fn verify_registered_blob(blob_path: &Path) -> std
             registry().remove(&id);
         } else if let Some(mut record) = registry().get_mut(&id) {
             record.suspect = false;
+            record.stat_signature = refreshed_signature;
         }
         return Ok(());
     }
@@ -560,6 +594,14 @@ pub(in crate::daemon::server) fn set_registry_watcher_available(available: bool)
     WATCHER_AVAILABLE.store(available, Ordering::Release);
 }
 
+/// Test-only seam: `WATCHER_AVAILABLE` is process-global, so a test that
+/// exercises watcher degradation must restore whatever it observed rather
+/// than assume the static's initial value. See `tests::watcher_lifecycle`.
+#[cfg(test)]
+pub(in crate::daemon::server) fn registry_watcher_available() -> bool {
+    WATCHER_AVAILABLE.load(Ordering::Acquire)
+}
+
 pub(in crate::daemon::server) fn mark_registered_links_suspect<'a>(
     paths: impl IntoIterator<Item = &'a Path>,
 ) {
@@ -591,10 +633,60 @@ pub(in crate::daemon::server) fn mark_removed_links_suspect<'a>(
     }
 }
 
+#[cfg(test)]
 pub(in crate::daemon::server) fn mark_all_registered_links_suspect() {
     for mut record in registry().iter_mut() {
         record.suspect = true;
     }
+}
+
+/// Outcome of a scoped overflow sweep, for logging.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(in crate::daemon::server) struct OverflowSweep {
+    /// Records whose cheap stat signature is unchanged — left trusted.
+    pub(in crate::daemon::server) unchanged: usize,
+    /// Records newly marked suspect (signature changed, missing, or unstattable).
+    pub(in crate::daemon::server) suspect: usize,
+}
+
+/// Watcher-overflow recovery that does not indiscriminately condemn the whole
+/// hardlink cache (issue #1156).
+///
+/// Overflow means "the event queue saturated", not "every file changed". A
+/// blanket `mark_all_registered_links_suspect()` turns one momentary burst —
+/// a wide `git checkout`, a parallel build — into a full blake3 re-hash of
+/// every shared blob on its next read. Instead, re-verify each record against
+/// the cheap `(mtime, size)` signature captured at registration: unchanged
+/// blobs stay trusted, and anything that changed, vanished, or cannot be
+/// stat'd is marked suspect so the read path still falls back to the full
+/// re-hash. Correctness is unchanged — the expensive check is skipped only
+/// where there is positive evidence the bytes were not touched.
+pub(in crate::daemon::server) fn mark_changed_registered_links_suspect() -> OverflowSweep {
+    let mut sweep = OverflowSweep::default();
+    for mut record in registry().iter_mut() {
+        if record.suspect {
+            sweep.suspect += 1;
+            continue;
+        }
+        let unchanged = record
+            .stat_signature
+            .is_some_and(|recorded| stat_signature(record.blob_path.as_path()) == Some(recorded));
+        if unchanged {
+            sweep.unchanged += 1;
+        } else {
+            record.suspect = true;
+            sweep.suspect += 1;
+        }
+    }
+    sweep
+}
+
+/// Test-only seam: the suspect flag of a single record. The registry is a
+/// process-global static, so tests running in parallel cannot assert on the
+/// aggregate sweep counters — they must scope assertions to their own blob.
+#[cfg(test)]
+pub(in crate::daemon::server) fn registered_link_suspect(id: FileId) -> Option<bool> {
+    registry().get(&id).map(|record| record.suspect)
 }
 
 pub(in crate::daemon::server) fn registered_blob_id(blob_path: &Path) -> Option<FileId> {

@@ -280,6 +280,10 @@ pub(super) struct SharedState {
     /// Whether the file watcher is active. Fast-hit cache is only used when
     /// the watcher is running, since we rely on it for change detection.
     pub(super) watcher_active: AtomicBool,
+    /// Monotonic count of watcher-arm failures since daemon start (issue
+    /// #1156). Surfaced in `zccache status` so an operator can see that a
+    /// daemon is running on its slow paths without trawling startup logs.
+    pub(super) watcher_degradations: AtomicU64,
     /// Response file expansion cache keyed by canonical root path.
     /// Each entry carries the transitive response-file hashes required to
     /// validate freshness before reusing the cached expansion.
