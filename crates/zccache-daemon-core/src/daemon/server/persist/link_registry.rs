@@ -594,6 +594,14 @@ pub(in crate::daemon::server) fn set_registry_watcher_available(available: bool)
     WATCHER_AVAILABLE.store(available, Ordering::Release);
 }
 
+/// Test-only seam: `WATCHER_AVAILABLE` is process-global, so a test that
+/// exercises watcher degradation must restore whatever it observed rather
+/// than assume the static's initial value. See `tests::watcher_lifecycle`.
+#[cfg(test)]
+pub(in crate::daemon::server) fn registry_watcher_available() -> bool {
+    WATCHER_AVAILABLE.load(Ordering::Acquire)
+}
+
 pub(in crate::daemon::server) fn mark_registered_links_suspect<'a>(
     paths: impl IntoIterator<Item = &'a Path>,
 ) {

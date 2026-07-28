@@ -12,6 +12,29 @@
 use super::super::run::{arm_watcher_pipeline, record_watcher_degradation};
 use super::super::*;
 
+/// Restores the process-global `WATCHER_AVAILABLE` flag on drop.
+///
+/// `record_watcher_degradation` flips that static off for the whole process,
+/// and `verify_registered_blob` consults it to decide whether a non-suspect,
+/// multi-linked blob may skip its re-hash. Unit tests in this crate run in
+/// parallel in one process, so a test that degrades the watcher must not leave
+/// the flag flipped for whatever else is mid-flight — and must restore what it
+/// *observed*, not the static's initial value, since another test may be
+/// holding it too.
+struct WatcherAvailabilityGuard(bool);
+
+impl WatcherAvailabilityGuard {
+    fn capture() -> Self {
+        Self(registry_watcher_available())
+    }
+}
+
+impl Drop for WatcherAvailabilityGuard {
+    fn drop(&mut self) {
+        set_registry_watcher_available(self.0);
+    }
+}
+
 /// Registers a blob/output hardlink pair and returns the registry identity,
 /// or `None` when the temp filesystem cannot make same-volume hardlinks.
 fn seed_registered_link(blob: &Path, output: &Path, bytes: &[u8]) -> Option<FileId> {
@@ -99,6 +122,7 @@ fn overflow_marks_an_unstattable_blob_suspect() {
 
 #[tokio::test]
 async fn watcher_degradation_is_recorded_and_recoverable() {
+    let _watcher_availability = WatcherAvailabilityGuard::capture();
     let dir = tempfile::tempdir().unwrap();
     let cache_dir: NormalizedPath = dir.path().join("cache").into();
     let server =
