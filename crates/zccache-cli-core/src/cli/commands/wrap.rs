@@ -7,7 +7,7 @@
 mod diag;
 mod env;
 mod fallback;
-mod ipc;
+pub(crate) mod ipc;
 mod passthrough;
 mod routing;
 mod rustfmt;
