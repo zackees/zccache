@@ -410,17 +410,24 @@ async fn side_effect_lock_allows_different_output_directories() {
     assert!(std::sync::Arc::ptr_eq(&lock_a, &same_lock_a));
     assert!(!std::sync::Arc::ptr_eq(&lock_a, &lock_b));
 
-    let _guard_a = lock_a.lock_owned().await;
-    let _guard_b = tokio::time::timeout(std::time::Duration::from_millis(50), lock_b.lock_owned())
-        .await
+    // #1254: these were `tokio::time::timeout(50ms, lock_owned())`, which made
+    // a *logical* claim ("b is not blocked by a") depend on wall-clock
+    // scheduling. Acquiring an uncontended mutex is instant, but under the
+    // parallel test load of this crate the task can simply fail to be
+    // scheduled inside 50 ms, and the test then reports contention that never
+    // happened. It failed on arm in CI and on Windows locally within an hour.
+    //
+    // `try_lock_owned` answers the same question with no deadline at all:
+    // uncontended succeeds immediately, contended fails immediately. There is
+    // no duration left for load to distort.
+    let _guard_a = lock_a
+        .try_lock_owned()
+        .expect("an unheld lock must be acquirable");
+    let _guard_b = lock_b
+        .try_lock_owned()
         .expect("a lock held for one output directory must not block another");
     assert!(
-        tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            same_lock_a.lock_owned(),
-        )
-        .await
-        .is_err(),
+        same_lock_a.try_lock_owned().is_err(),
         "the same output directory must remain exclusive"
     );
 }
