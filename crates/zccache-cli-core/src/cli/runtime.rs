@@ -380,6 +380,31 @@ pub(crate) async fn wait_for_daemon_ready_with(
 }
 
 /// Stop a stale daemon that is unreachable or version-incompatible.
+/// Does a short follow-up probe say the daemon is alive after all?
+///
+/// #1161 leg 2. `check_daemon_version` maps a `Status` timeout to
+/// `CommError`, which the recovery path treated as "replace it". But a
+/// timeout is not evidence of death — it is equally the signature of a
+/// daemon busy serving a `-j16` burst. #753 already established the fix on
+/// the wedge path: ask again, cheaply, and only escalate if that also fails.
+/// This reuses that classifier rather than inventing a second policy.
+///
+/// `true` means "alive, just slow — leave it alone". Probe disabled via
+/// `ZCCACHE_WEDGE_PROBE_BUDGET_MS=0` reads as `false`, preserving the
+/// unconditional-replace behaviour for anyone A/B-testing against it.
+async fn probe_says_daemon_is_merely_busy(endpoint: &str) -> bool {
+    use crate::cli::commands::wrap::ipc::{
+        classify_probe_outcome, probe_daemon_responsive, wedge_probe_budget, WedgeAction,
+    };
+    let Some(budget) = wedge_probe_budget() else {
+        return false;
+    };
+    matches!(
+        classify_probe_outcome(probe_daemon_responsive(endpoint, budget).await),
+        WedgeAction::DowngradeNoKill
+    )
+}
+
 /// Replace a daemon we failed to talk to.
 ///
 /// `failed_instance` is the identity captured **before** the failed exchange.
@@ -478,6 +503,20 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
             .await;
         }
         VersionCheck::CommError => {
+            // #1161 leg 2: a `CommError` here is usually a *Status probe
+            // timeout*, and `check_daemon_version` deliberately does not treat
+            // a timeout as "unreachable". Under load that is exactly what a
+            // saturated-but-healthy daemon produces, and replacing it is how a
+            // cohort of clients destroys the warm daemon they are all waiting
+            // on. Ask a second, cheaper question before concluding it is dead
+            // — the same probe #753 already applies on the wedge path.
+            if probe_says_daemon_is_merely_busy(endpoint).await {
+                tracing::info!(
+                    "daemon answered a probe after a status timeout; treating it as busy \
+                     rather than replacing it"
+                );
+                return Ok(());
+            }
             tracing::info!("cannot communicate with daemon, auto-recovering");
             let killed_pid = stop_stale_daemon(endpoint, probed_instance.as_ref()).await;
             return spawn_and_wait(
@@ -516,6 +555,13 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
                     .await;
                 }
                 VersionCheck::CommError => {
+                    // Same reasoning as the arm above, and this one matters
+                    // more: this loop runs while a daemon is still starting
+                    // up, which is precisely when it is too busy to answer a
+                    // 2 s Status ping.
+                    if probe_says_daemon_is_merely_busy(endpoint).await {
+                        continue;
+                    }
                     let killed_pid = stop_stale_daemon(endpoint, attempt_instance.as_ref()).await;
                     return spawn_and_wait(
                         endpoint,
@@ -1021,5 +1067,63 @@ mod tests {
         .expect_err("daemon-exit path must fail, not hang");
         assert!(err.contains("exited"), "wrong error: {err}");
         assert!(err.contains("99999"), "PID should appear: {err}");
+    }
+
+    // ---------------------------------------------------------------------
+    // #1161 leg 2 — probe before kill
+    // ---------------------------------------------------------------------
+
+    // `classify_probe_outcome` itself is already covered in `wrap/ipc.rs`
+    // (pong/error/timeout). What is new here is the wrapper below and the
+    // CommError arms that consult it, so that is what these exercise.
+
+    #[tokio::test]
+    async fn a_disabled_probe_budget_keeps_the_unconditional_replace() {
+        // ZCCACHE_WEDGE_PROBE_BUDGET_MS=0 is the documented A/B switch back to
+        // pre-#753 behaviour. It must not accidentally become "never replace":
+        // with the probe off there is no evidence of life, so the answer is
+        // "not merely busy" and recovery proceeds.
+        let _guard = EnvVarGuard::set("ZCCACHE_WEDGE_PROBE_BUDGET_MS", "0");
+        assert!(
+            !probe_says_daemon_is_merely_busy("definitely-not-a-real-endpoint").await,
+            "a disabled probe must not be read as proof the daemon is healthy"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_endpoint_is_not_merely_busy() {
+        // Nothing listening: the probe fails fast with a transport error,
+        // which classifies as escalate. Guards against the inverted default,
+        // where a probe failure would wrongly protect a dead daemon and wedge
+        // the client forever.
+        let _guard = EnvVarGuard::set("ZCCACHE_WEDGE_PROBE_BUDGET_MS", "250");
+        assert!(
+            !probe_says_daemon_is_merely_busy(&crate::ipc::unique_test_endpoint()).await,
+            "an endpoint with no daemon must not be treated as busy-but-healthy"
+        );
+    }
+
+    /// Restores the previous value on drop so these cases cannot leak into
+    /// the rest of the binary's tests.
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
     }
 }

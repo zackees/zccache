@@ -325,7 +325,7 @@ where
 /// Returned by [`classify_probe_outcome`] from a pure-function input
 /// so the decision matrix is unit-testable without a real daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum WedgeAction {
+pub(crate) enum WedgeAction {
     /// Probe came back inside its budget — the daemon is alive and
     /// answering on its IPC endpoint. The wedge on the original
     /// request must have been triggered by the daemon being too busy
@@ -350,7 +350,7 @@ pub(super) enum WedgeAction {
 /// to a wedge action. Production callers wire `attempt_daemon_ping`
 /// (below) as the probe; tests pass stub outcomes directly. Issue
 /// [#753].
-pub(super) fn classify_probe_outcome(
+pub(crate) fn classify_probe_outcome(
     probe: Result<Result<(), crate::ipc::IpcError>, tokio::time::error::Elapsed>,
 ) -> WedgeAction {
     match probe {
@@ -372,7 +372,7 @@ pub(super) fn classify_probe_outcome(
 ///
 /// Production caller for [`classify_probe_outcome`] in the Wedged
 /// arm. Issue #753.
-async fn probe_daemon_responsive(
+pub(crate) async fn probe_daemon_responsive(
     endpoint: &str,
     budget: std::time::Duration,
 ) -> Result<Result<(), crate::ipc::IpcError>, tokio::time::error::Elapsed> {
@@ -401,11 +401,11 @@ async fn probe_daemon_responsive(
 /// with `ZCCACHE_WEDGE_PROBE_BUDGET_MS`. Set to `0` to disable the
 /// probe entirely (pre-#753 unconditional kill behavior — useful for
 /// diagnostic A/B against the fix).
-pub(super) const WEDGE_PROBE_DEFAULT_MS: u64 = 3_000;
+pub(crate) const WEDGE_PROBE_DEFAULT_MS: u64 = 3_000;
 
 /// Returns the probe budget configured for this run. `None` means
 /// "probe disabled — kill unconditionally" (the pre-#753 behavior).
-pub(super) fn wedge_probe_budget() -> Option<std::time::Duration> {
+pub(crate) fn wedge_probe_budget() -> Option<std::time::Duration> {
     let ms = std::env::var("ZCCACHE_WEDGE_PROBE_BUDGET_MS")
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok())
