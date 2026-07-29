@@ -6,7 +6,7 @@
 //! with the resolved depfile dir. Splitting them would force re-importing
 //! every private helper into multiple test modules.
 
-use super::cleanup::cleanup_legacy_temp_root_state;
+use super::cleanup::{cleanup_legacy_temp_root_state, sweep_depfile_dirs};
 use super::namespace::{
     daemon_namespace_from_env_value, home_dir_short_hash, is_safe_ipc_component_char,
     sanitize_ipc_component,
@@ -311,6 +311,58 @@ fn depfile_dir_under_tmp() {
     let dir = depfile_dir_from_cache_dir(&cache);
     assert!(dir.ends_with("depfiles"));
     assert!(dir.starts_with(tmp));
+}
+
+/// Seed `{pid}-{instance}` depfile directories under a fresh base.
+fn seed_depfile_dirs(pids: &[u32]) -> tempfile::TempDir {
+    let base = tempfile::tempdir().unwrap();
+    for (instance, pid) in pids.iter().enumerate() {
+        std::fs::create_dir_all(base.path().join(format!("{pid}-{instance}"))).unwrap();
+    }
+    base
+}
+
+fn dir_count(base: &std::path::Path) -> usize {
+    std::fs::read_dir(base).unwrap().flatten().count()
+}
+
+/// #1165 finding 6: `is_alive(pid)` alone pins a dead daemon's directory
+/// forever once the OS reuses its number for an unrelated long-running
+/// process. Age must reclaim it regardless of who currently holds the pid.
+#[test]
+fn an_expired_depfile_dir_is_reclaimed_even_while_its_pid_looks_alive() {
+    let base = seed_depfile_dirs(&[4242]);
+
+    // Every pid reports alive — only the age floor can act here.
+    let cleaned = sweep_depfile_dirs(base.path(), |_| true, std::time::Duration::ZERO);
+
+    assert_eq!(cleaned, 1, "age must reclaim a directory a live pid pins");
+    assert_eq!(dir_count(base.path()), 0);
+}
+
+/// The converse, and the more important half: a *live* daemon's directory
+/// must survive. Reclaiming one breaks a running build, so the age floor only
+/// applies once the directory is genuinely old.
+#[test]
+fn a_recent_depfile_dir_with_a_live_pid_is_kept() {
+    let base = seed_depfile_dirs(&[4242]);
+
+    let cleaned = sweep_depfile_dirs(base.path(), |_| true, std::time::Duration::from_secs(3600));
+
+    assert_eq!(cleaned, 0, "a live pid's fresh directory must not be swept");
+    assert_eq!(dir_count(base.path()), 1);
+}
+
+/// The dead-pid path still works with a generous age floor — age is a
+/// backstop for pid reuse, not a replacement for liveness.
+#[test]
+fn a_dead_pid_is_still_reclaimed_before_the_age_floor() {
+    let base = seed_depfile_dirs(&[4242]);
+
+    let cleaned = sweep_depfile_dirs(base.path(), |_| false, std::time::Duration::from_secs(3600));
+
+    assert_eq!(cleaned, 1);
+    assert_eq!(dir_count(base.path()), 0);
 }
 
 #[test]

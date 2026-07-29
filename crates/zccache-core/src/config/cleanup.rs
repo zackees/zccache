@@ -8,6 +8,22 @@
 
 use super::paths::depfile_dir;
 use std::path::Path;
+use std::time::Duration;
+
+/// How old a depfile directory must be before it is reclaimed even though its
+/// PID still looks alive (#1165 finding 6).
+///
+/// `is_alive(pid)` is the primary signal, but PIDs are reused. Once the OS
+/// hands a dead daemon's number to an unrelated long-running process, that
+/// daemon's directory is pinned for as long as the new process lives — which
+/// on a busy machine with high PID churn is indefinitely.
+///
+/// Age is the backstop. A depfile directory belongs to one daemon instance and
+/// is removed on clean shutdown, so one this old is debris regardless of what
+/// currently holds its number. The window is deliberately generous: reclaiming
+/// a live daemon's directory breaks a build, while leaving debris a few days
+/// longer costs only disk.
+const DEPFILE_DIR_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// Remove legacy zccache state left directly under the OS temp directory.
 ///
@@ -37,8 +53,17 @@ pub fn cleanup_stale_depfile_dirs<F>(is_alive: F) -> usize
 where
     F: Fn(u32) -> bool,
 {
-    let base = depfile_dir();
-    let entries = match std::fs::read_dir(&base) {
+    sweep_depfile_dirs(depfile_dir().as_path(), is_alive, DEPFILE_DIR_MAX_AGE)
+}
+
+/// [`cleanup_stale_depfile_dirs`] with an explicit base directory and age
+/// floor, so tests can exercise both sides of the gate without touching the
+/// process-global depfile root or sleeping for a week.
+pub(super) fn sweep_depfile_dirs<F>(base: &Path, is_alive: F, max_age: Duration) -> usize
+where
+    F: Fn(u32) -> bool,
+{
+    let entries = match std::fs::read_dir(base) {
         Ok(entries) => entries,
         Err(_) => return 0,
     };
@@ -57,11 +82,18 @@ where
             Some(p) => p,
             None => continue,
         };
-        if !is_alive(pid) {
+        // #1165: a reused PID would otherwise pin this directory forever, so
+        // age reclaims it regardless of what currently holds that number.
+        let expired = dir_is_older_than(&path, max_age);
+        if !is_alive(pid) || expired {
             match std::fs::remove_dir_all(&path) {
                 Ok(()) => {
                     cleaned += 1;
-                    tracing::info!(path = %path.display(), "removed stale depfile dir");
+                    tracing::info!(
+                        path = %path.display(),
+                        reason = if expired { "age" } else { "dead_pid" },
+                        "removed stale depfile dir"
+                    );
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -73,6 +105,25 @@ where
         }
     }
     cleaned
+}
+
+/// Is this directory old enough that a live-looking PID can only mean reuse?
+///
+/// Errs toward "no": an unreadable mtime, or a clock that makes the directory
+/// look like it is from the future, both return false. Skipping real debris
+/// costs disk until the next sweep; reclaiming a live daemon's depfile
+/// directory breaks its build. Same bias as the staging-root age gate.
+fn dir_is_older_than(path: &Path, max_age: Duration) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return false;
+    };
+    let Ok(age) = std::time::SystemTime::now().duration_since(modified) else {
+        return false;
+    };
+    age >= max_age
 }
 
 fn cleanup_legacy_temp_cache_dir(temp_root: &Path, current_cache_dir: &Path) -> usize {
