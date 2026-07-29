@@ -3,6 +3,7 @@
 - [x] Inventory raw daemon process creation and existing Dylint exemptions.
 - [x] Route sync and Tokio daemon children through running-process.
 - [x] Replace file allowlists with production/test scope detection and UI coverage.
+- [x] Make the workspace Dylint job a pull-request gate.
 - [x] Pin the running-process revision that provides the required APIs.
 - [x] Run focused Dylint, daemon checks, fmt, and clippy.
 - [ ] Open, drive, merge, and validate the coordinated upstream PR.
