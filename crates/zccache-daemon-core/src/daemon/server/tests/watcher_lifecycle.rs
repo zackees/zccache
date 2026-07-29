@@ -9,7 +9,7 @@
 //! scoped to the test's own record by `FileId` — the aggregate sweep counters
 //! also see records registered by tests running in parallel.
 
-use super::super::run::{arm_watcher_pipeline, record_watcher_degradation};
+use super::super::run::{arm_watcher_pipeline, record_watcher_degradation, start_watcher_tasks};
 use super::super::*;
 
 /// Restores the process-global `WATCHER_AVAILABLE` flag on drop.
@@ -117,6 +117,50 @@ fn overflow_marks_an_unstattable_blob_suspect() {
         registered_link_suspect(id),
         Some(true),
         "an unstattable blob has no cheap evidence and must be marked suspect"
+    );
+}
+
+/// #1177 part B: the watcher consumer's `JoinHandle` used to be dropped, so if
+/// that task died the daemon kept serving fast hits from metadata nothing was
+/// invalidating any more — stale hits, until the next restart.
+///
+/// It cannot be restarted (the task owns the settled-event receiver, which
+/// dies with it), so the supervisor degrades instead: clearing `watcher_active`
+/// makes both fast-hit tiers re-verify rather than trust. Slower, never wrong.
+#[tokio::test]
+async fn a_watcher_consumer_that_stops_before_shutdown_degrades_the_daemon() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache_dir: NormalizedPath = dir.path().join("cache").into();
+    let server =
+        DaemonServer::bind_with_cache_dir(&crate::ipc::unique_test_endpoint(), &cache_dir).unwrap();
+    let state = server.test_state_arc();
+    state.watcher_active.store(true, Ordering::Release);
+
+    // Dropping the raw sender ends the settle task, which drops the settled
+    // sender, which ends the consumer — the same shape as the consumer dying,
+    // without needing to induce a panic inside tokio.
+    let (raw_tx, raw_rx) = tokio::sync::mpsc::unbounded_channel();
+    start_watcher_tasks(&state, raw_rx);
+    drop(raw_tx);
+
+    // The supervisor runs on its own task; give it a bounded chance to observe
+    // the exit rather than asserting on a race. Polls instead of sleeping a
+    // fixed interval so a fast machine finishes immediately and a loaded one
+    // still gets its chance.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut degraded = false;
+    while std::time::Instant::now() < deadline {
+        if !state.watcher_active.load(Ordering::Acquire) {
+            degraded = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    assert!(
+        degraded,
+        "a consumer that stops before shutdown must disable the fast hit tiers, \
+         not leave them trusting metadata nothing is invalidating"
     );
 }
 
