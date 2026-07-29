@@ -35,9 +35,13 @@
 //! - **Summary mode.** [`crate::audit::AuditMode::Summary`] currently degrades to a
 //!   `Normal` writer (no separate accumulator). The summary writer is
 //!   tracked under #910 (operator API) since the consumer is the same.
-//! - **Multi-file rollover.** The writer opens one file for the
-//!   lifetime of the sink. Rotation by run, by size, by date is the
-//!   operator API's responsibility.
+//! - **Rollover *policy*.** Rotation by run, by date, or shipping
+//!   archives off-box remains the operator API's responsibility. What
+//!   the sink does own is a bound: it rotates at
+//!   [`AUDIT_MAX_SIZE`] and keeps [`AUDIT_MAX_FILES`] archives
+//!   (#1165), so the default configuration cannot grow without limit
+//!   once #926's hot-path emitters land. Operators layering their own
+//!   scheme on top are unaffected — this only sets a floor.
 //!
 //! ## Lifecycle contract
 //!
@@ -67,7 +71,7 @@
 //! `FailLossless` is the default per `AuditSinkPolicy::default()`.
 
 use std::io::{self, BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -79,6 +83,20 @@ use crate::audit::{AuditConfig, AuditEvent, AuditLevel, AuditMode, AuditSinkPoli
 /// 50-wide cargo wave can deposit one event per compile milestone
 /// without blocking. Tuneable later if real workloads need more.
 const WRITER_QUEUE_CAPACITY: usize = 4096;
+
+/// Size at which `audit.jsonl` rotates, and how many archives survive
+/// (#1165 finding 3). Mirrors the compile journal's 50 MB × 3 deliberately:
+/// two audit-style JSONL surfaces in the same `logs/` directory with different
+/// bounds would be a needless thing to have to remember.
+///
+/// The sink previously opened one file for the lifetime of the process and
+/// never rotated it, on the documented grounds that rollover is the operator's
+/// concern. That holds for *policy* — by run, by date, shipped off-box — but
+/// it left the default unbounded, and #926's hot-path emitters will make that
+/// grow fast. An operator can still layer their own scheme on top; this only
+/// stops the out-of-the-box configuration from being a disk leak.
+const AUDIT_MAX_SIZE: u64 = 50 * 1024 * 1024;
+const AUDIT_MAX_FILES: usize = 3;
 
 /// Sink errors surfaced to host callers. Distinct from the internal
 /// writer-task errors which never escape this module.
@@ -153,6 +171,10 @@ impl AuditSink {
             .create(true)
             .append(true)
             .open(&path)?;
+        // Start from the on-disk length so a restart onto an existing file
+        // resumes counting rather than granting it a fresh budget.
+        let mut current_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let rotate_path = path.clone();
         let mut writer = BufWriter::with_capacity(64 * 1024, file);
 
         let (sender, mut receiver) = mpsc::channel::<Command>(WRITER_QUEUE_CAPACITY);
@@ -168,8 +190,20 @@ impl AuditSink {
                         // mid-run is a host-monitoring concern; the
                         // sink keeps trying.
                         if let Ok(line) = serde_json::to_string(&event) {
+                            // #1165: rotate before the write that would cross
+                            // the cap, and flush first so buffered bytes land
+                            // in the file being renamed rather than the new
+                            // one. Same ordering as the compile journal.
+                            if current_size > AUDIT_MAX_SIZE {
+                                let _ = writer.flush();
+                                if let Some(fresh) = rotate_audit_log(&rotate_path) {
+                                    writer = BufWriter::with_capacity(64 * 1024, fresh);
+                                    current_size = 0;
+                                }
+                            }
                             let _ = writer.write_all(line.as_bytes());
                             let _ = writer.write_all(b"\n");
+                            current_size += line.len() as u64 + 1;
                         }
                     }
                     Command::Flush(reply) => {
@@ -297,6 +331,67 @@ impl AuditSink {
     }
 }
 
+/// Rename the current audit log aside and open a fresh one in its place.
+///
+/// The archive suffix is nanoseconds since the epoch, zero-padded so a plain
+/// lexical sort orders archives by age — which is what [`gc_audit_logs`]
+/// relies on, and what keeps it correct when a restore rewrites every mtime.
+///
+/// Returns `None` if the rename or reopen fails, in which case the caller
+/// keeps writing to the existing handle: an audit log that is too large beats
+/// one that silently stops recording.
+fn rotate_audit_log(path: &Path) -> Option<std::fs::File> {
+    let file_name = path.file_name()?.to_string_lossy().into_owned();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let rotated = path.with_file_name(format!("{file_name}.{nanos:020}"));
+    std::fs::rename(path, &rotated).ok()?;
+
+    let fresh = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .ok()?;
+    gc_audit_logs(path, &file_name);
+    Some(fresh)
+}
+
+/// Keep only the newest [`AUDIT_MAX_FILES`] archives beside `path`.
+///
+/// Keys off the live file's own name rather than a hardcoded `audit.jsonl`,
+/// because `AuditConfig::event_log` can rename it — hardcoding would silently
+/// stop collecting for any operator who did.
+fn gc_audit_logs(path: &Path, file_name: &str) {
+    let Some(dir) = path.parent() else {
+        return;
+    };
+    let prefix = format!("{file_name}.");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    let mut archives: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(&prefix))
+        })
+        .collect();
+    if archives.len() <= AUDIT_MAX_FILES {
+        return;
+    }
+
+    archives.sort();
+    let excess = archives.len() - AUDIT_MAX_FILES;
+    for stale in archives.into_iter().take(excess) {
+        let _ = std::fs::remove_file(stale);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,6 +413,107 @@ mod tests {
         );
         event.level = level;
         event
+    }
+
+    /// Seed `count` archives whose embedded timestamps ascend, oldest first.
+    fn seed_archives(dir: &Path, live: &str, count: u64) {
+        for n in 1..=count {
+            std::fs::write(dir.join(format!("{live}.{n:020}")), "x").unwrap();
+        }
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// #1165 finding 3: the sink opened one file for the process lifetime and
+    /// never rotated it, so `audit.jsonl` was unbounded by default.
+    #[test]
+    fn rotating_moves_the_live_log_aside_and_reopens_it() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("audit.jsonl");
+        std::fs::write(&path, "original\n").unwrap();
+
+        let fresh = rotate_audit_log(&path).expect("rotation must succeed");
+        drop(fresh);
+
+        assert!(path.exists(), "a fresh live log must be reopened in place");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "",
+            "the reopened log starts empty"
+        );
+        let archives: Vec<String> = names_in(temp.path())
+            .into_iter()
+            .filter(|n| n != "audit.jsonl")
+            .collect();
+        assert_eq!(
+            archives.len(),
+            1,
+            "the old contents must survive as an archive"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join(&archives[0])).unwrap(),
+            "original\n"
+        );
+    }
+
+    #[test]
+    fn gc_keeps_the_newest_archives_and_drops_the_oldest() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("audit.jsonl");
+        std::fs::write(&path, "live").unwrap();
+        seed_archives(temp.path(), "audit.jsonl", AUDIT_MAX_FILES as u64 + 2);
+
+        gc_audit_logs(&path, "audit.jsonl");
+
+        let names = names_in(temp.path());
+        assert!(
+            names.contains(&"audit.jsonl".to_string()),
+            "the live log is not an archive and must never be collected"
+        );
+        let archives: Vec<String> = names.into_iter().filter(|n| n != "audit.jsonl").collect();
+        assert_eq!(archives.len(), AUDIT_MAX_FILES);
+        assert!(
+            !archives.contains(&format!("audit.jsonl.{:020}", 1)),
+            "the oldest archive must be the first reclaimed"
+        );
+        assert!(
+            archives.contains(&format!("audit.jsonl.{:020}", AUDIT_MAX_FILES + 2)),
+            "the newest archive must survive"
+        );
+    }
+
+    /// `AuditConfig::event_log` can rename the live file, so collection keys
+    /// off that name — hardcoding `audit.jsonl` would silently stop collecting
+    /// for any operator who renamed it.
+    #[test]
+    fn gc_follows_a_renamed_event_log() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("custom.jsonl");
+        std::fs::write(&path, "live").unwrap();
+        seed_archives(temp.path(), "custom.jsonl", AUDIT_MAX_FILES as u64 + 1);
+        // An unrelated neighbour that must not be touched.
+        std::fs::write(temp.path().join("audit.jsonl.00000000000000000001"), "x").unwrap();
+
+        gc_audit_logs(&path, "custom.jsonl");
+
+        let names = names_in(temp.path());
+        assert!(
+            names.contains(&"audit.jsonl.00000000000000000001".to_string()),
+            "a different log's archives must be left alone"
+        );
+        let custom: Vec<String> = names
+            .into_iter()
+            .filter(|n| n.starts_with("custom.jsonl."))
+            .collect();
+        assert_eq!(custom.len(), AUDIT_MAX_FILES);
     }
 
     #[tokio::test]
