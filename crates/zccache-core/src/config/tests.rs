@@ -313,6 +313,54 @@ fn depfile_dir_under_tmp() {
     assert!(dir.starts_with(tmp));
 }
 
+/// #1171: the cache root and socket directory were created with a plain
+/// `create_dir_all` — `0777 & ~umask`, i.e. `0755` normally and `0777` under
+/// the `0`/`002` umasks CI images often run with. Anyone who can reach the
+/// socket in there can have the daemon spawn a process of their choosing.
+///
+/// `0700` is also umask-proof: `mkdir(2)` masks the requested mode, and `0700`
+/// has no group/other bits for a umask to clear.
+#[cfg(unix)]
+#[test]
+fn a_private_dir_is_created_owner_only_at_every_level() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root");
+    let nested = root.join("state").join("v1");
+
+    super::paths::create_dir_all_private(&nested).unwrap();
+
+    for dir in [
+        nested.as_path(),
+        root.join("state").as_path(),
+        root.as_path(),
+    ] {
+        let mode = std::fs::metadata(dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode,
+            0o700,
+            "{} must be owner-only; a group/other-searchable parent is what \
+             lets another local user reach the socket on macOS, where the \
+             kernel ignores the socket's own mode bits",
+            dir.display()
+        );
+    }
+}
+
+/// Re-creating an existing directory must succeed rather than erroring, since
+/// every daemon start walks this path.
+#[cfg(unix)]
+#[test]
+fn creating_a_private_dir_twice_is_idempotent() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("root");
+
+    super::paths::create_dir_all_private(&dir).unwrap();
+    super::paths::create_dir_all_private(&dir)
+        .expect("a second create must be a no-op, not an AlreadyExists error");
+}
+
 /// Seed `{pid}-{instance}` depfile directories under a fresh base.
 fn seed_depfile_dirs(pids: &[u32]) -> tempfile::TempDir {
     let base = tempfile::tempdir().unwrap();

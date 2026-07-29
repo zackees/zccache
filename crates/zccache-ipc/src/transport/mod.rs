@@ -362,9 +362,22 @@ impl IpcListener {
             // Remove stale socket if it exists
             let _ = std::fs::remove_file(endpoint);
             if let Some(parent) = std::path::Path::new(endpoint).parent() {
-                std::fs::create_dir_all(parent)?;
+                // #1171: anyone who can connect to this socket can have the
+                // daemon spawn a process of their choosing, so the directory
+                // that contains it is an access-control boundary. A plain
+                // `create_dir_all` left it at `0777 & ~umask`.
+                zccache_core::config::create_dir_all_private(parent)?;
             }
             let listener = tokio::net::UnixListener::bind(endpoint)?;
+            // Tighten the socket itself too. On Linux this is what stops a
+            // permissive umask from leaving it world-connectable; on
+            // macOS/BSD the kernel ignores these bits on `connect()`, which
+            // is why the `0700` parent above is the load-bearing control
+            // there rather than this line.
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(endpoint, std::fs::Permissions::from_mode(0o600));
+            }
             Ok(Self {
                 inner: ListenerInner { listener },
             })

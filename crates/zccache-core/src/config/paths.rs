@@ -15,6 +15,42 @@
 use super::resolve::{daemon_state_dir_from_cache_dir, default_cache_dir};
 use crate::NormalizedPath;
 
+/// Create `path` and any missing parents, owner-only where the OS expresses
+/// that in the filesystem (#1171).
+///
+/// The cache root and the daemon's socket directory were created with a plain
+/// `create_dir_all`, i.e. `0777 & ~umask` — normally `0755`, and `0777` under
+/// the `0`/`002` umasks CI images and containers often run with. Those
+/// directories hold the IPC endpoint, and anyone who can connect to it can
+/// have the daemon spawn a process of their choosing, so the directory mode is
+/// an access-control boundary rather than tidiness.
+///
+/// It is the *load-bearing* one on macOS and the BSDs, where the kernel does
+/// not enforce a socket's own mode bits on `connect()` — only search
+/// permission on the containing directory, which `0755` grants to everyone.
+///
+/// Only newly created directories get the mode; an existing directory keeps
+/// whatever it has, because silently re-permissioning a user's existing tree
+/// is not this function's call to make. Detecting and reporting an
+/// already-loose directory is #1171 item 4.
+///
+/// On Windows this is exactly `create_dir_all`: the equivalent control there
+/// is the pipe's DACL, which is #1171 item 2.
+pub fn create_dir_all_private(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(path)
+    }
+}
+
 /// Returns the directory for content-addressed compiled outputs.
 #[must_use]
 pub fn artifacts_dir() -> NormalizedPath {

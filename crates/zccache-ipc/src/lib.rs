@@ -526,7 +526,8 @@ fn lock_file_name(namespace: Option<&str>) -> String {
 pub fn write_lock_file(pid: u32) -> Result<(), std::io::Error> {
     let path = lock_file_path();
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        // #1171: same directory family as the socket endpoint.
+        zccache_core::config::create_dir_all_private(parent)?;
     }
     std::fs::write(&path, pid.to_string())
 }
@@ -658,7 +659,8 @@ pub fn write_backend_identity(
 ) -> Result<(), std::io::Error> {
     let path = backend_identity_path();
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        // #1171: same directory family as the socket endpoint.
+        zccache_core::config::create_dir_all_private(parent)?;
     }
     let json = serde_json::to_vec_pretty(daemon)
         .map_err(|err| std::io::Error::other(format!("serialize backend identity: {err}")))?;

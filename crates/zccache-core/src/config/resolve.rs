@@ -210,7 +210,9 @@ pub fn write_last_version_marker() -> std::io::Result<()> {
 /// Test seam for [`write_last_version_marker`]: write the marker under an
 /// explicit top-level dir.
 pub fn write_last_version_marker_in(top_level: &std::path::Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(top_level)?;
+    // #1171: this is the first thing to create the top-level cache root on a
+    // fresh install, so it decides that directory's mode for good.
+    super::paths::create_dir_all_private(top_level)?;
     std::fs::write(
         top_level.join(LAST_VERSION_MARKER),
         format!("{}\n", crate::VERSION),
