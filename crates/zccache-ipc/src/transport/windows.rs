@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use bytes::BytesMut;
 use tokio::io::{AsyncWriteExt, ReadHalf, WriteHalf};
-use tokio::net::windows::named_pipe::{NamedPipeClient, NamedPipeServer, ServerOptions};
+use tokio::net::windows::named_pipe::{NamedPipeClient, NamedPipeServer};
 
 use crate::error::IpcError;
 
@@ -366,9 +366,13 @@ async fn create_pipe_server_async(
 ) -> Result<NamedPipeServer, IpcError> {
     let endpoint = endpoint.to_owned();
     tokio::task::spawn_blocking(move || {
-        Ok(ServerOptions::new()
-            .first_pipe_instance(first_pipe_instance)
-            .create(&endpoint)?)
+        // #1272: pool replacements need the same owner-only descriptor as the
+        // initial instances — a pipe created here is just as connectable, so
+        // securing only `bind` would leave every post-accept instance readable.
+        Ok(super::pipe_security::create_pipe_instance(
+            &endpoint,
+            first_pipe_instance,
+        )?)
     })
     .await
     .map_err(join_error_to_ipc)?

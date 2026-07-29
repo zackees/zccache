@@ -23,6 +23,8 @@ use tokio::io::{AsyncWriteExt, ReadHalf, WriteHalf};
 use super::error::IpcError;
 
 mod framing;
+#[cfg(windows)]
+mod pipe_security;
 mod probe;
 #[cfg(unix)]
 mod unix;
@@ -427,8 +429,8 @@ impl IpcListener {
         }
         #[cfg(windows)]
         {
+            use pipe_security::create_pipe_instance;
             use std::collections::VecDeque;
-            use tokio::net::windows::named_pipe::ServerOptions;
 
             // Pool sizing rationale (issue #666 follow-up, application-layer
             // back-pressure precondition): the pre-existing `.min(16)` cap
@@ -469,10 +471,7 @@ impl IpcListener {
                 let mut attempt = 0u32;
                 let mut delay_ms = FIRST_BIND_INITIAL_DELAY_MS;
                 loop {
-                    match ServerOptions::new()
-                        .first_pipe_instance(true)
-                        .create(endpoint)
-                    {
+                    match create_pipe_instance(endpoint, true) {
                         Ok(p) => break p,
                         Err(e) => {
                             attempt += 1;
@@ -494,9 +493,7 @@ impl IpcListener {
             };
             pool.push_back(first_pipe);
             for _ in 1..pool_size {
-                let pipe = ServerOptions::new()
-                    .first_pipe_instance(false)
-                    .create(endpoint)?;
+                let pipe = create_pipe_instance(endpoint, false)?;
                 pool.push_back(pipe);
             }
 
