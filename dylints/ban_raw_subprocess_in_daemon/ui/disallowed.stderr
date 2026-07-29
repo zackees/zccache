@@ -1,4 +1,4 @@
-error: `std::process::Command::status` bypasses the daemon's spawn discipline; route through `crate::process::command_output_with_priority` (sync) or `crate::process::tokio_command_output_with_priority` (async) so CREATE_NO_WINDOW, Job Object attach, and priority are applied
+error: `std::process::Command::status` bypasses running-process; execute the configured command through `running_process::spawn` or `running_process::spawn_tokio`
   --> $DIR/disallowed.rs:5:13
    |
 LL |     let _ = command.status();

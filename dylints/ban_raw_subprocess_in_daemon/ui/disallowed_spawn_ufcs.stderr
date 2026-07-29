@@ -1,0 +1,10 @@
+error: `std::process::Command::spawn` bypasses running-process; execute the configured command through `running_process::spawn` or `running_process::spawn_tokio`
+  --> $DIR/disallowed_spawn_ufcs.rs:3:13
+   |
+LL |     let _ = std::process::Command::spawn(&mut command);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[deny(ban_raw_subprocess_in_daemon)]` on by default
+
+error: aborting due to 1 previous error
+
