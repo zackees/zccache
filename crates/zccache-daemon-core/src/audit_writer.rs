@@ -37,11 +37,11 @@
 //!   tracked under #910 (operator API) since the consumer is the same.
 //! - **Rollover *policy*.** Rotation by run, by date, or shipping
 //!   archives off-box remains the operator API's responsibility. What
-//!   the sink does own is a bound: it rotates at
-//!   [`AUDIT_MAX_SIZE`] and keeps [`AUDIT_MAX_FILES`] archives
-//!   (#1165), so the default configuration cannot grow without limit
-//!   once #926's hot-path emitters land. Operators layering their own
-//!   scheme on top are unaffected — this only sets a floor.
+//!   the sink does own is a bound: it rotates at 50 MB and keeps 3
+//!   archives (#1165), so the default configuration cannot grow
+//!   without limit once #926's hot-path emitters land. Operators
+//!   layering their own scheme on top are unaffected — this only sets
+//!   a floor.
 //!
 //! ## Lifecycle contract
 //!
