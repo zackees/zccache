@@ -36,7 +36,6 @@ crates/zccache-cli-core/src/cli/snapshot_fp.rs
 crates/zccache-daemon-core/src/daemon/compile_journal/tests/entry.rs
 crates/zccache-daemon-core/src/daemon/compile_journal/tests/journal_file.rs
 crates/zccache-daemon-core/src/daemon/compile_journal/tests/miss_reason.rs
-crates/zccache-daemon-core/src/daemon/event_log.rs
 crates/zccache-daemon-core/src/daemon/eviction.rs
 crates/zccache-daemon-core/src/daemon/server/session.rs
 crates/zccache-daemon-core/src/daemon/server/tests/cache_trim.rs
