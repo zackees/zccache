@@ -2583,7 +2583,7 @@ dependencies = [
 [[package]]
 name = "running-process"
 version = "4.6.4"
-source = "git+https://github.com/zackees/running-process.git?rev=1936b831fd94149120fe8c55c49d20f35753826b#1936b831fd94149120fe8c55c49d20f35753826b"
+source = "git+https://github.com/zackees/running-process.git?rev=59556ebbb779a66a95811c75bb1533cf3db1c525#59556ebbb779a66a95811c75bb1533cf3db1c525"
 dependencies = [
  "anyhow",
  "blake3",
