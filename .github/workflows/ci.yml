@@ -60,7 +60,6 @@ jobs:
 
   dylint:
     name: Dylint
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     env:
       # Dylint removes RUSTUP_TOOLCHAIN before its nested driver build. The

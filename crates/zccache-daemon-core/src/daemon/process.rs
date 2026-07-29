@@ -564,63 +564,18 @@ pub(crate) struct CompilePriorityParseError {
     value: String,
 }
 
-/// Windows process creation flags applied to daemon-spawned children.
+/// Child creation is delegated to the running-process boundary.
 ///
-/// Currently always returns `CREATE_NO_WINDOW` (`0x08000000`). When the
-/// daemon is launched detached (no console attached), spawning a
-/// console-subsystem child like rustc / cl / clang without this flag
-/// causes Windows to allocate a fresh console window for the child —
-/// a visible flash per cache-miss compile in the soldr + rustc +
-/// zccache call chain. Setting `CREATE_NO_WINDOW` suppresses that
-/// allocation; stdio already flows through the pipes the helpers
-/// attach, so no output is lost.
-///
-/// `priority` is a parameter so future priority bits (`IDLE_PRIORITY_CLASS`,
-/// `BELOW_NORMAL_PRIORITY_CLASS`, etc.) can be OR'd in directly at the
-/// `CreateProcessW` call rather than via the separate post-spawn
-/// `SetPriorityClass` we use today. Unused today — kept for API
-/// stability so the call sites don't change shape later.
-#[cfg(windows)]
-fn child_creation_flags(_priority: CompilePriority) -> u32 {
-    /// `CREATE_NO_WINDOW` from `windows_sys::Win32::System::Threading`.
-    /// Hardcoded here because the daemon doesn't otherwise pull in
-    /// `windows-sys` and a single u32 constant doesn't justify the dep.
-    /// Value verified against the Windows SDK header `winbase.h`.
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    CREATE_NO_WINDOW
-}
-
-/// Apply the daemon's console-suppression creation flag (`CREATE_NO_WINDOW`)
-/// to a child spawned OUTSIDE the priority-aware `command_output_*` helpers.
+/// This keeps Windows console policy out of zccache while preserving Tokio's
+/// async pipe and wait interfaces. In particular, it prevents a visible flash
+/// per cache-miss compile in the soldr + rustc + zccache call chain.
 ///
 /// The compiler-identity probe (`rustc -vV` in [`super::server`]'s
-/// `compiler_hash`) builds a `Command` and calls `.output()` directly, so it
-/// never reached [`child_creation_flags`]. Since the daemon runs detached
-/// (no console), that made every cold-path identity probe flash a console
-/// window on Windows — the exact symptom `child_creation_flags` was added to
-/// fix for the compile path. This routes those probes through the same flag.
-/// No-op on non-Windows.
-pub(crate) fn suppress_child_console(cmd: &mut std::process::Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(child_creation_flags(CompilePriority::Normal));
-    }
-    #[cfg(not(windows))]
-    let _ = cmd;
-}
-
-/// `tokio::process::Command` variant of [`suppress_child_console`].
+/// compiler-hash module) is covered by the same boundary.
 ///
-/// `tokio::process::Command::creation_flags` is an inherent method (unlike
-/// `std`'s, which comes from `CommandExt`), so no trait import is needed.
-pub(crate) fn suppress_child_console_tokio(cmd: &mut tokio::process::Command) {
-    #[cfg(windows)]
-    cmd.creation_flags(child_creation_flags(CompilePriority::Normal));
-    #[cfg(not(windows))]
-    let _ = cmd;
-}
-
+/// Priority and daemon Job Object assignment remain local post-spawn policy;
+/// the actual process execution and console decision do not.
+///
 /// Wait for an async command after applying a compiler child priority.
 ///
 /// Convenience wrapper that pipes `Stdio::null()` for stdin. Callers that
@@ -688,86 +643,41 @@ async fn tokio_command_output_with_priority_stdin_inner(
     // (issue #962). Captured before the command is mutated/spawned.
     let cmd_desc = cmd.as_std().get_program().to_string_lossy().into_owned();
 
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+
+    if pipe_stdin {
+        cmd.stdin(Stdio::piped());
+    } else {
+        cmd.stdin(Stdio::null());
+    }
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let mut child =
+        running_process::spawn_tokio(cmd, running_process::TokioSpawnOptions::default())?;
     #[cfg(windows)]
-    {
-        use std::process::Stdio;
-        use tokio::io::AsyncWriteExt;
-
-        if pipe_stdin {
-            cmd.stdin(Stdio::piped());
-        } else {
-            cmd.stdin(Stdio::null());
-        }
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        cmd.kill_on_drop(true);
-        cmd.creation_flags(child_creation_flags(priority));
-        let mut child = cmd.spawn()?;
-        if let Some(handle) = child.raw_handle() {
-            assign_child_to_daemon_job(handle);
-            apply_priority_to_child_windows(handle, priority);
-        }
-        if pipe_stdin {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(stdin_bytes.unwrap_or(&[])).await;
-                let _ = stdin.shutdown().await;
-            }
-        }
-        match stream {
-            Some(sender) => {
-                crate::daemon::child_watchdog::wait_with_output_watchdog_streaming(
-                    child, &cmd_desc, sender,
-                )
-                .await
-            }
-            None => {
-                crate::daemon::child_watchdog::wait_with_output_watchdog(child, &cmd_desc).await
-            }
-        }
+    if let Some(handle) = child.raw_handle() {
+        assign_child_to_daemon_job(handle);
+        apply_priority_to_child_windows(handle, priority);
     }
-
     #[cfg(unix)]
-    {
-        use std::process::Stdio;
-        use tokio::io::AsyncWriteExt;
-
-        if pipe_stdin {
-            cmd.stdin(Stdio::piped());
-        } else {
-            cmd.stdin(Stdio::null());
-        }
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        cmd.kill_on_drop(true);
-        let mut child = cmd.spawn()?;
-        if let Some(pid) = child.id() {
-            apply_priority_to_child_unix(pid, priority);
-        }
-        if pipe_stdin {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(stdin_bytes.unwrap_or(&[])).await;
-                let _ = stdin.shutdown().await;
-            }
-        }
-        match stream {
-            Some(sender) => {
-                crate::daemon::child_watchdog::wait_with_output_watchdog_streaming(
-                    child, &cmd_desc, sender,
-                )
-                .await
-            }
-            None => {
-                crate::daemon::child_watchdog::wait_with_output_watchdog(child, &cmd_desc).await
-            }
+    if let Some(pid) = child.id() {
+        apply_priority_to_child_unix(pid, priority);
+    }
+    if pipe_stdin {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(stdin_bytes.unwrap_or(&[])).await;
+            let _ = stdin.shutdown().await;
         }
     }
-
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = stdin_bytes;
-        let _ = &cmd_desc;
-        let _ = stream;
-        cmd.output().await
+    match stream {
+        Some(sender) => {
+            crate::daemon::child_watchdog::wait_with_output_watchdog_streaming(
+                child, &cmd_desc, sender,
+            )
+            .await
+        }
+        None => crate::daemon::child_watchdog::wait_with_output_watchdog(child, &cmd_desc).await,
     }
 }
 
@@ -784,14 +694,7 @@ pub(crate) async fn tokio_leaf_command_output_with_priority(
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    cmd.kill_on_drop(true);
-
-    #[cfg(windows)]
-    {
-        cmd.creation_flags(child_creation_flags(priority));
-    }
-
-    let child = cmd.spawn()?;
+    let child = running_process::spawn_tokio(cmd, running_process::TokioSpawnOptions::default())?;
     #[cfg(windows)]
     {
         if let Some(handle) = child.raw_handle() {
@@ -1426,44 +1329,18 @@ mod tests {
 
     // ── Console-window suppression (Windows only) ───────────────────────
     //
-    // When the daemon is launched detached (no console attached) and then
-    // spawns a console-subsystem child like rustc / cl / clang via
-    // `command_output_with_priority` or `tokio_command_output_with_priority`,
-    // Windows allocates a fresh console window for the child *unless* the
-    // creation flags include `CREATE_NO_WINDOW`. The console window flashes
-    // for the lifetime of the child — visible whenever cargo hits a cache
-    // miss and the daemon executes the compiler inline. Reported by the
-    // soldr + rustc + zccache workflow.
-    //
+    // The process boundary owns Windows console policy. Zccache supplies
+    // commands and applies its post-spawn priority/Job Object policy only.
     // The end-to-end behavior (child having no console window) is hard to
     // test inside `cargo test` because the test runner's own stdio
-    // capture makes the test binary console-less, so a child spawned
-    // without `CREATE_NO_WINDOW` reads as console-less too — false green.
-    // Instead we unit-test the helper that *computes* the creation flags
-    // the spawn site applies. If that helper returns the right bits,
-    // `cmd.creation_flags(...)` puts them on the CreateProcessW call.
+    // capture can make the test binary console-less. Soldr's integration test
+    // probes the real detached daemon; this unit check guards the shared API's
+    // default.
 
-    /// `child_creation_flags` must include `CREATE_NO_WINDOW` (`0x08000000`)
-    /// regardless of priority. Without that bit set, a detached daemon's
-    /// `command_output_with_priority` spawn allocates a console window per
-    /// child (the soldr + rustc cache-miss flash).
+    /// The shared Tokio spawn policy must remain consoleless by default.
     #[cfg(windows)]
     #[test]
-    fn child_creation_flags_includes_create_no_window() {
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        for priority in [
-            CompilePriority::Normal,
-            CompilePriority::Low,
-            CompilePriority::Idle,
-            CompilePriority::High,
-        ] {
-            let flags = child_creation_flags(priority);
-            assert_eq!(
-                flags & CREATE_NO_WINDOW,
-                CREATE_NO_WINDOW,
-                "child_creation_flags({priority:?}) = 0x{flags:08x} must set CREATE_NO_WINDOW (0x08000000) \
-                 to suppress the per-child console flash a detached daemon would otherwise produce"
-            );
-        }
+    fn running_process_tokio_policy_is_consoleless() {
+        assert!(!running_process::TokioSpawnOptions::default().show_console);
     }
 }

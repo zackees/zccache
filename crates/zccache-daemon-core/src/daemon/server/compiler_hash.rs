@@ -73,43 +73,42 @@ fn warn_probe_timeout(path: &Path, timeout: std::time::Duration) {
 /// Outcome of a bounded `-vV` probe — distinguishes a genuine timeout (log it)
 /// from a spawn failure (expected for stub binaries in unit tests; don't log).
 enum ProbeOutcome {
-    Completed(std::process::Output),
+    Completed(ProbeOutput),
     TimedOut,
     SpawnFailed,
 }
 
+struct ProbeOutput {
+    success: bool,
+    stdout: Vec<u8>,
+}
+
 /// Spawn `cmd` and wait up to `timeout`, killing the child on timeout. Used to
-/// bound the sync `-vV` probe. `-vV` output is tiny (well under any pipe
-/// buffer), so polling `try_wait` cannot deadlock on an undrained pipe.
-fn output_within(mut cmd: std::process::Command, timeout: std::time::Duration) -> ProbeOutcome {
-    use std::process::Stdio;
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(_) => return ProbeOutcome::SpawnFailed,
-    };
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_status)) => {
-                return match child.wait_with_output() {
-                    Ok(output) => ProbeOutcome::Completed(output),
-                    Err(_) => ProbeOutcome::SpawnFailed,
-                };
-            }
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return ProbeOutcome::TimedOut;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            Err(_) => return ProbeOutcome::SpawnFailed,
-        }
+/// bound the sync `-vV` probe. Capture, descendant containment, reader
+/// cancellation, and the aggregate byte limit all belong to running-process.
+fn output_within(cmd: std::process::Command, timeout: std::time::Duration) -> ProbeOutcome {
+    const PROBE_OUTPUT_LIMIT: usize = 1024 * 1024;
+
+    match running_process::run_std_command_bounded(cmd, Some(timeout), PROBE_OUTPUT_LIMIT) {
+        Ok(output) => ProbeOutcome::Completed(ProbeOutput {
+            success: output.exit_code == 0,
+            stdout: output.stdout,
+        }),
+        Err(running_process::ProcessError::Timeout) => ProbeOutcome::TimedOut,
+        Err(_) => ProbeOutcome::SpawnFailed,
     }
+}
+
+async fn output_within_async(
+    cmd: &mut tokio::process::Command,
+    timeout: std::time::Duration,
+) -> std::io::Result<std::process::Output> {
+    crate::daemon::process::tokio_command_output_with_priority_timeout(
+        cmd,
+        crate::daemon::process::CompilePriority::Normal,
+        timeout,
+    )
+    .await
 }
 
 /// The provenance of a cached compiler identity.
@@ -537,14 +536,11 @@ fn warn_rustc_identity_fallback(path: &Path, reason: &'static str) {
 fn rustc_identity(path: &Path) -> Option<RustcIdentity> {
     let mut cmd = std::process::Command::new(path);
     cmd.arg("-vV");
-    crate::daemon::process::suppress_child_console(&mut cmd);
     let timeout = rustc_probe_timeout();
     match output_within(cmd, timeout) {
-        ProbeOutcome::Completed(output) if output.status.success() && !output.stdout.is_empty() => {
-            Some(RustcIdentity::VerifiedVv(crate::hash::hash_bytes(
-                &output.stdout,
-            )))
-        }
+        ProbeOutcome::Completed(output) if output.success && !output.stdout.is_empty() => Some(
+            RustcIdentity::VerifiedVv(crate::hash::hash_bytes(&output.stdout)),
+        ),
         ProbeOutcome::TimedOut => {
             warn_probe_timeout(path, timeout);
             warn_rustc_identity_fallback(path, "probe_timeout");
@@ -570,27 +566,25 @@ fn rustc_identity(path: &Path) -> Option<RustcIdentity> {
 async fn rustc_identity_async(path: std::path::PathBuf) -> Option<RustcIdentity> {
     let mut cmd = tokio::process::Command::new(&path);
     cmd.arg("-vV");
-    crate::daemon::process::suppress_child_console_tokio(&mut cmd);
-    cmd.kill_on_drop(true);
     let timeout = rustc_probe_timeout();
-    match tokio::time::timeout(timeout, cmd.output()).await {
-        Ok(Ok(output)) if output.status.success() && !output.stdout.is_empty() => Some(
+    match output_within_async(&mut cmd, timeout).await {
+        Ok(output) if output.status.success() && !output.stdout.is_empty() => Some(
             RustcIdentity::VerifiedVv(crate::hash::hash_bytes(&output.stdout)),
         ),
-        Err(_) => {
+        Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
             warn_probe_timeout(&path, timeout);
             warn_rustc_identity_fallback(&path, "probe_timeout");
             crate::hash::hash_file(&path)
                 .ok()
                 .map(RustcIdentity::FileFallback)
         }
-        Ok(Err(_)) => {
+        Err(_) => {
             warn_rustc_identity_fallback(&path, "probe_spawn_failed");
             crate::hash::hash_file(&path)
                 .ok()
                 .map(RustcIdentity::FileFallback)
         }
-        Ok(Ok(_)) => {
+        Ok(_) => {
             warn_rustc_identity_fallback(&path, "probe_degenerate_output");
             crate::hash::hash_file(&path)
                 .ok()
@@ -613,13 +607,10 @@ async fn rustc_identity_async(path: std::path::PathBuf) -> Option<RustcIdentity>
 pub(super) fn hash_rustc_identity(path: &Path) -> Option<ContentHash> {
     let mut cmd = std::process::Command::new(path);
     cmd.arg("-vV");
-    // Suppress the Windows console window this cold-path probe would
-    // otherwise flash — the daemon runs detached, so a console-subsystem
-    // child spawned without CREATE_NO_WINDOW pops a visible window.
-    crate::daemon::process::suppress_child_console(&mut cmd);
+    // The running-process boundary makes this cold-path probe consoleless.
     let timeout = rustc_probe_timeout();
     match output_within(cmd, timeout) {
-        ProbeOutcome::Completed(output) if output.status.success() && !output.stdout.is_empty() => {
+        ProbeOutcome::Completed(output) if output.success && !output.stdout.is_empty() => {
             Some(crate::hash::hash_bytes(&output.stdout))
         }
         // A hung wrapper compiler: log it, then fall through to the
@@ -651,10 +642,9 @@ pub(super) fn hash_rustc_identity(path: &Path) -> Option<ContentHash> {
 pub(super) fn hash_cc_identity(path: &Path) -> Option<ContentHash> {
     let mut cmd = std::process::Command::new(path);
     cmd.arg("--version");
-    crate::daemon::process::suppress_child_console(&mut cmd);
     let timeout = rustc_probe_timeout();
     match output_within(cmd, timeout) {
-        ProbeOutcome::Completed(output) if output.status.success() && !output.stdout.is_empty() => {
+        ProbeOutcome::Completed(output) if output.success && !output.stdout.is_empty() => {
             Some(crate::hash::hash_bytes(&output.stdout))
         }
         ProbeOutcome::TimedOut => {
@@ -680,14 +670,12 @@ pub(super) fn hash_cc_identity(path: &Path) -> Option<ContentHash> {
 pub(super) async fn hash_cc_identity_async(path: std::path::PathBuf) -> Option<ContentHash> {
     let mut cmd = tokio::process::Command::new(&path);
     cmd.arg("--version");
-    crate::daemon::process::suppress_child_console_tokio(&mut cmd);
-    cmd.kill_on_drop(true);
     let timeout = rustc_probe_timeout();
-    match tokio::time::timeout(timeout, cmd.output()).await {
-        Ok(Ok(output)) if output.status.success() && !output.stdout.is_empty() => {
+    match output_within_async(&mut cmd, timeout).await {
+        Ok(output) if output.status.success() && !output.stdout.is_empty() => {
             Some(crate::hash::hash_bytes(&output.stdout))
         }
-        Err(_) => {
+        Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
             warn_probe_timeout(&path, timeout);
             crate::hash::hash_file(&path).ok()
         }
@@ -711,14 +699,12 @@ pub(super) async fn hash_dylint_driver_identity_async(
 ) -> Option<ContentHash> {
     let mut cmd = tokio::process::Command::new(&path);
     cmd.arg("-V").envs(client_env);
-    crate::daemon::process::suppress_child_console_tokio(&mut cmd);
-    cmd.kill_on_drop(true);
     let timeout = rustc_probe_timeout();
-    match tokio::time::timeout(timeout, cmd.output()).await {
-        Ok(Ok(output)) if output.status.success() && !output.stdout.is_empty() => {
+    match output_within_async(&mut cmd, timeout).await {
+        Ok(output) if output.status.success() && !output.stdout.is_empty() => {
             Some(crate::hash::hash_bytes(&output.stdout))
         }
-        Err(_) => {
+        Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
             warn_probe_timeout(&path, timeout);
             crate::hash::hash_file(&path).ok()
         }
@@ -730,20 +716,12 @@ pub(super) async fn hash_dylint_driver_identity_async(
 pub(super) async fn hash_rustc_identity_async(path: std::path::PathBuf) -> Option<ContentHash> {
     let mut cmd = tokio::process::Command::new(&path);
     cmd.arg("-vV");
-    // Same CREATE_NO_WINDOW suppression as the sync variant above.
-    crate::daemon::process::suppress_child_console_tokio(&mut cmd);
-    // Reap the child if we abandon the probe on timeout (issue #972) so a hung
-    // wrapper compiler is not left running.
-    cmd.kill_on_drop(true);
     let timeout = rustc_probe_timeout();
-    match tokio::time::timeout(timeout, cmd.output()).await {
-        Ok(Ok(output)) if output.status.success() && !output.stdout.is_empty() => {
+    match output_within_async(&mut cmd, timeout).await {
+        Ok(output) if output.status.success() && !output.stdout.is_empty() => {
             Some(crate::hash::hash_bytes(&output.stdout))
         }
-        // Timeout: a wrapper compiler that hung. Log it (the `cmd.output()`
-        // future is dropped → kill_on_drop reaps the child), then fall through
-        // to the file-content hash so cache-key computation is not blocked.
-        Err(_) => {
+        Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
             warn_probe_timeout(&path, timeout);
             crate::hash::hash_file(&path).ok()
         }
@@ -811,7 +789,7 @@ mod probe_timeout_tests {
     #[test]
     fn completes_fast_command() {
         match output_within(fast_cmd(), Duration::from_secs(30)) {
-            ProbeOutcome::Completed(output) => assert!(output.status.success()),
+            ProbeOutcome::Completed(output) => assert!(output.success),
             other => panic!(
                 "expected Completed, got {:?}",
                 std::mem::discriminant(&other)
@@ -826,5 +804,25 @@ mod probe_timeout_tests {
             output_within(cmd, Duration::from_secs(5)),
             ProbeOutcome::SpawnFailed
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn timeout_is_not_held_open_by_escaped_descendant_pipes() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "setsid sh -c 'sleep 3' & sleep 30"]);
+
+        let start = std::time::Instant::now();
+        let outcome = output_within(cmd, Duration::from_millis(100));
+
+        assert!(
+            matches!(outcome, ProbeOutcome::TimedOut),
+            "the outer probe must time out"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "an escaped descendant retained a reader thread for {:?}",
+            start.elapsed()
+        );
     }
 }
