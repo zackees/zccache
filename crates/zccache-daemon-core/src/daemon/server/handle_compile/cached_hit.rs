@@ -207,12 +207,15 @@ pub(super) fn materialize_cached_compile_hit(
     let has_staged_payload = payloads_to_write.iter().any(
         |payload| matches!(payload, CachedPayload::File(path) if is_staged_artifact_path(path)),
     );
-    let observed = match write_payloads_par_with_mtime_floor_and_policies_observed(
+    let observed_result = write_payloads_par_with_mtime_floor_and_policies_observed(
         &targets,
         &payloads_to_write,
         &mtime_floor_paths,
         &delivery_policies,
-    ) {
+    );
+    payloads.record_staged_lock_timings(&state.profiler.staged);
+    drop(payloads);
+    let observed = match observed_result {
         Ok(observed) => observed,
         Err(error) => {
             report_materialization_failure(

@@ -22,6 +22,13 @@ pub(in crate::daemon::server) use materialize::{
     materialization_error, materialization_error_progress, materialize_independent_with_stats,
     StagedMaterializationStats,
 };
+mod read_guard;
+use read_guard::validate_key;
+pub(in crate::daemon::server) use read_guard::{
+    acquire_staged_materialization_guard_for_cached_path,
+    acquire_staged_materialization_guard_if_present, is_staged_artifact_path,
+    is_staged_artifact_root, staged_key_supported, StagedMaterializationGuard,
+};
 mod root_safety;
 pub(in crate::daemon::server) use root_safety::validate_staged_artifact_root;
 use root_safety::{
@@ -233,73 +240,6 @@ fn staged_exec_lane_enabled_for(value: Option<&str>) -> bool {
             "all" | "1" | "true" | "yes" | "on" | "exec"
         )
     })
-}
-
-pub(in crate::daemon::server) fn staged_key_supported(key_hex: &str) -> bool {
-    !key_hex.is_empty()
-        && key_hex.len() <= 128
-        && key_hex.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-pub(in crate::daemon::server) fn is_staged_artifact_path(path: &Path) -> bool {
-    let mut components = path.components().rev();
-    let Some(output) = components
-        .next()
-        .and_then(|component| component.as_os_str().to_str())
-    else {
-        return false;
-    };
-    let Some(generation) = components
-        .next()
-        .and_then(|component| component.as_os_str().to_str())
-    else {
-        return false;
-    };
-    let Some(key) = components
-        .next()
-        .and_then(|component| component.as_os_str().to_str())
-    else {
-        return false;
-    };
-    let Some(root) = components
-        .next()
-        .and_then(|component| component.as_os_str().to_str())
-    else {
-        return false;
-    };
-    let root_matches = if cfg!(windows) {
-        root.eq_ignore_ascii_case(STAGED_ROOT)
-    } else {
-        root == STAGED_ROOT
-    };
-    let key_matches =
-        key.len() <= 128 && !key.is_empty() && key.bytes().all(|byte| byte.is_ascii_hexdigit());
-    let generation_matches =
-        generation.len() == 64 && generation.bytes().all(|byte| byte.is_ascii_hexdigit());
-    let output_matches = output
-        .strip_prefix("output-")
-        .is_some_and(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()));
-    root_matches && key_matches && generation_matches && output_matches
-}
-
-pub(in crate::daemon::server) fn is_staged_artifact_root(path: &Path) -> bool {
-    path.file_name().is_some_and(|name| {
-        if cfg!(windows) {
-            name.to_string_lossy().eq_ignore_ascii_case(STAGED_ROOT)
-        } else {
-            name == STAGED_ROOT
-        }
-    })
-}
-
-fn validate_key(key_hex: &str) -> io::Result<()> {
-    if !staged_key_supported(key_hex) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "staged artifact key must be a bounded hexadecimal string",
-        ));
-    }
-    Ok(())
 }
 
 fn validate_generation(generation_hex: &str) -> io::Result<()> {

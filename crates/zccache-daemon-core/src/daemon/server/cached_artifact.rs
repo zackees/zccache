@@ -17,6 +17,44 @@ pub(crate) enum CachedPayload {
     File(NormalizedPath),
 }
 
+/// Payloads resolved for one requested-output delivery.
+///
+/// Staged file payloads carry a shared store-lock guard. Its ownership is tied
+/// to this value so callers cannot retain generation paths while accidentally
+/// dropping the lock before reflink/hardlink/copy or directory unpacking.
+pub(crate) struct MaterializationPayloads {
+    payloads: Arc<[CachedPayload]>,
+    staged_guard: Option<StagedMaterializationGuard>,
+}
+
+impl std::ops::Deref for MaterializationPayloads {
+    type Target = [CachedPayload];
+
+    fn deref(&self) -> &Self::Target {
+        &self.payloads
+    }
+}
+
+impl MaterializationPayloads {
+    pub(crate) fn staged_lock_timings(&self) -> Option<(u64, u64)> {
+        self.staged_guard
+            .as_ref()
+            .map(StagedMaterializationGuard::timings_ns)
+    }
+
+    pub(crate) fn record_staged_lock_timings(
+        &self,
+        profiler: &crate::daemon::staged_stats::StagedProfiler,
+    ) {
+        use crate::daemon::staged_stats::StagedTiming;
+
+        if let Some((wait_ns, hold_ns)) = self.staged_lock_timings() {
+            profiler.timing(StagedTiming::HitStoreLockWait, wait_ns);
+            profiler.timing(StagedTiming::HitStoreLockHold, hold_ns);
+        }
+    }
+}
+
 struct ArtifactAccess {
     last_used: std::time::Instant,
     last_used_wall: std::time::SystemTime,
@@ -217,33 +255,6 @@ impl CachedArtifact {
     }
 }
 
-/// Load output payloads from `{key}_0`, `{key}_1`, ... files on disk.
-///
-/// Returns the payload slice, or `None` if any data file is missing
-/// (indicating corruption or eviction — caller should treat as cache miss).
-pub(super) fn ensure_payloads(
-    cached: &CachedArtifact,
-    artifact_dir: &Path,
-    key_hex: &str,
-) -> Option<Arc<[CachedPayload]>> {
-    ensure_payloads_result(cached, artifact_dir, key_hex)
-        .ok()
-        .flatten()
-}
-
-pub(super) fn ensure_payloads_result(
-    cached: &CachedArtifact,
-    artifact_dir: &Path,
-    key_hex: &str,
-) -> std::io::Result<Option<Arc<[CachedPayload]>>> {
-    ensure_payloads_with_staged_policy_result(
-        cached,
-        artifact_dir,
-        key_hex,
-        staged_artifacts_enabled(),
-    )
-}
-
 /// Resolve payloads for materialization, translating a resolver failure or a
 /// missing-blob outcome into a typed [`MaterializationFailure`] the caller can
 /// report and (for genuine blob loss) use as depgraph-invalidation evidence.
@@ -251,20 +262,68 @@ pub(super) fn ensure_payloads_for_materialization(
     cached: &CachedArtifact,
     artifact_dir: &Path,
     key_hex: &str,
-) -> MaterializationResult<Arc<[CachedPayload]>> {
-    match ensure_payloads_result(cached, artifact_dir, key_hex) {
-        Ok(Some(payloads)) => Ok(payloads),
-        Ok(None) => Err(cache_blob_missing(
+) -> MaterializationResult<MaterializationPayloads> {
+    let existing = cached.payloads.get().cloned();
+    let existing_is_staged = existing.as_ref().is_some_and(|payloads| {
+        payloads.iter().any(
+            |payload| matches!(payload, CachedPayload::File(path) if is_staged_artifact_path(path)),
+        )
+    });
+    let mut staged_guard = if existing_is_staged {
+        Some(
+            acquire_staged_materialization_guard_for_cached_path(artifact_dir)
+                .map_err(|error| cache_read_failure(artifact_dir, error))?,
+        )
+    } else if existing.is_none() && staged_artifacts_enabled() {
+        acquire_staged_materialization_guard_if_present(artifact_dir, key_hex)
+            .map_err(|error| cache_read_failure(artifact_dir, error))?
+    } else {
+        None
+    };
+
+    let resolved = if let Some(payloads) = existing {
+        Some(payloads)
+    } else {
+        ensure_payloads_with_staged_policy_result(
+            cached,
+            artifact_dir,
+            key_hex,
+            staged_guard.is_some(),
+        )
+        .map_err(|error| cache_read_failure(artifact_dir, error))?
+    };
+
+    match resolved {
+        Some(payloads) => {
+            let is_staged = payloads.iter().any(
+                |payload| matches!(payload, CachedPayload::File(path) if is_staged_artifact_path(path)),
+            );
+            if is_staged && staged_guard.is_none() {
+                // A concurrent resolver may have initialized the shared cell
+                // with staged paths after this request chose its lookup lane.
+                // Acquire ownership before those canonical paths can escape.
+                staged_guard = Some(
+                    acquire_staged_materialization_guard_for_cached_path(artifact_dir)
+                        .map_err(|error| cache_read_failure(artifact_dir, error))?,
+                );
+            } else if !is_staged {
+                // A pointer may have disappeared before the shared lock was
+                // acquired, causing the resolver to fall back to pack/v1.
+                // Non-staged payloads must not retain the staged-store lock.
+                staged_guard = None;
+            }
+            Ok(MaterializationPayloads {
+                payloads,
+                staged_guard,
+            })
+        }
+        None => Err(cache_blob_missing(
             &artifact_dir.join(key_hex),
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "cached artifact metadata or payload is unavailable",
             ),
         )),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Err(cache_blob_missing(&artifact_dir.join(key_hex), error))
-        }
-        Err(error) => Err(cache_read_failure(artifact_dir, error)),
     }
 }
 
@@ -488,5 +547,177 @@ mod tests {
         assert!(ensure_payloads_with_staged_policy(&cached, dir.path(), key, false).is_none());
         std::fs::write(dir.path().join(format!("{key}_0")), b"payload").unwrap();
         assert!(ensure_payloads_with_staged_policy(&cached, dir.path(), key, false).is_some());
+    }
+
+    #[test]
+    fn staged_materialization_lease_blocks_clear_until_delivery_finishes() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let artifact_dir = dir.path().join("artifacts");
+        std::fs::create_dir_all(&artifact_dir).unwrap();
+        let source = dir.path().join("source.rlib");
+        let bytes = b"staged materialization ownership";
+        std::fs::write(&source, bytes).unwrap();
+        let key = "3".repeat(64);
+        persist_staged_artifact_paths(&artifact_dir, &key, &[source.into()]).unwrap();
+        let cached = lazy_artifact(bytes.len() as u64);
+
+        let payloads = ensure_payloads_for_materialization(&cached, &artifact_dir, &key).unwrap();
+        assert!(
+            payloads.staged_lock_timings().is_some(),
+            "a staged payload must carry its store-lock lease"
+        );
+        let staged_generation_path = match &payloads[0] {
+            CachedPayload::File(path) => path.clone(),
+            CachedPayload::Bytes(_) => panic!("staged resolver returned an inline payload"),
+        };
+
+        let clear_hook =
+            StagedHookGuard::arm(&artifact_dir, StagedHookPoint::MaintenanceStoreLockPending);
+        let (clear_done_tx, clear_done_rx) = mpsc::sync_channel(1);
+        let clear_artifact_dir = artifact_dir.clone();
+        let clear = std::thread::spawn(move || {
+            let result = clear_staged_artifacts(&clear_artifact_dir);
+            let _ = clear_done_tx.send(result);
+        });
+        clear_hook.wait_until_reached();
+        clear_hook.resume();
+        assert!(
+            matches!(
+                clear_done_rx.recv_timeout(Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "exclusive clear must wait while requested-output delivery owns the shared lease"
+        );
+
+        let destination: NormalizedPath = dir.path().join("restored.rlib").into();
+        write_payloads_par_observed(std::slice::from_ref(&destination), &payloads).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), bytes);
+
+        drop(payloads);
+        clear_done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("clear did not resume after the materialization lease was released")
+            .unwrap();
+        clear.join().unwrap();
+        assert!(
+            !staged_generation_path.exists(),
+            "clear must proceed promptly after the lease is released"
+        );
+    }
+
+    #[test]
+    fn staged_materialization_lease_blocks_snapshot_eviction_until_delivery_finishes() {
+        use std::collections::HashMap;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let artifact_dir = dir.path().join("artifacts");
+        std::fs::create_dir_all(&artifact_dir).unwrap();
+        let source = dir.path().join("source.rmeta");
+        let bytes = b"snapshot eviction ownership";
+        std::fs::write(&source, bytes).unwrap();
+        let key = "6".repeat(64);
+        persist_staged_artifact_paths(&artifact_dir, &key, &[source.into()]).unwrap();
+        let cached = lazy_artifact(bytes.len() as u64);
+        let payloads = ensure_payloads_for_materialization(&cached, &artifact_dir, &key).unwrap();
+        let generation = std::fs::read_to_string(
+            artifact_dir
+                .join(".staged-v2")
+                .join(format!("{key}.current")),
+        )
+        .unwrap();
+        let expected = HashMap::from([(key.clone(), Some(generation.trim().to_string()))]);
+
+        let eviction_hook =
+            StagedHookGuard::arm(&artifact_dir, StagedHookPoint::MaintenanceStoreLockPending);
+        let (eviction_done_tx, eviction_done_rx) = mpsc::sync_channel(1);
+        let eviction_artifact_dir = artifact_dir.clone();
+        let eviction = std::thread::spawn(move || {
+            let result = evict_staged_artifact_keys_if_unchanged(&eviction_artifact_dir, &expected);
+            let _ = eviction_done_tx.send(result);
+        });
+        eviction_hook.wait_until_reached();
+        eviction_hook.resume();
+        assert!(
+            matches!(
+                eviction_done_rx.recv_timeout(Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "snapshot eviction must wait while a hit owns the staged generation"
+        );
+
+        let destination: NormalizedPath = dir.path().join("restored.rmeta").into();
+        write_payloads_par_observed(std::slice::from_ref(&destination), &payloads).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), bytes);
+        drop(payloads);
+
+        let removed = eviction_done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("eviction did not resume after the materialization lease was released")
+            .unwrap();
+        assert_eq!(removed, std::collections::HashSet::from([key]));
+        eviction.join().unwrap();
+    }
+
+    #[test]
+    fn non_staged_payloads_do_not_take_the_staged_store_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifact_dir = dir.path().join("artifacts");
+        std::fs::create_dir_all(&artifact_dir).unwrap();
+        let key = "4".repeat(64);
+        let legacy = artifact_dir.join(format!("{key}_0"));
+        std::fs::write(&legacy, b"legacy").unwrap();
+        let cached = lazy_artifact(6);
+
+        let payloads = ensure_payloads_for_materialization(&cached, &artifact_dir, &key).unwrap();
+        assert!(
+            payloads.staged_lock_timings().is_none(),
+            "legacy file payloads must not acquire the staged-store lock"
+        );
+
+        let inline = CachedArtifact::from_cached_payloads(
+            ArtifactIndex::new(
+                vec!["inline.o".to_string()],
+                vec![6],
+                Arc::new(Vec::new()),
+                Arc::new(Vec::new()),
+                0,
+            ),
+            vec![CachedPayload::Bytes(Arc::new(b"inline".to_vec()))],
+        );
+        let inline_payloads =
+            ensure_payloads_for_materialization(&inline, &artifact_dir, &"5".repeat(64)).unwrap();
+        assert!(
+            inline_payloads.staged_lock_timings().is_none(),
+            "byte-backed payloads must not acquire the staged-store lock"
+        );
+    }
+
+    #[test]
+    fn every_cache_hit_delivery_path_uses_the_typed_materialization_lease() {
+        let consumers = [
+            (
+                "single compile",
+                include_str!("handle_compile/cached_hit.rs"),
+            ),
+            ("multi compile", include_str!("handle_compile_multi.rs")),
+            ("exact exec", include_str!("handle_exec.rs")),
+            ("link and directory bundle", include_str!("handle_link.rs")),
+        ];
+        for (name, source) in consumers {
+            assert!(
+                source.contains("ensure_payloads_for_materialization("),
+                "{name} bypasses the typed staged materialization lease"
+            );
+        }
+        assert!(
+            include_str!("handle_link.rs")
+                .contains("materialize_directory_payload(&payloads[0], &output_path)"),
+            "directory-bundle unpacking must consume payloads from the leased resolver"
+        );
     }
 }

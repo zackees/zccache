@@ -768,7 +768,11 @@ async fn try_exec_cache_hit(
     let stderr_full = entry.stderr.clone();
     let names = Arc::clone(&entry.meta.output_names);
 
-    let payloads = ensure_payloads(&entry, &state.artifact_dir, key_hex)?;
+    let payloads = ensure_payloads_for_materialization(&entry, &state.artifact_dir, key_hex)
+        .map_err(|failure| {
+            report_materialization_failure(&state.cache_dir, key_hex, "exec-hit", &failure);
+        })
+        .ok()?;
     record_artifact_access(state, key_hex, &entry, std::time::Instant::now());
 
     let mut paired: Vec<(NormalizedPath, &CachedPayload)> = Vec::with_capacity(output_files.len());
@@ -795,6 +799,8 @@ async fn try_exec_cache_hit(
     });
     let materialize_started = std::time::Instant::now();
     let observed = write_payloads_par_observed(&targets, &payloads_for_write);
+    payloads.record_staged_lock_timings(&state.profiler.staged);
+    drop(payloads);
     if let Err(failure) = &observed {
         report_materialization_failure(&state.cache_dir, key_hex, "exec-hit", failure);
     }

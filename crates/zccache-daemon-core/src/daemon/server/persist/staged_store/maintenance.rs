@@ -142,6 +142,11 @@ pub(crate) fn evict_staged_artifact_keys_if_unchanged(
         return Ok(HashSet::new());
     }
     let store_lock = open_store_lock(&root)?;
+    #[cfg(test)]
+    super::hook::pause(
+        artifact_dir,
+        super::StagedHookPoint::MaintenanceStoreLockPending,
+    );
     fs2::FileExt::lock_exclusive(&store_lock)?;
     let mut removed = HashSet::new();
     for (key, expected_generation) in expected.iter().filter(|(key, _)| staged_key_supported(key)) {
@@ -216,6 +221,11 @@ pub(in crate::daemon::server) fn clear_staged_artifacts(artifact_dir: &Path) -> 
         return Ok(0);
     }
     let store_lock = open_store_lock(&root)?;
+    #[cfg(test)]
+    super::hook::pause(
+        artifact_dir,
+        super::StagedHookPoint::MaintenanceStoreLockPending,
+    );
     fs2::FileExt::lock_exclusive(&store_lock)?;
     let mut bytes_removed = 0;
     for entry in fs::read_dir(&root)?.flatten() {

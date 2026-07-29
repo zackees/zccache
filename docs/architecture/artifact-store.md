@@ -150,6 +150,15 @@ emit a durable `staged_publication_conflict` lifecycle event. An
 invalid/corrupt prior generation may be replaced and is recorded as
 `staged_publication_replaces_invalid_generation`.
 
+Cache-hit resolution uses the same ownership boundary. A typed
+`MaterializationPayloads` value carries a shared store-lock lease whenever its
+payloads point into a staged generation, and keeps that lease alive through
+file delivery or directory-bundle unpacking. Cleanup and eviction therefore
+wait for an active hit instead of unlinking its generation between resolution
+and materialization. Byte-backed, pack, and flat-v1 payloads do not acquire the
+staged-store lock. The staged profile reports `hit_store_lock_wait` and
+`hit_store_lock_hold` nanoseconds separately from total hit materialization.
+
 Mixed-format lookup is explicit during migration: v2 is attempted first,
 then flat v1 payloads, then pack payloads. Disabling staged artifacts (or
 downgrading to a reader without v2 support) leaves v1/pack entries readable
