@@ -36,6 +36,57 @@ use crate::NormalizedPath;
 ///
 /// On Windows this is exactly `create_dir_all`: the equivalent control there
 /// is the pipe's DACL, which is #1171 item 2.
+/// Ensure an existing directory is not group- or other-writable, tightening
+/// it in place if it is (#1171 item 4).
+///
+/// [`create_dir_all_private`] only sets the mode on directories it creates, so
+/// an install predating that change still has a `0755` (or worse) cache root
+/// and socket directory. This is the repair path for those, and the reason it
+/// returns a `Result`: a directory that is group/other-writable and cannot be
+/// tightened is a real exposure, and the caller is expected to refuse to serve
+/// rather than continue quietly.
+///
+/// "Writable" is the test, not "readable". Another user reading the directory
+/// listing is uninteresting; another user *creating or replacing entries* in
+/// it is how the socket gets substituted.
+///
+/// Returns `Ok(false)` when nothing needed doing, `Ok(true)` when the mode was
+/// tightened, and `Err` when it is still loose afterwards. On Windows this is
+/// always `Ok(false)` — the equivalent control is the pipe DACL (#1171 item 2).
+pub fn ensure_dir_private(path: &std::path::Path) -> std::io::Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = std::fs::metadata(path)?.permissions().mode() & 0o777;
+        if mode & 0o022 == 0 {
+            return Ok(false);
+        }
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+
+        // Re-read rather than trusting the write: on some filesystems (and
+        // under some mount options) `chmod` reports success without taking
+        // effect, and this is exactly the case where a false negative is
+        // expensive.
+        let now = std::fs::metadata(path)?.permissions().mode() & 0o777;
+        if now & 0o022 != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "{} is group/other-writable (mode {now:04o}) and could not be tightened",
+                    path.display()
+                ),
+            ));
+        }
+        Ok(true)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = std::fs::metadata(path)?;
+        Ok(false)
+    }
+}
+
 pub fn create_dir_all_private(path: &std::path::Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {

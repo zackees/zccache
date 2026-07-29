@@ -44,6 +44,7 @@
 //! | `wrapper-local-fallback` | CLI wrapper | daemon dispatch failed before request delivery and the tool ran locally | `reason`, tool fields |
 //! | `version_mismatch` | daemon | client / daemon protocol versions disagree | `daemon_protocol_version`, `client_protocol_version`, `reason` |
 //! | `state_corrupt` (#1157) | daemon | persisted state did not parse and was dropped rather than reconciled; consequence is a full cold recompile | `subsystem`, `consequence`, `message`, `path`, `bytes` |
+//! | `insecure_socket_dir` (#1171) | daemon | the directory holding the IPC endpoint was group/other-writable; another local user could substitute the socket | `path`, `outcome`, `detail` |
 //! | `staged_publication_conflict` | daemon | one cache key produced two different valid generations; first generation retained | `cache_key`, `existing_generation`, `candidate_generation`, `elapsed_ns` |
 //! | `staged_publication_replaces_invalid_generation` | daemon | a corrupt/incomplete selected generation was replaced by a validated compile result | `cache_key`, `invalid_generation`, `replacement_generation` |
 //! | `staged_salvage_started` | daemon | publication/index failed after a successful compile; requested outputs are being recovered | `reason`, `output_count`, `copied_bytes`, `elapsed_ns` |
@@ -121,6 +122,14 @@ pub const EVENT_VERSION_MISMATCH: &str = "version_mismatch";
 /// so the event carries `subsystem` and `consequence` and is what makes a
 /// fleet-wide "everyone recompiled today" incident attributable after the fact.
 pub const EVENT_STATE_CORRUPT: &str = "state_corrupt";
+/// The directory holding the IPC endpoint was group/other-writable (#1171).
+///
+/// Reaching that socket is arbitrary process execution as the daemon user, so
+/// another local user who can create entries in this directory can substitute
+/// the endpoint. Emitted whether the mode was repaired or the daemon refused
+/// to serve, because "this was exposed until now" is the operator's business
+/// either way.
+pub const EVENT_INSECURE_SOCKET_DIR: &str = "insecure_socket_dir";
 
 /// Issue #755 events — daemon death + handover + client disconnect.
 /// Additive: existing tooling that filters on `event` continues to
@@ -200,6 +209,7 @@ pub const EVENT_ALL: &[&str] = &[
     EVENT_DIED_PRIVATE_OWNER_EXIT,
     EVENT_VERSION_MISMATCH,
     EVENT_STATE_CORRUPT,
+    EVENT_INSECURE_SOCKET_DIR,
     EVENT_DAEMON_DIED,
     EVENT_PIPE_HANDOVER,
     EVENT_CLIENT_DISCONNECTED,
