@@ -845,9 +845,9 @@ const LOG_GC_CUTOFF: std::time::Duration = std::time::Duration::from_secs(60 * 6
 ///   * `daemon-lifecycle.log.1` (rotated lifecycle archive; the daemon
 ///     handles its own 1 MiB soft-cap but never garbage-collects the
 ///     archive, so it can sit on disk forever after the daemon exits)
-///   * `daemon.log.*` (rotated event-log archives; the EventLogger
-///     keeps N by count, this adds a time-based safety net for archives
-///     left behind by daemons that exited before the next rotation)
+///   * `daemon.log.*` (legacy rotated event-log archives; nothing writes
+///     these since the unused `EventLogger` was removed in #1165, so the
+///     sweep is now purely about reclaiming what older daemons left)
 ///   * `compile_journal.jsonl.*` (rotated compile-journal archives;
 ///     same rationale)
 ///   * Anything else that may have accumulated here from past versions

@@ -1,8 +1,8 @@
 //! Background writer thread + JSONL rotation/GC.
 //!
-//! Same lock-free channel + background `std::thread` pattern as
-//! `EventLogger`. Serialization happens on the caller's tokio task; this
-//! thread does file I/O only. Zero contention on the hot path.
+//! Lock-free channel + background `std::thread`: serialization happens on the
+//! caller's tokio task; this thread does file I/O only. Zero contention on the
+//! hot path.
 //!
 //! Performance notes (ISSUE-101 / ISSUE-301 / ISSUE-302):
 //! - Channel is `std::sync::mpsc` (sync receiver) instead of
@@ -27,7 +27,7 @@ use std::sync::mpsc;
 
 use crate::core::NormalizedPath;
 
-use super::super::event_log::open_append;
+use super::log_io::open_append;
 
 /// Maximum global journal size before rotation (50 MB).
 pub(super) const JOURNAL_MAX_SIZE: u64 = 50 * 1024 * 1024;
@@ -174,8 +174,7 @@ pub(super) fn journal_thread(
 /// Rotate the global journal file: rename to timestamped backup, GC old backups.
 /// Returns the new file handle and initial size, or `None` on failure.
 pub(super) fn rotate_journal(path: &Path) -> Option<(std::fs::File, u64)> {
-    let ts =
-        super::super::event_log::format_timestamp(std::time::SystemTime::now()).replace(':', "-");
+    let ts = super::log_io::format_timestamp(std::time::SystemTime::now()).replace(':', "-");
     let rotated = path.with_file_name(format!("compile_journal.jsonl.{ts}"));
     // Rename current file to rotated name.
     if fs::rename(path, &rotated).is_err() {

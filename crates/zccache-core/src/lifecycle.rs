@@ -472,7 +472,7 @@ fn try_write_to_path(
 }
 
 /// Open a file in append mode with sharing flags that allow deletion
-/// on Windows. Mirrors `zccache_daemon::event_log::open_append`;
+/// on Windows. Mirrors the compile journal's `log_io::open_append`;
 /// duplicated here so `zccache-core` doesn't need to depend on the
 /// daemon crate.
 fn open_append(path: &Path) -> std::io::Result<std::fs::File> {
