@@ -371,6 +371,37 @@ fn a_group_writable_dir_is_tightened_in_place() {
     assert_eq!(mode, 0o700, "the repair must leave it owner-only");
 }
 
+/// A sticky world-writable directory is a *shared* temp root (`/tmp`,
+/// `/var/tmp` are `1777` by design) and must never be tightened.
+///
+/// The first revision of this function did not check, so it tried to `chmod
+/// /tmp` to `0700` — the socket parent for `unique_test_endpoint`. Unprivileged
+/// that fails and the daemon refuses to bind, which is how CI caught it; as
+/// root it would have *succeeded* and broken every other process on the
+/// machine. Being unable to fix a shared root is not a reason to refuse
+/// either: a socket there is protected by its own `0600` mode.
+#[cfg(unix)]
+#[test]
+fn a_sticky_shared_temp_root_is_never_tightened() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let shared = temp.path().join("shared-tmp");
+    std::fs::create_dir(&shared).unwrap();
+    // 1777 — exactly /tmp's mode.
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1777)).unwrap();
+
+    let changed = super::paths::ensure_dir_private(&shared)
+        .expect("a shared temp root must be accepted, not refused");
+
+    assert!(!changed, "a sticky shared root must be left alone");
+    let mode = std::fs::metadata(&shared).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(
+        mode, 0o1777,
+        "tightening a shared temp root would break every other process using it"
+    );
+}
+
 /// Writable is the test, not readable. Another user reading the directory
 /// listing is uninteresting; another user creating entries in it is how the
 /// socket gets substituted. A `0755` dir must still be repaired (other-execute

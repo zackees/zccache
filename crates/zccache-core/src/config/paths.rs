@@ -58,7 +58,28 @@ pub fn ensure_dir_private(path: &std::path::Path) -> std::io::Result<bool> {
     {
         use std::os::unix::fs::PermissionsExt;
 
-        let mode = std::fs::metadata(path)?.permissions().mode() & 0o777;
+        let meta = std::fs::metadata(path)?;
+        let full_mode = meta.permissions().mode();
+
+        // Never re-permission a directory zccache does not own.
+        //
+        // The sticky bit is the OS's marker for a *shared* temp root — `/tmp`
+        // and `/var/tmp` are `1777` by design, and their write permission is
+        // the point, with unlink protection supplying the safety. Tightening
+        // one would be wrong for every other process on the machine, and as
+        // root it would succeed: an earlier revision of this function tried
+        // exactly that and CI stopped it. A socket placed directly in such a
+        // root is not a layout zccache produces; its own `0600` mode is what
+        // protects it there.
+        const STICKY: u32 = 0o1000;
+        if full_mode & STICKY != 0 {
+            return Ok(false);
+        }
+        // A directory owned by someone else needs no special case: `chmod`
+        // fails with EPERM and this returns `Err`, which is the right answer
+        // anyway — the directory really is exposed and we really cannot fix
+        // it, so the caller should refuse rather than serve from it.
+        let mode = full_mode & 0o777;
         if mode & 0o022 == 0 {
             return Ok(false);
         }
