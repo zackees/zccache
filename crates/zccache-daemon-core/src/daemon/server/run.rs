@@ -661,7 +661,7 @@ pub(super) fn record_watcher_degradation(state: &Arc<SharedState>, reason: &str)
 
 /// Spawns the settle buffer and the `CacheSystem` consumer over a freshly
 /// armed watcher's raw event stream.
-fn start_watcher_tasks(
+pub(super) fn start_watcher_tasks(
     state: &Arc<SharedState>,
     raw_rx: tokio::sync::mpsc::UnboundedReceiver<crate::watcher::WatchEvent>,
 ) {
@@ -674,8 +674,9 @@ fn start_watcher_tasks(
         });
 
         // Consumer: feeds settled events into CacheSystem for metadata invalidation.
+        let supervised = Arc::clone(state);
         let state = Arc::clone(state);
-        tokio::spawn(async move {
+        let consumer = tokio::spawn(async move {
             while !state.shutdown_requested.load(Ordering::Acquire) {
                 // Race the settled-event recv against the shutdown signal
                 // (issue #974). Without this the loop only re-checks
@@ -762,6 +763,47 @@ fn start_watcher_tasks(
                 }
             }
             tracing::debug!("watcher consumer task exiting");
+        });
+
+        // #1177 part B: the consumer's handle used to be dropped, so a panic
+        // here killed metadata invalidation silently and the daemon kept
+        // serving fast hits from state nothing was invalidating any more —
+        // stale hits, i.e. a correctness failure, until the next restart.
+        //
+        // It cannot simply be restarted: the task owns `settled_rx`, which a
+        // panic drops, so a fresh loop would have no events to consume and
+        // would look healthy while delivering nothing.
+        //
+        // Instead, fail the way an unarmable watcher already fails (#1156):
+        // clear `watcher_active`, which both fast-hit tiers gate on, and say
+        // so. That converts a silent correctness bug into the documented
+        // degradation the rest of the daemon already handles — slower, but
+        // never wrong.
+        tokio::spawn(async move {
+            let outcome = consumer.await;
+            if supervised.shutdown_requested.load(Ordering::Acquire) {
+                return;
+            }
+            let reason = match &outcome {
+                Err(err) if err.is_panic() => "consumer_panicked",
+                Err(_) => "consumer_cancelled",
+                Ok(()) => "consumer_exited",
+            };
+            supervised.watcher_active.store(false, Ordering::Release);
+            tracing::warn!(
+                event = "watcher_degraded",
+                reason,
+                "watcher consumer stopped before shutdown — metadata invalidation \
+                 is no longer running; both fast hit tiers are disabled so hits \
+                 are re-verified instead of trusted"
+            );
+            crate::core::lifecycle::write_event(
+                crate::core::lifecycle::EVENT_WATCHER_DEGRADED,
+                serde_json::json!({
+                    "reason": reason,
+                    "degradations": ["fast_hit_tiers_disabled", "metadata_invalidation_stopped"],
+                }),
+            );
         });
     }
 }
