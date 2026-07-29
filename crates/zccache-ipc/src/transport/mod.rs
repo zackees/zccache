@@ -367,6 +367,49 @@ impl IpcListener {
                 // that contains it is an access-control boundary. A plain
                 // `create_dir_all` left it at `0777 & ~umask`.
                 zccache_core::config::create_dir_all_private(parent)?;
+                // #1171 item 4: the line above only sets the mode on
+                // directories it creates, so an install predating that change
+                // still has a loose one. Repair it, and if it cannot be
+                // repaired refuse to serve — binding into a directory other
+                // local users can write means they can substitute this socket,
+                // and the endpoint is arbitrary process execution.
+                match zccache_core::config::ensure_dir_private(parent) {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        tracing::warn!(
+                            event = "insecure_socket_dir",
+                            path = %parent.display(),
+                            outcome = "tightened",
+                            "socket directory was group/other-writable and has been \
+                             tightened to 0700; another local user could have \
+                             substituted the endpoint until now"
+                        );
+                        zccache_core::lifecycle::write_event(
+                            zccache_core::lifecycle::EVENT_INSECURE_SOCKET_DIR,
+                            serde_json::json!({
+                                "path": parent.display().to_string(),
+                                "outcome": "tightened",
+                            }),
+                        );
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            event = "insecure_socket_dir",
+                            path = %parent.display(),
+                            outcome = "refused",
+                            "refusing to bind: {err}"
+                        );
+                        zccache_core::lifecycle::write_event(
+                            zccache_core::lifecycle::EVENT_INSECURE_SOCKET_DIR,
+                            serde_json::json!({
+                                "path": parent.display().to_string(),
+                                "outcome": "refused",
+                                "detail": err.to_string(),
+                            }),
+                        );
+                        return Err(err.into());
+                    }
+                }
             }
             let listener = tokio::net::UnixListener::bind(endpoint)?;
             // Tighten the socket itself too. On Linux this is what stops a

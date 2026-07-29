@@ -348,6 +348,90 @@ fn a_private_dir_is_created_owner_only_at_every_level() {
     }
 }
 
+/// #1171 item 4: `create_dir_all_private` only sets the mode on directories it
+/// creates, so installs predating it still have a loose cache root and socket
+/// directory. This is the repair path for those.
+#[cfg(unix)]
+#[test]
+fn a_group_writable_dir_is_tightened_in_place() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("loose");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+
+    let changed = super::paths::ensure_dir_private(&dir).unwrap();
+
+    assert!(
+        changed,
+        "a world-writable dir must report that it was repaired"
+    );
+    let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700, "the repair must leave it owner-only");
+}
+
+/// A sticky world-writable directory is a *shared* temp root (`/tmp`,
+/// `/var/tmp` are `1777` by design) and must never be tightened.
+///
+/// The first revision of this function did not check, so it tried to `chmod
+/// /tmp` to `0700` — the socket parent for `unique_test_endpoint`. Unprivileged
+/// that fails and the daemon refuses to bind, which is how CI caught it; as
+/// root it would have *succeeded* and broken every other process on the
+/// machine. Being unable to fix a shared root is not a reason to refuse
+/// either: a socket there is protected by its own `0600` mode.
+#[cfg(unix)]
+#[test]
+fn a_sticky_shared_temp_root_is_never_tightened() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let shared = temp.path().join("shared-tmp");
+    std::fs::create_dir(&shared).unwrap();
+    // 1777 — exactly /tmp's mode.
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1777)).unwrap();
+
+    let changed = super::paths::ensure_dir_private(&shared)
+        .expect("a shared temp root must be accepted, not refused");
+
+    assert!(!changed, "a sticky shared root must be left alone");
+    let mode = std::fs::metadata(&shared).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(
+        mode, 0o1777,
+        "tightening a shared temp root would break every other process using it"
+    );
+}
+
+/// Writable is the test, not readable. Another user reading the directory
+/// listing is uninteresting; another user creating entries in it is how the
+/// socket gets substituted. A `0755` dir must still be repaired (other-execute
+/// grants the search permission macOS relies on), but a `0700` one must be
+/// left alone rather than churned on every daemon start.
+#[cfg(unix)]
+#[test]
+fn an_already_private_dir_is_left_untouched() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("private");
+    super::paths::create_dir_all_private(&dir).unwrap();
+
+    let changed = super::paths::ensure_dir_private(&dir).unwrap();
+
+    assert!(
+        !changed,
+        "an owner-only dir needs no repair and must report so"
+    );
+}
+
+/// A missing directory is an error, not a silent pass — the caller is about to
+/// bind a socket in it.
+#[cfg(unix)]
+#[test]
+fn ensuring_a_missing_dir_is_an_error() {
+    let temp = tempfile::tempdir().unwrap();
+    super::paths::ensure_dir_private(&temp.path().join("nope"))
+        .expect_err("a missing socket directory must not report success");
+}
+
 /// Re-creating an existing directory must succeed rather than erroring, since
 /// every daemon start walks this path.
 #[cfg(unix)]
