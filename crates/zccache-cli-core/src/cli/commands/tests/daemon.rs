@@ -2,10 +2,11 @@
 //! protocol-mismatch auto-recovery path (issue #27), the bounded wait
 //! after a clean stop, and the bounded Status-probe (issue #554).
 
-use super::super::daemon::{
-    check_daemon_version, ensure_daemon, profile_env_overrides, tokio_console_bind,
-    wait_for_daemon_teardown, VersionCheck,
-};
+use super::super::daemon::{profile_env_overrides, tokio_console_bind, wait_for_daemon_teardown};
+// #1161: the recovery path these tests cover now has a single implementation
+// in `cli::runtime`. The duplicate in `commands::daemon` — which had none of
+// the identity gating, probe-before-replace, or drain budget — is gone.
+use crate::cli::runtime::{check_daemon_version, ensure_daemon, VersionCheck};
 
 // ── Protocol mismatch recovery (issue #27) ──────────────────
 

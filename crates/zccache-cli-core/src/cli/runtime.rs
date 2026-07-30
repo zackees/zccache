@@ -19,8 +19,24 @@ pub fn run_async<T>(
         .block_on(future)
 }
 
+/// Identity of the daemon instance a client is about to talk to.
+///
+/// #1161: every kill must name the instance that actually failed, and the
+/// only way to do that is to read the identity **before** the exchange. By
+/// the time a request has failed, the lock file may already name a
+/// replacement some other client spawned — killing "whoever is current" is
+/// how one client's timeout becomes a kill chain through a `-j16` herd.
+///
+/// `None` means the identity could not be established, and every kill path
+/// treats that as a refusal rather than as a wildcard.
+#[must_use]
+pub fn current_daemon_instance(
+) -> Option<running_process::broker::protocol_v2::backend_handle::DaemonProcess> {
+    crate::ipc::read_backend_identity()
+}
+
 #[derive(Debug)]
-enum VersionCheck {
+pub(crate) enum VersionCheck {
     Ok,
     Unreachable,
     DaemonOlder { daemon_ver: String },
@@ -47,7 +63,7 @@ pub async fn connect_client(
     Ok(conn)
 }
 
-async fn check_daemon_version(endpoint: &str) -> VersionCheck {
+pub(crate) async fn check_daemon_version(endpoint: &str) -> VersionCheck {
     match crate::ipc::daemon_control_roundtrip(
         endpoint,
         crate::ipc::DaemonControlRequest::Status,
@@ -466,6 +482,55 @@ async fn stop_stale_daemon(
     endpoint: &str,
     failed_instance: Option<&running_process::broker::protocol_v2::backend_handle::DaemonProcess>,
 ) -> Option<u32> {
+    stop_daemon_instance(endpoint, failed_instance, GRACEFUL_DRAIN_BUDGET).await
+}
+
+/// How long a *wedged* daemon gets before the kill lands.
+///
+/// A daemon that already missed its per-request budget and then failed a
+/// follow-up responsiveness probe is not going to complete a 30 s durable
+/// drain — waiting the graceful budget would just delay the failure the
+/// fail-fast policy (#955) exists to surface immediately. The identity gate
+/// still applies: fail-fast is about *how long we wait*, never about *whom we
+/// kill*.
+const WEDGE_DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Kill a daemon the wrapper found wedged — but only the instance it was
+/// talking to.
+///
+/// `wedged_instance` must be the identity captured **before** the request that
+/// wedged. `None` refuses the kill: under a build herd, "whoever the lock
+/// names now" is frequently a healthy replacement another client just spawned.
+pub async fn stop_wedged_daemon(
+    endpoint: &str,
+    wedged_instance: Option<&running_process::broker::protocol_v2::backend_handle::DaemonProcess>,
+) -> Option<u32> {
+    stop_daemon_instance(endpoint, wedged_instance, WEDGE_DRAIN_BUDGET).await
+}
+
+/// Deliberately replace the daemon currently serving `endpoint`.
+///
+/// Unlike the recovery paths, this is not triggered by a failure — the caller
+/// wants a daemon with different settings (today: the tokio-console profile).
+/// It is still identity-bound: the instance is read first and the stop refuses
+/// if the lock has since moved to someone else, so a profile restart cannot
+/// take out a replacement another client spawned in between.
+pub(crate) async fn replace_running_daemon(endpoint: &str, reason: &str) -> Result<(), String> {
+    let instance = current_daemon_instance();
+    let killed_pid = stop_stale_daemon(endpoint, instance.as_ref()).await;
+    spawn_and_wait(endpoint, reason, killed_pid).await
+}
+
+/// Shared body of [`stop_stale_daemon`] and [`stop_wedged_daemon`].
+///
+/// `drain_budget` is the only difference between them: the identity gate,
+/// the forensics, and the escalation are identical, because "which daemon may
+/// I kill" is not a question the caller's urgency gets to answer.
+async fn stop_daemon_instance(
+    endpoint: &str,
+    failed_instance: Option<&running_process::broker::protocol_v2::backend_handle::DaemonProcess>,
+    drain_budget: std::time::Duration,
+) -> Option<u32> {
     // Gate before the Shutdown request, not just before the kill: asking an
     // innocent daemon to retire is itself the damage this issue is about.
     match failed_instance {
@@ -509,7 +574,7 @@ async fn stop_stale_daemon(
     // `index.bin` and turning an orderly replacement into "recompile
     // everything". Wait for the drain the daemon is entitled to, and reserve
     // the fast kill for one that will not leave.
-    let drained_cleanly = wait_for_process_exit(pid, GRACEFUL_DRAIN_BUDGET).await;
+    let drained_cleanly = wait_for_process_exit(pid, drain_budget).await;
     if drained_cleanly {
         crate::ipc::remove_lock_file();
         // Return the pid even though nothing was killed: the caller uses it to
@@ -524,7 +589,7 @@ async fn stop_stale_daemon(
     // waited, so "why was my warm daemon killed" is answerable afterwards.
     tracing::warn!(
         pid,
-        waited_secs = GRACEFUL_DRAIN_BUDGET.as_secs(),
+        waited_ms = drain_budget.as_millis() as u64,
         stage = "post-shutdown-drain",
         "daemon did not exit within its drain budget; escalating to force kill"
     );
@@ -534,7 +599,7 @@ async fn stop_stale_daemon(
             "pid": pid,
             "reason": "drain_budget_exhausted",
             "stage": "post-shutdown-drain",
-            "waited_secs": GRACEFUL_DRAIN_BUDGET.as_secs(),
+            "waited_ms": drain_budget.as_millis() as u64,
             "endpoint": endpoint,
         }),
     );
@@ -1256,6 +1321,90 @@ mod tests {
         assert!(
             FORCE_KILL_REAP_BUDGET < GRACEFUL_DRAIN_BUDGET,
             "reaping a killed process is not the same wait as letting one drain"
+        );
+    }
+
+    /// An endpoint nothing is listening on. The refusal path must return
+    /// before touching it at all, so its only requirement is being unique.
+    fn never_bound_endpoint() -> String {
+        crate::ipc::unique_test_endpoint()
+    }
+
+    /// A `DaemonProcess` that cannot possibly be the one recorded on disk.
+    fn foreign_identity(
+        pid: u32,
+    ) -> running_process::broker::protocol_v2::backend_handle::DaemonProcess {
+        running_process::broker::protocol_v2::backend_handle::DaemonProcess {
+            pid,
+            exe_path: std::path::PathBuf::from("zccache-daemon"),
+            exe_sha256: [0u8; 32],
+            boot_id: "boot-that-never-was".to_string(),
+            ipc_endpoint: crate::ipc::running_process_endpoint("test-endpoint"),
+            started_at_unix_ms: 1,
+            idle_timeout_secs: None,
+        }
+    }
+
+    /// #1161 leg 1. The gate sits before the `Shutdown` request, not just
+    /// before the kill: asking an innocent daemon to retire is itself the
+    /// damage. A mismatch must therefore return without doing *anything* —
+    /// no roundtrip, no kill, no lock removal.
+    #[tokio::test]
+    async fn a_stop_is_refused_when_the_recorded_instance_is_not_the_one_that_failed() {
+        // No identity is written for this endpoint, so `daemon_identity_matches`
+        // is false for any argument — which is the mismatch case.
+        let victim = foreign_identity(std::process::id());
+        let start = std::time::Instant::now();
+
+        let killed = stop_daemon_instance(
+            &never_bound_endpoint(),
+            Some(&victim),
+            std::time::Duration::from_secs(30),
+        )
+        .await;
+
+        assert_eq!(killed, None, "a mismatched instance must not be stopped");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "the refusal must short-circuit before any IPC or drain wait, took {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// The `None` case is the one that used to be implicit: with no recorded
+    /// identity the old code re-read the lock file and killed whoever it
+    /// named. Refusing is the safe direction — it costs one clear error about
+    /// a daemon that is already not answering, where permitting costs killing
+    /// a live daemon that was never at fault.
+    #[tokio::test]
+    async fn a_stop_is_refused_when_the_caller_cannot_name_the_failed_instance() {
+        let start = std::time::Instant::now();
+
+        let killed = stop_daemon_instance(
+            &never_bound_endpoint(),
+            None,
+            std::time::Duration::from_secs(30),
+        )
+        .await;
+
+        assert_eq!(killed, None, "an unnamed instance must not be stopped");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "the refusal must short-circuit, took {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// The wedge path (#955 fail-fast) is allowed a much shorter drain than an
+    /// orderly replacement — a daemon that already failed a responsiveness
+    /// probe will not complete a 30 s durable drain. What it is *not* allowed
+    /// is a different answer to "whom may I kill": both entry points funnel
+    /// through the same identity gate.
+    #[test]
+    fn the_wedge_path_shortens_the_drain_but_not_the_identity_gate() {
+        assert!(
+            WEDGE_DRAIN_BUDGET < GRACEFUL_DRAIN_BUDGET,
+            "a wedged daemon must not be given the full graceful drain"
         );
     }
 }

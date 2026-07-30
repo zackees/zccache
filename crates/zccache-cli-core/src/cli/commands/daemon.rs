@@ -3,7 +3,6 @@
 use crate::core::NormalizedPath;
 use std::process::ExitCode;
 
-use super::super::status_probe_timeout;
 use super::util::{connect, resolve_endpoint, run_async, LOST_CONNECTION_MSG};
 
 const DAEMON_PROFILE_ENV: &str = "ZCCACHE_DAEMON_PROFILE";
@@ -12,313 +11,6 @@ const TOKIO_CONSOLE_BIND_ENV: &str = "TOKIO_CONSOLE_BIND";
 const TOKIO_CONSOLE_OPEN_ENV: &str = "ZCCACHE_TOKIO_CONSOLE_OPEN";
 const TOKIO_CONSOLE_DEFAULT_BIND: &str = "127.0.0.1:6669";
 const PROFILE_START_REASON: &str = "tokio-console-profile-start";
-
-pub(crate) enum VersionCheck {
-    Ok,
-    /// Daemon is newer than client — safe to proceed.
-    DaemonNewer {
-        daemon_ver: String,
-    },
-    /// Daemon is older than client — must restart.
-    DaemonOlder {
-        daemon_ver: String,
-    },
-    /// Could not connect to the daemon at all.
-    Unreachable,
-    /// Connected but could not complete the version exchange (protocol mismatch, etc.).
-    CommError,
-    /// Client-side daemon wire configuration is invalid.
-    ClientConfigError(String),
-}
-
-/// Connect to the daemon and compare its version to ours.
-///
-/// The Status recv is bounded by [`status_probe_timeout`] so that a wedged
-/// daemon (alive socket, no response) surfaces as `CommError` in seconds
-/// rather than the 5-minute global default. The caller's recovery path
-/// (`ensure_daemon` → `stop_stale_daemon` → `spawn_and_wait`) then runs
-/// promptly. See issue #554.
-pub(crate) async fn check_daemon_version(endpoint: &str) -> VersionCheck {
-    match crate::ipc::daemon_control_roundtrip(
-        endpoint,
-        crate::ipc::DaemonControlRequest::Status,
-        Some(status_probe_timeout()),
-    )
-    .await
-    {
-        Ok(Some(crate::protocol::Response::Status(s))) => {
-            if s.version == crate::core::VERSION {
-                return VersionCheck::Ok;
-            }
-            let client_ver = crate::core::version::current();
-            match crate::core::version::Version::parse(&s.version) {
-                Some(daemon_ver) => match daemon_ver.cmp(&client_ver) {
-                    std::cmp::Ordering::Equal => VersionCheck::Ok,
-                    std::cmp::Ordering::Greater => VersionCheck::DaemonNewer {
-                        daemon_ver: s.version,
-                    },
-                    std::cmp::Ordering::Less => VersionCheck::DaemonOlder {
-                        daemon_ver: s.version,
-                    },
-                },
-                // Unparseable daemon version → treat as older (safe default)
-                None => VersionCheck::DaemonOlder {
-                    daemon_ver: s.version,
-                },
-            }
-        }
-        Err(crate::ipc::IpcError::Endpoint(message))
-            if message.contains(crate::protocol::wire_prost::WIRE_FORMAT_ENV) =>
-        {
-            VersionCheck::ClientConfigError(message)
-        }
-        Err(err) if crate::cli::client::is_daemon_unreachable_err(&err) => {
-            VersionCheck::Unreachable
-        }
-        _ => VersionCheck::CommError,
-    }
-}
-
-/// Spawn a new daemon and wait for it to become ready.
-///
-/// `outbound_pid` is `Some(pid)` when this spawn is the second half of
-/// a takeover orchestrated by `stop_stale_daemon` — the helper emits
-/// the linked `daemon-died{reason: takeover}` + `pipe-handover` pair
-/// once the new daemon's PID has been observed. `None` for a clean
-/// initial-start (no predecessor to record).  Issue #755 acceptance #2.
-pub(crate) async fn spawn_and_wait(
-    endpoint: &str,
-    reason: &str,
-    outbound_pid: Option<u32>,
-) -> Result<(), String> {
-    // Issue #982: embedding hosts forbid standalone daemon spawns.
-    // Checked before binary resolution so the refusal message is the
-    // guard's, not a misleading "cannot find zccache-daemon binary".
-    if crate::core::config::daemon_spawn_disabled() {
-        return Err(crate::core::config::no_spawn_error("zccache-daemon"));
-    }
-    tracing::debug!(%endpoint, reason, "spawning daemon");
-    // Issue #952: single-flight the spawn — same arbiter as the
-    // runtime.rs spawn path. Exactly one client in a cold-start herd
-    // spawns; the rest park on the ready-wait.
-    let spawn_slot = crate::cli::runtime::acquire_spawn_slot();
-    let meta = crate::core::lifecycle::client_meta(crate::core::VERSION);
-    if spawn_slot.is_some() {
-        // Record *why* the CLI is about to spawn a daemon so an operator
-        // can correlate each CLI decision with the resulting daemon PID
-        // by parsing the single `daemon-lifecycle.log`. See zccache#323
-        // for the diagnostic gap that motivated this.
-        crate::core::lifecycle::write_event(
-            crate::core::lifecycle::EVENT_SPAWN_ATTEMPT,
-            serde_json::json!({
-                "reason": reason,
-                "endpoint": endpoint,
-                "daemon_namespace": crate::core::config::daemon_namespace_label(),
-                "client_pid": std::process::id(),
-                // #755 acceptance #4: see runtime.rs for rationale.
-                "client_version": meta["client_version"],
-                "client_binary_path": meta["client_binary_path"],
-            }),
-        );
-        super::super::spawn_daemon(endpoint)?;
-    } else {
-        crate::core::lifecycle::write_event(
-            crate::core::lifecycle::EVENT_SPAWN_PARKED,
-            serde_json::json!({
-                "reason": reason,
-                "endpoint": endpoint,
-                "daemon_namespace": crate::core::config::daemon_namespace_label(),
-                "client_pid": std::process::id(),
-                "client_version": meta["client_version"],
-            }),
-        );
-    }
-
-    // Adaptive wait keyed on the daemon-lifecycle lockfile PID (issue #673):
-    // the previous 100-iteration / 10 s loop expired under thundering-herd
-    // builds while individual ERROR_PIPE_BUSY backoffs were still in flight.
-    // The shared helper polls past 10 s as long as a daemon owns the lockfile.
-    // The slot guard lives until READY so a late client can't win a
-    // second slot before the daemon binds (#952).
-    let wait_result = super::super::wait_for_daemon_ready(endpoint).await;
-    drop(spawn_slot);
-    wait_result?;
-
-    // #755 acceptance #2: emit linked daemon-died + pipe-handover events
-    // for the takeover case. Best-effort: if we can't read the new
-    // daemon's PID right after `wait_for_daemon_ready` (unlikely but
-    // possible under thundering-herd lockfile contention) we skip the
-    // linkage; the regular `spawn` line still records the new daemon.
-    if let Some(killed_pid) = outbound_pid {
-        if let Some(new_pid) = crate::ipc::check_running_daemon() {
-            crate::core::lifecycle::emit_takeover_lifecycle_events(
-                killed_pid,
-                new_pid,
-                crate::core::VERSION,
-                endpoint,
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Stop a stale daemon that is unreachable or version-incompatible.
-///
-/// Attempts graceful shutdown via IPC first, then falls back to force-killing
-/// the process via the lock file PID. Waits for the endpoint to be released.
-///
-/// Returns `Some(pid)` with the killed daemon's PID when a force-kill
-/// actually fired — the caller threads this through `spawn_and_wait`
-/// so the linked daemon-died + pipe-handover events get an
-/// `outbound_pid`. `None` means no live daemon was found to kill
-/// (graceful shutdown succeeded, or no daemon was running). #755.
-pub(crate) async fn stop_stale_daemon(endpoint: &str) -> Option<u32> {
-    // Try graceful shutdown via IPC.
-    let _ = crate::ipc::daemon_control_roundtrip(
-        endpoint,
-        crate::ipc::DaemonControlRequest::Shutdown,
-        Some(status_probe_timeout()),
-    )
-    .await;
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    // Force-kill via lock file PID if the daemon is still alive
-    let killed_pid = if let Some(pid) = crate::ipc::check_running_daemon() {
-        tracing::debug!(pid, "force-killing stale daemon process");
-        let kill_ok = crate::ipc::force_kill_process(pid).is_ok();
-        if kill_ok {
-            for _ in 0..50 {
-                if !crate::ipc::is_process_alive(pid) {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-        }
-        crate::ipc::remove_lock_file();
-        kill_ok.then_some(pid)
-    } else {
-        None
-    };
-
-    // Wait briefly for the endpoint (named pipe / socket) to be fully released
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    killed_pid
-}
-
-/// Ensure the daemon is running **and version-compatible**.
-///
-/// Version checking is asymmetric: a newer daemon is accepted (it's
-/// backward-compatible), but an older daemon triggers a hard error
-/// telling the user to run `zccache stop` first.
-///
-/// Handles concurrent calls gracefully: when multiple processes race to start
-/// the daemon, only one wins the bind. The losers detect this and connect to
-/// the winning daemon instead of failing.
-pub(crate) async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
-    // Issue #982: under the host no-spawn guard a reachable,
-    // version-compatible daemon may still be used, but every other
-    // outcome — including the stale-daemon replace paths, which would
-    // stop the old daemon before respawning — fails here, BEFORE
-    // anything is stopped or killed.
-    if crate::core::config::daemon_spawn_disabled() {
-        return match check_daemon_version(endpoint).await {
-            VersionCheck::Ok | VersionCheck::DaemonNewer { .. } => Ok(()),
-            _ => Err(crate::core::config::no_spawn_error("zccache-daemon")),
-        };
-    }
-    // Fast path: connect + version check
-    match check_daemon_version(endpoint).await {
-        VersionCheck::Ok => return Ok(()),
-        VersionCheck::DaemonNewer { daemon_ver } => {
-            tracing::debug!(
-                daemon_ver,
-                client_ver = crate::core::VERSION,
-                "daemon is newer than client, proceeding"
-            );
-            return Ok(());
-        }
-        VersionCheck::DaemonOlder { daemon_ver } => {
-            tracing::info!(
-                daemon_ver,
-                client_ver = crate::core::VERSION,
-                "daemon is older than client, auto-recovering"
-            );
-            let killed_pid = stop_stale_daemon(endpoint).await;
-            return spawn_and_wait(
-                endpoint,
-                crate::core::lifecycle::REASON_REPLACED_STALE_VERSION,
-                killed_pid,
-            )
-            .await;
-        }
-        VersionCheck::CommError => {
-            tracing::info!("cannot communicate with daemon, auto-recovering");
-            let killed_pid = stop_stale_daemon(endpoint).await;
-            return spawn_and_wait(
-                endpoint,
-                crate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
-                killed_pid,
-            )
-            .await;
-        }
-        VersionCheck::ClientConfigError(message) => return Err(message),
-        VersionCheck::Unreachable => {
-            // Fall through to lock-file check / spawn
-        }
-    }
-
-    // Check lock file for a running daemon we just can't reach yet
-    if let Some(pid) = crate::ipc::check_running_daemon() {
-        for _ in 0..20 {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            match check_daemon_version(endpoint).await {
-                VersionCheck::Ok => return Ok(()),
-                VersionCheck::DaemonNewer { daemon_ver } => {
-                    tracing::debug!(
-                        daemon_ver,
-                        client_ver = crate::core::VERSION,
-                        "daemon is newer than client, proceeding"
-                    );
-                    return Ok(());
-                }
-                VersionCheck::DaemonOlder { daemon_ver } => {
-                    tracing::info!(
-                        daemon_ver,
-                        client_ver = crate::core::VERSION,
-                        "daemon is older than client during startup, auto-recovering"
-                    );
-                    let killed_pid = stop_stale_daemon(endpoint).await;
-                    return spawn_and_wait(
-                        endpoint,
-                        crate::core::lifecycle::REASON_REPLACED_STALE_VERSION,
-                        killed_pid,
-                    )
-                    .await;
-                }
-                VersionCheck::CommError => {
-                    tracing::info!(
-                        "cannot communicate with daemon during startup, auto-recovering"
-                    );
-                    let killed_pid = stop_stale_daemon(endpoint).await;
-                    return spawn_and_wait(
-                        endpoint,
-                        crate::core::lifecycle::REASON_REPLACED_COMM_ERROR,
-                        killed_pid,
-                    )
-                    .await;
-                }
-                VersionCheck::ClientConfigError(message) => return Err(message),
-                VersionCheck::Unreachable => continue,
-            }
-        }
-        return Err(format!(
-            "daemon process {pid} exists but not accepting connections"
-        ));
-    }
-
-    // No daemon running — spawn one
-    spawn_and_wait(endpoint, crate::core::lifecycle::REASON_INITIAL_START, None).await
-}
 
 /// Find the daemon binary. Looks next to the CLI binary first, then on PATH.
 pub(crate) fn find_daemon_binary() -> Option<NormalizedPath> {
@@ -364,7 +56,7 @@ pub(crate) fn which_on_path(name: &str) -> Option<NormalizedPath> {
 }
 
 pub(crate) async fn cmd_start(endpoint: &str) -> ExitCode {
-    match ensure_daemon(endpoint).await {
+    match crate::cli::runtime::ensure_daemon(endpoint).await {
         Ok(()) => {
             eprintln!("daemon running at {endpoint}");
             ExitCode::SUCCESS
@@ -382,8 +74,9 @@ pub(crate) async fn cmd_profile_start(endpoint: &str, bind: Option<&str>, open: 
     let env = profile_env_overrides(&bind, open);
     let _guard = ScopedEnv::apply(&env);
 
-    let killed_pid = stop_stale_daemon(endpoint).await;
-    if let Err(e) = spawn_and_wait(endpoint, PROFILE_START_REASON, killed_pid).await {
+    if let Err(e) =
+        crate::cli::runtime::replace_running_daemon(endpoint, PROFILE_START_REASON).await
+    {
         eprintln!("failed to start tokio-console daemon profile: {e}");
         return ExitCode::FAILURE;
     }
@@ -486,9 +179,23 @@ pub(crate) async fn cmd_stop(endpoint: &str) -> ExitCode {
     {
         Ok(response) => response,
         Err(e) if crate::cli::client::is_daemon_unreachable_err(&e) => {
-            let raw_lock_pid = crate::ipc::read_lock_file_pid();
-            let Some(pid) = crate::ipc::check_running_daemon().or(raw_lock_pid) else {
-                eprintln!("daemon not running at {endpoint}");
+            // #1161: this used to fall back to `.or(read_lock_file_pid())`.
+            // `check_running_daemon` returning `None` is precisely the
+            // stale-lock / recycled-PID signal — it removes the lock file in
+            // that case — so falling back to the raw number force-killed a PID
+            // that had already failed verification, which is the #132 defense
+            // being bypassed by the one path that always kills.
+            let Some(pid) = crate::ipc::check_running_daemon() else {
+                if let Some(stale) = crate::ipc::read_lock_file_pid() {
+                    eprintln!(
+                        "daemon not running at {endpoint}; lock file named process {stale}, \
+                         which is not a live zccache daemon — leaving it alone and clearing \
+                         the stale lock"
+                    );
+                    crate::ipc::remove_lock_file();
+                } else {
+                    eprintln!("daemon not running at {endpoint}");
+                }
                 // No daemon — but the index file might still be there from a
                 // crashed prior run. Probe once so callers (CI tar) can rely
                 // on the lock being gone after `zccache stop` returns.
