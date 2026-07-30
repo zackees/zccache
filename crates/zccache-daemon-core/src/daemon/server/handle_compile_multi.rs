@@ -149,6 +149,8 @@ fn check_unit_cache(
                                 })
                                 .collect();
                             let materialization = materialize_multi_hit(&targets, &payloads);
+                            payloads.record_staged_lock_timings(&state.profiler.staged);
+                            drop(payloads);
                             if let Err(failure) = &materialization {
                                 report_materialization_failure(
                                     &state.cache_dir,
@@ -328,6 +330,8 @@ fn check_unit_cache(
                         })
                         .collect();
                     let materialization = materialize_multi_hit(&targets, &payloads);
+                    payloads.record_staged_lock_timings(&state.profiler.staged);
+                    drop(payloads);
                     if let Err(failure) = &materialization {
                         report_materialization_failure(
                             &state.cache_dir,

@@ -57,6 +57,8 @@ pub(crate) enum StagedTiming {
     Salvage,
     MissMaterialization,
     HitMaterialization,
+    HitStoreLockWait,
+    HitStoreLockHold,
 }
 
 const TIMINGS: &[(StagedTiming, &str)] = &[
@@ -67,6 +69,8 @@ const TIMINGS: &[(StagedTiming, &str)] = &[
     (StagedTiming::Salvage, "salvage"),
     (StagedTiming::MissMaterialization, "miss_materialization"),
     (StagedTiming::HitMaterialization, "hit_materialization"),
+    (StagedTiming::HitStoreLockWait, "hit_store_lock_wait"),
+    (StagedTiming::HitStoreLockHold, "hit_store_lock_hold"),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
