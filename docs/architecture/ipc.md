@@ -39,6 +39,25 @@ from that cache root. Unix uses `<cache>/daemon.sock` or
 pipe and appends `-<ns>` when a daemon namespace is configured. Explicit
 `ZCCACHE_ENDPOINT` still overrides the derived endpoint.
 
+## Endpoint Access Control (#1171)
+
+The connectable `Request` surface is process execution as the daemon user, so
+same-user is the trust boundary and the OS enforces it rather than the endpoint's
+location:
+
+- The socket's parent directory is created `0700`, and the socket itself is
+  `chmod` 0600 after `bind`. The directory is the load-bearing control on
+  macOS/BSD, where the kernel ignores a socket's mode bits on `connect()`.
+- A directory found group/other-writable is tightened, or the daemon refuses to
+  bind; either outcome emits `insecure_socket_dir`.
+- Every accepted connection is checked against the daemon's own euid via
+  `SO_PEERCRED` / `getpeereid`. A foreign uid — or a peer whose credentials the
+  kernel will not report — is dropped without a reply and emits
+  `ipc_peer_rejected` with `reason=foreign-uid` / `peer-cred-unavailable`.
+- Windows pipe instances are created with an explicit owner-only DACL
+  (`D:P(A;;GA;;;OW)(A;;GA;;;SY)`), replacing the default descriptor that granted
+  Everyone and ANONYMOUS LOGON read access.
+
 ## Connection Lifecycle
 
 **CLI side (drop-in wrapper mode):**

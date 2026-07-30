@@ -45,6 +45,7 @@
 //! | `version_mismatch` | daemon | client / daemon protocol versions disagree | `daemon_protocol_version`, `client_protocol_version`, `reason` |
 //! | `state_corrupt` (#1157) | daemon | persisted state did not parse and was dropped rather than reconciled; consequence is a full cold recompile | `subsystem`, `consequence`, `message`, `path`, `bytes` |
 //! | `insecure_socket_dir` (#1171) | daemon | the directory holding the IPC endpoint was group/other-writable; another local user could substitute the socket | `path`, `outcome`, `detail` |
+//! | `ipc_peer_rejected` (#1171) | daemon | an accepted IPC connection was refused because the peer is not this user, or its credentials were unavailable | `reason`, `detail` |
 //! | `staged_publication_conflict` | daemon | one cache key produced two different valid generations; first generation retained | `cache_key`, `existing_generation`, `candidate_generation`, `elapsed_ns` |
 //! | `staged_publication_replaces_invalid_generation` | daemon | a corrupt/incomplete selected generation was replaced by a validated compile result | `cache_key`, `invalid_generation`, `replacement_generation` |
 //! | `staged_salvage_started` | daemon | publication/index failed after a successful compile; requested outputs are being recovered | `reason`, `output_count`, `copied_bytes`, `elapsed_ns` |
@@ -130,6 +131,14 @@ pub const EVENT_STATE_CORRUPT: &str = "state_corrupt";
 /// to serve, because "this was exposed until now" is the operator's business
 /// either way.
 pub const EVENT_INSECURE_SOCKET_DIR: &str = "insecure_socket_dir";
+/// An accepted IPC connection was refused because the peer is not the daemon's
+/// own user, or because the kernel would not report the peer's identity (#1171).
+///
+/// Carries `reason` (`foreign-uid` / `peer-cred-unavailable`) and a `detail`
+/// string. Any occurrence means something other than this user's toolchain
+/// reached the endpoint — the `0700` directory that is supposed to make that
+/// impossible has been bypassed or was never applied.
+pub const EVENT_IPC_PEER_REJECTED: &str = "ipc_peer_rejected";
 
 /// Issue #755 events — daemon death + handover + client disconnect.
 /// Additive: existing tooling that filters on `event` continues to
@@ -210,6 +219,7 @@ pub const EVENT_ALL: &[&str] = &[
     EVENT_VERSION_MISMATCH,
     EVENT_STATE_CORRUPT,
     EVENT_INSECURE_SOCKET_DIR,
+    EVENT_IPC_PEER_REJECTED,
     EVENT_DAEMON_DIED,
     EVENT_PIPE_HANDOVER,
     EVENT_CLIENT_DISCONNECTED,

@@ -532,15 +532,38 @@ impl IpcListener {
     pub async fn accept(&mut self) -> Result<IpcConnection, IpcError> {
         #[cfg(unix)]
         {
-            let (stream, _addr) = self.inner.listener.accept().await?;
-            let (reader, writer) = tokio::io::split(stream);
-            Ok(IpcConnection {
-                reader,
-                writer,
-                read_buf: BytesMut::with_capacity(4096),
-                recv_timeout: None,
-                next_frame_request_id: 1,
-            })
+            let self_uid = unix::self_uid();
+            loop {
+                let (stream, _addr) = self.inner.listener.accept().await?;
+                if let Err(rejection) = unix::verify_peer_is_self(&stream, self_uid) {
+                    // Drop the connection without replying: the peer is not
+                    // entitled to a protocol error that would confirm the
+                    // daemon's version or liveness.
+                    drop(stream);
+                    tracing::warn!(
+                        event = "ipc_peer_rejected",
+                        reason = rejection.reason(),
+                        "refused an IPC connection: {}",
+                        rejection.detail()
+                    );
+                    zccache_core::lifecycle::write_event(
+                        zccache_core::lifecycle::EVENT_IPC_PEER_REJECTED,
+                        serde_json::json!({
+                            "reason": rejection.reason(),
+                            "detail": rejection.detail(),
+                        }),
+                    );
+                    continue;
+                }
+                let (reader, writer) = tokio::io::split(stream);
+                return Ok(IpcConnection {
+                    reader,
+                    writer,
+                    read_buf: BytesMut::with_capacity(4096),
+                    recv_timeout: None,
+                    next_frame_request_id: 1,
+                });
+            }
         }
         #[cfg(windows)]
         {
