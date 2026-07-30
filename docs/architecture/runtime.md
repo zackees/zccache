@@ -20,6 +20,12 @@ Tokio runtime:     multi-threaded (default thread count)
     - on miss: spawns compiler, stores result
     - sends response
   Background disk maintenance task (startup + 5-minute pressure checks)
+    - every pass: reaps sessions whose client died and `ended_sessions`
+      tombstones past their TTL (`sessions_reaped` when it reclaims anything)
+    - full passes only: sweeps `tmp/depfiles/<pid>-<instance>/` belonging to
+      dead daemon instances (`stale_depfile_dirs_swept`). Standalone mode also
+      sweeps once at startup; the periodic pass is what bounds growth *within*
+      one daemon lifetime and is the only sweep an embedded host ever gets.
   Watcher event processing task
 
 Dedicated OS thread:  file watcher (notify)

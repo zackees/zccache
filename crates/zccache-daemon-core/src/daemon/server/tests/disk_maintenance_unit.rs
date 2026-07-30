@@ -956,3 +956,126 @@ async fn tombstone_reaping_is_a_noop_when_nothing_is_stale() {
     }
     assert!(daemon.state.ended_sessions.contains_key(&fresh));
 }
+
+/// Count `sessions_reaped` rows currently in the lifecycle log.
+///
+/// The log path resolves from the process-global cache root, so a test cannot
+/// assume it owns the file — a concurrently running test may have written to
+/// it, and the resolved path can outlive any one test's env guard. Asserting
+/// on the *delta* across a single call is therefore the only stable shape;
+/// asserting a total, or an absence, is a flake waiting to happen.
+fn sessions_reaped_rows() -> usize {
+    let Ok(log) = std::fs::read_to_string(crate::core::lifecycle::log_file_path()) else {
+        return 0;
+    };
+    log.lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| event["event"] == crate::core::lifecycle::EVENT_SESSIONS_REAPED)
+        .count()
+}
+
+/// #1165 Finding 1: reaping was visible only as a `tracing::info!`, which is
+/// gone the moment the daemon's stderr goes somewhere unbounded. The durable
+/// event is what makes "this daemon reclaims a session per compile"
+/// attributable after the fact.
+///
+/// Both directions are asserted in one test, in order: a quiet pass must stay
+/// silent (this runs every maintenance tick for the daemon's life, so an
+/// unconditional emit would itself become the unbounded surface the issue is
+/// about), and a pass that reclaims something must leave a record.
+#[tokio::test]
+async fn reaping_writes_a_durable_event_only_when_it_reclaims_something() {
+    let root = tempfile::tempdir().unwrap();
+    let _cache_env = crate::daemon::server::tests::CacheDirEnvGuard::set(root.path());
+    let cache_dir: crate::core::NormalizedPath = root.path().join("cache").into();
+    let daemon = Arc::new(
+        EmbeddedDaemon::start(
+            crate::ipc::unique_test_endpoint(),
+            cache_dir.clone(),
+            None,
+            bytes_policy(1),
+        )
+        .await
+        .unwrap(),
+    );
+
+    let quiet_before = sessions_reaped_rows();
+    reap_finished_sessions_with(&daemon.state, only_dead_client_is_gone);
+    assert_eq!(
+        sessions_reaped_rows(),
+        quiet_before,
+        "a pass that reclaims nothing must not write an event"
+    );
+
+    daemon
+        .state
+        .sessions
+        .create(crate::depgraph::SessionConfig {
+            client_pid: DEAD_CLIENT_PID,
+            working_dir: root.path().into(),
+            log_file: None,
+            track_stats: true,
+            journal_path: None,
+            profile: false,
+            private_env: Vec::new(),
+            owner_pids: Vec::new(),
+        });
+
+    reap_finished_sessions_with(&daemon.state, only_dead_client_is_gone);
+
+    assert_eq!(
+        sessions_reaped_rows(),
+        quiet_before + 1,
+        "reclaiming a dead client's session must leave exactly one record"
+    );
+    let log = std::fs::read_to_string(crate::core::lifecycle::log_file_path()).unwrap();
+    let event: serde_json::Value = log
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .rfind(|event: &serde_json::Value| {
+            event["event"] == crate::core::lifecycle::EVENT_SESSIONS_REAPED
+        })
+        .expect("a sessions_reaped event");
+    assert_eq!(event["dead_client"], 1);
+    assert_eq!(
+        event["remaining"], 0,
+        "the event must carry what is left, not just what went"
+    );
+}
+
+/// #1165 Finding 6: the depfile sweep ran at startup only. That bounds growth
+/// *across* daemon lifetimes but not *within* one, and the startup call site
+/// is on the standalone path — an embedded host that never restarts its
+/// process never swept at all. Both modes share this maintenance loop, so
+/// running it here is what closes the gap.
+#[tokio::test]
+async fn the_periodic_sweep_reclaims_a_dead_instances_depfile_dir() {
+    let root = tempfile::tempdir().unwrap();
+    let _cache_env = crate::daemon::server::tests::CacheDirEnvGuard::set(root.path());
+
+    let depfiles = crate::core::config::depfile_dir();
+    let dead = depfiles.join(format!("{DEAD_CLIENT_PID}-0"));
+    std::fs::create_dir_all(&dead).unwrap();
+    std::fs::write(dead.join("some.d"), b"a.o: a.c").unwrap();
+    let live = depfiles.join(format!("{}-0", std::process::id()));
+    std::fs::create_dir_all(&live).unwrap();
+
+    sweep_stale_depfile_dirs().await;
+
+    assert!(
+        !dead.exists(),
+        "a depfile dir owned by a dead daemon instance must be reclaimed"
+    );
+    assert!(
+        live.exists(),
+        "reclaiming must not touch a running instance's depfile dir — that breaks its build"
+    );
+    let log = std::fs::read_to_string(crate::core::lifecycle::log_file_path())
+        .expect("the sweep must leave a durable record");
+    assert!(
+        log.lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .any(|event| event["event"] == crate::core::lifecycle::EVENT_STALE_DEPFILE_DIRS_SWEPT),
+        "the sweep should record what it reclaimed"
+    );
+}
