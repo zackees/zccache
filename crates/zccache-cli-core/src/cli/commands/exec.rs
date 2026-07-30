@@ -10,8 +10,8 @@ use std::sync::Arc;
 use crate::core::NormalizedPath;
 use crate::protocol::{ExecCachePolicy, ExecOutputStreams, Request, Response};
 
-use super::daemon::ensure_daemon;
 use super::util::{absolute_path, connect, exit_code_from_i32, resolve_endpoint};
+use crate::cli::runtime::ensure_daemon;
 
 /// Parsed view of `--input-file`, `--input-env`, etc. — pre-validates argv
 /// before sending the IPC request so misuse errors render before reaching the

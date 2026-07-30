@@ -3,8 +3,8 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use super::daemon::ensure_daemon;
 use super::util::connect;
+use crate::cli::runtime::ensure_daemon;
 
 pub(crate) async fn cmd_fp_check(
     endpoint: &str,

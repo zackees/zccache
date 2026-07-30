@@ -6,8 +6,8 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use super::super::super::{link_retry_budget, wedge_recv_timeout};
-use super::super::daemon::{ensure_daemon, stop_stale_daemon};
 use super::super::util::{connect, exit_code_from_i32, slurp_stdin_if_piped, LOST_CONNECTION_MSG};
+use crate::cli::runtime::{current_daemon_instance, ensure_daemon, stop_wedged_daemon};
 
 pub(super) async fn cmd_compile(
     endpoint: &str,
@@ -18,6 +18,11 @@ pub(super) async fn cmd_compile(
     client_env: Vec<(String, String)>,
 ) -> ExitCode {
     let stdin_bytes = slurp_stdin_if_piped();
+    // #1161: name the instance we are about to talk to BEFORE the exchange.
+    // If this request wedges, the lock file may already name a replacement
+    // some other client spawned, and killing "whoever is current" is how one
+    // client's timeout becomes a kill chain through a `-j16` herd.
+    let served_by = current_daemon_instance();
     let mut conn = match connect(endpoint).await {
         Ok(c) => c,
         Err(e) => {
@@ -114,7 +119,7 @@ pub(super) async fn cmd_compile(
                          (missed wedge budget + failed probe); killing it and \
                          failing immediately — issue #955"
                     );
-                    stop_stale_daemon(endpoint).await;
+                    stop_wedged_daemon(endpoint, served_by.as_ref()).await;
                     ExitCode::FAILURE
                 }
             }
@@ -468,6 +473,10 @@ async fn cmd_compile_ephemeral_with_stdin(
         stdin: stdin_bytes.clone(),
     };
 
+    // #1161: identity of the instance this attempt targets, read before the
+    // exchange so a later wedge kill cannot land on a replacement.
+    let served_by = current_daemon_instance();
+
     // Issue #752: retry once on transport failure
     // (`lost connection to daemon`). Wedge has its own handling.
     // Recovery is a small jittered sleep — ensure_daemon's next call
@@ -490,7 +499,7 @@ async fn cmd_compile_ephemeral_with_stdin(
                 "zccache[err][W]: daemon at {endpoint} stopped responding within \
                  the wedge budget; killing it so the next compile starts fresh — issue #666"
             );
-            stop_stale_daemon(endpoint).await;
+            stop_wedged_daemon(endpoint, served_by.as_ref()).await;
             ExitCode::FAILURE
         }
         CompileRecvOutcome::Failed(msg) => match msg.phase {
@@ -528,6 +537,9 @@ pub(super) async fn cmd_link_ephemeral(
         env: Some(client_env),
     };
 
+    // #1161: see `cmd_compile_ephemeral` — identity before the exchange.
+    let served_by = current_daemon_instance();
+
     // Issue #752: retry once on transport failure
     // (`lost connection to daemon`). Wedge has its own handling.
     // See `cmd_compile_ephemeral` for the recovery-closure rationale.
@@ -548,7 +560,7 @@ pub(super) async fn cmd_link_ephemeral(
                  the wedge budget on a Link; killing it so the next request starts \
                  fresh — issue #666"
             );
-            stop_stale_daemon(endpoint).await;
+            stop_wedged_daemon(endpoint, served_by.as_ref()).await;
             ExitCode::FAILURE
         }
         CompileRecvOutcome::Failed(msg) => match msg.phase {
