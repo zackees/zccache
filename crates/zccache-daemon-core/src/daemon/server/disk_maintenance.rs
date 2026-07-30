@@ -977,6 +977,55 @@ fn reap_finished_sessions_with(state: &SharedState, is_alive: impl Fn(u32) -> bo
             tombstones_remaining = state.ended_sessions.len(),
             "reaped finished sessions"
         );
+        // #1165 Finding 1: a `tracing::info!` is lost as soon as the daemon's
+        // stderr goes anywhere unbounded. The durable event is what makes
+        // "this daemon reclaims a session per compile" attributable after the
+        // fact, which is the growth mode the finding is about.
+        zccache_core::lifecycle::write_event(
+            zccache_core::lifecycle::EVENT_SESSIONS_REAPED,
+            serde_json::json!({
+                "expired": expired.len(),
+                "dead_client": dead.len(),
+                "tombstones": tombstones,
+                "remaining": state.sessions.active_count(),
+                "tombstones_remaining": state.ended_sessions.len(),
+            }),
+        );
+    }
+}
+
+/// Reclaim depfile directories left by daemon instances that are gone.
+///
+/// #1165 Finding 6: the startup sweep in `run.rs` bounds growth *across*
+/// daemon lifetimes but not *within* one, and it is on the standalone path
+/// only — an embedded host that never restarts the process never swept at all.
+/// Running it here fixes both, because `spawn_disk_maintenance` is the one
+/// maintenance loop both modes share.
+///
+/// Full passes only: the directories are age-floored at a week, so sweeping
+/// every pressure tick would be scanning for debris that cannot have appeared
+/// since the last scan.
+///
+/// The scan stats every candidate directory and may `remove_dir_all`, so it
+/// runs on the blocking pool rather than an executor worker.
+async fn sweep_stale_depfile_dirs() {
+    let cleaned = tokio::task::spawn_blocking(|| {
+        crate::core::config::cleanup_stale_depfile_dirs(crate::ipc::is_process_alive)
+    })
+    .await;
+    let cleaned = match cleaned {
+        Ok(cleaned) => cleaned,
+        Err(error) => {
+            tracing::warn!(%error, "stale depfile sweep worker failed");
+            return;
+        }
+    };
+    if cleaned > 0 {
+        tracing::info!(cleaned, "swept stale depfile directories");
+        zccache_core::lifecycle::write_event(
+            zccache_core::lifecycle::EVENT_STALE_DEPFILE_DIRS_SWEPT,
+            serde_json::json!({ "cleaned": cleaned }),
+        );
     }
 }
 
@@ -1039,6 +1088,9 @@ pub(super) fn spawn_disk_maintenance(
             } else {
                 MaintenanceKind::Pressure
             };
+            if kind == MaintenanceKind::Full {
+                sweep_stale_depfile_dirs().await;
+            }
             if kind == MaintenanceKind::Pressure {
                 match pressure_scan_needed(&state, policy) {
                     Ok(false) => {

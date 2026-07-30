@@ -46,6 +46,8 @@
 //! | `state_corrupt` (#1157) | daemon | persisted state did not parse and was dropped rather than reconciled; consequence is a full cold recompile | `subsystem`, `consequence`, `message`, `path`, `bytes` |
 //! | `insecure_socket_dir` (#1171) | daemon | the directory holding the IPC endpoint was group/other-writable; another local user could substitute the socket | `path`, `outcome`, `detail` |
 //! | `ipc_peer_rejected` (#1171) | daemon | an accepted IPC connection was refused because the peer is not this user, or its credentials were unavailable | `reason`, `detail` |
+//! | `sessions_reaped` (#1165) | daemon | periodic maintenance reclaimed session state whose owning client is gone or whose tombstone aged out | `expired`, `dead_client`, `tombstones`, `remaining`, `tombstones_remaining` |
+//! | `stale_depfile_dirs_swept` (#1165) | daemon | periodic maintenance reclaimed depfile directories from dead daemon instances | `cleaned` |
 //! | `staged_publication_conflict` | daemon | one cache key produced two different valid generations; first generation retained | `cache_key`, `existing_generation`, `candidate_generation`, `elapsed_ns` |
 //! | `staged_publication_replaces_invalid_generation` | daemon | a corrupt/incomplete selected generation was replaced by a validated compile result | `cache_key`, `invalid_generation`, `replacement_generation` |
 //! | `staged_salvage_started` | daemon | publication/index failed after a successful compile; requested outputs are being recovered | `reason`, `output_count`, `copied_bytes`, `elapsed_ns` |
@@ -139,6 +141,16 @@ pub const EVENT_INSECURE_SOCKET_DIR: &str = "insecure_socket_dir";
 /// reached the endpoint — the `0700` directory that is supposed to make that
 /// impossible has been bypassed or was never applied.
 pub const EVENT_IPC_PEER_REJECTED: &str = "ipc_peer_rejected";
+/// Periodic maintenance reclaimed session state (#1165).
+///
+/// Session registries grow with every client that dies without an explicit
+/// `SessionEnd`, so "how much is being reclaimed, how often" is the signal that
+/// separates a healthy daemon from one leaking a session per compile. Emitted
+/// only when something was actually reclaimed.
+pub const EVENT_SESSIONS_REAPED: &str = "sessions_reaped";
+/// Periodic maintenance reclaimed depfile directories belonging to dead daemon
+/// instances (#1165). Emitted only when something was actually reclaimed.
+pub const EVENT_STALE_DEPFILE_DIRS_SWEPT: &str = "stale_depfile_dirs_swept";
 
 /// Issue #755 events — daemon death + handover + client disconnect.
 /// Additive: existing tooling that filters on `event` continues to
@@ -220,6 +232,8 @@ pub const EVENT_ALL: &[&str] = &[
     EVENT_STATE_CORRUPT,
     EVENT_INSECURE_SOCKET_DIR,
     EVENT_IPC_PEER_REJECTED,
+    EVENT_SESSIONS_REAPED,
+    EVENT_STALE_DEPFILE_DIRS_SWEPT,
     EVENT_DAEMON_DIED,
     EVENT_PIPE_HANDOVER,
     EVENT_CLIENT_DISCONNECTED,
