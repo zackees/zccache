@@ -1,6 +1,9 @@
 """Regression tests for the authoritative local Docker perf harness."""
 
+import tarfile
+import tomllib
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -9,6 +12,9 @@ LOCAL_ENTRYPOINT = ROOT / "ci" / "docker" / "perf_entrypoint.sh"
 LOCAL_RUNNER = ROOT / "ci" / "docker" / "runner.Dockerfile"
 LOCAL_ORCHESTRATOR = ROOT / "ci" / "perf_local.py"
 COMMON_SH = ROOT / "perf" / "lib" / "common.sh"
+FIXTURE_ROOT = ROOT / "perf" / "fixtures"
+FIXTURE_REGEN = FIXTURE_ROOT / "regen.sh"
+ROLLOUT_FIXTURES = ("medium", "sqlite-link")
 SNAPSHOT_SCENARIOS = (
     ROOT / "perf" / "scenarios" / "cold-tar-untar-warm" / "run.sh",
     ROOT / "perf" / "scenarios" / "restore-no-clean-warm" / "run.sh",
@@ -64,6 +70,44 @@ def test_perf_local_runner_installs_scenario_dependencies() -> None:
 
     assert "        git \\\n" in runner
     assert "        procps \\\n" in runner
+
+
+def test_rollout_fixture_archives_pin_the_runner_toolchain() -> None:
+    runner = LOCAL_RUNNER.read_text(encoding="utf-8")
+    channels: set[str] = set()
+
+    for fixture in ROLLOUT_FIXTURES:
+        source_pin = FIXTURE_ROOT / fixture / "rust-toolchain.toml"
+        source_bytes = source_pin.read_bytes()
+        toolchain = tomllib.loads(source_bytes.decode("utf-8"))["toolchain"]
+        channels.add(toolchain["channel"])
+        assert toolchain["profile"] == "minimal"
+
+        archive = FIXTURE_ROOT / f"{fixture}.tar.gz"
+        with tarfile.open(archive, "r:gz") as tar:
+            archived_pin = tar.extractfile(f"{fixture}/rust-toolchain.toml")
+            assert archived_pin is not None
+            assert archived_pin.read() == source_bytes
+
+    assert len(channels) == 1
+    active_images = re.findall(r"^FROM\s+(\S+)", runner, flags=re.MULTILINE)
+    assert active_images == [f"rust:{channels.pop()}-slim-bookworm"]
+
+
+def test_fixture_regeneration_requires_and_deterministically_archives_pin() -> None:
+    regen = FIXTURE_REGEN.read_text(encoding="utf-8")
+    tar_command = regen.split("\ntar ", 1)[1].split("\n\nbytes=", 1)[0]
+
+    assert "medium|sqlite-link)" in regen
+    assert '[[ ! -f "${FIXTURE}/rust-toolchain.toml" ]]' in regen
+    for required_flag in (
+        "--sort=name",
+        "--owner=0",
+        "--group=0",
+        "--numeric-owner",
+        "--mtime='@0'",
+    ):
+        assert required_flag in tar_command
 
 
 def test_perf_local_final_rollout_matrix_and_gates_are_required() -> None:

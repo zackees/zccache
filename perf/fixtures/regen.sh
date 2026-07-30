@@ -31,6 +31,16 @@ if [[ ! -f "${FIXTURE}/Cargo.lock" ]]; then
     exit 2
 fi
 
+case "${FIXTURE}" in
+    medium|sqlite-link)
+        if [[ ! -f "${FIXTURE}/rust-toolchain.toml" ]]; then
+            echo "regen.sh: ${FIXTURE}/rust-toolchain.toml is missing" >&2
+            echo "  rollout fixtures must pin the runner-compatible Rust toolchain" >&2
+            exit 2
+        fi
+        ;;
+esac
+
 OUTPUT="${FIXTURE}.tar.gz"
 
 # Tar directly out of the fixture directory with explicit excludes so
