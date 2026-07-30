@@ -4419,6 +4419,7 @@ dependencies = [
  "bytes",
  "dashmap",
  "interprocess",
+ "libc",
  "prost",
  "running-process",
  "serde",

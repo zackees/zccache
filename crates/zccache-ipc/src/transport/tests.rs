@@ -252,3 +252,49 @@ async fn test_parallel_connections() {
     }
     server.await.unwrap();
 }
+
+/// #1171: the accept path must recognise a same-user peer and refuse a foreign
+/// one. A second real uid is not available in a test, so the daemon-side uid is
+/// injected — a peer that is genuinely us fails the check when the daemon
+/// believes it is someone else, which is the same comparison the real path
+/// makes with the arguments swapped.
+#[cfg(unix)]
+#[tokio::test]
+async fn peer_verification_accepts_self_and_rejects_foreign_uid() {
+    let (stream, _peer) = tokio::net::UnixStream::pair().unwrap();
+    let me = unix::self_uid();
+
+    unix::verify_peer_is_self(&stream, me).expect("our own connection must be trusted");
+
+    let rejection = unix::verify_peer_is_self(&stream, me.wrapping_add(1))
+        .expect_err("a peer whose uid differs from the daemon's must be refused");
+    assert_eq!(rejection.reason(), "foreign-uid");
+    assert!(
+        rejection.detail().contains("is not the daemon uid"),
+        "rejection detail should name both uids, got: {}",
+        rejection.detail()
+    );
+}
+
+/// A same-user client still completes a full round trip through the real
+/// `accept()` loop — the check must not cost the happy path a connection.
+#[cfg(unix)]
+#[tokio::test]
+async fn same_user_client_is_served_through_the_peer_check() {
+    let endpoint = unique_test_endpoint();
+    let mut listener = IpcListener::bind(&endpoint).unwrap();
+
+    let server = tokio::spawn(async move {
+        let mut conn = listener.accept().await.unwrap();
+        let msg: Option<Request> = conn.recv().await.unwrap();
+        assert_eq!(msg, Some(Request::Ping));
+        conn.send(&Response::Pong).await.unwrap();
+    });
+
+    let mut client = connect(&endpoint).await.unwrap();
+    client.send(&Request::Ping).await.unwrap();
+    let resp: Option<Response> = client.recv().await.unwrap();
+    assert_eq!(resp, Some(Response::Pong));
+
+    server.await.unwrap();
+}

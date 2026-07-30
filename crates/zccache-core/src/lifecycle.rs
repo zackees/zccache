@@ -130,6 +130,14 @@ pub const EVENT_STATE_CORRUPT: &str = "state_corrupt";
 /// to serve, because "this was exposed until now" is the operator's business
 /// either way.
 pub const EVENT_INSECURE_SOCKET_DIR: &str = "insecure_socket_dir";
+/// An accepted IPC connection was refused because the peer is not the daemon's
+/// own user, or because the kernel would not report the peer's identity (#1171).
+///
+/// Carries `reason` (`foreign-uid` / `peer-cred-unavailable`) and a `detail`
+/// string. Any occurrence means something other than this user's toolchain
+/// reached the endpoint — the `0700` directory that is supposed to make that
+/// impossible has been bypassed or was never applied.
+pub const EVENT_IPC_PEER_REJECTED: &str = "ipc_peer_rejected";
 
 /// Issue #755 events — daemon death + handover + client disconnect.
 /// Additive: existing tooling that filters on `event` continues to
@@ -210,6 +218,7 @@ pub const EVENT_ALL: &[&str] = &[
     EVENT_VERSION_MISMATCH,
     EVENT_STATE_CORRUPT,
     EVENT_INSECURE_SOCKET_DIR,
+    EVENT_IPC_PEER_REJECTED,
     EVENT_DAEMON_DIED,
     EVENT_PIPE_HANDOVER,
     EVENT_CLIENT_DISCONNECTED,
