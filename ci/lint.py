@@ -292,6 +292,8 @@ def lint_workspace():
             "dylints/ban_raw_subprocess_in_daemon/Cargo.toml",
             "dylints/ban_legacy_artifact_path/Cargo.toml",
             "dylints/ban_normalized_path_deref_containment/Cargo.toml",
+            "dylints/ban_dashmap_guard_across_blocking/Cargo.toml",
+            "dylints/ban_discarded_write_result/Cargo.toml",
         ):
             result = run_cmd(cargo_command(
                 "fmt",
