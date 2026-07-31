@@ -415,7 +415,17 @@ def run_soldr_builder(layout: dict[str, Path], *, force: bool = False) -> None:
             "run",
             "--rm",
             "-v",
-            host_volume(layout["soldr_src"], "/src", "ro"),
+            # Writable, deliberately. Embedding this checkout's zccache SHA can
+            # change zccache's *version* (any `chore(release)` bump does), and
+            # soldr's `Cargo.lock` pins it — so cargo must rewrite the lock, and
+            # a read-only `/src` fails the build with `failed to write
+            # /src/Cargo.lock`. That made the whole local perf gate unusable
+            # after every release until someone deleted `.perf-local/soldr-src`.
+            #
+            # Safe because `soldr-src` is a harness-managed scratch clone, not a
+            # user checkout: `ensure_soldr_source` hard-resets it whenever the
+            # requested soldr ref moves, so a rewritten lock never accumulates.
+            host_volume(layout["soldr_src"], "/src"),
             "-v",
             f"{VOLUME_TARGET_SOLDR}:/target",
             "-v",
