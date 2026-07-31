@@ -512,3 +512,20 @@ fn tar_gz_extracts_regular_files() {
         b"hello"
     );
 }
+
+/// Build a [`FetchRequest`] aimed at one of this module's local test servers.
+///
+/// #1172 made the download engine https-only by default. These servers are
+/// plain `TcpListener`s with no certificate, so every request in the test
+/// suite has to opt out explicitly — which is the point of the flag: the
+/// insecure path stays reachable, but only by writing down that you want it.
+/// Centralised here so a new test cannot forget and get a confusing transport
+/// error instead of the behaviour it meant to assert.
+pub(super) fn insecure_test_request(
+    source: impl Into<super::DownloadSource>,
+    destination: impl Into<crate::core::NormalizedPath>,
+) -> super::FetchRequest {
+    let mut request = super::FetchRequest::new(source, destination);
+    request.download_options.allow_insecure_http = true;
+    request
+}

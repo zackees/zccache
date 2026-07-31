@@ -116,6 +116,8 @@ fn main() -> std::process::ExitCode {
                 force,
                 max_connections,
                 min_segment_size,
+                // #1172: inherit the https-only default.
+                ..Default::default()
             },
         ) {
             Ok(mut handle) => {
@@ -189,6 +191,8 @@ fn main() -> std::process::ExitCode {
                 force,
                 max_connections,
                 min_segment_size,
+                // #1172: inherit the https-only default.
+                ..Default::default()
             };
             match client.fetch(request) {
                 Ok(result) => {
