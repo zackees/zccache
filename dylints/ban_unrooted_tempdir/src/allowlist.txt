@@ -26,12 +26,13 @@ crates/zccache-cli-core/src/cli/commands/wrap.rs
 # there at zccache runtime.
 crates/zccache-daemon-core/src/test_support/mod.rs
 
-# Daemon startup walks $TMPDIR to clean up legacy state from older zccache
-# installs (see `cleanup_legacy_temp_root_state`). The response-file write
-# paths at lines 2235/6817 are transient sidecars whose lifetime is bounded
-# by the compiler subprocess and which deliberately don't live under the
-# user-visible `~/.zccache/` tree. Migrating those is a follow-up.
-crates/zccache-daemon-core/src/daemon/server/run.rs
+# The legacy temp-root cleanup walks $TMPDIR looking for state older zccache
+# installs left there (see `cleanup_legacy_temp_root_state`). Reading the
+# system temp dir IS the job — the debris it reclaims is by definition not
+# under `~/.zccache/`, so there is nothing to re-root. It creates nothing
+# there. Moved here from `run.rs` by #1160, which made it a member of the
+# shared maintenance schedule; `run.rs` no longer touches $TMPDIR at all.
+crates/zccache-daemon-core/src/daemon/server/maintenance_schedule.rs
 
 # diag.rs reads `std::env::temp_dir()` purely to display its value in a
 # diagnostic dump (`zccache wrap --diag`). Nothing is created at the
