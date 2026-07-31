@@ -96,6 +96,14 @@ pub struct ArtifactStore {
     path: NormalizedPath,
     entries: DashMap<String, ArtifactIndex>,
     flush_lock: std::sync::Mutex<()>,
+    /// Set when a `load_from_disk` found the blob present but unparseable.
+    ///
+    /// This is the #1157 seam between the two crates. The corrupt arm lives
+    /// here, but the rebuild needs to scan the artifact directory and decide
+    /// a startup time budget — daemon concerns. `zccache-daemon-core` depends
+    /// on this crate, never the reverse, so the store only *reports* that it
+    /// started corrupt and the daemon owns the recovery policy.
+    started_corrupt: std::sync::atomic::AtomicBool,
 }
 
 impl ArtifactStore {
@@ -132,7 +140,23 @@ impl ArtifactStore {
             path: NormalizedPath::new(path),
             entries: DashMap::new(),
             flush_lock: std::sync::Mutex::new(()),
+            started_corrupt: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Consume the "the on-disk blob was unreadable" signal, returning whether
+    /// it was set and clearing it.
+    ///
+    /// #1157: the daemon calls this once at startup. `true` means the index
+    /// this store is serving is empty *because the file did not parse*, not
+    /// because the cache is cold — so the surviving on-disk payloads are worth
+    /// scanning to rebuild entries from
+    /// ([`crate::reconcile_index_from_disk`]). Taking rather than peeking
+    /// keeps the expensive scan to a single winner when the background loader
+    /// races the on-first-miss synchronous load.
+    pub fn take_started_corrupt(&self) -> bool {
+        self.started_corrupt
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
     }
 
     /// Read the on-disk index blob (if any) and insert every entry
@@ -178,10 +202,12 @@ impl ArtifactStore {
                     }
                 }
                 Err(e) => {
+                    self.started_corrupt
+                        .store(true, std::sync::atomic::Ordering::Release);
                     tracing::warn!(
                         path = %path.display(),
                         bytes = bytes.len(),
-                        "artifact index blob is corrupt, starting empty: {e}"
+                        "artifact index blob is corrupt, starting empty pending reconciliation: {e}"
                     );
                     // #1157: dropping the index re-misses every key while the
                     // content-addressed payloads are still on disk, so the
@@ -503,13 +529,47 @@ mod tests {
         assert!(store.get("another").is_some());
     }
 
+    /// This test used to be `open_corrupt_file_starts_empty`, and it asserted
+    /// only `store.len() == 0` — pinning "a corrupt blob is a cache wipe" as
+    /// the intended contract. #1157 finding 1 changed that: starting empty is
+    /// now the *load* behaviour, not the *final* behaviour. The store must
+    /// additionally hand the daemon the signal that lets it rebuild entries
+    /// from the payloads still on disk, because without the signal the daemon
+    /// cannot tell an unreadable index apart from a genuinely cold cache.
+    ///
+    /// The flag is a take, not a peek, so the rebuild scan runs once even
+    /// though `load_from_disk` has two call sites racing at startup.
     #[test]
-    fn open_corrupt_file_starts_empty() {
+    fn open_corrupt_file_starts_empty_but_flags_itself_for_reconciliation() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("index.bin");
         std::fs::write(&path, b"not valid bincode").unwrap();
+
         let store = ArtifactStore::open(&path).unwrap();
-        assert_eq!(store.len(), 0);
+        assert_eq!(store.len(), 0, "the unreadable blob still yields no rows");
+        assert!(
+            store.take_started_corrupt(),
+            "a corrupt load must be distinguishable from a cold cache"
+        );
+        assert!(
+            !store.take_started_corrupt(),
+            "the signal is consumed so only one caller pays for the rebuild scan"
+        );
+    }
+
+    #[test]
+    fn a_missing_or_healthy_index_is_not_flagged_as_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.bin");
+
+        let missing = ArtifactStore::open(&path).unwrap();
+        assert!(!missing.take_started_corrupt());
+
+        missing.insert("k", &sample_meta());
+        missing.flush().unwrap();
+        let healthy = ArtifactStore::open(&path).unwrap();
+        assert_eq!(healthy.len(), 1);
+        assert!(!healthy.take_started_corrupt());
     }
 
     /// #1157: starting empty on a corrupt index re-misses every key while the

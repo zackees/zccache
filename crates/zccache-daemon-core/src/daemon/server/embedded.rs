@@ -111,6 +111,16 @@ impl EmbeddedDaemon {
             if let Err(e) = state.artifact_store.load_from_disk() {
                 tracing::warn!("embedded artifact index load failed, continuing empty: {e}");
             }
+            // #1157: same recovery as the standalone daemon's
+            // `ArtifactStoreLoader` — run it before snapshotting into
+            // `state.artifacts` so rebuilt entries are published together
+            // with the ones that loaded normally.
+            super::index_reconcile::reconcile_corrupt_index(
+                &state.artifact_store,
+                state.artifact_dir.as_path(),
+                state.cache_dir.as_path(),
+                super::index_reconcile::reconcile_budget(),
+            );
             let entries = state.artifact_store.load_all();
             let count = entries.len();
             for (key, meta) in entries {

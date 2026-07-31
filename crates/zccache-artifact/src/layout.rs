@@ -147,12 +147,28 @@ fn legacy_path_validation_enabled() -> bool {
         })
 }
 
-/// Resolve and validate a staged-v2 generation without falling back.
-pub fn resolve_staged_artifact_files(
+/// The staged-v2 generation currently published for one artifact key, with
+/// its manifest already checked for identity, version, and self-consistency
+/// (the generation hex is a digest over the manifest's own output rows).
+///
+/// The payload files themselves are *not* verified yet — that is
+/// [`verify_generation_outputs`], which is the expensive part (a full blake3
+/// read of every output).
+struct PublishedGeneration {
+    dir: std::path::PathBuf,
+    outputs: Vec<StagedOutput>,
+}
+
+/// Read `<artifact_dir>/.staged-v2/<key>.current` and the manifest it points
+/// at, rejecting anything whose identity or self-digest does not check out.
+///
+/// `Ok(None)` means "this key has no published staged generation" — the
+/// caller falls back to pack / flat-v1. Every other failure is an error, so a
+/// tampered or truncated manifest is loud rather than silently skipped.
+fn load_published_generation(
     artifact_dir: &Path,
     key_hex: &str,
-    expected_sizes: &[u64],
-) -> io::Result<Option<Vec<NormalizedPath>>> {
+) -> io::Result<Option<PublishedGeneration>> {
     validate_key(key_hex)?;
     let root = artifact_dir.join(STAGED_ROOT);
     let pointer = root.join(format!("{key_hex}.current"));
@@ -162,32 +178,38 @@ pub fn resolve_staged_artifact_files(
         Err(error) => return Err(error),
     };
     validate_generation(&generation_hex)?;
-    let generation = root.join(key_hex).join(&generation_hex);
-    let manifest = load_manifest(&generation.join("manifest.bin"), key_hex, &generation_hex)?;
+    let dir = root.join(key_hex).join(&generation_hex);
+    let manifest = load_manifest(&dir.join("manifest.bin"), key_hex, &generation_hex)?;
     if generation_digest(key_hex, &manifest.outputs) != generation_hex {
         return Err(invalid_data(
             "staged generation digest does not match its manifest",
         ));
     }
-    if manifest.outputs.len() != expected_sizes.len() {
-        return Err(invalid_data(
-            "staged output count does not match artifact metadata",
-        ));
-    }
+    Ok(Some(PublishedGeneration {
+        dir,
+        outputs: manifest.outputs,
+    }))
+}
 
-    let mut paths = Vec::with_capacity(manifest.outputs.len());
-    let mut seen = vec![false; expected_sizes.len()];
-    for output in &manifest.outputs {
-        if output.index >= expected_sizes.len()
-            || seen[output.index]
-            || expected_sizes[output.index] != output.size
-        {
+/// Verify every payload file in a published generation against its manifest
+/// row (size then blake3 digest) and return the output paths in index order.
+///
+/// Also enforces that the manifest's indices are exactly `0..outputs.len()`
+/// with no repeats, so a caller can index the returned slice positionally.
+fn verify_generation_outputs(generation: &PublishedGeneration) -> io::Result<Vec<NormalizedPath>> {
+    let mut seen = vec![false; generation.outputs.len()];
+    let mut paths = Vec::with_capacity(generation.outputs.len());
+    for output in &generation.outputs {
+        if output.index >= seen.len() || seen[output.index] {
             return Err(invalid_data(
-                "staged output size does not match artifact metadata",
+                "staged manifest has a duplicate or out-of-range output index",
             ));
         }
         seen[output.index] = true;
-        let path: NormalizedPath = generation.join(format!("output-{}", output.index)).into();
+        let path: NormalizedPath = generation
+            .dir
+            .join(format!("output-{}", output.index))
+            .into();
         if fs::metadata(&path)?.len() != output.size {
             return Err(invalid_data(
                 "staged output size does not match its manifest",
@@ -201,11 +223,95 @@ pub fn resolve_staged_artifact_files(
         }
         paths.push((output.index, path));
     }
-    if seen.iter().any(|was_seen| !was_seen) {
-        return Err(invalid_data("staged manifest has a missing output index"));
-    }
     paths.sort_by_key(|(index, _)| *index);
-    Ok(Some(paths.into_iter().map(|(_, path)| path).collect()))
+    Ok(paths.into_iter().map(|(_, path)| path).collect())
+}
+
+/// Resolve and validate a staged-v2 generation without falling back.
+pub fn resolve_staged_artifact_files(
+    artifact_dir: &Path,
+    key_hex: &str,
+    expected_sizes: &[u64],
+) -> io::Result<Option<Vec<NormalizedPath>>> {
+    let Some(generation) = load_published_generation(artifact_dir, key_hex)? else {
+        return Ok(None);
+    };
+    if generation.outputs.len() != expected_sizes.len() {
+        return Err(invalid_data(
+            "staged output count does not match artifact metadata",
+        ));
+    }
+    for output in &generation.outputs {
+        if output.index >= expected_sizes.len() || expected_sizes[output.index] != output.size {
+            return Err(invalid_data(
+                "staged output size does not match artifact metadata",
+            ));
+        }
+    }
+    Ok(Some(verify_generation_outputs(&generation)?))
+}
+
+/// Every artifact key that currently has a published staged-v2 generation
+/// pointer, discovered by listing `<artifact_dir>/.staged-v2/*.current`.
+///
+/// Used by index reconciliation (#1157) to enumerate rebuild candidates when
+/// `index.bin` is unreadable and there is no key list to iterate. A missing
+/// staged root is an empty list, not an error.
+pub fn published_staged_keys(artifact_dir: &Path) -> io::Result<Vec<String>> {
+    let root = artifact_dir.join(STAGED_ROOT);
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut keys = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(key) = name.strip_suffix(".current") else {
+            continue;
+        };
+        if validate_key(key).is_ok() {
+            keys.push(key.to_string());
+        }
+    }
+    keys.sort();
+    Ok(keys)
+}
+
+/// Fully verified per-output sizes for the published staged generation of
+/// `key_hex`, derived from the manifest alone.
+///
+/// This is [`resolve_staged_artifact_files`] with the index cross-check
+/// removed, for the one caller that has no index entry to cross-check
+/// against: rebuilding a corrupt `index.bin` from disk (#1157). The manifest
+/// is the authoritative record of the output count and sizes, and every
+/// payload is blake3-verified before a size is reported, so a reconstructed
+/// entry can never claim a size the bytes on disk do not back.
+///
+/// Also returns the manifest's mtime so the rebuilt entry can carry a stable
+/// `stored_at_secs` instead of `now()` — otherwise every restart would reset
+/// retention age for the whole cache.
+pub fn verified_staged_generation(
+    artifact_dir: &Path,
+    key_hex: &str,
+) -> io::Result<Option<(Vec<u64>, std::time::SystemTime)>> {
+    let Some(generation) = load_published_generation(artifact_dir, key_hex)? else {
+        return Ok(None);
+    };
+    verify_generation_outputs(&generation)?;
+    let mut sizes = vec![0_u64; generation.outputs.len()];
+    for output in &generation.outputs {
+        // `verify_generation_outputs` already proved the indices are exactly
+        // `0..len` with no repeats, so this cannot panic or overwrite.
+        sizes[output.index] = output.size;
+    }
+    let stored_at = fs::metadata(generation.dir.join("manifest.bin"))?
+        .modified()
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    Ok(Some((sizes, stored_at)))
 }
 
 fn load_manifest(
@@ -339,6 +445,73 @@ fn invalid_data(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
+/// Fixture writers for the on-disk layouts this module reads.
+///
+/// Behind the `test-support` feature (and always available inside this
+/// crate's own tests) so crates above `zccache-artifact` can seed a genuine
+/// `.staged-v2` generation instead of hand-rolling the manifest encoding and
+/// drifting from it.
+#[cfg(any(test, feature = "test-support"))]
+// Fixture setup: a filesystem error here means the test's premise never got
+// established, so panicking with the failed step named is the correct and
+// most debuggable outcome. Never compiled into a shipping binary.
+#[allow(clippy::expect_used)]
+pub mod fixtures {
+    use super::{
+        generation_digest, StagedManifest, StagedOutput, STAGED_MANIFEST_VERSION, STAGED_ROOT,
+    };
+    use std::fs;
+    use std::path::Path;
+
+    /// Write a complete, self-consistent staged-v2 generation for `key_hex`
+    /// under `artifact_dir` and publish it via the `.current` pointer.
+    /// Returns the generation hex.
+    pub fn seed_staged_generation(
+        artifact_dir: &Path,
+        key_hex: &str,
+        payloads: &[&[u8]],
+    ) -> String {
+        let outputs: Vec<StagedOutput> = payloads
+            .iter()
+            .enumerate()
+            .map(|(index, payload)| StagedOutput {
+                index,
+                size: payload.len() as u64,
+                digest_hex: blake3::hash(payload).to_hex().to_string(),
+            })
+            .collect();
+        let generation_hex = generation_digest(key_hex, &outputs);
+        let generation_dir = artifact_dir
+            .join(STAGED_ROOT)
+            .join(key_hex)
+            .join(&generation_hex);
+        fs::create_dir_all(&generation_dir).expect("create staged generation dir");
+        for (index, payload) in payloads.iter().enumerate() {
+            fs::write(generation_dir.join(format!("output-{index}")), payload)
+                .expect("write staged output");
+        }
+        let manifest = StagedManifest {
+            version: STAGED_MANIFEST_VERSION,
+            key_hex: key_hex.to_string(),
+            generation_hex: generation_hex.clone(),
+            outputs,
+        };
+        fs::write(
+            generation_dir.join("manifest.bin"),
+            bincode::serialize(&manifest).expect("serialize staged manifest"),
+        )
+        .expect("write staged manifest");
+        fs::write(
+            artifact_dir
+                .join(STAGED_ROOT)
+                .join(format!("{key_hex}.current")),
+            &generation_hex,
+        )
+        .expect("write staged pointer");
+        generation_hex
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,49 +542,7 @@ mod tests {
         data
     }
 
-    fn seed_staged(
-        artifact_dir: &Path,
-        key_hex: &str,
-        payloads: &[&[u8]],
-    ) -> (String, Vec<StagedOutput>) {
-        let mut outputs = Vec::with_capacity(payloads.len());
-        for (index, payload) in payloads.iter().enumerate() {
-            outputs.push(StagedOutput {
-                index,
-                size: payload.len() as u64,
-                digest_hex: blake3::hash(payload).to_hex().to_string(),
-            });
-        }
-        let generation_hex = generation_digest(key_hex, &outputs);
-        let generation_dir = artifact_dir
-            .join(STAGED_ROOT)
-            .join(key_hex)
-            .join(&generation_hex);
-        fs::create_dir_all(&generation_dir).expect("create generation");
-        for (index, payload) in payloads.iter().enumerate() {
-            fs::write(generation_dir.join(format!("output-{index}")), payload)
-                .expect("write staged output");
-        }
-        let manifest = StagedManifest {
-            version: STAGED_MANIFEST_VERSION,
-            key_hex: key_hex.to_string(),
-            generation_hex: generation_hex.clone(),
-            outputs: outputs.clone(),
-        };
-        fs::write(
-            generation_dir.join("manifest.bin"),
-            bincode::serialize(&manifest).expect("serialize manifest"),
-        )
-        .expect("write manifest");
-        fs::write(
-            artifact_dir
-                .join(STAGED_ROOT)
-                .join(format!("{key_hex}.current")),
-            &generation_hex,
-        )
-        .expect("write pointer");
-        (generation_hex, outputs)
-    }
+    use super::fixtures::seed_staged_generation as seed_staged;
 
     #[test]
     fn resolves_legacy_pack_and_staged_layouts() {
@@ -473,7 +604,7 @@ mod tests {
     fn rejects_corrupt_staged_manifest_without_legacy_fallback() {
         let root = tempfile::tempdir().expect("tempdir");
         let key = "b".repeat(64);
-        let (generation, _) = seed_staged(root.path(), &key, &[b"valid"]);
+        let generation = seed_staged(root.path(), &key, &[b"valid"]);
         fs::write(
             root.path()
                 .join(STAGED_ROOT)

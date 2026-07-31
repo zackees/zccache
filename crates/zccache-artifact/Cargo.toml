@@ -13,6 +13,10 @@ publish = false
 [features]
 default = []
 cli = ["dep:flate2", "dep:tar"]
+# Fixture writers for the on-disk layouts (`layout::fixtures`). Dev-only:
+# lets crates above this one seed a real `.staged-v2` generation without
+# reimplementing the manifest format.
+test-support = []
 gha = ["dep:zccache-gha", "dep:flate2", "dep:tar"]
 
 [dependencies]

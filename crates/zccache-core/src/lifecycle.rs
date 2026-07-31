@@ -46,6 +46,7 @@
 //! | `wrapper-daemon-unavailable` (#1170) | CLI wrapper | the daemon could not be reached before request dispatch and the wrapper refused to run the tool uncached | `tool`, `cwd`, `endpoint`, `reason`, `phase`, `route`, `exit_code` |
 //! | `version_mismatch` | daemon | client / daemon protocol versions disagree | `daemon_protocol_version`, `client_protocol_version`, `reason` |
 //! | `state_corrupt` (#1157) | daemon | persisted state did not parse and was dropped rather than reconciled; consequence is a full cold recompile | `subsystem`, `consequence`, `message`, `path`, `bytes` |
+//! | `index_reconciled` (#1157) | daemon | a corrupt artifact index was rebuilt from surviving staged-v2 generations instead of starting empty | `recovered`, `candidates`, `skipped_multi_output`, `skipped_unverifiable`, `truncated_by_budget`, `budget_ms`, `elapsed_ns` |
 //! | `insecure_socket_dir` (#1171) | daemon | the directory holding the IPC endpoint was group/other-writable; another local user could substitute the socket | `path`, `outcome`, `detail` |
 //! | `insecure_deploy_dir` (#1172) | CLI | the directory the daemon binary is deployed into was group/other-writable; another local user could have replaced the binary the CLI executes | `path`, `outcome`, `detail` |
 //! | `ipc_peer_rejected` (#1171) | daemon | an accepted IPC connection was refused because the peer is not this user, or its credentials were unavailable | `reason`, `detail` |
@@ -131,6 +132,18 @@ pub const EVENT_VERSION_MISMATCH: &str = "version_mismatch";
 /// so the event carries `subsystem` and `consequence` and is what makes a
 /// fleet-wide "everyone recompiled today" incident attributable after the fact.
 pub const EVENT_STATE_CORRUPT: &str = "state_corrupt";
+/// A corrupt artifact index was rebuilt from the surviving on-disk payloads
+/// instead of being left empty (#1157, finding 1).
+///
+/// Always paired with the [`EVENT_STATE_CORRUPT`] row that recorded the
+/// unreadable blob — this one says how much of it came back. `recovered` is
+/// the number of index entries re-inserted, `skipped_multi_output` counts the
+/// generations deliberately left out because their output filenames are not
+/// recoverable from disk (delivering those by a guessed name is how a
+/// reconciliation turns into a wrong cache hit), and `truncated_by_budget`
+/// says the scan hit its wall-clock cap and stopped early rather than
+/// delaying daemon start.
+pub const EVENT_INDEX_RECONCILED: &str = "index_reconciled";
 /// The directory holding the IPC endpoint was group/other-writable (#1171).
 ///
 /// Reaching that socket is arbitrary process execution as the daemon user, so
@@ -280,6 +293,7 @@ pub const EVENT_ALL: &[&str] = &[
     EVENT_DIED_PRIVATE_OWNER_EXIT,
     EVENT_VERSION_MISMATCH,
     EVENT_STATE_CORRUPT,
+    EVENT_INDEX_RECONCILED,
     EVENT_INSECURE_SOCKET_DIR,
     EVENT_IPC_PEER_REJECTED,
     EVENT_INSECURE_DEPLOY_DIR,

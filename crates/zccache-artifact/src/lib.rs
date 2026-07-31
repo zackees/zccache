@@ -8,15 +8,22 @@
 
 pub mod kv;
 mod layout;
+mod reconcile;
 mod rust_plan;
 mod store;
 
 pub use kv::{
     is_valid_namespace, Key, KvError, KvResult, KvStore, INLINE_THRESHOLD, MAX_VALUE_BYTES,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use layout::fixtures as layout_fixtures;
 pub use layout::{
     record_legacy_artifact_access, resolve_artifact_payloads, resolve_staged_artifact_files,
     LegacyArtifactAccessPurpose, ResolvedArtifactPayload, LEGACY_PATH_VALIDATE_ENV,
+};
+pub use reconcile::{
+    reconcile_index_from_disk, IndexReconciliation, DEFAULT_RECONCILE_BUDGET,
+    RECONCILED_OUTPUT_NAME,
 };
 #[cfg(feature = "gha")]
 pub use rust_plan::{
