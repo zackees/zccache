@@ -55,18 +55,6 @@ fn daemon_max_blocking_threads() -> usize {
     parallelism.saturating_mul(8).clamp(128, 512)
 }
 
-/// Size of a persisted snapshot for a state-loss event payload, or `None` when
-/// it cannot be stat'd.
-///
-/// #1157 asks the drop-path events to carry the file path and byte count so a
-/// post-incident search can size the loss. `None` is deliberate over `0`: a
-/// snapshot that vanished between classification and this stat is a different
-/// story from one that was present and empty, and collapsing them would make
-/// the forensics lie.
-fn snapshot_bytes(path: &std::path::Path) -> Option<u64> {
-    std::fs::metadata(path).ok().map(|meta| meta.len())
-}
-
 const DAEMON_PROFILE_ENV: &str = "ZCCACHE_DAEMON_PROFILE";
 const TOKIO_CONSOLE_PROFILE: &str = "tokio-console";
 const TOKIO_CONSOLE_BIND_ENV: &str = "TOKIO_CONSOLE_BIND";
@@ -454,91 +442,16 @@ fn run_server(args: Args) {
                 setter.install(None, None);
                 return;
             }
-            let start = std::time::Instant::now();
-            let outcome = crate::depgraph::classify_load(&depgraph_path);
-            let warning = outcome.warning(&depgraph_path);
-            match outcome {
-                crate::depgraph::DepGraphLoadOutcome::Loaded { graph } => {
-                    let stats = graph.stats();
-                    let (cold_ctxs, warm_ctxs, stale_ctxs) = graph.state_breakdown();
-                    let ctxs_with_key = graph.contexts_with_artifact_key();
-                    tracing::info!(
-                        contexts = stats.context_count,
-                        files = stats.file_count,
-                        cold = cold_ctxs,
-                        warm = warm_ctxs,
-                        stale = stale_ctxs,
-                        with_artifact_key = ctxs_with_key,
-                        elapsed_ms = start.elapsed().as_millis() as u64,
-                        "loaded depgraph from disk (background)"
-                    );
-                    setter.install(Some(graph), None);
-                }
-                crate::depgraph::DepGraphLoadOutcome::Missing => {
-                    setter.install(None, None);
-                }
-                crate::depgraph::DepGraphLoadOutcome::VersionMismatch {
-                    file_version,
-                    expected_version,
-                } => {
-                    tracing::warn!(
-                        file_version,
-                        expected_version,
-                        "depgraph version mismatch — starting with empty graph"
-                    );
-                    // #1157: a schema bump silently costs every workspace a
-                    // full cold recompile. A `tracing::warn!` goes to whatever
-                    // the operator happened to be capturing, so fleet-wide
-                    // "everyone recompiled today" incidents were unattributable
-                    // after the fact. The durable event is what makes them
-                    // diagnosable -- same reasoning as the spawn/death events
-                    // this log already carries.
-                    crate::daemon::lifecycle::write_event(
-                        crate::daemon::lifecycle::EVENT_VERSION_MISMATCH,
-                        serde_json::json!({
-                            "subsystem": "depgraph",
-                            "file_version": file_version,
-                            "expected_version": expected_version,
-                            "consequence": "empty_graph",
-                            // #1157 asked for the path and byte count on *both*
-                            // drop paths; the index side carries them, so a
-                            // post-incident search could size the index loss but
-                            // not the graph loss. `bytes` is null when the file
-                            // vanished between classify and stat -- absent, not
-                            // zero, so it is not mistaken for an empty snapshot.
-                            "path": depgraph_path.display().to_string(),
-                            "bytes": snapshot_bytes(&depgraph_path),
-                        }),
-                    );
-                    if let Some(ref w) = warning {
-                        eprintln!("{w}");
-                    }
-                    setter.install(None, warning);
-                }
-                crate::depgraph::DepGraphLoadOutcome::Corrupt { ref message }
-                | crate::depgraph::DepGraphLoadOutcome::IoError { ref message } => {
-                    tracing::warn!("depgraph load failed: {message} — starting with empty graph");
-                    // #1157: the sibling `VersionMismatch` arm already emits a
-                    // durable event, and this arm has the same blast radius —
-                    // an empty graph means every workspace cold-recompiles.
-                    // Leaving it on `tracing::warn!` alone made the corrupt
-                    // case the one variant a post-incident log search missed.
-                    crate::daemon::lifecycle::write_event(
-                        crate::core::lifecycle::EVENT_STATE_CORRUPT,
-                        serde_json::json!({
-                            "subsystem": "depgraph",
-                            "message": message,
-                            "consequence": "empty_graph",
-                            "path": depgraph_path.display().to_string(),
-                            "bytes": snapshot_bytes(&depgraph_path),
-                        }),
-                    );
-                    if let Some(ref w) = warning {
-                        eprintln!("{w}");
-                    }
-                    setter.install(None, warning);
-                }
+            // #1157: the classify/quarantine/recover policy lives in
+            // `daemon::depgraph_load` so its degraded arms are reachable from
+            // a unit test — inline here they could only ever be pinned by
+            // re-emitting their events by hand, which cannot catch an arm that
+            // stops firing.
+            let load = crate::daemon::depgraph_load::load_for_startup(&depgraph_path);
+            if let Some(ref w) = load.warning {
+                eprintln!("{w}");
             }
+            setter.install(load.graph, load.warning);
         });
 
         // Issue #784: move the compiler-hash cache load off the
@@ -759,144 +672,6 @@ fn init_tokio_console_tracing(filter: tracing_subscriber::EnvFilter, bind: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // #1157: the durable record of a depgraph schema bump.
-    //
-    // Scope, stated plainly: this pins the *payload contract* — the event
-    // name and the fields an operator greps for — by writing the same shape
-    // through the same API into a temp cache root. It does not drive the
-    // call site, because that arm lives inside a `spawn_blocking` closure in
-    // `run_daemon` and reaching it needs a live daemon plus a version-skewed
-    // depgraph file on disk, which is integration scope. The value here is
-    // that a future edit cannot silently rename a field or drop the event
-    // from the catalog.
-    #[test]
-    fn depgraph_version_mismatch_event_is_greppable_and_catalogued() {
-        use crate::core::lifecycle as core_lifecycle;
-        use crate::daemon::lifecycle;
-
-        assert!(
-            core_lifecycle::EVENT_ALL.contains(&lifecycle::EVENT_VERSION_MISMATCH),
-            "log-audit tooling and operator docs key on the catalog; an event \
-             outside it is invisible to them"
-        );
-
-        let temp = tempfile::tempdir().unwrap();
-        core_lifecycle::write_event_in_cache_root(
-            temp.path(),
-            lifecycle::EVENT_VERSION_MISMATCH,
-            serde_json::json!({
-                "subsystem": "depgraph",
-                "file_version": 3u32,
-                "expected_version": 4u32,
-                "consequence": "empty_graph",
-            }),
-        );
-
-        let log_path = temp
-            .path()
-            .join("logs")
-            .join(core_lifecycle::live_log_filename());
-        let body = std::fs::read_to_string(&log_path)
-            .expect("the event must land in <cache_root>/logs/<live log>");
-        let record = body
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .find(|v| v["event"] == lifecycle::EVENT_VERSION_MISMATCH)
-            .expect("the version-mismatch event must be written to the lifecycle log");
-
-        // `subsystem` is what separates a depgraph schema bump from the
-        // daemon-version mismatch that already used this event name.
-        assert_eq!(record["subsystem"], "depgraph");
-        assert_eq!(record["file_version"], 3);
-        assert_eq!(record["expected_version"], 4);
-        assert_eq!(record["consequence"], "empty_graph");
-    }
-
-    /// #1157 asked the drop-path events to carry the file path *and* byte
-    /// count. The index side did; the depgraph side reported neither, so a
-    /// post-incident search could size the index loss but not the graph loss.
-    ///
-    /// Unlike the payload-contract test above, this drives the real function:
-    /// `snapshot_bytes` is where the only logic lives, and the distinction it
-    /// encodes — absent vs. present-but-empty — is the part worth pinning.
-    #[test]
-    fn snapshot_bytes_separates_a_missing_snapshot_from_an_empty_one() {
-        let temp = tempfile::tempdir().unwrap();
-
-        let missing = temp.path().join("never-written.bin");
-        assert_eq!(
-            snapshot_bytes(&missing),
-            None,
-            "a snapshot that is not there must report absent, not zero bytes — \
-             collapsing the two would make the forensics claim a file existed"
-        );
-
-        let empty = temp.path().join("empty.bin");
-        std::fs::write(&empty, b"").unwrap();
-        assert_eq!(
-            snapshot_bytes(&empty),
-            Some(0),
-            "a present-but-empty snapshot is a real, different failure and must \
-             be distinguishable from a missing one"
-        );
-
-        let populated = temp.path().join("populated.bin");
-        std::fs::write(&populated, b"corrupt-but-sizeable").unwrap();
-        assert_eq!(snapshot_bytes(&populated), Some(20));
-    }
-
-    /// The corrupt/IO arm is the variant a post-incident log search used to
-    /// miss entirely, and it still has no test that drives its call site (that
-    /// arm lives in a `spawn_blocking` closure in `run_daemon`). This pins its
-    /// payload contract, including the `path`/`bytes` fields #1157 asked for.
-    #[test]
-    fn depgraph_state_corrupt_event_carries_the_path_and_size_of_what_was_dropped() {
-        use crate::core::lifecycle as core_lifecycle;
-
-        assert!(
-            core_lifecycle::EVENT_ALL.contains(&core_lifecycle::EVENT_STATE_CORRUPT),
-            "an event outside the catalog cannot be given a log-audit rule"
-        );
-
-        let temp = tempfile::tempdir().unwrap();
-        let snapshot = temp.path().join("depgraph.bin");
-        std::fs::write(&snapshot, b"not a valid snapshot").unwrap();
-
-        core_lifecycle::write_event_in_cache_root(
-            temp.path(),
-            core_lifecycle::EVENT_STATE_CORRUPT,
-            serde_json::json!({
-                "subsystem": "depgraph",
-                "message": "decode failed",
-                "consequence": "empty_graph",
-                "path": snapshot.display().to_string(),
-                "bytes": snapshot_bytes(&snapshot),
-            }),
-        );
-
-        let log_path = temp
-            .path()
-            .join("logs")
-            .join(core_lifecycle::live_log_filename());
-        let body = std::fs::read_to_string(&log_path).expect("event must be written");
-        let record = body
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .find(|v| v["event"] == core_lifecycle::EVENT_STATE_CORRUPT)
-            .expect("the corrupt-state event must reach the lifecycle log");
-
-        assert_eq!(record["subsystem"], "depgraph");
-        assert_eq!(record["consequence"], "empty_graph");
-        assert_eq!(record["bytes"], 20, "the size of the dropped snapshot");
-        assert!(
-            record["path"]
-                .as_str()
-                .is_some_and(|p| p.ends_with("depgraph.bin")),
-            "the event must name the file that was dropped; got {:?}",
-            record["path"]
-        );
-    }
 
     // #997: the daemon arg parser is now library-testable. Before the
     // extraction this lived in a bin and could not be unit-tested.

@@ -28,6 +28,7 @@ use super::scanner::{IncludeDirective, IncludeKind};
 use super::search_paths::IncludeSearchPaths;
 
 mod persistence;
+pub mod quarantine;
 #[cfg(test)]
 mod tests;
 

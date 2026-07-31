@@ -14,6 +14,7 @@ mod connection_disconnect;
 mod connection_ipc;
 mod connection_self_profile;
 mod deferred_cold_path;
+mod depgraph_reset_reachability;
 mod disk_maintenance;
 mod embedded_flush;
 mod exec_probe;
