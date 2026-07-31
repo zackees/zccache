@@ -42,6 +42,7 @@
 //! | `pipe-handover` (#755) | CLI (on takeover) | new daemon claimed the endpoint a previous daemon held | `pid` (the new daemon), `inbound_pid`, `inbound_version`, `outbound_pid`, `reason`, `client_pid` |
 //! | `client-disconnected` (#755) | client | IPC connection broke mid-request | `endpoint`, `client_pid`, `client_version`, `client_binary_path`, `cause`, `detail` |
 //! | `wrapper-local-fallback` | CLI wrapper | retired by #1170; kept so historical logs still resolve and the audit rule can assert it never reappears | `reason`, tool fields |
+//! | `daemon_spawn_breaker_open` (#1170) | CLI wrapper | daemon recovery was exhausted; later invocations fail immediately until the cool-down expires | `reason`, `cooldown_ms`, `consecutive_failures` |
 //! | `wrapper-daemon-unavailable` (#1170) | CLI wrapper | the daemon could not be reached before request dispatch and the wrapper refused to run the tool uncached | `tool`, `cwd`, `endpoint`, `reason`, `phase`, `route`, `exit_code` |
 //! | `version_mismatch` | daemon | client / daemon protocol versions disagree | `daemon_protocol_version`, `client_protocol_version`, `reason` |
 //! | `state_corrupt` (#1157) | daemon | persisted state did not parse and was dropped rather than reconciled; consequence is a full cold recompile | `subsystem`, `consequence`, `message`, `path`, `bytes` |
@@ -191,6 +192,14 @@ pub const EVENT_WRAPPER_LOCAL_FALLBACK: &str = "wrapper-local-fallback";
 /// `wrapper-local-fallback` any more; its audit rule stays as the guard that
 /// it does not come back.
 pub const EVENT_WRAPPER_DAEMON_UNAVAILABLE: &str = "wrapper-daemon-unavailable";
+/// The bounded recovery ladder was exhausted and the wrapper opened its
+/// cross-invocation breaker (#1170).
+///
+/// Emitted once per opening, not once per translation unit: the breaker
+/// exists precisely so a 1000-TU build against a dead daemon fails in
+/// seconds rather than paying the ladder 1000 times, and an event per TU
+/// would reintroduce the cost it removes in the log.
+pub const EVENT_DAEMON_SPAWN_BREAKER_OPEN: &str = "daemon_spawn_breaker_open";
 /// Phase 0 log-audit event names. These are emitted by the owning cache paths;
 /// the audit catalog consumes the stable spellings rather than source regexes.
 pub const EVENT_LEGACY_ARTIFACT_PATH_ACCESSED: &str = "legacy_artifact_path_accessed";
@@ -251,6 +260,7 @@ pub const EVENT_ALL: &[&str] = &[
     EVENT_CLIENT_CANCELLED,
     EVENT_WRAPPER_LOCAL_FALLBACK,
     EVENT_WRAPPER_DAEMON_UNAVAILABLE,
+    EVENT_DAEMON_SPAWN_BREAKER_OPEN,
     EVENT_STAGED_PUBLICATION_CONFLICT,
     EVENT_STAGED_PUBLICATION_REPLACES_INVALID_GENERATION,
     EVENT_STAGED_PUBLICATION_FAILED,

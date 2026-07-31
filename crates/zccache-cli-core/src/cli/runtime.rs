@@ -577,6 +577,11 @@ async fn stop_daemon_instance(
     let drained_cleanly = wait_for_process_exit(pid, drain_budget).await;
     if drained_cleanly {
         crate::ipc::remove_lock_file();
+        // #1170 change 2, step 3: the lock file was never the whole of a dead
+        // instance's state. Clear the rest here rather than leaving `<lock>
+        // .spawn` to a 20 s staleness timer and the identity file to nothing
+        // at all.
+        super::recovery::clear_stale_daemon_state();
         // Return the pid even though nothing was killed: the caller uses it to
         // link old -> new in the takeover lifecycle events. Previously a
         // daemon that exited inside the 200 ms window returned `None` here and
@@ -609,13 +614,50 @@ async fn stop_daemon_instance(
         wait_for_process_exit(pid, FORCE_KILL_REAP_BUDGET).await;
     }
     crate::ipc::remove_lock_file();
+    super::recovery::clear_stale_daemon_state();
     let killed_pid = kill_ok.then_some(pid);
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     killed_pid
 }
 
+/// Acquire a working daemon, or fail loudly within a bounded budget.
+///
+/// #1170 change 2 wraps the ladder below in two bounds that did not exist:
+/// a **total deadline** (`ZCCACHE_RECOVERY_BUDGET_MS`, default 30 s — the
+/// worst case used to be minutes), and a **cross-invocation breaker**. The
+/// wrapper is a fresh process per translation unit, so nothing was shared
+/// between them: a 1000-TU build against a dead daemon paid the whole ladder
+/// 1000 times. Now the first exhaustion writes a marker and the rest fail in
+/// microseconds, reporting the *original* cause rather than "breaker open".
 pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
+    if let Some(reason) = super::recovery::breaker_reason_if_open() {
+        return Err(format!(
+            "daemon recovery already failed on this cache root and is in its cool-down: {reason}"
+        ));
+    }
+    let outcome = match super::recovery::recovery_budget() {
+        Some(budget) => match tokio::time::timeout(budget, ensure_daemon_ladder(endpoint)).await {
+            Ok(outcome) => outcome,
+            Err(_) => Err(format!(
+                "daemon recovery exceeded its {}ms budget ({})",
+                budget.as_millis(),
+                super::recovery::RECOVERY_BUDGET_ENV
+            )),
+        },
+        None => ensure_daemon_ladder(endpoint).await,
+    };
+    match &outcome {
+        // A working daemon is proof the outage is over. Clearing on every
+        // success — not only after a recovery — is what stops a stale marker
+        // from fast-failing a healthy build.
+        Ok(()) => super::recovery::clear_breaker(),
+        Err(reason) => super::recovery::open_breaker(reason),
+    }
+    outcome
+}
+
+async fn ensure_daemon_ladder(endpoint: &str) -> Result<(), String> {
     // Issue #982: under the host no-spawn guard a reachable,
     // version-compatible daemon may still be used, but every other
     // outcome — including the stale-daemon replace paths, which would

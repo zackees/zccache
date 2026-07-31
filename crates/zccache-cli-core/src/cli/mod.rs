@@ -6,6 +6,7 @@ pub mod client;
 pub mod commands;
 pub mod defender;
 pub mod multicall;
+pub(crate) mod recovery;
 mod runtime;
 pub mod snapshot_fp;
 pub mod symbols;

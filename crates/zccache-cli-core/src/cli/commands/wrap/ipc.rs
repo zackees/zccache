@@ -89,13 +89,7 @@ pub(super) async fn cmd_compile(
             // burst-load tail clears. If the probe itself fails or
             // times out, run the pre-#753 kill+respawn recovery.
             drop(conn);
-            let action = match wedge_probe_budget() {
-                Some(budget) => {
-                    classify_probe_outcome(probe_daemon_responsive(endpoint, budget).await)
-                }
-                None => WedgeAction::EscalateKill, // ZCCACHE_WEDGE_PROBE_BUDGET_MS=0
-            };
-            match action {
+            match wedge_action(endpoint).await {
                 WedgeAction::DowngradeNoKill => {
                     super::emit_wrapper_warning(&format!(
                         "zccache[warn][W]: daemon at {endpoint} answered probe within \
@@ -136,6 +130,23 @@ pub(super) async fn cmd_compile(
             eprintln!("zccache[err][R]: {}", msg.message);
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Decide what a wedge means before acting on it.
+///
+/// #753 established that under burst-link load a "wedge" is usually a healthy
+/// daemon too busy to answer in time, and that killing it collapses the whole
+/// shared cohort. #1170 change 2 makes that classification apply to **every**
+/// wedge arm — the session arm had it, the two ephemeral arms killed
+/// unconditionally.
+///
+/// `ZCCACHE_WEDGE_PROBE_BUDGET_MS=0` disables the probe and preserves the
+/// pre-#753 unconditional-replace behaviour for anyone A/B-testing it.
+async fn wedge_action(endpoint: &str) -> WedgeAction {
+    match wedge_probe_budget() {
+        Some(budget) => classify_probe_outcome(probe_daemon_responsive(endpoint, budget).await),
+        None => WedgeAction::EscalateKill,
     }
 }
 
@@ -494,14 +505,46 @@ async fn cmd_compile_ephemeral_with_stdin(
         CompileRecvOutcome::Done(recv_result) => {
             report_relay_outcome(relay_compile_response_to_stdio(recv_result))
         }
-        CompileRecvOutcome::Wedged => {
-            eprintln!(
-                "zccache[err][W]: daemon at {endpoint} stopped responding within \
-                 the wedge budget; killing it so the next compile starts fresh — issue #666"
-            );
-            stop_wedged_daemon(endpoint, served_by.as_ref()).await;
-            ExitCode::FAILURE
-        }
+        // #1170 change 2: this arm used to kill unconditionally. A busy
+        // daemon under a `-j16` burst looks identical to a hung one from a
+        // single client's timeout, and killing it takes down the daemon every
+        // other worker is waiting on. Classify first, exactly as the session
+        // arm has since #753.
+        CompileRecvOutcome::Wedged => match wedge_action(endpoint).await {
+            WedgeAction::DowngradeNoKill => {
+                super::emit_wrapper_warning(&format!(
+                    "zccache[warn][W]: daemon at {endpoint} answered a probe within budget \
+                     but missed the per-request wedge budget — burst load, not a hung \
+                     daemon. Retrying once without killing — issues #753/#1170"
+                ));
+                match run_ephemeral_attempt(endpoint, &request).await {
+                    CompileRecvOutcome::Done(recv_result) => {
+                        report_relay_outcome(relay_compile_response_to_stdio(recv_result))
+                    }
+                    CompileRecvOutcome::Wedged => {
+                        eprintln!(
+                            "zccache[err][W]: daemon at {endpoint} missed the wedge budget \
+                             again after answering a probe; failing without killing a daemon \
+                             that is demonstrably alive"
+                        );
+                        ExitCode::FAILURE
+                    }
+                    CompileRecvOutcome::Failed(msg) => {
+                        eprintln!("zccache[err][R]: {}", msg.message);
+                        ExitCode::FAILURE
+                    }
+                }
+            }
+            WedgeAction::EscalateKill | WedgeAction::EscalateKillProbeError => {
+                eprintln!(
+                    "zccache[err][W]: daemon at {endpoint} stopped responding within \
+                     the wedge budget and failed the follow-up probe; killing it so the \
+                     next compile starts fresh — issue #666"
+                );
+                stop_wedged_daemon(endpoint, served_by.as_ref()).await;
+                ExitCode::FAILURE
+            }
+        },
         CompileRecvOutcome::Failed(msg) => match msg.phase {
             // #1170: this used to run the compiler directly, uncached, and
             // mirror its exit code — so a daemon outage that compiled fine
@@ -553,15 +596,44 @@ pub(super) async fn cmd_link_ephemeral(
         CompileRecvOutcome::Done(recv_result) => {
             report_relay_outcome(relay_link_response_to_stdio(recv_result))
         }
-        CompileRecvOutcome::Wedged => {
-            eprintln!(
-                "zccache[err][W]: daemon at {endpoint} stopped responding within \
-                 the wedge budget on a Link; killing it so the next request starts \
-                 fresh — issue #666"
-            );
-            stop_wedged_daemon(endpoint, served_by.as_ref()).await;
-            ExitCode::FAILURE
-        }
+        // #1170 change 2: classify before killing, as in `cmd_compile_ephemeral`.
+        // Links are the requests most likely to be slow for legitimate reasons,
+        // so this arm is if anything the more important of the two.
+        CompileRecvOutcome::Wedged => match wedge_action(endpoint).await {
+            WedgeAction::DowngradeNoKill => {
+                super::emit_wrapper_warning(&format!(
+                    "zccache[warn][W]: daemon at {endpoint} answered a probe within budget \
+                     but missed the per-request wedge budget on a Link — burst load, not a \
+                     hung daemon. Retrying once without killing — issues #753/#1170"
+                ));
+                match run_ephemeral_attempt(endpoint, &request).await {
+                    CompileRecvOutcome::Done(recv_result) => {
+                        report_relay_outcome(relay_link_response_to_stdio(recv_result))
+                    }
+                    CompileRecvOutcome::Wedged => {
+                        eprintln!(
+                            "zccache[err][W]: daemon at {endpoint} missed the wedge budget \
+                             again on a Link after answering a probe; failing without killing \
+                             a daemon that is demonstrably alive"
+                        );
+                        ExitCode::FAILURE
+                    }
+                    CompileRecvOutcome::Failed(msg) => {
+                        eprintln!("zccache[err][R]: {}", msg.message);
+                        ExitCode::FAILURE
+                    }
+                }
+            }
+            WedgeAction::EscalateKill | WedgeAction::EscalateKillProbeError => {
+                eprintln!(
+                    "zccache[err][W]: daemon at {endpoint} stopped responding within \
+                     the wedge budget on a Link and failed the follow-up probe; killing it \
+                     so the next request starts fresh — issue #666"
+                );
+                stop_wedged_daemon(endpoint, served_by.as_ref()).await;
+                ExitCode::FAILURE
+            }
+        },
         CompileRecvOutcome::Failed(msg) => match msg.phase {
             // #1170: as in `cmd_compile_ephemeral` — a link/archive step is
             // no more entitled to silently bypass the daemon than a compile.
