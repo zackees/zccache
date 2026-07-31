@@ -333,14 +333,35 @@ The test fixture is the `exec_test_tool` binary (built under `--features test-su
 
 ---
 
-## Wrapper fallback policy (`ZCCACHE_FALLBACK`, issue #1211)
+## Daemon unavailable is a hard error (issue #1170)
 
-When the daemon/cache pipeline fails **before request dispatch** (daemon spawn failure, connect timeout, `ZCCACHE_NO_SPAWN` refusal), the wrapper historically ran the tool directly, uncached. That degenerate fallback is now policy-gated at the single chokepoint `wrap/passthrough.rs::run_locally`:
+When the daemon/cache pipeline fails **before request dispatch** (daemon spawn failure, connect timeout, `ZCCACHE_NO_SPAWN` refusal), the wrapper **refuses to run the tool**. There is no uncached fallback.
 
-- **`Error` (the default on every host):** the wrapper refuses the uncached fallback — the tool is never spawned, stderr gets `zccache[err][F]: <reason>; refusing uncached fallback (<policy source>)`, and the compile fails with exit 1. The `wrapper-local-fallback` lifecycle event is still emitted with `outcome:"blocked"` for forensics. Hard-error is the default everywhere (not just CI) because cached artifacts are materialized as **read-only hardlinks** (COW-lite, #1038/#1039): a direct uncached compiler run cannot overwrite them, so the fallback doesn't merely lose the cache — it fails or corrupts the build.
-- **`Warn` (opt-in via `ZCCACHE_FALLBACK=warn`):** yellow `zccache[warn][F]` warning carrying the failure reason, then the tool runs uncached (`outcome:"ran"`). Escape hatch for build trees that never received hardlinked artifacts.
+The removed fallback mirrored the tool's exit code, so a daemon outage that happened to compile fine exited `0` — the build stayed green and the outage was invisible. #1039's read-only hardlinked artifacts made it worse than a lost cache: a direct compiler run cannot overwrite them, so the fallback frequently failed or corrupted the build. `ZCCACHE_FALLBACK` (the #1211 policy gate, which had already defaulted to `Error`) is gone with it.
 
-Post-dispatch transport failures (`FailurePhase::DeliveryUnknown`) were already fail-fast and are unchanged (double-compile hazard). `ZCCACHE_DISABLE=1` passthrough warns (never silent) but stays warn-only — it is a deliberate user opt-out; the probe bypass (`ZCCACHE_PROBE_BYPASS`) stays fully silent because probe callers parse the tool's stderr. The session→ephemeral downgrade and the wedge `DowngradeNoKill` recovery also announce themselves with yellow warnings naming the cause.
+The refusal is loud on three surfaces (`wrap/unavailable.rs`):
+
+- **exit 125** — wrapper-infrastructure failure, the git/env/docker convention, deliberately outside the 1/2 a compiler uses for diagnostics so CI classifies an infra failure from the code alone. This is part of the stable `zccache cc` / `zccache c++` contract.
+- **stderr** — `zccache[err][D]: daemon unavailable at <endpoint> (<reason>); refusing to run <tool> uncached.`
+- **a durable event** — `wrapper-daemon-unavailable`, and the `no-daemon-unavailable` audit rule forbids it in perf and integration runs (a run that hit it did not use the cache, so it measured something else).
+
+**The only sanctioned bypasses**, both explicit and opt-in: `ZCCACHE_DISABLE=1` (full passthrough, never contacts the daemon; warns, never silent) and `ZCCACHE_PROBE_BYPASS` (meson-probe TUs exec directly; fully silent because probe callers parse the tool's stderr). Post-dispatch transport failures (`FailurePhase::DeliveryUnknown`) were already fail-fast and are unchanged — the hazard there is a double compile.
+
+### The bounded recovery ladder
+
+Because unavailability is now fatal, recovery has to be robust *and* bounded (`cli/recovery.rs`):
+
+- **Total deadline** — `ZCCACHE_RECOVERY_BUDGET_MS`, default 30 s, `0` disables. Previously the ladder had no overall cap and the worst case was minutes inside one compile.
+- **Wedge classification on every arm** — a wedge is probed before any kill (#753). A busy daemon under a `-j16` burst is indistinguishable from a hung one from one client's timeout; the wrapper retries once without killing and kills only when the follow-up probe also fails.
+- **Identity-scoped cleanup** — the kill names the instance that failed (#1161), and clears the lock file, `<lock>.spawn`, and the backend identity file together.
+- **Cross-invocation breaker** — the wrapper is a fresh process per TU, so ladder exhaustion writes `<daemon-lock>.spawn-failed`. Invocations inside its cool-down (60 s, doubling, capped at 10 min) fail immediately with the *original* reason, so a 1000-TU build fails in seconds rather than paying the ladder 1000 times. Any successful acquisition clears it; `daemon_spawn_breaker_open` fires once per opening, not per TU.
+
+## Daemon log output (issue #1165)
+
+The daemon's `tracing` output goes to **stderr**, and that is the operational contract: whoever supervises the process (systemd, launchd, a Windows service, a CI runner) owns that stream and is **expected to rotate it**. zccache does not rotate a stream it does not own.
+
+For operators with no such supervisor, `ZCCACHE_LOG_FILE=<path>` adds a **size-capped** file sink alongside stderr — additive, never a redirect, so a supervisor already collecting stderr keeps getting everything. It retains one live file plus one archive, so the footprint is bounded at `2 ×` the cap (`ZCCACHE_LOG_FILE_MAX_BYTES`, default 16 MiB), matching the lifecycle log's retention shape. Writes are best-effort: a failing sink degrades to no file output and never blocks or crashes the daemon.
+
 
 ---
 

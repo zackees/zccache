@@ -19,6 +19,7 @@ pub mod fingerprint;
 pub mod jobserver;
 pub mod lifecycle;
 pub mod lineage;
+pub mod log_sink;
 pub(crate) mod process;
 pub mod server;
 pub mod side_effect;
