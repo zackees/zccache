@@ -209,10 +209,9 @@ fn verify_generation_outputs(generation: &PublishedGeneration) -> io::Result<Vec
             ));
         }
         seen[output.index] = true;
-        let path: NormalizedPath = generation
-            .dir
-            .join(format!("output-{}", output.index))
-            .into();
+        // `dir` is already a `NormalizedPath`, so `join` yields one — the
+        // `.into()` this replaced became a no-op when the field changed type.
+        let path = generation.dir.join(format!("output-{}", output.index));
         if fs::metadata(&path)?.len() != output.size {
             return Err(invalid_data(
                 "staged output size does not match its manifest",
