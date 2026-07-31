@@ -258,6 +258,7 @@ message DaemonStatus {
   bool dep_graph_persisted = 27;
   bool watcher_active = 28;
   uint64 watcher_degradations = 29;
+  bool index_writer_gone = 30;
 }
 
 message PrivateDaemonOwnerStatus {

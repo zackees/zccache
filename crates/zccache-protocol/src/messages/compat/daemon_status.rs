@@ -41,6 +41,7 @@ fn daemon_status_expanded_roundtrip() {
         dep_graph_persisted: true,
         watcher_active: true,
         watcher_degradations: 0,
+        index_writer_gone: false,
     };
     roundtrip(&status);
 }
@@ -77,6 +78,7 @@ fn daemon_status_version_field_roundtrips() {
         dep_graph_persisted: false,
         watcher_active: false,
         watcher_degradations: 3,
+        index_writer_gone: true,
     };
     roundtrip(&with_version);
 }
