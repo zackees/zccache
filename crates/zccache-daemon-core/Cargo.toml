@@ -17,7 +17,7 @@ default = []
 # Pulls clap + tracing-subscriber; enabled by the hosting binary.
 daemon-entry = ["dep:clap", "dep:tracing-subscriber"]
 # Dev-only test utilities (zccache_daemon_core::test_support).
-test-support = ["dep:tracing-subscriber"]
+test-support = ["dep:tracing-subscriber", "zccache-artifact/test-support"]
 tokio-console = ["dep:console-subscriber"]
 
 [dependencies]

@@ -199,6 +199,15 @@ impl ArtifactStoreLoader {
         if let Err(e) = self.store.load_from_disk() {
             tracing::warn!("artifact index load failed, continuing with empty store: {e}");
         }
+        // #1157: a blob that was present but unparseable is not a cold cache.
+        // Rebuild what the surviving payloads can prove before declaring the
+        // store loaded, so the first request after a corrupt boot can hit.
+        super::index_reconcile::reconcile_corrupt_index(
+            &self.store,
+            self.state.artifact_dir.as_path(),
+            self.state.cache_dir.as_path(),
+            super::index_reconcile::reconcile_budget(),
+        );
         self.state
             .artifact_store_loaded
             .store(true, Ordering::Release);
