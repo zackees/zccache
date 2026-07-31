@@ -261,11 +261,18 @@ mod tests {
             let log = crate::core::lifecycle::log_file_path();
             let body = std::fs::read_to_string(log.as_path())
                 .expect("a degraded load must write a durable lifecycle event");
+            // Select by THIS fixture's snapshot path, not by "the last line".
+            // The lifecycle log resolves from a process-global cache root, so a
+            // concurrently running test can append between our write and our
+            // read — taking the tail made this pass alone and fail in the
+            // suite. The tempdir path is unique per fixture, so it is an exact
+            // selector rather than a positional guess.
+            let wanted = self.snapshot.display().to_string();
             let record = body
                 .lines()
                 .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-                .next_back()
-                .expect("the lifecycle log must contain a parseable record");
+                .rfind(|record: &serde_json::Value| record["path"] == wanted)
+                .expect("a degraded load must write an event naming its own snapshot");
             (load, record)
         }
 
