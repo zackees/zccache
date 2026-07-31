@@ -24,7 +24,8 @@ crates/zccache-cli-core/src/cli/commands/cache_ops.rs
 crates/zccache-cli-core/src/cli/commands/symbols.rs
 crates/zccache-cli-core/src/cli/commands/wrap.rs
 crates/zccache-cli-core/src/cli/defender.rs
-crates/zccache-cli-core/src/cli/runtime.rs
+crates/zccache-cli-core/src/cli/runtime/mod.rs
+crates/zccache-cli-core/src/cli/runtime/deploy.rs
 # Crash, lifecycle, and defender code crosses OS process and file-system
 # boundaries. These modules still use raw paths while the normalized path
 # API is being threaded through the surrounding runtime contracts.

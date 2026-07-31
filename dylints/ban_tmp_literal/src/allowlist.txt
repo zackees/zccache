@@ -31,7 +31,7 @@ crates/zccache-protocol/src/messages/compat/mod.rs
 # the filesystem on Windows. Migrate to neutral fake paths (`/fixture/...`)
 # as you touch each file; do not add new entries in this group. See #828.
 crates/zccache-cli-core/src/cli/commands/tests/analyze.rs
-crates/zccache-cli-core/src/cli/runtime.rs
+crates/zccache-cli-core/src/cli/runtime/mod.rs
 crates/zccache-cli-core/src/cli/snapshot_fp.rs
 crates/zccache-daemon-core/src/daemon/compile_journal/tests/entry.rs
 crates/zccache-daemon-core/src/daemon/compile_journal/tests/journal_file.rs
