@@ -16,6 +16,12 @@ Split into focused submodules (file-size discipline: every source file < 1,000 L
   (`artifacts_dir`, `tmp_dir`, `depfile_dir`, `depgraph_dir`, `log_dir`,
   `crash_dump_dir`, `index_path`, `metadata_path_from_cache_dir`,
   `symbols_cache_dir`, `cargo_registry_cache_dir`, etc.).
+- **`win_acl.rs`** *(Windows only)* - The Windows half of
+  `paths::ensure_dir_private` (#1172 F1e): reads a directory's DACL as SDDL and,
+  when it is not protected-and-owner-only, writes
+  `D:P(A;OICI;FA;;;<user>)(A;OICI;FA;;;SY)` and verifies it by read-back. This is
+  the access-control boundary on the daemon deploy directory, whose contents the
+  CLI executes. Mirrors `zccache-ipc`'s `transport/pipe_security.rs` (#1272).
 - **`namespace.rs`** - `ZCCACHE_DAEMON_NAMESPACE` parsing
   (`daemon_namespace`, `daemon_namespace_label`), IPC sanitization
   (`sanitize_ipc_component`, `sanitize_daemon_namespace`), and the FNV-1a

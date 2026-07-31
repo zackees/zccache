@@ -152,8 +152,17 @@ fn ensure_deploy_dir_private(dir: &Path) -> std::io::Result<()> {
                 event = "insecure_deploy_dir",
                 path = %dir.display(),
                 outcome = "tightened",
-                "daemon deploy directory was group/other-writable and has been tightened; \
-                 another local user could have replaced the daemon binary until now"
+                // Deliberately states what was observed, not the worst case it
+                // could imply. On Windows this also fires the first time a
+                // version directory is seen, because a directory inheriting an
+                // otherwise-narrow profile DACL is not *protected* — nobody
+                // else could necessarily write it. Claiming "another user could
+                // have replaced your daemon" there would be a false alarm, and
+                // false alarms are how a loud-forensics convention stops being
+                // read.
+                "daemon deploy directory was not restricted to this user and has been \
+                 tightened; anything able to write it could choose what the CLI executes \
+                 as the daemon"
             );
             crate::core::lifecycle::write_event(
                 crate::core::lifecycle::EVENT_INSECURE_DEPLOY_DIR,
