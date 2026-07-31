@@ -43,12 +43,13 @@ use std::path::Path;
 use windows_sys::Win32::Foundation::{LocalFree, ERROR_SUCCESS, HLOCAL};
 use windows_sys::Win32::Security::Authorization::{
     ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW,
-    SetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW,
+    GetNamedSecurityInfoW, SetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    GetSecurityDescriptorDacl, GetTokenInformation, TokenUser, ACL, DACL_SECURITY_INFORMATION,
-    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, TOKEN_QUERY, TOKEN_USER,
+    EqualSid, GetSecurityDescriptorDacl, GetTokenInformation, TokenUser, ACL,
+    DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -140,7 +141,53 @@ pub(super) fn is_owner_only(sddl: &str, user_sid: &str) -> bool {
     if rest.contains("NO_ACCESS_CONTROL") {
         return false;
     }
-    aces(rest).all(|trustee| trustee == user_sid || ALLOWED_TRUSTEES.contains(&trustee))
+    aces(rest).all(|trustee| trustee_is_self_or_admin(trustee, user_sid))
+}
+
+/// Is this ACE trustee the running user, SYSTEM, or Administrators?
+///
+/// Compares **SIDs, not strings**. `ConvertSecurityDescriptorToStringSecurityDescriptorW`
+/// substitutes a two-letter alias for well-known SIDs, and which SIDs count as
+/// "well-known" is not something the caller controls: a process running as the
+/// built-in Administrator gets its own account rendered as `LA`, so a raw-SID
+/// string comparison reports the directory as exposed *after we just tightened
+/// it*, and the read-back check then fails a DACL that is in fact correct.
+///
+/// CI found this — the Windows runner runs as that account and my dev host
+/// does not.
+fn trustee_is_self_or_admin(trustee: &str, user_sid: &str) -> bool {
+    if trustee == user_sid || ALLOWED_TRUSTEES.contains(&trustee) {
+        return true;
+    }
+    // Resolve both sides; `ConvertStringSidToSidW` accepts an alias as happily
+    // as a raw SID, which is exactly the normalization the string compare
+    // above lacks.
+    match (sid_bytes(trustee), sid_bytes(user_sid)) {
+        (Some(mut lhs), Some(mut rhs)) => {
+            // SAFETY: both buffers hold a valid SID copied out under
+            // `GetLengthSid`, and `EqualSid` only reads them.
+            unsafe { EqualSid(lhs.as_mut_ptr().cast(), rhs.as_mut_ptr().cast()) != 0 }
+        }
+        _ => false,
+    }
+}
+
+/// Copy the binary SID an SDDL trustee denotes, alias or raw.
+fn sid_bytes(trustee: &str) -> Option<Vec<u8>> {
+    let wide: Vec<u16> = trustee.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut psid: windows_sys::Win32::Security::PSID = std::ptr::null_mut();
+    // SAFETY: `wide` is NUL-terminated; on success the SID is LocalAlloc'd and
+    // freed below on every path.
+    if unsafe { ConvertStringSidToSidW(wide.as_ptr(), &mut psid) } == 0 || psid.is_null() {
+        return None;
+    }
+    // SAFETY: `psid` is a valid SID from the call above.
+    let len = unsafe { windows_sys::Win32::Security::GetLengthSid(psid) } as usize;
+    // SAFETY: `psid` points at `len` readable bytes.
+    let bytes = unsafe { std::slice::from_raw_parts(psid.cast::<u8>(), len) }.to_vec();
+    // SAFETY: `psid` came from `ConvertStringSidToSidW`, which LocalAllocs.
+    unsafe { LocalFree(psid.cast::<std::ffi::c_void>()) };
+    Some(bytes)
 }
 
 /// Yield the trustee field of every ACE in an SDDL DACL body.
@@ -433,5 +480,42 @@ mod tests {
     fn an_unprotected_dacl_is_not_owner_only() {
         assert!(!is_owner_only("D:AI(A;OICIID;FA;;;S-1-5-18)", "S-1-5-18"));
         assert!(!is_owner_only("D:NO_ACCESS_CONTROL", "S-1-5-18"));
+    }
+
+    /// The alias case CI caught and this host could not.
+    ///
+    /// `ConvertSecurityDescriptorToStringSecurityDescriptorW` renders
+    /// well-known SIDs as two-letter aliases. A process running as the
+    /// built-in Administrator gets its *own* account back as `LA`, so a raw
+    /// string comparison declared the directory exposed immediately after
+    /// tightening it — and the read-back check then rejected a DACL that was
+    /// actually correct. The GitHub Windows runner runs as that account; my
+    /// dev host does not, which is exactly why this needs a test rather than a
+    /// manual probe.
+    #[test]
+    fn a_trustee_alias_matches_the_same_sid_written_longhand() {
+        // SYSTEM, both spellings, in both argument positions.
+        assert!(trustee_is_self_or_admin("SY", "S-1-5-18"));
+        assert!(trustee_is_self_or_admin("S-1-5-18", "SY"));
+
+        // The shape CI hit: the ACE for the running user comes back aliased
+        // while the SID we compare against is spelled out longhand.
+        assert!(
+            is_owner_only("D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;S-1-5-18)", "S-1-5-18"),
+            "an aliased trustee must resolve to its SID, not be read as a stranger"
+        );
+
+        // `LA` is the built-in Administrator *account*, not SYSTEM — a
+        // different principal, and it must not be waved through just because
+        // it happens to be an alias. (Getting this backwards is what made the
+        // first version of this test fail.)
+        assert!(!trustee_is_self_or_admin("LA", "S-1-5-18"));
+
+        // And the comparison must still reject an actual stranger.
+        assert!(!trustee_is_self_or_admin("WD", "S-1-5-18"));
+        assert!(
+            !is_owner_only("D:PAI(A;OICI;FA;;;WD)(A;OICI;FA;;;SY)", "S-1-5-18"),
+            "Everyone must not be accepted just because SYSTEM is also listed"
+        );
     }
 }
