@@ -104,6 +104,13 @@ pub struct DaemonStatus {
     /// Watcher-arm failures since daemon start (issue #1156). Non-zero with
     /// `watcher_active == true` means the daemon recovered via a re-arm.
     pub watcher_degradations: u64,
+    /// Whether the index writer has gone away (issue #1177).
+    ///
+    /// `true` means published artifacts are no longer being recorded durably:
+    /// the cache still serves this daemon's in-memory state but nothing it
+    /// publishes will survive a restart. Distinct from a slow daemon, and not
+    /// otherwise visible without reading the lifecycle log.
+    pub index_writer_gone: bool,
 }
 
 /// Per-session statistics, returned when the session opted in to tracking.

@@ -136,6 +136,15 @@ pub(crate) async fn cmd_status(endpoint: &str, json: bool) -> ExitCode {
                 };
                 println!("  Watcher:       {watcher}");
             }
+            if s.index_writer_gone {
+                // Worse than a performance cliff: the daemon still serves from
+                // memory, so it looks healthy, but nothing it publishes is
+                // being recorded and none of it survives a restart (#1177).
+                println!(
+                    "  Index writer:  GONE — new artifacts are not being recorded and will \
+                     not survive a restart; restart the daemon"
+                );
+            }
             println!();
             if s.total_links > 0 {
                 println!();

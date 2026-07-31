@@ -114,6 +114,7 @@ fn test_daemon_status(endpoint: &str) -> zccache_protocol::DaemonStatus {
         dep_graph_persisted: false,
         watcher_active: true,
         watcher_degradations: 0,
+        index_writer_gone: false,
     }
 }
 
