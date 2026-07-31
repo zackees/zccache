@@ -181,6 +181,7 @@ mod session;
 mod staged_materialize;
 mod staged_publish;
 mod state;
+mod supervise;
 mod util;
 mod wal;
 mod watch;
