@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use crate::download_client::DownloadClient;
 
-use super::super::{FetchRequest, FetchStateKind, FetchStatus, WaitMode};
+use super::super::{FetchStateKind, FetchStatus, WaitMode};
 use super::{
     fetch_with_retry, run_with_self_healing, sha256_hex, try_wait_for_test_condition, TestDaemon,
     TestHttpConfig, TestHttpServer,
@@ -31,7 +31,8 @@ fn fetch_cache_miss_then_hit_and_exists_stay_local() {
     });
     let client = DownloadClient::new(Some(daemon.endpoint.clone()));
     let dir = tempfile::tempdir().unwrap();
-    let mut request = FetchRequest::new(server.url.clone(), dir.path().join("artifact.bin"));
+    let mut request =
+        super::insecure_test_request(server.url.clone(), dir.path().join("artifact.bin"));
     request.expected_sha256 = Some(sha256_hex(&body));
 
     let first = fetch_with_retry(&client, request.clone()).unwrap();
@@ -67,7 +68,7 @@ fn fetch_checksum_mismatch_cleans_up_invalid_artifact() {
     let client = DownloadClient::new(Some(daemon.endpoint.clone()));
     let dir = tempfile::tempdir().unwrap();
     let destination = dir.path().join("bad.bin");
-    let mut request = FetchRequest::new(server.url.clone(), &destination);
+    let mut request = super::insecure_test_request(server.url.clone(), &destination);
     request.expected_sha256 = Some("00".repeat(32));
 
     let err = fetch_with_retry(&client, request.clone()).unwrap_err();
@@ -94,7 +95,8 @@ fn fetch_single_url_max_connections_uses_range_requests() {
     });
     let client = DownloadClient::new(Some(daemon.endpoint.clone()));
     let dir = tempfile::tempdir().unwrap();
-    let mut request = FetchRequest::new(server.url.clone(), dir.path().join("multipart.bin"));
+    let mut request =
+        super::insecure_test_request(server.url.clone(), dir.path().join("multipart.bin"));
     request.download_options.max_connections = Some(4);
     request.download_options.min_segment_size = Some(1024);
     request.expected_sha256 = Some(sha256_hex(&body));
@@ -150,7 +152,7 @@ fn fetch_explicit_multipart_urls_concatenates_and_stays_local() {
     let client = DownloadClient::new(Some(daemon.endpoint.clone()));
     let dir = tempfile::tempdir().unwrap();
     let destination = dir.path().join("artifact.bin");
-    let mut request = FetchRequest::new(
+    let mut request = super::insecure_test_request(
         vec![
             server_a.url.clone(),
             server_b.url.clone(),
@@ -213,7 +215,7 @@ fn fetch_no_wait_returns_locked_while_other_client_is_downloading() {
             let destination_for_thread = destination.clone();
             let download_thread = thread::spawn(move || {
                 let client = DownloadClient::new(Some(endpoint));
-                let request = FetchRequest::new(url, &destination_for_thread);
+                let request = super::insecure_test_request(url, &destination_for_thread);
                 fetch_with_retry(&client, request)
             });
 
@@ -224,7 +226,7 @@ fn fetch_no_wait_returns_locked_while_other_client_is_downloading() {
                     || request_started.load(Ordering::Acquire),
                 )?;
                 let client = DownloadClient::new(Some(daemon.endpoint.clone()));
-                let mut no_wait = FetchRequest::new(server.url.clone(), &destination);
+                let mut no_wait = super::insecure_test_request(server.url.clone(), &destination);
                 no_wait.wait_mode = WaitMode::NoWait;
                 let locked = fetch_with_retry(&client, no_wait)
                     .map_err(|err| format!("no-wait fetch failed: {err}"))?;
@@ -289,7 +291,7 @@ fn fetch_multipart_no_wait_returns_locked_while_other_client_is_downloading() {
             let destination_for_thread = destination.clone();
             let download_thread = thread::spawn(move || {
                 let client = DownloadClient::new(Some(endpoint));
-                let request = FetchRequest::new(source, &destination_for_thread);
+                let request = super::insecure_test_request(source, &destination_for_thread);
                 fetch_with_retry(&client, request)
             });
 
@@ -300,7 +302,7 @@ fn fetch_multipart_no_wait_returns_locked_while_other_client_is_downloading() {
                     || request_started.load(Ordering::Acquire),
                 )?;
                 let client = DownloadClient::new(Some(daemon.endpoint.clone()));
-                let mut no_wait = FetchRequest::new(
+                let mut no_wait = super::insecure_test_request(
                     vec![slow_server.url.clone(), fast_server.url.clone()],
                     &destination,
                 );
@@ -348,7 +350,7 @@ fn fetch_dry_run_avoids_network_and_filesystem_mutation() {
     let client = DownloadClient::new(Some(daemon.endpoint.clone()));
     let dir = tempfile::tempdir().unwrap();
     let destination = dir.path().join("dry.bin");
-    let mut request = FetchRequest::new(server.url.clone(), &destination);
+    let mut request = super::insecure_test_request(server.url.clone(), &destination);
     request.dry_run = true;
 
     let result = fetch_with_retry(&client, request).unwrap();
@@ -381,7 +383,7 @@ fn fetch_expands_7z_and_exists_reports_expanded_ready() {
     let client = DownloadClient::new(Some(daemon.endpoint.clone()));
     let cache_path = dir.path().join("cache").join("toolchain.7z");
     let expanded_path = dir.path().join("expanded");
-    let mut request = FetchRequest::new(server.url.clone(), &cache_path);
+    let mut request = super::insecure_test_request(server.url.clone(), &cache_path);
     request.destination_path_expanded = Some(expanded_path.clone().into());
     request.expected_sha256 = Some(sha256_hex(&archive_bytes));
 
@@ -425,12 +427,15 @@ fn fetch_without_expected_sha_then_validate_later_uses_stored_fingerprint() {
     let dir = tempfile::tempdir().unwrap();
     let destination = dir.path().join("delayed.bin");
 
-    let first =
-        fetch_with_retry(&client, FetchRequest::new(server.url.clone(), &destination)).unwrap();
+    let first = fetch_with_retry(
+        &client,
+        super::insecure_test_request(server.url.clone(), &destination),
+    )
+    .unwrap();
     assert_eq!(first.status, FetchStatus::Downloaded);
     assert_eq!(first.sha256, sha256_hex(&body));
 
-    let mut later = FetchRequest::new(server.url.clone(), &destination);
+    let mut later = super::insecure_test_request(server.url.clone(), &destination);
     later.expected_sha256 = Some(first.sha256.clone());
     let second = fetch_with_retry(&client, later.clone()).unwrap();
     assert_eq!(second.status, FetchStatus::AlreadyPresent);
@@ -469,12 +474,12 @@ fn expanded_state_remains_valid_when_expected_sha_is_added_later() {
     let cache_path = dir.path().join("cache").join("bundle.zip");
     let expanded_path = dir.path().join("expanded");
 
-    let mut initial = FetchRequest::new(server.url.clone(), &cache_path);
+    let mut initial = super::insecure_test_request(server.url.clone(), &cache_path);
     initial.destination_path_expanded = Some(expanded_path.clone().into());
     let first = fetch_with_retry(&client, initial).unwrap();
     assert_eq!(first.status, FetchStatus::Expanded);
 
-    let mut later = FetchRequest::new(server.url.clone(), &cache_path);
+    let mut later = super::insecure_test_request(server.url.clone(), &cache_path);
     later.destination_path_expanded = Some(expanded_path.clone().into());
     later.expected_sha256 = Some(first.sha256.clone());
     let second = fetch_with_retry(&client, later.clone()).unwrap();
@@ -504,9 +509,13 @@ fn force_is_rejected_for_existing_artifact_state() {
     let dir = tempfile::tempdir().unwrap();
     let destination = dir.path().join("immutable.bin");
 
-    let _ = fetch_with_retry(&client, FetchRequest::new(server.url.clone(), &destination)).unwrap();
+    let _ = fetch_with_retry(
+        &client,
+        super::insecure_test_request(server.url.clone(), &destination),
+    )
+    .unwrap();
 
-    let mut force = FetchRequest::new(server.url.clone(), &destination);
+    let mut force = super::insecure_test_request(server.url.clone(), &destination);
     force.force = true;
     let err = fetch_with_retry(&client, force).unwrap_err();
     assert!(err.contains("purge"));
@@ -539,7 +548,7 @@ fn fetch_rejects_unsafe_zip_entries_end_to_end() {
     let client = DownloadClient::new(Some(daemon.endpoint.clone()));
     let cache_path = dir.path().join("cache").join("unsafe.zip");
     let expanded_path = dir.path().join("expanded");
-    let mut request = FetchRequest::new(server.url.clone(), &cache_path);
+    let mut request = super::insecure_test_request(server.url.clone(), &cache_path);
     request.destination_path_expanded = Some(expanded_path.clone().into());
 
     let err = fetch_with_retry(&client, request).unwrap_err();
