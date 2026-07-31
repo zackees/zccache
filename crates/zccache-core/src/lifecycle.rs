@@ -47,6 +47,7 @@
 //! | `version_mismatch` | daemon | client / daemon protocol versions disagree | `daemon_protocol_version`, `client_protocol_version`, `reason` |
 //! | `state_corrupt` (#1157) | daemon | persisted state did not parse and was dropped rather than reconciled; consequence is a full cold recompile | `subsystem`, `consequence`, `message`, `path`, `bytes` |
 //! | `insecure_socket_dir` (#1171) | daemon | the directory holding the IPC endpoint was group/other-writable; another local user could substitute the socket | `path`, `outcome`, `detail` |
+//! | `insecure_deploy_dir` (#1172) | CLI | the directory the daemon binary is deployed into was group/other-writable; another local user could have replaced the binary the CLI executes | `path`, `outcome`, `detail` |
 //! | `ipc_peer_rejected` (#1171) | daemon | an accepted IPC connection was refused because the peer is not this user, or its credentials were unavailable | `reason`, `detail` |
 //! | `sessions_reaped` (#1165) | daemon | periodic maintenance reclaimed session state whose owning client is gone or whose tombstone aged out | `expired`, `dead_client`, `tombstones`, `remaining`, `tombstones_remaining` |
 //! | `stale_depfile_dirs_swept` (#1165) | daemon | periodic maintenance reclaimed depfile directories from dead daemon instances | `cleaned` |
@@ -146,6 +147,14 @@ pub const EVENT_INSECURE_SOCKET_DIR: &str = "insecure_socket_dir";
 /// reached the endpoint — the `0700` directory that is supposed to make that
 /// impossible has been bypassed or was never applied.
 pub const EVENT_IPC_PEER_REJECTED: &str = "ipc_peer_rejected";
+/// The directory the daemon binary is deployed into was group/other-writable
+/// (#1172).
+///
+/// Whoever can write there chooses what the CLI executes as the daemon.
+/// Emitted whether the mode was repaired or the deploy refused, because "this
+/// was exposed until now" is the operator's business either way — the same
+/// contract as `insecure_socket_dir`.
+pub const EVENT_INSECURE_DEPLOY_DIR: &str = "insecure_deploy_dir";
 /// Periodic maintenance reclaimed session state (#1165).
 ///
 /// Session registries grow with every client that dies without an explicit
@@ -273,6 +282,7 @@ pub const EVENT_ALL: &[&str] = &[
     EVENT_STATE_CORRUPT,
     EVENT_INSECURE_SOCKET_DIR,
     EVENT_IPC_PEER_REJECTED,
+    EVENT_INSECURE_DEPLOY_DIR,
     EVENT_SESSIONS_REAPED,
     EVENT_STALE_DEPFILE_DIRS_SWEPT,
     EVENT_DAEMON_DIED,

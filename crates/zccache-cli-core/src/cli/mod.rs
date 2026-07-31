@@ -487,25 +487,52 @@ mod tests {
     }
 
     #[test]
-    fn materialize_daemon_exe_is_idempotent_on_matching_size() {
+    fn materialize_daemon_exe_is_idempotent_on_identical_contents() {
         let tmp = tempfile::tempdir().expect("create tempdir");
         let src = tmp.path().join("zccache");
         std::fs::write(&src, b"same-version-bytes").expect("write source");
         let dest = tmp.path().join("v1.2.3").join("zccache-daemon");
 
         let first = materialize_daemon_exe_to(&src, &dest).expect("first materialize");
-        // Stamp a SAME-LENGTH sentinel into the dest; a second materialize with
-        // a matching-size source must reuse it untouched (idempotent). The
-        // sentinel must equal the source length (18) so the size gate fires.
-        let sentinel = b"same-version-SENTL";
-        assert_eq!(sentinel.len(), b"same-version-bytes".len());
-        std::fs::write(&dest, sentinel).expect("overwrite dest sentinel");
+        let before = std::fs::metadata(&dest).expect("dest exists").len();
         let second = materialize_daemon_exe_to(&src, &dest).expect("second materialize");
+
         assert_eq!(first, second);
+        assert_eq!(std::fs::read(&dest).unwrap(), b"same-version-bytes");
+        assert_eq!(
+            std::fs::metadata(&dest).expect("dest exists").len(),
+            before,
+            "an already-correct dest is reused, not re-copied"
+        );
+    }
+
+    /// #1172: this test previously asserted the **vulnerability**. It wrote a
+    /// same-length sentinel over the destination and required it to be reused
+    /// untouched, because the reuse gate was `len() == len()`.
+    ///
+    /// Size is not integrity. A file of the right length with the wrong bytes
+    /// was reused and then *executed* as the daemon, on every spawn, against a
+    /// well-known path. The assertion is now inverted: a same-length,
+    /// different-content destination must be replaced from the source.
+    #[test]
+    fn materialize_daemon_exe_replaces_same_size_different_content() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let src = tmp.path().join("zccache");
+        std::fs::write(&src, b"same-version-bytes").expect("write source");
+        let dest = tmp.path().join("v1.2.3").join("zccache-daemon");
+        materialize_daemon_exe_to(&src, &dest).expect("first materialize");
+
+        // Exactly the source's length, so a size-only gate would accept it.
+        let impostor = b"same-version-SENTL";
+        assert_eq!(impostor.len(), b"same-version-bytes".len());
+        std::fs::write(&dest, impostor).expect("overwrite dest");
+
+        materialize_daemon_exe_to(&src, &dest).expect("second materialize");
+
         assert_eq!(
             std::fs::read(&dest).unwrap(),
-            sentinel,
-            "matching-size dest is reused untouched"
+            b"same-version-bytes",
+            "a same-size, different-content binary must be replaced, never executed"
         );
     }
 
