@@ -155,7 +155,10 @@ fn legacy_path_validation_enabled() -> bool {
 /// [`verify_generation_outputs`], which is the expensive part (a full blake3
 /// read of every output).
 struct PublishedGeneration {
-    dir: std::path::PathBuf,
+    /// Normalized rather than `std::path::PathBuf`: `ban_std_pathbuf` is a
+    /// workspace lint, and the paths derived from this field are already
+    /// normalized at their use sites.
+    dir: NormalizedPath,
     outputs: Vec<StagedOutput>,
 }
 
@@ -178,7 +181,7 @@ fn load_published_generation(
         Err(error) => return Err(error),
     };
     validate_generation(&generation_hex)?;
-    let dir = root.join(key_hex).join(&generation_hex);
+    let dir: NormalizedPath = root.join(key_hex).join(&generation_hex).into();
     let manifest = load_manifest(&dir.join("manifest.bin"), key_hex, &generation_hex)?;
     if generation_digest(key_hex, &manifest.outputs) != generation_hex {
         return Err(invalid_data(
