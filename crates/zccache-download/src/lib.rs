@@ -18,6 +18,20 @@ pub struct DownloadOptions {
     pub force: bool,
     pub max_connections: Option<usize>,
     pub min_segment_size: Option<u64>,
+    /// Permit plaintext `http://` for this download (#1172).
+    ///
+    /// The engine is https-only by default: downloaded artifacts are written
+    /// to disk and often executed or linked, and a checksum is optional at
+    /// most call sites, so the transport is frequently the only integrity
+    /// guarantee there is. `https_only` also makes an https→http **redirect**
+    /// fail rather than silently downgrade, which is the case a URL check at
+    /// the call site would miss.
+    ///
+    /// The escape hatch exists for local test servers, which have no
+    /// certificate. `#[serde(default)]` keeps it false — i.e. secure — for any
+    /// request serialized before this field existed.
+    #[serde(default)]
+    pub allow_insecure_http: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +145,10 @@ pub async fn download_to_path(
 ) -> Result<Option<u64>, DownloadError> {
     let client = reqwest::Client::builder()
         .user_agent(format!("zccache-download/{}", zccache_core::VERSION))
+        // #1172: https-only unless the caller explicitly opted out. This also
+        // rejects an https→http redirect, which a URL check at the call site
+        // would not catch.
+        .https_only(!options.allow_insecure_http)
         .build()
         .map_err(|e| DownloadError::Http(e.to_string()))?;
 
@@ -715,6 +733,8 @@ mod tests {
                 force: false,
                 max_connections: Some(1),
                 min_segment_size: Some(1024),
+                // Local test server has no certificate (#1172).
+                allow_insecure_http: true,
             },
             progress,
             CancellationToken::new(),
@@ -772,6 +792,8 @@ mod tests {
                 force: false,
                 max_connections: Some(4),
                 min_segment_size: Some(1024),
+                // Local test server has no certificate (#1172).
+                allow_insecure_http: true,
             },
             Arc::new(|_, _, _| {}),
             CancellationToken::new(),
@@ -809,7 +831,11 @@ mod tests {
             &server.url,
             &destination,
             &metadata_dir,
-            &DownloadOptions::default(),
+            &DownloadOptions {
+                // Local test server has no certificate (#1172).
+                allow_insecure_http: true,
+                ..DownloadOptions::default()
+            },
             progress,
             CancellationToken::new(),
         )
@@ -852,6 +878,8 @@ mod tests {
                     force: false,
                     max_connections: Some(1),
                     min_segment_size: Some(4096),
+                    // Local test server has no certificate (#1172).
+                    allow_insecure_http: true,
                 },
                 progress,
                 cancel_clone,
@@ -893,5 +921,65 @@ mod tests {
         assert_eq!(percentage(1, Some(3)), Some(33.33));
         assert_eq!(percentage(2, Some(3)), Some(66.67));
         assert_eq!(percentage(0, None), None);
+    }
+
+    /// #1172: the engine is https-only by default. Downloaded artifacts are
+    /// written to disk and often executed or linked, and a checksum is
+    /// optional at most call sites, so the transport is frequently the only
+    /// integrity guarantee there is.
+    ///
+    /// This drives the real `download_to_path` against a real plaintext
+    /// server, so it fails if the builder ever stops applying the policy —
+    /// asserting on the flag alone would not.
+    #[tokio::test]
+    async fn plaintext_http_is_refused_unless_explicitly_allowed() {
+        let server = TestServer::start(TestServerConfig {
+            body: Arc::new(vec![0u8; 128]),
+            accept_ranges: false,
+            send_content_length: true,
+            chunk_size: 0,
+            chunk_delay_ms: 0,
+            etag: None,
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("payload.bin");
+        let metadata_dir = dir.path().join("metadata");
+
+        let refused = download_to_path(
+            &server.url,
+            &destination,
+            &metadata_dir,
+            // Default: the secure setting.
+            &DownloadOptions::default(),
+            Arc::new(|_, _, _| {}),
+            CancellationToken::new(),
+        )
+        .await;
+
+        assert!(
+            refused.is_err(),
+            "an http:// source must be refused by default, got {refused:?}"
+        );
+        assert!(
+            !destination.exists(),
+            "nothing may be written when the transport was refused"
+        );
+
+        // And the opt-out still works, so the escape hatch for local test
+        // servers is real rather than decorative.
+        let allowed = download_to_path(
+            &server.url,
+            &destination,
+            &metadata_dir,
+            &DownloadOptions {
+                allow_insecure_http: true,
+                ..DownloadOptions::default()
+            },
+            Arc::new(|_, _, _| {}),
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(allowed.is_ok(), "explicit opt-in must still download");
     }
 }
