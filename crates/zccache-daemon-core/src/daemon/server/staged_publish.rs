@@ -22,6 +22,41 @@ pub(super) fn record_staged_publication_failure(state: &SharedState, reason: Sta
     }
 }
 
+/// Hand an index insert to the index writer, observing the send result.
+///
+/// #1177 Part A: three call sites did `let _ = index_writer_tx.send(..)`. That
+/// send only fails when the index-writer task is **gone**, which means the
+/// daemon has silently stopped durably recording anything it caches — every
+/// artifact it publishes from that moment on is invisible to the next daemon
+/// start, so the cache is quietly write-only. The old spelling made that
+/// indistinguishable from success.
+///
+/// Reported once per daemon rather than once per compile: the condition is
+/// permanent (the receiver does not come back), so an event per compile would
+/// turn one fault into an unbounded log. The first occurrence carries the
+/// artifact key so the failure has a concrete anchor.
+pub(super) fn enqueue_index_insert(state: &SharedState, key: String, metadata: ArtifactIndex) {
+    if state
+        .index_writer_tx
+        .send(IndexWriterCommand::Insert(key.clone(), metadata))
+        .is_err()
+        && !state.index_writer_gone.swap(true, Ordering::AcqRel)
+    {
+        tracing::error!(
+            artifact_key = %key,
+            "index writer is gone; published artifacts are no longer being recorded \
+             durably and will not survive a daemon restart"
+        );
+        crate::core::lifecycle::write_event(
+            crate::core::lifecycle::EVENT_INDEX_WRITER_GONE,
+            serde_json::json!({
+                "artifact_key": key,
+                "consequence": "published artifacts are not durably indexed",
+            }),
+        );
+    }
+}
+
 pub(super) fn send_staged_index_insert(
     state: &SharedState,
     key: String,

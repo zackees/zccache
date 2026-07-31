@@ -216,7 +216,19 @@ fn enqueue_persisted_index(
     let Some(meta) = outcome.meta else {
         return false;
     };
-    let _ = index_writer_tx.send(IndexWriterCommand::Insert(key_hex, meta));
+    // #1177: this send only fails when the index writer is gone, which means
+    // the daemon has silently stopped recording what it caches. `enqueue`
+    // needs the state to bound the report, so the one call site that has only
+    // the sender keeps the raw send and its own report.
+    if index_writer_tx
+        .send(IndexWriterCommand::Insert(key_hex.clone(), meta))
+        .is_err()
+    {
+        tracing::error!(
+            artifact_key = %key_hex,
+            "index writer is gone; persisted artifact will not survive a daemon restart"
+        );
+    }
     true
 }
 
@@ -374,9 +386,7 @@ fn store_rustc_outputs(
                         ))
                     })?;
                 } else {
-                    let _ = state_for_publish
-                        .index_writer_tx
-                        .send(IndexWriterCommand::Insert(key_hex, meta.clone()));
+                    enqueue_index_insert(state_for_publish.as_ref(), key_hex, meta.clone());
                 }
                 Ok::<_, std::io::Error>((snapshot, meta))
             })
@@ -469,10 +479,7 @@ fn store_rustc_outputs(
                     Err(reason) => (Some(reason), 0),
                 }
             } else {
-                let _ = state.index_writer_tx.send(IndexWriterCommand::Insert(
-                    artifact_key_hex.to_string(),
-                    meta.clone(),
-                ));
+                enqueue_index_insert(state, artifact_key_hex.to_string(), meta.clone());
                 (None, 0)
             };
             if let Some(reason) = index_failure {
@@ -723,10 +730,7 @@ fn store_single_output(
                 }
             };
         if written && !staged_publication {
-            let _ = state.index_writer_tx.send(IndexWriterCommand::Insert(
-                key_hex.clone(),
-                persist_meta.clone(),
-            ));
+            enqueue_index_insert(state, key_hex.clone(), persist_meta.clone());
         }
         stats.persist_enqueue_ns = t_persist_enqueue.elapsed().as_nanos() as u64;
         if written {

@@ -19,6 +19,7 @@ mod embedded_flush;
 mod exec_probe;
 mod fingerprint;
 mod fs_matrix;
+mod index_writer_gone;
 mod link_cache;
 mod metadata_deferred;
 mod multi_restart_context_key;
