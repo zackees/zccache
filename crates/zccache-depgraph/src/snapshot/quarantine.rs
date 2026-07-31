@@ -113,7 +113,7 @@ fn quarantined_version(name: &str) -> Option<u32> {
         .ok()
 }
 
-/// Delete quarantined sidecars beyond [`MAX_QUARANTINED_SNAPSHOTS`], oldest
+/// Delete quarantined sidecars beyond the retention cap, oldest
 /// first. The sidecar matching this build's [`DEPGRAPH_VERSION`] is never a
 /// pruning candidate — it is the one [`recover`] reads.
 ///
