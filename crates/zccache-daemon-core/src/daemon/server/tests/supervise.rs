@@ -30,6 +30,7 @@ async fn a_panicking_idempotent_task_is_restarted() {
         "test-panicker",
         never_shutting_down(),
         Restart::Idempotent,
+        None,
         move || {
             let counter = Arc::clone(&counter);
             async move {
@@ -80,6 +81,7 @@ async fn a_non_restartable_task_is_not_brought_back() {
         "test-unique",
         never_shutting_down(),
         Restart::Never,
+        None,
         move || {
             let counter = Arc::clone(&counter);
             async move {
@@ -114,6 +116,7 @@ async fn a_task_ending_during_shutdown_is_not_treated_as_a_fault() {
         "test-shutdown",
         move || flag.load(Ordering::Acquire),
         Restart::Idempotent,
+        None,
         move || {
             let counter = Arc::clone(&counter);
             async move {

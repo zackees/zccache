@@ -262,8 +262,27 @@ single policy shared with standalone mode.
 
 ### Maintenance limits and task ownership
 
+Both service modes start the **same** periodic set from one declaration:
+`MAINTENANCE_TASKS` in `daemon/server/maintenance_schedule.rs` (issue #1160).
+`DaemonServer::run` and `EmbeddedDaemon::start_background_tasks` each build a
+`MaintenanceSchedule` and call `start()`; nothing periodic may be hand-spawned
+in either. Shared members: the staged-artifact temp sweep, memory-budget
+eviction plus the ephemeral request/rsp trims, disk maintenance, and the
+periodic depgraph save. A member may be absent from embedded mode only when it
+is flagged `standalone_only` with a rationale — today the legacy temp-root
+cleanup, the idle watchdog, and private-daemon owner reaping, all of which
+either scan state an embedded host never wrote or would self-terminate the
+host's process. The parity test asserts each mode starts exactly its declared
+set, so adding a task to one mode alone fails rather than ships.
+
+`MaintenanceOwnership::Host` suppresses only the **disk** member; the in-memory
+members keep running, because no host API drives eviction or depgraph
+persistence and suppressing them would restore the unbounded growth #1160 is
+about.
+
 With `MaintenanceOwnership::Embedded`, embedded mode owns one disk-maintenance
-task in addition to the artifact-index writer. Both tasks spawn through
+task in addition to the artifact-index writer. Every schedule member — and the
+`spawn_supervised` supervisor wrapping the restartable ones — spawns through
 `RuntimeHooks::handle` when the host supplies one, so persistent work stays on
 the host-selected Tokio runtime. Maintenance waits for artifact-index
 hydration, runs an initial pressure or due full pass, performs cheap pressure

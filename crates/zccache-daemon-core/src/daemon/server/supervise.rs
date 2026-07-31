@@ -63,10 +63,17 @@ fn exit_reason(outcome: &Result<(), tokio::task::JoinError>) -> &'static str {
 ///
 /// `factory` builds the task future; it is called again on each restart, so it
 /// must capture whatever the loop needs by clone rather than by move-once.
+///
+/// `runtime_handle` carries the embedded host's runtime (zccache#922). Both the
+/// supervisor and every task it starts must land on it — a bare `tokio::spawn`
+/// would put supervised work on whatever runtime happened to be current at the
+/// call, which is precisely the contract the handle exists to enforce. `None`
+/// means "use the ambient runtime", which is the standalone daemon's case.
 pub(super) fn spawn_supervised<S, F, Fut>(
     name: &'static str,
     is_shutting_down: S,
     restart: Restart,
+    runtime_handle: Option<&tokio::runtime::Handle>,
     factory: F,
 ) -> tokio::task::JoinHandle<()>
 where
@@ -74,11 +81,18 @@ where
     F: Fn() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
-    tokio::spawn(async move {
+    let spawn_handle = runtime_handle.cloned();
+    let runtime_handle = runtime_handle.cloned();
+    let supervisor = async move {
         let mut restarts = 0u32;
         let mut backoff = RESTART_INITIAL_BACKOFF;
         loop {
-            let outcome = tokio::spawn(factory()).await;
+            let task = factory();
+            let outcome = match &runtime_handle {
+                Some(handle) => handle.spawn(task),
+                None => tokio::spawn(task),
+            }
+            .await;
 
             // A task ending during shutdown is the expected path, not a fault.
             if is_shutting_down() {
@@ -123,7 +137,11 @@ where
                 serde_json::json!({ "task": name, "restarts": restarts }),
             );
         }
-    })
+    };
+    match spawn_handle {
+        Some(handle) => handle.spawn(supervisor),
+        None => tokio::spawn(supervisor),
+    }
 }
 
 #[cfg(test)]

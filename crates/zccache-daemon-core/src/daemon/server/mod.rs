@@ -87,6 +87,11 @@ pub(crate) struct EmbeddedDaemon {
     index_writer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<IndexWriterCommand>>,
     index_writer_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
     maintenance_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Periodic tasks this service started, as reported by
+    /// [`maintenance_schedule::MaintenanceSchedule::start`] (#1160). Retained
+    /// so the parity guard can assert against a real embedded service rather
+    /// than against the schedule in isolation.
+    maintenance_tasks: Vec<&'static str>,
 }
 
 pub(crate) struct EmbeddedCompileRequest {
@@ -169,6 +174,7 @@ mod link_hash;
 mod link_helpers;
 mod link_process;
 mod loaders;
+mod maintenance_schedule;
 mod pch;
 mod pending_writes;
 pub(crate) mod persist;
@@ -208,6 +214,7 @@ use lifecycle::*;
 use link_helpers::*;
 #[cfg(test)]
 use link_process::run_post_link_deploy_hook;
+use maintenance_schedule::*;
 use pch::*;
 use persist::*;
 

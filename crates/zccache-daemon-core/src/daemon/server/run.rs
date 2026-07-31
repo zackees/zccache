@@ -44,12 +44,15 @@ impl DaemonServer {
         }
 
         let cache_dir = self.state.cache_dir.clone();
-        let temp_root = std::env::temp_dir();
 
         // Migrate legacy blob digests once per cache root. Keep this off the
         // Tokio runtime thread because the helper hashes files synchronously.
         // The marker is published only after a successful migration so a
         // failed attempt remains retryable on the next daemon start.
+        //
+        // The staged-artifact temp sweep that used to live here is now a
+        // member of `MaintenanceSchedule` so the embedded service runs it too
+        // (#1160c).
         {
             let cache_dir = cache_dir.clone();
             let artifact_dir = self.state.artifact_dir.clone();
@@ -57,9 +60,6 @@ impl DaemonServer {
             tokio::spawn(async move {
                 if let Err(error) = state.staging.cleanup_abandoned() {
                     tracing::debug!(%error, "abandoned private staging cleanup skipped");
-                }
-                if let Err(error) = cleanup_staged_artifact_temps(&artifact_dir) {
-                    tracing::debug!(%error, "staged artifact temp cleanup skipped");
                 }
                 let marker = cache_dir.join(".legacy-blob-digests-migrated-v1");
                 if marker.exists() {
@@ -113,17 +113,8 @@ impl DaemonServer {
             let _ = std::fs::remove_file(&legacy_lock);
         }
 
-        // Remove legacy temp-root state from older builds before starting the daemon.
-        {
-            let cleaned = crate::core::config::cleanup_legacy_temp_root_state(
-                &temp_root,
-                &cache_dir,
-                crate::ipc::is_process_alive,
-            );
-            if cleaned > 0 {
-                tracing::info!(cleaned, "cleaned legacy temp-root zccache state");
-            }
-        }
+        // Legacy temp-root state removal is a standalone-only member of
+        // `MaintenanceSchedule` (see its rationale) and starts below.
 
         // Clean up stale depfile directories from dead daemon instances.
         {
@@ -136,174 +127,30 @@ impl DaemonServer {
 
         self.start_watcher_pipeline().await;
 
-        // Start idle watchdog if timeout is configured.
-        if idle_timeout_secs > 0 {
-            let state = Arc::clone(&self.state);
-            let timeout = idle_timeout_secs;
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                    let last = state.last_activity.load(Ordering::Relaxed);
-                    let idle = now_secs().saturating_sub(last);
-                    if idle >= timeout {
-                        tracing::info!(idle_secs = idle, "idle timeout — shutting down");
-                        // Persist a "died-idle" lifecycle event so operators
-                        // can see why the daemon exited. Pair this with the
-                        // "spawn" entry to reconstruct daemon lifetime from
-                        // the lifecycle log alone — tracing stderr is NUL'd.
-                        super::super::lifecycle::write_event(
-                            super::super::lifecycle::EVENT_DIED_IDLE,
-                            serde_json::json!({
-                                "reason": super::super::lifecycle::REASON_IDLE_TIMEOUT,
-                                "idle_secs": idle,
-                                "idle_timeout_secs": timeout,
-                            }),
-                        );
-                        state.shutdown_requested.store(true, Ordering::Release);
-                        state.shutdown.notify_waiters();
-                        break;
-                    }
-                }
-            });
-        }
-
-        // Private daemons are owned by caller-supplied PIDs. Once the last
-        // live owner disappears, shut down even if the normal idle timeout is
-        // disabled or still far in the future.
-        {
-            let state = Arc::clone(&self.state);
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    if !state.private_daemon.is_enabled().await {
-                        continue;
-                    }
-                    let prune = state
-                        .private_daemon
-                        .prune_dead_owner_pids(crate::ipc::is_process_alive)
-                        .await;
-                    if !prune.removed_pids.is_empty() {
-                        tracing::info!(
-                            removed_pids = ?prune.removed_pids,
-                            "private daemon owner PIDs exited"
-                        );
-                    }
-                    if prune.should_shutdown {
-                        tracing::info!("private daemon has no live owner PIDs - shutting down");
-                        crate::core::lifecycle::write_event(
-                            crate::core::lifecycle::EVENT_DIED_PRIVATE_OWNER_EXIT,
-                            serde_json::json!({
-                                "reason": "private-owner-pids-exited",
-                                "uptime_secs": now_secs().saturating_sub(state.start_time),
-                                "removed_pids": prune.removed_pids,
-                            }),
-                        );
-                        state.shutdown_requested.store(true, Ordering::Release);
-                        state.shutdown.notify_waiters();
-                        break;
-                    }
-                }
-            });
-        }
-
         // Start background artifact loading (non-blocking so daemon responds
         // immediately — Bug 6 fix).
         {
             std::mem::drop(spawn_artifact_loader(Arc::clone(&self.state), None).await);
         }
 
-        // Start memory eviction background task.
+        // Every periodic loop this daemon owns starts here, from the single
+        // schedule the embedded service also starts (#1160). Nothing periodic
+        // may be hand-spawned in this function any more: a task added here
+        // alone would silently not run inside an embedded host, which is the
+        // exact drift the schedule exists to make impossible.
         //
-        // #1177: supervised. A panic here used to be silent — the task
-        // vanished and memory simply stopped being evicted, which surfaces
-        // days later as "the daemon got fat" with nothing in the log.
-        {
-            let state = Arc::clone(&self.state);
-            let shutdown_state = Arc::clone(&self.state);
-            let budget = crate::core::config::Config::default().max_memory_bytes;
-            let interval_secs = crate::core::config::Config::default().eviction_interval_secs;
-            std::mem::drop(supervise::spawn_supervised(
-                "memory-eviction",
-                move || shutdown_state.shutdown_requested.load(Ordering::Acquire),
-                supervise::Restart::Idempotent,
-                move || {
-                    let state = Arc::clone(&state);
-                    async move {
-                        loop {
-                            tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
-                            let req_removed =
-                                trim_request_cache(&state.request_cache, EPHEMERAL_CACHE_MAX_AGE);
-                            let req_validation_removed = trim_request_validation_cache(
-                                &state.request_validation_cache,
-                                EPHEMERAL_CACHE_MAX_AGE,
-                            );
-                            let rsp_removed =
-                                trim_rsp_cache(&state.rsp_cache, EPHEMERAL_CACHE_MAX_AGE);
-                            if req_removed > 0 || req_validation_removed > 0 || rsp_removed > 0 {
-                                tracing::debug!(
-                                    request_cache_removed = req_removed,
-                                    request_validation_cache_removed = req_validation_removed,
-                                    rsp_cache_removed = rsp_removed,
-                                    "trimmed ephemeral daemon caches"
-                                );
-                            }
-                            let (freed, items) = run_memory_eviction_pass(&state, budget).await;
-                            if items > 0 {
-                                tracing::info!(
-                                    freed_bytes = freed,
-                                    items_removed = items,
-                                    "memory eviction"
-                                );
-                            }
-                        }
-                    }
-                },
-            ));
-        }
-
-        // The daemon is the primary maintenance owner. It checks this exact
-        // cache root at startup and every five minutes, with persisted daily
-        // full-age catch-up after idle periods or restarts (issue #1148).
-        let mut maintenance_handle = Some(spawn_disk_maintenance(
+        // The standalone-only members (legacy temp-root cleanup, idle
+        // watchdog, private-daemon owner reaping) carry their rationale in
+        // `MAINTENANCE_TASKS`.
+        let started = MaintenanceSchedule::new(
             Arc::clone(&self.state),
             maintenance_policy,
-            None,
-        ));
-
-        // Start periodic depgraph save task (every 5 minutes).
-        //
-        // #1177: supervised. A silent death here means the depgraph stops
-        // being persisted, so the next daemon start is a cold graph and a
-        // full recompile — with nothing recording why.
-        {
-            let state = Arc::clone(&self.state);
-            let shutdown_state = Arc::clone(&self.state);
-            std::mem::drop(supervise::spawn_supervised(
-                "depgraph-save",
-                move || shutdown_state.shutdown_requested.load(Ordering::Acquire),
-                supervise::Restart::Idempotent,
-                move || {
-                    let state = Arc::clone(&state);
-                    async move {
-                        let path = depgraph_file_path_for_cache_dir(&state.cache_dir);
-                        loop {
-                            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
-                            if let Some(parent) = path.parent() {
-                                std::fs::create_dir_all(parent).ok();
-                            }
-                            let dg = state.dep_graph.load();
-                            match crate::depgraph::save_to_file(&dg, &path) {
-                                Ok(()) => {
-                                    state.dep_graph_persisted.store(true, Ordering::Release);
-                                    tracing::debug!("periodic depgraph save");
-                                }
-                                Err(e) => tracing::warn!("periodic depgraph save failed: {e}"),
-                            }
-                        }
-                    }
-                },
-            ));
-        }
+            ServiceMode::Standalone,
+        )
+        .with_idle_timeout_secs(idle_timeout_secs)
+        .start();
+        tracing::debug!(tasks = ?started.started, "maintenance schedule started");
+        let mut maintenance_handle = started.disk_maintenance;
 
         loop {
             tokio::select! {
@@ -835,7 +682,12 @@ pub(super) fn start_watcher_tasks(
     }
 }
 
-async fn run_memory_eviction_pass(state: &Arc<SharedState>, budget: u64) -> (u64, usize) {
+/// One memory-budget eviction sweep. Driven by the `memory-eviction` member of
+/// [`super::maintenance_schedule::MaintenanceSchedule`] in both service modes.
+pub(super) async fn run_memory_eviction_pass(
+    state: &Arc<SharedState>,
+    budget: u64,
+) -> (u64, usize) {
     let started = Instant::now();
     let mut total_freed = 0_u64;
     let mut total_items = 0_usize;
