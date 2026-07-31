@@ -291,6 +291,11 @@ async fn fetch_archive(
 
     let client = reqwest::Client::builder()
         .user_agent(concat!("zccache/", env!("CARGO_PKG_VERSION")))
+        // #1172: these archives are unpacked next to the running executable,
+        // and the fetch carries no checksum, so the transport is the only
+        // integrity guarantee there is. `RELEASE_BASE_URL` is already https;
+        // this makes a redirect to http fail rather than silently downgrade.
+        .https_only(true)
         .build()
         .map_err(|e| SymbolsError::Fetch {
             url: url.to_string(),
@@ -485,7 +490,22 @@ fn extract_targz(bytes: &[u8], prefix: &Path) -> Result<Vec<PathBuf>, SymbolsErr
         if !is_debug_sidecar(&first_inner) {
             continue;
         }
-        let dest = prefix.join(&inner);
+        // #1172: a symlink or hardlink entry writes through to wherever its
+        // target points, escaping `prefix` without any `..` in its own path.
+        // The `is_dir()` check below would have sent one down the file branch
+        // and unpacked it. Skip link entries entirely — symbol sidecars have
+        // no legitimate use for them.
+        if entry.header().entry_type().is_symlink() || entry.header().entry_type().is_hard_link() {
+            continue;
+        }
+        // #1172: `prefix.join(&inner)` trusted archive-controlled components.
+        // `is_debug_sidecar` gates only the FIRST component, so
+        // `foo.dSYM/../../../evil` passed the filter and then escaped the
+        // prefix. Reuse the same normalization the download-client extractor
+        // has had all along rather than inventing a second policy.
+        let Some(dest) = safe_symbol_join(prefix, &inner) else {
+            continue;
+        };
         if entry.header().entry_type().is_dir() {
             fs::create_dir_all(&dest).map_err(|e| SymbolsError::Io {
                 path: dest.clone(),
@@ -509,6 +529,33 @@ fn extract_targz(bytes: &[u8], prefix: &Path) -> Result<Vec<PathBuf>, SymbolsErr
         }
     }
     Ok(installed)
+}
+
+/// Join an archive-supplied relative path under `base`, or `None` if the entry
+/// is not something that can safely land there.
+///
+/// #1172. Mirrors `download_client::artifact::archive::safe_join`: absolute
+/// entries and any component that is not a plain name are refused, so the
+/// result is always inside `base`. Returns `None` rather than an error because
+/// symbol installation already skips entries it does not recognize — a hostile
+/// entry is dropped on the same path as an uninteresting one.
+fn safe_symbol_join(base: &Path, entry: &Path) -> Option<PathBuf> {
+    if entry.is_absolute() {
+        return None;
+    }
+    let mut clean = PathBuf::new();
+    for component in entry.components() {
+        match component {
+            std::path::Component::Normal(part) => clean.push(part),
+            std::path::Component::CurDir => {}
+            // ParentDir, RootDir, Prefix — all escape or re-root.
+            _ => return None,
+        }
+    }
+    if clean.as_os_str().is_empty() {
+        return None;
+    }
+    Some(base.join(clean))
 }
 
 fn is_debug_sidecar(leaf: &Path) -> bool {
@@ -742,5 +789,60 @@ mod tests {
             path.display(),
             expected_root.as_path().display(),
         );
+    }
+
+    /// #1172: `prefix.join(&inner)` trusted archive-controlled path
+    /// components. `is_debug_sidecar` gates only the first one, so an entry
+    /// like `foo.dSYM/../../../evil` passed the filter and then wrote outside
+    /// the symbols directory. Symbol archives are fetched over the network
+    /// with no checksum, so this was a reachable write primitive, not a
+    /// theoretical one.
+    #[test]
+    fn archive_entries_cannot_escape_the_symbols_prefix() {
+        let base = Path::new("/symbols/v1");
+
+        for escape in ["foo.dSYM/../../../evil", "..", "../evil", "foo.dSYM/../.."] {
+            assert!(
+                safe_symbol_join(base, Path::new(escape)).is_none(),
+                "entry {escape:?} must be refused, not joined"
+            );
+        }
+    }
+
+    /// An absolute entry re-roots the join and lands wherever it says.
+    #[test]
+    fn absolute_archive_entries_are_refused() {
+        let base = Path::new("/symbols/v1");
+        let absolute = if cfg!(windows) {
+            r"C:\Windows\System32\evil.pdb"
+        } else {
+            "/etc/evil.pdb"
+        };
+        assert!(safe_symbol_join(base, Path::new(absolute)).is_none());
+    }
+
+    /// The guard must not break the entries the installer actually needs —
+    /// a rejection-only test would pass with a function that refuses
+    /// everything.
+    #[test]
+    fn ordinary_sidecar_entries_still_join_under_the_prefix() {
+        let base = Path::new("/symbols/v1");
+
+        let flat = safe_symbol_join(base, Path::new("zccache.pdb")).expect("plain entry allowed");
+        assert_eq!(flat, base.join("zccache.pdb"));
+
+        let nested = safe_symbol_join(base, Path::new("zccache.dSYM/Contents/Info.plist"))
+            .expect("dSYM bundle child allowed");
+        assert_eq!(nested, base.join("zccache.dSYM/Contents/Info.plist"));
+
+        // `./` is noise, not an escape.
+        let cur_dir =
+            safe_symbol_join(base, Path::new("./zccache.pdb")).expect("CurDir is normalized away");
+        assert_eq!(cur_dir, base.join("zccache.pdb"));
+    }
+
+    #[test]
+    fn an_empty_entry_is_refused_rather_than_returning_the_prefix() {
+        assert!(safe_symbol_join(Path::new("/symbols/v1"), Path::new("")).is_none());
     }
 }
