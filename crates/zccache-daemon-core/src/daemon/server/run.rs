@@ -213,38 +213,52 @@ impl DaemonServer {
         }
 
         // Start memory eviction background task.
+        //
+        // #1177: supervised. A panic here used to be silent — the task
+        // vanished and memory simply stopped being evicted, which surfaces
+        // days later as "the daemon got fat" with nothing in the log.
         {
             let state = Arc::clone(&self.state);
+            let shutdown_state = Arc::clone(&self.state);
             let budget = crate::core::config::Config::default().max_memory_bytes;
             let interval_secs = crate::core::config::Config::default().eviction_interval_secs;
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
-                    let req_removed =
-                        trim_request_cache(&state.request_cache, EPHEMERAL_CACHE_MAX_AGE);
-                    let req_validation_removed = trim_request_validation_cache(
-                        &state.request_validation_cache,
-                        EPHEMERAL_CACHE_MAX_AGE,
-                    );
-                    let rsp_removed = trim_rsp_cache(&state.rsp_cache, EPHEMERAL_CACHE_MAX_AGE);
-                    if req_removed > 0 || req_validation_removed > 0 || rsp_removed > 0 {
-                        tracing::debug!(
-                            request_cache_removed = req_removed,
-                            request_validation_cache_removed = req_validation_removed,
-                            rsp_cache_removed = rsp_removed,
-                            "trimmed ephemeral daemon caches"
-                        );
+            std::mem::drop(supervise::spawn_supervised(
+                "memory-eviction",
+                move || shutdown_state.shutdown_requested.load(Ordering::Acquire),
+                supervise::Restart::Idempotent,
+                move || {
+                    let state = Arc::clone(&state);
+                    async move {
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+                            let req_removed =
+                                trim_request_cache(&state.request_cache, EPHEMERAL_CACHE_MAX_AGE);
+                            let req_validation_removed = trim_request_validation_cache(
+                                &state.request_validation_cache,
+                                EPHEMERAL_CACHE_MAX_AGE,
+                            );
+                            let rsp_removed =
+                                trim_rsp_cache(&state.rsp_cache, EPHEMERAL_CACHE_MAX_AGE);
+                            if req_removed > 0 || req_validation_removed > 0 || rsp_removed > 0 {
+                                tracing::debug!(
+                                    request_cache_removed = req_removed,
+                                    request_validation_cache_removed = req_validation_removed,
+                                    rsp_cache_removed = rsp_removed,
+                                    "trimmed ephemeral daemon caches"
+                                );
+                            }
+                            let (freed, items) = run_memory_eviction_pass(&state, budget).await;
+                            if items > 0 {
+                                tracing::info!(
+                                    freed_bytes = freed,
+                                    items_removed = items,
+                                    "memory eviction"
+                                );
+                            }
+                        }
                     }
-                    let (freed, items) = run_memory_eviction_pass(&state, budget).await;
-                    if items > 0 {
-                        tracing::info!(
-                            freed_bytes = freed,
-                            items_removed = items,
-                            "memory eviction"
-                        );
-                    }
-                }
-            });
+                },
+            ));
         }
 
         // The daemon is the primary maintenance owner. It checks this exact
@@ -257,25 +271,38 @@ impl DaemonServer {
         ));
 
         // Start periodic depgraph save task (every 5 minutes).
+        //
+        // #1177: supervised. A silent death here means the depgraph stops
+        // being persisted, so the next daemon start is a cold graph and a
+        // full recompile — with nothing recording why.
         {
             let state = Arc::clone(&self.state);
-            tokio::spawn(async move {
-                let path = depgraph_file_path_for_cache_dir(&state.cache_dir);
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(300)).await;
-                    if let Some(parent) = path.parent() {
-                        std::fs::create_dir_all(parent).ok();
-                    }
-                    let dg = state.dep_graph.load();
-                    match crate::depgraph::save_to_file(&dg, &path) {
-                        Ok(()) => {
-                            state.dep_graph_persisted.store(true, Ordering::Release);
-                            tracing::debug!("periodic depgraph save");
+            let shutdown_state = Arc::clone(&self.state);
+            std::mem::drop(supervise::spawn_supervised(
+                "depgraph-save",
+                move || shutdown_state.shutdown_requested.load(Ordering::Acquire),
+                supervise::Restart::Idempotent,
+                move || {
+                    let state = Arc::clone(&state);
+                    async move {
+                        let path = depgraph_file_path_for_cache_dir(&state.cache_dir);
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                            if let Some(parent) = path.parent() {
+                                std::fs::create_dir_all(parent).ok();
+                            }
+                            let dg = state.dep_graph.load();
+                            match crate::depgraph::save_to_file(&dg, &path) {
+                                Ok(()) => {
+                                    state.dep_graph_persisted.store(true, Ordering::Release);
+                                    tracing::debug!("periodic depgraph save");
+                                }
+                                Err(e) => tracing::warn!("periodic depgraph save failed: {e}"),
+                            }
                         }
-                        Err(e) => tracing::warn!("periodic depgraph save failed: {e}"),
                     }
-                }
-            });
+                },
+            ));
         }
 
         loop {
