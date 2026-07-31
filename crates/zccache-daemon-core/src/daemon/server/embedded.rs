@@ -74,6 +74,7 @@ impl EmbeddedDaemon {
             index_writer_rx: Some(index_writer_rx),
             index_writer_handle: Mutex::new(None),
             maintenance_handle: Mutex::new(None),
+            maintenance_tasks: Vec::new(),
         };
         daemon
             .start_background_tasks(runtime_handle, automatic_maintenance)
@@ -201,14 +202,31 @@ impl EmbeddedDaemon {
         })
         .await;
 
-        if automatic_maintenance {
-            let maintenance_handle = spawn_disk_maintenance(
-                Arc::clone(&self.state),
-                self.maintenance_policy,
-                runtime_handle.as_ref(),
-            );
-            *self.maintenance_handle.lock().await = Some(maintenance_handle);
-        }
+        // #1160: start the SAME schedule the standalone daemon starts. Before
+        // this, embedded ran no periodic task at all beyond the disk loop, so
+        // every in-memory budget was dead code inside a long-lived host, the
+        // depgraph was persisted only when the host called `flush()`, and
+        // interrupted-write staged temps were never reclaimed.
+        //
+        // `automatic_maintenance == false` means the host owns the *disk*
+        // passes (`MaintenanceOwnership::Host`) and drives them through
+        // `maintain_disk`. It does not mean the host owns memory eviction or
+        // depgraph persistence — no API exposes those — so only the disk
+        // member is suppressed.
+        let started = MaintenanceSchedule::new(
+            Arc::clone(&self.state),
+            self.maintenance_policy,
+            ServiceMode::Embedded,
+        )
+        .with_runtime_handle(runtime_handle)
+        .with_disk_maintenance(automatic_maintenance)
+        .start();
+        tracing::debug!(
+            tasks = ?started.started,
+            "embedded maintenance schedule started"
+        );
+        *self.maintenance_handle.lock().await = started.disk_maintenance;
+        self.maintenance_tasks = started.started;
     }
 
     pub(crate) async fn compile(

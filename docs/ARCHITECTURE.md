@@ -36,6 +36,7 @@ failed cache-root audit retain its diagnostic JSONL evidence.
 - **soldr target artifact contract** → [rust-artifact-plan.md](architecture/rust-artifact-plan.md)
 - **Embedded soldr/fbuild service integration** → [embedded-service.md](architecture/embedded-service.md)
 - **Embedded maintenance limits and shutdown reporting** → [embedded-service.md § Maintenance limits and task ownership](architecture/embedded-service.md#maintenance-limits-and-task-ownership)
+- **Shared periodic maintenance schedule (both service modes)** → [embedded-service.md § Maintenance limits and task ownership](architecture/embedded-service.md#maintenance-limits-and-task-ownership)
 - **Legacy action target snapshots** → [target-cache.md](architecture/target-cache.md)
 - **Thread safety & crash safety** → [runtime.md](architecture/runtime.md)
 - **Async/process bridge — watchdogs, cancellation & timeouts (deadlock hardening)** → [runtime.md § Async / process bridge](architecture/runtime.md#async--process-bridge-watchdogs-cancellation--timeouts)
