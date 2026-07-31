@@ -19,6 +19,10 @@ pub mod fingerprint;
 pub mod jobserver;
 pub mod lifecycle;
 pub mod lineage;
+/// Bounded opt-in tracing file sink (#1165). Gated with `entry` because it is
+/// a `tracing_subscriber` layer and that dependency is optional — the daemon
+/// library is also built by hosts that install their own subscriber.
+#[cfg(feature = "daemon-entry")]
 pub mod log_sink;
 pub(crate) mod process;
 pub mod server;
