@@ -1,9 +1,10 @@
 //! Executable-level tests for the wrapper/daemon failure safety contract.
 //!
-//! These tests intentionally exercise the published wrapper binary. They
-//! prove that a pre-dispatch failure replays the compiler exactly once,
-//! including stdin, and that a real session does not consume stdin twice
-//! while moving from the session path to the ephemeral fallback path.
+//! These tests intentionally exercise the published wrapper binary. Since
+//! #1170 the contract they prove is the opposite of the original one: a
+//! pre-dispatch daemon failure must NOT run the compiler at all. It fails
+//! with the wrapper's own infrastructure exit code and a durable event, so a
+//! daemon outage can never present as a green build.
 
 #![allow(
     clippy::expect_used,
@@ -49,7 +50,6 @@ fn run_wrapper(
     cache_dir: &Path,
     payload: &[u8],
     session_id: Option<&str>,
-    fallback_policy: &str,
 ) -> Output {
     let mut command = Command::new(zccache);
     command
@@ -58,10 +58,6 @@ fn run_wrapper(
         .env("ZCCACHE_CACHE_DIR", cache_dir)
         .env("ZCCACHE_NO_SPAWN", "1")
         .env("ZCCACHE_DAEMON_WIRE", "bincode")
-        // Issue #1211: the default policy is Error (uncached fallback is
-        // unsafe with read-only hardlinked artifacts), so the warn-path
-        // tests must opt in explicitly to keep exercising the fallback.
-        .env("ZCCACHE_FALLBACK", fallback_policy)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -94,38 +90,6 @@ fn lifecycle_events(cache_dir: &Path) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn assert_one_fallback(cache_dir: &Path, test_name: &'static str) {
-    let events = lifecycle_events(cache_dir);
-    let fallbacks: Vec<_> = events
-        .iter()
-        .filter(|event| event["event"] == "wrapper-local-fallback")
-        .collect();
-    assert_eq!(
-        fallbacks.len(),
-        1,
-        "expected one fallback event: {events:#?}"
-    );
-    assert_eq!(fallbacks[0]["phase"], "pre-dispatch");
-    assert_eq!(
-        fallbacks[0]["outcome"], "ran",
-        "warn-policy fallback must record that the tool actually ran"
-    );
-
-    let effective =
-        zccache::core::config::effective_cache_root_from_top_level(&cache_dir.to_path_buf().into());
-    let report = zccache::audit::audit_cache_root(
-        &effective,
-        zccache::audit::LogAuditContext::Integration,
-        &zccache::audit::AuditOptions::default().allow_for_test(
-            test_name,
-            [zccache::audit::RuleId("no-wrapper-local-fallback")],
-        ),
-    )
-    .expect("audit intentional fallback fixture");
-    assert!(report.passed(), "{}", report.format_human());
-    assert_eq!(report.test_allow_name.as_deref(), Some(test_name));
-}
-
 fn wait_for_daemon_shutdown(cache_dir: &Path) {
     for _ in 0..80 {
         if lifecycle_events(cache_dir)
@@ -139,9 +103,69 @@ fn wait_for_daemon_shutdown(cache_dir: &Path) {
     panic!("daemon did not publish died-shutdown within the test deadline");
 }
 
+/// The wrapper-infrastructure exit code from #1170. Kept as a literal here
+/// rather than imported: these tests stand in for the external consumers
+/// (soldr, fbuild, CI classifiers) that see only the process exit status, so
+/// they should break if the number changes, not follow it.
+const DAEMON_UNAVAILABLE_EXIT_CODE: i32 = 125;
+
+/// Assert the run recorded exactly one daemon-unavailable refusal, and that
+/// nothing recorded the retired `wrapper-local-fallback`.
+fn assert_one_refusal(cache_dir: &Path, test_name: &'static str) {
+    let events = lifecycle_events(cache_dir);
+    let refusals: Vec<_> = events
+        .iter()
+        .filter(|event| event["event"] == "wrapper-daemon-unavailable")
+        .collect();
+    assert_eq!(
+        refusals.len(),
+        1,
+        "expected exactly one daemon-unavailable event: {events:#?}"
+    );
+    assert_eq!(refusals[0]["phase"], "pre-dispatch");
+    assert_eq!(refusals[0]["exit_code"], DAEMON_UNAVAILABLE_EXIT_CODE);
+    assert!(
+        !events
+            .iter()
+            .any(|event| event["event"] == "wrapper-local-fallback"),
+        "the silent local fallback is retired and must not reappear: {events:#?}"
+    );
+
+    let effective =
+        zccache::core::config::effective_cache_root_from_top_level(&cache_dir.to_path_buf().into());
+    let report = zccache::audit::audit_cache_root(
+        &effective,
+        zccache::audit::LogAuditContext::Integration,
+        &zccache::audit::AuditOptions::default()
+            .allow_for_test(test_name, [zccache::audit::RuleId("no-daemon-unavailable")]),
+    )
+    .expect("audit intentional refusal fixture");
+    assert!(report.passed(), "{}", report.format_human());
+    assert_eq!(report.test_allow_name.as_deref(), Some(test_name));
+}
+
+fn assert_tool_never_ran(output: &Output) {
+    assert!(
+        !output
+            .stdout
+            .windows(b"ZCCACHE_PASSTHROUGH_STDOUT_MARKER".len())
+            .any(|window| window == b"ZCCACHE_PASSTHROUGH_STDOUT_MARKER"),
+        "the wrapper must not run the tool uncached"
+    );
+}
+
+/// #1170: a pre-dispatch daemon failure is a hard error with a distinct
+/// infrastructure exit code.
+///
+/// The behaviour this replaces is the reason the issue exists: the old path
+/// ran the compiler directly and *mirrored its exit code*, so an outage that
+/// happened to compile fine exited 0 and left a green build hiding it. The
+/// load-bearing assertions are therefore "not 0" and "the tool never ran" —
+/// the shim would exit 7 if it were reached, so 125 also proves the code is
+/// the wrapper's own and not the tool's.
 #[test]
 #[ignore = "integration test: launches the wrapper binary"]
-fn ephemeral_pre_dispatch_fallback_preserves_process_contract() {
+fn ephemeral_pre_dispatch_failure_is_a_hard_error_with_the_infra_exit_code() {
     let zccache = binary_path("zccache");
     let echo_shim = binary_path("echo_shim");
     if !zccache.exists() || !echo_shim.exists() {
@@ -151,39 +175,41 @@ fn ephemeral_pre_dispatch_fallback_preserves_process_contract() {
 
     let cache_dir = tempfile::tempdir().expect("cache tempdir");
     let payload = b"pre-dispatch-stdin\0with-a-nul\n";
-    let output = run_wrapper(
-        &zccache,
-        &echo_shim,
-        cache_dir.path(),
-        payload,
-        None,
-        "warn",
-    );
+    let output = run_wrapper(&zccache, &echo_shim, cache_dir.path(), payload, None);
     stop_daemon(&zccache, cache_dir.path());
 
-    assert_eq!(output.status.code(), Some(7));
-    assert!(output
-        .stdout
-        .windows(b"ZCCACHE_PASSTHROUGH_STDOUT_MARKER\n".len())
-        .any(|window| window == b"ZCCACHE_PASSTHROUGH_STDOUT_MARKER\n"));
     assert_eq!(
-        output
-            .stderr
-            .windows(payload.len())
-            .filter(|window| *window == payload)
-            .count(),
-        1,
-        "stdin must reach the local compiler exactly once"
+        output.status.code(),
+        Some(DAEMON_UNAVAILABLE_EXIT_CODE),
+        "a daemon outage must fail with the wrapper's infra code, not the tool's 7"
     );
-    assert_one_fallback(
+    assert_tool_never_ran(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("zccache[err][D]:"),
+        "stderr must use the daemon-unavailable severity prefix: {stderr}"
+    );
+    assert!(
+        stderr.contains("cannot start daemon") || stderr.contains("cannot connect to daemon"),
+        "stderr must carry the concrete daemon-failure reason: {stderr}"
+    );
+    assert!(
+        stderr.contains("ZCCACHE_DISABLE=1"),
+        "the refusal must name the sanctioned bypass: {stderr}"
+    );
+    assert_one_refusal(
         cache_dir.path(),
-        "ephemeral_pre_dispatch_fallback_preserves_process_contract",
+        "ephemeral_pre_dispatch_failure_is_a_hard_error_with_the_infra_exit_code",
     );
 }
 
+/// The session route degrades into the ephemeral route on connect failure, so
+/// it reaches the same refusal — and must not slurp stdin a second time on the
+/// way there. Stdin handling is the part of the old contract worth keeping:
+/// the wrapper still reads it exactly once even though nothing replays it now.
 #[test]
 #[ignore = "integration test: launches the wrapper binary"]
-fn session_pre_dispatch_fallback_does_not_consume_stdin_twice() {
+fn session_pre_dispatch_failure_refuses_without_double_reading_stdin() {
     let zccache = binary_path("zccache");
     let echo_shim = binary_path("echo_shim");
     if !zccache.exists() || !echo_shim.exists() {
@@ -212,90 +238,24 @@ fn session_pre_dispatch_fallback_does_not_consume_stdin_twice() {
     stop_daemon(&zccache, cache_dir.path());
     wait_for_daemon_shutdown(cache_dir.path());
 
-    let payload = b"session-fallback-stdin\0must-appear-once\n";
+    let payload = b"session-refusal-stdin\0must-not-double-read\n";
     let output = run_wrapper(
         &zccache,
         &echo_shim,
         cache_dir.path(),
         payload,
         Some(&session_id),
-        "warn",
-    );
-    stop_daemon(&zccache, cache_dir.path());
-
-    assert_eq!(output.status.code(), Some(7));
-    assert_eq!(
-        output
-            .stderr
-            .windows(payload.len())
-            .filter(|window| *window == payload)
-            .count(),
-        1,
-        "session fallback must not slurp stdin a second time"
-    );
-    assert_one_fallback(
-        cache_dir.path(),
-        "session_pre_dispatch_fallback_does_not_consume_stdin_twice",
-    );
-}
-
-/// Issue #1211: under the strict policy (`ZCCACHE_FALLBACK=error`, also the
-/// default on every host) a pre-dispatch daemon failure must fail the
-/// compile with the failure reason on stderr — the tool is never run
-/// uncached (it could not overwrite read-only hardlinked artifacts anyway).
-#[test]
-#[ignore = "integration test: launches the wrapper binary"]
-fn strict_policy_refuses_pre_dispatch_fallback() {
-    let zccache = binary_path("zccache");
-    let echo_shim = binary_path("echo_shim");
-    if !zccache.exists() || !echo_shim.exists() {
-        eprintln!("skipping: required binaries are not built");
-        return;
-    }
-
-    let cache_dir = tempfile::tempdir().expect("cache tempdir");
-    let payload = b"strict-mode-stdin\n";
-    let output = run_wrapper(
-        &zccache,
-        &echo_shim,
-        cache_dir.path(),
-        payload,
-        None,
-        "error",
     );
     stop_daemon(&zccache, cache_dir.path());
 
     assert_eq!(
         output.status.code(),
-        Some(1),
-        "strict mode must fail the compile, not mirror the tool's exit code"
+        Some(DAEMON_UNAVAILABLE_EXIT_CODE),
+        "the session route must reach the same hard error as the ephemeral one"
     );
-    assert!(
-        !output
-            .stdout
-            .windows(b"ZCCACHE_PASSTHROUGH_STDOUT_MARKER".len())
-            .any(|window| window == b"ZCCACHE_PASSTHROUGH_STDOUT_MARKER"),
-        "strict mode must not run the tool uncached"
+    assert_tool_never_ran(&output);
+    assert_one_refusal(
+        cache_dir.path(),
+        "session_pre_dispatch_failure_refuses_without_double_reading_stdin",
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("refusing uncached fallback"),
-        "stderr must announce the refusal: {stderr}"
-    );
-    assert!(
-        stderr.contains("cannot start daemon") || stderr.contains("cannot connect to daemon"),
-        "stderr must carry the daemon-failure reason: {stderr}"
-    );
-
-    let events = lifecycle_events(cache_dir.path());
-    let fallbacks: Vec<_> = events
-        .iter()
-        .filter(|event| event["event"] == "wrapper-local-fallback")
-        .collect();
-    assert_eq!(
-        fallbacks.len(),
-        1,
-        "expected one blocked event: {events:#?}"
-    );
-    assert_eq!(fallbacks[0]["outcome"], "blocked");
 }

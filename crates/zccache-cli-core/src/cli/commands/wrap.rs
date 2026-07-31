@@ -6,12 +6,12 @@
 
 mod diag;
 mod env;
-mod fallback;
 pub(crate) mod ipc;
 mod passthrough;
 mod routing;
 mod rustfmt;
 mod tool_resolution;
+mod unavailable;
 
 use crate::compiler::strict_paths::StrictPathsMode;
 use std::io::{IsTerminal, Write};
