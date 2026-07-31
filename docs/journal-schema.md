@@ -128,6 +128,41 @@ execution, include scanning, and artifact storage. Tokio Console is for live
 Tokio runtime symptoms such as blocked tasks, long polls, wakeups, timers, and
 resource contention.
 
+## Retention and file ownership (issue #1165)
+
+Two different files, two different owners. This is the part that decides who is
+responsible for deleting anything.
+
+**Daemon-owned, bounded by the daemon:**
+
+| File | Bound |
+|---|---|
+| `<cache_dir>/logs/compile_journal.jsonl` | rotated by the journal writer's own size/GC policy |
+| `<cache_dir>/logs/daemon-lifecycle.log` | 1 MiB live + one `.1` archive |
+| `<cache_dir>/logs/audit.jsonl` | 50 MB × 3 files |
+| `<cache_dir>/crashes/` | newest `CRASH_DUMP_KEEP` dumps, `.reported` markers reaped with their dump |
+| `$ZCCACHE_LOG_FILE` (opt-in tracing sink) | `ZCCACHE_LOG_FILE_MAX_BYTES` live + one archive |
+
+**Caller-owned, and deliberately never touched by the daemon:** the per-session
+journal at `SessionConfig.journal_path`.
+
+That path is **supplied by the client** on `SessionStart`, and the daemon never
+defaults it — omit it and no per-session journal is written at all. `close_session`
+therefore drops the handle and leaves the file exactly where the caller asked for
+it.
+
+This is by design, and the alternative was considered and rejected. A retention
+policy here would mean the daemon enumerating a directory *the client chose*
+(`/tmp`, a home directory, a build tree) and unlinking files by a filter it
+invented — session journal names are client-chosen with no shared prefix, so any
+filter broad enough to catch real journals is broad enough to catch unrelated
+user files. Bounding one small JSONL per session is not worth a mechanism that
+can delete outside the cache root.
+
+**If you pass `journal_path`, you own retention.** A caller that mints a fresh
+path per session (a CI job, a build wrapper) must rotate or clean them itself.
+A caller that reuses one path, or omits it, has nothing to clean.
+
 ## Stability & versioning
 
 The journal is **additive-by-default**: new optional fields may appear in
