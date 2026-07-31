@@ -34,8 +34,9 @@ use crate::NormalizedPath;
 /// is not this function's call to make. Detecting and reporting an
 /// already-loose directory is #1171 item 4.
 ///
-/// On Windows this is exactly `create_dir_all`: the equivalent control there
-/// is the pipe's DACL, which is #1171 item 2.
+/// On Windows this is exactly `create_dir_all`: directories are tightened by
+/// [`ensure_dir_private`] instead, which writes an explicit DACL (#1172 F1e).
+///
 /// Ensure an existing directory is not group- or other-writable, tightening
 /// it in place if it is (#1171 item 4).
 ///
@@ -51,8 +52,14 @@ use crate::NormalizedPath;
 /// it is how the socket gets substituted.
 ///
 /// Returns `Ok(false)` when nothing needed doing, `Ok(true)` when the mode was
-/// tightened, and `Err` when it is still loose afterwards. On Windows this is
-/// always `Ok(false)` — the equivalent control is the pipe DACL (#1171 item 2).
+/// tightened, and `Err` when it is still loose afterwards.
+///
+/// On Windows the same three outcomes come from a DACL rather than mode bits
+/// (#1172 F1e): a directory whose ACL is not protected-and-owner-only gets
+/// `D:P(A;OICI;FA;;;<user>)(A;OICI;FA;;;SY)` written to it, verified by
+/// read-back. This used to be a no-op, which left the daemon deploy directory
+/// — a directory the CLI *executes* a binary out of — unguarded. See
+/// `config::win_acl`.
 pub fn ensure_dir_private(path: &std::path::Path) -> std::io::Result<bool> {
     #[cfg(unix)]
     {
@@ -101,7 +108,16 @@ pub fn ensure_dir_private(path: &std::path::Path) -> std::io::Result<bool> {
         }
         Ok(true)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // #1172 F1e: the Windows arm used to be a bare `metadata()` probe, so
+        // the directory the CLI copies the daemon binary into — and then
+        // executes — had no enforced access control at all. `win_acl` applies
+        // the file-object equivalent of `0700`: a protected DACL naming the
+        // deploying user and SYSTEM.
+        super::win_acl::ensure_dir_private(path)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = std::fs::metadata(path)?;
         Ok(false)

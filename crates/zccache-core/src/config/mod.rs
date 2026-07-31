@@ -11,6 +11,10 @@ pub mod cleanup;
 pub mod namespace;
 pub mod paths;
 pub mod resolve;
+/// Owner-only directory DACLs (#1172 F1e) — the Windows half of
+/// [`paths::ensure_dir_private`].
+#[cfg(windows)]
+mod win_acl;
 
 use super::NormalizedPath;
 
