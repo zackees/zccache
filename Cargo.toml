@@ -31,6 +31,7 @@ exclude = [
     "dylints/ban_legacy_artifact_path",
     "dylints/ban_normalized_path_deref_containment",
     "dylints/ban_dashmap_guard_across_blocking",
+    "dylints/ban_discarded_write_result",
 ]
 
 [workspace.package]

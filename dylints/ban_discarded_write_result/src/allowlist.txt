@@ -1,0 +1,50 @@
+# Each non-empty, non-comment line is matched against the tail of each source
+# file path (slashes normalized). Same mechanism as ban_tmp_literal.
+#
+# DO NOT add an entry without an inline comment explaining why the dropped
+# error is safe — i.e. why no caller proceeds as if durable state landed.
+# The default fix is to propagate with `?`, or to handle the error and gate
+# the follow-on state mutation on success.
+#
+# NOT allowlisted on purpose:
+#   handle_compile/miss_store.rs — the #1163 vector. Its discarded
+#   index-writer sends were fixed on main (PR #1292); the file stays in scope
+#   so the shape cannot re-enter.
+
+# ── Rollback on an already-failing path ─────────────────────────────────────
+# `AuthoritativeDigestRollback::restore_on_failure` re-writes the previous
+# digest sidecar after the persist it guards has already failed; the caller
+# is returning that original error either way. A failed restore degrades to
+# the verify-and-heal path on next read, so nothing downstream treats the
+# rollback as durable.
+crates/zccache-daemon-core/src/daemon/server/persist/artifact_io.rs
+
+# `replace_directory`'s non-Linux/macOS arm renames a backup directory back
+# into place only after `rename(staged, requested)` already failed, and then
+# returns that original error. The restore is best-effort by construction.
+crates/zccache-daemon-core/src/daemon/server/persist/directory_bundle.rs
+
+# ── Best-effort durability hint ─────────────────────────────────────────────
+# `directory.sync_all()` after a successful `replace_path` is a parent-dir
+# fsync hint; the enclosing code already treats failure to even open the
+# parent as acceptable (`if let Ok(directory) = ...`). The artifact is
+# content-addressed and reconstructible, so a lost dir-fsync costs a
+# re-materialize, not a wrong answer. Borderline — revisit if staged paths
+# ever become the authoritative record.
+crates/zccache-daemon-core/src/daemon/server/persist/staged_paths.rs
+
+# ── Test-orchestration channels ─────────────────────────────────────────────
+# `hook.rs` is the deterministic staged-pipeline pause hook used by race
+# tests. Its `send`/`try_send` peers are legitimately gone once the test
+# guard drops, and no persistence decision is made from the result. The
+# module is `#[cfg(test)]`, so this entry only matters for a local
+# `--all-targets` run; CI's `cargo dylint --all --workspace` never reaches it.
+crates/zccache-daemon-core/src/daemon/server/persist/staged_store/hook.rs
+
+# ── Intentional shutdown acks ───────────────────────────────────────────────
+# `wal.rs`'s `ack.send(())` replies target oneshot receivers that the caller
+# may have already abandoned (flush timeout, shutdown drain). The WAL state
+# is committed before the ack, so a dropped ack loses nothing durable. This
+# file must be allowlisted because `send` is deliberately in the matched
+# name set.
+crates/zccache-daemon-core/src/daemon/server/wal.rs

@@ -1,0 +1,22 @@
+error: `let _ =` discards the `Result` of `write`; durable state may silently not exist. Propagate with `?`, or handle the error and gate the follow-on state mutation on success. If the site is fire-and-forget by design, add its path to `dylints/ban_discarded_write_result/src/allowlist.txt` with a justifying comment
+  --> $DIR/disallowed.rs:4:5
+   |
+LL |     let _ = std::fs::write("a", b"b");
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[deny(ban_discarded_write_result)]` on by default
+
+error: `let _ =` discards the `Result` of `send`; durable state may silently not exist. Propagate with `?`, or handle the error and gate the follow-on state mutation on success. If the site is fire-and-forget by design, add its path to `dylints/ban_discarded_write_result/src/allowlist.txt` with a justifying comment
+  --> $DIR/disallowed.rs:7:5
+   |
+LL |     let _ = tx.send(1);
+   |     ^^^^^^^^^^^^^^^^^^^
+
+error: `.ok();` discards the `Result` of `rename`; durable state may silently not exist. Propagate with `?`, or handle the error and gate the follow-on state mutation on success. If the site is fire-and-forget by design, add its path to `dylints/ban_discarded_write_result/src/allowlist.txt` with a justifying comment
+  --> $DIR/disallowed.rs:9:5
+   |
+LL |     std::fs::rename("a", "b").ok();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 3 previous errors
+

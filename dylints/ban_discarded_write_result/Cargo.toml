@@ -1,0 +1,22 @@
+[package]
+name = "ban_discarded_write_result"
+version = "0.1.0"
+description = "Ban discarded Results from write-ish calls in daemon persistence code"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Match the dylint_linting pin used by the sibling dylints — same toolchain
+# (rust-toolchain.toml here), same upstream commit.
+dylint_linting = "6.0.1"
+
+[dev-dependencies]
+dylint_testing = "6.0.1"
+
+[package.metadata.rust-analyzer]
+rustc_private = true
+
+[workspace]
