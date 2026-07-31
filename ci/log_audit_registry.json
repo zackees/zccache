@@ -41,6 +41,14 @@
       ]
     },
     {
+      "id": "no-daemon-unavailable",
+      "owner_issue": 1170,
+      "contexts": [
+        "perf",
+        "integration"
+      ]
+    },
+    {
       "id": "bounded-publication-conflicts",
       "owner_issue": 1159,
       "contexts": [

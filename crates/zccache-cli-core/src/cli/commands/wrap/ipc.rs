@@ -503,14 +503,12 @@ async fn cmd_compile_ephemeral_with_stdin(
             ExitCode::FAILURE
         }
         CompileRecvOutcome::Failed(msg) => match msg.phase {
-            FailurePhase::PreDispatch => super::passthrough::run_locally(
-                compiler,
-                &args,
-                &cwd,
-                &client_env,
-                &stdin_bytes,
-                &msg.message,
-            ),
+            // #1170: this used to run the compiler directly, uncached, and
+            // mirror its exit code — so a daemon outage that compiled fine
+            // exited 0 and stayed invisible.
+            FailurePhase::PreDispatch => {
+                super::unavailable::refuse_uncached_run(endpoint, compiler, &cwd, &msg.message)
+            }
             FailurePhase::DeliveryUnknown => {
                 eprintln!("zccache[err][R]: {}", msg.message);
                 ExitCode::FAILURE
@@ -527,8 +525,9 @@ pub(super) async fn cmd_link_ephemeral(
     cwd: NormalizedPath,
     client_env: Vec<(String, String)>,
 ) -> ExitCode {
-    let local_args = args.clone();
-    let local_env = client_env.clone();
+    // #1170 removed the local-fallback arm, which was the only consumer of
+    // the pre-move clones of `args`/`client_env` — nothing runs the tool
+    // locally any more, so nothing needs a second copy of its argv.
     let request = crate::protocol::Request::LinkEphemeral {
         client_pid: std::process::id(),
         tool: tool.into(),
@@ -564,14 +563,11 @@ pub(super) async fn cmd_link_ephemeral(
             ExitCode::FAILURE
         }
         CompileRecvOutcome::Failed(msg) => match msg.phase {
-            FailurePhase::PreDispatch => super::passthrough::run_locally(
-                tool,
-                &local_args,
-                &cwd,
-                &local_env,
-                &[],
-                &msg.message,
-            ),
+            // #1170: as in `cmd_compile_ephemeral` — a link/archive step is
+            // no more entitled to silently bypass the daemon than a compile.
+            FailurePhase::PreDispatch => {
+                super::unavailable::refuse_uncached_run(endpoint, tool, &cwd, &msg.message)
+            }
             FailurePhase::DeliveryUnknown => {
                 eprintln!("zccache[err][R]: {}", msg.message);
                 ExitCode::FAILURE

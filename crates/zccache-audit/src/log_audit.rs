@@ -214,6 +214,18 @@ fn no_wrapper_local_fallback() -> AuditRule {
     }
 }
 
+/// #1170: the wrapper refused to run a tool because the daemon was
+/// unreachable. In a perf or integration run this is not a flaky detail — it
+/// means the run measured or exercised something other than the cache, so the
+/// run itself is invalid. Mirrors soldr's harness, which already marks a run
+/// infrastructure-invalid on a daemon fallback.
+fn no_daemon_unavailable() -> AuditRule {
+    AuditRule::Forbidden {
+        source: LogSource::LifecycleLog,
+        pattern: EventPattern::event("wrapper-daemon-unavailable"),
+    }
+}
+
 fn bounded_publication_conflicts() -> AuditRule {
     AuditRule::Bounded {
         source: LogSource::LifecycleLog,
@@ -263,6 +275,12 @@ pub const REGISTRY: &[RuleRegistration] = &[
         owner_issue: 1159,
         contexts: ALL,
         rule: no_wrapper_local_fallback,
+    },
+    RuleRegistration {
+        id: RuleId("no-daemon-unavailable"),
+        owner_issue: 1170,
+        contexts: ALL,
+        rule: no_daemon_unavailable,
     },
     RuleRegistration {
         id: RuleId("bounded-publication-conflicts"),
