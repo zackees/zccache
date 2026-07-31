@@ -677,17 +677,41 @@ fn init_tracing(level: &str) {
     }
 }
 
+/// Install the stderr sink, plus the opt-in bounded file sink (#1165 item 5).
+///
+/// stderr stays the default and is never taken away: whoever supervises the
+/// daemon owns that stream and is expected to rotate it. `ZCCACHE_LOG_FILE`
+/// *adds* a size-capped file alongside it for operators who have no
+/// supervisor doing that — previously there was no bounded option at all.
 fn init_fmt_tracing(filter: tracing_subscriber::EnvFilter) {
     use tracing_subscriber::prelude::*;
 
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::fmt::layer()
+    let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_target(true)
+        .with_thread_ids(true);
+
+    match super::log_sink::BoundedFileSink::from_env() {
+        Some(sink) => {
+            // ANSI off for the file: escape codes in a log an operator greps
+            // months later are noise, not colour.
+            let file_layer = tracing_subscriber::fmt::layer()
                 .with_target(true)
                 .with_thread_ids(true)
-                .with_filter(filter),
-        )
-        .init();
+                .with_ansi(false)
+                .with_writer(sink);
+            // The filter is applied once at the registry rather than per
+            // layer, so both sinks are guaranteed to agree on what they see.
+            tracing_subscriber::registry()
+                .with(stderr_layer)
+                .with(file_layer)
+                .with(filter)
+                .init();
+        }
+        None => tracing_subscriber::registry()
+            .with(stderr_layer)
+            .with(filter)
+            .init(),
+    }
 }
 
 #[cfg(feature = "tokio-console")]
