@@ -71,7 +71,7 @@ use super::CacheDirEnvGuard;
 /// `-MF`/`-MT` values are skipped so a depfile path ending in a source-like
 /// name can never be mistaken for an input.
 #[cfg(unix)]
-fn write_fake_multi_cc(dir: &Path) -> PathBuf {
+pub(super) fn write_fake_multi_cc(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
     let tool = dir.join("cc");
@@ -114,7 +114,7 @@ exit 0
 }
 
 #[cfg(windows)]
-fn write_fake_multi_cc(dir: &Path) -> PathBuf {
+pub(super) fn write_fake_multi_cc(dir: &Path) -> PathBuf {
     let tool = dir.join("cc.cmd");
     std::fs::write(
         &tool,
@@ -178,7 +178,7 @@ fn restore_dep_graph_from_disk(server: &DaemonServer, path: &Path) {
     }
 }
 
-fn save_dep_graph_to_disk(server: &DaemonServer, path: &Path) {
+pub(super) fn save_dep_graph_to_disk(server: &DaemonServer, path: &Path) {
     let dg = server.state.dep_graph.load_full();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
@@ -195,7 +195,7 @@ fn save_dep_graph_to_disk(server: &DaemonServer, path: &Path) {
 /// the entry, but the on-disk index never does. Mirrors `run.rs`'s startup
 /// snippet exactly so a synthetic restart in this harness sees what a real
 /// restart would see.
-fn spawn_index_writer(server: &mut DaemonServer) -> tokio::task::JoinHandle<()> {
+pub(super) fn spawn_index_writer(server: &mut DaemonServer) -> tokio::task::JoinHandle<()> {
     let rx = server
         .index_writer_rx
         .take()
@@ -218,7 +218,7 @@ fn spawn_index_writer(server: &mut DaemonServer) -> tokio::task::JoinHandle<()> 
 /// `pending_cache_writes` registration makes that observable — a previous
 /// version of this helper polled `in_flight_bytes` instead and still raced
 /// CI timing on the Linux runner (#1161).
-async fn quiesce_and_persist(
+pub(super) async fn quiesce_and_persist(
     server: &DaemonServer,
     index_writer_handle: tokio::task::JoinHandle<()>,
     depgraph_path: &Path,

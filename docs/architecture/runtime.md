@@ -386,7 +386,20 @@ The dep graph **is** persisted across daemon restarts (issue #262). At graceful 
 On startup, the daemon attempts to load the snapshot:
 
 - **Success:** the in-memory graph is populated from the file and `DaemonStatus.dep_graph_persisted` reports `true`. CI runs that restore `<cache_dir>` from a cache store skip the cold-seed compile entirely.
-- **Missing file / `VersionMismatch` / corrupt bytes:** a warning is logged and the daemon starts with an empty graph (the pre-fix behavior).
+- **Missing file:** a plain cold start, no warning and no event.
+- **`VersionMismatch` / corrupt bytes:** a warning is logged, a durable lifecycle event is written (`version_mismatch` or `state_corrupt`, with `subsystem=depgraph`, `path`, `bytes`, `quarantined_to`, `recovered_from`, `consequence`), and the rejected snapshot is **quarantined** rather than left for the next graceful shutdown to overwrite. See [Depgraph snapshot quarantine](#depgraph-snapshot-quarantine) below.
+
+#### Depgraph snapshot quarantine
+
+Issue #1157 finding 2. An artifact key is `H(logical_context_key, sorted(path → content_hash))` over the source *plus every resolved include*, and that include set exists **only** in the depgraph — `zccache_artifact::ArtifactIndex` records outputs/stdout/stderr/exit-code and nothing about inputs. So an empty graph really does force one recompile per translation unit. What survives is the artifact *store*: the recompile recomputes the identical key and re-adopts the artifact on disk, so a reset costs one recompile, not a cache wipe.
+
+Reinterpreting a foreign-schema snapshot to "keep artifact-key resolution usable" is deliberately **not** done: reading it needs the old type definitions (a versioned migration), and doing it without one is unsafe — a schema bump can be precisely because a new input class started feeding the key (`rustc_env_deps`, #1021), and a resurrected context missing that field could satisfy `check()` and serve an artifact built under different inputs.
+
+What the daemon does instead (`zccache_depgraph::quarantine`, driven by `daemon::depgraph_load::load_for_startup`):
+
+- A version-skewed `depgraph.bin` is **moved** to `depgraph.v<file_version>.bin`; bytes that failed validation go to the single-slot `depgraph.corrupt.bin` (forensics only, never read back).
+- A sidecar named for **this build's own** `DEPGRAPH_VERSION` is loaded back through the ordinary `classify_load` path — same magic/version/rkyv validation as the primary — so a cache root shared by two binaries with different schema versions keeps each side warm instead of destroying the other's snapshot on every switch.
+- Sidecars are capped (`MAX_QUARANTINED_SNAPSHOTS`, oldest pruned first); the current build's sidecar is never a pruning candidate.
 
 The snapshot load runs in a background blocking task after the IPC endpoint and readiness lockfile are available, so daemon startup stays fast. Compile handlers gate their first depgraph registration/check on that background task completing; otherwise a warm daemon can race the empty default graph and classify the first lookup as `cold_skip` before the persisted graph is installed.
 

@@ -9,6 +9,12 @@ pub(crate) mod child_watchdog;
 pub mod compile_journal;
 pub(crate) mod compile_output;
 pub mod crash;
+/// Startup classification / quarantine policy for the persisted depgraph
+/// snapshot (#1157). Gated with `entry` because the standalone daemon is its
+/// only production caller; `test` keeps it available to the server tests that
+/// drive a synthetic restart.
+#[cfg(any(feature = "daemon-entry", test))]
+pub(crate) mod depgraph_load;
 /// Standalone daemon process entry point (issue #997), gated so it only
 /// compiles when a binary that hosts it (`daemon-bin`, or the `cli`/`zccache`
 /// binary via argv[0] dispatch) pulls in clap + tracing-subscriber.

@@ -44,6 +44,7 @@ failed cache-root audit retain its diagnostic JSONL evidence.
 - **Host no-spawn guard (`ZCCACHE_NO_SPAWN`, embedding hosts)** → [runtime.md § Host no-spawn guard](architecture/runtime.md#host-no-spawn-guard-zccache_no_spawn)
 - **Uncached-fallback policy (`ZCCACHE_FALLBACK`, CI hard-error)** → [runtime.md § Wrapper fallback policy](architecture/runtime.md#wrapper-fallback-policy-zccache_fallback-issue-1211)
 - **Standalone daemon identity, deployment & lifecycle (argv[0] single binary, version-rooted deploy, versioned endpoints)** → [runtime.md § Standalone daemon identity, deployment & lifecycle](architecture/runtime.md#standalone-daemon-identity-deployment--lifecycle)
+- **Rejected depgraph snapshots — quarantine, recovery, why no migration** → [runtime.md § Depgraph snapshot quarantine](architecture/runtime.md#depgraph-snapshot-quarantine)
 - **Windows/macOS/Linux differences** → [portability.md](architecture/portability.md)
 - **Compile journal fields & `miss_reason` enum** → [journal-schema.md](journal-schema.md)
 
