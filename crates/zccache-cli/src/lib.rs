@@ -424,6 +424,9 @@ impl NativeDownloadApi {
             force,
             max_connections,
             min_segment_size,
+            // #1172: inherit the https-only default rather than restating it,
+            // so a future security field cannot be dropped here silently.
+            ..Default::default()
         };
         let handle = self
             .client
