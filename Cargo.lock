@@ -4049,7 +4049,7 @@ dependencies = [
 
 [[package]]
 name = "zccache"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "arc-swap",
  "bincode",
@@ -4124,7 +4124,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-artifact"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "bincode",
  "blake3",
@@ -4148,7 +4148,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-audit"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4158,7 +4158,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-cli"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "pyo3",
  "pyo3-build-config",
@@ -4167,7 +4167,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-cli-core"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "bincode",
  "blake3",
@@ -4222,14 +4222,14 @@ dependencies = [
 
 [[package]]
 name = "zccache-compile-trace"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "zccache-audit",
 ]
 
 [[package]]
 name = "zccache-compiler"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "clang",
  "serde_json",
@@ -4241,7 +4241,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-core"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "crash-handler",
  "dashmap",
@@ -4256,7 +4256,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-daemon-core"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "arc-swap",
  "bincode",
@@ -4309,7 +4309,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-depgraph"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "bincode",
  "blake3",
@@ -4330,7 +4330,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-download"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "blake3",
  "futures",
@@ -4345,7 +4345,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-download-protocol"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "bincode",
  "bytes",
@@ -4357,7 +4357,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-fingerprint"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "filetime",
  "fs2",
@@ -4377,7 +4377,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-fscache"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "bincode",
  "dashmap",
@@ -4393,7 +4393,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-gha"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "reqwest",
  "serde",
@@ -4404,7 +4404,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-hash"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "blake3",
  "memmap2",
@@ -4414,7 +4414,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-ipc"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "bytes",
  "dashmap",
@@ -4435,7 +4435,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-protocol"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "bincode",
  "bytes",
@@ -4453,7 +4453,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-symbols"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "tempfile",
  "zccache-core",
@@ -4461,7 +4461,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-test-support"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "tempfile",
  "zccache-audit",
@@ -4470,7 +4470,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-watcher"
-version = "1.12.17"
+version = "1.13.0"
 dependencies = [
  "globset",
  "jwalk",
