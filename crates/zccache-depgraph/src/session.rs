@@ -259,6 +259,16 @@ pub struct SessionConfig {
     /// Whether to track per-session statistics.
     pub track_stats: bool,
     /// Path for per-session JSONL compile journal (must end in .jsonl).
+    ///
+    /// **Caller-owned (#1165).** The daemon never defaults this — omit it and
+    /// no per-session journal is written — and it never deletes the file, not
+    /// even on `close_session`. Applying a retention policy would mean the
+    /// daemon unlinking files in a directory the *client* chose, by a filter
+    /// it invented; session journal names have no shared prefix, so any filter
+    /// broad enough to catch real journals could catch unrelated user files.
+    ///
+    /// A caller that mints a fresh path per session must rotate or clean them
+    /// itself. See `docs/journal-schema.md` → "Retention and file ownership".
     pub journal_path: Option<NormalizedPath>,
     /// Issue #256: opt in to the extended journal schema. When true,
     /// the daemon populates crate_name, crate_type, output_ext, and
