@@ -110,6 +110,19 @@ pub struct FetchRequest {
     pub destination_path: NormalizedPath,
     pub destination_path_expanded: Option<NormalizedPath>,
     pub expected_sha256: Option<String>,
+    /// Refuse to accept an artifact that carries no `expected_sha256` (#1172).
+    ///
+    /// The checksum was optional at every call site, and a request without one
+    /// validated *successfully* — so "no integrity check" and "integrity check
+    /// passed" were the same outcome. Setting this makes the absence itself an
+    /// error, which is the only way a caller can insist on verification
+    /// without inspecting how the request was built.
+    ///
+    /// `#[serde(default)]` so an older serialized request still deserializes
+    /// as "not required", preserving today's behaviour for callers that have
+    /// not opted in.
+    #[serde(default)]
+    pub require_checksum: bool,
     pub archive_format: ArchiveFormat,
     pub wait_mode: WaitMode,
     pub dry_run: bool,
@@ -117,7 +130,40 @@ pub struct FetchRequest {
     pub download_options: DownloadOptions,
 }
 
+/// Env var that makes every fetch require a checksum (#1172).
+///
+/// Fleet-level policy: an operator or CI job can turn integrity checking from
+/// per-call-site opt-in into a floor nobody can forget, without auditing every
+/// caller. Unset (the default) preserves today's behaviour.
+pub const REQUIRE_CHECKSUM_ENV: &str = "ZCCACHE_REQUIRE_CHECKSUM";
+
+/// Does policy require every fetch to carry a checksum?
+fn checksum_required_by_policy() -> bool {
+    checksum_required_by_policy_with(|name| std::env::var(name).ok())
+}
+
+fn checksum_required_by_policy_with<F>(lookup: F) -> bool
+where
+    F: Fn(&str) -> Option<String>,
+{
+    lookup(REQUIRE_CHECKSUM_ENV).is_some_and(|value| {
+        let value = value.trim();
+        !value.is_empty()
+            && !matches!(
+                value.to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off" | "n"
+            )
+    })
+}
+
 impl FetchRequest {
+    /// Require a checksum for this fetch regardless of policy.
+    #[must_use]
+    pub fn require_checksum(mut self) -> Self {
+        self.require_checksum = true;
+        self
+    }
+
     #[must_use]
     pub fn new(
         source: impl Into<DownloadSource>,
@@ -128,6 +174,7 @@ impl FetchRequest {
             destination_path: destination_path.into(),
             destination_path_expanded: None,
             expected_sha256: None,
+            require_checksum: checksum_required_by_policy(),
             archive_format: ArchiveFormat::Auto,
             wait_mode: WaitMode::Block,
             dry_run: false,

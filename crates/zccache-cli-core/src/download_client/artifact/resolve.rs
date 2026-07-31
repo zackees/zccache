@@ -11,6 +11,7 @@ pub(super) struct ResolvedFetchRequest {
     pub(super) cache_path: NormalizedPath,
     pub(super) expanded_path: Option<NormalizedPath>,
     pub(super) expected_sha256: Option<String>,
+    pub(super) require_checksum: bool,
     pub(super) archive_format: ArchiveFormat,
     pub(super) wait_mode: WaitMode,
     pub(super) dry_run: bool,
@@ -28,6 +29,7 @@ pub(super) fn resolve_request(request: &FetchRequest) -> Result<ResolvedFetchReq
             .map(|p| normalize_target(p, true))
             .transpose()?,
         expected_sha256: request.expected_sha256.clone().map(normalize_sha256),
+        require_checksum: request.require_checksum,
         archive_format: request.archive_format,
         wait_mode: request.wait_mode,
         dry_run: request.dry_run,
@@ -48,6 +50,7 @@ pub(super) fn resolve_request_no_create(
             .map(|p| normalize_target(p, false))
             .transpose()?,
         expected_sha256: request.expected_sha256.clone().map(normalize_sha256),
+        require_checksum: request.require_checksum,
         archive_format: request.archive_format,
         wait_mode: request.wait_mode,
         dry_run: request.dry_run,

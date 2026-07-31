@@ -89,11 +89,14 @@ pub(super) fn artifact_matches_request(
     request: &ResolvedFetchRequest,
     fingerprint: &ArtifactFingerprint,
 ) -> bool {
-    request
-        .expected_sha256
-        .as_ref()
-        .map(|expected_sha256| fingerprint.sha256 == *expected_sha256)
-        .unwrap_or(true)
+    match request.expected_sha256.as_ref() {
+        Some(expected_sha256) => fingerprint.sha256 == *expected_sha256,
+        // #1172: `unwrap_or(true)` meant "no checksum supplied" and "checksum
+        // matched" were the same answer, so a caller could not tell an
+        // unverified artifact from a verified one. When the caller asked for
+        // verification, absence is a failure, not a pass.
+        None => !request.require_checksum,
+    }
 }
 
 pub(super) fn validate_artifact(
@@ -103,6 +106,17 @@ pub(super) fn validate_artifact(
         return Err(format!(
             "downloaded artifact missing at {}",
             request.cache_path.display()
+        ));
+    }
+    // #1172: refuse before hashing. A required-but-absent checksum is a
+    // configuration failure, and reporting it as such is more useful than
+    // silently validating nothing.
+    if request.require_checksum && request.expected_sha256.is_none() {
+        return Err(format!(
+            "refusing to accept {}: no expected sha256 was supplied and checksum \
+             verification is required (set one on the request, or unset {})",
+            request.cache_path.display(),
+            super::REQUIRE_CHECKSUM_ENV,
         ));
     }
     let fingerprint =
@@ -126,5 +140,91 @@ pub(super) fn cleanup_invalid_fetch_state(request: &ResolvedFetchRequest) {
     if let Some(expanded_path) = &request.expanded_path {
         let _ = remove_path_if_exists(expanded_path);
         let _ = remove_path_if_exists(&expanded_marker_path(expanded_path));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::download_client::artifact::{
+        checksum_required_by_policy_with, FetchRequest, REQUIRE_CHECKSUM_ENV,
+    };
+
+    fn fingerprint(sha256: &str) -> ArtifactFingerprint {
+        ArtifactFingerprint {
+            bytes: 1,
+            sha256: sha256.to_string(),
+        }
+    }
+
+    fn resolved(expected: Option<&str>, require: bool) -> ResolvedFetchRequest {
+        let mut request = FetchRequest::new("https://example.invalid/a.tar", "/tmp/a.tar");
+        request.expected_sha256 = expected.map(str::to_string);
+        request.require_checksum = require;
+        super::super::resolve::resolve_request_no_create(&request).expect("resolve")
+    }
+
+    /// #1172: `unwrap_or(true)` made "no checksum supplied" and "checksum
+    /// matched" the same answer, so a caller could not tell an unverified
+    /// artifact from a verified one. When verification was asked for, absence
+    /// must be a failure.
+    #[test]
+    fn a_missing_checksum_does_not_pass_as_a_match_when_verification_is_required() {
+        let any = fingerprint("aa");
+        assert!(
+            artifact_matches_request(&resolved(None, false), &any),
+            "without the requirement, today's permissive behaviour is preserved"
+        );
+        assert!(
+            !artifact_matches_request(&resolved(None, true), &any),
+            "with the requirement, an unverified artifact must not match"
+        );
+    }
+
+    #[test]
+    fn a_supplied_checksum_is_still_compared_normally() {
+        assert!(artifact_matches_request(
+            &resolved(Some("aa"), true),
+            &fingerprint("aa")
+        ));
+        assert!(!artifact_matches_request(
+            &resolved(Some("aa"), true),
+            &fingerprint("bb")
+        ));
+    }
+
+    /// The error has to name the knob, or an operator who turned the policy on
+    /// fleet-wide gets a failure they cannot act on.
+    #[test]
+    fn requiring_a_checksum_without_supplying_one_is_a_named_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.tar");
+        std::fs::write(&path, b"payload").unwrap();
+
+        let mut request = FetchRequest::new("https://example.invalid/a.tar", path.clone());
+        request.require_checksum = true;
+        let resolved = super::super::resolve::resolve_request_no_create(&request).expect("resolve");
+
+        let error = validate_artifact(&resolved).expect_err("must refuse");
+        assert!(
+            error.contains(REQUIRE_CHECKSUM_ENV),
+            "the refusal must name the policy knob: {error}"
+        );
+    }
+
+    #[test]
+    fn the_policy_env_var_is_off_by_default_and_accepts_falsey_values() {
+        assert!(!checksum_required_by_policy_with(|_| None));
+        assert!(!checksum_required_by_policy_with(|_| Some("0".to_string())));
+        assert!(!checksum_required_by_policy_with(|_| Some(
+            "false".to_string()
+        )));
+        assert!(!checksum_required_by_policy_with(|_| Some(
+            "  ".to_string()
+        )));
+        assert!(checksum_required_by_policy_with(|_| Some("1".to_string())));
+        assert!(checksum_required_by_policy_with(|_| Some(
+            "yes".to_string()
+        )));
     }
 }
