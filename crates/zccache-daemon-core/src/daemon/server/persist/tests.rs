@@ -167,6 +167,14 @@ fn batch_floor_freshens_materialized_outputs_without_floor_paths() {
     // preserves that old mtime, Cargo records stale output mtimes and the
     // next no-op build recompiles the graph. The batch materializer uses
     // one fresh floor for all outputs from that hit.
+    //
+    // NOTE (#1158): this assertion is in direct tension with CLAUDE.md's
+    // "never stamp now() on cache hits" rule, which cites iter7's opposite
+    // measurement. Both are measured; neither has been re-run on a quiet box.
+    // Do not relax this test to satisfy that rule without the A/B in #1158 —
+    // #599's regression was 14× on "warm (target intact)", the dominant
+    // dev-inner-loop scenario, and iter7's was sub-second. See the comment at
+    // the `batch_floor` call site in `write_cached.rs`.
     let dir = tempfile::tempdir().unwrap();
     let cache = dir.path().join("cache/libcrate-cache.rlib");
     std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
