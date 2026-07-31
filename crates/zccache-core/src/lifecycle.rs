@@ -73,6 +73,7 @@
 //! | `native_flag_host_salted` | daemon | a `native` CPU-selection flag made the compile key host-specific | `compiler_family` |
 //! | `time_macro_noncacheable` | daemon | a C/C++ time macro bypassed the compile cache | `source`, `input`, `macro_name` |
 //! | `system_include_discovery_empty` | daemon | a C/C++ include probe returned no paths, so its compile bypassed the cache | `compiler`, `reason` |
+//! | `index_writer_gone` (#1177) | daemon | an index insert could not be handed to the index writer; published artifacts are no longer durably recorded | `artifact_key`, `consequence` |
 //! | `background_task_died` (#1177) | daemon | a supervised background loop stopped unexpectedly; periodic work it owned has stopped happening | `task`, `reason`, `restarts`, `restartable` |
 //! | `background_task_restarted` (#1177) | daemon | a supervised background loop was brought back after an unexpected stop | `task`, `restarts` |
 //! | `watcher_degraded` | daemon | the file watcher could not be armed, disabling both fast hit tiers | `reason`, `degradations` |
@@ -228,6 +229,14 @@ pub const EVENT_COW_BLOB_CORRUPTION_DETECTED: &str = "cow_blob_corruption_detect
 pub const EVENT_NATIVE_FLAG_HOST_SALTED: &str = "native_flag_host_salted";
 pub const EVENT_TIME_MACRO_NONCACHEABLE: &str = "time_macro_noncacheable";
 pub const EVENT_SYSTEM_INCLUDE_DISCOVERY_EMPTY: &str = "system_include_discovery_empty";
+/// The index-writer task is gone, so published artifacts are no longer being
+/// recorded durably (#1177).
+///
+/// The cache is effectively write-only from this point: every artifact it
+/// publishes is invisible to the next daemon start. Emitted once per daemon —
+/// the condition is permanent, so an event per compile would turn one fault
+/// into an unbounded log.
+pub const EVENT_INDEX_WRITER_GONE: &str = "index_writer_gone";
 /// A supervised background loop stopped unexpectedly (#1177).
 ///
 /// Every periodic task used to be a bare `tokio::spawn` with a dropped
@@ -291,6 +300,7 @@ pub const EVENT_ALL: &[&str] = &[
     EVENT_NATIVE_FLAG_HOST_SALTED,
     EVENT_TIME_MACRO_NONCACHEABLE,
     EVENT_SYSTEM_INCLUDE_DISCOVERY_EMPTY,
+    EVENT_INDEX_WRITER_GONE,
     EVENT_BACKGROUND_TASK_DIED,
     EVENT_BACKGROUND_TASK_RESTARTED,
     EVENT_WATCHER_DEGRADED,

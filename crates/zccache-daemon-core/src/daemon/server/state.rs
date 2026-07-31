@@ -526,6 +526,10 @@ pub(super) struct SharedState {
     /// instead of consuming the public shutdown Notify, so legacy
     /// `shutdown_handle().notify_one()` callers still wake the accept loop.
     pub(super) shutdown_requested: AtomicBool,
+    /// Latched when an index-writer send fails, i.e. the writer task is gone
+    /// (#1177). The condition is permanent — the receiver does not come back —
+    /// so this bounds the report to one per daemon instead of one per compile.
+    pub(super) index_writer_gone: AtomicBool,
     /// Fingerprint manager: tracks per-watch dirty state for `zccache fp` commands.
     pub(super) fingerprint: FingerprintManager,
     /// Whether the in-memory dep graph is backed by a persisted snapshot.
