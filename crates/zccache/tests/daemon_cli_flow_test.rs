@@ -57,13 +57,29 @@ fn parse_session_id_from_json(json: &str) -> String {
     rest[..end].trim().trim_matches('"').to_string()
 }
 
-async fn start_daemon() -> (
+/// Start a daemon rooted at an isolated cache directory under `cache_root`.
+///
+/// `DaemonServer::bind` resolves the *process-global* cache root, so every
+/// test using it contends with whatever daemon is already live on the
+/// developer's (or runner's) default root — failing with "another live daemon
+/// already holds this cache root as its writer", or, if it wins the race,
+/// writing its logs somewhere the test does not look. `lifecycle.rs` says so
+/// directly: everything outside the env guard "should bind an isolated root
+/// ... which needs no global state at all and therefore cannot participate in
+/// the race".
+///
+/// The caller already owns a tempdir, so rooting the daemon in it costs
+/// nothing and makes the test independent of ambient machine state.
+async fn start_daemon(
+    cache_root: &std::path::Path,
+) -> (
     String,
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
 ) {
     let endpoint = zccache::ipc::unique_test_endpoint();
-    let mut server = DaemonServer::bind(&endpoint).unwrap();
+    let cache_dir: zccache::core::NormalizedPath = cache_root.join("zccache-cache").into();
+    let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
         server.run(0).await.unwrap();
@@ -90,7 +106,7 @@ async fn cli_binary_session_round_trip() {
 
         std::fs::write(&src, "int main() { return 0; }\n").unwrap();
 
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let (endpoint, server_handle, shutdown) = start_daemon(tmp.path()).await;
 
         assert!(
             cli_binary.exists(),
@@ -199,7 +215,7 @@ async fn cli_binary_ephemeral_session() {
 
         std::fs::write(&src, "int main() { return 0; }\n").unwrap();
 
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let (endpoint, server_handle, shutdown) = start_daemon(tmp.path()).await;
 
         let clang_str = clang.to_string_lossy().into_owned();
         let src_str = src.to_string_lossy().into_owned();
@@ -285,7 +301,7 @@ async fn cli_binary_compiler_override_cpp_session_c_file() {
         )
         .unwrap();
 
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let (endpoint, server_handle, shutdown) = start_daemon(tmp.path()).await;
 
         // Start session (compiler-agnostic now)
         let output = std::process::Command::new(&cli_binary)
