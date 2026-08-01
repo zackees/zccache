@@ -189,14 +189,24 @@ pub fn request_to_prost(request: &crate::Request, request_id: &str) -> zccache_v
                 path: Some(path_to_prost(path)),
             })
         }
-        // Issue #838: ExecProbe / ExecStore are bincode-only in slice 1.
-        // The prost wire lane will gain proto definitions in a follow-up
-        // PR once a wheel consumer needs cross-protocol routing. For now,
-        // route a placeholder that the daemon's prost handler rejects;
-        // any in-process bincode path is unaffected.
-        crate::Request::ExecProbe { .. } | crate::Request::ExecStore { .. } => {
-            Body::Ping(zccache_v1::Empty {})
-        }
+        crate::Request::ExecProbe {
+            name,
+            input_files,
+            input_env,
+            input_extra,
+        } => Body::ExecProbe(zccache_v1::ExecProbe {
+            name: name.clone(),
+            input_files: paths_to_prost(input_files),
+            input_env: env_pairs_to_prost(input_env),
+            input_extra: input_extra.as_ref().clone(),
+        }),
+        crate::Request::ExecStore {
+            cache_key_hex,
+            result_bytes,
+        } => Body::ExecStore(zccache_v1::ExecStore {
+            cache_key_hex: cache_key_hex.clone(),
+            result_bytes: result_bytes.as_ref().clone(),
+        }),
     };
 
     zccache_v1::Request {
@@ -340,6 +350,16 @@ pub fn request_from_prost(request: zccache_v1::Request) -> Result<crate::Request
                 release.path,
                 "ReleaseWorktreeHandles.path",
             )?),
+        }),
+        Some(Body::ExecProbe(probe)) => Ok(crate::Request::ExecProbe {
+            name: probe.name,
+            input_files: paths_from_prost(probe.input_files),
+            input_env: env_pairs_from_prost(probe.input_env),
+            input_extra: std::sync::Arc::new(probe.input_extra),
+        }),
+        Some(Body::ExecStore(store)) => Ok(crate::Request::ExecStore {
+            cache_key_hex: store.cache_key_hex,
+            result_bytes: std::sync::Arc::new(store.result_bytes),
         }),
         None => Err("v16 prost request is missing its request body".to_string()),
     }
