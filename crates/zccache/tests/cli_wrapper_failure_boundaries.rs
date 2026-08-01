@@ -58,6 +58,24 @@ fn run_wrapper(
         .env("ZCCACHE_CACHE_DIR", cache_dir)
         .env("ZCCACHE_NO_SPAWN", "1")
         .env("ZCCACHE_DAEMON_WIRE", "bincode")
+        // These tests assert that the refusal contract holds. They must not
+        // inherit the sanctioned bypasses they exist to contrast against:
+        // `ZCCACHE_DISABLE` and `ZCCACHE_PROBE_BYPASS` both passthrough-exec
+        // the tool *before* any endpoint resolution, so an inherited one turns
+        // "refused with 125" into "ran the tool and mirrored its exit code"
+        // with no assertion able to tell the difference.
+        //
+        // This is not hypothetical: the CI step added for #1317 set
+        // `ZCCACHE_DISABLE=1` for journal hygiene, and both tests failed with
+        // `left: Some(7)` — the shim's own code. Reproduced on Windows by
+        // exporting the same variable, so it was never platform-specific.
+        //
+        // `ZCCACHE_ENDPOINT` is removed too: `resolve_endpoint` honours it
+        // *ahead of* the cache dir, so an inherited value would silently point
+        // these tests at a real daemon and defeat the tempdir isolation.
+        .env_remove("ZCCACHE_DISABLE")
+        .env_remove("ZCCACHE_PROBE_BYPASS")
+        .env_remove("ZCCACHE_ENDPOINT")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -254,6 +272,18 @@ fn session_pre_dispatch_failure_refuses_without_double_reading_stdin() {
         "the session route must reach the same hard error as the ephemeral one"
     );
     assert_tool_never_ran(&output);
+    // #1317: the name promised a stdin property nothing checked — the
+    // distinctive payload was passed in and then ignored. The refusal path
+    // never replays stdin, so the marker must not surface on either stream;
+    // a wrapper that echoed or re-emitted what it slurped would show it here.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for (stream, text) in [("stdout", &stdout), ("stderr", &stderr)] {
+        assert!(
+            !text.contains("must-not-double-read"),
+            "refusal must not replay the stdin payload; {stream} carried it: {text}"
+        );
+    }
     assert_one_refusal(
         cache_dir.path(),
         "session_pre_dispatch_failure_refuses_without_double_reading_stdin",

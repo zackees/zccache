@@ -144,6 +144,30 @@ jobs:
           if [[ -d "$journal_root" ]]; then
             find "$journal_root" -type f -path '*/logs/*.jsonl' -print -delete
           fi
+      - name: Wrapper daemon-unavailable contract (exit 125)
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/integration
+          # Deliberately NO `ZCCACHE_DISABLE` here. The adjacent
+          # artifact-layout step sets it for journal hygiene, and copying that
+          # across is what made the first version of this step fail: the
+          # wrapper honours the bypass before any endpoint resolution, so both
+          # tests ran the tool and mirrored its exit code (7) instead of
+          # refusing with 125. A step that verifies "no silent bypass exists"
+          # must not set the bypass. The tests now also strip it themselves.
+        run: |
+          # #1317: these are #[ignore]d (they launch the wrapper binary), and
+          # the main run above does not pass --ignored, so the exit-125
+          # daemon-unavailable contract documented in CLAUDE.md was verified
+          # nowhere. They are the only end-to-end coverage of it: real binary,
+          # real exit code, the `zccache[err][D]:` stderr, exactly one durable
+          # `wrapper-daemon-unavailable` event, and no local-fallback event.
+          #
+          # Kept as its own step rather than folded into the main run so a
+          # failure here is legible on sight instead of buried in a
+          # workspace-wide log.
+          unset ZCCACHE_CACHE_DIR
+          soldr cargo test -p zccache --features "$ZCCACHE_INTEGRATION_FEATURES" --test cli_wrapper_failure_boundaries -- --ignored --test-threads=1
       - name: Strict artifact-layout validation
         shell: bash
         env:
