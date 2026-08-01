@@ -153,3 +153,28 @@ same-sweep re-plan, and selects replacement candidates until it reaches the
 headroom target or only protected metadata remains. Also settle orphaned
 journal rows explicitly: a gentle metadata deletion can otherwise leave memory
 debt after the metadata entry itself is gone.
+
+## Never validate a soldr command with a `^error`-anchored grep
+
+Local `clippy --all-targets -- -D warnings` reported clean; CI then failed the
+integration leg on `unused_must_use` in a test I had just edited. The lint was
+in the local output the whole time. `soldr` prefixes every line with a timing
+column (`   88.69 error: ...`) and emits ANSI colour, so an anchored
+`grep -E "^(error|warning)"` matches nothing and a clean-looking filter is
+indistinguishable from a clean build.
+
+Judge a build by its **exit code**, not by a line filter:
+
+```sh
+soldr cargo clippy -p <crate> --all-targets -- -D warnings >/tmp/out.txt 2>&1
+echo "exit=$?  diagnostics=$(grep -cE 'warning:|error(\[|:)' /tmp/out.txt)"
+```
+
+Two independent signals, neither anchored. Also export `RUSTFLAGS="-D warnings"`
+to match CI: rustc lints like `unused_must_use` are denied there, and passing
+`-- -D warnings` to clippy alone does not reproduce the same gate.
+
+This was already recorded in memory as "Validating soldr output on Windows" and
+I still repeated it, which is the actual lesson: the failure mode is silent and
+looks exactly like success, so the filter has to be structurally incapable of
+lying rather than merely correct on the day it was written.

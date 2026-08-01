@@ -24,7 +24,8 @@
 
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use zccache_core::NormalizedPath;
 
 /// The staged-v2 store directory name, relative to the artifact dir.
 pub const STAGED_ROOT: &str = ".staged-v2";
@@ -33,8 +34,8 @@ pub const STAGED_ROOT: &str = ".staged-v2";
 pub const STORE_LOCK: &str = ".store.lock";
 
 /// `<artifact_dir>/.staged-v2`.
-pub fn staged_root(artifact_dir: &Path) -> PathBuf {
-    artifact_dir.join(STAGED_ROOT)
+pub fn staged_root(artifact_dir: &Path) -> NormalizedPath {
+    artifact_dir.join(STAGED_ROOT).into()
 }
 
 /// Whether `metadata` describes a symlink (unix) or any reparse point
@@ -119,7 +120,7 @@ impl StagedReadGuard {
     /// this variant will materialize an empty `.staged-v2` directory in a cache
     /// that has never staged anything.
     pub fn acquire(artifact_dir: &Path) -> io::Result<Self> {
-        let store_lock = open_store_lock(&staged_root(artifact_dir))?;
+        let store_lock = open_store_lock(staged_root(artifact_dir).as_path())?;
         fs2::FileExt::lock_shared(&store_lock)?;
         Ok(Self {
             _store_lock: store_lock,
@@ -133,7 +134,7 @@ impl StagedReadGuard {
     /// the caller — the unlocked path is safe rather than merely tolerated.
     pub fn acquire_if_present(artifact_dir: &Path) -> io::Result<Option<Self>> {
         let root = staged_root(artifact_dir);
-        if !validate_staged_root_path(&root)? {
+        if !validate_staged_root_path(root.as_path())? {
             return Ok(None);
         }
         Self::acquire(artifact_dir).map(Some)
@@ -152,7 +153,7 @@ mod tests {
 
         assert!(guard.is_none(), "absent staged root must not take a lock");
         assert!(
-            !staged_root(dir.path()).exists(),
+            !staged_root(dir.path()).as_path().exists(),
             "a read-only probe must not create the staged root"
         );
     }
@@ -160,7 +161,7 @@ mod tests {
     #[test]
     fn an_existing_staged_root_yields_a_guard() {
         let dir = tempfile::tempdir().unwrap();
-        fs::create_dir_all(staged_root(dir.path())).unwrap();
+        fs::create_dir_all(staged_root(dir.path()).as_path()).unwrap();
 
         let guard = StagedReadGuard::acquire_if_present(dir.path()).unwrap();
 
@@ -172,7 +173,7 @@ mod tests {
     #[test]
     fn two_readers_hold_the_lock_at_once() {
         let dir = tempfile::tempdir().unwrap();
-        fs::create_dir_all(staged_root(dir.path())).unwrap();
+        fs::create_dir_all(staged_root(dir.path()).as_path()).unwrap();
 
         let first = StagedReadGuard::acquire(dir.path()).unwrap();
         let second = StagedReadGuard::acquire(dir.path()).unwrap();
@@ -188,9 +189,9 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let root = staged_root(dir.path());
-        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(root.as_path()).unwrap();
 
-        let exclusive = open_store_lock(&root).unwrap();
+        let exclusive = open_store_lock(root.as_path()).unwrap();
         fs2::FileExt::lock_exclusive(&exclusive).unwrap();
 
         let (tx, rx) = mpsc::channel();

@@ -312,7 +312,7 @@ fn warm_waits_for_the_staged_store_lock_before_materializing() {
 
     // Stand in for daemon maintenance holding the store exclusively.
     let staged = zccache_artifact::staged_lock::staged_root(&artifact_dir);
-    let gc_lock = zccache_artifact::staged_lock::open_store_lock(&staged).unwrap();
+    let gc_lock = zccache_artifact::staged_lock::open_store_lock(staged.as_path()).unwrap();
     fs2::FileExt::lock_exclusive(&gc_lock).unwrap();
 
     // The outcome travels through the channel, not just a unit tick, so that an

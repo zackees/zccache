@@ -1,24 +1,16 @@
 //! Exact-root validation and safe link/reparse removal for staged artifacts.
 
-use crate::core::NormalizedPath;
-use std::fs::{self, File};
+use std::fs;
 use std::io;
 use std::path::Path;
 
-// Root naming, root validation and lock-file opening are delegated to
-// `zccache-artifact` so the daemon and the in-process `zccache warm` command
-// contend on one lock. See `zccache_artifact::staged_lock`.
+// Root naming, root validation and lock-file opening are re-exported from
+// `zccache-artifact` rather than reimplemented here, so the daemon and the
+// in-process `zccache warm` command provably contend on one lock file.
+// See `zccache_artifact::staged_lock`.
 pub(super) use zccache_artifact::staged_lock::{
-    is_staged_link_or_reparse, validate_staged_root_path,
+    is_staged_link_or_reparse, open_store_lock, staged_root, validate_staged_root_path,
 };
-
-pub(super) fn staged_root(artifact_dir: &Path) -> NormalizedPath {
-    zccache_artifact::staged_lock::staged_root(artifact_dir).into()
-}
-
-pub(super) fn open_store_lock(root: &Path) -> io::Result<File> {
-    zccache_artifact::staged_lock::open_store_lock(root)
-}
 
 #[cfg(windows)]
 pub(super) fn remove_staged_link_or_reparse(
