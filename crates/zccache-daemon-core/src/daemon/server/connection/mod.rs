@@ -16,6 +16,8 @@ use crate::protocol::{
 
 mod attribution;
 mod dispatch;
+#[cfg(test)]
+mod tests;
 
 #[cfg(test)]
 pub(in crate::daemon::server) use attribution::redacted_args_preview;
@@ -125,7 +127,14 @@ where
 
 /// Resolve the heartbeat interval, or `None` when heartbeats are disabled.
 fn compile_progress_interval() -> Option<std::time::Duration> {
-    let Some(raw) = std::env::var(COMPILE_PROGRESS_INTERVAL_ENV).ok() else {
+    compile_progress_interval_from(std::env::var(COMPILE_PROGRESS_INTERVAL_ENV).ok().as_deref())
+}
+
+/// The env-var parse, taking the raw value rather than reading the process
+/// environment, so it is testable without mutating global state that every
+/// other test in this binary shares.
+fn compile_progress_interval_from(raw: Option<&str>) -> Option<std::time::Duration> {
+    let Some(raw) = raw else {
         return Some(COMPILE_PROGRESS_INTERVAL);
     };
     match raw.trim().parse::<u64>() {
@@ -182,7 +191,32 @@ async fn guarded_dispatch_with_progress<F>(
 where
     F: std::future::Future<Output = (Response, Option<PendingJournalContext>)>,
 {
-    let Some(interval) = compile_progress_interval() else {
+    guarded_dispatch_with_progress_every(
+        compile_progress_interval(),
+        conn,
+        response_wire,
+        state,
+        handler,
+    )
+    .await
+}
+
+/// [`guarded_dispatch_with_progress`] with the cadence supplied by the caller.
+///
+/// Split out so a test can drive the heartbeat loop on a millisecond cadence
+/// without setting a process-global env var that every other test in this
+/// binary would race against.
+async fn guarded_dispatch_with_progress_every<F>(
+    interval: Option<std::time::Duration>,
+    conn: &mut IpcConnection,
+    response_wire: &ResponseWire,
+    state: &SharedState,
+    handler: F,
+) -> Option<(Response, Option<PendingJournalContext>)>
+where
+    F: std::future::Future<Output = (Response, Option<PendingJournalContext>)>,
+{
+    let Some(interval) = interval else {
         return guarded_dispatch(conn, handler).await;
     };
     let slot = Arc::new(super::compile_progress::CompileProgressSlot::default());
