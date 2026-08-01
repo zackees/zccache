@@ -254,6 +254,18 @@ fn session_pre_dispatch_failure_refuses_without_double_reading_stdin() {
         "the session route must reach the same hard error as the ephemeral one"
     );
     assert_tool_never_ran(&output);
+    // #1317: the name promised a stdin property nothing checked — the
+    // distinctive payload was passed in and then ignored. The refusal path
+    // never replays stdin, so the marker must not surface on either stream;
+    // a wrapper that echoed or re-emitted what it slurped would show it here.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for (stream, text) in [("stdout", &stdout), ("stderr", &stderr)] {
+        assert!(
+            !text.contains("must-not-double-read"),
+            "refusal must not replay the stdin payload; {stream} carried it: {text}"
+        );
+    }
     assert_one_refusal(
         cache_dir.path(),
         "session_pre_dispatch_failure_refuses_without_double_reading_stdin",
