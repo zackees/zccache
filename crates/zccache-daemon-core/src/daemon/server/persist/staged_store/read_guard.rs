@@ -97,9 +97,25 @@ impl StagedMaterializationGuard {
 fn acquire_staged_materialization_guard(
     artifact_dir: &Path,
 ) -> io::Result<StagedMaterializationGuard> {
+    acquire_staged_materialization_guard_from(artifact_dir, Instant::now())
+}
+
+/// Acquire the shared read lock, attributing everything since `wait_started`
+/// to the wait.
+///
+/// #1215: the timer used to start *after* `staged_root` and `open_store_lock`,
+/// so `HitStoreLockWait` reported only the `lock_shared` call. Opening the lock
+/// file is a real filesystem operation on every staged hit, and the caller's
+/// pointer probe is another — excluding both meant the telemetry could not
+/// account for guard-acquisition cost, which is exactly what it exists to
+/// attribute. Callers that probe first pass their own start instant so their
+/// probe lands inside the window.
+fn acquire_staged_materialization_guard_from(
+    artifact_dir: &Path,
+    wait_started: Instant,
+) -> io::Result<StagedMaterializationGuard> {
     let root = staged_root(artifact_dir);
     let store_lock = open_store_lock(&root)?;
-    let wait_started = Instant::now();
     fs2::FileExt::lock_shared(&store_lock)?;
     let wait_ns = wait_started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
     Ok(StagedMaterializationGuard {
@@ -117,6 +133,9 @@ pub(in crate::daemon::server) fn acquire_staged_materialization_guard_if_present
     artifact_dir: &Path,
     key_hex: &str,
 ) -> io::Result<Option<StagedMaterializationGuard>> {
+    // Start before the pointer probe (#1215): `symlink_metadata` is a stat on
+    // every staged hit and belongs to acquisition cost, not to free time.
+    let wait_started = Instant::now();
     validate_key(key_hex)?;
     let pointer = pointer_path(artifact_dir, key_hex);
     match fs::symlink_metadata(&pointer) {
@@ -127,7 +146,7 @@ pub(in crate::daemon::server) fn acquire_staged_materialization_guard_if_present
                 pointer.display()
             ),
         )),
-        Ok(_) => acquire_staged_materialization_guard(artifact_dir).map(Some),
+        Ok(_) => acquire_staged_materialization_guard_from(artifact_dir, wait_started).map(Some),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
@@ -137,4 +156,25 @@ pub(in crate::daemon::server) fn acquire_staged_materialization_guard_for_cached
     artifact_dir: &Path,
 ) -> io::Result<StagedMaterializationGuard> {
     acquire_staged_materialization_guard(artifact_dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// The `_if_present` path starts its timer before the pointer probe, so a
+    /// key with no staged pointer costs a stat and reports no guard at all.
+    #[test]
+    fn a_key_without_a_staged_pointer_acquires_no_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(staged_root(dir.path())).unwrap();
+
+        let guard =
+            acquire_staged_materialization_guard_if_present(dir.path(), &"a".repeat(64)).unwrap();
+
+        assert!(
+            guard.is_none(),
+            "no staged pointer means no lock is taken; callers resolve with \
+             staged lookup disabled for that attempt"
+        );
+    }
 }
