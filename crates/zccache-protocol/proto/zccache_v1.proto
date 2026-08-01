@@ -40,6 +40,8 @@ message Request {
     Empty list_rust_artifacts = 17;
     GenericToolExec generic_tool_exec = 18;
     ReleaseWorktreeHandles release_worktree_handles = 19;
+    ExecProbe exec_probe = 20;
+    ExecStore exec_store = 21;
   }
   string request_id = 100;
 }
@@ -65,6 +67,8 @@ message Response {
     Backpressure backpressure = 17;
     ReleaseWorktreeHandlesResult release_worktree_handles_result = 18;
     CompileProgress compile_progress = 19;
+    ExecProbeResult exec_probe_result = 20;
+    ExecStoreAck exec_store_ack = 21;
   }
   string request_id = 100;
 }
@@ -406,4 +410,30 @@ message ReleaseWorktreeHandlesResult {
   uint32 released = 2;
   repeated string sessions_dropped = 3;
   repeated Path unreleased = 4;
+}
+
+// Issue #838 / #840: caller-owned-tool exec cache. Where GenericToolExec
+// ships the command to the daemon, ExecProbe keeps the runner with the
+// caller and asks the daemon only for key derivation + lookup.
+message ExecProbe {
+  string name = 1;
+  repeated Path input_files = 2;
+  repeated EnvVar input_env = 3;
+  bytes input_extra = 4;
+}
+
+message ExecStore {
+  string cache_key_hex = 1;
+  bytes result_bytes = 2;
+}
+
+message ExecProbeResult {
+  string cache_key_hex = 1;
+  // Absent on miss. `optional` is load-bearing: an empty cached result is a
+  // legitimate hit, so it must stay distinguishable from "not cached".
+  optional bytes cached_bytes = 2;
+}
+
+message ExecStoreAck {
+  bool stored = 1;
 }

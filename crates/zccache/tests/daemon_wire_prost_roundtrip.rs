@@ -617,3 +617,201 @@ mod full_family {
         assert!(supported_control_response_from_prost(prost).is_err());
     }
 }
+
+// ── Exhaustiveness trip-wire (issue #840) ──────────────────────────────
+//
+// Why this exists: `ExecProbe`/`ExecStore` were added to the enum and to
+// the bincode lane, but their prost arms were left as `Body::Ping` /
+// `Body::Pong` stubs. Nothing failed. Every test in `full_family` above is
+// a hand-written per-variant `#[test]`, so a new variant simply had no
+// test and compiled green — while `request_to_prost` silently encoded an
+// ExecProbe as a bare Ping, which `request_from_prost` then decoded back
+// as `Request::Ping`. Payload discarded, no error, indistinguishable from
+// a legitimate keepalive.
+//
+// The bincode lane did not have this hole because
+// `messages/compat/variant_indices.rs` pins every variant in one list, so
+// an omission is visible there. This module gives the prost lane a match
+// that stops compiling when a variant is added.
+
+mod exhaustive_prost_coverage {
+    use std::sync::Arc;
+    use zccache::protocol::wire_prost::{
+        default_request_id, request_from_prost, request_to_prost, response_from_prost,
+        response_to_prost,
+    };
+    use zccache::protocol::{Request, Response};
+
+    /// Name every `Request` variant.
+    ///
+    /// This match is deliberately exhaustive with no `_` arm: adding a
+    /// variant to `Request` makes this fail to compile. When that happens,
+    /// add the variant here and give it a prost roundtrip test — the
+    /// roundtrip assertion is what proves the prost arms are real rather
+    /// than stubs.
+    fn request_variant_name(request: &Request) -> &'static str {
+        match request {
+            Request::Ping => "Ping",
+            Request::Shutdown => "Shutdown",
+            Request::Status => "Status",
+            Request::Clear => "Clear",
+            Request::Lookup { .. } => "Lookup",
+            Request::Store { .. } => "Store",
+            Request::SessionStart { .. } => "SessionStart",
+            Request::Compile { .. } => "Compile",
+            Request::SessionEnd { .. } => "SessionEnd",
+            Request::CompileEphemeral { .. } => "CompileEphemeral",
+            Request::LinkEphemeral { .. } => "LinkEphemeral",
+            Request::SessionStats { .. } => "SessionStats",
+            Request::FingerprintCheck { .. } => "FingerprintCheck",
+            Request::FingerprintMarkSuccess { .. } => "FingerprintMarkSuccess",
+            Request::FingerprintMarkFailure { .. } => "FingerprintMarkFailure",
+            Request::FingerprintInvalidate { .. } => "FingerprintInvalidate",
+            Request::ListRustArtifacts => "ListRustArtifacts",
+            Request::GenericToolExec { .. } => "GenericToolExec",
+            Request::ReleaseWorktreeHandles { .. } => "ReleaseWorktreeHandles",
+            Request::ExecProbe { .. } => "ExecProbe",
+            Request::ExecStore { .. } => "ExecStore",
+        }
+    }
+
+    /// Name every `Response` variant. Same contract as above.
+    fn response_variant_name(response: &Response) -> &'static str {
+        match response {
+            Response::Pong => "Pong",
+            Response::ShuttingDown => "ShuttingDown",
+            Response::Status { .. } => "Status",
+            Response::LookupResult { .. } => "LookupResult",
+            Response::StoreResult { .. } => "StoreResult",
+            Response::SessionStarted { .. } => "SessionStarted",
+            Response::CompileResult { .. } => "CompileResult",
+            Response::SessionEnded { .. } => "SessionEnded",
+            Response::LinkResult { .. } => "LinkResult",
+            Response::Error { .. } => "Error",
+            Response::Cleared { .. } => "Cleared",
+            Response::SessionStatsResult { .. } => "SessionStatsResult",
+            Response::FingerprintCheckResult { .. } => "FingerprintCheckResult",
+            Response::FingerprintAck => "FingerprintAck",
+            Response::RustArtifactList { .. } => "RustArtifactList",
+            Response::GenericToolExecResult { .. } => "GenericToolExecResult",
+            Response::Backpressure { .. } => "Backpressure",
+            Response::ReleaseWorktreeHandlesResult { .. } => "ReleaseWorktreeHandlesResult",
+            Response::CompileProgress { .. } => "CompileProgress",
+            Response::ExecProbeResult { .. } => "ExecProbeResult",
+            Response::ExecStoreAck { .. } => "ExecStoreAck",
+        }
+    }
+
+    /// The exec variants, with payloads a stub cannot fake.
+    ///
+    /// Every field is non-default: a `Body::Ping` stub loses all of them,
+    /// so roundtrip equality fails loudly instead of comparing empty
+    /// strings to empty strings.
+    fn exec_requests() -> Vec<Request> {
+        vec![
+            Request::ExecProbe {
+                name: "noexcept_ast".to_string(),
+                input_files: vec!["src/foo.cpp".into(), "ci/rules.json".into()],
+                input_env: vec![
+                    ("LINT_VERSION".to_string(), "1.2.3".to_string()),
+                    ("PATH".to_string(), "/usr/bin".to_string()),
+                ],
+                input_extra: Arc::new(b"schema-v1".to_vec()),
+            },
+            // The all-empty probe: a distinct wire shape, and the one case
+            // a Ping stub would accidentally satisfy.
+            Request::ExecProbe {
+                name: String::new(),
+                input_files: vec![],
+                input_env: vec![],
+                input_extra: Arc::new(Vec::new()),
+            },
+            Request::ExecStore {
+                cache_key_hex: "0123456789abcdef".repeat(4),
+                result_bytes: Arc::new(b"opaque-result-bytes".to_vec()),
+            },
+        ]
+    }
+
+    fn exec_responses() -> Vec<Response> {
+        vec![
+            Response::ExecProbeResult {
+                cache_key_hex: "a".repeat(64),
+                cached_bytes: Some(Arc::new(b"cached".to_vec())),
+            },
+            Response::ExecProbeResult {
+                cache_key_hex: "b".repeat(64),
+                cached_bytes: None,
+            },
+            // An empty cached payload is a HIT, not a miss. If `optional`
+            // were dropped from the proto field this would decode as
+            // `None` and silently turn every empty-result hit into a miss.
+            Response::ExecProbeResult {
+                cache_key_hex: "c".repeat(64),
+                cached_bytes: Some(Arc::new(Vec::new())),
+            },
+            Response::ExecStoreAck { stored: true },
+            Response::ExecStoreAck { stored: false },
+        ]
+    }
+
+    #[test]
+    fn exec_requests_survive_a_prost_roundtrip() {
+        for request in exec_requests() {
+            let request_id = default_request_id(&request);
+            let decoded = request_from_prost(request_to_prost(&request, request_id)).unwrap();
+            assert_eq!(
+                decoded,
+                request,
+                "{} lost data crossing the prost lane",
+                request_variant_name(&request)
+            );
+        }
+    }
+
+    #[test]
+    fn exec_responses_survive_a_prost_roundtrip() {
+        for response in exec_responses() {
+            let decoded = response_from_prost(response_to_prost(&response, "resp-1")).unwrap();
+            assert_eq!(
+                decoded,
+                response,
+                "{} lost data crossing the prost lane",
+                response_variant_name(&response)
+            );
+        }
+    }
+
+    /// The specific regression: an exec request must not arrive as a Ping.
+    ///
+    /// Roundtrip equality already covers this, but assert the decoded
+    /// variant explicitly — under the old stubs this was the exact
+    /// observable failure, and naming it tells the next reader what
+    /// "broken" looked like.
+    #[test]
+    fn exec_requests_do_not_degrade_into_ping() {
+        for request in exec_requests() {
+            let request_id = default_request_id(&request);
+            let decoded = request_from_prost(request_to_prost(&request, request_id)).unwrap();
+            assert_ne!(
+                decoded,
+                Request::Ping,
+                "{} encoded as a bare Ping — the prost arm is a stub",
+                request_variant_name(&request)
+            );
+        }
+    }
+
+    #[test]
+    fn exec_responses_do_not_degrade_into_pong() {
+        for response in exec_responses() {
+            let decoded = response_from_prost(response_to_prost(&response, "resp-1")).unwrap();
+            assert_ne!(
+                decoded,
+                Response::Pong,
+                "{} encoded as a bare Pong — the prost arm is a stub",
+                response_variant_name(&response)
+            );
+        }
+    }
+}

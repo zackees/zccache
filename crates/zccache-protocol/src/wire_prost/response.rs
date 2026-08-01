@@ -137,11 +137,15 @@ pub fn response_to_prost(response: &crate::Response, request_id: &str) -> zccach
             in_flight: *in_flight,
             phase: phase.clone(),
         }),
-        // Issue #838: ExecProbeResult / ExecStoreAck are bincode-only in
-        // slice 1. The prost wire lane will gain proto definitions once a
-        // wheel consumer needs cross-protocol routing.
-        crate::Response::ExecProbeResult { .. } | crate::Response::ExecStoreAck { .. } => {
-            Body::Pong(zccache_v1::Empty {})
+        crate::Response::ExecProbeResult {
+            cache_key_hex,
+            cached_bytes,
+        } => Body::ExecProbeResult(zccache_v1::ExecProbeResult {
+            cache_key_hex: cache_key_hex.clone(),
+            cached_bytes: cached_bytes.as_ref().map(|bytes| bytes.as_ref().clone()),
+        }),
+        crate::Response::ExecStoreAck { stored } => {
+            Body::ExecStoreAck(zccache_v1::ExecStoreAck { stored: *stored })
         }
     };
 
@@ -246,6 +250,11 @@ pub fn response_from_prost(response: zccache_v1::Response) -> Result<crate::Resp
             in_flight: progress.in_flight,
             phase: progress.phase,
         }),
+        Some(Body::ExecProbeResult(result)) => Ok(crate::Response::ExecProbeResult {
+            cache_key_hex: result.cache_key_hex,
+            cached_bytes: result.cached_bytes.map(std::sync::Arc::new),
+        }),
+        Some(Body::ExecStoreAck(ack)) => Ok(crate::Response::ExecStoreAck { stored: ack.stored }),
         None => Err("v16 prost response is missing its response body".to_string()),
     }
 }
