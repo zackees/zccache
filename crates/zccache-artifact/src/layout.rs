@@ -11,7 +11,8 @@ use std::path::Path;
 use std::sync::Arc;
 use zccache_core::NormalizedPath;
 
-const STAGED_ROOT: &str = ".staged-v2";
+use crate::staged_lock::STAGED_ROOT;
+
 const STAGED_MANIFEST_VERSION: u32 = 1;
 const PACK_MAGIC: &[u8; 4] = b"ZCPK";
 pub const LEGACY_PATH_VALIDATE_ENV: &str = "ZCCACHE_LEGACY_PATH_VALIDATE";
