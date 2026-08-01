@@ -336,9 +336,12 @@ fn warm_waits_for_the_staged_store_lock_before_materializing() {
 
     drop(gc_lock);
 
-    rx.recv_timeout(std::time::Duration::from_secs(30))
+    let outcome = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
         .expect("warm must proceed once the exclusive lock is released");
-    let (restored, _skipped, errors) = warm.join().unwrap().unwrap();
+    warm.join().unwrap().ok();
+    let (restored, _skipped, errors) =
+        outcome.expect("warm should succeed once it can take the lock");
     assert_eq!(errors, 0, "warm should succeed after acquiring the lock");
     assert_eq!(restored, 1, "the staged payload should be restored");
 }
