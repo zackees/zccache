@@ -277,6 +277,79 @@ async fn staged_exec_disk_hit_reports_physical_materialization_tier() {
     assert!(staged.timings_ns.contains_key("hit_materialization"));
 }
 
+/// #1215: the exec hit's response bytes must come from the destination we just
+/// materialized, not from the cache path.
+///
+/// The old code read `CachedPayload::File(p)` — a staged generation path —
+/// *after* dropping the staged materialization lease. That is the exact
+/// resolve-to-materialize race the lease exists to close, and exec was the one
+/// delivery path that still had it. Worse, a failed read substituted an empty
+/// payload, so a client asking for a cached artifact received **zero bytes
+/// reported as a hit**.
+///
+/// This pins the response against the destination: the bytes the client is
+/// handed must equal what actually landed on disk.
+#[tokio::test]
+async fn exec_hit_response_bytes_come_from_the_materialized_destination() {
+    let temp = tempdir().unwrap();
+    let endpoint = crate::ipc::unique_test_endpoint();
+    let cache_dir: NormalizedPath = temp.path().join("cache").into();
+    let server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
+    let source: NormalizedPath = temp.path().join("private-result.bin").into();
+    let expected = b"staged exec payload bytes";
+    std::fs::write(&source, expected).unwrap();
+    let artifact = ArtifactData {
+        outputs: vec![ArtifactOutput {
+            name: "result.bin".to_string(),
+            payload: ArtifactPayload::Bytes(Arc::new(expected.to_vec())),
+        }],
+        stdout: Arc::new(Vec::new()),
+        stderr: Arc::new(Vec::new()),
+        exit_code: 0,
+    };
+    let metadata = CachedArtifact::from_artifact_data(&artifact).meta.clone();
+    let key = "e".repeat(64);
+    let cached = store_exec_artifact(&server.state, key.clone(), artifact, Some(vec![source]))
+        .await
+        .unwrap()
+        .expect("staged stores defer memory visibility until materialization");
+    server.state.artifacts.insert(key.clone(), cached);
+    server.state.artifacts.remove(&key);
+    server.state.artifact_store.insert(&key, &metadata);
+
+    let response = try_exec_cache_hit(
+        &server.state,
+        &key,
+        temp.path(),
+        &[NormalizedPath::from("result.bin")],
+        ExecOutputStreams::default(),
+    )
+    .await;
+
+    let Some(Response::GenericToolExecResult { output_files, .. }) = response else {
+        panic!("expected a staged exec hit");
+    };
+    assert_eq!(output_files.len(), 1);
+    let ArtifactPayload::Bytes(bytes) = &output_files[0].payload else {
+        panic!("exec replays outputs inline as bytes");
+    };
+    assert!(
+        !bytes.is_empty(),
+        "an empty payload reported as a hit is the failure mode this pins: the \
+         client would silently receive a zero-byte artifact"
+    );
+    assert_eq!(
+        bytes.as_slice(),
+        expected,
+        "response bytes must match what was materialized to the destination"
+    );
+    assert_eq!(
+        std::fs::read(temp.path().join("result.bin")).unwrap(),
+        expected,
+        "and the destination on disk must agree with what the client was told"
+    );
+}
+
 #[test]
 fn primary_key_changes_when_input_hash_changes() {
     let k1 = compose_primary_key(

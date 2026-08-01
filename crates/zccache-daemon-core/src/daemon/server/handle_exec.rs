@@ -832,9 +832,37 @@ async fn try_exec_cache_hit(
     for (abs, payload) in targets.iter().zip(payloads_for_write.iter()) {
         let bytes: Arc<Vec<u8>> = match payload {
             CachedPayload::Bytes(b) => Arc::clone(b),
-            CachedPayload::File(p) => match std::fs::read(p.as_path()) {
+            // #1215: read the destination we just materialized, never the
+            // cache path. The staged lease was released above, so a
+            // `CachedPayload::File` pointing into a staged generation could be
+            // evicted by maintenance between that drop and this read — the
+            // exact resolve-to-materialize race the lease exists to close, and
+            // the one path that still had it. `abs` is this build's own output
+            // and needs no lease.
+            //
+            // A failure here is also no longer survivable-by-omission: the old
+            // code substituted an empty payload, so a client asking for a
+            // cached artifact got zero bytes reported as a hit. A wrong answer
+            // is worse than a miss.
+            CachedPayload::File(_) => match std::fs::read(abs.as_path()) {
                 Ok(b) => Arc::new(b),
-                Err(_) => Arc::new(Vec::new()),
+                Err(error) => {
+                    tracing::warn!(
+                        key = %key_hex,
+                        path = %abs.display(),
+                        "exec hit materialized an output that could not be read back: {error}"
+                    );
+                    report_materialization_failure(
+                        &state.cache_dir,
+                        key_hex,
+                        "exec-hit-readback",
+                        &MaterializationFailure::DestinationWrite(DestinationWriteFailure {
+                            path: abs.clone(),
+                            error,
+                        }),
+                    );
+                    return None;
+                }
             },
         };
         response_outputs.push(ArtifactOutput {
