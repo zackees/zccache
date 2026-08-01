@@ -8,6 +8,9 @@
 
 use super::*;
 
+/// Prefix of the environment namespace forwarded to the spawned daemon.
+const ZCCACHE_ENV_PREFIX: &str = "ZCCACHE_";
+
 /// Initialize spawn-lineage env vars on a command the CLI is about to spawn.
 ///
 /// Mirrors the daemon-side propagation in `zccache_daemon::lineage` so that
@@ -21,6 +24,45 @@ fn apply_cli_spawn_lineage(cmd: &mut std::process::Command) {
     for (k, v) in cli_spawn_lineage_env() {
         cmd.env(k, v);
     }
+}
+
+/// Every `ZCCACHE_*` variable in the CLI's environment, to be replayed onto
+/// the daemon it spawns.
+///
+/// `running_process::spawn_daemon` rebuilds the environment block rather than
+/// inheriting it — that is the point of the sanitized spawn, which exists to
+/// keep *foreign* state (notably grandparent pipe handles) out of a
+/// long-lived daemon. But it also dropped zccache's own configuration, so the
+/// daemon silently ran on defaults no matter what the caller set.
+///
+/// That was not the documented behaviour. `Args::idle_timeout` declares
+/// `env = "ZCCACHE_IDLE_TIMEOUT_SECS"` and its doc comment states the value
+/// "propagates to the daemon via `spawn_daemon`'s inherited environment, so a
+/// caller can ask for a shorter idle window without touching the command
+/// line." Measured on Windows: setting it to 7 still produced
+/// `idle_timeout=3600`. The same silence hid `ZCCACHE_CACHE_DIR`, so a daemon
+/// asked for an isolated cache root served the default one instead — while
+/// bound to an endpoint whose name *is* a hash of the requested root, which is
+/// how the two could disagree without anything reporting it.
+///
+/// The whole `ZCCACHE_*` namespace is forwarded rather than a curated list:
+/// the daemon is zccache, this is its configuration namespace, and an
+/// allowlist silently drifts every time a knob is added — which is precisely
+/// the failure mode being fixed.
+fn zccache_config_env() -> Vec<(String, String)> {
+    zccache_config_env_from(std::env::vars())
+}
+
+/// The filter, over a supplied iterator rather than the process environment,
+/// so it is testable without mutating global state the rest of the test
+/// binary shares.
+fn zccache_config_env_from<I>(vars: I) -> Vec<(String, String)>
+where
+    I: IntoIterator<Item = (String, String)>,
+{
+    vars.into_iter()
+        .filter(|(key, _)| key.starts_with(ZCCACHE_ENV_PREFIX))
+        .collect()
 }
 
 /// Compute the lineage env-var pairs the CLI sets on the daemon it
@@ -433,6 +475,11 @@ pub fn spawn_daemon(endpoint: &str) -> Result<(), String> {
         "--log-file",
         &log_arg,
     ]);
+    // Forward zccache's own configuration namespace before the lineage
+    // overrides, so lineage still wins on any collision.
+    for (key, value) in zccache_config_env() {
+        cmd.env(key, value);
+    }
     #[cfg(not(windows))]
     apply_cli_spawn_lineage(&mut cmd);
     #[cfg(windows)]
@@ -447,4 +494,75 @@ pub fn spawn_daemon(endpoint: &str) -> Result<(), String> {
     running_process::spawn_daemon(&mut cmd)
         .map(|_child| ())
         .map_err(|e| format!("failed to spawn daemon (sanitized): {e}"))
+}
+
+#[cfg(test)]
+mod spawn_env_tests {
+    use super::*;
+
+    fn pairs(raw: &[(&str, &str)]) -> Vec<(String, String)> {
+        raw.iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    /// The daemon is zccache, so its own configuration namespace has to reach
+    /// it. `running_process::spawn_daemon` rebuilds the environment block, so
+    /// anything not replayed here is silently lost and the daemon runs on
+    /// defaults — which is exactly how `ZCCACHE_CACHE_DIR` and
+    /// `ZCCACHE_IDLE_TIMEOUT_SECS` were being dropped.
+    #[test]
+    fn the_zccache_namespace_is_forwarded() {
+        let forwarded = zccache_config_env_from(pairs(&[
+            ("ZCCACHE_CACHE_DIR", "/tmp/isolated"),
+            ("ZCCACHE_IDLE_TIMEOUT_SECS", "7"),
+            ("ZCCACHE_MAX_PARALLEL_COMPILES", "1"),
+        ]));
+
+        assert_eq!(forwarded.len(), 3, "every ZCCACHE_* var must survive");
+        assert!(forwarded
+            .iter()
+            .any(|(k, v)| k == "ZCCACHE_CACHE_DIR" && v == "/tmp/isolated"));
+        assert!(forwarded
+            .iter()
+            .any(|(k, v)| k == "ZCCACHE_IDLE_TIMEOUT_SECS" && v == "7"));
+    }
+
+    /// Forwarding is scoped to zccache's namespace. The sanitized spawn exists
+    /// to keep foreign state out of a long-lived daemon, and that is still its
+    /// job — this only restores zccache's own settings.
+    #[test]
+    fn foreign_variables_are_not_forwarded() {
+        let forwarded = zccache_config_env_from(pairs(&[
+            ("PATH", "/usr/bin"),
+            ("GITHUB_TOKEN", "ghp_secret"),
+            ("SOLDR_CACHE_DIR", "/soldr"),
+            ("ZCCACHE_CACHE_DIR", "/tmp/isolated"),
+        ]));
+
+        assert_eq!(
+            forwarded,
+            pairs(&[("ZCCACHE_CACHE_DIR", "/tmp/isolated")]),
+            "only the ZCCACHE_ namespace crosses into the daemon"
+        );
+    }
+
+    /// A name that merely contains the prefix is not in the namespace.
+    #[test]
+    fn the_prefix_must_be_a_prefix() {
+        let forwarded = zccache_config_env_from(pairs(&[
+            ("MY_ZCCACHE_CACHE_DIR", "/nope"),
+            ("XZCCACHE_THING", "/nope"),
+        ]));
+
+        assert!(
+            forwarded.is_empty(),
+            "matching mid-name would forward unrelated variables: {forwarded:?}"
+        );
+    }
+
+    #[test]
+    fn an_empty_environment_forwards_nothing() {
+        assert!(zccache_config_env_from(Vec::new()).is_empty());
+    }
 }
