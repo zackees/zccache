@@ -144,7 +144,14 @@ fn hash_file(path: &Path) -> std::io::Result<[u8; 32]> {
 /// errors when it cannot; the refusal is loud on both surfaces, because
 /// "someone else can write your daemon's directory" is not a detail to swallow.
 fn ensure_deploy_dir_private(dir: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
+    // Create with the owner-only descriptor already applied rather than
+    // `create_dir_all` + tighten. The two-step shape left the directory live
+    // with the inherited ACL in between, which is exactly the exposure this
+    // function exists to remove — harmless under `%USERPROFILE%`, but real for
+    // a `ZCCACHE_CACHE_DIR` relocated somewhere that hands down
+    // `BUILTIN\Users:(OI)(CI)(M)`. `ensure_dir_private` below still runs: it
+    // is the repair path for directories that already existed.
+    crate::core::config::create_dir_all_private(dir)?;
     match crate::core::config::ensure_dir_private(dir) {
         Ok(false) => Ok(()),
         Ok(true) => {
@@ -260,7 +267,11 @@ const DAEMON_SPAWN_LOGS_SUBDIR: &str = "logs";
 /// `Stdio::null` after warning.
 fn allocate_daemon_spawn_log_path() -> std::path::PathBuf {
     let dir = crate::core::config::daemon_state_dir().join(DAEMON_SPAWN_LOGS_SUBDIR);
-    let _ = std::fs::create_dir_all(dir.as_path());
+    // Private creation, not plain `create_dir_all`: log GC runs before
+    // `materialize_daemon_exe`, so on a cold cache this can be what first
+    // creates `daemon_state_dir` itself — ahead of the deploy directory's own
+    // tightening pass.
+    let _ = crate::core::config::create_dir_all_private(dir.as_path());
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)

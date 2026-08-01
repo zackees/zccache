@@ -34,8 +34,10 @@ use crate::NormalizedPath;
 /// is not this function's call to make. Detecting and reporting an
 /// already-loose directory is #1171 item 4.
 ///
-/// On Windows this is exactly `create_dir_all`: directories are tightened by
-/// [`ensure_dir_private`] instead, which writes an explicit DACL (#1172 F1e).
+/// On Windows the owner-only DACL is supplied to `CreateDirectoryW` at
+/// creation time, so — as on unix — the directory is never briefly visible
+/// with a wider ACL (#1172 F1e and its residual). [`ensure_dir_private`]
+/// remains the repair path for directories that already exist.
 ///
 /// Ensure an existing directory is not group- or other-writable, tightening
 /// it in place if it is (#1171 item 4).
@@ -133,7 +135,16 @@ pub fn create_dir_all_private(path: &std::path::Path) -> std::io::Result<()> {
             .mode(0o700)
             .create(path)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // #1172 residual: this used to be a bare `create_dir_all`, leaving the
+        // directory live with the inherited ACL until `ensure_dir_private`
+        // tightened it. The descriptor now goes to `CreateDirectoryW` in
+        // `SECURITY_ATTRIBUTES`, matching what `mode(0o700)` gives the unix
+        // arm — the directory is never observable with any other DACL.
+        super::win_acl::create_dir_all_private(path)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         std::fs::create_dir_all(path)
     }

@@ -27,6 +27,9 @@ windows-sys = { version = "0.59", features = [
     # #1172 F1e: Get/SetNamedSecurityInfoW + the SDDL converters used to put an
     # owner-only DACL on the daemon deploy directory.
     "Win32_Security_Authorization",
+    # #1172 residual: CreateDirectoryW, so the deploy directory is born with
+    # its owner-only DACL instead of being tightened after the fact.
+    "Win32_Storage_FileSystem",
     "Win32_System_Threading",
 ] }
 

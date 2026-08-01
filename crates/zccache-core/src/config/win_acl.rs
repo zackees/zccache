@@ -49,8 +49,9 @@ use windows_sys::Win32::Security::Authorization::{
 use windows_sys::Win32::Security::{
     EqualSid, GetSecurityDescriptorDacl, GetTokenInformation, TokenUser, ACL,
     DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-    TOKEN_QUERY, TOKEN_USER,
+    SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
 };
+use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 /// Inheritance flags on every ACE we write: `OBJECT_INHERIT` +
@@ -113,6 +114,88 @@ pub(super) fn ensure_dir_private(path: &Path) -> io::Result<bool> {
         ));
     }
     Ok(true)
+}
+
+/// Create `path` with the owner-only DACL already on it, creating any missing
+/// parents the same way.
+///
+/// #1172 residual: `ensure_dir_private` can only tighten a directory that
+/// already exists, so every caller had the shape "create with whatever the
+/// parent hands down, then fix it". Between those two steps the directory is
+/// live with the inherited ACL. Under `%USERPROFILE%` that inheritance is
+/// already narrow and the window is harmless, but the relocated-root case this
+/// module exists for (`ZCCACHE_CACHE_DIR` on `C:\ProgramData\…` or a volume
+/// root) inherits `BUILTIN\Users:(OI)(CI)(M)` — and there another local user
+/// can win the race and populate the directory the daemon binary is about to
+/// be deployed into.
+///
+/// The unix arm never had this gap: `DirBuilder::mode(0o700)` passes the mode
+/// to `mkdir(2)` itself, so no directory is ever briefly group-writable. This
+/// is the Windows equivalent — the descriptor goes to `CreateDirectoryW` in
+/// `SECURITY_ATTRIBUTES`, so the directory is never visible with any other
+/// DACL.
+///
+/// Already-existing directories are left to `ensure_dir_private`: this only
+/// closes the window for directories *it* creates. `Ok(())` when the path
+/// exists as a directory already, so it composes like `create_dir_all`.
+pub(super) fn create_dir_all_private(path: &Path) -> io::Result<()> {
+    if path.is_dir() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            create_dir_all_private(parent)?;
+        }
+    }
+    let user_sid = current_user_sid()?;
+    match create_dir_with_dacl(path, &owner_only_sddl(&user_sid)) {
+        Ok(()) => Ok(()),
+        // Lost a benign race with another zccache process creating the same
+        // directory. The winner applied the same descriptor, so this is a
+        // success, not a retry.
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+/// `CreateDirectoryW` with `sddl` supplied at creation time.
+fn create_dir_with_dacl(path: &Path, sddl: &str) -> io::Result<()> {
+    let wide_sddl: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: `wide_sddl` is NUL-terminated and outlives the call; on success
+    // Windows allocates `descriptor`, released below.
+    let ok = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            wide_sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 || descriptor.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>()).unwrap_or(0),
+        lpSecurityDescriptor: descriptor.cast(),
+        bInheritHandle: 0,
+    };
+    let wide_path = wide(path);
+    // SAFETY: `wide_path` is NUL-terminated and `attributes` borrows the live
+    // descriptor freed below. The kernel copies the descriptor into the new
+    // object, so releasing ours afterwards is sound.
+    let created = unsafe { CreateDirectoryW(wide_path.as_ptr(), &attributes) };
+    let result = if created == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    };
+
+    // SAFETY: `descriptor` came from the SDDL conversion above and is freed
+    // exactly once, after the last use of `attributes`.
+    unsafe { LocalFree(descriptor as HLOCAL) };
+    result
 }
 
 /// The protected owner-only DACL written to an exposed directory.
@@ -516,6 +599,86 @@ mod tests {
         assert!(
             !is_owner_only("D:PAI(A;OICI;FA;;;WD)(A;OICI;FA;;;SY)", "S-1-5-18"),
             "Everyone must not be accepted just because SYSTEM is also listed"
+        );
+    }
+
+    /// The whole point of the residual fix: the directory must be owner-only
+    /// *at birth*, not tightened afterwards.
+    ///
+    /// This is also the empirical check that `SE_DACL_PROTECTED` survives
+    /// `CreateDirectoryW`. `D:P` in an SDDL sets the control bit on the
+    /// converted descriptor, but whether the kernel honors it through
+    /// `SECURITY_ATTRIBUTES` is not something the docs promise — and if it
+    /// does not, `is_owner_only` rejects the result (it requires `P`) and this
+    /// fails. A fix that quietly degraded to "created wide, tightened later"
+    /// would be worse than none, because it would look closed.
+    #[test]
+    fn a_freshly_created_dir_is_owner_only_without_a_tighten_pass() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("deploy");
+
+        create_dir_all_private(&dir).unwrap();
+
+        let user_sid = current_user_sid().unwrap();
+        let sddl = dacl_sddl(&dir).unwrap();
+        assert!(
+            is_owner_only(&sddl, &user_sid),
+            "a directory created by create_dir_all_private must already be \
+             owner-only and protected; got {sddl}"
+        );
+        assert!(
+            !sddl.contains(";BU)"),
+            "BUILTIN\\Users must never appear on the deploy directory: {sddl}"
+        );
+        // Nothing left for the tighten pass to do — `Ok(false)` is
+        // "was already private".
+        assert!(
+            !ensure_dir_private(&dir).unwrap(),
+            "a directory born private must not need tightening"
+        );
+    }
+
+    /// Intermediate parents are created by the same path, so the window is not
+    /// simply moved up one level. A `v<VERSION>` dir born private under a
+    /// briefly-wide cache root would still be exposed through its parent.
+    #[test]
+    fn intermediate_parents_are_created_private_too() {
+        let temp = tempfile::tempdir().unwrap();
+        let leaf = temp.path().join("root").join("v1.2.3").join("nested");
+
+        create_dir_all_private(&leaf).unwrap();
+
+        let user_sid = current_user_sid().unwrap();
+        for dir in [
+            temp.path().join("root"),
+            temp.path().join("root").join("v1.2.3"),
+            leaf,
+        ] {
+            let sddl = dacl_sddl(&dir).unwrap();
+            assert!(
+                is_owner_only(&sddl, &user_sid),
+                "every level must be created private, {} was not: {sddl}",
+                dir.display()
+            );
+        }
+    }
+
+    /// Composes like `create_dir_all`: an existing directory is a no-op, not
+    /// an error, and its DACL is left for `ensure_dir_private` to judge.
+    #[test]
+    fn an_existing_directory_is_accepted_and_left_alone() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("already-here");
+        std::fs::create_dir(&dir).unwrap();
+        let before = dacl_sddl(&dir).unwrap();
+
+        create_dir_all_private(&dir).unwrap();
+
+        assert_eq!(
+            dacl_sddl(&dir).unwrap(),
+            before,
+            "an existing directory must not be silently re-permissioned here; \
+             tightening is ensure_dir_private's job and it reports what it did"
         );
     }
 }
