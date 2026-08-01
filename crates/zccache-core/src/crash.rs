@@ -108,7 +108,14 @@ pub fn install(bin_stem: &'static str) -> CrashGuard {
 /// init.
 fn write_last_run_marker(bin_stem: &str) -> std::io::Result<()> {
     let cache_dir = super::config::daemon_state_dir();
-    std::fs::create_dir_all(&cache_dir)?;
+    // Private creation, not a bare `create_dir_all` (#1325). `install` runs as
+    // the first statement of the CLI's `run_main`, so this is what actually
+    // creates `<cache>/v<VERSION>` on a fresh root — before the lifecycle
+    // writer, before the spawn slot, and before the deploy. Creating it wide
+    // here silently defeated #1314: the deploy's own `create_dir_all_private`
+    // early-returns on an existing directory, so `ensure_dir_private` had to
+    // tighten after the fact and the #1172 window stayed open.
+    super::config::create_dir_all_private(&cache_dir)?;
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -195,7 +202,8 @@ fn install_signal_handler() -> Option<crash_handler::CrashHandler> {
 
 fn write_signal_dump(ctx: &crash_handler::CrashContext) {
     let crash_dir = super::config::crash_dump_dir();
-    if std::fs::create_dir_all(&crash_dir).is_err() {
+    // Same tree as the deployed daemon binary; create it private (#1325).
+    if super::config::create_dir_all_private(&crash_dir).is_err() {
         return;
     }
     let sig_label = signal_label(ctx);
@@ -326,7 +334,7 @@ fn format_signal_summary(_cc: &crash_handler::CrashContext) -> String {
 /// context), so allocation here is fine.
 fn write_panic_dump(panic_info: &str, backtrace: &str) -> Option<NormalizedPath> {
     let crash_dir = super::config::crash_dump_dir();
-    std::fs::create_dir_all(&crash_dir).ok()?;
+    super::config::create_dir_all_private(&crash_dir).ok()?;
     let path = unique_dump_path(&crash_dir, "panic", "txt");
 
     let ts = SystemTime::now()

@@ -321,3 +321,51 @@ fn session_pre_dispatch_failure_refuses_without_double_reading_stdin() {
         "session_pre_dispatch_failure_refuses_without_double_reading_stdin",
     );
 }
+
+/// #1325: the deploy directory must be *born* private, never tightened.
+///
+/// #1314 made `create_dir_all_private` apply the owner-only DACL at creation,
+/// but nothing asserted the end-to-end result — and it was silently bypassed
+/// for months of commits because `crash::install` (the first statement of the
+/// CLI's `run_main`) created `<cache>/v<VERSION>` with a plain
+/// `create_dir_all` before any private creator ran. The deploy's own
+/// `create_dir_all_private` then early-returned on the existing directory and
+/// `ensure_dir_private` tightened after the fact, leaving #1172's window open.
+///
+/// `insecure_deploy_dir` is the observable that distinguishes the two: it is
+/// emitted only when a tighten was necessary. Asserting its absence on a fresh
+/// cache root is what makes "born private" testable — a unit test on the
+/// creation primitive cannot catch an upstream caller creating the directory
+/// first, which is exactly how this regressed.
+#[test]
+#[ignore = "integration test: launches the wrapper binary"]
+fn a_fresh_cache_root_never_needs_its_deploy_dir_tightened() {
+    let zccache = binary_path("zccache");
+    if !zccache.exists() {
+        eprintln!("skipping: zccache binary is not built");
+        return;
+    }
+
+    let cache_dir = tempfile::tempdir().expect("cache tempdir");
+    // Any command that installs the crash guard and touches the daemon state
+    // dir will do; `status` is the cheapest and starts no daemon.
+    let output = Command::new(&zccache)
+        .arg("status")
+        .env("ZCCACHE_CACHE_DIR", cache_dir.path())
+        .env("ZCCACHE_NO_SPAWN", "1")
+        .env_remove("ZCCACHE_DISABLE")
+        .output()
+        .expect("run zccache status");
+
+    let tightened: Vec<_> = lifecycle_events(cache_dir.path())
+        .into_iter()
+        .filter(|event| event["event"] == "insecure_deploy_dir")
+        .collect();
+    assert!(
+        tightened.is_empty(),
+        "the deploy directory must be created private, not tightened after the \
+         fact — some caller is creating it with a plain create_dir_all before \
+         the private creator runs (#1325): {tightened:#?}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
