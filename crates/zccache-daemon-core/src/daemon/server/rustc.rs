@@ -570,6 +570,13 @@ pub(super) fn rustc_expected_output_paths(
         push_unique_output_path(&mut paths, sidecar);
     }
 
+    // soldr#2148. Declaring it is what gets it redirected into the staging
+    // directory alongside the image, captured on a miss, and replayed on a
+    // hit -- as part of the same cache entry, so the pair cannot desynchronise.
+    if let Some(pdb) = msvc_pdb_sidecar_output_path(primary_output_path) {
+        push_unique_output_path(&mut paths, pdb);
+    }
+
     paths
 }
 
@@ -630,6 +637,29 @@ fn dylint_library_sidecar_output_path(
             .join(format!("lib{crate_name}@{toolchain}{suffix}"))
             .into(),
     )
+}
+
+/// `<primary>.pdb` beside a linked Windows image.
+///
+/// MSVC keeps debug info in a separate file named after the image, so the
+/// `.pdb` is a real product of the link step that rustc drives. Nothing in the
+/// rustc output model knew about it, so it was never staged, never stored and
+/// never replayed: a cached build produced the `.exe` alone and the binary's
+/// `RSDS` record pointed at a file that was not there (soldr#2148).
+///
+/// Returns `None` for outputs that never have one -- rlib, rmeta, staticlib --
+/// so nothing extra is declared for the common case. A declared output that
+/// the compiler does not produce (debuginfo off, or a non-MSVC target that
+/// still emits an `.exe`) is filtered out at collection time rather than
+/// failing the compile, so this does not need to predict debuginfo settings.
+pub(super) fn msvc_pdb_sidecar_output_path(primary_output_path: &Path) -> Option<NormalizedPath> {
+    let extension = primary_output_path.extension()?.to_str()?;
+    if !extension.eq_ignore_ascii_case("exe") && !extension.eq_ignore_ascii_case("dll") {
+        return None;
+    }
+    Some(NormalizedPath::new(
+        primary_output_path.with_extension("pdb"),
+    ))
 }
 
 pub(super) fn dylint_cdylib_has_complete_output_identity(
@@ -737,6 +767,30 @@ pub(super) fn collect_rustc_output_files(
                             size: meta.len(),
                         });
                     }
+                }
+            }
+        }
+    }
+
+    // soldr#2148. This is the enumeration used when the staged plan is not
+    // enabled; `rustc_expected_output_paths` covers the staged one. Both need
+    // it, or the `.pdb` survives in one configuration and vanishes in the
+    // other -- which is worse than losing it consistently, because it makes
+    // the bug look intermittent.
+    if let Some(pdb) = msvc_pdb_sidecar_output_path(primary_output_path) {
+        if let Ok(meta) = std::fs::metadata(&pdb) {
+            if meta.is_file() {
+                let name = pdb
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                if !outputs.iter().any(|existing| existing.name == name) {
+                    outputs.push(RustcOutputFile {
+                        name,
+                        path: pdb,
+                        size: meta.len(),
+                    });
                 }
             }
         }
@@ -904,5 +958,39 @@ mod dylint_sidecar_tests {
 
         let without_identity = rustc_expected_output_paths(&parsed, &primary, cwd, None);
         assert_eq!(without_identity, vec![NormalizedPath::new(primary)]);
+    }
+}
+
+/// soldr#2148. Deliberately NOT `cfg(not(target_os = "windows"))` like the
+/// dylint sidecar tests above: `msvc_pdb_sidecar_output_path` is pure path
+/// manipulation, and Windows is precisely where its absence was the bug.
+#[cfg(test)]
+mod pdb_sidecar_tests {
+    use super::*;
+
+    #[test]
+    fn msvc_pdb_is_declared_for_linked_images_only() {
+        // soldr#2148: a cached build produced the .exe without its .pdb, so
+        // crash dumps resolved to `module+0xNNNN`. The pdb was never in the
+        // output model, so it was never staged, stored or replayed.
+        for image in ["app.exe", "plugin.dll", "APP.EXE"] {
+            let pdb = msvc_pdb_sidecar_output_path(Path::new(image))
+                .unwrap_or_else(|| panic!("{image} should declare a pdb"));
+            assert_eq!(
+                pdb.extension().and_then(|e| e.to_str()),
+                Some("pdb"),
+                "{image} -> {pdb:?}"
+            );
+        }
+
+        // Artifacts that never have one. Declaring a pdb for these would be
+        // harmless (missing outputs are filtered at collection) but it would
+        // also be a lie about what the compile produces.
+        for other in ["libfoo.rlib", "libfoo.rmeta", "libfoo.a", "foo.d", "noext"] {
+            assert!(
+                msvc_pdb_sidecar_output_path(Path::new(other)).is_none(),
+                "{other} must not declare a pdb"
+            );
+        }
     }
 }
