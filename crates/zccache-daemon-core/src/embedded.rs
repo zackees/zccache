@@ -63,6 +63,10 @@ pub struct ZccacheService {
     /// service's lifetime; flush + shutdown are forwarded from the
     /// matching `ZccacheService` methods.
     audit_sink: Option<Arc<crate::audit_writer::AuditSink>>,
+    /// The host's audit configuration, retained so emitted events can carry
+    /// the selected mode and honor the host's redaction policy. `Arc` keeps
+    /// `Clone` on the service cheap.
+    audit: Arc<AuditConfig>,
 }
 
 /// Configuration for [`ZccacheService::start`].
@@ -517,7 +521,68 @@ impl ZccacheService {
             cancellation: config.cancellation,
             _host_inflight_guard: host_inflight_guard,
             audit_sink,
+            audit: Arc::new(config.audit),
         })
+    }
+
+    /// Emit one durable audit event, if the host enabled audit.
+    ///
+    /// #905: the sink was started, flushed and shut down but nothing ever
+    /// called `emit`, so a host that configured `audit.jsonl` got a file that
+    /// was created, rotated and always empty. This is the seam that feeds it.
+    ///
+    /// Costs one `Option` check when audit is off (`AuditMode::Off` makes
+    /// `AuditSink::start` return `None`), so the default path is unaffected.
+    ///
+    /// A failed emit is dropped, never propagated: losing an audit record must
+    /// not fail a compile that otherwise succeeded. `AuditSink` already owns
+    /// the backpressure policy and its own lost-event counter, so a caller
+    /// here has nothing useful to add.
+    fn emit_audit(
+        &self,
+        context: &AuditContext,
+        category: &'static str,
+        event: &'static str,
+        level: crate::audit::AuditLevel,
+        duration_ns: Option<u64>,
+        fields: &[(&'static str, serde_json::Value)],
+    ) {
+        let Some(sink) = &self.audit_sink else {
+            return;
+        };
+        let (Ok(event_id), Ok(span_id), Ok(category), Ok(event)) = (
+            crate::audit::AuditId::new(uuid::Uuid::new_v4().to_string()),
+            crate::audit::AuditId::new(uuid::Uuid::new_v4().to_string()),
+            crate::audit::AuditCategory::new(category),
+            crate::audit::AuditEventName::new(event),
+        ) else {
+            // Every argument is a compile-time constant or a fresh UUID, so
+            // this is unreachable in practice; returning beats unwrapping in
+            // a path that must never take down a compile.
+            return;
+        };
+        let mut record = crate::audit::AuditEvent::new(
+            event_id,
+            context.clone(),
+            span_id,
+            category,
+            event,
+            // No date-time dependency in this crate, and the repo convention
+            // is nanoseconds everywhere internally (see CLAUDE.md), so the
+            // timestamp is epoch nanos as a decimal string. It sorts
+            // lexically within a fixed width and needs no formatter.
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_nanos())
+                .to_string(),
+        );
+        record.level = level;
+        record.mode = self.audit.mode;
+        record.duration_ns = duration_ns;
+        for (key, value) in fields {
+            record = record.with_field(*key, value.clone());
+        }
+        let _ = sink.emit(record.apply_redaction(&self.audit.redaction));
     }
 
     /// Compile using the embedded daemon engine.
@@ -575,6 +640,25 @@ impl ZccacheService {
                 return Err(EmbeddedError::Cancelled);
             }
         }
+        // Carry the resolved `compile_id` on every event for this compile, so
+        // the host's own records correlate by id rather than by timestamp.
+        let audit = {
+            let mut audit = request.audit.clone();
+            audit.compile_id = crate::audit::AuditId::new(compile_id.clone()).ok();
+            audit
+        };
+        let started = std::time::Instant::now();
+        self.emit_audit(
+            &audit,
+            crate::audit::AuditCategory::ZCCACHE_COMPILE,
+            crate::audit::AuditEventName::COMPILE_STARTED,
+            crate::audit::AuditLevel::Info,
+            None,
+            &[(
+                "compiler",
+                serde_json::Value::from(request.compiler.as_path().display().to_string()),
+            )],
+        );
         let compile_future = self.daemon.compile(EmbeddedCompileRequest {
             compiler: request.compiler.into_path_buf(),
             args: request.args,
@@ -582,16 +666,34 @@ impl ZccacheService {
             env: Some(request.env),
             stdin: request.stdin,
         });
-        let response = match &self.cancellation {
+        let outcome = match &self.cancellation {
             Some(token) => {
                 let cancelled = token.cancelled();
                 tokio::select! {
                     biased;
-                    () = cancelled => return Err(EmbeddedError::Cancelled),
-                    result = compile_future => result.map_err(EmbeddedError::Compile)?,
+                    () = cancelled => Err(EmbeddedError::Cancelled),
+                    result = compile_future => result.map_err(EmbeddedError::Compile),
                 }
             }
-            None => compile_future.await.map_err(EmbeddedError::Compile)?,
+            None => compile_future.await.map_err(EmbeddedError::Compile),
+        };
+        // Every `compile.started` must get a `compile.finished`, including on
+        // the cancel and spawn-failure paths. An audit log with dangling
+        // starts cannot be used to measure anything, and those are exactly
+        // the compiles an operator most wants to find.
+        let response = match outcome {
+            Ok(response) => response,
+            Err(error) => {
+                self.emit_audit(
+                    &audit,
+                    crate::audit::AuditCategory::ZCCACHE_COMPILE,
+                    crate::audit::AuditEventName::COMPILE_FINISHED,
+                    crate::audit::AuditLevel::Error,
+                    Some(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)),
+                    &[("error", serde_json::Value::from(error.to_string()))],
+                );
+                return Err(error);
+            }
         };
         let cache_outcome = if response.exit_code != 0 {
             CacheOutcome::Error
@@ -600,6 +702,47 @@ impl ZccacheService {
         } else {
             CacheOutcome::Miss
         };
+        let elapsed_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        // No `cache_key` field: the key is derived inside the engine and is
+        // not visible at this boundary. Emitting `cache.lookup` with the key
+        // needs plumbing through `EmbeddedCompileRequest` — deliberately left
+        // to a follow-up rather than guessed at here.
+        match cache_outcome {
+            CacheOutcome::Hit => self.emit_audit(
+                &audit,
+                crate::audit::AuditCategory::ZCCACHE_CACHE_LOOKUP,
+                crate::audit::AuditEventName::CACHE_HIT,
+                crate::audit::AuditLevel::Info,
+                Some(elapsed_ns),
+                &[],
+            ),
+            CacheOutcome::Miss => self.emit_audit(
+                &audit,
+                crate::audit::AuditCategory::ZCCACHE_CACHE_LOOKUP,
+                crate::audit::AuditEventName::CACHE_MISS,
+                crate::audit::AuditLevel::Info,
+                Some(elapsed_ns),
+                &[],
+            ),
+            // A failed compile is not a cache outcome; `compile.finished`
+            // below carries the exit code.
+            CacheOutcome::Error => {}
+        }
+        self.emit_audit(
+            &audit,
+            crate::audit::AuditCategory::ZCCACHE_COMPILE,
+            crate::audit::AuditEventName::COMPILE_FINISHED,
+            if response.exit_code == 0 {
+                crate::audit::AuditLevel::Info
+            } else {
+                crate::audit::AuditLevel::Error
+            },
+            Some(elapsed_ns),
+            &[
+                ("exit_code", serde_json::Value::from(response.exit_code)),
+                ("cached", serde_json::Value::from(response.cached)),
+            ],
+        );
         Ok(CompileResponse {
             exit_code: response.exit_code,
             stdout: response.stdout.as_ref().clone(),
