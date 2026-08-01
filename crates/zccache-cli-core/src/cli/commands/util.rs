@@ -164,8 +164,22 @@ pub(crate) fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// Install the CLI's tracing subscriber, writing diagnostics to **stderr**.
+///
+/// `tracing_subscriber::fmt()` defaults to stdout, which put every CLI
+/// `warn!` into the one stream that carries machine-readable output. The
+/// concrete failure: `zccache session-start` prints a JSON object on stdout
+/// and callers parse it, so a single warning (for example the
+/// `insecure_deploy_dir` notice, which fires the first time a version
+/// directory is seen) made that JSON unparseable. The wrapper is the more
+/// serious case — `zccache cc` / `c++` relay compiler stdout verbatim and
+/// that byte stream is public contract, so a diagnostic landing in it can
+/// corrupt output a build system consumes.
+///
+/// Diagnostics go to stderr; stdout carries only the command's result.
 pub(crate) fn init_tracing() {
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
