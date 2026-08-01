@@ -525,6 +525,35 @@ where
                 Ok(total)
             })?
     };
+    // This `now()` seed is a deliberate, contested exception to CLAUDE.md's
+    // "never stamp now() on cache hits" rule. Read this before "fixing" it —
+    // it has been flagged and investigated twice (#1158 most recently).
+    //
+    // Because `now()` dominates every real file mtime, seeding the floor with
+    // it means every materialized output is stamped to ~now(), not floored up
+    // to a stable sibling. Two *measured* findings point in opposite
+    // directions about whether that is right for rustc/cargo:
+    //
+    //  * #599 (fixed, and pinned by `batch_floor_freshens_*` in `tests.rs`):
+    //    a hit is still a rustc invocation from cargo's perspective. Restore an
+    //    old mtime and cargo records a stale output, so the *next* no-op build
+    //    recompiles the graph — measured at 14x slower "warm (target intact)".
+    //  * iter7 (CLAUDE.md): stamping now() on hits invalidates cargo's
+    //    fingerprint the other way, measured at 5.9ms -> 2.8ms per hit and
+    //    warm 11.6s -> 9.8s.
+    //
+    // Both cannot be fully right for the same consumer, and the difference is
+    // ~0.44s across a `medium` warm build — smaller than the ~10s run-to-run
+    // noise on a 4-CPU Docker VM, so it cannot be settled on a busy machine.
+    // #1158 has the full analysis and the exact A/B to run.
+    //
+    // Until someone resolves it with repeatable numbers (PERF.md `--matrix
+    // --repeat 5` on a quiet box), this stays as-is: it is the behaviour a
+    // closed regression test asserts, and reverting it on reasoning alone
+    // would risk reopening a 14x dev-inner-loop regression to chase a
+    // sub-second one. If you do change it, CLAUDE.md's guidance is to gate the
+    // now() seed on the *consumer* (make/ninja need fresh outputs; cargo may
+    // not) rather than re-globalizing either behaviour.
     let batch_floor = std::time::SystemTime::now();
     floor_materialized_outputs_to_input_max(
         targets.iter().map(|out| out.as_ref()),
