@@ -108,17 +108,49 @@ fn lifecycle_events(cache_dir: &Path) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn wait_for_daemon_shutdown(cache_dir: &Path) {
-    for _ in 0..80 {
-        if lifecycle_events(cache_dir)
-            .iter()
-            .any(|event| event["event"] == "died-shutdown")
+/// Wait until the daemon is genuinely unreachable, not merely until it said it
+/// was going away.
+///
+/// The `died-shutdown` lifecycle event is published *before* the listener
+/// stops accepting, so a wrapper run started on that signal alone can still
+/// connect, dispatch, and have the daemon run the tool — returning the tool's
+/// exit code (7) where the test demands the wrapper's refusal (125). Windows
+/// timing hid this; Linux CI failed on it intermittently.
+///
+/// So the event is the *first* gate and reachability is the second: `zccache
+/// status` exits non-zero once nothing answers the endpoint, which is the
+/// property the refusal contract actually depends on.
+fn wait_for_daemon_shutdown(zccache: &Path, cache_dir: &Path) {
+    let mut saw_event = false;
+    for _ in 0..200 {
+        if !saw_event
+            && lifecycle_events(cache_dir)
+                .iter()
+                .any(|event| event["event"] == "died-shutdown")
         {
+            saw_event = true;
+        }
+        if saw_event && !daemon_answers(zccache, cache_dir) {
             return;
         }
         std::thread::sleep(Duration::from_millis(25));
     }
-    panic!("daemon did not publish died-shutdown within the test deadline");
+    panic!(
+        "daemon still reachable after publishing died-shutdown (saw_event={saw_event}) \
+         within the test deadline"
+    );
+}
+
+/// Does anything still answer on this cache dir's endpoint?
+fn daemon_answers(zccache: &Path, cache_dir: &Path) -> bool {
+    Command::new(zccache)
+        .arg("status")
+        .env("ZCCACHE_CACHE_DIR", cache_dir)
+        .env("ZCCACHE_NO_SPAWN", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// The wrapper-infrastructure exit code from #1170. Kept as a literal here
@@ -254,7 +286,7 @@ fn session_pre_dispatch_failure_refuses_without_double_reading_stdin() {
         .expect("session id")
         .to_string();
     stop_daemon(&zccache, cache_dir.path());
-    wait_for_daemon_shutdown(cache_dir.path());
+    wait_for_daemon_shutdown(&zccache, cache_dir.path());
 
     let payload = b"session-refusal-stdin\0must-not-double-read\n";
     let output = run_wrapper(
