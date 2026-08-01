@@ -47,10 +47,14 @@ pub(in crate::daemon::server) use hook::{StagedHookGuard, StagedHookPoint};
 
 pub(in crate::daemon::server) const STAGED_ARTIFACTS_ENV: &str = "ZCCACHE_STAGED_ARTIFACTS";
 
-const STAGED_ROOT: &str = ".staged-v2";
+// The staged root and store-lock names are owned by `zccache-artifact` and
+// imported rather than redeclared: `zccache warm` runs in the CLI process and
+// locks the same file to exclude this daemon's GC. Two independent string
+// constants would keep compiling while silently ceasing to exclude each other.
+use zccache_artifact::staged_lock::{STAGED_ROOT, STORE_LOCK};
+
 const STAGED_MANIFEST_VERSION: u32 = 1;
 const PUBLISH_LOCK: &str = ".publish.lock";
-const STORE_LOCK: &str = ".store.lock";
 
 static STAGED_ARTIFACT_TMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 

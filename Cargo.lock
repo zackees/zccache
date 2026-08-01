@@ -4130,6 +4130,7 @@ dependencies = [
  "blake3",
  "dashmap",
  "flate2",
+ "fs2",
  "prost",
  "rayon",
  "redb",

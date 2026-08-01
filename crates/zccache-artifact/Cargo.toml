@@ -28,6 +28,7 @@ bincode = { workspace = true }
 blake3 = { workspace = true }
 dashmap = { workspace = true }
 flate2 = { workspace = true, optional = true }
+fs2 = { workspace = true }
 prost = { workspace = true }
 rayon = { workspace = true }
 reflink-copy = { workspace = true }

@@ -279,3 +279,69 @@ fn warm_returns_error_on_missing_index() {
     );
     assert!(result.is_err());
 }
+
+/// `warm` runs in the CLI process while a daemon may be running GC, so it must
+/// take the staged store's shared lock across resolve->materialize. Pinning it
+/// via the exclusive side is what makes this test discriminate: without the
+/// guard, `warm_target` completes immediately even while GC holds the store.
+#[test]
+fn warm_waits_for_the_staged_store_lock_before_materializing() {
+    use std::sync::mpsc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let artifact_dir = dir.path().join("artifacts");
+    let target_dir = dir.path().join("target");
+    let index_path = dir.path().join("index.redb");
+    std::fs::create_dir_all(&artifact_dir).unwrap();
+
+    let key = "aaaaaaaabbbbbbbb";
+    let store = crate::artifact::ArtifactStore::open(&index_path).unwrap();
+    store.insert(
+        key,
+        &crate::artifact::ArtifactIndex::new(
+            vec!["libstaged-abc123.rlib".to_string()],
+            vec![b"staged-rlib".len() as u64],
+            vec![],
+            vec![],
+            0,
+        ),
+    );
+    store.flush().unwrap();
+    drop(store);
+    seed_staged_fixture(&artifact_dir, key, b"staged-rlib");
+
+    // Stand in for daemon maintenance holding the store exclusively.
+    let staged = zccache_artifact::staged_lock::staged_root(&artifact_dir);
+    let gc_lock = zccache_artifact::staged_lock::open_store_lock(staged.as_path()).unwrap();
+    fs2::FileExt::lock_exclusive(&gc_lock).unwrap();
+
+    // The outcome travels through the channel, not just a unit tick, so that an
+    // early `Err` return (which would also unblock the recv and look exactly
+    // like "warm ignored the lock") names itself instead of failing as a
+    // mystery.
+    let (tx, rx) = mpsc::channel();
+    let warm = std::thread::spawn(move || {
+        let outcome = warm_target(&index_path, &artifact_dir, &target_dir, "debug", None);
+        tx.send(outcome.clone()).unwrap();
+        outcome
+    });
+
+    if let Ok(early) = rx.recv_timeout(std::time::Duration::from_millis(250)) {
+        panic!(
+            "warm returned {early:?} while the staged store was held exclusively; \
+             it must block instead -- returning here means it either materialized \
+             without the guard or failed before reaching it"
+        );
+    }
+
+    drop(gc_lock);
+
+    let outcome = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("warm must proceed once the exclusive lock is released");
+    warm.join().unwrap().ok();
+    let (restored, _skipped, errors) =
+        outcome.expect("warm should succeed once it can take the lock");
+    assert_eq!(errors, 0, "warm should succeed after acquiring the lock");
+    assert_eq!(restored, 1, "the staged payload should be restored");
+}
