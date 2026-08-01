@@ -58,6 +58,24 @@ fn run_wrapper(
         .env("ZCCACHE_CACHE_DIR", cache_dir)
         .env("ZCCACHE_NO_SPAWN", "1")
         .env("ZCCACHE_DAEMON_WIRE", "bincode")
+        // These tests assert that the refusal contract holds. They must not
+        // inherit the sanctioned bypasses they exist to contrast against:
+        // `ZCCACHE_DISABLE` and `ZCCACHE_PROBE_BYPASS` both passthrough-exec
+        // the tool *before* any endpoint resolution, so an inherited one turns
+        // "refused with 125" into "ran the tool and mirrored its exit code"
+        // with no assertion able to tell the difference.
+        //
+        // This is not hypothetical: the CI step added for #1317 set
+        // `ZCCACHE_DISABLE=1` for journal hygiene, and both tests failed with
+        // `left: Some(7)` — the shim's own code. Reproduced on Windows by
+        // exporting the same variable, so it was never platform-specific.
+        //
+        // `ZCCACHE_ENDPOINT` is removed too: `resolve_endpoint` honours it
+        // *ahead of* the cache dir, so an inherited value would silently point
+        // these tests at a real daemon and defeat the tempdir isolation.
+        .env_remove("ZCCACHE_DISABLE")
+        .env_remove("ZCCACHE_PROBE_BYPASS")
+        .env_remove("ZCCACHE_ENDPOINT")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

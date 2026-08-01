@@ -148,10 +148,13 @@ jobs:
         shell: bash
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/integration
-          # These tests spawn the wrapper binary and assert its real process
-          # exit code, so they own their own tempdir caches and their journals
-          # are build orchestration rather than the runtime this job audits.
-          ZCCACHE_DISABLE: "1"
+          # Deliberately NO `ZCCACHE_DISABLE` here. The adjacent
+          # artifact-layout step sets it for journal hygiene, and copying that
+          # across is what made the first version of this step fail: the
+          # wrapper honours the bypass before any endpoint resolution, so both
+          # tests ran the tool and mirrored its exit code (7) instead of
+          # refusing with 125. A step that verifies "no silent bypass exists"
+          # must not set the bypass. The tests now also strip it themselves.
         run: |
           # #1317: these are #[ignore]d (they launch the wrapper binary), and
           # the main run above does not pass --ignored, so the exit-125
