@@ -729,3 +729,218 @@ mod staged_depfile_restart_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod audit_emission_tests {
+    //! #905: the audit sink was started, flushed and shut down but nothing
+    //! ever called `emit`, so a host that configured `audit.jsonl` got a file
+    //! that was created and rotated and always empty. These tests pin that
+    //! events actually reach the log.
+
+    use super::*;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// Locate the audit JSONL under `root`, wherever the effective cache /
+    /// audit root landed.
+    fn find_audit_log(dir: &std::path::Path) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = find_audit_log(&path) {
+                    return Some(found);
+                }
+            } else if path.file_name().and_then(|name| name.to_str()) == Some("audit.jsonl") {
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    fn audit_lines(root: &std::path::Path) -> Vec<serde_json::Value> {
+        let Some(path) = find_audit_log(root) else {
+            return Vec::new();
+        };
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return Vec::new();
+        };
+        content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).expect("audit log must be valid JSONL"))
+            .collect()
+    }
+
+    async fn start_audited_service(temp: &TempDir, instance: &str) -> ZccacheService {
+        ZccacheService::start(ZccacheConfig {
+            host: HostIdentity {
+                product: "zccache-test".into(),
+                instance_id: instance.into(),
+                workspace_id: instance.into(),
+            },
+            cache_root: temp.path().join("zccache").into(),
+            audit: AuditConfig {
+                output_root: Some(temp.path().join("audit").to_string_lossy().into_owned()),
+                ..AuditConfig::default()
+            },
+            limits: ServiceLimits::default(),
+            runtime: RuntimeHooks::default(),
+            cancellation: None,
+        })
+        .await
+        .expect("audited embedded service starts")
+    }
+
+    /// The unspawnable compiler still drives the full emit path (the journal
+    /// tests above use the same trick), so this needs no compiler on the host.
+    fn unspawnable_request(run: &str) -> CompileRequest {
+        CompileRequest {
+            audit: AuditContext::new(
+                crate::audit::AuditId::new(run).expect("non-empty"),
+                crate::audit::AuditId::new("audit-trace").expect("non-empty"),
+            ),
+            compiler: PathBuf::from("/nonexistent/compiler-that-never-runs").into(),
+            args: vec!["--version".into()],
+            cwd: std::env::current_dir().expect("cwd").into(),
+            env: Vec::new(),
+            stdin: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_compile_writes_events_to_the_host_audit_log() {
+        let temp = TempDir::new().expect("temp root");
+        let service = start_audited_service(&temp, "audit-emission").await;
+
+        let _ = service.compile(unspawnable_request("audit-run")).await;
+
+        // `flush` forwards to the sink, so the assertion is deterministic
+        // rather than a sleep-and-hope.
+        service.flush().await.expect("flush drains the audit sink");
+        let events = audit_lines(temp.path());
+
+        assert!(
+            !events.is_empty(),
+            "a compile under AuditMode::Normal must write audit events; an \
+             empty log is the #905 regression"
+        );
+        let names: Vec<&str> = events
+            .iter()
+            .filter_map(|event| event["event"].as_str())
+            .collect();
+        assert!(
+            names.contains(&"compile.started"),
+            "expected compile.started, got {names:?}"
+        );
+        assert!(
+            names.contains(&"compile.finished"),
+            "expected compile.finished, got {names:?}"
+        );
+
+        service
+            .shutdown(ShutdownMode::Graceful)
+            .await
+            .expect("graceful shutdown after audited compile");
+    }
+
+    /// The host's causal ids must reach the record. Before #905 the context
+    /// was accepted and discarded, leaving timestamp correlation as the only
+    /// way to tie a zccache event back to the host's run.
+    #[tokio::test]
+    async fn events_carry_the_host_supplied_correlation_ids() {
+        let temp = TempDir::new().expect("temp root");
+        let service = start_audited_service(&temp, "audit-context").await;
+
+        let _ = service.compile(unspawnable_request("host-run-42")).await;
+        service.flush().await.expect("flush drains the audit sink");
+
+        let events = audit_lines(temp.path());
+        let started = events
+            .iter()
+            .find(|event| event["event"] == "compile.started")
+            .expect("compile.started must be present");
+
+        assert_eq!(
+            started["run_id"], "host-run-42",
+            "the host's run_id must survive into the record: {started}"
+        );
+        assert_eq!(
+            started["trace_id"], "audit-trace",
+            "the host's trace_id must survive into the record: {started}"
+        );
+        assert!(
+            started["compile_id"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty()),
+            "every compile event needs a compile_id to group on: {started}"
+        );
+
+        let finished = events
+            .iter()
+            .find(|event| event["event"] == "compile.finished")
+            .expect("compile.finished must be present");
+        assert_eq!(
+            finished["compile_id"], started["compile_id"],
+            "start and finish must share one compile_id or they cannot be paired"
+        );
+        assert_eq!(
+            finished["level"], "error",
+            "a failed compile must not be logged at info: {finished}"
+        );
+        // The unspawnable compiler fails before the engine yields an exit
+        // code, so the terminal event carries the error text instead. What
+        // matters is that the event exists at all — the first cut of this
+        // change returned early on that path and emitted a `compile.started`
+        // with no matching finish.
+        assert!(
+            finished["fields"]["error"]
+                .as_str()
+                .is_some_and(|error| !error.is_empty()),
+            "a compile that failed before producing an exit code must record \
+             why: {finished}"
+        );
+
+        service
+            .shutdown(ShutdownMode::Graceful)
+            .await
+            .expect("graceful shutdown");
+    }
+
+    /// `AuditMode::Off` must stay a true no-op — no sink, no file, no cost.
+    #[tokio::test]
+    async fn audit_off_writes_nothing() {
+        let temp = TempDir::new().expect("temp root");
+        let service = ZccacheService::start(ZccacheConfig {
+            host: HostIdentity {
+                product: "zccache-test".into(),
+                instance_id: "audit-off".into(),
+                workspace_id: "audit-off".into(),
+            },
+            cache_root: temp.path().join("zccache").into(),
+            audit: AuditConfig {
+                mode: crate::audit::AuditMode::Off,
+                output_root: Some(temp.path().join("audit").to_string_lossy().into_owned()),
+                ..AuditConfig::default()
+            },
+            limits: ServiceLimits::default(),
+            runtime: RuntimeHooks::default(),
+            cancellation: None,
+        })
+        .await
+        .expect("service starts with audit off");
+
+        let _ = service.compile(unspawnable_request("off-run")).await;
+        service.flush().await.expect("flush with no sink");
+
+        assert!(
+            find_audit_log(temp.path()).is_none(),
+            "AuditMode::Off must not create an audit log at all"
+        );
+
+        service
+            .shutdown(ShutdownMode::Graceful)
+            .await
+            .expect("graceful shutdown with audit off");
+    }
+}

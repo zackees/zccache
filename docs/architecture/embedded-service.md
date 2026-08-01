@@ -19,7 +19,8 @@ The MVP boundary is:
 |---|---|---|
 | Architecture contract | Landed | This document records lifecycle, ownership, audit, and shutdown expectations. |
 | Public Rust API | MVP landed | `zccache::embedded` exports `ZccacheService` and stable config/request/stats types for start, compile, stats, disk maintenance, flush, and shutdown. |
-| Durable audit schema | MVP landed | `zccache::audit` exports serializable schema/config/event/finding/manifest types; hot-path emission and fixtures remain follow-up work. |
+| Durable audit schema | MVP landed | `zccache::audit` exports serializable schema/config/event/finding/manifest types. |
+| Audit emission | Partial | `ZccacheService::compile` emits `compile.started`, `cache.hit`/`cache.miss` and `compile.finished` carrying the host's `AuditContext` (#905). Engine-internal events (`cache.lookup` with the key, `compiler.spawn`/`compiler.exit`, depgraph) still need plumbing through `EmbeddedCompileRequest`. |
 | soldr embedded integration | Landed | soldr uses the direct embedded service and owns its cache root, runtime handle, audit context, and shutdown sequence. |
 | fbuild embedded integration | Open | zccache#908 follows the same service contract, adjusted for fbuild's daemon/runtime model. |
 | Vendored hotfix workflow | Documented | zccache#909 is recorded in [`vendored-hotfix-workflow.md`](vendored-hotfix-workflow.md). |
@@ -185,11 +186,14 @@ pub struct HostIdentity {
 }
 
 pub struct AuditContext {
-    pub run_id: String,
-    pub trace_id: String,
-    pub parent_span_id: Option<String>,
-    pub command_id: Option<String>,
-    pub session_id: Option<String>,
+    pub run_id: AuditId,
+    pub build_id: Option<AuditId>,
+    pub trace_id: AuditId,
+    pub span_id: Option<AuditId>,
+    pub parent_span_id: Option<AuditId>,
+    pub command_id: Option<AuditId>,
+    pub compile_id: Option<AuditId>,
+    pub session_id: Option<AuditId>,
 }
 
 pub struct CompileRequest {
@@ -409,7 +413,8 @@ events inside the current `tracing` span.
 
 ### Event Shape
 
-The concrete Rust schema lives in `crates/zccache/src/audit.rs`. The durable
+The concrete Rust schema lives in `crates/zccache-audit/src/lib.rs` (moved
+there by the #1018 crate split; re-exported as `zccache::audit`). The durable
 event stream uses schema `soldr.audit.v1` and `schema_version: 1`. The base
 shape is:
 
