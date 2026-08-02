@@ -24,17 +24,24 @@ type ClientConn = zccache::ipc::IpcConnection;
 #[cfg(windows)]
 type ClientConn = zccache::ipc::IpcClientConnection;
 
-/// Helper: start a daemon server on a unique endpoint.
+/// Helper: start a daemon server on a unique endpoint with an isolated cache
+/// root (#1322). Plain `DaemonServer::bind` inherits the process-global cache
+/// dir, so this test failed on any machine with a live daemon: "another live
+/// daemon already holds this cache root as its writer". The returned `TempDir`
+/// must be kept alive by the caller for as long as the daemon runs.
 async fn start_daemon() -> (
     String,
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
+    tempfile::TempDir,
 ) {
     let endpoint = zccache::ipc::unique_test_endpoint();
-    let mut server = DaemonServer::bind(&endpoint).unwrap();
+    let cache_root = tempfile::tempdir().expect("daemon cache tempdir");
+    let cache_dir: zccache::core::NormalizedPath = cache_root.path().join("zccache-cache").into();
+    let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move { server.run(0).await.unwrap() });
-    (endpoint, handle, shutdown)
+    (endpoint, handle, shutdown, cache_root)
 }
 
 /// Helper: start a session. Returns (session_id, compiler_string).
@@ -91,7 +98,7 @@ async fn compiler_override_uses_wrapped_compiler() {
     let cwd = tmp.path().to_string_lossy().into_owned();
     std::fs::write(&src, "struct Point { int x; int y; };\nint main(void) {\n\tstruct Point p = { .x = 1, .y = 2 };\n\treturn p.x + p.y - 3;\n}\n").unwrap();
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
     let (sid, _clangpp_compiler) =
         start_session(&mut client, &clangpp, &cwd, &log.to_string_lossy()).await;
@@ -114,28 +121,34 @@ async fn compiler_override_uses_wrapped_compiler() {
         .await
         .unwrap();
 
-    match client.recv().await.unwrap() {
-        Some(Response::CompileResult {
-            exit_code,
-            cached,
-            stderr,
-            ..
-        }) => {
-            let stderr_str = String::from_utf8_lossy(&stderr);
-            assert_eq!(
-                exit_code, 0,
-                "C file with -std=c11 should compile with clang override. stderr: {stderr_str}"
-            );
-            assert!(!cached, "first compile should be a miss");
-            assert!(
-                !stderr_str.contains("not valid for C++"),
-                "compiler override should use clang, not clang++. stderr: {stderr_str}"
-            );
+    loop {
+        match client.recv().await.unwrap() {
+            // #1337: heartbeats (#1216) are non-terminal and share this
+            // connection; only a CompileResult ends the exchange.
+            Some(Response::CompileProgress { .. }) => continue,
+            Some(Response::CompileResult {
+                exit_code,
+                cached,
+                stderr,
+                ..
+            }) => {
+                let stderr_str = String::from_utf8_lossy(&stderr);
+                assert_eq!(
+                    exit_code, 0,
+                    "C file with -std=c11 should compile with clang override. stderr: {stderr_str}"
+                );
+                assert!(!cached, "first compile should be a miss");
+                assert!(
+                    !stderr_str.contains("not valid for C++"),
+                    "compiler override should use clang, not clang++. stderr: {stderr_str}"
+                );
+                break;
+            }
+            Some(Response::Error { message }) => {
+                panic!("compile error (compiler override not working?): {message}")
+            }
+            other => panic!("expected CompileResult, got: {other:?}"),
         }
-        Some(Response::Error { message }) => {
-            panic!("compile error (compiler override not working?): {message}")
-        }
-        other => panic!("expected CompileResult, got: {other:?}"),
     }
     assert!(obj.exists(), "object file should be produced");
     shutdown.notify_one();

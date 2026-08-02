@@ -119,20 +119,25 @@ async fn compile(
         .await
         .unwrap();
 
-    match client.recv().await.unwrap() {
-        Some(Response::CompileResult {
-            exit_code,
-            cached,
-            stdout,
-            stderr,
-        }) => (
-            exit_code,
-            cached,
-            Arc::unwrap_or_clone(stdout),
-            Arc::unwrap_or_clone(stderr),
-        ),
-        Some(Response::Error { message }) => panic!("compile error: {message}"),
-        other => panic!("unexpected response: {other:?}"),
+    loop {
+        match client.recv().await.unwrap() {
+            Some(Response::CompileProgress { .. }) => continue,
+            Some(Response::CompileResult {
+                exit_code,
+                cached,
+                stdout,
+                stderr,
+            }) => {
+                break (
+                    exit_code,
+                    cached,
+                    Arc::unwrap_or_clone(stdout),
+                    Arc::unwrap_or_clone(stderr),
+                )
+            }
+            Some(Response::Error { message }) => panic!("compile error: {message}"),
+            other => panic!("unexpected response: {other:?}"),
+        }
     }
 }
 

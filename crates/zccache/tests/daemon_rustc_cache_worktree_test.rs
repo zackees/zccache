@@ -23,20 +23,6 @@ type ClientConn = zccache::ipc::IpcConnection;
 #[cfg(windows)]
 type ClientConn = zccache::ipc::IpcClientConnection;
 
-async fn start_daemon() -> (
-    String,
-    tokio::task::JoinHandle<()>,
-    std::sync::Arc<tokio::sync::Notify>,
-) {
-    let endpoint = zccache::ipc::unique_test_endpoint();
-    let mut server = DaemonServer::bind(&endpoint).unwrap();
-    let shutdown = server.shutdown_handle();
-    let handle = tokio::spawn(async move {
-        server.run(0).await.unwrap();
-    });
-    (endpoint, handle, shutdown)
-}
-
 /// Start an isolated daemon so content-addressed artifacts from a prior test
 /// run cannot turn this test's first observation of a new source into a hit.
 async fn start_daemon_with_cache_dir(
@@ -98,12 +84,15 @@ async fn compile_with_env(
         .await
         .unwrap();
 
-    match client.recv().await.unwrap() {
-        Some(Response::CompileResult {
-            exit_code, cached, ..
-        }) => (exit_code, cached),
-        Some(Response::Error { message }) => panic!("compile error: {message}"),
-        other => panic!("unexpected response: {other:?}"),
+    loop {
+        match client.recv().await.unwrap() {
+            Some(Response::CompileProgress { .. }) => continue,
+            Some(Response::CompileResult {
+                exit_code, cached, ..
+            }) => break (exit_code, cached),
+            Some(Response::Error { message }) => panic!("compile error: {message}"),
+            other => panic!("unexpected response: {other:?}"),
+        }
     }
 }
 
@@ -586,7 +575,12 @@ async fn test_rustc_git_worktrees_share_with_different_cargo_target_dir_shapes()
         let target_a = root_a.join(".claude/worktrees/parent-cache-main-target");
         let target_b = root_b.join(".claude/worktrees/parent-cache-sub-target");
 
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        // #1322: bind an isolated cache root. `start_daemon()` inherits the
+        // process-global cache dir, so this test failed on any machine with a
+        // live daemon: "another live daemon already holds this cache root as
+        // its writer".
+        let (endpoint, server_handle, shutdown) =
+            start_daemon_with_cache_dir(&tmp.path().join("daemon-cache")).await;
         let mut client_a = zccache::ipc::connect(&endpoint).await.unwrap();
         let mut client_b = zccache::ipc::connect(&endpoint).await.unwrap();
         let session_a = start_session_in(&mut client_a, &root_a).await;
