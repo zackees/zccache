@@ -434,6 +434,13 @@ async fn cold_path_stress_profile() {
     let cache_dir: zccache::core::NormalizedPath = cache_root.path().join("zccache-cache").into();
     let server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
     let shutdown = server.shutdown_handle();
+    // #1322 unmasked a deadlock here: `run()` below holds this mutex for the
+    // daemon's entire lifetime, so the mid-loop
+    // `server.lock().await.profile_snapshot()` this replaces could never
+    // acquire it and the test hung forever. It was invisible while the test
+    // still died at `bind` in two seconds. Sample through a lock-free handle
+    // taken before the server moves into the run task.
+    let profile_handle = server.profile_handle();
     let server = Arc::new(Mutex::new(server));
     let server_clone = Arc::clone(&server);
     let handle = tokio::spawn(async move {
@@ -511,7 +518,7 @@ async fn cold_path_stress_profile() {
 
         // Take cumulative snapshot — we'll use the latest snapshot per size
         // since the profiler gives averages across all requests.
-        let profile = server.lock().await.profile_snapshot();
+        let profile = profile_handle.snapshot();
         all_results.push((file_count, cold_result, profile.clone()));
 
         eprintln!();
