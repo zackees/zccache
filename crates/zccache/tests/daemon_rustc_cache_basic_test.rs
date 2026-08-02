@@ -77,12 +77,22 @@ async fn compile(
         .await
         .unwrap();
 
-    match client.recv().await.unwrap() {
-        Some(Response::CompileResult {
-            exit_code, cached, ..
-        }) => (exit_code, cached),
-        Some(Response::Error { message }) => panic!("compile error: {message}"),
-        other => panic!("unexpected response: {other:?}"),
+    // #1216 pushes non-terminal `CompileProgress` heartbeats on the same
+    // connection while a compile is queued or running. The real wrapper
+    // swallows them (`wrap/ipc.rs`); this helper predates the feature and
+    // treated the first frame as terminal, so it panicked with
+    // "unexpected response: Some(CompileProgress { .. })" as soon as a compile
+    // took long enough to emit one. Nothing caught it because this file is
+    // `#[ignore]`d and CI does not run it (#1322).
+    loop {
+        match client.recv().await.unwrap() {
+            Some(Response::CompileProgress { .. }) => continue,
+            Some(Response::CompileResult {
+                exit_code, cached, ..
+            }) => return (exit_code, cached),
+            Some(Response::Error { message }) => panic!("compile error: {message}"),
+            other => panic!("unexpected response: {other:?}"),
+        }
     }
 }
 
