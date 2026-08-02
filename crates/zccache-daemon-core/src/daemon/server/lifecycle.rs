@@ -380,6 +380,23 @@ impl DaemonServer {
         self.state.profiler.snapshot()
     }
 
+    /// Cloneable handle for sampling the phase profiler *while the server is
+    /// running* (for benchmarks).
+    ///
+    /// `profile_snapshot` takes `&self`, so a profiling test that hands the
+    /// server to a `run()` task can only reach it by wrapping the server in a
+    /// `Mutex` — and `run()` holds that lock for the daemon's entire lifetime,
+    /// so any mid-run `lock().await.profile_snapshot()` deadlocks. Take this
+    /// handle *before* moving the server into the task and sample without
+    /// locking. See `daemon_cold_path_profile_test`.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn profile_handle(&self) -> ProfileHandle {
+        ProfileHandle {
+            state: Arc::clone(&self.state),
+        }
+    }
+
     /// Test-only seam: exercise the DashMap → on-disk-`ArtifactStore`
     /// fallback used by every artifact-lookup site.
     ///
@@ -569,5 +586,22 @@ mod tests {
             "first compile must see the loaded warm graph instead of the empty default"
         );
         assert!(state.dep_graph_persisted.load(Ordering::Acquire));
+    }
+}
+
+/// Lock-free handle for sampling a running daemon's phase profiler.
+///
+/// See [`DaemonServer::profile_handle`] for why this exists.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct ProfileHandle {
+    state: Arc<SharedState>,
+}
+
+impl ProfileHandle {
+    /// Snapshot the phase profiler without acquiring any lock.
+    #[must_use]
+    pub fn snapshot(&self) -> super::super::stats::ProfileSnapshot {
+        self.state.profiler.snapshot()
     }
 }

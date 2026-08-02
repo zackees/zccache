@@ -217,12 +217,17 @@ async fn compile_one(
         })
         .await
         .unwrap();
-    let (exit_code, cached) = match client.recv::<Response>().await.unwrap() {
-        Some(Response::CompileResult {
-            exit_code, cached, ..
-        }) => (exit_code, cached),
-        Some(Response::Error { message }) => panic!("compile error: {message}"),
-        other => panic!("expected CompileResult, got: {other:?}"),
+    // #1337: CompileProgress heartbeats (#1216) are non-terminal frames on
+    // this same connection; only a CompileResult ends the exchange.
+    let (exit_code, cached) = loop {
+        match client.recv::<Response>().await.unwrap() {
+            Some(Response::CompileProgress { .. }) => continue,
+            Some(Response::CompileResult {
+                exit_code, cached, ..
+            }) => break (exit_code, cached),
+            Some(Response::Error { message }) => panic!("compile error: {message}"),
+            other => panic!("expected CompileResult, got: {other:?}"),
+        }
     };
     (exit_code, cached, start.elapsed())
 }
@@ -421,8 +426,21 @@ async fn cold_path_stress_profile() {
     // Single daemon for all sizes — avoids index.redb lock contention.
     // We take profiler snapshots before/after each size to compute per-size averages.
     let endpoint = zccache::ipc::unique_test_endpoint();
-    let server = DaemonServer::bind(&endpoint).unwrap();
+    // #1322: bind an isolated cache root. Plain `bind` inherits the
+    // process-global cache dir, so this test failed on any machine with a live
+    // daemon: "another live daemon already holds this cache root as its
+    // writer" — before reaching any compile.
+    let cache_root = tempfile::tempdir().expect("daemon cache tempdir");
+    let cache_dir: zccache::core::NormalizedPath = cache_root.path().join("zccache-cache").into();
+    let server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
     let shutdown = server.shutdown_handle();
+    // #1322 unmasked a deadlock here: `run()` below holds this mutex for the
+    // daemon's entire lifetime, so the mid-loop
+    // `server.lock().await.profile_snapshot()` this replaces could never
+    // acquire it and the test hung forever. It was invisible while the test
+    // still died at `bind` in two seconds. Sample through a lock-free handle
+    // taken before the server moves into the run task.
+    let profile_handle = server.profile_handle();
     let server = Arc::new(Mutex::new(server));
     let server_clone = Arc::clone(&server);
     let handle = tokio::spawn(async move {
@@ -500,7 +518,7 @@ async fn cold_path_stress_profile() {
 
         // Take cumulative snapshot — we'll use the latest snapshot per size
         // since the profiler gives averages across all requests.
-        let profile = server.lock().await.profile_snapshot();
+        let profile = profile_handle.snapshot();
         all_results.push((file_count, cold_result, profile.clone()));
 
         eprintln!();
@@ -622,7 +640,13 @@ async fn cold_path_concurrent_stress() {
 
     // Single daemon serving all sessions
     let endpoint = zccache::ipc::unique_test_endpoint();
-    let server = DaemonServer::bind(&endpoint).unwrap();
+    // #1322: bind an isolated cache root. Plain `bind` inherits the
+    // process-global cache dir, so this test failed on any machine with a live
+    // daemon: "another live daemon already holds this cache root as its
+    // writer" — before reaching any compile.
+    let cache_root = tempfile::tempdir().expect("daemon cache tempdir");
+    let cache_dir: zccache::core::NormalizedPath = cache_root.path().join("zccache-cache").into();
+    let server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
     let shutdown = server.shutdown_handle();
     let server = Arc::new(Mutex::new(server));
     let server_clone = Arc::clone(&server);
@@ -753,7 +777,13 @@ async fn cold_path_first_file_penalty() {
 
     // Single daemon for all trials
     let endpoint = zccache::ipc::unique_test_endpoint();
-    let mut server = DaemonServer::bind(&endpoint).unwrap();
+    // #1322: bind an isolated cache root. Plain `bind` inherits the
+    // process-global cache dir, so this test failed on any machine with a live
+    // daemon: "another live daemon already holds this cache root as its
+    // writer" — before reaching any compile.
+    let cache_root = tempfile::tempdir().expect("daemon cache tempdir");
+    let cache_dir: zccache::core::NormalizedPath = cache_root.path().join("zccache-cache").into();
+    let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move { server.run(0).await.unwrap() });
     tokio::time::sleep(Duration::from_millis(100)).await;
