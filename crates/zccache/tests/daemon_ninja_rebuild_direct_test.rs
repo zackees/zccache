@@ -205,14 +205,20 @@ async fn build_all_ipc(
             .await
             .unwrap();
 
-        match client.recv().await.unwrap() {
-            Some(Response::CompileResult {
-                exit_code, cached, ..
-            }) => {
-                results.push((name, exit_code, cached));
+        // #1337: heartbeats (#1216) are non-terminal frames on this same
+        // connection; only a CompileResult ends the exchange.
+        loop {
+            match client.recv().await.unwrap() {
+                Some(Response::CompileProgress { .. }) => continue,
+                Some(Response::CompileResult {
+                    exit_code, cached, ..
+                }) => {
+                    results.push((name, exit_code, cached));
+                    break;
+                }
+                Some(Response::Error { message }) => panic!("compile error: {message}"),
+                other => panic!("expected CompileResult, got: {other:?}"),
             }
-            Some(Response::Error { message }) => panic!("compile error: {message}"),
-            other => panic!("expected CompileResult, got: {other:?}"),
         }
     }
 
@@ -610,12 +616,16 @@ async fn ninja_concurrent_cold_build() {
             .unwrap();
 
             let name = src.file_name().unwrap().to_string_lossy().into_owned();
-            match conn.recv().await.unwrap() {
-                Some(Response::CompileResult {
-                    exit_code, cached, ..
-                }) => (name, exit_code, cached),
-                Some(Response::Error { message }) => panic!("{name}: {message}"),
-                other => panic!("{name}: unexpected response: {other:?}"),
+            loop {
+                match conn.recv().await.unwrap() {
+                    // #1337: heartbeats are non-terminal.
+                    Some(Response::CompileProgress { .. }) => continue,
+                    Some(Response::CompileResult {
+                        exit_code, cached, ..
+                    }) => break (name, exit_code, cached),
+                    Some(Response::Error { message }) => panic!("{name}: {message}"),
+                    other => panic!("{name}: unexpected response: {other:?}"),
+                }
             }
         }));
     }

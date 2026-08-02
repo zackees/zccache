@@ -206,19 +206,27 @@ async fn compile_rustc(
         .await
         .expect("send Compile");
 
-    match client.recv().await.expect("recv CompileResult") {
-        Some(Response::CompileResult {
-            exit_code,
-            stderr,
-            cached,
-            ..
-        }) => CompileOutcome {
-            exit_code,
-            stderr: (*stderr).clone(),
-            cached,
-        },
-        Some(Response::Error { message }) => panic!("compile error: {message}"),
-        other => panic!("expected CompileResult, got {other:?}"),
+    // #1337: CompileProgress heartbeats (#1216) are non-terminal frames
+    // delivered on this same connection; only a CompileResult ends the
+    // exchange.
+    loop {
+        match client.recv().await.expect("recv CompileResult") {
+            Some(Response::CompileProgress { .. }) => continue,
+            Some(Response::CompileResult {
+                exit_code,
+                stderr,
+                cached,
+                ..
+            }) => {
+                break CompileOutcome {
+                    exit_code,
+                    stderr: (*stderr).clone(),
+                    cached,
+                }
+            }
+            Some(Response::Error { message }) => panic!("compile error: {message}"),
+            other => panic!("expected CompileResult, got {other:?}"),
+        }
     }
 }
 
