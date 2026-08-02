@@ -822,7 +822,13 @@ async fn reaping_removes_a_session_whose_client_died() {
         });
     assert_eq!(daemon.state.sessions.active_count(), 2);
 
-    reap_finished_sessions_with(&daemon.state, only_dead_client_is_gone);
+    // #1324: zero grace so these exercise reclamation itself, not the
+    // idle window that protects an in-use session from its exited starter.
+    reap_finished_sessions_with_grace(
+        &daemon.state,
+        only_dead_client_is_gone,
+        std::time::Duration::ZERO,
+    );
 
     // The crashed client is the case that leaked without bound: it never sent
     // SessionEnd, so nothing else would ever have removed it.
@@ -869,7 +875,13 @@ async fn reaping_is_a_noop_when_every_client_is_alive() {
     // for the life of the daemon, so a reaper that eventually evicted live
     // sessions would surface as builds mysteriously losing their session.
     for _ in 0..3 {
-        reap_finished_sessions_with(&daemon.state, only_dead_client_is_gone);
+        // #1324: zero grace so these exercise reclamation itself, not the
+        // idle window that protects an in-use session from its exited starter.
+        reap_finished_sessions_with_grace(
+            &daemon.state,
+            only_dead_client_is_gone,
+            std::time::Duration::ZERO,
+        );
     }
 
     assert!(daemon.state.sessions.context_count(&live).is_some());
@@ -1000,7 +1012,13 @@ async fn reaping_writes_a_durable_event_only_when_it_reclaims_something() {
     );
 
     let quiet_before = sessions_reaped_rows();
-    reap_finished_sessions_with(&daemon.state, only_dead_client_is_gone);
+    // #1324: zero grace so these exercise reclamation itself, not the
+    // idle window that protects an in-use session from its exited starter.
+    reap_finished_sessions_with_grace(
+        &daemon.state,
+        only_dead_client_is_gone,
+        std::time::Duration::ZERO,
+    );
     assert_eq!(
         sessions_reaped_rows(),
         quiet_before,
@@ -1021,7 +1039,13 @@ async fn reaping_writes_a_durable_event_only_when_it_reclaims_something() {
             owner_pids: Vec::new(),
         });
 
-    reap_finished_sessions_with(&daemon.state, only_dead_client_is_gone);
+    // #1324: zero grace so these exercise reclamation itself, not the
+    // idle window that protects an in-use session from its exited starter.
+    reap_finished_sessions_with_grace(
+        &daemon.state,
+        only_dead_client_is_gone,
+        std::time::Duration::ZERO,
+    );
 
     assert_eq!(
         sessions_reaped_rows(),
