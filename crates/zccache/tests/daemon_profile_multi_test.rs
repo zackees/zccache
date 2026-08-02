@@ -78,7 +78,14 @@ async fn profile_multi_file_warm_path() {
 
     // Start daemon — keep server accessible for profile_snapshot()
     let endpoint = zccache::ipc::unique_test_endpoint();
-    let server = DaemonServer::bind(&endpoint).unwrap();
+    // #1322: bind an isolated cache root. Plain `bind` inherits the
+    // process-global cache dir, so this test fails on any machine with a live
+    // daemon ("another live daemon already holds this cache root as its
+    // writer") and, worse, shares cached artifacts with the developer's own
+    // builds — which for a *profiling* test silently changes what is measured.
+    let cache_root = tempfile::tempdir().expect("daemon cache tempdir");
+    let cache_dir: zccache::core::NormalizedPath = cache_root.path().join("zccache-cache").into();
+    let server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
     let shutdown = server.shutdown_handle();
 
     // We need to share the server so we can call profile_snapshot() later.
@@ -135,11 +142,16 @@ async fn profile_multi_file_warm_path() {
             })
             .await
             .unwrap();
-        match client.recv::<Response>().await.unwrap() {
-            Some(Response::CompileResult { exit_code, .. }) => {
-                assert_eq!(exit_code, 0);
+        loop {
+            match client.recv::<Response>().await.unwrap() {
+                // #1337: heartbeats (#1216) are non-terminal.
+                Some(Response::CompileProgress { .. }) => continue,
+                Some(Response::CompileResult { exit_code, .. }) => {
+                    assert_eq!(exit_code, 0);
+                    break;
+                }
+                other => panic!("expected CompileResult, got: {other:?}"),
             }
-            other => panic!("expected CompileResult, got: {other:?}"),
         }
     }
     eprintln!("  Cold done: {:.3}s\n", t0.elapsed().as_secs_f64());
@@ -165,14 +177,19 @@ async fn profile_multi_file_warm_path() {
             })
             .await
             .unwrap();
-        match client.recv::<Response>().await.unwrap() {
-            Some(Response::CompileResult {
-                exit_code, cached, ..
-            }) => {
-                assert_eq!(exit_code, 0);
-                assert!(cached, "iter {i} should be cached");
+        loop {
+            match client.recv::<Response>().await.unwrap() {
+                // #1337: heartbeats (#1216) are non-terminal.
+                Some(Response::CompileProgress { .. }) => continue,
+                Some(Response::CompileResult {
+                    exit_code, cached, ..
+                }) => {
+                    assert_eq!(exit_code, 0);
+                    assert!(cached, "iter {i} should be cached");
+                    break;
+                }
+                other => panic!("expected CompileResult, got: {other:?}"),
             }
-            other => panic!("expected CompileResult, got: {other:?}"),
         }
         let elapsed = t.elapsed();
         multi_times.push(elapsed);
