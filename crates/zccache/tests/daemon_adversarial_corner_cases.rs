@@ -126,6 +126,12 @@ async fn compile_and_read(
 struct TestHarness {
     clang: NormalizedPath,
     tmp: tempfile::TempDir,
+    /// The daemon's isolated cache root, kept alive for as long as the daemon
+    /// itself (#1328). Binding this to `_cache_root` inside `new()` dropped
+    /// the TempDir the moment the constructor returned, deleting the cache
+    /// directory out from under the still-running daemon — so nothing could
+    /// ever be stored and *every* compile in this harness reported a miss.
+    _cache_root: tempfile::TempDir,
     #[expect(dead_code)]
     endpoint: String,
     server_handle: JoinHandle<()>,
@@ -141,13 +147,14 @@ impl TestHarness {
         let log = tmp.path().join("log.txt");
         let cwd = tmp.path().to_string_lossy().into_owned();
 
-        let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
+        let (endpoint, server_handle, shutdown, cache_root) = start_daemon().await;
         let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
         let session_id = start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
 
         Some(Self {
             clang,
             tmp,
+            _cache_root: cache_root,
             endpoint,
             server_handle,
             shutdown,
