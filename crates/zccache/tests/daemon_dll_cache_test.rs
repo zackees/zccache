@@ -14,18 +14,27 @@ use zccache::daemon::DaemonServer;
 use zccache::protocol::{Request, Response};
 
 /// Helper: start a daemon server on a unique endpoint.
+/// Start a daemon rooted at its own tempdir (#1322).
+///
+/// `DaemonServer::bind` resolves the process-global cache root, so tests using
+/// it collide with any daemon already live on the default root. The `TempDir`
+/// is returned so the caller keeps it alive — dropping it would delete the
+/// cache root out from under the running daemon.
 async fn start_daemon() -> (
     String,
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
+    tempfile::TempDir,
 ) {
     let endpoint = zccache::ipc::unique_test_endpoint();
-    let mut server = DaemonServer::bind(&endpoint).unwrap();
+    let cache_root = tempfile::tempdir().expect("daemon cache tempdir");
+    let cache_dir: zccache::core::NormalizedPath = cache_root.path().join("zccache-cache").into();
+    let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
         server.run(0).await.unwrap();
     });
-    (endpoint, handle, shutdown)
+    (endpoint, handle, shutdown, cache_root)
 }
 
 /// Compile a minimal C source to an object file using gcc.
@@ -68,7 +77,7 @@ async fn test_dll_cache_miss_then_hit() {
 
     let output_dll = tmp.path().join("libmath.dll");
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
 
     // Clear persisted artifacts to ensure test isolation from prior runs
@@ -181,7 +190,7 @@ async fn test_dll_cache_invalidated_on_input_change() {
 
     let output_dll = tmp.path().join("libfunc.dll");
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
 
     // Clear persisted artifacts to ensure test isolation from prior runs
@@ -290,7 +299,7 @@ async fn test_dll_non_deterministic_warning() {
 
     let output_dll = tmp.path().join("libwarn.dll");
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
 
     // Clear persisted artifacts to ensure test isolation from prior runs
@@ -369,7 +378,7 @@ async fn test_exe_cache_miss_then_hit() {
 
     let output_exe = tmp.path().join("main.exe");
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
 
     // Clear persisted artifacts to ensure test isolation from prior runs
@@ -493,7 +502,7 @@ async fn test_clang_link_cache_miss_then_hit() {
         .path()
         .join(if cfg!(windows) { "main.exe" } else { "main" });
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
 
     // Clear persisted artifacts to ensure test isolation
