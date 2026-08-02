@@ -35,7 +35,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "1.13.0"
+version = "1.13.1"
 edition = "2021"
 rust-version = "1.94.1"
 license = "MIT OR Apache-2.0"
@@ -82,7 +82,7 @@ lzma-rs = "0.3"
 sevenz-rust = "0.6"
 rkyv = "0.8"
 mimalloc = "0.1"
-running-process = { version = "4.8.0", git = "https://github.com/zackees/running-process.git", rev = "0374db2b2d3d9f4b4bb8db7c9372855853316f2f", default-features = false, features = ["client-async"] }
+running-process = { version = "4.8.1", git = "https://github.com/zackees/running-process.git", rev = "359b4e3d92660e54eb9b16b6e83de8ce26932ff8", default-features = false, features = ["client-async"] }
 zccache = { path = "crates/zccache" }
 zccache-artifact = { path = "crates/zccache-artifact" }
 zccache-audit = { path = "crates/zccache-audit" }
