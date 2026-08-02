@@ -13,26 +13,41 @@
 use zccache::daemon::DaemonServer;
 use zccache::protocol::{Request, Response};
 
-/// Helper: start a daemon server on a unique endpoint and return the endpoint + shutdown handle.
+/// Helper: start a daemon server on a unique endpoint and return the endpoint +
+/// shutdown handle.
+///
+/// The daemon is rooted at its own tempdir (#1322). `DaemonServer::bind`
+/// resolves the *process-global* cache root, so every test using it contends
+/// with whatever daemon is already live on the developer's or runner's default
+/// root — failing with "another live daemon already holds this cache root as
+/// its writer". `lifecycle.rs` says so directly: everything outside the env
+/// guard "should bind an isolated root ... which needs no global state at all
+/// and therefore cannot participate in the race".
+///
+/// The `TempDir` is returned so the caller keeps it alive; dropping it would
+/// delete the cache root out from under the running daemon.
 async fn start_daemon() -> (
     String,
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
+    tempfile::TempDir,
 ) {
     let endpoint = zccache::ipc::unique_test_endpoint();
-    let mut server = DaemonServer::bind(&endpoint).unwrap();
+    let cache_root = tempfile::tempdir().expect("daemon cache tempdir");
+    let cache_dir: zccache::core::NormalizedPath = cache_root.path().join("zccache-cache").into();
+    let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
         server.run(0).await.unwrap();
     });
-    (endpoint, handle, shutdown)
+    (endpoint, handle, shutdown, cache_root)
 }
 
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC
 async fn test_client_connects_and_pings_daemon() {
     zccache::test_support::test_timeout(async {
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
 
         let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
         client.send(&Request::Ping).await.unwrap();
@@ -49,7 +64,7 @@ async fn test_client_connects_and_pings_daemon() {
 #[ignore] // integration-level: starts real daemon with IPC
 async fn test_multiple_clients_concurrent() {
     zccache::test_support::test_timeout(async {
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
 
         let mut handles = Vec::new();
         for _ in 0..5 {
@@ -76,7 +91,7 @@ async fn test_multiple_clients_concurrent() {
 #[ignore] // integration-level: starts real daemon with IPC
 async fn test_session_start_with_nonexistent_compiler() {
     zccache::test_support::test_timeout(async {
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
 
         let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
         client
@@ -138,7 +153,7 @@ async fn test_session_start_with_clang_toolchain() {
     }
 
     zccache::test_support::test_timeout(async move {
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
 
         let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
         client
@@ -208,7 +223,7 @@ async fn test_full_client_flow() {
     }
 
     zccache::test_support::test_timeout(async move {
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
 
         let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
 
@@ -286,7 +301,7 @@ int main() {
         let output_obj = tmp.path().join("hello.o");
         let depfile = tmp.path().join("hello.d");
 
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
         let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
 
         // Start session with log file

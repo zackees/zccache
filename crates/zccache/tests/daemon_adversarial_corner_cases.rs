@@ -33,14 +33,22 @@ type ClientConn = zccache::ipc::IpcClientConnection;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-async fn start_daemon() -> (String, JoinHandle<()>, Arc<Notify>) {
+/// Start a daemon rooted at its own tempdir (#1322).
+///
+/// `DaemonServer::bind` resolves the process-global cache root, so tests using
+/// it collide with any daemon already live on the default root. The `TempDir`
+/// is returned so the caller keeps it alive — dropping it would delete the
+/// cache root out from under the running daemon.
+async fn start_daemon() -> (String, JoinHandle<()>, Arc<Notify>, tempfile::TempDir) {
     let endpoint = zccache::ipc::unique_test_endpoint();
-    let mut server = DaemonServer::bind(&endpoint).unwrap();
+    let cache_root = tempfile::tempdir().expect("daemon cache tempdir");
+    let cache_dir: zccache::core::NormalizedPath = cache_root.path().join("zccache-cache").into();
+    let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
         server.run(0).await.unwrap();
     });
-    (endpoint, handle, shutdown)
+    (endpoint, handle, shutdown, cache_root)
 }
 
 async fn start_session(
@@ -130,7 +138,7 @@ impl TestHarness {
         let log = tmp.path().join("log.txt");
         let cwd = tmp.path().to_string_lossy().into_owned();
 
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
         let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
         let session_id = start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
 
@@ -281,7 +289,7 @@ async fn corner_cache_survives_session_restart() {
     let log1 = tmp.path().join("log1.txt");
     let log2 = tmp.path().join("log2.txt");
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
 
     // Session A: compile
     let mut client1 = zccache::ipc::connect(&endpoint).await.unwrap();
@@ -360,7 +368,7 @@ async fn corner_thundering_herd_same_file() {
     let src = tmp.path().join("herd.cpp");
     std::fs::write(&src, "int f() { return 42; }\n").unwrap();
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
 
     let n_sessions = 4;
     let mut handles = Vec::new();
@@ -447,7 +455,7 @@ async fn corner_thundering_herd_all_warm() {
     let src = tmp.path().join("warm.cpp");
     std::fs::write(&src, "int f() { return 7; }\n").unwrap();
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
 
     // Warm the cache with a single compile
     {
