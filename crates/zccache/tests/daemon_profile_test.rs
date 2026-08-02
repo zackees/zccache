@@ -244,7 +244,12 @@ async fn profile_compile_phases() {
     use tokio::sync::Mutex;
 
     let endpoint = zccache::ipc::unique_test_endpoint();
-    let server = DaemonServer::bind(&endpoint).unwrap();
+    // #1322: private cache root, else this collides with any daemon already
+    // live on the process-global default. `_cache_root` must outlive the
+    // daemon — dropping it deletes the cache root from under it.
+    let _cache_root = tempfile::tempdir().expect("daemon cache tempdir");
+    let cache_dir: zccache::core::NormalizedPath = _cache_root.path().join("zccache-cache").into();
+    let server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
     let shutdown = server.shutdown_handle();
     let server = Arc::new(Mutex::new(Some(server)));
     let server_clone = Arc::clone(&server);
