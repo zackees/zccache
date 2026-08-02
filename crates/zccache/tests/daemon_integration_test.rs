@@ -346,15 +346,21 @@ int main() {
             .await
             .unwrap();
 
-        let resp: Option<Response> = client.recv().await.unwrap();
-        match resp {
-            Some(Response::CompileResult {
-                exit_code, cached, ..
-            }) => {
-                assert_eq!(exit_code, 0, "first compile should succeed");
-                assert!(!cached, "first compile should be a cache miss");
+        // #1337: heartbeats (#1216) are non-terminal frames on this same
+        // connection; only a CompileResult ends the exchange.
+        loop {
+            let resp: Option<Response> = client.recv().await.unwrap();
+            match resp {
+                Some(Response::CompileProgress { .. }) => continue,
+                Some(Response::CompileResult {
+                    exit_code, cached, ..
+                }) => {
+                    assert_eq!(exit_code, 0, "first compile should succeed");
+                    assert!(!cached, "first compile should be a cache miss");
+                    break;
+                }
+                other => panic!("expected CompileResult, got: {other:?}"),
             }
-            other => panic!("expected CompileResult, got: {other:?}"),
         }
 
         // Verify .o was produced
@@ -389,15 +395,21 @@ int main() {
             .await
             .unwrap();
 
-        let resp: Option<Response> = client.recv().await.unwrap();
-        match resp {
-            Some(Response::CompileResult {
-                exit_code, cached, ..
-            }) => {
-                assert_eq!(exit_code, 0, "second compile should succeed");
-                assert!(cached, "second compile should be a cache hit");
+        // #1337: heartbeats (#1216) are non-terminal frames on this same
+        // connection; only a CompileResult ends the exchange.
+        loop {
+            let resp: Option<Response> = client.recv().await.unwrap();
+            match resp {
+                Some(Response::CompileProgress { .. }) => continue,
+                Some(Response::CompileResult {
+                    exit_code, cached, ..
+                }) => {
+                    assert_eq!(exit_code, 0, "second compile should succeed");
+                    assert!(cached, "second compile should be a cache hit");
+                    break;
+                }
+                other => panic!("expected CompileResult, got: {other:?}"),
             }
-            other => panic!("expected CompileResult, got: {other:?}"),
         }
 
         // Verify .o was restored from cache
