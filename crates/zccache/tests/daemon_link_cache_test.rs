@@ -14,18 +14,27 @@ use zccache::daemon::DaemonServer;
 use zccache::protocol::{Request, Response};
 
 /// Helper: start a daemon server on a unique endpoint.
+/// Start a daemon rooted at its own tempdir (#1322).
+///
+/// `DaemonServer::bind` resolves the process-global cache root, so tests using
+/// it collide with any daemon already live on the default root. The `TempDir`
+/// is returned so the caller keeps it alive — dropping it would delete the
+/// cache root out from under the running daemon.
 async fn start_daemon() -> (
     String,
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
+    tempfile::TempDir,
 ) {
     let endpoint = zccache::ipc::unique_test_endpoint();
-    let mut server = DaemonServer::bind(&endpoint).unwrap();
+    let cache_root = tempfile::tempdir().expect("daemon cache tempdir");
+    let cache_dir: zccache::core::NormalizedPath = cache_root.path().join("zccache-cache").into();
+    let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
         server.run(0).await.unwrap();
     });
-    (endpoint, handle, shutdown)
+    (endpoint, handle, shutdown, cache_root)
 }
 
 /// Create fake object files (ar doesn't validate content).
@@ -156,7 +165,7 @@ async fn test_ar_cache_miss_then_hit() {
 
     let output_lib = tmp.path().join("libfoo.a");
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
 
     // First link — should be a cache miss
@@ -313,7 +322,7 @@ async fn test_link_path_remap_auto_hits_across_sibling_git_roots() {
         "test must use distinct physical output paths"
     );
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
 
     // Clear persisted artifacts to ensure test isolation from prior runs.
@@ -433,7 +442,7 @@ async fn test_link_hit_restores_explicit_map_destination() {
     let mut args = compiler_driver_link_args(&root, &output);
     args.insert(2, "-Wl,-Map,reports/mapped.map".to_string());
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
     client.send(&Request::Clear).await.unwrap();
     let _: Option<Response> = client.recv().await.unwrap();
@@ -494,7 +503,7 @@ async fn test_ar_cache_invalidated_on_input_change() {
 
     let output_lib = tmp.path().join("libbar.a");
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
 
     let make_args = |lib: &std::path::Path, dir: &std::path::Path| -> Vec<String> {
@@ -589,7 +598,7 @@ async fn test_ar_non_deterministic_warning() {
 
     let output_lib = tmp.path().join("libwarn.a");
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
 
     // ar rcs (no D flag) — should warn about non-determinism
@@ -665,7 +674,7 @@ async fn test_ar_non_cacheable_passthrough() {
         .unwrap();
     assert!(status.success(), "ar rcsD should succeed");
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
 
     // ar t (list operation) — non-cacheable, should pass through
@@ -720,7 +729,7 @@ async fn test_link_stats_in_status() {
 
     let output_lib = tmp.path().join("libstats.a");
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
 
     // One deterministic link — cache miss
