@@ -965,8 +965,22 @@ fn reap_finished_sessions(state: &SharedState) {
 /// platform and leaves `is_process_alive` — which has its own tests — as the
 /// only thing depending on OS behaviour.
 fn reap_finished_sessions_with(state: &SharedState, is_alive: impl Fn(u32) -> bool) {
+    reap_finished_sessions_with_grace(
+        state,
+        is_alive,
+        crate::depgraph::session::DEAD_CLIENT_REAP_GRACE,
+    );
+}
+
+/// [`reap_finished_sessions_with`] with the dead-owner grace supplied by the
+/// caller, so tests can exercise reclamation without sleeping for it (#1324).
+fn reap_finished_sessions_with_grace(
+    state: &SharedState,
+    is_alive: impl Fn(u32) -> bool,
+    grace: std::time::Duration,
+) {
     let expired = state.sessions.cleanup_expired();
-    let dead = state.sessions.cleanup_dead_pids(is_alive);
+    let dead = state.sessions.cleanup_dead_pids_idle_for(is_alive, grace);
     let tombstones = reap_ended_session_tombstones(state, ENDED_SESSION_TTL);
     if !expired.is_empty() || !dead.is_empty() || tombstones > 0 {
         tracing::info!(

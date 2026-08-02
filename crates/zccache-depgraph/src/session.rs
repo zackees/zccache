@@ -15,6 +15,24 @@ use zccache_core::NormalizedPath;
 
 use super::context::ContextKey;
 
+/// How long a session must have been idle before a dead owner PID is grounds
+/// to reclaim it (#1324).
+///
+/// `client_pid` is the PID of whoever called `zccache session-start`. That is a
+/// short-lived CLI process which prints the session id and exits, so by the
+/// time any maintenance sweep runs the owner is *always* dead and dead-PID
+/// reaping degenerates into "drop every session on the next sweep". The
+/// sessions it was dropping were live builds: later `zccache <compiler>`
+/// invocations are separate processes that look the session up by id, so they
+/// found nothing and every session-scoped feature (logging, stats, tracking)
+/// silently stopped working while compiles kept succeeding.
+///
+/// Requiring idleness as well keeps #1165's leak protection — an abandoned
+/// session is still reclaimed — without severing one that is in active use.
+/// The window has to exceed a build's longest gap between compile requests,
+/// which is a link step, not a compile.
+pub const DEAD_CLIENT_REAP_GRACE: Duration = Duration::from_secs(15 * 60);
+
 /// Per-session depgraph/artifact lookup outcome counters.
 ///
 /// These counters intentionally separate the #787 failure shapes that the
@@ -427,20 +445,41 @@ impl SessionManager {
         expired
     }
 
-    /// Remove sessions whose client PID is no longer alive.
-    /// The caller provides a function that checks if a PID is alive.
+    /// Remove sessions whose client PID is no longer alive **and** which have
+    /// been idle for at least [`DEAD_CLIENT_REAP_GRACE`].
+    ///
+    /// The idleness half is load-bearing, not belt-and-braces: the owning PID
+    /// is the `zccache session-start` process, which exits immediately, so
+    /// liveness alone marks every session reclaimable the moment it is
+    /// created. See [`DEAD_CLIENT_REAP_GRACE`] for the full account (#1324).
     pub fn cleanup_dead_pids<F>(&self, is_alive: F) -> Vec<Session>
     where
         F: Fn(u32) -> bool,
     {
+        self.cleanup_dead_pids_idle_for(is_alive, DEAD_CLIENT_REAP_GRACE)
+    }
+
+    /// [`cleanup_dead_pids`](Self::cleanup_dead_pids) with an explicit grace
+    /// window, so tests can exercise the policy without sleeping.
+    pub fn cleanup_dead_pids_idle_for<F>(&self, is_alive: F, grace: Duration) -> Vec<Session>
+    where
+        F: Fn(u32) -> bool,
+    {
+        let cutoff = Instant::now().checked_sub(grace);
         let mut dead = Vec::new();
 
         self.sessions.retain(|_, session| {
             if is_alive(session.client_pid) {
-                true
-            } else {
-                dead.push(session.clone());
-                false
+                return true;
+            }
+            // No cutoff means the daemon has been up for less than the grace
+            // window, so nothing can have been idle that long yet.
+            match cutoff {
+                Some(cutoff) if session.last_activity < cutoff => {
+                    dead.push(session.clone());
+                    false
+                }
+                _ => true,
             }
         });
 
@@ -625,11 +664,64 @@ mod tests {
         mgr.create(config2);
         assert_eq!(mgr.active_count(), 2);
 
-        // PID 100 is dead, PID 200 is alive.
+        // PID 100 is dead, PID 200 is alive. Both sessions were just
+        // created, so neither is idle: a dead owner alone is not grounds to
+        // reclaim (#1324). Zero grace is used elsewhere to exercise the
+        // reaping half without sleeping.
         let dead = mgr.cleanup_dead_pids(|pid| pid != 100);
+        assert!(
+            dead.is_empty(),
+            "an active session must survive its owner exiting: {dead:?}"
+        );
+        assert_eq!(mgr.active_count(), 2);
+
+        // With the grace elapsed, the dead-owner session is reclaimed and the
+        // live-owner one is not.
+        let dead = mgr.cleanup_dead_pids_idle_for(|pid| pid != 100, Duration::ZERO);
         assert_eq!(dead.len(), 1);
         assert_eq!(dead[0].client_pid, 100);
         assert_eq!(mgr.active_count(), 1);
+    }
+
+    /// #1324: the owning PID is `zccache session-start`, which exits as soon
+    /// as it prints the session id. Reaping on liveness alone therefore
+    /// discarded every session on the first maintenance sweep, and the later
+    /// `zccache <compiler>` processes — separate PIDs looking the session up
+    /// by id — found nothing. Compiles still succeeded, so the only visible
+    /// symptom was that session-scoped features quietly did nothing.
+    #[test]
+    fn a_session_whose_starter_exited_survives_while_it_is_in_use() {
+        let mgr = SessionManager::new(Duration::from_secs(900));
+        let mut config = test_config();
+        config.client_pid = 4242;
+        let id = mgr.create(config);
+
+        // The starter process is gone — as it always is by this point.
+        let dead = mgr.cleanup_dead_pids(|_| false);
+
+        assert!(
+            dead.is_empty(),
+            "the session must outlive the CLI that registered it"
+        );
+        assert!(
+            mgr.exists(&id),
+            "a build's session must still resolve after `session-start` exits"
+        );
+    }
+
+    /// The leak protection #1165 added still has to work: an abandoned
+    /// session with a dead owner is reclaimed once it goes idle.
+    #[test]
+    fn an_idle_session_with_a_dead_owner_is_still_reclaimed() {
+        let mgr = SessionManager::new(Duration::from_secs(900));
+        let mut config = test_config();
+        config.client_pid = 4242;
+        let id = mgr.create(config);
+
+        let dead = mgr.cleanup_dead_pids_idle_for(|_| false, Duration::ZERO);
+
+        assert_eq!(dead.len(), 1, "abandoned sessions must not accumulate");
+        assert!(!mgr.exists(&id));
     }
 
     #[test]
