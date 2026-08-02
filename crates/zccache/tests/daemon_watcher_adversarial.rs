@@ -35,14 +35,22 @@ type ClientConn = zccache::ipc::IpcClientConnection;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-async fn start_daemon() -> (String, JoinHandle<()>, Arc<Notify>) {
+/// Start a daemon on a unique endpoint with an isolated cache root (#1322).
+///
+/// Plain `DaemonServer::bind` inherits the process-global cache dir, so every
+/// test here failed on any machine with a live daemon: "another live daemon
+/// already holds this cache root as its writer". The returned `TempDir` must
+/// be kept alive by the caller for as long as the daemon runs.
+async fn start_daemon() -> (String, JoinHandle<()>, Arc<Notify>, tempfile::TempDir) {
     let endpoint = zccache::ipc::unique_test_endpoint();
-    let mut server = DaemonServer::bind(&endpoint).unwrap();
+    let cache_root = tempfile::tempdir().expect("daemon cache tempdir");
+    let cache_dir: zccache::core::NormalizedPath = cache_root.path().join("zccache-cache").into();
+    let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
         server.run(0).await.unwrap();
     });
-    (endpoint, handle, shutdown)
+    (endpoint, handle, shutdown, cache_root)
 }
 
 async fn start_session(
@@ -89,12 +97,15 @@ async fn compile_and_read(
         .await
         .unwrap();
 
-    let (exit_code, cached) = match client.recv().await.unwrap() {
-        Some(Response::CompileResult {
-            exit_code, cached, ..
-        }) => (exit_code, cached),
-        Some(Response::Error { message }) => panic!("compile error: {message}"),
-        other => panic!("expected CompileResult, got: {other:?}"),
+    let (exit_code, cached) = loop {
+        match client.recv().await.unwrap() {
+            Some(Response::CompileProgress { .. }) => continue,
+            Some(Response::CompileResult {
+                exit_code, cached, ..
+            }) => break (exit_code, cached),
+            Some(Response::Error { message }) => panic!("compile error: {message}"),
+            other => panic!("expected CompileResult, got: {other:?}"),
+        }
     };
     let obj_data = if obj_path.exists() {
         std::fs::read(obj_path).unwrap()
@@ -145,6 +156,9 @@ struct TestHarness {
     shutdown: Arc<Notify>,
     client: ClientConn,
     session_id: String,
+    /// Kept alive for the daemon's lifetime: dropping it deletes the isolated
+    /// cache root out from under the still-running server (#1322).
+    _cache_root: tempfile::TempDir,
 }
 
 impl TestHarness {
@@ -154,7 +168,7 @@ impl TestHarness {
         let log = tmp.path().join("log.txt");
         let cwd = tmp.path().to_string_lossy().into_owned();
 
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let (endpoint, server_handle, shutdown, cache_root) = start_daemon().await;
         let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
         let session_id = start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
 
@@ -169,6 +183,7 @@ impl TestHarness {
             shutdown,
             client,
             session_id,
+            _cache_root: cache_root,
         })
     }
 
