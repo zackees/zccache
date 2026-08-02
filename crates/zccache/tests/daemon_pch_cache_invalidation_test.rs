@@ -29,16 +29,25 @@ type ClientConn = zccache::ipc::IpcConnection;
 #[cfg(windows)]
 type ClientConn = zccache::ipc::IpcClientConnection;
 
+/// Start a daemon rooted at its own tempdir (#1322).
+///
+/// `DaemonServer::bind` resolves the process-global cache root, so tests using
+/// it collide with any daemon already live on the default root. The `TempDir`
+/// is returned so the caller keeps it alive — dropping it would delete the
+/// cache root out from under the running daemon.
 async fn start_daemon() -> (
     String,
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
+    tempfile::TempDir,
 ) {
     let endpoint = zccache::ipc::unique_test_endpoint();
-    let mut server = DaemonServer::bind(&endpoint).unwrap();
+    let cache_root = tempfile::tempdir().expect("daemon cache tempdir");
+    let cache_dir: zccache::core::NormalizedPath = cache_root.path().join("zccache-cache").into();
+    let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move { server.run(0).await.unwrap() });
-    (endpoint, handle, shutdown)
+    (endpoint, handle, shutdown, cache_root)
 }
 
 async fn start_session(client: &mut ClientConn, cwd: &str, log_file: &str) -> String {
@@ -144,7 +153,7 @@ async fn pch_sub_header_change_invalidates_cache() {
     .unwrap();
     std::fs::write(&source, "int main() { return SUB_VALUE; }\n").unwrap();
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
     let sid = start_session(&mut client, &cwd, &log.to_string_lossy()).await;
 
@@ -321,7 +330,7 @@ async fn pch_build_dir_separation_sub_header_change() {
     .unwrap();
     std::fs::write(&source, "int main() { return SUB_VALUE; }\n").unwrap();
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
     let sid = start_session(&mut client, &cwd, &log.to_string_lossy()).await;
 
@@ -478,7 +487,7 @@ async fn pch_chained_sub_header_change() {
     .unwrap();
     std::fs::write(&source, "int main() { return SUB_VALUE + TEST_EXTRA; }\n").unwrap();
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
     let sid = start_session(&mut client, &cwd, &log.to_string_lossy()).await;
 
@@ -731,7 +740,7 @@ async fn pch_rebuild_no_spurious_output_in_source_tree() {
     let pch_output = build_dir.join("pch.h.pch");
     let main_obj = build_dir.join("main.o");
 
-    let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
     let sid = start_session(&mut client, &cwd, &log.to_string_lossy()).await;
 
