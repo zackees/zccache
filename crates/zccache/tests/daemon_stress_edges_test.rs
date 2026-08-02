@@ -97,12 +97,15 @@ async fn compile_with_env(
         })
         .await
         .unwrap();
-    match client.recv().await.unwrap() {
-        Some(Response::CompileResult {
-            exit_code, cached, ..
-        }) => (exit_code, cached),
-        Some(Response::Error { message }) => panic!("compile error: {message}"),
-        other => panic!("expected CompileResult, got: {other:?}"),
+    loop {
+        match client.recv().await.unwrap() {
+            Some(Response::CompileProgress { .. }) => continue,
+            Some(Response::CompileResult {
+                exit_code, cached, ..
+            }) => break (exit_code, cached),
+            Some(Response::Error { message }) => panic!("compile error: {message}"),
+            other => panic!("expected CompileResult, got: {other:?}"),
+        }
     }
 }
 

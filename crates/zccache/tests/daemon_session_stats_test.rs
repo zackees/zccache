@@ -93,11 +93,14 @@ async fn compile(
         .await
         .unwrap();
 
-    match client.recv().await.unwrap() {
-        Some(Response::CompileResult {
-            exit_code, cached, ..
-        }) => (exit_code, cached),
-        other => panic!("expected CompileResult, got: {other:?}"),
+    loop {
+        match client.recv().await.unwrap() {
+            Some(Response::CompileProgress { .. }) => continue,
+            Some(Response::CompileResult {
+                exit_code, cached, ..
+            }) => break (exit_code, cached),
+            other => panic!("expected CompileResult, got: {other:?}"),
+        }
     }
 }
 

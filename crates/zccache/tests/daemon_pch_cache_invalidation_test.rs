@@ -88,15 +88,18 @@ async fn compile_raw(
         .await
         .unwrap();
 
-    match client.recv().await.unwrap() {
-        Some(Response::CompileResult {
-            exit_code,
-            cached,
-            stderr,
-            ..
-        }) => (exit_code, cached, (*stderr).clone()),
-        Some(Response::Error { message }) => panic!("compile error: {message}"),
-        other => panic!("expected CompileResult, got: {other:?}"),
+    loop {
+        match client.recv().await.unwrap() {
+            Some(Response::CompileProgress { .. }) => continue,
+            Some(Response::CompileResult {
+                exit_code,
+                cached,
+                stderr,
+                ..
+            }) => break (exit_code, cached, (*stderr).clone()),
+            Some(Response::Error { message }) => panic!("compile error: {message}"),
+            other => panic!("expected CompileResult, got: {other:?}"),
+        }
     }
 }
 

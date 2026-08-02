@@ -108,10 +108,13 @@ async fn compile_one(
         })
         .await
         .unwrap();
-    match client.recv().await.unwrap() {
-        Some(Response::CompileResult { exit_code, .. }) => exit_code,
-        Some(Response::Error { message }) => panic!("compile error: {message}"),
-        other => panic!("expected CompileResult, got: {other:?}"),
+    loop {
+        match client.recv().await.unwrap() {
+            Some(Response::CompileProgress { .. }) => continue,
+            Some(Response::CompileResult { exit_code, .. }) => break exit_code,
+            Some(Response::Error { message }) => panic!("compile error: {message}"),
+            other => panic!("expected CompileResult, got: {other:?}"),
+        }
     }
 }
 
