@@ -31,18 +31,30 @@ type ClientConn = zccache::ipc::IpcClientConnection;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/// Start a daemon on a unique endpoint with an isolated cache root (#1322,
+/// #1330).
+///
+/// The returned `TempDir` MUST be kept alive for as long as the daemon runs.
+/// Binding it to `_cache_root` in a caller that returns (a `new()`
+/// constructor, say) drops it immediately and deletes the cache directory out
+/// from under the running daemon — the daemon then stores nothing and every
+/// compile reports a miss, which looks exactly like a cold-cache failure.
+/// That is #1328.
 async fn start_daemon() -> (
     String,
     tokio::task::JoinHandle<()>,
     std::sync::Arc<tokio::sync::Notify>,
+    tempfile::TempDir,
 ) {
     let endpoint = zccache::ipc::unique_test_endpoint();
-    let mut server = DaemonServer::bind(&endpoint).unwrap();
+    let cache_root = tempfile::tempdir().expect("daemon cache tempdir");
+    let cache_dir: zccache::core::NormalizedPath = cache_root.path().join("zccache-cache").into();
+    let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
         server.run(0).await.unwrap();
     });
-    (endpoint, handle, shutdown)
+    (endpoint, handle, shutdown, cache_root)
 }
 
 async fn start_session(
@@ -122,6 +134,8 @@ async fn compile_and_read(
 struct TestHarness {
     clang: NormalizedPath,
     tmp: tempfile::TempDir,
+    /// Kept alive for the daemon's lifetime — see `start_daemon` (#1328).
+    _cache_root: tempfile::TempDir,
     #[expect(dead_code)]
     endpoint: String,
     server_handle: tokio::task::JoinHandle<()>,
@@ -137,13 +151,14 @@ impl TestHarness {
         let log = tmp.path().join("log.txt");
         let cwd = tmp.path().to_string_lossy().into_owned();
 
-        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let (endpoint, server_handle, shutdown, cache_root) = start_daemon().await;
         let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
         let session_id = start_session(&mut client, &clang, &cwd, &log.to_string_lossy()).await;
 
         Some(Self {
             clang,
             tmp,
+            _cache_root: cache_root,
             endpoint,
             server_handle,
             shutdown,
