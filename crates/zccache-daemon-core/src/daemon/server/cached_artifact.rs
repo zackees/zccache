@@ -3,7 +3,7 @@
 //! `CachedArtifact` is the daemon's per-key view of a cached compilation:
 //! metadata plus either resident bytes or pointers to on-disk payload files.
 //! `ensure_payloads` lazily resolves the payload slice from the artifact dir,
-//! and `migrate_meta_files` upgrades legacy `.meta` blobs to the redb-backed
+//! and `migrate_meta_files` upgrades legacy `.meta` blobs into the bincode
 //! `ArtifactStore` on first startup after an upgrade.
 
 use super::*;
