@@ -178,3 +178,52 @@ This was already recorded in memory as "Validating soldr output on Windows" and
 I still repeated it, which is the actual lesson: the failure mode is silent and
 looks exactly like success, so the filter has to be structurally incapable of
 lying rather than merely correct on the day it was written.
+
+## Removing a database can remove serialization you never knew you relied on
+
+#1352 replaced `KvStore`'s redb backend with one file per key. The public API,
+the CLI surface, and every functional test were preserved, and the unit tests
+passed first try. The stress suite did not: `c1_thundering_herd_same_key`
+(16 threads x 100 writes to one key) failed immediately with
+`ERROR_ACCESS_DENIED` on Windows.
+
+The cause was not in the new code. It was in what the old code had been doing
+for free. Every write to a key went through one redb write transaction, so
+same-key writers were **serialized by the database** as a side effect of
+durability. File-per-key deletes that serialization — which is the entire point
+of the change — but `MOVEFILE_REPLACE_EXISTING` cannot start while another
+handle is open on the destination, so concurrent same-key renames collide.
+
+The fix needed two mechanisms, and the first alone was not enough: a bounded
+retry on the transient Windows sharing errors could not converge against 1,600
+renames onto one path, because the destination is open essentially always. It
+took sharded per-key mutexes held across the rename only. **I found that out by
+running the test, not by reasoning about it** — the retry looked obviously
+sufficient right up until it wasn't.
+
+Lesson: when you remove a component, enumerate the *incidental* guarantees it
+was providing, not just the advertised ones. A database gives you serialization,
+ordering, and atomicity across keys whether or not you asked for them. Then
+trust the concurrency tests over your model of the change: the functional tests
+all passed while the design was still wrong.
+
+## Docs that describe a removed subsystem are an active liability
+
+A user reported `redb: Database already open. Cannot acquire lock.` The
+investigation started in zccache and stayed there for a while, because
+`crates/CLAUDE.md` said "redb MVCC for artifact index" and
+`architecture/artifact-store.md` documented a two-table redb schema. Both had
+been false since the index moved to a bincode blob. The error was in a different
+repository entirely (soldr's `state.redb`).
+
+Worse, soldr#1814 had already done exactly this audit months earlier and reached
+the same conclusion. The stale docs did not just slow one investigation down —
+they caused a completed one to be repeated from scratch.
+
+Lesson: when a subsystem is replaced, the doc sweep is part of the change, not
+cleanup to schedule later. Grep for the old technology's name across `docs/`,
+`README.md`, and every `CLAUDE.md`, and check test/bench identifiers too —
+`run_strategy_*_redb` names survived on functions that call the bincode store,
+which would have misled the next person profiling persistence. Mark superseded
+ADRs superseded rather than rewriting them; the reason a decision changed is
+usually more useful than the decision.
