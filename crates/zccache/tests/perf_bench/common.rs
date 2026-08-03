@@ -337,6 +337,25 @@ pub fn stop_sccache(sccache: &Path) {
     std::env::remove_var("SCCACHE_DIR");
 }
 
+/// Receive the terminal response for a compile request, ignoring heartbeats.
+pub async fn recv_compile_result(
+    client: &mut ClientConn,
+) -> (i32, std::sync::Arc<Vec<u8>>, std::sync::Arc<Vec<u8>>, bool) {
+    loop {
+        match client.recv().await.unwrap() {
+            Some(Response::CompileProgress { .. }) => continue,
+            Some(Response::CompileResult {
+                exit_code,
+                stdout,
+                stderr,
+                cached,
+            }) => return (exit_code, stdout, stderr, cached),
+            Some(Response::Error { message }) => panic!("compile error: {message}"),
+            other => panic!("expected CompileResult, got: {other:?}"),
+        }
+    }
+}
+
 pub async fn clear_zccache(client: &mut ClientConn) {
     client.send(&Request::Clear).await.unwrap();
     match client.recv().await.unwrap() {

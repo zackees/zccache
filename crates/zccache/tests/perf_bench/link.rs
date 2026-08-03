@@ -16,9 +16,9 @@ use zccache::protocol::{Request, Response};
 
 use super::common::{
     clean_link_outputs, clear_dir_contents, clear_zccache, dir_size_bytes, find_sccache, fmt_bytes,
-    fmt_dur, fmt_ratio, median, print_trials, run_tool_timed, start_daemon, start_fresh_sccache,
-    stop_sccache, try_run_sccache_tool_timed, try_run_tool, ClientConn, NUM_FILES, RUSTC_NUM_FILES,
-    WARM_TRIALS,
+    fmt_dur, fmt_ratio, median, print_trials, recv_compile_result, run_tool_timed, start_daemon,
+    start_fresh_sccache, stop_sccache, try_run_sccache_tool_timed, try_run_tool, ClientConn,
+    NUM_FILES, RUSTC_NUM_FILES, WARM_TRIALS,
 };
 use super::cpp_project::{generate_project, source_names};
 use super::rust_project::{
@@ -480,27 +480,17 @@ pub async fn run_zccache_rust_final_link_timed(
     // link/compile during recv(), so stopping the clock before it timed only
     // the IPC send (~0.000s) and made every link benchmark report a bogus
     // 0.000s cold/warm with absurd speedup ratios.
-    let response = client.recv().await.unwrap();
+    let (exit_code, _, stderr, cached) = recv_compile_result(client).await;
     let elapsed = start.elapsed();
-    match response {
-        Some(Response::CompileResult {
-            exit_code,
-            stderr,
-            cached,
-            ..
-        }) => {
-            assert_eq!(
-                exit_code,
-                0,
-                "zccache Rust link failed:\n{}",
-                String::from_utf8_lossy(&stderr)
-            );
-            assert_eq!(
-                cached, expected_cached,
-                "zccache Rust link cached={cached}, expected {expected_cached}"
-            );
-        }
-        other => panic!("expected CompileResult, got: {other:?}"),
-    }
+    assert_eq!(
+        exit_code,
+        0,
+        "zccache Rust link failed:\n{}",
+        String::from_utf8_lossy(&stderr)
+    );
+    assert_eq!(
+        cached, expected_cached,
+        "zccache Rust link cached={cached}, expected {expected_cached}"
+    );
     elapsed
 }

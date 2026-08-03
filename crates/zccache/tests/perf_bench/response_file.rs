@@ -11,9 +11,11 @@
 
 use std::path::Path;
 use std::time::{Duration, Instant};
-use zccache::protocol::{Request, Response};
+use zccache::protocol::Request;
 
-use super::common::{clean_objects, ClientConn, NUM_FILES, RSP_NUM_DEFINES, RSP_NUM_INCLUDES};
+use super::common::{
+    clean_objects, recv_compile_result, ClientConn, NUM_FILES, RSP_NUM_DEFINES, RSP_NUM_INCLUDES,
+};
 
 // ── Response-file generation ─────────────────────────────────────────────
 
@@ -194,12 +196,8 @@ pub async fn zccache_compile_single_rsp(
             })
             .await
             .unwrap();
-        match client.recv().await.unwrap() {
-            Some(Response::CompileResult { exit_code, .. }) => {
-                assert_eq!(exit_code, 0, "rsp compile failed for {src}");
-            }
-            other => panic!("expected CompileResult, got: {other:?}"),
-        }
+        let (exit_code, ..) = recv_compile_result(client).await;
+        assert_eq!(exit_code, 0, "rsp compile failed for {src}");
     }
     start.elapsed()
 }
@@ -223,11 +221,7 @@ pub async fn zccache_compile_multi_rsp(
         })
         .await
         .unwrap();
-    match client.recv().await.unwrap() {
-        Some(Response::CompileResult { exit_code, .. }) => {
-            assert_eq!(exit_code, 0, "multi-file rsp compile failed");
-        }
-        other => panic!("expected CompileResult, got: {other:?}"),
-    }
+    let (exit_code, ..) = recv_compile_result(client).await;
+    assert_eq!(exit_code, 0, "multi-file rsp compile failed");
     start.elapsed()
 }
