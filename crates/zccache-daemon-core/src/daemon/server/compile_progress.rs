@@ -115,6 +115,45 @@ pub(in crate::daemon) struct CompileQueueGuard {
     admitted: bool,
 }
 
+/// Owns one admitted compile slot and its queue-accounting guard.
+///
+/// Field order intentionally drops the semaphore permit first, then updates
+/// the diagnostic gauge, matching the inline production sequence this type
+/// replaces.
+pub(in crate::daemon) struct CompileGateGuard {
+    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    _queue_guard: CompileQueueGuard,
+}
+
+/// Enter the production compile gate while publishing queue progress.
+///
+/// Returns the available-permit count sampled before waiting so the existing
+/// `compile_start` diagnostic can retain its exact payload.
+pub(in crate::daemon) async fn acquire_compile_gate(
+    semaphore: Option<&Arc<tokio::sync::Semaphore>>,
+    gauge: &Arc<CompileQueueGauge>,
+) -> (CompileGateGuard, Option<usize>) {
+    let mut queue_guard = gauge.enqueue();
+    let (permit, available_before) = if let Some(semaphore) = semaphore {
+        let available_before = semaphore.available_permits();
+        let permit = Arc::clone(semaphore)
+            .acquire_owned()
+            .await
+            .expect("compile concurrency semaphore must remain open");
+        (Some(permit), Some(available_before))
+    } else {
+        (None, None)
+    };
+    queue_guard.admit();
+    (
+        CompileGateGuard {
+            _permit: permit,
+            _queue_guard: queue_guard,
+        },
+        available_before,
+    )
+}
+
 impl CompileQueueGuard {
     /// Record that this request's permit was granted.
     pub(in crate::daemon) fn admit(&mut self) {
