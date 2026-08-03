@@ -264,25 +264,23 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     //
     // Issue #1216: the wait is registered in `state.compile_queue` so the
     // connection layer can push `CompileProgress` heartbeats naming this
-    // request's queue position while it sits here. `_queue_guard` restores
-    // the counters on every exit path, including cancellation.
+    // request's queue position while it sits here. `_compile_gate` restores
+    // the permit and counters on every exit path, including cancellation.
     let client_pid = lineage.client_pid.unwrap_or(0);
-    let mut _queue_guard = state.compile_queue.enqueue();
-    let _permit = if let Some(sem) = state.compile_concurrency.as_ref() {
-        let available_before = sem.available_permits();
-        let permit = Arc::clone(sem).acquire_owned().await.ok();
-        _queue_guard.admit();
+    let (_compile_gate, available_before) =
+        crate::daemon::server::compile_progress::acquire_compile_gate(
+            state.compile_concurrency.as_ref(),
+            &state.compile_queue,
+        )
+        .await;
+    if let Some(available_before) = available_before {
         tracing::info!(
             event = "compile_start",
             client_pid,
             available_before,
             "compile_start client_pid={client_pid} available_before={available_before}",
         );
-        permit
-    } else {
-        _queue_guard.admit();
-        None
-    };
+    }
     let compile_span_start = std::time::Instant::now();
 
     let (result, streamed_output) = if let Some(context) = crate::daemon::compile_output::current()
