@@ -133,26 +133,31 @@ fn daemon_pid(cache_dir: &Path) -> u32 {
 /// So the event is the *first* gate and reachability is the second: `zccache
 /// status` exits non-zero once nothing answers the endpoint, which is the
 /// property the refusal contract actually depends on.
+///
+/// Graceful shutdown is setup for this test, not the contract under test. If
+/// the matching daemon has published its terminal event but still answers,
+/// kill that exact PID rather than waiting indefinitely for unrelated cleanup.
 fn wait_for_daemon_shutdown(zccache: &Path, cache_dir: &Path, daemon_pid: u32) {
     let deadline = Instant::now() + zccache::test_support::INTEGRATION_TEST_TIMEOUT;
-    let mut saw_matching_event = false;
+    let mut forced_kill = false;
     loop {
-        if !saw_matching_event
-            && lifecycle_events(cache_dir)
-                .iter()
-                .any(|event| event["event"] == "died-shutdown" && event["pid"] == daemon_pid)
-        {
-            saw_matching_event = true;
-        }
+        let saw_matching_event = lifecycle_events(cache_dir)
+            .iter()
+            .any(|event| event["event"] == "died-shutdown" && event["pid"] == daemon_pid);
         let endpoint_reachable = daemon_answers(zccache, cache_dir);
         if saw_matching_event && !endpoint_reachable {
             return;
+        }
+        if saw_matching_event && endpoint_reachable && !forced_kill {
+            zccache::ipc::force_kill_process(daemon_pid)
+                .unwrap_or_else(|error| panic!("kill test daemon {daemon_pid}: {error}"));
+            forced_kill = true;
         }
         if Instant::now() >= deadline {
             panic!(
                 "daemon {daemon_pid} shutdown incomplete after {:?}: \
                  matching died-shutdown event={saw_matching_event}, \
-                 endpoint_reachable={endpoint_reachable}",
+                 endpoint_reachable={endpoint_reachable}, forced_kill={forced_kill}",
                 zccache::test_support::INTEGRATION_TEST_TIMEOUT
             );
         }
