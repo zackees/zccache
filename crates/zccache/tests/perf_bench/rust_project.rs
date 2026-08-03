@@ -11,9 +11,9 @@
 
 use std::path::Path;
 use std::time::{Duration, Instant};
-use zccache::protocol::{Request, Response};
+use zccache::protocol::Request;
 
-use super::common::{ClientConn, RUSTC_NUM_FILES};
+use super::common::{recv_compile_result, ClientConn, RUSTC_NUM_FILES};
 
 pub fn generate_rust_project(dir: &Path) {
     // Create output directory (mimics cargo's target/debug/deps)
@@ -213,12 +213,8 @@ pub async fn run_zccache_rustc_batch(
             })
             .await
             .unwrap();
-        match client.recv().await.unwrap() {
-            Some(Response::CompileResult { exit_code, .. }) => {
-                assert_eq!(exit_code, 0, "zccache rustc failed for {src}")
-            }
-            other => panic!("expected CompileResult, got: {other:?}"),
-        }
+        let (exit_code, ..) = recv_compile_result(client).await;
+        assert_eq!(exit_code, 0, "zccache rustc failed for {src}");
     }
     start.elapsed()
 }
@@ -250,12 +246,8 @@ pub async fn run_zccache_rustc_batch_with_env(
             })
             .await
             .unwrap();
-        match client.recv().await.unwrap() {
-            Some(Response::CompileResult { exit_code, .. }) => {
-                assert_eq!(exit_code, 0, "zccache rustc failed for {src}")
-            }
-            other => panic!("expected CompileResult, got: {other:?}"),
-        }
+        let (exit_code, ..) = recv_compile_result(client).await;
+        assert_eq!(exit_code, 0, "zccache rustc failed for {src}");
     }
     start.elapsed()
 }

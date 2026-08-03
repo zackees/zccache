@@ -27,7 +27,9 @@ use std::time::{Duration, Instant};
 
 use zccache::protocol::{Request, Response};
 
-use super::common::{fmt_dur, fmt_ratio, median, print_trials, start_daemon, WARM_TRIALS};
+use super::common::{
+    fmt_dur, fmt_ratio, median, print_trials, recv_compile_result, start_daemon, WARM_TRIALS,
+};
 
 /// Number of unique probe TUs. Matches the rough order-of-magnitude of
 /// what meson emits during a configure for a moderately-sized project
@@ -116,12 +118,8 @@ async fn zccache_probe_storm(
             })
             .await
             .unwrap();
-        match client.recv::<Response>().await.unwrap() {
-            Some(Response::CompileResult { exit_code, .. }) => {
-                assert_eq!(exit_code, 0, "probe compile via zccache failed");
-            }
-            other => panic!("expected CompileResult, got: {other:?}"),
-        }
+        let (exit_code, ..) = recv_compile_result(client).await;
+        assert_eq!(exit_code, 0, "probe compile via zccache failed");
     }
     start.elapsed()
 }

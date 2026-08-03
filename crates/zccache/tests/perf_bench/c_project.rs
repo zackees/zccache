@@ -10,9 +10,9 @@
 
 use std::path::Path;
 use std::time::{Duration, Instant};
-use zccache::protocol::{Request, Response};
+use zccache::protocol::Request;
 
-use super::common::{clean_objects, ClientConn, NUM_FILES};
+use super::common::{clean_objects, recv_compile_result, ClientConn, NUM_FILES};
 
 pub fn c_source_names() -> Vec<String> {
     (0..NUM_FILES).map(|i| format!("unit_{i:03}.c")).collect()
@@ -197,12 +197,8 @@ pub async fn zccache_compile_c_single(
             })
             .await
             .unwrap();
-        match client.recv().await.unwrap() {
-            Some(Response::CompileResult { exit_code, .. }) => {
-                assert_eq!(exit_code, 0, "C compile failed for {src}");
-            }
-            other => panic!("expected CompileResult, got: {other:?}"),
-        }
+        let (exit_code, ..) = recv_compile_result(client).await;
+        assert_eq!(exit_code, 0, "C compile failed for {src}");
     }
     start.elapsed()
 }

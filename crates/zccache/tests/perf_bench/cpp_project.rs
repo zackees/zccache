@@ -12,9 +12,9 @@
 
 use std::path::Path;
 use std::time::{Duration, Instant};
-use zccache::protocol::{Request, Response};
+use zccache::protocol::Request;
 
-use super::common::{clean_objects, ClientConn, NUM_FILES};
+use super::common::{clean_objects, recv_compile_result, ClientConn, NUM_FILES};
 use super::response_file::generate_response_files;
 
 pub fn source_names() -> Vec<String> {
@@ -160,12 +160,8 @@ pub async fn zccache_compile_single(
             })
             .await
             .unwrap();
-        match client.recv().await.unwrap() {
-            Some(Response::CompileResult { exit_code, .. }) => {
-                assert_eq!(exit_code, 0, "compile failed for {src}");
-            }
-            other => panic!("expected CompileResult, got: {other:?}"),
-        }
+        let (exit_code, ..) = recv_compile_result(client).await;
+        assert_eq!(exit_code, 0, "compile failed for {src}");
     }
     start.elapsed()
 }
@@ -195,18 +191,12 @@ pub async fn zccache_compile_multi(
         })
         .await
         .unwrap();
-    match client.recv().await.unwrap() {
-        Some(Response::CompileResult {
-            exit_code, cached, ..
-        }) => {
-            assert_eq!(exit_code, 0, "multi-file compile failed");
-            assert_eq!(
-                cached, expected_cached,
-                "multi-file compile returned an unexpected cache state"
-            );
-        }
-        other => panic!("expected CompileResult, got: {other:?}"),
-    }
+    let (exit_code, _, _, cached) = recv_compile_result(client).await;
+    assert_eq!(exit_code, 0, "multi-file compile failed");
+    assert_eq!(
+        cached, expected_cached,
+        "multi-file compile returned an unexpected cache state"
+    );
     start.elapsed()
 }
 
@@ -339,12 +329,8 @@ pub async fn zccache_compile_cpp_single_with_env(
             })
             .await
             .unwrap();
-        match client.recv().await.unwrap() {
-            Some(Response::CompileResult { exit_code, .. }) => {
-                assert_eq!(exit_code, 0, "compile failed for {src}");
-            }
-            other => panic!("expected CompileResult, got: {other:?}"),
-        }
+        let (exit_code, ..) = recv_compile_result(client).await;
+        assert_eq!(exit_code, 0, "compile failed for {src}");
     }
     start.elapsed()
 }
