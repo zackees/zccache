@@ -32,7 +32,6 @@ fs2 = { workspace = true }
 prost = { workspace = true }
 rayon = { workspace = true }
 reflink-copy = { workspace = true }
-redb = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tar = { workspace = true, optional = true }
