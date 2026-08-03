@@ -9,6 +9,9 @@ name: Integration
 # fastest platform (Linux).
 
 on:
+  workflow_dispatch:
+  schedule:
+    - cron: "43 5 * * 0"
   push:
     branches: [main]
     paths-ignore:
@@ -36,7 +39,9 @@ on:
       - "tasks/**"
 
 concurrency:
-  group: integration-${{ github.ref }}
+  # Keep scheduled/manual discovery runs together while separating them from
+  # normal push/PR gates on the same ref.
+  group: integration-${{ github.ref }}-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'discovery' || github.event_name }}
   cancel-in-progress: true
 
 env:
@@ -181,6 +186,45 @@ jobs:
         run: |
           unset ZCCACHE_CACHE_DIR
           soldr cargo test -p zccache-daemon-core --test legacy_path_validation -- --ignored --test-threads=1
+      - name: Test ignored integration and stress suite
+        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/integration
+          SOLDR_CACHE_LIFECYCLE: command
+          SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
+          SOLDR_TARGET_BLOCK_FREE_GB: "2"
+        run: |
+          set +e
+          unset ZCCACHE_CACHE_DIR
+          start=$SECONDS
+          timeout 90m soldr cargo test --workspace --features "$ZCCACHE_INTEGRATION_FEATURES" --no-fail-fast -- \
+            --ignored --test-threads=1 \
+            --skip bench_ --skip perf_ --skip profile_ \
+            --skip cold_path_stress_profile --skip cold_path_concurrent_stress \
+            --skip cold_path_first_file_penalty --skip persist_pool_bench 2>&1 | tee ignored-test-output.txt
+          status=${PIPESTATUS[0]}
+          dur=$((SECONDS - start))
+          echo "- **Ignored integration/stress (Linux)**: ${dur}s" >> "$GITHUB_STEP_SUMMARY"
+          if [ $status -ne 0 ]; then
+            {
+              echo '## Ignored Integration Test Failures'
+              echo '```'
+              awk '/^failures:$/,/^test result:/' ignored-test-output.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit $status
+      - name: Remove ignored-suite harness journals before strict audit
+        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/integration
+        run: |
+          journal_root="$SOLDR_CACHE_DIR/cache/zccache/daemon-state"
+          if [[ -d "$journal_root" ]]; then
+            find "$journal_root" -type f -path '*/logs/*.jsonl' -print -delete
+          fi
       - name: Stop isolated test cache
         if: always()
         shell: bash
