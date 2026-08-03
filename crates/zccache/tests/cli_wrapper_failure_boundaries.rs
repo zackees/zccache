@@ -16,7 +16,9 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 fn target_bin_dir() -> PathBuf {
     let mut path = std::env::current_exe().expect("current executable");
@@ -35,13 +37,14 @@ fn binary_path(stem: &str) -> PathBuf {
     path
 }
 
-fn stop_daemon(zccache: &Path, cache_dir: &Path) {
-    let _ = Command::new(zccache)
+fn stop_daemon(zccache: &Path, cache_dir: &Path) -> Output {
+    Command::new(zccache)
         .arg("stop")
         .env("ZCCACHE_CACHE_DIR", cache_dir)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run zccache stop")
 }
 
 fn run_wrapper(
@@ -108,8 +111,18 @@ fn lifecycle_events(cache_dir: &Path) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// Wait until the daemon is genuinely unreachable, not merely until it said it
-/// was going away.
+fn daemon_pid(cache_dir: &Path) -> u32 {
+    lifecycle_events(cache_dir)
+        .into_iter()
+        .rev()
+        .find(|event| event["event"] == "spawn")
+        .and_then(|event| event["pid"].as_u64())
+        .and_then(|pid| u32::try_from(pid).ok())
+        .expect("current daemon spawn event with a valid PID")
+}
+
+/// Wait until the specific daemon is genuinely unreachable, not merely until
+/// it said it was going away.
 ///
 /// The `died-shutdown` lifecycle event is published *before* the listener
 /// stops accepting, so a wrapper run started on that signal alone can still
@@ -120,25 +133,36 @@ fn lifecycle_events(cache_dir: &Path) -> Vec<serde_json::Value> {
 /// So the event is the *first* gate and reachability is the second: `zccache
 /// status` exits non-zero once nothing answers the endpoint, which is the
 /// property the refusal contract actually depends on.
-fn wait_for_daemon_shutdown(zccache: &Path, cache_dir: &Path) {
-    let mut saw_event = false;
-    for _ in 0..200 {
-        if !saw_event
-            && lifecycle_events(cache_dir)
-                .iter()
-                .any(|event| event["event"] == "died-shutdown")
-        {
-            saw_event = true;
-        }
-        if saw_event && !daemon_answers(zccache, cache_dir) {
+///
+/// Graceful shutdown is setup for this test, not the contract under test. If
+/// the matching daemon has published its terminal event but still answers,
+/// kill that exact PID rather than waiting indefinitely for unrelated cleanup.
+fn wait_for_daemon_shutdown(zccache: &Path, cache_dir: &Path, daemon_pid: u32) {
+    let deadline = Instant::now() + zccache::test_support::INTEGRATION_TEST_TIMEOUT;
+    let mut forced_kill = false;
+    loop {
+        let saw_matching_event = lifecycle_events(cache_dir)
+            .iter()
+            .any(|event| event["event"] == "died-shutdown" && event["pid"] == daemon_pid);
+        let endpoint_reachable = daemon_answers(zccache, cache_dir);
+        if saw_matching_event && !endpoint_reachable {
             return;
         }
-        std::thread::sleep(Duration::from_millis(25));
+        if saw_matching_event && endpoint_reachable && !forced_kill {
+            zccache::ipc::force_kill_process(daemon_pid)
+                .unwrap_or_else(|error| panic!("kill test daemon {daemon_pid}: {error}"));
+            forced_kill = true;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "daemon {daemon_pid} shutdown incomplete after {:?}: \
+                 matching died-shutdown event={saw_matching_event}, \
+                 endpoint_reachable={endpoint_reachable}, forced_kill={forced_kill}",
+                zccache::test_support::INTEGRATION_TEST_TIMEOUT
+            );
+        }
+        std::thread::sleep(SHUTDOWN_POLL_INTERVAL);
     }
-    panic!(
-        "daemon still reachable after publishing died-shutdown (saw_event={saw_event}) \
-         within the test deadline"
-    );
 }
 
 /// Does anything still answer on this cache dir's endpoint?
@@ -226,7 +250,7 @@ fn ephemeral_pre_dispatch_failure_is_a_hard_error_with_the_infra_exit_code() {
     let cache_dir = tempfile::tempdir().expect("cache tempdir");
     let payload = b"pre-dispatch-stdin\0with-a-nul\n";
     let output = run_wrapper(&zccache, &echo_shim, cache_dir.path(), payload, None);
-    stop_daemon(&zccache, cache_dir.path());
+    let _ = stop_daemon(&zccache, cache_dir.path());
 
     assert_eq!(
         output.status.code(),
@@ -285,8 +309,14 @@ fn session_pre_dispatch_failure_refuses_without_double_reading_stdin() {
         .as_str()
         .expect("session id")
         .to_string();
-    stop_daemon(&zccache, cache_dir.path());
-    wait_for_daemon_shutdown(&zccache, cache_dir.path());
+    let daemon_pid = daemon_pid(cache_dir.path());
+    let stop = stop_daemon(&zccache, cache_dir.path());
+    assert!(
+        stop.status.success(),
+        "zccache stop failed for daemon {daemon_pid}: {}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    wait_for_daemon_shutdown(&zccache, cache_dir.path(), daemon_pid);
 
     let payload = b"session-refusal-stdin\0must-not-double-read\n";
     let output = run_wrapper(
@@ -296,7 +326,7 @@ fn session_pre_dispatch_failure_refuses_without_double_reading_stdin() {
         payload,
         Some(&session_id),
     );
-    stop_daemon(&zccache, cache_dir.path());
+    let _ = stop_daemon(&zccache, cache_dir.path());
 
     assert_eq!(
         output.status.code(),
