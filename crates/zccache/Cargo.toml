@@ -122,7 +122,6 @@ arc-swap = { workspace = true }
 rayon = { workspace = true }
 
 # artifact
-redb = { workspace = true }
 tempfile = { workspace = true }
 
 # watcher

@@ -889,8 +889,8 @@ pub(super) async fn spawn_artifact_loader(
                 }
                 count
             } else {
-                // Migration: legacy `.meta` files predate the redb index and
-                // the current bincode blob; populate the live store from them
+                // Migration: legacy `.meta` files predate the current bincode
+                // index blob; populate the live store from them
                 // so the first session after upgrade still has its warm cache.
                 migrate_meta_files(
                     &artifact_dir,

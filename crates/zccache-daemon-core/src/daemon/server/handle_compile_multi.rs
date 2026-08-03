@@ -1004,7 +1004,7 @@ pub(super) async fn handle_compile_multi(
                 });
 
                 // Files are already on disk via the hardlink above. The
-                // remaining work is the redb index entry, which goes through
+                // remaining work is the index entry, which goes through
                 // the same background WAL the byte-write path used.
                 let _ = state_task
                     .index_writer_tx

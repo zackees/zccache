@@ -350,7 +350,8 @@ pub(super) fn emit_cc_miss_profile(profile: CcMissProfile<'_>) {
         .saturating_add(build_context_ns);
     let pre_exec_other_ns = pre_exec_ns.saturating_sub(pre_exec_measured_ns);
     // Sub-phase residual: anything in artifact_store that isn't one
-    // of the measured slices (e.g. the redb commit on the index path).
+    // of the measured slices (e.g. the index-writer enqueue on the
+    // index path).
     let artifact_store_measured_ns = depgraph_update_ns
         .saturating_add(artifact_build_ns)
         .saturating_add(persist_enqueue_ns)
