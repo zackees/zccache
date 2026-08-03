@@ -10,7 +10,7 @@ This document is the index for zccache's architecture specification. Each subsys
 | [architecture/data-flow.md](architecture/data-flow.md) | ~160 | Cache hit, cache miss, passthrough traces + rustc key-scope rules (env-deps, incremental, crate types) |
 | [architecture/ipc.md](architecture/ipc.md) | ~100 | Transport abstraction, socket discovery, connection lifecycle, compile progress heartbeats, errors |
 | [architecture/metadata-cache.md](architecture/metadata-cache.md) | ~130 | In-memory cache data model, confidence levels, watcher integration |
-| [architecture/artifact-store.md](architecture/artifact-store.md) | ~130 | Disk layout, redb index schema, LRU eviction, corruption detection |
+| [architecture/artifact-store.md](architecture/artifact-store.md) | ~130 | Disk layout, bincode index schema, LRU eviction, corruption detection |
 | [architecture/rust-artifact-plan.md](architecture/rust-artifact-plan.md) | ~120 | Rust plan ownership, thin/full semantics, restore hardening, backends, diagnostics, CLI contract |
 | [architecture/embedded-service.md](architecture/embedded-service.md) | ~290 | Embedded service MVP boundary, audit continuity, soldr/fbuild integration design |
 | [architecture/target-cache.md](architecture/target-cache.md) | ~70 | Legacy action target snapshot ownership, outputs, and rust-plan boundary |

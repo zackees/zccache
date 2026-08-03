@@ -1,6 +1,6 @@
 # Disk Artifact Cache
 
-The artifact store persists compiled output files on disk, keyed by content-addressed blake3 hash. Uses redb for indexing and LRU eviction.
+The artifact store persists compiled output files on disk, keyed by content-addressed blake3 hash. The index is an in-memory `DashMap` snapshotted to a bincode blob (`index.bin`); it drives LRU eviction.
 
 For how cache keys are computed see [overview.md](overview.md) (section 2.8). For crash recovery see [runtime.md](runtime.md).
 
@@ -230,7 +230,7 @@ Save/restore summaries expose exported bytes and the stable skip reasons
           stderr                 # captured stderr (may be empty)
   tmp/
     {random}/                    # in-progress writes
-  index.redb                     # redb database
+  index.bin                      # bincode index snapshot
 ```
 
 **cache_root** defaults to `~/.zccache` on all platforms.
@@ -247,7 +247,7 @@ To prevent partially-written artifacts from being read:
 2. Write all output files and the manifest into the temp directory.
 3. `fsync` the temp directory (and files, on Linux, where `fsync` semantics require it).
 4. Rename the temp directory to its final path under `artifacts/`. On POSIX, `rename()` is atomic within the same filesystem. On Windows, `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` provides equivalent semantics for directories.
-5. Insert into the redb index within a write transaction.
+5. Insert into the in-memory index. The insert is infallible and does no disk I/O; the daemon's background WAL writer snapshots the map to `index.bin` on its timer.
 
 If the daemon crashes between steps 2 and 4, the temp directory is orphaned. On startup, the daemon deletes all entries under `{cache_root}/tmp/`.
 
@@ -273,38 +273,34 @@ If the daemon crashes between steps 2 and 4, the temp directory is orphaned. On 
 
 The manifest exists primarily for debugging and corruption detection. The cache key is the directory name; the manifest records what went into it.
 
-## redb Index Schema
+## Index Schema
 
-The redb database contains two tables:
-
-**Table `artifacts`:**
-```
-Key:   [u8; 32]        // blake3 hash bytes
-Value: ArtifactMeta    // bincode-serialized
-```
+The index is a `DashMap<String, ArtifactIndex>` keyed by the artifact's hex cache key, snapshotted whole to `index.bin` as one bincode blob.
 
 ```rust
-struct ArtifactMeta {
-    total_size: u64,            // sum of all files in artifact dir
-    last_access: SystemTime,    // updated on each lookup
-    created_at: SystemTime,
-    output_file_count: u32,
+pub struct ArtifactIndex {
+    pub output_names: Arc<[String]>,  // e.g. ["foo.o"]
+    pub output_sizes: Vec<u64>,       // parallel to output_names
+    pub stdout: Arc<Vec<u8>>,         // captured compiler stdout
+    pub stderr: Arc<Vec<u8>>,         // captured compiler stderr
+    pub exit_code: i32,
+    pub total_size: u64,              // eviction budget accounting
+    pub stored_at_secs: u64,          // stored-at / access checkpoint
 }
 ```
 
-**Table `stats`:**
-```
-Key:   &str             // stat name
-Value: u64              // counter
-```
+It holds everything needed to serve a hit *except* the output bytes, which are resolved lazily through the staged/pack/flat layout resolver.
 
-Tracks: `hits`, `misses`, `evictions`, `total_bytes_written`, `total_bytes_evicted`.
+All mutation methods (`insert`, `insert_many`, `remove`, `remove_batch`, `clear`) are **infallible** — they only touch the in-memory map. Disk I/O happens exclusively in `flush()`, called by the daemon's background WAL writer. See `run_index_writer` in `zccache-daemon-core`.
 
-redb is chosen for its properties:
-- Pure Rust, no external dependencies.
-- ACID transactions — the index survives crashes without corruption.
-- Single-file database.
-- Good read concurrency (multiple concurrent readers, single writer).
+### Why not redb
+
+The rationale lives with the code, in the `## Why not redb` module doc of [`crates/zccache-artifact/src/store.rs`](../../crates/zccache-artifact/src/store.rs). In short: the daemon already holds a complete authoritative copy of the index in memory, so the on-disk file is only read at startup. A bincode blob is one sequential write per flush instead of one fsync per commit, and a single `fs::read` + deserialize at startup.
+
+The tradeoff is durability granularity — a crash *between* flushes loses the whole delta, where an ACID store would recover to the last committed transaction. This is acceptable because the artifact files themselves remain on disk: the worst case is a re-miss on the unflushed keys, which the daemon repopulates on next access. Graceful shutdown flushes synchronously.
+
+> [!NOTE]
+> A prior design used redb here (DD-008). It was superseded; see [DESIGN_DECISIONS.md](../DESIGN_DECISIONS.md) DD-008 for the original decision and why it changed. Legacy `index.redb` files are left on disk untouched — remove them with `zccache clear` or by hand.
 
 ## Daemon-owned retention policy
 
@@ -365,7 +361,7 @@ On artifact lookup:
 3. Verify each output file listed in the manifest exists and its size matches.
 4. (Optional, not default) Verify blake3 hashes of output files match manifest.
 
-If any check fails, remove the artifact directory and its redb entry, and treat as a cache miss. Log a warning.
+If any check fails, remove the artifact directory and its index entry, and treat as a cache miss. Log a warning.
 
 On startup, the daemon does NOT do a full integrity scan (too slow for large caches). Corruption is detected lazily on lookup.
 

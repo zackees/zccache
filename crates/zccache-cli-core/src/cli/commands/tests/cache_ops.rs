@@ -271,7 +271,7 @@ fn warm_skips_missing_payloads() {
 fn warm_returns_error_on_missing_index() {
     let dir = tempfile::tempdir().unwrap();
     let result = warm_target(
-        &dir.path().join("nonexistent.redb"),
+        &dir.path().join("nonexistent.bin"),
         &dir.path().join("artifacts"),
         &dir.path().join("target"),
         "debug",
@@ -291,7 +291,7 @@ fn warm_waits_for_the_staged_store_lock_before_materializing() {
     let dir = tempfile::tempdir().unwrap();
     let artifact_dir = dir.path().join("artifacts");
     let target_dir = dir.path().join("target");
-    let index_path = dir.path().join("index.redb");
+    let index_path = dir.path().join("index.bin");
     std::fs::create_dir_all(&artifact_dir).unwrap();
 
     let key = "aaaaaaaabbbbbbbb";

@@ -68,7 +68,7 @@ zccache-test-support (dev-only test utilities)
 - **zccache-protocol** — `Request`/`Response` enums, `ArtifactData`, length-prefixed bincode framing; bump `PROTOCOL_VERSION` on any wire-format change
 - **zccache-ipc** — Platform IPC endpoint discovery (`default_endpoint()`: Unix sockets vs named pipes)
 - **zccache-fscache** — `MetadataCache` (DashMap-backed) with `Confidence` levels and time-based decay
-- **zccache-artifact** — Content-addressed disk store with 2-level hex sharding, redb index for LRU eviction; also Rust-plan bundle save/restore
+- **zccache-artifact** — Content-addressed disk store with 2-level hex sharding, in-memory index snapshotted to a bincode blob (`index.bin`) for LRU eviction; also Rust-plan bundle save/restore
 - **zccache-watcher** — `FileWatcher` trait over notify crate; dedicated OS thread, events via tokio channel
 - **zccache-compiler** — `CompilerFamily` detection, `ParsedInvocation` for cacheability checks (clang/gcc/msvc/rustc/clang-cl), plus `parse_linker`, `parse_archiver`, `parse_msvc`, `parse_rustfmt`, `response_file`, `strict_paths`, `arduino` submodules
 - **zccache-depgraph** — Persistent dependency graph for cache invalidation; snapshot save/load, dep walker
@@ -101,7 +101,7 @@ zccache-test-support (dev-only test utilities)
 
 **Cache keys:** blake3 hash of: compiler identity + sorted args + sorted env vars + source content hash + dependency hashes. Domain separation tag "zccache-cache-key-v1".
 
-**Concurrency:** Tokio tasks for IPC, DashMap for metadata cache (sharded lock-free reads), redb MVCC for artifact index, file watcher on dedicated OS thread.
+**Concurrency:** Tokio tasks for IPC, DashMap for metadata cache (sharded lock-free reads), DashMap for the artifact index (disk I/O only in the background WAL writer's `flush()`), file watcher on dedicated OS thread.
 
 ## File-size discipline
 

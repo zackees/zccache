@@ -169,7 +169,7 @@ The MVP hashes preprocessor output as the dependency hash. This is correct but s
 
 1. **Dependency file parsing:** After a cache miss, parse the `-MD`-generated `.d` file to discover the exact set of headers used. Cache this set. On subsequent compilations with the same source, hash only the individual headers instead of running the preprocessor.
 2. **Include scanning:** Parse `#include` directives without running the preprocessor. Faster but less accurate (misses conditional includes).
-3. **Persistent dependency graph:** Store the source-to-headers mapping in redb. Invalidate edges when headers change.
+3. **Persistent dependency graph:** Store the source-to-headers mapping in a persistent graph. Invalidate edges when headers change. *(Implemented — see `zccache-depgraph`, which snapshots the graph with rkyv rather than a database.)*
 
 ### Persistent Metadata Cache
 

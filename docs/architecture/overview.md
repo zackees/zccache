@@ -27,7 +27,7 @@ zccache intercepts C/C++ compiler invocations, computes a deterministic cache ke
                                     |  |  (DashMap)  |            |            |
                                     |  +------+------+    +-------+--------+   |
                                     |         |           | Artifact Store |   |
-                                    |         v           | (disk + redb)  |   |
+                                    |         v           | (disk + bincode)|   |
                                     |  +------+------+    +-------+--------+   |
                                     |  | File Watcher|            |            |
                                     |  | (notify)    |            |            |
@@ -199,7 +199,7 @@ struct FileWatcher {
 ```rust
 struct ArtifactStore {
     root: PathBuf,
-    index: redb::Database,
+    index: DashMap<String, ArtifactIndex>,
     max_size: u64,
 }
 

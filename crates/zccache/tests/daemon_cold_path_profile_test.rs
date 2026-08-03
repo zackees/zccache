@@ -423,7 +423,7 @@ async fn cold_path_stress_profile() {
     let mut all_results: Vec<(usize, ColdPassResult, zccache::daemon::ProfileSnapshot)> =
         Vec::new();
 
-    // Single daemon for all sizes — avoids index.redb lock contention.
+    // Single daemon for all sizes — avoids cache-root writer-lock contention.
     // We take profiler snapshots before/after each size to compute per-size averages.
     let endpoint = zccache::ipc::unique_test_endpoint();
     // #1322: bind an isolated cache root. Plain `bind` inherits the

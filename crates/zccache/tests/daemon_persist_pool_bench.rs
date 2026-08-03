@@ -6,7 +6,7 @@
 //!         let _permit = persist_semaphore.acquire().await;
 //!         spawn_blocking(|| {
 //!             for payload in payloads { std::fs::write(path, payload) }
-//!             artifact_store.insert(key, meta)   // redb
+//!             artifact_store.insert(key, meta)   // in-memory index
 //!         }).await
 //!     })
 //!
@@ -184,8 +184,8 @@ fn artifact_filename(key_hex: &str, idx: usize) -> String {
 }
 
 fn open_store(dir: &Path) -> Arc<ArtifactStore> {
-    let store_path = dir.join("index.redb");
-    Arc::new(ArtifactStore::open(&store_path).expect("open redb store"))
+    let store_path = dir.join("index.bin");
+    Arc::new(ArtifactStore::open(&store_path).expect("open artifact store"))
 }
 
 /// Pack header layout for `.pack` files:
@@ -220,7 +220,7 @@ fn build_pack(payloads: &[Arc<Vec<u8>>]) -> Vec<u8> {
 }
 
 /// Strategy A: today's behaviour. semaphore=8, serial writes within task,
-/// redb insert inside the spawn_blocking under the semaphore.
+/// Index insert inside the spawn_blocking under the semaphore.
 async fn run_strategy_serial_in_task(
     artifact_dir: PathBuf,
     store: Arc<ArtifactStore>,
@@ -252,7 +252,7 @@ async fn run_strategy_serial_in_task(
 }
 
 /// Strategy B: fan out each payload as its own spawn_blocking. The semaphore
-/// caps total in-flight writes, not "tasks". redb insert still inside, but
+/// caps total in-flight writes, not "tasks". Index insert still inside, but
 /// only one of the payloads (the last) carries the insert so we don't
 /// duplicate it.
 async fn run_strategy_fanout_payloads(
@@ -284,7 +284,7 @@ async fn run_strategy_fanout_payloads(
                 .ok();
             }));
         }
-        // After all payloads land, commit the redb row. Off the disk-write semaphore.
+        // After all payloads land, record the index row. Off the disk-write semaphore.
         handles.push(tokio::spawn(async move {
             for h in payload_handles {
                 let _ = h.await;
@@ -305,9 +305,9 @@ async fn run_strategy_fanout_payloads(
 }
 
 /// Strategy D: today's serial-within-task disk writes (semaphore-gated), but
-/// redb commits flow through a separate single-writer task fed by an unbounded
+/// Index writes flow through a separate single-writer task fed by an unbounded
 /// channel. Mirrors the new implementation in `server.rs` after iteration 2.
-async fn run_strategy_serial_in_task_async_redb(
+async fn run_strategy_serial_in_task_async_store(
     artifact_dir: PathBuf,
     store: Arc<ArtifactStore>,
     jobs: Vec<Job>,
@@ -366,9 +366,9 @@ async fn run_strategy_serial_in_task_async_redb(
 
 /// Strategy E: packed write — concatenate every payload of a job into a
 /// single `.pack` file (one `std::fs::write` per job instead of N), plus the
-/// same async redb channel as Strategy D. Goal: collapse Defender's
+/// same async index channel as Strategy D. Goal: collapse Defender's
 /// per-file scan overhead, which is the *unit* of the slowdown on Windows.
-async fn run_strategy_packed_async_redb(
+async fn run_strategy_packed_async_store(
     artifact_dir: PathBuf,
     store: Arc<ArtifactStore>,
     jobs: Vec<Job>,
@@ -424,9 +424,9 @@ async fn run_strategy_packed_async_redb(
     let _ = writer.await;
 }
 
-/// Strategy C: fanout + batched redb commits (single writer task drains a
+/// Strategy C: fanout + batched index writes (single writer task drains a
 /// channel of completed jobs and inserts them in batches of 32).
-async fn run_strategy_fanout_batched_redb(
+async fn run_strategy_fanout_batched_store(
     artifact_dir: PathBuf,
     store: Arc<ArtifactStore>,
     jobs: Vec<Job>,
@@ -574,15 +574,27 @@ async fn persist_pool_bench() {
         ("fanout payloads", "fanout_payloads", 32),
         ("fanout payloads", "fanout_payloads", 64),
         ("fanout payloads", "fanout_payloads", 128),
-        ("fanout + batched redb", "fanout_batched_redb", 32),
-        ("fanout + batched redb", "fanout_batched_redb", 64),
-        ("fanout + batched redb", "fanout_batched_redb", 128),
-        ("serial + async redb (new)", "serial_in_task_async_redb", 8),
-        ("serial + async redb (new)", "serial_in_task_async_redb", 16),
-        ("serial + async redb (new)", "serial_in_task_async_redb", 32),
-        ("packed + async redb", "packed_async_redb", 8),
-        ("packed + async redb", "packed_async_redb", 16),
-        ("packed + async redb", "packed_async_redb", 32),
+        ("fanout + batched store", "fanout_batched_store", 32),
+        ("fanout + batched store", "fanout_batched_store", 64),
+        ("fanout + batched store", "fanout_batched_store", 128),
+        (
+            "serial + async store (new)",
+            "serial_in_task_async_store",
+            8,
+        ),
+        (
+            "serial + async store (new)",
+            "serial_in_task_async_store",
+            16,
+        ),
+        (
+            "serial + async store (new)",
+            "serial_in_task_async_store",
+            32,
+        ),
+        ("packed + async store", "packed_async_store", 8),
+        ("packed + async store", "packed_async_store", 16),
+        ("packed + async store", "packed_async_store", 32),
     ];
 
     let mut rows = Vec::new();
@@ -622,8 +634,8 @@ async fn persist_pool_bench() {
                     )
                     .await;
                 }
-                "fanout_batched_redb" => {
-                    run_strategy_fanout_batched_redb(
+                "fanout_batched_store" => {
+                    run_strategy_fanout_batched_store(
                         artifact_dir.clone(),
                         Arc::clone(&store),
                         jobs,
@@ -631,8 +643,8 @@ async fn persist_pool_bench() {
                     )
                     .await;
                 }
-                "serial_in_task_async_redb" => {
-                    run_strategy_serial_in_task_async_redb(
+                "serial_in_task_async_store" => {
+                    run_strategy_serial_in_task_async_store(
                         artifact_dir.clone(),
                         Arc::clone(&store),
                         jobs,
@@ -640,8 +652,8 @@ async fn persist_pool_bench() {
                     )
                     .await;
                 }
-                "packed_async_redb" => {
-                    run_strategy_packed_async_redb(
+                "packed_async_store" => {
+                    run_strategy_packed_async_store(
                         artifact_dir.clone(),
                         Arc::clone(&store),
                         jobs,
