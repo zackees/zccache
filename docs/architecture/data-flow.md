@@ -62,10 +62,10 @@ User invokes:  zccache clang++ -c foo.c -o foo.o
    sorted_env, source_hash, dep_hash).
 
 10. Daemon queries ArtifactStore::lookup(key).
-    a. redb index lookup by key — found, returns artifact directory path
-       and metadata.
+    a. In-memory index lookup by key — found, returns artifact directory
+       path and metadata.
     b. Verify artifact directory exists and manifest is intact.
-    c. Update last-access-time in redb index.
+    c. Update last-access-time in the in-memory index.
 
 11. Daemon copies cached output files to the requested output paths
     (e.g., copies cached object file to foo.o).
@@ -98,7 +98,8 @@ Steps 1–9: identical to cache hit path.
     d. Compute artifact content hash (the cache key).
     e. Rename temp dir to {cache_root}/artifacts/{hash[0..2]}/{hash[2..4]}/{hash}.
        Atomic on same filesystem.
-    f. Insert entry into redb index with current timestamp as last-access-time.
+    f. Insert entry into the in-memory index with the current timestamp as
+       last-access-time; the background WAL writer snapshots it to index.bin.
     g. If total cache size exceeds max, trigger async eviction.
 
 14. Daemon sends Response::CacheMiss { exit_code: 0, stdout, stderr }.

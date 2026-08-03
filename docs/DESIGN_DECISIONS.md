@@ -192,7 +192,10 @@ This document records the key architectural and technical decisions for **zccach
 
 ---
 
-## DD-008: redb for Artifact Index
+## DD-008: redb for Artifact Index — SUPERSEDED
+
+> [!IMPORTANT]
+> **Superseded.** The artifact index is no longer redb — it is an in-memory `DashMap` snapshotted to a bincode blob at `index.bin`. The decision below is kept for the historical record; see **Superseded by** at the end of this entry for why it changed, and [architecture/artifact-store.md](architecture/artifact-store.md) for the current design.
 
 **Context:** The artifact cache needs a persistent index that maps cache keys to artifact locations and tracks access times for LRU eviction. The index must survive daemon restarts and be corruption-resistant.
 
@@ -216,6 +219,14 @@ This document records the key architectural and technical decisions for **zccach
 **Consequences:**
 - The redb file lives in the cache directory. If corrupted, it can be deleted and rebuilt by scanning the content-addressed artifact store.
 - redb's API is simpler than SQL, which limits future query flexibility. Acceptable for the current access patterns.
+
+**Superseded by:** the bincode index blob (`index.bin`). The premise above — that the index must be *queried* from disk — turned out to be wrong. The daemon keeps a complete authoritative copy of the index in memory (`SharedState::artifacts`), so the on-disk file is read exactly once, at startup, and is otherwise write-only. Under that access pattern redb's per-transaction fsync was pure cost: one sequential blob write per flush replaced one fsync per commit, and startup became a single `fs::read` + deserialize.
+
+The tradeoff accepted in exchange is coarser durability — a crash *between* flushes loses the whole delta, where redb would recover to the last committed transaction. That is tolerable because the artifact files themselves stay on disk, so the worst case is a re-miss on the unflushed keys. Graceful shutdown flushes synchronously.
+
+Note that the "corrupted → delete and rebuild" consequence above survives the change: `ArtifactStore` reports `started_corrupt` and the daemon owns the rebuild policy.
+
+Legacy `index.redb` files are left on disk untouched by the migration; remove them with `zccache clear` or by hand. The full rationale lives with the code, in the `## Why not redb` module doc of [`crates/zccache-artifact/src/store.rs`](../crates/zccache-artifact/src/store.rs).
 
 ---
 
@@ -338,7 +349,7 @@ Example: cache key `a1b2c3d4...` is stored at `<cache_root>/artifacts/a1/b2/a1b2
 | Size-weighted LRU | Premature optimization. Adds complexity for marginal benefit in v1. |
 
 **Consequences:**
-- Every cache hit updates the access time in redb. This is a write on the read path, but redb writes are fast and batched.
+- Every cache hit updates the access time in the in-memory index. This is a write on the read path, but it touches only a DashMap shard — the disk snapshot happens on the background writer's timer.
 - Eviction runs in the background and does not block cache lookups.
 - Users can manually clear the cache or adjust the threshold via configuration.
 
@@ -422,7 +433,10 @@ This catches the scenario where a file is deleted and a new file is created at t
 
 ---
 
-### Q3: Artifact Index — redb
+### Q3: Artifact Index
+
+> [!NOTE]
+> Describes the superseded redb design; see DD-008 and [architecture/artifact-store.md](architecture/artifact-store.md) for the bincode index in use today.
 
 The redb database contains two tables:
 
@@ -442,7 +456,7 @@ redb provides ACID transactions, so a crash during an index update never leaves 
 The daemon is built async-first on tokio:
 - **IPC listener** runs as a tokio task, spawning a new task per connection.
 - **Compiler execution** uses `tokio::process::Command` for non-blocking child process management.
-- **Cache operations** are synchronous but fast (in-memory DashMap lookups, redb reads). They run on the tokio runtime without blocking issues because individual operations complete in microseconds.
+- **Cache operations** are synchronous but fast (in-memory DashMap lookups). They run on the tokio runtime without blocking issues because individual operations complete in microseconds.
 - **Disk I/O** for artifact reads/writes uses `tokio::fs` or `spawn_blocking` for operations that may take longer.
 
 The CLI is *not* fully async. It uses `tokio::runtime::Runtime::block_on` to make a single IPC request and wait for the response.
@@ -495,7 +509,7 @@ The daemon can crash at any point. The recovery strategy ensures no data corrupt
 
 1. **Artifact store:** Content-addressed and written atomically (DD-010). A crash during a write leaves a temp directory that is cleaned up on next startup. No corrupt artifacts at final paths.
 
-2. **redb index:** ACID transactions. A crash during a write rolls back the incomplete transaction. The database is consistent on recovery. If the database file is irrecoverably corrupted, delete it and rebuild from the artifact directory.
+2. **`index.bin`:** rewritten whole on each flush, so it is never half-updated. A crash between flushes loses that delta and costs a re-miss. If the blob is unparseable, the daemon rebuilds it from the artifact directory.
 
 3. **Metadata cache (in-memory):** Lost on crash. Rebuilt lazily on next access. This is by design: the metadata cache is a performance optimization, not a source of truth.
 
@@ -505,7 +519,7 @@ The daemon can crash at any point. The recovery strategy ensures no data corrupt
 
 **Startup sequence after crash:**
 1. Clean up stale temp directories in the artifact store.
-2. Open (or rebuild) the redb index.
+2. Load (or rebuild) the index from `index.bin`.
 3. Remove stale socket/pipe files.
 4. Start listening for connections.
 
@@ -581,7 +595,7 @@ v1 is deliberately minimal. The goal is a correct, useful tool for the most comm
 
 **Rationale:**
 - Eliminates cold-start penalty after daemon restarts.
-- The cache directory is the same one used for the redb index and other persistent state.
+- The cache directory is the same one used for the artifact index and other persistent state.
 - `.meta` sidecars are simple and atomic (write-then-rename pattern).
 
 **Alternatives Considered:**
@@ -688,7 +702,7 @@ still only redirects zccache indirectly.
 **Decision:** `ZCCACHE_CACHE_DIR` is the supported cache-root override. When set
 and non-empty, all paths derived from `zccache_core::config::default_cache_dir()`
 use that root directly, including artifacts, temp files, depgraph state,
-`index.redb`, crash dumps, logs, cargo/download helper state, and lock files.
+`index.bin`, crash dumps, logs, cargo/download helper state, and lock files.
 Relative values are normalized against the current working directory.
 
 Default daemon endpoints also derive from the override. On Unix, zccache uses a

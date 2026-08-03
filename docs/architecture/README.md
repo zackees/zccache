@@ -8,7 +8,7 @@ Detailed design specification for zccache, split by subsystem.
 | [data-flow.md](data-flow.md) | Cache hit/miss/passthrough step-by-step traces |
 | [ipc.md](ipc.md) | Transport abstraction, socket discovery, connection lifecycle |
 | [metadata-cache.md](metadata-cache.md) | In-memory cache, confidence model, file watcher integration |
-| [artifact-store.md](artifact-store.md) | Disk layout, redb index, eviction, corruption detection |
+| [artifact-store.md](artifact-store.md) | Disk layout, bincode index, eviction, corruption detection |
 | [rust-artifact-plan.md](rust-artifact-plan.md) | Rust plan ownership, thin/full semantics, backends, diagnostics, CLI contract |
 | [embedded-service.md](embedded-service.md) | Embedded host-daemon API, audit continuity, soldr/fbuild integration contract |
 | [audit-schema.md](audit-schema.md) | `soldr.audit.v1` JSONL contract: event shape, AuditContext, modes, redaction, additive-compatibility policy (zccache#906) |

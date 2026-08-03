@@ -420,7 +420,7 @@ zccache status
 ```
 
 When set and non-empty, the override is used for `artifacts/`, `tmp/`,
-`depgraph/`, `index.redb`, `crashes/`, `logs/`, daemon lock files, download
+`depgraph/`, `index.bin`, `crashes/`, `logs/`, daemon lock files, download
 daemon state, and the default daemon endpoint. Separate cache roots therefore
 use separate daemon instances unless `ZCCACHE_ENDPOINT` is explicitly set.
 Relative override paths are normalized against the current working directory.
@@ -1252,7 +1252,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full system design.
 | `zccache-ipc` | Transport layer (Unix sockets / named pipes) |
 | `zccache-hash` | blake3 hashing and cache key computation |
 | `zccache-fscache` | In-memory file metadata cache |
-| `zccache-artifact` | Disk-backed artifact store with redb index |
+| `zccache-artifact` | Disk-backed artifact store with bincode index |
 | `zccache-watcher` | File watcher subsystem: daemon `notify` pipeline plus Rust-backed Python watcher bindings |
 | `zccache-compiler` | Compiler detection and argument parsing |
 | `zccache-gha` | GitHub Actions Cache API client |

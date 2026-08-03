@@ -113,7 +113,7 @@ This document describes the phased implementation plan for **zccache**, a high-p
   - Storage layout: `<cache_root>/objects/<first-2-hex>/<remaining-hex>/`
   - Atomic writes: write to temp dir under `<cache_root>/tmp/`, then rename into place
   - Manifest file per artifact: output file(s), stdout, stderr, exit code, timestamp, size, checksum
-- `redb` index for:
+- Index (originally planned as `redb`; shipped as an in-memory map snapshotted to `index.bin` — see DD-008) for:
   - Cache key to artifact path mapping
   - Access time tracking (for LRU eviction)
   - Total cache size tracking
@@ -144,10 +144,13 @@ This document describes the phased implementation plan for **zccache**, a high-p
 - Corrupt artifacts (tampered data) are detected and removed on read
 - `zccache stats` reports accurate numbers
 - `zccache clear` removes all entries and resets stats
-- Cache survives daemon restart (redb persistence)
+- Cache survives daemon restart (index persisted to disk)
 - Cache key is deterministic: same inputs always produce same key
 
 **Risks:** `redb` edge cases under highly concurrent access (many simultaneous writes to the same table). **Mitigation:** Run stress tests with 50+ concurrent writers; wrap `redb` access behind a service with controlled concurrency; keep the `redb` schema simple (two tables: keys, access times).
+
+> [!NOTE]
+> Retained as written for the historical record. This risk was real but was resolved by removing the database rather than by taming it: the index became an in-memory `DashMap` whose only writer is the daemon's background flush (DD-008, superseded). The "wrap access behind a service with controlled concurrency" mitigation is essentially what shipped.
 
 ---
 

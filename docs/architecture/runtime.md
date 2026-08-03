@@ -42,7 +42,7 @@ For the on-disk record shape and the closed `miss_reason` enum, see
 |---|---|---|
 | Metadata cache | DashMap (sharded concurrent map) | Low — per-shard locks, short critical sections |
 | Artifact store on disk | Atomic rename, no locks | None — each artifact has unique path |
-| redb index | redb internal MVCC (readers never block, writer serialized) | Low — write transactions are short |
+| Artifact index | DashMap (sharded concurrent map); disk I/O only in the background WAL writer's `flush()` | Low — per-shard locks, no fsync on the mutation path |
 | File watcher event channel | tokio mpsc (bounded, 4096) | Low — single producer, single consumer |
 | Event log channel | tokio mpsc (unbounded) | None — lock-free send, single consumer thread |
 | Compile journal channel | tokio mpsc (unbounded) | None — lock-free send, single consumer thread (writes global + per-session files) |
@@ -51,7 +51,7 @@ For the on-disk record shape and the closed `miss_reason` enum, see
 
 There is no nested locking. The design avoids situations where one lock is held while acquiring another:
 - DashMap lookups are point operations. The shard lock is released before any I/O.
-- redb transactions do not hold DashMap locks.
+- The index writer's `flush()` does not hold DashMap shard locks across disk I/O.
 - The watcher thread never acquires DashMap locks directly; it sends events through a channel.
 
 This eliminates deadlock by design.
@@ -276,7 +276,7 @@ When in doubt, zccache assumes the file has changed and re-verifies. Specific po
 | Compiler updated in-place | Incorrect cache hit | Compiler binary is in metadata cache; stat-verified on use |
 | Clock skew / mtime unreliable | Incorrect cache hit | file_id provides second signal; Low confidence triggers re-hash |
 | Disk full during artifact write | Orphaned temp dir | Temp dir cleaned on startup; write failure returns error, CLI falls back |
-| redb corruption | Index lost | redb is ACID; if corruption occurs (hardware fault), rebuild index by scanning artifact directories |
+| `index.bin` corrupt or truncated | Index lost | `ArtifactStore` reports `started_corrupt`; the daemon rebuilds by scanning artifact directories |
 
 ### What zccache Does NOT Cache
 
@@ -431,9 +431,9 @@ The dumper is intentionally text-only for v1 — minidumps via `MiniDumpWriteDum
 
 ### Index Recovery
 
-**redb** provides ACID transactions. The database file is always in a consistent state, even after an unclean shutdown. If the daemon crashed mid-transaction, redb rolls back the incomplete transaction on next open.
+**`index.bin`** is rewritten whole by each `flush()`, so it is never half-updated. A crash *between* flushes loses that delta — the artifact files remain on disk, so the effect is a re-miss on the unflushed keys, not incorrect behavior. A blob that is present but unparseable sets `started_corrupt`, and the daemon rebuilds the index by scanning the artifact directories. Graceful shutdown flushes synchronously.
 
-**Index-artifact divergence:** If the daemon crashed after writing the artifact directory but before inserting the redb entry, the artifact exists on disk but is not in the index. This is a harmless orphan; it wastes disk space but does not cause incorrect behavior. A periodic (or on-demand) maintenance task can scan the artifact directories and reconcile with the index:
+**Index-artifact divergence:** If the daemon crashed after writing the artifact directory but before the next index flush, the artifact exists on disk but is not in the index. This is a harmless orphan; it wastes disk space but does not cause incorrect behavior. A periodic (or on-demand) maintenance task can scan the artifact directories and reconcile with the index:
 - Artifact on disk but not in index: add to index.
 - Entry in index but no artifact on disk: remove from index.
 
