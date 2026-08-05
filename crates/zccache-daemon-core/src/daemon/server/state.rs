@@ -439,7 +439,8 @@ pub(super) struct SharedState {
     /// Reuses one shared OS staged-store lock for all active staged deliveries
     /// in this daemon and cache root. The final lease drop releases it, letting
     /// cross-process maintenance acquire the exclusive lock.
-    pub(super) staged_materialization_lock: Arc<StdMutex<Option<Arc<StagedMaterializationLock>>>>,
+    pub(super) staged_materialization_lock:
+        Arc<StdMutex<std::sync::Weak<StagedMaterializationLock>>>,
     /// Limits concurrent disk persistence tasks to prevent memory pileup
     /// when disk I/O is slow and compilation requests are fast.
     pub(super) persist_semaphore: Arc<tokio::sync::Semaphore>,
