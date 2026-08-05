@@ -252,8 +252,9 @@ fn acquire_staged_materialization_guard_for_state_from(
     if let Some(store_lock) = held.upgrade() {
         return Ok(StagedMaterializationGuard {
             _store_lock: store_lock,
-            // Reusing the daemon-local lease performs no filesystem work.
-            wait_ns: 0,
+            // Reuse avoids an OS lock syscall, but pointer validation and the
+            // daemon-local mutex are still part of guard-acquisition time.
+            wait_ns: wait_started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
             acquired_at: Instant::now(),
         });
     }
@@ -276,10 +277,10 @@ fn acquire_staged_materialization_guard_for_state_from(
 
 /// Acquire one payload lease from a daemon-local shared staged-store lock.
 ///
-/// The `SharedState` cell owns a process-local reference while one or more
-/// [`StagedMaterializationGuard`] values own delivery leases. The final lease
-/// clears that cell and releases the shared OS lock, so cross-process GC can
-/// acquire its exclusive lock. Reused leases avoid the per-hit open/lock work.
+/// The `SharedState` cell holds a weak reference while one or more payload
+/// leases own the shared OS lock. When the final lease drops, the file handle
+/// closes and cross-process GC can acquire its exclusive lock. Reused leases
+/// avoid redundant open/lock syscalls.
 pub(in crate::daemon::server) fn acquire_staged_materialization_guard_for_state(
     state: &super::super::SharedState,
     artifact_dir: &Path,
