@@ -24,10 +24,20 @@ pub(in crate::daemon::server) use materialize::{
 };
 mod read_guard;
 use read_guard::validate_key;
+#[cfg(test)]
 pub(in crate::daemon::server) use read_guard::{
     acquire_staged_materialization_guard_for_cached_path,
-    acquire_staged_materialization_guard_if_present, is_staged_artifact_path,
+    acquire_staged_materialization_guard_if_present,
+};
+pub(in crate::daemon::server) use read_guard::{
+    acquire_staged_materialization_guard_for_state,
+    acquire_staged_materialization_guard_if_present_for_state, is_staged_artifact_path,
     is_staged_artifact_root, staged_key_supported, StagedMaterializationGuard,
+    StagedMaterializationLock,
+};
+#[cfg(test)]
+pub(in crate::daemon::server) use read_guard::{
+    reset_test_shared_lock_acquisitions, test_shared_lock_acquisition_count,
 };
 mod root_safety;
 pub(in crate::daemon::server) use root_safety::validate_staged_artifact_root;

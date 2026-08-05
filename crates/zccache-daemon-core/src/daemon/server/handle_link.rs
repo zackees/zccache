@@ -374,14 +374,11 @@ pub(super) async fn handle_link_ephemeral(
     let t_cache_lookup = profile_enabled.then(std::time::Instant::now);
     if let Some(entry) = lookup_artifact_with_disk_fallback(state, &key_hex) {
         // Load payloads from disk if not already loaded.
-        if let Ok(payloads) = ensure_payloads_for_materialization(
-            &entry,
-            &state.artifact_dir,
-            &key_hex,
-        )
-        .map_err(|failure| {
-            report_materialization_failure(&state.cache_dir, &key_hex, "link-hit", &failure);
-        }) {
+        if let Ok(payloads) = ensure_payloads_for_materialization_for_state(state, &entry, &key_hex)
+            .map_err(|failure| {
+                report_materialization_failure(&state.cache_dir, &key_hex, "link-hit", &failure);
+            })
+        {
             record_artifact_access(state, &key_hex, &entry, std::time::Instant::now());
             discard_speculative_archive(&mut speculative_archive);
             let names = Arc::clone(&entry.meta.output_names);

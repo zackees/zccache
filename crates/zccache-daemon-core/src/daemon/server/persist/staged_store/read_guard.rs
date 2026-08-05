@@ -4,7 +4,53 @@ use super::{is_staged_link_or_reparse, open_store_lock, pointer_path, staged_roo
 use std::fs::{self, File};
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
+
+#[cfg(test)]
+use crate::core::NormalizedPath;
+#[cfg(test)]
+use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
+
+#[cfg(test)]
+static TEST_SHARED_LOCK_ACQUISITIONS: OnceLock<Mutex<HashMap<NormalizedPath, u64>>> =
+    OnceLock::new();
+
+#[cfg(test)]
+fn test_shared_lock_acquisitions() -> &'static Mutex<HashMap<NormalizedPath, u64>> {
+    TEST_SHARED_LOCK_ACQUISITIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+pub(in crate::daemon::server) fn reset_test_shared_lock_acquisitions(root: &NormalizedPath) {
+    test_shared_lock_acquisitions()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(root.clone(), 0);
+}
+
+#[cfg(test)]
+fn record_test_shared_lock_acquisition(root: &NormalizedPath) {
+    if let Some(count) = test_shared_lock_acquisitions()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_mut(root)
+    {
+        *count = count.saturating_add(1);
+    }
+}
+
+#[cfg(test)]
+pub(in crate::daemon::server) fn test_shared_lock_acquisition_count(root: &NormalizedPath) -> u64 {
+    test_shared_lock_acquisitions()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(root)
+        .copied()
+        .unwrap_or(0)
+}
 
 pub(in crate::daemon::server) fn staged_key_supported(key_hex: &str) -> bool {
     !key_hex.is_empty()
@@ -73,6 +119,16 @@ pub(super) fn validate_key(key_hex: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// A process-local shared lock lease over the staged store.
+///
+/// The daemon keeps one of these in [`SharedState`] while one or more cache
+/// hits deliver staged outputs. Individual materialization payloads clone the
+/// `Arc`, so only the transition from zero to one active hit opens and locks
+/// `.store.lock`; dropping the final payload releases cross-process exclusion.
+pub(in crate::daemon::server) struct StagedMaterializationLock {
+    _store_lock: File,
+}
+
 /// Shared ownership of the staged store while resolved generation paths are
 /// being delivered to caller-owned destinations.
 ///
@@ -80,9 +136,28 @@ pub(super) fn validate_key(key_hex: &str) -> io::Result<()> {
 /// guard in the typed materialization payload prevents a generation from
 /// disappearing between resolution and the final reflink/hardlink/copy.
 pub(in crate::daemon::server) struct StagedMaterializationGuard {
-    _store_lock: File,
+    store_lock: Arc<StagedMaterializationLock>,
+    state_lock: Option<Arc<std::sync::Mutex<Option<Arc<StagedMaterializationLock>>>>>,
     wait_ns: u64,
     acquired_at: Instant,
+}
+
+impl Drop for StagedMaterializationGuard {
+    fn drop(&mut self) {
+        let Some(state_lock) = self.state_lock.as_ref() else {
+            return;
+        };
+        let mut held = state_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if held
+            .as_ref()
+            .is_some_and(|active| Arc::ptr_eq(active, &self.store_lock))
+            && Arc::strong_count(&self.store_lock) == 2
+        {
+            *held = None;
+        }
+    }
 }
 
 impl StagedMaterializationGuard {
@@ -94,12 +169,14 @@ impl StagedMaterializationGuard {
     }
 }
 
+#[cfg(test)]
 fn acquire_staged_materialization_guard(
     artifact_dir: &Path,
 ) -> io::Result<StagedMaterializationGuard> {
     acquire_staged_materialization_guard_from(artifact_dir, Instant::now())
 }
 
+#[cfg(test)]
 /// Acquire the shared read lock, attributing everything since `wait_started`
 /// to the wait.
 ///
@@ -117,14 +194,20 @@ fn acquire_staged_materialization_guard_from(
     let root = staged_root(artifact_dir);
     let store_lock = open_store_lock(&root)?;
     fs2::FileExt::lock_shared(&store_lock)?;
+    #[cfg(test)]
+    record_test_shared_lock_acquisition(&root);
     let wait_ns = wait_started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
     Ok(StagedMaterializationGuard {
-        _store_lock: store_lock,
+        store_lock: Arc::new(StagedMaterializationLock {
+            _store_lock: store_lock,
+        }),
+        state_lock: None,
         wait_ns,
         acquired_at: Instant::now(),
     })
 }
 
+#[cfg(test)]
 /// Acquire staged-store read ownership only when this key currently has a
 /// staged pointer. If no pointer exists, callers deliberately resolve with
 /// staged lookup disabled for that attempt: a concurrent publisher may become
@@ -152,6 +235,81 @@ pub(in crate::daemon::server) fn acquire_staged_materialization_guard_if_present
     }
 }
 
+pub(in crate::daemon::server) fn acquire_staged_materialization_guard_if_present_for_state(
+    state: &super::super::SharedState,
+    artifact_dir: &Path,
+    key_hex: &str,
+) -> io::Result<Option<StagedMaterializationGuard>> {
+    let wait_started = Instant::now();
+    validate_key(key_hex)?;
+    let pointer = pointer_path(artifact_dir, key_hex);
+    match fs::symlink_metadata(&pointer) {
+        Ok(metadata) if is_staged_link_or_reparse(&metadata) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing staged artifact materialization through linked/reparse pointer: {}",
+                pointer.display()
+            ),
+        )),
+        Ok(_) => {
+            acquire_staged_materialization_guard_for_state_from(state, artifact_dir, wait_started)
+                .map(Some)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn acquire_staged_materialization_guard_for_state_from(
+    state: &super::super::SharedState,
+    artifact_dir: &Path,
+    wait_started: Instant,
+) -> io::Result<StagedMaterializationGuard> {
+    let mut held = state
+        .staged_materialization_lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(store_lock) = held.as_ref() {
+        return Ok(StagedMaterializationGuard {
+            store_lock: Arc::clone(store_lock),
+            state_lock: Some(Arc::clone(&state.staged_materialization_lock)),
+            // Reusing the daemon-local lease performs no filesystem work.
+            wait_ns: 0,
+            acquired_at: Instant::now(),
+        });
+    }
+
+    let root = staged_root(artifact_dir);
+    let store_lock = open_store_lock(&root)?;
+    fs2::FileExt::lock_shared(&store_lock)?;
+    #[cfg(test)]
+    record_test_shared_lock_acquisition(&root);
+    let store_lock = Arc::new(StagedMaterializationLock {
+        _store_lock: store_lock,
+    });
+    *held = Some(Arc::clone(&store_lock));
+    Ok(StagedMaterializationGuard {
+        store_lock,
+        state_lock: Some(Arc::clone(&state.staged_materialization_lock)),
+        wait_ns: wait_started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+        acquired_at: Instant::now(),
+    })
+}
+
+/// Acquire one payload lease from a daemon-local shared staged-store lock.
+///
+/// The `SharedState` cell owns a process-local reference while one or more
+/// [`StagedMaterializationGuard`] values own delivery leases. The final lease
+/// clears that cell and releases the shared OS lock, so cross-process GC can
+/// acquire its exclusive lock. Reused leases avoid the per-hit open/lock work.
+pub(in crate::daemon::server) fn acquire_staged_materialization_guard_for_state(
+    state: &super::super::SharedState,
+    artifact_dir: &Path,
+) -> io::Result<StagedMaterializationGuard> {
+    acquire_staged_materialization_guard_for_state_from(state, artifact_dir, Instant::now())
+}
+
+#[cfg(test)]
 pub(in crate::daemon::server) fn acquire_staged_materialization_guard_for_cached_path(
     artifact_dir: &Path,
 ) -> io::Result<StagedMaterializationGuard> {
@@ -166,7 +324,9 @@ mod tests {
     #[test]
     fn a_key_without_a_staged_pointer_acquires_no_guard() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(staged_root(dir.path())).unwrap();
+        let root = staged_root(dir.path());
+        std::fs::create_dir_all(&root).unwrap();
+        reset_test_shared_lock_acquisitions(&root);
 
         let guard =
             acquire_staged_materialization_guard_if_present(dir.path(), &"a".repeat(64)).unwrap();
@@ -176,5 +336,6 @@ mod tests {
             "no staged pointer means no lock is taken; callers resolve with \
              staged lookup disabled for that attempt"
         );
+        assert_eq!(test_shared_lock_acquisition_count(&root), 0);
     }
 }

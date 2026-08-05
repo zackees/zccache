@@ -1,3 +1,20 @@
+# #1215 staged materialization lock contention
+
+Issue: https://github.com/zackees/zccache/issues/1215 — `perf(persist): bound staged materialization lock contention before GC hardening`
+
+- [x] Read the issue, PERF.md, prior #1215 PRs, staged-store ownership code, and retained evidence.
+- [x] RED: add a deterministic regression/performance test proving concurrent staged deliveries share one process-local OS read lease while preserving maintenance exclusion.
+- [x] GREEN: retain one shared staged-store file lock per active daemon/root, releasing it only after the final materialization lease.
+- [ ] Verify the complete staged delivery matrix, formatter, clippy/check, integration tests, and the sanctioned repeat-5 Docker matrix (or document a concrete infrastructure blocker).
+- [ ] Self-review the final diff for correctness, lock lifetime, cross-process GC behavior, and scope.
+- [ ] Commit, push, open and merge the #1215 PR; synchronize local `main`, delete this branch, and verify a clean checkout.
+
+## Review
+
+- Focused RED signal: `concurrent_staged_materialization_leases_share_the_store_lock` failed with eight OS shared-lock acquisitions before the state-aware lease implementation, then passed after it.
+- Production behavior: all five daemon hit delivery entry points now acquire a `SharedState`-owned staged lease; direct test helpers retain an independent acquisition path only under `cfg(test)`.
+- Pending full validation and review.
+
 # soldr#2031 running-process boundary
 
 - [x] Inventory raw daemon process creation and existing Dylint exemptions.

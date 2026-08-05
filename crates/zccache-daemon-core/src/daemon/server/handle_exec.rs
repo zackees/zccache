@@ -768,7 +768,7 @@ async fn try_exec_cache_hit(
     let stderr_full = entry.stderr.clone();
     let names = Arc::clone(&entry.meta.output_names);
 
-    let payloads = ensure_payloads_for_materialization(&entry, &state.artifact_dir, key_hex)
+    let payloads = ensure_payloads_for_materialization_for_state(state, &entry, key_hex)
         .map_err(|failure| {
             report_materialization_failure(&state.cache_dir, key_hex, "exec-hit", &failure);
         })
