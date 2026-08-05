@@ -121,9 +121,9 @@ fn check_unit_cache(
                 // runs in its own blocking task, so writes are already
                 // parallel across units.
                 if let Some(cached) = lookup_artifact_with_disk_fallback(state, artifact_key_hex) {
-                    match ensure_payloads_for_materialization(
+                    match ensure_payloads_for_materialization_for_state(
+                        state,
                         &cached,
-                        &state.artifact_dir,
                         artifact_key_hex,
                     ) {
                         Ok(payloads) => {
@@ -302,11 +302,7 @@ fn check_unit_cache(
         let artifact_key_hex = artifact_key.hash().to_hex();
         if let Some(cached) = lookup_artifact_with_disk_fallback(state, &artifact_key_hex) {
             let t_lookup = t0.elapsed();
-            match ensure_payloads_for_materialization(
-                &cached,
-                &state.artifact_dir,
-                &artifact_key_hex,
-            ) {
+            match ensure_payloads_for_materialization_for_state(state, &cached, &artifact_key_hex) {
                 Ok(payloads) => {
                     record_artifact_access(
                         state,

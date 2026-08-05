@@ -117,17 +117,16 @@ pub(super) fn materialize_cached_compile_hit(
     };
     let cached = lookup_artifact_with_disk_fallback(state, artifact_key_hex)
         .ok_or_else(&missing_artifact)?;
-    let payloads =
-        ensure_payloads_for_materialization(&cached, &state.artifact_dir, artifact_key_hex)
-            .map_err(|error| {
-                report_materialization_failure(
-                    &state.cache_dir,
-                    artifact_key_hex,
-                    "compile-hit",
-                    &error,
-                );
-                CachedHitFailure::from(error)
-            })?;
+    let payloads = ensure_payloads_for_materialization_for_state(state, &cached, artifact_key_hex)
+        .map_err(|error| {
+            report_materialization_failure(
+                &state.cache_dir,
+                artifact_key_hex,
+                "compile-hit",
+                &error,
+            );
+            CachedHitFailure::from(error)
+        })?;
     record_artifact_access(state, artifact_key_hex, &cached, t0);
     let t1 = Instant::now();
     let artifact_lookup_ns = (t1 - t0).as_nanos() as u64;

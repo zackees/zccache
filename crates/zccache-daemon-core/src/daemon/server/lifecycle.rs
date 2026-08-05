@@ -273,6 +273,7 @@ pub(super) fn new_shared_state(
             in_flight_bytes: AtomicUsize::new(0),
             disk_maintenance: Mutex::new(()),
             artifact_publication: Arc::new(tokio::sync::RwLock::new(())),
+            staged_materialization_lock: Arc::new(StdMutex::new(std::sync::Weak::new())),
             persist_semaphore: Arc::new(tokio::sync::Semaphore::new(persist_workers_default())),
             compile_concurrency,
             compile_queue: Arc::new(
