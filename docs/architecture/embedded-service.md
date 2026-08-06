@@ -139,6 +139,12 @@ pub struct DiskCacheLimits {
     pub max_cache_percent: Option<u8>,
 }
 
+pub struct ZccacheStartOptions {
+    pub disk_limits: DiskCacheLimits,
+    pub maintenance_ownership: MaintenanceOwnership,
+    pub staging_root: Option<NormalizedPath>,
+}
+
 pub enum DiskMaintenanceKind {
     Pressure,
     Full,
@@ -231,6 +237,10 @@ impl ZccacheService {
         disk_limits: DiskCacheLimits,
         maintenance_ownership: MaintenanceOwnership,
     ) -> Result<Self>;
+    pub async fn start_with_options(
+        config: ZccacheConfig,
+        options: ZccacheStartOptions,
+    ) -> Result<Self>;
     pub async fn compile(&self, request: CompileRequest) -> Result<CompileResponse>;
     pub async fn compile_streaming<F>(&self, request: CompileRequest, on_chunk: F) -> Result<()>
     where
@@ -253,7 +263,10 @@ impl ZccacheService {
 `DiskCacheLimits::max_cache_bytes` and `max_cache_percent` are mutually
 exclusive. `start` uses the shared dynamic artifact-store budget;
 `start_with_disk_limits` accepts overrides without adding fields to the
-existing public `ServiceLimits` struct. The budget
+existing public `ServiceLimits` struct. `start_with_options` is the additive
+surface for a host-owned maintenance schedule and a private staging base;
+existing `ZccacheConfig` literals remain source-compatible. zccache owns only
+the `zccache-staging` child beneath an explicit staging base. The budget
 accounts for allocated artifact files and pending writes, not small root-local
 indexes, depgraphs, logs, journals, or daemon metadata. By default the service
 starts its own pressure/full maintenance loop on the host runtime. A host that

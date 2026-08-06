@@ -392,6 +392,29 @@ pub enum MaintenanceOwnership {
     Host,
 }
 
+/// Additive startup options for embedded hosts that need non-default storage
+/// or maintenance ownership without expanding [`ZccacheConfig`].
+#[derive(Debug, Clone)]
+pub struct ZccacheStartOptions {
+    pub disk_limits: DiskCacheLimits,
+    pub maintenance_ownership: MaintenanceOwnership,
+    /// Optional base for private compiler outputs.
+    ///
+    /// The service creates and cleans only its own `zccache-staging` child
+    /// beneath this directory. `None` keeps staging under the cache root.
+    pub staging_root: Option<NormalizedPath>,
+}
+
+impl Default for ZccacheStartOptions {
+    fn default() -> Self {
+        Self {
+            disk_limits: DiskCacheLimits::default(),
+            maintenance_ownership: MaintenanceOwnership::Embedded,
+            staging_root: None,
+        }
+    }
+}
+
 /// Pressure tier observed during a disk-maintenance pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiskMaintenancePressure {
@@ -454,7 +477,7 @@ impl ZccacheService {
     /// runtime (for tokio-console attach unity, graceful-shutdown signalling,
     /// and related diagnostics).
     pub async fn start(config: ZccacheConfig) -> Result<Self> {
-        Self::start_with_disk_limits(config, DiskCacheLimits::default()).await
+        Self::start_with_options(config, ZccacheStartOptions::default()).await
     }
 
     /// Start an embedded service with an explicit artifact-store budget.
@@ -466,10 +489,12 @@ impl ZccacheService {
         config: ZccacheConfig,
         disk_limits: DiskCacheLimits,
     ) -> Result<Self> {
-        Self::start_with_disk_limits_and_maintenance(
+        Self::start_with_options(
             config,
-            disk_limits,
-            MaintenanceOwnership::Embedded,
+            ZccacheStartOptions {
+                disk_limits,
+                ..ZccacheStartOptions::default()
+            },
         )
         .await
     }
@@ -480,20 +505,40 @@ impl ZccacheService {
         disk_limits: DiskCacheLimits,
         maintenance_ownership: MaintenanceOwnership,
     ) -> Result<Self> {
+        Self::start_with_options(
+            config,
+            ZccacheStartOptions {
+                disk_limits,
+                maintenance_ownership,
+                staging_root: None,
+            },
+        )
+        .await
+    }
+
+    /// Start an embedded service with additive storage and ownership options.
+    ///
+    /// Existing constructors preserve their source-compatible defaults;
+    /// hosts that need a short private compiler-output root use this method.
+    pub async fn start_with_options(
+        config: ZccacheConfig,
+        options: ZccacheStartOptions,
+    ) -> Result<Self> {
         let endpoint = embedded_endpoint(&config.host);
         let cache_root =
             crate::core::config::effective_cache_root_from_top_level(&config.cache_root);
         let maintenance_policy = MaintenancePolicy::from_limits(
-            disk_limits.max_cache_bytes,
-            disk_limits.max_cache_percent,
+            options.disk_limits.max_cache_bytes,
+            options.disk_limits.max_cache_percent,
         )
         .map_err(EmbeddedError::Start)?;
         let daemon = EmbeddedDaemon::start_with_maintenance(
             endpoint,
             cache_root,
+            options.staging_root.as_ref(),
             config.runtime.handle.clone(),
             maintenance_policy,
-            maintenance_ownership == MaintenanceOwnership::Embedded,
+            options.maintenance_ownership == MaintenanceOwnership::Embedded,
         )
         .await
         .map_err(|err| EmbeddedError::Start(err.to_string()))?;

@@ -510,6 +510,13 @@ remain supported through the 1.13.x release line and will not be considered for
 removal before 1.14. Legacy v1 and pack entries remain readable while staging
 is disabled.
 
+Private compiler outputs normally live below `{cache_root}/staging`. Set
+`ZCCACHE_STAGING_DIR` to choose a shorter base (for example, for a Windows
+linker); zccache creates and cleans only its `zccache-staging` child there.
+Durable artifacts remain in the configured cache and staged publication stays
+enabled. Embedded hosts can set `ZccacheStartOptions::staging_root` through
+`ZccacheService::start_with_options`.
+
 #### Safe filesystem materialization
 
 Cache-hit delivery is capability driven. zccache probes the actual source and

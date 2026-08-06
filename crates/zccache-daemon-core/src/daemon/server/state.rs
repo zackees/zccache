@@ -9,6 +9,7 @@
 use super::*;
 
 const STAGING_LOCK_FILE: &str = ".active.lock";
+const CONFIGURED_STAGING_CHILD: &str = "zccache-staging";
 
 /// Lock file naming the single live writer of a cache root (#1162).
 const CACHE_ROOT_WRITER_LOCK_FILE: &str = ".writer.lock";
@@ -38,7 +39,11 @@ pub(super) struct StagingRoot {
 }
 
 impl StagingRoot {
-    pub(super) fn new(cache_dir: &Path, instance: u64) -> std::io::Result<Self> {
+    pub(super) fn new(
+        cache_dir: &Path,
+        configured_parent: Option<&Path>,
+        instance: u64,
+    ) -> std::io::Result<Self> {
         use fs2::FileExt;
         use std::io::Write;
 
@@ -46,9 +51,10 @@ impl StagingRoot {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let path = cache_dir
-            .join("staging")
-            .join(format!("{}-{instance}-{nonce}", std::process::id()));
+        let parent = configured_parent
+            .map(|root| root.join(CONFIGURED_STAGING_CHILD))
+            .unwrap_or_else(|| cache_dir.join("staging"));
+        let path = parent.join(format!("{}-{instance}-{nonce}", std::process::id()));
         std::fs::create_dir_all(&path)?;
         let mut file = std::fs::OpenOptions::new()
             .read(true)
@@ -731,10 +737,63 @@ mod staging_tests {
     }
 
     #[test]
+    fn embedded_host_can_place_private_staging_outside_a_deep_cache_root() {
+        let cache = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+
+        let root = StagingRoot::new(cache.path(), Some(staging.path()), 7).unwrap();
+
+        assert!(root.path().starts_with(staging.path()));
+        assert!(root
+            .path()
+            .starts_with(staging.path().join(CONFIGURED_STAGING_CHILD)));
+        assert!(!root.path().starts_with(cache.path()));
+        assert!(root.path().join(STAGING_LOCK_FILE).is_file());
+    }
+
+    #[test]
+    fn configured_staging_cleanup_is_bounded_to_the_owned_child() {
+        let cache = tempfile::tempdir().unwrap();
+        let configured = tempfile::tempdir().unwrap();
+        let unrelated = configured.path().join("unrelated-user-data");
+        std::fs::create_dir_all(&unrelated).unwrap();
+        std::fs::write(unrelated.join("keep.txt"), b"keep").unwrap();
+
+        let debris = configured
+            .path()
+            .join(CONFIGURED_STAGING_CHILD)
+            .join("abandoned");
+        std::fs::create_dir_all(&debris).unwrap();
+        std::fs::write(debris.join("orphan.o"), b"orphan").unwrap();
+        backdate(&debris, Duration::from_secs(3600));
+
+        let cleaner = StagingRoot::new(cache.path(), Some(configured.path()), 1).unwrap();
+        assert_eq!(cleaner.cleanup_abandoned().unwrap(), 1);
+        assert!(unrelated.join("keep.txt").is_file());
+        assert!(!debris.exists());
+    }
+
+    #[test]
+    fn explicit_staging_roots_remain_independent_in_one_process() {
+        let cache_a = tempfile::tempdir().unwrap();
+        let cache_b = tempfile::tempdir().unwrap();
+        let staging_a = tempfile::tempdir().unwrap();
+        let staging_b = tempfile::tempdir().unwrap();
+
+        let root_a = StagingRoot::new(cache_a.path(), Some(staging_a.path()), 1).unwrap();
+        let root_b = StagingRoot::new(cache_b.path(), Some(staging_b.path()), 2).unwrap();
+
+        assert!(root_a.path().starts_with(staging_a.path()));
+        assert!(root_b.path().starts_with(staging_b.path()));
+        assert!(!root_a.path().starts_with(staging_b.path()));
+        assert!(!root_b.path().starts_with(staging_a.path()));
+    }
+
+    #[test]
     fn abandoned_cleanup_preserves_live_roots_and_removes_crash_debris() {
         let temp = tempfile::tempdir().unwrap();
-        let live_a = StagingRoot::new(temp.path(), 1).unwrap();
-        let live_b = StagingRoot::new(temp.path(), 2).unwrap();
+        let live_a = StagingRoot::new(temp.path(), None, 1).unwrap();
+        let live_b = StagingRoot::new(temp.path(), None, 2).unwrap();
         std::fs::write(live_b.path().join("active.o"), b"active").unwrap();
 
         let abandoned = temp.path().join("staging").join("abandoned");
@@ -756,7 +815,7 @@ mod staging_tests {
     #[test]
     fn a_staging_root_being_born_survives_a_concurrent_cleaner() {
         let temp = tempfile::tempdir().unwrap();
-        let cleaner = StagingRoot::new(temp.path(), 1).unwrap();
+        let cleaner = StagingRoot::new(temp.path(), None, 1).unwrap();
 
         // Exactly the on-disk state `StagingRoot::new` leaves behind after
         // `create_dir_all` and before it opens `.active.lock`.
@@ -777,7 +836,7 @@ mod staging_tests {
     #[test]
     fn the_cleaner_does_not_create_the_lock_file_it_tests_for() {
         let temp = tempfile::tempdir().unwrap();
-        let cleaner = StagingRoot::new(temp.path(), 1).unwrap();
+        let cleaner = StagingRoot::new(temp.path(), None, 1).unwrap();
         let being_born = temp.path().join("staging").join("999-0-12345");
         std::fs::create_dir_all(&being_born).unwrap();
 
@@ -800,7 +859,7 @@ mod staging_tests {
     #[test]
     fn lockless_debris_is_still_reclaimed_once_it_is_old_enough() {
         let temp = tempfile::tempdir().unwrap();
-        let cleaner = StagingRoot::new(temp.path(), 1).unwrap();
+        let cleaner = StagingRoot::new(temp.path(), None, 1).unwrap();
 
         let debris = temp.path().join("staging").join("dead-0-1");
         std::fs::create_dir_all(&debris).unwrap();
@@ -817,7 +876,7 @@ mod staging_tests {
     #[test]
     fn the_age_gate_is_what_decides_the_lockless_case() {
         let temp = tempfile::tempdir().unwrap();
-        let cleaner = StagingRoot::new(temp.path(), 1).unwrap();
+        let cleaner = StagingRoot::new(temp.path(), None, 1).unwrap();
         let young = temp.path().join("staging").join("young-0-1");
         std::fs::create_dir_all(&young).unwrap();
 
@@ -842,8 +901,8 @@ mod staging_tests {
     #[test]
     fn a_held_lock_still_protects_a_live_root_regardless_of_age() {
         let temp = tempfile::tempdir().unwrap();
-        let cleaner = StagingRoot::new(temp.path(), 1).unwrap();
-        let live = StagingRoot::new(temp.path(), 2).unwrap();
+        let cleaner = StagingRoot::new(temp.path(), None, 1).unwrap();
+        let live = StagingRoot::new(temp.path(), None, 2).unwrap();
         std::fs::write(live.path().join("active.o"), b"active").unwrap();
 
         // Age must never override a held lock: a long-running daemon is old.

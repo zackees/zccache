@@ -21,6 +21,12 @@ use super::NormalizedPath;
 /// Environment variable used to override the zccache cache root.
 pub const CACHE_DIR_ENV: &str = "ZCCACHE_CACHE_DIR";
 
+/// Optional parent directory for daemon-private compiler staging.
+///
+/// Keeping this separate from [`CACHE_DIR_ENV`] lets hosts shorten paths
+/// passed to external tools without relocating the durable artifact store.
+pub const STAGING_DIR_ENV: &str = "ZCCACHE_STAGING_DIR";
+
 /// Environment variable used to select a daemon/socket namespace.
 ///
 /// The default daemon identity remains unchanged when this is unset or empty.
@@ -117,8 +123,9 @@ pub use resolve::{
     daemon_state_dir_from_cache_dir_with_namespace, default_cache_dir,
     effective_cache_root_from_top_level, is_version_dir_name, prune_stale_version_dirs,
     prune_stale_version_dirs_in, read_last_version_marker, resolve_cache_root,
-    resolve_cache_root_top_level, versioned_subdir, write_last_version_marker,
-    write_last_version_marker_in, CacheRootSource, PruneReport, LAST_VERSION_MARKER,
+    resolve_cache_root_top_level, staging_dir_override, versioned_subdir,
+    write_last_version_marker, write_last_version_marker_in, CacheRootSource, PruneReport,
+    LAST_VERSION_MARKER,
 };
 
 /// Top-level configuration for zccache.

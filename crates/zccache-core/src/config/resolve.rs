@@ -7,7 +7,9 @@
 //! the per-daemon-version subdir layout (issues #761 / #762 Phase 0).
 
 use super::namespace::home_dir_short_hash;
-use super::{CACHE_DIR_ENV, COLOCATE_ENV, DAEMON_NAMESPACE_ENV, DAEMON_STATE_DIR_ENV};
+use super::{
+    CACHE_DIR_ENV, COLOCATE_ENV, DAEMON_NAMESPACE_ENV, DAEMON_STATE_DIR_ENV, STAGING_DIR_ENV,
+};
 use crate::NormalizedPath;
 use std::ffi::OsString;
 use std::path::Path;
@@ -387,6 +389,18 @@ pub(super) fn sanitize_path_component(s: &str) -> String {
 #[must_use]
 pub fn cache_dir_override() -> Option<NormalizedPath> {
     cache_dir_from_env_value(std::env::var_os(CACHE_DIR_ENV))
+}
+
+/// Returns the base for zccache-owned private compiler staging from
+/// `ZCCACHE_STAGING_DIR`, if set.
+///
+/// The daemon creates and cleans only its `zccache-staging` child beneath
+/// this base. The durable cache root remains unchanged. Relative paths are
+/// resolved against the daemon's current directory using the same contract
+/// as [`cache_dir_override`].
+#[must_use]
+pub fn staging_dir_override() -> Option<NormalizedPath> {
+    cache_dir_from_env_value(std::env::var_os(STAGING_DIR_ENV))
 }
 
 fn dirs_fallback() -> NormalizedPath {

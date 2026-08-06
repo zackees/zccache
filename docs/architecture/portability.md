@@ -32,6 +32,15 @@ misses rather than being reinterpreted.
 
 ## Path Handling
 
+Private compiler outputs default to `{cache_root}/staging`. Set
+`ZCCACHE_STAGING_DIR` to a shorter base when a platform tool cannot consume
+the cache-root-derived path. zccache creates and cleans only a
+`zccache-staging` child beneath that base. The override does not relocate
+durable artifacts or disable staged publication; each daemon still owns a
+locked child and removes it at shutdown. Embedded services should pass the
+same base explicitly through `ZccacheStartOptions::staging_root` so concurrent
+instances remain independent.
+
 **Canonicalization:** All paths stored in the metadata cache are canonicalized (`std::fs::canonicalize`). This resolves symlinks and relative components, ensuring that `/home/user/./foo.c` and `/home/user/foo.c` map to the same entry.
 
 **Case sensitivity:**

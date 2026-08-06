@@ -112,6 +112,12 @@ remain mandatory for the narrow semantic allowlist.
 
 Private compiler/linker files normally live under a per-daemon
 `{cache_root}/staging/` directory, outside the clearable artifact store.
+`ZCCACHE_STAGING_DIR` chooses a base beneath which zccache owns the
+`zccache-staging` child; cleanup never scans unrelated siblings in that base.
+The durable artifact store and its cache identity stay under
+`ZCCACHE_CACHE_DIR`. Embedded hosts may instead pass
+`ZccacheStartOptions::staging_root` to `ZccacheService::start_with_options`
+when an external tool cannot consume a deeply nested path.
 Directory producers use a hidden private sibling beside the requested bundle
 to preserve same-filesystem atomic installation. An advisory lock protects
 each live daemon's directory: startup cleanup reclaims only unlocked crash
