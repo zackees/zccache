@@ -1,3 +1,12 @@
+# soldr#2188 short compiler staging root
+
+- [x] Read the issue, staged-output architecture, portability contract, and performance gate.
+- [x] RED: prove an embedded host can place private compiler staging outside a deep cache root.
+- [x] GREEN: add an explicit embedded staging root while preserving cache-local staging by default.
+- [x] Document the ownership and cleanup contract.
+- [ ] Run focused tests, formatting, clippy, and the sanctioned performance matrix.
+- [ ] Review, push, merge, and validate the upstream change before updating Soldr.
+
 # #1215 staged materialization lock contention
 
 Issue: https://github.com/zackees/zccache/issues/1215 — `perf(persist): bound staged materialization lock contention before GC hardening`

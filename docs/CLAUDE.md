@@ -14,6 +14,7 @@ Architecture docs are split by subsystem. Read only what's relevant to your curr
 | `zccache-watcher` | [metadata-cache.md](architecture/metadata-cache.md) (watcher section) |
 | `zccache-artifact` | [artifact-store.md](architecture/artifact-store.md) |
 | Cross-filesystem COW materialization | [artifact-store.md](architecture/artifact-store.md), [portability.md](architecture/portability.md) |
+| Private compiler staging paths | [artifact-store.md](architecture/artifact-store.md), [portability.md](architecture/portability.md) |
 | Daemon-owned disk retention | [artifact-store.md](architecture/artifact-store.md), [runtime.md](architecture/runtime.md), [embedded-service.md](architecture/embedded-service.md) |
 | `zccache-hash` | [overview.md](architecture/overview.md) (2.8) |
 | `zccache-compiler` | [overview.md](architecture/overview.md) (2.9), [data-flow.md](architecture/data-flow.md) |

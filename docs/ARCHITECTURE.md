@@ -30,6 +30,7 @@ failed cache-root audit retain its diagnostic JSONL evidence.
 - **Compile queue visibility, progress-based wedge detection** → [ipc.md § Compile progress heartbeats](architecture/ipc.md#compile-progress-heartbeats-issue-1216)
 - **File change detection** → [metadata-cache.md](architecture/metadata-cache.md)
 - **Disk cache & eviction** → [artifact-store.md](architecture/artifact-store.md)
+- **Private compiler staging root** → [portability.md](architecture/portability.md#path-handling)
 - **Daemon-owned bounded disk retention** → [artifact-store.md](architecture/artifact-store.md#daemon-owned-retention-policy)
 - **Transactional directory outputs** → [artifact-store.md](architecture/artifact-store.md#immutable-staged-output-rollout)
 - **Reflink / hardlink COW safety** → [artifact-store.md](architecture/artifact-store.md#capability-driven-cow-materialization)

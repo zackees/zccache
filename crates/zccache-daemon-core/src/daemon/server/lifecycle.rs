@@ -25,7 +25,9 @@ impl DaemonServer {
     /// `tests::bind_isolated_server`, which needs no global state at all and
     /// therefore cannot participate in the race.
     pub fn bind(endpoint: &str) -> Result<Self, crate::ipc::IpcError> {
-        Self::bind_with_cache_dir(endpoint, &crate::core::config::default_cache_dir())
+        let cache_dir = crate::core::config::default_cache_dir();
+        let staging_root = crate::core::config::staging_dir_override();
+        Self::bind_with_roots(endpoint, &cache_dir, staging_root.as_ref())
     }
 
     /// Create a new daemon server bound to the given endpoint, rooted at an
@@ -35,11 +37,20 @@ impl DaemonServer {
         endpoint: &str,
         cache_dir: &crate::core::NormalizedPath,
     ) -> Result<Self, crate::ipc::IpcError> {
+        Self::bind_with_roots(endpoint, cache_dir, None)
+    }
+
+    fn bind_with_roots(
+        endpoint: &str,
+        cache_dir: &crate::core::NormalizedPath,
+        staging_root: Option<&crate::core::NormalizedPath>,
+    ) -> Result<Self, crate::ipc::IpcError> {
         let listener = IpcListener::bind(endpoint)?;
         let backend_identity = crate::ipc::current_backend_identity(endpoint)
             .map_err(|err| daemon_identity_error(endpoint, &err))?;
-        let (state, index_writer_rx) = new_shared_state(endpoint, cache_dir, backend_identity)
-            .map_err(|error| cache_root_error(cache_dir, &error))?;
+        let (state, index_writer_rx) =
+            new_shared_state(endpoint, cache_dir, staging_root, backend_identity)
+                .map_err(|error| cache_root_error(cache_dir, &error))?;
 
         Ok(Self {
             listener,
@@ -100,6 +111,7 @@ pub(super) fn depgraph_file_path_for_cache_dir(
 pub(super) fn new_shared_state(
     endpoint: &str,
     cache_dir: &crate::core::NormalizedPath,
+    staging_root: Option<&crate::core::NormalizedPath>,
     backend_identity: running_process::broker::protocol_v2::backend_handle::DaemonProcess,
 ) -> std::io::Result<(
     Arc<SharedState>,
@@ -248,7 +260,11 @@ pub(super) fn new_shared_state(
             stats: StatsCollector::new(),
             profiler: PhaseProfiler::new(),
             artifact_dir,
-            staging: StagingRoot::new(cache_dir.as_path(), instance)?,
+            staging: StagingRoot::new(
+                cache_dir.as_path(),
+                staging_root.map(|path| path.as_path()),
+                instance,
+            )?,
             cache_root_lock,
             metadata_path,
             compiler_hash_cache_path,

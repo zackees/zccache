@@ -33,7 +33,7 @@ fn test_state(cache_dir: &crate::core::NormalizedPath) -> Arc<SharedState> {
     let endpoint = crate::ipc::unique_test_endpoint();
     let identity = crate::ipc::current_backend_identity(&endpoint).expect("backend identity");
     let (state, _index_writer_rx) =
-        new_shared_state(&endpoint, cache_dir, identity).expect("shared state");
+        new_shared_state(&endpoint, cache_dir, None, identity).expect("shared state");
     state
 }
 

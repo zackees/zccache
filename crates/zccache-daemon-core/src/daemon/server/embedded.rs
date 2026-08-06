@@ -36,6 +36,7 @@ impl EmbeddedDaemon {
         Self::start_with_maintenance(
             endpoint,
             cache_dir,
+            None,
             runtime_handle,
             maintenance_policy,
             true,
@@ -46,14 +47,16 @@ impl EmbeddedDaemon {
     pub(crate) async fn start_with_maintenance(
         endpoint: String,
         cache_dir: crate::core::NormalizedPath,
+        staging_root: Option<&crate::core::NormalizedPath>,
         runtime_handle: Option<tokio::runtime::Handle>,
         maintenance_policy: MaintenancePolicy,
         automatic_maintenance: bool,
     ) -> Result<Self, crate::ipc::IpcError> {
         let backend_identity = crate::ipc::current_backend_identity(&endpoint)
             .map_err(|err| super::lifecycle::daemon_identity_error(&endpoint, &err))?;
-        let (state, index_writer_rx) = new_shared_state(&endpoint, &cache_dir, backend_identity)
-            .map_err(|error| super::lifecycle::cache_root_error(&cache_dir, &error))?;
+        let (state, index_writer_rx) =
+            new_shared_state(&endpoint, &cache_dir, staging_root, backend_identity)
+                .map_err(|error| super::lifecycle::cache_root_error(&cache_dir, &error))?;
         // Arm the startup depgraph-load gate as early as possible — before
         // this state can serve any compile. The shared `dep_graph_load_complete`
         // flag inits `true` ("assume loaded"); the standalone daemon flips it
@@ -827,6 +830,7 @@ mod flush_ownership_tests {
             crate::ipc::unique_test_endpoint(),
             crate::core::NormalizedPath::new(temp.path()),
             None,
+            None,
             MaintenancePolicy::default(),
             false,
         )
@@ -839,5 +843,62 @@ mod flush_ownership_tests {
         );
         let report = daemon.shutdown().await;
         assert!(report.is_complete());
+    }
+
+    #[tokio::test]
+    async fn concurrent_embedded_daemons_keep_explicit_staging_roots_independent() {
+        let cache_a = tempfile::tempdir().expect("cache a");
+        let cache_b = tempfile::tempdir().expect("cache b");
+        let staging_a = tempfile::tempdir().expect("staging a");
+        let staging_b = tempfile::tempdir().expect("staging b");
+        let cache_a = crate::core::NormalizedPath::new(cache_a.path());
+        let cache_b = crate::core::NormalizedPath::new(cache_b.path());
+        let staging_a = crate::core::NormalizedPath::new(staging_a.path());
+        let staging_b = crate::core::NormalizedPath::new(staging_b.path());
+
+        let start_a = EmbeddedDaemon::start_with_maintenance(
+            crate::ipc::unique_test_endpoint(),
+            cache_a,
+            Some(&staging_a),
+            None,
+            MaintenancePolicy::default(),
+            false,
+        );
+        let start_b = EmbeddedDaemon::start_with_maintenance(
+            crate::ipc::unique_test_endpoint(),
+            cache_b,
+            Some(&staging_b),
+            None,
+            MaintenancePolicy::default(),
+            false,
+        );
+        let (daemon_a, daemon_b) = tokio::join!(start_a, start_b);
+        let daemon_a = daemon_a.expect("embedded daemon a");
+        let daemon_b = daemon_b.expect("embedded daemon b");
+
+        assert!(daemon_a
+            .state
+            .staging
+            .path()
+            .starts_with(staging_a.as_path()));
+        assert!(daemon_b
+            .state
+            .staging
+            .path()
+            .starts_with(staging_b.as_path()));
+        assert!(!daemon_a
+            .state
+            .staging
+            .path()
+            .starts_with(staging_b.as_path()));
+        assert!(!daemon_b
+            .state
+            .staging
+            .path()
+            .starts_with(staging_a.as_path()));
+
+        let (report_a, report_b) = tokio::join!(daemon_a.shutdown(), daemon_b.shutdown());
+        assert!(report_a.is_complete());
+        assert!(report_b.is_complete());
     }
 }
