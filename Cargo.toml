@@ -81,7 +81,7 @@ lzma-rs = "0.3"
 sevenz-rust = "0.6"
 rkyv = "0.8"
 mimalloc = "0.1"
-running-process = { version = "4.8.1", git = "https://github.com/zackees/running-process.git", rev = "359b4e3d92660e54eb9b16b6e83de8ce26932ff8", default-features = false, features = ["client-async"] }
+running-process = { version = "4.10", default-features = false, features = ["client-async"] }
 zccache = { path = "crates/zccache" }
 zccache-artifact = { path = "crates/zccache-artifact" }
 zccache-audit = { path = "crates/zccache-audit" }
@@ -108,7 +108,7 @@ zccache-fingerprint = { path = "crates/zccache-fingerprint" }
 # 1. Detect buffer overflow (bytes_written == 0) and report as error
 # 2. Report start_read failure (watcher silently dying) as error
 [patch.crates-io]
-notify = { path = "vendor/notify" }
+notify = { path = "../notify" }
 
 [workspace.metadata.dylint]
 libraries = [{ path = "dylints/*" }]
