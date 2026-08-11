@@ -580,6 +580,26 @@ pub(crate) struct CompilePriorityParseError {
 ///
 /// Convenience wrapper that pipes `Stdio::null()` for stdin. Callers that
 /// need to forward client stdin use [`tokio_command_output_with_priority_stdin`].
+/// Spawn options for daemon-owned compiler/tool children (soldr#2442 slice 3):
+/// reap the child when the daemon drops the compile future (a client
+/// disconnect / Ctrl-C) and when the daemon process itself dies, so a cancelled
+/// or crashed compile never orphans a rustc process. running-process provides
+/// the primitives: `kill_on_drop` (Tokio drop), Linux `PR_SET_PDEATHSIG`, and
+/// on Windows the kill-on-close job object.
+///
+/// `kill_on_drop` is enabled on every platform (the primary case: a dropped
+/// compile future must reap its child). `kill_when_owner_dies` is scoped to
+/// Linux here because the Windows path already assigns each child to the
+/// daemon's kill-on-close job below (`assign_child_to_daemon_job`); enabling it
+/// there too would place the child in a second job for no benefit.
+fn owned_child_spawn_options() -> running_process::TokioSpawnOptions {
+    running_process::TokioSpawnOptions {
+        kill_on_drop: true,
+        kill_when_owner_dies: cfg!(target_os = "linux"),
+        ..Default::default()
+    }
+}
+
 pub(crate) async fn tokio_command_output_with_priority(
     cmd: &mut tokio::process::Command,
     priority: CompilePriority,
@@ -654,7 +674,7 @@ async fn tokio_command_output_with_priority_stdin_inner(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     let mut child =
-        running_process::spawn_tokio(cmd, running_process::TokioSpawnOptions::default())?;
+        running_process::spawn_tokio(cmd, owned_child_spawn_options())?;
     #[cfg(windows)]
     if let Some(handle) = child.raw_handle() {
         assign_child_to_daemon_job(handle);
@@ -694,7 +714,7 @@ pub(crate) async fn tokio_leaf_command_output_with_priority(
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    let child = running_process::spawn_tokio(cmd, running_process::TokioSpawnOptions::default())?;
+    let child = running_process::spawn_tokio(cmd, owned_child_spawn_options())?;
     #[cfg(windows)]
     {
         if let Some(handle) = child.raw_handle() {
