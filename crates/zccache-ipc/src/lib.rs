@@ -18,7 +18,6 @@ pub use broker::{
 };
 pub use error::IpcError;
 pub use manifest::{publish_manifest, publish_manifest_in, publish_service_definition};
-#[cfg(windows)]
 pub use transport::IpcClientConnection;
 pub use transport::{
     connect, unique_test_endpoint, IpcConnection, IpcListener, DEFAULT_CLIENT_RECV_TIMEOUT,
@@ -27,13 +26,7 @@ pub use transport::{
 use zccache_core::NormalizedPath;
 use zccache_protocol::{self as protocol, wire_prost, Response};
 
-#[cfg(unix)]
-const MAX_PORTABLE_UNIX_SOCKET_PATH_BYTES: usize = 100;
-
-#[cfg(unix)]
 type ClientConnection = IpcConnection;
-#[cfg(windows)]
-type ClientConnection = IpcClientConnection;
 
 /// Daemon control requests that may opt into the v16 prost migration slice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -367,43 +360,27 @@ pub fn default_endpoint() -> String {
         return endpoint_for_cache_dir(cache_dir.as_path(), namespace.as_deref());
     }
 
-    #[cfg(unix)]
-    {
-        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            return format!(
-                "{runtime_dir}/zccache/{}",
-                socket_name(namespace.as_deref())
-            );
-        }
-        let user = std::env::var("USER").unwrap_or_else(|_| String::from("unknown"));
-        format!("/tmp/zccache-{user}/{}", socket_name(namespace.as_deref()))
-    }
-    #[cfg(windows)]
-    {
-        let username = std::env::var("USERNAME").unwrap_or_else(|_| String::from("unknown"));
-        pipe_name(&username, namespace.as_deref())
-    }
+    let username =
+        zccache_platform::ipc::current_user_name().unwrap_or_else(|| String::from("unknown"));
+    zccache_platform::ipc::Endpoint::select(
+        default_file_endpoint(namespace.as_deref()),
+        pipe_name(&username, namespace.as_deref()),
+    )
+    .to_string()
 }
 
 pub fn endpoint_for_cache_dir(cache_dir: &std::path::Path, namespace: Option<&str>) -> String {
-    #[cfg(unix)]
-    {
-        let direct = cache_dir.join(daemon_socket_name(namespace));
-        let direct = direct.to_string_lossy();
-        if direct.len() <= MAX_PORTABLE_UNIX_SOCKET_PATH_BYTES {
-            return direct.into_owned();
-        }
-
+    let direct = cache_dir.join(daemon_socket_name(namespace));
+    let direct = direct.to_string_lossy();
+    let file_path = if zccache_platform::ipc::Endpoint::file_path_is_portable(&direct) {
+        direct.into_owned()
+    } else {
         compact_cache_dir_endpoint(cache_dir, namespace)
-    }
-    #[cfg(windows)]
-    {
-        let suffix = zccache_core::stable_path_id(cache_dir);
-        pipe_name(&suffix, namespace)
-    }
+    };
+    let suffix = zccache_core::stable_path_id(cache_dir);
+    zccache_platform::ipc::Endpoint::select(file_path, pipe_name(&suffix, namespace)).to_string()
 }
 
-#[cfg(unix)]
 fn compact_cache_dir_endpoint(cache_dir: &std::path::Path, namespace: Option<&str>) -> String {
     // Endpoint is a Unix socket path; return it as a `String` directly so
     // we don't round-trip through `PathBuf` only to immediately convert
@@ -429,19 +406,13 @@ pub fn endpoint_for_private_daemon_name(
         return endpoint_for_cache_dir(cache_dir, Some(&namespace));
     }
 
-    #[cfg(unix)]
-    {
-        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            return format!("{runtime_dir}/zccache/{}", socket_name(Some(&namespace)));
-        }
-        let user = std::env::var("USER").unwrap_or_else(|_| String::from("unknown"));
-        format!("/tmp/zccache-{user}/{}", socket_name(Some(&namespace)))
-    }
-    #[cfg(windows)]
-    {
-        let username = std::env::var("USERNAME").unwrap_or_else(|_| String::from("unknown"));
-        pipe_name(&username, Some(&namespace))
-    }
+    let username =
+        zccache_platform::ipc::current_user_name().unwrap_or_else(|| String::from("unknown"));
+    zccache_platform::ipc::Endpoint::select(
+        default_file_endpoint(Some(&namespace)),
+        pipe_name(&username, Some(&namespace)),
+    )
+    .to_string()
 }
 
 /// Returns the path for the daemon lock file.
@@ -452,8 +423,7 @@ pub fn lock_file_path() -> NormalizedPath {
         return cache_dir.join(lock_file_name(namespace.as_deref()));
     }
 
-    #[cfg(unix)]
-    {
+    let file_lock = {
         let endpoint = default_endpoint();
         // Endpoint paths always live inside a directory, but the denied
         // `expect_used` lint fires when clippy compiles this cfg(unix)
@@ -462,12 +432,15 @@ pub fn lock_file_path() -> NormalizedPath {
         let dir = std::path::Path::new(&endpoint)
             .parent()
             .unwrap_or_else(|| std::path::Path::new("/tmp"));
-        dir.join(lock_file_name(namespace.as_deref())).into()
-    }
-    #[cfg(windows)]
-    {
-        zccache_core::config::default_cache_dir().join(lock_file_name(namespace.as_deref()))
-    }
+        dir.join(lock_file_name(namespace.as_deref()))
+    };
+    let windows_lock =
+        { zccache_core::config::default_cache_dir().join(lock_file_name(namespace.as_deref())) };
+    zccache_platform::ipc::select_host_text(
+        file_lock.to_string_lossy().into_owned(),
+        windows_lock.to_string_lossy().into_owned(),
+    )
+    .into()
 }
 
 /// The `v<VERSION>` tag folded into every endpoint + lock name (#1004 / #694
@@ -483,7 +456,6 @@ fn version_tag() -> String {
     zccache_core::config::versioned_subdir()
 }
 
-#[cfg(unix)]
 fn socket_name(namespace: Option<&str>) -> String {
     let v = version_tag();
     match namespace {
@@ -492,7 +464,6 @@ fn socket_name(namespace: Option<&str>) -> String {
     }
 }
 
-#[cfg(unix)]
 fn daemon_socket_name(namespace: Option<&str>) -> String {
     let v = version_tag();
     match namespace {
@@ -501,15 +472,22 @@ fn daemon_socket_name(namespace: Option<&str>) -> String {
     }
 }
 
-#[cfg(windows)]
 fn pipe_name(base: &str, namespace: Option<&str>) -> String {
     let base = zccache_core::config::sanitize_ipc_component(base)
         .unwrap_or_else(|| String::from("unknown"));
     let v = version_tag();
     match namespace {
-        Some(ns) => format!(r"\\.\pipe\zccache-{base}-{ns}-{v}"),
-        None => format!(r"\\.\pipe\zccache-{base}-{v}"),
+        Some(ns) => format!("zccache-{base}-{ns}-{v}"),
+        None => format!("zccache-{base}-{v}"),
     }
+}
+
+fn default_file_endpoint(namespace: Option<&str>) -> String {
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        return format!("{runtime_dir}/zccache/{}", socket_name(namespace));
+    }
+    let user = std::env::var("USER").unwrap_or_else(|_| String::from("unknown"));
+    format!("/tmp/zccache-{user}/{}", socket_name(namespace))
 }
 
 fn lock_file_name(namespace: Option<&str>) -> String {
@@ -543,6 +521,11 @@ pub fn read_lock_file_pid() -> Option<u32> {
 /// Remove the lock file.
 pub fn remove_lock_file() {
     let _ = std::fs::remove_file(lock_file_path());
+}
+
+/// Retire a stale native endpoint without exposing its host representation.
+pub fn retire_endpoint(endpoint: &str) -> std::io::Result<()> {
+    zccache_platform::ipc::Endpoint::from_native(endpoint).retire()
 }
 
 /// Path where the daemon records the identity consumed by
@@ -594,17 +577,8 @@ pub fn running_process_endpoint(
     }
 }
 
-#[cfg(windows)]
 fn running_process_endpoint_path(endpoint: &str) -> String {
-    endpoint
-        .strip_prefix(r"\\.\pipe\")
-        .unwrap_or(endpoint)
-        .to_string()
-}
-
-#[cfg(unix)]
-fn running_process_endpoint_path(endpoint: &str) -> String {
-    endpoint.to_string()
+    zccache_platform::ipc::Endpoint::from_native(endpoint).to_running_process()
 }
 
 /// Build the current process identity that a zccache daemon exposes to
@@ -1037,12 +1011,8 @@ pub fn check_running_daemon() -> Option<u32> {
         // Stale lock file — clean up. The PID may be dead, or may belong to
         // an unrelated process that recycled the lock file's PID (issue #132).
         remove_lock_file();
-        #[cfg(unix)]
-        {
-            // Also remove stale socket on Unix
-            let endpoint = default_endpoint();
-            let _ = std::fs::remove_file(&endpoint);
-        }
+        let endpoint = zccache_platform::ipc::Endpoint::from_native(default_endpoint());
+        let _ = endpoint.retire();
         None
     }
 }

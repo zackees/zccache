@@ -12,6 +12,7 @@ publish = false
 
 [dependencies]
 zccache-core = { workspace = true }
+zccache-platform = { workspace = true }
 zccache-download = { workspace = true }
 
 bincode = { workspace = true }

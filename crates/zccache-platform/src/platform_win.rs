@@ -5,3 +5,4 @@
 //! phase; empty until then.
 
 pub mod fs;
+pub mod ipc;

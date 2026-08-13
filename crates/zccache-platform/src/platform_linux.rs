@@ -6,3 +6,4 @@
 //! then.
 
 pub mod fs;
+pub mod ipc;

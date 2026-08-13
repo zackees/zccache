@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 # Native mechanics arrive per capability phase (fs, ipc, process, executable,
 # host); the leaf must never depend on any zccache-* crate.
+tokio = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

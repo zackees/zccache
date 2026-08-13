@@ -4399,6 +4399,7 @@ dependencies = [
  "tempfile",
  "zccache-core",
  "zccache-download",
+ "zccache-platform",
 ]
 
 [[package]]
@@ -4465,7 +4466,6 @@ dependencies = [
  "bytes",
  "dashmap",
  "interprocess",
- "libc",
  "prost",
  "running-process",
  "serde",
@@ -4476,6 +4476,7 @@ dependencies = [
  "tracing",
  "zccache-core",
  "zccache-depgraph",
+ "zccache-platform",
  "zccache-protocol",
 ]
 
@@ -4485,6 +4486,7 @@ version = "1.13.1"
 dependencies = [
  "libc",
  "tempfile",
+ "tokio",
  "windows-sys 0.61.2",
 ]
 
