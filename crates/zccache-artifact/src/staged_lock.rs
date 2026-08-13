@@ -22,7 +22,7 @@
 //! compiling, keep passing their own tests, and silently stop excluding each
 //! other the moment either side changed a name.
 
-use std::fs::{self, File, Metadata, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::Path;
 use zccache_core::NormalizedPath;
@@ -38,19 +38,18 @@ pub fn staged_root(artifact_dir: &Path) -> NormalizedPath {
     artifact_dir.join(STAGED_ROOT).into()
 }
 
-/// Whether `metadata` describes a symlink (unix) or any reparse point
+/// Whether the entry at `path` is a symlink (unix) or any reparse point
 /// (Windows). Staged access refuses to traverse either.
-pub fn is_staged_link_or_reparse(metadata: &Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-    }
-    #[cfg(not(windows))]
-    {
-        metadata.file_type().is_symlink()
-    }
+///
+/// A classification error (e.g. the entry vanished between the caller's
+/// `symlink_metadata` and this re-stat) reads as "not a link", matching the
+/// historical behavior where the caller's already-fetched metadata decided.
+pub fn is_staged_link_or_reparse(path: &Path) -> bool {
+    use crate::platform::fs::links::LinkKind;
+    matches!(
+        crate::platform::fs::links::classify(path),
+        Ok(LinkKind::Symlink | LinkKind::Reparse)
+    )
 }
 
 /// `Ok(false)` when the root is simply absent; `Err` when it exists but is
@@ -62,7 +61,7 @@ pub fn validate_staged_root_path(root: &Path) -> io::Result<bool> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error),
     };
-    if is_staged_link_or_reparse(&metadata) {
+    if is_staged_link_or_reparse(root) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(

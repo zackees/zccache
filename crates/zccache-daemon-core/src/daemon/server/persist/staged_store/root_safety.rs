@@ -12,26 +12,22 @@ pub(super) use zccache_artifact::staged_lock::{
     is_staged_link_or_reparse, open_store_lock, staged_root, validate_staged_root_path,
 };
 
-#[cfg(windows)]
 pub(super) fn remove_staged_link_or_reparse(
     path: &Path,
     metadata: &fs::Metadata,
 ) -> io::Result<()> {
-    use std::os::windows::fs::MetadataExt;
-    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
-    if metadata.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0 {
-        fs::remove_dir(path)
+    use crate::platform::fs::links::LinkKind;
+    if crate::platform::fs::links::classify(path)? != LinkKind::Regular {
+        // A reparse point that is a directory (Windows junctions) is removed
+        // with `remove_dir`; every other link form is a file to `remove_file`.
+        if metadata.is_dir() {
+            fs::remove_dir(path)
+        } else {
+            fs::remove_file(path)
+        }
     } else {
         fs::remove_file(path)
     }
-}
-
-#[cfg(not(windows))]
-pub(super) fn remove_staged_link_or_reparse(
-    path: &Path,
-    _metadata: &fs::Metadata,
-) -> io::Result<()> {
-    fs::remove_file(path)
 }
 
 pub(in crate::daemon::server) fn validate_staged_artifact_root(

@@ -202,7 +202,7 @@ pub(in crate::daemon::server) fn acquire_staged_materialization_guard_if_present
     validate_key(key_hex)?;
     let pointer = pointer_path(artifact_dir, key_hex);
     match fs::symlink_metadata(&pointer) {
-        Ok(metadata) if is_staged_link_or_reparse(&metadata) => Err(io::Error::new(
+        Ok(_) if is_staged_link_or_reparse(&pointer) => Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
                 "refusing staged artifact materialization through linked/reparse pointer: {}",
@@ -224,7 +224,7 @@ pub(in crate::daemon::server) fn acquire_staged_materialization_guard_if_present
     validate_key(key_hex)?;
     let pointer = pointer_path(artifact_dir, key_hex);
     match fs::symlink_metadata(&pointer) {
-        Ok(metadata) if is_staged_link_or_reparse(&metadata) => Err(io::Error::new(
+        Ok(_) if is_staged_link_or_reparse(&pointer) => Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
                 "refusing staged artifact materialization through linked/reparse pointer: {}",

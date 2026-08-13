@@ -6,6 +6,8 @@
 
 #![allow(clippy::missing_errors_doc)] // TODO: add error docs
 
+pub(crate) use zccache_platform as platform;
+
 pub mod kv;
 mod layout;
 mod reconcile;
