@@ -39,10 +39,6 @@ use std::path::Path;
 /// No-op on non-Windows. Set `ZCCACHE_NO_UNLOCK=1` to opt out (mirrors
 /// clud's `CLUD_NO_UNLOCK`).
 pub fn unlock_exe() {
-    if !cfg!(target_os = "windows") {
-        return;
-    }
-
     // Escape hatch for CI / test harnesses that spawn many short-lived
     // zccache invocations: the rename+copy+GC dance on every start costs
     // real time and (under investigation in clud's #37) appears to keep
@@ -65,25 +61,16 @@ pub fn unlock_exe() {
         return;
     }
 
-    // Rename zccache-daemon.exe → zccache-daemon.exe.old.<rand>. We keep
-    // running from the renamed file.
-    let rand_id: u32 = std::process::id()
-        ^ (std::time::UNIX_EPOCH
-            .elapsed()
-            .unwrap_or_default()
-            .subsec_nanos());
-    let old_exe = my_exe.with_extension(format!("exe.old.{rand_id}"));
-
-    if fs::rename(&my_exe, &old_exe).is_err() {
-        tracing::warn!(
-            "could not unlock exe for hot-reload; pip install may fail while zccache is running"
-        );
-        return;
+    match crate::platform::executable::unlock_for_replacement(&my_exe) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(_) => {
+            tracing::warn!(
+                "could not unlock exe for hot-reload; pip install may fail while zccache is running"
+            );
+            return;
+        }
     }
-
-    // Copy back: zccache-daemon.exe.old.<rand> → zccache-daemon.exe (new
-    // file, unlocked).
-    let _ = fs::copy(&old_exe, &my_exe);
 
     // GC stale .old files in background. Fire and forget.
     let parent = match my_exe.parent() {
@@ -135,11 +122,7 @@ pub fn release_cwd() {
 /// project-local cache), and the whole point of [`release_cwd`] is to
 /// chdir OUT of any workspace so its directory handle is released.
 fn zccache_home_dir() -> Option<std::path::PathBuf> {
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
-    if home.is_empty() {
-        return None;
-    }
-    Some(std::path::Path::new(&home).join(".zccache"))
+    crate::platform::host::home_dir().map(|home| home.join(".zccache"))
 }
 
 /// Detach inherited stdio (stdin/stdout/stderr) by re-opening them to the

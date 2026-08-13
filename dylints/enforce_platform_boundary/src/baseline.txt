@@ -6,20 +6,12 @@
 # occurrences fail the lint; stale entries (their occurrence migrated away)
 # fail the lint at runtime. No wildcard, directory, crate, or file exemptions.
 # Generated via ZCCACHE_PLATFORM_BOUNDARY_DUMP_DIR (see lint README).
-# total = 106
+# total = 97
 crates/zccache-artifact/src/kv.rs	attr_cfg	windows	0
 crates/zccache-artifact/src/kv.rs	attr_cfg	windows	1
 crates/zccache-artifact/src/kv.rs	attr_cfg	windows	2
 crates/zccache-artifact/src/kv.rs	attr_cfg	windows	3
 crates/zccache-artifact/src/kv.rs	attr_cfg	windows	4
-crates/zccache-compiler/src/arduino.rs	attr_cfg	target_os	0
-crates/zccache-compiler/src/arduino.rs	attr_cfg	target_os	1
-crates/zccache-compiler/src/arduino.rs	attr_cfg	target_os	2
-crates/zccache-compiler/src/arduino.rs	attr_cfg	target_os	3
-crates/zccache-compiler/src/arduino.rs	attr_cfg	unix	0
-crates/zccache-compiler/src/arduino.rs	attr_cfg	unix	1
-crates/zccache-compiler/src/arduino.rs	attr_cfg	windows	0
-crates/zccache-compiler/src/arduino.rs	attr_cfg	windows	1
 crates/zccache-compiler/src/parse.rs	attr_cfg	windows	0
 crates/zccache-compiler/src/parse.rs	attr_cfg	windows	1
 crates/zccache-compiler/src/parse_rustc.rs	cfg_macro	target_os	0
@@ -95,7 +87,6 @@ crates/zccache-daemon-core/src/daemon/server/util.rs	native_import	std::os::wind
 crates/zccache-daemon-core/src/daemon/server/util.rs	native_import	std::os::windows	3
 crates/zccache-daemon-core/src/daemon/server/watch.rs	attr_cfg	windows	0
 crates/zccache-daemon-core/src/daemon/server/watch.rs	attr_cfg	windows	1
-crates/zccache-daemon-core/src/daemon/trampoline.rs	cfg_macro	target_os	0
 crates/zccache-depgraph/src/depfile/canonicalize.rs	attr_cfg	windows	0
 crates/zccache-depgraph/src/msvc_args.rs	attr_cfg	windows	0
 crates/zccache-depgraph/src/msvc_args.rs	attr_cfg	windows	1

@@ -4283,6 +4283,7 @@ dependencies = [
  "thiserror",
  "zccache-core",
  "zccache-hash",
+ "zccache-platform",
 ]
 
 [[package]]
