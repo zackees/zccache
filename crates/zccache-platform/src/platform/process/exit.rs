@@ -11,3 +11,13 @@ pub fn crash_label(exit: NativeExit) -> &'static str {
         NativeExit::Success => "success",
     }
 }
+
+#[must_use]
+pub fn context_label(context: &crash_handler::CrashContext) -> String {
+    crate::platform_imp::process::exit::context_label(context)
+}
+
+#[must_use]
+pub fn context_summary(context: &crash_handler::CrashContext) -> String {
+    crate::platform_imp::process::exit::context_summary(context)
+}

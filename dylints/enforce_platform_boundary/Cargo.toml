@@ -3,7 +3,7 @@
 # compiled-library cache on this manifest, not on the embedded baseline, so a
 # baseline edit without a version bump would keep running the stale library.
 name = "enforce_platform_boundary"
-version = "0.1.3"
+version = "0.1.5"
 description = "Confine host-platform selection and native APIs to the zccache-platform leaf crate"
 edition = "2021"
 publish = false
