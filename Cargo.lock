@@ -4479,6 +4479,11 @@ dependencies = [
 [[package]]
 name = "zccache-platform"
 version = "1.13.1"
+dependencies = [
+ "libc",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "zccache-protocol"
