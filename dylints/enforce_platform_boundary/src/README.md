@@ -21,3 +21,9 @@ Classification of a compiled file by its repo-relative path:
 The lint matches **pre-expansion** path *names*: it cannot distinguish a
 local `mod libc` shadow from the real crate, which is exactly what the UI
 fixtures exploit to stay host-independent.
+
+Coverage note: the workspace Dylint run checks crates with their default
+features (matching the CI job). Modules behind non-default features (e.g.
+`zccache-cli-core`'s `cli`) are not expanded and are therefore not linted
+until a build enables the feature; the baseline records the default-feature
+surface.

@@ -15,7 +15,7 @@ use rustc_ast::tokenstream::TokenTree;
 use rustc_ast::visit::{self, Visitor};
 use rustc_ast::{
     Attribute, Crate, Expr, ExprKind, Item, ItemKind, MetaItem, MetaItemInner, MetaItemKind, Path,
-    UseTree,
+    UseTree, UseTreeKind,
 };
 use rustc_errors::DiagDecorator;
 use rustc_lint::{EarlyContext, EarlyLintPass, LintContext};
@@ -31,7 +31,11 @@ dylint_linting::declare_pre_expansion_lint! {
     /// native imports, and direct concrete-module references.
     ///
     /// The lint runs **pre-expansion**, so inactive host branches (Windows
-    /// code compiled on Linux CI, and vice versa) are inspected too.
+    /// code compiled on Linux CI, and vice versa) are inspected too. The
+    /// pre-expansion driver delivers the crate root through `check_crate`
+    /// and every nested module file through the `check_attribute` /
+    /// `check_item` / `check_expr` hooks; paths are scanned per item subtree
+    /// because the early walker has no path delegation.
     ///
     /// ### Why is this bad?
     ///
@@ -85,10 +89,12 @@ const CONCRETE_MODULES: &[&str] = &["platform_win", "platform_linux", "platform_
 /// `path<TAB>kind<TAB>normalized<TAB>ordinal`.
 const BASELINE_TEXT: &str = include_str!("baseline.txt");
 
-/// Environment variable holding a dump path: when set, every baseline-scope
-/// occurrence is appended to that file instead of being accepted or denied.
-/// Bootstrap-only — regenerate `baseline.txt` from the dump after a migration.
-const DUMP_ENV: &str = "ZCCACHE_PLATFORM_BOUNDARY_DUMP";
+/// Environment variable naming a dump DIRECTORY: when set, every
+/// baseline-scope occurrence is appended to `<dir>/<pid>.dump` (one file per
+/// compiler invocation — concurrent crates must not share a file handle).
+/// Bootstrap-only — regenerate `baseline.txt` from the concatenated dump
+/// after a migration.
+const DUMP_ENV: &str = "ZCCACHE_PLATFORM_BOUNDARY_DUMP_DIR";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -180,6 +186,10 @@ fn classify(path: &str) -> Scope {
         return Scope::Facade;
     }
     if path.starts_with("crates/") {
+        // Dev-only test helpers are a non-production target.
+        if path.starts_with("crates/zccache-test-support/") {
+            return Scope::OutOfScope;
+        }
         if path.contains("/tests/") || path.ends_with("_tests.rs") || path.ends_with("/tests.rs") {
             return Scope::OutOfScope;
         }
@@ -251,7 +261,9 @@ struct PassState {
 
 impl Default for PassState {
     fn default() -> Self {
-        let dump = std::env::var_os(DUMP_ENV).and_then(|path| {
+        let dump = std::env::var_os(DUMP_ENV).and_then(|dir| {
+            std::fs::create_dir_all(&dir).ok()?;
+            let path = std::path::PathBuf::from(dir).join(format!("{}.dump", std::process::id()));
             OpenOptions::new().create(true).append(true).open(&path).ok()
         });
         PassState {
@@ -265,74 +277,110 @@ impl Default for PassState {
 static PASS_STATE: LazyLock<std::sync::Mutex<PassState>> =
     LazyLock::new(|| std::sync::Mutex::new(PassState::default()));
 
-/// Per-walk state borrowing the pass's counters. The lifetime is the local
-/// scope of `check_crate`, so the mutable borrows end with the visitor.
-struct State<'s> {
-    ecx: &'s EarlyContext<'s>,
-    counts: &'s mut HashMap<Key, u32>,
-    files_seen: &'s mut HashSet<String>,
-    dump: &'s mut Option<std::fs::File>,
+/// Per-hook state borrowing the pass's counters. `'m` is the short mutable
+/// borrow of the pass state; it never outlives the hook invocation.
+struct State<'ecx, 'm> {
+    ecx: &'ecx EarlyContext<'ecx>,
+    counts: &'m mut HashMap<Key, u32>,
+    files_seen: &'m mut HashSet<String>,
+    dump: &'m mut Option<std::fs::File>,
 }
 
-impl<'s> State<'s> {
+/// Records one occurrence against the shared counters. Acceptable when out
+/// of scope, in an allowed zone, or grandfathered by the baseline.
+#[allow(clippy::too_many_arguments)]
+fn record_with(
+    ecx: &EarlyContext<'_>,
+    counts: &mut HashMap<Key, u32>,
+    files_seen: &mut HashSet<String>,
+    dump: &mut Option<std::fs::File>,
+    span: Span,
+    kind: Kind,
+    normalized: &str,
+) {
+    let Some(path) = source_filename(ecx.sess(), span).and_then(|name| repo_relative_path(&name))
+    else {
+        return;
+    };
+    let scope = classify(&path);
+    match scope {
+        Scope::OutOfScope | Scope::Concrete | Scope::Selector => return,
+        Scope::Facade => {
+            if kind == Kind::ModuleRef && normalized == "platform_imp" {
+                return;
+            }
+            emit_lint(ecx, span, kind, normalized);
+            return;
+        }
+        Scope::Ui => {
+            emit_lint(ecx, span, kind, normalized);
+            return;
+        }
+        Scope::Production => {}
+    }
+    // Production scope: exact-occurrence ratchet.
+    files_seen.insert(path.clone());
+    let key = (path, kind.as_str().to_string(), normalized.to_string());
+    let ordinal = counts.get(&key).copied().unwrap_or(0);
+    counts.insert(key.clone(), ordinal + 1);
+    if let Some(dump) = dump.as_mut() {
+        // Bootstrap mode: record instead of judging; the dump is sorted
+        // and deduplicated into baseline.txt by its consumer.
+        let _ = writeln!(dump, "{}\t{}\t{}\t{}", key.0, key.1, key.2, ordinal);
+        return;
+    }
+    if ordinal >= baseline_count(&key) {
+        emit_lint(ecx, span, kind, normalized);
+    }
+}
+
+fn emit_lint(ecx: &EarlyContext<'_>, span: Span, kind: Kind, normalized: &str) {
+    // Keep the substring "ui" out of these messages: compiletest
+    // normalizes fixture paths and rewrites "ui" to `$DIR` mid-word.
+    let text = message(kind, normalized);
+    ecx.opt_span_lint(
+        ENFORCE_PLATFORM_BOUNDARY,
+        Some(span),
+        DiagDecorator(move |diag| {
+            diag.primary_message(text);
+        }),
+    );
+}
+
+impl<'ecx, 'm> State<'ecx, 'm> {
     /// Records one occurrence. Returns `false` when the construct is
     /// acceptable (out of scope, allowed zone, or grandfathered).
     fn record(&mut self, span: Span, kind: Kind, normalized: &str) {
-        let Some(path) =
-            source_filename(self.ecx.sess(), span).and_then(|name| repo_relative_path(&name))
-        else {
-            return;
-        };
-        let scope = classify(&path);
-        match scope {
-            Scope::OutOfScope | Scope::Concrete | Scope::Selector => return,
-            Scope::Facade => {
-                if kind == Kind::ModuleRef && normalized == "platform_imp" {
-                    return;
-                }
-                self.emit(span, kind, normalized);
-                return;
-            }
-            Scope::Ui => {
-                self.emit(span, kind, normalized);
-                return;
-            }
-            Scope::Production => {}
-        }
-        // Production scope: exact-occurrence ratchet.
-        self.files_seen.insert(path.clone());
-        let key = (path, kind.as_str().to_string(), normalized.to_string());
-        let ordinal = self.counts.get(&key).copied().unwrap_or(0);
-        self.counts.insert(key.clone(), ordinal + 1);
-        if let Some(dump) = self.dump.as_mut() {
-            // Bootstrap mode: record instead of judging; the dump is sorted
-            // and deduplicated into baseline.txt by its consumer.
-            let _ = writeln!(dump, "{}\t{}\t{}\t{}", key.0, key.1, key.2, ordinal);
-            return;
-        }
-        if ordinal >= baseline_count(&key) {
-            self.emit(span, kind, normalized);
-        }
-    }
-
-    fn emit(&self, span: Span, kind: Kind, normalized: &str) {
-        // Keep the substring "ui" out of these messages: compiletest
-        // normalizes fixture paths and rewrites "ui" to `$DIR` mid-word.
-        let text = message(kind, normalized);
-        self.ecx.opt_span_lint(
-            ENFORCE_PLATFORM_BOUNDARY,
-            Some(span),
-            DiagDecorator(move |diag| {
-                diag.primary_message(text);
-            }),
-        );
+        record_with(
+            self.ecx,
+            self.counts,
+            self.files_seen,
+            self.dump,
+            span,
+            kind,
+            normalized,
+        )
     }
 
     fn check_attribute(&mut self, attr: &Attribute) {
         let Some(meta) = attr.meta() else {
             return;
         };
+        self.touch(attr.span);
         self.check_meta(&meta);
+    }
+
+    /// Marks a Production-scope file as seen so fully-migrated files still
+    /// trip the stale-baseline check.
+    fn touch(&mut self, span: Span) {
+        let Some(path) =
+            source_filename(self.ecx.sess(), span).and_then(|name| repo_relative_path(&name))
+        else {
+            return;
+        };
+        if classify(&path) == Scope::Production {
+            self.files_seen.insert(path);
+        }
     }
 
     /// Walks a MetaItem tree and flags every leaf whose path selects the host
@@ -426,9 +474,18 @@ impl<'s> State<'s> {
 
     fn check_use_tree(&mut self, tree: &UseTree) {
         self.check_path(&tree.prefix);
+        match &tree.kind {
+            UseTreeKind::Simple(_) | UseTreeKind::Glob(_) => {}
+            UseTreeKind::Nested { items, .. } => {
+                for (nested, _id) in items {
+                    self.check_use_tree(nested);
+                }
+            }
+        }
     }
 
     fn check_item(&mut self, item: &Item) {
+        self.touch(item.span);
         if let ItemKind::ExternCrate(orig, ident) = &item.kind {
             for name in [orig.as_ref().map(|symbol| symbol.as_str()), Some(ident.name.as_str())] {
                 if let Some(name) = name {
@@ -438,58 +495,75 @@ impl<'s> State<'s> {
                 }
             }
         }
+        if let ItemKind::Use(tree) = &item.kind {
+            self.check_use_tree(tree);
+        }
+        // Paths are not delegated by the walker, so scan this item's own
+        // subtree here. Nested items are skipped: the walker delivers them
+        // through check_item separately, so every path is visited once.
+        let mut scanner = PathScanner {
+            ecx: self.ecx,
+            counts: &mut *self.counts,
+            files_seen: &mut *self.files_seen,
+            dump: &mut *self.dump,
+            marker: PhantomData,
+        };
+        visit::walk_item(&mut scanner, item);
     }
 }
 
-struct BoundaryVisitor<'s, 'ast> {
-    state: &'s mut State<'s>,
+/// Scans an item's subtree for paths without descending into nested items
+/// (which arrive through their own `check_item` call).
+struct PathScanner<'a, 'ast> {
+    ecx: &'a EarlyContext<'a>,
+    counts: &'a mut HashMap<Key, u32>,
+    files_seen: &'a mut HashSet<String>,
+    dump: &'a mut Option<std::fs::File>,
     marker: PhantomData<&'ast ()>,
 }
 
-impl<'s, 'ast> Visitor<'ast> for BoundaryVisitor<'s, 'ast> {
-    fn visit_attribute(&mut self, attr: &'ast Attribute) {
-        self.state.check_attribute(attr);
-    }
+impl<'a, 'ast> Visitor<'ast> for PathScanner<'a, 'ast> {
+    fn visit_item(&mut self, _item: &'ast Item) {}
 
     fn visit_path(&mut self, path: &'ast Path) {
-        self.state.check_path(path);
-    }
-
-    fn visit_use_tree(&mut self, tree: &'ast UseTree) {
-        self.state.check_use_tree(tree);
-        visit::walk_use_tree(self, tree);
-    }
-
-    fn visit_item(&mut self, item: &'ast Item) {
-        self.state.check_item(item);
-        visit::walk_item(self, item);
-    }
-
-    fn visit_expr(&mut self, expr: &'ast Expr) {
-        self.state.check_cfg_macro(expr);
-        visit::walk_expr(self, expr);
+        State {
+            ecx: self.ecx,
+            counts: self.counts,
+            files_seen: self.files_seen,
+            dump: self.dump,
+        }
+        .check_path(path);
     }
 }
 
+/// Runs `f` with a `State` borrowing the per-compiler-invocation counters.
+fn with_state<'ecx>(cx: &'ecx EarlyContext<'ecx>, f: impl FnOnce(&mut State<'ecx, '_>)) {
+    let mut guard = PASS_STATE.lock().unwrap();
+    let PassState {
+        counts,
+        files_seen,
+        dump,
+    } = &mut *guard;
+    let mut state = State {
+        ecx: cx,
+        counts,
+        files_seen,
+        dump,
+    };
+    f(&mut state);
+}
+
 impl EarlyLintPass for EnforcePlatformBoundary {
-    fn check_crate(&mut self, cx: &EarlyContext<'_>, krate: &Crate) {
-        let mut guard = PASS_STATE.lock().unwrap();
-        let PassState {
-            counts,
-            files_seen,
-            dump,
-        } = &mut *guard;
-        let mut state = State {
-            ecx: cx,
-            counts,
-            files_seen,
-            dump,
-        };
-        let mut visitor = BoundaryVisitor {
-            state: &mut state,
-            marker: PhantomData,
-        };
-        visit::walk_crate(&mut visitor, krate);
+    fn check_attribute(&mut self, cx: &EarlyContext<'_>, attr: &Attribute) {
+        with_state(cx, |state| state.check_attribute(attr));
+    }
+
+    fn check_item(&mut self, cx: &EarlyContext<'_>, item: &Item) {
+        with_state(cx, |state| state.check_item(item));
+    }
+
+    fn check_expr(&mut self, cx: &EarlyContext<'_>, expr: &Expr) {
+        with_state(cx, |state| state.check_cfg_macro(expr));
     }
 
     fn check_crate_post(&mut self, cx: &EarlyContext<'_>, _krate: &Crate) {

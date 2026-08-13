@@ -58,7 +58,7 @@ To regenerate `src/baseline.txt` from the current workspace (migration
 bootstrap only; requires dylint to run on this host):
 
 ```bash
-ZCCACHE_PLATFORM_BOUNDARY_DUMP=/tmp/baseline.dump uv run python -m ci.lint --dylint-only || true
-sort -u /tmp/baseline.dump > dylints/enforce_platform_boundary/src/baseline.txt
+ZCCACHE_PLATFORM_BOUNDARY_DUMP_DIR=/tmp/baseline-dump uv run python -m ci.lint --dylint-only || true
+sort -u /tmp/baseline-dump/*.dump > dylints/enforce_platform_boundary/src/baseline.txt
 # then update the "# total" line and bump the lint crate version
 ```
