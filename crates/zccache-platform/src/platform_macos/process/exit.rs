@@ -1,0 +1,1 @@
+//! macOS exit interpretation.
