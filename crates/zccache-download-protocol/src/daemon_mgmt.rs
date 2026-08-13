@@ -18,9 +18,9 @@ pub fn default_endpoint() -> String {
         zccache_platform::ipc::current_user_name().unwrap_or_else(|| String::from("unknown"));
     let pipe_user = zccache_core::config::sanitize_ipc_component(&raw_user)
         .unwrap_or_else(|| String::from("unknown"));
-    let file_path = std::env::var("XDG_RUNTIME_DIR")
+    let file_path = zccache_platform::host::runtime_dir()
         .map(|runtime_dir| format!("{runtime_dir}/zccache-download/sock"))
-        .unwrap_or_else(|_| format!("/tmp/zccache-download-{raw_user}/sock"));
+        .unwrap_or_else(|| format!("/tmp/zccache-download-{raw_user}/sock"));
     zccache_platform::ipc::Endpoint::select(file_path, format!("zccache-download-{pipe_user}"))
         .to_string()
 }

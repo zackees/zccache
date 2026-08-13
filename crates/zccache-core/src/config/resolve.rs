@@ -404,10 +404,9 @@ pub fn staging_dir_override() -> Option<NormalizedPath> {
 }
 
 fn dirs_fallback() -> NormalizedPath {
-    std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
+    crate::platform::host::home_dir()
         .map(NormalizedPath::from)
-        .unwrap_or_else(|_| ".".into())
+        .unwrap_or_else(|| ".".into())
 }
 
 pub(super) fn cache_dir_from_env_value(value: Option<OsString>) -> Option<NormalizedPath> {

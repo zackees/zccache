@@ -4283,6 +4283,7 @@ dependencies = [
  "thiserror",
  "zccache-core",
  "zccache-hash",
+ "zccache-platform",
 ]
 
 [[package]]
@@ -4373,6 +4374,7 @@ dependencies = [
  "zccache-compiler",
  "zccache-core",
  "zccache-hash",
+ "zccache-platform",
 ]
 
 [[package]]

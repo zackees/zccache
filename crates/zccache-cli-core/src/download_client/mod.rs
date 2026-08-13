@@ -56,40 +56,19 @@ fn run_async<T>(future: impl std::future::Future<Output = Result<T, String>>) ->
 }
 
 fn find_daemon_binary() -> Option<NormalizedPath> {
-    let name = if cfg!(windows) {
-        "zccache-download-daemon.exe"
-    } else {
-        "zccache-download-daemon"
-    };
+    let name =
+        crate::platform::executable::native_name(std::ffi::OsStr::new("zccache-download-daemon"));
 
-    if let Ok(exe) = std::env::current_exe() {
+    if let Ok(exe) = crate::platform::executable::current_image() {
         if let Some(dir) = exe.parent() {
-            let candidate = dir.join(name);
+            let candidate = dir.join(&name);
             if candidate.exists() {
                 return Some(candidate.into());
             }
         }
     }
 
-    which_on_path(name)
-}
-
-fn which_on_path(name: &str) -> Option<NormalizedPath> {
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate.into());
-        }
-        #[cfg(windows)]
-        if Path::new(name).extension().is_none() {
-            let with_exe = dir.join(format!("{name}.exe"));
-            if with_exe.is_file() {
-                return Some(with_exe.into());
-            }
-        }
-    }
-    None
+    crate::platform::executable::find_on_path(&name).map(Into::into)
 }
 
 fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {

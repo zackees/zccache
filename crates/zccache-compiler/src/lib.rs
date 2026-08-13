@@ -18,6 +18,8 @@
 
 #![allow(clippy::missing_errors_doc)]
 
+pub(crate) use zccache_platform as platform;
+
 pub mod arduino;
 mod detect;
 mod dylint;

@@ -428,7 +428,7 @@ pub fn emit_takeover_lifecycle_events(
 /// back to `"<unknown>"` so the field is always present.
 #[must_use]
 pub fn client_meta(client_version: &str) -> serde_json::Value {
-    let binary_path = std::env::current_exe()
+    let binary_path = crate::platform::executable::current_image()
         .ok()
         .and_then(|p| p.to_str().map(str::to_string))
         .unwrap_or_else(|| "<unknown>".to_string());

@@ -76,8 +76,8 @@ pub fn write_crash_dump(panic_info: &str, backtrace: &str) -> Option<NormalizedP
          Backtrace:\n\
          {backtrace}\n",
         version = env!("CARGO_PKG_VERSION"),
-        os = std::env::consts::OS,
-        arch = std::env::consts::ARCH,
+        os = crate::platform::host::os(),
+        arch = crate::platform::host::arch(),
         pid = std::process::id(),
     );
     std::fs::write(&path, content).ok()?;

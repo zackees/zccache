@@ -16,9 +16,8 @@ pub(crate) fn resolve_cargo_home(explicit: Option<&str>) -> Result<NormalizedPat
             return Ok(NormalizedPath::from(ch));
         }
     }
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map_err(|_| "cannot determine home directory (set HOME or CARGO_HOME)".to_string())?;
+    let home = crate::platform::host::home_dir()
+        .ok_or_else(|| "cannot determine home directory (set HOME or CARGO_HOME)".to_string())?;
     Ok(NormalizedPath::from(home).join(".cargo"))
 }
 

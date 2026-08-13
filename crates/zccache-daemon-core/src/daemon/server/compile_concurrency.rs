@@ -117,9 +117,7 @@ fn default_cap(is_ci: bool, num_cpus: usize) -> usize {
 }
 
 fn num_cpus_default() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
+    crate::platform::host::available_parallelism().unwrap_or(1)
 }
 
 #[cfg(test)]
