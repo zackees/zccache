@@ -92,19 +92,3 @@ crates/zccache-daemon-core/src/audit_writer.rs
 crates/zccache-daemon-core/src/daemon/server/handle_compile_ephemeral.rs
 crates/zccache-daemon-core/src/embedded.rs
 crates/zccache-watcher/src/python.rs
-# zccache-platform (#1365) is the dependency leaf that owns host mechanics;
-# it never depends on a zccache crate, so NormalizedPath is unavailable by
-# design. Its README pins "neutral code only: Path/PathBuf" as the facade
-# contract; these files are the intentional raw-PathBuf surface, and the
-# facade-owned opaque types wrap the results at the boundary.
-crates/zccache-platform/src/platform/fs/path.rs
-crates/zccache-platform/src/platform_win/fs/path.rs
-crates/zccache-platform/src/platform_win/fs/verbatim.rs
-crates/zccache-platform/src/platform_linux/fs/path.rs
-crates/zccache-platform/src/platform_macos/fs/path.rs
-# Process inspection returns host executable paths through the same neutral
-# dependency-leaf contract; NormalizedPath cannot be used inside this crate.
-crates/zccache-platform/src/platform/process/inspect.rs
-crates/zccache-platform/src/platform_win/process/inspect.rs
-crates/zccache-platform/src/platform_linux/process/inspect.rs
-crates/zccache-platform/src/platform_macos/process/inspect.rs
