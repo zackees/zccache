@@ -4141,7 +4141,6 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "wait-timeout",
- "windows-sys 0.61.2",
  "zccache",
  "zccache-artifact",
  "zccache-audit",
@@ -4226,7 +4225,6 @@ dependencies = [
  "futures",
  "interprocess",
  "jwalk",
- "libc",
  "lzma-rs",
  "memmap2",
  "prost",
@@ -4246,7 +4244,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "windows-sys 0.61.2",
  "zccache-artifact",
  "zccache-audit",
  "zccache-compile-trace",
@@ -4292,13 +4289,11 @@ version = "1.13.1"
 dependencies = [
  "crash-handler",
  "dashmap",
- "libc",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
  "tracing",
- "windows-sys 0.61.2",
  "zccache-platform",
 ]
 
@@ -4319,7 +4314,6 @@ dependencies = [
  "fs2",
  "globset",
  "jwalk",
- "libc",
  "memmap2",
  "notify",
  "prost",
@@ -4338,7 +4332,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
- "windows-sys 0.61.2",
  "zccache-artifact",
  "zccache-audit",
  "zccache-compile-trace",
@@ -4488,6 +4481,7 @@ name = "zccache-platform"
 version = "1.13.1"
 dependencies = [
  "crash-handler",
+ "interprocess",
  "libc",
  "tempfile",
  "tokio",

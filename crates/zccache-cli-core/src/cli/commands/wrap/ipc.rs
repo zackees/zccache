@@ -433,23 +433,12 @@ pub(crate) fn wedge_probe_budget() -> Option<std::time::Duration> {
     }
 }
 
-#[cfg(unix)]
 impl ConnRecv for crate::ipc::IpcConnection {
     async fn recv_with_timeout(
         &mut self,
         timeout: std::time::Duration,
     ) -> Result<Option<crate::protocol::Response>, crate::ipc::IpcError> {
         crate::ipc::IpcConnection::recv_response_with_timeout(self, timeout).await
-    }
-}
-
-#[cfg(windows)]
-impl ConnRecv for crate::ipc::IpcClientConnection {
-    async fn recv_with_timeout(
-        &mut self,
-        timeout: std::time::Duration,
-    ) -> Result<Option<crate::protocol::Response>, crate::ipc::IpcError> {
-        crate::ipc::IpcClientConnection::recv_response_with_timeout(self, timeout).await
     }
 }
 

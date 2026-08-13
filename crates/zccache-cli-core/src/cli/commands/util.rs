@@ -66,19 +66,9 @@ pub(crate) fn resolve_endpoint(explicit: Option<&str>) -> String {
 /// actual rustc/clang invocation and only responds when done. The 300s
 /// budget accommodates the slowest legitimate unity / LTO workload while
 /// still bounding "alive but stuck" hangs.
-#[cfg(unix)]
 pub(crate) async fn connect(
     endpoint: &str,
 ) -> Result<crate::ipc::IpcConnection, crate::ipc::IpcError> {
-    let mut conn = crate::ipc::connect_daemon(endpoint).await?;
-    conn.set_recv_timeout(crate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
-    Ok(conn)
-}
-
-#[cfg(windows)]
-pub(crate) async fn connect(
-    endpoint: &str,
-) -> Result<crate::ipc::IpcClientConnection, crate::ipc::IpcError> {
     let mut conn = crate::ipc::connect_daemon(endpoint).await?;
     conn.set_recv_timeout(crate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
     Ok(conn)

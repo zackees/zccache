@@ -55,7 +55,7 @@ pub const DEFAULT_CLIENT_RECV_TIMEOUT: Duration = Duration::from_secs(300);
 
 // â”€â”€ Platform-specific connection inner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-type StreamType = zccache_platform::ipc::Stream;
+type StreamType = crate::platform::ipc::Stream;
 
 /// A bidirectional IPC connection that sends/receives protocol messages.
 ///
@@ -337,21 +337,21 @@ impl IpcConnection {
 
 /// Listens for incoming local IPC connections through the platform facade.
 pub struct IpcListener {
-    inner: zccache_platform::ipc::Listener,
+    inner: crate::platform::ipc::Listener,
 }
 
 impl IpcListener {
     /// Bind to the given endpoint and start listening.
     pub fn bind(endpoint: &str) -> Result<Self, IpcError> {
-        let native = zccache_platform::ipc::Endpoint::from_native(endpoint);
-        let result = zccache_platform::ipc::Listener::bind(&native);
+        let native = crate::platform::ipc::Endpoint::from_native(endpoint);
+        let result = crate::platform::ipc::Listener::bind(&native);
         Self::finish_bind(endpoint, &native, result)
     }
 
     /// Bind from an asynchronous caller.
     pub async fn bind_async(endpoint: &str) -> Result<Self, IpcError> {
-        let native = zccache_platform::ipc::Endpoint::from_native(endpoint);
-        let result = zccache_platform::ipc::Listener::bind_async(&native).await;
+        let native = crate::platform::ipc::Endpoint::from_native(endpoint);
+        let result = crate::platform::ipc::Listener::bind_async(&native).await;
         Self::finish_bind(endpoint, &native, result)
     }
 
@@ -389,8 +389,8 @@ impl IpcListener {
 impl IpcListener {
     fn finish_bind(
         endpoint: &str,
-        native: &zccache_platform::ipc::Endpoint,
-        result: std::io::Result<zccache_platform::ipc::Listener>,
+        native: &crate::platform::ipc::Endpoint,
+        result: std::io::Result<crate::platform::ipc::Listener>,
     ) -> Result<Self, IpcError> {
         let inner = result.map_err(|error| {
             if native.uses_file_path()
@@ -422,10 +422,10 @@ fn emit_insecure_socket_dir(endpoint: &str, outcome: &str, error: Option<&std::i
 
 /// Connect to a local endpoint without adding a protocol round trip.
 pub async fn connect(endpoint: &str) -> Result<IpcConnection, IpcError> {
-    let native = zccache_platform::ipc::Endpoint::from_native(endpoint);
+    let native = crate::platform::ipc::Endpoint::from_native(endpoint);
     let timeout = native.connect_timeout();
     let stream =
-        tokio::time::timeout(timeout, zccache_platform::ipc::connect(&native))
+        tokio::time::timeout(timeout, crate::platform::ipc::connect(&native))
             .await
             .map_err(|_| {
                 IpcError::Io(std::io::Error::new(
@@ -438,7 +438,7 @@ pub async fn connect(endpoint: &str) -> Result<IpcConnection, IpcError> {
 
 /// Generate a unique test endpoint name.
 pub fn unique_test_endpoint() -> String {
-    zccache_platform::ipc::Endpoint::unique_test("zccache").to_string()
+    crate::platform::ipc::Endpoint::unique_test("zccache").to_string()
 }
 
 #[cfg(test)]

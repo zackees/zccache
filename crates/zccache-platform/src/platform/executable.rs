@@ -86,7 +86,7 @@ mod tests {
         let image = directory.path().join(native_name(OsStr::new("probe")));
         std::fs::write(&image, b"image").expect("write image");
         let relocated = unlock_for_replacement(&image).expect("unlock");
-        assert_eq!(relocated, cfg!(windows));
+        assert_eq!(relocated, crate::host::is_windows());
         assert!(image.is_file());
     }
 }

@@ -13,6 +13,7 @@ publish = false
 # Native mechanics arrive per capability phase (fs, ipc, process, executable,
 # host); the leaf must never depend on any zccache-* crate.
 crash-handler = "0.6"
+interprocess = "2.4.2"
 tokio = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]

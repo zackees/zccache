@@ -263,8 +263,7 @@ fn resolve_tool_path(tool: &str) -> Option<NormalizedPath> {
         }
         // Windows: try common executable extensions when the user didn't
         // type one. Mirrors what cmd.exe / PowerShell expand.
-        #[cfg(windows)]
-        {
+        if crate::platform::host::is_windows() {
             for ext in [".exe", ".bat", ".cmd"] {
                 let with_ext = dir.join(format!("{tool}{ext}"));
                 if with_ext.is_file() {

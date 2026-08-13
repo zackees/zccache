@@ -1189,9 +1189,11 @@ mod tests {
         assert!(artifacts.is_empty());
     }
 
-    #[cfg(windows)]
     #[test]
     fn disk_eviction_removes_readonly_blob() {
+        if !crate::platform::host::is_windows() {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let artifacts: DashMap<String, CachedArtifact> = DashMap::new();
         write_fake_artifact(dir.path(), "readonly", 5000);

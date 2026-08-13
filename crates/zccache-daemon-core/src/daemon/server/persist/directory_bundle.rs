@@ -515,16 +515,20 @@ mod tests {
         assert!(!requested.join("old").exists());
     }
 
-    #[cfg(unix)]
     #[test]
     fn directory_bundle_rejects_symlinks() {
-        use std::os::unix::fs::symlink;
-
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source.dSYM");
         std::fs::create_dir(&source).unwrap();
         std::fs::write(temp.path().join("outside"), b"outside").unwrap();
-        symlink(temp.path().join("outside"), source.join("link")).unwrap();
+        if crate::platform::fs::links::symlink_file(
+            &temp.path().join("outside"),
+            &source.join("link"),
+        )
+        .is_err()
+        {
+            return;
+        }
 
         let error = pack_directory(&source, &temp.path().join("bundle.bin")).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);

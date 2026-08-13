@@ -95,7 +95,7 @@ pub(super) fn is_safe_ipc_component_char(c: char) -> bool {
 /// path. FNV-1a (64-bit) — small, deterministic, no extra dep.
 pub(super) fn home_dir_short_hash(home: &Path) -> String {
     let canon = home.to_string_lossy();
-    let canon = if cfg!(windows) {
+    let canon = if crate::platform::host::is_windows() {
         canon.to_ascii_lowercase()
     } else {
         canon.into_owned()

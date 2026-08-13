@@ -185,23 +185,11 @@ tracing-subscriber = { workspace = true, optional = true }
 # everywhere also removes a per-platform variable from perf analysis.
 mimalloc = { workspace = true, optional = true }
 
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = [
-    "Win32_Foundation",
-    "Win32_Security",
-    "Win32_Storage_FileSystem",
-    "Win32_System_JobObjects",
-    "Win32_System_Ioctl",
-    "Win32_System_Threading",
-] }
-
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 futures = { workspace = true }
 zccache-test-support = { workspace = true }
+
 # tests/cli_installers.rs builds sample archives to exercise the installer.
 zip = { workspace = true }
 # Self-dep so zccache's own integration tests can pull in the gated
@@ -211,6 +199,9 @@ zccache = { path = ".", features = ["test-support"] }
 # time-dependent unit tests (issue #717). test-util is a dev-only feature
 # so it does not bloat production builds.
 tokio = { workspace = true, features = ["test-util"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
 
 [[bench]]
 name = "hashing"

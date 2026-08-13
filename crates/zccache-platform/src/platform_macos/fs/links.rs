@@ -3,6 +3,10 @@
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
+pub fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
 use crate::platform::fs::LinkKind;
 
 pub fn hard_link_count(path: &Path) -> std::io::Result<u64> {

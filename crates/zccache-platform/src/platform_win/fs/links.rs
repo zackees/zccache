@@ -3,6 +3,10 @@
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
+pub fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(target, link)
+}
+
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_NORMAL,

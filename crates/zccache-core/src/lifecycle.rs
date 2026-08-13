@@ -580,15 +580,7 @@ fn try_write_to_path(
 /// duplicated here so `zccache-core` doesn't need to depend on the
 /// daemon crate.
 fn open_append(path: &Path) -> std::io::Result<std::fs::File> {
-    let mut opts = std::fs::OpenOptions::new();
-    opts.create(true).append(true);
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        // FILE_SHARE_READ (0x1) | FILE_SHARE_WRITE (0x2) | FILE_SHARE_DELETE (0x4)
-        opts.share_mode(0x1 | 0x2 | 0x4);
-    }
-    opts.open(path)
+    crate::platform::fs::durability::open_shared_append(path)
 }
 
 /// Absolute path to the live lifecycle log file.

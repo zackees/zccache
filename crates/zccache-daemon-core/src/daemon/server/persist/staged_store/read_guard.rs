@@ -84,7 +84,7 @@ pub(in crate::daemon::server) fn is_staged_artifact_path(path: &Path) -> bool {
     else {
         return false;
     };
-    let root_matches = if cfg!(windows) {
+    let root_matches = if crate::platform::host::is_windows() {
         root.eq_ignore_ascii_case(STAGED_ROOT)
     } else {
         root == STAGED_ROOT
@@ -101,7 +101,7 @@ pub(in crate::daemon::server) fn is_staged_artifact_path(path: &Path) -> bool {
 
 pub(in crate::daemon::server) fn is_staged_artifact_root(path: &Path) -> bool {
     path.file_name().is_some_and(|name| {
-        if cfg!(windows) {
+        if crate::platform::host::is_windows() {
             name.to_string_lossy().eq_ignore_ascii_case(STAGED_ROOT)
         } else {
             name == STAGED_ROOT

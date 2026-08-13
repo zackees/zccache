@@ -241,12 +241,12 @@ fn write_signal_dump(ctx: &crash_handler::CrashContext) {
 
 /// Map the platform-specific crash context to its stable filename label.
 fn signal_label(context: &crash_handler::CrashContext) -> String {
-    zccache_platform::process::exit::context_label(context)
+    crate::platform::process::exit::context_label(context)
 }
 
 /// Render host-native crash details for the signal-level report body.
 fn format_signal_summary(context: &crash_handler::CrashContext) -> String {
-    zccache_platform::process::exit::context_summary(context)
+    crate::platform::process::exit::context_summary(context)
 }
 
 /// Write a Rust-panic dump. Caller is the panic hook (not signal

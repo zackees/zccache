@@ -541,9 +541,11 @@ impl Drop for StagedMultiUnitPlan {
 mod tests {
     use super::*;
 
-    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn invocation_rejects_case_alias_output_names() {
+        if crate::platform::host::is_linux() {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let args = vec!["-c".into(), "one.c".into(), "two.c".into()];
         let outputs = vec![

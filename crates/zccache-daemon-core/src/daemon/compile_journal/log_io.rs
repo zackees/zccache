@@ -5,7 +5,7 @@
 //! constructed (#1165 finding 7). They live here now because the compile
 //! journal is their only consumer.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -16,15 +16,7 @@ use std::time::SystemTime;
 /// renaming the file while a handle is open. This helper adds `FILE_SHARE_DELETE`
 /// so log files remain deletable at any time.
 pub(crate) fn open_append(path: &Path) -> std::io::Result<File> {
-    let mut opts = OpenOptions::new();
-    opts.create(true).append(true);
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        // FILE_SHARE_READ (0x1) | FILE_SHARE_WRITE (0x2) | FILE_SHARE_DELETE (0x4)
-        opts.share_mode(0x1 | 0x2 | 0x4);
-    }
-    opts.open(path)
+    crate::platform::fs::durability::open_shared_append(path)
 }
 
 /// Format a `SystemTime` as `YYYY-MM-DDTHH:MM:SS.mmmZ` in UTC.

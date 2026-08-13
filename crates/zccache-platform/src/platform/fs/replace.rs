@@ -38,6 +38,18 @@ pub fn install_directory(staged: &Path, requested: &Path) -> std::io::Result<()>
     platform_imp::fs::replace::install_directory(staged, requested)
 }
 
+/// Whether a native sharing failure may clear when retried.
+#[must_use]
+pub fn is_transient_share_error(error: &std::io::Error) -> bool {
+    platform_imp::fs::replace::is_transient_share_error(error)
+}
+
+/// Whether a non-blocking native file lock reported contention.
+#[must_use]
+pub fn is_lock_contention(error: &std::io::Error) -> bool {
+    platform_imp::fs::replace::is_lock_contention(error)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

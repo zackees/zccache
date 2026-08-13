@@ -389,11 +389,8 @@ fn is_would_block(err: &io::Error) -> bool {
     // Windows: `LockFileEx` with `LOCKFILE_FAIL_IMMEDIATELY` returns
     // `ERROR_LOCK_VIOLATION (33)`, which std currently surfaces as
     // `ErrorKind::Uncategorized`. Treat it as "would block".
-    #[cfg(windows)]
-    {
-        if matches!(err.raw_os_error(), Some(33)) {
-            return true;
-        }
+    if crate::platform::fs::replace::is_lock_contention(err) {
+        return true;
     }
     false
 }
@@ -813,7 +810,7 @@ mod tests {
     #[test]
     fn absolute_archive_entries_are_refused() {
         let base = Path::new("/symbols/v1");
-        let absolute = if cfg!(windows) {
+        let absolute = if crate::platform::host::is_windows() {
             r"C:\Windows\System32\evil.pdb"
         } else {
             "/etc/evil.pdb"

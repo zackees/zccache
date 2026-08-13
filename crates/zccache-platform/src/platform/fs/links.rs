@@ -28,6 +28,11 @@ pub fn classify(path: &Path) -> std::io::Result<LinkKind> {
     platform_imp::fs::links::classify(path)
 }
 
+/// Creates a symbolic link to a file using native host semantics.
+pub fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+    platform_imp::fs::links::symlink_file(target, link)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

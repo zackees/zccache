@@ -558,14 +558,9 @@ fn try_normalize(path: &Path) -> Option<NormalizedPath> {
     // On Windows, canonicalize produces \\?\ extended-length paths which must
     // be stripped to match the watcher's path format for journal lookups.
     let p = path.canonicalize().ok()?;
-    #[cfg(windows)]
-    {
-        let s = p.to_string_lossy();
-        if let Some(stripped) = s.strip_prefix(r"\\?\") {
-            return Some(NormalizedPath::from(stripped));
-        }
-    }
-    Some(p.into())
+    Some(NormalizedPath::new(
+        crate::platform::fs::path::strip_verbatim_prefix(&p),
+    ))
 }
 
 #[cfg(test)]

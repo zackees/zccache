@@ -41,7 +41,7 @@
 #[derive(Debug)]
 pub(crate) struct JobserverPool {
     capacity: usize,
-    inner: zccache_platform::process::jobserver::NativeJobserver,
+    inner: crate::platform::process::jobserver::NativeJobserver,
 }
 
 #[allow(dead_code)]
@@ -53,7 +53,7 @@ impl JobserverPool {
                 "JobserverPool capacity must be > 0; use no jobserver instead of capacity=0",
             ));
         }
-        let inner = zccache_platform::process::jobserver::NativeJobserver::create(capacity)?;
+        let inner = crate::platform::process::jobserver::NativeJobserver::create(capacity)?;
         Ok(Self { capacity, inner })
     }
 
@@ -80,7 +80,7 @@ mod tests {
     fn create_matches_host_capability() {
         match JobserverPool::create(8) {
             Ok(pool) => {
-                assert!(zccache_platform::process::jobserver::is_supported());
+                assert!(crate::platform::process::jobserver::is_supported());
                 assert_eq!(pool.capacity(), 8);
                 let auth = pool.auth_string();
                 let parts: Vec<&str> = auth.split(',').collect();
@@ -88,7 +88,7 @@ mod tests {
                 assert!(parts.iter().all(|part| part.parse::<i32>().is_ok()));
             }
             Err(error) => {
-                assert!(!zccache_platform::process::jobserver::is_supported());
+                assert!(!crate::platform::process::jobserver::is_supported());
                 assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
             }
         }

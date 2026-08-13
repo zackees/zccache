@@ -7,10 +7,8 @@ Parent: https://github.com/zackees/zccache/issues/1365 — 6 phase sub-issues (#
 - [ ] Phase 0: exploration inventories (MSRV pins, platform-heavy code, amalgamation/dylint/CI).
 - [x] Phase 1 (#1366): PR #1370 merged.
 - [x] Phase 2 (#1367): PR #1371 merged; corrective PR #1373 merged green.
-- [~] Phase 3 (#1368): platform::ipc — implementation, local gates, and pre-push review complete. PR will close #1368.
-- [~] Phase 4 (#1369): platform::process — checkpoint PR #1377 merged into the Phase 3 branch; PR #1375 is undergoing CI repair before merge to main.
-- [~] Phase 5 (#1378): platform::executable + platform::host (deploy.rs, suffixes/PATH, image lookup, defender, elevation, native_cpu, resource probes).
-- [ ] Phase 6 (create #1371): delete baseline at zero; Linux-hosted --target windows regression; libc/windows-sys confined; publish crate self-contained; RED→GREEN evidence; #1365 auto-closes.
+- [~] Phases 3/4/5 (#1368/#1369/#1378): integrated on PR #1375; checkpoint PRs #1377 and #1379 merged into its branch.
+- [~] Phase 6 (#1380): zero-baseline implementation complete locally; validation and PR gates pending.
 - [ ] Finish: git status clean; local repo back on `refactor/platform/phase2-fs` rebased to final main.
 
 Each phase: branch from main → TDD RED→GREEN → soldr fmt/clippy/check → ./test → PR → wait for GHA green (watch) → merge → rebase next phase.
@@ -90,10 +88,18 @@ Platform/core/depgraph tests and CLI-core all-feature/all-target checks pass on 
 exact-occurrence baseline fell from 127 to 97 after migrating Defender, native CPU inputs,
 libclang discovery, and executable replacement.
 
-## Phase 6 (create #1371 sub-issue) plan — zero baseline
+## Phase 6 (#1380) plan — zero baseline
 
-Delete baseline.txt at zero; verify libc/windows-sys confined to concrete trees; Linux-hosted
---target windows regression; publish crate self-contained; record RED->GREEN; parent auto-closes.
+RED: the final audit found 97 grandfathered production occurrences across artifact, compiler,
+core, daemon, depgraph, and IPC.
+
+GREEN implementation: all 97 rows were migrated, `baseline.txt` and its runtime ratchet were
+deleted, and the lint now rejects every production occurrence directly. Host cfg/native paths
+scan clean outside the selector/concrete trees. Production `libc`/`windows-sys` dependencies are
+confined to zccache-platform; the only other libc declaration is Unix integration-test-only.
+
+Pending: Linux Dylint, cross-target/target-semantics checks, publish self-containment, full tests,
+clippy, pre-push review, and green PR CI before merge and parent closure.
 
 # soldr#2188 short compiler staging root
 

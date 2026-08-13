@@ -267,30 +267,7 @@ pub fn format_elapsed(d: Duration) -> String {
 /// kill atomically. On Unix this calls `setsid` via `pre_exec`; on Windows
 /// this sets the `CREATE_NEW_PROCESS_GROUP` creation flag.
 pub fn configure_process_group(cmd: &mut Command) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        // SAFETY: setsid is async-signal-safe and only mutates the child's
-        // own process-group state.
-        unsafe {
-            cmd.pre_exec(|| {
-                if libc::setsid() == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = cmd;
-    }
+    crate::platform::process::command::configure_process_group(cmd);
 }
 
 /// Kill `child` and every descendant. Best-effort: errors are swallowed
@@ -298,26 +275,7 @@ pub fn configure_process_group(cmd: &mut Command) {
 pub fn kill_process_tree(child: &mut Child) {
     let pid = child.id();
 
-    #[cfg(windows)]
-    {
-        use std::process::Stdio;
-        // /T = recursive (kill children), /F = force.
-        let _ = Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-
-    #[cfg(unix)]
-    {
-        // The child started its own session via setsid, so its PGID == its
-        // PID. Negative pid kills the whole process group.
-        let pid_i = pid as i32;
-        unsafe {
-            libc::kill(-pid_i, libc::SIGKILL);
-        }
-    }
+    crate::platform::process::terminate::force_group(pid);
 
     // Reap the direct child to avoid a zombie even on platforms where the
     // group-kill above did the heavy lifting.
@@ -368,7 +326,11 @@ fn dump_relevant_processes() {
 }
 
 fn home_dir() -> Option<NormalizedPath> {
-    let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    let key = if crate::platform::host::is_windows() {
+        "USERPROFILE"
+    } else {
+        "HOME"
+    };
     env::var_os(key).map(|os| NormalizedPath::new(Path::new(&os)))
 }
 
@@ -586,7 +548,7 @@ mod tests {
     fn sleep_forever_cmd() -> Command {
         // A child that will never exit on its own. We use the host's interpreter
         // so this works on Windows (where `sleep` is not a binary).
-        if cfg!(windows) {
+        if crate::platform::host::is_windows() {
             let mut c = Command::new("cmd");
             c.args(["/C", "ping -n 600 127.0.0.1 > NUL"]);
             c.stdout(Stdio::null()).stderr(Stdio::null());
@@ -600,7 +562,7 @@ mod tests {
     }
 
     fn quick_exit_cmd() -> Command {
-        if cfg!(windows) {
+        if crate::platform::host::is_windows() {
             let mut c = Command::new("cmd");
             c.args(["/C", "exit 0"]);
             c.stdout(Stdio::null()).stderr(Stdio::null());

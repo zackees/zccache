@@ -769,7 +769,7 @@ mod tests {
             ));
         }
         let elapsed = start.elapsed();
-        let budget = if cfg!(windows) {
+        let budget = if crate::platform::host::is_windows() {
             std::time::Duration::from_secs(2)
         } else {
             std::time::Duration::from_secs(1)

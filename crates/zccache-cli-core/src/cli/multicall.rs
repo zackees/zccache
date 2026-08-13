@@ -60,8 +60,9 @@ mod tests {
         // Backslash is a path separator only on Windows; on Unix it is an
         // ordinary filename char, so a backslash "path" is one component and
         // would not stem to `zccache-daemon`. Assert the native form per-OS.
-        #[cfg(windows)]
-        assert!(matches(r"C:\Users\u\.zccache\v1.12.15\zccache-daemon.exe"));
+        if crate::platform::host::is_windows() {
+            assert!(matches(r"C:\Users\u\.zccache\v1.12.15\zccache-daemon.exe"));
+        }
     }
 
     #[test]
@@ -91,16 +92,20 @@ mod tests {
         assert!(!matches("zccache-download-daemon"));
     }
 
-    #[cfg(windows)]
     #[test]
     fn windows_is_case_insensitive() {
+        if !crate::platform::host::is_windows() {
+            return;
+        }
         assert!(matches("ZCCACHE-DAEMON.EXE"));
         assert!(matches("Zccache-Daemon"));
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn unix_is_case_sensitive() {
+        if crate::platform::host::is_windows() {
+            return;
+        }
         assert!(!matches("Zccache-Daemon"));
     }
 }

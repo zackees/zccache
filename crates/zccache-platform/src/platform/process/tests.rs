@@ -47,7 +47,7 @@ fn child_cpu_ticks_are_nondecreasing() {
 #[test]
 fn native_capabilities_have_stable_labels() {
     assert!(!exit::crash_label(exit::NativeExit::Success).is_empty());
-    assert_eq!(jobserver::is_supported(), !cfg!(windows));
+    assert_eq!(jobserver::is_supported(), !crate::host::is_windows());
 }
 
 #[test]
