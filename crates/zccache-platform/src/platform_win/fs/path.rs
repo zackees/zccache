@@ -21,7 +21,11 @@ pub fn strip_verbatim_prefix(path: &Path) -> PathBuf {
 
 /// Windows path comparison folds ASCII case.
 pub fn case_fold(path: &Path) -> PathBuf {
-    PathBuf::from(path.to_string_lossy().replace('\\', "/").to_ascii_lowercase())
+    PathBuf::from(
+        path.to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase(),
+    )
 }
 
 /// Converts an MSYS `/c/...`-style path (or bare `/c`) to `C:\...`.
@@ -33,10 +37,10 @@ pub fn from_msys(path: &Path) -> Option<PathBuf> {
     let remainder: String = chars.collect();
     if remainder.is_empty() {
         Some(PathBuf::from(format!("{drive}:\\")))
-    } else if let Some(rest) = remainder.strip_prefix('/') {
-        Some(PathBuf::from(format!("{drive}:\\{}", rest.replace('/', "\\"))))
     } else {
-        None
+        remainder
+            .strip_prefix('/')
+            .map(|rest| PathBuf::from(format!("{drive}:\\{}", rest.replace('/', "\\"))))
     }
 }
 
@@ -44,3 +48,8 @@ pub fn from_msys(path: &Path) -> Option<PathBuf> {
 pub fn canonicalize_private_prefix(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
+
+/// The verbatim (`\\?\`) form required by manual Win32 calls; the logic
+/// lives in `super::verbatim` and is re-exported so the neutral facade can
+/// reach it through the `path` module.
+pub(crate) use super::verbatim_path;

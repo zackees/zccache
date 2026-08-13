@@ -25,6 +25,20 @@ pub fn hard_link_limit() -> u64 {
     platform_imp::fs::volume::hard_link_limit()
 }
 
+/// The volume identity of `path` as a plain `u128` (volume serial on
+/// Windows, `st_dev` elsewhere), for callers that key on the raw value.
+/// `None` when the path cannot be statted.
+pub fn volume_identity_u128(path: &Path) -> Option<u128> {
+    platform_imp::fs::volume::volume_identity_u128(path)
+}
+
+/// The disk space `metadata`-described file actually occupies (compressed
+/// size on Windows, `blocks * 512` elsewhere), falling back to the logical
+/// length when the host cannot report it.
+pub fn allocated_bytes(path: &Path, metadata: &std::fs::Metadata) -> u64 {
+    platform_imp::fs::volume::allocated_bytes(path, metadata)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

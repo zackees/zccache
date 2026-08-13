@@ -69,8 +69,8 @@ fn reparse_tag(path: &Path) -> Option<u32> {
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
     };
-    use windows_sys::Win32::System::IO::DeviceIoControl;
     use windows_sys::Win32::System::Ioctl::FSCTL_GET_REPARSE_POINT;
+    use windows_sys::Win32::System::IO::DeviceIoControl;
 
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     unsafe {
@@ -102,6 +102,8 @@ fn reparse_tag(path: &Path) -> Option<u32> {
         if ok == 0 || returned < 4 {
             return None;
         }
-        Some(u32::from_ne_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]))
+        Some(u32::from_ne_bytes([
+            buffer[0], buffer[1], buffer[2], buffer[3],
+        ]))
     }
 }

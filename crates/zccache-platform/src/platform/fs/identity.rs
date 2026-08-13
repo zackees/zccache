@@ -38,11 +38,8 @@ pub fn same_file(a: &Path, b: &Path) -> std::io::Result<bool> {
 /// primitive; never an error, matching the caller contract that an
 /// unprovable marker means "possibly changed".
 pub fn change_marker(path: &Path) -> Option<ChangeMarker> {
-    Some(ChangeMarker(
-        platform_imp::fs::identity::change_marker(path),
-    ))
+    platform_imp::fs::identity::change_marker(path).map(|marker| ChangeMarker(Some(marker)))
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,7 +56,10 @@ mod tests {
         let b = dir.path().join("b");
         fs::write(&a, b"data").expect("write a");
         fs::hard_link(&a, &b).expect("hard link");
-        assert_eq!(file_identity(&a).expect("identity a"), file_identity(&b).expect("identity b"));
+        assert_eq!(
+            file_identity(&a).expect("identity a"),
+            file_identity(&b).expect("identity b")
+        );
         assert!(same_file(&a, &b).expect("same_file"));
     }
 
@@ -70,7 +70,10 @@ mod tests {
         let b = dir.path().join("b");
         fs::write(&a, b"data").expect("write a");
         fs::copy(&a, &b).expect("copy");
-        assert_ne!(file_identity(&a).expect("identity a"), file_identity(&b).expect("identity b"));
+        assert_ne!(
+            file_identity(&a).expect("identity a"),
+            file_identity(&b).expect("identity b")
+        );
         assert!(!same_file(&a, &b).expect("same_file"));
     }
 

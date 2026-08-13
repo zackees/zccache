@@ -446,7 +446,6 @@ fn wide_to_string(text: *const u16) -> String {
     String::from_utf16_lossy(slice)
 }
 
-
 /// Sets or clears the read-only file attribute.
 pub(crate) fn set_readonly(path: &Path, readonly: bool) -> std::io::Result<()> {
     let mut permissions = std::fs::metadata(path)?.permissions();
@@ -471,6 +470,18 @@ pub(crate) fn make_executable(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The host's mode representation on Windows is the `0`/`1` readonly
+/// attribute.
+pub(crate) fn mode(metadata: &std::fs::Metadata) -> u32 {
+    u32::from(metadata.permissions().readonly())
+}
+
+/// Restores the readonly attribute previously read with [`mode`]; all other
+/// permission bits are preserved.
+pub(crate) fn apply_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    set_readonly(path, mode != 0)
+}
+
 #[cfg(test)]
 mod attribute_tests {
     use super::*;
@@ -486,4 +497,3 @@ mod attribute_tests {
         std::fs::write(&file, b"more").unwrap();
     }
 }
-

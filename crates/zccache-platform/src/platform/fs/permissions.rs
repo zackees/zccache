@@ -36,6 +36,17 @@ pub fn make_executable(path: &Path) -> std::io::Result<()> {
     platform_imp::fs::permissions::make_executable(path)
 }
 
+/// The host's mode representation of `metadata`: unix mode bits on Unix,
+/// the `0`/`1` readonly attribute on Windows.
+pub fn mode(metadata: &std::fs::Metadata) -> u32 {
+    platform_imp::fs::permissions::mode(metadata)
+}
+
+/// Applies a mode previously read with [`mode`] back to `path`.
+pub fn apply_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    platform_imp::fs::permissions::apply_mode(path, mode)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

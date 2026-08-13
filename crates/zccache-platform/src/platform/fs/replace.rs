@@ -16,6 +16,28 @@ pub fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> 
     platform_imp::fs::replace::atomic_replace(source, destination)
 }
 
+/// Renames `source` to `destination` where the destination must NOT exist
+/// (generation rename). Retried past AV scanners on Windows.
+pub fn rename_without_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    platform_imp::fs::replace::rename_without_replace(source, destination)
+}
+
+/// Replaces `destination` with `source`, falling back to delete-then-rename
+/// when a sharing violation keeps the destination pinned (the artifact-store
+/// AV path).
+pub fn replace_with_delete_fallback(source: &Path, destination: &Path) -> std::io::Result<()> {
+    platform_imp::fs::replace::replace_with_delete_fallback(source, destination)
+}
+
+/// Installs the staged directory tree `staged` over `requested`, which may
+/// already exist. The host chooses the strategy: atomic exchange
+/// (renameat2 `RENAME_EXCHANGE` / renamex_np `RENAME_SWAP`) where
+/// available, an intermediate-backup dance otherwise. On success `staged`
+/// no longer exists.
+pub fn install_directory(staged: &Path, requested: &Path) -> std::io::Result<()> {
+    platform_imp::fs::replace::install_directory(staged, requested)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

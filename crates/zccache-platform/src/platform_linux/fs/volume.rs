@@ -22,3 +22,13 @@ pub fn file_id_width() -> u32 {
 pub fn hard_link_limit() -> u64 {
     65_000
 }
+
+pub fn volume_identity_u128(path: &Path) -> Option<u128> {
+    std::fs::metadata(path)
+        .ok()
+        .map(|meta| u128::from(meta.dev()))
+}
+
+pub fn allocated_bytes(_path: &Path, metadata: &std::fs::Metadata) -> u64 {
+    metadata.blocks().saturating_mul(512)
+}

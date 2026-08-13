@@ -22,3 +22,8 @@ pub fn from_msys(_path: &Path) -> Option<PathBuf> {
 pub fn canonicalize_private_prefix(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
+
+/// Linux has no verbatim (`\\?\`) path form.
+pub fn verbatim_path(path: &Path) -> std::io::Result<PathBuf> {
+    Ok(path.to_path_buf())
+}

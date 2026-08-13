@@ -31,6 +31,13 @@ pub fn canonicalize_private_prefix(path: &Path) -> PathBuf {
     platform_imp::fs::path::canonicalize_private_prefix(path)
 }
 
+/// Returns `path` in the host's verbatim (extended-length) form, when the
+/// host requires one for manual Win32 calls. On hosts without verbatim
+/// paths this is an identity return.
+pub fn verbatim_path(path: &Path) -> std::io::Result<PathBuf> {
+    platform_imp::fs::path::verbatim_path(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

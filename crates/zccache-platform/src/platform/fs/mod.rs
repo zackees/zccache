@@ -7,6 +7,7 @@
 //! mtime handling, retry budgets, and authorization to delete — stays with
 //! the callers (zccache#1367 moves primitives, not policy).
 
+pub mod durability;
 pub mod identity;
 pub mod links;
 pub mod path;
