@@ -102,3 +102,9 @@ crates/zccache-platform/src/platform_win/fs/path.rs
 crates/zccache-platform/src/platform_win/fs/verbatim.rs
 crates/zccache-platform/src/platform_linux/fs/path.rs
 crates/zccache-platform/src/platform_macos/fs/path.rs
+# Process inspection returns host executable paths through the same neutral
+# dependency-leaf contract; NormalizedPath cannot be used inside this crate.
+crates/zccache-platform/src/platform/process/inspect.rs
+crates/zccache-platform/src/platform_win/process/inspect.rs
+crates/zccache-platform/src/platform_linux/process/inspect.rs
+crates/zccache-platform/src/platform_macos/process/inspect.rs
