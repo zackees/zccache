@@ -4,6 +4,7 @@ use super::{exit, inspect, jobserver, priority::Priority, spawn, terminate};
 
 #[test]
 fn neutral_priorities_are_distinct_and_ordered() {
+    assert!(Priority::High < Priority::Normal);
     assert!(Priority::Normal < Priority::Low);
     assert!(Priority::Low < Priority::Idle);
 }
@@ -40,4 +41,24 @@ fn child_cpu_ticks_are_nondecreasing() {
 fn native_capabilities_have_stable_labels() {
     assert!(!exit::crash_label(exit::NativeExit::Success).is_empty());
     assert_eq!(jobserver::is_supported(), !cfg!(windows));
+}
+
+#[test]
+fn native_jobserver_matches_reported_capability() {
+    let zero = jobserver::NativeJobserver::create(0).unwrap_err();
+    assert_eq!(zero.kind(), std::io::ErrorKind::InvalidInput);
+
+    match jobserver::NativeJobserver::create(2) {
+        Ok(pool) => {
+            assert!(jobserver::is_supported());
+            let auth = pool.auth_string();
+            let fields: Vec<&str> = auth.split(',').collect();
+            assert_eq!(fields.len(), 2);
+            assert!(fields.iter().all(|field| field.parse::<i32>().is_ok()));
+        }
+        Err(error) => {
+            assert!(!jobserver::is_supported());
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        }
+    }
 }

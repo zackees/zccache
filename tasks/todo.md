@@ -60,6 +60,15 @@ ipc PID helpers + cli-core deploy.rs spawn bits + bin/zccache.rs stack wrapper. 
 CompilePriority/watchdog budgets/jobserver accounting in daemon. Coordinate #1360 (owner-death
 behavior preserved). Files <1000 LOC (process.rs 1365, child_watchdog.rs 1202 → split).
 
+GREEN checkpoint (2026-08-13): inspect/terminate callers, watchdog CPU accounting,
+priority application, Windows kill-on-close Job Object ownership, and the POSIX jobserver
+primitive now use the neutral process facade. Product policy and diagnostics remain in their
+callers. Platform tests pass 32/32, focused daemon jobserver tests pass 2/2, and targeted
+production clippy passes with warnings denied. The exact-occurrence baseline fell from 336 to
+214 and its cache version is 0.1.3. Docker Desktop's Linux engine pipe was unavailable, so the
+Linux Dylint runtime gate remains required before publication; local baseline wiring validation
+passes.
+
 ## Phase 5 (create #1370 sub-issue) plan — platform::executable + platform::host
 
 executable: deploy.rs suffixes/PATH/PATHEXT/image lookup/unlock_exe. host: native_cpu.rs,

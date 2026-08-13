@@ -116,82 +116,10 @@ fn should_kill_stalled(
 /// unsupported platform, or the handle/pid is already gone). Callers treat
 /// `None` as "assume progress" so Mode B can never false-kill on a platform it
 /// cannot measure — it simply falls back to the output-only signal there.
-#[cfg(windows)]
 fn child_cpu_ticks(child: &Child) -> Option<u64> {
-    use windows_sys::Win32::Foundation::FILETIME;
-    use windows_sys::Win32::System::Threading::GetProcessTimes;
-
-    let handle = child.raw_handle()?;
-    let mut creation = FILETIME {
-        dwLowDateTime: 0,
-        dwHighDateTime: 0,
-    };
-    let mut exit = creation;
-    let mut kernel = creation;
-    let mut user = creation;
-    // SAFETY: `handle` is a live process handle owned by `child` (the child has
-    // not been dropped); the four FILETIME out-params are valid stack storage.
-    let ok = unsafe {
-        GetProcessTimes(
-            handle.cast::<std::ffi::c_void>(),
-            &mut creation,
-            &mut exit,
-            &mut kernel,
-            &mut user,
-        )
-    };
-    if ok == 0 {
-        return None;
-    }
-    let filetime_to_u64 =
-        |ft: FILETIME| ((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64;
-    Some(filetime_to_u64(kernel).wrapping_add(filetime_to_u64(user)))
-}
-
-#[cfg(target_os = "linux")]
-fn child_cpu_ticks(child: &Child) -> Option<u64> {
-    // /proc/<pid>/stat: `pid (comm) state ...`. `comm` can contain spaces and
-    // parens, so split after the LAST ')' before tokenizing. utime is field 14
-    // and stime is field 15 (1-based) overall → indices 11 and 12 of the
-    // post-')' tokens (which start at field 3, `state`).
-    let pid = child.id()?;
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let after_comm = stat.rsplit_once(')')?.1;
-    let fields: Vec<&str> = after_comm.split_whitespace().collect();
-    let utime: u64 = fields.get(11)?.parse().ok()?;
-    let stime: u64 = fields.get(12)?.parse().ok()?;
-    Some(utime.wrapping_add(stime))
-}
-
-#[cfg(target_os = "macos")]
-fn child_cpu_ticks(child: &Child) -> Option<u64> {
-    // macOS: `proc_pid_rusage(RUSAGE_INFO_V2)` reports the process's cumulative
-    // user + system CPU time (nanoseconds, monotonic). Sufficient for the
-    // delta-only "did it burn CPU?" check.
-    let pid = child.id()? as libc::c_int;
-    // SAFETY: zeroed POD struct; `proc_pid_rusage` fills it and returns 0 on
-    // success. We pass a valid `&mut` and the matching V2 flavor.
-    let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
-    let rc = unsafe {
-        libc::proc_pid_rusage(
-            pid,
-            libc::RUSAGE_INFO_V2,
-            &mut info as *mut libc::rusage_info_v2 as *mut _,
-        )
-    };
-    if rc != 0 {
-        return None;
-    }
-    Some(info.ri_user_time.wrapping_add(info.ri_system_time))
-}
-
-#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-fn child_cpu_ticks(_child: &Child) -> Option<u64> {
-    // Exotic non-CI targets (e.g. the BSDs) with no wired-up per-process CPU
-    // accounting. Mode B relies on the output-progress signal alone here (the
-    // `None` == "assume progress" rule), so it never false-kills; Mode A
-    // (orphan-pipe) still applies.
-    None
+    child
+        .id()
+        .and_then(zccache_platform::process::inspect::cpu_ticks)
 }
 
 /// Await a spawned child, draining stdout/stderr concurrently, with a

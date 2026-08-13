@@ -339,29 +339,14 @@ impl CompilePriority {
         }
     }
 
-    #[cfg(unix)]
-    fn unix_nice_value(self) -> Option<i32> {
-        match self {
-            Self::Auto | Self::Normal => None,
-            Self::Low => Some(10),
-            Self::Idle => Some(19),
-            // Higher priorities commonly require extra privileges; failures are
-            // logged and compilation continues at the inherited priority.
-            Self::High => Some(-5),
-        }
-    }
-
-    #[cfg(windows)]
-    fn windows_priority_class(self) -> Option<u32> {
-        use windows_sys::Win32::System::Threading::{
-            BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS,
-        };
+    fn platform_priority(self) -> zccache_platform::process::priority::Priority {
+        use zccache_platform::process::priority::Priority;
 
         match self {
-            Self::Auto | Self::Normal => None,
-            Self::Low => Some(BELOW_NORMAL_PRIORITY_CLASS),
-            Self::Idle => Some(IDLE_PRIORITY_CLASS),
-            Self::High => Some(HIGH_PRIORITY_CLASS),
+            Self::Auto | Self::Normal => Priority::Normal,
+            Self::Low => Priority::Low,
+            Self::Idle => Priority::Idle,
+            Self::High => Priority::High,
         }
     }
 }
@@ -674,15 +659,8 @@ async fn tokio_command_output_with_priority_stdin_inner(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     let mut child = running_process::spawn_tokio(cmd, owned_child_spawn_options())?;
-    #[cfg(windows)]
-    if let Some(handle) = child.raw_handle() {
-        assign_child_to_daemon_job(handle);
-        apply_priority_to_child_windows(handle, priority);
-    }
-    #[cfg(unix)]
-    if let Some(pid) = child.id() {
-        apply_priority_to_child_unix(pid, priority);
-    }
+    attach_child_owner_death(&child);
+    apply_priority_to_child(&child, priority);
     if pipe_stdin {
         if let Some(mut stdin) = child.stdin.take() {
             let _ = stdin.write_all(stdin_bytes.unwrap_or(&[])).await;
@@ -714,154 +692,28 @@ pub(crate) async fn tokio_leaf_command_output_with_priority(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     let child = running_process::spawn_tokio(cmd, owned_child_spawn_options())?;
-    #[cfg(windows)]
-    {
-        if let Some(handle) = child.raw_handle() {
-            assign_child_to_daemon_job(handle);
-            apply_priority_to_child_windows(handle, priority);
-        }
-    }
-    #[cfg(unix)]
-    if let Some(pid) = child.id() {
-        apply_priority_to_child_unix(pid, priority);
-    }
+    attach_child_owner_death(&child);
+    apply_priority_to_child(&child, priority);
     child.wait_with_output().await
 }
 
-#[cfg(windows)]
-fn assign_child_to_daemon_job(raw_handle: std::os::windows::io::RawHandle) {
-    let Some(job) = DAEMON_JOB.get_or_init(WindowsJob::new).as_ref() else {
-        return;
-    };
-
-    if let Err(e) = job.assign(raw_handle) {
-        tracing::debug!("failed to assign child process to daemon job: {e}");
+fn attach_child_owner_death(child: &tokio::process::Child) {
+    if let Err(error) = zccache_platform::process::spawn::attach_owner_death(child) {
+        tracing::debug!(%error, "failed to attach child process owner-death primitive");
     }
 }
 
-#[cfg(unix)]
-fn apply_priority_to_child_unix(pid: u32, priority: CompilePriority) {
-    let Some(nice) = priority.unix_nice_value() else {
-        return;
-    };
-
-    let rc = unsafe { libc::setpriority(libc::PRIO_PROCESS, pid as libc::id_t, nice) };
-    if rc != 0 {
+fn apply_priority_to_child(child: &tokio::process::Child, priority: CompilePriority) {
+    if let Err(error) =
+        zccache_platform::process::priority::apply_to_child(child, priority.platform_priority())
+    {
         tracing::debug!(
             ?priority,
-            pid,
-            nice,
-            error = %io::Error::last_os_error(),
+            %error,
             "failed to set compiler child priority"
         );
     }
 }
-
-#[cfg(windows)]
-fn apply_priority_to_child_windows(
-    raw_handle: std::os::windows::io::RawHandle,
-    priority: CompilePriority,
-) {
-    let Some(priority_class) = priority.windows_priority_class() else {
-        return;
-    };
-
-    use windows_sys::Win32::System::Threading::SetPriorityClass;
-
-    let ok = unsafe { SetPriorityClass(raw_handle.cast::<std::ffi::c_void>(), priority_class) };
-    if ok == 0 {
-        tracing::debug!(
-            ?priority,
-            error = %io::Error::last_os_error(),
-            "failed to set compiler child priority"
-        );
-    }
-}
-
-#[cfg(windows)]
-static DAEMON_JOB: OnceLock<Option<WindowsJob>> = OnceLock::new();
-
-#[cfg(windows)]
-struct WindowsJob {
-    handle: usize,
-}
-
-#[cfg(windows)]
-impl WindowsJob {
-    fn new() -> Option<Self> {
-        use std::mem::size_of;
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::JobObjects::{
-            CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
-            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        };
-
-        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-        if handle.is_null() {
-            tracing::debug!(
-                "failed to create daemon job object: {}",
-                io::Error::last_os_error()
-            );
-            return None;
-        }
-
-        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-
-        let ok = unsafe {
-            SetInformationJobObject(
-                handle,
-                JobObjectExtendedLimitInformation,
-                (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            )
-        };
-        if ok == 0 {
-            tracing::debug!(
-                "failed to configure daemon job object: {}",
-                io::Error::last_os_error()
-            );
-            unsafe {
-                CloseHandle(handle);
-            }
-            return None;
-        }
-
-        tracing::debug!("created daemon child-process job object");
-        Some(Self {
-            handle: handle as usize,
-        })
-    }
-
-    fn assign(&self, raw_handle: std::os::windows::io::RawHandle) -> io::Result<()> {
-        use windows_sys::Win32::Foundation::HANDLE;
-        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
-
-        let ok = unsafe {
-            AssignProcessToJobObject(self.handle as HANDLE, raw_handle.cast::<std::ffi::c_void>())
-        };
-        if ok == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
-}
-
-#[cfg(windows)]
-impl Drop for WindowsJob {
-    fn drop(&mut self) {
-        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-        unsafe {
-            CloseHandle(self.handle as HANDLE);
-        }
-    }
-}
-
-#[cfg(windows)]
-unsafe impl Send for WindowsJob {}
-
-#[cfg(windows)]
-unsafe impl Sync for WindowsJob {}
 
 #[cfg(test)]
 mod tests {
@@ -1313,37 +1165,18 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
-    fn unix_priority_mapping_is_explicit() {
-        assert_eq!(CompilePriority::Auto.unix_nice_value(), None);
-        assert_eq!(CompilePriority::Normal.unix_nice_value(), None);
-        assert_eq!(CompilePriority::Low.unix_nice_value(), Some(10));
-        assert_eq!(CompilePriority::Idle.unix_nice_value(), Some(19));
-        assert_eq!(CompilePriority::High.unix_nice_value(), Some(-5));
-    }
+    fn platform_priority_mapping_is_explicit() {
+        use zccache_platform::process::priority::Priority;
 
-    #[cfg(windows)]
-    #[test]
-    fn windows_priority_mapping_is_explicit() {
-        use windows_sys::Win32::System::Threading::{
-            BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS,
-        };
-
-        assert_eq!(CompilePriority::Auto.windows_priority_class(), None);
-        assert_eq!(CompilePriority::Normal.windows_priority_class(), None);
+        assert_eq!(CompilePriority::Auto.platform_priority(), Priority::Normal);
         assert_eq!(
-            CompilePriority::Low.windows_priority_class(),
-            Some(BELOW_NORMAL_PRIORITY_CLASS)
+            CompilePriority::Normal.platform_priority(),
+            Priority::Normal
         );
-        assert_eq!(
-            CompilePriority::Idle.windows_priority_class(),
-            Some(IDLE_PRIORITY_CLASS)
-        );
-        assert_eq!(
-            CompilePriority::High.windows_priority_class(),
-            Some(HIGH_PRIORITY_CLASS)
-        );
+        assert_eq!(CompilePriority::Low.platform_priority(), Priority::Low);
+        assert_eq!(CompilePriority::Idle.platform_priority(), Priority::Idle);
+        assert_eq!(CompilePriority::High.platform_priority(), Priority::High);
     }
 
     // ── Console-window suppression (Windows only) ───────────────────────
