@@ -8,9 +8,6 @@
 
 use std::time::Duration;
 
-use interprocess::local_socket::traits::Stream as _;
-use interprocess::local_socket::Stream;
-
 /// Default deadline for the [`probe_local_socket`] liveness check.
 ///
 /// This is a probe, not a usage connect — 250 ms is generous for any
@@ -43,24 +40,7 @@ pub fn probe_local_socket(endpoint: &str) -> std::io::Result<()> {
 pub fn probe_local_socket_with_deadline(endpoint: &str, deadline: Duration) -> std::io::Result<()> {
     let endpoint = endpoint.to_owned();
     call_with_io_deadline("probe_local_socket", deadline, move || {
-        // Pass the endpoint string verbatim on both platforms, aligned with
-        // upstream `running_process::broker::server::connection::
-        // local_socket_name`.
-        #[cfg(windows)]
-        let name = {
-            use interprocess::local_socket::{GenericNamespaced, ToNsName};
-            ToNsName::to_ns_name::<GenericNamespaced>(endpoint.as_str())?
-        };
-
-        #[cfg(unix)]
-        let name = {
-            use interprocess::local_socket::{GenericFilePath, ToFsName};
-            ToFsName::to_fs_name::<GenericFilePath>(endpoint.as_str())?
-        };
-
-        let stream = Stream::connect(name)?;
-        drop(stream);
-        Ok(())
+        crate::platform::ipc::probe_native(&endpoint)
     })
 }
 
@@ -94,11 +74,8 @@ mod tests {
     fn probe_local_socket_no_listener_returns_err() {
         // A syntactically valid but unbound endpoint must return Err, never
         // hang, and never panic.
-        #[cfg(windows)]
-        let endpoint = r"\\.\pipe\zccache-probe-no-listener-1001";
-        #[cfg(unix)]
-        let endpoint = "/tmp/zccache-probe-no-listener-1001.sock";
-        let err = probe_local_socket(endpoint).expect_err("no listener => Err");
+        let endpoint = crate::platform::ipc::Endpoint::unique_test("probe-no-listener");
+        let err = probe_local_socket(endpoint.as_str()).expect_err("no listener => Err");
         assert!(matches!(
             err.kind(),
             std::io::ErrorKind::NotFound

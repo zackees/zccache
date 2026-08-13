@@ -45,19 +45,9 @@ pub(crate) enum VersionCheck {
     ClientConfigError(String),
 }
 
-#[cfg(unix)]
 pub async fn connect_client(
     endpoint: &str,
 ) -> Result<crate::ipc::IpcConnection, crate::ipc::IpcError> {
-    let mut conn = crate::ipc::connect_daemon(endpoint).await?;
-    conn.set_recv_timeout(crate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
-    Ok(conn)
-}
-
-#[cfg(windows)]
-pub async fn connect_client(
-    endpoint: &str,
-) -> Result<crate::ipc::IpcClientConnection, crate::ipc::IpcError> {
     let mut conn = crate::ipc::connect_daemon(endpoint).await?;
     conn.set_recv_timeout(crate::ipc::DEFAULT_CLIENT_RECV_TIMEOUT);
     Ok(conn)
@@ -795,7 +785,7 @@ mod tests {
     // Bogus endpoint that connect_client cannot bind to on either platform.
     // Unix: a nonexistent socket path. Windows: a nonexistent named pipe.
     fn dead_endpoint() -> &'static str {
-        if cfg!(windows) {
+        if crate::platform::host::is_windows() {
             r"\\.\pipe\zccache-test-issue-673-dead"
         } else {
             "/tmp/zccache-test-issue-673-dead.sock"

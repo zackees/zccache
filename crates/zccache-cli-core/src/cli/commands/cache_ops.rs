@@ -964,7 +964,8 @@ pub(crate) fn snapshot_bytes_walk(
     }
 
     // Dedup by (dev, inode) so hardlinked files don't double-count.
-    let seen: Mutex<std::collections::HashSet<(u64, u64)>> = Mutex::new(Default::default());
+    let seen: Mutex<std::collections::HashSet<crate::platform::fs::identity::FileIdentity>> =
+        Mutex::new(Default::default());
 
     let walker = WalkDirGeneric::<((), Option<u64>)>::new(target).process_read_dir(
         move |_depth, parent_path, _read_dir_state, children| {
@@ -1009,7 +1010,7 @@ pub(crate) fn snapshot_bytes_walk(
             Ok(m) => m,
             Err(_) => continue,
         };
-        if let Some(key) = file_identity(&meta) {
+        if let Ok(key) = crate::platform::fs::identity::file_identity(&entry.path()) {
             let mut seen_guard = seen.lock().unwrap_or_else(|p| p.into_inner());
             if !seen_guard.insert(key) {
                 continue;
@@ -1018,23 +1019,4 @@ pub(crate) fn snapshot_bytes_walk(
         total = total.saturating_add(meta.len());
     }
     Ok(total)
-}
-
-#[cfg(unix)]
-fn file_identity(meta: &std::fs::Metadata) -> Option<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
-    Some((meta.dev(), meta.ino()))
-}
-
-#[cfg(windows)]
-fn file_identity(_meta: &std::fs::Metadata) -> Option<(u64, u64)> {
-    // Windows file IDs require a separate Win32 call; not worth the cost just
-    // for hardlink dedup in a target/ tree. Cargo doesn't hardlink within
-    // `target/` in practice, so the dedup is a no-op here.
-    None
-}
-
-#[cfg(not(any(unix, windows)))]
-fn file_identity(_meta: &std::fs::Metadata) -> Option<(u64, u64)> {
-    None
 }

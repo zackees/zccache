@@ -148,15 +148,15 @@ fn zccache_home_dir() -> Option<std::path::PathBuf> {
 /// better than no detach, and any platform where this fails is a platform
 /// where the original pipe write end could not have been opened anyway.
 pub fn detach_stdio() {
-    zccache_platform::process::stdio::detach();
+    crate::platform::process::stdio::detach();
 }
 
 /// Redirect this process's stdout and stderr to the log path, leaving stdin
 /// connected to the platform null device. Falls back to full detachment when
 /// the log cannot be opened.
 pub fn redirect_stdio_to_log(log_path: &Path) {
-    if !zccache_platform::process::stdio::redirect_to_log(log_path) {
-        zccache_platform::process::stdio::detach();
+    if !crate::platform::process::stdio::redirect_to_log(log_path) {
+        crate::platform::process::stdio::detach();
     }
 }
 

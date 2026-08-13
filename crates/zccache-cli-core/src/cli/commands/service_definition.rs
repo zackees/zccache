@@ -237,7 +237,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn fake_daemon_binary(root: &Path) -> PathBuf {
-        let binary = root.join(if cfg!(windows) {
+        let binary = root.join(if crate::platform::host::is_windows() {
             "zccache-daemon.exe"
         } else {
             "zccache-daemon"

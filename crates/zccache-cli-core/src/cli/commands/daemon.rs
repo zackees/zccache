@@ -95,8 +95,9 @@ pub(crate) fn profile_env_overrides(bind: &str, open: bool) -> Vec<(String, Stri
 
 fn launch_tokio_console(bind: &str) -> Result<(), String> {
     let mut cmd = std::process::Command::new("tokio-console");
-    #[cfg(windows)]
-    cmd.args(["--lang", "en_US.UTF-8"]);
+    if crate::platform::host::is_windows() {
+        cmd.args(["--lang", "en_US.UTF-8"]);
+    }
     cmd.arg(bind);
     cmd.spawn()
         .map(|_| {

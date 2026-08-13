@@ -321,7 +321,7 @@ fn fake_backend_endpoint_from_env() -> Option<String> {
 /// namespaced names) while zccache's transport expects the full
 /// `\\.\pipe\` form. Unix socket paths are shared verbatim.
 fn to_zccache_endpoint(endpoint: &str) -> String {
-    zccache_platform::ipc::Endpoint::from_running_process(endpoint).to_string()
+    crate::platform::ipc::Endpoint::from_running_process(endpoint).to_string()
 }
 
 /// Strip a zccache endpoint down to the running-process local-socket form.
@@ -331,7 +331,7 @@ fn to_zccache_endpoint(endpoint: &str) -> String {
 /// a zccache endpoint to the upstream fake-backend seam.
 #[must_use]
 pub fn to_running_process_endpoint(endpoint: &str) -> String {
-    zccache_platform::ipc::Endpoint::from_native(endpoint).to_running_process()
+    crate::platform::ipc::Endpoint::from_native(endpoint).to_running_process()
 }
 
 #[cfg(test)]
@@ -628,7 +628,7 @@ mod tests {
             to_zccache_endpoint(&to_running_process_endpoint(&endpoint)),
             endpoint
         );
-        let native = zccache_platform::ipc::Endpoint::from_running_process("name");
+        let native = crate::platform::ipc::Endpoint::from_running_process("name");
         assert_eq!(to_zccache_endpoint("name"), native.as_str());
         assert_eq!(to_running_process_endpoint(native.as_str()), "name");
     }

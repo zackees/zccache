@@ -82,14 +82,7 @@ pub(crate) struct FingerprintManager {
 /// Strip the `\\?\` extended-length prefix on Windows.
 /// No-op on other platforms.
 fn strip_win_prefix(path: NormalizedPath) -> NormalizedPath {
-    #[cfg(windows)]
-    {
-        let s = path.to_string_lossy();
-        if let Some(stripped) = s.strip_prefix(r"\\?\") {
-            return NormalizedPath::from(stripped);
-        }
-    }
-    path
+    NormalizedPath::new(crate::platform::fs::path::strip_verbatim_prefix(&path))
 }
 
 /// Canonicalize a path, stripping the `\\?\` prefix on Windows.

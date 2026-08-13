@@ -17,3 +17,11 @@ pub fn current_user_name() -> Option<String> {
 pub fn select_host_text(file_value: String, _windows_value: String) -> String {
     file_value
 }
+
+pub fn probe_native(endpoint: &str) -> std::io::Result<()> {
+    use interprocess::local_socket::traits::Stream as _;
+    use interprocess::local_socket::{GenericFilePath, Stream, ToFsName};
+    let name = ToFsName::to_fs_name::<GenericFilePath>(endpoint)?;
+    drop(Stream::connect(name)?);
+    Ok(())
+}

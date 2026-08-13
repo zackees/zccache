@@ -27,6 +27,24 @@ pub fn arch() -> &'static str {
     crate::platform_imp::host::arch()
 }
 
+/// Whether this process is running on Windows.
+#[must_use]
+pub fn is_windows() -> bool {
+    os() == "windows"
+}
+
+/// Whether this process is running on macOS.
+#[must_use]
+pub fn is_macos() -> bool {
+    os() == "macos"
+}
+
+/// Whether this process is running on Linux.
+#[must_use]
+pub fn is_linux() -> bool {
+    os() == "linux"
+}
+
 /// Best-effort current user's home directory.
 #[must_use]
 pub fn home_dir() -> Option<PathBuf> {

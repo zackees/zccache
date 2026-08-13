@@ -740,15 +740,12 @@ mod probe_timeout_tests {
     use std::time::Duration;
 
     fn slow_cmd() -> std::process::Command {
-        #[cfg(windows)]
-        {
+        if crate::platform::host::is_windows() {
             let mut c = std::process::Command::new("cmd");
             // ~30 s: 31 pings ~1 s apart.
             c.args(["/c", "ping -n 31 127.0.0.1 >nul"]);
             c
-        }
-        #[cfg(unix)]
-        {
+        } else {
             let mut c = std::process::Command::new("sh");
             c.args(["-c", "sleep 30"]);
             c
@@ -756,14 +753,11 @@ mod probe_timeout_tests {
     }
 
     fn fast_cmd() -> std::process::Command {
-        #[cfg(windows)]
-        {
+        if crate::platform::host::is_windows() {
             let mut c = std::process::Command::new("cmd");
             c.args(["/c", "echo hi"]);
             c
-        }
-        #[cfg(unix)]
-        {
+        } else {
             let mut c = std::process::Command::new("sh");
             c.args(["-c", "echo hi"]);
             c
@@ -806,9 +800,11 @@ mod probe_timeout_tests {
         ));
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn timeout_is_not_held_open_by_escaped_descendant_pipes() {
+        if !crate::platform::host::is_linux() {
+            return;
+        }
         let mut cmd = std::process::Command::new("sh");
         cmd.args(["-c", "setsid sh -c 'sleep 3' & sleep 30"]);
 

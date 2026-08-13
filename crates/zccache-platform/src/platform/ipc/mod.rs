@@ -22,5 +22,10 @@ pub fn select_host_text(file_value: String, windows_value: String) -> String {
     crate::platform_imp::ipc::select_host_text(file_value, windows_value)
 }
 
+/// Performs one blocking native local-socket connection probe.
+pub fn probe_native(endpoint: &str) -> std::io::Result<()> {
+    crate::platform_imp::ipc::probe_native(endpoint)
+}
+
 #[cfg(test)]
 mod tests;

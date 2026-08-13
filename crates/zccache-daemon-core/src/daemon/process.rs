@@ -339,8 +339,8 @@ impl CompilePriority {
         }
     }
 
-    fn platform_priority(self) -> zccache_platform::process::priority::Priority {
-        use zccache_platform::process::priority::Priority;
+    fn platform_priority(self) -> crate::platform::process::priority::Priority {
+        use crate::platform::process::priority::Priority;
 
         match self {
             Self::Auto | Self::Normal => Priority::Normal,
@@ -580,7 +580,7 @@ pub(crate) struct CompilePriorityParseError {
 fn owned_child_spawn_options() -> running_process::TokioSpawnOptions {
     running_process::TokioSpawnOptions {
         kill_on_drop: true,
-        kill_when_owner_dies: zccache_platform::process::spawn::uses_pre_spawn_owner_death(),
+        kill_when_owner_dies: crate::platform::process::spawn::uses_pre_spawn_owner_death(),
         ..Default::default()
     }
 }
@@ -698,14 +698,14 @@ pub(crate) async fn tokio_leaf_command_output_with_priority(
 }
 
 fn attach_child_owner_death(child: &tokio::process::Child) {
-    if let Err(error) = zccache_platform::process::spawn::attach_owner_death(child) {
+    if let Err(error) = crate::platform::process::spawn::attach_owner_death(child) {
         tracing::debug!(%error, "failed to attach child process owner-death primitive");
     }
 }
 
 fn apply_priority_to_child(child: &tokio::process::Child, priority: CompilePriority) {
     if let Err(error) =
-        zccache_platform::process::priority::apply_to_child(child, priority.platform_priority())
+        crate::platform::process::priority::apply_to_child(child, priority.platform_priority())
     {
         tracing::debug!(
             ?priority,

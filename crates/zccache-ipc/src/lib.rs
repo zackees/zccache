@@ -6,6 +6,8 @@
 
 #![allow(clippy::missing_errors_doc)]
 
+pub(crate) use zccache_platform as platform;
+
 pub mod broker;
 pub mod error;
 pub mod manifest;
@@ -361,8 +363,8 @@ pub fn default_endpoint() -> String {
     }
 
     let username =
-        zccache_platform::ipc::current_user_name().unwrap_or_else(|| String::from("unknown"));
-    zccache_platform::ipc::Endpoint::select(
+        crate::platform::ipc::current_user_name().unwrap_or_else(|| String::from("unknown"));
+    crate::platform::ipc::Endpoint::select(
         default_file_endpoint(namespace.as_deref()),
         pipe_name(&username, namespace.as_deref()),
     )
@@ -372,13 +374,13 @@ pub fn default_endpoint() -> String {
 pub fn endpoint_for_cache_dir(cache_dir: &std::path::Path, namespace: Option<&str>) -> String {
     let direct = cache_dir.join(daemon_socket_name(namespace));
     let direct = direct.to_string_lossy();
-    let file_path = if zccache_platform::ipc::Endpoint::file_path_is_portable(&direct) {
+    let file_path = if crate::platform::ipc::Endpoint::file_path_is_portable(&direct) {
         direct.into_owned()
     } else {
         compact_cache_dir_endpoint(cache_dir, namespace)
     };
     let suffix = zccache_core::stable_path_id(cache_dir);
-    zccache_platform::ipc::Endpoint::select(file_path, pipe_name(&suffix, namespace)).to_string()
+    crate::platform::ipc::Endpoint::select(file_path, pipe_name(&suffix, namespace)).to_string()
 }
 
 fn compact_cache_dir_endpoint(cache_dir: &std::path::Path, namespace: Option<&str>) -> String {
@@ -407,8 +409,8 @@ pub fn endpoint_for_private_daemon_name(
     }
 
     let username =
-        zccache_platform::ipc::current_user_name().unwrap_or_else(|| String::from("unknown"));
-    zccache_platform::ipc::Endpoint::select(
+        crate::platform::ipc::current_user_name().unwrap_or_else(|| String::from("unknown"));
+    crate::platform::ipc::Endpoint::select(
         default_file_endpoint(Some(&namespace)),
         pipe_name(&username, Some(&namespace)),
     )
@@ -436,7 +438,7 @@ pub fn lock_file_path() -> NormalizedPath {
     };
     let windows_lock =
         { zccache_core::config::default_cache_dir().join(lock_file_name(namespace.as_deref())) };
-    zccache_platform::ipc::select_host_text(
+    crate::platform::ipc::select_host_text(
         file_lock.to_string_lossy().into_owned(),
         windows_lock.to_string_lossy().into_owned(),
     )
@@ -483,10 +485,10 @@ fn pipe_name(base: &str, namespace: Option<&str>) -> String {
 }
 
 fn default_file_endpoint(namespace: Option<&str>) -> String {
-    if let Some(runtime_dir) = zccache_platform::host::runtime_dir() {
+    if let Some(runtime_dir) = crate::platform::host::runtime_dir() {
         return format!("{runtime_dir}/zccache/{}", socket_name(namespace));
     }
-    let user = zccache_platform::host::current_user().unwrap_or_else(|| String::from("unknown"));
+    let user = crate::platform::host::current_user().unwrap_or_else(|| String::from("unknown"));
     format!("/tmp/zccache-{user}/{}", socket_name(namespace))
 }
 
@@ -525,7 +527,7 @@ pub fn remove_lock_file() {
 
 /// Retire a stale native endpoint without exposing its host representation.
 pub fn retire_endpoint(endpoint: &str) -> std::io::Result<()> {
-    zccache_platform::ipc::Endpoint::from_native(endpoint).retire()
+    crate::platform::ipc::Endpoint::from_native(endpoint).retire()
 }
 
 /// Path where the daemon records the identity consumed by
@@ -578,7 +580,7 @@ pub fn running_process_endpoint(
 }
 
 fn running_process_endpoint_path(endpoint: &str) -> String {
-    zccache_platform::ipc::Endpoint::from_native(endpoint).to_running_process()
+    crate::platform::ipc::Endpoint::from_native(endpoint).to_running_process()
 }
 
 /// Build the current process identity that a zccache daemon exposes to
@@ -722,7 +724,7 @@ pub fn running_process_disabled() -> bool {
 /// This is intended as a last-resort escape hatch when the daemon is no longer
 /// reachable over IPC, so graceful shutdown is not possible.
 pub fn force_kill_process(pid: u32) -> Result<(), std::io::Error> {
-    zccache_platform::process::terminate::force(pid)
+    crate::platform::process::terminate::force(pid)
 }
 
 /// Check if a process with the given PID is actually running.
@@ -744,7 +746,7 @@ pub fn force_kill_process(pid: u32) -> Result<(), std::io::Error> {
 /// one that is still running.
 #[must_use]
 pub fn is_process_alive(pid: u32) -> bool {
-    zccache_platform::process::inspect::is_alive(pid)
+    crate::platform::process::inspect::is_alive(pid)
 }
 
 /// Probe whether a daemon is **already serving** at `endpoint`. Returns
@@ -825,7 +827,7 @@ pub fn verify_pid_exe_stem(pid: u32, expected_stem: &str) -> bool {
     if !is_process_alive(pid) {
         return false;
     }
-    match zccache_platform::process::inspect::executable_path(pid) {
+    match crate::platform::process::inspect::executable_path(pid) {
         // Got an exe path — only trust the PID if it points at our daemon.
         Some(exe) => exe_stem_matches(&exe, expected_stem),
         // Platform doesn't support reading the exe path. Fall back to the
@@ -853,7 +855,7 @@ pub fn check_running_daemon() -> Option<u32> {
         // Stale lock file — clean up. The PID may be dead, or may belong to
         // an unrelated process that recycled the lock file's PID (issue #132).
         remove_lock_file();
-        let endpoint = zccache_platform::ipc::Endpoint::from_native(default_endpoint());
+        let endpoint = crate::platform::ipc::Endpoint::from_native(default_endpoint());
         let _ = endpoint.retire();
         None
     }

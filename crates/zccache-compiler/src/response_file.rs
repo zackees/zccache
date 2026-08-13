@@ -9,13 +9,10 @@ use std::path::Path;
 
 use zccache_core::NormalizedPath;
 
-#[cfg(any(windows, test))]
 mod format;
 #[cfg(test)]
 use format::gnu as format_rsp_content;
-#[cfg(any(windows, test))]
 use format::gnu_if_safe as format_rsp_content_if_safe;
-#[cfg(any(windows, test))]
 use format::{
     msvc_if_safe as format_rsp_content_msvc_if_safe, rustc_if_safe as format_rsp_content_rustc,
 };
@@ -238,11 +235,9 @@ fn decode_utf16(payload: &[u8], decode_word: fn([u8; 2]) -> u16) -> std::io::Res
 /// Maximum command-line length (in bytes) before we spill to a response file.
 /// Windows `CreateProcess` has a 32,767 character limit. We use a conservative
 /// threshold to account for the compiler path, env block, and quoting overhead.
-#[cfg(windows)]
 const MAX_CMDLINE_LEN: usize = 30_000;
 
 /// Atomic counter for unique response file names.
-#[cfg(windows)]
 static RSP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Format args for a response file that **rustc** will read.
@@ -279,12 +274,14 @@ static RSP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 ///
 /// The returned [`TempResponseFile`] keeps the temporary file alive via RAII.
 /// Drop it after the compiler process finishes.
-#[cfg(windows)]
 pub fn write_response_file_if_needed(
     args: &[String],
     tmp_dir: &Path,
     family_hint: crate::CompilerFamily,
 ) -> std::io::Result<Option<TempResponseFile>> {
+    if !crate::platform::host::is_windows() {
+        return Ok(None);
+    }
     let estimated_len: usize = args.iter().map(|a| a.len() + 3).sum();
     if estimated_len < MAX_CMDLINE_LEN {
         return Ok(None);
@@ -305,16 +302,6 @@ pub fn write_response_file_if_needed(
     std::fs::write(&rsp_path, content)?;
 
     Ok(Some(TempResponseFile { path: rsp_path }))
-}
-
-/// No-op on non-Windows platforms (command-line length is not an issue).
-#[cfg(not(windows))]
-pub fn write_response_file_if_needed(
-    _args: &[String],
-    _tmp_dir: &Path,
-    _family_hint: crate::CompilerFamily,
-) -> std::io::Result<Option<TempResponseFile>> {
-    Ok(None)
 }
 
 /// RAII guard for a temporary response file. Deletes the file on drop.

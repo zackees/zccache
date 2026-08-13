@@ -95,9 +95,11 @@ async fn endpoint_can_be_retired_and_rebound() {
     let _listener = Listener::bind(&endpoint).expect("rebind");
 }
 
-#[cfg(unix)]
 #[test]
 fn retirement_refuses_to_delete_an_ordinary_file() {
+    if crate::host::is_windows() {
+        return;
+    }
     let directory = tempfile::tempdir().expect("tempdir");
     let path = directory.path().join("ordinary-file");
     std::fs::write(&path, b"preserve me").expect("write ordinary file");
@@ -113,28 +115,23 @@ fn retirement_refuses_to_delete_an_ordinary_file() {
     );
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn binding_tightens_parent_and_socket_permissions() {
-    use std::os::unix::fs::PermissionsExt;
+    if crate::host::is_windows() {
+        return;
+    }
 
     let directory = tempfile::tempdir().expect("tempdir");
-    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o777))
-        .expect("make parent permissive");
+    crate::fs::permissions::apply_mode(directory.path(), 0o777).expect("make parent permissive");
     let path = directory.path().join("private.sock");
     let endpoint = Endpoint::from_native(path.to_string_lossy().into_owned());
     let _listener = Listener::bind(&endpoint).expect("bind secure socket");
 
-    let parent_mode = std::fs::metadata(directory.path())
-        .expect("parent metadata")
-        .permissions()
-        .mode()
-        & 0o777;
-    let socket_mode = std::fs::metadata(path)
-        .expect("socket metadata")
-        .permissions()
-        .mode()
-        & 0o777;
+    let parent_mode = crate::fs::permissions::mode(
+        &std::fs::metadata(directory.path()).expect("parent metadata"),
+    ) & 0o777;
+    let socket_mode =
+        crate::fs::permissions::mode(&std::fs::metadata(path).expect("socket metadata")) & 0o777;
     assert_eq!(parent_mode, 0o700);
     assert_eq!(socket_mode, 0o600);
 }

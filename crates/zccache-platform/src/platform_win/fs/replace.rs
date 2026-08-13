@@ -24,6 +24,14 @@ pub(crate) fn is_av_scan_transient(err: &std::io::Error) -> bool {
     matches!(err.raw_os_error(), Some(5) | Some(32))
 }
 
+pub fn is_transient_share_error(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(5) | Some(32))
+}
+
+pub fn is_lock_contention(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(33))
+}
+
 /// Retries `op` across the fixed AV-scan delay ladder, five attempts.
 pub(crate) fn av_scan_retry<T, F: FnMut() -> std::io::Result<T>>(mut op: F) -> std::io::Result<T> {
     const DELAYS_MS: [u64; 4] = [50, 100, 250, 500];

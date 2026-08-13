@@ -13,3 +13,11 @@ pub use stream::Stream;
 
 pub fn current_user_name() -> Option<String> { super::host::current_user() }
 pub fn select_host_text(_file_value: String, windows_value: String) -> String { windows_value }
+
+pub fn probe_native(endpoint: &str) -> std::io::Result<()> {
+    use interprocess::local_socket::traits::Stream as _;
+    use interprocess::local_socket::{GenericNamespaced, Stream, ToNsName};
+    let name = ToNsName::to_ns_name::<GenericNamespaced>(endpoint)?;
+    drop(Stream::connect(name)?);
+    Ok(())
+}

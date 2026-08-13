@@ -119,7 +119,7 @@ fn should_kill_stalled(
 fn child_cpu_ticks(child: &Child) -> Option<u64> {
     child
         .id()
-        .and_then(zccache_platform::process::inspect::cpu_ticks)
+        .and_then(crate::platform::process::inspect::cpu_ticks)
 }
 
 /// Await a spawned child, draining stdout/stderr concurrently, with a

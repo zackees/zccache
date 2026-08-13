@@ -1,6 +1,5 @@
 //! Stable path identities for privately staged compiler outputs.
 
-#[cfg(windows)]
 use super::break_output_hardlink_before_compile;
 use crate::core::path::NormalizedPath;
 use std::io;
@@ -234,8 +233,7 @@ fn atomic_replace_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
         // it already swaps the directory entry without touching the shared
         // inode. Gate the detach to Windows to avoid the extra metadata
         // stat + hard-link-count check on the Linux/macOS hot path.
-        #[cfg(windows)]
-        {
+        if crate::platform::host::is_windows() {
             let _ = break_output_hardlink_before_compile(path);
         }
         replace_path(&temporary, path)?;
@@ -425,9 +423,11 @@ mod tests {
         );
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn depfile_round_trip_preserves_make_escaped_special_paths() {
+        if crate::platform::host::is_windows() {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let private_root = temp.path().join("cache root # $");
         std::fs::create_dir_all(&private_root).unwrap();

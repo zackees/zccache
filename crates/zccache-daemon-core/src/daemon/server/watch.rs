@@ -16,21 +16,7 @@ async fn canonicalize_watch_registration_batch(dirs: Vec<NormalizedPath>) -> Vec
     tokio::task::spawn_blocking(move || {
         dirs.into_iter()
             .filter_map(|dir| match dir.canonicalize() {
-                Ok(p) => {
-                    #[cfg(windows)]
-                    {
-                        let s = p.to_string_lossy();
-                        if let Some(stripped) = s.strip_prefix(r"\\?\") {
-                            Some(stripped.into())
-                        } else {
-                            Some(p.into())
-                        }
-                    }
-                    #[cfg(not(windows))]
-                    {
-                        Some(p.into())
-                    }
-                }
+                Ok(p) => Some(crate::platform::fs::path::strip_verbatim_prefix(&p).into()),
                 Err(e) => {
                     tracing::debug!("cannot canonicalize {}: {e}", dir.display());
                     None

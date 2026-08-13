@@ -294,17 +294,21 @@ mod tests {
         assert!(quiet_value_silences(Some("true")));
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn non_windows_is_elevated_true() {
+        if crate::platform::host::is_windows() {
+            return;
+        }
         // Non-Windows always reports elevated so the Defender flow no-ops
         // cleanly on macOS / Linux.
         assert!(is_elevated());
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn non_windows_query_returns_unsupported() {
+        if crate::platform::host::is_windows() {
+            return;
+        }
         let err = query_excluded(&[PathBuf::from("/tmp/x")]).unwrap_err();
         assert!(matches!(err, DefenderError::Unsupported));
         assert_eq!(format!("{err}"), "Defender exclusion is Windows-only.");

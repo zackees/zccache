@@ -18,3 +18,12 @@ pub fn force(pid: u32) -> io::Result<()> {
         error.map_or(Ok(()), Err)
     }
 }
+
+pub fn force_group(pid: u32) {
+    use std::process::Stdio;
+    let _ = std::process::Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}

@@ -15,13 +15,13 @@ pub fn default_endpoint() -> String {
     }
 
     let raw_user =
-        zccache_platform::ipc::current_user_name().unwrap_or_else(|| String::from("unknown"));
+        crate::platform::ipc::current_user_name().unwrap_or_else(|| String::from("unknown"));
     let pipe_user = zccache_core::config::sanitize_ipc_component(&raw_user)
         .unwrap_or_else(|| String::from("unknown"));
-    let file_path = zccache_platform::host::runtime_dir()
+    let file_path = crate::platform::host::runtime_dir()
         .map(|runtime_dir| format!("{runtime_dir}/zccache-download/sock"))
         .unwrap_or_else(|| format!("/tmp/zccache-download-{raw_user}/sock"));
-    zccache_platform::ipc::Endpoint::select(file_path, format!("zccache-download-{pipe_user}"))
+    crate::platform::ipc::Endpoint::select(file_path, format!("zccache-download-{pipe_user}"))
         .to_string()
 }
 
@@ -31,7 +31,7 @@ fn endpoint_for_cache_dir(cache_dir: &std::path::Path) -> String {
         .to_string_lossy()
         .into_owned();
     let suffix = zccache_core::stable_path_id(cache_dir);
-    zccache_platform::ipc::Endpoint::select(file_path, format!("zccache-download-{suffix}"))
+    crate::platform::ipc::Endpoint::select(file_path, format!("zccache-download-{suffix}"))
         .to_string()
 }
 
@@ -107,7 +107,7 @@ mod tests {
         let versioned = cache_dir.join(zccache_core::config::versioned_subdir());
 
         let endpoint = default_endpoint();
-        let expected = zccache_platform::ipc::Endpoint::select(
+        let expected = crate::platform::ipc::Endpoint::select(
             versioned
                 .join("download-daemon.sock")
                 .to_string_lossy()
