@@ -103,9 +103,14 @@ fn retirement_refuses_to_delete_an_ordinary_file() {
     std::fs::write(&path, b"preserve me").expect("write ordinary file");
     let endpoint = Endpoint::from_native(path.to_string_lossy().into_owned());
 
-    let error = endpoint.retire().expect_err("ordinary file must be preserved");
+    let error = endpoint
+        .retire()
+        .expect_err("ordinary file must be preserved");
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-    assert_eq!(std::fs::read(&path).expect("ordinary file remains"), b"preserve me");
+    assert_eq!(
+        std::fs::read(&path).expect("ordinary file remains"),
+        b"preserve me"
+    );
 }
 
 #[cfg(unix)]

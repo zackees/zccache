@@ -112,7 +112,10 @@ mod tests {
                 .join("download-daemon.sock")
                 .to_string_lossy()
                 .into_owned(),
-            format!("zccache-download-{}", zccache_core::stable_path_id(&versioned)),
+            format!(
+                "zccache-download-{}",
+                zccache_core::stable_path_id(&versioned)
+            ),
         );
         assert_eq!(endpoint, expected.as_str());
 

@@ -424,12 +424,15 @@ fn emit_insecure_socket_dir(endpoint: &str, outcome: &str, error: Option<&std::i
 pub async fn connect(endpoint: &str) -> Result<IpcConnection, IpcError> {
     let native = zccache_platform::ipc::Endpoint::from_native(endpoint);
     let timeout = native.connect_timeout();
-    let stream = tokio::time::timeout(timeout, zccache_platform::ipc::connect(&native))
-        .await
-        .map_err(|_| IpcError::Io(std::io::Error::new(
+    let stream =
+        tokio::time::timeout(timeout, zccache_platform::ipc::connect(&native))
+            .await
+            .map_err(|_| {
+                IpcError::Io(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
             format!("cannot connect to daemon at {endpoint}: connect timed out after {timeout:?}"),
-        )))??;
+        ))
+            })??;
     Ok(IpcConnection::from_stream(stream))
 }
 
