@@ -227,8 +227,8 @@ fn write_signal_dump(ctx: &crash_handler::CrashContext) {
          a debugger or attach RUST_BACKTRACE-enabled child for stack>\n",
         bin = bin_stem(),
         version = env!("CARGO_PKG_VERSION"),
-        os = std::env::consts::OS,
-        arch = std::env::consts::ARCH,
+        os = crate::platform::host::os(),
+        arch = crate::platform::host::arch(),
         pid = std::process::id(),
         sig = sig_label,
         ts = SystemTime::now()
@@ -278,8 +278,8 @@ fn write_panic_dump(panic_info: &str, backtrace: &str) -> Option<NormalizedPath>
          {backtrace}\n",
         bin = bin_stem(),
         version = env!("CARGO_PKG_VERSION"),
-        os = std::env::consts::OS,
-        arch = std::env::consts::ARCH,
+        os = crate::platform::host::os(),
+        arch = crate::platform::host::arch(),
         pid = std::process::id(),
     );
 

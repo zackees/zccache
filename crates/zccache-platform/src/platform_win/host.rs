@@ -1,6 +1,5 @@
 //! Windows host facts and privilege probes.
 
-use std::ffi::OsString;
 use std::path::PathBuf;
 
 pub const fn os() -> &'static str { std::env::consts::OS }
@@ -12,8 +11,12 @@ pub fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-pub fn current_user() -> Option<OsString> {
-    std::env::var_os("USERNAME")
+pub fn current_user() -> Option<String> {
+    std::env::var("USERNAME").ok()
+}
+
+pub fn runtime_dir() -> Option<String> {
+    None
 }
 
 pub fn cpu_identity_material() -> String {
@@ -63,6 +66,10 @@ pub fn is_elevated() -> bool {
         CloseHandle(token);
         ok != 0 && elevation.TokenIsElevated != 0
     }
+}
+
+pub const fn defender_supported() -> bool {
+    true
 }
 
 pub fn defender_exclusions() -> Result<Vec<PathBuf>, crate::host::DefenderError> {

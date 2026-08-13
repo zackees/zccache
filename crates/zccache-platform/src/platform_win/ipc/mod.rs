@@ -11,5 +11,5 @@ pub use listener::Listener;
 pub use peer::PeerIdentity;
 pub use stream::Stream;
 
-pub fn current_user_name() -> Option<String> { std::env::var("USERNAME").ok() }
+pub fn current_user_name() -> Option<String> { super::host::current_user() }
 pub fn select_host_text(_file_value: String, windows_value: String) -> String { windows_value }

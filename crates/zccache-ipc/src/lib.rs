@@ -483,10 +483,10 @@ fn pipe_name(base: &str, namespace: Option<&str>) -> String {
 }
 
 fn default_file_endpoint(namespace: Option<&str>) -> String {
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+    if let Some(runtime_dir) = zccache_platform::host::runtime_dir() {
         return format!("{runtime_dir}/zccache/{}", socket_name(namespace));
     }
-    let user = std::env::var("USER").unwrap_or_else(|_| String::from("unknown"));
+    let user = zccache_platform::host::current_user().unwrap_or_else(|| String::from("unknown"));
     format!("/tmp/zccache-{user}/{}", socket_name(namespace))
 }
 

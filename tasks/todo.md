@@ -82,11 +82,13 @@ defender.rs elevation + Defender primitives, path/env OS facts, home/runtime dir
 
 RED (2026-08-13): focused platform compilation failed with nine missing concrete
 `executable`/`host` backend references after adding neutral characterization tests first.
-GREEN checkpoint: all three private host trees now implement executable naming/search/stem
-comparison and host identity/home/user/elevation/resource facts; Windows Defender command
-mechanics moved into the concrete Windows host tree while core retains product errors and UX.
+GREEN checkpoint: all three private host trees now implement executable naming/search/stem,
+shared-library candidates, running-image replacement, and host OS/arch/home/runtime/user/
+elevation/resource facts. Windows Defender command mechanics moved into the concrete Windows
+host tree while core retains product errors and UX.
 Platform/core/depgraph tests and CLI-core all-feature/all-target checks pass on Windows. The
-exact-occurrence baseline fell from 127 to 106 after migrating Defender and native CPU inputs.
+exact-occurrence baseline fell from 127 to 97 after migrating Defender, native CPU inputs,
+libclang discovery, and executable replacement.
 
 ## Phase 6 (create #1371 sub-issue) plan — zero baseline
 

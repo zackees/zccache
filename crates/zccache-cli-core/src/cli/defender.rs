@@ -30,11 +30,11 @@ fn windows_only_noop() -> ExitCode {
 }
 
 pub fn cmd_check(json: bool) -> ExitCode {
-    if !cfg!(windows) {
+    if !crate::platform::host::defender_supported() {
         if json {
             let doc = serde_json::json!({
                 "supported": false,
-                "platform": std::env::consts::OS,
+                "platform": crate::platform::host::os(),
                 "message": "Defender exclusion is Windows-only.",
             });
             println!("{doc}");
@@ -76,7 +76,7 @@ pub fn cmd_check(json: bool) -> ExitCode {
 }
 
 pub fn cmd_add() -> ExitCode {
-    if !cfg!(windows) {
+    if !crate::platform::host::defender_supported() {
         return windows_only_noop();
     }
     if !is_elevated() {
@@ -100,7 +100,7 @@ pub fn cmd_add() -> ExitCode {
 }
 
 pub fn cmd_remove() -> ExitCode {
-    if !cfg!(windows) {
+    if !crate::platform::host::defender_supported() {
         return windows_only_noop();
     }
     if !is_elevated() {
@@ -156,7 +156,7 @@ fn print_check_json(
         .collect();
     let doc = serde_json::json!({
         "supported": true,
-        "platform": std::env::consts::OS,
+        "platform": crate::platform::host::os(),
         "cache_root": cache_root.display().to_string(),
         "paths": paths,
         "all_excluded": statuses.iter().all(|s| s.excluded) && !statuses.is_empty(),

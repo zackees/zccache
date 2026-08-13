@@ -1,13 +1,14 @@
 //! Linux host facts.
 
-use std::ffi::OsString;
 use std::path::PathBuf;
 
 pub const fn os() -> &'static str { std::env::consts::OS }
 pub const fn arch() -> &'static str { std::env::consts::ARCH }
 pub fn home_dir() -> Option<PathBuf> { std::env::var_os("HOME").map(PathBuf::from) }
-pub fn current_user() -> Option<OsString> { std::env::var_os("USER") }
+pub fn current_user() -> Option<String> { std::env::var("USER").ok() }
+pub fn runtime_dir() -> Option<String> { std::env::var("XDG_RUNTIME_DIR").ok() }
 pub const fn is_elevated() -> bool { true }
+pub const fn defender_supported() -> bool { false }
 
 pub fn cpu_identity_material() -> String {
     let mut material = format!("arch={}\0os={}", arch(), os());

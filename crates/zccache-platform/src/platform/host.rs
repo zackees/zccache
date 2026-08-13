@@ -1,6 +1,5 @@
 //! Neutral facts about the machine running zccache.
 
-use std::ffi::OsString;
 use std::path::PathBuf;
 
 /// Native Defender command failure without product-specific wording.
@@ -34,9 +33,15 @@ pub fn home_dir() -> Option<PathBuf> {
     crate::platform_imp::host::home_dir()
 }
 
+/// Best-effort per-user runtime directory for local sockets and locks.
+#[must_use]
+pub fn runtime_dir() -> Option<String> {
+    crate::platform_imp::host::runtime_dir()
+}
+
 /// Best-effort current user identifier suitable for endpoint names.
 #[must_use]
-pub fn current_user() -> Option<OsString> {
+pub fn current_user() -> Option<String> {
     crate::platform_imp::host::current_user()
 }
 
@@ -58,6 +63,12 @@ pub fn available_parallelism() -> Option<usize> {
 #[must_use]
 pub fn is_elevated() -> bool {
     crate::platform_imp::host::is_elevated()
+}
+
+/// Whether native Defender exclusion management exists on this host.
+#[must_use]
+pub fn defender_supported() -> bool {
+    crate::platform_imp::host::defender_supported()
 }
 
 /// Returns the host's configured Defender exclusion paths.
