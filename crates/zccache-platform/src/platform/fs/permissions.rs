@@ -100,33 +100,4 @@ mod tests {
         let read = fs::read_to_string(&file).expect("read");
         assert_eq!(read, "data");
     }
-
-    #[cfg(unix)]
-    #[test]
-    fn dangling_symlink_is_removable_without_a_permission_change() {
-        use std::os::unix::fs::symlink;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let link = dir.path().join("output");
-        symlink(dir.path().join("missing"), &link).expect("symlink");
-
-        make_writable(&link).expect("dangling symlink is removable");
-        fs::remove_file(link).expect("remove dangling symlink");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn valid_symlink_makes_its_referent_writable() {
-        use std::os::unix::fs::symlink;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let target = dir.path().join("target");
-        let link = dir.path().join("output");
-        fs::write(&target, b"data").expect("write");
-        set_readonly(&target, true).expect("readonly target");
-        symlink(&target, &link).expect("symlink");
-
-        make_writable(&link).expect("make referent writable");
-        assert!(!fs::metadata(target).expect("target metadata").permissions().readonly());
-    }
 }

@@ -73,3 +73,38 @@ pub fn mode(metadata: &std::fs::Metadata) -> u32 {
 pub fn apply_mode(path: &Path, mode: u32) -> std::io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn dangling_symlink_is_removable_without_a_permission_change() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let link = dir.path().join("output");
+        symlink(dir.path().join("missing"), &link).expect("symlink");
+
+        crate::platform::fs::permissions::make_writable(&link)
+            .expect("dangling symlink is removable");
+        std::fs::remove_file(link).expect("remove dangling symlink");
+    }
+
+    #[test]
+    fn valid_symlink_makes_its_referent_writable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("target");
+        let link = dir.path().join("output");
+        std::fs::write(&target, b"data").expect("write");
+        crate::platform::fs::permissions::set_readonly(&target, true).expect("readonly target");
+        symlink(&target, &link).expect("symlink");
+
+        crate::platform::fs::permissions::make_writable(&link)
+            .expect("make referent writable");
+        assert!(
+            !std::fs::metadata(target)
+                .expect("target metadata")
+                .permissions()
+                .readonly()
+        );
+    }
+}
