@@ -591,10 +591,8 @@ pub fn clear_crash_dumps() -> usize {
         let path = entry.path();
         let ext = path.extension().and_then(|e| e.to_str());
         match ext {
-            Some("txt") | Some("dmp") => {
-                if std::fs::remove_file(&path).is_ok() {
-                    count += 1;
-                }
+            Some("txt") | Some("dmp") if std::fs::remove_file(&path).is_ok() => {
+                count += 1;
             }
             Some("reported") => {
                 let _ = std::fs::remove_file(&path);
@@ -796,10 +794,8 @@ mod tests {
             let path = entry.path();
             let ext = path.extension().and_then(|e| e.to_str());
             match ext {
-                Some("txt") | Some("dmp") => {
-                    if std::fs::remove_file(&path).is_ok() {
-                        count += 1;
-                    }
+                Some("txt") | Some("dmp") if std::fs::remove_file(&path).is_ok() => {
+                    count += 1;
                 }
                 Some("reported") => {
                     let _ = std::fs::remove_file(&path);
