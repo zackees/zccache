@@ -1,0 +1,40 @@
+//! macOS host facts.
+
+use std::ffi::OsString;
+use std::path::PathBuf;
+
+pub const fn os() -> &'static str { std::env::consts::OS }
+pub const fn arch() -> &'static str { std::env::consts::ARCH }
+pub fn home_dir() -> Option<PathBuf> { std::env::var_os("HOME").map(PathBuf::from) }
+pub fn current_user() -> Option<OsString> { std::env::var_os("USER") }
+pub const fn is_elevated() -> bool { true }
+
+pub fn cpu_identity_material() -> String {
+    let mut material = format!("arch={}\0os={}", arch(), os());
+    if let Some(name) = std::env::var_os("HOSTNAME") {
+        material.push_str("\0HOSTNAME="); material.push_str(&name.to_string_lossy());
+    } else {
+        material.push_str("\0pid="); material.push_str(&std::process::id().to_string());
+    }
+    append_cpu_features(&mut material);
+    material
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn append_cpu_features(material: &mut String) {
+    for (name, present) in [("sse2", std::arch::is_x86_feature_detected!("sse2")), ("sse4.2", std::arch::is_x86_feature_detected!("sse4.2")), ("avx", std::arch::is_x86_feature_detected!("avx")), ("avx2", std::arch::is_x86_feature_detected!("avx2")), ("avx512f", std::arch::is_x86_feature_detected!("avx512f")), ("fma", std::arch::is_x86_feature_detected!("fma")), ("bmi1", std::arch::is_x86_feature_detected!("bmi1")), ("bmi2", std::arch::is_x86_feature_detected!("bmi2"))] {
+        if present { material.push_str("\0feature="); material.push_str(name); }
+    }
+}
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+fn append_cpu_features(_: &mut String) {}
+
+pub fn defender_exclusions() -> Result<Vec<PathBuf>, crate::host::DefenderError> {
+    Err(crate::host::DefenderError::Unsupported)
+}
+pub fn add_defender_exclusion(_: &std::path::Path) -> Result<(), crate::host::DefenderError> {
+    Err(crate::host::DefenderError::Unsupported)
+}
+pub fn remove_defender_exclusion(_: &std::path::Path) -> Result<(), crate::host::DefenderError> {
+    Err(crate::host::DefenderError::Unsupported)
+}

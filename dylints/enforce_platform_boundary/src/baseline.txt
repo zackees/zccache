@@ -6,7 +6,7 @@
 # occurrences fail the lint; stale entries (their occurrence migrated away)
 # fail the lint at runtime. No wildcard, directory, crate, or file exemptions.
 # Generated via ZCCACHE_PLATFORM_BOUNDARY_DUMP_DIR (see lint README).
-# total = 127
+# total = 106
 crates/zccache-artifact/src/kv.rs	attr_cfg	windows	0
 crates/zccache-artifact/src/kv.rs	attr_cfg	windows	1
 crates/zccache-artifact/src/kv.rs	attr_cfg	windows	2
@@ -36,22 +36,6 @@ crates/zccache-compiler/src/response_file.rs	attr_cfg	windows	5
 crates/zccache-compiler/src/response_file.rs	attr_cfg	windows	6
 crates/zccache-core/src/config/namespace.rs	cfg_macro	windows	0
 crates/zccache-core/src/config/resolve.rs	cfg_macro	windows	0
-crates/zccache-core/src/defender.rs	attr_cfg	windows	0
-crates/zccache-core/src/defender.rs	attr_cfg	windows	1
-crates/zccache-core/src/defender.rs	attr_cfg	windows	2
-crates/zccache-core/src/defender.rs	attr_cfg	windows	3
-crates/zccache-core/src/defender.rs	attr_cfg	windows	4
-crates/zccache-core/src/defender.rs	attr_cfg	windows	5
-crates/zccache-core/src/defender.rs	attr_cfg	windows	6
-crates/zccache-core/src/defender.rs	attr_cfg	windows	7
-crates/zccache-core/src/defender.rs	attr_cfg	windows	8
-crates/zccache-core/src/defender.rs	cfg_macro	windows	0
-crates/zccache-core/src/defender.rs	native_import	windows_sys	0
-crates/zccache-core/src/defender.rs	native_import	windows_sys	1
-crates/zccache-core/src/defender.rs	native_import	windows_sys	2
-crates/zccache-core/src/defender.rs	native_import	windows_sys	3
-crates/zccache-core/src/defender.rs	native_import	windows_sys	4
-crates/zccache-core/src/defender.rs	native_import	windows_sys	5
 crates/zccache-core/src/lifecycle.rs	attr_cfg	windows	0
 crates/zccache-core/src/lifecycle.rs	native_import	std::os::windows	0
 crates/zccache-core/src/lifecycle.rs	native_import	std::os::windows	1
@@ -117,11 +101,6 @@ crates/zccache-depgraph/src/msvc_args.rs	attr_cfg	windows	0
 crates/zccache-depgraph/src/msvc_args.rs	attr_cfg	windows	1
 crates/zccache-depgraph/src/msvc_args.rs	attr_cfg	windows	2
 crates/zccache-depgraph/src/msvc_args.rs	attr_cfg	windows	3
-crates/zccache-depgraph/src/native_cpu.rs	attr_cfg	target_arch	0
-crates/zccache-depgraph/src/native_cpu.rs	attr_cfg	target_arch	1
-crates/zccache-depgraph/src/native_cpu.rs	attr_cfg	target_arch	2
-crates/zccache-depgraph/src/native_cpu.rs	attr_cfg	target_arch	3
-crates/zccache-depgraph/src/native_cpu.rs	attr_cfg	target_os	0
 crates/zccache-depgraph/src/scanner.rs	attr_cfg	windows	0
 crates/zccache-depgraph/src/show_includes.rs	attr_cfg	windows	0
 crates/zccache-depgraph/src/show_includes.rs	attr_cfg	windows	1

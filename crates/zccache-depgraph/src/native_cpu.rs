@@ -48,73 +48,8 @@ pub fn is_rustc_native_cpu_flag(flag: &str) -> bool {
 }
 
 fn host_cpu_identity_material() -> String {
-    let mut material = format!(
-        "arch={}\0os={}",
-        std::env::consts::ARCH,
-        std::env::consts::OS
-    );
-
-    // Linux exposes a per-install machine id, which avoids sharing a native
-    // artifact even when two machines happen to report the same CPU model.
-    // Keep the raw value local: the caller hashes all material before it can
-    // become part of a cache key or snapshot.
-    #[cfg(target_os = "linux")]
-    if let Ok(machine_id) = std::fs::read_to_string("/etc/machine-id") {
-        let machine_id = machine_id.trim();
-        if !machine_id.is_empty() {
-            material.push_str("\0machine-id=");
-            material.push_str(machine_id);
-        }
-    }
-
-    // Windows normally provides COMPUTERNAME and Unix systems commonly expose
-    // HOSTNAME. This is intentionally only an additional discriminator; the
-    // identity is already domain-separated and opaque after hashing.
-    for variable in ["COMPUTERNAME", "HOSTNAME"] {
-        if let Some(value) = std::env::var_os(variable) {
-            material.push('\0');
-            material.push_str(variable);
-            material.push('=');
-            material.push_str(&value.to_string_lossy());
-        }
-    }
-
-    append_observed_cpu_features(&mut material);
-
-    // A host without an exposed identifier must never collapse into a common
-    // cross-host salt. PID costs only a restart hit in that rare fallback.
-    if !material.contains("machine-id=")
-        && !material.contains("COMPUTERNAME=")
-        && !material.contains("HOSTNAME=")
-    {
-        material.push_str("\0pid=");
-        material.push_str(&std::process::id().to_string());
-    }
-
-    material
+    crate::platform::host::cpu_identity_material()
 }
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn append_observed_cpu_features(material: &mut String) {
-    for (name, present) in [
-        ("sse2", std::arch::is_x86_feature_detected!("sse2")),
-        ("sse4.2", std::arch::is_x86_feature_detected!("sse4.2")),
-        ("avx", std::arch::is_x86_feature_detected!("avx")),
-        ("avx2", std::arch::is_x86_feature_detected!("avx2")),
-        ("avx512f", std::arch::is_x86_feature_detected!("avx512f")),
-        ("fma", std::arch::is_x86_feature_detected!("fma")),
-        ("bmi1", std::arch::is_x86_feature_detected!("bmi1")),
-        ("bmi2", std::arch::is_x86_feature_detected!("bmi2")),
-    ] {
-        if present {
-            material.push_str("\0feature=");
-            material.push_str(name);
-        }
-    }
-}
-
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn append_observed_cpu_features(_: &mut String) {}
 
 #[cfg(test)]
 mod tests {

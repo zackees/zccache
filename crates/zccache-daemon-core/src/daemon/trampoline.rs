@@ -52,7 +52,7 @@ pub fn unlock_exe() {
         return;
     }
 
-    let my_exe = match std::env::current_exe() {
+    let my_exe = match crate::platform::executable::current_image() {
         Ok(p) => p,
         Err(_) => return,
     };

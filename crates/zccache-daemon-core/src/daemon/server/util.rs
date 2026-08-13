@@ -83,9 +83,7 @@ pub(super) fn persist_workers_default() -> usize {
         // the `max(32, …)` floor covers the same burst on smaller hosts
         // (32 simultaneous hardlinks is well under the per-process fd
         // ceiling even on default-configured Linux).
-        let parallelism = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(8);
+        let parallelism = crate::platform::host::available_parallelism().unwrap_or(8);
         parallelism.saturating_mul(2).max(32)
     }
 }

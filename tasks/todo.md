@@ -8,8 +8,8 @@ Parent: https://github.com/zackees/zccache/issues/1365 — 6 phase sub-issues (#
 - [x] Phase 1 (#1366): PR #1370 merged.
 - [x] Phase 2 (#1367): PR #1371 merged; corrective PR #1373 merged green.
 - [~] Phase 3 (#1368): platform::ipc — implementation, local gates, and pre-push review complete. PR will close #1368.
-- [ ] Phase 4 (#1369): platform::process — command/spawn/priority/inspect/terminate/stdio/jobserver/exit; keep watchdog/priority/jobserver policy; coordinate #1360; files <1000 LOC. PR closes #1369.
-- [ ] Phase 5 (create #1370): platform::executable + platform::host (deploy.rs, suffixes/PATH, image lookup, defender, elevation, native_cpu, resource probes).
+- [~] Phase 4 (#1369): platform::process — checkpoint PR #1377 merged into the Phase 3 branch; PR #1375 is undergoing CI repair before merge to main.
+- [~] Phase 5 (#1378): platform::executable + platform::host (deploy.rs, suffixes/PATH, image lookup, defender, elevation, native_cpu, resource probes).
 - [ ] Phase 6 (create #1371): delete baseline at zero; Linux-hosted --target windows regression; libc/windows-sys confined; publish crate self-contained; RED→GREEN evidence; #1365 auto-closes.
 - [ ] Finish: git status clean; local repo back on `refactor/platform/phase2-fs` rebased to final main.
 
@@ -75,10 +75,18 @@ The two touched oversized production files were split without moving product pol
 `process.rs` is 721 lines and `child_watchdog.rs` is 696 lines; their existing test modules
 now live in purpose-named sibling `_tests.rs` files.
 
-## Phase 5 (create #1370 sub-issue) plan — platform::executable + platform::host
+## Phase 5 (#1378) plan — platform::executable + platform::host
 
 executable: deploy.rs suffixes/PATH/PATHEXT/image lookup/unlock_exe. host: native_cpu.rs,
 defender.rs elevation + Defender primitives, path/env OS facts, home/runtime dirs, resource probes.
+
+RED (2026-08-13): focused platform compilation failed with nine missing concrete
+`executable`/`host` backend references after adding neutral characterization tests first.
+GREEN checkpoint: all three private host trees now implement executable naming/search/stem
+comparison and host identity/home/user/elevation/resource facts; Windows Defender command
+mechanics moved into the concrete Windows host tree while core retains product errors and UX.
+Platform/core/depgraph tests and CLI-core all-feature/all-target checks pass on Windows. The
+exact-occurrence baseline fell from 127 to 106 after migrating Defender and native CPU inputs.
 
 ## Phase 6 (create #1371 sub-issue) plan — zero baseline
 

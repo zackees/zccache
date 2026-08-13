@@ -106,12 +106,8 @@ fn cli_spawn_lineage_env() -> Vec<(String, String)> {
 /// of the CLI (self) placed under the versioned cache dir with the daemon's own
 /// name, so argv[0] dispatch (#998) routes the copy to the daemon and
 /// `verify_pid_exe_stem(pid, "zccache-daemon")` (zccache-ipc) recognizes it.
-fn deployed_daemon_file_name() -> &'static str {
-    if cfg!(windows) {
-        "zccache-daemon.exe"
-    } else {
-        "zccache-daemon"
-    }
+fn deployed_daemon_file_name() -> std::ffi::OsString {
+    crate::platform::executable::native_name(std::ffi::OsStr::new("zccache-daemon"))
 }
 
 /// Path the daemon binary is materialized to:
@@ -272,11 +268,7 @@ pub fn materialize_daemon_exe_to(
             .subsec_nanos();
     let tmp = dest.with_file_name(format!("zccache-daemon.tmp.{rand_id}"));
     std::fs::copy(source, &tmp)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
-    }
+    let _ = crate::platform::fs::permissions::make_executable(&tmp);
     match std::fs::rename(&tmp, dest) {
         Ok(()) => Ok(dest.to_path_buf()),
         Err(e) => {
@@ -419,7 +411,7 @@ pub fn spawn_daemon(endpoint: &str) -> Result<(), String> {
     // `pip install --upgrade zccache` / `rm -rf <project>` still succeed
     // (issue #134). Fall back to spawning the current exe in place if the
     // copy fails — the daemon's own `unlock_exe()` then handles the rename.
-    let self_exe = std::env::current_exe()
+    let self_exe = crate::platform::executable::current_image()
         .map_err(|e| format!("cannot resolve current executable to deploy daemon: {e}"))?;
     let bin_owned: std::path::PathBuf;
     // `spawned_as_daemon` is true when we run the materialized copy, whose

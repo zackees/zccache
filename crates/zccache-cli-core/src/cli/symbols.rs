@@ -142,7 +142,7 @@ fn resolved_prefix(opts_prefix: Option<&Path>) -> Result<PathBuf, SymbolsError> 
     if let Some(p) = opts_prefix {
         return Ok(p.to_path_buf());
     }
-    let exe = env::current_exe().map_err(SymbolsError::LocateExe)?;
+    let exe = crate::platform::executable::current_image().map_err(SymbolsError::LocateExe)?;
     Ok(exe
         .parent()
         .map(Path::to_path_buf)

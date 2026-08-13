@@ -12,7 +12,6 @@
 //! match (or the explicit `zccache daemon-run` escape hatch).
 
 use std::ffi::OsStr;
-use std::path::Path;
 
 /// The file stem the self-copied daemon binary is deployed under. Must match
 /// `verify_pid_exe_stem(pid, "zccache-daemon")` in `zccache-ipc` and the
@@ -38,17 +37,7 @@ pub fn invoked_as_daemon() -> bool {
 ///   `zccache-daemon.old.<rand>.exe` (issue #999 Windows unlock rename) does
 ///   NOT match — a dead relocated binary must never dispatch as the daemon.
 fn stem_matches(arg0: &OsStr, target: &str) -> bool {
-    let Some(stem) = Path::new(arg0).file_stem() else {
-        return false;
-    };
-    let Some(stem) = stem.to_str() else {
-        return false;
-    };
-    if cfg!(windows) {
-        stem.eq_ignore_ascii_case(target)
-    } else {
-        stem == target
-    }
+    crate::platform::executable::stem_matches(arg0, target)
 }
 
 #[cfg(test)]

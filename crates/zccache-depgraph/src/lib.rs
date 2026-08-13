@@ -20,6 +20,8 @@ pub mod snapshot;
 pub mod system_includes;
 pub mod watcher_support;
 
+pub(crate) use zccache_platform as platform;
+
 pub use args::{ParsedArgs, UserDepFlags};
 pub use compile_commands::{parse_compile_commands_json, CompileCommand};
 pub use context::{

@@ -4373,6 +4373,7 @@ dependencies = [
  "zccache-compiler",
  "zccache-core",
  "zccache-hash",
+ "zccache-platform",
 ]
 
 [[package]]

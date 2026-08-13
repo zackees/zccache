@@ -49,9 +49,7 @@ use crate::core::NormalizedPath;
 /// - 32 cores → 256
 /// - ≥ 64 cores → 512 (ceiling — matches tokio's stated default).
 fn daemon_max_blocking_threads() -> usize {
-    let parallelism = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(8);
+    let parallelism = crate::platform::host::available_parallelism().unwrap_or(8);
     parallelism.saturating_mul(8).clamp(128, 512)
 }
 
@@ -425,7 +423,7 @@ fn run_server(args: Args) {
         // RUNNING_PROCESS_DISABLE=1. The version-policy refinement (#720
         // Phase 0) is the follow-up that turns the current exact-version
         // pin into a real compatibility floor + range.
-        if let Ok(binary) = std::env::current_exe() {
+        if let Ok(binary) = crate::platform::executable::current_image() {
             let _ = crate::ipc::publish_service_definition(&binary);
         }
 
