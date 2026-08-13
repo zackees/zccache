@@ -256,3 +256,23 @@ usually more useful than the decision.
   bit me — use explicit rc capture).
 - Fresh cargo fingerprints mean cargo-dylint re-lints nothing: touch
   crates/**/src/*.rs before a baseline dump to force a full re-check.
+
+
+## 2026-08-13 local tooling state (Windows)
+
+- soldr 0.9.0's local compile daemon is down: the running-process broker pipe
+  cannot be reached (`soldr daemon start` fails at `rpb-v2-...` with os error
+  2) and `~/.soldr-dev/runtime/soldr-daemon` only holds stale v0.8.44 copies.
+  Workaround: run everything with `soldr --no-cache` (probes bypass the
+  daemon; compiles run directly). `soldr rustup run <toolchain>` works for
+  toolchain-pinned commands.
+- `./test` exits 1 instantly while the daemon is down (ci/test.py uses plain
+  `soldr cargo`); the equivalent is `soldr --no-cache cargo build -p zccache
+  --bins --features <PREBUILD_BIN_FEATURES>` + `soldr --no-cache cargo test
+  --workspace -- --test-threads=1`. `--test-threads` is a test-binary arg and
+  must follow `--`.
+- `uv run pytest ci/tests` is blocked by the local tool-guard hook; run the
+  test functions via importlib instead (CI runs pytest normally).
+- The repo `[patch] notify = { path = "../notify" }` needs the sibling
+  `C:/Users/niteris/dev/notify` checkout (soldr's `_vender/notify`); cargo
+  fails at manifest parse without it.
