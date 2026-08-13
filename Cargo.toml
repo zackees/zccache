@@ -110,8 +110,10 @@ zccache-fingerprint = { path = "crates/zccache-fingerprint" }
 # Vendored notify with fixes for Windows ReadDirectoryChangesW:
 # 1. Detect buffer overflow (bytes_written == 0) and report as error
 # 2. Report start_read failure (watcher silently dying) as error
+# Kept in-repo (vendor/notify) so workspace builds need no sibling checkout;
+# the tree tracks soldr's _vender/notify (patched for windows-sys 0.61).
 [patch.crates-io]
-notify = { path = "../notify" }
+notify = { path = "vendor/notify" }
 
 [workspace.metadata.dylint]
 libraries = [{ path = "dylints/*" }]
