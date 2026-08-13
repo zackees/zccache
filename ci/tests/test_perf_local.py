@@ -34,16 +34,34 @@ def test_buildkit_gc_is_scoped_to_zccache_builder() -> None:
         "--builder",
         perf_local.BUILDER_NAME,
         "--filter",
-        "until=48h",
+        "until=24h",
         "--force",
     ]
+
+
+def test_buildkit_gc_fast_trigger_drops_age_filter() -> None:
+    command = perf_local.buildkit_prune_command(fast=True)
+    assert command[:5] == [
+        "docker",
+        "buildx",
+        "prune",
+        "--builder",
+        perf_local.BUILDER_NAME,
+    ]
+    assert "--filter" not in command
 
 
 def test_image_gc_is_label_scoped() -> None:
     command = perf_local.image_prune_command()
     assert command[:4] == ["docker", "image", "prune", "--force"]
     assert f"label={perf_local.LABEL_PREFIX}.managed=true" in command
-    assert "until=48h" in command
+    assert "until=24h" in command
+
+
+def test_image_gc_fast_trigger_keeps_label_scope_but_drops_age() -> None:
+    command = perf_local.image_prune_command(fast=True)
+    assert f"label={perf_local.LABEL_PREFIX}.managed=true" in command
+    assert "until=24h" not in command
 
 
 def test_managed_volume_create_commands_label_every_persistent_volume() -> None:

@@ -120,6 +120,8 @@ MANAGED_VOLUMES = (
 LABEL_PREFIX = "io.zccache.perf-local"
 BUILDER_NAME = "zccache-perf-local"
 VOLUME_BUDGET_BYTES = 80 * (1 << 30)
+MAX_MANAGED_IMAGES = 6
+MAX_BUILDKIT_RECORDS = 100
 
 VALID_SCENARIOS = (
     "build-then-check",
@@ -220,30 +222,52 @@ def ensure_managed_volumes() -> None:
         subprocess.run(command, capture_output=True, check=True)
 
 
-def buildkit_prune_command() -> list[str]:
-    return [
+def buildkit_prune_command(*, fast: bool = False) -> list[str]:
+    command = [
         "docker",
         "buildx",
         "prune",
         "--builder",
         BUILDER_NAME,
-        "--filter",
-        "until=48h",
-        "--force",
     ]
+    if not fast:
+        command.extend(["--filter", "until=24h"])
+    command.append("--force")
+    return command
 
 
-def image_prune_command() -> list[str]:
-    return [
+def image_prune_command(*, fast: bool = False) -> list[str]:
+    command = [
         "docker",
         "image",
         "prune",
         "--force",
         "--filter",
         f"label={LABEL_PREFIX}.managed=true",
-        "--filter",
-        "until=48h",
     ]
+    if not fast:
+        command.extend(["--filter", "until=24h"])
+    return command
+
+
+def managed_image_count() -> int:
+    result = subprocess.run(
+        ["docker", "image", "ls", "-q", "--filter", f"label={LABEL_PREFIX}.managed=true"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return len(set(result.stdout.split())) if result.returncode == 0 else 0
+
+
+def buildkit_record_count() -> int:
+    result = subprocess.run(
+        ["docker", "buildx", "du", "--builder", BUILDER_NAME, "--format", "{{json .}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return len(result.stdout.splitlines()) if result.returncode == 0 else 0
 
 
 def _builder_exists() -> bool:
@@ -275,10 +299,18 @@ def _ensure_builder() -> bool:
 def incremental_docker_gc() -> None:
     """Prune only old zccache-owned artifacts during ordinary harness use."""
     if _builder_exists():
-        result = subprocess.run(buildkit_prune_command(), capture_output=True, check=False)
+        result = subprocess.run(
+            buildkit_prune_command(fast=buildkit_record_count() > MAX_BUILDKIT_RECORDS),
+            capture_output=True,
+            check=False,
+        )
         if result.returncode != 0:
             print("[perf-local] warning: BuildKit GC failed", file=sys.stderr)
-    result = subprocess.run(image_prune_command(), capture_output=True, check=False)
+    result = subprocess.run(
+        image_prune_command(fast=managed_image_count() > MAX_MANAGED_IMAGES),
+        capture_output=True,
+        check=False,
+    )
     if result.returncode != 0:
         print("[perf-local] warning: managed image GC failed", file=sys.stderr)
 
