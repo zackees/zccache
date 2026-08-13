@@ -673,8 +673,7 @@ async fn tokio_command_output_with_priority_stdin_inner(
     }
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    let mut child =
-        running_process::spawn_tokio(cmd, owned_child_spawn_options())?;
+    let mut child = running_process::spawn_tokio(cmd, owned_child_spawn_options())?;
     #[cfg(windows)]
     if let Some(handle) = child.raw_handle() {
         assign_child_to_daemon_job(handle);
