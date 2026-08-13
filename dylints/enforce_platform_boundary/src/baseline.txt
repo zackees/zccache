@@ -6,7 +6,7 @@
 # occurrences fail the lint; stale entries (their occurrence migrated away)
 # fail the lint at runtime. No wildcard, directory, crate, or file exemptions.
 # Generated via ZCCACHE_PLATFORM_BOUNDARY_DUMP_DIR (see lint README).
-# total = 547
+# total = 548
 crates/zccache-artifact/src/kv.rs	attr_cfg	windows	0
 crates/zccache-artifact/src/kv.rs	attr_cfg	windows	1
 crates/zccache-artifact/src/kv.rs	attr_cfg	windows	2
@@ -554,3 +554,4 @@ crates/zccache-ipc/src/transport/mod.rs	native_import	std::os::unix	0
 crates/zccache-ipc/src/transport/mod.rs	native_import	std::os::unix	1
 crates/zccache-ipc/src/transport/pipe_security.rs	native_import	std::os::windows	0
 crates/zccache-ipc/src/transport/pipe_security.rs	native_import	std::os::windows	1
+crates/zccache-ipc/src/transport/unix.rs	native_import	libc	0
