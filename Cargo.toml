@@ -33,6 +33,7 @@ exclude = [
     "dylints/ban_normalized_path_deref_containment",
     "dylints/ban_dashmap_guard_across_blocking",
     "dylints/ban_discarded_write_result",
+    "dylints/enforce_platform_boundary",
 ]
 
 [workspace.package]

@@ -1,0 +1,112 @@
+error: host-platform cfg selection (windows) is not allowed here; host selection belongs in crates/zccache-platform/src/lib.rs cfg_select!
+  --> $DIR/disallowed.rs:5:13
+   |
+LL | #![cfg_attr(windows, allow(unused_imports))]
+   |             ^^^^^^^
+   |
+   = note: `#[deny(enforce_platform_boundary)]` on by default
+
+error: host-platform cfg selection (windows) is not allowed here; host selection belongs in crates/zccache-platform/src/lib.rs cfg_select!
+  --> $DIR/disallowed.rs:34:5
+   |
+LL |     cfg!(windows)
+   |     ^^^^^^^^^^^^^
+
+error: host-platform cfg selection (unix) is not allowed here; host selection belongs in crates/zccache-platform/src/lib.rs cfg_select!
+  --> $DIR/disallowed.rs:38:7
+   |
+LL | #[cfg(unix)]
+   |       ^^^^
+
+error: host-platform cfg selection (unix) is not allowed here; host selection belongs in crates/zccache-platform/src/lib.rs cfg_select!
+  --> $DIR/disallowed.rs:40:7
+   |
+LL | #[cfg(unix)]
+   |       ^^^^
+
+error: host-platform cfg selection (target_os) is not allowed here; host selection belongs in crates/zccache-platform/src/lib.rs cfg_select!
+  --> $DIR/disallowed.rs:44:12
+   |
+LL | #[cfg_attr(target_os = "windows", allow(dead_code))]
+   |            ^^^^^^^^^^^^^^^^^^^^^
+
+error: host-platform cfg selection (target_arch) is not allowed here; host selection belongs in crates/zccache-platform/src/lib.rs cfg_select!
+  --> $DIR/disallowed.rs:48:7
+   |
+LL | #[cfg(target_arch = "x86_64")]
+   |       ^^^^^^^^^^^^^^^^^^^^^^
+
+error: host-platform cfg selection (target_env) is not allowed here; host selection belongs in crates/zccache-platform/src/lib.rs cfg_select!
+  --> $DIR/disallowed.rs:50:7
+   |
+LL | #[cfg(target_env = "msvc")]
+   |       ^^^^^^^^^^^^^^^^^^^
+
+error: host-platform cfg selection (target_family) is not allowed here; host selection belongs in crates/zccache-platform/src/lib.rs cfg_select!
+  --> $DIR/disallowed.rs:52:7
+   |
+LL | #[cfg(target_family = "unix")]
+   |       ^^^^^^^^^^^^^^^^^^^^^^
+
+error: reference to concrete platform module (platform_win) is not allowed here; concrete modules stay private to zccache-platform
+  --> $DIR/disallowed.rs:57:5
+   |
+LL |     platform_win::win_only();
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+error: reference to concrete platform module (platform_imp) is not allowed here; concrete modules stay private to zccache-platform
+  --> $DIR/disallowed.rs:60:5
+   |
+LL |     platform_imp::some_leaf();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: host-platform cfg selection (windows) is not allowed here; host selection belongs in crates/zccache-platform/src/lib.rs cfg_select!
+  --> $DIR/disallowed.rs:64:7
+   |
+LL | #[cfg(windows)]
+   |       ^^^^^^^
+
+error: native path (std::os::windows) is not allowed here; move native code into a concrete platform tree (platform_win, platform_linux, platform_macos)
+  --> $DIR/disallowed.rs:65:5
+   |
+LL | use std::os::windows::io::RawHandle;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: host-platform cfg selection (unix) is not allowed here; host selection belongs in crates/zccache-platform/src/lib.rs cfg_select!
+  --> $DIR/disallowed.rs:66:7
+   |
+LL | #[cfg(unix)]
+   |       ^^^^
+
+error: native path (std::os::unix) is not allowed here; move native code into a concrete platform tree (platform_win, platform_linux, platform_macos)
+  --> $DIR/disallowed.rs:67:5
+   |
+LL | use std::os::unix::fs::MetadataExt;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: native path (libc) is not allowed here; move native code into a concrete platform tree (platform_win, platform_linux, platform_macos)
+  --> $DIR/disallowed.rs:68:5
+   |
+LL | use libc::c_int;
+   |     ^^^^^^^^^^^
+
+error: native path (windows_sys) is not allowed here; move native code into a concrete platform tree (platform_win, platform_linux, platform_macos)
+  --> $DIR/disallowed.rs:69:5
+   |
+LL | use windows_sys::Win32::Foundation::HANDLE;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: host-platform cfg selection (windows) is not allowed here; host selection belongs in crates/zccache-platform/src/lib.rs cfg_select!
+  --> $DIR/disallowed.rs:71:7
+   |
+LL | #[cfg(windows)]
+   |       ^^^^^^^
+
+error: host-platform cfg selection (unix) is not allowed here; host selection belongs in crates/zccache-platform/src/lib.rs cfg_select!
+  --> $DIR/disallowed.rs:75:7
+   |
+LL | #[cfg(unix)]
+   |       ^^^^
+
+error: aborting due to 18 previous errors
+

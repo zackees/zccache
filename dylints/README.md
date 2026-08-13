@@ -10,8 +10,9 @@ Custom Rust lints used by this workspace.
 - `ban_normalized_path_deref_containment`: bans `std::path::Path` containment methods (`starts_with`, `strip_prefix`) resolved through `NormalizedPath`'s `Deref` autoderef instead of its inherent normalized methods.
 - `ban_dashmap_guard_across_blocking`: bans holding a `DashMap::get` guard across awaits, filesystem/process work, or a mutation of the same map.
 - `ban_discarded_write_result`: bans discarding the `Result` of a write-ish call (`let _ = …` / statement-position `.ok();`) in the daemon's persistence modules (#1163 / #1177).
+- `enforce_platform_boundary`: confines host-platform cfg/native APIs to the `zccache-platform` leaf crate, pre-expansion, with a ratcheting exact-occurrence baseline (#1365 / #1366).
 
-All eight libraries use the published Dylint 6.0.1 crates and the pinned
+All nine libraries use the published Dylint 6.0.1 crates and the pinned
 `nightly-2026-05-26` toolchain. The supported `cargo-dylint` driver is used
 directly; no custom driver checkout or library alias repair is required.
 

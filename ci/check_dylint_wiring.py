@@ -16,6 +16,79 @@ def manifests(root: Path) -> set[str]:
     }
 
 
+PLATFORM_BASELINE_KINDS = frozenset(
+    {"attr_cfg", "cfg_macro", "native_import", "module_ref"}
+)
+
+
+def check_platform_baseline(root: Path, path: Path) -> list[str]:
+    """Validate enforce_platform_boundary's exact-occurrence baseline.
+
+    Each row is `path<TAB>kind<TAB>normalized<TAB>ordinal`. Rows must point at
+    existing production sources (never the platform crate's allowed zones or
+    test trees), must be unique, and ordinals must be contiguous from zero
+    per (path, kind, normalized) group. The header's total must match.
+    """
+    errors: list[str] = []
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    declared_total: int | None = None
+    seen: set[tuple[str, str, str, str]] = set()
+    ordinals: dict[tuple[str, str, str], list[int]] = {}
+    entry_count = 0
+    for lineno, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            if stripped.startswith("# total ="):
+                try:
+                    declared_total = int(stripped.removeprefix("# total ="))
+                except ValueError:
+                    errors.append(f"platform baseline total is not an integer: {lineno}")
+            continue
+        fields = line.split("\t")
+        if len(fields) != 4:
+            errors.append(f"platform baseline row must have 4 fields: {lineno}")
+            continue
+        file_path, kind, normalized, ordinal_text = fields
+        entry_count += 1
+        if kind not in PLATFORM_BASELINE_KINDS:
+            errors.append(f"platform baseline unknown kind {kind!r}: {lineno}")
+        if not file_path.startswith("crates/"):
+            errors.append(f"platform baseline path outside crates/: {file_path}")
+            continue
+        target = root / file_path
+        if not target.is_file():
+            errors.append(f"stale platform-boundary baseline path: {file_path}")
+        if file_path.startswith("crates/zccache-platform/src/"):
+            errors.append(
+                f"platform baseline entry in an allowed zone: {file_path}"
+            )
+        if "/tests/" in file_path or file_path.endswith("_tests.rs") or "/benches/" in file_path:
+            errors.append(f"platform baseline entry outside production scope: {file_path}")
+        row = (file_path, kind, normalized, ordinal_text)
+        if row in seen:
+            errors.append(f"platform baseline duplicate row: {line.strip()}")
+        seen.add(row)
+        try:
+            ordinal = int(ordinal_text)
+        except ValueError:
+            errors.append(f"platform baseline ordinal is not an integer: {line.strip()}")
+            continue
+        ordinals.setdefault((file_path, kind, normalized), []).append(ordinal)
+    for key, values in ordinals.items():
+        expected = list(range(len(values)))
+        if sorted(values) != expected:
+            errors.append(
+                f"platform baseline ordinals are not contiguous from zero "
+                f"for {key}: {sorted(values)}"
+            )
+    if declared_total is not None and declared_total != entry_count:
+        errors.append(
+            f"platform baseline total {declared_total} != {entry_count} rows"
+        )
+    return errors
+
+
 def check(root: Path = ROOT) -> list[str]:
     """Return wiring errors; kept pure so pytest can exercise fixtures."""
     expected = manifests(root)
@@ -63,6 +136,8 @@ def check(root: Path = ROOT) -> list[str]:
                 continue
             if entry.startswith("crates/") and not (root / entry).exists():
                 errors.append(f"stale allowlist path: {allowlist.relative_to(root)}: {entry}")
+    for baseline in (root / "dylints").glob("*/src/baseline.txt"):
+        errors.extend(check_platform_baseline(root, baseline))
     return errors
 
 
