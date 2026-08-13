@@ -676,7 +676,7 @@ fn cache_dir_endpoint_falls_back_to_short_unix_socket_path() {
     assert!(endpoint.ends_with(&format!("-daemon-soldr-dev-{v}.sock")));
 }
 
-/// On macOS, `daemon_exe_for_pid` must reject a PID whose
+/// On macOS, the platform executable lookup must identify a PID whose
 /// executable is something other than `zccache-daemon`. Until
 /// `proc_pidpath` was wired up, this returned `None` and
 /// `verify_pid_exe_stem` fell back to alive-only — which meant a
@@ -698,7 +698,7 @@ fn recycled_pid_is_rejected_on_macos() {
         .expect("spawn /bin/sleep");
     let pid = sleeper.id();
 
-    let exe = daemon_exe_for_pid(pid);
+    let exe = crate::platform::process::inspect::executable_path(pid);
     let verified = verify_pid_exe_stem(pid, "zccache-daemon");
 
     // Clean up before assertions so a panic doesn't orphan the child.

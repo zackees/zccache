@@ -196,12 +196,7 @@ struct State<'ecx> {
 
 /// Records one occurrence unless its source is outside the production boundary.
 #[allow(clippy::too_many_arguments)]
-fn record_with(
-    ecx: &EarlyContext<'_>,
-    span: Span,
-    kind: Kind,
-    normalized: &str,
-) {
+fn record_with(ecx: &EarlyContext<'_>, span: Span, kind: Kind, normalized: &str) {
     let Some(path) = source_filename(ecx.sess(), span).and_then(|name| repo_relative_path(&name))
     else {
         return;
@@ -241,12 +236,7 @@ fn emit_lint(ecx: &EarlyContext<'_>, span: Span, kind: Kind, normalized: &str) {
 impl<'ecx> State<'ecx> {
     /// Records one occurrence unless its source location is allowed.
     fn record(&mut self, span: Span, kind: Kind, normalized: &str) {
-        record_with(
-            self.ecx,
-            span,
-            kind,
-            normalized,
-        )
+        record_with(self.ecx, span, kind, normalized)
     }
 
     fn check_attribute(&mut self, attr: &Attribute) {
