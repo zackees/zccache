@@ -100,5 +100,4 @@ mod tests {
         let read = fs::read_to_string(&file).expect("read");
         assert_eq!(read, "data");
     }
-
 }
