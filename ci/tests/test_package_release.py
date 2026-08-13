@@ -199,7 +199,7 @@ def test_release_workflow_disables_soldr_for_artifact_builds() -> None:
 def test_build_target_forces_msvc_host_toolchain_for_windows() -> None:
     action = _repo_text(".github/actions/build-target/action.yml")
 
-    assert "1.94.1-x86_64-pc-windows-msvc" in action
+    assert "1.95.0-x86_64-pc-windows-msvc" in action
     assert 'rustup run "$RELEASE_RUST_TOOLCHAIN" rustc -vV' in action
     assert "Windows release builds must use the MSVC host toolchain" in action
     assert 'rustup which --toolchain "$RELEASE_RUST_TOOLCHAIN" rustc' in action

@@ -19,7 +19,7 @@
 #     -v <repo>/.perf-local/binaries/zccache:/out \
 #     zccache-perf-zccache-builder
 
-FROM rust:1.94.1-slim-bookworm
+FROM rust:1.95.0-slim-bookworm
 
 # Build deps for any cc-rs / pkg-config / C-FFI crates that show up in
 # zccache's transitive graph. Notable consumers:

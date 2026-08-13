@@ -37,7 +37,7 @@ exclude = [
 [workspace.package]
 version = "1.13.1"
 edition = "2021"
-rust-version = "1.94.1"
+rust-version = "1.95.0"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zackees/zccache"
 homepage = "https://github.com/zackees/zccache"

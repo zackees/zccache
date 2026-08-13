@@ -169,7 +169,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Parse `channel = "1.94.1"` from rust-toolchain.toml.
+          # Parse `channel = "1.95.0"` from rust-toolchain.toml.
           # Previous awk-with-multi-char-FS extracted the space
           # between `=` and the opening quote into $2 instead of the
           # actual value into $3, so `rustup default ' '` errored

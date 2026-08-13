@@ -42,7 +42,7 @@ jobs:
       - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
         with:
           zccache-seed-strict: true
-          toolchain: 1.94.1
+          toolchain: 1.95.0
           cache: true
           build-cache: false
           linker: fast
@@ -73,7 +73,7 @@ jobs:
         uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
         with:
           zccache-seed-strict: true
-          toolchain: 1.94.1
+          toolchain: 1.95.0
           cache: true
           cargo-registry-cache: false
           cache-key-suffix: dylint
@@ -168,13 +168,21 @@ jobs:
           export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-26 rustc)"
           export RUSTUP_TOOLCHAIN=nightly-2026-05-26
           soldr rustup run nightly-2026-05-26 cargo test --manifest-path dylints/ban_discarded_write_result/Cargo.toml
+      - name: Check Dylint Library Formatting (enforce_platform_boundary)
+        run: soldr cargo fmt --manifest-path dylints/enforce_platform_boundary/Cargo.toml --all -- --check
+      - name: Test Dylint Library (enforce_platform_boundary)
+        run: |
+          export PATH="${DYLINT_CARGO_SHIM}:${PATH}"
+          export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-26 rustc)"
+          export RUSTUP_TOOLCHAIN=nightly-2026-05-26
+          soldr rustup run nightly-2026-05-26 cargo test --manifest-path dylints/enforce_platform_boundary/Cargo.toml
       - name: Run Dylint
         run: |
           export PATH="${CARGO_HOME}/bin:${PATH}"
           uv run python -m ci.lint --dylint-only
 
   msrv:
-    name: MSRV (1.94.1)
+    name: MSRV (1.95.0)
     runs-on: ubuntu-latest
     # setup-soldr#347: opt this job into post-step cache eviction.
     # actions: write is required for cache.deleteActionsCacheById.
@@ -191,7 +199,7 @@ jobs:
         with:
           zccache-seed-strict: true
           cache: true
-          toolchain: 1.94.1
+          toolchain: 1.95.0
           cache-key-suffix: msrv
           linker: fast
           prebuild-deps: soldr-cook
@@ -221,7 +229,7 @@ jobs:
       - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
         with:
           zccache-seed-strict: true
-          toolchain: 1.94.1
+          toolchain: 1.95.0
           cache: true
           cache-key-suffix: docs
           linker: fast

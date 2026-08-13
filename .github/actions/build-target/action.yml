@@ -75,12 +75,12 @@ runs:
     - name: Select Rust toolchain
       shell: bash
       run: |
-        echo "RELEASE_RUST_TOOLCHAIN=${{ contains(inputs.target, 'pc-windows-msvc') && '1.94.1-x86_64-pc-windows-msvc' || '1.94.1' }}" >> "$GITHUB_ENV"
+        echo "RELEASE_RUST_TOOLCHAIN=${{ contains(inputs.target, 'pc-windows-msvc') && '1.95.0-x86_64-pc-windows-msvc' || '1.95.0' }}" >> "$GITHUB_ENV"
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: ${{ contains(inputs.target, 'pc-windows-msvc') && '1.94.1-x86_64-pc-windows-msvc' || '1.94.1' }}
+        toolchain: ${{ contains(inputs.target, 'pc-windows-msvc') && '1.95.0-x86_64-pc-windows-msvc' || '1.95.0' }}
         targets: ${{ inputs.target }}
 
     - name: Verify Rust host toolchain
@@ -130,7 +130,7 @@ runs:
       if: inputs.use_soldr == 'true'
       uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
       with:
-        toolchain: 1.94.1
+        toolchain: 1.95.0
         cache: true
         cache-key-suffix: build-${{ inputs.cache_key }}
         linker: fast

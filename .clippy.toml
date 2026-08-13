@@ -1,4 +1,4 @@
-msrv = "1.94.1"
+msrv = "1.95.0"
 
 # Workspace clippy config — see #944.
 #

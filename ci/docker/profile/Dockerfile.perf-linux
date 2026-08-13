@@ -17,7 +17,7 @@
 # The entrypoint runs ci/docker/profile/run_profile.sh inside /work,
 # producing oncpu.svg + offcpu.svg + raw .data files in /out.
 
-FROM rust:1.94.1-bookworm
+FROM rust:1.95.0-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
 

@@ -902,7 +902,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
 
       - uses: zackees/zccache@main
         with:
@@ -940,7 +940,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
           targets: ${{ matrix.target }}
 
       # One action replaces sccache + rust-cache

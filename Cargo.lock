@@ -241,6 +241,7 @@ dependencies = [
  "cfg-if",
  "constant_time_eq",
  "cpufeatures",
+ "memmap2",
  "rayon-core",
 ]
 
@@ -1805,7 +1806,7 @@ dependencies = [
  "mio",
  "notify-types",
  "walkdir",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2605,8 +2606,9 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.8.1"
-source = "git+https://github.com/zackees/running-process.git?rev=359b4e3d92660e54eb9b16b6e83de8ce26932ff8#359b4e3d92660e54eb9b16b6e83de8ce26932ff8"
+version = "4.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c8ddef1be10a8e64bb8e2976419dbbef4cea7884e03ec5cef0722677b606154"
 dependencies = [
  "anyhow",
  "blake3",
@@ -4139,7 +4141,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "wait-timeout",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
  "zccache",
  "zccache-artifact",
  "zccache-audit",
@@ -4156,6 +4158,7 @@ dependencies = [
  "zccache-gha",
  "zccache-hash",
  "zccache-ipc",
+ "zccache-platform",
  "zccache-protocol",
  "zccache-symbols",
  "zccache-test-support",
@@ -4242,7 +4245,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
  "zccache-artifact",
  "zccache-audit",
  "zccache-compile-trace",
@@ -4292,7 +4295,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4331,7 +4334,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
  "zccache-artifact",
  "zccache-audit",
  "zccache-compile-trace",
@@ -4472,6 +4475,10 @@ dependencies = [
  "zccache-depgraph",
  "zccache-protocol",
 ]
+
+[[package]]
+name = "zccache-platform"
+version = "1.13.1"
 
 [[package]]
 name = "zccache-protocol"

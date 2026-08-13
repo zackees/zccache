@@ -232,7 +232,7 @@ def test_dockerfile_pins_all_campaign_tools():
     assert "emscripten/emsdk:3.1.74@sha256:" in dockerfile
     assert "SOLDR_VERSION=0.8.16" in dockerfile
     assert "SCCACHE_VERSION=0.10.0" in dockerfile
-    assert "RUST_VERSION=1.94.1" in dockerfile
+    assert "RUST_VERSION=1.95.0" in dockerfile
     assert "clang-14" in dockerfile
     assert 'org.zccache.campaign.recipe="${CAMPAIGN_RECIPE_SHA}"' in dockerfile
     assert "SOLDR_COMMAND_OUTPUT_TIMEOUT_SECS=600" in dockerfile
