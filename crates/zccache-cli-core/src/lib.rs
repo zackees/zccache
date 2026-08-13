@@ -24,6 +24,8 @@ pub use zccache_download_protocol as download_protocol;
 pub use zccache_gha as gha;
 pub use zccache_hash as hash;
 pub use zccache_ipc as ipc;
+// The facade is consumed only by feature-gated CLI/download modules.
+#[allow(unused_imports)]
 pub(crate) use zccache_platform as platform;
 pub use zccache_protocol as protocol;
 #[cfg(feature = "symbols")]
