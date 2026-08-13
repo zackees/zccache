@@ -1,0 +1,15 @@
+[package]
+name = "zccache-platform"
+description = "Dependency-leaf host-platform primitives: one cfg_select! selector, five neutral facades"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[dependencies]
+# Native mechanics arrive per capability phase (fs, ipc, process, executable,
+# host). Phase 1 ships the selector and neutral facades only, so the leaf has
+# no dependencies yet — and it must never depend on any zccache-* crate.

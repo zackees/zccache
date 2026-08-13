@@ -15,6 +15,7 @@ members = [
     "crates/zccache-gha",
     "crates/zccache-hash",
     "crates/zccache-ipc",
+    "crates/zccache-platform",
     "crates/zccache-protocol",
     "crates/zccache-symbols",
     "crates/zccache-test-support",
@@ -97,6 +98,7 @@ zccache-fscache = { path = "crates/zccache-fscache" }
 zccache-gha = { path = "crates/zccache-gha" }
 zccache-hash = { path = "crates/zccache-hash" }
 zccache-ipc = { path = "crates/zccache-ipc" }
+zccache-platform = { path = "crates/zccache-platform" }
 zccache-protocol = { path = "crates/zccache-protocol" }
 zccache-symbols = { path = "crates/zccache-symbols" }
 zccache-test-support = { path = "crates/zccache-test-support" }

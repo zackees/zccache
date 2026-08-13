@@ -81,6 +81,7 @@ zccache-fscache = { workspace = true }
 zccache-hash = { workspace = true }
 zccache-gha = { workspace = true, optional = true }
 zccache-ipc = { workspace = true }
+zccache-platform = { workspace = true }
 zccache-protocol = { workspace = true }
 zccache-symbols = { workspace = true, optional = true }
 zccache-watcher = { workspace = true }
