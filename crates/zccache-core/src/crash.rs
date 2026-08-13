@@ -239,95 +239,14 @@ fn write_signal_dump(ctx: &crash_handler::CrashContext) {
     let _ = std::fs::write(&path, body);
 }
 
-/// Map the platform-specific `CrashContext` to a short uppercase label
-/// (`SIGSEGV`, `EXC_BAD_ACCESS`, `STATUS_ACCESS_VIOLATION`, …). Used in
-/// the dump filename, which is what `zccache crashes` lists.
-#[cfg(target_os = "linux")]
-fn signal_label(ctx: &crash_handler::CrashContext) -> String {
-    match ctx.siginfo.ssi_signo as i32 {
-        libc::SIGSEGV => "SIGSEGV".to_string(),
-        libc::SIGBUS => "SIGBUS".to_string(),
-        libc::SIGILL => "SIGILL".to_string(),
-        libc::SIGFPE => "SIGFPE".to_string(),
-        libc::SIGABRT => "SIGABRT".to_string(),
-        libc::SIGTRAP => "SIGTRAP".to_string(),
-        other => format!("SIG{other}"),
-    }
+/// Map the platform-specific crash context to its stable filename label.
+fn signal_label(context: &crash_handler::CrashContext) -> String {
+    zccache_platform::process::exit::context_label(context)
 }
 
-#[cfg(target_os = "macos")]
-fn signal_label(ctx: &crash_handler::CrashContext) -> String {
-    match ctx.exception.as_ref() {
-        Some(exc) => format!("EXC_{kind}", kind = exc.kind),
-        None => "SIGUNKNOWN".to_string(),
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn signal_label(ctx: &crash_handler::CrashContext) -> String {
-    let exception_code: u32 = unsafe {
-        if ctx.exception_pointers.is_null() {
-            0
-        } else {
-            (*(*ctx.exception_pointers).ExceptionRecord).ExceptionCode as u32
-        }
-    };
-    match exception_code {
-        0xC0000005 => "STATUS_ACCESS_VIOLATION".to_string(),
-        0xC000001D => "STATUS_ILLEGAL_INSTRUCTION".to_string(),
-        0xC0000094 => "STATUS_INTEGER_DIVIDE_BY_ZERO".to_string(),
-        0x80000003 => "STATUS_BREAKPOINT".to_string(),
-        0xC00000FD => "STATUS_STACK_OVERFLOW".to_string(),
-        code => format!("EXCEPTION_{code:08X}"),
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn signal_label(_ctx: &crash_handler::CrashContext) -> String {
-    "UNKNOWN".to_string()
-}
-
-#[cfg(target_os = "linux")]
-fn format_signal_summary(cc: &crash_handler::CrashContext) -> String {
-    format!(
-        "siginfo.si_signo = {}\nsiginfo.si_code  = {}\nsiginfo.si_addr  = {:#x}\ntid = {}",
-        cc.siginfo.ssi_signo, cc.siginfo.ssi_code, cc.siginfo.ssi_addr, cc.tid
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn format_signal_summary(cc: &crash_handler::CrashContext) -> String {
-    match cc.exception.as_ref() {
-        Some(exc) => format!(
-            "exception_kind = {}\nexception_code = {}\nexception_subcode = {:?}\nthread = {}",
-            exc.kind, exc.code, exc.subcode, cc.thread
-        ),
-        None => format!("exception = <none>\nthread = {}", cc.thread),
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn format_signal_summary(cc: &crash_handler::CrashContext) -> String {
-    let (code, addr) = unsafe {
-        if cc.exception_pointers.is_null() {
-            (0u32, 0usize)
-        } else {
-            let rec = (*cc.exception_pointers).ExceptionRecord;
-            (
-                (*rec).ExceptionCode as u32,
-                (*rec).ExceptionAddress as usize,
-            )
-        }
-    };
-    format!(
-        "exception_code    = 0x{code:08X}\nexception_address = 0x{addr:016X}\nthread_id         = {tid}",
-        tid = cc.thread_id
-    )
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn format_signal_summary(_cc: &crash_handler::CrashContext) -> String {
-    "unsupported platform — no signal details available".to_string()
+/// Render host-native crash details for the signal-level report body.
+fn format_signal_summary(context: &crash_handler::CrashContext) -> String {
+    zccache_platform::process::exit::context_summary(context)
 }
 
 /// Write a Rust-panic dump. Caller is the panic hook (not signal

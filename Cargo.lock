@@ -4484,6 +4484,7 @@ dependencies = [
 name = "zccache-platform"
 version = "1.13.1"
 dependencies = [
+ "crash-handler",
  "libc",
  "tempfile",
  "tokio",

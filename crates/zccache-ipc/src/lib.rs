@@ -722,54 +722,7 @@ pub fn running_process_disabled() -> bool {
 /// This is intended as a last-resort escape hatch when the daemon is no longer
 /// reachable over IPC, so graceful shutdown is not possible.
 pub fn force_kill_process(pid: u32) -> Result<(), std::io::Error> {
-    #[cfg(unix)]
-    {
-        // SAFETY: kill is called with a PID provided by the caller and a fixed
-        // signal value. No pointers are involved.
-        extern "C" {
-            fn kill(pid: i32, sig: i32) -> i32;
-        }
-        const SIGKILL: i32 = 9;
-        let rc = unsafe { kill(pid as i32, SIGKILL) };
-        if rc == 0 {
-            Ok(())
-        } else {
-            Err(std::io::Error::last_os_error())
-        }
-    }
-    #[cfg(windows)]
-    {
-        // windows-sys defines CloseHandle/OpenProcess/TerminateProcess with
-        // HANDLE/BOOL newtypes; our local extern uses the underlying isize/i32
-        // for ergonomics. Same ABI, different signature in the type-system,
-        // so the linker accepts both but rustc warns. -D warnings on CI
-        // promotes the warn to error.
-        #[allow(clashing_extern_declarations)]
-        extern "system" {
-            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
-            fn TerminateProcess(handle: isize, exit_code: u32) -> i32;
-            fn CloseHandle(handle: isize) -> i32;
-        }
-        const PROCESS_TERMINATE: u32 = 0x0001;
-        const SYNCHRONIZE: u32 = 0x0010_0000;
-        unsafe {
-            let handle = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, pid);
-            if handle == 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            let result = TerminateProcess(handle, 1);
-            let err = if result == 0 {
-                Some(std::io::Error::last_os_error())
-            } else {
-                None
-            };
-            CloseHandle(handle);
-            match err {
-                Some(err) => Err(err),
-                None => Ok(()),
-            }
-        }
-    }
+    zccache_platform::process::terminate::force(pid)
 }
 
 /// Check if a process with the given PID is actually running.
@@ -791,42 +744,7 @@ pub fn force_kill_process(pid: u32) -> Result<(), std::io::Error> {
 /// one that is still running.
 #[must_use]
 pub fn is_process_alive(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        // SAFETY: kill(pid, 0) is a standard POSIX call that checks process
-        // existence without sending any signal.
-        extern "C" {
-            fn kill(pid: i32, sig: i32) -> i32;
-        }
-        unsafe { kill(pid as i32, 0) == 0 }
-    }
-    #[cfg(windows)]
-    {
-        // See CloseHandle note in force_kill_process above.
-        #[allow(clashing_extern_declarations)]
-        extern "system" {
-            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
-            fn CloseHandle(handle: isize) -> i32;
-            fn WaitForSingleObject(handle: isize, milliseconds: u32) -> u32;
-        }
-        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-        const SYNCHRONIZE: u32 = 0x0010_0000;
-        const WAIT_TIMEOUT: u32 = 0x0000_0102;
-        unsafe {
-            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid);
-            if handle == 0 {
-                return false;
-            }
-            // WAIT_TIMEOUT means the process object has not yet been signaled
-            // — i.e. the process really is still running. Any other return
-            // value (WAIT_OBJECT_0 = signaled = exited, WAIT_FAILED, WAIT_ABANDONED)
-            // means the process is not running, even if a zombie process
-            // object keeps the PID nominally addressable.
-            let status = WaitForSingleObject(handle, 0);
-            CloseHandle(handle);
-            status == WAIT_TIMEOUT
-        }
-    }
+    zccache_platform::process::inspect::is_alive(pid)
 }
 
 /// Probe whether a daemon is **already serving** at `endpoint`. Returns
@@ -907,7 +825,7 @@ pub fn verify_pid_exe_stem(pid: u32, expected_stem: &str) -> bool {
     if !is_process_alive(pid) {
         return false;
     }
-    match daemon_exe_for_pid(pid) {
+    match zccache_platform::process::inspect::executable_path(pid) {
         // Got an exe path — only trust the PID if it points at our daemon.
         Some(exe) => exe_stem_matches(&exe, expected_stem),
         // Platform doesn't support reading the exe path. Fall back to the
@@ -923,82 +841,6 @@ fn exe_stem_matches(path: &std::path::Path, expected_stem: &str) -> bool {
     let name = name.to_string_lossy();
     let stem = name.strip_suffix(".exe").unwrap_or(&name);
     stem == expected_stem
-}
-
-#[cfg(target_os = "linux")]
-fn daemon_exe_for_pid(pid: u32) -> Option<NormalizedPath> {
-    std::fs::read_link(format!("/proc/{pid}/exe"))
-        .ok()
-        .map(NormalizedPath::from)
-}
-
-#[cfg(target_os = "macos")]
-fn daemon_exe_for_pid(pid: u32) -> Option<NormalizedPath> {
-    // `proc_pidpath` from libproc (`libSystem.dylib`) — same one
-    // `ps`/`lsof` use under the hood. Available on macOS 10.5+.
-    //
-    // PROC_PIDPATHINFO_MAXSIZE is documented as 4 * MAXPATHLEN (= 4096)
-    // in `<sys/proc_info.h>`. Allocate exactly that and let the call
-    // tell us how many bytes it wrote.
-    const PROC_PIDPATHINFO_MAXSIZE: usize = 4096;
-
-    extern "C" {
-        fn proc_pidpath(pid: i32, buf: *mut std::ffi::c_void, bufsize: u32) -> i32;
-    }
-
-    let mut buf = vec![0u8; PROC_PIDPATHINFO_MAXSIZE];
-    // SAFETY: pid is a u32 from the caller, buf is a freshly-allocated
-    // Vec we own. bufsize matches the allocation size. proc_pidpath
-    // returns the number of bytes written (>0) or -1 on error and is
-    // tolerant of stale PIDs (returns ESRCH).
-    let written = unsafe { proc_pidpath(pid as i32, buf.as_mut_ptr().cast(), buf.len() as u32) };
-    if written <= 0 {
-        // EPERM (process belongs to another user), ESRCH (pid gone), etc.
-        // Don't trust the PID — recycled-PID defense fires.
-        return None;
-    }
-    buf.truncate(written as usize);
-    let s = std::str::from_utf8(&buf).ok()?;
-    Some(NormalizedPath::from(std::path::PathBuf::from(s)))
-}
-
-#[cfg(windows)]
-fn daemon_exe_for_pid(pid: u32) -> Option<NormalizedPath> {
-    // See CloseHandle note in force_kill_process above.
-    #[allow(clashing_extern_declarations)]
-    extern "system" {
-        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
-        fn CloseHandle(handle: isize) -> i32;
-        fn QueryFullProcessImageNameW(
-            handle: isize,
-            flags: u32,
-            buffer: *mut u16,
-            size: *mut u32,
-        ) -> i32;
-    }
-    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle == 0 {
-            return None;
-        }
-        let mut buf = vec![0u16; 32_768];
-        let mut size = buf.len() as u32;
-        let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size);
-        CloseHandle(handle);
-        if ok == 0 {
-            return None;
-        }
-        use std::os::windows::ffi::OsStringExt;
-        let os = std::ffi::OsString::from_wide(&buf[..size as usize]);
-        Some(NormalizedPath::new(&os))
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn daemon_exe_for_pid(_pid: u32) -> Option<NormalizedPath> {
-    None
 }
 
 /// Check if a daemon is already running. Returns the PID if alive.

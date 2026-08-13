@@ -19,27 +19,8 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::process::ExitCode;
 
-#[cfg(windows)]
 fn main() -> ExitCode {
-    match std::thread::Builder::new()
-        .name("zccache-cli".to_string())
-        .stack_size(8 * 1024 * 1024)
-        .spawn(run_main)
-    {
-        Ok(handle) => match handle.join() {
-            Ok(code) => code,
-            Err(_) => ExitCode::FAILURE,
-        },
-        Err(err) => {
-            eprintln!("zccache: failed to start CLI thread: {err}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn main() -> ExitCode {
-    run_main()
+    zccache::platform::process::spawn::run_cli_entry(run_main)
 }
 
 fn run_main() -> ExitCode {

@@ -114,8 +114,8 @@ fn retirement_refuses_to_delete_an_ordinary_file() {
 }
 
 #[cfg(unix)]
-#[test]
-fn binding_tightens_parent_and_socket_permissions() {
+#[tokio::test]
+async fn binding_tightens_parent_and_socket_permissions() {
     use std::os::unix::fs::PermissionsExt;
 
     let directory = tempfile::tempdir().expect("tempdir");
