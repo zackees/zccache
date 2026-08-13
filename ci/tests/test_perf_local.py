@@ -26,6 +26,50 @@ def _load_perf_local():
 perf_local = _load_perf_local()
 
 
+def test_buildkit_gc_is_scoped_to_zccache_builder() -> None:
+    assert perf_local.buildkit_prune_command() == [
+        "docker",
+        "buildx",
+        "prune",
+        "--builder",
+        perf_local.BUILDER_NAME,
+        "--filter",
+        "until=48h",
+        "--force",
+    ]
+
+
+def test_image_gc_is_label_scoped() -> None:
+    command = perf_local.image_prune_command()
+    assert command[:4] == ["docker", "image", "prune", "--force"]
+    assert f"label={perf_local.LABEL_PREFIX}.managed=true" in command
+    assert "until=48h" in command
+
+
+def test_managed_volume_create_commands_label_every_persistent_volume() -> None:
+    commands = perf_local.managed_volume_create_commands()
+    assert {command[-1] for command in commands} == set(perf_local.MANAGED_VOLUMES)
+    for command in commands:
+        assert command[:3] == ["docker", "volume", "create"]
+        assert f"{perf_local.LABEL_PREFIX}.managed=true" in command
+
+
+def test_persistent_volume_budget_is_a_hard_ceiling() -> None:
+    assert not perf_local.volumes_over_budget(perf_local.VOLUME_BUDGET_BYTES)
+    assert perf_local.volumes_over_budget(perf_local.VOLUME_BUDGET_BYTES + 1)
+
+
+def test_volume_usage_command_mounts_every_managed_volume() -> None:
+    command = perf_local.volume_usage_command()
+    for volume in perf_local.MANAGED_VOLUMES:
+        assert any(arg.startswith(f"{volume}:") for arg in command)
+    assert command[command.index("--entrypoint") : command.index("--entrypoint") + 3] == [
+        "--entrypoint",
+        "sh",
+        perf_local.IMAGE_ZCCACHE,
+    ]
+
+
 def test_remove_previous_results_repairs_container_owned_tree(tmp_path, monkeypatch):
     results_dir = tmp_path / "results"
     results_dir.mkdir()
@@ -45,8 +89,7 @@ def test_remove_previous_results_repairs_container_owned_tree(tmp_path, monkeypa
     monkeypatch.setattr(
         perf_local,
         "run",
-        lambda command, **_kwargs: commands.append(command)
-        or subprocess.CompletedProcess(command, 0),
+        lambda command, **_kwargs: commands.append(command) or subprocess.CompletedProcess(command, 0),
     )
 
     perf_local.remove_previous_results(results_dir)
@@ -244,9 +287,7 @@ def test_threshold_manifest_is_authoritative_for_evaluation_and_rendering():
     assert perf_local.PERF_THRESHOLDS_PATH.is_file()
     assert perf_local.LOCAL_MIN_SPEEDUP == perf_local.PERF_THRESHOLDS["minimum_speedup"]
     assert perf_local.LOCAL_MAX_WARM_MS == perf_local.PERF_THRESHOLDS["maximum_warm_ms"]
-    assert perf_local.LOCAL_MAX_STAGED_OVERHEAD_MS_PER_PUBLICATION == (
-        perf_local.PERF_THRESHOLDS["maximum_staged_overhead_ms_per_publication"]
-    )
+    assert perf_local.LOCAL_MAX_STAGED_OVERHEAD_MS_PER_PUBLICATION == (perf_local.PERF_THRESHOLDS["maximum_staged_overhead_ms_per_publication"])
 
 
 def test_distribution_reports_repeatability_statistics():
@@ -623,10 +664,7 @@ def test_rollout_evaluator_rejects_per_publication_staged_regression(tmp_path):
         "medium",
     )
 
-    assert (
-        "staged miss overhead 850ms/publication exceeds "
-        "750ms/publication for medium"
-    ) in failures
+    assert ("staged miss overhead 850ms/publication exceeds " "750ms/publication for medium") in failures
 
 
 def test_rollout_evaluator_rejects_missing_tier_and_staged_failure(tmp_path):
