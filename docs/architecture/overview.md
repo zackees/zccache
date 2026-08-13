@@ -86,30 +86,19 @@ zccache intercepts C/C++ compiler invocations, computes a deterministic cache ke
 
 **Responsibility:** Platform-abstracted bidirectional byte-stream transport between CLI and daemon.
 
-**Key interfaces:**
+**Key interfaces (`zccache-platform::ipc`):**
 ```rust
-#[async_trait]
-trait Transport: Send + Sync {
-    type Listener: TransportListener;
-    type Stream: TransportStream;
-
-    async fn bind(addr: &TransportAddr) -> Result<Self::Listener>;
-    async fn connect(addr: &TransportAddr) -> Result<Self::Stream>;
-}
-
-#[async_trait]
-trait TransportListener: Send + Sync {
-    type Stream: TransportStream;
-    async fn accept(&self) -> Result<Self::Stream>;
-}
-
-trait TransportStream: AsyncRead + AsyncWrite + Send + Unpin {}
+let endpoint = Endpoint::select(unix_path, windows_pipe_name);
+let mut listener = Listener::bind(&endpoint)?;
+let stream: Stream = connect(&endpoint).await?;
+let (stream, peer): (Stream, PeerIdentity) = listener.accept().await?;
 ```
 
 **Internal structure:**
-- `UnixTransport` — wraps `tokio::net::UnixListener` / `UnixStream`. Used on Linux and macOS.
-- `NamedPipeTransport` — wraps `tokio::net::windows::named_pipe`. Used on Windows.
-- `TransportAddr` — enum holding path (Unix) or pipe name (Windows).
+- `zccache-platform` selects private Linux, macOS, or Windows concrete leaves once.
+- Linux/macOS leaves wrap Tokio Unix listeners/streams and kernel peer credentials.
+- Windows leaves wrap Tokio named pipes, owner-only DACLs, accept pooling, and busy backoff.
+- `zccache-ipc` layers framing, product naming, timeouts, and diagnostics over the facade.
 
 ### 2.4 Protocol
 

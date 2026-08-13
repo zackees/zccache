@@ -124,7 +124,7 @@ mod tests {
     fn target_path_is_canonicalized_for_match() {
         // Verifies the helper accepts canonicalize failures gracefully —
         // a path that does not exist must not panic, just return None.
-        let bogus = std::path::Path::new(if cfg!(windows) {
+        let bogus = std::path::Path::new(if crate::platform::host::is_windows() {
             r"C:\zccache-nonexistent-test-path-690"
         } else {
             "/zccache-nonexistent-test-path-690"

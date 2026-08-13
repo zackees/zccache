@@ -2,6 +2,12 @@
 
 use std::path::Path;
 
+pub fn is_transient_share_error(_error: &std::io::Error) -> bool {
+    false
+}
+
+pub fn is_lock_contention(_error: &std::io::Error) -> bool { false }
+
 pub fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
     std::fs::rename(source, destination)
 }

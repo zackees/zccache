@@ -12,6 +12,9 @@ publish = false
 [dependencies]
 # Native mechanics arrive per capability phase (fs, ipc, process, executable,
 # host); the leaf must never depend on any zccache-* crate.
+crash-handler = "0.6"
+interprocess = "2.4.2"
+tokio = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -21,6 +24,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
     "Win32_System_Ioctl",
+    "Win32_System_JobObjects",
+    "Win32_System_Console",
     "Win32_System_Threading",
 ] }
 

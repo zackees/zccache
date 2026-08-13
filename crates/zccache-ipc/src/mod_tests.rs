@@ -545,7 +545,7 @@ fn daemon_namespace_moves_endpoint_and_lock_file() {
             .join(format!("daemon-soldr-dev-{v}.sock"))
             .to_string_lossy()
             .into_owned();
-        if direct.len() <= MAX_PORTABLE_UNIX_SOCKET_PATH_BYTES {
+        if zccache_platform::ipc::Endpoint::file_path_is_portable(&direct) {
             assert_eq!(endpoint, direct);
         } else {
             assert_eq!(
@@ -630,16 +630,15 @@ fn private_daemon_name_derives_endpoint_from_cache_root() {
 #[test]
 fn pipe_name_keeps_safe_username_endpoint_unchanged() {
     let v = zccache_core::config::versioned_subdir();
-    assert_eq!(
-        pipe_name("zackees", None),
-        format!(r"\\.\pipe\zccache-zackees-{v}")
-    );
+    let endpoint = zccache_platform::ipc::Endpoint::select("", pipe_name("zackees", None));
+    assert_eq!(endpoint.as_str(), format!(r"\\.\pipe\zccache-zackees-{v}"));
 }
 
 #[cfg(windows)]
 #[test]
 fn pipe_name_sanitizes_username_spaces() {
-    let endpoint = pipe_name("Zach Vorhies", None);
+    let endpoint =
+        zccache_platform::ipc::Endpoint::select("", pipe_name("Zach Vorhies", None)).to_string();
     assert!(endpoint.starts_with(r"\\.\pipe\zccache-Zach_Vorhies-"));
     assert!(!endpoint.contains(' '));
 }
@@ -668,7 +667,7 @@ fn cache_dir_endpoint_falls_back_to_short_unix_socket_path() {
     let endpoint = endpoint_for_cache_dir(&cache_dir, Some("soldr-dev"));
 
     assert!(
-        endpoint.len() <= MAX_PORTABLE_UNIX_SOCKET_PATH_BYTES,
+        zccache_platform::ipc::Endpoint::file_path_is_portable(&endpoint),
         "endpoint too long: {endpoint}"
     );
     assert!(endpoint.starts_with("/tmp/zccache-"));
@@ -677,7 +676,7 @@ fn cache_dir_endpoint_falls_back_to_short_unix_socket_path() {
     assert!(endpoint.ends_with(&format!("-daemon-soldr-dev-{v}.sock")));
 }
 
-/// On macOS, `daemon_exe_for_pid` must reject a PID whose
+/// On macOS, the platform executable lookup must identify a PID whose
 /// executable is something other than `zccache-daemon`. Until
 /// `proc_pidpath` was wired up, this returned `None` and
 /// `verify_pid_exe_stem` fell back to alive-only — which meant a
@@ -699,7 +698,7 @@ fn recycled_pid_is_rejected_on_macos() {
         .expect("spawn /bin/sleep");
     let pid = sleeper.id();
 
-    let exe = daemon_exe_for_pid(pid);
+    let exe = crate::platform::process::inspect::executable_path(pid);
     let verified = verify_pid_exe_stem(pid, "zccache-daemon");
 
     // Clean up before assertions so a panic doesn't orphan the child.

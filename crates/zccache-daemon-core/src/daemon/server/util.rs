@@ -68,14 +68,11 @@ pub(super) fn persist_workers_default() -> usize {
             }
         }
     }
-    #[cfg(windows)]
-    {
+    if crate::platform::host::is_windows() {
         // Windows Defender serializes write-scan; raising this above 8
         // regressed wall-clock in `tests/persist_pool_bench.rs`.
         8
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         // Follow-up to ISSUE-501 (Linux Docker 2026-06-25): on non-AV
         // hosts persist is non-critical work; size it generously above
         // the cold-miss wave width so it never queues. `parallelism * 2`
@@ -83,9 +80,7 @@ pub(super) fn persist_workers_default() -> usize {
         // the `max(32, …)` floor covers the same burst on smaller hosts
         // (32 simultaneous hardlinks is well under the per-process fd
         // ceiling even on default-configured Linux).
-        let parallelism = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(8);
+        let parallelism = crate::platform::host::available_parallelism().unwrap_or(8);
         parallelism.saturating_mul(2).max(32)
     }
 }
@@ -132,42 +127,7 @@ pub(super) fn hash_file(
 }
 
 fn path_for_cache_lookup(path: &Path) -> NormalizedPath {
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::{OsStrExt, OsStringExt};
-
-        if !path.as_os_str().as_encoded_bytes().starts_with(br"\\?\") {
-            return path.into();
-        }
-        let encoded: Vec<u16> = path.as_os_str().encode_wide().collect();
-
-        let ascii_eq = |value: u16, uppercase: u8| {
-            value == u16::from(uppercase) || value == u16::from(uppercase.to_ascii_lowercase())
-        };
-        let is_unc = encoded.len() >= 8
-            && ascii_eq(encoded[4], b'U')
-            && ascii_eq(encoded[5], b'N')
-            && ascii_eq(encoded[6], b'C')
-            && encoded[7] == b'\\' as u16;
-        let normalized = if is_unc {
-            let mut result = vec![b'\\' as u16, b'\\' as u16];
-            result.extend_from_slice(&encoded[8..]);
-            Some(result)
-        } else if encoded.len() >= 6
-            && encoded[4] <= 0x7f
-            && (encoded[4] as u8).is_ascii_alphabetic()
-            && encoded[5] == b':' as u16
-        {
-            Some(encoded[4..].to_vec())
-        } else {
-            None
-        };
-        if let Some(normalized) = normalized {
-            let path = std::ffi::OsString::from_wide(&normalized);
-            return NormalizedPath::new(Path::new(&path));
-        }
-    }
-    path.into()
+    NormalizedPath::new(crate::platform::fs::path::strip_verbatim_prefix(path))
 }
 
 /// Check if all files in a context's dependency list are unchanged since
@@ -353,46 +313,5 @@ pub(super) fn record_artifact_access(
         let _ = state
             .index_writer_tx
             .send(IndexWriterCommand::Insert(key_hex.to_string(), meta));
-    }
-}
-
-#[cfg(all(test, windows))]
-mod tests {
-    use super::*;
-    use std::os::windows::ffi::{OsStrExt, OsStringExt};
-
-    #[test]
-    fn cache_lookup_path_strips_windows_verbatim_prefix() {
-        let input = Path::new(r"\\?\C:\workspace\clippy.toml");
-        assert_eq!(
-            path_for_cache_lookup(input).as_path(),
-            Path::new(r"C:\workspace\clippy.toml")
-        );
-
-        let unc = Path::new(r"\\?\UNC\server\share\clippy.toml");
-        assert_eq!(
-            path_for_cache_lookup(unc).as_path(),
-            Path::new(r"\\server\share\clippy.toml")
-        );
-
-        let encoded = [
-            b'\\' as u16,
-            b'\\' as u16,
-            b'?' as u16,
-            b'\\' as u16,
-            b'C' as u16,
-            b':' as u16,
-            b'\\' as u16,
-            0xd800,
-        ];
-        let non_unicode = PathBuf::from(std::ffi::OsString::from_wide(&encoded));
-        assert_eq!(
-            path_for_cache_lookup(&non_unicode)
-                .as_path()
-                .as_os_str()
-                .encode_wide()
-                .collect::<Vec<_>>(),
-            encoded[4..]
-        );
     }
 }

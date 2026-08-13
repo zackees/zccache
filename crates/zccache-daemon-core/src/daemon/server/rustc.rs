@@ -232,7 +232,7 @@ pub(super) async fn build_rustc_compile_context_async(
 }
 
 fn is_dylint_cdylib_args(args: &crate::depgraph::RustcParsedArgs) -> bool {
-    !cfg!(target_os = "windows")
+    !crate::platform::host::is_windows()
         && args.crate_types == ["cdylib"]
         && args.target.is_none()
         && args.extra_filename.as_deref().is_none_or(str::is_empty)
@@ -586,7 +586,7 @@ fn dylint_library_sidecar_output_path(
     cwd: &Path,
     client_env: Option<&[(String, String)]>,
 ) -> Option<NormalizedPath> {
-    if cfg!(target_os = "windows") || rustc_args.crate_types != ["cdylib"] {
+    if crate::platform::host::is_windows() || rustc_args.crate_types != ["cdylib"] {
         return None;
     }
     let linker_stem = rustc_args.linker.as_ref()?.file_stem()?.to_str()?;
@@ -627,7 +627,7 @@ fn dylint_library_sidecar_output_path(
     } else {
         parent
     };
-    let suffix = if cfg!(target_os = "macos") {
+    let suffix = if crate::platform::host::is_macos() {
         ".dylib"
     } else {
         ".so"
@@ -918,12 +918,15 @@ pub(super) fn rust_remap_gate(
     }
 }
 
-#[cfg(all(test, not(target_os = "windows")))]
+#[cfg(test)]
 mod dylint_sidecar_tests {
     use super::*;
 
     #[test]
     fn perf_dylint_cdylib_models_toolchain_sidecar_as_complete_output_set() {
+        if crate::platform::host::is_windows() {
+            return;
+        }
         let cwd = Path::new("/repo");
         let out_dir = "/repo/target/dylint/libraries/nightly/release/deps";
         let args = vec![
@@ -935,7 +938,7 @@ mod dylint_sidecar_tests {
             "src/lib.rs".to_string(),
         ];
         let parsed = crate::depgraph::parse_rustc_args(&args, cwd);
-        let extension = if cfg!(target_os = "macos") {
+        let extension = if crate::platform::host::is_macos() {
             "dylib"
         } else {
             "so"

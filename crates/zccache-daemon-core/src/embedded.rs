@@ -158,7 +158,7 @@ impl HostIdentity {
         let mut hasher = Hasher::new();
         hasher.update(product.as_bytes());
         hasher.update(b"\0zccache-host-identity-v1\0");
-        if let Ok(exe) = std::env::current_exe() {
+        if let Ok(exe) = crate::platform::executable::current_image() {
             hasher.update(exe.as_os_str().to_string_lossy().as_bytes());
         }
         let bytes = hasher.finalize();

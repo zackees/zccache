@@ -1,17 +1,15 @@
 # #1365 centralize host-platform mechanics behind zccache-platform
 
-Parent: https://github.com/zackees/zccache/issues/1365 — 6 phase sub-issues (#1366-#1369 exist; #1370/#1371 to be created for phases 5/6). Parent auto-closes when all sub-issues close. Base branch: `chore/wire-prost-2-default-fallback`.
+Parent: https://github.com/zackees/zccache/issues/1365 — 6 phase sub-issues (#1366-#1369 exist; two more to be created for phases 5/6). Parent auto-closes when all sub-issues close. Starting branch: `refactor/platform/phase2-fs`.
 
 - [x] Read #1365 + sub-issues #1366-#1369; baseline branch recorded.
 - [x] Install Rust 1.95.0 toolchain locally.
 - [ ] Phase 0: exploration inventories (MSRV pins, platform-heavy code, amalgamation/dylint/CI).
-- [~] Phase 1 (#1366): PR #1370 open. Local GREEN: baseline 547 rows grandfathered (0 violations), ratchet regression proven, UI fixtures green, workspace check+clippy(-D warnings incl. 6 pre-existing 1.95-lint fixes)+2538 unit tests+653 touched-crate tests+rustdoc+fmt all green. CI: main was red on the ../notify patch (os error 2); vendored soldr's 0.61-patched notify in-repo + repointed [patch]. Waiting for CI green on the new push, then merge.
-- [~] Phase 2 (#1367): PR #1371 open. Facade + 3 concrete trees implemented (18 platform tests, RED captured); core/artifact/daemon rewired by subagents (sticky-bit guard regression caught + restored); baseline 548->390, authoritative ratchet exit 0; workspace check/clippy/2546 tests green; both unix arms cross-checked locally. Waiting for CI green, then merge.
-- [ ] Phase 3 (#1368): platform::ipc — transport/stream/listener/connect/peer/endpoint from zccache-ipc; keep framing/protocol/broker policy; endpoint strings byte-stable; security preserved. PR closes #1368.
-- [ ] Phase 4 (#1369): platform::process — command/spawn/priority/inspect/terminate/stdio/jobserver/exit; keep watchdog/priority/jobserver policy; coordinate #1360; files <1000 LOC. PR closes #1369.
-- [ ] Phase 5 (create #1370): platform::executable + platform::host (deploy.rs, suffixes/PATH, image lookup, defender, elevation, native_cpu, resource probes).
-- [ ] Phase 6 (create #1371): delete baseline at zero; Linux-hosted --target windows regression; libc/windows-sys confined; publish crate self-contained; RED→GREEN evidence; #1365 auto-closes.
-- [ ] Finish: git status clean; local repo back on `chore/wire-prost-2-default-fallback`.
+- [x] Phase 1 (#1366): PR #1370 merged.
+- [x] Phase 2 (#1367): PR #1371 merged; corrective PR #1373 merged green.
+- [~] Phases 3/4/5 (#1368/#1369/#1378): integrated on PR #1375; checkpoint PRs #1377 and #1379 merged into its branch.
+- [~] Phase 6 (#1380): zero-baseline implementation complete locally; validation and PR gates pending.
+- [ ] Finish: git status clean; local repo back on `refactor/platform/phase2-fs` rebased to final main.
 
 Each phase: branch from main → TDD RED→GREEN → soldr fmt/clippy/check → ./test → PR → wait for GHA green (watch) → merge → rebase next phase.
 
@@ -30,13 +28,29 @@ commit bde74dfb). Files must stay <1000 LOC (kv.rs 1061 → split).
 
 ## Phase 3 (#1368) plan — platform::ipc
 
+RED (2026-08-13): `soldr --no-cache cargo test -p zccache-platform` failed with eight
+`cannot find ipc in platform_imp` errors after the neutral contract and characterization tests
+were added before any concrete backend. The same command is GREEN with 21 passing tests after
+adding the Linux, macOS, and Windows concrete transports. Final focused GREEN:
+26 platform tests, 52 IPC tests, and the download-protocol endpoint test pass on Windows;
+platform + IPC all-target checks pass for installed macOS and Linux cross targets. Coverage
+includes simultaneous 1 MiB duplex traffic, endpoint retirement/rebind, ordinary-file
+preservation on Unix, Unix 0700/0600 permissions, and the live Windows pipe DACL.
+
 Facade: endpoint/stream/listener/connect/peer. Move zccache-ipc/src/transport/{mod,unix,windows,
 pipe_security}.rs native mechanics; keep framing/protocol/broker/timeouts in zccache-ipc.
 Endpoint strings byte-for-byte stable; owner-only socket/pipe security preserved; no extra
-roundtrip; download_client + daemon_mgmt consume neutral APIs. Baseline rows: all ipc +
-download-protocol rows deleted.
+roundtrip; download_client + daemon_mgmt consume neutral APIs. Baseline rows: all IPC +
+download-protocol rows deleted (390 -> 336). Workspace check and clippy with `-D warnings`
+pass; `./test` passes. `./test --integration` reaches an unrelated existing contract mismatch:
+`stop_kills_locked_process_when_ipc_is_unreachable` expects a fabricated PowerShell PID to be
+killed, while the #1161/#132 identity-bound stop intentionally refuses non-zccache processes.
 
 ## Phase 4 (#1369) plan — platform::process
+
+RED (2026-08-13): `soldr --no-cache cargo test -p zccache-platform` fails with
+13 missing process-facade APIs after adding the capability leaves and owned-child
+characterization tests before any concrete backend.
 
 Facade: command/spawn/priority/inspect/terminate/stdio/jobserver/exit. Move daemon/{process,
 child_watchdog,jobserver,trampoline}.rs native code + core/crash.rs signal labels +
@@ -44,15 +58,48 @@ ipc PID helpers + cli-core deploy.rs spawn bits + bin/zccache.rs stack wrapper. 
 CompilePriority/watchdog budgets/jobserver accounting in daemon. Coordinate #1360 (owner-death
 behavior preserved). Files <1000 LOC (process.rs 1365, child_watchdog.rs 1202 → split).
 
-## Phase 5 (create #1370 sub-issue) plan — platform::executable + platform::host
+GREEN checkpoint (2026-08-13): inspect/terminate callers, watchdog CPU accounting,
+priority application, Windows kill-on-close Job Object ownership, and the POSIX jobserver
+primitive now use the neutral process facade. Product policy and diagnostics remain in their
+callers. Platform tests pass 32/32, focused daemon jobserver tests pass 2/2, and targeted
+production clippy passes with warnings denied. The exact-occurrence baseline fell from 336 to
+127 after also moving stdio redirection, crash-context interpretation, command window setup,
+CLI stack selection, and pre-spawn owner-death selection; its cache version is 0.1.7. Docker
+Desktop's Linux engine pipe was unavailable, so the
+Linux Dylint runtime gate remains required before publication; local baseline wiring validation
+passes.
+
+The two touched oversized production files were split without moving product policy:
+`process.rs` is 721 lines and `child_watchdog.rs` is 696 lines; their existing test modules
+now live in purpose-named sibling `_tests.rs` files.
+
+## Phase 5 (#1378) plan — platform::executable + platform::host
 
 executable: deploy.rs suffixes/PATH/PATHEXT/image lookup/unlock_exe. host: native_cpu.rs,
 defender.rs elevation + Defender primitives, path/env OS facts, home/runtime dirs, resource probes.
 
-## Phase 6 (create #1371 sub-issue) plan — zero baseline
+RED (2026-08-13): focused platform compilation failed with nine missing concrete
+`executable`/`host` backend references after adding neutral characterization tests first.
+GREEN checkpoint: all three private host trees now implement executable naming/search/stem,
+shared-library candidates, running-image replacement, and host OS/arch/home/runtime/user/
+elevation/resource facts. Windows Defender command mechanics moved into the concrete Windows
+host tree while core retains product errors and UX.
+Platform/core/depgraph tests and CLI-core all-feature/all-target checks pass on Windows. The
+exact-occurrence baseline fell from 127 to 97 after migrating Defender, native CPU inputs,
+libclang discovery, and executable replacement.
 
-Delete baseline.txt at zero; verify libc/windows-sys confined to concrete trees; Linux-hosted
---target windows regression; publish crate self-contained; record RED->GREEN; parent auto-closes.
+## Phase 6 (#1380) plan — zero baseline
+
+RED: the final audit found 97 grandfathered production occurrences across artifact, compiler,
+core, daemon, depgraph, and IPC.
+
+GREEN implementation: all 97 rows were migrated, `baseline.txt` and its runtime ratchet were
+deleted, and the lint now rejects every production occurrence directly. Host cfg/native paths
+scan clean outside the selector/concrete trees. Production `libc`/`windows-sys` dependencies are
+confined to zccache-platform; the only other libc declaration is Unix integration-test-only.
+
+Pending: Linux Dylint, cross-target/target-semantics checks, publish self-containment, full tests,
+clippy, pre-push review, and green PR CI before merge and parent closure.
 
 # soldr#2188 short compiler staging root
 

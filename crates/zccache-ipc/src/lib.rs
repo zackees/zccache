@@ -6,6 +6,8 @@
 
 #![allow(clippy::missing_errors_doc)]
 
+pub(crate) use zccache_platform as platform;
+
 pub mod broker;
 pub mod error;
 pub mod manifest;
@@ -18,7 +20,6 @@ pub use broker::{
 };
 pub use error::IpcError;
 pub use manifest::{publish_manifest, publish_manifest_in, publish_service_definition};
-#[cfg(windows)]
 pub use transport::IpcClientConnection;
 pub use transport::{
     connect, unique_test_endpoint, IpcConnection, IpcListener, DEFAULT_CLIENT_RECV_TIMEOUT,
@@ -27,13 +28,7 @@ pub use transport::{
 use zccache_core::NormalizedPath;
 use zccache_protocol::{self as protocol, wire_prost, Response};
 
-#[cfg(unix)]
-const MAX_PORTABLE_UNIX_SOCKET_PATH_BYTES: usize = 100;
-
-#[cfg(unix)]
 type ClientConnection = IpcConnection;
-#[cfg(windows)]
-type ClientConnection = IpcClientConnection;
 
 /// Daemon control requests that may opt into the v16 prost migration slice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -367,43 +362,27 @@ pub fn default_endpoint() -> String {
         return endpoint_for_cache_dir(cache_dir.as_path(), namespace.as_deref());
     }
 
-    #[cfg(unix)]
-    {
-        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            return format!(
-                "{runtime_dir}/zccache/{}",
-                socket_name(namespace.as_deref())
-            );
-        }
-        let user = std::env::var("USER").unwrap_or_else(|_| String::from("unknown"));
-        format!("/tmp/zccache-{user}/{}", socket_name(namespace.as_deref()))
-    }
-    #[cfg(windows)]
-    {
-        let username = std::env::var("USERNAME").unwrap_or_else(|_| String::from("unknown"));
-        pipe_name(&username, namespace.as_deref())
-    }
+    let username =
+        crate::platform::ipc::current_user_name().unwrap_or_else(|| String::from("unknown"));
+    crate::platform::ipc::Endpoint::select(
+        default_file_endpoint(namespace.as_deref()),
+        pipe_name(&username, namespace.as_deref()),
+    )
+    .to_string()
 }
 
 pub fn endpoint_for_cache_dir(cache_dir: &std::path::Path, namespace: Option<&str>) -> String {
-    #[cfg(unix)]
-    {
-        let direct = cache_dir.join(daemon_socket_name(namespace));
-        let direct = direct.to_string_lossy();
-        if direct.len() <= MAX_PORTABLE_UNIX_SOCKET_PATH_BYTES {
-            return direct.into_owned();
-        }
-
+    let direct = cache_dir.join(daemon_socket_name(namespace));
+    let direct = direct.to_string_lossy();
+    let file_path = if crate::platform::ipc::Endpoint::file_path_is_portable(&direct) {
+        direct.into_owned()
+    } else {
         compact_cache_dir_endpoint(cache_dir, namespace)
-    }
-    #[cfg(windows)]
-    {
-        let suffix = zccache_core::stable_path_id(cache_dir);
-        pipe_name(&suffix, namespace)
-    }
+    };
+    let suffix = zccache_core::stable_path_id(cache_dir);
+    crate::platform::ipc::Endpoint::select(file_path, pipe_name(&suffix, namespace)).to_string()
 }
 
-#[cfg(unix)]
 fn compact_cache_dir_endpoint(cache_dir: &std::path::Path, namespace: Option<&str>) -> String {
     // Endpoint is a Unix socket path; return it as a `String` directly so
     // we don't round-trip through `PathBuf` only to immediately convert
@@ -429,19 +408,13 @@ pub fn endpoint_for_private_daemon_name(
         return endpoint_for_cache_dir(cache_dir, Some(&namespace));
     }
 
-    #[cfg(unix)]
-    {
-        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            return format!("{runtime_dir}/zccache/{}", socket_name(Some(&namespace)));
-        }
-        let user = std::env::var("USER").unwrap_or_else(|_| String::from("unknown"));
-        format!("/tmp/zccache-{user}/{}", socket_name(Some(&namespace)))
-    }
-    #[cfg(windows)]
-    {
-        let username = std::env::var("USERNAME").unwrap_or_else(|_| String::from("unknown"));
-        pipe_name(&username, Some(&namespace))
-    }
+    let username =
+        crate::platform::ipc::current_user_name().unwrap_or_else(|| String::from("unknown"));
+    crate::platform::ipc::Endpoint::select(
+        default_file_endpoint(Some(&namespace)),
+        pipe_name(&username, Some(&namespace)),
+    )
+    .to_string()
 }
 
 /// Returns the path for the daemon lock file.
@@ -452,8 +425,7 @@ pub fn lock_file_path() -> NormalizedPath {
         return cache_dir.join(lock_file_name(namespace.as_deref()));
     }
 
-    #[cfg(unix)]
-    {
+    let file_lock = {
         let endpoint = default_endpoint();
         // Endpoint paths always live inside a directory, but the denied
         // `expect_used` lint fires when clippy compiles this cfg(unix)
@@ -462,12 +434,15 @@ pub fn lock_file_path() -> NormalizedPath {
         let dir = std::path::Path::new(&endpoint)
             .parent()
             .unwrap_or_else(|| std::path::Path::new("/tmp"));
-        dir.join(lock_file_name(namespace.as_deref())).into()
-    }
-    #[cfg(windows)]
-    {
-        zccache_core::config::default_cache_dir().join(lock_file_name(namespace.as_deref()))
-    }
+        dir.join(lock_file_name(namespace.as_deref()))
+    };
+    let windows_lock =
+        { zccache_core::config::default_cache_dir().join(lock_file_name(namespace.as_deref())) };
+    crate::platform::ipc::select_host_text(
+        file_lock.to_string_lossy().into_owned(),
+        windows_lock.to_string_lossy().into_owned(),
+    )
+    .into()
 }
 
 /// The `v<VERSION>` tag folded into every endpoint + lock name (#1004 / #694
@@ -483,7 +458,6 @@ fn version_tag() -> String {
     zccache_core::config::versioned_subdir()
 }
 
-#[cfg(unix)]
 fn socket_name(namespace: Option<&str>) -> String {
     let v = version_tag();
     match namespace {
@@ -492,7 +466,6 @@ fn socket_name(namespace: Option<&str>) -> String {
     }
 }
 
-#[cfg(unix)]
 fn daemon_socket_name(namespace: Option<&str>) -> String {
     let v = version_tag();
     match namespace {
@@ -501,15 +474,22 @@ fn daemon_socket_name(namespace: Option<&str>) -> String {
     }
 }
 
-#[cfg(windows)]
 fn pipe_name(base: &str, namespace: Option<&str>) -> String {
     let base = zccache_core::config::sanitize_ipc_component(base)
         .unwrap_or_else(|| String::from("unknown"));
     let v = version_tag();
     match namespace {
-        Some(ns) => format!(r"\\.\pipe\zccache-{base}-{ns}-{v}"),
-        None => format!(r"\\.\pipe\zccache-{base}-{v}"),
+        Some(ns) => format!("zccache-{base}-{ns}-{v}"),
+        None => format!("zccache-{base}-{v}"),
     }
+}
+
+fn default_file_endpoint(namespace: Option<&str>) -> String {
+    if let Some(runtime_dir) = crate::platform::host::runtime_dir() {
+        return format!("{runtime_dir}/zccache/{}", socket_name(namespace));
+    }
+    let user = crate::platform::host::current_user().unwrap_or_else(|| String::from("unknown"));
+    format!("/tmp/zccache-{user}/{}", socket_name(namespace))
 }
 
 fn lock_file_name(namespace: Option<&str>) -> String {
@@ -543,6 +523,11 @@ pub fn read_lock_file_pid() -> Option<u32> {
 /// Remove the lock file.
 pub fn remove_lock_file() {
     let _ = std::fs::remove_file(lock_file_path());
+}
+
+/// Retire a stale native endpoint without exposing its host representation.
+pub fn retire_endpoint(endpoint: &str) -> std::io::Result<()> {
+    crate::platform::ipc::Endpoint::from_native(endpoint).retire()
 }
 
 /// Path where the daemon records the identity consumed by
@@ -594,17 +579,8 @@ pub fn running_process_endpoint(
     }
 }
 
-#[cfg(windows)]
 fn running_process_endpoint_path(endpoint: &str) -> String {
-    endpoint
-        .strip_prefix(r"\\.\pipe\")
-        .unwrap_or(endpoint)
-        .to_string()
-}
-
-#[cfg(unix)]
-fn running_process_endpoint_path(endpoint: &str) -> String {
-    endpoint.to_string()
+    crate::platform::ipc::Endpoint::from_native(endpoint).to_running_process()
 }
 
 /// Build the current process identity that a zccache daemon exposes to
@@ -748,54 +724,7 @@ pub fn running_process_disabled() -> bool {
 /// This is intended as a last-resort escape hatch when the daemon is no longer
 /// reachable over IPC, so graceful shutdown is not possible.
 pub fn force_kill_process(pid: u32) -> Result<(), std::io::Error> {
-    #[cfg(unix)]
-    {
-        // SAFETY: kill is called with a PID provided by the caller and a fixed
-        // signal value. No pointers are involved.
-        extern "C" {
-            fn kill(pid: i32, sig: i32) -> i32;
-        }
-        const SIGKILL: i32 = 9;
-        let rc = unsafe { kill(pid as i32, SIGKILL) };
-        if rc == 0 {
-            Ok(())
-        } else {
-            Err(std::io::Error::last_os_error())
-        }
-    }
-    #[cfg(windows)]
-    {
-        // windows-sys defines CloseHandle/OpenProcess/TerminateProcess with
-        // HANDLE/BOOL newtypes; our local extern uses the underlying isize/i32
-        // for ergonomics. Same ABI, different signature in the type-system,
-        // so the linker accepts both but rustc warns. -D warnings on CI
-        // promotes the warn to error.
-        #[allow(clashing_extern_declarations)]
-        extern "system" {
-            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
-            fn TerminateProcess(handle: isize, exit_code: u32) -> i32;
-            fn CloseHandle(handle: isize) -> i32;
-        }
-        const PROCESS_TERMINATE: u32 = 0x0001;
-        const SYNCHRONIZE: u32 = 0x0010_0000;
-        unsafe {
-            let handle = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, pid);
-            if handle == 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            let result = TerminateProcess(handle, 1);
-            let err = if result == 0 {
-                Some(std::io::Error::last_os_error())
-            } else {
-                None
-            };
-            CloseHandle(handle);
-            match err {
-                Some(err) => Err(err),
-                None => Ok(()),
-            }
-        }
-    }
+    crate::platform::process::terminate::force(pid)
 }
 
 /// Check if a process with the given PID is actually running.
@@ -817,42 +746,7 @@ pub fn force_kill_process(pid: u32) -> Result<(), std::io::Error> {
 /// one that is still running.
 #[must_use]
 pub fn is_process_alive(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        // SAFETY: kill(pid, 0) is a standard POSIX call that checks process
-        // existence without sending any signal.
-        extern "C" {
-            fn kill(pid: i32, sig: i32) -> i32;
-        }
-        unsafe { kill(pid as i32, 0) == 0 }
-    }
-    #[cfg(windows)]
-    {
-        // See CloseHandle note in force_kill_process above.
-        #[allow(clashing_extern_declarations)]
-        extern "system" {
-            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
-            fn CloseHandle(handle: isize) -> i32;
-            fn WaitForSingleObject(handle: isize, milliseconds: u32) -> u32;
-        }
-        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-        const SYNCHRONIZE: u32 = 0x0010_0000;
-        const WAIT_TIMEOUT: u32 = 0x0000_0102;
-        unsafe {
-            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid);
-            if handle == 0 {
-                return false;
-            }
-            // WAIT_TIMEOUT means the process object has not yet been signaled
-            // — i.e. the process really is still running. Any other return
-            // value (WAIT_OBJECT_0 = signaled = exited, WAIT_FAILED, WAIT_ABANDONED)
-            // means the process is not running, even if a zombie process
-            // object keeps the PID nominally addressable.
-            let status = WaitForSingleObject(handle, 0);
-            CloseHandle(handle);
-            status == WAIT_TIMEOUT
-        }
-    }
+    crate::platform::process::inspect::is_alive(pid)
 }
 
 /// Probe whether a daemon is **already serving** at `endpoint`. Returns
@@ -933,7 +827,7 @@ pub fn verify_pid_exe_stem(pid: u32, expected_stem: &str) -> bool {
     if !is_process_alive(pid) {
         return false;
     }
-    match daemon_exe_for_pid(pid) {
+    match crate::platform::process::inspect::executable_path(pid) {
         // Got an exe path — only trust the PID if it points at our daemon.
         Some(exe) => exe_stem_matches(&exe, expected_stem),
         // Platform doesn't support reading the exe path. Fall back to the
@@ -951,82 +845,6 @@ fn exe_stem_matches(path: &std::path::Path, expected_stem: &str) -> bool {
     stem == expected_stem
 }
 
-#[cfg(target_os = "linux")]
-fn daemon_exe_for_pid(pid: u32) -> Option<NormalizedPath> {
-    std::fs::read_link(format!("/proc/{pid}/exe"))
-        .ok()
-        .map(NormalizedPath::from)
-}
-
-#[cfg(target_os = "macos")]
-fn daemon_exe_for_pid(pid: u32) -> Option<NormalizedPath> {
-    // `proc_pidpath` from libproc (`libSystem.dylib`) — same one
-    // `ps`/`lsof` use under the hood. Available on macOS 10.5+.
-    //
-    // PROC_PIDPATHINFO_MAXSIZE is documented as 4 * MAXPATHLEN (= 4096)
-    // in `<sys/proc_info.h>`. Allocate exactly that and let the call
-    // tell us how many bytes it wrote.
-    const PROC_PIDPATHINFO_MAXSIZE: usize = 4096;
-
-    extern "C" {
-        fn proc_pidpath(pid: i32, buf: *mut std::ffi::c_void, bufsize: u32) -> i32;
-    }
-
-    let mut buf = vec![0u8; PROC_PIDPATHINFO_MAXSIZE];
-    // SAFETY: pid is a u32 from the caller, buf is a freshly-allocated
-    // Vec we own. bufsize matches the allocation size. proc_pidpath
-    // returns the number of bytes written (>0) or -1 on error and is
-    // tolerant of stale PIDs (returns ESRCH).
-    let written = unsafe { proc_pidpath(pid as i32, buf.as_mut_ptr().cast(), buf.len() as u32) };
-    if written <= 0 {
-        // EPERM (process belongs to another user), ESRCH (pid gone), etc.
-        // Don't trust the PID — recycled-PID defense fires.
-        return None;
-    }
-    buf.truncate(written as usize);
-    let s = std::str::from_utf8(&buf).ok()?;
-    Some(NormalizedPath::from(std::path::PathBuf::from(s)))
-}
-
-#[cfg(windows)]
-fn daemon_exe_for_pid(pid: u32) -> Option<NormalizedPath> {
-    // See CloseHandle note in force_kill_process above.
-    #[allow(clashing_extern_declarations)]
-    extern "system" {
-        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
-        fn CloseHandle(handle: isize) -> i32;
-        fn QueryFullProcessImageNameW(
-            handle: isize,
-            flags: u32,
-            buffer: *mut u16,
-            size: *mut u32,
-        ) -> i32;
-    }
-    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle == 0 {
-            return None;
-        }
-        let mut buf = vec![0u16; 32_768];
-        let mut size = buf.len() as u32;
-        let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size);
-        CloseHandle(handle);
-        if ok == 0 {
-            return None;
-        }
-        use std::os::windows::ffi::OsStringExt;
-        let os = std::ffi::OsString::from_wide(&buf[..size as usize]);
-        Some(NormalizedPath::new(&os))
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn daemon_exe_for_pid(_pid: u32) -> Option<NormalizedPath> {
-    None
-}
-
 /// Check if a daemon is already running. Returns the PID if alive.
 #[must_use]
 pub fn check_running_daemon() -> Option<u32> {
@@ -1037,12 +855,8 @@ pub fn check_running_daemon() -> Option<u32> {
         // Stale lock file — clean up. The PID may be dead, or may belong to
         // an unrelated process that recycled the lock file's PID (issue #132).
         remove_lock_file();
-        #[cfg(unix)]
-        {
-            // Also remove stale socket on Unix
-            let endpoint = default_endpoint();
-            let _ = std::fs::remove_file(&endpoint);
-        }
+        let endpoint = crate::platform::ipc::Endpoint::from_native(default_endpoint());
+        let _ = endpoint.retire();
         None
     }
 }

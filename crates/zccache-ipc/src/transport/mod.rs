@@ -23,26 +23,17 @@ use tokio::io::{AsyncWriteExt, ReadHalf, WriteHalf};
 use super::error::IpcError;
 
 mod framing;
-#[cfg(windows)]
-mod pipe_security;
 mod probe;
-#[cfg(unix)]
-mod unix;
-#[cfg(windows)]
-mod windows;
 
 use framing::{decode_response_wire, recv_bincode_loop, recv_wire_loop};
 
-#[cfg(unix)]
-pub use unix::connect;
-#[cfg(windows)]
-pub use windows::{connect, IpcClientConnection};
+pub type IpcClientConnection = IpcConnection;
 
 /// Suggested per-recv timeout for client-side request/response IPC.
 ///
-/// Five minutes. Covers the slowest legitimate workload — unity / LTO
+/// Five minutes. Covers the slowest legitimate workload â€” unity / LTO
 /// builds where the daemon runs the compile inline and only responds when
-/// the linker finishes — while still bounding the rare "daemon alive but
+/// the linker finishes â€” while still bounding the rare "daemon alive but
 /// stuck" failure mode.
 ///
 /// **This is an opt-in default; the IPC layer does not apply it on its
@@ -62,13 +53,9 @@ pub use windows::{connect, IpcClientConnection};
 /// bumping the const.
 pub const DEFAULT_CLIENT_RECV_TIMEOUT: Duration = Duration::from_secs(300);
 
-// ── Platform-specific connection inner ──────────────────────────────
+// â”€â”€ Platform-specific connection inner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-#[cfg(unix)]
-type StreamType = tokio::net::UnixStream;
-
-#[cfg(windows)]
-type StreamType = tokio::net::windows::named_pipe::NamedPipeServer;
+type StreamType = crate::platform::ipc::Stream;
 
 /// A bidirectional IPC connection that sends/receives protocol messages.
 ///
@@ -88,9 +75,20 @@ pub struct IpcConnection {
     pub(super) next_frame_request_id: u64,
 }
 
-// ── IpcConnection impl (server-side on Windows, both on Unix) ───────
+// â”€â”€ IpcConnection impl (server-side on Windows, both on Unix) â”€â”€â”€â”€â”€â”€â”€
 
 impl IpcConnection {
+    fn from_stream(stream: StreamType) -> Self {
+        let (reader, writer) = tokio::io::split(stream);
+        Self {
+            reader,
+            writer,
+            read_buf: BytesMut::with_capacity(4096),
+            recv_timeout: None,
+            next_frame_request_id: 1,
+        }
+    }
+
     /// Serve a running-process `BackendHandle` endpoint identity probe.
     ///
     /// Returns `true` when this connection was a probe and has been answered.
@@ -286,12 +284,12 @@ impl IpcConnection {
     }
 
     /// Resolve when the peer disconnects while the server is NOT otherwise
-    /// reading a request — i.e. while a long-running handler (compile / link /
+    /// reading a request â€” i.e. while a long-running handler (compile / link /
     /// exec) is in flight and the client is blocked awaiting the response.
     ///
     /// The server dispatch loop races this against the handler future
-    /// (`tokio::select!`). If the client goes away — clean EOF, a killed
-    /// process, a broken pipe — this resolves, the losing handler future is
+    /// (`tokio::select!`). If the client goes away â€” clean EOF, a killed
+    /// process, a broken pipe â€” this resolves, the losing handler future is
     /// dropped, and the daemon-owned compiler [`tokio::process::Child`]
     /// (spawned with `kill_on_drop(true)`) is reaped as a side effect. Without
     /// this, the daemon parks inside the compile await, never notices the dead
@@ -300,7 +298,7 @@ impl IpcConnection {
     ///
     /// Bytes that arrive while waiting (an unexpected pipelined request) are
     /// buffered via the shared `read_next_chunk` path and the method keeps
-    /// waiting — it resolves ONLY on disconnect, never on data. This is
+    /// waiting â€” it resolves ONLY on disconnect, never on data. This is
     /// cancellation-safe: dropping the returned future (the common case, when
     /// the handler wins the race) leaves any buffered bytes intact in
     /// `read_buf` for the next `recv`/`recv_wire` call.
@@ -319,7 +317,7 @@ impl IpcConnection {
 
     /// The recv read loop, factored out so both `recv` and
     /// `recv_with_timeout` share the same implementation. Always
-    /// unbounded — the wrapping methods add the deadline.
+    /// unbounded â€” the wrapping methods add the deadline.
     async fn recv_loop<T: serde::de::DeserializeOwned>(&mut self) -> Result<Option<T>, IpcError> {
         recv_bincode_loop(&mut self.reader, &mut self.read_buf).await
     }
@@ -335,275 +333,112 @@ impl IpcConnection {
     }
 }
 
-// ── IpcListener ─────────────────────────────────────────────────────
+// â”€â”€ IpcListener â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-/// Listens for incoming IPC connections.
+/// Listens for incoming local IPC connections through the platform facade.
 pub struct IpcListener {
-    pub(super) inner: ListenerInner,
-}
-
-#[cfg(unix)]
-pub(super) struct ListenerInner {
-    listener: tokio::net::UnixListener,
-}
-
-#[cfg(windows)]
-pub(super) struct ListenerInner {
-    pub(super) endpoint: String,
-    /// Pool of pre-created pipe instances waiting for clients.
-    /// Multiple pending instances eliminate the busy window between
-    /// accepting a connection and creating the next instance (Bug 4 fix).
-    pub(super) pool: std::collections::VecDeque<tokio::net::windows::named_pipe::NamedPipeServer>,
+    inner: crate::platform::ipc::Listener,
 }
 
 impl IpcListener {
     /// Bind to the given endpoint and start listening.
     pub fn bind(endpoint: &str) -> Result<Self, IpcError> {
-        #[cfg(unix)]
-        {
-            // Remove stale socket if it exists
-            let _ = std::fs::remove_file(endpoint);
-            if let Some(parent) = std::path::Path::new(endpoint).parent() {
-                // #1171: anyone who can connect to this socket can have the
-                // daemon spawn a process of their choosing, so the directory
-                // that contains it is an access-control boundary. A plain
-                // `create_dir_all` left it at `0777 & ~umask`.
-                zccache_core::config::create_dir_all_private(parent)?;
-                // #1171 item 4: the line above only sets the mode on
-                // directories it creates, so an install predating that change
-                // still has a loose one. Repair it, and if it cannot be
-                // repaired refuse to serve — binding into a directory other
-                // local users can write means they can substitute this socket,
-                // and the endpoint is arbitrary process execution.
-                match zccache_core::config::ensure_dir_private(parent) {
-                    Ok(false) => {}
-                    Ok(true) => {
-                        tracing::warn!(
-                            event = "insecure_socket_dir",
-                            path = %parent.display(),
-                            outcome = "tightened",
-                            "socket directory was group/other-writable and has been \
-                             tightened to 0700; another local user could have \
-                             substituted the endpoint until now"
-                        );
-                        zccache_core::lifecycle::write_event(
-                            zccache_core::lifecycle::EVENT_INSECURE_SOCKET_DIR,
-                            serde_json::json!({
-                                "path": parent.display().to_string(),
-                                "outcome": "tightened",
-                            }),
-                        );
-                    }
-                    Err(err) => {
-                        tracing::error!(
-                            event = "insecure_socket_dir",
-                            path = %parent.display(),
-                            outcome = "refused",
-                            "refusing to bind: {err}"
-                        );
-                        zccache_core::lifecycle::write_event(
-                            zccache_core::lifecycle::EVENT_INSECURE_SOCKET_DIR,
-                            serde_json::json!({
-                                "path": parent.display().to_string(),
-                                "outcome": "refused",
-                                "detail": err.to_string(),
-                            }),
-                        );
-                        return Err(err.into());
-                    }
-                }
-            }
-            let listener = tokio::net::UnixListener::bind(endpoint)?;
-            // Tighten the socket itself too. On Linux this is what stops a
-            // permissive umask from leaving it world-connectable; on
-            // macOS/BSD the kernel ignores these bits on `connect()`, which
-            // is why the `0700` parent above is the load-bearing control
-            // there rather than this line.
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(endpoint, std::fs::Permissions::from_mode(0o600));
-            }
-            Ok(Self {
-                inner: ListenerInner { listener },
-            })
-        }
-        #[cfg(windows)]
-        {
-            use pipe_security::create_pipe_instance;
-            use std::collections::VecDeque;
-
-            // Pool sizing rationale (issue #666 follow-up, application-layer
-            // back-pressure precondition): the pre-existing `.min(16)` cap
-            // made the named-pipe accept queue the dominant bottleneck under
-            // a ninja burst of ~670 parallel TUs. The OS layer would return
-            // `ERROR_PIPE_BUSY` to clients before the daemon ever saw the
-            // request, which aliased "daemon overloaded" with "daemon dead"
-            // at the client. Raising the cap moves the bottleneck inside
-            // the daemon where it can be expressed as an in-band
-            // `Response::Backpressure` reply.
-            let pool_size = std::env::var("ZCCACHE_PIPE_POOL_SIZE")
-                .ok()
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or_else(|| {
-                    std::thread::available_parallelism()
-                        .map(|n| n.get().saturating_mul(4))
-                        .unwrap_or(64)
-                        .clamp(16, 128)
-                });
-
-            // Issue #774: the first pipe instance asserts namespace ownership
-            // via `first_pipe_instance(true)`. After a hard-killed daemon
-            // (`taskkill /F`), the pipe name can linger briefly in the OS
-            // namespace while the kernel reaps the dead process's handles.
-            // Retry the first bind with backoff to ride out that GC window
-            // before declaring the namespace contested — the alternative is
-            // the daemon failing to start and forcing a reboot. The
-            // companion fix in `is_process_alive` (also #774) stops the CLI
-            // from spinning against a still-referenced-but-terminated PID,
-            // which is what allowed the orphan pipe to outlive the daemon
-            // long enough to matter here.
-            const FIRST_BIND_ATTEMPTS: u32 = 8;
-            const FIRST_BIND_INITIAL_DELAY_MS: u64 = 20;
-            const FIRST_BIND_MAX_DELAY_MS: u64 = 160;
-
-            let mut pool = VecDeque::with_capacity(pool_size);
-            let first_pipe = {
-                let mut attempt = 0u32;
-                let mut delay_ms = FIRST_BIND_INITIAL_DELAY_MS;
-                loop {
-                    match create_pipe_instance(endpoint, true) {
-                        Ok(p) => break p,
-                        Err(e) => {
-                            attempt += 1;
-                            if attempt >= FIRST_BIND_ATTEMPTS {
-                                return Err(e.into());
-                            }
-                            tracing::warn!(
-                                attempt,
-                                max_attempts = FIRST_BIND_ATTEMPTS,
-                                error = %e,
-                                endpoint = %endpoint,
-                                "first pipe instance bind failed; retrying after backoff (issue #774)"
-                            );
-                            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-                            delay_ms = (delay_ms * 2).min(FIRST_BIND_MAX_DELAY_MS);
-                        }
-                    }
-                }
-            };
-            pool.push_back(first_pipe);
-            for _ in 1..pool_size {
-                let pipe = create_pipe_instance(endpoint, false)?;
-                pool.push_back(pipe);
-            }
-
-            Ok(Self {
-                inner: ListenerInner {
-                    endpoint: endpoint.to_string(),
-                    pool,
-                },
-            })
-        }
+        let native = crate::platform::ipc::Endpoint::from_native(endpoint);
+        let result = crate::platform::ipc::Listener::bind(&native);
+        Self::finish_bind(endpoint, &native, result)
     }
 
-    /// Bind to the given endpoint from an async context.
-    ///
-    /// The synchronous [`Self::bind`] API remains available for tests and
-    /// true sync callers. Async production paths should use this bridge so
-    /// filesystem and named-pipe setup do not run on an executor worker.
+    /// Bind from an asynchronous caller.
     pub async fn bind_async(endpoint: &str) -> Result<Self, IpcError> {
-        #[cfg(unix)]
-        {
-            let endpoint = endpoint.to_owned();
-            tokio::task::spawn_blocking(move || Self::bind(&endpoint))
-                .await
-                .map_err(join_error_to_ipc)?
-        }
-        #[cfg(windows)]
-        {
-            windows::bind_listener_async(endpoint).await
+        let native = crate::platform::ipc::Endpoint::from_native(endpoint);
+        let result = crate::platform::ipc::Listener::bind_async(&native).await;
+        Self::finish_bind(endpoint, &native, result)
+    }
+
+    /// Accept the next same-user connection.
+    pub async fn accept(&mut self) -> Result<IpcConnection, IpcError> {
+        loop {
+            let (stream, peer) = self.inner.accept().await?;
+            if let Some(reason) = peer.rejection_reason() {
+                tracing::warn!(
+                    event = "ipc_peer_rejected",
+                    reason,
+                    peer_pid = ?peer.pid(),
+                    "refused an IPC connection authenticated as another user"
+                );
+                zccache_core::lifecycle::write_event(
+                    zccache_core::lifecycle::EVENT_IPC_PEER_REJECTED,
+                    serde_json::json!({
+                        "reason": reason,
+                        "peer_pid": peer.pid(),
+                    }),
+                );
+                continue;
+            }
+            return Ok(IpcConnection::from_stream(stream));
         }
     }
 
-    /// Accept a new connection.
-    ///
-    /// On Unix, returns an `IpcConnection` wrapping a `UnixStream`.
-    /// On Windows, returns an `IpcConnection` wrapping a `NamedPipeServer`.
-    pub async fn accept(&mut self) -> Result<IpcConnection, IpcError> {
-        #[cfg(unix)]
-        {
-            let self_uid = unix::self_uid();
-            loop {
-                let (stream, _addr) = self.inner.listener.accept().await?;
-                if let Err(rejection) = unix::verify_peer_is_self(&stream, self_uid) {
-                    // Drop the connection without replying: the peer is not
-                    // entitled to a protocol error that would confirm the
-                    // daemon's version or liveness.
-                    drop(stream);
-                    tracing::warn!(
-                        event = "ipc_peer_rejected",
-                        reason = rejection.reason(),
-                        "refused an IPC connection: {}",
-                        rejection.detail()
-                    );
-                    zccache_core::lifecycle::write_event(
-                        zccache_core::lifecycle::EVENT_IPC_PEER_REJECTED,
-                        serde_json::json!({
-                            "reason": rejection.reason(),
-                            "detail": rejection.detail(),
-                        }),
-                    );
-                    continue;
-                }
-                let (reader, writer) = tokio::io::split(stream);
-                return Ok(IpcConnection {
-                    reader,
-                    writer,
-                    read_buf: BytesMut::with_capacity(4096),
-                    recv_timeout: None,
-                    next_frame_request_id: 1,
-                });
-            }
-        }
-        #[cfg(windows)]
-        {
-            self.accept_windows().await
-        }
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn test_drain_pool(&mut self) -> usize {
+        self.inner.drain_accept_pool()
     }
 }
 
-#[cfg(unix)]
-fn join_error_to_ipc(err: tokio::task::JoinError) -> IpcError {
-    IpcError::Io(std::io::Error::other(format!(
-        "async IPC bind worker failed: {err}"
-    )))
+impl IpcListener {
+    fn finish_bind(
+        endpoint: &str,
+        native: &crate::platform::ipc::Endpoint,
+        result: std::io::Result<crate::platform::ipc::Listener>,
+    ) -> Result<Self, IpcError> {
+        let inner = result.map_err(|error| {
+            if native.uses_file_path()
+                && error.to_string().starts_with("insecure socket directory:")
+            {
+                emit_insecure_socket_dir(endpoint, "refused", Some(&error));
+            }
+            IpcError::Io(error)
+        })?;
+        if inner.tightened_parent() {
+            emit_insecure_socket_dir(endpoint, "tightened", None);
+        }
+        Ok(Self { inner })
+    }
+}
+
+fn emit_insecure_socket_dir(endpoint: &str, outcome: &str, error: Option<&std::io::Error>) {
+    let path = std::path::Path::new(endpoint)
+        .parent()
+        .map(|parent| parent.display().to_string())
+        .unwrap_or_else(|| endpoint.to_owned());
+    tracing::warn!(event = "insecure_socket_dir", %path, outcome, error = ?error,
+        "IPC endpoint directory security required attention");
+    zccache_core::lifecycle::write_event(
+        zccache_core::lifecycle::EVENT_INSECURE_SOCKET_DIR,
+        serde_json::json!({ "path": path, "outcome": outcome, "detail": error.map(ToString::to_string) }),
+    );
+}
+
+/// Connect to a local endpoint without adding a protocol round trip.
+pub async fn connect(endpoint: &str) -> Result<IpcConnection, IpcError> {
+    let native = crate::platform::ipc::Endpoint::from_native(endpoint);
+    let timeout = native.connect_timeout();
+    let stream =
+        tokio::time::timeout(timeout, crate::platform::ipc::connect(&native))
+            .await
+            .map_err(|_| {
+                IpcError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("cannot connect to daemon at {endpoint}: connect timed out after {timeout:?}"),
+        ))
+            })??;
+    Ok(IpcConnection::from_stream(stream))
 }
 
 /// Generate a unique test endpoint name.
 pub fn unique_test_endpoint() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-
-    #[cfg(unix)]
-    {
-        format!("/tmp/zccache-test-{pid}-{id}.sock")
-    }
-    #[cfg(windows)]
-    {
-        // Named pipes are global to the Windows session.  The per-process
-        // counter keeps concurrent tests in one test binary apart, but a
-        // freshly launched Cargo test executable can reuse a PID while a
-        // recently closed pipe is still being reaped.  Include a wall-clock
-        // nonce so such a pipe cannot make a later test's first-instance
-        // ownership check fail with ERROR_ACCESS_DENIED.
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        format!(r"\\.\pipe\zccache-test-{pid}-{nonce}-{id}")
-    }
+    crate::platform::ipc::Endpoint::unique_test("zccache").to_string()
 }
 
 #[cfg(test)]

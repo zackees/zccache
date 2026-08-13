@@ -61,40 +61,9 @@ pub fn compute_exclusion_paths(cache_root: &Path) -> Vec<PathBuf> {
 /// On Windows we query the process token for `TokenElevation`. On every
 /// other platform we return `true` — non-Windows callers never need
 /// elevation for the Defender flow because the flow is a no-op there.
-#[cfg(windows)]
 #[must_use]
 pub fn is_elevated() -> bool {
-    use std::mem::size_of;
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows_sys::Win32::Security::{
-        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
-    };
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-
-    unsafe {
-        let mut token: HANDLE = std::ptr::null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
-            return false;
-        }
-        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
-        let mut size: u32 = 0;
-        #[allow(clippy::cast_possible_truncation)]
-        let ok = GetTokenInformation(
-            token,
-            TokenElevation,
-            std::ptr::from_mut::<TOKEN_ELEVATION>(&mut elevation).cast(),
-            size_of::<TOKEN_ELEVATION>() as u32,
-            &mut size,
-        );
-        CloseHandle(token);
-        ok != 0 && elevation.TokenIsElevated != 0
-    }
-}
-
-#[cfg(not(windows))]
-#[must_use]
-pub fn is_elevated() -> bool {
-    true
+    crate::platform::host::is_elevated()
 }
 
 /// True when `ZCCACHE_QUIET` is set to a non-empty value other than `"0"`.
@@ -121,9 +90,6 @@ pub fn quiet_value_silences(value: Option<&str>) -> bool {
 /// the daemon's redirected stderr — eventually the user's terminal — on
 /// every fresh start.
 pub fn maybe_emit_first_run_banner(cache_root: &Path) {
-    if !cfg!(windows) {
-        return;
-    }
     if is_quiet_env() {
         return;
     }
@@ -207,147 +173,70 @@ pub struct ExclusionStatus {
     pub excluded: bool,
 }
 
-#[cfg(windows)]
-mod windows_impl {
-    use super::{DefenderError, ExclusionStatus};
-    use std::path::{Path, PathBuf};
-    use std::process::Command;
+pub fn query_excluded(paths: &[PathBuf]) -> Result<Vec<ExclusionStatus>, DefenderError> {
+    let excluded = crate::platform::host::defender_exclusions().map_err(map_native_error)?;
+    Ok(paths
+        .iter()
+        .map(|path| ExclusionStatus {
+            path: path.clone(),
+            excluded: excluded.iter().any(|entry| paths_equal(path, entry)),
+        })
+        .collect())
+}
 
-    /// Run `Get-MpPreference | Select-Object -ExpandProperty ExclusionPath`
-    /// once and check membership locally. One subprocess regardless of how
-    /// many paths are being checked — Defender's exclusion list is small
-    /// and stable.
-    pub fn query_excluded(paths: &[PathBuf]) -> Result<Vec<ExclusionStatus>, DefenderError> {
-        let raw = run_powershell(&[
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "(Get-MpPreference).ExclusionPath",
-        ])?;
-        let excluded: Vec<String> = raw
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect();
-        Ok(paths
-            .iter()
-            .map(|p| ExclusionStatus {
-                path: p.clone(),
-                excluded: path_matches_any(p, &excluded),
-            })
-            .collect())
+pub fn add_exclusions(paths: &[PathBuf]) -> Result<(), DefenderError> {
+    for path in paths {
+        crate::platform::host::add_defender_exclusion(path).map_err(map_native_error)?;
     }
+    Ok(())
+}
 
-    pub fn add_exclusions(paths: &[PathBuf]) -> Result<(), DefenderError> {
-        for p in paths {
-            let arg = quote_for_powershell(p);
-            run_powershell(&[
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                &format!("Add-MpPreference -ExclusionPath {arg}"),
-            ])?;
+pub fn remove_exclusions(paths: &[PathBuf]) -> Result<(), DefenderError> {
+    for path in paths {
+        crate::platform::host::remove_defender_exclusion(path).map_err(map_native_error)?;
+    }
+    Ok(())
+}
+
+fn map_native_error(error: crate::platform::host::DefenderError) -> DefenderError {
+    match error {
+        crate::platform::host::DefenderError::Unsupported => DefenderError::Unsupported,
+        crate::platform::host::DefenderError::PowerShellNotFound => {
+            DefenderError::PowerShellNotFound
         }
-        Ok(())
-    }
-
-    pub fn remove_exclusions(paths: &[PathBuf]) -> Result<(), DefenderError> {
-        for p in paths {
-            let arg = quote_for_powershell(p);
-            run_powershell(&[
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                &format!("Remove-MpPreference -ExclusionPath {arg}"),
-            ])?;
+        crate::platform::host::DefenderError::CommandFailed { exit_code, stderr } => {
+            DefenderError::PowerShellFailed { exit_code, stderr }
         }
-        Ok(())
-    }
-
-    fn run_powershell(args: &[&str]) -> Result<String, DefenderError> {
-        let output = Command::new("powershell.exe").args(args).output()?;
-        if !output.status.success() {
-            return Err(DefenderError::PowerShellFailed {
-                exit_code: output.status.code(),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            });
+        crate::platform::host::DefenderError::OutputParse(message) => {
+            DefenderError::OutputParse(message)
         }
-        String::from_utf8(output.stdout).map_err(|e| DefenderError::OutputParse(e.to_string()))
-    }
-
-    /// Defender exclusion paths are stored in whatever form the user
-    /// supplied to `Add-MpPreference`. Normalise both sides before
-    /// comparing so `C:\Users\me\.zccache` matches `C:/Users/me/.zccache`
-    /// and trailing separators don't cause false negatives.
-    fn path_matches_any(needle: &Path, haystack: &[String]) -> bool {
-        let needle_norm = normalize_for_compare(needle);
-        haystack
-            .iter()
-            .any(|h| normalize_for_compare(Path::new(h)) == needle_norm)
-    }
-
-    fn normalize_for_compare(p: &Path) -> String {
-        let s: String = p.to_string_lossy().replace('/', "\\");
-        let trimmed = s.trim_end_matches('\\');
-        trimmed.to_ascii_lowercase()
-    }
-
-    fn quote_for_powershell(p: &Path) -> String {
-        // Single-quote so PowerShell does not expand `$`; double single
-        // quotes inside escape the quote character. Paths in Windows do
-        // not contain single quotes in practice, but guard anyway.
-        let s = p.to_string_lossy();
-        format!("'{}'", s.replace('\'', "''"))
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn normalize_for_compare_canonicalizes() {
-            assert_eq!(
-                normalize_for_compare(Path::new("C:/Users/me/.zccache")),
-                normalize_for_compare(Path::new("C:\\Users\\me\\.zccache\\"))
-            );
-        }
-
-        #[test]
-        fn path_matches_any_is_case_insensitive() {
-            let cands = vec!["C:\\Users\\Me\\.zccache".to_string()];
-            assert!(path_matches_any(Path::new("c:/users/me/.zccache"), &cands));
-        }
-
-        #[test]
-        fn quote_for_powershell_escapes_single_quote() {
-            let p = Path::new("C:/it's/weird");
-            assert_eq!(quote_for_powershell(p), "'C:/it''s/weird'");
-        }
+        crate::platform::host::DefenderError::Io(error) => DefenderError::Io(error),
     }
 }
 
-#[cfg(windows)]
-pub use windows_impl::{add_exclusions, query_excluded, remove_exclusions};
-
-#[cfg(not(windows))]
-pub fn query_excluded(_paths: &[PathBuf]) -> Result<Vec<ExclusionStatus>, DefenderError> {
-    Err(DefenderError::Unsupported)
+fn paths_equal(left: &Path, right: &Path) -> bool {
+    normalize_for_compare(left) == normalize_for_compare(right)
 }
 
-#[cfg(not(windows))]
-pub fn add_exclusions(_paths: &[PathBuf]) -> Result<(), DefenderError> {
-    Err(DefenderError::Unsupported)
-}
-
-#[cfg(not(windows))]
-pub fn remove_exclusions(_paths: &[PathBuf]) -> Result<(), DefenderError> {
-    Err(DefenderError::Unsupported)
+fn normalize_for_compare(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn defender_path_comparison_normalizes_case_and_separators() {
+        assert!(paths_equal(
+            Path::new("C:/Users/me/.zccache"),
+            Path::new("c:\\users\\me\\.zccache\\"),
+        ));
+    }
 
     #[test]
     fn compute_paths_includes_cache_root() {
@@ -405,17 +294,21 @@ mod tests {
         assert!(quiet_value_silences(Some("true")));
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn non_windows_is_elevated_true() {
+        if crate::platform::host::is_windows() {
+            return;
+        }
         // Non-Windows always reports elevated so the Defender flow no-ops
         // cleanly on macOS / Linux.
         assert!(is_elevated());
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn non_windows_query_returns_unsupported() {
+        if crate::platform::host::is_windows() {
+            return;
+        }
         let err = query_excluded(&[PathBuf::from("/tmp/x")]).unwrap_err();
         assert!(matches!(err, DefenderError::Unsupported));
         assert_eq!(format!("{err}"), "Defender exclusion is Windows-only.");

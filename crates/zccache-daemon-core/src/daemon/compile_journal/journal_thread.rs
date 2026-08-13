@@ -127,7 +127,7 @@ pub(super) fn journal_thread(
                                     let fallback = open_append(&path).unwrap_or_else(|_| {
                                         // Last resort: /dev/null equivalent. The HashMap
                                         // entry will be cleaned up on CloseSession.
-                                        std::fs::File::open(if cfg!(windows) {
+                                        std::fs::File::open(if crate::platform::host::is_windows() {
                                             "NUL"
                                         } else {
                                             "/dev/null"

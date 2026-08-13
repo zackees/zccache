@@ -16,10 +16,7 @@ pub use artifact::{
     FetchStatus, WaitMode,
 };
 
-#[cfg(unix)]
 type ClientConn = crate::ipc::IpcConnection;
-#[cfg(windows)]
-type ClientConn = crate::ipc::IpcClientConnection;
 
 pub use crate::download_protocol::daemon_mgmt::{
     default_endpoint, lock_file_path, read_lock_file_pid, remove_lock_file, write_lock_file,
@@ -34,20 +31,11 @@ pub fn check_running_daemon() -> Option<u32> {
         Some(pid)
     } else {
         remove_lock_file();
-        #[cfg(unix)]
-        {
-            let _ = std::fs::remove_file(default_endpoint());
-        }
+        let _ = crate::ipc::retire_endpoint(&default_endpoint());
         None
     }
 }
 
-#[cfg(unix)]
-async fn connect_client(endpoint: &str) -> Result<ClientConn, crate::ipc::IpcError> {
-    crate::ipc::connect(endpoint).await
-}
-
-#[cfg(windows)]
 async fn connect_client(endpoint: &str) -> Result<ClientConn, crate::ipc::IpcError> {
     crate::ipc::connect(endpoint).await
 }
@@ -68,40 +56,19 @@ fn run_async<T>(future: impl std::future::Future<Output = Result<T, String>>) ->
 }
 
 fn find_daemon_binary() -> Option<NormalizedPath> {
-    let name = if cfg!(windows) {
-        "zccache-download-daemon.exe"
-    } else {
-        "zccache-download-daemon"
-    };
+    let name =
+        crate::platform::executable::native_name(std::ffi::OsStr::new("zccache-download-daemon"));
 
-    if let Ok(exe) = std::env::current_exe() {
+    if let Ok(exe) = crate::platform::executable::current_image() {
         if let Some(dir) = exe.parent() {
-            let candidate = dir.join(name);
+            let candidate = dir.join(&name);
             if candidate.exists() {
                 return Some(candidate.into());
             }
         }
     }
 
-    which_on_path(name)
-}
-
-fn which_on_path(name: &str) -> Option<NormalizedPath> {
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate.into());
-        }
-        #[cfg(windows)]
-        if Path::new(name).extension().is_none() {
-            let with_exe = dir.join(format!("{name}.exe"));
-            if with_exe.is_file() {
-                return Some(with_exe.into());
-            }
-        }
-    }
-    None
+    crate::platform::executable::find_on_path(&name).map(Into::into)
 }
 
 fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
@@ -118,12 +85,7 @@ fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    crate::platform::process::command::hide_window(&mut cmd);
     cmd.spawn()
         .map_err(|e| format!("failed to spawn download daemon: {e}"))?;
     Ok(())

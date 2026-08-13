@@ -258,24 +258,6 @@ async fn test_parallel_connections() {
 /// injected — a peer that is genuinely us fails the check when the daemon
 /// believes it is someone else, which is the same comparison the real path
 /// makes with the arguments swapped.
-#[cfg(unix)]
-#[tokio::test]
-async fn peer_verification_accepts_self_and_rejects_foreign_uid() {
-    let (stream, _peer) = tokio::net::UnixStream::pair().unwrap();
-    let me = unix::self_uid();
-
-    unix::verify_peer_is_self(&stream, me).expect("our own connection must be trusted");
-
-    let rejection = unix::verify_peer_is_self(&stream, me.wrapping_add(1))
-        .expect_err("a peer whose uid differs from the daemon's must be refused");
-    assert_eq!(rejection.reason(), "foreign-uid");
-    assert!(
-        rejection.detail().contains("is not the daemon uid"),
-        "rejection detail should name both uids, got: {}",
-        rejection.detail()
-    );
-}
-
 /// A same-user client still completes a full round trip through the real
 /// `accept()` loop — the check must not cost the happy path a connection.
 #[cfg(unix)]

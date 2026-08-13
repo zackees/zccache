@@ -1,5 +1,7 @@
 #![allow(clippy::missing_errors_doc)]
 
+pub(crate) use zccache_platform as platform;
+
 pub mod daemon_mgmt;
 
 use serde::{Deserialize, Serialize};

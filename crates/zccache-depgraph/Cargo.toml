@@ -14,6 +14,7 @@ publish = false
 zccache-core = { workspace = true }
 zccache-compiler = { workspace = true }
 zccache-hash = { workspace = true }
+zccache-platform = { workspace = true }
 bincode = { workspace = true }
 blake3 = { workspace = true }
 dashmap = { workspace = true }

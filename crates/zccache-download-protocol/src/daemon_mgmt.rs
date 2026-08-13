@@ -14,36 +14,25 @@ pub fn default_endpoint() -> String {
         return endpoint_for_cache_dir(versioned.as_path());
     }
 
-    #[cfg(unix)]
-    {
-        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            return format!("{runtime_dir}/zccache-download/sock");
-        }
-        let user = std::env::var("USER").unwrap_or_else(|_| String::from("unknown"));
-        format!("/tmp/zccache-download-{user}/sock")
-    }
-    #[cfg(windows)]
-    {
-        let username = std::env::var("USERNAME").unwrap_or_else(|_| String::from("unknown"));
-        let username = zccache_core::config::sanitize_ipc_component(&username)
-            .unwrap_or_else(|| String::from("unknown"));
-        format!(r"\\.\pipe\zccache-download-{username}")
-    }
+    let raw_user =
+        crate::platform::ipc::current_user_name().unwrap_or_else(|| String::from("unknown"));
+    let pipe_user = zccache_core::config::sanitize_ipc_component(&raw_user)
+        .unwrap_or_else(|| String::from("unknown"));
+    let file_path = crate::platform::host::runtime_dir()
+        .map(|runtime_dir| format!("{runtime_dir}/zccache-download/sock"))
+        .unwrap_or_else(|| format!("/tmp/zccache-download-{raw_user}/sock"));
+    crate::platform::ipc::Endpoint::select(file_path, format!("zccache-download-{pipe_user}"))
+        .to_string()
 }
 
 fn endpoint_for_cache_dir(cache_dir: &std::path::Path) -> String {
-    #[cfg(unix)]
-    {
-        cache_dir
-            .join("download-daemon.sock")
-            .to_string_lossy()
-            .into_owned()
-    }
-    #[cfg(windows)]
-    {
-        let suffix = zccache_core::stable_path_id(cache_dir);
-        format!(r"\\.\pipe\zccache-download-{suffix}")
-    }
+    let file_path = cache_dir
+        .join("download-daemon.sock")
+        .to_string_lossy()
+        .into_owned();
+    let suffix = zccache_core::stable_path_id(cache_dir);
+    crate::platform::ipc::Endpoint::select(file_path, format!("zccache-download-{suffix}"))
+        .to_string()
 }
 
 /// Path to the daemon PID lock file.
@@ -118,19 +107,17 @@ mod tests {
         let versioned = cache_dir.join(zccache_core::config::versioned_subdir());
 
         let endpoint = default_endpoint();
-        #[cfg(unix)]
-        assert_eq!(
-            endpoint,
+        let expected = crate::platform::ipc::Endpoint::select(
             versioned
                 .join("download-daemon.sock")
                 .to_string_lossy()
-                .into_owned()
+                .into_owned(),
+            format!(
+                "zccache-download-{}",
+                zccache_core::stable_path_id(&versioned)
+            ),
         );
-        #[cfg(windows)]
-        {
-            assert!(endpoint.starts_with(r"\\.\pipe\zccache-download-"));
-            assert!(endpoint.ends_with(&zccache_core::stable_path_id(&versioned)));
-        }
+        assert_eq!(endpoint, expected.as_str());
 
         assert_eq!(lock_file_path(), versioned.join("download-daemon.lock"));
     }

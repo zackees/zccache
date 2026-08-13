@@ -581,21 +581,18 @@ pub(super) fn start_watcher_tasks(
                             // extended-length prefix but the rest of the
                             // codebase uses plain paths. Strip the prefix
                             // so journal/metadata lookups match.
-                            #[cfg(windows)]
                             let (changed, removed) = {
-                                let strip = |paths: Vec<NormalizedPath>| -> Vec<NormalizedPath> {
-                                    paths
-                                        .into_iter()
-                                        .map(|p| {
-                                            let s = p.to_string_lossy();
-                                            if let Some(stripped) = s.strip_prefix(r"\\?\") {
-                                                stripped.into()
-                                            } else {
-                                                p
-                                            }
-                                        })
-                                        .collect()
-                                };
+                                let strip =
+                                    |paths: Vec<NormalizedPath>| -> Vec<NormalizedPath> {
+                                        paths
+                                            .into_iter()
+                                            .map(|p| {
+                                                NormalizedPath::new(
+                                            crate::platform::fs::path::strip_verbatim_prefix(&p),
+                                        )
+                                            })
+                                            .collect()
+                                    };
                                 (strip(changed), strip(removed))
                             };
                             #[cfg(debug_assertions)]

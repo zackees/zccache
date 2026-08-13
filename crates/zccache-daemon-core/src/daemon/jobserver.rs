@@ -36,36 +36,16 @@
 //!   returns an error on Windows; callers fall back to today's
 //!   uncapped behavior.
 
-#[cfg(unix)]
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
-
-/// One token bucket exposed via the GNU make jobserver protocol.
-///
-/// Created with a fixed capacity at daemon start; lives for the
-/// daemon's lifetime; tokens are returned to the bucket as compile
-/// jobs finish.
-///
-/// Note on the `#[allow(dead_code)]`: this primitive ships ahead of
-/// its consumer. Sub-task #816 of the #813 epic wires it into the
-/// daemon-state init + cargo env injection paths. Removing the allow
-/// when #816 lands is part of that PR's checklist.
+/// One token bucket exposed through the GNU make jobserver protocol.
 #[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct JobserverPool {
     capacity: usize,
-    #[cfg(unix)]
-    inner: PosixPipe,
-    // Windows variant intentionally absent in this sub-task — see
-    // module docs for the deferral rationale.
-    #[cfg(not(unix))]
-    _phantom: std::marker::PhantomData<()>,
+    inner: crate::platform::process::jobserver::NativeJobserver,
 }
 
 #[allow(dead_code)]
 impl JobserverPool {
-    /// Allocate a pool with `capacity` tokens. Returns `Err` on
-    /// unsupported platforms (Windows, until the follow-up sub-task
-    /// adds the named-pipe form) and on POSIX `pipe2` / write failures.
     pub(crate) fn create(capacity: usize) -> std::io::Result<Self> {
         if capacity == 0 {
             return Err(std::io::Error::new(
@@ -73,328 +53,44 @@ impl JobserverPool {
                 "JobserverPool capacity must be > 0; use no jobserver instead of capacity=0",
             ));
         }
-
-        #[cfg(unix)]
-        {
-            let inner = PosixPipe::create(capacity)?;
-            Ok(Self { capacity, inner })
-        }
-
-        #[cfg(not(unix))]
-        {
-            let _ = capacity;
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "JobserverPool is POSIX-only in this build; Windows support \
-                 (named pipe form, --jobserver-auth=fifo:NAME) is a separate \
-                 sub-task of #813",
-            ))
-        }
+        let inner = crate::platform::process::jobserver::NativeJobserver::create(capacity)?;
+        Ok(Self { capacity, inner })
     }
 
-    /// Total tokens this pool was created with. Does not reflect
-    /// current availability — by design, the pool is opaque about its
-    /// in-flight state; the kernel pipe is the only source of truth.
     pub(crate) fn capacity(&self) -> usize {
         self.capacity
     }
 
-    /// The `--jobserver-auth=<value>` payload to inject into spawned
-    /// cargo/rustc env (typically via `MAKEFLAGS`).
-    ///
-    /// POSIX form: `R,W` where R and W are the raw FDs of the pipe's
-    /// read and write ends. The spawned process inherits the FDs
-    /// (we deliberately do NOT set `O_CLOEXEC` here — see
-    /// [`PosixPipe::create`] for the platform notes).
     pub(crate) fn auth_string(&self) -> String {
-        #[cfg(unix)]
-        {
-            format!("{},{}", self.inner.read_fd(), self.inner.write_fd())
-        }
-
-        #[cfg(not(unix))]
-        {
-            unreachable!("JobserverPool cannot be constructed on non-POSIX in this build")
-        }
+        self.inner.auth_string()
     }
 }
-
-#[cfg(unix)]
-#[derive(Debug)]
-struct PosixPipe {
-    read: OwnedFd,
-    write: OwnedFd,
-}
-
-#[cfg(unix)]
-impl PosixPipe {
-    fn create(capacity: usize) -> std::io::Result<Self> {
-        // Create a pipe with both ends marked CLOEXEC so the FDs do not
-        // leak into unrelated forks. The daemon explicitly clears
-        // CLOEXEC at spawn time for children that should inherit
-        // (sub-task #816's responsibility); by default, descendants are
-        // isolated.
-        //
-        // On Linux/BSD/Solarish we use `pipe2(O_CLOEXEC)` — atomic.
-        // On macOS the libc crate exposes no `pipe2`, so we fall back
-        // to the two-call `pipe()` + per-FD `fcntl(F_SETFD, FD_CLOEXEC)`
-        // dance. There is a tiny race between the `pipe()` return and
-        // the two `fcntl` calls during which a concurrent `fork()`
-        // could inherit either FD; the daemon's process model does not
-        // spawn worker forks before this pool is constructed, so the
-        // race is closed in practice. If that invariant changes,
-        // switch to a guarded spawn lock or use the `nix` crate's
-        // `pipe2` wrapper.
-        let mut fds = [0_i32; 2];
-        let rc = unsafe { Self::sys_pipe(&mut fds) };
-        if rc != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let read = unsafe { OwnedFd::from_raw_fd(fds[0]) };
-        let write = unsafe { OwnedFd::from_raw_fd(fds[1]) };
-
-        // Prime the pipe with one byte per token.
-        let bytes = vec![b'+'; capacity];
-        let written = unsafe {
-            libc::write(
-                write.as_raw_fd(),
-                bytes.as_ptr() as *const libc::c_void,
-                bytes.len(),
-            )
-        };
-        if written < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        if (written as usize) != bytes.len() {
-            return Err(std::io::Error::other(format!(
-                "jobserver pipe priming wrote {} of {} bytes",
-                written,
-                bytes.len()
-            )));
-        }
-
-        Ok(Self { read, write })
-    }
-
-    /// Platform-shimmed pipe creation. Returns 0 on success and -1 on
-    /// failure (setting errno via the underlying syscalls).
-    ///
-    /// SAFETY: `fds` must point at a writable `[i32; 2]`.
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "android",
-        target_os = "freebsd",
-        target_os = "netbsd",
-        target_os = "openbsd",
-        target_os = "dragonfly",
-        target_os = "illumos",
-        target_os = "solaris",
-        target_os = "redox",
-        target_os = "emscripten",
-    ))]
-    unsafe fn sys_pipe(fds: &mut [i32; 2]) -> libc::c_int {
-        libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC)
-    }
-
-    /// macOS + iOS fallback: `pipe()` + per-FD `fcntl(F_SETFD, FD_CLOEXEC)`.
-    /// See the doc comment on `create` for the race-window rationale.
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    unsafe fn sys_pipe(fds: &mut [i32; 2]) -> libc::c_int {
-        let rc = libc::pipe(fds.as_mut_ptr());
-        if rc != 0 {
-            return rc;
-        }
-        for &fd in fds.iter() {
-            let flags = libc::fcntl(fd, libc::F_GETFD);
-            if flags == -1 {
-                libc::close(fds[0]);
-                libc::close(fds[1]);
-                return -1;
-            }
-            if libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) == -1 {
-                libc::close(fds[0]);
-                libc::close(fds[1]);
-                return -1;
-            }
-        }
-        0
-    }
-
-    fn read_fd(&self) -> RawFd {
-        self.read.as_raw_fd()
-    }
-
-    fn write_fd(&self) -> RawFd {
-        self.write.as_raw_fd()
-    }
-}
-
-#[cfg(unix)]
-use std::os::fd::FromRawFd;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum FdProbe {
-        Closed,
-        Open { dev: libc::dev_t, ino: libc::ino_t },
-        Error(i32),
-    }
-
-    #[cfg(unix)]
-    impl FdProbe {
-        fn capture(fd: RawFd) -> Self {
-            let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-            let result = unsafe { libc::fstat(fd, stat.as_mut_ptr()) };
-            if result == 0 {
-                let stat = unsafe { stat.assume_init() };
-                return Self::Open {
-                    dev: stat.st_dev,
-                    ino: stat.st_ino,
-                };
-            }
-            match std::io::Error::last_os_error().raw_os_error() {
-                Some(libc::EBADF) => Self::Closed,
-                Some(errno) => Self::Error(errno),
-                None => Self::Error(0),
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    fn assert_pool_drop_closes_endpoints() {
-        let endpoints;
-        {
-            let pool = JobserverPool::create(1).expect("jobserver pool should be created");
-            endpoints = [
-                (
-                    "read",
-                    pool.inner.read.as_raw_fd(),
-                    FdProbe::capture(pool.inner.read.as_raw_fd()),
-                ),
-                (
-                    "write",
-                    pool.inner.write.as_raw_fd(),
-                    FdProbe::capture(pool.inner.write.as_raw_fd()),
-                ),
-            ];
-            for (name, fd, before) in endpoints {
-                assert!(
-                    matches!(before, FdProbe::Open { .. }),
-                    "pre-drop {name} endpoint fd {fd} must be open, observed {before:?}"
-                );
-            }
-        }
-        for (name, fd, before) in endpoints {
-            let after = FdProbe::capture(fd);
-            match after {
-                FdProbe::Closed => {}
-                FdProbe::Open { .. } => assert_ne!(
-                    after, before,
-                    "jobserver {name} endpoint fd {fd} still identifies the dropped pipe; \
-                     before={before:?}, after={after:?}"
-                ),
-                FdProbe::Error(errno) => panic!(
-                    "post-drop fstat for jobserver {name} endpoint fd {fd} failed with \
-                     unexpected errno {errno}; before={before:?}, after={after:?}"
-                ),
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn create_with_capacity_succeeds() {
-        let pool = JobserverPool::create(8).unwrap();
-        assert_eq!(pool.capacity(), 8);
-        let auth = pool.auth_string();
-        // Format: "R,W" where R and W are decimal file descriptors.
-        let parts: Vec<&str> = auth.split(',').collect();
-        assert_eq!(parts.len(), 2, "auth string should be R,W: got {auth:?}");
-        let _r: i32 = parts[0].parse().expect("read fd parseable");
-        let _w: i32 = parts[1].parse().expect("write fd parseable");
-    }
-
-    #[cfg(unix)]
     #[test]
     fn create_with_zero_capacity_is_invalid() {
-        let err = JobserverPool::create(0).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        let error = JobserverPool::create(0).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     }
 
-    #[cfg(unix)]
     #[test]
-    fn pipe_contains_capacity_tokens_after_create() {
-        use std::os::fd::AsRawFd;
-        let pool = JobserverPool::create(3).unwrap();
-        // Drain the pipe directly; each byte is one token. The pool
-        // must have exactly `capacity` bytes available.
-        let mut buf = [0_u8; 32];
-        let n = unsafe {
-            libc::read(
-                pool.inner.read.as_raw_fd(),
-                buf.as_mut_ptr() as *mut libc::c_void,
-                buf.len(),
-            )
-        };
-        assert!(n >= 0, "read should succeed on a freshly-primed pipe");
-        assert_eq!(n as usize, 3, "pipe should hold exactly 3 tokens");
-        for &b in &buf[..3] {
-            assert_eq!(b, b'+', "token byte should be '+': got {b:?}");
+    fn create_matches_host_capability() {
+        match JobserverPool::create(8) {
+            Ok(pool) => {
+                assert!(crate::platform::process::jobserver::is_supported());
+                assert_eq!(pool.capacity(), 8);
+                let auth = pool.auth_string();
+                let parts: Vec<&str> = auth.split(',').collect();
+                assert_eq!(parts.len(), 2, "auth string should be R,W: {auth:?}");
+                assert!(parts.iter().all(|part| part.parse::<i32>().is_ok()));
+            }
+            Err(error) => {
+                assert!(!crate::platform::process::jobserver::is_supported());
+                assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+            }
         }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn dropping_pool_closes_pipe() {
-        assert_pool_drop_closes_endpoints();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    #[ignore = "stress: fd-number reuse while jobserver pools drop"]
-    fn stress_dropping_pool_identity_under_fd_churn() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use std::sync::Arc;
-
-        const CHURN_THREADS: usize = 4;
-        const ITERATIONS: usize = 2_000;
-
-        let stop = Arc::new(AtomicBool::new(false));
-        let churners: Vec<_> = (0..CHURN_THREADS)
-            .map(|_| {
-                let stop = Arc::clone(&stop);
-                std::thread::spawn(move || {
-                    while !stop.load(Ordering::Relaxed) {
-                        let mut fds = [0 as libc::c_int; 2];
-                        if unsafe { libc::pipe(fds.as_mut_ptr()) } == 0 {
-                            unsafe {
-                                libc::close(fds[0]);
-                                libc::close(fds[1]);
-                            }
-                        }
-                    }
-                })
-            })
-            .collect();
-
-        for _ in 0..ITERATIONS {
-            assert_pool_drop_closes_endpoints();
-        }
-
-        stop.store(true, Ordering::Relaxed);
-        for churner in churners {
-            churner.join().expect("fd churn worker panicked");
-        }
-    }
-
-    #[cfg(not(unix))]
-    #[test]
-    fn windows_create_returns_unsupported() {
-        let err = JobserverPool::create(4).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
     }
 }

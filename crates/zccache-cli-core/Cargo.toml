@@ -54,6 +54,7 @@ zccache-fingerprint = { workspace = true }
 zccache-gha = { workspace = true, optional = true }
 zccache-hash = { workspace = true }
 zccache-ipc = { workspace = true }
+zccache-platform = { workspace = true }
 zccache-protocol = { workspace = true }
 zccache-symbols = { workspace = true, optional = true }
 
@@ -91,18 +92,6 @@ flate2 = { workspace = true }
 ruzstd = { workspace = true, optional = true }
 lzma-rs = { workspace = true, optional = true }
 sevenz-rust = { workspace = true, optional = true }
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = [
-    "Win32_Foundation",
-    "Win32_Security",
-    "Win32_Storage_FileSystem",
-    "Win32_System_JobObjects",
-    "Win32_System_Threading",
-] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

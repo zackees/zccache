@@ -298,10 +298,11 @@ pub fn parse_invocation(compiler: &str, args: &[String]) -> ParsedInvocation {
         let mut output_names = std::collections::HashSet::new();
         if compilations.iter().any(|compilation| {
             let output = compilation.output_file.to_string_lossy();
-            #[cfg(windows)]
-            let output = output.to_ascii_lowercase();
-            #[cfg(not(windows))]
-            let output = output.into_owned();
+            let output = if crate::platform::host::is_windows() {
+                output.to_ascii_lowercase()
+            } else {
+                output.into_owned()
+            };
             !output_names.insert(output)
         }) {
             return ParsedInvocation::NonCacheable {

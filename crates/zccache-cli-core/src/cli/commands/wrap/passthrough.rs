@@ -79,7 +79,7 @@ mod tests {
     use super::*;
 
     fn noop_tool() -> std::path::PathBuf {
-        if cfg!(windows) {
+        if crate::platform::host::is_windows() {
             std::path::PathBuf::from("cmd.exe")
         } else {
             std::path::PathBuf::from("true")
@@ -87,7 +87,7 @@ mod tests {
     }
 
     fn noop_args() -> Vec<String> {
-        if cfg!(windows) {
+        if crate::platform::host::is_windows() {
             vec!["/c".to_string(), "exit".to_string(), "0".to_string()]
         } else {
             Vec::new()

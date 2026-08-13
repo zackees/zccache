@@ -206,8 +206,9 @@ fn discover_libclang_path() -> Option<NormalizedPath> {
                 }
             }
 
-            default_libclang_candidates()
+            crate::platform::executable::clang_library_candidates()
                 .into_iter()
+                .map(NormalizedPath::from)
                 .find(|candidate| candidate.exists())
         })
         .clone()
@@ -234,48 +235,8 @@ fn ensure_libclang_env() -> Result<(), ArduinoError> {
     Ok(())
 }
 
-fn default_libclang_candidates() -> Vec<NormalizedPath> {
-    #[cfg(windows)]
-    {
-        vec![
-            NormalizedPath::from(r"C:\Program Files\LLVM\bin\libclang.dll"),
-            NormalizedPath::from(r"C:\Program Files\LLVM\lib\libclang.dll"),
-            NormalizedPath::from(r"C:\Program Files\doxygen\bin\libclang.dll"),
-        ]
-    }
-    #[cfg(target_os = "macos")]
-    {
-        vec![
-            NormalizedPath::from("/opt/homebrew/opt/llvm/lib/libclang.dylib"),
-            NormalizedPath::from("/usr/local/opt/llvm/lib/libclang.dylib"),
-            NormalizedPath::from("/Library/Developer/CommandLineTools/usr/lib/libclang.dylib"),
-        ]
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        vec![
-            NormalizedPath::from("/usr/lib/llvm-18/lib/libclang.so"),
-            NormalizedPath::from("/usr/lib/llvm-17/lib/libclang.so"),
-            NormalizedPath::from("/usr/lib/llvm-16/lib/libclang.so"),
-            NormalizedPath::from("/usr/lib/libclang.so"),
-            NormalizedPath::from("/usr/local/lib/libclang.so"),
-        ]
-    }
-}
-
-#[cfg(windows)]
-fn libclang_filename() -> &'static str {
-    "libclang.dll"
-}
-
-#[cfg(target_os = "macos")]
-fn libclang_filename() -> &'static str {
-    "libclang.dylib"
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn libclang_filename() -> &'static str {
-    "libclang.so"
+fn libclang_filename() -> std::ffi::OsString {
+    crate::platform::executable::native_library_name(std::ffi::OsStr::new("libclang"))
 }
 
 fn collect_existing_declarations(entities: &[Entity<'_>]) -> HashSet<String> {

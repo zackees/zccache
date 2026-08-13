@@ -116,7 +116,7 @@ pub(super) fn effective_strict_paths_mode(
 /// proves out in the field.
 fn windows_pch_guard_default() -> StrictPathsMode {
     let guard_value = std::env::var("ZCCACHE_WINDOWS_PCH_GUARD").ok();
-    windows_pch_guard_default_for(cfg!(target_os = "windows"), guard_value.as_deref())
+    windows_pch_guard_default_for(crate::platform::host::is_windows(), guard_value.as_deref())
 }
 
 /// Pure helper for `windows_pch_guard_default` — separated so unit tests

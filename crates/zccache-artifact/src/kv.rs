@@ -55,29 +55,11 @@ mod long_path {
     /// The dir must already exist; callers in this crate `create_dir_all`
     /// first.
     pub(super) fn ensure_long_path(dir: &Path) -> std::io::Result<NormalizedPath> {
-        #[cfg(windows)]
-        {
-            // `fs::canonicalize` on Windows returns the verbatim form
-            // (`\\?\C:\...` or `\\?\UNC\...`), which is exactly what we need.
-            // If the path already starts with `\\?\` we keep it as-is.
-            if starts_with_verbatim(dir) {
-                return Ok(NormalizedPath::new(dir));
-            }
-            std::fs::canonicalize(dir).map(NormalizedPath::new)
-        }
-        #[cfg(not(windows))]
-        {
+        if crate::platform::host::is_windows() {
+            crate::platform::fs::path::verbatim_path(dir).map(NormalizedPath::new)
+        } else {
             Ok(NormalizedPath::new(dir))
         }
-    }
-
-    #[cfg(windows)]
-    fn starts_with_verbatim(p: &Path) -> bool {
-        // OsStr equality is byte-wise on Windows for the ASCII prefix; using
-        // `to_string_lossy` is fine here because we only inspect the leading
-        // four ASCII bytes.
-        let s = p.as_os_str().to_string_lossy();
-        s.starts_with(r"\\?\")
     }
 }
 
@@ -344,20 +326,7 @@ fn persist_atomically(mut tmp: tempfile::NamedTempFile, dest: &Path) -> KvResult
 /// On Unix `rename(2)` over an open file succeeds, so this is always false and
 /// the retry loop never engages.
 fn is_transient_share_error(error: &std::io::Error) -> bool {
-    #[cfg(windows)]
-    {
-        const ERROR_ACCESS_DENIED: i32 = 5;
-        const ERROR_SHARING_VIOLATION: i32 = 32;
-        matches!(
-            error.raw_os_error(),
-            Some(ERROR_ACCESS_DENIED) | Some(ERROR_SHARING_VIOLATION)
-        )
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = error;
-        false
-    }
+    crate::platform::fs::replace::is_transient_share_error(error)
 }
 
 /// Payload length recorded in a value file's header, without reading the body.

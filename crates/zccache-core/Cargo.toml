@@ -18,22 +18,6 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 zccache-platform = { workspace = true }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = [
-    "Win32_Foundation",
-    "Win32_Security",
-    # #1172 F1e: Get/SetNamedSecurityInfoW + the SDDL converters used to put an
-    # owner-only DACL on the daemon deploy directory.
-    "Win32_Security_Authorization",
-    # #1172 residual: CreateDirectoryW, so the deploy directory is born with
-    # its owner-only DACL instead of being tightened after the fact.
-    "Win32_Storage_FileSystem",
-    "Win32_System_Threading",
-] }
-
 [dev-dependencies]
 dashmap = { workspace = true }
 tempfile = { workspace = true }

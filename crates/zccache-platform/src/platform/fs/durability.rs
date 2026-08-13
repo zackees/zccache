@@ -10,3 +10,8 @@ use crate::platform_imp;
 pub fn sync_directory(path: &Path) -> std::io::Result<()> {
     platform_imp::fs::durability::sync_directory(path)
 }
+
+/// Opens an append-only log while permitting concurrent rename/deletion.
+pub fn open_shared_append(path: &Path) -> std::io::Result<std::fs::File> {
+    platform_imp::fs::durability::open_shared_append(path)
+}

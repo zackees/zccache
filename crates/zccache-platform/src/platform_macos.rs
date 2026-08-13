@@ -5,4 +5,8 @@
 //! where they share call sites. Populated per capability phase; empty until
 //! then.
 
+pub mod executable;
 pub mod fs;
+pub mod host;
+pub mod ipc;
+pub mod process;

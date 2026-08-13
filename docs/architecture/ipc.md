@@ -8,15 +8,24 @@ For the protocol message types see [overview.md](overview.md) (section 2.4). For
 
 ## Transport Abstraction
 
-The `Transport` trait (see overview.md section 2.3) abstracts over Unix domain sockets and Windows named pipes. The daemon and CLI code are written against the trait; platform selection happens at build time via conditional compilation:
+`zccache-platform::ipc` provides one neutral, statically dispatched facade over
+Unix domain sockets and Windows named pipes. Product crates use `Endpoint`,
+`Listener`, `Stream`, `PeerIdentity`, and `connect`; the only host selection is
+the `std::cfg_select!` in `zccache-platform`:
 
 ```rust
-#[cfg(unix)]
-type PlatformTransport = UnixTransport;
-
-#[cfg(windows)]
-type PlatformTransport = NamedPipeTransport;
+let endpoint = Endpoint::select(unix_path, windows_pipe_name);
+let mut listener = Listener::bind(&endpoint)?;
+let client = connect(&endpoint).await?;
+let (server, peer) = listener.accept().await?;
 ```
+
+The facade owns native prefixing, path limits, stale endpoint retirement,
+same-user peer facts, Windows pipe pooling/backoff, and owner-only endpoint
+security. `zccache-ipc` retains product endpoint naming, framing, protocol
+selection, timeouts, broker behavior, and user-facing diagnostics. The facade
+uses concrete stream enums rather than trait objects, so it adds neither a
+handshake nor dynamic dispatch to the request path.
 
 ## Socket Discovery
 

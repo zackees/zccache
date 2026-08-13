@@ -80,7 +80,7 @@ pub fn parse_system_include_output(output: &str) -> Vec<NormalizedPath> {
 /// stderr.
 #[must_use]
 pub fn discovery_args() -> Vec<&'static str> {
-    if cfg!(windows) {
+    if crate::platform::host::is_windows() {
         vec!["-v", "-E", "-x", "c++", "NUL"]
     } else {
         vec!["-v", "-E", "-x", "c++", "/dev/null"]
@@ -102,7 +102,7 @@ pub fn discovery_args() -> Vec<&'static str> {
 /// expects. Use [`discovery_args`] (the slow path) for gcc/MSVC.
 #[must_use]
 pub fn discovery_args_fast() -> Vec<&'static str> {
-    if cfg!(windows) {
+    if crate::platform::host::is_windows() {
         vec!["-###", "-E", "-x", "c++", "NUL"]
     } else {
         vec!["-###", "-E", "-x", "c++", "/dev/null"]

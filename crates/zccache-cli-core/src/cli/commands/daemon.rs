@@ -14,16 +14,12 @@ const PROFILE_START_REASON: &str = "tokio-console-profile-start";
 
 /// Find the daemon binary. Looks next to the CLI binary first, then on PATH.
 pub(crate) fn find_daemon_binary() -> Option<NormalizedPath> {
-    let name = if cfg!(windows) {
-        "zccache-daemon.exe"
-    } else {
-        "zccache-daemon"
-    };
+    let name = crate::platform::executable::native_name(std::ffi::OsStr::new("zccache-daemon"));
 
     // Look next to the CLI binary
-    if let Ok(exe) = std::env::current_exe() {
+    if let Ok(exe) = crate::platform::executable::current_image() {
         if let Some(dir) = exe.parent() {
-            let candidate = dir.join(name);
+            let candidate = dir.join(&name);
             if candidate.exists() {
                 return Some(candidate.into());
             }
@@ -31,28 +27,13 @@ pub(crate) fn find_daemon_binary() -> Option<NormalizedPath> {
     }
 
     // Fall back to PATH
-    which_on_path(name)
+    crate::platform::executable::find_on_path(&name).map(Into::into)
 }
 
 /// Simple PATH lookup (no external crate needed).
 /// On Windows, also tries appending `.exe` if the name has no extension.
 pub(crate) fn which_on_path(name: &str) -> Option<NormalizedPath> {
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate.into());
-        }
-        // On Windows, try with .exe suffix
-        #[cfg(windows)]
-        if std::path::Path::new(name).extension().is_none() {
-            let with_exe = dir.join(format!("{name}.exe"));
-            if with_exe.is_file() {
-                return Some(with_exe.into());
-            }
-        }
-    }
-    None
+    crate::platform::executable::find_on_path(std::ffi::OsStr::new(name)).map(Into::into)
 }
 
 pub(crate) async fn cmd_start(endpoint: &str) -> ExitCode {
@@ -114,8 +95,9 @@ pub(crate) fn profile_env_overrides(bind: &str, open: bool) -> Vec<(String, Stri
 
 fn launch_tokio_console(bind: &str) -> Result<(), String> {
     let mut cmd = std::process::Command::new("tokio-console");
-    #[cfg(windows)]
-    cmd.args(["--lang", "en_US.UTF-8"]);
+    if crate::platform::host::is_windows() {
+        cmd.args(["--lang", "en_US.UTF-8"]);
+    }
     cmd.arg(bind);
     cmd.spawn()
         .map(|_| {

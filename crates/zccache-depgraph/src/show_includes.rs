@@ -412,9 +412,11 @@ mod tests {
         assert_eq!(filtered, diagnostic);
     }
 
-    #[cfg(windows)]
     #[test]
     fn detect_prefix_accepts_unc_paths() {
+        if !crate::platform::host::is_windows() {
+            return;
+        }
         let line = "Hinweis: Einlesen der Datei: \\\\server\\share\\sdk\\foo.h";
         assert_eq!(
             extract_prefix_candidate(line),
@@ -555,9 +557,11 @@ mod tests {
         assert_eq!(filtered, b"warning\r\n");
     }
 
-    #[cfg(windows)]
     #[test]
     fn non_english_locale_detected() {
+        if !crate::platform::host::is_windows() {
+            return;
+        }
         // Simulates Japanese MSVC locale.
         let dir = tempfile::TempDir::new().unwrap();
         let cwd = dir.path();

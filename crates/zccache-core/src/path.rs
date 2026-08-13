@@ -294,24 +294,7 @@ pub fn normalize(path: &Path) -> PathBuf {
 #[must_use]
 pub fn normalize_for_key(path: &Path) -> String {
     let normalized = normalize(path);
-
-    #[cfg(windows)]
-    {
-        let stripped = crate::platform::fs::path::strip_verbatim_prefix(&normalized);
-        crate::platform::fs::path::case_fold(&stripped)
-            .to_string_lossy()
-            .into_owned()
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        crate::platform::fs::path::case_fold(&normalized)
-            .to_string_lossy()
-            .into_owned()
-    }
-
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
+    if crate::platform::host::is_linux() {
         // Issue #550: zero-copy `OsString::into_string()` when the path is
         // valid UTF-8 (always true for the C/C++ headers in the hot
         // `compute_artifact_key` loop). Falls back to lossy conversion if
@@ -322,6 +305,11 @@ pub fn normalize_for_key(path: &Path) -> String {
             .into_os_string()
             .into_string()
             .unwrap_or_else(|os| os.to_string_lossy().into_owned())
+    } else {
+        let stripped = crate::platform::fs::path::strip_verbatim_prefix(&normalized);
+        crate::platform::fs::path::case_fold(&stripped)
+            .to_string_lossy()
+            .into_owned()
     }
 }
 
@@ -391,9 +379,11 @@ mod tests {
         assert_eq!(path.strip_prefix("/sdk/./include"), Ok(Path::new("vector")));
     }
 
-    #[cfg(windows)]
     #[test]
     fn normalized_starts_with_accepts_extended_prefix_and_case_variants() {
+        if !crate::platform::host::is_windows() {
+            return;
+        }
         let path = NormalizedPath::new(r"C:\Users\Builder\include\vector");
         assert!(path.starts_with(r"\\?\c:\users\BUILDER\include"));
         assert_eq!(
@@ -402,9 +392,11 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn normalized_starts_with_accepts_macos_case_variants() {
+        if !crate::platform::host::is_macos() {
+            return;
+        }
         let path = NormalizedPath::new("/private/var/folders/T/include/vector");
         assert!(path.starts_with("/PRIVATE/VAR/FOLDERS/t/include"));
         assert_eq!(
@@ -425,9 +417,11 @@ mod tests {
         assert_eq!(p, PathBuf::from("a/c"));
     }
 
-    #[cfg(windows)]
     #[test]
     fn normalize_for_key_windows_equivalent_spellings_match() {
+        if !crate::platform::host::is_windows() {
+            return;
+        }
         let a = normalize_for_key(Path::new(r"\\?\C:\Work\src\..\src\main.cpp"));
         let b = normalize_for_key(Path::new("c:/work/src/main.cpp"));
         assert_eq!(a, b);
@@ -436,28 +430,31 @@ mod tests {
     #[test]
     fn msys_path_drive_letter() {
         let result = normalize_msys_path("/c/Users/foo/bar");
-        #[cfg(windows)]
-        assert_eq!(result, r"C:\Users\foo\bar");
-        #[cfg(not(windows))]
-        assert_eq!(result, "/c/Users/foo/bar");
+        if crate::platform::host::is_windows() {
+            assert_eq!(result, r"C:\Users\foo\bar");
+        } else {
+            assert_eq!(result, "/c/Users/foo/bar");
+        }
     }
 
     #[test]
     fn msys_path_uppercase_drive() {
         let result = normalize_msys_path("/D/project/build");
-        #[cfg(windows)]
-        assert_eq!(result, r"D:\project\build");
-        #[cfg(not(windows))]
-        assert_eq!(result, "/D/project/build");
+        if crate::platform::host::is_windows() {
+            assert_eq!(result, r"D:\project\build");
+        } else {
+            assert_eq!(result, "/D/project/build");
+        }
     }
 
     #[test]
     fn msys_path_bare_drive() {
         let result = normalize_msys_path("/c");
-        #[cfg(windows)]
-        assert_eq!(result, "C:");
-        #[cfg(not(windows))]
-        assert_eq!(result, "/c");
+        if crate::platform::host::is_windows() {
+            assert_eq!(result, "C:");
+        } else {
+            assert_eq!(result, "/c");
+        }
     }
 
     #[test]

@@ -5,8 +5,8 @@ name = "ban_std_pathbuf"
 # src/allowlist.txt, so a content-only change to the allowlist does
 # not invalidate the cached compiled plugin and the OLD allowlist
 # stays in effect.
-version = "0.3.0"
-description = "Ban std::path::PathBuf outside the legacy allowlist"
+version = "0.4.0"
+description = "Ban std::path::PathBuf outside the platform leaf and legacy allowlist"
 edition = "2021"
 publish = false
 

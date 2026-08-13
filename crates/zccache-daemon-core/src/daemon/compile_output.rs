@@ -226,7 +226,6 @@ fn capture_limit() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
     use crate::daemon::process::CompilePriority;
 
     #[test]
@@ -279,9 +278,11 @@ mod tests {
         assert!(captured.stderr.ends_with(&vec![b'x'; 512]));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn first_chunk_arrives_while_child_is_still_running() {
+        if crate::platform::host::is_windows() {
+            return;
+        }
         let (sender, mut chunks) = mpsc::channel(8);
         let context = OutputContext::new(sender);
         let (raw_sender, raw_receiver) = mpsc::channel(8);
@@ -321,9 +322,11 @@ mod tests {
         assert_eq!(capture.stderr, b"first\nsecond\n");
     }
 
-    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn dropping_streaming_operation_kills_and_reaps_child() {
+        if !crate::platform::host::is_linux() {
+            return;
+        }
         let temp = tempfile::TempDir::new().expect("tempdir");
         let pid_path = temp.path().join("child.pid");
         let script = format!(
