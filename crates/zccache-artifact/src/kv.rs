@@ -571,7 +571,7 @@ impl KvStore {
                 out.push((key, len));
             }
         }
-        out.sort_by(|a, b| a.0.to_hex().cmp(&b.0.to_hex()));
+        out.sort_by_key(|(key, _len)| key.to_hex());
         Ok(out)
     }
 

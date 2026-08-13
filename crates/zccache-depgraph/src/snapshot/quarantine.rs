@@ -141,7 +141,7 @@ pub fn prune(primary: &Path) -> usize {
         return 0;
     }
     // Newest first, so the tail past the cap is the oldest.
-    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    candidates.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
     let mut removed = 0;
     for (_, path) in candidates.drain(MAX_QUARANTINED_SNAPSHOTS..) {
         if std::fs::remove_file(path.as_path()).is_ok() {

@@ -141,30 +141,29 @@ pub(super) fn validate_manifest(
     }
     match plan.packages.ownership_mode {
         None => {}
-        Some(RustPlanOwnershipMode::CookPartitionedV1) => {
+        Some(RustPlanOwnershipMode::CookPartitionedV1)
             if manifest
                 .artifacts
                 .iter()
-                .any(|artifact| artifact.owner != Some(RustPlanArtifactOwnerKind::Zccache))
-            {
-                summary
-                    .key_input_mismatches
-                    .push("partitioned bundle contains a non-zccache owner".to_string());
-                compatible = false;
-            }
+                .any(|artifact| artifact.owner != Some(RustPlanArtifactOwnerKind::Zccache)) =>
+        {
+            summary
+                .key_input_mismatches
+                .push("partitioned bundle contains a non-zccache owner".to_string());
+            compatible = false;
         }
-        Some(RustPlanOwnershipMode::ZccacheAllV1) => {
+        Some(RustPlanOwnershipMode::ZccacheAllV1)
             if manifest
                 .artifacts
                 .iter()
-                .any(|artifact| artifact.owner != Some(RustPlanArtifactOwnerKind::Zccache))
-            {
-                summary
-                    .key_input_mismatches
-                    .push("zccache-all bundle contains a non-zccache owner".to_string());
-                compatible = false;
-            }
+                .any(|artifact| artifact.owner != Some(RustPlanArtifactOwnerKind::Zccache)) =>
+        {
+            summary
+                .key_input_mismatches
+                .push("zccache-all bundle contains a non-zccache owner".to_string());
+            compatible = false;
         }
+        Some(_) => {}
     }
     if compatible {
         Ok(true)
