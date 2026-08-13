@@ -28,6 +28,13 @@ fn owned_child_can_be_observed_and_terminated() {
 }
 
 #[test]
+fn disposable_child_output_and_exit_status_are_observable() {
+    let output = spawn::echo_output("zccache-platform-child").expect("spawn echo child");
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("zccache-platform-child"));
+}
+
+#[test]
 fn child_cpu_ticks_are_nondecreasing() {
     let mut child = spawn::sleeping_child(Duration::from_secs(30)).expect("spawn child");
     let first = inspect::cpu_ticks(child.id()).expect("first CPU reading");
@@ -61,4 +68,16 @@ fn native_jobserver_matches_reported_capability() {
             assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
         }
     }
+}
+
+#[test]
+fn cli_entry_preserves_its_exit_code() {
+    fn success() -> std::process::ExitCode {
+        std::process::ExitCode::SUCCESS
+    }
+
+    assert_eq!(
+        spawn::run_cli_entry(success),
+        std::process::ExitCode::SUCCESS
+    );
 }

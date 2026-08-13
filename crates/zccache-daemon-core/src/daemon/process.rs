@@ -580,7 +580,7 @@ pub(crate) struct CompilePriorityParseError {
 fn owned_child_spawn_options() -> running_process::TokioSpawnOptions {
     running_process::TokioSpawnOptions {
         kill_on_drop: true,
-        kill_when_owner_dies: cfg!(target_os = "linux"),
+        kill_when_owner_dies: zccache_platform::process::spawn::uses_pre_spawn_owner_death(),
         ..Default::default()
     }
 }

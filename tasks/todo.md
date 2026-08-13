@@ -65,8 +65,9 @@ priority application, Windows kill-on-close Job Object ownership, and the POSIX 
 primitive now use the neutral process facade. Product policy and diagnostics remain in their
 callers. Platform tests pass 32/32, focused daemon jobserver tests pass 2/2, and targeted
 production clippy passes with warnings denied. The exact-occurrence baseline fell from 336 to
-156 after also moving stdio redirection and crash-context interpretation; its cache version is
-0.1.5. Docker Desktop's Linux engine pipe was unavailable, so the
+155 after also moving stdio redirection, crash-context interpretation, command window setup,
+CLI stack selection, and pre-spawn owner-death selection; its cache version is 0.1.6. Docker
+Desktop's Linux engine pipe was unavailable, so the
 Linux Dylint runtime gate remains required before publication; local baseline wiring validation
 passes.
 

@@ -6,10 +6,26 @@ pub fn sleeping_child(duration: std::time::Duration) -> std::io::Result<std::pro
     crate::platform_imp::process::spawn::sleeping_child(duration)
 }
 
+/// Spawn a disposable child and capture a marker from its standard output.
+pub fn echo_output(marker: &str) -> std::io::Result<std::process::Output> {
+    crate::platform_imp::process::spawn::echo_output(marker)
+}
+
 /// Attach a daemon-owned child to the host's owner-death primitive.
 ///
 /// Windows uses a process-wide kill-on-close Job Object. Unix ownership is
 /// configured before spawn, so this post-spawn operation is a no-op there.
 pub fn attach_owner_death(child: &tokio::process::Child) -> std::io::Result<()> {
     crate::platform_imp::process::spawn::attach_owner_death(child)
+}
+
+/// Whether the host's owner-death guarantee is installed before process spawn.
+#[must_use]
+pub fn uses_pre_spawn_owner_death() -> bool {
+    crate::platform_imp::process::spawn::uses_pre_spawn_owner_death()
+}
+
+/// Run a CLI entry point with the host's required stack reservation.
+pub fn run_cli_entry(entry: fn() -> std::process::ExitCode) -> std::process::ExitCode {
+    crate::platform_imp::process::spawn::run_cli_entry(entry)
 }

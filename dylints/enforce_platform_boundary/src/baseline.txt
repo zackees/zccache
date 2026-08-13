@@ -6,7 +6,7 @@
 # occurrences fail the lint; stale entries (their occurrence migrated away)
 # fail the lint at runtime. No wildcard, directory, crate, or file exemptions.
 # Generated via ZCCACHE_PLATFORM_BOUNDARY_DUMP_DIR (see lint README).
-# total = 156
+# total = 155
 crates/zccache-artifact/src/kv.rs	attr_cfg	windows	0
 crates/zccache-artifact/src/kv.rs	attr_cfg	windows	1
 crates/zccache-artifact/src/kv.rs	attr_cfg	windows	2
@@ -105,7 +105,6 @@ crates/zccache-daemon-core/src/daemon/compile_output.rs	attr_cfg	unix	1
 crates/zccache-daemon-core/src/daemon/eviction.rs	attr_cfg	windows	0
 crates/zccache-daemon-core/src/daemon/fingerprint.rs	attr_cfg	windows	0
 crates/zccache-daemon-core/src/daemon/process.rs	attr_cfg	windows	0
-crates/zccache-daemon-core/src/daemon/process.rs	cfg_macro	target_os	0
 crates/zccache-daemon-core/src/daemon/server/compiler_hash.rs	attr_cfg	target_os	0
 crates/zccache-daemon-core/src/daemon/server/compiler_hash.rs	attr_cfg	unix	0
 crates/zccache-daemon-core/src/daemon/server/compiler_hash.rs	attr_cfg	unix	1

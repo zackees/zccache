@@ -106,12 +106,7 @@ fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    zccache_platform::process::command::hide_window(&mut cmd);
     cmd.spawn()
         .map_err(|e| format!("failed to spawn download daemon: {e}"))?;
     Ok(())

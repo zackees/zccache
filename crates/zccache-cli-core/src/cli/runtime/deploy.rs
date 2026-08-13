@@ -19,7 +19,6 @@ const ZCCACHE_ENV_PREFIX: &str = "ZCCACHE_";
 /// initialized with the CLI's PID, and the originator marker (used by
 /// running-process for crash-resilient orphan discovery) is set to
 /// `zccache-cli:<pid>` unless an outer tool has already claimed it.
-#[cfg(not(windows))]
 fn apply_cli_spawn_lineage(cmd: &mut std::process::Command) {
     for (k, v) in cli_spawn_lineage_env() {
         cmd.env(k, v);
@@ -480,17 +479,7 @@ pub fn spawn_daemon(endpoint: &str) -> Result<(), String> {
     for (key, value) in zccache_config_env() {
         cmd.env(key, value);
     }
-    #[cfg(not(windows))]
     apply_cli_spawn_lineage(&mut cmd);
-    #[cfg(windows)]
-    {
-        // On Windows the sanitized spawn rebuilds the environment block
-        // itself; pass our lineage overrides via `cmd.env(...)` so they
-        // land in the merged block.
-        for (k, v) in cli_spawn_lineage_env() {
-            cmd.env(k, v);
-        }
-    }
     running_process::spawn_daemon(&mut cmd)
         .map(|_child| ())
         .map_err(|e| format!("failed to spawn daemon (sanitized): {e}"))
