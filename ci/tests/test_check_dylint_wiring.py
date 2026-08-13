@@ -73,3 +73,66 @@ def test_check_rejects_stale_source_prefix_in_array(tmp_path: Path) -> None:
         "stale Dylint source prefix" in error
         for error in check_dylint_wiring.check(tmp_path)
     )
+
+
+def _scaffold_baseline(root: Path, content: str) -> Path:
+    _write(root, "crates/zccache-ipc/src/lib.rs")
+    baseline = root / "dylints" / "example" / "src" / "baseline.txt"
+    baseline.parent.mkdir(parents=True, exist_ok=True)
+    baseline.write_text(content, encoding="utf-8")
+    return baseline
+
+
+def test_platform_baseline_accepts_exact_occurrences(tmp_path: Path) -> None:
+    _scaffold(tmp_path)
+    _scaffold_baseline(
+        tmp_path,
+        "# total = 2\n"
+        "crates/zccache-ipc/src/lib.rs\tattr_cfg\twindows\t0\n"
+        "crates/zccache-ipc/src/lib.rs\tnative_import\tlibc\t0\n",
+    )
+
+    assert check_dylint_wiring.check(tmp_path) == []
+
+
+def test_platform_baseline_rejects_stale_paths_and_zones(tmp_path: Path) -> None:
+    _scaffold(tmp_path)
+    _scaffold_baseline(
+        tmp_path,
+        "# total = 3\n"
+        "crates/gone/src/lib.rs\tattr_cfg\twindows\t0\n"
+        "crates/zccache-platform/src/lib.rs\tattr_cfg\twindows\t0\n"
+        "crates/zccache-ipc/src/tests/x.rs\tattr_cfg\twindows\t0\n",
+    )
+
+    errors = check_dylint_wiring.check(tmp_path)
+    assert any("stale platform-boundary baseline path" in error for error in errors)
+    assert any("allowed zone" in error for error in errors)
+    assert any("outside production scope" in error for error in errors)
+
+
+def test_platform_baseline_rejects_duplicates_and_gaps(tmp_path: Path) -> None:
+    _scaffold(tmp_path)
+    _scaffold_baseline(
+        tmp_path,
+        "# total = 3\n"
+        "crates/zccache-ipc/src/lib.rs\tattr_cfg\twindows\t0\n"
+        "crates/zccache-ipc/src/lib.rs\tattr_cfg\twindows\t0\n"
+        "crates/zccache-ipc/src/lib.rs\tattr_cfg\tunix\t2\n",
+    )
+
+    errors = check_dylint_wiring.check(tmp_path)
+    assert any("duplicate row" in error for error in errors)
+    assert any("not contiguous" in error for error in errors)
+
+
+def test_platform_baseline_total_must_match_rows(tmp_path: Path) -> None:
+    _scaffold(tmp_path)
+    _scaffold_baseline(
+        tmp_path,
+        "# total = 9\n"
+        "crates/zccache-ipc/src/lib.rs\tattr_cfg\twindows\t0\n",
+    )
+
+    errors = check_dylint_wiring.check(tmp_path)
+    assert any("total 9 != 1 rows" in error for error in errors)
