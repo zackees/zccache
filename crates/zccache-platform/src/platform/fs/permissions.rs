@@ -28,7 +28,22 @@ pub fn set_readonly(path: &Path, readonly: bool) -> std::io::Result<()> {
 
 /// Makes `path` writable while preserving every unrelated permission bit.
 pub fn make_writable(path: &Path) -> std::io::Result<()> {
-    platform_imp::fs::permissions::make_writable(path)
+    // A materialization destination can be a dangling link.  Callers remove
+    // that directory entry immediately after this step, so there is no
+    // referent whose permissions could be changed. Treat that specific
+    // entry as writable; an actually absent path remains an error.
+    match platform_imp::fs::permissions::make_writable(path) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && std::fs::symlink_metadata(path)
+                    .map(|metadata| metadata.file_type().is_symlink())
+                    .unwrap_or(false) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Makes `path` executable, touching only the executable bits.
@@ -85,4 +100,5 @@ mod tests {
         let read = fs::read_to_string(&file).expect("read");
         assert_eq!(read, "data");
     }
+
 }
