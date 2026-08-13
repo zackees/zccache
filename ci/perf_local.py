@@ -110,6 +110,18 @@ VOLUME_CARGO_HOME_ZCCACHE = "zccache-perf-cargo-home-zccache"
 # every subsequent invocation — measured at one ~6 s install on first
 # call, ~50 ms (cached) on every call after.
 VOLUME_RUST_STATE = "zccache-perf-rust-state"
+MANAGED_VOLUMES = (
+    VOLUME_TARGET_SOLDR,
+    VOLUME_TARGET_ZCCACHE,
+    VOLUME_CARGO_HOME_SOLDR,
+    VOLUME_CARGO_HOME_ZCCACHE,
+    VOLUME_RUST_STATE,
+)
+LABEL_PREFIX = "io.zccache.perf-local"
+BUILDER_NAME = "zccache-perf-local"
+VOLUME_BUDGET_BYTES = 80 * (1 << 30)
+MAX_MANAGED_IMAGES = 6
+MAX_BUILDKIT_RECORDS = 100
 
 VALID_SCENARIOS = (
     "build-then-check",
@@ -128,6 +140,7 @@ ROLLOUT_SCENARIOS = (
 DEFAULT_SCENARIO = "cold-tar-untar-warm"
 DEFAULT_FIXTURE = "medium"
 
+
 def load_perf_thresholds() -> dict:
     """Load and validate the single source of truth for local timing gates."""
     thresholds = json.loads(PERF_THRESHOLDS_PATH.read_text(encoding="utf-8"))
@@ -140,9 +153,7 @@ def load_perf_thresholds() -> dict:
         raise ValueError("threshold manifest minimum_speedup must be numeric")
     staged_limits = thresholds.get("maximum_staged_overhead_ms_per_publication")
     if not isinstance(staged_limits, dict) or set(staged_limits) != set(VALID_FIXTURES):
-        raise ValueError(
-            "threshold manifest must define staged overhead per publication for every fixture"
-        )
+        raise ValueError("threshold manifest must define staged overhead per publication for every fixture")
     if not all(type(value) is int and value > 0 for value in staged_limits.values()):
         raise ValueError("staged overhead per-publication limits must be positive integers")
     return thresholds
@@ -151,12 +162,8 @@ def load_perf_thresholds() -> dict:
 PERF_THRESHOLDS = load_perf_thresholds()
 LOCAL_MIN_SPEEDUP = float(PERF_THRESHOLDS["minimum_speedup"])
 LOCAL_MAX_WARM_MS = PERF_THRESHOLDS["maximum_warm_ms"]
-LOCAL_MAX_STAGED_OVERHEAD_MS_PER_PUBLICATION = PERF_THRESHOLDS[
-    "maximum_staged_overhead_ms_per_publication"
-]
-LOCAL_MAX_MATERIALIZATION_COPIED_BYTES = int(
-    PERF_THRESHOLDS["maximum_materialization_copied_bytes"]
-)
+LOCAL_MAX_STAGED_OVERHEAD_MS_PER_PUBLICATION = PERF_THRESHOLDS["maximum_staged_overhead_ms_per_publication"]
+LOCAL_MAX_MATERIALIZATION_COPIED_BYTES = int(PERF_THRESHOLDS["maximum_materialization_copied_bytes"])
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +203,172 @@ def image_exists(tag: str) -> bool:
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
+def managed_volume_create_commands() -> list[list[str]]:
+    return [
+        [
+            "docker",
+            "volume",
+            "create",
+            "--label",
+            f"{LABEL_PREFIX}.managed=true",
+            volume,
+        ]
+        for volume in MANAGED_VOLUMES
+    ]
+
+
+def ensure_managed_volumes() -> None:
+    for command in managed_volume_create_commands():
+        subprocess.run(command, capture_output=True, check=True)
+
+
+def buildkit_prune_command(*, fast: bool = False) -> list[str]:
+    command = [
+        "docker",
+        "buildx",
+        "prune",
+        "--builder",
+        BUILDER_NAME,
+    ]
+    if not fast:
+        command.extend(["--filter", "until=24h"])
+    command.append("--force")
+    return command
+
+
+def image_prune_command(*, fast: bool = False) -> list[str]:
+    command = [
+        "docker",
+        "image",
+        "prune",
+        "--force",
+        "--filter",
+        f"label={LABEL_PREFIX}.managed=true",
+    ]
+    if not fast:
+        command.extend(["--filter", "until=24h"])
+    return command
+
+
+def managed_image_count() -> int:
+    result = subprocess.run(
+        ["docker", "image", "ls", "-q", "--filter", f"label={LABEL_PREFIX}.managed=true"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return len(set(result.stdout.split())) if result.returncode == 0 else 0
+
+
+def buildkit_record_count() -> int:
+    result = subprocess.run(
+        ["docker", "buildx", "du", "--builder", BUILDER_NAME, "--format", "{{json .}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return len(result.stdout.splitlines()) if result.returncode == 0 else 0
+
+
+def _builder_exists() -> bool:
+    return (
+        subprocess.run(
+            ["docker", "buildx", "inspect", BUILDER_NAME],
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def _ensure_builder() -> bool:
+    if subprocess.run(["docker", "buildx", "version"], capture_output=True, check=False).returncode != 0:
+        return False
+    if _builder_exists():
+        return True
+    return (
+        subprocess.run(
+            ["docker", "buildx", "create", "--name", BUILDER_NAME],
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def incremental_docker_gc() -> None:
+    """Prune only old zccache-owned artifacts during ordinary harness use."""
+    if _builder_exists():
+        result = subprocess.run(
+            buildkit_prune_command(fast=buildkit_record_count() > MAX_BUILDKIT_RECORDS),
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            print("[perf-local] warning: BuildKit GC failed", file=sys.stderr)
+    result = subprocess.run(
+        image_prune_command(fast=managed_image_count() > MAX_MANAGED_IMAGES),
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        print("[perf-local] warning: managed image GC failed", file=sys.stderr)
+
+
+def prepare_docker_storage() -> None:
+    ensure_managed_volumes()
+    incremental_docker_gc()
+
+
+def volumes_over_budget(usage_bytes: int) -> bool:
+    return usage_bytes > VOLUME_BUDGET_BYTES
+
+
+def volume_usage_command() -> list[str]:
+    command = ["docker", "run", "--rm"]
+    for index, volume in enumerate(MANAGED_VOLUMES):
+        command.extend(["-v", f"{volume}:/managed/{index}:ro"])
+    command.extend(
+        [
+            "--entrypoint",
+            "sh",
+            IMAGE_ZCCACHE,
+            "-c",
+            "du -sk /managed/* | awk '{total += $1} END {print total}'",
+        ]
+    )
+    return command
+
+
+def enforce_volume_budget() -> None:
+    """Rotate fixed warm volumes above 80 GiB, but never while they are active."""
+    for volume in MANAGED_VOLUMES:
+        active = subprocess.run(
+            ["docker", "ps", "-q", "--filter", f"volume={volume}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if active.returncode != 0 or active.stdout.strip():
+            return
+    result = subprocess.run(volume_usage_command(), capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        print("[perf-local] warning: unable to measure Docker volume usage", file=sys.stderr)
+        return
+    try:
+        usage = int(result.stdout.strip()) * 1024
+    except ValueError:
+        print("[perf-local] warning: invalid Docker volume usage result", file=sys.stderr)
+        return
+    if not volumes_over_budget(usage):
+        return
+    print("[perf-local] incremental gc: warm volumes exceed 80 GiB; rotating them")
+    removed = subprocess.run(["docker", "volume", "rm", "--force", *MANAGED_VOLUMES], check=False)
+    if removed.returncode != 0:
+        raise RuntimeError("unable to rotate over-budget zccache Docker volumes")
+    ensure_managed_volumes()
+
+
 # ---------------------------------------------------------------------------
 # Image build steps
 
@@ -205,10 +378,15 @@ def build_image(tag: str, dockerfile: Path, context: Path, *, force: bool) -> No
         print(f"[perf-local] image {tag} already built, skipping (use --rebuild-images to force)")
         return
     print(f"[perf-local] building image {tag} from {dockerfile.relative_to(REPO_ROOT)}")
+    if _ensure_builder():
+        build_command = ["docker", "buildx", "build", "--builder", BUILDER_NAME, "--load"]
+    else:
+        build_command = ["docker", "build"]
     run(
         [
-            "docker",
-            "build",
+            *build_command,
+            "--label",
+            f"{LABEL_PREFIX}.managed=true",
             "-t",
             tag,
             "-f",
@@ -605,11 +783,7 @@ def validate_infrastructure_result(result: dict, results_dir: Path) -> None:
         or not all(isinstance(item, str) and re.fullmatch(r"soldr-aborts-[A-Za-z0-9_-]+[.]jsonl", item) for item in evidence)
         or not isinstance(fallback_evidence, list)
         or not fallback_evidence
-        or not all(
-            isinstance(item, str)
-            and re.fullmatch(r"soldr-daemon-fallbacks-[A-Za-z0-9_-]+[.]jsonl", item)
-            for item in fallback_evidence
-        )
+        or not all(isinstance(item, str) and re.fullmatch(r"soldr-daemon-fallbacks-[A-Za-z0-9_-]+[.]jsonl", item) for item in fallback_evidence)
         or not all(type(value) is int and value >= 0 for value in counts.values())
     )
     if malformed:
@@ -625,9 +799,7 @@ def validate_infrastructure_result(result: dict, results_dir: Path) -> None:
         raise ValueError(f"declared soldr abort evidence is missing: {missing[0]}")
     missing_fallback = [item for item in fallback_evidence if not (results_dir / item).is_file()]
     if missing_fallback:
-        raise ValueError(
-            f"declared soldr daemon fallback evidence is missing: {missing_fallback[0]}"
-        )
+        raise ValueError(f"declared soldr daemon fallback evidence is missing: {missing_fallback[0]}")
     if not valid or any(counts.values()):
         detail = "; ".join(reasons) or "soldr abort detected"
         raise ValueError(
@@ -704,10 +876,7 @@ def evaluate_rollout_result(results_dir: Path, scenario: str, fixture: str) -> l
     if not isinstance(cold_timings, dict) or not isinstance(cold_counters, dict):
         failures.append("malformed cold staged telemetry")
         return failures
-    overhead_ns = sum(
-        int(cold_timings.get(name, 0) or 0)
-        for name in ("hashing", "publication", "miss_materialization")
-    )
+    overhead_ns = sum(int(cold_timings.get(name, 0) or 0) for name in ("hashing", "publication", "miss_materialization"))
     publications = int(cold_counters.get("publication_success", 0) or 0)
     if publications <= 0:
         failures.append("cold path published no staged generations")
@@ -715,16 +884,10 @@ def evaluate_rollout_result(results_dir: Path, scenario: str, fixture: str) -> l
         # These timings accumulate independently across concurrent compiler
         # requests. Normalize their sum so an identical per-publication cost
         # receives the same verdict in a four-crate and a 143-crate fixture.
-        overhead_ms_per_publication = (
-            overhead_ns + publications * 1_000_000 - 1
-        ) // (publications * 1_000_000)
+        overhead_ms_per_publication = (overhead_ns + publications * 1_000_000 - 1) // (publications * 1_000_000)
         overhead_limit = int(LOCAL_MAX_STAGED_OVERHEAD_MS_PER_PUBLICATION[fixture])
         if overhead_ms_per_publication > overhead_limit:
-            failures.append(
-                "staged miss overhead "
-                f"{overhead_ms_per_publication}ms/publication exceeds "
-                f"{overhead_limit}ms/publication for {fixture}"
-            )
+            failures.append("staged miss overhead " f"{overhead_ms_per_publication}ms/publication exceeds " f"{overhead_limit}ms/publication for {fixture}")
 
     counter_sets = [cold_counters]
     if warm_staged is not None:
@@ -1158,9 +1321,7 @@ def _write_repeat_summary(
         "samples": [str(path.relative_to(base_dir)) for path, _ in samples],
         "distributions": {name: _distribution(values) for name, values in timings.items()},
     }
-    (base_dir / "repeat-summary.json").write_text(
-        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    (base_dir / "repeat-summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def run_rollout_matrix(layout: dict[str, Path], jobs: int, repeat: int) -> int:
@@ -1234,6 +1395,9 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
+        prepare_docker_storage()
+        if image_exists(IMAGE_ZCCACHE):
+            enforce_volume_budget()
         runner = SUBCOMMAND_RUNNERS[sys.argv[1]]
         return runner(sys.argv[2:])
 
@@ -1311,11 +1475,14 @@ def main() -> int:
         )
         return 2
 
+    prepare_docker_storage()
+
     print(f"[perf-local] repo root: {REPO_ROOT}")
     print(f"[perf-local] scratch dir: {PERF_LOCAL}")
 
     layout = ensure_volume_dirs()
     build_all_images(force=args.rebuild_images)
+    enforce_volume_budget()
 
     ensure_soldr_source(args.soldr_ref)
     run_soldr_builder(layout, force=args.rebuild_images)
