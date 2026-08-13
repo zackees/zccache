@@ -6,7 +6,7 @@
 # occurrences fail the lint; stale entries (their occurrence migrated away)
 # fail the lint at runtime. No wildcard, directory, crate, or file exemptions.
 # Generated via ZCCACHE_PLATFORM_BOUNDARY_DUMP_DIR (see lint README).
-# total = 155
+# total = 127
 crates/zccache-artifact/src/kv.rs	attr_cfg	windows	0
 crates/zccache-artifact/src/kv.rs	attr_cfg	windows	1
 crates/zccache-artifact/src/kv.rs	attr_cfg	windows	2
@@ -68,33 +68,6 @@ crates/zccache-core/src/path.rs	attr_cfg	windows	6
 crates/zccache-core/src/path.rs	attr_cfg	windows	7
 crates/zccache-core/src/path.rs	attr_cfg	windows	8
 crates/zccache-core/src/path.rs	attr_cfg	windows	9
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	target_os	0
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	target_os	1
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	unix	0
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	unix	1
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	unix	10
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	unix	11
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	unix	12
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	unix	2
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	unix	3
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	unix	4
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	unix	5
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	unix	6
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	unix	7
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	unix	8
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	unix	9
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	windows	0
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	windows	1
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	windows	10
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	windows	11
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	windows	2
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	windows	3
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	windows	4
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	windows	5
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	windows	6
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	windows	7
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	windows	8
-crates/zccache-daemon-core/src/daemon/child_watchdog.rs	attr_cfg	windows	9
 crates/zccache-daemon-core/src/daemon/compile_journal/journal_thread.rs	cfg_macro	windows	0
 crates/zccache-daemon-core/src/daemon/compile_journal/log_io.rs	attr_cfg	windows	0
 crates/zccache-daemon-core/src/daemon/compile_journal/log_io.rs	native_import	std::os::windows	0
@@ -104,7 +77,6 @@ crates/zccache-daemon-core/src/daemon/compile_output.rs	attr_cfg	unix	0
 crates/zccache-daemon-core/src/daemon/compile_output.rs	attr_cfg	unix	1
 crates/zccache-daemon-core/src/daemon/eviction.rs	attr_cfg	windows	0
 crates/zccache-daemon-core/src/daemon/fingerprint.rs	attr_cfg	windows	0
-crates/zccache-daemon-core/src/daemon/process.rs	attr_cfg	windows	0
 crates/zccache-daemon-core/src/daemon/server/compiler_hash.rs	attr_cfg	target_os	0
 crates/zccache-daemon-core/src/daemon/server/compiler_hash.rs	attr_cfg	unix	0
 crates/zccache-daemon-core/src/daemon/server/compiler_hash.rs	attr_cfg	unix	1
