@@ -227,3 +227,32 @@ cleanup to schedule later. Grep for the old technology's name across `docs/`,
 which would have misled the next person profiling persistence. Mark superseded
 ADRs superseded rather than rewriting them; the reason a decision changed is
 usually more useful than the decision.
+
+
+## 2026-08-13 dylint pre-expansion visibility (#1365 phase 1)
+
+- **Pre-expansion lints only see the crate-root file via check_crate.** The
+  pre-expansion machinery calls `EarlyCheckNode` for the crate root
+  (check_crate + walk_crate over the root AST) and, *per nested module
+  file*, walks only that module's attrs + top-level items via the
+  `check_attribute`/`check_item`/`check_expr` hooks during expansion.
+  A lint that only implements check_crate silently misses every submodule
+  file (daemon-core produced 0 findings while ipc/lib.rs produced 31 —
+  ipc's host code was inline in lib.rs). Implement the hooks; scan paths
+  per item subtree because the early walker has no visit_path delegation.
+- **Early-lint diagnostics at the crate span are silently dropped**: early
+  diagnostics are buffered per NodeId and flushed when the node is visited;
+  a crate-span diagnostic is never flushed. Don't use opt_span_lint at the
+  crate span for debugging — write to the dump file instead.
+- **Diagnostics from the dylint DRIVER go through the driver's env, not
+  ambient**: the driver computes its sysroot as
+  RUSTUP_HOME/toolchains/RUSTUP_TOOLCHAIN and needs the FULL toolchain name
+  (nightly-2026-05-26-x86_64-pc-windows-msvc), not the short channel.
+- **cargo-dylint on Windows needs the `@toolchain` .dll aliases created
+  manually** (ci/lint.py's ensure_dylint_aliases loop); it builds one lint
+  library per invocation attempt and errors on the first missing alias.
+- **cargo-dylint exits 0 even when "No libraries were found"** — treat that
+  string as failure; also `cmd | tail` masks exit codes (third time this
+  bit me — use explicit rc capture).
+- Fresh cargo fingerprints mean cargo-dylint re-lints nothing: touch
+  crates/**/src/*.rs before a baseline dump to force a full re-check.

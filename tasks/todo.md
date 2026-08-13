@@ -1,3 +1,20 @@
+# #1365 centralize host-platform mechanics behind zccache-platform
+
+Parent: https://github.com/zackees/zccache/issues/1365 — 6 phase sub-issues (#1366-#1369 exist; #1370/#1371 to be created for phases 5/6). Parent auto-closes when all sub-issues close. Base branch: `chore/wire-prost-2-default-fallback`.
+
+- [x] Read #1365 + sub-issues #1366-#1369; baseline branch recorded.
+- [x] Install Rust 1.95.0 toolchain locally.
+- [ ] Phase 0: exploration inventories (MSRV pins, platform-heavy code, amalgamation/dylint/CI).
+- [~] Phase 1 (#1366): RED captured (UI fixtures 0 diagnostics on stub; toolchain+amalgamation REDs). Committed: tests, MSRV 1.95.0 (31 files), zccache-platform crate, boundary lint + wiring, docs. Lint rewritten to hook-based pre-expansion (check_crate only sees the root file); baseline dump = 547 rows / 57 files (per-process dump files, corruption fixed). Pending: baseline.txt regen + grandfathered GREEN run + ratchet regression, workspace check/clippy/./test, PR + CI green + merge.
+- [ ] Phase 2 (#1367): platform::fs — identity/links/permissions/replace/volume/path/positioned_io from core/artifact/daemon-core; characterization tests first; baseline ratchets down. PR closes #1367.
+- [ ] Phase 3 (#1368): platform::ipc — transport/stream/listener/connect/peer/endpoint from zccache-ipc; keep framing/protocol/broker policy; endpoint strings byte-stable; security preserved. PR closes #1368.
+- [ ] Phase 4 (#1369): platform::process — command/spawn/priority/inspect/terminate/stdio/jobserver/exit; keep watchdog/priority/jobserver policy; coordinate #1360; files <1000 LOC. PR closes #1369.
+- [ ] Phase 5 (create #1370): platform::executable + platform::host (deploy.rs, suffixes/PATH, image lookup, defender, elevation, native_cpu, resource probes).
+- [ ] Phase 6 (create #1371): delete baseline at zero; Linux-hosted --target windows regression; libc/windows-sys confined; publish crate self-contained; RED→GREEN evidence; #1365 auto-closes.
+- [ ] Finish: git status clean; local repo back on `chore/wire-prost-2-default-fallback`.
+
+Each phase: branch from main → TDD RED→GREEN → soldr fmt/clippy/check → ./test → PR → wait for GHA green (watch) → merge → rebase next phase.
+
 # soldr#2188 short compiler staging root
 
 - [x] Read the issue, staged-output architecture, portability contract, and performance gate.

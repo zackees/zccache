@@ -55,6 +55,8 @@ INTENTIONAL_LEGACY: tuple[str, ...] = (
     "ci/tests/test_toolchain_consistency.py",
     "perf/fixtures/medium/rust-toolchain.toml",
     "perf/fixtures/sqlite-link/rust-toolchain.toml",
+    # Fixture lockfiles pin the fixture toolchain they were generated with.
+    "perf/fixtures/medium/Cargo.lock",
     "crates/zccache/tests/audit-fixtures/embedded-cold-compile.jsonl",
     "crates/zccache/tests/audit-fixtures/embedded-cancelled-compile.jsonl",
     "crates/zccache-artifact/src/rust_plan/tests/mod.rs",
