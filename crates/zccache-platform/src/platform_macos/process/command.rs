@@ -1,0 +1,1 @@
+//! macOS command setup.

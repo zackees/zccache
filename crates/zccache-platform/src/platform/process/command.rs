@@ -1,0 +1,1 @@
+//! Prepared-command native configuration.

@@ -50,6 +50,10 @@ killed, while the #1161/#132 identity-bound stop intentionally refuses non-zccac
 
 ## Phase 4 (#1369) plan — platform::process
 
+RED (2026-08-13): `soldr --no-cache cargo test -p zccache-platform` fails with
+13 missing process-facade APIs after adding the capability leaves and owned-child
+characterization tests before any concrete backend.
+
 Facade: command/spawn/priority/inspect/terminate/stdio/jobserver/exit. Move daemon/{process,
 child_watchdog,jobserver,trampoline}.rs native code + core/crash.rs signal labels +
 ipc PID helpers + cli-core deploy.rs spawn bits + bin/zccache.rs stack wrapper. Keep
