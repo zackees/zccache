@@ -67,7 +67,10 @@ fn staged_generation_is_independent_and_hash_addressed() {
     assert_eq!(payloads.len(), 2);
     assert_eq!(fs::read(&payloads[0]).unwrap(), b"first immutable payload");
     assert_eq!(fs::read(&payloads[1]).unwrap(), b"second immutable payload");
-    assert!(!same_file(sources[0].as_path(), payloads[0].as_path()));
+    assert!(
+        !crate::platform::fs::identity::same_file(sources[0].as_path(), payloads[0].as_path())
+            .unwrap()
+    );
     assert!(fs::metadata(&payloads[0]).unwrap().permissions().readonly());
 
     fs::write(&sources[0], b"mutated compiler output").unwrap();
@@ -126,7 +129,7 @@ fn staged_publication_evicts_nondeterministic_same_key_output() {
     let key = "e".repeat(64);
     persist_staged_artifact_paths(&artifact_dir, &key, &sources).unwrap();
 
-    make_writable(&sources[0]).unwrap();
+    crate::platform::fs::permissions::make_writable(&sources[0]).unwrap();
     fs::write(&sources[0], b"replacement immutable payload").unwrap();
     let error = persist_staged_artifact_paths(&artifact_dir, &key, &sources).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
@@ -285,7 +288,7 @@ fn staged_publication_can_replace_a_proven_corrupt_generation() {
     let payloads = load_staged_artifact_paths(&artifact_dir, &key, &[23, 24])
         .unwrap()
         .unwrap();
-    make_writable(&payloads[0]).unwrap();
+    crate::platform::fs::permissions::make_writable(&payloads[0]).unwrap();
     fs::write(&payloads[0], b"corrupt").unwrap();
 
     fs::write(&sources[0], b"replacement immutable payload").unwrap();
@@ -483,7 +486,7 @@ fn staged_generation_rejects_same_size_corruption() {
         .unwrap()
         .unwrap();
 
-    make_writable(&payloads[0]).unwrap();
+    crate::platform::fs::permissions::make_writable(&payloads[0]).unwrap();
     let mut corrupted = fs::read(&payloads[0]).unwrap();
     corrupted[0] ^= 0xff;
     fs::write(&payloads[0], corrupted).unwrap();
@@ -512,7 +515,7 @@ fn staged_generation_pointer_never_selects_partial_set() {
         .join(STAGED_ROOT)
         .join(&key)
         .join(generation.trim());
-    make_writable(&generation_dir.join("output-1")).unwrap();
+    crate::platform::fs::permissions::make_writable(&generation_dir.join("output-1")).unwrap();
     fs::remove_file(generation_dir.join("output-1")).unwrap();
     assert!(load_staged_artifact_paths(&artifact_dir, &key, &[23, 24]).is_err());
 }
@@ -603,5 +606,5 @@ fn mutable_page_writer_never_shares_backend_inode() {
     fs::write(&destination, page).unwrap();
     assert_eq!(fs::read(&backend).unwrap(), vec![0x11_u8; 4096]);
     assert_ne!(fs::read(&destination).unwrap(), fs::read(&backend).unwrap());
-    assert!(!same_file(&payloads[0], &destination));
+    assert!(!crate::platform::fs::identity::same_file(&payloads[0], &destination).unwrap());
 }

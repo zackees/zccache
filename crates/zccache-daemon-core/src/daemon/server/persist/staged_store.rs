@@ -303,15 +303,7 @@ fn sync_file(path: &Path) -> io::Result<()> {
 }
 
 fn sync_directory(path: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        File::open(path)?.sync_all()
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        Ok(())
-    }
+    crate::platform::fs::durability::sync_directory(path)
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -333,55 +325,11 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 fn replace_staged_path(source: &Path, destination: &Path) -> io::Result<()> {
-    #[cfg(not(windows))]
-    {
-        fs::rename(source, destination)
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::Storage::FileSystem::{
-            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-        };
-
-        let source_wide: Vec<u16> = windows_verbatim_file_path(source)?
-            .as_path()
-            .as_os_str()
-            .encode_wide()
-            .chain(Some(0))
-            .collect();
-        let destination_wide: Vec<u16> = windows_verbatim_file_path(destination)?
-            .as_path()
-            .as_os_str()
-            .encode_wide()
-            .chain(Some(0))
-            .collect();
-        av_scan_retry(|| {
-            let result = unsafe {
-                MoveFileExW(
-                    source_wide.as_ptr(),
-                    destination_wide.as_ptr(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-                )
-            };
-            if result == 0 {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        })
-    }
+    crate::platform::fs::replace::atomic_replace(source, destination)
 }
 
 fn rename_staged_generation(source: &Path, destination: &Path) -> io::Result<()> {
-    #[cfg(not(windows))]
-    {
-        fs::rename(source, destination)
-    }
-    #[cfg(windows)]
-    {
-        av_scan_retry(|| fs::rename(source, destination))
-    }
+    crate::platform::fs::replace::rename_without_replace(source, destination)
 }
 
 fn remove_uncommitted_generation(pointer: &Path, generation_hex: &str, generation: &Path) {
@@ -416,7 +364,7 @@ fn copy_independent(source: &Path, destination: &Path) -> io::Result<(bool, u64)
     // A failed reflink probe may leave a partial destination, including
     // platform-specific attributes. Remove it before attempting the copy tier.
     if fs::metadata(destination).is_ok() {
-        let _ = set_readonly(destination, false);
+        let _ = crate::platform::fs::permissions::set_readonly(destination, false);
     }
     let _ = fs::remove_file(destination);
     #[cfg(test)]
@@ -437,7 +385,7 @@ fn copy_output(source: &Path, destination: &Path) -> io::Result<(bool, u64)> {
     }
     // Keep the destination writable while restoring timestamps. On Windows,
     // setting mtime on a read-only file fails with ERROR_ACCESS_DENIED.
-    make_writable(destination)?;
+    crate::platform::fs::permissions::make_writable(destination)?;
     let mtime = filetime::FileTime::from_last_modification_time(&source_metadata);
     filetime::set_file_mtime(destination, mtime)?;
     result
@@ -624,18 +572,20 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
                     ),
                 )
             })?;
-            set_readonly(&destination, true).map_err(|error| {
-                publish_error(
-                    StagedPublishFailure::OutputCopy,
-                    io::Error::new(
-                        error.kind(),
-                        format!(
-                            "staged output read-only finalization failed: {}: {error}",
-                            destination.display()
+            crate::platform::fs::permissions::set_readonly(&destination, true).map_err(
+                |error| {
+                    publish_error(
+                        StagedPublishFailure::OutputCopy,
+                        io::Error::new(
+                            error.kind(),
+                            format!(
+                                "staged output read-only finalization failed: {}: {error}",
+                                destination.display()
+                            ),
                         ),
-                    ),
-                )
-            })?;
+                    )
+                },
+            )?;
             let hash_started = std::time::Instant::now();
             #[cfg(test)]
             fault::inject(artifact_dir, StagedFaultPoint::OutputHash(index))

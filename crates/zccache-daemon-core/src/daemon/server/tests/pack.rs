@@ -117,8 +117,8 @@ fn persist_artifact_paths_preserves_compiler_output_writability() {
             .unwrap();
         assert_eq!(std::fs::read(&payloads[0]).unwrap(), b"rlib-bytes");
         assert_eq!(std::fs::read(&payloads[1]).unwrap(), b"rmeta-bytes");
-        assert!(!same_file(&src_a, &payloads[0]));
-        assert!(!same_file(&src_b, &payloads[1]));
+        assert!(!crate::platform::fs::identity::same_file(&src_a, &payloads[0]).unwrap());
+        assert!(!crate::platform::fs::identity::same_file(&src_b, &payloads[1]).unwrap());
         return;
     }
 

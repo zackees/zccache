@@ -13,7 +13,7 @@ fn seed_persisted_blob(path: &Path, bytes: &[u8]) {
 }
 
 fn require_hardlink(out: &Path, cache: &Path, test_name: &str) -> bool {
-    if same_file(out, cache) {
+    if crate::platform::fs::identity::same_file(out, cache).unwrap() {
         true
     } else {
         eprintln!("SKIP {test_name}: temporary filesystem does not support same-volume hardlinks");
@@ -124,7 +124,7 @@ fn write_cached_output_skips_when_already_hardlinked() {
     write_cached_output(&out, &cache, content).unwrap();
     assert_eq!(std::fs::read(&out).unwrap(), content.as_slice());
     assert!(
-        same_file(&out, &cache),
+        crate::platform::fs::identity::same_file(&out, &cache).unwrap(),
         "output must remain hardlinked to cache after the skip fast path"
     );
 }
@@ -158,7 +158,7 @@ fn persist_artifact_output_does_not_mutate_existing_hardlink() {
     );
     assert_eq!(std::fs::read(&cache).unwrap(), b"second");
     assert!(
-        !same_file(&out, &cache),
+        !crate::platform::fs::identity::same_file(&out, &cache).unwrap(),
         "publishing a new cache payload must detach any existing hardlinked output"
     );
 }
@@ -186,10 +186,10 @@ fn persist_artifact_file_creates_independent_immutable_snapshot() {
         // break_output_hardlink_before_compile, which unconditionally
         // detaches any shared alias (based on OS-level link count) before
         // a compiler is ever allowed to write to `source` again.
-        assert!(same_file(&source, &cache));
+        assert!(crate::platform::fs::identity::same_file(&source, &cache).unwrap());
     } else {
         assert!(std::fs::metadata(&cache).unwrap().permissions().readonly());
-        assert!(!same_file(&source, &cache));
+        assert!(!crate::platform::fs::identity::same_file(&source, &cache).unwrap());
     }
 }
 
@@ -283,7 +283,7 @@ fn staged_generation_materializes_independently_from_the_backend() {
         .unwrap();
     write_cached_file(&output, &payloads[0]).unwrap();
 
-    assert!(!same_file(&output, &payloads[0]));
+    assert!(!crate::platform::fs::identity::same_file(&output, &payloads[0]).unwrap());
     assert!(!std::fs::metadata(&output).unwrap().permissions().readonly());
     std::fs::write(&output, b"mutated target output").unwrap();
     assert_eq!(
@@ -327,7 +327,7 @@ fn staged_generation_hardlinks_only_when_semantically_authorized() {
         return;
     }
 
-    make_writable(&output).unwrap();
+    crate::platform::fs::permissions::make_writable(&output).unwrap();
     std::fs::write(&output, b"poisoned rust archive").unwrap();
     mark_registered_links_suspect([output.as_path()]);
     assert!(
@@ -538,7 +538,7 @@ fn break_output_hardlink_before_compile_prevents_cache_poisoning() {
 
     break_output_hardlink_before_compile(&out).unwrap();
     assert!(
-        !same_file(&out, &cache),
+        !crate::platform::fs::identity::same_file(&out, &cache).unwrap(),
         "break_output_hardlink_before_compile must detach the output from the shared cache blob"
     );
 
@@ -563,7 +563,7 @@ fn unmediated_mutation_cannot_silently_poison_cache() {
     seed_persisted_blob(&cache, original);
 
     write_cached_output(&out, &cache, original).unwrap();
-    if same_file(&out, &cache) {
+    if crate::platform::fs::identity::same_file(&out, &cache).unwrap() {
         let mutation = std::fs::OpenOptions::new()
             .write(true)
             .truncate(true)
@@ -612,9 +612,12 @@ fn capability_verdict_is_cached_and_registry_tracks_hardlinks() {
     let second = fs_caps(&cache, &out);
     assert_eq!(first, second);
     write_cached_output(&out, &cache, b"bytes").unwrap();
-    if same_file(&out, &cache) {
+    if crate::platform::fs::identity::same_file(&out, &cache).unwrap() {
         assert_eq!(registered_output_count(&cache), 1);
-        assert_eq!(hard_link_count(&cache).unwrap(), 2);
+        assert_eq!(
+            crate::platform::fs::links::hard_link_count(&cache).unwrap(),
+            2
+        );
     } else {
         assert!(first.reflink || !first.hardlink);
     }
@@ -657,7 +660,7 @@ fn suspect_corruption_emits_durable_forensics() {
     seed_persisted_blob(&blob, b"original");
     std::fs::hard_link(&blob, &output).unwrap();
     register_hardlink(&blob, &output).unwrap();
-    make_writable(&output).unwrap();
+    crate::platform::fs::permissions::make_writable(&output).unwrap();
     std::fs::write(&output, b"poisoned").unwrap();
     mark_registered_links_suspect([output.as_path()]);
 
@@ -690,7 +693,7 @@ fn removed_link_event_marks_blob_suspect_before_forgetting_path() {
     std::fs::write(&blob, b"original").unwrap();
     std::fs::hard_link(&blob, &output).unwrap();
     register_hardlink(&blob, &output).unwrap();
-    make_writable(&output).unwrap();
+    crate::platform::fs::permissions::make_writable(&output).unwrap();
     std::fs::write(&output, b"poisoned").unwrap();
     std::fs::remove_file(&output).unwrap();
 
@@ -709,7 +712,7 @@ fn watcher_overflow_marks_every_blob_suspect() {
     std::fs::write(&blob, b"original").unwrap();
     std::fs::hard_link(&blob, &output).unwrap();
     register_hardlink(&blob, &output).unwrap();
-    make_writable(&output).unwrap();
+    crate::platform::fs::permissions::make_writable(&output).unwrap();
     std::fs::write(&output, b"poisoned").unwrap();
 
     mark_all_registered_links_suspect();
@@ -727,7 +730,7 @@ fn watcher_event_between_hardlink_publish_and_registry_commit_is_retained() {
     std::fs::write(&blob, b"original").unwrap();
     let registration = prepare_hardlink_registration(&blob, &output).unwrap();
     std::fs::hard_link(&blob, &output).unwrap();
-    make_writable(&output).unwrap();
+    crate::platform::fs::permissions::make_writable(&output).unwrap();
     std::fs::write(&output, b"poisoned during publish").unwrap();
     std::fs::remove_file(&output).unwrap();
 
@@ -749,7 +752,7 @@ fn daemon_restart_fails_closed_for_unregistered_multilink_blob() {
     std::fs::hard_link(&blob, &output).unwrap();
     register_hardlink(&blob, &output).unwrap();
     forget_blob_registration_for_restart_test(&blob);
-    make_writable(&output).unwrap();
+    crate::platform::fs::permissions::make_writable(&output).unwrap();
     std::fs::write(&output, b"poisoned while daemon was down").unwrap();
 
     let error = verify_registered_blob(&blob).expect_err("unknown shared blob must be evicted");
@@ -770,7 +773,7 @@ fn restart_digest_detects_poison_after_alias_was_deleted() {
     write_authoritative_blob_digest(&blob).unwrap();
     std::fs::hard_link(&blob, &output).unwrap();
     register_hardlink(&blob, &output).unwrap();
-    make_writable(&output).unwrap();
+    crate::platform::fs::permissions::make_writable(&output).unwrap();
     std::fs::write(&output, b"poisoned while daemon was down").unwrap();
     std::fs::remove_file(&output).unwrap();
     forget_blob_registration_for_restart_test(&blob);
@@ -806,7 +809,7 @@ fn failed_restart_eviction_restores_readonly_and_retries_after_alias_delete() {
     assert_eq!(first.kind(), std::io::ErrorKind::PermissionDenied);
     assert!(std::fs::metadata(&blob).unwrap().permissions().readonly());
 
-    make_writable(&output).unwrap();
+    crate::platform::fs::permissions::make_writable(&output).unwrap();
     std::fs::remove_file(&output).unwrap();
     let retry = verify_registered_blob(&blob).expect_err("unverifiable blob must retry eviction");
     assert_eq!(retry.kind(), std::io::ErrorKind::InvalidData);
@@ -976,17 +979,17 @@ fn failed_detach_keeps_hardlink_registered_and_readonly() {
     std::fs::write(&blob, b"original").unwrap();
     std::fs::hard_link(&blob, &output).unwrap();
     register_hardlink(&blob, &output).unwrap();
-    set_readonly(&blob, true).unwrap();
+    crate::platform::fs::permissions::set_readonly(&blob, true).unwrap();
     fail_detach_remove_for_test(&output);
 
     let error = break_output_hardlink_before_compile(&output)
         .expect_err("injected remove failure must propagate");
 
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-    assert!(same_file(&blob, &output));
+    assert!(crate::platform::fs::identity::same_file(&blob, &output).unwrap());
     assert_eq!(registered_output_count(&blob), 1);
     assert!(std::fs::metadata(&blob).unwrap().permissions().readonly());
-    make_writable(&blob).unwrap();
+    crate::platform::fs::permissions::make_writable(&blob).unwrap();
 }
 
 #[test]
@@ -997,7 +1000,7 @@ fn failed_detach_rename_restores_blob_readonly_after_unlink() {
     std::fs::write(&blob, b"original").unwrap();
     std::fs::hard_link(&blob, &output).unwrap();
     register_hardlink(&blob, &output).unwrap();
-    set_readonly(&blob, true).unwrap();
+    crate::platform::fs::permissions::set_readonly(&blob, true).unwrap();
     fail_detach_rename_for_test(&output);
 
     let error = break_output_hardlink_before_compile(&output)
@@ -1006,10 +1009,13 @@ fn failed_detach_rename_restores_blob_readonly_after_unlink() {
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     assert!(!output.exists(), "shared output name was already unlinked");
     assert!(blob.exists());
-    assert_eq!(hard_link_count(&blob).unwrap(), 1);
+    assert_eq!(
+        crate::platform::fs::links::hard_link_count(&blob).unwrap(),
+        1
+    );
     assert_eq!(registered_output_count(&blob), 0);
     assert!(std::fs::metadata(&blob).unwrap().permissions().readonly());
-    make_writable(&blob).unwrap();
+    crate::platform::fs::permissions::make_writable(&blob).unwrap();
 }
 
 #[test]
@@ -1020,16 +1026,16 @@ fn failed_blob_removal_restores_readonly_and_registration() {
     std::fs::write(&blob, b"original").unwrap();
     std::fs::hard_link(&blob, &output).unwrap();
     register_hardlink(&blob, &output).unwrap();
-    set_readonly(&blob, true).unwrap();
+    crate::platform::fs::permissions::set_readonly(&blob, true).unwrap();
     fail_detach_remove_for_test(&blob);
 
     let error = remove_registered_blob(&blob).expect_err("injected removal must fail");
 
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-    assert!(same_file(&blob, &output));
+    assert!(crate::platform::fs::identity::same_file(&blob, &output).unwrap());
     assert_eq!(registered_output_count(&blob), 1);
     assert!(std::fs::metadata(&blob).unwrap().permissions().readonly());
-    make_writable(&blob).unwrap();
+    crate::platform::fs::permissions::make_writable(&blob).unwrap();
 }
 
 #[test]
@@ -1040,7 +1046,7 @@ fn failed_corrupt_blob_eviction_retains_suspect_record_for_retry() {
     std::fs::write(&blob, b"original").unwrap();
     std::fs::hard_link(&blob, &output).unwrap();
     register_hardlink(&blob, &output).unwrap();
-    make_writable(&output).unwrap();
+    crate::platform::fs::permissions::make_writable(&output).unwrap();
     std::fs::write(&output, b"poisoned").unwrap();
     mark_registered_links_suspect([output.as_path()]);
     fail_detach_remove_for_test(&blob);
@@ -1050,7 +1056,7 @@ fn failed_corrupt_blob_eviction_retains_suspect_record_for_retry() {
     assert!(blob.exists());
     assert!(std::fs::metadata(&blob).unwrap().permissions().readonly());
 
-    make_writable(&output).unwrap();
+    crate::platform::fs::permissions::make_writable(&output).unwrap();
     std::fs::remove_file(&output).unwrap();
     let retry = verify_registered_blob(&blob).expect_err("known corruption must remain suspect");
     assert_eq!(retry.kind(), std::io::ErrorKind::InvalidData);
@@ -1066,7 +1072,7 @@ fn replacing_registered_blob_drops_old_inode_record() {
     std::fs::write(&blob, b"original").unwrap();
     std::fs::hard_link(&blob, &output).unwrap();
     register_hardlink(&blob, &output).unwrap();
-    let old_id = get_file_id(&blob).unwrap();
+    let old_id = crate::platform::fs::identity::file_identity(&blob).unwrap();
     std::fs::write(&tmp, b"replacement").unwrap();
 
     replace_artifact_cache_file(&tmp, &blob).unwrap();
@@ -1193,7 +1199,7 @@ fn write_cached_output_floor_detaches_instead_of_corrupting_shared_blob() {
 
     // First delivery: creates the hardlink (or copy, depending on fs caps).
     write_cached_output(&out, &cache, content).unwrap();
-    if !same_file(&out, &cache) {
+    if !crate::platform::fs::identity::same_file(&out, &cache).unwrap() {
         // This filesystem doesn't support hardlinks — the detach path this
         // test targets never triggers. Nothing to verify.
         return;
@@ -1230,7 +1236,7 @@ fn write_cached_output_floor_detaches_instead_of_corrupting_shared_blob() {
     );
 
     assert!(
-        !same_file(&out, &cache),
+        !crate::platform::fs::identity::same_file(&out, &cache).unwrap(),
         "output must be detached from the shared blob once its mtime diverges"
     );
     assert_eq!(std::fs::read(&cache).unwrap(), content);

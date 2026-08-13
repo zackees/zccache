@@ -6,8 +6,6 @@ use std::sync::{Mutex, OnceLock};
 
 pub(in crate::daemon::server) const DISABLE_REFLINK_ENV: &str = "ZCCACHE_DISABLE_REFLINK";
 pub(in crate::daemon::server) const COW_READONLY_ENV: &str = "ZCCACHE_COW_READONLY";
-const WINDOWS_HARDLINK_LIMIT: u64 = 1023;
-const UNIX_HARDLINK_LIMIT: u64 = 65_000;
 const CAPS_CACHE_LIMIT: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -31,7 +29,7 @@ impl VolumeCaps {
             reflink: false,
             hardlink: false,
             readonly_enforced: false,
-            file_id: if cfg!(windows) {
+            file_id: if crate::platform::fs::volume::file_id_width() > 64 {
                 FileIdWidth::Bits128
             } else {
                 FileIdWidth::Bits64
@@ -101,13 +99,13 @@ fn env_flag(name: &str, default: bool) -> bool {
 }
 
 pub(in crate::daemon::server) fn fs_caps(src: &Path, dst: &Path) -> VolumeCaps {
-    let Some(src_volume) = volume_identity(src) else {
+    let Some(src_volume) = crate::platform::fs::volume::volume_identity_u128(src) else {
         return VolumeCaps::copy_only();
     };
     let Some(dst_probe) = existing_path(dst.parent().unwrap_or(dst)) else {
         return VolumeCaps::copy_only();
     };
-    let Some(dst_volume) = volume_identity(&dst_probe) else {
+    let Some(dst_volume) = crate::platform::fs::volume::volume_identity_u128(&dst_probe) else {
         return VolumeCaps::copy_only();
     };
     if src_volume != dst_volume {
@@ -160,16 +158,12 @@ fn probe_caps(src: &Path, dst: &Path) -> VolumeCaps {
         reflink,
         hardlink,
         readonly_enforced: hardlink,
-        file_id: if cfg!(windows) {
+        file_id: if crate::platform::fs::volume::file_id_width() > 64 {
             FileIdWidth::Bits128
         } else {
             FileIdWidth::Bits64
         },
-        hardlink_limit: if cfg!(windows) {
-            WINDOWS_HARDLINK_LIMIT
-        } else {
-            UNIX_HARDLINK_LIMIT
-        },
+        hardlink_limit: crate::platform::fs::volume::hard_link_limit(),
     }
 }
 
@@ -181,19 +175,6 @@ fn existing_path(path: &Path) -> Option<NormalizedPath> {
         }
         candidate = candidate.parent()?;
     }
-}
-
-#[cfg(unix)]
-fn volume_identity(path: &Path) -> Option<u128> {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata(path)
-        .ok()
-        .map(|meta| u128::from(meta.dev()))
-}
-
-#[cfg(windows)]
-fn volume_identity(path: &Path) -> Option<u128> {
-    get_file_id(path).map(|id| u128::from(id.volume_serial))
 }
 
 #[cfg(test)]

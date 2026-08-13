@@ -259,10 +259,10 @@ fn perf_cow_materialization_128_hits_under_two_seconds() {
         let output = dir.path().join(format!("target/output-{index}.rlib"));
         std::fs::create_dir_all(output.parent().unwrap()).unwrap();
         write_cached_file(&output, &cache).unwrap();
-        make_writable(&output).unwrap();
+        crate::platform::fs::permissions::make_writable(&output).unwrap();
     }
     let elapsed = started.elapsed();
-    make_writable(&cache).unwrap();
+    crate::platform::fs::permissions::make_writable(&cache).unwrap();
     assert!(
         elapsed < Duration::from_secs(2),
         "128 capability-driven materializations took {elapsed:?}"
