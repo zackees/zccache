@@ -54,6 +54,7 @@ zccache-fingerprint = { workspace = true }
 zccache-gha = { workspace = true, optional = true }
 zccache-hash = { workspace = true }
 zccache-ipc = { workspace = true }
+zccache-platform = { workspace = true }
 zccache-protocol = { workspace = true }
 zccache-symbols = { workspace = true, optional = true }
 

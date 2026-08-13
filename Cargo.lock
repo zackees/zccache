@@ -4260,6 +4260,7 @@ dependencies = [
  "zccache-gha",
  "zccache-hash",
  "zccache-ipc",
+ "zccache-platform",
  "zccache-protocol",
  "zccache-symbols",
  "zip",
