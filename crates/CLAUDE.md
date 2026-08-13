@@ -38,6 +38,9 @@ zccache-fingerprint ── hash, core
 zccache-protocol ──── core
 zccache-ipc ──────── protocol, core
                                                       │
+zccache-platform ── (dependency leaf: no zccache-* deps;
+                      host mechanics behind neutral facades)
+                                                      │
 DOWNLOAD-CACHE SUBSYSTEM LIBS                         │
 ─────────────────────────────                         │
 zccache-download ──── core
@@ -63,6 +66,7 @@ zccache-test-support (dev-only test utilities)
 ### Shared foundations
 - **zccache-core** — Shared error types (`Error`/`Result`), `Config`, `NormalizedPath` for cross-platform path handling
 - **zccache-hash** — `ContentHash` (blake3), `CacheKeyBuilder` with domain-separated deterministic hashing
+- **zccache-platform** — Dependency-leaf crate for host-platform mechanics (#1365): one `cfg_select!` host selector in its `lib.rs` and five neutral facades (`process`, `fs`, `ipc`, `executable`, `host`). Every consuming crate aliases it as `crate::platform`; concrete `platform_{win,linux,macos}` trees are private. Never depends on a zccache crate and never contains product types. Amalgamated as a private `platform` module of the published `zccache` crate.
 
 ### Compile-cache subsystem libs
 - **zccache-protocol** — `Request`/`Response` enums, `ArtifactData`, length-prefixed bincode framing; bump `PROTOCOL_VERSION` on any wire-format change

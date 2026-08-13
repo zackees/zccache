@@ -15,7 +15,7 @@ This document is the index for zccache's architecture specification. Each subsys
 | [architecture/embedded-service.md](architecture/embedded-service.md) | ~290 | Embedded service MVP boundary, audit continuity, soldr/fbuild integration design |
 | [architecture/target-cache.md](architecture/target-cache.md) | ~70 | Legacy action target snapshot ownership, outputs, and rust-plan boundary |
 | [architecture/runtime.md](architecture/runtime.md) | ~130 | Concurrency model, correctness guarantees, failure modes, crash recovery |
-| [architecture/portability.md](architecture/portability.md) | ~110 | Platform differences, path handling, file identity, future extensions |
+| [architecture/portability.md](architecture/portability.md) | ~200 | Platform differences, host-platform boundary (zccache-platform), path handling, file identity, future extensions |
 
 Cache-root lifecycle logs are verified by the shared `zccache-audit` catalog at
 perf and integration boundaries. This keeps CI policy in Rust and makes a
@@ -47,6 +47,7 @@ failed cache-root audit retain its diagnostic JSONL evidence.
 - **Standalone daemon identity, deployment & lifecycle (argv[0] single binary, version-rooted deploy, versioned endpoints)** → [runtime.md § Standalone daemon identity, deployment & lifecycle](architecture/runtime.md#standalone-daemon-identity-deployment--lifecycle)
 - **Rejected depgraph snapshots — quarantine, recovery, why no migration** → [runtime.md § Depgraph snapshot quarantine](architecture/runtime.md#depgraph-snapshot-quarantine)
 - **Windows/macOS/Linux differences** → [portability.md](architecture/portability.md)
+- **Host-platform boundary (zccache-platform)** → [portability.md](architecture/portability.md#host-platform-boundary-zccache-platform)
 - **Compile journal fields & `miss_reason` enum** → [journal-schema.md](journal-schema.md)
 
 See also: [DESIGN_DECISIONS.md](DESIGN_DECISIONS.md) for rationale behind key choices, [ROADMAP.md](ROADMAP.md) for implementation phases.

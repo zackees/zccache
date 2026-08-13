@@ -30,6 +30,55 @@ values are portable and retained through 1.13.x. The kill switch leaves legacy
 v1/pack reads available on Linux, macOS, and Windows; v2-only entries become
 misses rather than being reinterpreted.
 
+---
+
+## Host-Platform Boundary (`zccache-platform`)
+
+Host mechanics are selected in exactly one place: `crates/zccache-platform/src/lib.rs`,
+through `std::cfg_select!` (Rust 1.95.0). Every other production crate consumes the
+neutral facades re-exported there and aliases the leaf as:
+
+```rust
+pub(crate) use zccache_platform as platform;
+```
+
+```
+crates/zccache-platform/src/lib.rs        the one host selector (no fallback arm)
+crates/zccache-platform/src/platform.rs   neutral facade root
+crates/zccache-platform/src/platform/     process | fs | ipc | executable | host
+crates/zccache-platform/src/platform_win.rs    private concrete Windows tree
+crates/zccache-platform/src/platform_linux.rs  private concrete Linux tree
+crates/zccache-platform/src/platform_macos.rs  private concrete macOS tree
+```
+
+Rules:
+
+- **One selector, five facades.** Concrete trees are private and cannot be
+  named downstream; unsupported host OSes fail compilation at the selector.
+  Linux and macOS stay separate trees even where they share call sites.
+- **Leaf crate.** zccache-platform never depends on a `zccache-*` crate and
+  never carries product types (`NormalizedPath`, `Config`, protocol messages,
+  audit events, …). Callers translate primitive results into product types
+  and diagnostics.
+- **Host is not compiler target.** This crate answers "what OS is this
+  zccache process running on?" Compiler/build-target decisions — `rustc
+  --target` parsing, MSVC/GNU/Apple linker modes, output extensions from an
+  explicit triple — stay in zccache-compiler. A Linux-hosted
+  `--target …-windows-…` build uses Linux host mechanics and Windows artifact
+  naming; only the no-target fallback consults the host facade.
+- **Enforcement.** The `enforce_platform_boundary` Dylint inspects
+  pre-expansion source (inactive host branches included) and rejects host
+  cfg/cfg_attr/cfg!, native imports (`std::os::*`, `libc`, `windows-sys`),
+  and concrete-module references outside this crate. A transitional
+  exact-occurrence baseline grandfathers pre-migration sites and ratchets to
+  zero; new occurrences fail immediately.
+- **Publish.** `ci/publish_amalgamate.py` copies the crate into the published
+  `zccache` crate as a private `platform` module (`zccache_platform::` paths
+  become `crate::platform::`). It is not a public crates.io API.
+
+Phase order: #1366 bootstrap/toolchain/lint → #1367 `fs` → #1368 `ipc` →
+#1369 `process` → executable/host → zero-baseline cleanup.
+
 ## Path Handling
 
 Private compiler outputs default to `{cache_root}/staging`. Set
