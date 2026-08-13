@@ -37,7 +37,11 @@ impl Drop for WatcherAvailabilityGuard {
 
 /// Registers a blob/output hardlink pair and returns the registry identity,
 /// or `None` when the temp filesystem cannot make same-volume hardlinks.
-fn seed_registered_link(blob: &Path, output: &Path, bytes: &[u8]) -> Option<FileId> {
+fn seed_registered_link(
+    blob: &Path,
+    output: &Path,
+    bytes: &[u8],
+) -> Option<crate::platform::fs::FileIdentity> {
     std::fs::write(blob, bytes).unwrap();
     if std::fs::hard_link(blob, output).is_err() {
         return None;
@@ -82,7 +86,7 @@ fn overflow_still_rejects_a_blob_poisoned_through_its_alias() {
     // Writing through the alias mutates the shared inode, so the blob's own
     // (mtime, size) signature changes. The cheap sweep must notice and fall
     // back to the full re-hash, which then rejects and evicts the blob.
-    make_writable(&output).unwrap();
+    crate::platform::fs::permissions::make_writable(&output).unwrap();
     std::fs::write(&output, b"poisoned with a different length").unwrap();
 
     mark_changed_registered_links_suspect();
@@ -109,7 +113,7 @@ fn overflow_marks_an_unstattable_blob_suspect() {
 
     // A blob that cannot be stat'd yields no cheap evidence, so the sweep must
     // fall back to suspect rather than silently vouching for it.
-    make_writable(&blob).unwrap();
+    crate::platform::fs::permissions::make_writable(&blob).unwrap();
     std::fs::remove_file(&blob).unwrap();
 
     mark_changed_registered_links_suspect();

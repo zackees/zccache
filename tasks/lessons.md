@@ -276,3 +276,17 @@ usually more useful than the decision.
 - The repo `[patch] notify = { path = "../notify" }` needs the sibling
   `C:/Users/niteris/dev/notify` checkout (soldr's `_vender/notify`); cargo
   fails at manifest parse without it.
+
+
+## 2026-08-13 phase-2 fs migration: subagent rewiring dropped a guard
+
+The core+artifact rewiring delegated `ensure_dir_private` to the facade and
+dropped the unix sticky-bit guard ("never tighten a shared temp root — /tmp
+is 1777 by design; a previous revision tried and CI stopped it"). The
+facade impls lacked the guard, and the regression was invisible locally
+(the sticky test is cfg(unix) and Windows runs skip it). Lesson: when
+delegating native arms to a facade, port EVERY guard/branch — including
+cfg-gated behavior the local host cannot execute — and cross-check the
+non-host arms with `soldr cargo check --target <other-OS>` before
+committing. Also restored DirBuilder mode-at-creation for
+create_dir_all_private (no inherited-mode window).

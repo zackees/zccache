@@ -126,7 +126,10 @@ impl StagedDirectoryPlan {
     }
 
     pub(in crate::daemon::server) fn materialize(&self) -> std::io::Result<()> {
-        install_directory(self.staged.as_path(), self.requested.as_path())
+        crate::platform::fs::replace::install_directory(
+            self.staged.as_path(),
+            self.requested.as_path(),
+        )
     }
 
     pub(in crate::daemon::server) fn cleanup(&self) -> std::io::Result<()> {
@@ -199,7 +202,7 @@ pub(in crate::daemon::server) fn materialize_directory_payload(
     ));
     let result = (|| {
         unpack_directory(&bytes, &temp)?;
-        install_directory(&temp, requested)
+        crate::platform::fs::replace::install_directory(&temp, requested)
     })();
     if result.is_err() {
         let _ = remove_directory_if_present(&temp);
@@ -230,7 +233,7 @@ fn pack_directory(source: &Path, archive: &Path) -> std::io::Result<u64> {
         .with_limit(MAX_BUNDLE_BYTES);
     let bytes = options
         .serialize(&DirectoryBundle {
-            root_mode: permission_mode(&root_metadata),
+            root_mode: crate::platform::fs::permissions::mode(&root_metadata),
             root_modified_secs: root_modified.as_secs(),
             root_modified_nanos: root_modified.subsec_nanos(),
             entries,
@@ -249,7 +252,11 @@ fn collect_entries(
         let child = child?;
         let path = child.path();
         let metadata = std::fs::symlink_metadata(&path)?;
-        if metadata.file_type().is_symlink() {
+        // `classify` rejects Windows junctions/mount points too — a bundle
+        // must not archive a tree that resolves elsewhere.
+        if crate::platform::fs::links::classify(&path)?
+            != crate::platform::fs::links::LinkKind::Regular
+        {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("directory output contains symlink: {}", path.display()),
@@ -281,7 +288,7 @@ fn collect_entries(
             } else {
                 Vec::new()
             },
-            mode: permission_mode(&metadata),
+            mode: crate::platform::fs::permissions::mode(&metadata),
             modified_secs: modified.as_secs(),
             modified_nanos: modified.subsec_nanos(),
         });
@@ -314,7 +321,7 @@ fn unpack_directory(bytes: &[u8], target: &Path) -> std::io::Result<()> {
                     std::fs::create_dir_all(parent)?;
                 }
                 std::fs::write(&path, &entry.bytes)?;
-                set_permissions(&path, entry.mode)?;
+                crate::platform::fs::permissions::apply_mode(&path, entry.mode)?;
                 set_mtime(&path, entry)?;
             }
         }
@@ -326,10 +333,10 @@ fn unpack_directory(bytes: &[u8], target: &Path) -> std::io::Result<()> {
         .filter(|entry| matches!(entry.kind, EntryKind::Directory))
     {
         let path = target.join(validated_relative_path(&entry.path)?);
-        set_permissions(&path, entry.mode)?;
+        crate::platform::fs::permissions::apply_mode(&path, entry.mode)?;
         set_mtime(&path, entry)?;
     }
-    set_permissions(target, bundle.root_mode)?;
+    crate::platform::fs::permissions::apply_mode(target, bundle.root_mode)?;
     set_timestamp(
         target,
         bundle.root_modified_secs,
@@ -363,72 +370,6 @@ fn validated_relative_path(path: &str) -> std::io::Result<Box<Path>> {
     Ok(path.into())
 }
 
-fn install_directory(staged: &Path, requested: &Path) -> std::io::Result<()> {
-    let parent = requested.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent)?;
-    if !requested.exists() {
-        return std::fs::rename(staged, requested);
-    }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        atomic_exchange_directories(staged, requested)?;
-        remove_directory_if_present(staged)
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let backup = parent.join(format!(
-            ".zccache-directory-backup-{}-{}",
-            std::process::id(),
-            DIRECTORY_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::rename(requested, &backup)?;
-        if let Err(error) = std::fs::rename(staged, requested) {
-            let _ = std::fs::rename(&backup, requested);
-            return Err(error);
-        }
-        remove_directory_if_present(&backup)
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn atomic_exchange_directories(left: &Path, right: &Path) -> std::io::Result<()> {
-    use std::os::unix::ffi::OsStrExt;
-
-    let left = std::ffi::CString::new(left.as_os_str().as_bytes()).map_err(invalid_bundle)?;
-    let right = std::ffi::CString::new(right.as_os_str().as_bytes()).map_err(invalid_bundle)?;
-    // SAFETY: both pointers come from live CStrings, and renamex_np does not retain them.
-    let result = unsafe { libc::renamex_np(left.as_ptr(), right.as_ptr(), libc::RENAME_SWAP) };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn atomic_exchange_directories(left: &Path, right: &Path) -> std::io::Result<()> {
-    use std::os::unix::ffi::OsStrExt;
-
-    let left = std::ffi::CString::new(left.as_os_str().as_bytes()).map_err(invalid_bundle)?;
-    let right = std::ffi::CString::new(right.as_os_str().as_bytes()).map_err(invalid_bundle)?;
-    // SAFETY: both pointers come from live CStrings, and renameat2 does not retain them.
-    let result = unsafe {
-        libc::syscall(
-            libc::SYS_renameat2,
-            libc::AT_FDCWD,
-            left.as_ptr(),
-            libc::AT_FDCWD,
-            right.as_ptr(),
-            libc::RENAME_EXCHANGE,
-        )
-    };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
 fn remove_directory_if_present(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
@@ -446,30 +387,6 @@ fn set_timestamp(path: &Path, seconds: u64, nanos: u32) -> std::io::Result<()> {
         .checked_add(Duration::new(seconds, nanos))
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid mtime"))?;
     filetime::set_file_mtime(path, filetime::FileTime::from_system_time(modified))
-}
-
-#[cfg(unix)]
-fn permission_mode(metadata: &std::fs::Metadata) -> u32 {
-    use std::os::unix::fs::PermissionsExt;
-    metadata.permissions().mode()
-}
-
-#[cfg(not(unix))]
-fn permission_mode(metadata: &std::fs::Metadata) -> u32 {
-    u32::from(metadata.permissions().readonly())
-}
-
-#[cfg(unix)]
-fn set_permissions(path: &Path, mode: u32) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-}
-
-#[cfg(not(unix))]
-fn set_permissions(path: &Path, mode: u32) -> std::io::Result<()> {
-    let mut permissions = std::fs::metadata(path)?.permissions();
-    permissions.set_readonly(mode != 0);
-    std::fs::set_permissions(path, permissions)
 }
 
 fn invalid_bundle(error: impl std::fmt::Display) -> std::io::Error {

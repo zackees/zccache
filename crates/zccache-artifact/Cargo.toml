@@ -23,6 +23,7 @@ gha = ["dep:zccache-gha", "dep:flate2", "dep:tar"]
 zccache-core = { workspace = true }
 zccache-hash = { workspace = true }
 zccache-gha = { workspace = true, optional = true }
+zccache-platform = { workspace = true }
 
 bincode = { workspace = true }
 blake3 = { workspace = true }

@@ -4188,6 +4188,7 @@ dependencies = [
  "zccache-core",
  "zccache-gha",
  "zccache-hash",
+ "zccache-platform",
 ]
 
 [[package]]
@@ -4296,6 +4297,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "windows-sys 0.61.2",
+ "zccache-platform",
 ]
 
 [[package]]
@@ -4345,6 +4347,7 @@ dependencies = [
  "zccache-fscache",
  "zccache-hash",
  "zccache-ipc",
+ "zccache-platform",
  "zccache-protocol",
  "zccache-test-support",
  "zccache-watcher",
@@ -4479,6 +4482,11 @@ dependencies = [
 [[package]]
 name = "zccache-platform"
 version = "1.13.1"
+dependencies = [
+ "libc",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "zccache-protocol"

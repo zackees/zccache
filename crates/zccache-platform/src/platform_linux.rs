@@ -4,3 +4,5 @@
 //! here and in `platform_linux/`. Linux and macOS remain separate trees even
 //! where they share call sites. Populated per capability phase; empty until
 //! then.
+
+pub mod fs;

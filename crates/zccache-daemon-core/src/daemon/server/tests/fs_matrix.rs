@@ -140,12 +140,12 @@ fn exercise_row(fixture: &FsFixture, cross_volume: bool) -> String {
     let output_time =
         filetime::FileTime::from_last_modification_time(&std::fs::metadata(&output).unwrap());
     assert_eq!(output_time.unix_seconds(), blob_time.unix_seconds());
-    let shares_file_identity = same_file(&blob, &output);
+    let shares_file_identity = crate::platform::fs::identity::same_file(&blob, &output).unwrap();
     let mut blob_may_be_evicted = false;
 
     let tier = if observed.reflink_count == 1 {
         assert!(!shares_file_identity);
-        make_writable(&output).unwrap();
+        crate::platform::fs::permissions::make_writable(&output).unwrap();
         std::fs::write(&output, b"private").unwrap();
         assert_eq!(std::fs::read(&blob).unwrap(), original);
         "reflink"
@@ -181,8 +181,8 @@ fn exercise_row(fixture: &FsFixture, cross_volume: bool) -> String {
     } else {
         "independent"
     };
-    let _ = make_writable(&blob);
-    let _ = make_writable(&output);
+    let _ = crate::platform::fs::permissions::make_writable(&blob);
+    let _ = crate::platform::fs::permissions::make_writable(&output);
     if output.exists() {
         std::fs::remove_file(&output).unwrap();
     }
@@ -226,7 +226,7 @@ fn refs_non_cluster_multiple_round_trips() {
     let observed = write_cached_file_observed(&output, &blob).unwrap();
     assert_eq!(observed.reflink_count, 1, "ReFS must use the reflink tier");
     assert_eq!(observed.copy_bytes, 0);
-    assert!(!same_file(&blob, &output));
+    assert!(!crate::platform::fs::identity::same_file(&blob, &output).unwrap());
     assert_eq!(std::fs::read(&output).unwrap(), bytes);
     let output_time =
         filetime::FileTime::from_last_modification_time(&std::fs::metadata(&output).unwrap());
@@ -275,7 +275,7 @@ fn reflink_larger_than_four_gib_uses_chunked_clone() {
     assert_eq!(observed.reflink_count, 1);
     assert_eq!(observed.copy_bytes, 0);
     assert_eq!(std::fs::metadata(&output).unwrap().len(), LENGTH);
-    assert!(!same_file(&blob, &output));
+    assert!(!crate::platform::fs::identity::same_file(&blob, &output).unwrap());
     assert_eq!(read_at(&output, FOUR_GIB - 7, 15), b"boundary-before");
     assert_eq!(read_at(&output, FOUR_GIB + 9, 14), b"boundary-after");
     let output_time =

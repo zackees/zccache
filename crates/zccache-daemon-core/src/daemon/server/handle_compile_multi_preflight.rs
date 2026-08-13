@@ -7,8 +7,8 @@ struct InputStamp {
     len: u64,
     modified: Option<std::time::SystemTime>,
     created: Option<std::time::SystemTime>,
-    file_id: Option<FileId>,
-    change_marker: Option<i128>,
+    file_id: Option<crate::platform::fs::FileIdentity>,
+    change_marker: Option<crate::platform::fs::ChangeMarker>,
 }
 
 pub(super) struct InputStampSet {
@@ -32,8 +32,8 @@ fn input_stamp(path: &Path) -> Option<InputStamp> {
         len: metadata.len(),
         modified: metadata.modified().ok(),
         created: metadata.created().ok(),
-        file_id: get_file_id(path),
-        change_marker: get_file_change_marker(path),
+        file_id: crate::platform::fs::identity::file_identity(path).ok(),
+        change_marker: crate::platform::fs::identity::change_marker(path),
     })
 }
 

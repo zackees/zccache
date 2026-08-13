@@ -351,7 +351,7 @@ fn plan_maintenance_at_least(
 fn add_file(
     path: &Path,
     artifact: &mut DiskArtifact,
-    seen: &mut HashSet<FileId>,
+    seen: &mut HashSet<crate::platform::fs::FileIdentity>,
 ) -> io::Result<()> {
     let metadata = std::fs::symlink_metadata(path)?;
     if !metadata.file_type().is_file() {
@@ -360,65 +360,25 @@ fn add_file(
     artifact.last_access = artifact
         .last_access
         .max(metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH));
-    if get_file_id(path).is_none_or(|id| seen.insert(id)) {
-        artifact.allocated_bytes = artifact
-            .allocated_bytes
-            .saturating_add(allocated_bytes(path, &metadata));
+    if crate::platform::fs::identity::file_identity(path)
+        .ok()
+        .is_none_or(|id| seen.insert(id))
+    {
+        artifact.allocated_bytes =
+            artifact
+                .allocated_bytes
+                .saturating_add(crate::platform::fs::volume::allocated_bytes(
+                    path, &metadata,
+                ));
     }
     Ok(())
 }
 
-#[cfg(unix)]
-fn allocated_bytes(_path: &Path, metadata: &std::fs::Metadata) -> u64 {
-    use std::os::unix::fs::MetadataExt;
-    metadata.blocks().saturating_mul(512)
-}
-
-#[cfg(not(unix))]
-fn allocated_bytes(path: &Path, metadata: &std::fs::Metadata) -> u64 {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::{GetLastError, SetLastError};
-    use windows_sys::Win32::Storage::FileSystem::GetCompressedFileSizeW;
-
-    let path = windows_verbatim_file_path(path).unwrap_or_else(|_| path.into());
-    let wide: Vec<u16> = path
-        .as_path()
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    let mut high = 0_u32;
-    unsafe {
-        SetLastError(0);
-        let low = GetCompressedFileSizeW(wide.as_ptr(), &mut high);
-        windows_allocated_size_result(low, high, GetLastError(), metadata.len())
-    }
-}
-
-#[cfg(any(test, windows))]
-fn windows_allocated_size_result(low: u32, high: u32, error: u32, fallback: u64) -> u64 {
-    if low == u32::MAX && error != 0 {
-        fallback
-    } else {
-        (u64::from(high) << 32) | u64::from(low)
-    }
-}
-
-#[cfg(windows)]
-fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
-    metadata.file_type().is_symlink()
-}
-
 fn validate_owned_artifact_root(artifact_dir: &Path) -> io::Result<()> {
     let metadata = std::fs::symlink_metadata(artifact_dir)?;
-    if is_link_or_reparse(&metadata) {
+    if crate::platform::fs::links::classify(artifact_dir)
+        .is_ok_and(|kind| kind != crate::platform::fs::links::LinkKind::Regular)
+    {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
@@ -443,7 +403,7 @@ fn validate_owned_artifact_root(artifact_dir: &Path) -> io::Result<()> {
 fn add_tree(
     root: &Path,
     artifact: &mut DiskArtifact,
-    seen: &mut HashSet<FileId>,
+    seen: &mut HashSet<crate::platform::fs::FileIdentity>,
 ) -> io::Result<()> {
     if root.is_file() {
         return add_file(root, artifact, seen);
@@ -454,7 +414,9 @@ fn add_tree(
     for entry in std::fs::read_dir(root)?.flatten() {
         let path = entry.path();
         let metadata = std::fs::symlink_metadata(&path)?;
-        if is_link_or_reparse(&metadata) {
+        if crate::platform::fs::links::classify(&path)
+            .is_ok_and(|kind| kind != crate::platform::fs::links::LinkKind::Regular)
+        {
             continue;
         }
         if metadata.is_dir() {

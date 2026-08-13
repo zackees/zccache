@@ -1,6 +1,6 @@
 //! Independent requested-path materialization and physical-work observations.
 
-use super::{copy_output, set_readonly};
+use super::copy_output;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -75,11 +75,11 @@ pub(in crate::daemon::server) fn materialize_independent_with_stats(
                 ),
             ));
         }
-        let _ = set_readonly(destination, false);
+        let _ = crate::platform::fs::permissions::set_readonly(destination, false);
         fs::remove_file(destination)?;
     }
     copy_output(source, destination).map(|(reflink, copy_bytes)| {
-        let _ = set_readonly(destination, false);
+        let _ = crate::platform::fs::permissions::set_readonly(destination, false);
         StagedMaterializationStats {
             reflink_count: u64::from(reflink),
             hardlink_count: 0,

@@ -1,40 +1,13 @@
-//! Owner-only DACL for the daemon deploy directory on Windows (#1172 F1e).
+//! Windows permission mechanics: owner-only DACLs for cache-owned
+//! directories and read-only attribute handling.
 //!
-//! [`ensure_dir_private`](super::paths::ensure_dir_private) expressed "private"
-//! as unix mode bits and did nothing at all on Windows, so the directory the
-//! CLI copies the daemon binary into — and then *executes* — was left with
-//! whatever the profile tree inherits. That is normally
-//!
-//! ```text
-//! D:AI(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;FA;;;S-1-5-21-…-1001)
-//! ```
-//!
-//! under `%USERPROFILE%`, which is already narrow — but nothing *enforced* it.
-//! A cache root relocated by `ZCCACHE_CACHE_DIR` to `C:\ProgramData\…`,
-//! `C:\zccache`, or any directory created off the volume root inherits
-//! `BUILTIN\Users:(OI)(CI)(M)` or `CREATOR OWNER` grants instead, and then any
-//! local account can replace `zccache-daemon.exe` between the CLI's integrity
-//! check and the spawn. Whoever can write that directory chooses what the CLI
-//! runs as the daemon.
-//!
-//! The replacement mirrors the named-pipe descriptor from #1272
-//! (`transport/pipe_security.rs`): `D:P(A;OICI;FA;;;<user>)(A;OICI;FA;;;SY)`.
-//! The `P` (PROTECTED) flag is load-bearing — without it the inherited `Users`
-//! and `CREATOR OWNER` aces this exists to remove come straight back. `OICI`
-//! makes the deployed binary itself inherit the same pair, so the file is
-//! covered and not just its directory.
-//!
-//! Two deliberate differences from the pipe:
-//!
-//! * The trustee is the **current token user's SID**, not `OW` (OWNER RIGHTS).
-//!   `OW` resolves through object ownership, and a directory created by an
-//!   elevated process is owned by `BUILTIN\Administrators`, not by the user —
-//!   which would leave the CLI unable to write its own deploy directory. The
-//!   explicit SID is the account that actually deploys and spawns.
-//! * `SYSTEM` and `BUILTIN\Administrators` are *accepted* when already present
-//!   on a directory, and never treated as a finding. An administrator can take
-//!   ownership regardless, so an ACE for them grants nothing an attacker at
-//!   that privilege level did not already have.
+//! Ported from zccache-core's win_acl (#1172 F1e): `ensure_dir_private`
+//! expressed "private" as unix mode bits and did nothing at all on Windows,
+//! so directories the CLI populates and executes from were left with
+//! whatever the parent tree inherits. This module applies an explicit
+//! protected owner-only DACL — `D:P(A;OICI;FA;;;<user>)(A;OICI;FA;;;SY)` —
+//! instead, with the same three-outcome contract as the Unix arm
+//! (untouched / tightened / still-exposed error).
 
 use std::io;
 use std::os::windows::ffi::OsStrExt;
@@ -86,7 +59,7 @@ const ACE_FIELDS: usize = 6;
 /// it was tightened, and `Err` when it is still exposed afterwards — the same
 /// three outcomes the unix arm reports, so the caller's "tightened" /
 /// "refused" lifecycle contract is unchanged.
-pub(super) fn ensure_dir_private(path: &Path) -> io::Result<bool> {
+pub(crate) fn ensure_dir_private(path: &Path) -> io::Result<bool> {
     // Matches the unix arm's `metadata()` probe: a missing directory is an
     // error, not a silent pass — the caller is about to deploy a binary here.
     let _ = std::fs::metadata(path)?;
@@ -138,7 +111,7 @@ pub(super) fn ensure_dir_private(path: &Path) -> io::Result<bool> {
 /// Already-existing directories are left to `ensure_dir_private`: this only
 /// closes the window for directories *it* creates. `Ok(())` when the path
 /// exists as a directory already, so it composes like `create_dir_all`.
-pub(super) fn create_dir_all_private(path: &Path) -> io::Result<()> {
+pub(crate) fn create_dir_all_private(path: &Path) -> io::Result<()> {
     if path.is_dir() {
         return Ok(());
     }
@@ -210,7 +183,7 @@ fn owner_only_sddl(user_sid: &str) -> String {
 /// narrow is one `icacls` reset — or one move to a differently-permissioned
 /// parent — away from re-acquiring `BUILTIN\Users`, so it is reported as
 /// needing repair rather than accepted.
-pub(super) fn is_owner_only(sddl: &str, user_sid: &str) -> bool {
+pub(crate) fn is_owner_only(sddl: &str, user_sid: &str) -> bool {
     let Some(rest) = sddl.strip_prefix("D:") else {
         return false;
     };
@@ -352,7 +325,7 @@ fn token_user_sid(token: windows_sys::Win32::Foundation::HANDLE) -> io::Result<S
 /// Read `path`'s DACL back as SDDL. This is the honest observation the
 /// tightening decision and the tests are both made from — never the constant
 /// we passed in.
-pub(super) fn dacl_sddl(path: &Path) -> io::Result<String> {
+pub(crate) fn dacl_sddl(path: &Path) -> io::Result<String> {
     let wide_path = wide(path);
     let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
     let mut dacl: *mut ACL = std::ptr::null_mut();
@@ -473,212 +446,54 @@ fn wide_to_string(text: *const u16) -> String {
     String::from_utf16_lossy(slice)
 }
 
+/// Sets or clears the read-only file attribute.
+pub(crate) fn set_readonly(path: &Path, readonly: bool) -> std::io::Result<()> {
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    if permissions.readonly() == readonly {
+        return Ok(());
+    }
+    permissions.set_readonly(readonly);
+    std::fs::set_permissions(path, permissions)
+}
+
+/// Clears the read-only attribute when set.
+pub(crate) fn make_writable(path: &Path) -> std::io::Result<()> {
+    if path.exists() && std::fs::metadata(path)?.permissions().readonly() {
+        set_readonly(path, false)?;
+    }
+    Ok(())
+}
+
+/// Windows has no per-file executable bit; this is a no-op that keeps the
+/// neutral facade portable.
+pub(crate) fn make_executable(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// The host's mode representation on Windows is the `0`/`1` readonly
+/// attribute.
+pub(crate) fn mode(metadata: &std::fs::Metadata) -> u32 {
+    u32::from(metadata.permissions().readonly())
+}
+
+/// Restores the readonly attribute previously read with [`mode`]; all other
+/// permission bits are preserved.
+pub(crate) fn apply_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    set_readonly(path, mode != 0)
+}
+
 #[cfg(test)]
-mod tests {
+mod attribute_tests {
     use super::*;
 
-    /// #1172 F1e: the deploy directory holds a binary the CLI executes, so
-    /// anything that can write it chooses what runs as the daemon. This drives
-    /// the real code path and reads the DACL back off the created directory,
-    /// so it fails against the pre-fix no-op rather than restating a constant.
     #[test]
-    fn a_users_writable_deploy_dir_is_tightened_to_owner_only() {
+    fn readonly_roundtrip() {
         let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().join("deploy");
-        std::fs::create_dir(&dir).unwrap();
-
-        // Give BUILTIN\Users modify, inherited-style — the grant a cache root
-        // under C:\ or C:\ProgramData picks up, and the one that makes this a
-        // finding rather than a hardening nicety.
-        let user_sid = current_user_sid().unwrap();
-        apply_dacl(
-            &dir,
-            &format!("D:(A;OICI;FA;;;{user_sid})(A;OICI;0x1301bf;;;BU)"),
-        )
-        .unwrap();
-        let before = dacl_sddl(&dir).unwrap();
-        println!("DACL before: {before}");
-        assert!(
-            !is_owner_only(&before, &user_sid),
-            "the test fixture must start exposed, got {before}"
-        );
-
-        let changed = super::ensure_dir_private(&dir).unwrap();
-
-        let after = dacl_sddl(&dir).unwrap();
-        println!("DACL after:  {after}");
-        assert!(changed, "an exposed dir must report that it was repaired");
-        assert!(
-            is_owner_only(&after, &user_sid),
-            "the repair must leave the deploy dir owner-only, got {after}"
-        );
-        assert!(
-            !after.contains(";BU)"),
-            "BUILTIN\\Users must not retain write access: {after}"
-        );
-
-        // The point of the DACL is that the CLI can still deploy into it.
-        std::fs::write(dir.join("zccache-daemon.exe"), b"probe").unwrap();
-    }
-
-    /// Idempotence matters: this runs on every daemon spawn, and a directory
-    /// that reported "tightened" forever would emit a security lifecycle event
-    /// on every compile.
-    #[test]
-    fn an_already_private_dir_is_left_untouched() {
-        let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().join("deploy");
-        std::fs::create_dir(&dir).unwrap();
-
-        super::ensure_dir_private(&dir).unwrap();
-        let second = super::ensure_dir_private(&dir).unwrap();
-
-        assert!(
-            !second,
-            "a dir already tightened must need no repair the second time"
-        );
-    }
-
-    /// A missing directory is an error, not a silent pass — the caller is
-    /// about to copy a binary into it.
-    #[test]
-    fn ensuring_a_missing_dir_is_an_error() {
-        let temp = tempfile::tempdir().unwrap();
-        super::ensure_dir_private(&temp.path().join("nope"))
-            .expect_err("a missing deploy directory must not report success");
-    }
-
-    /// The SDDL we write must be accepted by Windows and must satisfy our own
-    /// predicate — a typo would otherwise loop forever between "not private"
-    /// and a set that never converges.
-    #[test]
-    fn the_owner_only_sddl_round_trips() {
-        let user_sid = current_user_sid().unwrap();
-        assert!(is_owner_only(&owner_only_sddl(&user_sid), &user_sid));
-    }
-
-    /// An unprotected DACL is one `icacls` reset away from re-inheriting
-    /// `BUILTIN\Users`, so it must not be accepted as private.
-    #[test]
-    fn an_unprotected_dacl_is_not_owner_only() {
-        assert!(!is_owner_only("D:AI(A;OICIID;FA;;;S-1-5-18)", "S-1-5-18"));
-        assert!(!is_owner_only("D:NO_ACCESS_CONTROL", "S-1-5-18"));
-    }
-
-    /// The alias case CI caught and this host could not.
-    ///
-    /// `ConvertSecurityDescriptorToStringSecurityDescriptorW` renders
-    /// well-known SIDs as two-letter aliases. A process running as the
-    /// built-in Administrator gets its *own* account back as `LA`, so a raw
-    /// string comparison declared the directory exposed immediately after
-    /// tightening it — and the read-back check then rejected a DACL that was
-    /// actually correct. The GitHub Windows runner runs as that account; my
-    /// dev host does not, which is exactly why this needs a test rather than a
-    /// manual probe.
-    #[test]
-    fn a_trustee_alias_matches_the_same_sid_written_longhand() {
-        // SYSTEM, both spellings, in both argument positions.
-        assert!(trustee_is_self_or_admin("SY", "S-1-5-18"));
-        assert!(trustee_is_self_or_admin("S-1-5-18", "SY"));
-
-        // The shape CI hit: the ACE for the running user comes back aliased
-        // while the SID we compare against is spelled out longhand.
-        assert!(
-            is_owner_only("D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;S-1-5-18)", "S-1-5-18"),
-            "an aliased trustee must resolve to its SID, not be read as a stranger"
-        );
-
-        // `LA` is the built-in Administrator *account*, not SYSTEM — a
-        // different principal, and it must not be waved through just because
-        // it happens to be an alias. (Getting this backwards is what made the
-        // first version of this test fail.)
-        assert!(!trustee_is_self_or_admin("LA", "S-1-5-18"));
-
-        // And the comparison must still reject an actual stranger.
-        assert!(!trustee_is_self_or_admin("WD", "S-1-5-18"));
-        assert!(
-            !is_owner_only("D:PAI(A;OICI;FA;;;WD)(A;OICI;FA;;;SY)", "S-1-5-18"),
-            "Everyone must not be accepted just because SYSTEM is also listed"
-        );
-    }
-
-    /// The whole point of the residual fix: the directory must be owner-only
-    /// *at birth*, not tightened afterwards.
-    ///
-    /// This is also the empirical check that `SE_DACL_PROTECTED` survives
-    /// `CreateDirectoryW`. `D:P` in an SDDL sets the control bit on the
-    /// converted descriptor, but whether the kernel honors it through
-    /// `SECURITY_ATTRIBUTES` is not something the docs promise — and if it
-    /// does not, `is_owner_only` rejects the result (it requires `P`) and this
-    /// fails. A fix that quietly degraded to "created wide, tightened later"
-    /// would be worse than none, because it would look closed.
-    #[test]
-    fn a_freshly_created_dir_is_owner_only_without_a_tighten_pass() {
-        let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().join("deploy");
-
-        create_dir_all_private(&dir).unwrap();
-
-        let user_sid = current_user_sid().unwrap();
-        let sddl = dacl_sddl(&dir).unwrap();
-        assert!(
-            is_owner_only(&sddl, &user_sid),
-            "a directory created by create_dir_all_private must already be \
-             owner-only and protected; got {sddl}"
-        );
-        assert!(
-            !sddl.contains(";BU)"),
-            "BUILTIN\\Users must never appear on the deploy directory: {sddl}"
-        );
-        // Nothing left for the tighten pass to do — `Ok(false)` is
-        // "was already private".
-        assert!(
-            !ensure_dir_private(&dir).unwrap(),
-            "a directory born private must not need tightening"
-        );
-    }
-
-    /// Intermediate parents are created by the same path, so the window is not
-    /// simply moved up one level. A `v<VERSION>` dir born private under a
-    /// briefly-wide cache root would still be exposed through its parent.
-    #[test]
-    fn intermediate_parents_are_created_private_too() {
-        let temp = tempfile::tempdir().unwrap();
-        let leaf = temp.path().join("root").join("v1.2.3").join("nested");
-
-        create_dir_all_private(&leaf).unwrap();
-
-        let user_sid = current_user_sid().unwrap();
-        for dir in [
-            temp.path().join("root"),
-            temp.path().join("root").join("v1.2.3"),
-            leaf,
-        ] {
-            let sddl = dacl_sddl(&dir).unwrap();
-            assert!(
-                is_owner_only(&sddl, &user_sid),
-                "every level must be created private, {} was not: {sddl}",
-                dir.display()
-            );
-        }
-    }
-
-    /// Composes like `create_dir_all`: an existing directory is a no-op, not
-    /// an error, and its DACL is left for `ensure_dir_private` to judge.
-    #[test]
-    fn an_existing_directory_is_accepted_and_left_alone() {
-        let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().join("already-here");
-        std::fs::create_dir(&dir).unwrap();
-        let before = dacl_sddl(&dir).unwrap();
-
-        create_dir_all_private(&dir).unwrap();
-
-        assert_eq!(
-            dacl_sddl(&dir).unwrap(),
-            before,
-            "an existing directory must not be silently re-permissioned here; \
-             tightening is ensure_dir_private's job and it reports what it did"
-        );
+        let file = temp.path().join("f");
+        std::fs::write(&file, b"data").unwrap();
+        set_readonly(&file, true).unwrap();
+        assert!(std::fs::metadata(&file).unwrap().permissions().readonly());
+        make_writable(&file).unwrap();
+        std::fs::write(&file, b"more").unwrap();
     }
 }

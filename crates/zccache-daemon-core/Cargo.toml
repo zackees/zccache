@@ -32,6 +32,7 @@ zccache-fingerprint = { workspace = true }
 zccache-fscache = { workspace = true }
 zccache-hash = { workspace = true }
 zccache-ipc = { workspace = true }
+zccache-platform = { workspace = true }
 zccache-protocol = { workspace = true }
 zccache-watcher = { workspace = true }
 

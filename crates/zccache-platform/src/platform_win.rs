@@ -3,3 +3,5 @@
 //! All Windows host cfg and native APIs (`std::os::windows::*`,
 //! `windows-sys`) live here and in `platform_win/`. Populated per capability
 //! phase; empty until then.
+
+pub mod fs;

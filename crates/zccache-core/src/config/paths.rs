@@ -60,94 +60,16 @@ use crate::NormalizedPath;
 /// (#1172 F1e): a directory whose ACL is not protected-and-owner-only gets
 /// `D:P(A;OICI;FA;;;<user>)(A;OICI;FA;;;SY)` written to it, verified by
 /// read-back. This used to be a no-op, which left the daemon deploy directory
-/// — a directory the CLI *executes* a binary out of — unguarded. See
-/// `config::win_acl`.
+/// — a directory the CLI *executes* a binary out of — unguarded.
+///
+/// Both host arms are implemented in the `zccache-platform` facade
+/// (`crate::platform::fs::permissions`).
 pub fn ensure_dir_private(path: &std::path::Path) -> std::io::Result<bool> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let meta = std::fs::metadata(path)?;
-        let full_mode = meta.permissions().mode();
-
-        // Never re-permission a directory zccache does not own.
-        //
-        // The sticky bit is the OS's marker for a *shared* temp root — `/tmp`
-        // and `/var/tmp` are `1777` by design, and their write permission is
-        // the point, with unlink protection supplying the safety. Tightening
-        // one would be wrong for every other process on the machine, and as
-        // root it would succeed: an earlier revision of this function tried
-        // exactly that and CI stopped it. A socket placed directly in such a
-        // root is not a layout zccache produces; its own `0600` mode is what
-        // protects it there.
-        const STICKY: u32 = 0o1000;
-        if full_mode & STICKY != 0 {
-            return Ok(false);
-        }
-        // A directory owned by someone else needs no special case: `chmod`
-        // fails with EPERM and this returns `Err`, which is the right answer
-        // anyway — the directory really is exposed and we really cannot fix
-        // it, so the caller should refuse rather than serve from it.
-        let mode = full_mode & 0o777;
-        if mode & 0o022 == 0 {
-            return Ok(false);
-        }
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
-
-        // Re-read rather than trusting the write: on some filesystems (and
-        // under some mount options) `chmod` reports success without taking
-        // effect, and this is exactly the case where a false negative is
-        // expensive.
-        let now = std::fs::metadata(path)?.permissions().mode() & 0o777;
-        if now & 0o022 != 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "{} is group/other-writable (mode {now:04o}) and could not be tightened",
-                    path.display()
-                ),
-            ));
-        }
-        Ok(true)
-    }
-    #[cfg(windows)]
-    {
-        // #1172 F1e: the Windows arm used to be a bare `metadata()` probe, so
-        // the directory the CLI copies the daemon binary into — and then
-        // executes — had no enforced access control at all. `win_acl` applies
-        // the file-object equivalent of `0700`: a protected DACL naming the
-        // deploying user and SYSTEM.
-        super::win_acl::ensure_dir_private(path)
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = std::fs::metadata(path)?;
-        Ok(false)
-    }
+    crate::platform::fs::permissions::ensure_dir_private(path)
 }
 
 pub fn create_dir_all_private(path: &std::path::Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(path)
-    }
-    #[cfg(windows)]
-    {
-        // #1172 residual: this used to be a bare `create_dir_all`, leaving the
-        // directory live with the inherited ACL until `ensure_dir_private`
-        // tightened it. The descriptor now goes to `CreateDirectoryW` in
-        // `SECURITY_ATTRIBUTES`, matching what `mode(0o700)` gives the unix
-        // arm — the directory is never observable with any other DACL.
-        super::win_acl::create_dir_all_private(path)
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        std::fs::create_dir_all(path)
-    }
+    crate::platform::fs::permissions::create_dir_all_private(path)
 }
 
 /// Returns the directory for content-addressed compiled outputs.

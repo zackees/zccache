@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::core::NormalizedPath;
+use crate::platform::fs::FileIdentity;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
@@ -26,8 +27,8 @@ struct LinkRecord {
     suspect: bool,
 }
 
-static REGISTRY: OnceLock<dashmap::DashMap<FileId, LinkRecord>> = OnceLock::new();
-static OUTPUT_IDS: OnceLock<dashmap::DashMap<NormalizedPath, FileId>> = OnceLock::new();
+static REGISTRY: OnceLock<dashmap::DashMap<FileIdentity, LinkRecord>> = OnceLock::new();
+static OUTPUT_IDS: OnceLock<dashmap::DashMap<NormalizedPath, FileIdentity>> = OnceLock::new();
 static WATCHER_AVAILABLE: AtomicBool = AtomicBool::new(true);
 
 fn stat_signature(path: &Path) -> Option<StatSignature> {
@@ -38,11 +39,11 @@ fn stat_signature(path: &Path) -> Option<StatSignature> {
     Some((mtime_ns, metadata.len()))
 }
 
-fn registry() -> &'static dashmap::DashMap<FileId, LinkRecord> {
+fn registry() -> &'static dashmap::DashMap<FileIdentity, LinkRecord> {
     REGISTRY.get_or_init(dashmap::DashMap::new)
 }
 
-fn output_ids() -> &'static dashmap::DashMap<NormalizedPath, FileId> {
+fn output_ids() -> &'static dashmap::DashMap<NormalizedPath, FileIdentity> {
     OUTPUT_IDS.get_or_init(dashmap::DashMap::new)
 }
 
@@ -98,7 +99,7 @@ pub(in crate::daemon::server) fn write_authoritative_blob_digest(
 pub(in crate::daemon::server) fn register_trusted_blob_for_test(
     blob_path: &Path,
 ) -> std::io::Result<()> {
-    let id = get_file_id(blob_path).ok_or_else(|| {
+    let id = crate::platform::fs::identity::file_identity(blob_path).map_err(|_| {
         std::io::Error::other(format!(
             "unable to identify test cache blob {}",
             blob_path.display()
@@ -204,42 +205,8 @@ pub(in crate::daemon::server) fn write_authoritative_blob_digest_for_with_cleanu
     })
 }
 
-#[cfg(not(windows))]
 fn replace_digest_sidecar(temp_path: &Path, final_path: &Path) -> std::io::Result<()> {
-    std::fs::rename(temp_path, final_path)
-}
-
-#[cfg(windows)]
-fn replace_digest_sidecar(temp_path: &Path, final_path: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING};
-
-    let temp = windows_verbatim_file_path(temp_path)?
-        .as_path()
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect::<Vec<_>>();
-    let final_path = windows_verbatim_file_path(final_path)?
-        .as_path()
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect::<Vec<_>>();
-    // SAFETY: Both buffers are NUL-terminated UTF-16 strings that remain
-    // alive for the duration of the call.
-    if unsafe {
-        MoveFileExW(
-            temp.as_ptr(),
-            final_path.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING,
-        )
-    } == 0
-    {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    crate::platform::fs::replace::atomic_replace(temp_path, final_path)
 }
 
 /// Best-effort cleanup of a blob's digest sidecar. Used when a publish
@@ -320,8 +287,8 @@ pub(in crate::daemon::server) fn register_hardlink(
 pub(in crate::daemon::server) fn prepare_hardlink_registration(
     blob_path: &Path,
     output_path: &Path,
-) -> std::io::Result<FileId> {
-    let id = get_file_id(blob_path).ok_or_else(|| {
+) -> std::io::Result<FileIdentity> {
+    let id = crate::platform::fs::identity::file_identity(blob_path).map_err(|_| {
         std::io::Error::other(format!(
             "unable to identify cache blob {}",
             blob_path.display()
@@ -368,7 +335,10 @@ pub(in crate::daemon::server) fn prepare_hardlink_registration(
     Ok(id)
 }
 
-pub(in crate::daemon::server) fn cancel_hardlink_registration(id: FileId, output_path: &Path) {
+pub(in crate::daemon::server) fn cancel_hardlink_registration(
+    id: FileIdentity,
+    output_path: &Path,
+) {
     let output_path = NormalizedPath::new(output_path);
     if output_ids()
         .get(&output_path)
@@ -379,7 +349,7 @@ pub(in crate::daemon::server) fn cancel_hardlink_registration(id: FileId, output
 }
 
 pub(in crate::daemon::server) fn commit_hardlink_registration(
-    id: FileId,
+    id: FileIdentity,
     output_path: &Path,
 ) -> std::io::Result<()> {
     let Some(mut record) = registry().get_mut(&id) else {
@@ -389,7 +359,7 @@ pub(in crate::daemon::server) fn commit_hardlink_registration(
         ));
     };
     let output_path = NormalizedPath::new(output_path);
-    match get_file_id(output_path.as_path()) {
+    match crate::platform::fs::identity::file_identity(output_path.as_path()).ok() {
         Some(actual) if actual == id => {}
         Some(_mismatched) => {
             // The path now resolves to a *different* file identity than the
@@ -428,18 +398,18 @@ pub(in crate::daemon::server) fn commit_hardlink_registration(
 
 pub(in crate::daemon::server) fn prepare_registered_detach(
     path: &Path,
-) -> Option<(FileId, NormalizedPath)> {
+) -> Option<(FileIdentity, NormalizedPath)> {
     let path = NormalizedPath::new(path);
     let id = output_ids()
         .get(&path)
         .map(|entry| *entry)
-        .or_else(|| get_file_id(path.as_path()))?;
+        .or_else(|| crate::platform::fs::identity::file_identity(path.as_path()).ok())?;
     registry()
         .get(&id)
         .map(|record| (id, record.blob_path.clone()))
 }
 
-pub(in crate::daemon::server) fn commit_registered_detach(id: FileId, path: &Path) {
+pub(in crate::daemon::server) fn commit_registered_detach(id: FileIdentity, path: &Path) {
     let path = NormalizedPath::new(path);
     output_ids().remove(&path);
     let remove = if let Some(mut record) = registry().get_mut(&id) {
@@ -455,7 +425,7 @@ pub(in crate::daemon::server) fn commit_registered_detach(id: FileId, path: &Pat
 
 pub(in crate::daemon::server) fn verify_registered_blob(blob_path: &Path) -> std::io::Result<()> {
     let started = std::time::Instant::now();
-    let Some(id) = get_file_id(blob_path) else {
+    let Some(id) = crate::platform::fs::identity::file_identity(blob_path).ok() else {
         return Ok(());
     };
     // A prior blob at this same (volume, inode) identity may have been
@@ -510,7 +480,7 @@ pub(in crate::daemon::server) fn verify_registered_blob(blob_path: &Path) -> std
         // the publishing rename. The remaining cost is a one-time cache
         // miss for blobs written by a pre-#1039 zccache version on
         // upgrade, which is the safer trade-off.
-        let link_count = hard_link_count(blob_path).unwrap_or_default();
+        let link_count = crate::platform::fs::links::hard_link_count(blob_path).unwrap_or_default();
         tracing::warn!(
             event = "cow_unregistered_blob_evicted",
             blob_path = %blob_path.display(),
@@ -532,7 +502,7 @@ pub(in crate::daemon::server) fn verify_registered_blob(blob_path: &Path) -> std
     };
     if !record.suspect
         && (WATCHER_AVAILABLE.load(Ordering::Acquire)
-            || hard_link_count(blob_path).unwrap_or_default() <= 1)
+            || crate::platform::fs::links::hard_link_count(blob_path).unwrap_or_default() <= 1)
     {
         return Ok(());
     }
@@ -550,7 +520,7 @@ pub(in crate::daemon::server) fn verify_registered_blob(blob_path: &Path) -> std
         return Ok(());
     }
     let elapsed_ns = started.elapsed().as_nanos() as u64;
-    let link_count = hard_link_count(blob_path).unwrap_or_default();
+    let link_count = crate::platform::fs::links::hard_link_count(blob_path).unwrap_or_default();
     let outputs = record.outputs.iter().cloned().collect::<Vec<_>>();
     let cache_key = record
         .blob_path
@@ -606,7 +576,7 @@ pub(in crate::daemon::server) fn mark_registered_links_suspect<'a>(
     paths: impl IntoIterator<Item = &'a Path>,
 ) {
     for path in paths {
-        let Some(id) = get_file_id(path) else {
+        let Some(id) = crate::platform::fs::identity::file_identity(path).ok() else {
             continue;
         };
         if let Some(mut record) = registry().get_mut(&id) {
@@ -685,16 +655,16 @@ pub(in crate::daemon::server) fn mark_changed_registered_links_suspect() -> Over
 /// process-global static, so tests running in parallel cannot assert on the
 /// aggregate sweep counters — they must scope assertions to their own blob.
 #[cfg(test)]
-pub(in crate::daemon::server) fn registered_link_suspect(id: FileId) -> Option<bool> {
+pub(in crate::daemon::server) fn registered_link_suspect(id: FileIdentity) -> Option<bool> {
     registry().get(&id).map(|record| record.suspect)
 }
 
-pub(in crate::daemon::server) fn registered_blob_id(blob_path: &Path) -> Option<FileId> {
-    let id = get_file_id(blob_path)?;
+pub(in crate::daemon::server) fn registered_blob_id(blob_path: &Path) -> Option<FileIdentity> {
+    let id = crate::platform::fs::identity::file_identity(blob_path).ok()?;
     registry().contains_key(&id).then_some(id)
 }
 
-pub(in crate::daemon::server) fn unregister_blob_id(id: FileId) {
+pub(in crate::daemon::server) fn unregister_blob_id(id: FileIdentity) {
     if let Some((_, record)) = registry().remove(&id) {
         for output in record.outputs {
             output_ids().remove(&output);
@@ -708,10 +678,10 @@ pub(in crate::daemon::server) fn remove_registered_blob(blob_path: &Path) -> std
         .map(|metadata| metadata.permissions().readonly())
         .unwrap_or(false);
     let restore_readonly = was_readonly || readonly_enabled();
-    make_writable(blob_path)?;
+    crate::platform::fs::permissions::make_writable(blob_path)?;
     if let Err(error) = remove_output_file(blob_path) {
         if restore_readonly {
-            let _ = set_readonly(blob_path, true);
+            let _ = crate::platform::fs::permissions::set_readonly(blob_path, true);
         }
         return Err(error);
     }
@@ -724,26 +694,28 @@ pub(in crate::daemon::server) fn remove_registered_blob(blob_path: &Path) -> std
 
 #[cfg(test)]
 pub(in crate::daemon::server) fn registered_output_count(blob_path: &Path) -> usize {
-    get_file_id(blob_path)
+    crate::platform::fs::identity::file_identity(blob_path)
+        .ok()
         .and_then(|id| registry().get(&id).map(|record| record.outputs.len()))
         .unwrap_or(0)
 }
 
 #[cfg(test)]
-pub(in crate::daemon::server) fn is_file_id_registered(id: FileId) -> bool {
+pub(in crate::daemon::server) fn is_file_id_registered(id: FileIdentity) -> bool {
     registry().contains_key(&id)
 }
 
 #[cfg(test)]
 pub(in crate::daemon::server) fn is_blob_suspect_for_test(blob_path: &Path) -> bool {
-    get_file_id(blob_path)
+    crate::platform::fs::identity::file_identity(blob_path)
+        .ok()
         .and_then(|id| registry().get(&id).map(|record| record.suspect))
         .unwrap_or(false)
 }
 
 #[cfg(test)]
 pub(in crate::daemon::server) fn forget_blob_registration_for_restart_test(blob_path: &Path) {
-    let Some(id) = get_file_id(blob_path) else {
+    let Some(id) = crate::platform::fs::identity::file_identity(blob_path).ok() else {
         return;
     };
     if let Some((_, record)) = registry().remove(&id) {

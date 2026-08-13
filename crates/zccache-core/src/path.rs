@@ -297,17 +297,17 @@ pub fn normalize_for_key(path: &Path) -> String {
 
     #[cfg(windows)]
     {
-        let mut s = normalized.to_string_lossy().replace('\\', "/");
-        if let Some(stripped) = s.strip_prefix("//?/") {
-            s = stripped.to_string();
-        }
-        s.make_ascii_lowercase();
-        s
+        let stripped = crate::platform::fs::path::strip_verbatim_prefix(&normalized);
+        crate::platform::fs::path::case_fold(&stripped)
+            .to_string_lossy()
+            .into_owned()
     }
 
     #[cfg(target_os = "macos")]
     {
-        normalized.to_string_lossy().to_lowercase()
+        crate::platform::fs::path::case_fold(&normalized)
+            .to_string_lossy()
+            .into_owned()
     }
 
     #[cfg(not(any(windows, target_os = "macos")))]
@@ -353,24 +353,17 @@ pub fn stable_path_id(path: &Path) -> String {
 /// Already-native paths (e.g., `C:\...`) pass through unchanged.
 #[must_use]
 pub fn normalize_msys_path(path: &str) -> String {
-    #[cfg(windows)]
-    {
-        let bytes = path.as_bytes();
-        // Match pattern: /X/ or /X (end of string) where X is a-zA-Z
-        if bytes.len() >= 2
-            && bytes[0] == b'/'
-            && bytes[1].is_ascii_alphabetic()
-            && (bytes.len() == 2 || bytes[2] == b'/')
-        {
-            let drive = (bytes[1] as char).to_ascii_uppercase();
-            let rest = if bytes.len() > 2 { &path[2..] } else { "" };
-            return format!("{drive}:{rest}").replace('/', "\\");
+    match crate::platform::fs::path::from_msys(Path::new(path)) {
+        Some(converted) => {
+            let mut text = converted.to_string_lossy().into_owned();
+            // `from_msys` renders the bare-drive form (`/c`) as `C:\`; the
+            // historical contract here is `C:` — a drive-relative path.
+            if path.len() == 2 {
+                text.pop();
+            }
+            text
         }
-        path.to_string()
-    }
-    #[cfg(not(windows))]
-    {
-        path.to_string()
+        None => path.to_string(),
     }
 }
 

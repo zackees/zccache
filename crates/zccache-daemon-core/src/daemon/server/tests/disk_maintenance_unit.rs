@@ -399,7 +399,10 @@ fn issue_1148_hardlinks_are_counted_once_and_sibling_root_is_untouched() {
     let scanned = scan_artifacts(&artifact_dir).unwrap();
     assert_eq!(scanned.len(), 1);
     let meta_path = artifact_dir.join("key.meta");
-    let allocated = allocated_bytes(&meta_path, &std::fs::metadata(&meta_path).unwrap());
+    let allocated = crate::platform::fs::volume::allocated_bytes(
+        &meta_path,
+        &std::fs::metadata(&meta_path).unwrap(),
+    );
     assert_eq!(scanned[0].allocated_bytes, allocated);
     assert_eq!(
         std::fs::read(sibling.join("sentinel")).unwrap(),
@@ -640,15 +643,6 @@ fn issue_1148_future_persisted_access_is_clamped_at_restore() {
     assert!(access.last_used_wall <= SystemTime::now());
     assert!(!access.used_in_process);
     assert!(access.last_access_checkpoint.is_none());
-}
-
-#[test]
-fn issue_1148_windows_allocated_size_combines_high_low_and_falls_back() {
-    assert_eq!(
-        windows_allocated_size_result(7, 1, 0, 99),
-        (1_u64 << 32) | 7
-    );
-    assert_eq!(windows_allocated_size_result(u32::MAX, 0, 5, 99), 99);
 }
 
 #[tokio::test]

@@ -1,5 +1,6 @@
-//! Atomic artifact writes: tmp-then-rename, error enrichment, and the
-//! Windows AV-scanner retry helper.
+//! Atomic artifact writes: tmp-then-rename and error enrichment. The
+//! replace mechanics (including the Windows AV-scanner retry ladder) live
+//! behind `crate::platform::fs::replace`.
 
 use super::*;
 
@@ -72,7 +73,7 @@ pub(in crate::daemon::server) fn persist_artifact_output(
         .map_err(|e| enrich_persist_err(e, None, cache_path))?;
     let result = (|| {
         std::fs::write(&tmp_path, payload)?;
-        set_readonly(&tmp_path, readonly_enabled())?;
+        crate::platform::fs::permissions::set_readonly(&tmp_path, readonly_enabled())?;
         // Write the digest sidecar for cache_path's *final* name while the
         // bytes are still private at tmp_path, so the rename that publishes
         // the blob is the last fallible step. Writing the digest *after*
@@ -84,7 +85,7 @@ pub(in crate::daemon::server) fn persist_artifact_output(
         replace_artifact_cache_file(&tmp_path, cache_path)
     })();
     if let Err(e) = result {
-        let _ = make_writable(&tmp_path);
+        let _ = crate::platform::fs::permissions::make_writable(&tmp_path);
         let _ = std::fs::remove_file(&tmp_path);
         digest.restore_on_failure(cache_path);
         return Err(enrich_persist_err(e, None, cache_path));
@@ -270,7 +271,7 @@ pub(in crate::daemon::server) fn persist_artifact_file(
     // ReFS) — issue #1042.
     let result = (|| {
         if reflink_copy::reflink(source_path, &tmp_path).is_ok() {
-            set_readonly(&tmp_path, readonly_enabled())?;
+            crate::platform::fs::permissions::set_readonly(&tmp_path, readonly_enabled())?;
             digest.write_for(&tmp_path, cache_path)?;
             replace_artifact_cache_file(&tmp_path, cache_path)?;
             return Ok(PersistArtifactFileStats {
@@ -298,7 +299,7 @@ pub(in crate::daemon::server) fn persist_artifact_file(
             });
         }
         let copy_bytes = std::fs::copy(source_path, &tmp_path)?;
-        set_readonly(&tmp_path, readonly_enabled())?;
+        crate::platform::fs::permissions::set_readonly(&tmp_path, readonly_enabled())?;
         digest.write_for(&tmp_path, cache_path)?;
         replace_artifact_cache_file(&tmp_path, cache_path)?;
         Ok(PersistArtifactFileStats {
@@ -310,7 +311,7 @@ pub(in crate::daemon::server) fn persist_artifact_file(
     match result {
         Ok(stats) => Ok(stats),
         Err(e) => {
-            let _ = make_writable(&tmp_path);
+            let _ = crate::platform::fs::permissions::make_writable(&tmp_path);
             let _ = std::fs::remove_file(&tmp_path);
             digest.restore_on_failure(cache_path);
             Err(enrich_persist_err(e, Some(source_path), cache_path))
@@ -318,75 +319,21 @@ pub(in crate::daemon::server) fn persist_artifact_file(
     }
 }
 
-#[cfg(not(windows))]
+/// Replaces the cached blob with `tmp_path`'s bytes, keeping the hardlink
+/// registry consistent: if the destination was a registered blob, its
+/// registration is dropped only after the replacement succeeded. The
+/// platform owns the swap semantics (`replace_with_delete_fallback` — the
+/// Windows AV-scan retry ladder with delete-then-rename fallback).
 pub(in crate::daemon::server) fn replace_artifact_cache_file(
     tmp_path: &Path,
     cache_path: &Path,
 ) -> std::io::Result<()> {
     let replaced = registered_blob_id(cache_path);
-    std::fs::rename(tmp_path, cache_path)?;
-    if let Some(id) = replaced {
-        unregister_blob_id(id);
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-pub(in crate::daemon::server) fn replace_artifact_cache_file(
-    tmp_path: &Path,
-    cache_path: &Path,
-) -> std::io::Result<()> {
-    let replaced = registered_blob_id(cache_path);
-    let result = av_scan_retry(|| match std::fs::rename(tmp_path, cache_path) {
-        Ok(()) => Ok(()),
-        Err(_) if cache_path.exists() => {
-            remove_registered_blob(cache_path)?;
-            std::fs::rename(tmp_path, cache_path)
-        }
-        Err(err) => Err(err),
-    });
+    let result = crate::platform::fs::replace::replace_with_delete_fallback(tmp_path, cache_path);
     if result.is_ok() {
         if let Some(id) = replaced {
             unregister_blob_id(id);
         }
     }
     result
-}
-
-// ── Windows AV-scanner retry (issue #490) ──────────────────────────────────
-//
-// Defender / EDR tools open just-written files for an inline scan with a
-// restrictive share mode and no `FILE_SHARE_DELETE`, so any `MoveFileExW` /
-// `DeleteFileW` against the target during the scan window fails with
-// `ERROR_ACCESS_DENIED` (5) or `ERROR_SHARING_VIOLATION` (32). The scan window
-// is short — typically tens to a few hundred milliseconds — so a bounded
-// back-off retry absorbs the race without papering over real ACL failures
-// (those persist past the budget and surface to the caller unchanged).
-
-#[cfg(windows)]
-const AV_SCAN_RETRY_DELAYS_MS: &[u64] = &[50, 100, 250, 500];
-
-#[cfg(windows)]
-fn is_av_scan_transient(err: &std::io::Error) -> bool {
-    if matches!(err.kind(), std::io::ErrorKind::PermissionDenied) {
-        return true;
-    }
-    matches!(err.raw_os_error(), Some(5) | Some(32))
-}
-
-#[cfg(windows)]
-pub(in crate::daemon::server) fn av_scan_retry<T, F>(mut op: F) -> std::io::Result<T>
-where
-    F: FnMut() -> std::io::Result<T>,
-{
-    for &delay in AV_SCAN_RETRY_DELAYS_MS {
-        match op() {
-            Ok(value) => return Ok(value),
-            Err(err) if is_av_scan_transient(&err) => {
-                std::thread::sleep(std::time::Duration::from_millis(delay));
-            }
-            Err(err) => return Err(err),
-        }
-    }
-    op()
 }

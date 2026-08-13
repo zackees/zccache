@@ -22,7 +22,7 @@ pub(crate) struct StagedDiskArtifact {
 
 fn staged_tree_stats(path: &Path) -> io::Result<(u64, SystemTime)> {
     let metadata = fs::symlink_metadata(path)?;
-    if is_staged_link_or_reparse(&metadata) {
+    if is_staged_link_or_reparse(path) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
@@ -63,7 +63,7 @@ fn scan_staged_disk_artifacts_locked(
     for entry in fs::read_dir(root)?.flatten() {
         let key_root = entry.path();
         let key_metadata = fs::symlink_metadata(&key_root)?;
-        if is_staged_link_or_reparse(&key_metadata) {
+        if is_staged_link_or_reparse(&key_root) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 format!(
@@ -82,7 +82,7 @@ fn scan_staged_disk_artifacts_locked(
         let (mut _total_size, mut mtime) = staged_tree_stats(&key_root)?;
         let pointer = pointer_path(artifact_dir, &key);
         let generation = if let Ok(metadata) = fs::symlink_metadata(&pointer) {
-            if is_staged_link_or_reparse(&metadata) {
+            if is_staged_link_or_reparse(&pointer) {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     format!(
@@ -152,7 +152,7 @@ pub(crate) fn evict_staged_artifact_keys_if_unchanged(
     for (key, expected_generation) in expected.iter().filter(|(key, _)| staged_key_supported(key)) {
         let pointer = pointer_path(artifact_dir, key);
         let current = match fs::symlink_metadata(&pointer) {
-            Ok(metadata) if is_staged_link_or_reparse(&metadata) => {
+            Ok(_) if is_staged_link_or_reparse(&pointer) => {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     format!(
@@ -198,7 +198,7 @@ pub(super) fn remove_staged_tree(path: &Path) -> io::Result<u64> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
         Err(error) => return Err(error),
     };
-    if is_staged_link_or_reparse(&metadata) {
+    if is_staged_link_or_reparse(path) {
         remove_staged_link_or_reparse(path, &metadata)?;
         return Ok(0);
     }

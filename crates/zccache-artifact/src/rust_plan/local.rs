@@ -633,38 +633,31 @@ fn restore_bundle_file(src: &Path, dst: &Path) -> std::io::Result<()> {
     make_bundle_file_writable(dst)
 }
 
-#[cfg_attr(windows, allow(clippy::permissions_set_readonly_false))]
 fn make_bundle_file_writable(path: &Path) -> std::io::Result<()> {
-    let mut permissions = std::fs::metadata(path)?.permissions();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        permissions.set_mode(permissions.mode() | 0o200);
-    }
-    #[cfg(windows)]
-    permissions.set_readonly(false);
-    std::fs::set_permissions(path, permissions)
+    crate::platform::fs::permissions::make_writable(path)
 }
 
 fn remove_bundle_dir(path: &Path) -> std::io::Result<()> {
-    #[cfg(windows)]
-    fn clear_readonly(path: &Path) -> std::io::Result<()> {
-        for entry in std::fs::read_dir(path)? {
-            let entry = entry?;
-            let child = entry.path();
-            if entry.file_type()?.is_dir() {
-                clear_readonly(&child)?;
-            } else {
-                if entry.metadata()?.permissions().readonly() {
-                    make_bundle_file_writable(&child)?;
-                }
-            }
-        }
-        Ok(())
-    }
-    #[cfg(windows)]
+    // Windows `remove_dir_all` refuses to delete read-only files, so the tree
+    // is pre-cleared of the read-only attribute before removal (historically
+    // a windows-only walk). The walk is now portable: on unix `make_writable`
+    // only adds the owner-write bit — a benign change for files about to be
+    // deleted — and on Windows it clears the attribute exactly as before.
     clear_readonly(path)?;
     std::fs::remove_dir_all(path)
+}
+
+fn clear_readonly(path: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let child = entry.path();
+        if entry.file_type()?.is_dir() {
+            clear_readonly(&child)?;
+        } else {
+            let _ = crate::platform::fs::permissions::make_writable(&child);
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn system_time_to_unix_nanos(time: SystemTime) -> u64 {
