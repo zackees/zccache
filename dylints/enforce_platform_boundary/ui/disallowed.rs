@@ -61,11 +61,11 @@ fn imp_reference() {
 }
 
 // 6. Imports from std::os::windows / std::os::unix / windows_sys / libc.
-#[cfg(windows)]
-use std::os::windows::io::RawHandle;
+use libc::c_int;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
-use libc::c_int;
+#[cfg(windows)]
+use std::os::windows::io::RawHandle;
 use windows_sys::Win32::Foundation::HANDLE;
 
 #[cfg(windows)]

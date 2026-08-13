@@ -154,7 +154,11 @@ impl Baseline {
             if fields.len() != 4 {
                 continue;
             }
-            let key = (fields[0].to_string(), fields[1].to_string(), fields[2].to_string());
+            let key = (
+                fields[0].to_string(),
+                fields[1].to_string(),
+                fields[2].to_string(),
+            );
             *counts.entry(key).or_insert(0) += 1;
         }
         Baseline { counts }
@@ -229,7 +233,10 @@ fn source_filename(sess: &Session, span: Span) -> Option<String> {
                         .into_owned()
                 }),
         ),
-        name => Some(name.display(RemapPathScopeComponents::DIAGNOSTICS).to_string()),
+        name => Some(
+            name.display(RemapPathScopeComponents::DIAGNOSTICS)
+                .to_string(),
+        ),
     }
 }
 
@@ -264,7 +271,11 @@ impl Default for PassState {
         let dump = std::env::var_os(DUMP_ENV).and_then(|dir| {
             std::fs::create_dir_all(&dir).ok()?;
             let path = std::path::PathBuf::from(dir).join(format!("{}.dump", std::process::id()));
-            OpenOptions::new().create(true).append(true).open(&path).ok()
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .ok()
         });
         PassState {
             counts: HashMap::new(),
@@ -452,7 +463,11 @@ impl<'ecx, 'm> State<'ecx, 'm> {
             && segments[1] == "os"
             && (segments[2] == "windows" || segments[2] == "unix")
         {
-            self.record(path.span, Kind::NativeImport, &format!("std::os::{}", segments[2]));
+            self.record(
+                path.span,
+                Kind::NativeImport,
+                &format!("std::os::{}", segments[2]),
+            );
             return;
         }
         if let Some(first) = segments.first() {
@@ -487,7 +502,10 @@ impl<'ecx, 'm> State<'ecx, 'm> {
     fn check_item(&mut self, item: &Item) {
         self.touch(item.span);
         if let ItemKind::ExternCrate(orig, ident) = &item.kind {
-            for name in [orig.as_ref().map(|symbol| symbol.as_str()), Some(ident.name.as_str())] {
+            for name in [
+                orig.as_ref().map(|symbol| symbol.as_str()),
+                Some(ident.name.as_str()),
+            ] {
                 if let Some(name) = name {
                     if NATIVE_ROOTS.contains(&name) {
                         self.record(item.span, Kind::NativeImport, name);
@@ -578,12 +596,15 @@ impl EarlyLintPass for EnforcePlatformBoundary {
             }
             let observed = guard.counts.get(key).copied().unwrap_or(0);
             if observed < *expected {
-                cx.sess().dcx().struct_err(format!(
-                    "stale enforce_platform_boundary baseline entry `{} {} {}`: \
+                cx.sess()
+                    .dcx()
+                    .struct_err(format!(
+                        "stale enforce_platform_boundary baseline entry `{} {} {}`: \
                      {observed} of {expected} occurrences remain; delete the row \
                      in the PR that migrates its code",
-                    key.0, key.1, key.2,
-                )).emit();
+                        key.0, key.1, key.2,
+                    ))
+                    .emit();
             }
         }
     }

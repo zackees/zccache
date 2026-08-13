@@ -60,35 +60,35 @@ error: reference to concrete platform module (platform_imp) is not allowed here;
 LL |     platform_imp::some_leaf();
    |     ^^^^^^^^^^^^^^^^^^^^^^^
 
-error: native path (std::os::windows) is not allowed here; move native code into a concrete platform tree (platform_win, platform_linux, platform_macos)
-  --> $DIR/disallowed.rs:65:5
+error: native path (libc) is not allowed here; move native code into a concrete platform tree (platform_win, platform_linux, platform_macos)
+  --> $DIR/disallowed.rs:64:5
    |
-LL | use std::os::windows::io::RawHandle;
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-error: host-platform cfg selection (windows) is not allowed here; host selection belongs in crates/zccache-platform/src/lib.rs cfg_select!
-  --> $DIR/disallowed.rs:64:7
-   |
-LL | #[cfg(windows)]
-   |       ^^^^^^^
+LL | use libc::c_int;
+   |     ^^^^^^^^^^^
 
 error: native path (std::os::unix) is not allowed here; move native code into a concrete platform tree (platform_win, platform_linux, platform_macos)
-  --> $DIR/disallowed.rs:67:5
+  --> $DIR/disallowed.rs:66:5
    |
 LL | use std::os::unix::fs::MetadataExt;
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error: host-platform cfg selection (unix) is not allowed here; host selection belongs in crates/zccache-platform/src/lib.rs cfg_select!
-  --> $DIR/disallowed.rs:66:7
+  --> $DIR/disallowed.rs:65:7
    |
 LL | #[cfg(unix)]
    |       ^^^^
 
-error: native path (libc) is not allowed here; move native code into a concrete platform tree (platform_win, platform_linux, platform_macos)
+error: native path (std::os::windows) is not allowed here; move native code into a concrete platform tree (platform_win, platform_linux, platform_macos)
   --> $DIR/disallowed.rs:68:5
    |
-LL | use libc::c_int;
-   |     ^^^^^^^^^^^
+LL | use std::os::windows::io::RawHandle;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: host-platform cfg selection (windows) is not allowed here; host selection belongs in crates/zccache-platform/src/lib.rs cfg_select!
+  --> $DIR/disallowed.rs:67:7
+   |
+LL | #[cfg(windows)]
+   |       ^^^^^^^
 
 error: native path (windows_sys) is not allowed here; move native code into a concrete platform tree (platform_win, platform_linux, platform_macos)
   --> $DIR/disallowed.rs:69:5
