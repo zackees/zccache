@@ -7,7 +7,7 @@ or macOS host.
 
 ## Files
 
-- `Dockerfile.perf-linux` — image with `rust:1.94.1-bookworm` + `perf` +
+- `Dockerfile.perf-linux` — image with `rust:1.95.0-bookworm` + `perf` +
   `bpftrace` + Brendan Gregg's FlameGraph scripts. Single-stage; builds in
   ~3–5 min on first run.
 - `run_profile.sh` — entrypoint. Builds the daemon + `perf_bench_test` with

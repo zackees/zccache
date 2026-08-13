@@ -18,7 +18,7 @@
 # Why musl: the resulting binary is static, so it runs on the (glibc) runner
 # image without any libc compatibility worry.
 
-FROM rust:1.94.1-alpine
+FROM rust:1.95.0-alpine
 
 # musl-dev: musl libc headers (the `+crt-static` target needs them).
 # git: cargo's git-dep resolution + Cargo.lock fetch.

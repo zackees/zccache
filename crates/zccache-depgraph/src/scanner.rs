@@ -411,16 +411,14 @@ fn join_continuations(source: &str) -> String {
 /// Accounts for backslash continuations merging multiple source lines.
 fn build_line_map(source: &str) -> Vec<u32> {
     let mut map = Vec::new();
-    let mut source_line: u32 = 1;
     let mut continued = false;
 
-    for line in source.split('\n') {
+    for (source_line, line) in (1_u32..).zip(source.split('\n')) {
         if !continued {
             map.push(source_line);
         }
         let trimmed = line.trim_end_matches('\r');
         continued = trimmed.ends_with('\\');
-        source_line += 1;
     }
 
     map

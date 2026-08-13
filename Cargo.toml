@@ -15,6 +15,7 @@ members = [
     "crates/zccache-gha",
     "crates/zccache-hash",
     "crates/zccache-ipc",
+    "crates/zccache-platform",
     "crates/zccache-protocol",
     "crates/zccache-symbols",
     "crates/zccache-test-support",
@@ -32,12 +33,13 @@ exclude = [
     "dylints/ban_normalized_path_deref_containment",
     "dylints/ban_dashmap_guard_across_blocking",
     "dylints/ban_discarded_write_result",
+    "dylints/enforce_platform_boundary",
 ]
 
 [workspace.package]
 version = "1.13.1"
 edition = "2021"
-rust-version = "1.94.1"
+rust-version = "1.95.0"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zackees/zccache"
 homepage = "https://github.com/zackees/zccache"
@@ -97,6 +99,7 @@ zccache-fscache = { path = "crates/zccache-fscache" }
 zccache-gha = { path = "crates/zccache-gha" }
 zccache-hash = { path = "crates/zccache-hash" }
 zccache-ipc = { path = "crates/zccache-ipc" }
+zccache-platform = { path = "crates/zccache-platform" }
 zccache-protocol = { path = "crates/zccache-protocol" }
 zccache-symbols = { path = "crates/zccache-symbols" }
 zccache-test-support = { path = "crates/zccache-test-support" }
@@ -107,8 +110,10 @@ zccache-fingerprint = { path = "crates/zccache-fingerprint" }
 # Vendored notify with fixes for Windows ReadDirectoryChangesW:
 # 1. Detect buffer overflow (bytes_written == 0) and report as error
 # 2. Report start_read failure (watcher silently dying) as error
+# Kept in-repo (vendor/notify) so workspace builds need no sibling checkout;
+# the tree tracks soldr's _vender/notify (patched for windows-sys 0.61).
 [patch.crates-io]
-notify = { path = "../notify" }
+notify = { path = "vendor/notify" }
 
 [workspace.metadata.dylint]
 libraries = [{ path = "dylints/*" }]

@@ -51,6 +51,9 @@ pub use zccache_fscache as fscache;
 pub use zccache_gha as gha;
 pub use zccache_hash as hash;
 pub use zccache_ipc as ipc;
+/// zccache#1365 — the host-platform leaf (one cfg_select! selector, five
+/// neutral facades). Internal machinery: published as a private module.
+pub use zccache_platform as platform;
 pub use zccache_protocol as protocol;
 #[cfg(feature = "symbols")]
 pub use zccache_symbols as symbols;

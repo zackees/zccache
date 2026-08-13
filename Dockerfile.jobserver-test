@@ -23,7 +23,7 @@
 #   - peak concurrent rustc process count observed > 1 (cap violation)
 #   - fewer than 60 successful compiles complete
 
-ARG RUST_VERSION=1.94.1
+ARG RUST_VERSION=1.95.0
 
 # ─── Stage 1: build zccache ─────────────────────────────────────────────
 FROM rust:${RUST_VERSION}-bookworm AS builder

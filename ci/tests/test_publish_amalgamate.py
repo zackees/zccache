@@ -165,6 +165,7 @@ gha = ["dep:zccache-gha", "zccache-artifact/gha"]
 [dependencies]
 zccache-core = { workspace = true }
 zccache-hash = { workspace = true }
+zccache-platform = { workspace = true }
 reqwest = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 """.lstrip(),
@@ -188,6 +189,12 @@ sha2 = { workspace = true, optional = true }
         "pub struct ContentHash;\n",
         encoding="utf-8",
     )
+    platform_src = root / "crates" / "zccache-platform" / "src"
+    platform_src.mkdir(parents=True)
+    (platform_src / "lib.rs").write_text(
+        "pub mod platform;\n",
+        encoding="utf-8",
+    )
     proto_dir = root / "crates" / "zccache-protocol" / "proto"
     proto_dir.mkdir(parents=True)
     (proto_dir / "zccache_v1.proto").write_text(
@@ -200,6 +207,7 @@ sha2 = { workspace = true, optional = true }
         modules=(
             AmalgamatedModule("zccache-core", "core", "pub mod core;"),
             AmalgamatedModule("zccache-hash", "hash", "pub mod hash;"),
+            AmalgamatedModule("zccache-platform", "platform", "mod platform;"),
         ),
     )
 
@@ -216,6 +224,103 @@ sha2 = { workspace = true, optional = true }
         encoding="utf-8"
     )
     assert "zccache-core =" not in (zccache / "Cargo.toml").read_text(
+        encoding="utf-8"
+    )
+    assert "zccache-platform =" not in (zccache / "Cargo.toml").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_platform_module_is_declared_as_a_private_root_module() -> None:
+    platform = next(
+        module for module in INTERNAL_MODULES if module.crate == "zccache-platform"
+    )
+    assert platform.module == "platform"
+    # The platform leaf is internal machinery, not a public crates.io API.
+    assert platform.declaration == "mod platform;"
+    assert platform.drop_python_bindings is False
+
+
+def test_prepare_copies_platform_sources_and_rewrites_platform_paths(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path
+    zccache = root / "crates" / "zccache"
+    (zccache / "src").mkdir(parents=True)
+    (zccache / "src" / "lib.rs").write_text("", encoding="utf-8")
+    (zccache / "Cargo.toml").write_text(
+        "[package]\nname = \"zccache\"\n\n[dependencies]\n"
+        "zccache-platform = { workspace = true }\n",
+        encoding="utf-8",
+    )
+    (zccache / "build.rs").write_text("fn main() {}\n", encoding="utf-8")
+
+    proto_dir = root / "crates" / "zccache-protocol" / "proto"
+    proto_dir.mkdir(parents=True)
+    (proto_dir / "zccache_v1.proto").write_text(
+        'syntax = "proto3";\n',
+        encoding="utf-8",
+    )
+
+    platform_src = root / "crates" / "zccache-platform" / "src"
+    platform_src.mkdir(parents=True)
+    (platform_src / "lib.rs").write_text(
+        "mod platform;\npub use platform::fs;\n",
+        encoding="utf-8",
+    )
+    (platform_src / "platform.rs").write_text(
+        "pub mod fs;\npub fn leaf() -> u32 { crate::platform::fs::answer() }\n",
+        encoding="utf-8",
+    )
+    (platform_src / "platform").mkdir()
+    (platform_src / "platform" / "fs.rs").write_text(
+        "pub fn answer() -> u32 { 42 }\n",
+        encoding="utf-8",
+    )
+
+    core_src = root / "crates" / "zccache-core" / "src"
+    core_src.mkdir(parents=True)
+    (core_src / "lib.rs").write_text(
+        "use zccache_platform::fs;\npub fn probe() -> u32 { fs::answer() }\n",
+        encoding="utf-8",
+    )
+
+    prepare_zccache_crate_for_publish(
+        root,
+        modules=(
+            AmalgamatedModule("zccache-platform", "platform", "mod platform;"),
+            AmalgamatedModule("zccache-core", "core", "pub mod core;"),
+        ),
+    )
+
+    # Platform sources are copied with lib.rs renamed to mod.rs.
+    assert (zccache / "src" / "platform" / "mod.rs").is_file()
+    assert (zccache / "src" / "platform" / "platform.rs").is_file()
+    assert (zccache / "src" / "platform" / "platform" / "fs.rs").is_file()
+    # Module-relative paths in the old lib.rs need no rewrite; `crate::`
+    # inside platform sources rebases to `crate::platform::`, so facade
+    # self-references double the segment and still resolve
+    # (crate::platform::platform::fs).
+    platform_mod = (zccache / "src" / "platform" / "mod.rs").read_text(
+        encoding="utf-8"
+    )
+    assert "mod platform;" in platform_mod
+    assert "pub use platform::fs;" in platform_mod
+    platform_facade = (zccache / "src" / "platform" / "platform.rs").read_text(
+        encoding="utf-8"
+    )
+    assert "crate::platform::platform::fs::answer()" in platform_facade
+    # `zccache_platform::` in consumers rewrites to `crate::platform::`.
+    core_mod = (zccache / "src" / "core" / "mod.rs").read_text(
+        encoding="utf-8"
+    )
+    assert "use crate::platform::fs;" in core_mod
+    assert "zccache_platform" not in core_mod
+    # The prepared manifest drops the internal path dependency.
+    manifest = (zccache / "Cargo.toml").read_text(encoding="utf-8")
+    assert "zccache-platform =" not in manifest
+    # The private root module is declared in the regenerated lib.rs.
+    assert "mod platform;" in (zccache / "src" / "lib.rs").read_text(
         encoding="utf-8"
     )
 

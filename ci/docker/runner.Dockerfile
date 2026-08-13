@@ -4,7 +4,7 @@
 # scenario against pre-built binaries.
 #
 # This image has NO compiler installed (well, rustc is present because
-# the base is rust:1.94.1, but the runner doesn't build anything itself).
+# the base is rust:1.95.0, but the runner doesn't build anything itself).
 # Instead it mounts in:
 #   - the soldr binary produced by soldr-builder
 #   - the zccache source (read-only, for perf/scenarios/, perf/lib/,
@@ -14,7 +14,7 @@
 # It then runs the perf scenario script and copies result.json + cache
 # reports + logs back to the mounted results dir.
 #
-# Why share the rust:1.94.1-bookworm-slim base with the zccache builder:
+# Why share the rust:1.95.0-bookworm-slim base with the zccache builder:
 # matches glibc + libssl ABI exactly, so anything the zccache binaries
 # linked against at build time resolves at run time.
 #
@@ -28,7 +28,7 @@
 #     -e FIXTURE=medium \
 #     zccache-perf-runner
 
-FROM rust:1.94.1-slim-bookworm
+FROM rust:1.95.0-slim-bookworm
 
 # Scenario script deps. tar+zstd let `soldr save`/`soldr load` round-trip
 # the .tar.zst snapshots; jq parses result.json + cache reports.

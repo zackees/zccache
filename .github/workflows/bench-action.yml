@@ -44,7 +44,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
 
       - name: "Cold build"
         id: cold
@@ -109,7 +109,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
       - uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: "Cold build"
@@ -173,7 +173,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
 
       - uses: ./
         with:
@@ -243,7 +243,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
 
       # Setup zccache — this should restore target/ from the previous job's save
       - uses: ./

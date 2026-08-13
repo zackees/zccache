@@ -1,3 +1,59 @@
+# #1365 centralize host-platform mechanics behind zccache-platform
+
+Parent: https://github.com/zackees/zccache/issues/1365 — 6 phase sub-issues (#1366-#1369 exist; #1370/#1371 to be created for phases 5/6). Parent auto-closes when all sub-issues close. Base branch: `chore/wire-prost-2-default-fallback`.
+
+- [x] Read #1365 + sub-issues #1366-#1369; baseline branch recorded.
+- [x] Install Rust 1.95.0 toolchain locally.
+- [ ] Phase 0: exploration inventories (MSRV pins, platform-heavy code, amalgamation/dylint/CI).
+- [~] Phase 1 (#1366): PR #1370 open. Local GREEN: baseline 547 rows grandfathered (0 violations), ratchet regression proven, UI fixtures green, workspace check+clippy(-D warnings incl. 6 pre-existing 1.95-lint fixes)+2538 unit tests+653 touched-crate tests+rustdoc+fmt all green. CI: main was red on the ../notify patch (os error 2); vendored soldr's 0.61-patched notify in-repo + repointed [patch]. Waiting for CI green on the new push, then merge.
+- [ ] Phase 2 (#1367): platform::fs — identity/links/permissions/replace/volume/path/positioned_io from core/artifact/daemon-core; characterization tests first; baseline ratchets down. PR closes #1367.
+- [ ] Phase 3 (#1368): platform::ipc — transport/stream/listener/connect/peer/endpoint from zccache-ipc; keep framing/protocol/broker policy; endpoint strings byte-stable; security preserved. PR closes #1368.
+- [ ] Phase 4 (#1369): platform::process — command/spawn/priority/inspect/terminate/stdio/jobserver/exit; keep watchdog/priority/jobserver policy; coordinate #1360; files <1000 LOC. PR closes #1369.
+- [ ] Phase 5 (create #1370): platform::executable + platform::host (deploy.rs, suffixes/PATH, image lookup, defender, elevation, native_cpu, resource probes).
+- [ ] Phase 6 (create #1371): delete baseline at zero; Linux-hosted --target windows regression; libc/windows-sys confined; publish crate self-contained; RED→GREEN evidence; #1365 auto-closes.
+- [ ] Finish: git status clean; local repo back on `chore/wire-prost-2-default-fallback`.
+
+Each phase: branch from main → TDD RED→GREEN → soldr fmt/clippy/check → ./test → PR → wait for GHA green (watch) → merge → rebase next phase.
+
+## Phase 2 (#1367) plan — platform::fs
+
+Slices per sub-issue: (1) RED facade/characterization tests, (2) identity/link/change-marker
+from persist/hardlink.rs + fs_caps.rs, (3) permissions from config/paths.rs + win_acl.rs +
+staged_lock.rs + rust_plan/local.rs, (4) replace/clone/positioned-io from kv.rs +
+persist/{artifact_io,staged_paths,staged_store}.rs, (5) path normalization from
+zccache-core/src/path.rs, (6) wire consumers (core, artifact, daemon-core) + ratchet baseline.
+
+Characterization tests FIRST: two hardlinks == FileIdentity; copy !=; nlink increments;
+volume identity stable; Windows 128-bit FileId preserved; unix ChangeMarker = None.
+Baseline rows to delete: all rows for core/artifact/daemon-core fs files (per-crate counts in
+commit bde74dfb). Files must stay <1000 LOC (kv.rs 1061 → split).
+
+## Phase 3 (#1368) plan — platform::ipc
+
+Facade: endpoint/stream/listener/connect/peer. Move zccache-ipc/src/transport/{mod,unix,windows,
+pipe_security}.rs native mechanics; keep framing/protocol/broker/timeouts in zccache-ipc.
+Endpoint strings byte-for-byte stable; owner-only socket/pipe security preserved; no extra
+roundtrip; download_client + daemon_mgmt consume neutral APIs. Baseline rows: all ipc +
+download-protocol rows deleted.
+
+## Phase 4 (#1369) plan — platform::process
+
+Facade: command/spawn/priority/inspect/terminate/stdio/jobserver/exit. Move daemon/{process,
+child_watchdog,jobserver,trampoline}.rs native code + core/crash.rs signal labels +
+ipc PID helpers + cli-core deploy.rs spawn bits + bin/zccache.rs stack wrapper. Keep
+CompilePriority/watchdog budgets/jobserver accounting in daemon. Coordinate #1360 (owner-death
+behavior preserved). Files <1000 LOC (process.rs 1365, child_watchdog.rs 1202 → split).
+
+## Phase 5 (create #1370 sub-issue) plan — platform::executable + platform::host
+
+executable: deploy.rs suffixes/PATH/PATHEXT/image lookup/unlock_exe. host: native_cpu.rs,
+defender.rs elevation + Defender primitives, path/env OS facts, home/runtime dirs, resource probes.
+
+## Phase 6 (create #1371 sub-issue) plan — zero baseline
+
+Delete baseline.txt at zero; verify libc/windows-sys confined to concrete trees; Linux-hosted
+--target windows regression; publish crate self-contained; record RED->GREEN; parent auto-closes.
+
 # soldr#2188 short compiler staging root
 
 - [x] Read the issue, staged-output architecture, portability contract, and performance gate.

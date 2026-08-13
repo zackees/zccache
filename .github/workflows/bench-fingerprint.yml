@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
 
       - name: "Build 1: cold"
         run: cargo build -p $BUILD_TARGET
@@ -60,7 +60,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
       - uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: "Build 1: cold (populates sccache)"
@@ -94,7 +94,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
       - uses: ./
         with:
           shared-key: h1
@@ -148,7 +148,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
       - uses: ./
         with:
           shared-key: h2
@@ -189,7 +189,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
       - uses: ./
         with:
           shared-key: h3
@@ -238,7 +238,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
       - uses: ./
         with:
           shared-key: h4
@@ -283,7 +283,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
       - uses: ./
         with:
           shared-key: h5
@@ -330,7 +330,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
       - uses: ./
         with:
           shared-key: h6
@@ -380,7 +380,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
       - uses: ./
         with:
           shared-key: h7

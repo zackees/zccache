@@ -32,7 +32,7 @@ jobs:
       - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
         with:
           zccache-seed-strict: true
-          toolchain: 1.94.1
+          toolchain: 1.95.0
           cache: true
           cache-key-suffix: check-${{ inputs.os }}
           linker: fast
@@ -65,7 +65,7 @@ jobs:
       - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
         with:
           zccache-seed-strict: true
-          toolchain: 1.94.1
+          toolchain: 1.95.0
           cache: true
           cache-key-suffix: test-${{ inputs.os }}
           linker: fast

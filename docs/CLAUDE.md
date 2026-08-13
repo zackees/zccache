@@ -25,6 +25,7 @@ Architecture docs are split by subsystem. Read only what's relevant to your curr
 | `zccache-symbols` | Crate README — 128-byte release footer, `<dump>.symref` sidecars, `zccache-stamp` CI helper |
 | Perf measurement harness | [/PERF.md](../PERF.md) — local Docker matrix, scenarios, gate semantics |
 | Crash dumper (CLI + daemon) | [runtime.md](architecture/runtime.md) (Crash Dumper) — `zccache_core::crash::install` covers both binaries |
+| Host-platform boundary (`zccache-platform`, `crate::platform`) | [portability.md](architecture/portability.md) — one selector, five facades, host-vs-compiler-target rule |
 | Generic tool exec (`zccache exec`, issue #272) | [runtime.md § Generic tool exec](architecture/runtime.md#generic-tool-exec-zccache-exec) — `handle_exec.rs` + `cli/commands/exec.rs` |
 | Platform-specific issues | [portability.md](architecture/portability.md) |
 | Compile journal record shape | [journal-schema.md](journal-schema.md) |

@@ -32,7 +32,7 @@ zccache is a local-first compiler cache (21 crates) for C/C++/Rust/Emscripten, i
 
 - **Always use `soldr <tool>` directly** to execute Rust commands. Bare cargo/rustc, legacy root trampolines, and `uv run cargo` are blocked by hook. soldr resolves repo-local `.cargo` / `.rustup` homes and the rustup-managed toolchain pinned by `rust-toolchain.toml`.
 - **Always use `uv` for Python.** Bare `python`/`pip` are blocked by hook. Use `uv run ...` or `uv pip ...`.
-- MSRV: 1.94.1 | Edition: 2021 | Toolchain: 1.94.1 (clippy + rustfmt)
+- MSRV: 1.95.0 | Edition: 2021 | Toolchain: 1.95.0 (clippy + rustfmt)
 - CI: Linux, macOS, Windows. All warnings denied (`RUSTFLAGS="-D warnings"`)
 - Every directory with files must have a README.md (enforced by hook)
 
