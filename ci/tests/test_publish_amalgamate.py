@@ -231,6 +231,34 @@ sha2 = { workspace = true, optional = true }
     )
 
 
+def test_public_crate_matches_platform_native_dependencies() -> None:
+    root = Path(__file__).parents[2]
+    public_manifest = tomllib.loads(
+        (root / "crates" / "zccache" / "Cargo.toml").read_text(encoding="utf-8")
+    )
+    platform_manifest = tomllib.loads(
+        (root / "crates" / "zccache-platform" / "Cargo.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    for target in ("cfg(unix)", "cfg(windows)"):
+        assert public_manifest["target"][target]["dependencies"] == (
+            platform_manifest["target"][target]["dependencies"]
+        )
+
+
+def test_platform_host_modules_can_be_reexported_after_amalgamation() -> None:
+    root = Path(__file__).parents[2]
+    platform_lib = (
+        root / "crates" / "zccache-platform" / "src" / "lib.rs"
+    ).read_text(encoding="utf-8")
+
+    assert "pub(crate) mod platform_win;" in platform_lib
+    assert "pub(crate) mod platform_linux;" in platform_lib
+    assert "pub(crate) mod platform_macos;" in platform_lib
+
+
 def test_platform_module_is_declared_as_a_private_root_module() -> None:
     platform = next(
         module for module in INTERNAL_MODULES if module.crate == "zccache-platform"
