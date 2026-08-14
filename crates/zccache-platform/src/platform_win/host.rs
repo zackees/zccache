@@ -2,6 +2,10 @@
 
 use std::path::PathBuf;
 
+pub const IS_WINDOWS: bool = true;
+pub const IS_MACOS: bool = false;
+pub const IS_LINUX: bool = false;
+
 pub const fn os() -> &'static str { std::env::consts::OS }
 pub const fn arch() -> &'static str { std::env::consts::ARCH }
 
