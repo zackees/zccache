@@ -853,6 +853,16 @@ def test_perf_workflow_has_dedicated_cow_materialization_gate():
         "perf_cow_materialization_128_hits_under_two_seconds" in job
     )
     assert "--no-cache" not in job + build_job + speed_floor_job
+    assert (
+        "--language c --test perf_c_zccache_vs_bare \\\n"
+        "            --attempts 3 --cold-bare-threshold 0.80"
+        in speed_floor_job
+    )
+    assert (
+        "--language rust --test perf_rustc_zccache_vs_sccache \\\n"
+        "            --attempts 3 --cold-bare-threshold 0.75"
+        in speed_floor_job
+    )
 
 
 def test_run_benchmarks_once_uses_fresh_cache_per_command(tmp_path, monkeypatch):
