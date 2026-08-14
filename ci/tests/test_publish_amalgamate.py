@@ -265,7 +265,9 @@ def test_platform_module_is_declared_as_a_private_root_module() -> None:
     )
     assert platform.module == "platform"
     # The platform leaf is internal machinery, not a public crates.io API.
-    assert platform.declaration == "mod platform;"
+    # The amalgamated module is private, so platform primitives unused by the
+    # public crate would otherwise fail release packaging under `-D warnings`.
+    assert platform.declaration == "#[allow(dead_code)]\nmod platform;"
     assert platform.drop_python_bindings is False
 
 
