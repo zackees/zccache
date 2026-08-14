@@ -29,20 +29,20 @@ pub fn arch() -> &'static str {
 
 /// Whether this process is running on Windows.
 #[must_use]
-pub fn is_windows() -> bool {
-    os() == "windows"
+pub const fn is_windows() -> bool {
+    cfg!(windows)
 }
 
 /// Whether this process is running on macOS.
 #[must_use]
-pub fn is_macos() -> bool {
-    os() == "macos"
+pub const fn is_macos() -> bool {
+    cfg!(target_os = "macos")
 }
 
 /// Whether this process is running on Linux.
 #[must_use]
-pub fn is_linux() -> bool {
-    os() == "linux"
+pub const fn is_linux() -> bool {
+    cfg!(target_os = "linux")
 }
 
 /// Best-effort current user's home directory.
@@ -115,5 +115,8 @@ mod tests {
         assert!(!cpu_identity_material().is_empty());
         assert_eq!(cpu_identity_material(), cpu_identity_material());
         assert!(available_parallelism().is_some_and(|value| value >= 1));
+        assert_eq!(is_windows(), os() == "windows");
+        assert_eq!(is_macos(), os() == "macos");
+        assert_eq!(is_linux(), os() == "linux");
     }
 }
