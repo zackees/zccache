@@ -17,17 +17,17 @@ pub use platform::{executable, fs, host, ipc, process};
 // arm's alias is allowed to be unused.
 cfg_select! {
     target_os = "windows" => {
-        mod platform_win;
+        pub(crate) mod platform_win;
         #[allow(unused_imports)]
         pub(crate) use platform_win as platform_imp;
     }
     target_os = "linux" => {
-        mod platform_linux;
+        pub(crate) mod platform_linux;
         #[allow(unused_imports)]
         pub(crate) use platform_linux as platform_imp;
     }
     target_os = "macos" => {
-        mod platform_macos;
+        pub(crate) mod platform_macos;
         #[allow(unused_imports)]
         pub(crate) use platform_macos as platform_imp;
     }
