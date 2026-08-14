@@ -59,7 +59,7 @@ def test_docker_command_uses_read_only_source_and_named_build_volumes(tmp_path):
 
 def test_pinned_tool_versions_are_required():
     versions = {
-        "rustc": "rustc 1.94.1 (fake)",
+        "rustc": "rustc 1.95.0 (fake)",
         "clang": "Ubuntu clang version 14.0.0",
         "sccache": "sccache 0.10.0",
         "emscripten": "emcc 3.1.74",
