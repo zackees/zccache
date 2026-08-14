@@ -29,7 +29,7 @@ BUILD_VOLUMES = {
     "zccache-standalone-artifacts": "/artifacts",
 }
 TOOL_VERSION_MARKERS = {
-    "rustc": "rustc 1.94.1",
+    "rustc": "rustc 1.95.0",
     "clang": "clang version 14.",
     "sccache": "sccache 0.10.0",
     "emscripten": "3.1.74",

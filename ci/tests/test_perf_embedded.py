@@ -72,7 +72,7 @@ def _result(language: str) -> dict:
         "host_fingerprint": "f" * 64,
         "tool_versions": {
             "soldr": "soldr 0.8.16",
-            "rustc": "rustc 1.94.1",
+            "rustc": "rustc 1.95.0",
             "clang": "clang version 14.0.0",
             "emscripten": "3.1.74",
         },
