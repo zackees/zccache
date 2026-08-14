@@ -61,7 +61,7 @@ INTERNAL_MODULES: tuple[AmalgamatedModule, ...] = (
     AmalgamatedModule(
         "zccache-platform",
         "platform",
-        "#[allow(dead_code)]\nmod platform;",
+        "#[allow(dead_code, unused_imports)]\nmod platform;",
     ),
     AmalgamatedModule("zccache-protocol", "protocol", "pub mod protocol;"),
     AmalgamatedModule(
