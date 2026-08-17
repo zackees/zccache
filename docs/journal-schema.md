@@ -18,6 +18,7 @@ scripts) can rely on.
 | `env`          | array of `[k, v]` | no           | Sanitized build-diagnostic allowlist. Secret-looking names/values and all non-allowlisted variables are omitted. |
 | `exit_code`    | integer         | yes            | Process exit code. `-1` is reserved for daemon-side errors. |
 | `session_id`   | string \| null  | yes            | UUID for session-attached requests; `null` for ephemeral. |
+| `daemon_generation` | string     | no             | Which daemon process generation served the compile (zackees/soldr#2436 D4). The embedded host passes its route-generation identity; a standalone daemon mints one per-process UUID. Restart-warmth analysis joins rows to generations with it. |
 | `latency_ns`   | integer         | yes            | Wall-clock nanoseconds (per the project's `_ns` convention). |
 | `context_key`  | string          | no             | Full root-normalized dep-graph context hash. Present once cache-key construction completes; useful for comparing ephemeral cross-worktree requests. |
 | `crate_name`   | string          | no             | Populated when parseable from `--crate-name` (rustc). |

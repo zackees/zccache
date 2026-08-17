@@ -73,11 +73,14 @@ pub(crate) fn load_for_startup(path: &Path) -> StartupLoad {
             let stats = graph.stats();
             let (cold_ctxs, warm_ctxs, stale_ctxs) = graph.state_breakdown();
             let ctxs_with_key = graph.contexts_with_artifact_key();
+            // zackees/soldr#2436 D5: `contexts_restored` + `warm_count`
+            // are the single datapoint that separates write-side loss (few
+            // restored) from load-side loss (restored but later missed).
             tracing::info!(
-                contexts = stats.context_count,
+                contexts_restored = stats.context_count,
                 files = stats.file_count,
                 cold = cold_ctxs,
-                warm = warm_ctxs,
+                warm_count = warm_ctxs,
                 stale = stale_ctxs,
                 with_artifact_key = ctxs_with_key,
                 elapsed_ms = start.elapsed().as_millis() as u64,

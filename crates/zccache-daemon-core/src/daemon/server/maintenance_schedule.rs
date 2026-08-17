@@ -39,6 +39,27 @@ pub(super) const TASK_STAGED_TEMP_SWEEP: &str = "staged-temp-sweep";
 pub(super) const TASK_MEMORY_EVICTION: &str = "memory-eviction";
 pub(super) const TASK_DISK_MAINTENANCE: &str = "disk-maintenance";
 pub(super) const TASK_DEPGRAPH_SAVE: &str = "depgraph-save";
+
+/// zackees/soldr#2436 D5: registrations that force a save before the timer.
+pub(super) const DEPGRAPH_SAVE_BATCH: usize = 32;
+/// How often the batch condition is polled between interval saves.
+pub(super) const DEPGRAPH_SAVE_BATCH_POLL: Duration = Duration::from_secs(5);
+
+/// Pure decision core for the save loop: `Some(reason)` when a save is due.
+pub(super) fn depgraph_save_due(
+    waited: Duration,
+    interval: Duration,
+    contexts: usize,
+    last_saved_contexts: usize,
+) -> Option<&'static str> {
+    if contexts.saturating_sub(last_saved_contexts) >= DEPGRAPH_SAVE_BATCH {
+        return Some("batch");
+    }
+    if waited >= interval {
+        return Some("interval");
+    }
+    None
+}
 pub(super) const TASK_LEGACY_TEMP_ROOT_CLEANUP: &str = "legacy-temp-root-cleanup";
 pub(super) const TASK_IDLE_WATCHDOG: &str = "idle-watchdog";
 pub(super) const TASK_PRIVATE_DAEMON_OWNERS: &str = "private-daemon-owner-reaper";
@@ -354,16 +375,35 @@ impl MaintenanceSchedule {
                 let state = Arc::clone(&state);
                 async move {
                     let path = depgraph_file_path_for_cache_dir(&state.cache_dir);
+                    // zackees/soldr#2436 D5: the interval alone left up to a
+                    // full period of registrations to die with any un-drained
+                    // daemon. A batch trigger bounds that loss: once
+                    // DEPGRAPH_SAVE_BATCH new contexts have registered since
+                    // the last save, save now instead of waiting the timer
+                    // out. Ticks are the smaller of the interval and the
+                    // batch poll so short test intervals stay honored.
+                    let tick = interval.min(DEPGRAPH_SAVE_BATCH_POLL);
+                    let mut last_saved_contexts = 0usize;
+                    let mut waited = Duration::ZERO;
                     loop {
-                        tokio::time::sleep(interval).await;
+                        tokio::time::sleep(tick).await;
+                        waited += tick;
+                        let dg = state.dep_graph.load();
+                        let contexts = dg.stats().context_count;
+                        let decision =
+                            depgraph_save_due(waited, interval, contexts, last_saved_contexts);
+                        let Some(reason) = decision else {
+                            continue;
+                        };
+                        waited = Duration::ZERO;
                         if let Some(parent) = path.parent() {
                             std::fs::create_dir_all(parent).ok();
                         }
-                        let dg = state.dep_graph.load();
                         match crate::depgraph::save_to_file(&dg, &path) {
                             Ok(()) => {
                                 state.dep_graph_persisted.store(true, Ordering::Release);
-                                tracing::debug!("periodic depgraph save");
+                                last_saved_contexts = contexts;
+                                tracing::info!(contexts, reason, "depgraph save");
                             }
                             Err(e) => tracing::warn!("periodic depgraph save failed: {e}"),
                         }

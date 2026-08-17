@@ -1,7 +1,9 @@
 //! Tests for `JournalEntry` serialization (legacy + extended profile fields)
 //! and the `SelfProfileSpans` accumulator / `with_profile_fields` builder.
 
-use super::super::{miss_reason, JournalEntry, MissDiff, SelfProfileNs, SelfProfileSpans};
+use super::super::{
+    miss_reason, JournalContext, JournalEntry, MissDiff, SelfProfileNs, SelfProfileSpans,
+};
 use super::{legacy_entry, make_ctx};
 
 // ─── Legacy JournalEntry serialization ────────────────────────────────────
@@ -273,6 +275,7 @@ fn serializes_extended_fields_when_present() {
         env: None,
         exit_code: 0,
         session_id: Some("sess-1".to_string()),
+        daemon_generation: None,
         latency_ns: 1_234_567,
         context_key: None,
         crate_name: Some("soldr_cli".to_string()),
@@ -494,4 +497,42 @@ fn self_profile_spans_saturate_on_overflow() {
     spans.add_hash_inputs_ns(u128::MAX);
     spans.add_hash_inputs_ns(5);
     assert_eq!(spans.hash_inputs_ns, u128::MAX);
+}
+
+// ─── zackees/soldr#2436 D4: generation identity on every row ─────────────
+
+#[test]
+fn journal_rows_carry_generation_and_session() {
+    let ctx = JournalContext::new(
+        "/usr/bin/rustc".to_string(),
+        vec!["--crate-name".into(), "demo".into()],
+        "/project".to_string(),
+        None,
+        Some("sess-gen".to_string()),
+    );
+    let entry = JournalEntry::new(ctx, "miss", 0, 1, Some(miss_reason::CONTEXT_NOT_FOUND));
+    let generation = entry
+        .daemon_generation
+        .as_deref()
+        .expect("every row carries a daemon generation");
+    // Standalone daemons mint a per-process UUID; the embedded host may
+    // override it earlier via set_daemon_generation, which is also a valid
+    // (host-shaped) identity — either way it must be non-empty and stable
+    // across rows in one process.
+    assert!(!generation.is_empty());
+    assert_eq!(entry.session_id.as_deref(), Some("sess-gen"));
+    let second = JournalEntry::new(
+        JournalContext::new(
+            "/usr/bin/rustc".to_string(),
+            vec![],
+            "/project".to_string(),
+            None,
+            None,
+        ),
+        "hit",
+        0,
+        1,
+        None,
+    );
+    assert_eq!(second.daemon_generation.as_deref(), Some(generation));
 }

@@ -159,7 +159,7 @@ impl DepGraph {
         ctx: CompileContext,
         key_root: Option<NormalizedPath>,
     ) -> ContextRegistration {
-        const MAX_EQUIVALENT_CONTEXTS: usize = 4;
+        let max_equivalent_contexts = max_equivalent_contexts();
 
         let instance = super::ContextInstanceKey::new(key, &ctx.source_file, key_root.as_ref());
         let instance_key = instance.map_key();
@@ -239,7 +239,7 @@ impl DepGraph {
                 }
             })
             .or_insert_with(|| vec![instance_key]);
-        let evicted = if evicted.len() > MAX_EQUIVALENT_CONTEXTS {
+        let evicted = if evicted.len() > max_equivalent_contexts {
             Some(evicted.remove(0))
         } else {
             None
@@ -280,4 +280,24 @@ impl DepGraph {
             None => true,
         }
     }
+}
+
+/// zackees/soldr#2436 D11: how many equivalent-root context instances one
+/// logical context key may hold before the oldest is evicted.
+///
+/// The historical limit of 4 was measured against single-checkout use; the
+/// multi-worktree finding showed a shared parent cache legitimately
+/// registering one instance per live worktree (plus renames), so 4 caused
+/// silent eviction churn — every eviction is a future `context_not_found`
+/// miss for the evicted root. 16 covers the observed worktree counts with
+/// headroom; `ZCCACHE_MAX_EQUIVALENT_CONTEXTS` overrides for unusual fleets.
+pub(crate) fn max_equivalent_contexts() -> usize {
+    static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        std::env::var("ZCCACHE_MAX_EQUIVALENT_CONTEXTS")
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .filter(|value| *value >= 1)
+            .unwrap_or(16)
+    })
 }
