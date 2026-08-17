@@ -669,7 +669,12 @@ fn dylint_library_sidecar_output_path(
 pub(super) fn msvc_target_writes_pdb(rustc_args: &crate::depgraph::RustcParsedArgs) -> bool {
     match rustc_args.target.as_deref() {
         Some(triple) => triple.ends_with("-pc-windows-msvc"),
-        None => cfg!(all(target_os = "windows", target_env = "msvc")),
+        // Host-native compile: only a Windows host can be MSVC-hosted. This
+        // deliberately over-approximates (a windows-gnu host toolchain also
+        // returns true) because a declared-but-unproduced pdb is filtered at
+        // collection time (see the doc comment above), while host `cfg!` is
+        // not allowed outside zccache-platform (enforce_platform_boundary).
+        None => crate::platform::host::is_windows(),
     }
 }
 
@@ -1045,7 +1050,9 @@ mod pdb_sidecar_tests {
         let primary = Path::new("/repo/target/deps/wg.exe");
         let declared = rustc_expected_output_paths(&msvc, primary, cwd, None);
         assert!(
-            declared.iter().any(|p| p.extension() == Some("pdb".as_ref())),
+            declared
+                .iter()
+                .any(|p| p.extension() == Some("pdb".as_ref())),
             "msvc target must declare the pdb sidecar: {declared:?}"
         );
 
