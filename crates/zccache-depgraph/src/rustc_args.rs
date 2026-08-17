@@ -286,6 +286,30 @@ pub fn parse_rustc_args(args: &[String], cwd: &Path) -> RustcParsedArgs {
             }
         }
 
+        // -l [KIND[:MODIFIERS]=]NAME — native link libraries, typically from
+        // build-script `cargo:rustc-link-lib` directives (zackees/soldr#2313).
+        // The NAME must key the unit: before this arm, `-l` fell into the
+        // generic unknown-flag fall-through and its VALUE was dropped as a
+        // stray positional, so a link unit whose build script changed its
+        // native libs was served the previous run's cached artifact — a
+        // cache hit masking a link error. The `--` guard keeps long flags
+        // (`--library-path`-style spellings) out of this arm.
+        if arg == "-l" {
+            if let Some(next) = args.get(i + 1) {
+                result.unknown_flags.push(format!("-l {next}"));
+                i += 2;
+                continue;
+            }
+        } else if !arg.starts_with("--") {
+            if let Some(rest) = arg.strip_prefix("-l") {
+                if !rest.is_empty() {
+                    result.unknown_flags.push(format!("-l {rest}"));
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+
         // -C <option> or --codegen <option>
         if arg == "-C" || arg == "--codegen" {
             if let Some(next) = args.get(i + 1) {
@@ -833,5 +857,56 @@ mod tests {
             &cwd(),
         );
         assert_eq!(parsed.remap_path_prefixes, vec!["/home/user=/anon"]);
+    }
+    // ─── zackees/soldr#2313: native link-lib flags must key the unit ─────
+
+    #[test]
+    fn link_lib_value_is_captured_not_dropped() {
+        let parsed = parse_rustc_args(
+            &args(&["--crate-name", "demo", "src/main.rs", "-l", "dylib=c++"]),
+            cwd().as_path(),
+        );
+        assert!(
+            parsed.unknown_flags.contains(&"-l dylib=c++".to_string()),
+            "the library NAME must be key material: {:?}",
+            parsed.unknown_flags
+        );
+        // The value must not leak into positional/source handling.
+        assert_eq!(
+            parsed.source_file.as_path().to_string_lossy(),
+            "/project/src/main.rs"
+        );
+    }
+
+    #[test]
+    fn fused_link_lib_spelling_is_captured() {
+        let parsed = parse_rustc_args(&args(&["src/main.rs", "-lstatic=sqlite3"]), cwd().as_path());
+        assert!(parsed
+            .unknown_flags
+            .contains(&"-l static=sqlite3".to_string()));
+    }
+
+    #[test]
+    fn changing_the_linked_library_changes_the_context_key() {
+        let base = ["--crate-name", "demo", "--crate-type", "bin", "src/main.rs"];
+        let key = |extra: &[&str]| {
+            let mut all: Vec<&str> = base.to_vec();
+            all.extend_from_slice(extra);
+            let parsed = parse_rustc_args(&args(&all), cwd().as_path());
+            crate::context::RustcCompileContext::from_parsed_args(
+                &parsed,
+                &[],
+                zccache_hash::ContentHash::from_bytes([7u8; 32]),
+            )
+            .context_key()
+        };
+        let none = key(&[]);
+        let cxx = key(&["-l", "dylib=c++"]);
+        let stdcxx = key(&["-l", "dylib=stdc++"]);
+        assert_ne!(none, cxx, "adding a native lib must change the key");
+        assert_ne!(
+            cxx, stdcxx,
+            "changing the native lib NAME must change the key — the              soldr#2313 stale-link-hit bug"
+        );
     }
 }
