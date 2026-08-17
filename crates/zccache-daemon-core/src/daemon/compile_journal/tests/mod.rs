@@ -58,6 +58,7 @@ pub(super) fn legacy_entry(
         env: sanitize_journal_env(env),
         exit_code,
         session_id,
+        daemon_generation: None,
         latency_ns,
         context_key: None,
         crate_name: None,

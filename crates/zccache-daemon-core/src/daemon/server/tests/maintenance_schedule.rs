@@ -253,3 +253,50 @@ async fn host_owned_disk_maintenance_keeps_the_in_memory_members() {
 
     stop(&state);
 }
+
+// ─── zackees/soldr#2436 D5: batch-save decision core ─────────────────────
+
+#[test]
+fn a_batch_of_registrations_triggers_a_save_before_the_timer() {
+    use super::super::maintenance_schedule::{depgraph_save_due, DEPGRAPH_SAVE_BATCH};
+    use std::time::Duration;
+    // Timer nowhere near due, but a full batch registered since last save.
+    assert_eq!(
+        depgraph_save_due(
+            Duration::from_secs(5),
+            Duration::from_secs(300),
+            DEPGRAPH_SAVE_BATCH,
+            0
+        ),
+        Some("batch")
+    );
+    // Growth measured against the last SAVED count, not zero.
+    assert_eq!(
+        depgraph_save_due(
+            Duration::from_secs(5),
+            Duration::from_secs(300),
+            100 + DEPGRAPH_SAVE_BATCH,
+            100
+        ),
+        Some("batch")
+    );
+}
+
+#[test]
+fn below_batch_growth_waits_for_the_interval() {
+    use super::super::maintenance_schedule::{depgraph_save_due, DEPGRAPH_SAVE_BATCH};
+    use std::time::Duration;
+    assert_eq!(
+        depgraph_save_due(
+            Duration::from_secs(5),
+            Duration::from_secs(300),
+            DEPGRAPH_SAVE_BATCH - 1,
+            0
+        ),
+        None
+    );
+    assert_eq!(
+        depgraph_save_due(Duration::from_secs(300), Duration::from_secs(300), 1, 0),
+        Some("interval")
+    );
+}

@@ -515,6 +515,31 @@ fn run_server(args: Args) {
             }
         });
 
+        // zackees/soldr#2436 D6: SIGTERM takes the same graceful drain as
+        // Ctrl+C. Supervisors (soldr's displacement policy, systemd, CI
+        // reapers) speak SIGTERM; before this it fell through to the default
+        // disposition — immediate death — losing up to a full save interval
+        // of depgraph registrations on every routine daemon displacement.
+        #[cfg(unix)]
+        {
+            let shutdown = server.shutdown_handle();
+            tokio::spawn(async move {
+                let mut sigterm =
+                    match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    {
+                        Ok(stream) => stream,
+                        Err(error) => {
+                            tracing::warn!("could not install SIGTERM handler: {error}");
+                            return;
+                        }
+                    };
+                if sigterm.recv().await.is_some() {
+                    tracing::info!("received SIGTERM — shutting down");
+                    shutdown.notify_waiters();
+                }
+            });
+        }
+
         tracing::info!(%endpoint, "listening for connections");
 
         // Take `mut server` here so `server.run(&mut self)` can borrow.

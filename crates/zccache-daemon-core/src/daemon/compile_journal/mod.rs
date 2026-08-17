@@ -153,6 +153,23 @@ fn miss_reason_priority(reason: &str) -> u8 {
     }
 }
 
+/// zackees/soldr#2436 D4: the identity stamped into every journal row.
+///
+/// First-set wins: the embedded host (soldr-daemon) calls
+/// [`set_daemon_generation`] with its route-generation identity before the
+/// first compile; a standalone daemon that never does mints a per-process
+/// UUID lazily so rows are still attributable across restarts.
+static DAEMON_GENERATION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Set the generation identity journal rows carry. No-op after first use.
+pub fn set_daemon_generation(value: String) {
+    let _ = DAEMON_GENERATION.set(value);
+}
+
+fn daemon_generation() -> &'static str {
+    DAEMON_GENERATION.get_or_init(|| uuid::Uuid::new_v4().to_string())
+}
+
 /// A single journal entry serialized as one JSON line.
 ///
 /// The fields below the legacy block are populated only when `--profile`
@@ -178,6 +195,14 @@ pub struct JournalEntry {
     pub exit_code: i32,
     /// Session UUID or null for ephemeral.
     pub session_id: Option<String>,
+    /// zackees/soldr#2436 D4: which daemon process generation served this
+    /// compile. Restart-warmth analysis needs to attribute journal rows to
+    /// generations — a `context_not_found` in generation N+1 for a context
+    /// generation N registered is the restart-loss signature. Set by the
+    /// embedded host via [`set_daemon_generation`]; standalone daemons mint
+    /// a per-process UUID on first use.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daemon_generation: Option<String>,
     /// Wall-clock nanoseconds.
     pub latency_ns: u128,
     /// Root-normalized dependency-graph context identity.
@@ -291,6 +316,7 @@ impl JournalEntry {
             env: ctx.env,
             exit_code,
             session_id: ctx.session_id,
+            daemon_generation: Some(daemon_generation().to_string()),
             latency_ns,
             context_key: None,
             crate_name: None,

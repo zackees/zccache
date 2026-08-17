@@ -197,16 +197,19 @@ fn concurrent_equivalent_registration_keeps_independent_instances() {
 
 #[test]
 fn equivalent_variant_bound_evicts_to_a_conservative_miss() {
+    // zackees/soldr#2436 D11: the bound is resolver-driven (default 16,
+    // ZCCACHE_MAX_EQUIVALENT_CONTEXTS override); register one past it.
+    let limit = crate::graph::register::max_equivalent_contexts();
     let graph = DepGraph::new();
     let mut registrations = Vec::new();
-    for index in 0..5 {
+    for index in 0..=limit {
         let root = format!("/evict-{index}");
         let registration = graph
             .register_with_root_result(context(&root), Some(NormalizedPath::from(root.as_str())));
         graph.update(&registration.map_key, scan(&root), equivalent_hash);
         registrations.push(registration);
     }
-    assert_eq!(graph.stats().context_count, 4);
+    assert_eq!(graph.stats().context_count, limit);
     assert!(matches!(
         graph.check(&registrations[0].map_key, |_| true, equivalent_hash),
         CacheVerdict::Cold
