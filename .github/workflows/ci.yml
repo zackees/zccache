@@ -79,6 +79,10 @@ jobs:
       - id: setup-soldr
         uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
         with:
+          # Post-#1820 soldr (see the identical pin above): 0.8.13's live
+          # target-artifact GC is what collected the freshly built dylint
+          # cdylibs out from under cargo-dylint's post-build lookup.
+          version: 0.9.2
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
