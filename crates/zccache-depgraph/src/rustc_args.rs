@@ -871,10 +871,15 @@ mod tests {
             "the library NAME must be key material: {:?}",
             parsed.unknown_flags
         );
-        // The value must not leak into positional/source handling.
+        // The value must not leak into positional/source handling: the
+        // source stays main.rs (host path separators vary).
         assert_eq!(
-            parsed.source_file.as_path().to_string_lossy(),
-            "/project/src/main.rs"
+            parsed
+                .source_file
+                .as_path()
+                .file_name()
+                .and_then(|n| n.to_str()),
+            Some("main.rs")
         );
     }
 
