@@ -573,8 +573,18 @@ pub(super) fn rustc_expected_output_paths(
     // soldr#2148. Declaring it is what gets it redirected into the staging
     // directory alongside the image, captured on a miss, and replayed on a
     // hit -- as part of the same cache entry, so the pair cannot desynchronise.
-    if let Some(pdb) = msvc_pdb_sidecar_output_path(primary_output_path) {
-        push_unique_output_path(&mut paths, pdb);
+    //
+    // soldr#2347: only when the *target* is MSVC. A windows-gnu image is
+    // linked by mingw, which keeps DWARF in the image and never writes a
+    // `.pdb` — a staged plan that declares one then hard-fails at
+    // materialization when the file does not exist, killing every
+    // Linux-hosted `--target x86_64-pc-windows-gnu` compile of a linked
+    // image (the non-staged enumeration below already probes the
+    // filesystem and was naturally immune).
+    if msvc_target_writes_pdb(rustc_args) {
+        if let Some(pdb) = msvc_pdb_sidecar_output_path(primary_output_path) {
+            push_unique_output_path(&mut paths, pdb);
+        }
     }
 
     paths
@@ -652,6 +662,17 @@ fn dylint_library_sidecar_output_path(
 /// the compiler does not produce (debuginfo off, or a non-MSVC target that
 /// still emits an `.exe`) is filtered out at collection time rather than
 /// failing the compile, so this does not need to predict debuginfo settings.
+/// Whether the compile's target links with MSVC and can therefore
+/// produce a `.pdb` beside the image (soldr#2347). An explicit
+/// `--target` decides directly; with no `--target`, the compile is
+/// host-native and only an MSVC host writes pdbs.
+pub(super) fn msvc_target_writes_pdb(rustc_args: &crate::depgraph::RustcParsedArgs) -> bool {
+    match rustc_args.target.as_deref() {
+        Some(triple) => triple.ends_with("-pc-windows-msvc"),
+        None => cfg!(all(target_os = "windows", target_env = "msvc")),
+    }
+}
+
 pub(super) fn msvc_pdb_sidecar_output_path(primary_output_path: &Path) -> Option<NormalizedPath> {
     let extension = primary_output_path.extension()?.to_str()?;
     if !extension.eq_ignore_ascii_case("exe") && !extension.eq_ignore_ascii_case("dll") {
@@ -992,5 +1013,48 @@ mod pdb_sidecar_tests {
                 "{other} must not declare a pdb"
             );
         }
+    }
+
+    /// soldr#2347: the pdb declaration is target-aware. A windows-gnu
+    /// image is linked by mingw (DWARF in the image, no pdb ever); the
+    /// staged plan hard-fails materialization on a declared output that
+    /// never appears, which killed every Linux-hosted
+    /// `--target x86_64-pc-windows-gnu` linked-image compile.
+    #[test]
+    fn pdb_declaration_is_msvc_target_only() {
+        let cwd = Path::new("/repo");
+        let base = |target: Option<&str>| {
+            let mut args = vec![
+                "--crate-name=wg".to_string(),
+                "--crate-type=bin".to_string(),
+                "--emit=link".to_string(),
+                "--out-dir=/repo/target/deps".to_string(),
+                "src/main.rs".to_string(),
+            ];
+            if let Some(target) = target {
+                args.push(format!("--target={target}"));
+            }
+            crate::depgraph::parse_rustc_args(&args, cwd)
+        };
+
+        let msvc = base(Some("x86_64-pc-windows-msvc"));
+        assert!(msvc_target_writes_pdb(&msvc));
+        let primary = Path::new("/repo/target/deps/wg.exe");
+        let declared = rustc_expected_output_paths(&msvc, primary, cwd, None);
+        assert!(
+            declared.iter().any(|p| p.extension() == Some("pdb".as_ref())),
+            "msvc target must declare the pdb sidecar: {declared:?}"
+        );
+
+        let gnu = base(Some("x86_64-pc-windows-gnu"));
+        assert!(!msvc_target_writes_pdb(&gnu));
+        let declared = rustc_expected_output_paths(&gnu, primary, cwd, None);
+        assert!(
+            !declared.iter().any(|p| p.extension() == Some("pdb".as_ref())),
+            "windows-gnu never writes a pdb; declaring one hard-fails the              staged materialization (soldr#2347): {declared:?}"
+        );
+
+        let aarch_gnu = base(Some("aarch64-pc-windows-gnullvm"));
+        assert!(!msvc_target_writes_pdb(&aarch_gnu));
     }
 }
