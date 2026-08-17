@@ -1045,7 +1045,9 @@ mod pdb_sidecar_tests {
         let primary = Path::new("/repo/target/deps/wg.exe");
         let declared = rustc_expected_output_paths(&msvc, primary, cwd, None);
         assert!(
-            declared.iter().any(|p| p.extension() == Some("pdb".as_ref())),
+            declared
+                .iter()
+                .any(|p| p.extension() == Some("pdb".as_ref())),
             "msvc target must declare the pdb sidecar: {declared:?}"
         );
 
