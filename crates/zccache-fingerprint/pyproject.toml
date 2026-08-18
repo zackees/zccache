@@ -7,7 +7,7 @@ name = "zccache-fingerprint"
 dynamic = ["version"]
 description = "Fast file fingerprinting backed by blake3"
 requires-python = ">=3.10"
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0-only"
 
 [tool.maturin]
 features = ["python", "pyo3/abi3-py310"]

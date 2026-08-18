@@ -40,7 +40,7 @@ exclude = [
 version = "1.13.5"
 edition = "2021"
 rust-version = "1.95.0"
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0-only"
 repository = "https://github.com/zackees/zccache"
 homepage = "https://github.com/zackees/zccache"
 
