@@ -7,7 +7,7 @@ name = "zccache-watcher"
 dynamic = ["version"]
 description = "Cross-platform filesystem watcher backed by zccache"
 requires-python = ">=3.10"
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0-only"
 
 [tool.maturin]
 features = ["python", "pyo3/abi3-py310"]
