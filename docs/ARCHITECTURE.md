@@ -36,6 +36,7 @@ failed cache-root audit retain its diagnostic JSONL evidence.
 - **Reflink / hardlink COW safety** → [artifact-store.md](architecture/artifact-store.md#capability-driven-cow-materialization)
 - **soldr target artifact contract** → [rust-artifact-plan.md](architecture/rust-artifact-plan.md)
 - **Embedded soldr/fbuild service integration** → [embedded-service.md](architecture/embedded-service.md)
+- **Embedded heap snapshots** → [embedded-service.md § Heap snapshots](architecture/embedded-service.md#heap-snapshots)
 - **Embedded maintenance limits and shutdown reporting** → [embedded-service.md § Maintenance limits and task ownership](architecture/embedded-service.md#maintenance-limits-and-task-ownership)
 - **Shared periodic maintenance schedule (both service modes)** → [embedded-service.md § Maintenance limits and task ownership](architecture/embedded-service.md#maintenance-limits-and-task-ownership)
 - **Legacy action target snapshots** → [target-cache.md](architecture/target-cache.md)

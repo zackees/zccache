@@ -52,6 +52,23 @@ pub use zccache_fingerprint as fingerprint;
 pub use zccache_fscache as fscache;
 #[cfg(feature = "gha")]
 pub use zccache_gha as gha;
+/// Process-wide sampled heap profiling for embedded hosts.
+///
+/// Enable the `heap-profile` feature, install [`MiMalloc`] as the final
+/// binary's `#[global_allocator]`, then use [`prof`] to start profiling and
+/// write pprof-compatible snapshots. The allocator declaration belongs in
+/// the embedding executable because a Rust library cannot select a global
+/// allocator on its consumer's behalf.
+///
+/// [`MiMalloc`]: heap_profile::MiMalloc
+/// [`prof`]: heap_profile::prof
+#[cfg(feature = "heap-profile")]
+pub mod heap_profile {
+    pub use mimalloc_pprof::{
+        enable_heap_profiling, enable_heap_profiling_with, prof, DumpFormat, MiMalloc, ProfConfig,
+        ProfConfigMode,
+    };
+}
 pub use zccache_hash as hash;
 pub use zccache_ipc as ipc;
 /// zccache#1365 — the host-platform leaf (one cfg_select! selector, five

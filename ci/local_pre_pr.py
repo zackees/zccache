@@ -34,7 +34,8 @@ def run_linux_suites(selected: list[str]) -> None:
     features = (
         "zccache/zccache-bin,zccache/daemon-bin,zccache/download-bin,"
         "zccache/download-daemon-bin,zccache/fingerprint-bin,zccache/stamp-bin,"
-        "zccache/ci-bin,zccache/crash-tools,zccache/tokio-console,zccache/test-support"
+        "zccache/ci-bin,zccache/crash-tools,zccache/tokio-console,zccache/test-support,"
+        "zccache/heap-profile"
     )
     run_perf_local("cargo", "build", "-p", "zccache", "--features", features, "--bin", "zccache")
     for suite in selected:
