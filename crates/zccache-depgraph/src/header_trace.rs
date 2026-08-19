@@ -451,8 +451,12 @@ mod tests {
         let first = temp.path().join(first_name);
         let second = temp.path().join(second_name);
         std::fs::write(&source, "").unwrap();
-        std::fs::write(&first, "").unwrap();
-        std::fs::write(&second, "").unwrap();
+        // Some Unix filesystems reject byte sequences that `OsString` can
+        // represent (APFS reports EILSEQ, for example). Exercise the
+        // fail-closed path wherever the fixture itself is supported.
+        if std::fs::write(&first, "").is_err() || std::fs::write(&second, "").is_err() {
+            return;
+        }
         let stderr = b". header-\xff.h\n. header-\xfe.h\n".to_vec();
 
         let (scan, filtered) = parse_header_trace(&stderr, &source, temp.path());
