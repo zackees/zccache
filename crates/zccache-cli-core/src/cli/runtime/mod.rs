@@ -1043,7 +1043,7 @@ mod tests {
         running_process::broker::protocol_v2::backend_handle::DaemonProcess {
             pid,
             exe_path: std::path::PathBuf::from("zccache-daemon"),
-            exe_sha256: [0u8; 32],
+            exe_hash: [0u8; 32],
             boot_id: "boot-that-never-was".to_string(),
             ipc_endpoint: crate::ipc::running_process_endpoint("test-endpoint"),
             started_at_unix_ms: 1,
