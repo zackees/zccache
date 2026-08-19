@@ -558,8 +558,10 @@ pub(crate) struct CompilePriorityParseError {
 /// The compiler-identity probe (`rustc -vV` in [`super::server`]'s
 /// compiler-hash module) is covered by the same boundary.
 ///
-/// Priority and daemon Job Object assignment remain local post-spawn policy;
-/// the actual process execution and console decision do not.
+/// Priority remains local post-spawn policy. Owner-death containment is
+/// configured transactionally by running-process on Linux and macOS; Windows
+/// retains zccache's established process-wide kill-on-close Job Object until
+/// the dependency's Windows spawn path can propagate assignment failures.
 ///
 /// Wait for an async command after applying a compiler child priority.
 ///
@@ -569,14 +571,12 @@ pub(crate) struct CompilePriorityParseError {
 /// reap the child when the daemon drops the compile future (a client
 /// disconnect / Ctrl-C) and when the daemon process itself dies, so a cancelled
 /// or crashed compile never orphans a rustc process. running-process provides
-/// the primitives: `kill_on_drop` (Tokio drop), Linux `PR_SET_PDEATHSIG`, and
-/// on Windows the kill-on-close job object.
+/// both primitives: `kill_on_drop` handles a dropped Tokio future, while the
+/// platform owner-death policy binds the child to the daemon process.
 ///
-/// `kill_on_drop` is enabled on every platform (the primary case: a dropped
-/// compile future must reap its child). `kill_when_owner_dies` is scoped to
-/// Linux here because the Windows path already assigns each child to the
-/// daemon's kill-on-close job below (`assign_child_to_daemon_job`); enabling it
-/// there too would place the child in a second job for no benefit.
+/// Linux and macOS install that containment transactionally in the dependency
+/// spawn boundary. Windows keeps the existing local kill-on-close Job Object,
+/// so it must not request the dependency's second Job Object as well.
 fn owned_child_spawn_options() -> running_process::TokioSpawnOptions {
     running_process::TokioSpawnOptions {
         kill_on_drop: true,

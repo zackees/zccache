@@ -83,7 +83,7 @@ lzma-rs = "0.3"
 sevenz-rust = "0.6"
 rkyv = "0.8"
 mimalloc = "0.1"
-running-process = { version = "4.10", default-features = false, features = ["client-async"] }
+running-process = { version = "4.10.3", default-features = false, features = ["client-async"] }
 zccache = { path = "crates/zccache" }
 zccache-artifact = { path = "crates/zccache-artifact" }
 zccache-audit = { path = "crates/zccache-audit" }
