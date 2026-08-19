@@ -1,5 +1,5 @@
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: mimalloc_pprof::MiMalloc = mimalloc_pprof::MiMalloc;
 
 use clap::Parser;
 use zccache::download_protocol::daemon_mgmt;

@@ -15,7 +15,7 @@
 //!    it to the daemon via the session from ZCCACHE_SESSION_ID.
 
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: mimalloc_pprof::MiMalloc = mimalloc_pprof::MiMalloc;
 
 use std::process::ExitCode;
 

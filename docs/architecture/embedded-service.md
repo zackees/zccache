@@ -19,6 +19,7 @@ The MVP boundary is:
 |---|---|---|
 | Architecture contract | Landed | This document records lifecycle, ownership, audit, and shutdown expectations. |
 | Public Rust API | MVP landed | `zccache::embedded` exports `ZccacheService` and stable config/request/stats types for start, compile, stats, disk maintenance, flush, and shutdown. |
+| Heap snapshots | Landed | The `heap-profile` feature exports `zccache::heap_profile`, a process-wide mimalloc sampler that emits pprof `profile.proto` snapshots. |
 | Durable audit schema | MVP landed | `zccache::audit` exports serializable schema/config/event/finding/manifest types. |
 | Audit emission | Partial | `ZccacheService::compile` emits `compile.started`, `cache.hit`/`cache.miss` and `compile.finished` carrying the host's `AuditContext` (#905). Engine-internal events (`cache.lookup` with the key, `compiler.spawn`/`compiler.exit`, depgraph) still need plumbing through `EmbeddedCompileRequest`. |
 | soldr embedded integration | Landed | soldr uses the direct embedded service and owns its cache root, runtime handle, audit context, and shutdown sequence. |
@@ -29,6 +30,38 @@ The MVP boundary is:
 Tests in this repository cover the public Rust service boundary, maintenance,
 flush/shutdown reporting, and durable audit schema. Broader host workload
 validation remains owned by each consuming repository.
+
+### Heap snapshots
+
+An embedded host can opt into sampled heap profiling without adding a second
+allocator dependency:
+
+```rust
+use zccache::heap_profile::{prof, MiMalloc};
+
+#[global_allocator]
+static ALLOCATOR: MiMalloc = MiMalloc;
+
+fn snapshot() -> std::io::Result<()> {
+    let _started = prof::start(0); // default sampling interval
+    prof::dump_proto_file(std::path::Path::new("heap.pb"))
+}
+```
+
+The host enables zccache's `heap-profile` Cargo feature and owns profiler
+lifecycle because both the allocator and sampler are process-global. Snapshot
+files use pprof's binary `profile.proto` format and carry module mappings for
+external symbolization. Hosts should retain line tables (and frame pointers on
+Linux/macOS where practical) so the same binaries and debug sidecars used for
+CPU profiles also resolve heap stacks.
+
+`mimalloc-pprof` must be the process's sole mimalloc provider. A host that
+already depends on the ordinary `mimalloc` crate must remove that dependency
+and use `zccache::heap_profile::MiMalloc`; Cargo rejects two native libraries
+that both declare `links = "mimalloc"`. Zccache's shipped binaries use this
+same allocator implementation to keep every feature combination linkable. The
+sampling hooks remain dormant unless profiling is enabled through the API or
+the `MIMALLOC_PROF` environment variable.
 
 ## Problem
 

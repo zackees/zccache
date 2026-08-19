@@ -50,16 +50,17 @@ download-protocol = ["download", "dep:zccache-download-protocol"]
 gha = ["dep:zccache-gha", "zccache-artifact/gha"]
 symbols = ["dep:zccache-symbols"]
 tokio-console = ["dep:console-subscriber", "zccache-daemon-core/tokio-console"]
-zccache-bin = ["cli", "dep:mimalloc"]
-daemon-bin = ["daemon-entry", "symbols", "dep:mimalloc"]
-download-bin = ["dep:clap", "dep:mimalloc", "download-client"]
+heap-profile = ["dep:mimalloc-pprof"]
+zccache-bin = ["cli", "dep:mimalloc-pprof"]
+daemon-bin = ["daemon-entry", "symbols", "dep:mimalloc-pprof"]
+download-bin = ["dep:clap", "dep:mimalloc-pprof", "download-client"]
 download-daemon-bin = [
     "dep:clap",
-    "dep:mimalloc",
+    "dep:mimalloc-pprof",
     "dep:tracing-subscriber",
     "download-daemon",
 ]
-fingerprint-bin = ["dep:clap", "dep:mimalloc"]
+fingerprint-bin = ["dep:clap", "dep:mimalloc-pprof"]
 stamp-bin = ["symbols"]
 ci-bin = ["ci", "dep:md5"]
 crash-tools = ["dep:sadness-generator"]
@@ -176,14 +177,16 @@ wait-timeout = { version = "0.2", optional = true }
 # shared: used by test_support, download-daemon bin, etc.
 tracing-subscriber = { workspace = true, optional = true }
 
-# Global allocator on every target. mimalloc is pure C with no autotools
-# step, so it cross-compiles cleanly in every direction. tikv-jemalloc
+# Global allocator on every target. mimalloc-pprof vendors mimalloc and is
+# pure C with no autotools step, so it cross-compiles cleanly in every
+# direction. tikv-jemalloc
 # was the previous choice on unix but its bundled autoconf invokes a
 # hidden `$(CC) -MM` dep-tracking pass that silently drops the
 # `--sysroot` flag — broke Linux->*-apple-darwin (and would equally
 # break Windows->Linux); see tikv/jemallocator#170. Using one allocator
-# everywhere also removes a per-platform variable from perf analysis.
-mimalloc = { workspace = true, optional = true }
+# everywhere also removes a per-platform variable from perf analysis. The
+# profiler stays dormant unless explicitly enabled by API or environment.
+mimalloc-pprof = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

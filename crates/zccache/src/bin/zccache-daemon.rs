@@ -7,7 +7,7 @@
 //! not the library) and delegates.
 
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: mimalloc_pprof::MiMalloc = mimalloc_pprof::MiMalloc;
 
 fn main() -> std::process::ExitCode {
     if let Err(error) = zccache::dev_daemon_identity::initialize() {
