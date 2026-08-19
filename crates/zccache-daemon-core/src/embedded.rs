@@ -7,16 +7,20 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::NormalizedPath;
 use crate::daemon::server::{
-    DiskMaintenanceReport as InternalDiskMaintenanceReport, EmbeddedCompileRequest, EmbeddedDaemon,
-    EmbeddedFlushReport, EmbeddedStatsSnapshot, MaintenanceKind as InternalMaintenanceKind,
-    MaintenancePolicy, MaintenancePressure as InternalMaintenancePressure,
+    EmbeddedCompileRequest, EmbeddedDaemon, EmbeddedFlushReport,
+    MaintenanceKind as InternalMaintenanceKind, MaintenancePolicy,
 };
 
-pub use crate::audit::{AuditConfig, AuditContext};
+pub use crate::audit::{AuditConfig, AuditContext, AuditEvent};
+pub use control::EmbeddedEventSink;
+
+mod control;
+mod reporting;
 
 /// Result type used by the embedded service API.
 pub type Result<T> = std::result::Result<T, EmbeddedError>;
@@ -30,13 +34,11 @@ pub enum EmbeddedError {
     Compile(String),
     #[error("embedded zccache service is already shut down")]
     ShutDown,
-    /// The host-provided cancellation token (see
-    /// [`ZccacheConfig::cancellation`]) fired before the operation
-    /// finished. Subprocesses already in flight when the token is
-    /// observed are reaped via `kill_on_drop` when the suspended future
-    /// drops; the host should treat this as a terminal outcome and not
-    /// retry the same compile. Issue zccache#923.
-    #[error("embedded zccache operation cancelled by host token")]
+    /// The host-provided cancellation token fired, or forced shutdown
+    /// cancelled the operation. Subprocesses already in flight are reaped
+    /// when the suspended future drops; the host should treat this as a
+    /// terminal outcome and not retry the same compile.
+    #[error("embedded zccache operation cancelled")]
     Cancelled,
 }
 
@@ -45,13 +47,16 @@ pub enum EmbeddedError {
 pub struct ZccacheService {
     daemon: Arc<EmbeddedDaemon>,
     shutdown: Arc<AtomicBool>,
-    /// Snapshot of the host-supplied cancellation token captured at
-    /// [`ZccacheService::start`]. Compile calls race it via `tokio::select!`;
-    /// flush checks only whether it was already latched before persistence
-    /// begins, then keeps ownership until the flush completes. `None`
-    /// preserves the pre-#923 behavior where only
-    /// `shutdown(ShutdownMode::Force)` aborts in-flight work.
-    cancellation: Option<CancellationToken>,
+    /// Snapshot of the host-supplied cancellation token captured at startup.
+    /// Compile calls race it; flush checks only whether it was already latched
+    /// before persistence begins, then keeps ownership until flush completes.
+    host_cancellation: Option<CancellationToken>,
+    /// Service-owned token fired by `shutdown(Force)`. Unlike the optional
+    /// host token, this is always present so forced shutdown can abort work
+    /// submitted through any cloned handle.
+    force_cancellation: CancellationToken,
+    /// Optional admission gate implementing `max_parallel_compiles`.
+    compile_permits: Option<Arc<Semaphore>>,
     /// RAII handle for the optional host-in-flight counter registration
     /// (zccache#924). Wrapped in `Arc` so the `Clone` impl on
     /// `ZccacheService` does not double-register; the slot is cleared
@@ -63,6 +68,9 @@ pub struct ZccacheService {
     /// service's lifetime; flush + shutdown are forwarded from the
     /// matching `ZccacheService` methods.
     audit_sink: Option<Arc<crate::audit_writer::AuditSink>>,
+    /// Optional host callback for the same redacted structured events sent to
+    /// the durable audit sink.
+    event_sink: Option<Arc<dyn EmbeddedEventSink>>,
     /// The host's audit configuration, retained so emitted events can carry
     /// the selected mode and honor the host's redaction policy. `Arc` keeps
     /// `Clone` on the service cheap.
@@ -88,10 +96,8 @@ pub struct ZccacheConfig {
     /// flush is owned to completion so cancellation cannot strand a partial
     /// checkpoint.
     ///
-    /// `None` preserves the pre-#923 behavior: the service participates
-    /// in cancellation only via `shutdown(ShutdownMode::Force)`, which
-    /// requires moving the service handle and so cannot be triggered
-    /// mid-call.
+    /// `None` opts out of host-token cancellation. Forced shutdown still
+    /// cancels compiles running through cloned service handles.
     ///
     /// Hosts that own a top-level shutdown signal (soldr's daemon
     /// `Notify`, fbuild's coordinator runtime) should clone their token
@@ -202,6 +208,10 @@ pub struct RuntimeHooks {
 /// Optional service limits. `None` means zccache's existing daemon defaults.
 #[derive(Debug, Clone, Default)]
 pub struct ServiceLimits {
+    /// Maximum compile calls admitted to the daemon engine concurrently.
+    ///
+    /// Additional callers wait asynchronously and remain cancellable. `None`
+    /// preserves unconstrained admission; `Some(0)` is rejected at startup.
     pub max_parallel_compiles: Option<usize>,
     /// Optional host-supplied in-flight counter (zccache#924).
     ///
@@ -524,50 +534,7 @@ impl ZccacheService {
         config: ZccacheConfig,
         options: ZccacheStartOptions,
     ) -> Result<Self> {
-        let endpoint = embedded_endpoint(&config.host);
-        let cache_root =
-            crate::core::config::effective_cache_root_from_top_level(&config.cache_root);
-        let maintenance_policy = MaintenancePolicy::from_limits(
-            options.disk_limits.max_cache_bytes,
-            options.disk_limits.max_cache_percent,
-        )
-        .map_err(EmbeddedError::Start)?;
-        let daemon = EmbeddedDaemon::start_with_maintenance(
-            endpoint,
-            cache_root,
-            options.staging_root.as_ref(),
-            config.runtime.handle.clone(),
-            maintenance_policy,
-            options.maintenance_ownership == MaintenanceOwnership::Embedded,
-        )
-        .await
-        .map_err(|err| EmbeddedError::Start(err.to_string()))?;
-        // zccache#924: register the optional host-in-flight counter so
-        // CompilePriority::Auto sees host-side subprocess pressure when
-        // deciding Normal vs Low. The RAII guard is held on the service
-        // until the last clone drops, then the slot is cleared.
-        let host_inflight_guard = config
-            .limits
-            .host_in_flight
-            .map(crate::daemon::process::register_host_in_flight_counter)
-            .map(Arc::new);
-        // zccache#926: spawn the durable audit JSONL writer when the
-        // host configured a mode that requires emission. The writer
-        // task runs on the host's tokio runtime via the same
-        // `runtime.handle` plumbing as the rest of the embedded
-        // service so tokio-console attach unity holds.
-        let audit_sink =
-            crate::audit_writer::AuditSink::start(&config.audit, config.runtime.handle.clone())
-                .map_err(|err| EmbeddedError::Start(err.to_string()))?
-                .map(Arc::new);
-        Ok(Self {
-            daemon: Arc::new(daemon),
-            shutdown: Arc::new(AtomicBool::new(false)),
-            cancellation: config.cancellation,
-            _host_inflight_guard: host_inflight_guard,
-            audit_sink,
-            audit: Arc::new(config.audit),
-        })
+        Self::start_internal(config, options, None).await
     }
 
     /// Emit one durable audit event, if the host enabled audit.
@@ -592,9 +559,9 @@ impl ZccacheService {
         duration_ns: Option<u64>,
         fields: &[(&'static str, serde_json::Value)],
     ) {
-        let Some(sink) = &self.audit_sink else {
+        if self.audit_sink.is_none() && self.event_sink.is_none() {
             return;
-        };
+        }
         let (Ok(event_id), Ok(span_id), Ok(category), Ok(event)) = (
             crate::audit::AuditId::new(uuid::Uuid::new_v4().to_string()),
             crate::audit::AuditId::new(uuid::Uuid::new_v4().to_string()),
@@ -627,15 +594,25 @@ impl ZccacheService {
         for (key, value) in fields {
             record = record.with_field(*key, value.clone());
         }
-        let _ = sink.emit(record.apply_redaction(&self.audit.redaction));
+        let record = record.apply_redaction(&self.audit.redaction);
+        if let Some(sink) = &self.event_sink {
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink.emit(&record)))
+                .is_err()
+            {
+                tracing::warn!("embedded host event sink panicked; event dropped");
+            }
+        }
+        if let Some(sink) = &self.audit_sink {
+            let _ = sink.emit(record);
+        }
     }
 
     /// Compile using the embedded daemon engine.
     ///
-    /// Honors [`ZccacheConfig::cancellation`] (zccache#923): if the
-    /// host-supplied token fires before the compile finishes, the call
-    /// returns [`EmbeddedError::Cancelled`] and the in-flight compile
-    /// future is dropped. The daemon's [`tokio::process::Child`] handles
+    /// Honors [`ZccacheConfig::cancellation`] and forced shutdown: if either
+    /// cancellation source fires before the compile finishes, the call returns
+    /// [`EmbeddedError::Cancelled`] and drops the in-flight compile future.
+    /// The daemon's [`tokio::process::Child`] handles
     /// use `kill_on_drop(true)`, so the subprocess is reaped as a side
     /// effect — there is no orphaned `rustc` left behind. Hosts should
     /// treat `Cancelled` as terminal (no retry inside the same shutdown).
@@ -668,6 +645,7 @@ impl ZccacheService {
     }
 
     async fn compile_inner(&self, request: CompileRequest) -> Result<CompileResponse> {
+        let _compile_permit = self.acquire_compile_permit().await?;
         let compile_id = request
             .audit
             .compile_id
@@ -680,10 +658,13 @@ impl ZccacheService {
         }
         // Fast-path: token already fired before we did anything else.
         // Avoids spawning the compile only to immediately cancel it.
-        if let Some(token) = &self.cancellation {
+        if let Some(token) = &self.host_cancellation {
             if token.is_cancelled() {
                 return Err(EmbeddedError::Cancelled);
             }
+        }
+        if self.force_cancellation.is_cancelled() {
+            return Err(EmbeddedError::Cancelled);
         }
         // Carry the resolved `compile_id` on every event for this compile, so
         // the host's own records correlate by id rather than by timestamp.
@@ -711,17 +692,7 @@ impl ZccacheService {
             env: Some(request.env),
             stdin: request.stdin,
         });
-        let outcome = match &self.cancellation {
-            Some(token) => {
-                let cancelled = token.cancelled();
-                tokio::select! {
-                    biased;
-                    () = cancelled => Err(EmbeddedError::Cancelled),
-                    result = compile_future => result.map_err(EmbeddedError::Compile),
-                }
-            }
-            None => compile_future.await.map_err(EmbeddedError::Compile),
-        };
+        let outcome = self.await_compile(compile_future).await;
         // Every `compile.started` must get a `compile.finished`, including on
         // the cancel and spawn-failure paths. An audit log with dangling
         // starts cannot be used to measure anything, and those are exactly
@@ -895,7 +866,7 @@ impl ZccacheService {
         if self.shutdown.load(Ordering::Acquire) {
             return Err(EmbeddedError::ShutDown);
         }
-        if let Some(token) = &self.cancellation {
+        if let Some(token) = &self.host_cancellation {
             if token.is_cancelled() {
                 return Err(EmbeddedError::Cancelled);
             }
@@ -929,12 +900,15 @@ impl ZccacheService {
 
     /// Shut down the service and flush relevant persisted state.
     ///
-    /// `ShutdownMode::Graceful` waits for the durable audit sink to
-    /// drain before returning. `ShutdownMode::Force` does not — the
-    /// host signalled "stop now, lost events are acceptable."
+    /// `ShutdownMode::Graceful` waits for the durable audit sink to drain.
+    /// `ShutdownMode::Force` first cancels in-flight and queued compiles
+    /// through every cloned service handle, then skips the audit drain.
     async fn shutdown_internal(self, mode: ShutdownMode) -> Result<EmbeddedFlushReport> {
         if self.shutdown.swap(true, Ordering::AcqRel) {
             return Err(EmbeddedError::ShutDown);
+        }
+        if matches!(mode, ShutdownMode::Force) {
+            self.force_cancellation.cancel();
         }
         let report = self.daemon.shutdown().await;
         // zccache#926: shut the audit sink down when going Graceful.
@@ -980,145 +954,9 @@ where
     }
 }
 
-impl ServiceStats {
-    fn from_snapshot(snapshot: EmbeddedStatsSnapshot) -> Self {
-        let status = snapshot.status;
-        Self {
-            cache_root: status.cache_dir,
-            uptime_secs: status.uptime_secs,
-            total_compilations: status.total_compilations,
-            cache_hits: status.cache_hits,
-            cache_misses: status.cache_misses,
-            non_cacheable: status.non_cacheable,
-            compile_errors: status.compile_errors,
-            compile_errors_cached: status.compile_errors_cached,
-            time_saved_ms: status.time_saved_ms,
-            artifact_count: status.artifact_count,
-            cache_size_bytes: status.cache_size_bytes,
-            metadata_entries: status.metadata_entries,
-            dep_graph_contexts: status.dep_graph_contexts,
-            dep_graph_files: status.dep_graph_files,
-            sessions_total: status.sessions_total,
-            sessions_active: status.sessions_active,
-            phase_profile: snapshot.phase_profile,
-        }
-    }
-}
-
-impl FlushReport {
-    fn from_report(report: EmbeddedFlushReport) -> Self {
-        Self {
-            pending_writes_drained: report.pending_writes_drained,
-            artifact_entries: report.artifact_entries,
-            metadata_entries: report.metadata_entries,
-        }
-    }
-}
-
 #[cfg(test)]
-mod flush_report_compatibility_tests {
-    use super::FlushReport;
-
-    #[test]
-    fn legacy_flush_report_literal_and_exhaustive_pattern_still_compile() {
-        let report = FlushReport {
-            pending_writes_drained: true,
-            artifact_entries: 2,
-            metadata_entries: 3,
-        };
-        let FlushReport {
-            pending_writes_drained,
-            artifact_entries,
-            metadata_entries,
-        } = report;
-        assert!(pending_writes_drained);
-        assert_eq!((artifact_entries, metadata_entries), (2, 3));
-    }
-}
-
-impl DetailedFlushReport {
-    fn from_report(report: EmbeddedFlushReport) -> Self {
-        debug_assert_eq!(report.is_complete(), {
-            report.pending_writes_drained
-                && report.index_writer_drained
-                && report.steps.iter().all(|step| {
-                    matches!(
-                        step.outcome,
-                        crate::daemon::server::FlushStepOutcome::Completed
-                    )
-                })
-        });
-        Self {
-            pending_writes_drained: report.pending_writes_drained,
-            index_writer_drained: report.index_writer_drained,
-            steps: report
-                .steps
-                .into_iter()
-                .map(|step| FlushStepReport {
-                    step: step.step,
-                    outcome: match step.outcome {
-                        crate::daemon::server::FlushStepOutcome::Completed => {
-                            FlushStepOutcome::Completed
-                        }
-                        crate::daemon::server::FlushStepOutcome::Failed(error) => {
-                            FlushStepOutcome::Failed(error)
-                        }
-                        crate::daemon::server::FlushStepOutcome::TimedOut => {
-                            FlushStepOutcome::TimedOut
-                        }
-                    },
-                })
-                .collect(),
-            artifact_entries: report.artifact_entries,
-            metadata_entries: report.metadata_entries,
-        }
-    }
-}
-
-impl DiskMaintenanceReport {
-    fn from_report(report: InternalDiskMaintenanceReport) -> Self {
-        Self {
-            kind: match report.kind {
-                InternalMaintenanceKind::Pressure => DiskMaintenanceKind::Pressure,
-                InternalMaintenanceKind::Full => DiskMaintenanceKind::Full,
-            },
-            pressure: match report.pressure {
-                InternalMaintenancePressure::None => DiskMaintenancePressure::None,
-                InternalMaintenancePressure::Soft => DiskMaintenancePressure::Soft,
-                InternalMaintenancePressure::Hard => DiskMaintenancePressure::Hard,
-            },
-            budget_bytes: report.budget_bytes,
-            usage_before_bytes: report.usage_before_bytes,
-            usage_after_bytes: report.usage_after_bytes,
-            bytes_reclaimed: report.bytes_reclaimed,
-            artifacts_removed: report.artifacts_removed,
-            expired_artifacts_removed: report.expired_artifacts_removed,
-            pending_write_bytes: report.pending_write_bytes,
-        }
-    }
-}
-
-fn embedded_endpoint(host: &HostIdentity) -> String {
-    format!(
-        "embedded:{}:{}:{}",
-        sanitize_identity(&host.product),
-        sanitize_identity(&host.instance_id),
-        sanitize_identity(&host.workspace_id)
-    )
-}
-
-fn sanitize_identity(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
+#[path = "embedded/contract_tests.rs"]
+mod contract_tests;
 
 #[cfg(test)]
 #[path = "embedded/tests.rs"]
