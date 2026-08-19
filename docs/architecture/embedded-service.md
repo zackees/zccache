@@ -21,7 +21,7 @@ The MVP boundary is:
 | Public Rust API | MVP landed | `zccache::embedded` exports `ZccacheService` and stable config/request/stats types for start, compile, stats, disk maintenance, flush, and shutdown. |
 | Heap snapshots | Landed | The `heap-profile` feature exports `zccache::heap_profile`, a process-wide mimalloc sampler that emits pprof `profile.proto` snapshots. |
 | Durable audit schema | MVP landed | `zccache::audit` exports serializable schema/config/event/finding/manifest types. |
-| Audit emission | Partial | `ZccacheService::compile` emits `compile.started`, `cache.hit`/`cache.miss` and `compile.finished` carrying the host's `AuditContext` (#905). Engine-internal events (`cache.lookup` with the key, `compiler.spawn`/`compiler.exit`, depgraph) still need plumbing through `EmbeddedCompileRequest`. |
+| Audit emission | Host boundary landed | `ZccacheService::compile` emits `compile.started`, `cache.hit`/`cache.miss` and `compile.finished` carrying the host's `AuditContext` to durable JSONL and an optional host-owned `EmbeddedEventSink` (#905). Engine-internal events (`cache.lookup` with the key, `compiler.spawn`/`compiler.exit`, depgraph) still need plumbing through `EmbeddedCompileRequest`. |
 | soldr embedded integration | Landed | soldr uses the direct embedded service and owns its cache root, runtime handle, audit context, and shutdown sequence. |
 | fbuild embedded integration | Open | zccache#908 follows the same service contract, adjusted for fbuild's daemon/runtime model. |
 | Vendored hotfix workflow | Documented | zccache#909 is recorded in [`vendored-hotfix-workflow.md`](vendored-hotfix-workflow.md). |
@@ -380,6 +380,13 @@ without a real compiler invocation:
 - `flush()` is callable before host audit/report generation.
 - `shutdown(ShutdownMode::Graceful)` releases tasks and reports whether any
   work was dropped or left unflushed.
+- `shutdown(ShutdownMode::Force)` cancels queued and in-flight compiles across
+  cloned handles before stopping the engine, and does not wait for audit drain.
+- `ServiceLimits::max_parallel_compiles` bounds admission with an async
+  semaphore; `None` is unlimited and zero is rejected at startup.
+- Hosts can supply an `EmbeddedEventSink` callback without enabling file audit
+  output; callbacks receive redacted structured events and cannot panic the
+  compile path.
 - Host identity and audit configuration are required at construction time, even
   if early implementations accept a minimal/no-op audit sink.
 
