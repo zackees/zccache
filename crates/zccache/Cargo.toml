@@ -46,20 +46,22 @@ download-daemon = [
     "dep:zccache-cli-core",
     "zccache-cli-core/download-daemon",
 ]
+download-daemon-entry = [
+    "download-daemon",
+    "dep:clap",
+    "dep:tracing-subscriber",
+]
 download-protocol = ["download", "dep:zccache-download-protocol"]
 gha = ["dep:zccache-gha", "zccache-artifact/gha"]
 symbols = ["dep:zccache-symbols"]
 tokio-console = ["dep:console-subscriber", "zccache-daemon-core/tokio-console"]
 heap-profile = ["dep:mimalloc-pprof"]
-zccache-bin = ["cli", "dep:mimalloc-pprof"]
+# The release binary hosts both daemons behind argv[0] dispatch. The legacy
+# daemon [[bin]] features remain available as source-build/test shims.
+zccache-bin = ["cli", "download-daemon-entry", "dep:mimalloc-pprof"]
 daemon-bin = ["daemon-entry", "symbols", "dep:mimalloc-pprof"]
 download-bin = ["dep:clap", "dep:mimalloc-pprof", "download-client"]
-download-daemon-bin = [
-    "dep:clap",
-    "dep:mimalloc-pprof",
-    "dep:tracing-subscriber",
-    "download-daemon",
-]
+download-daemon-bin = ["dep:mimalloc-pprof", "download-daemon-entry"]
 fingerprint-bin = ["dep:clap", "dep:mimalloc-pprof"]
 stamp-bin = ["symbols"]
 ci-bin = ["ci", "dep:md5"]

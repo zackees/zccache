@@ -223,6 +223,15 @@ sha2 = { workspace = true, optional = true }
     assert "pub mod core;" in (zccache / "src" / "lib.rs").read_text(
         encoding="utf-8"
     )
+    assert '#[cfg(feature = "download-daemon-entry")]' in (
+        zccache / "src" / "lib.rs"
+    ).read_text(encoding="utf-8")
+    assert "pub mod download_daemon_entry;" in (
+        zccache / "src" / "lib.rs"
+    ).read_text(encoding="utf-8")
+    assert "pub mod dev_daemon_identity;" in (
+        zccache / "src" / "lib.rs"
+    ).read_text(encoding="utf-8")
     assert "zccache-core =" not in (zccache / "Cargo.toml").read_text(
         encoding="utf-8"
     )

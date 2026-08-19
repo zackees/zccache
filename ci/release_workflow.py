@@ -56,12 +56,12 @@ PLATFORMS: dict[str, list[str]] = {
 }
 
 REQUIRED_PLATFORM_FILES: dict[str, tuple[str, ...]] = {
-    "linux-x86_64-gnu": ("zccache", "zccache-daemon", "zccache-fp"),
-    "linux-aarch64-gnu": ("zccache", "zccache-daemon", "zccache-fp"),
-    "macos-x86_64": ("zccache", "zccache-daemon", "zccache-fp"),
-    "macos-aarch64": ("zccache", "zccache-daemon", "zccache-fp"),
-    "windows-x86_64": ("zccache.exe", "zccache-daemon.exe", "zccache-fp.exe"),
-    "windows-arm64": ("zccache.exe", "zccache-daemon.exe", "zccache-fp.exe"),
+    "linux-x86_64-gnu": ("zccache", "zccache-fp"),
+    "linux-aarch64-gnu": ("zccache", "zccache-fp"),
+    "macos-x86_64": ("zccache", "zccache-fp"),
+    "macos-aarch64": ("zccache", "zccache-fp"),
+    "windows-x86_64": ("zccache.exe", "zccache-fp.exe"),
+    "windows-arm64": ("zccache.exe", "zccache-fp.exe"),
 }
 
 REQUIRED_NATIVE_FILES: dict[str, tuple[str, ...]] = {

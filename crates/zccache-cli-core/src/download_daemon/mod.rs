@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::core::NormalizedPath;
 use crate::download::{
@@ -68,16 +68,27 @@ struct SharedState {
 pub struct DownloadDaemon {
     listener: crate::ipc::IpcListener,
     state: Arc<SharedState>,
+    idle_timeout: Duration,
 }
 
 impl DownloadDaemon {
+    const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
     pub fn bind(endpoint: &str) -> Result<Self, crate::ipc::IpcError> {
+        Self::bind_with_idle_timeout(endpoint, Self::DEFAULT_IDLE_TIMEOUT)
+    }
+
+    fn bind_with_idle_timeout(
+        endpoint: &str,
+        idle_timeout: Duration,
+    ) -> Result<Self, crate::ipc::IpcError> {
         let listener = crate::ipc::IpcListener::bind(endpoint)?;
         let log_path = crate::core::config::log_dir().join("download-daemon.log");
         let logger = FileLogger::new(&log_path)
             .map_err(|e| crate::ipc::IpcError::Io(std::io::Error::other(e.to_string())))?;
         Ok(Self {
             listener,
+            idle_timeout,
             state: Arc::new(SharedState {
                 endpoint: endpoint.to_string(),
                 jobs: DashMap::new(),
@@ -109,6 +120,12 @@ impl DownloadDaemon {
                             tracing::warn!("download connection error: {err}");
                         }
                     });
+                }
+                () = tokio::time::sleep(self.idle_timeout) => {
+                    if self.state.jobs.is_empty() {
+                        self.state.logger.log("download daemon stopped after idle timeout");
+                        break;
+                    }
                 }
             }
         }
@@ -544,5 +561,23 @@ async fn detach_client(state: &Arc<SharedState>, job_id: &str) {
         } else {
             state.jobs.remove(job_id);
         }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn daemon_retires_after_becoming_idle() {
+        let endpoint = crate::ipc::unique_test_endpoint();
+        let mut daemon =
+            DownloadDaemon::bind_with_idle_timeout(&endpoint, Duration::from_millis(10))
+                .expect("bind download daemon");
+
+        tokio::time::timeout(Duration::from_secs(1), daemon.run())
+            .await
+            .expect("idle daemon must retire")
+            .expect("idle shutdown is clean");
     }
 }

@@ -3,7 +3,7 @@
 21 crates split into two product surfaces: the **compile cache** and a separate **download cache**, plus utility binaries (`zccache-fp`, `zccache-stamp`) and one CI lib (`zccache-ci`).
 
 > [!NOTE]
-> **Binary layout (post-consolidation, #997–#999).** The compile-cache binaries all live as `[[bin]]` targets in the single `crates/zccache` crate — `zccache` (CLI), `zccache-daemon` (the standalone daemon; its `main` is the library `daemon::entry`), and `zccache-fp`. As of #998 the `zccache` binary is a **multi-call binary**: it dispatches on `argv[0]` and runs the daemon when invoked as `zccache-daemon`, so the CLI **self-deploys** the daemon by copying itself to `~/.zccache/v<VERSION>/zccache-daemon` (#999) rather than shipping a separate daemon executable. `crates/zccache-cli` is **not** the CLI — it is the PyO3 `cdylib` hosting `zccache._native`. See [docs/architecture/runtime.md § Standalone daemon identity, deployment & lifecycle](../docs/architecture/runtime.md#standalone-daemon-identity-deployment--lifecycle).
+> **Binary layout (#997–#1000).** Release archives and wheels ship `zccache` plus the intentionally separate `zccache-fp`. `zccache` is a **multi-call binary**: copies named `zccache-daemon` and `zccache-download-daemon` dispatch to their respective daemon entry points. Both daemons are self-deployed beneath `~/.zccache/v<VERSION>/`; their legacy `[[bin]]` targets remain buildable as transitional source/test shims but are not distribution artifacts. `crates/zccache-cli` is **not** the CLI — it is the PyO3 `cdylib` hosting `zccache._native`. See [docs/architecture/runtime.md § Standalone daemon identity, deployment & lifecycle](../docs/architecture/runtime.md#standalone-daemon-identity-deployment--lifecycle).
 
 ## Dependency Graph
 
@@ -14,12 +14,12 @@ zccache-cli (bin "zccache")  ──┐
   deps: artifact, compiler, core, hash, ipc, protocol,
         download, download-client, gha, symbols      │
                                                       │
-zccache-daemon (bin)  ─────────┤
+zccache-daemon (legacy bin shim) ┤
   deps: artifact, compiler, core, hash, ipc, protocol,
         fscache, watcher, depgraph, fingerprint,      │
         test-support (dev only)                       │
                                                       │
-zccache-download-daemon (bin)  ┤  deps: core, ipc, download, download-protocol
+zccache-download-daemon (legacy bin shim) ┤  deps: core, ipc, download, download-protocol
 zccache-download-cli (bin "zccache-download")  ┤  deps: download, download-client
                                                       │
 SIDECAR BINARIES                                      │
@@ -79,14 +79,14 @@ zccache-test-support (dev-only test utilities)
 - **zccache-fingerprint** — File fingerprinting engine + `zccache-fp` CLI for inspecting/marking fingerprints
 
 ### Compile-cache application binaries
-- **zccache-daemon** — Tokio async runtime, IPC server, orchestrates all compile-cache subsystems
-- **zccache-cli** — `zccache` binary: subcommands (start/stop/status/clear/analyze/warm/session/snapshot/cargo-registry/gha/rust-plan/fp/symbols), compiler wrapper mode, daemon lifecycle, GHA + Rust-plan save/restore
+- **zccache-daemon** — Tokio async runtime, IPC server, orchestrates all compile-cache subsystems; hosted by the shipped multicall `zccache` binary
+- **zccache-cli** — shipped `zccache` binary: subcommands (start/stop/status/clear/analyze/warm/session/snapshot/cargo-registry/gha/rust-plan/fp/symbols), compiler wrapper mode, both daemon entry points, daemon lifecycle, GHA + Rust-plan save/restore
 
 ### Download-cache (separate daemon for fetching cached artifact archives)
 - **zccache-download** — Core download engine and types
 - **zccache-download-protocol** — IPC protocol for download daemon
 - **zccache-download-client** — Rust client API for the download daemon
-- **zccache-download-daemon** — Per-user `zccache-download-daemon` binary
+- **zccache-download-daemon** — Per-user daemon self-deployed from the shipped multicall `zccache` binary
 - **zccache-download-cli** — `zccache-download` CLI binary
 
 ### Other

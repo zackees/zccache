@@ -55,20 +55,121 @@ fn run_async<T>(future: impl std::future::Future<Output = Result<T, String>>) ->
         .block_on(future)
 }
 
-fn find_daemon_binary() -> Option<NormalizedPath> {
+fn find_daemon_binary() -> Result<Option<NormalizedPath>, String> {
     let name =
         crate::platform::executable::native_name(std::ffi::OsStr::new("zccache-download-daemon"));
 
     if let Ok(exe) = crate::platform::executable::current_image() {
+        // #1000: the release ships one multicall `zccache` executable. When
+        // the download client is running inside that binary, copy it to the
+        // version-rooted download-daemon name so argv[0] dispatch enters the
+        // server and the PID identity check remains exact. Other embedders
+        // and the standalone download CLI do not contain that entry point,
+        // so they retain the sibling/PATH compatibility lookup below.
+        #[cfg(feature = "cli")]
+        if is_multicall_host(exe.as_path()) {
+            let dest = crate::core::config::daemon_state_dir().join(&name);
+            let deployed = materialize_multicall_download_daemon(exe.as_path(), dest.as_path())
+                .map_err(|err| {
+                    format!(
+                        "failed to self-deploy zccache-download-daemon from {} to {}: {err}",
+                        exe.display(),
+                        dest.display()
+                    )
+                })?;
+            return Ok(deployed.map(Into::into));
+        }
+
         if let Some(dir) = exe.parent() {
             let candidate = dir.join(&name);
             if candidate.exists() {
-                return Some(candidate.into());
+                return Ok(Some(candidate.into()));
             }
         }
     }
 
-    crate::platform::executable::find_on_path(&name).map(Into::into)
+    Ok(crate::platform::executable::find_on_path(&name).map(Into::into))
+}
+
+#[cfg(feature = "cli")]
+fn is_multicall_host(exe: &Path) -> bool {
+    crate::platform::executable::stem_matches(exe.as_os_str(), "zccache")
+        || crate::platform::executable::stem_matches(exe.as_os_str(), "zccache-daemon")
+}
+
+#[cfg(feature = "cli")]
+fn materialize_multicall_download_daemon(
+    exe: &Path,
+    dest: &Path,
+) -> Result<Option<std::path::PathBuf>, std::io::Error> {
+    if !is_multicall_host(exe) {
+        return Ok(None);
+    }
+    crate::cli::materialize_daemon_exe_to(exe, dest).map(Some)
+}
+
+#[cfg(all(test, feature = "cli"))]
+mod self_deploy_contract_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_multicall_cli_is_a_self_deploy_source() {
+        assert!(is_multicall_host(Path::new("zccache")));
+        assert!(is_multicall_host(Path::new("zccache.exe")));
+        assert!(is_multicall_host(Path::new("zccache-daemon.exe")));
+        assert!(!is_multicall_host(Path::new("zccache-download")));
+        assert!(!is_multicall_host(Path::new("host-embedding-zccache")));
+    }
+
+    #[test]
+    fn multicall_cli_is_materialized_under_the_download_daemon_name() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let source = temp.path().join(if cfg!(windows) {
+            "zccache.exe"
+        } else {
+            "zccache"
+        });
+        let dest = temp.path().join("version").join(if cfg!(windows) {
+            "zccache-download-daemon.exe"
+        } else {
+            "zccache-download-daemon"
+        });
+        std::fs::write(&source, b"multicall-binary").expect("write source");
+
+        let deployed = materialize_multicall_download_daemon(&source, &dest)
+            .expect("materialize multicall binary")
+            .expect("multicall source is recognized");
+
+        assert_eq!(deployed, dest);
+        assert_eq!(std::fs::read(deployed).unwrap(), b"multicall-binary");
+    }
+
+    #[test]
+    fn recognized_multicall_source_fails_closed_when_deployment_fails() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let missing_source = temp.path().join(if cfg!(windows) {
+            "zccache.exe"
+        } else {
+            "zccache"
+        });
+        let dest = temp.path().join("version").join(if cfg!(windows) {
+            "zccache-download-daemon.exe"
+        } else {
+            "zccache-download-daemon"
+        });
+
+        assert!(materialize_multicall_download_daemon(&missing_source, &dest).is_err());
+    }
+
+    #[test]
+    fn non_multicall_embedder_keeps_compatibility_lookup_path() {
+        let result = materialize_multicall_download_daemon(
+            Path::new("host-embedding-zccache"),
+            Path::new("unused-download-daemon"),
+        )
+        .expect("non-multicall detection does not touch the filesystem");
+        assert!(result.is_none());
+    }
 }
 
 fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
@@ -113,7 +214,7 @@ async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
             "zccache-download-daemon",
         ));
     }
-    let bin = find_daemon_binary().ok_or("cannot find zccache-download-daemon binary")?;
+    let bin = find_daemon_binary()?.ok_or("cannot find zccache-download-daemon binary")?;
     spawn_daemon(&bin, endpoint)?;
     for _ in 0..100 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;

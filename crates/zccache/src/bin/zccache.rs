@@ -24,7 +24,7 @@ fn main() -> ExitCode {
         eprintln!("zccache: failed to establish development daemon identity: {error}");
         return ExitCode::FAILURE;
     }
-    zccache::platform::process::spawn::run_cli_entry(run_main)
+    zccache::cli::run_cli_entry(run_main)
 }
 
 fn run_main() -> ExitCode {
@@ -35,6 +35,10 @@ fn run_main() -> ExitCode {
     // crash guard, so this runs before the CLI's.
     if zccache::cli::multicall::invoked_as_daemon() {
         zccache::daemon::entry::run();
+        return ExitCode::SUCCESS;
+    }
+    if zccache::cli::multicall::invoked_as_download_daemon() {
+        zccache::download_daemon_entry::run();
         return ExitCode::SUCCESS;
     }
 

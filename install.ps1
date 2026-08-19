@@ -130,7 +130,15 @@ try {
 
     New-Item -ItemType Directory -Force -Path $installDir | Out-Null
     Copy-Item -LiteralPath (Join-Path $archiveRoot "zccache.exe") -Destination (Join-Path $installDir "zccache.exe") -Force
-    Copy-Item -LiteralPath (Join-Path $archiveRoot "zccache-daemon.exe") -Destination (Join-Path $installDir "zccache-daemon.exe") -Force
+    # Releases before #1000 shipped a separate daemon and still require it.
+    # Newer multicall releases omit it, so remove any stale installed sibling.
+    $archiveDaemon = Join-Path $archiveRoot "zccache-daemon.exe"
+    $legacyDaemon = Join-Path $installDir "zccache-daemon.exe"
+    if (Test-Path -LiteralPath $archiveDaemon) {
+        Copy-Item -LiteralPath $archiveDaemon -Destination $legacyDaemon -Force
+    } elseif (Test-Path -LiteralPath $legacyDaemon) {
+        Remove-Item -LiteralPath $legacyDaemon -Force
+    }
     $fp = Join-Path $archiveRoot "zccache-fp.exe"
     if (Test-Path -LiteralPath $fp) {
         Copy-Item -LiteralPath $fp -Destination (Join-Path $installDir "zccache-fp.exe") -Force

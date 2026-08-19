@@ -5,24 +5,12 @@ use zccache_core::NormalizedPath;
 
 /// Return the default IPC endpoint for the download daemon.
 pub fn default_endpoint() -> String {
-    if let Some(top_root) = zccache_core::config::cache_dir_override() {
-        // Issue #761 / #762 Phase 0: append `v<VERSION>` so two sibling
-        // daemon versions sharing one env-pinned root don't collide on
-        // the IPC endpoint name. The override returns the unversioned
-        // top-level; the endpoint resolver applies the version segment.
-        let versioned = top_root.join(zccache_core::config::versioned_subdir());
-        return endpoint_for_cache_dir(versioned.as_path());
-    }
-
-    let raw_user =
-        crate::platform::ipc::current_user_name().unwrap_or_else(|| String::from("unknown"));
-    let pipe_user = zccache_core::config::sanitize_ipc_component(&raw_user)
-        .unwrap_or_else(|| String::from("unknown"));
-    let file_path = crate::platform::host::runtime_dir()
-        .map(|runtime_dir| format!("{runtime_dir}/zccache-download/sock"))
-        .unwrap_or_else(|| format!("/tmp/zccache-download-{raw_user}/sock"));
-    crate::platform::ipc::Endpoint::select(file_path, format!("zccache-download-{pipe_user}"))
-        .to_string()
+    // The daemon state directory includes the cache protocol version and
+    // namespace for both the default root and an explicit cache override.
+    // Deriving IPC identity from it prevents a freshly upgraded client from
+    // connecting to an older download daemon before it can self-deploy the
+    // matching multicall executable.
+    endpoint_for_cache_dir(zccache_core::config::daemon_state_dir().as_path())
 }
 
 fn endpoint_for_cache_dir(cache_dir: &std::path::Path) -> String {
@@ -120,5 +108,14 @@ mod tests {
         assert_eq!(endpoint, expected.as_str());
 
         assert_eq!(lock_file_path(), versioned.join("download-daemon.lock"));
+    }
+
+    #[test]
+    fn different_version_roots_have_different_download_endpoints() {
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path().join("v1.0.0");
+        let new = root.path().join("v2.0.0");
+
+        assert_ne!(endpoint_for_cache_dir(&old), endpoint_for_cache_dir(&new));
     }
 }

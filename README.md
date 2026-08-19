@@ -289,8 +289,9 @@ curl -LsSf https://github.com/zackees/zccache/releases/latest/download/install.s
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/zackees/zccache/releases/latest/download/install.ps1 | iex"
 ```
 
-This installs the standalone **native Rust binaries** (`zccache`, `zccache-daemon`,
-and `zccache-fp`) directly from GitHub Releases.
+This installs the standalone **native Rust binaries** (`zccache` and
+`zccache-fp`) directly from GitHub Releases. The multicall `zccache` executable
+self-deploys its compile and download daemon copies when needed.
 
 Default install locations:
 

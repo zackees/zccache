@@ -17,6 +17,8 @@ use std::ffi::OsStr;
 /// `verify_pid_exe_stem(pid, "zccache-daemon")` in `zccache-ipc` and the
 /// deployment path in #999.
 pub const DAEMON_STEM: &str = "zccache-daemon";
+/// The file stem used by the self-deployed download daemon copy.
+pub const DOWNLOAD_DAEMON_STEM: &str = "zccache-download-daemon";
 
 /// True when this process was invoked under the daemon's name.
 ///
@@ -26,6 +28,13 @@ pub fn invoked_as_daemon() -> bool {
     std::env::args_os()
         .next()
         .is_some_and(|arg0| stem_matches(&arg0, DAEMON_STEM))
+}
+
+/// True when this process was invoked under the download daemon's name.
+pub fn invoked_as_download_daemon() -> bool {
+    std::env::args_os()
+        .next()
+        .is_some_and(|arg0| stem_matches(&arg0, DOWNLOAD_DAEMON_STEM))
 }
 
 /// Core, testable name check: does `arg0`'s file stem equal `target`?
@@ -90,6 +99,19 @@ mod tests {
         assert!(!matches(""));
         assert!(!matches("some-other-tool"));
         assert!(!matches("zccache-download-daemon"));
+    }
+
+    #[test]
+    fn download_daemon_name_is_distinct() {
+        assert!(stem_matches(
+            &OsString::from("zccache-download-daemon.exe"),
+            DOWNLOAD_DAEMON_STEM
+        ));
+        assert!(!matches("zccache-download-daemon"));
+        assert!(!stem_matches(
+            &OsString::from("zccache-daemon"),
+            DOWNLOAD_DAEMON_STEM
+        ));
     }
 
     #[test]

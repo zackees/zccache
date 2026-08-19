@@ -46,6 +46,9 @@ pub use zccache_depgraph as depgraph;
 pub mod dev_daemon_identity;
 #[cfg(feature = "download")]
 pub use zccache_download as download;
+#[cfg(feature = "download-daemon-entry")]
+#[doc(hidden)]
+pub mod download_daemon_entry;
 #[cfg(feature = "download-protocol")]
 pub use zccache_download_protocol as download_protocol;
 pub use zccache_fingerprint as fingerprint;

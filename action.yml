@@ -222,8 +222,8 @@ runs:
 
           cargo build --release --target-dir "$BUILD_DIR" \
             -p zccache \
+            --features zccache-bin,fingerprint-bin \
             --bin zccache \
-            --bin zccache-daemon \
             --bin zccache-fp
 
           BIN_EXT=""
@@ -231,7 +231,6 @@ runs:
             BIN_EXT=".exe"
           fi
           cp "$BUILD_DIR/release/zccache${BIN_EXT}" "$INSTALL_DIR/"
-          cp "$BUILD_DIR/release/zccache-daemon${BIN_EXT}" "$INSTALL_DIR/"
           cp "$BUILD_DIR/release/zccache-fp${BIN_EXT}" "$INSTALL_DIR/"
           chmod +x "$INSTALL_DIR/zccache"* 2>/dev/null || true
           add_install_dir_to_path "$INSTALL_DIR"
@@ -340,7 +339,7 @@ runs:
             add_install_dir_to_path "$FOUND_DIR"
             # Fix executable permissions (macOS PyPI bundles may lose +x)
             if [ "${{ runner.os }}" != "Windows" ]; then
-              chmod +x "$FOUND_DIR/zccache" "$FOUND_DIR/zccache-daemon" 2>/dev/null || true
+              chmod +x "$FOUND_DIR/zccache" 2>/dev/null || true
             fi
           fi
         fi

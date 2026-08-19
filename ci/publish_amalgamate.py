@@ -179,11 +179,17 @@ pub use daemon_core::audit_writer;
 pub mod ci;
 #[cfg(feature = "cli")]
 pub use cli_core::cli;
+#[cfg(feature = "symbols")]
+#[doc(hidden)]
+pub mod dev_daemon_identity;
 pub use daemon_core::daemon;
 #[cfg(feature = "download-client")]
 pub use cli_core::download_client;
 #[cfg(feature = "download-daemon")]
 pub use cli_core::download_daemon;
+#[cfg(feature = "download-daemon-entry")]
+#[doc(hidden)]
+pub mod download_daemon_entry;
 pub use daemon_core::embedded;
 
 #[cfg(feature = "test-support")]

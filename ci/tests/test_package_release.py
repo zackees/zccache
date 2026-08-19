@@ -74,6 +74,7 @@ def test_write_tarball_preserves_full_version_and_target(tmp_path: Path) -> None
 
     with tarfile.open(archive, "r:gz") as tf:
         assert tf.getmember("zccache-v1.3.10-x86_64-unknown-linux-musl/zccache")
+        assert not any(member.name.endswith("/zccache-daemon") for member in tf.getmembers())
 
 
 def test_write_zip_preserves_full_version_and_target(tmp_path: Path) -> None:
@@ -98,6 +99,7 @@ def test_write_zip_preserves_full_version_and_target(tmp_path: Path) -> None:
 
     with zipfile.ZipFile(archive) as zf:
         assert "zccache-v1.3.10-x86_64-pc-windows-msvc/zccache.exe" in zf.namelist()
+        assert not any(name.endswith("/zccache-daemon.exe") for name in zf.namelist())
 
 
 def test_stage_debug_tree_packages_dwp_files(tmp_path: Path) -> None:
@@ -180,10 +182,11 @@ def test_build_target_compiles_release_artifacts_without_compile_cache() -> None
     assert "Release artifacts are distribution outputs" in action
     assert (
         '"${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache '
-        "--features zccache-bin,daemon-bin,fingerprint-bin "
-        "--bin zccache --bin zccache-daemon --bin zccache-fp"
+        "--features zccache-bin,fingerprint-bin "
+        "--bin zccache --bin zccache-fp"
         in compact_action
     )
+    assert "--bin zccache-daemon" not in compact_action
     assert '"${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-cli --features python --lib' in action
 
 
@@ -239,8 +242,8 @@ def test_build_target_can_synthesize_macos_dsym_sidecars() -> None:
     assert "copy_or_create_dsym()" in action
     assert 'dsymutil "$TARGET_DIR/$bin" -o "staging-debug/$dsym"' in action
     assert 'copy_or_create_dsym "zccache" "zccache.dSYM"' in action
-    assert 'copy_or_create_dsym "zccache-daemon" "zccache-daemon.dSYM"' in action
     assert 'copy_or_create_dsym "zccache-fp" "zccache-fp.dSYM"' in action
+    assert "zccache-daemon.dSYM" not in action
 
 
 def test_build_target_can_treat_debug_sidecars_as_optional() -> None:
