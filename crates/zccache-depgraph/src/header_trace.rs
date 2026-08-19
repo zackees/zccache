@@ -118,14 +118,6 @@ impl HeaderTraceParser {
         }
     }
 
-    #[cfg(unix)]
-    fn record_path_bytes(&mut self, bytes: &[u8]) -> bool {
-        std::str::from_utf8(bytes)
-            .ok()
-            .is_some_and(|path| self.record_path(Path::new(path)))
-    }
-
-    #[cfg(not(unix))]
     fn record_path_bytes(&mut self, bytes: &[u8]) -> bool {
         std::str::from_utf8(bytes)
             .ok()
@@ -170,6 +162,30 @@ pub fn parse_header_trace(stderr: &[u8], source: &Path, cwd: &Path) -> (ScanResu
     (parser.finish(&mut filtered), filtered)
 }
 
+/// Parse Clang's private `-header-include-file` output.
+///
+/// Unlike `-H`, this sink contains one bare path per line and does not share
+/// stderr with user diagnostics. Missing or malformed output fails closed so
+/// a compiler-version mismatch can never create a direct-mode false hit.
+#[must_use]
+pub fn parse_header_trace_file(path: &Path, source: &Path, cwd: &Path) -> ScanResult {
+    let mut parser = HeaderTraceParser::new(source, cwd);
+    let trace = match std::fs::read(path) {
+        Ok(trace) => trace,
+        Err(_) => {
+            parser.incomplete = true;
+            return parser.finish(&mut Vec::new());
+        }
+    };
+    for line in trace.split(|byte| *byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if !line.is_empty() && !parser.record_path_bytes(line) {
+            parser.incomplete = true;
+        }
+    }
+    parser.finish(&mut Vec::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,7 +205,10 @@ mod tests {
 
         let (scan, filtered) = parse_header_trace(stderr.as_bytes(), &source, temp.path());
 
-        assert_eq!(scan.resolved, vec![NormalizedPath::new(&header)]);
+        assert_eq!(
+            scan.resolved,
+            vec![crate::depfile::canonicalize_path(&header, temp.path())]
+        );
         assert_eq!(filtered, b"warning: useful diagnostic\n");
         assert!(!scan.has_computed);
     }
@@ -255,7 +274,10 @@ mod tests {
 
         let (scan, filtered) = parse_header_trace(stderr.as_bytes(), &source, temp.path());
 
-        assert_eq!(scan.resolved, vec![NormalizedPath::new(&header)]);
+        assert_eq!(
+            scan.resolved,
+            vec![crate::depfile::canonicalize_path(&header, temp.path())]
+        );
         assert_eq!(filtered, b"warning: retained\n");
     }
 
@@ -274,27 +296,22 @@ mod tests {
         assert_eq!(filtered, stderr.as_bytes());
     }
 
-    #[cfg(unix)]
     #[test]
     fn distinct_non_utf8_header_paths_fail_closed_without_lossy_deduplication() {
-        use std::os::unix::ffi::{OsStrExt, OsStringExt};
-
         let temp = tempfile::TempDir::new().unwrap();
         let source = temp.path().join("main.c");
-        let first = temp
-            .path()
-            .join(std::ffi::OsString::from_vec(b"header-\xff.h".to_vec()));
-        let second = temp
-            .path()
-            .join(std::ffi::OsString::from_vec(b"header-\xfe.h".to_vec()));
+        let Some(first_name) = crate::platform::fs::path::from_raw_bytes(b"header-\xff.h") else {
+            return;
+        };
+        let Some(second_name) = crate::platform::fs::path::from_raw_bytes(b"header-\xfe.h") else {
+            return;
+        };
+        let first = temp.path().join(first_name);
+        let second = temp.path().join(second_name);
         std::fs::write(&source, "").unwrap();
         std::fs::write(&first, "").unwrap();
         std::fs::write(&second, "").unwrap();
-        let mut stderr = b". ".to_vec();
-        stderr.extend_from_slice(first.as_os_str().as_bytes());
-        stderr.extend_from_slice(b"\n. ");
-        stderr.extend_from_slice(second.as_os_str().as_bytes());
-        stderr.push(b'\n');
+        let stderr = b". header-\xff.h\n. header-\xfe.h\n".to_vec();
 
         let (scan, filtered) = parse_header_trace(&stderr, &source, temp.path());
 
@@ -331,5 +348,41 @@ mod tests {
         let streamed_scan = parser.finish(&mut streamed);
         assert_eq!(streamed_scan.resolved, scan.resolved);
         assert!(streamed.is_empty());
+    }
+
+    #[test]
+    fn private_trace_file_tracks_paths_and_fails_closed_on_bad_records() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("main.c");
+        let header = temp.path().join("header with spaces.h");
+        let trace = temp.path().join("main.headers");
+        std::fs::write(&source, "").unwrap();
+        std::fs::write(&header, "").unwrap();
+        std::fs::write(
+            &trace,
+            format!("{}\n{}\nmissing.h\n", source.display(), header.display()),
+        )
+        .unwrap();
+
+        let scan = parse_header_trace_file(&trace, &source, temp.path());
+
+        assert_eq!(
+            scan.resolved,
+            vec![crate::depfile::canonicalize_path(&header, temp.path())]
+        );
+        assert!(scan.has_computed);
+    }
+
+    #[test]
+    fn missing_private_trace_file_fails_closed() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("main.c");
+        std::fs::write(&source, "").unwrap();
+
+        let scan =
+            parse_header_trace_file(&temp.path().join("missing.headers"), &source, temp.path());
+
+        assert!(scan.resolved.is_empty());
+        assert!(scan.has_computed);
     }
 }

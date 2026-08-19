@@ -38,6 +38,13 @@ pub fn verbatim_path(path: &Path) -> std::io::Result<PathBuf> {
     platform_imp::fs::path::verbatim_path(path)
 }
 
+/// Converts compiler-emitted path bytes into the host's native path form.
+/// Unix preserves arbitrary bytes; Windows accepts UTF-8 because a byte
+/// stream cannot represent native UTF-16 losslessly.
+pub fn from_raw_bytes(bytes: &[u8]) -> Option<PathBuf> {
+    platform_imp::fs::path::from_raw_bytes(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,5 +62,12 @@ mod tests {
         let once = case_fold(&p);
         let twice = case_fold(&p);
         assert_eq!(once, twice);
+    }
+    #[test]
+    fn utf8_raw_bytes_form_a_native_path() {
+        assert_eq!(
+            from_raw_bytes(b"dir/header.h"),
+            Some(PathBuf::from("dir/header.h"))
+        );
     }
 }

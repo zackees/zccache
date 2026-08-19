@@ -343,7 +343,10 @@ mod tests {
 
         assert_eq!(
             scan.resolved,
-            vec![crate::core::NormalizedPath::from(header)]
+            vec![crate::depgraph::depfile::canonicalize_path(
+                &header,
+                temp.path()
+            )]
         );
         assert_eq!(captured.stderr, b"warning: retained\n");
         assert_eq!(emitted, captured.stderr);

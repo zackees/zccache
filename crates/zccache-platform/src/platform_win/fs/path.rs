@@ -53,3 +53,7 @@ pub fn canonicalize_private_prefix(path: &Path) -> PathBuf {
 /// lives in `super::verbatim` and is re-exported so the neutral facade can
 /// reach it through the `path` module.
 pub(crate) use super::verbatim_path;
+
+pub fn from_raw_bytes(bytes: &[u8]) -> Option<PathBuf> {
+    std::str::from_utf8(bytes).ok().map(PathBuf::from)
+}

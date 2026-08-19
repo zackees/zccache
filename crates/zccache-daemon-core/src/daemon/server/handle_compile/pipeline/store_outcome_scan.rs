@@ -186,6 +186,17 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
     }
 }
 
+pub(super) fn apply_static_fallback_policy(
+    dependency_mode: DependencyDiscoveryMode,
+    used_static_fallback: bool,
+    result: &mut crate::depgraph::ScanResult,
+    include_search: &crate::depgraph::IncludeSearchPaths,
+) {
+    if used_static_fallback {
+        dependency_mode.apply_static_fallback(result, include_search);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,16 +232,5 @@ mod tests {
         assert!(collection.scan_result.resolved.contains(&header));
         assert!(collection.scan_result.has_computed);
         assert!(collection.depfile_parse_warning.is_some());
-    }
-}
-
-pub(super) fn apply_static_fallback_policy(
-    dependency_mode: DependencyDiscoveryMode,
-    used_static_fallback: bool,
-    result: &mut crate::depgraph::ScanResult,
-    include_search: &crate::depgraph::IncludeSearchPaths,
-) {
-    if used_static_fallback {
-        dependency_mode.apply_static_fallback(result, include_search);
     }
 }

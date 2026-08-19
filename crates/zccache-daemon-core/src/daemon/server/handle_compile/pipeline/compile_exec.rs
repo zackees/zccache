@@ -48,6 +48,16 @@ pub(super) enum CompileExecResult {
     Error(Response),
 }
 
+struct PrivateHeaderTrace {
+    path: NormalizedPath,
+}
+
+impl Drop for PrivateHeaderTrace {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.path.as_path());
+    }
+}
+
 /// Prepare depfile/response-file/output-paths, spawn the compiler, and gather
 /// timings. The `pre_hash_task` returned is the rustc-only background hash of
 /// source + externs (issue #532) — `await`ed later in the store phase so its
@@ -98,7 +108,30 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     );
     let header_trace_enabled =
         inject_header_trace && matches!(depfile_strategy, DepfileStrategy::InjectedMmd { .. });
-    if header_trace_enabled {
+    let private_header_trace = if header_trace_enabled
+        && use_private_clang_header_trace(compilation.family, source_path.as_path(), effective_args)
+    {
+        let depfile = match &depfile_strategy {
+            DepfileStrategy::InjectedMmd { path } => path,
+            _ => unreachable!("private header trace requires an injected MMD depfile"),
+        };
+        let trace = PrivateHeaderTrace {
+            path: header_trace_path(depfile),
+        };
+        extra_args.extend([
+            "-Xclang".to_string(),
+            "-header-include-file".to_string(),
+            "-Xclang".to_string(),
+            trace.path.to_string_lossy().into_owned(),
+            "-Xclang".to_string(),
+            "-sys-header-deps".to_string(),
+        ]);
+        Some(trace)
+    } else {
+        None
+    };
+    let stderr_header_trace = header_trace_enabled && private_header_trace.is_none();
+    if stderr_header_trace {
         extra_args.push("-H".to_string());
     }
 
@@ -302,7 +335,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
                 source: source_path.as_path(),
                 cwd: cwd_path.as_path(),
             }
-        } else if header_trace_enabled {
+        } else if stderr_header_trace {
             crate::daemon::compile_output::StderrFilter::HeaderTrace {
                 source: source_path.as_path(),
                 cwd: cwd_path.as_path(),
@@ -385,7 +418,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
             cwd_path,
         );
         (output.stdout, Some(scan), filtered)
-    } else if header_trace_enabled {
+    } else if stderr_header_trace {
         let (scan, filtered) = crate::depgraph::header_trace::parse_header_trace(
             &output.stderr,
             source_path,
@@ -394,6 +427,16 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         (output.stdout, Some(scan), filtered)
     } else {
         (output.stdout, None, output.stderr)
+    };
+    let dependency_scan = if let Some(trace) = private_header_trace.as_ref() {
+        let scan = crate::depgraph::header_trace::parse_header_trace_file(
+            trace.path.as_path(),
+            source_path,
+            cwd_path,
+        );
+        Some(scan)
+    } else {
+        dependency_scan
     };
     let stdout = Arc::new(stdout_bytes);
     let stderr = Arc::new(stderr_bytes);
@@ -424,6 +467,31 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     })
 }
 
+fn header_trace_path(depfile: &NormalizedPath) -> NormalizedPath {
+    depfile.as_path().with_extension("headers").into()
+}
+
+/// Clang's file-backed frontend trace avoids `-H` stderr traffic on the hot C
+/// miss path. Keep it deliberately narrower than the rejected all-language
+/// candidate: C++ continues to use the public trace because its much larger
+/// header graph previously made the private path exceed the hosted watchdog.
+fn use_private_clang_header_trace(
+    family: crate::compiler::CompilerFamily,
+    source: &Path,
+    args: &[String],
+) -> bool {
+    family == crate::compiler::CompilerFamily::Clang
+        && source.extension().is_some_and(|extension| extension == "c")
+        && !args.iter().any(|arg| {
+            arg == "-x"
+                || arg.starts_with("-x")
+                || arg == "-header-include-file"
+                || arg == "-sys-header-deps"
+                || arg == "-Xclang=-header-include-file"
+                || arg == "-Xclang=-sys-header-deps"
+        })
+}
+
 fn header_trace_is_supported(family: crate::compiler::CompilerFamily, args: &[String]) -> bool {
     if !matches!(
         family,
@@ -437,6 +505,10 @@ fn header_trace_is_supported(family: crate::compiler::CompilerFamily, args: &[St
             || arg == "-Xpreprocessor=-H"
             || arg == "-Xclang=-H"
             || arg == "-fshow-skipped-includes"
+            || arg == "-header-include-file"
+            || arg == "-sys-header-deps"
+            || arg == "-Xclang=-header-include-file"
+            || arg == "-Xclang=-sys-header-deps"
             || arg == "-fdiagnostics-format"
             || arg.starts_with("-fdiagnostics-format=")
     })
@@ -457,7 +529,9 @@ fn should_inject_header_trace(
 
 #[cfg(test)]
 mod tests {
-    use super::{header_trace_is_supported, should_inject_header_trace};
+    use super::{
+        header_trace_is_supported, should_inject_header_trace, use_private_clang_header_trace,
+    };
     use crate::compiler::CompilerFamily;
     use crate::daemon::server::dependency_policy::DependencyDiscoveryMode;
     use crate::depgraph::UserDepFlags;
@@ -487,6 +561,10 @@ mod tests {
             "-Xpreprocessor=-H",
             "-Xclang=-H",
             "-fshow-skipped-includes",
+            "-header-include-file",
+            "-sys-header-deps",
+            "-Xclang=-header-include-file",
+            "-Xclang=-sys-header-deps",
             "-fdiagnostics-format=json",
         ] {
             assert!(!header_trace_is_supported(
@@ -531,6 +609,42 @@ mod tests {
                 CompilerFamily::Clang,
                 &compile_args,
                 &dep_flags,
+            ));
+        }
+    }
+
+    #[test]
+    fn private_clang_trace_is_bounded_to_plain_c_translation_units() {
+        assert!(use_private_clang_header_trace(
+            CompilerFamily::Clang,
+            std::path::Path::new("main.c"),
+            &args(&["-c", "main.c"]),
+        ));
+        assert!(!use_private_clang_header_trace(
+            CompilerFamily::Clang,
+            std::path::Path::new("main.cpp"),
+            &args(&["-c", "main.cpp"]),
+        ));
+        assert!(!use_private_clang_header_trace(
+            CompilerFamily::Clang,
+            std::path::Path::new("main.C"),
+            &args(&["-c", "main.C"]),
+        ));
+        assert!(!use_private_clang_header_trace(
+            CompilerFamily::Clang,
+            std::path::Path::new("main.c"),
+            &args(&["-x", "c++", "-c", "main.c"]),
+        ));
+        assert!(!use_private_clang_header_trace(
+            CompilerFamily::Gcc,
+            std::path::Path::new("main.c"),
+            &args(&["-c", "main.c"]),
+        ));
+        for incompatible in ["-Xclang=-header-include-file", "-Xclang=-sys-header-deps"] {
+            assert!(!use_private_clang_header_trace(
+                CompilerFamily::Clang,
+                std::path::Path::new("main.c"),
+                &args(&["-c", "main.c", incompatible]),
             ));
         }
     }
