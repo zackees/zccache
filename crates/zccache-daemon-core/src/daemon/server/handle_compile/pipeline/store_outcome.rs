@@ -43,7 +43,7 @@ pub(super) struct StoreOutcomeRequest<'a> {
     pub(super) stderr: Arc<Vec<u8>>,
     pub(super) exit_code: i32,
     pub(super) depfile_strategy: DepfileStrategy,
-    pub(super) show_includes_scan: Option<crate::depgraph::ScanResult>,
+    pub(super) compiler_dependency_scan: Option<crate::depgraph::ScanResult>,
     pub(super) pre_hash_task: Option<tokio::task::JoinHandle<HashMap<NormalizedPath, ContentHash>>>,
     /// Issue #401: pre-compile hashes already produced by `hash_and_verify`
     /// on the cc/cpp miss path. `None` means the pre-compile hash phase did
@@ -160,7 +160,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         stderr,
         exit_code,
         depfile_strategy,
-        show_includes_scan,
+        compiler_dependency_scan,
         pre_hash_task,
         pre_hashed,
         compiler_priority_decision,
@@ -300,7 +300,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         source_path: source_path.clone(),
         cwd_path: cwd_path.clone(),
         depfile_strategy,
-        show_includes_scan,
+        compiler_dependency_scan,
         include_search: ctx.include_search.clone(),
         dependency_mode,
     })

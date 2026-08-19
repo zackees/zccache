@@ -37,6 +37,7 @@ case "${command}" in
         seed_soldr_home
         cd /src
         soldr cargo test -p zccache --test perf_bench_test --release --no-run
+        soldr cargo build -p zccache --features ci-bin --bin zccache-ci --release
         benchmark="$({
             find /target/release/deps -maxdepth 1 -type f \
                 -name 'perf_bench_test-*' -perm /111 -printf '%T@ %p\n'
@@ -46,6 +47,7 @@ case "${command}" in
             exit 2
         fi
         install -m 0755 "${benchmark}" /artifacts/perf_bench_test
+        install -m 0755 /target/release/zccache-ci /artifacts/zccache-ci
         ;;
     verify)
         seed_soldr_home
@@ -64,9 +66,11 @@ case "${command}" in
         ;;
     run)
         require_mount /artifacts/perf_bench_test
+        require_mount /artifacts/zccache-ci
         language="${2:?language is required}"
         test_name="${3:?test name is required}"
         attempts="${4:?attempt count is required}"
+        export ZCCACHE_CI_BIN=/artifacts/zccache-ci
         cd /src
         /usr/bin/time -v -o /results/resource-usage.txt \
             uv run --no-project python -m ci.perf_guard \

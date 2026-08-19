@@ -11,7 +11,7 @@ pub(super) struct CompileScanRequest {
     pub(super) source_path: NormalizedPath,
     pub(super) cwd_path: NormalizedPath,
     pub(super) depfile_strategy: DepfileStrategy,
-    pub(super) show_includes_scan: Option<crate::depgraph::ScanResult>,
+    pub(super) compiler_dependency_scan: Option<crate::depgraph::ScanResult>,
     pub(super) include_search: crate::depgraph::IncludeSearchPaths,
     pub(super) dependency_mode: DependencyDiscoveryMode,
 }
@@ -48,7 +48,7 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
         source_path,
         cwd_path,
         depfile_strategy,
-        show_includes_scan,
+        compiler_dependency_scan,
         include_search,
         dependency_mode,
     } = req;
@@ -137,20 +137,36 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
             match crate::depgraph::depfile::parse_depfile_path(path, &source_path, &cwd_path) {
                 Ok(result) => {
                     let _ = std::fs::remove_file(path);
-                    result
+                    if let Some(compiler_scan) = compiler_dependency_scan {
+                        crate::depgraph::depfile::merge_scan_results(result, compiler_scan)
+                    } else {
+                        result
+                    }
                 }
                 Err(e) => {
                     used_static_fallback = true;
                     depfile_parse_warning = Some(format!("path={} error={e}", path.display()));
                     let _ = std::fs::remove_file(path);
-                    crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
+                    let fallback =
+                        crate::depgraph::scanner::scan_recursive(&source_path, &include_search);
+                    let mut result = if let Some(scan) = compiler_dependency_scan {
+                        crate::depgraph::depfile::merge_scan_results(scan, fallback)
+                    } else {
+                        fallback
+                    };
+                    // A malformed private depfile means one of the two exact
+                    // compiler manifests was incomplete. Retain every path we
+                    // did recover, but never permit a direct-mode hit from it.
+                    result.has_computed = true;
+                    result
                 }
             }
         }
-        DepfileStrategy::ShowIncludes => show_includes_scan.unwrap_or_else(|| {
-            used_static_fallback = true;
-            crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
-        }),
+        DepfileStrategy::CompilerTrace | DepfileStrategy::ShowIncludes => compiler_dependency_scan
+            .unwrap_or_else(|| {
+                used_static_fallback = true;
+                crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
+            }),
         DepfileStrategy::Unsupported => {
             used_static_fallback = true;
             crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
@@ -179,5 +195,43 @@ pub(super) fn apply_static_fallback_policy(
 ) {
     if used_static_fallback {
         dependency_mode.apply_static_fallback(result, include_search);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_mmd_retains_compiler_trace_and_fails_closed() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("main.c");
+        let header = temp.path().join("system.h");
+        let depfile = temp.path().join("main.d");
+        std::fs::write(&source, "#include <system.h>\n").unwrap();
+        std::fs::write(&header, "#define VALUE 1\n").unwrap();
+        std::fs::write(&depfile, [0xff, 0xfe]).unwrap();
+        let header: NormalizedPath = header.into();
+
+        let collection = collect_compile_scan(CompileScanRequest {
+            is_rustc: false,
+            rustc_args: None,
+            source_path: source.into(),
+            cwd_path: temp.path().into(),
+            depfile_strategy: DepfileStrategy::InjectedMmd {
+                path: depfile.into(),
+            },
+            compiler_dependency_scan: Some(crate::depgraph::ScanResult {
+                resolved: vec![header.clone()],
+                unresolved: Vec::new(),
+                has_computed: false,
+            }),
+            include_search: Default::default(),
+            dependency_mode: DependencyDiscoveryMode::AllHeaders,
+        });
+
+        assert!(collection.scan_result.resolved.contains(&header));
+        assert!(collection.scan_result.has_computed);
+        assert!(collection.depfile_parse_warning.is_some());
     }
 }

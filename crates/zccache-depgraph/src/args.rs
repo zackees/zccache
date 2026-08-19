@@ -3,9 +3,12 @@
 //! Extracts include paths, defines, and cache-relevant flags from
 //! compiler command-line arguments.
 
+mod dep_flags;
+
 use std::path::Path;
 
 use super::search_paths::IncludeSearchPaths;
+use dep_flags::parse_user_dep_flags;
 use zccache_compiler::gnu_flag_takes_value;
 use zccache_core::NormalizedPath;
 
@@ -64,7 +67,7 @@ pub fn parse_gnu_args(args: &[String], cwd: &Path) -> ParsedArgs {
         flags: Vec::new(),
         force_includes: Vec::new(),
         compiler: None,
-        dep_flags: UserDepFlags::default(),
+        dep_flags: parse_user_dep_flags(args, cwd),
         unknown_flags: Vec::new(),
     };
 
@@ -284,23 +287,15 @@ pub fn parse_gnu_args(args: &[String], cwd: &Path) -> ParsedArgs {
 
         // Dependency-generation flags: track but don't include in cache key.
         if arg == "-MD" || arg == "-MMD" {
-            result.dep_flags.has_md = true;
-            result.dep_flags.has_mmd = arg == "-MMD";
             i += 1;
             continue;
         }
 
         // -MF takes a following argument â€” capture path.
         if arg == "-MF" {
-            if let Some(next) = args.get(i + 1) {
-                result.dep_flags.depfile_to_stdout = next == "-";
-                result.dep_flags.mf_path = (next != "-").then(|| resolve_path(next, cwd));
-            }
             i += 2;
             continue;
-        } else if let Some(path) = arg.strip_prefix("-MF").filter(|path| !path.is_empty()) {
-            result.dep_flags.depfile_to_stdout = path == "-";
-            result.dep_flags.mf_path = (path != "-").then(|| resolve_path(path, cwd));
+        } else if arg.strip_prefix("-MF").is_some_and(|path| !path.is_empty()) {
             i += 1;
             continue;
         }

@@ -13,8 +13,10 @@ use zccache_core::NormalizedPath;
 pub enum DepfileStrategy {
     /// We injected `-MD -MF <path>` — read and clean up after compilation.
     Injected { path: NormalizedPath },
-    /// We injected a private MMD depfile; merge a conservative local include scan.
+    /// We injected a private MMD depfile to merge with an exact compiler trace.
     InjectedMmd { path: NormalizedPath },
+    /// The compiler emitted an exact header trace without an on-disk depfile.
+    CompilerTrace,
     /// User already had `-MF <path>` — read it (don't delete).
     UserSpecified {
         path: NormalizedPath,

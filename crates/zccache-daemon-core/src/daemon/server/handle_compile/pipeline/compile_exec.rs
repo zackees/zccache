@@ -31,7 +31,7 @@ pub(super) struct CompileExecOutcome {
     pub(super) stdout: Arc<Vec<u8>>,
     pub(super) stderr: Arc<Vec<u8>>,
     pub(super) depfile_strategy: DepfileStrategy,
-    pub(super) show_includes_scan: Option<crate::depgraph::ScanResult>,
+    pub(super) dependency_scan: Option<crate::depgraph::ScanResult>,
     pub(super) pre_hash_task: Option<tokio::task::JoinHandle<HashMap<NormalizedPath, ContentHash>>>,
     pub(super) compiler_priority_decision: crate::daemon::process::CompilePriorityDecision,
     pub(super) pre_exec_ns: u64,
@@ -46,6 +46,16 @@ pub(super) struct CompileExecOutcome {
 pub(super) enum CompileExecResult {
     Ok(CompileExecOutcome),
     Error(Response),
+}
+
+struct PrivateHeaderTrace {
+    path: NormalizedPath,
+}
+
+impl Drop for PrivateHeaderTrace {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.path.as_path());
+    }
 }
 
 /// Prepare depfile/response-file/output-paths, spawn the compiler, and gather
@@ -79,10 +89,16 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     let pre_exec_ns = compile_start.elapsed().as_nanos() as u64;
     let t_exec = std::time::Instant::now();
     let supports_depfile = compilation.family.supports_depfile();
+    let inject_header_trace = should_inject_header_trace(
+        dependency_mode,
+        compilation.family,
+        effective_args,
+        dep_flags,
+    );
     let use_mmd = matches!(
         compilation.family,
         crate::compiler::CompilerFamily::Gcc | crate::compiler::CompilerFamily::Clang
-    ) && dependency_mode.use_mmd();
+    ) && (dependency_mode.use_mmd() || inject_header_trace);
     let (mut extra_args, mut depfile_strategy) = crate::depgraph::depfile::prepare_depfile_with_mmd(
         use_mmd,
         supports_depfile,
@@ -90,6 +106,22 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         output_path,
         &state.depfile_tmpdir,
     );
+    let header_trace_enabled =
+        inject_header_trace && matches!(depfile_strategy, DepfileStrategy::InjectedMmd { .. });
+    let private_header_trace = if header_trace_enabled
+        && use_private_clang_header_trace(compilation.family, source_path.as_path(), effective_args)
+    {
+        Some(prepare_private_clang_header_trace(
+            &mut extra_args,
+            &mut depfile_strategy,
+        ))
+    } else {
+        None
+    };
+    let stderr_header_trace = header_trace_enabled && private_header_trace.is_none();
+    if stderr_header_trace {
+        extra_args.push("-H".to_string());
+    }
 
     // For MSVC, use /showIncludes to get complete dependency info
     // (equivalent to depfiles for gcc/clang). This enables cache hits
@@ -291,6 +323,11 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
                 source: source_path.as_path(),
                 cwd: cwd_path.as_path(),
             }
+        } else if stderr_header_trace {
+            crate::daemon::compile_output::StderrFilter::HeaderTrace {
+                source: source_path.as_path(),
+                cwd: cwd_path.as_path(),
+            }
         } else {
             crate::daemon::compile_output::StderrFilter::None
         };
@@ -360,12 +397,8 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
 
     let t_post_exec = std::time::Instant::now();
     let exit_code = output.status.code().unwrap_or(-1);
-    let (stdout_bytes, show_includes_scan, stderr_bytes) = if let Some(streamed) = streamed_output {
-        (
-            streamed.stdout,
-            streamed.show_includes_scan,
-            streamed.stderr,
-        )
+    let (stdout_bytes, dependency_scan, stderr_bytes) = if let Some(streamed) = streamed_output {
+        (streamed.stdout, streamed.dependency_scan, streamed.stderr)
     } else if depfile_strategy == DepfileStrategy::ShowIncludes {
         let (scan, filtered) = crate::depgraph::show_includes::parse_show_includes(
             &output.stderr,
@@ -373,8 +406,25 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
             cwd_path,
         );
         (output.stdout, Some(scan), filtered)
+    } else if stderr_header_trace {
+        let (scan, filtered) = crate::depgraph::header_trace::parse_header_trace(
+            &output.stderr,
+            source_path,
+            cwd_path,
+        );
+        (output.stdout, Some(scan), filtered)
     } else {
         (output.stdout, None, output.stderr)
+    };
+    let dependency_scan = if let Some(trace) = private_header_trace.as_ref() {
+        let scan = crate::depgraph::header_trace::parse_dependency_graph_file(
+            trace.path.as_path(),
+            source_path,
+            cwd_path,
+        );
+        Some(scan)
+    } else {
+        dependency_scan
     };
     let stdout = Arc::new(stdout_bytes);
     let stderr = Arc::new(stderr_bytes);
@@ -392,7 +442,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         stdout,
         stderr,
         depfile_strategy,
-        show_includes_scan,
+        dependency_scan,
         pre_hash_task,
         compiler_priority_decision,
         pre_exec_ns,
@@ -403,4 +453,274 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         post_exec_ns,
         staged_plan,
     })
+}
+
+fn header_trace_path(depfile: &NormalizedPath) -> NormalizedPath {
+    depfile.as_path().with_extension("headers").into()
+}
+
+fn prepare_private_clang_header_trace(
+    extra_args: &mut Vec<String>,
+    depfile_strategy: &mut DepfileStrategy,
+) -> PrivateHeaderTrace {
+    let DepfileStrategy::InjectedMmd { path } =
+        std::mem::replace(depfile_strategy, DepfileStrategy::CompilerTrace)
+    else {
+        unreachable!("private header trace requires an injected MMD depfile");
+    };
+    let trace = PrivateHeaderTrace {
+        path: header_trace_path(&path),
+    };
+    // Clang's dependency graph includes system headers without the
+    // `-sys-header-deps` switch that makes the compact MMD path expensive.
+    // It is complete on its own, so no second manifest is needed.
+    extra_args.clear();
+    extra_args.extend([
+        "-Xclang".to_string(),
+        "-dependency-dot".to_string(),
+        "-Xclang".to_string(),
+        trace.path.to_string_lossy().into_owned(),
+    ]);
+    trace
+}
+
+/// Clang's file-backed frontend trace avoids `-H` stderr traffic on the hot C
+/// miss path. Keep it deliberately narrower than the rejected all-language
+/// candidate: C++ continues to use the public trace because its much larger
+/// header graph previously made the private path exceed the hosted watchdog.
+fn use_private_clang_header_trace(
+    family: crate::compiler::CompilerFamily,
+    source: &Path,
+    args: &[String],
+) -> bool {
+    family == crate::compiler::CompilerFamily::Clang
+        && source.extension().is_some_and(|extension| extension == "c")
+        && !args.iter().any(|arg| {
+            arg == "-x"
+                || arg.starts_with("-x")
+                || contains_private_header_trace_flag(arg)
+                || contains_sysroot_flag(arg)
+        })
+}
+
+fn contains_private_header_trace_flag(arg: &str) -> bool {
+    const PRIVATE_FLAGS: [&str; 3] = [
+        "-dependency-dot",
+        "-header-include-file",
+        "-sys-header-deps",
+    ];
+    PRIVATE_FLAGS.contains(&arg)
+        || arg
+            .strip_prefix("-Xclang=")
+            .is_some_and(|arg| PRIVATE_FLAGS.contains(&arg))
+        || arg
+            .strip_prefix("-Wp,")
+            .is_some_and(|args| args.split(',').any(|arg| PRIVATE_FLAGS.contains(&arg)))
+}
+
+fn contains_sysroot_flag(arg: &str) -> bool {
+    fn is_sysroot_flag(arg: &str) -> bool {
+        arg.starts_with("-isysroot") || arg == "--sysroot" || arg.starts_with("--sysroot=")
+    }
+
+    is_sysroot_flag(arg)
+        || arg.strip_prefix("-Xclang=").is_some_and(is_sysroot_flag)
+        || arg
+            .strip_prefix("-Wp,")
+            .is_some_and(|args| args.split(',').any(is_sysroot_flag))
+}
+
+fn header_trace_is_supported(family: crate::compiler::CompilerFamily, args: &[String]) -> bool {
+    if !matches!(
+        family,
+        crate::compiler::CompilerFamily::Gcc | crate::compiler::CompilerFamily::Clang
+    ) {
+        return false;
+    }
+    !args.iter().any(|arg| {
+        arg == "-H"
+            || (arg.starts_with("-Wp,") && arg.split(',').any(|part| part == "-H"))
+            || arg == "-Xpreprocessor=-H"
+            || arg == "-Xclang=-H"
+            || arg == "-fshow-skipped-includes"
+            || contains_private_header_trace_flag(arg)
+            || arg == "-fdiagnostics-format"
+            || arg.starts_with("-fdiagnostics-format=")
+    })
+}
+
+fn should_inject_header_trace(
+    dependency_mode: DependencyDiscoveryMode,
+    family: crate::compiler::CompilerFamily,
+    args: &[String],
+    dep_flags: &UserDepFlags,
+) -> bool {
+    dependency_mode == DependencyDiscoveryMode::AllHeaders
+        && !dep_flags.has_md
+        && dep_flags.mf_path.is_none()
+        && !dep_flags.depfile_to_stdout
+        && header_trace_is_supported(family, args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        header_trace_is_supported, prepare_private_clang_header_trace, should_inject_header_trace,
+        use_private_clang_header_trace,
+    };
+    use crate::compiler::CompilerFamily;
+    use crate::daemon::server::dependency_policy::DependencyDiscoveryMode;
+    use crate::depgraph::UserDepFlags;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn header_trace_is_limited_to_unmodified_gnu_diagnostic_streams() {
+        assert!(header_trace_is_supported(
+            CompilerFamily::Clang,
+            &args(&["-c", "main.c", "-Iinclude"]),
+        ));
+        assert!(header_trace_is_supported(
+            CompilerFamily::Gcc,
+            &args(&["-c", "main.cc"]),
+        ));
+        assert!(!header_trace_is_supported(
+            CompilerFamily::Msvc,
+            &args(&["/c", "main.c"]),
+        ));
+        for incompatible in [
+            "-H",
+            "-Wp,-H",
+            "-Wp,-DTRACE,-H,-UOLD",
+            "-Xpreprocessor=-H",
+            "-Xclang=-H",
+            "-fshow-skipped-includes",
+            "-header-include-file",
+            "-sys-header-deps",
+            "-Xclang=-header-include-file",
+            "-Xclang=-sys-header-deps",
+            "-dependency-dot",
+            "-Xclang=-dependency-dot",
+            "-Wp,-dependency-dot,custom.dot",
+            "-Wp,-header-include-file,custom.headers,-sys-header-deps",
+            "-fdiagnostics-format=json",
+        ] {
+            assert!(!header_trace_is_supported(
+                CompilerFamily::Clang,
+                &args(&["-c", "main.c", incompatible]),
+            ));
+        }
+        assert!(!header_trace_is_supported(
+            CompilerFamily::Gcc,
+            &args(&["-c", "main.c", "-Xpreprocessor", "-H"]),
+        ));
+    }
+
+    #[test]
+    fn user_depfiles_never_enable_private_header_trace() {
+        let compile_args = args(&["-c", "main.c"]);
+        assert!(should_inject_header_trace(
+            DependencyDiscoveryMode::AllHeaders,
+            CompilerFamily::Clang,
+            &compile_args,
+            &UserDepFlags::default(),
+        ));
+        for dep_flags in [
+            UserDepFlags {
+                has_md: true,
+                has_mmd: true,
+                ..Default::default()
+            },
+            UserDepFlags {
+                has_md: true,
+                has_mmd: true,
+                mf_path: Some("custom.d".into()),
+                ..Default::default()
+            },
+            UserDepFlags {
+                depfile_to_stdout: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(!should_inject_header_trace(
+                DependencyDiscoveryMode::AllHeaders,
+                CompilerFamily::Clang,
+                &compile_args,
+                &dep_flags,
+            ));
+        }
+    }
+
+    #[test]
+    fn private_clang_trace_is_bounded_to_plain_c_translation_units() {
+        assert!(use_private_clang_header_trace(
+            CompilerFamily::Clang,
+            std::path::Path::new("main.c"),
+            &args(&["-c", "main.c"]),
+        ));
+        assert!(!use_private_clang_header_trace(
+            CompilerFamily::Clang,
+            std::path::Path::new("main.cpp"),
+            &args(&["-c", "main.cpp"]),
+        ));
+        assert!(!use_private_clang_header_trace(
+            CompilerFamily::Clang,
+            std::path::Path::new("main.C"),
+            &args(&["-c", "main.C"]),
+        ));
+        assert!(!use_private_clang_header_trace(
+            CompilerFamily::Clang,
+            std::path::Path::new("main.c"),
+            &args(&["-x", "c++", "-c", "main.c"]),
+        ));
+        assert!(!use_private_clang_header_trace(
+            CompilerFamily::Gcc,
+            std::path::Path::new("main.c"),
+            &args(&["-c", "main.c"]),
+        ));
+        for incompatible in [
+            "-Xclang=-header-include-file",
+            "-Xclang=-sys-header-deps",
+            "-Xclang=-dependency-dot",
+            "-Wp,-dependency-dot,custom.dot",
+            "-Wp,-header-include-file,custom.headers,-sys-header-deps",
+            "--sysroot=/sdk",
+            "-isysroot/sdk",
+            "-Xclang=-isysroot",
+            "-Xclang=-isysroot=/sdk",
+            "-Xclang=--sysroot",
+            "-Xclang=--sysroot=/sdk",
+            "-Wp,-isysroot,/sdk",
+            "-Wp,--sysroot,/sdk",
+        ] {
+            assert!(!use_private_clang_header_trace(
+                CompilerFamily::Clang,
+                std::path::Path::new("main.c"),
+                &args(&["-c", "main.c", incompatible]),
+            ));
+        }
+    }
+
+    #[test]
+    fn private_clang_trace_does_not_duplicate_the_header_graph_in_mmd() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let depfile = temp.path().join("main.d");
+        let mut extra_args = args(&["-MMD", "-MF", depfile.to_str().unwrap()]);
+        let mut strategy = crate::depgraph::DepfileStrategy::InjectedMmd {
+            path: depfile.into(),
+        };
+
+        let trace = prepare_private_clang_header_trace(&mut extra_args, &mut strategy);
+
+        assert_eq!(strategy, crate::depgraph::DepfileStrategy::CompilerTrace);
+        assert!(!extra_args.iter().any(|arg| arg == "-MMD" || arg == "-MF"));
+        assert!(extra_args.iter().any(|arg| arg == "-dependency-dot"));
+        assert!(!extra_args.iter().any(|arg| arg == "-sys-header-deps"));
+        assert_eq!(
+            trace.path.extension(),
+            Some(std::ffi::OsStr::new("headers"))
+        );
+    }
 }

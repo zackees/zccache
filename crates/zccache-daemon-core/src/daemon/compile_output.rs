@@ -64,12 +64,34 @@ pub(crate) fn current() -> Option<OutputContext> {
 pub(crate) enum StderrFilter<'a> {
     None,
     ShowIncludes { source: &'a Path, cwd: &'a Path },
+    HeaderTrace { source: &'a Path, cwd: &'a Path },
 }
 
 pub(crate) struct CapturedOutput {
     pub(crate) stdout: Vec<u8>,
     pub(crate) stderr: Vec<u8>,
-    pub(crate) show_includes_scan: Option<crate::depgraph::ScanResult>,
+    pub(crate) dependency_scan: Option<crate::depgraph::ScanResult>,
+}
+
+enum DependencyParser {
+    ShowIncludes(crate::depgraph::show_includes::ShowIncludesParser),
+    HeaderTrace(crate::depgraph::header_trace::HeaderTraceParser),
+}
+
+impl DependencyParser {
+    fn push(&mut self, bytes: &[u8], output: &mut Vec<u8>) {
+        match self {
+            Self::ShowIncludes(parser) => parser.push(bytes, output),
+            Self::HeaderTrace(parser) => parser.push(bytes, output),
+        }
+    }
+
+    fn finish(self, output: &mut Vec<u8>) -> crate::depgraph::ScanResult {
+        match self {
+            Self::ShowIncludes(parser) => parser.finish(output),
+            Self::HeaderTrace(parser) => parser.finish(output),
+        }
+    }
 }
 
 pub(crate) async fn consume(
@@ -80,11 +102,14 @@ pub(crate) async fn consume(
     context.mark_live();
     let mut stdout = BoundedCapture::new(context.capture_limit, "stdout");
     let mut stderr = BoundedCapture::new(context.capture_limit, "stderr");
-    let mut show_includes = match stderr_filter {
+    let mut dependency_parser = match stderr_filter {
         StderrFilter::None => None,
-        StderrFilter::ShowIncludes { source, cwd } => Some(
+        StderrFilter::ShowIncludes { source, cwd } => Some(DependencyParser::ShowIncludes(
             crate::depgraph::show_includes::ShowIncludesParser::new(source, cwd),
-        ),
+        )),
+        StderrFilter::HeaderTrace { source, cwd } => Some(DependencyParser::HeaderTrace(
+            crate::depgraph::header_trace::HeaderTraceParser::new(source, cwd),
+        )),
     };
 
     while let Some(chunk) = receiver.recv().await {
@@ -96,7 +121,7 @@ pub(crate) async fn consume(
             }
             RawOutputChunk::Stderr(bytes) => {
                 let mut filtered = Vec::new();
-                if let Some(parser) = show_includes.as_mut() {
+                if let Some(parser) = dependency_parser.as_mut() {
                     parser.push(&bytes, &mut filtered);
                 } else {
                     filtered = bytes;
@@ -108,7 +133,7 @@ pub(crate) async fn consume(
         }
     }
 
-    let show_includes_scan = if let Some(parser) = show_includes {
+    let dependency_scan = if let Some(parser) = dependency_parser {
         let mut filtered = Vec::new();
         let scan = parser.finish(&mut filtered);
         if let Some(bytes) = stderr.push(&filtered) {
@@ -129,7 +154,7 @@ pub(crate) async fn consume(
     Ok(CapturedOutput {
         stdout: stdout.into_bytes(),
         stderr: stderr.into_bytes(),
-        show_includes_scan,
+        dependency_scan,
     })
 }
 
@@ -276,6 +301,55 @@ mod tests {
         assert!(captured.stderr.len() < 2048);
         assert!(String::from_utf8_lossy(&captured.stderr).contains("truncated to 1024 bytes"));
         assert!(captured.stderr.ends_with(&vec![b'x'; 512]));
+    }
+
+    #[tokio::test]
+    async fn header_trace_filter_streams_only_real_diagnostics() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let source = temp.path().join("main.c");
+        let header = temp.path().join("header with spaces.h");
+        std::fs::write(&source, "").expect("source");
+        std::fs::write(&header, "").expect("header");
+        let trace = format!(". {}\nwarning: retained\n", header.display());
+        let (sender, mut chunks) = mpsc::channel(8);
+        let context = OutputContext::new(sender);
+        let (raw_sender, raw_receiver) = mpsc::channel(128);
+        for bytes in trace.as_bytes().chunks(5) {
+            raw_sender
+                .send(RawOutputChunk::Stderr(bytes.to_vec()))
+                .await
+                .expect("raw receiver");
+        }
+        drop(raw_sender);
+
+        let captured = super::consume(
+            raw_receiver,
+            context,
+            StderrFilter::HeaderTrace {
+                source: &source,
+                cwd: temp.path(),
+            },
+        )
+        .await
+        .expect("capture");
+        let scan = captured.dependency_scan.expect("header scan");
+        let mut emitted = Vec::new();
+        while let Ok(chunk) = chunks.try_recv() {
+            let OutputChunk::Stderr(bytes) = chunk else {
+                panic!("expected stderr")
+            };
+            emitted.extend(bytes);
+        }
+
+        assert_eq!(
+            scan.resolved,
+            vec![crate::depgraph::depfile::canonicalize_path(
+                &header,
+                temp.path()
+            )]
+        );
+        assert_eq!(captured.stderr, b"warning: retained\n");
+        assert_eq!(emitted, captured.stderr);
     }
 
     #[tokio::test]

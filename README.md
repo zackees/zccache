@@ -743,10 +743,15 @@ A few things worth knowing:
 
 ### C/C++ dependency policy
 
-By default zccache asks GCC and Clang for an `-MD` dependency manifest and
-tracks every compiler-selected user and system header. The manifest is the
-pay-once cost: later C and C++ requests use the same direct-mode depgraph and
-do not rediscover the include closure.
+By default zccache asks GCC and Clang for the compiler's exact include trace.
+Ordinary Clang C compilations direct a complete user-and-system-header trace to
+a private file; GCC and C++ combine a compact `-MMD` user-header manifest with
+the public `-H` stream, from which zccache removes only verified trace records.
+zccache tracks every compiler-selected user and system header. Invocations that
+already request `-H` or alter the diagnostic format retain the conservative
+`-MD` path.
+The resulting manifest is the pay-once cost: later C and C++ requests use the
+same direct-mode depgraph and do not rediscover the include closure.
 
 `--fast` is a broad opt-in preset. It currently omits system headers from new
 C/C++ manifests by using `-MMD`; `--skip-system-headers` selects that behavior

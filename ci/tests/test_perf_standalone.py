@@ -265,6 +265,17 @@ def test_runtime_rust_state_is_owned_and_seeded_by_soldr():
     assert "/opt/rust" not in entrypoint
 
 
+def test_standalone_run_builds_and_wires_log_auditor():
+    entrypoint = (
+        perf_standalone.REPO_ROOT / "ci/docker/standalone_perf_entrypoint.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "soldr cargo build -p zccache --features ci-bin --bin zccache-ci --release" in entrypoint
+    assert "install -m 0755 /target/release/zccache-ci /artifacts/zccache-ci" in entrypoint
+    assert "require_mount /artifacts/zccache-ci" in entrypoint
+    assert "export ZCCACHE_CI_BIN=/artifacts/zccache-ci" in entrypoint
+
+
 def test_campaign_artifact_paths_are_relative_and_complete(tmp_path):
     sample_dir = tmp_path / "c" / "perf_c_zccache_vs_bare"
     sample_dir.mkdir(parents=True)
