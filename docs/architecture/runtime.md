@@ -153,11 +153,12 @@ CLI lazily spawns a real per-user daemon.
 
 ### One binary, dispatched by `argv[0]` (#998)
 
-Only the `zccache` CLI is deployed. It is a **multi-call binary**: it reads its
-own `argv[0]` file stem and, if invoked as `zccache-daemon`, runs the daemon
-(`daemon::entry::run`); any other or empty name falls through to the CLI. The
-daemon `main` lives in the library (`daemon::entry`, #997) so both the CLI and
-the transitional `zccache-daemon` bin can host it. A hidden
+Only `zccache` (plus the independent `zccache-fp` utility) is shipped. It is a
+**multi-call binary**: it reads its own `argv[0]` file stem and dispatches
+`zccache-daemon` to the compile daemon (`daemon::entry::run`) and
+`zccache-download-daemon` to the download daemon. Any other or empty name falls
+through to the CLI. Both daemon entry points live in library code so the CLI
+and transitional, non-shipped daemon bin targets can host them. A hidden
 `zccache daemon-run <flags…>` subcommand is the `argv[0]`-independent escape
 hatch (debugging, `noexec` cache dirs, unreliable `argv[0]`). The name check is
 `cli::multicall::stem_matches`: Windows is case-insensitive and drops `.exe`;
@@ -171,6 +172,7 @@ stable, version-rooted path using the daemon's own name:
 
 ```
 ~/.zccache/v<VERSION>/zccache-daemon[.exe]
+~/.zccache/v<VERSION>/zccache-download-daemon[.exe]
 ```
 
 `materialize_daemon_exe` is **idempotent** (an existing dest whose size matches
@@ -179,8 +181,8 @@ repeated multi-MB copies) and **atomic** (temp-in-same-dir + `rename`; a
 concurrent winner is tolerated). Because each installed version owns its own
 `v<VERSION>/` directory, a stale copy can never masquerade as a newer one — the
 structural fix for the #760 "soft-shadow" downgrade the old random-name
-`runtime-binaries/` copies allowed. The own-name `zccache-daemon` satisfies
-`verify_pid_exe_stem(pid, "zccache-daemon")`.
+`runtime-binaries/` copies allowed. Each own-name copy satisfies its exact
+`verify_pid_exe_stem` identity check.
 
 **Windows locked-exe teardown.** Windows locks a running executable's file, so
 `rm -rf` of a version dir (during `zccache clear`, a stale-sibling prune, or an

@@ -153,7 +153,6 @@ runs:
         TARGET_DIR="target/${{ inputs.target }}/release"
         rm -f \
           "$TARGET_DIR/zccache${{ inputs.binary_ext }}" \
-          "$TARGET_DIR/zccache-daemon${{ inputs.binary_ext }}" \
           "$TARGET_DIR/zccache-fp${{ inputs.binary_ext }}"
 
     # Static-link the MSVC C runtime (vcruntime + UCRT) for Windows release
@@ -195,8 +194,8 @@ runs:
         # native executable); the staging step below `cp`s `target/.../zccache-fp`
         # into `staging/`.
         "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache \
-          --features zccache-bin,daemon-bin,fingerprint-bin \
-          --bin zccache --bin zccache-daemon --bin zccache-fp
+          --features zccache-bin,fingerprint-bin \
+          --bin zccache --bin zccache-fp
 
     # Windows DLL load smoke gate (see zccache#269). If the just-built
     # `zccache.exe` cannot complete loader init on this host, `--version`
@@ -260,7 +259,6 @@ runs:
         rm -rf staging standalone
         mkdir -p staging
         cp target/${{ inputs.target }}/release/zccache${{ inputs.binary_ext }} staging/
-        cp target/${{ inputs.target }}/release/zccache-daemon${{ inputs.binary_ext }} staging/
         cp target/${{ inputs.target }}/release/zccache-fp${{ inputs.binary_ext }} staging/
 
         if [ "${{ inputs.include_python }}" = "true" ]; then
@@ -304,7 +302,6 @@ runs:
             }
             if command -v "$STRIP" &> /dev/null; then
               do_strip staging/zccache${{ inputs.binary_ext }}
-              do_strip staging/zccache-daemon${{ inputs.binary_ext }}
               do_strip staging/zccache-fp${{ inputs.binary_ext }}
               if [ "${{ inputs.include_python }}" = "true" ]; then
                 for native in staging/python/zccache/_native.* \
@@ -327,15 +324,14 @@ runs:
         #   macOS:        <bin>.dSYM/   (directory)
         #   Windows MSVC: <bin>.pdb
         #
-        # Windows PDB naming: rustc's MSVC linker writes PDBs using the
-        # underscored crate name, not the [[bin]] name. So:
-        #   zccache-daemon.exe  ->  zccache_daemon.pdb
+        # Windows PDB naming: rustc's MSVC linker writes the hyphenated
+        # `zccache-fp` target's PDB with an underscored crate name:
         #   zccache-fp.exe      ->  zccache_fp.pdb
         # `zccache.exe` is the exception because its [[bin]] name has no
         # hyphens. Windbg/cdb find a PDB by GUID via the codeview record
         # embedded in the PE, so the underscored filename on disk still
-        # resolves for `zccache-daemon.exe`. See zccache#276 for the
-        # missing-PDB regression that motivated this naming fix.
+        # resolves for `zccache-fp.exe`. See zccache#276 for the missing-PDB
+        # regression that motivated this naming fix.
         rm -rf staging-debug
         mkdir -p staging-debug
         copy_debug() {
@@ -368,12 +364,10 @@ runs:
             ;;
           *apple-darwin)
             copy_or_create_dsym "zccache" "zccache.dSYM"
-            copy_or_create_dsym "zccache-daemon" "zccache-daemon.dSYM"
             copy_or_create_dsym "zccache-fp" "zccache-fp.dSYM"
             ;;
           *)
             copy_debug "$TARGET_DIR/zccache.dwp"
-            copy_debug "$TARGET_DIR/zccache-daemon.dwp"
             copy_debug "$TARGET_DIR/zccache-fp.dwp"
             ;;
         esac
@@ -396,9 +390,9 @@ runs:
         # the rustc PDB-name convention change that caused zccache#276)
         # before it ships to a release.
         case "$TARGET" in
-          *pc-windows-msvc) require=("zccache.pdb" "zccache_daemon.pdb" "zccache_fp.pdb") ;;
-          *apple-darwin)    require=("zccache.dSYM" "zccache-daemon.dSYM" "zccache-fp.dSYM") ;;
-          *)                require=("zccache.dwp" "zccache-daemon.dwp" "zccache-fp.dwp") ;;
+          *pc-windows-msvc) require=("zccache.pdb" "zccache_fp.pdb") ;;
+          *apple-darwin)    require=("zccache.dSYM" "zccache-fp.dSYM") ;;
+          *)                require=("zccache.dwp" "zccache-fp.dwp") ;;
         esac
         missing=()
         for entry in "${require[@]}"; do
@@ -426,7 +420,7 @@ runs:
         if [ -z "$VERSION" ]; then
           VERSION=$(python -c "import tomllib; from pathlib import Path; print(tomllib.loads(Path('Cargo.toml').read_text(encoding='utf-8'))['workspace']['package']['version'])")
         fi
-        for bin in zccache zccache-daemon zccache-fp; do
+        for bin in zccache zccache-fp; do
           BIN_PATH="staging/${bin}${{ inputs.binary_ext }}"
           if [ ! -e "$BIN_PATH" ]; then
             echo "::error::binary missing for stamping: $BIN_PATH" >&2
@@ -451,7 +445,7 @@ runs:
             min_size=262144
             ;;
         esac
-        for bin in zccache zccache-daemon zccache-fp; do
+        for bin in zccache zccache-fp; do
           path="staging/${bin}${{ inputs.binary_ext }}"
           if [ ! -f "$path" ]; then
             echo "::error::Missing staged binary: $path" >&2
@@ -471,7 +465,7 @@ runs:
             ;;
         esac
 
-        for bin in zccache zccache-daemon zccache-fp; do
+        for bin in zccache zccache-fp; do
           path="staging/${bin}${{ inputs.binary_ext }}"
           version="$("$path" --version)"
           printf '%s\n' "$version"

@@ -160,14 +160,20 @@ fn write_response(stream: &mut TcpStream, status: u16, body: &[u8]) -> std::io::
 }
 
 #[cfg(unix)]
-fn make_fake_unix_archive(root: &Path, target: &str) -> NormalizedPath {
+fn make_fake_unix_archive(
+    root: &Path,
+    target: &str,
+    include_legacy_daemon: bool,
+) -> NormalizedPath {
     let release_tag = VERSION;
     let archive_tag = format!("v{VERSION}");
     let asset_dir = root.join("download").join(release_tag);
     let archive_root = asset_dir.join(format!("zccache-{archive_tag}-{target}"));
     fs::create_dir_all(&archive_root).expect("create archive root");
     write_unix_binary(&archive_root.join("zccache"), "zccache");
-    write_unix_binary(&archive_root.join("zccache-daemon"), "zccache-daemon");
+    if include_legacy_daemon {
+        write_unix_binary(&archive_root.join("zccache-daemon"), "zccache-daemon");
+    }
     write_unix_binary(&archive_root.join("zccache-fp"), "zccache-fp");
     fs::write(archive_root.join("README.md"), "test archive\n").expect("write readme");
 
@@ -199,14 +205,20 @@ fn write_unix_binary(path: &Path, name: &str) {
 }
 
 #[cfg(windows)]
-fn make_fake_windows_archive(root: &Path, target: &str) -> NormalizedPath {
+fn make_fake_windows_archive(
+    root: &Path,
+    target: &str,
+    include_legacy_daemon: bool,
+) -> NormalizedPath {
     let release_tag = VERSION;
     let archive_tag = format!("v{VERSION}");
     let asset_dir = root.join("download").join(release_tag);
     let archive_root = asset_dir.join(format!("zccache-{archive_tag}-{target}"));
     fs::create_dir_all(&archive_root).expect("create archive root");
     write_windows_binary(&archive_root.join("zccache.exe"), "zccache");
-    write_windows_binary(&archive_root.join("zccache-daemon.exe"), "zccache-daemon");
+    if include_legacy_daemon {
+        write_windows_binary(&archive_root.join("zccache-daemon.exe"), "zccache-daemon");
+    }
     write_windows_binary(&archive_root.join("zccache-fp.exe"), "zccache-fp");
     fs::write(archive_root.join("README.md"), "test archive\r\n").expect("write readme");
 
@@ -305,12 +317,14 @@ fn install_sh_installs_release_archive() {
         ("macos", "aarch64") => "aarch64-apple-darwin",
         other => panic!("unsupported test target: {other:?}"),
     };
-    let _archive = make_fake_unix_archive(&release_root, target);
+    let _archive = make_fake_unix_archive(&release_root, target, false);
     let server = TestServer::start(release_root.into());
 
     let home = temp.path().join("home");
     let install_dir = temp.path().join("bin");
     fs::create_dir_all(&home).expect("create home");
+    fs::create_dir_all(&install_dir).expect("create install dir");
+    write_unix_binary(&install_dir.join("zccache-daemon"), "legacy-daemon");
 
     let status = Command::new("sh")
         .arg(workspace_root().join("install.sh"))
@@ -342,8 +356,8 @@ fn install_sh_installs_release_archive() {
         "profile missing install path"
     );
     assert!(
-        install_dir.join("zccache-daemon").exists(),
-        "daemon not installed"
+        !install_dir.join("zccache-daemon").exists(),
+        "legacy daemon must be removed"
     );
     assert!(
         install_dir.join("zccache-fp").exists(),
@@ -365,7 +379,7 @@ fn install_sh_supports_global_mode() {
         ("macos", "aarch64") => "aarch64-apple-darwin",
         other => panic!("unsupported test target: {other:?}"),
     };
-    let _archive = make_fake_unix_archive(&release_root, target);
+    let _archive = make_fake_unix_archive(&release_root, target, true);
     let server = TestServer::start(release_root.into());
 
     let home = temp.path().join("home");
@@ -391,6 +405,10 @@ fn install_sh_supports_global_mode() {
         "zccache not installed"
     );
     assert!(
+        install_dir.join("zccache-daemon").exists(),
+        "legacy daemon from archive not installed"
+    );
+    assert!(
         !home.join(".profile").exists(),
         "global install should not edit user profile"
     );
@@ -410,7 +428,7 @@ fn install_sh_resolves_latest_release_tag() {
         ("macos", "aarch64") => "aarch64-apple-darwin",
         other => panic!("unsupported test target: {other:?}"),
     };
-    let _archive = make_fake_unix_archive(&release_root, target);
+    let _archive = make_fake_unix_archive(&release_root, target, false);
     let server = TestServer::start(release_root.into());
 
     let home = temp.path().join("home");
@@ -451,12 +469,14 @@ fn install_ps1_installs_release_archive() {
         "aarch64" => "aarch64-pc-windows-msvc",
         other => panic!("unsupported test arch: {other}"),
     };
-    let _archive = make_fake_windows_archive(&release_root, target);
+    let _archive = make_fake_windows_archive(&release_root, target, false);
     let server = TestServer::start(release_root.into());
 
     let home = temp.path().join("home");
     let install_dir = temp.path().join("bin");
     fs::create_dir_all(&home).expect("create home");
+    fs::create_dir_all(&install_dir).expect("create install dir");
+    write_windows_binary(&install_dir.join("zccache-daemon.exe"), "legacy-daemon");
 
     let status = Command::new("powershell")
         .args([
@@ -494,8 +514,8 @@ fn install_ps1_installs_release_archive() {
         format!("zccache {VERSION}")
     );
     assert!(
-        install_dir.join("zccache-daemon.exe").exists(),
-        "daemon not installed"
+        !install_dir.join("zccache-daemon.exe").exists(),
+        "legacy daemon must be removed"
     );
     assert!(
         install_dir.join("zccache-fp.exe").exists(),
@@ -515,7 +535,7 @@ fn install_ps1_supports_global_mode() {
         "aarch64" => "aarch64-pc-windows-msvc",
         other => panic!("unsupported test arch: {other}"),
     };
-    let _archive = make_fake_windows_archive(&release_root, target);
+    let _archive = make_fake_windows_archive(&release_root, target, true);
     let server = TestServer::start(release_root.into());
 
     let install_dir = temp.path().join("global-bin");
@@ -544,5 +564,9 @@ fn install_ps1_supports_global_mode() {
     assert!(
         install_dir.join("zccache.exe").exists(),
         "zccache.exe not installed"
+    );
+    assert!(
+        install_dir.join("zccache-daemon.exe").exists(),
+        "legacy daemon from archive not installed"
     );
 }

@@ -10,7 +10,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-INCLUDE = ("zccache", "zccache-daemon", "zccache-fp")
+INCLUDE = ("zccache", "zccache-fp")
 
 
 def parse_args() -> argparse.Namespace:

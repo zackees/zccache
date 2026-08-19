@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1.7
 #
-# Persistent build environment for the zccache trio
-# (zccache, zccache-daemon, zccache-fp) targeting glibc x86_64.
+# Persistent build environment for the shipped zccache pair
+# (zccache, zccache-fp) targeting glibc x86_64.
 #
 # Same shape as soldr-builder.Dockerfile (volume-mounted source +
 # persistent target/) but on bookworm-slim because:
 #   1. We want a glibc binary so the runner image (also bookworm) has
-#      no dynamic-link surprises when soldr invokes zccache-daemon.
+#      no dynamic-link surprises when soldr invokes zccache's self-deployed daemon.
 #   2. bookworm is the same OS family as the catthehacker/ubuntu act-24.04
 #      image, so binary behaviour matches the local performance runner
 #      as closely as we can without literally booting the same image.
@@ -43,8 +43,8 @@ ENV CARGO_HOME=/cargo-home
 
 WORKDIR /src
 
-# Build the three binaries the perf-cluster's bench job stages.
-# `--bin zccache --bin zccache-daemon --bin zccache-fp` matches the
+# Build the two binaries the perf-cluster's bench job stages.
+# `--bin zccache --bin zccache-fp` matches the
 # `cargo build` invocation in .github/workflows/perf-rust-cluster.yml
 # (step "Build zccache trio (release)") so what we measure locally is
 # byte-for-byte equivalent to what the cluster would have measured.
@@ -58,15 +58,14 @@ if [ ! -f /src/Cargo.toml ]; then
 fi
 mkdir -p /out
 cargo build --release \
-    --features zccache-bin,daemon-bin,fingerprint-bin \
+    --features zccache-bin,fingerprint-bin \
     --bin zccache \
-    --bin zccache-daemon \
     --bin zccache-fp
-for bin in zccache zccache-daemon zccache-fp; do
+for bin in zccache zccache-fp; do
     cp "${CARGO_TARGET_DIR}/release/${bin}" "/out/${bin}"
     chmod +x "/out/${bin}"
 done
-echo "wrote /out/{zccache,zccache-daemon,zccache-fp}:"
+echo "wrote /out/{zccache,zccache-fp}:"
 ls -l /out/
 EOF
 RUN chmod +x /usr/local/bin/build.sh

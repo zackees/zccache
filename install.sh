@@ -201,11 +201,18 @@ main() {
 
     mkdir -p "$install_dir"
     cp "$archive_root"/zccache "$install_dir"/
-    cp "$archive_root"/zccache-daemon "$install_dir"/
+    # Releases before #1000 shipped a separate daemon and still require it.
+    # Newer multicall releases omit it, so remove any stale installed sibling.
+    if [ -f "$archive_root/zccache-daemon" ]; then
+        cp "$archive_root"/zccache-daemon "$install_dir"/
+    else
+        rm -f "$install_dir"/zccache-daemon
+    fi
     if [ -f "$archive_root/zccache-fp" ]; then
         cp "$archive_root"/zccache-fp "$install_dir"/
     fi
-    chmod 755 "$install_dir"/zccache "$install_dir"/zccache-daemon 2>/dev/null || true
+    chmod 755 "$install_dir"/zccache 2>/dev/null || true
+    [ -f "$install_dir/zccache-daemon" ] && chmod 755 "$install_dir"/zccache-daemon 2>/dev/null || true
     [ -f "$install_dir/zccache-fp" ] && chmod 755 "$install_dir"/zccache-fp 2>/dev/null || true
 
     if [ "$ZCCACHE_INSTALL_MODE" = "user" ]; then

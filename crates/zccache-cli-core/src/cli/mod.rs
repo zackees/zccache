@@ -11,6 +11,14 @@ mod runtime;
 pub mod snapshot_fp;
 pub mod symbols;
 
+/// Run the CLI entry point with the host platform's process setup.
+///
+/// Kept on the public CLI facade so the crates.io-amalgamated binary does not
+/// need to expose the internal platform module.
+pub fn run_cli_entry(entry: fn() -> std::process::ExitCode) -> std::process::ExitCode {
+    crate::platform::process::spawn::run_cli_entry(entry)
+}
+
 /// Default per-call timeout for the `Status` probe used by daemon version
 /// checks. Two seconds keeps startup responsive when an existing daemon is
 /// alive but IPC-deaf, while still leaving normal Compile/Link roundtrips on
