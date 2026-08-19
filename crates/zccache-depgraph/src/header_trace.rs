@@ -239,9 +239,13 @@ pub fn parse_dependency_graph_file(path: &Path, source: &Path, cwd: &Path) -> Sc
         }
         parser.record_resolved_path(path);
     }
+    // Clang emits a syntactically complete empty graph for a translation
+    // unit with no includes. Once any node exists, however, the source node
+    // is required so a truncated graph cannot be mistaken for a complete
+    // dependency manifest.
     parser.incomplete |= !saw_header
         || !saw_footer
-        || !saw_source
+        || (!node_ids.is_empty() && !saw_source)
         || edges
             .iter()
             .any(|(from, to)| !node_ids.contains(from) || !node_ids.contains(to));
@@ -473,7 +477,10 @@ mod tests {
 
         assert_eq!(
             scan.resolved,
-            vec![NormalizedPath::new(&valid), NormalizedPath::new(&invalid)]
+            vec![
+                crate::depfile::canonicalize_path(&valid, temp.path()),
+                crate::depfile::canonicalize_path(&invalid, temp.path()),
+            ]
         );
         assert!(!scan.has_computed);
         assert!(filtered.is_empty());
@@ -622,6 +629,20 @@ mod tests {
 
         assert!(scan.resolved.is_empty());
         assert!(scan.has_computed, "graph should fail closed: {graph:?}");
+    }
+
+    #[test]
+    fn empty_dependency_graph_is_a_complete_no_include_manifest() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("main.c");
+        let trace = temp.path().join("empty.headers");
+        std::fs::write(&source, "int main(void) { return 0; }\n").unwrap();
+        std::fs::write(&trace, "digraph \"dependencies\" {\n}\n").unwrap();
+
+        let scan = parse_dependency_graph_file(&trace, &source, temp.path());
+
+        assert!(scan.resolved.is_empty());
+        assert!(!scan.has_computed);
     }
 
     #[test]

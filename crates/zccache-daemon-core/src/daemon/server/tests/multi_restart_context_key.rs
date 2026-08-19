@@ -68,8 +68,9 @@ use super::CacheDirEnvGuard;
 /// * Discovery probes (`-v -E ...`, `-###`) see no `.c` args and no `-o`,
 ///   and become successful no-ops.
 ///
-/// `-MF`/`-MT` values are skipped so a depfile path ending in a source-like
-/// name can never be mistaken for an input.
+/// `-MF` is captured and `-MT` is skipped so their values can never be
+/// mistaken for inputs. Depfile sources are cwd-relative, matching the test
+/// working directory without exposing host TEMP-path escaping to the shim.
 #[cfg(unix)]
 pub(super) fn write_fake_multi_cc(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -79,30 +80,54 @@ pub(super) fn write_fake_multi_cc(dir: &Path) -> PathBuf {
         &tool,
         r#"#!/bin/sh
 out=
-srcs=
-while [ "$#" -gt 0 ]; do
-    case "$1" in
+depfile=
+operand=
+for arg do
+    if [ -n "$operand" ]; then
+        case "$operand" in
+            out) out=$arg ;;
+            depfile) depfile=$arg ;;
+            skip) ;;
+        esac
+        operand=
+        continue
+    fi
+    case "$arg" in
         -v)
             printf '%s\n' '#include <...> search starts here:' >&2
             printf '%s\n' ' /usr/include' >&2
             printf '%s\n' 'End of search list.' >&2
             exit 0
             ;;
-        -o) shift; out=$1 ;;
-        -MF|-MT) shift ;;
-        *.c) srcs="$srcs $1" ;;
+        -o) operand=out ;;
+        -MF) operand=depfile ;;
+        -MT) operand=skip ;;
     esac
-    shift || true
 done
-if [ -n "$out" ]; then
-    for s in $srcs; do
-        printf 'object-for:%s\n' "$s" > "$out"
-    done
-else
-    for s in $srcs; do
-        printf 'object-for:%s\n' "$s" > "${s%.c}.o"
-    done
+if [ -n "$depfile" ]; then
+    printf 'object:' > "$depfile"
 fi
+operand=
+for arg do
+    if [ -n "$operand" ]; then
+        operand=
+        continue
+    fi
+    case "$arg" in
+        -o|-MF|-MT) operand=value ;;
+        *.c)
+            if [ -n "$out" ]; then
+                printf 'object-for:%s\n' "$arg" > "$out"
+            else
+                printf 'object-for:%s\n' "$arg" > "${arg%.c}.o"
+            fi
+            if [ -n "$depfile" ]; then
+                printf ' %s' "${arg##*/}" >> "$depfile"
+            fi
+            ;;
+    esac
+done
+if [ -n "$depfile" ]; then printf '\n' >> "$depfile"; fi
 exit 0
 "#,
     )
@@ -122,6 +147,7 @@ pub(super) fn write_fake_multi_cc(dir: &Path) -> PathBuf {
 setlocal enabledelayedexpansion
 set "OUT="
 set "SRCS="
+set "DEPFILE="
 :loop
 if "%~1"=="" goto run
 if "%~1"=="-o" (
@@ -137,6 +163,7 @@ if "%~1"=="-v" (
     exit /b 0
 )
 if "%~1"=="-MF" (
+    set "DEPFILE=%~2"
     shift
     shift
     goto loop
@@ -155,10 +182,17 @@ if defined OUT (
     for %%S in (!SRCS!) do (
         > "!OUT!" echo object-for:%%~S
     )
-    exit /b 0
+) else (
+    for %%S in (!SRCS!) do (
+        > "%%~dpnS.o" echo object-for:%%~S
+    )
 )
-for %%S in (!SRCS!) do (
-    > "%%~dpnS.o" echo object-for:%%~S
+if defined DEPFILE (
+    > "!DEPFILE!" <nul set /p ="object:"
+    for %%S in (!SRCS!) do (
+        >> "!DEPFILE!" <nul set /p =" %%~nxS"
+    )
+    >> "!DEPFILE!" echo.
 )
 exit /b 0
 "#,
@@ -250,7 +284,7 @@ async fn multi_file_compile_hits_warm_after_restart() {
         crate::core::config::depgraph_dir_from_cache_dir(&cache_root).join("depgraph.bin");
 
     let cc = write_fake_multi_cc(tmp.path());
-    let work = tmp.path().join("work");
+    let work = tmp.path().join("work with spaces");
     std::fs::create_dir_all(&work).unwrap();
     let a = work.join("multi_a.c");
     let b = work.join("multi_b.c");
