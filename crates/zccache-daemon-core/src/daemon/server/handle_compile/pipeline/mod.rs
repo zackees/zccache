@@ -1086,7 +1086,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         stdout,
         stderr,
         depfile_strategy,
-        show_includes_scan,
+        dependency_scan,
         pre_hash_task,
         compiler_priority_decision,
         pre_exec_ns,
@@ -1187,7 +1187,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             stderr: Arc::clone(&artifact_stderr),
             exit_code,
             depfile_strategy,
-            show_includes_scan,
+            compiler_dependency_scan: dependency_scan,
             pre_hash_task,
             // Issue #401: hand the cc/cpp miss path the hashes already
             // computed in `hash_and_verify` so `store_outcome.rs` skips
