@@ -41,3 +41,7 @@ pub fn verbatim_path(path: &Path) -> std::io::Result<PathBuf> {
 pub fn from_raw_bytes(bytes: &[u8]) -> Option<PathBuf> {
     Some(std::ffi::OsString::from_vec(bytes.to_vec()).into())
 }
+
+pub fn system_root_candidate(path: &Path) -> Option<PathBuf> {
+    Some(Path::new("/").join(path))
+}

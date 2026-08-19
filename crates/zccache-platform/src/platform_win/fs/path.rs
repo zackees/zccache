@@ -57,3 +57,7 @@ pub(crate) use super::verbatim_path;
 pub fn from_raw_bytes(bytes: &[u8]) -> Option<PathBuf> {
     std::str::from_utf8(bytes).ok().map(PathBuf::from)
 }
+
+pub fn system_root_candidate(_path: &Path) -> Option<PathBuf> {
+    None
+}

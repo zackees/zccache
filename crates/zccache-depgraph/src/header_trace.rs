@@ -125,8 +125,16 @@ impl HeaderTraceParser {
     }
 
     fn record_path(&mut self, path: &Path) -> bool {
-        if path.as_os_str().is_empty() {
+        let Some(path) = self.resolve_path(path) else {
             return false;
+        };
+        self.record_resolved_path(path);
+        true
+    }
+
+    fn resolve_path(&self, path: &Path) -> Option<NormalizedPath> {
+        if path.as_os_str().is_empty() {
+            return None;
         }
         let path = if path.is_absolute() {
             crate::depfile::canonicalize_path(path, self.cwd.as_path())
@@ -137,12 +145,15 @@ impl HeaderTraceParser {
         // existence check prevents trace-shaped diagnostics from being
         // swallowed if they do not name an actual include.
         if !path.is_file() {
-            return false;
+            return None;
         }
+        Some(path)
+    }
+
+    fn record_resolved_path(&mut self, path: NormalizedPath) {
         if path != self.source && self.seen.insert(path.clone()) {
             self.resolved.push(path);
         }
-        true
     }
 }
 
@@ -162,28 +173,155 @@ pub fn parse_header_trace(stderr: &[u8], source: &Path, cwd: &Path) -> (ScanResu
     (parser.finish(&mut filtered), filtered)
 }
 
-/// Parse Clang's private `-header-include-file` output.
+/// Parse Clang's private `-dependency-dot` output.
 ///
-/// Unlike `-H`, this sink contains one bare path per line and does not share
-/// stderr with user diagnostics. Missing or malformed output fails closed so
-/// a compiler-version mismatch can never create a direct-mode false hit.
+/// This sink contains compiler-selected user and system headers without
+/// sharing stderr with diagnostics. Missing or malformed output fails closed
+/// so a compiler-version mismatch can never create a direct-mode false hit.
 #[must_use]
-pub fn parse_header_trace_file(path: &Path, source: &Path, cwd: &Path) -> ScanResult {
+pub fn parse_dependency_graph_file(path: &Path, source: &Path, cwd: &Path) -> ScanResult {
     let mut parser = HeaderTraceParser::new(source, cwd);
-    let trace = match std::fs::read(path) {
-        Ok(trace) => trace,
+    let graph = match std::fs::read(path) {
+        Ok(graph) => graph,
         Err(_) => {
             parser.incomplete = true;
             return parser.finish(&mut Vec::new());
         }
     };
-    for line in trace.split(|byte| *byte == b'\n') {
+    let mut saw_header = false;
+    let mut saw_footer = false;
+    let mut saw_source = false;
+    let mut node_ids = HashSet::new();
+    let mut edges = Vec::new();
+    for line in graph.split(|byte| *byte == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
-        if !line.is_empty() && !parser.record_path_bytes(line) {
+        if line.is_empty() {
+            continue;
+        }
+        if !saw_header {
+            saw_header = line == b"digraph \"dependencies\" {";
+            parser.incomplete |= !saw_header;
+            continue;
+        }
+        if line == b"}" {
+            if saw_footer {
+                parser.incomplete = true;
+            }
+            saw_footer = true;
+            continue;
+        }
+        if saw_footer {
             parser.incomplete = true;
+            continue;
+        }
+        let Some(line) = line.strip_prefix(b"  ") else {
+            parser.incomplete = true;
+            continue;
+        };
+        if let Some(edge) = parse_dependency_graph_edge(line) {
+            edges.push(edge);
+            continue;
+        }
+        let Some((id, label)) = parse_dependency_graph_node(line) else {
+            parser.incomplete = true;
+            continue;
+        };
+        if !node_ids.insert(id) {
+            parser.incomplete = true;
+            continue;
+        }
+        let Some(path) = resolve_dependency_graph_path(&parser, &label) else {
+            parser.incomplete = true;
+            continue;
+        };
+        if path == parser.source {
+            saw_source = true;
+        }
+        parser.record_resolved_path(path);
+    }
+    parser.incomplete |= !saw_header
+        || !saw_footer
+        || !saw_source
+        || edges
+            .iter()
+            .any(|(from, to)| !node_ids.contains(from) || !node_ids.contains(to));
+    parser.finish(&mut Vec::new())
+}
+
+fn parse_dependency_graph_node(line: &[u8]) -> Option<(u64, Vec<u8>)> {
+    let line = line.strip_prefix(b"header_")?;
+    let id_len = line.iter().take_while(|byte| byte.is_ascii_digit()).count();
+    if id_len == 0 {
+        return None;
+    }
+    let id = std::str::from_utf8(&line[..id_len]).ok()?.parse().ok()?;
+    let line = &line[id_len..];
+    let prefix = b" [ shape=\"box\", label=\"";
+    let mut index = prefix.len();
+    line.starts_with(prefix).then_some(())?;
+    let mut label = Vec::new();
+    while index < line.len() {
+        match line[index] {
+            b'"' => {
+                return (line.get(index + 1..) == Some(b"];")).then_some((id, label));
+            }
+            b'\\' => {
+                index += 1;
+                let escaped = *line.get(index)?;
+                match escaped {
+                    b'n' => label.push(b'\n'),
+                    b'\\' | b'"' | b'{' | b'}' | b'<' | b'>' | b'|' => label.push(escaped),
+                    // LLVM deliberately leaves `\l` untouched.
+                    b'l' => label.extend_from_slice(b"\\l"),
+                    _ => return None,
+                }
+            }
+            byte => label.push(byte),
+        }
+        index += 1;
+    }
+    None
+}
+
+fn parse_dependency_graph_edge(line: &[u8]) -> Option<(u64, u64)> {
+    let line = line.strip_prefix(b"header_")?;
+    let from_len = line.iter().take_while(|byte| byte.is_ascii_digit()).count();
+    if from_len == 0 {
+        return None;
+    }
+    let from = std::str::from_utf8(&line[..from_len]).ok()?.parse().ok()?;
+    let line = line[from_len..].strip_prefix(b" -> header_")?;
+    let to_len = line.iter().take_while(|byte| byte.is_ascii_digit()).count();
+    if to_len == 0 || line.get(to_len..) != Some(b";") {
+        return None;
+    }
+    let to = std::str::from_utf8(&line[..to_len]).ok()?.parse().ok()?;
+    Some((from, to))
+}
+
+fn resolve_dependency_graph_path(
+    parser: &HeaderTraceParser,
+    bytes: &[u8],
+) -> Option<NormalizedPath> {
+    let path = Path::new(std::str::from_utf8(bytes).ok()?);
+    let mut candidates = Vec::new();
+    if let Some(candidate) = parser.resolve_path(path) {
+        candidates.push(candidate);
+    }
+    if !path.is_absolute() {
+        if let Some(candidate) = crate::platform::fs::path::system_root_candidate(path)
+            .and_then(|rooted| parser.resolve_path(&rooted))
+        {
+            if !candidates.contains(&candidate) {
+                candidates.push(candidate);
+            }
         }
     }
-    parser.finish(&mut Vec::new())
+    if candidates.len() == 1 {
+        candidates.pop()
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -351,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn private_trace_file_tracks_paths_and_fails_closed_on_bad_records() {
+    fn private_dependency_graph_tracks_paths_and_fails_closed_on_bad_records() {
         let temp = tempfile::TempDir::new().unwrap();
         let source = temp.path().join("main.c");
         let header = temp.path().join("header with spaces.h");
@@ -360,11 +498,15 @@ mod tests {
         std::fs::write(&header, "").unwrap();
         std::fs::write(
             &trace,
-            format!("{}\n{}\nmissing.h\n", source.display(), header.display()),
+            format!(
+                "digraph \"dependencies\" {{\n  header_0 [ shape=\"box\", label=\"{}\"];\n  header_1 [ shape=\"box\", label=\"{}\"];\n  malformed node\n}}\n",
+                dot_escape_path(&source),
+                dot_escape_path(&header)
+            ),
         )
         .unwrap();
 
-        let scan = parse_header_trace_file(&trace, &source, temp.path());
+        let scan = parse_dependency_graph_file(&trace, &source, temp.path());
 
         assert_eq!(
             scan.resolved,
@@ -374,15 +516,130 @@ mod tests {
     }
 
     #[test]
-    fn missing_private_trace_file_fails_closed() {
+    fn rootless_dependency_graph_paths_resolve_from_the_system_root() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("main.c");
+        let header = temp.path().join("system.h");
+        std::fs::write(&source, "").unwrap();
+        std::fs::write(&header, "").unwrap();
+        let rootless = header
+            .to_string_lossy()
+            .trim_start_matches(['/', '\\'])
+            .to_string();
+        let Some(candidate) =
+            crate::platform::fs::path::system_root_candidate(Path::new(&rootless))
+        else {
+            return;
+        };
+        if !candidate.is_file() {
+            return;
+        }
+        let trace = temp.path().join("rootless.headers");
+        std::fs::write(
+            &trace,
+            format!(
+                "digraph \"dependencies\" {{\n  header_0 [ shape=\"box\", label=\"{}\"];\n  header_1 [ shape=\"box\", label=\"{}\"];\n  header_0 -> header_1;\n}}\n",
+                dot_escape_path(&source),
+                rootless.replace('\\', "\\\\").replace('"', "\\\"")
+            ),
+        )
+        .unwrap();
+
+        let scan = parse_dependency_graph_file(&trace, &source, temp.path());
+
+        assert_eq!(
+            scan.resolved,
+            vec![crate::depfile::canonicalize_path(&header, temp.path())]
+        );
+        assert!(!scan.has_computed);
+    }
+
+    #[test]
+    fn ambiguous_rootless_dependency_graph_path_fails_closed() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("main.c");
+        let header = temp.path().join("system.h");
+        std::fs::write(&source, "").unwrap();
+        std::fs::write(&header, "").unwrap();
+        let rootless = header
+            .to_string_lossy()
+            .trim_start_matches(['/', '\\'])
+            .to_string();
+        let Some(candidate) =
+            crate::platform::fs::path::system_root_candidate(Path::new(&rootless))
+        else {
+            return;
+        };
+        if !candidate.is_file() {
+            return;
+        }
+        let shadow = temp.path().join(&rootless);
+        std::fs::create_dir_all(shadow.parent().unwrap()).unwrap();
+        std::fs::write(&shadow, "shadow").unwrap();
+        let trace = temp.path().join("ambiguous.headers");
+        std::fs::write(
+            &trace,
+            format!(
+                "digraph \"dependencies\" {{\n  header_0 [ shape=\"box\", label=\"{}\"];\n  header_1 [ shape=\"box\", label=\"{}\"];\n  header_0 -> header_1;\n}}\n",
+                dot_escape_path(&source),
+                rootless.replace('\\', "\\\\").replace('"', "\\\"")
+            ),
+        )
+        .unwrap();
+
+        let scan = parse_dependency_graph_file(&trace, &source, temp.path());
+
+        assert!(scan.resolved.is_empty());
+        assert!(scan.has_computed);
+    }
+
+    #[test]
+    fn dependency_graph_requires_nodes_source_and_one_footer() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("main.c");
+        std::fs::write(&source, "").unwrap();
+        for graph in [
+            "digraph \"dependencies\" {\n  header_0 -> header_1;\n}\n",
+            "digraph \"dependencies\" {\n  header_0 -> broken;\n}\n",
+        ] {
+            let trace = temp.path().join("invalid.headers");
+            std::fs::write(&trace, graph).unwrap();
+
+            let scan = parse_dependency_graph_file(&trace, &source, temp.path());
+
+            assert!(scan.resolved.is_empty());
+            assert!(scan.has_computed, "graph should fail closed: {graph:?}");
+        }
+
+        let trace = temp.path().join("duplicate-footer.headers");
+        let graph = format!(
+            "digraph \"dependencies\" {{\n  header_0 [ shape=\"box\", label=\"{}\"];\n}}\n}}\n",
+            dot_escape_path(&source)
+        );
+        std::fs::write(&trace, &graph).unwrap();
+
+        let scan = parse_dependency_graph_file(&trace, &source, temp.path());
+
+        assert!(scan.resolved.is_empty());
+        assert!(scan.has_computed, "graph should fail closed: {graph:?}");
+    }
+
+    #[test]
+    fn missing_private_dependency_graph_fails_closed() {
         let temp = tempfile::TempDir::new().unwrap();
         let source = temp.path().join("main.c");
         std::fs::write(&source, "").unwrap();
 
         let scan =
-            parse_header_trace_file(&temp.path().join("missing.headers"), &source, temp.path());
+            parse_dependency_graph_file(&temp.path().join("missing.headers"), &source, temp.path());
 
         assert!(scan.resolved.is_empty());
         assert!(scan.has_computed);
+    }
+
+    fn dot_escape_path(path: &Path) -> String {
+        path.to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
     }
 }

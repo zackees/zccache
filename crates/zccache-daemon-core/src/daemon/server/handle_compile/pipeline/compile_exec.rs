@@ -417,7 +417,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         (output.stdout, None, output.stderr)
     };
     let dependency_scan = if let Some(trace) = private_header_trace.as_ref() {
-        let scan = crate::depgraph::header_trace::parse_header_trace_file(
+        let scan = crate::depgraph::header_trace::parse_dependency_graph_file(
             trace.path.as_path(),
             source_path,
             cwd_path,
@@ -471,17 +471,15 @@ fn prepare_private_clang_header_trace(
     let trace = PrivateHeaderTrace {
         path: header_trace_path(&path),
     };
-    // `-sys-header-deps` also promotes MMD to a full system-header depfile.
-    // The trace already contains every compiler-selected user and system
-    // header, so retaining `-MMD -MF` would serialize the same graph twice.
+    // Clang's dependency graph includes system headers without the
+    // `-sys-header-deps` switch that makes the compact MMD path expensive.
+    // It is complete on its own, so no second manifest is needed.
     extra_args.clear();
     extra_args.extend([
         "-Xclang".to_string(),
-        "-header-include-file".to_string(),
+        "-dependency-dot".to_string(),
         "-Xclang".to_string(),
         trace.path.to_string_lossy().into_owned(),
-        "-Xclang".to_string(),
-        "-sys-header-deps".to_string(),
     ]);
     trace
 }
@@ -500,11 +498,36 @@ fn use_private_clang_header_trace(
         && !args.iter().any(|arg| {
             arg == "-x"
                 || arg.starts_with("-x")
-                || arg == "-header-include-file"
-                || arg == "-sys-header-deps"
-                || arg == "-Xclang=-header-include-file"
-                || arg == "-Xclang=-sys-header-deps"
+                || contains_private_header_trace_flag(arg)
+                || contains_sysroot_flag(arg)
         })
+}
+
+fn contains_private_header_trace_flag(arg: &str) -> bool {
+    const PRIVATE_FLAGS: [&str; 3] = [
+        "-dependency-dot",
+        "-header-include-file",
+        "-sys-header-deps",
+    ];
+    PRIVATE_FLAGS.contains(&arg)
+        || arg
+            .strip_prefix("-Xclang=")
+            .is_some_and(|arg| PRIVATE_FLAGS.contains(&arg))
+        || arg
+            .strip_prefix("-Wp,")
+            .is_some_and(|args| args.split(',').any(|arg| PRIVATE_FLAGS.contains(&arg)))
+}
+
+fn contains_sysroot_flag(arg: &str) -> bool {
+    fn is_sysroot_flag(arg: &str) -> bool {
+        arg.starts_with("-isysroot") || arg == "--sysroot" || arg.starts_with("--sysroot=")
+    }
+
+    is_sysroot_flag(arg)
+        || arg.strip_prefix("-Xclang=").is_some_and(is_sysroot_flag)
+        || arg
+            .strip_prefix("-Wp,")
+            .is_some_and(|args| args.split(',').any(is_sysroot_flag))
 }
 
 fn header_trace_is_supported(family: crate::compiler::CompilerFamily, args: &[String]) -> bool {
@@ -520,10 +543,7 @@ fn header_trace_is_supported(family: crate::compiler::CompilerFamily, args: &[St
             || arg == "-Xpreprocessor=-H"
             || arg == "-Xclang=-H"
             || arg == "-fshow-skipped-includes"
-            || arg == "-header-include-file"
-            || arg == "-sys-header-deps"
-            || arg == "-Xclang=-header-include-file"
-            || arg == "-Xclang=-sys-header-deps"
+            || contains_private_header_trace_flag(arg)
             || arg == "-fdiagnostics-format"
             || arg.starts_with("-fdiagnostics-format=")
     })
@@ -581,6 +601,10 @@ mod tests {
             "-sys-header-deps",
             "-Xclang=-header-include-file",
             "-Xclang=-sys-header-deps",
+            "-dependency-dot",
+            "-Xclang=-dependency-dot",
+            "-Wp,-dependency-dot,custom.dot",
+            "-Wp,-header-include-file,custom.headers,-sys-header-deps",
             "-fdiagnostics-format=json",
         ] {
             assert!(!header_trace_is_supported(
@@ -656,7 +680,21 @@ mod tests {
             std::path::Path::new("main.c"),
             &args(&["-c", "main.c"]),
         ));
-        for incompatible in ["-Xclang=-header-include-file", "-Xclang=-sys-header-deps"] {
+        for incompatible in [
+            "-Xclang=-header-include-file",
+            "-Xclang=-sys-header-deps",
+            "-Xclang=-dependency-dot",
+            "-Wp,-dependency-dot,custom.dot",
+            "-Wp,-header-include-file,custom.headers,-sys-header-deps",
+            "--sysroot=/sdk",
+            "-isysroot/sdk",
+            "-Xclang=-isysroot",
+            "-Xclang=-isysroot=/sdk",
+            "-Xclang=--sysroot",
+            "-Xclang=--sysroot=/sdk",
+            "-Wp,-isysroot,/sdk",
+            "-Wp,--sysroot,/sdk",
+        ] {
             assert!(!use_private_clang_header_trace(
                 CompilerFamily::Clang,
                 std::path::Path::new("main.c"),
@@ -678,7 +716,8 @@ mod tests {
 
         assert_eq!(strategy, crate::depgraph::DepfileStrategy::CompilerTrace);
         assert!(!extra_args.iter().any(|arg| arg == "-MMD" || arg == "-MF"));
-        assert!(extra_args.iter().any(|arg| arg == "-sys-header-deps"));
+        assert!(extra_args.iter().any(|arg| arg == "-dependency-dot"));
+        assert!(!extra_args.iter().any(|arg| arg == "-sys-header-deps"));
         assert_eq!(
             trace.path.extension(),
             Some(std::ffi::OsStr::new("headers"))

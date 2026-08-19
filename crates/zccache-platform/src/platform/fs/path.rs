@@ -45,6 +45,12 @@ pub fn from_raw_bytes(bytes: &[u8]) -> Option<PathBuf> {
     platform_imp::fs::path::from_raw_bytes(bytes)
 }
 
+/// Resolves a compiler path that is relative only because its leading host
+/// root separator was omitted. Windows drive-relative paths are ambiguous.
+pub fn system_root_candidate(path: &Path) -> Option<PathBuf> {
+    platform_imp::fs::path::system_root_candidate(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,5 +75,12 @@ mod tests {
             from_raw_bytes(b"dir/header.h"),
             Some(PathBuf::from("dir/header.h"))
         );
+    }
+
+    #[test]
+    fn system_root_candidate_preserves_the_path_suffix() {
+        if let Some(rooted) = system_root_candidate(Path::new("dir/header.h")) {
+            assert!(rooted.ends_with(Path::new("dir/header.h")));
+        }
     }
 }

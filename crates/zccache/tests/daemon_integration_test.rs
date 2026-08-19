@@ -273,7 +273,7 @@ async fn test_full_client_flow() {
 /// 5. Read log_file → verify cache miss then cache hit entries
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + compiler
-async fn test_compile_hello_cpp_cached() {
+async fn test_compile_hello_cpp_cached_with_forwarded_depfile() {
     let clang_path = match zccache::test_support::find_clang() {
         Some(p) => p,
         None => {
@@ -286,20 +286,11 @@ async fn test_compile_hello_cpp_cached() {
         // Create temp dir with hello.cpp
         let tmp = tempfile::tempdir().unwrap();
         let hello_cpp = tmp.path().join("hello.cpp");
-        std::fs::write(
-            &hello_cpp,
-            r#"#include <stdio.h>
-int main() {
-    printf("hello world\n");
-    return 0;
-}
-"#,
-        )
-        .unwrap();
+        std::fs::write(&hello_cpp, "int main() { return 0; }\n").unwrap();
 
         let log_file = tmp.path().join("session.log");
         let output_obj = tmp.path().join("hello.o");
-        let depfile = tmp.path().join("hello.d");
+        let depfile = tmp.path().join("forwarded-custom.d");
 
         let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
         let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
@@ -334,9 +325,7 @@ int main() {
                     hello_cpp.to_string_lossy().into_owned(),
                     "-o".to_string(),
                     output_obj.to_string_lossy().into_owned(),
-                    "-MD".to_string(),
-                    "-MF".to_string(),
-                    depfile.to_string_lossy().into_owned(),
+                    format!("-Wp,-MMD,{}", depfile.to_string_lossy()),
                 ],
                 cwd: tmp.path().to_string_lossy().into_owned().into(),
                 compiler: compiler_str.clone().into(),
@@ -383,9 +372,7 @@ int main() {
                     hello_cpp.to_string_lossy().into_owned(),
                     "-o".to_string(),
                     output_obj.to_string_lossy().into_owned(),
-                    "-MD".to_string(),
-                    "-MF".to_string(),
-                    depfile.to_string_lossy().into_owned(),
+                    format!("-Wp,-MMD,{}", depfile.to_string_lossy()),
                 ],
                 cwd: tmp.path().to_string_lossy().into_owned().into(),
                 compiler: compiler_str.into(),
@@ -405,7 +392,11 @@ int main() {
                     exit_code, cached, ..
                 }) => {
                     assert_eq!(exit_code, 0, "second compile should succeed");
-                    assert!(cached, "second compile should be a cache hit");
+                    assert!(
+                        cached,
+                        "second compile should be a cache hit; session log:\n{}",
+                        std::fs::read_to_string(&log_file).unwrap_or_default()
+                    );
                     break;
                 }
                 other => panic!("expected CompileResult, got: {other:?}"),
