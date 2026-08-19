@@ -37,6 +37,15 @@ fn zccache_bin() -> NormalizedPath {
     NormalizedPath::new(path)
 }
 
+fn expected_dev_namespace(bin: &Path) -> String {
+    let hash = running_process::blake3_file(bin).expect("hash development zccache binary");
+    format!(
+        "{}-{}",
+        zccache::core::VERSION,
+        &hash.to_hex().as_str()[..16]
+    )
+}
+
 fn run_cache_root(cache_dir: Option<&Path>, json: bool) -> std::process::Output {
     let bin = zccache_bin();
     let mut cmd = Command::new(bin.as_path());
@@ -98,7 +107,8 @@ fn cache_root_env_branch_reports_env_source() {
     assert_eq!(v["source"], "env:ZCCACHE_CACHE_DIR");
     let got = v["cache_root"].as_str().expect("cache_root is a string");
     assert_eq!(Path::new(got), want.join(versioned_subdir()).as_path());
-    assert_eq!(v["daemon_namespace"], "default");
+    let namespace = expected_dev_namespace(zccache_bin().as_path());
+    assert_eq!(v["daemon_namespace"], namespace);
     assert!(
         v["daemon_endpoint"].as_str().is_some(),
         "daemon_endpoint must be present and stringy"
@@ -121,7 +131,8 @@ fn cache_root_default_branch_reports_default_source_when_env_unset() {
         v["cache_root"].as_str().is_some(),
         "cache_root must be present and stringy"
     );
-    assert_eq!(v["daemon_namespace"], "default");
+    let namespace = expected_dev_namespace(zccache_bin().as_path());
+    assert_eq!(v["daemon_namespace"], namespace);
 }
 
 #[test]

@@ -9,6 +9,11 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-fn main() {
+fn main() -> std::process::ExitCode {
+    if let Err(error) = zccache::dev_daemon_identity::initialize() {
+        eprintln!("zccache-daemon: failed to establish development daemon identity: {error}");
+        return std::process::ExitCode::FAILURE;
+    }
     zccache::daemon::entry::run();
+    std::process::ExitCode::SUCCESS
 }

@@ -51,7 +51,7 @@ gha = ["dep:zccache-gha", "zccache-artifact/gha"]
 symbols = ["dep:zccache-symbols"]
 tokio-console = ["dep:console-subscriber", "zccache-daemon-core/tokio-console"]
 zccache-bin = ["cli", "dep:mimalloc"]
-daemon-bin = ["daemon-entry", "dep:mimalloc"]
+daemon-bin = ["daemon-entry", "symbols", "dep:mimalloc"]
 download-bin = ["dep:clap", "dep:mimalloc", "download-client"]
 download-daemon-bin = [
     "dep:clap",
