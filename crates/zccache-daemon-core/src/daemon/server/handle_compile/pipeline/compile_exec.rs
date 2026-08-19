@@ -111,22 +111,10 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     let private_header_trace = if header_trace_enabled
         && use_private_clang_header_trace(compilation.family, source_path.as_path(), effective_args)
     {
-        let depfile = match &depfile_strategy {
-            DepfileStrategy::InjectedMmd { path } => path,
-            _ => unreachable!("private header trace requires an injected MMD depfile"),
-        };
-        let trace = PrivateHeaderTrace {
-            path: header_trace_path(depfile),
-        };
-        extra_args.extend([
-            "-Xclang".to_string(),
-            "-header-include-file".to_string(),
-            "-Xclang".to_string(),
-            trace.path.to_string_lossy().into_owned(),
-            "-Xclang".to_string(),
-            "-sys-header-deps".to_string(),
-        ]);
-        Some(trace)
+        Some(prepare_private_clang_header_trace(
+            &mut extra_args,
+            &mut depfile_strategy,
+        ))
     } else {
         None
     };
@@ -471,6 +459,33 @@ fn header_trace_path(depfile: &NormalizedPath) -> NormalizedPath {
     depfile.as_path().with_extension("headers").into()
 }
 
+fn prepare_private_clang_header_trace(
+    extra_args: &mut Vec<String>,
+    depfile_strategy: &mut DepfileStrategy,
+) -> PrivateHeaderTrace {
+    let DepfileStrategy::InjectedMmd { path } =
+        std::mem::replace(depfile_strategy, DepfileStrategy::CompilerTrace)
+    else {
+        unreachable!("private header trace requires an injected MMD depfile");
+    };
+    let trace = PrivateHeaderTrace {
+        path: header_trace_path(&path),
+    };
+    // `-sys-header-deps` also promotes MMD to a full system-header depfile.
+    // The trace already contains every compiler-selected user and system
+    // header, so retaining `-MMD -MF` would serialize the same graph twice.
+    extra_args.clear();
+    extra_args.extend([
+        "-Xclang".to_string(),
+        "-header-include-file".to_string(),
+        "-Xclang".to_string(),
+        trace.path.to_string_lossy().into_owned(),
+        "-Xclang".to_string(),
+        "-sys-header-deps".to_string(),
+    ]);
+    trace
+}
+
 /// Clang's file-backed frontend trace avoids `-H` stderr traffic on the hot C
 /// miss path. Keep it deliberately narrower than the rejected all-language
 /// candidate: C++ continues to use the public trace because its much larger
@@ -530,7 +545,8 @@ fn should_inject_header_trace(
 #[cfg(test)]
 mod tests {
     use super::{
-        header_trace_is_supported, should_inject_header_trace, use_private_clang_header_trace,
+        header_trace_is_supported, prepare_private_clang_header_trace, should_inject_header_trace,
+        use_private_clang_header_trace,
     };
     use crate::compiler::CompilerFamily;
     use crate::daemon::server::dependency_policy::DependencyDiscoveryMode;
@@ -647,5 +663,25 @@ mod tests {
                 &args(&["-c", "main.c", incompatible]),
             ));
         }
+    }
+
+    #[test]
+    fn private_clang_trace_does_not_duplicate_the_header_graph_in_mmd() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let depfile = temp.path().join("main.d");
+        let mut extra_args = args(&["-MMD", "-MF", depfile.to_str().unwrap()]);
+        let mut strategy = crate::depgraph::DepfileStrategy::InjectedMmd {
+            path: depfile.into(),
+        };
+
+        let trace = prepare_private_clang_header_trace(&mut extra_args, &mut strategy);
+
+        assert_eq!(strategy, crate::depgraph::DepfileStrategy::CompilerTrace);
+        assert!(!extra_args.iter().any(|arg| arg == "-MMD" || arg == "-MF"));
+        assert!(extra_args.iter().any(|arg| arg == "-sys-header-deps"));
+        assert_eq!(
+            trace.path.extension(),
+            Some(std::ffi::OsStr::new("headers"))
+        );
     }
 }

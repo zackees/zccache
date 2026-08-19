@@ -18,6 +18,7 @@ use super::staged_store::materialization_error_progress;
 use super::staged_store::{inject_staged_fault, StagedFaultGuard, StagedFaultPoint};
 use super::staged_store::{materialization_error, staged_lane_enabled, StagedMaterializationStats};
 use crate::core::path::NormalizedPath;
+use crate::depgraph::DepfileStrategy;
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -754,15 +755,15 @@ impl StagedCompilePlan {
 
     pub(in crate::daemon::server) fn rewrite_depfile_strategy(
         &self,
-        strategy: crate::depgraph::DepfileStrategy,
-    ) -> crate::depgraph::DepfileStrategy {
+        strategy: DepfileStrategy,
+    ) -> DepfileStrategy {
+        use DepfileStrategy::*;
         let path = match &strategy {
-            crate::depgraph::DepfileStrategy::Injected { path }
-            | crate::depgraph::DepfileStrategy::InjectedMmd { path }
-            | crate::depgraph::DepfileStrategy::UserSpecified { path, .. }
-            | crate::depgraph::DepfileStrategy::UserDefault { path, .. } => path,
-            crate::depgraph::DepfileStrategy::ShowIncludes
-            | crate::depgraph::DepfileStrategy::Unsupported => return strategy,
+            Injected { path }
+            | InjectedMmd { path }
+            | UserSpecified { path, .. }
+            | UserDefault { path, .. } => path,
+            CompilerTrace | ShowIncludes | Unsupported => return strategy,
         };
         let Some(staged) = self
             .outputs
@@ -773,28 +774,23 @@ impl StagedCompilePlan {
             return strategy;
         };
         match strategy {
-            crate::depgraph::DepfileStrategy::Injected { .. } => {
-                crate::depgraph::DepfileStrategy::Injected { path: staged }
-            }
-            crate::depgraph::DepfileStrategy::InjectedMmd { .. } => {
-                crate::depgraph::DepfileStrategy::InjectedMmd { path: staged }
-            }
-            crate::depgraph::DepfileStrategy::UserSpecified {
+            Injected { .. } => Injected { path: staged },
+            InjectedMmd { .. } => InjectedMmd { path: staged },
+            UserSpecified {
                 augment_system_headers,
                 ..
-            } => crate::depgraph::DepfileStrategy::UserSpecified {
+            } => UserSpecified {
                 path: staged,
                 augment_system_headers,
             },
-            crate::depgraph::DepfileStrategy::UserDefault {
+            UserDefault {
                 augment_system_headers,
                 ..
-            } => crate::depgraph::DepfileStrategy::UserDefault {
+            } => UserDefault {
                 path: staged,
                 augment_system_headers,
             },
-            crate::depgraph::DepfileStrategy::ShowIncludes
-            | crate::depgraph::DepfileStrategy::Unsupported => strategy,
+            CompilerTrace | ShowIncludes | Unsupported => strategy,
         }
     }
 

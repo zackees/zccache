@@ -162,10 +162,11 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
                 }
             }
         }
-        DepfileStrategy::ShowIncludes => compiler_dependency_scan.unwrap_or_else(|| {
-            used_static_fallback = true;
-            crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
-        }),
+        DepfileStrategy::CompilerTrace | DepfileStrategy::ShowIncludes => compiler_dependency_scan
+            .unwrap_or_else(|| {
+                used_static_fallback = true;
+                crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
+            }),
         DepfileStrategy::Unsupported => {
             used_static_fallback = true;
             crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
