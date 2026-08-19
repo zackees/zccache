@@ -13,7 +13,7 @@ pub fn attach_owner_death(_child: &tokio::process::Child) -> std::io::Result<()>
 }
 
 pub fn uses_pre_spawn_owner_death() -> bool {
-    false
+    true
 }
 
 pub fn run_cli_entry(entry: fn() -> std::process::ExitCode) -> std::process::ExitCode {

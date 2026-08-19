@@ -1,5 +1,137 @@
 use super::*;
 
+#[test]
+fn daemon_owned_children_are_bound_to_both_future_and_process_lifetimes() {
+    let options = owned_child_spawn_options();
+    assert!(
+        options.kill_on_drop,
+        "dropping a cancelled compile future must reap its child"
+    );
+    assert_eq!(
+        options.kill_when_owner_dies,
+        crate::platform::process::spawn::uses_pre_spawn_owner_death(),
+        "the dependency option must match the platform's pre-spawn policy"
+    );
+}
+
+struct KillAndWaitGuard(Option<std::process::Child>);
+
+impl KillAndWaitGuard {
+    fn child_mut(&mut self) -> &mut std::process::Child {
+        self.0.as_mut().expect("owner helper is still armed")
+    }
+
+    fn kill_and_wait(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+impl Drop for KillAndWaitGuard {
+    fn drop(&mut self) {
+        self.kill_and_wait();
+    }
+}
+
+#[test]
+fn daemon_owned_child_dies_when_helper_owner_is_killed() {
+    const HELPER_ENV: &str = "ZCCACHE_OWNER_DEATH_TEST_HELPER";
+    const PID_FILE_ENV: &str = "ZCCACHE_OWNER_DEATH_TEST_PID_FILE";
+
+    if std::env::var_os(HELPER_ENV).is_some() {
+        let mut command = owner_death_test_child_command(PID_FILE_ENV);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("owner-death helper runtime");
+        let result = runtime.block_on(tokio_leaf_command_output_with_priority(
+            &mut command,
+            CompilePriority::Normal,
+        ));
+        panic!("owner-death test child returned before its owner was killed: {result:?}");
+    }
+
+    let temp = tempfile::tempdir().expect("owner-death test tempdir");
+    let pid_file = temp.path().join("child.pid");
+    let test_name = "daemon::process::tests::daemon_owned_child_dies_when_helper_owner_is_killed";
+    let owner = std::process::Command::new(std::env::current_exe().expect("current test binary"))
+        .arg(test_name)
+        .arg("--exact")
+        .arg("--nocapture")
+        .env(HELPER_ENV, "1")
+        .env(PID_FILE_ENV, &pid_file)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn owner-death helper process");
+    let mut owner = KillAndWaitGuard(Some(owner));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let child_pid = loop {
+        if let Ok(contents) = std::fs::read_to_string(&pid_file) {
+            if let Ok(pid) = contents.trim().parse::<u32>() {
+                break pid;
+            }
+        }
+        if let Ok(Some(status)) = owner.child_mut().try_wait() {
+            panic!("owner-death helper exited before publishing its child PID: {status}");
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "owner-death helper did not publish its child PID"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
+    assert!(
+        crate::platform::process::inspect::is_alive(child_pid),
+        "test child must be alive before its owner is killed"
+    );
+
+    owner.kill_and_wait();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while crate::platform::process::inspect::is_alive(child_pid)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let survived = crate::platform::process::inspect::is_alive(child_pid);
+    if survived {
+        let _ = crate::platform::process::terminate::force(child_pid);
+    }
+    assert!(
+        !survived,
+        "daemon-owned child {child_pid} survived after helper owner death"
+    );
+}
+
+fn owner_death_test_child_command(pid_file_env: &str) -> tokio::process::Command {
+    #[cfg(windows)]
+    {
+        let mut command = tokio::process::Command::new("powershell");
+        command.args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "$PID | Set-Content -LiteralPath $env:{pid_file_env}; Start-Sleep -Seconds 30"
+            ),
+        ]);
+        command
+    }
+    #[cfg(unix)]
+    {
+        let mut command = tokio::process::Command::new("sh");
+        command.args([
+            "-c",
+            &format!("printf '%s\\n' \"$$\" > \"${pid_file_env}\"; exec sleep 30"),
+        ]);
+        command
+    }
+}
+
 // ── run_cpu_blocking (#955) ──
 
 #[test]

@@ -11,15 +11,16 @@ pub fn echo_output(marker: &str) -> std::io::Result<std::process::Output> {
     crate::platform_imp::process::spawn::echo_output(marker)
 }
 
-/// Attach a daemon-owned child to the host's owner-death primitive.
+/// Attach a daemon-owned child to the host's post-spawn owner-death primitive.
 ///
-/// Windows uses a process-wide kill-on-close Job Object. Unix ownership is
-/// configured before spawn, so this post-spawn operation is a no-op there.
+/// Windows uses zccache's process-wide kill-on-close Job Object. Linux and
+/// macOS configure ownership before spawn, so this is a no-op there.
 pub fn attach_owner_death(child: &tokio::process::Child) -> std::io::Result<()> {
     crate::platform_imp::process::spawn::attach_owner_death(child)
 }
 
-/// Whether the host's owner-death guarantee is installed before process spawn.
+/// Whether owner-death containment is installed by running-process before the
+/// child can execute.
 #[must_use]
 pub fn uses_pre_spawn_owner_death() -> bool {
     crate::platform_imp::process::spawn::uses_pre_spawn_owner_death()

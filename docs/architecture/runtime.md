@@ -77,9 +77,12 @@ This is the async-bridge design tracked under meta #889. Its pieces:
 `_priority` / `_timeout` wrappers) is the single entry point async daemon code
 uses to run a child process — compile (`compile_exec`), link (`handle_link`),
 multi-compile (`handle_compile_multi`), generic exec (`handle_exec`), and the
-system-include probe. It always spawns with piped stdio + `kill_on_drop(true)`;
-on Windows every child is also assigned to a process-wide **job object**
-(`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) so the whole tree dies with the daemon.
+system-include probe. It always spawns with piped stdio + `kill_on_drop(true)`.
+Daemon-process death is covered separately on every supported host: Linux uses
+`PR_SET_PDEATHSIG`, macOS uses running-process's transactional kqueue
+supervisor, and Windows retains zccache's process-wide **job object**
+(`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`). Thus the compiler child is reaped both
+when a request future is cancelled and when the daemon process itself dies.
 
 ### 2. Child-wait watchdog (`daemon::child_watchdog`)
 
