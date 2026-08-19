@@ -41,6 +41,9 @@ pub use zccache_daemon_core::daemon;
 /// unchanged.
 pub use zccache_daemon_core::embedded;
 pub use zccache_depgraph as depgraph;
+#[cfg(feature = "symbols")]
+#[doc(hidden)]
+pub mod dev_daemon_identity;
 #[cfg(feature = "download")]
 pub use zccache_download as download;
 #[cfg(feature = "download-protocol")]

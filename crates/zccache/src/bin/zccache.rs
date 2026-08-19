@@ -20,6 +20,10 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    if let Err(error) = zccache::dev_daemon_identity::initialize() {
+        eprintln!("zccache: failed to establish development daemon identity: {error}");
+        return ExitCode::FAILURE;
+    }
     zccache::platform::process::spawn::run_cli_entry(run_main)
 }
 

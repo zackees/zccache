@@ -205,6 +205,15 @@ normalized through `effective_cache_root_from_top_level` (`normalized_override_r
 endpoint, lock, backend identity, and daemon state all live coherently under
 `/foo/v<version>`.
 
+Unstamped development binaries add a content-derived identity to
+`ZCCACHE_DAEMON_NAMESPACE` before resolving any of those names. The value is
+`<version>-<first-16-hex-of-blake3(current-exe)>`, so two local builds sharing
+one home root cannot displace each other's daemon. An inherited non-empty
+namespace always wins: managed hosts such as soldr compute it once above a
+build and every wrapper plus the spawned daemon reuse that value. Official
+binaries carry the release footer and retain the bare, version-only identity
+so normal upgrade semantics are unchanged.
+
 ### Conflict prevention & the retired broker (#1002)
 
 Standalone conflict prevention is the version-aware endpoint scheme above, not a
