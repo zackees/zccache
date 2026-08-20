@@ -550,6 +550,8 @@ Issue: https://github.com/zackees/zccache/issues/864
   rustc children together with exit 255 under four-way release parallelism;
   cross lanes are now bounded to two jobs while native builds stay unchanged.
 - clud-review: clean after the initial hosted toolchain follow-ups (one reviewer).
+- Final clud-review: clean after bounding both binary and Python-extension
+  cross-build paths (one reviewer).
 
 # #1414 isolate session-reaping lifecycle events
 
