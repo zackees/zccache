@@ -523,7 +523,7 @@ Issue: https://github.com/zackees/zccache/issues/1411
 - [x] Add a RED regression proving a state-owned reap event follows the daemon's explicit cache root, not the process-global environment.
 - [x] Route the event through the explicit-root lifecycle writer and preserve its payload/cardinality contract.
 - [x] Run the focused regression repeatedly, the daemon-core suite, formatting, and clippy/checks.
-- [ ] Run the repository review gate.
+- [x] Run the repository review gate.
 - [ ] Push, merge, close #1414, and verify the Linux x86 gate.
 
 ## Review
@@ -533,3 +533,5 @@ Issue: https://github.com/zackees/zccache/issues/1411
 - GREEN: the focused test passes against the daemon-owned root; the full
   daemon-core suite passes (754 active, 25 ignored), as do formatting,
   warnings-denied clippy for every daemon-core target, and whitespace checks.
+- Post-merge GREEN: the focused regression passes against current main.
+- clud-review: clean (one reviewer).
