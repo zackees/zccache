@@ -13,9 +13,17 @@ inputs:
     description: Cache key suffix passed to setup-soldr.
     required: true
   use_soldr:
-    description: Use setup-soldr for setup and caching. Release builds set this false to avoid post-build cache uploads.
+    description: Use setup-soldr for setup and caching.
     required: false
     default: "true"
+  cross_compile:
+    description: Build from a Linux x86 host with a soldr-managed cross driver.
+    required: false
+    default: "false"
+  cross_driver:
+    description: Cross-build cargo driver (native, zigbuild, or xwin).
+    required: false
+    default: native
   prebuild_deps:
     description: setup-soldr prebuild dependency mode.
     required: false
@@ -75,12 +83,12 @@ runs:
     - name: Select Rust toolchain
       shell: bash
       run: |
-        echo "RELEASE_RUST_TOOLCHAIN=${{ contains(inputs.target, 'pc-windows-msvc') && '1.95.0-x86_64-pc-windows-msvc' || '1.95.0' }}" >> "$GITHUB_ENV"
+        echo "RELEASE_RUST_TOOLCHAIN=${{ inputs.cross_compile == 'true' && '1.95.0' || (contains(inputs.target, 'pc-windows-msvc') && '1.95.0-x86_64-pc-windows-msvc' || '1.95.0') }}" >> "$GITHUB_ENV"
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: ${{ contains(inputs.target, 'pc-windows-msvc') && '1.95.0-x86_64-pc-windows-msvc' || '1.95.0' }}
+        toolchain: ${{ inputs.cross_compile == 'true' && '1.95.0' || (contains(inputs.target, 'pc-windows-msvc') && '1.95.0-x86_64-pc-windows-msvc' || '1.95.0') }}
         targets: ${{ inputs.target }}
 
     - name: Verify Rust host toolchain
@@ -89,20 +97,24 @@ runs:
         info="$(rustup run "$RELEASE_RUST_TOOLCHAIN" rustc -vV)"
         printf '%s\n' "$info"
         host="$(printf '%s\n' "$info" | awk '/^host: / { print $2 }')"
-        if [[ "${{ inputs.target }}" == *pc-windows-msvc && "$host" != "x86_64-pc-windows-msvc" ]]; then
+        if [ "${{ inputs.cross_compile }}" = "true" ] && [ "$host" != "x86_64-unknown-linux-gnu" ]; then
+          echo "::error::Cross release builds require the Linux x86 host toolchain, got: ${host:-<missing>}" >&2
+          exit 1
+        fi
+        if [ "${{ inputs.cross_compile }}" != "true" ] && [[ "${{ inputs.target }}" == *pc-windows-msvc ]] && [ "$host" != "x86_64-pc-windows-msvc" ]; then
           echo "::error::Windows release builds must use the MSVC host toolchain, got: ${host:-<missing>}" >&2
           exit 1
         fi
 
     - name: Install musl tools
-      if: inputs.target == 'x86_64-unknown-linux-musl'
+      if: inputs.cross_compile != 'true' && inputs.target == 'x86_64-unknown-linux-musl'
       shell: bash
       run: |
         sudo apt-get update
         sudo apt-get install -y musl-tools
 
     - name: Install musl cross-compilation tools
-      if: inputs.target == 'aarch64-unknown-linux-musl'
+      if: inputs.cross_compile != 'true' && inputs.target == 'aarch64-unknown-linux-musl'
       shell: bash
       run: |
         curl -fsSL -o aarch64-unknown-linux-musl.tar.xz \
@@ -111,20 +123,84 @@ runs:
         echo "$PWD/aarch64-unknown-linux-musl/bin" >> "$GITHUB_PATH"
 
     - name: Install GNU cross-compilation tools
-      if: inputs.target == 'aarch64-unknown-linux-gnu'
+      if: inputs.cross_compile != 'true' && inputs.target == 'aarch64-unknown-linux-gnu'
       shell: bash
       run: |
         sudo apt-get update
         sudo apt-get install -y gcc-aarch64-linux-gnu
 
     - name: Configure cross-compilation linker
-      if: inputs.linker != ''
+      if: inputs.cross_compile != 'true' && inputs.linker != ''
       shell: bash
       run: |
         TARGET_UPPER=$(echo "${{ inputs.target }}" | tr '[:lower:]-' '[:upper:]_')
         TARGET_CC=$(echo "${{ inputs.target }}" | tr '-' '_')
         echo "CARGO_TARGET_${TARGET_UPPER}_LINKER=${{ inputs.linker }}" >> "$GITHUB_ENV"
         echo "CC_${TARGET_CC}=${{ inputs.linker }}" >> "$GITHUB_ENV"
+
+    - name: Install Zig
+      if: inputs.cross_driver == 'zigbuild'
+      uses: mlugg/setup-zig@v2
+      with:
+        version: "0.14.1"
+
+    - name: Install cargo-zigbuild
+      if: inputs.cross_driver == 'zigbuild'
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-zigbuild
+
+    - name: Configure Zig C compatibility
+      if: inputs.cross_driver == 'zigbuild'
+      shell: bash
+      run: |
+        # Zig cross targets promote __DATE__/__TIME__ to an error. The
+        # mimalloc-pprof amalgamation reports its build timestamp, so retain
+        # the diagnostic without making that vendored C source unbuildable.
+        printf 'CFLAGS=%s\n' "${CFLAGS:+$CFLAGS }-Wno-error=date-time" >> "$GITHUB_ENV"
+        printf 'CXXFLAGS=%s\n' "${CXXFLAGS:+$CXXFLAGS }-Wno-error=date-time" >> "$GITHUB_ENV"
+
+    - name: Install LLVM dSYM tools
+      if: inputs.cross_driver == 'zigbuild' && contains(inputs.target, 'apple-darwin')
+      shell: bash
+      run: |
+        set -euo pipefail
+        if command -v dsymutil >/dev/null 2>&1; then
+          dsymutil --version
+          exit 0
+        fi
+        sudo apt-get update
+        sudo apt-get install --no-install-recommends -y llvm
+        if command -v dsymutil >/dev/null 2>&1; then
+          dsymutil --version
+          exit 0
+        fi
+        llvm_dsymutil="$(command -v llvm-dsymutil || true)"
+        if [ -z "$llvm_dsymutil" ]; then
+          llvm_dsymutil="$(find -L /usr/bin -maxdepth 1 -type f -executable -name 'llvm-dsymutil*' -print | sort -V | tail -n 1)"
+        fi
+        test -n "$llvm_dsymutil" && test -x "$llvm_dsymutil"
+        sudo ln -s "$llvm_dsymutil" /usr/local/bin/dsymutil
+        test -x /usr/local/bin/dsymutil
+        dsymutil --version
+
+    - name: Install cargo-xwin
+      if: inputs.cross_driver == 'xwin'
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-xwin
+
+    - name: Configure xwin ARM64 C compatibility
+      if: inputs.cross_driver == 'xwin' && inputs.target == 'aarch64-pc-windows-msvc'
+      shell: bash
+      run: |
+        # mimalloc's MSVC C atomics use intrinsics that clang-cl does not
+        # declare for ARM64. Its own source recommends C++ compilation for
+        # MSVC; /TP selects that std::atomic path without changing Rust code.
+        # cargo-xwin owns CFLAGS_<target> and replaces that variable when it
+        # injects the SDK include paths. General CFLAGS is additive in cc-rs
+        # and this job builds only the selected ARM64 target.
+        echo "CFLAGS=-TP" >> "$GITHUB_ENV"
 
     - name: Setup soldr build cache
       if: inputs.use_soldr == 'true'
@@ -133,9 +209,25 @@ runs:
         toolchain: 1.95.0
         cache: true
         cache-key-suffix: build-${{ inputs.cache_key }}
-        linker: fast
+        linker: ${{ inputs.cross_compile == 'true' && 'platform-default' || 'fast' }}
         prebuild-deps: ${{ inputs.prebuild_deps }}
         prebuild-deps-flags: "--release --target ${{ inputs.target }}"
+        compile-cache-stats: detailed
+        verify-compile-cache: ${{ inputs.cross_compile == 'true' && 'error' || 'off' }}
+
+    - name: Verify bootstrap zccache selection
+      if: inputs.cross_compile == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        test -n "${SOLDR_RUSTC_WRAPPER:-}"
+        test -x "$SOLDR_RUSTC_WRAPPER"
+        resolved="$(command -v zccache)"
+        if [ "$resolved" != "$SOLDR_RUSTC_WRAPPER" ]; then
+          echo "::error::Bootstrap zccache is not first on PATH: $resolved" >&2
+          exit 1
+        fi
+        "$SOLDR_RUSTC_WRAPPER" --version
 
     - name: Clear restored target artifacts
       if: inputs.clear_target_after_setup == 'true'
@@ -174,9 +266,20 @@ runs:
       env:
         PYO3_PYTHON: python
       run: |
-        # Release artifacts are distribution outputs, so they must be compiled
-        # from source instead of being hydrated from a restored compile cache.
-        if [ "${{ inputs.use_soldr }}" = "true" ]; then
+        # Native distribution builds keep the historical no-cache path. Linux
+        # cross lanes deliberately use the current-worktree bootstrap zccache;
+        # setup-soldr's post gate rejects a silently bypassed compiler cache.
+        # Zig cross builds are especially memory-heavy on the two-core hosted
+        # Linux runners. Keep one rustc child alive at a time; exit 255 means a
+        # signaled compiler child and persisted with two concurrent children.
+        # The xwin lanes showed the same signaled rustc-child exit (255) once
+        # the Zig lanes were serialized. Keep every hosted cross lane to one
+        # rustc child at a time.
+        if [ "${{ inputs.cross_driver }}" = "zigbuild" ]; then
+          cargo_build=(soldr cargo zigbuild --jobs 1)
+        elif [ "${{ inputs.cross_driver }}" = "xwin" ]; then
+          cargo_build=(soldr cargo xwin build --jobs 1)
+        elif [ "${{ inputs.use_soldr }}" = "true" ]; then
           cargo_build=(soldr --no-cache cargo build)
         else
           cargo_build=(rustup run "$RELEASE_RUST_TOOLCHAIN" cargo build)
@@ -209,7 +312,7 @@ runs:
       shell: bash
       run: |
         case "${{ inputs.target }}" in
-          aarch64-pc-windows-msvc|aarch64-unknown-linux-musl|aarch64-unknown-linux-gnu)
+          *apple-darwin|*pc-windows-msvc|aarch64-unknown-linux-musl|aarch64-unknown-linux-gnu)
             # Cross-compiled; skip exec on host. TODO: when matrix gains
             # an arm64 runner, gate aarch64-pc-windows-msvc through it.
             echo "Skipping smoke test for cross-compiled target ${{ inputs.target }}"
@@ -244,7 +347,11 @@ runs:
         # carry the `python` feature, so `-p zccache --features python` is a
         # workflow-only build-target bug that latently broke the release path.
         # Surfaced when 1.9.1 became the first version bump after that split.
-        if [ "${{ inputs.use_soldr }}" = "true" ]; then
+        if [ "${{ inputs.cross_driver }}" = "zigbuild" ]; then
+          cargo_build=(soldr cargo zigbuild --jobs 1)
+        elif [ "${{ inputs.cross_driver }}" = "xwin" ]; then
+          cargo_build=(soldr cargo xwin build --jobs 1)
+        elif [ "${{ inputs.use_soldr }}" = "true" ]; then
           cargo_build=(soldr --no-cache cargo build)
         else
           cargo_build=(rustup run "$RELEASE_RUST_TOOLCHAIN" cargo build)
@@ -252,6 +359,33 @@ runs:
         "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-cli --features python --lib
         "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-watcher --features python --lib
         "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-fingerprint --features python --lib
+
+    - name: Repair missing Linux debug sidecars
+      if: inputs.cross_driver == 'zigbuild' && contains(inputs.target, 'unknown-linux')
+      shell: bash
+      env:
+        PYO3_PYTHON: python
+      run: |
+        set -euo pipefail
+        TARGET="${{ inputs.target }}"
+        TARGET_DIR="target/$TARGET/release"
+        if [ -e "$TARGET_DIR/zccache.dwp" ] && [ -e "$TARGET_DIR/zccache-fp.dwp" ]; then
+          echo "Linux debug sidecars were produced by the cache-first build"
+          exit 0
+        fi
+
+        # A cached rustc link can restore the executable without the packed
+        # split-debuginfo sidecar. Preserve the normal cache-first build and
+        # its warm dependencies, then rebuild only the shipped umbrella
+        # package without the wrapper so rustc emits both .dwp files locally.
+        echo "Packed Linux debug sidecars are missing; rebuilding zccache locally"
+        soldr cargo clean -p zccache --release --target "$TARGET"
+        soldr --no-cache cargo zigbuild --jobs 1 \
+          --release --target "$TARGET" -p zccache \
+          --features zccache-bin,fingerprint-bin \
+          --bin zccache --bin zccache-fp
+        test -e "$TARGET_DIR/zccache.dwp"
+        test -e "$TARGET_DIR/zccache-fp.dwp"
 
     - name: Stage artifacts
       shell: bash
@@ -351,6 +485,8 @@ runs:
           if [ ! -e "staging-debug/$dsym" ] && [ ! -L "staging-debug/$dsym" ]; then
             if command -v dsymutil >/dev/null 2>&1 && [ -e "$TARGET_DIR/$bin" ]; then
               dsymutil "$TARGET_DIR/$bin" -o "staging-debug/$dsym"
+            elif command -v llvm-dsymutil >/dev/null 2>&1 && [ -e "$TARGET_DIR/$bin" ]; then
+              llvm-dsymutil "$TARGET_DIR/$bin" -o "staging-debug/$dsym"
             fi
           fi
         }
@@ -459,7 +595,7 @@ runs:
         done
 
         case "${{ inputs.target }}" in
-          aarch64-pc-windows-msvc|aarch64-unknown-linux-musl|aarch64-unknown-linux-gnu)
+          *apple-darwin|*pc-windows-msvc|aarch64-unknown-linux-musl|aarch64-unknown-linux-gnu)
             echo "Skipping staged binary execution check for cross-compiled target ${{ inputs.target }}"
             exit 0
             ;;

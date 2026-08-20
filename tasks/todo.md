@@ -518,6 +518,55 @@ Issue: https://github.com/zackees/zccache/issues/1411
   fixture and its parent results alias read-only during verification.
 - clud-review: clean (one reviewer).
 
+# #864 soldr-driven release cross-compilation
+
+Issue: https://github.com/zackees/zccache/issues/864
+
+- [x] Inventory release/build matrices, composite-action artifact contracts,
+  and the soldr reference workflow.
+- [x] Add RED workflow contracts for a bare-cargo bootstrap and the first
+  Ubuntu cross target family.
+- [x] Stage bootstrap zccache and drive the selected cross jobs through soldr
+  zig/xwin without changing artifact shapes.
+- [x] Add or verify release dry-run behavior and publish suppression.
+- [x] Run workflow contracts, focused build validation, formatting, and the
+  review gate.
+- [ ] Push, run the hosted dry-run, merge, and close #864.
+
+## Review
+
+- RED: focused workflow contracts rejected the pre-migration native-runner
+  matrix because it had no wrapper-free bootstrap artifact and invoked
+  platform toolchains directly instead of soldr's zig/xwin drivers.
+- GREEN: 36 release-manifest/toolchain contracts pass (one environment-gated
+  test skipped); all edited YAML parses, and Ruff E/F and whitespace checks pass.
+- Review follow-up: recheck PATH after installing LLVM, accept symlinked
+  versioned `llvm-dsymutil` executables, and verify the selected tool before
+  cross compilation starts.
+- Hosted RED: the second dry run installed Ubuntu's LLVM meta-package, then
+  missed its versioned `llvm-dsymutil` symlink and exited before compilation.
+- clud-review: clean after both follow-ups (one reviewer).
+- Hosted RED: all completed Linux cross lanes terminated multiple unrelated
+  rustc children together with exit 255 under four-way release parallelism;
+  cross lanes are now bounded to two jobs while native builds stay unchanged.
+- clud-review: clean after the initial hosted toolchain follow-ups (one reviewer).
+- Final clud-review: clean after bounding both binary and Python-extension
+  cross-build paths (one reviewer).
+- Hosted RED: serializing Zig builds fixed every signaled compiler child and
+  both macOS targets completed; all four Linux targets then exposed missing
+  packed `.dwp` sidecars after cache-restored link outputs, while both xwin
+  lanes reproduced exit 255 at two jobs.
+- Final follow-up: serialize xwin too, and keep the normal cache-first Linux
+  build while rebuilding only the shipped umbrella package without the wrapper
+  when its `.dwp` outputs were not restored.
+- Final clud-review: clean after restricting the repair to Zig Linux targets
+  and using soldr's sanctioned no-cache fallback (one reviewer).
+- Hosted RED: the next dry run cleared every Linux and macOS target, but the
+  ARM64 xwin build proved cargo-xwin replaces `CFLAGS_aarch64_pc_windows_msvc`
+  while injecting SDK flags, so clang-cl never received `-TP`.
+- Follow-up: pass `-TP` through general `CFLAGS`, which cc-rs composes with
+  cargo-xwin's target flags in this single-target ARM64 job.
+
 # #1414 isolate session-reaping lifecycle events
 
 - [x] Add a RED regression proving a state-owned reap event follows the daemon's explicit cache root, not the process-global environment.

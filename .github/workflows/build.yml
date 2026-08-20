@@ -15,65 +15,101 @@ env:
   RUSTUP_HOME: ${{ github.workspace }}/.rustup
 
 jobs:
+  bootstrap-zccache:
+    name: Bootstrap zccache (bare Cargo)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.ref || github.sha }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Build bootstrap zccache without a compiler wrapper
+        env:
+          CARGO: cargo
+          RUSTC_WRAPPER: ""
+          RUSTC_WORKSPACE_WRAPPER: ""
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER
+          "$CARGO" build --release --target x86_64-unknown-linux-gnu \
+            -p zccache --features zccache-bin --bin zccache
+          mkdir -p bootstrap-zccache
+          install -m 0755 \
+            target/x86_64-unknown-linux-gnu/release/zccache \
+            bootstrap-zccache/zccache
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bootstrap-zccache
+          path: bootstrap-zccache/zccache
+          if-no-files-found: error
+
   build:
     name: Build (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-24.04
+    needs: bootstrap-zccache
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
             binary_ext: ""
+            cross_driver: zigbuild
             prebuild_deps: none
             clear_target_after_setup: "true"
             include_python: false
 
           - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
             binary_ext: ""
-            cross: true
-            linker: aarch64-unknown-linux-musl-gcc
-            strip: aarch64-unknown-linux-musl-strip
+            cross_driver: zigbuild
             prebuild_deps: none
             clear_target_after_setup: "true"
             include_python: false
 
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
             binary_ext: ""
+            cross_driver: zigbuild
+            prebuild_deps: none
+            clear_target_after_setup: "true"
             include_python: true
 
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
             binary_ext: ""
-            cross: true
-            linker: aarch64-linux-gnu-gcc
-            strip: aarch64-linux-gnu-strip
+            cross_driver: zigbuild
             prebuild_deps: none
             clear_target_after_setup: "true"
             include_python: true
 
           - target: x86_64-apple-darwin
-            os: macos-14
             binary_ext: ""
+            cross_driver: zigbuild
+            prebuild_deps: none
+            clear_target_after_setup: "true"
             include_python: true
 
           - target: aarch64-apple-darwin
-            os: macos-latest
             binary_ext: ""
+            cross_driver: zigbuild
             prebuild_deps: none
             clear_target_after_setup: "true"
             include_python: true
 
           - target: x86_64-pc-windows-msvc
-            os: windows-latest
             binary_ext: ".exe"
+            cross_driver: xwin
+            prebuild_deps: none
+            clear_target_after_setup: "true"
             include_python: true
 
           - target: aarch64-pc-windows-msvc
-            os: windows-latest
             binary_ext: ".exe"
+            cross_driver: xwin
             prebuild_deps: none
             clear_target_after_setup: "true"
             require_debug_sidecars: "false"
@@ -84,19 +120,34 @@ jobs:
         with:
           ref: ${{ github.event.inputs.ref || github.sha }}
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: bootstrap-zccache
+          path: ${{ runner.temp }}/bootstrap-zccache
+
+      - name: Install bootstrap zccache for soldr
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x "$RUNNER_TEMP/bootstrap-zccache/zccache"
+          echo "$RUNNER_TEMP/bootstrap-zccache" >> "$GITHUB_PATH"
+          echo "SOLDR_RUSTC_WRAPPER=$RUNNER_TEMP/bootstrap-zccache/zccache" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/bootstrap-zccache/zccache" --version
+
       - uses: ./.github/actions/build-target
         id: build_target
         with:
           target: ${{ matrix.target }}
           binary_ext: ${{ matrix.binary_ext }}
           cache_key: ${{ matrix.target }}
+          use_soldr: "true"
+          cross_compile: "true"
+          cross_driver: ${{ matrix.cross_driver }}
           prebuild_deps: ${{ matrix.prebuild_deps || 'soldr-cook' }}
           clear_target_after_setup: ${{ matrix.clear_target_after_setup || 'false' }}
           require_debug_sidecars: ${{ matrix.require_debug_sidecars || 'true' }}
           include_python: ${{ matrix.include_python && 'true' || 'false' }}
           python_version: "3.13"
-          linker: ${{ matrix.linker || '' }}
-          strip: ${{ matrix.strip || '' }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
