@@ -10,6 +10,7 @@ parent `handle_compile.rs` need no changes.
 | File | Responsibility |
 |---|---|
 | `mod.rs` | `handle_compile_request` orchestrator; wires the phases together |
+| `request_prep.rs` | Validate request inputs, prepare Dylint identity/environment, reject time macros, discover system includes, and parse single- vs multi-file invocations |
 | `system_includes.rs` | Per-compiler system include discovery + initial watch |
 | `hash_verify.rs` | Hash source + headers in parallel, run depgraph verdict |
 | `compile_exec.rs` | Prepare depfile / response file, spawn compiler, parse output |

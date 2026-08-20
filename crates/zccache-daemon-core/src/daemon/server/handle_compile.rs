@@ -11,6 +11,7 @@ mod miss_profile;
 mod miss_store;
 mod pipeline;
 mod request;
+mod rustc_index;
 
 use super::*;
 use request::CompileRequest;

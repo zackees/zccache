@@ -4,6 +4,8 @@ use super::*;
 
 pub(super) enum IndexWriterCommand {
     Insert(String, ArtifactIndex),
+    /// Refresh retention age without replacing newer artifact metadata.
+    Touch(String, u64),
     Remove(Vec<String>),
     Clear(tokio::sync::oneshot::Sender<()>),
     Flush(tokio::sync::oneshot::Sender<()>),
@@ -294,6 +296,17 @@ async fn process_index_writer_command(
                 flush_wal_to_disk(store, wal).await;
             }
         }
+        IndexWriterCommand::Touch(k, stored_at_secs) => {
+            if let Some(meta) = wal.get_mut(&k) {
+                meta.stored_at_secs = meta.stored_at_secs.max(stored_at_secs);
+            } else if let Some(mut meta) = store.get(&k) {
+                meta.stored_at_secs = meta.stored_at_secs.max(stored_at_secs);
+                wal.insert(k, meta);
+            }
+            if wal.len() >= max_pending {
+                flush_wal_to_disk(store, wal).await;
+            }
+        }
         IndexWriterCommand::Remove(keys) => {
             for key in &keys {
                 wal.remove(key);
@@ -367,6 +380,52 @@ pub(super) async fn flush_wal_to_disk(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn access_touch_merges_into_newest_pending_verdict_row() {
+        let temp = tempfile::tempdir().expect("temporary index directory");
+        let store = Arc::new(ArtifactStore::open_empty(&temp.path().join("index.bin")));
+        let mut wal = std::collections::HashMap::new();
+        let key = "b".repeat(64);
+        let mut stale = ArtifactIndex::new(
+            vec!["output.rmeta".to_string()],
+            vec![4096],
+            Vec::new(),
+            Vec::new(),
+            0,
+        );
+        stale.stored_at_secs = 10;
+        store.insert(&key, &stale);
+
+        let mut newest = stale;
+        newest.rustc_verdicts.insert(
+            "dylint".to_string(),
+            ArtifactVerdict {
+                stdout: Arc::new(Vec::new()),
+                stderr: Arc::new(b"lint verdict".to_vec()),
+                exit_code: 1,
+            },
+        );
+        process_index_writer_command(
+            IndexWriterCommand::Insert(key.clone(), newest),
+            &store,
+            &mut wal,
+            usize::MAX,
+        )
+        .await;
+        process_index_writer_command(
+            IndexWriterCommand::Touch(key.clone(), 20),
+            &store,
+            &mut wal,
+            usize::MAX,
+        )
+        .await;
+
+        let pending = wal.get(&key).unwrap();
+        assert_eq!(pending.stored_at_secs, 20);
+        assert_eq!(pending.rustc_verdicts.len(), 1);
+        assert_eq!(pending.output_names.as_ref(), &["output.rmeta"]);
+    }
 
     #[tokio::test]
     async fn remove_cancels_pending_insert_and_persists_deletion() {

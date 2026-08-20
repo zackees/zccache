@@ -29,6 +29,9 @@ pub(super) struct MissArtifactStoreRequest<'a> {
     /// has durably consumed them.
     pub(super) staged_persist_plan: Option<StagedCompilePlan>,
     pub(super) rustc_all_outputs: Option<&'a [RustcOutputFile]>,
+    /// Dylint input identity for the rustc verdict layer. `None` selects the
+    /// plain-rustc verdict while non-rust compilers never call the rust path.
+    pub(super) rustc_dylint_input_hash: Option<&'a str>,
     pub(super) stdout: &'a Arc<Vec<u8>>,
     pub(super) stderr: &'a Arc<Vec<u8>>,
     pub(super) exit_code: i32,
@@ -73,6 +76,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
         user_depfile_persist_temp,
         staged_persist_plan,
         rustc_all_outputs,
+        rustc_dylint_input_hash,
         stdout,
         stderr,
         exit_code,
@@ -132,6 +136,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
                 source_path,
                 all_outputs,
                 &artifact_key_hex,
+                rustc_dylint_input_hash,
                 stdout,
                 stderr,
                 exit_code,
@@ -302,6 +307,7 @@ fn store_rustc_outputs(
     source_path: &NormalizedPath,
     all_outputs: &[RustcOutputFile],
     artifact_key_hex: &str,
+    dylint_input_hash: Option<&str>,
     stdout: &Arc<Vec<u8>>,
     stderr: &Arc<Vec<u8>>,
     exit_code: i32,
@@ -339,12 +345,24 @@ fn store_rustc_outputs(
     // publishing the in-memory artifact so depgraph hits never point at a
     // key whose payload files have not landed yet.
     let t_artifact_index_build = Instant::now();
-    let meta = ArtifactIndex::new(
+    let mut meta = ArtifactIndex::new(
         output_names,
         output_sizes,
-        Arc::clone(stdout),
-        Arc::clone(stderr),
-        exit_code,
+        Arc::new(Vec::new()),
+        Arc::new(Vec::new()),
+        0,
+    );
+    let verdict_key_hex =
+        crate::depgraph::compute_rustc_verdict_key(artifact_key_hex, dylint_input_hash)
+            .hash()
+            .to_hex();
+    meta.rustc_verdicts.insert(
+        verdict_key_hex,
+        ArtifactVerdict {
+            stdout: Arc::clone(stdout),
+            stderr: Arc::clone(stderr),
+            exit_code,
+        },
     );
     stats.artifact_index_build_ns = t_artifact_index_build.elapsed().as_nanos() as u64;
     stats.artifact_build_ns = t_artifact_build.elapsed().as_nanos() as u64;
@@ -373,29 +391,23 @@ fn store_rustc_outputs(
                 let _staged_plan = staged_plan;
                 let snapshot =
                     persist_artifact_paths_with_stats(&artifact_dir, &key_hex, &source_paths)?;
-                if snapshot.staged {
-                    send_staged_index_insert(
-                        state_for_publish.as_ref(),
-                        key_hex.clone(),
-                        meta.clone(),
-                    )
-                    .map_err(|reason| {
-                        std::io::Error::other(format!(
-                            "staged artifact index commit failed: {}",
-                            reason.id()
-                        ))
-                    })?;
-                } else {
-                    enqueue_index_insert(state_for_publish.as_ref(), key_hex, meta.clone());
-                }
-                Ok::<_, std::io::Error>((snapshot, meta))
+                commit_rustc_artifact_index(
+                    state_for_publish.as_ref(),
+                    key_hex,
+                    meta,
+                    snapshot.staged,
+                )
+                .map_err(|reason| {
+                    std::io::Error::other(format!(
+                        "staged artifact index commit failed: {}",
+                        reason.id()
+                    ))
+                })?;
+                Ok::<_, std::io::Error>(snapshot)
             })
             .await;
             match published {
-                Ok(Ok((snapshot, meta))) => {
-                    state_ref
-                        .artifacts
-                        .insert(completion_key.clone(), CachedArtifact::from_index(meta));
+                Ok(Ok(snapshot)) => {
                     use crate::daemon::staged_stats::{StagedBytes, StagedCounter, StagedTiming};
                     if snapshot.staged {
                         state_ref
@@ -473,14 +485,14 @@ fn store_rustc_outputs(
             stats.rust_snapshot_copy_bytes = snapshot_stats.copy_bytes;
             stats.rust_snapshot_digest_ns = snapshot_stats.staged_hash_ns;
             stats.rust_snapshot_publication_ns = snapshot_stats.staged_publication_ns;
-            let (index_failure, index_commit_ns) = if snapshot_stats.staged {
-                match send_staged_index_insert(state, artifact_key_hex.to_string(), meta.clone()) {
-                    Ok(elapsed_ns) => (None, elapsed_ns),
-                    Err(reason) => (Some(reason), 0),
-                }
-            } else {
-                enqueue_index_insert(state, artifact_key_hex.to_string(), meta.clone());
-                (None, 0)
+            let (index_failure, index_commit_ns) = match commit_rustc_artifact_index(
+                state,
+                artifact_key_hex.to_string(),
+                meta,
+                snapshot_stats.staged,
+            ) {
+                Ok(elapsed_ns) => (None, elapsed_ns),
+                Err(reason) => (Some(reason), 0),
             };
             if let Some(reason) = index_failure {
                 record_staged_publication_failure(state, reason);
@@ -536,10 +548,7 @@ fn store_rustc_outputs(
 
     let t_artifact_insert_stats = Instant::now();
     if persisted {
-        let t_artifact_memory_insert = Instant::now();
-        let cached = CachedArtifact::from_index(meta);
-        state.artifacts.insert(artifact_key_hex.to_string(), cached);
-        stats.artifact_memory_insert_ns = t_artifact_memory_insert.elapsed().as_nanos() as u64;
+        stats.artifact_memory_insert_ns = t_artifact_insert_stats.elapsed().as_nanos() as u64;
     }
 
     let latency_ns = compile_start.elapsed().as_nanos() as u64;
@@ -550,6 +559,42 @@ fn store_rustc_outputs(
     });
     stats.artifact_insert_stats_ns = t_artifact_insert_stats.elapsed().as_nanos() as u64;
     drop(publication_guard);
+}
+
+fn commit_rustc_artifact_index(
+    state: &SharedState,
+    key_hex: String,
+    mut meta: ArtifactIndex,
+    staged: bool,
+) -> Result<u64, StagedPublishFailure> {
+    use dashmap::mapref::entry::Entry;
+
+    if let Some(durable) = super::rustc_index::durable_rustc_index(state, &key_hex) {
+        meta = super::rustc_index::merge_rustc_index(meta, durable);
+    }
+
+    let commit = |metadata: ArtifactIndex| {
+        if staged {
+            send_staged_index_insert(state, key_hex.clone(), metadata)
+        } else {
+            enqueue_index_insert(state, key_hex.clone(), metadata);
+            Ok(0)
+        }
+    };
+
+    match state.artifacts.entry(key_hex.clone()) {
+        Entry::Occupied(mut entry) => {
+            meta = super::rustc_index::merge_rustc_index(meta, entry.get().meta.clone());
+            let commit_ns = commit(meta.clone())?;
+            entry.insert(CachedArtifact::from_index(meta));
+            Ok(commit_ns)
+        }
+        Entry::Vacant(entry) => {
+            let commit_ns = commit(meta.clone())?;
+            entry.insert(CachedArtifact::from_index(meta));
+            Ok(commit_ns)
+        }
+    }
 }
 
 /// Preserve canonical staged depfile bytes after requested-output
@@ -846,10 +891,34 @@ fn store_single_output(
 #[cfg(test)]
 mod staged_publication_diagnostic_tests {
     use super::{
-        enqueue_persisted_index, preserve_staged_depfile_for_persistence,
-        truncate_staged_publication_error, PersistOutcome, MAX_STAGED_PUBLICATION_ERROR_CHARS,
+        commit_rustc_artifact_index, enqueue_persisted_index,
+        preserve_staged_depfile_for_persistence, truncate_staged_publication_error, ArtifactIndex,
+        ArtifactVerdict, PersistOutcome, MAX_STAGED_PUBLICATION_ERROR_CHARS,
     };
     use crate::core::NormalizedPath;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn rustc_index_commit_merges_verdicts_for_shared_artifact_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let server = crate::daemon::server::tests::bind_isolated_server(temp.path());
+        let mut meta = ArtifactIndex::new(vec![], vec![], vec![], vec![], 0);
+        for key in ["plain", "dylint"] {
+            meta.rustc_verdicts.insert(
+                key.to_string(),
+                ArtifactVerdict {
+                    stdout: Arc::new(Vec::new()),
+                    stderr: Arc::new(key.as_bytes().to_vec()),
+                    exit_code: 0,
+                },
+            );
+            commit_rustc_artifact_index(&server.state, "artifact".to_string(), meta, false)
+                .unwrap();
+            meta = ArtifactIndex::new(vec![], vec![], vec![], vec![], 0);
+        }
+        let cached = server.state.artifacts.get("artifact").unwrap();
+        assert_eq!(cached.meta.rustc_verdicts.len(), 2);
+    }
 
     #[test]
     fn failed_async_persist_never_enqueues_an_index_insert() {

@@ -882,7 +882,8 @@ pub(super) async fn spawn_artifact_loader(
                 for (key, meta) in entries {
                     state_ref
                         .artifacts
-                        .insert(key, CachedArtifact::from_index(meta));
+                        .entry(key)
+                        .or_insert_with(|| CachedArtifact::from_index(meta));
                 }
                 count
             } else {

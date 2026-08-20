@@ -4,6 +4,7 @@
 //! hit-branch dispatch, miss exec, store) was originally a single 1.2k LOC
 //! function. The implementation is now split per phase under this directory:
 //!
+//! - `request_prep.rs` — validation, Dylint/time-macro prep, invocation parse
 //! - `system_includes.rs` — per-compiler system include discovery + watch
 //! - `hash_verify.rs` — source + header hashing and depgraph verdict
 //! - `compile_exec.rs` — depfile/response-file prep + compiler spawn
@@ -15,6 +16,7 @@
 
 mod compile_exec;
 mod hash_verify;
+mod request_prep;
 mod store_outcome;
 mod system_includes;
 mod time_macros;
@@ -23,7 +25,7 @@ use super::super::*;
 use super::cached_hit::{
     materialize_cached_compile_hit, CachedHitFailure, CachedHitMaterializeRequest, CachedHitPhases,
 };
-use super::error_cache::{compile_failure_stderr, maybe_store_rustc_error_artifact};
+use super::error_cache::maybe_store_rustc_error_artifact;
 use super::hit_branches::{
     try_depgraph_cached_hit, try_fast_hit, try_request_cache_hit, DepgraphHitProbe, FastHitProbe,
     RequestCacheHitProbe,
@@ -32,11 +34,13 @@ use super::request::CompileRequest;
 
 use compile_exec::{run_compile_exec, CompileExecOutcome, CompileExecRequest, CompileExecResult};
 use hash_verify::{hash_and_verify, HashSourceOutcome, HashVerifyInput, HashVerifyOutcome};
+use request_prep::{
+    begin_prepared_request, discover_request_system_includes, invalidate_missing_depgraph_artifact,
+    parse_single_compile_request, prepare_request_arguments, record_dylint_input_hash,
+    wait_for_startup_depgraph_load, ParsedRequestArguments, ParsedSingleRequest,
+};
 use store_outcome::{store_successful_compile, StoreOutcomeRequest};
-use system_includes::{discover_system_includes, SystemIncludesOutcome};
-use time_macros::{find_time_macro_use, warn_time_macro_uncacheable};
-
-const DEPGRAPH_STARTUP_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+use system_includes::SystemIncludesOutcome;
 
 /// Handle a Compile request: parse args, check depgraph, run compiler or return cached.
 pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response {
@@ -49,183 +53,29 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         client_env,
         stdin,
     } = req;
-    let mut client_env = client_env;
     let state = state_arc.as_ref();
     let compile_start = std::time::Instant::now();
-    let sid = match session_id.parse::<SessionId>() {
-        Ok(id) => id,
-        Err(_) => {
-            return Response::Error {
-                message: format!("invalid session ID: {session_id}"),
-            };
-        }
-    };
-    // Expand response files before request-level caching so `@file` mutations
-    // can't reuse stale fast-hit entries keyed only by raw argv.
-    let expanded_args = expand_args_cached(state, args, cwd);
-
-    let strict_paths_mode = match strict_paths_mode_from_client_env(client_env.as_deref()) {
-        Ok(mode) => mode,
-        Err(err) => return compile_failure_stderr(format!("zccache: {err}")),
-    };
-    if let Err(err) =
-        crate::compiler::strict_paths::validate_args(&expanded_args, strict_paths_mode)
-    {
-        let compiler = compiler_path.display().to_string();
-        return compile_failure_stderr(err.diagnostic(&compiler, &expanded_args));
-    }
-    let dependency_mode = match DependencyDiscoveryMode::from_client_env(client_env.as_deref()) {
-        Ok(mode) => mode,
-        Err(err) => return compile_failure_stderr(format!("zccache: {err}")),
-    };
-
-    let worktree_root = compile_worktree_root(state, &sid, cwd, client_env.as_deref());
-    let effective_args = effective_compile_args(
-        &expanded_args,
+    let ParsedRequestArguments {
+        sid,
+        client_env,
+        dependency_mode,
+        worktree_root,
+        effective_args,
+        request_cache_key_root,
+    } = match prepare_request_arguments(
+        state,
+        session_id,
         compiler_path,
+        args,
         cwd,
-        worktree_root.as_ref(),
-        client_env.as_deref(),
-    );
-
-    if crate::compiler::is_dylint_driver(&compiler_path.to_string_lossy()) {
-        let dylint_result = async {
-            let (inner_rustc, _) = crate::compiler::dylint_inner_rustc_args(
-                &compiler_path.to_string_lossy(),
-                &effective_args,
-            )
-            .map_err(str::to_string)?
-            .ok_or_else(|| "Dylint nested invocation was not recognized".to_string())?;
-            let inner_rustc = {
-                let path = Path::new(inner_rustc);
-                if path.is_absolute() {
-                    path.to_path_buf()
-                } else {
-                    cwd.join(path)
-                }
-            };
-            let driver_identity = state
-                .compiler_hash_cache
-                .get_or_hash_with_async(compiler_path, {
-                    let probe_env = client_env.clone().unwrap_or_default();
-                    |path| hash_dylint_driver_identity_async(path, probe_env)
-                })
-                .await
-                .ok_or_else(|| {
-                    format!("cannot identify Dylint driver {}", compiler_path.display())
-                })?;
-            let inner_rustc_identity = state
-                .compiler_hash_cache
-                .get_or_hash_rustc_identity_async(&inner_rustc)
-                .await
-                .ok_or_else(|| {
-                    format!(
-                        "cannot identify Dylint inner rustc {}",
-                        inner_rustc.display()
-                    )
-                })?;
-            let env = client_env.get_or_insert_with(Vec::new);
-            crate::compiler::prepare_dylint_cache_env_with_identities(
-                &NormalizedPath::new(compiler_path),
-                &effective_args,
-                cwd,
-                env,
-                driver_identity,
-                inner_rustc_identity,
-                |path| {
-                    state
-                        .compiler_hash_cache
-                        .get_or_hash_with(path, |path| crate::hash::hash_file(path).ok())
-                        .ok_or_else(|| {
-                            format!(
-                                "cannot hash Dylint library {}; running uncached",
-                                path.display()
-                            )
-                        })
-                },
-            )
-        }
-        .await;
-        if dylint_result.is_ok() {
-            if let Some(env) = client_env.as_deref() {
-                for (name, value) in env.iter().filter(|(name, _)| {
-                    crate::compiler::dylint_env_affects_output(name)
-                        || matches!(name.as_str(), "DYLINT_LIBS" | "ZCCACHE_WORKTREE_ROOT")
-                }) {
-                    record_dylint_input_hash(name, value.as_bytes());
-                }
-            }
-        }
-        if let Err(reason) = dylint_result {
-            let diagnostic = format!("zccache: Dylint cache disabled: {reason}\n");
-            let bypass_compiler: NormalizedPath = compiler_path.into();
-            state.stats.record_compilation();
-            state.stats.record_non_cacheable();
-            record_session_stat(&state.sessions, &sid, |t| t.record_non_cacheable());
-            write_session_log(
-                &state.sessions,
-                &sid,
-                &format!("non-cacheable: Dylint cache disabled: {reason}"),
-            );
-            let response = run_compiler_direct(
-                &bypass_compiler,
-                args,
-                cwd,
-                &state.sessions,
-                &sid,
-                &client_env,
-                &stdin,
-                state.depfile_tmpdir.as_path(),
-            )
-            .await;
-            return prepend_compile_stderr(response, diagnostic.as_bytes());
-        }
-    }
-    let request_cache_key_root =
-        request_key_root(compiler_path, &effective_args, worktree_root.as_ref());
-
-    // `__DATE__`, `__TIME__`, and `__TIMESTAMP__` are source-level inputs
-    // whose expansion changes between otherwise-identical compiler requests.
-    // This check intentionally precedes the request cache: all later cache
-    // layers would be too late to prevent replaying an old timestamp object.
-    let preflight_parsed =
-        crate::compiler::parse_invocation(compiler_path.to_str().unwrap_or(""), &effective_args);
-    let time_macro_use = match &preflight_parsed {
-        crate::compiler::ParsedInvocation::Cacheable(compilation) => {
-            find_time_macro_use(compilation, cwd)
-        }
-        crate::compiler::ParsedInvocation::MultiFile { compilations, .. } => compilations
-            .iter()
-            .find_map(|compilation| find_time_macro_use(compilation, cwd)),
-        crate::compiler::ParsedInvocation::NonCacheable { .. } => None,
+        client_env,
+        &stdin,
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(response) => return response,
     };
-    if let Some(found) = time_macro_use {
-        let bypass_compiler: NormalizedPath = compiler_path.into();
-        state.stats.record_compilation();
-        state.stats.record_non_cacheable();
-        record_session_stat(&state.sessions, &sid, |t| t.record_non_cacheable());
-        write_session_log(
-            &state.sessions,
-            &sid,
-            &format!(
-                "non-cacheable: {} in {}",
-                found.macro_name,
-                found.input_file.display()
-            ),
-        );
-        warn_time_macro_uncacheable(&found);
-        return run_compiler_direct(
-            &bypass_compiler,
-            args,
-            cwd,
-            &state.sessions,
-            &sid,
-            &client_env,
-            &stdin,
-            state.depfile_tmpdir.as_path(),
-        )
-        .await;
-    }
 
     // Snap the journal clock once so all file hashes in this request see a
     // consistent view (avoids per-file current_clock() syscalls).
@@ -249,179 +99,62 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         return response;
     }
 
-    state.stats.record_compilation();
+    let (compiler, lineage, want_rust_miss_profile) =
+        begin_prepared_request(state, &sid, session_id, compiler_path);
 
-    // Note: we do not require `state.sessions.exists(&sid)` here. A daemon
-    // restart (e.g. zccache-ci killing the daemon to unlock target binaries
-    // on Windows) drops the session map but client wrappers keep using the
-    // session UUID they were issued. The session-stat and touch helpers
-    // below already no-op for unknown sessions, so the compile itself
-    // proceeds; only per-session stats are lost. Mirrors PR #137's
-    // idempotent SessionEnd fix. See issues #166 and #167.
-
-    let compiler: NormalizedPath = compiler_path.into();
-
-    // Lineage carried into every child spawned for this compile request —
-    // compiler, depfile probe, etc. See `super::super::lineage` and issue #7.
-    let lineage = crate::daemon::lineage::Lineage::current(
-        session_client_pid(state, &sid),
-        Some(session_id.into()),
-    );
-
-    // Issue #461: the timed phases below feed only `RustMissProfile`, which is
-    // emitted only when `ZCCACHE_PROFILE_RUST_MISS` is set. Decide once here
-    // whether to capture phase boundaries — otherwise we pay 4 unconditional
-    // clock reads (~50ns Linux / ~500ns Windows each) on EVERY request,
-    // including warm hits that never reach the miss emitter. Cheap env var
-    // probe is ~50ns; tied here for amortization across the rest of the
-    // function. Note this is broader than `rust_profile_enabled` below (which
-    // also requires `is_rustc`); allowing the env-only check to gate these
-    // early phases costs at most a handful of bytes when a non-rustc
-    // compile happens with the env set — acceptable since that's the rare
-    // diagnostic path.
-    let want_rust_miss_profile = std::env::var_os(RUST_MISS_PROFILE_ENV).is_some();
-
-    let compiler_priority = CompilePriority::from_client_env(client_env.as_deref());
     let SystemIncludesOutcome {
         includes: system_includes,
-        empty_discovery,
         system_includes_ns,
         system_watch_ns,
-    } = discover_system_includes(
+        ..
+    } = match discover_request_system_includes(
         state,
+        &sid,
         &compiler,
         &lineage,
-        compiler_priority,
         want_rust_miss_profile,
+        args,
+        cwd,
+        &client_env,
+        &stdin,
     )
-    .await;
-
-    if empty_discovery {
-        // Issue #1167: an empty successful C/C++ probe is ambiguous, not an
-        // assertion that the compiler has no default includes. Do not build a
-        // context or artifact key from it; run this request directly and let
-        // the next request re-probe.
-        state.stats.record_compilation();
-        state.stats.record_non_cacheable();
-        record_session_stat(&state.sessions, &sid, |t| t.record_non_cacheable());
-        write_session_log(
-            &state.sessions,
-            &sid,
-            "non-cacheable: system include discovery returned zero paths",
-        );
-        return run_compiler_direct(
-            &compiler,
-            args,
-            cwd,
-            &state.sessions,
-            &sid,
-            &client_env,
-            &stdin,
-            state.depfile_tmpdir.as_path(),
-        )
-        .await;
-    }
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(response) => return response,
+    };
 
     state.sessions.touch(&sid);
 
-    // ── Phase: expand response files + parse args ─────────────────────
-    let t0 = std::time::Instant::now();
-    let compiler_str = compiler.to_str().unwrap_or("");
-    let parsed = crate::compiler::parse_invocation(compiler_str, &effective_args);
-    let compilation = match parsed {
-        crate::compiler::ParsedInvocation::Cacheable(c) => c,
-        crate::compiler::ParsedInvocation::NonCacheable { reason } => {
-            state.stats.record_non_cacheable();
-            record_session_stat(&state.sessions, &sid, |t| t.record_non_cacheable());
-            write_session_log(&state.sessions, &sid, &format!("non-cacheable: {reason}"));
-            // Use raw args — compiler handles @file natively
-            return run_compiler_direct(
-                &compiler,
-                args,
-                cwd,
-                &state.sessions,
-                &sid,
-                &client_env,
-                &stdin,
-                state.depfile_tmpdir.as_path(),
-            )
-            .await;
-        }
-        crate::compiler::ParsedInvocation::MultiFile {
-            compilations,
-            original_args,
-            source_indices,
-        } => {
-            wait_for_startup_depgraph_load(state, &sid).await;
-            return handle_compile_multi(
-                Arc::clone(state_arc),
-                sid,
-                compiler,
-                compilations,
-                original_args,
-                source_indices,
-                cwd.into(),
-                worktree_root.clone(),
-                system_includes,
-                client_env,
-                stdin,
-                compile_start,
-                dependency_mode,
-            )
-            .await;
-        }
+    let ParsedSingleRequest {
+        compilation,
+        cwd_path,
+        source_path,
+        output_path,
+        system_includes,
+        client_env,
+        stdin,
+        parse_args_ns,
+    } = match parse_single_compile_request(
+        state_arc,
+        state,
+        &sid,
+        &compiler,
+        &effective_args,
+        args,
+        cwd,
+        worktree_root.as_ref(),
+        system_includes,
+        client_env,
+        stdin,
+        compile_start,
+        dependency_mode,
+    )
+    .await
+    {
+        Ok(parsed) => parsed,
+        Err(response) => return response,
     };
-    let parse_args_ns = t0.elapsed().as_nanos() as u64;
-
-    let cwd_path: NormalizedPath = cwd.into();
-    let source_path = if compilation.source_file.is_absolute() {
-        compilation.source_file.clone()
-    } else {
-        cwd_path.join(&compilation.source_file)
-    };
-    let output_path = if compilation.output_file.is_absolute() {
-        compilation.output_file.clone()
-    } else {
-        cwd_path.join(&compilation.output_file)
-    };
-    if compilation.family == crate::compiler::CompilerFamily::Rustc {
-        let rustc_args = crate::depgraph::parse_rustc_args(
-            crate::compiler::dylint_inner_rustc_args(compiler_str, &effective_args)
-                .ok()
-                .flatten()
-                .map_or(effective_args.as_slice(), |(_, inner)| inner),
-            cwd,
-        );
-        if rustc_args.crate_types == ["cdylib"]
-            && !dylint_cdylib_has_complete_output_identity(
-                &rustc_args,
-                output_path.as_path(),
-                cwd,
-                client_env.as_deref(),
-            )
-        {
-            state.stats.record_non_cacheable();
-            record_session_stat(&state.sessions, &sid, |tracker| {
-                tracker.record_non_cacheable()
-            });
-            write_session_log(
-                &state.sessions,
-                &sid,
-                "non-cacheable: Dylint cdylib output identity is incomplete",
-            );
-            return run_compiler_direct(
-                &compiler,
-                args,
-                cwd,
-                &state.sessions,
-                &sid,
-                &client_env,
-                &stdin,
-                state.depfile_tmpdir.as_path(),
-            )
-            .await;
-        }
-    }
 
     // ── Phase: build context + register ──────────────────────────────
     wait_for_startup_depgraph_load(state, &sid).await;
@@ -823,6 +556,10 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 t.record_depgraph_hit_artifact_miss();
             });
             let failure_name = match &failure {
+                CachedHitFailure::VerdictMissing => {
+                    record_miss_reason(miss_reason::NO_ARTIFACT_FOR_KEY);
+                    "verdict_not_found"
+                }
                 CachedHitFailure::CacheBlobMissing(_) => {
                     record_miss_reason(miss_reason::NO_ARTIFACT_FOR_KEY);
                     "artifact_not_found"
@@ -984,11 +721,21 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                         cwd,
                         client_env.as_deref(),
                     );
+                    let dylint_hash = client_env.as_deref().and_then(|env| {
+                        env.iter().find_map(|(name, value)| {
+                            (name == "ZCCACHE_DYLINT_CACHE_INPUT_HASH").then_some(value.as_str())
+                        })
+                    });
+                    let verdict_key_hex =
+                        crate::depgraph::compute_rustc_verdict_key(&artifact_key_hex, dylint_hash)
+                            .hash()
+                            .to_hex();
                     if let Ok(response) =
                         materialize_cached_compile_hit(CachedHitMaterializeRequest {
                             state,
                             sid: &sid,
                             artifact_key_hex: &artifact_key_hex,
+                            verdict_key_hex: Some(&verdict_key_hex),
                             source_path: &source_path,
                             output_path: &output_path,
                             secondary_output_dir: output_path
@@ -1131,6 +878,11 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         state.stats.record_error();
         record_session_stat(&state.sessions, &sid, |t| t.record_error());
         if let Some(rustc_args) = rustc_args_opt.as_ref() {
+            let dylint_input_hash = client_env.as_deref().and_then(|env| {
+                env.iter().find_map(|(name, value)| {
+                    (name == "ZCCACHE_DYLINT_CACHE_INPUT_HASH").then_some(value.as_str())
+                })
+            });
             if let Some(artifact_key_hex) = maybe_store_rustc_error_artifact(
                 state,
                 &context_key,
@@ -1138,6 +890,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 &cwd_path,
                 &ctx,
                 rustc_args,
+                dylint_input_hash,
                 &artifact_stdout,
                 &artifact_stderr,
                 exit_code,
@@ -1161,6 +914,11 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
     // Only cache successful compilations
     if exit_code == 0 {
         let synchronous_persist = staged_plan.is_some();
+        let rustc_dylint_input_hash = client_env.as_deref().and_then(|env| {
+            env.iter().find_map(|(name, value)| {
+                (name == "ZCCACHE_DYLINT_CACHE_INPUT_HASH").then_some(value.as_str())
+            })
+        });
         if let Some(response) = store_successful_compile(StoreOutcomeRequest {
             state_arc,
             sid: &sid,
@@ -1178,6 +936,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             compilation: &compilation,
             dependency_mode,
             rustc_args_opt: rustc_args_opt.as_deref(),
+            rustc_dylint_input_hash,
             rustc_extern_paths: &rustc_extern_paths,
             client_env: client_env.as_deref(),
             is_rustc,
@@ -1229,80 +988,5 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         stdout: response_stdout,
         stderr: response_stderr,
         cached: false,
-    }
-}
-
-fn record_dylint_input_hash(name: &str, value: &[u8]) {
-    let value_hash = crate::hash::hash_bytes(value).to_hex();
-    super::super::inner_trace::record_ns(
-        &format!(
-            "dylint_input_{}_{}",
-            name.to_ascii_lowercase(),
-            &value_hash[..12]
-        ),
-        0,
-    );
-}
-
-fn prepend_compile_stderr(mut response: Response, diagnostic: &[u8]) -> Response {
-    if let Response::CompileResult { stderr, .. } = &mut response {
-        let existing = std::mem::take(Arc::make_mut(stderr));
-        let mut combined = Vec::with_capacity(diagnostic.len() + existing.len());
-        combined.extend_from_slice(diagnostic);
-        combined.extend(existing);
-        *Arc::make_mut(stderr) = combined;
-    }
-    response
-}
-
-fn invalidate_missing_depgraph_artifact(
-    state: &SharedState,
-    sid: &SessionId,
-    artifact_key_hex: &str,
-    _evidence: &CacheBlobMissing,
-) {
-    let mut stale_keys = std::collections::HashSet::with_capacity(1);
-    stale_keys.insert(artifact_key_hex.to_string());
-    let cleared = state.dep_graph.load().invalidate_artifact_keys(&stale_keys);
-    write_session_log(
-        &state.sessions,
-        sid,
-        &format!("[DIAG] depgraph_invalidate_artifact: key={artifact_key_hex} cleared={cleared}"),
-    );
-}
-
-async fn wait_for_startup_depgraph_load(state: &SharedState, sid: &SessionId) {
-    if state.dep_graph_load_complete.load(Ordering::Acquire) {
-        return;
-    }
-
-    write_session_log(
-        &state.sessions,
-        sid,
-        "[DIAG] depgraph_load_pending: waiting before compile context registration",
-    );
-
-    let deadline = tokio::time::sleep(DEPGRAPH_STARTUP_WAIT_TIMEOUT);
-    tokio::pin!(deadline);
-    loop {
-        let notified = state.dep_graph_load_notify.notified();
-        if state.dep_graph_load_complete.load(Ordering::Acquire) {
-            return;
-        }
-        tokio::select! {
-            () = notified => {
-                if state.dep_graph_load_complete.load(Ordering::Acquire) {
-                    return;
-                }
-            }
-            () = &mut deadline => {
-                write_session_log(
-                    &state.sessions,
-                    sid,
-                    "[WARN] depgraph_load_pending: timed out; continuing with current graph",
-                );
-                return;
-            }
-        }
     }
 }

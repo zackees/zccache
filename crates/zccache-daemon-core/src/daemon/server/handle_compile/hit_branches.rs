@@ -7,6 +7,25 @@ use super::cached_hit::{
 use crate::depgraph::depfile::user_depfile_destination;
 use crate::depgraph::UserDepFlags;
 
+const DYLINT_CACHE_INPUT_HASH_ENV: &str = "ZCCACHE_DYLINT_CACHE_INPUT_HASH";
+
+fn rustc_verdict_key_hex(
+    is_rustc: bool,
+    artifact_key_hex: &str,
+    client_env: Option<&[(String, String)]>,
+) -> Option<String> {
+    is_rustc.then(|| {
+        let dylint_hash = client_env.and_then(|env| {
+            env.iter()
+                .find_map(|(name, value)| (name == DYLINT_CACHE_INPUT_HASH_ENV).then_some(value))
+                .map(String::as_str)
+        });
+        crate::depgraph::compute_rustc_verdict_key(artifact_key_hex, dylint_hash)
+            .hash()
+            .to_hex()
+    })
+}
+
 pub(super) struct RequestCacheHitProbe<'a> {
     pub(super) state: &'a SharedState,
     pub(super) sid: &'a SessionId,
@@ -130,10 +149,12 @@ pub(super) async fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Op
         rustc_requested_outputs(rustc_args, &output_path, cwd, client_env);
     let rustc_archive_hardlink_eligible =
         is_rustc.then(|| crate::compiler::rustc_archive_hardlink_eligible(rustc_args));
+    let verdict_key_hex = rustc_verdict_key_hex(is_rustc, artifact_key_hex, client_env);
     materialize_cached_compile_hit(CachedHitMaterializeRequest {
         state,
         sid,
         artifact_key_hex,
+        verdict_key_hex: verdict_key_hex.as_deref(),
         source_path: &source_path,
         output_path: &output_path,
         secondary_output_dir: output_path.parent().unwrap_or(cwd).into(),
@@ -259,10 +280,12 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
     } else {
         None
     };
+    let verdict_key_hex = rustc_verdict_key_hex(is_rustc, &entry_artifact_key_hex, client_env);
     let response = materialize_cached_compile_hit(CachedHitMaterializeRequest {
         state,
         sid,
         artifact_key_hex: &entry_artifact_key_hex,
+        verdict_key_hex: verdict_key_hex.as_deref(),
         source_path,
         output_path,
         secondary_output_dir,
@@ -399,10 +422,13 @@ pub(super) async fn try_depgraph_cached_hit(
     // and unnecessarily recompile. The fast-hit path has the same guard.
     pending_writes::await_pending_payload(&state.pending_cache_writes, artifact_key_hex).await;
 
+    let verdict_key_hex = rustc_verdict_key_hex(is_rustc, artifact_key_hex, client_env);
+
     let response = materialize_cached_compile_hit(CachedHitMaterializeRequest {
         state,
         sid,
         artifact_key_hex,
+        verdict_key_hex: verdict_key_hex.as_deref(),
         source_path,
         output_path,
         secondary_output_dir,

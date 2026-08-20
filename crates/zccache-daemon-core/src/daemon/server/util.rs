@@ -309,9 +309,10 @@ pub(super) fn record_artifact_access(
     artifact: &CachedArtifact,
     now: Instant,
 ) {
-    if let Some(meta) = artifact.record_access(now) {
-        let _ = state
-            .index_writer_tx
-            .send(IndexWriterCommand::Insert(key_hex.to_string(), meta));
+    if let Some(stored_at_secs) = artifact.record_access(now) {
+        let _ = state.index_writer_tx.send(IndexWriterCommand::Touch(
+            key_hex.to_string(),
+            stored_at_secs,
+        ));
     }
 }

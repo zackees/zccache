@@ -324,6 +324,134 @@ async fn nested_dylint_hits_and_invalidates_every_external_input() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "integration-level: starts a real daemon and rustc"]
+async fn plain_and_dylint_share_artifact_bytes_but_not_verdicts() {
+    let Some(rustc) = zccache::test_support::find_rustc() else {
+        eprintln!("skipping test: rustc not found");
+        return;
+    };
+
+    zccache::test_support::test_timeout(async move {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let _cache_env = CacheDirEnvGuard::set(&cache);
+        let driver = tmp.path().join("dylint-driver");
+        let library = tmp.path().join("libworkspace_lint.so");
+        let source = tmp.path().join("lib.rs");
+        let output = tmp.path().join("libchecked.rlib");
+        write_driver(&driver, "workspace lint verdict");
+        std::fs::write(&library, b"lint-library").unwrap();
+        std::fs::write(&source, "pub fn checked() -> u32 { 42 }\n").unwrap();
+
+        let plain_args = vec![
+            "--edition=2021".to_string(),
+            "--crate-type=lib".to_string(),
+            "--crate-name=checked".to_string(),
+            "--emit=link".to_string(),
+            source.display().to_string(),
+            "-o".to_string(),
+            output.display().to_string(),
+        ];
+        let mut dylint_args = vec![rustc.display().to_string()];
+        dylint_args.extend(plain_args.clone());
+        let dylint_libs = serde_json::to_string(&vec![library]).unwrap();
+
+        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
+        let session_log = tmp.path().join("session.log");
+        let session_id = start_session(&mut client, Some(session_log.clone().into())).await;
+
+        let plain_miss = compile(
+            &mut client,
+            &session_id,
+            &rustc,
+            &plain_args,
+            tmp.path(),
+            "[]",
+            "plain",
+            false,
+        )
+        .await;
+        assert_eq!(plain_miss.0, 0);
+        assert!(!plain_miss.1);
+        assert!(!String::from_utf8_lossy(&plain_miss.3).contains("workspace lint verdict"));
+
+        std::fs::remove_file(&output).unwrap();
+        let dylint_miss = compile(
+            &mut client,
+            &session_id,
+            &driver,
+            &dylint_args,
+            tmp.path(),
+            &dylint_libs,
+            "lint-metadata",
+            false,
+        )
+        .await;
+        assert_eq!(dylint_miss.0, 0);
+        assert!(
+            !dylint_miss.1,
+            "a plain artifact must not satisfy a missing Dylint verdict"
+        );
+        assert!(String::from_utf8_lossy(&dylint_miss.3).contains("workspace lint verdict"));
+
+        std::fs::remove_file(&output).unwrap();
+        let dylint_hit = compile(
+            &mut client,
+            &session_id,
+            &driver,
+            &dylint_args,
+            tmp.path(),
+            &dylint_libs,
+            "lint-metadata",
+            false,
+        )
+        .await;
+        assert!(dylint_hit.1);
+        assert_eq!(dylint_hit.3, dylint_miss.3);
+
+        std::fs::remove_file(&output).unwrap();
+        let plain_hit = compile(
+            &mut client,
+            &session_id,
+            &rustc,
+            &plain_args,
+            tmp.path(),
+            "[]",
+            "plain",
+            false,
+        )
+        .await;
+        assert!(plain_hit.1);
+        assert!(
+            !String::from_utf8_lossy(&plain_hit.3).contains("workspace lint verdict"),
+            "plain hits must replay the plain verdict, never Dylint diagnostics"
+        );
+
+        let log = std::fs::read_to_string(session_log).unwrap();
+        let update_keys = log
+            .lines()
+            .filter(|line| line.contains("[DIAG] update:"))
+            .filter_map(|line| line.split("artifact_key=").nth(1))
+            .filter_map(|tail| tail.split_whitespace().next())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            update_keys.len(),
+            2,
+            "plain and Dylint should each run once"
+        );
+        assert_eq!(
+            update_keys[0], update_keys[1],
+            "plain and Dylint misses must publish the same artifact-byte key"
+        );
+
+        shutdown.notify_one();
+        server_handle.await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "integration-level: starts a real daemon and rustc"]
 async fn nested_dylint_hits_across_sibling_worktrees() {
     let Some(rustc) = zccache::test_support::find_rustc() else {
         eprintln!("skipping test: rustc not found");

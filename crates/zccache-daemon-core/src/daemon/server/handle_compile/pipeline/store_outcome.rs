@@ -32,6 +32,7 @@ pub(super) struct StoreOutcomeRequest<'a> {
     pub(super) compilation: &'a crate::compiler::CacheableCompilation,
     pub(super) dependency_mode: DependencyDiscoveryMode,
     pub(super) rustc_args_opt: Option<&'a crate::depgraph::RustcParsedArgs>,
+    pub(super) rustc_dylint_input_hash: Option<&'a str>,
     pub(super) rustc_extern_paths: &'a [NormalizedPath],
     /// Request env the compile ran under — the value source for rustc
     /// env-dep snapshots (zccache#1021).
@@ -151,6 +152,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         compilation,
         dependency_mode,
         rustc_args_opt,
+        rustc_dylint_input_hash,
         rustc_extern_paths,
         client_env,
         is_rustc,
@@ -611,6 +613,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
                 user_depfile_persist_temp,
                 staged_persist_plan: staged_rust_persist_plan,
                 rustc_all_outputs: rustc_all_outputs.as_deref(),
+                rustc_dylint_input_hash,
                 stdout: &stdout,
                 stderr: &stderr,
                 exit_code,

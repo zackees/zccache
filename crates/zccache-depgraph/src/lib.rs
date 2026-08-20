@@ -26,8 +26,9 @@ pub(crate) use zccache_platform as platform;
 pub use args::{ParsedArgs, UserDepFlags};
 pub use compile_commands::{parse_compile_commands_json, CompileCommand};
 pub use context::{
-    compute_artifact_key, compute_rustc_artifact_key, fold_rustc_env_deps_into_artifact_key,
-    ArtifactKey, CompileContext, ContextKey, RustcCompileContext,
+    compute_artifact_key, compute_rustc_artifact_key, compute_rustc_verdict_key,
+    fold_rustc_env_deps_into_artifact_key, ArtifactKey, CompileContext, ContextKey,
+    RustcCompileContext,
 };
 pub use depfile::{prepare_depfile, prepare_depfile_with_mmd, DepfileError, DepfileStrategy};
 pub use graph::{hash_env_dep_value, CacheVerdict, ContextState, DepGraph, DepGraphStats};

@@ -13,7 +13,7 @@ use super::compile_journal::{
 use super::fingerprint::FingerprintManager;
 use super::process::CompilePriority;
 use super::stats::{HitPhases, MissPhases, PhaseProfiler, StatsCollector};
-use crate::artifact::{ArtifactIndex, ArtifactStore};
+use crate::artifact::{ArtifactIndex, ArtifactStore, ArtifactVerdict};
 use crate::core::NormalizedPath;
 use crate::depgraph::{
     CompileContext, ContextKey, DepGraph, DepfileStrategy, SessionId, SessionManager,
