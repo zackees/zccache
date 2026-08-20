@@ -493,6 +493,11 @@ the cache root. This is the soldr development isolation knob: soldr can set
 development builds do not attach to, replace, or stop the daemon used by normal
 app builds on the same machine.
 
+The namespace may partition daemon-owned mutable state, but it does not move
+CLI-owned shared payloads. In particular, downloaded symbols remain under
+`<cache-root>/symbols/` and Cargo registry archives remain under
+`<cache-root>/cargo-registry/`, matching the paths reported by `cache-root`.
+
 Unset or empty means the default namespace and keeps all historical names. A
 non-empty value is trimmed, sanitized to an ASCII path component, and folded
 into:

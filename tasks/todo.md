@@ -422,3 +422,31 @@ Issue: https://github.com/zackees/zccache/issues/1117
   and review gate in Linux Docker.
 - [ ] Merge the upstream PR, bump soldr's vendored commit, rerun the hosted
   real Dylint/watchdog acceptance, and close the meta issue.
+
+# #1400 stable CLI-owned cache paths
+
+- [x] Reproduce the current-main cargo-registry path mismatch from Actions on all three OSes.
+- [x] File #1400 and add it to the #1205 burn-down tracker.
+- [x] Add RED tests proving daemon namespaces do not move CLI-owned shared cache paths.
+- [x] Keep daemon-owned state namespaced while restoring cargo-registry and symbols to the stable cache root.
+- [x] Run focused tests, formatter, checks, clippy, and the locally available workflow contract.
+- [ ] Review, commit, push, merge the PR, close #1400, and verify current main.
+
+## Review
+
+- Current-main evidence: `cargo-registry save` writes below
+  `daemon-state/<dev-binary-hash>/cargo-registry`, while `cache-root` reports
+  the stable effective root expected by the public CLI and action contract.
+- RED: the real CLI test failed with the archive under
+  `daemon-state/dev-binary-hash/cargo-registry`; the production path helpers
+  now keep both Cargo-registry and symbol payloads under the stable root.
+- GREEN: the focused core path tests, the real cargo-registry CLI regression,
+  the symbols caller contract, `zccache-core`'s full suite, the full
+  `cli_cache_root` integration test, formatting, `zccache-core` clippy, and
+  the feature-complete `zccache` check pass. The local workflow harness reaches
+  its Docker preflight, but Docker Desktop is unavailable; the hosted
+  three-OS action job remains the authoritative workflow validation.
+- Review follow-up: an isolated symbols caller subprocess sets a non-empty
+  daemon namespace and requires the shared cache directory to be exactly
+  `<default_cache_dir>/symbols`, rejecting a stale
+  `daemon-state/<namespace>` intermediate path.

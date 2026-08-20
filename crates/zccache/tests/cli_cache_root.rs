@@ -170,6 +170,52 @@ fn cache_root_json_reports_daemon_namespace_and_derived_endpoint() {
 }
 
 #[test]
+fn daemon_namespace_does_not_move_cargo_registry_archives() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cache_root = temp.path().join("zc");
+    let cargo_home = temp.path().join("cargo-home");
+    let registry_index = cargo_home.join("registry").join("index");
+    std::fs::create_dir_all(&registry_index).expect("create fake cargo registry");
+    std::fs::write(registry_index.join("marker"), b"registry payload")
+        .expect("write fake cargo registry payload");
+
+    let bin = zccache_bin();
+    let output = Command::new(bin.as_path())
+        .env("ZCCACHE_CACHE_DIR", &cache_root)
+        .env("ZCCACHE_DAEMON_NAMESPACE", "dev-binary-hash")
+        .env_remove("ZCCACHE_COLOCATE")
+        .env_remove("SOLDR_SKIP_CARGO_REGISTRY_SAVE")
+        .args([
+            "cargo-registry",
+            "save",
+            "--key",
+            "namespace-stable",
+            "--cargo-home",
+        ])
+        .arg(&cargo_home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn zccache cargo-registry save");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let expected = cache_root
+        .join(versioned_subdir())
+        .join("cargo-registry")
+        .join("namespace-stable.tar.gz");
+    assert!(
+        expected.is_file(),
+        "cargo-registry archive must remain at the stable cache-root path; stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
 fn cache_root_relative_env_path_is_absolute_in_output() {
     // `ZCCACHE_CACHE_DIR=./relative-zc` should still print an absolute
     // path so wrappers don't have to re-resolve it against the cwd.
