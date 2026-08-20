@@ -3,8 +3,8 @@
 //! Verifies that the daemon correctly expands response files before computing
 //! cache keys, so that changes to response file content invalidate the cache.
 //!
-//! Run all:    soldr cargo test -p zccache-daemon --test response_file_cache -- --ignored --nocapture
-//! Run single: soldr cargo test -p zccache-daemon --test response_file_cache -- <test_name> --ignored --nocapture
+//! Run all:    soldr cargo test -p zccache --test response_file_cache -- --ignored --nocapture
+//! Run single: soldr cargo test -p zccache --test response_file_cache -- <test_name> --ignored --nocapture
 
 #![allow(
     clippy::unwrap_used,

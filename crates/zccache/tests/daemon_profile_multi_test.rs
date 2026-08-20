@@ -1,6 +1,6 @@
 //! Profile the multi-file warm cache path to identify bottlenecks.
 //!
-//! Run: soldr cargo test -p zccache-daemon --test profile_multi_test -- --nocapture --ignored
+//! Run: soldr cargo test -p zccache --test profile_multi_test -- --nocapture --ignored
 
 #![allow(
     clippy::unwrap_used,

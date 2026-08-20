@@ -1,7 +1,7 @@
 //! Performance comparison: bare clang vs sccache vs zccache.
 //!
 //! Three-way benchmark measuring compile latency across cache-miss and cache-hit scenarios.
-//! Run with: soldr cargo test -p zccache-daemon --test perf_test -- --nocapture --ignored
+//! Run with: soldr cargo test -p zccache --test perf_test -- --nocapture --ignored
 
 #![allow(
     clippy::unwrap_used,
@@ -592,7 +592,7 @@ fn print_three_way(bare: &BenchResult, sccache: &BenchResult, zccache: &BenchRes
 
 /// Full three-way benchmark: bare clang vs sccache vs zccache.
 ///
-/// Run with: soldr cargo test -p zccache-daemon --test perf_test -- perf_full_benchmark --nocapture --ignored
+/// Run with: soldr cargo test -p zccache --test perf_test -- perf_full_benchmark --nocapture --ignored
 #[tokio::test]
 #[ignore]
 async fn perf_full_benchmark() {

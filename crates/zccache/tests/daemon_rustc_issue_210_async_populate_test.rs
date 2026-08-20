@@ -2,7 +2,7 @@
 //! daemon cache before observable warm-cache behavior is reported.
 //!
 //! Run all:
-//!   cargo test -p zccache-daemon --test rustc_issue_210_async_populate_test -- --ignored --nocapture
+//!   soldr cargo test -p zccache --test rustc_issue_210_async_populate_test -- --ignored --nocapture
 
 #![allow(
     clippy::unwrap_used,

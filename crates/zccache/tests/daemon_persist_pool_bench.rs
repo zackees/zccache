@@ -21,7 +21,7 @@
 //! through several persist strategies on the same machine, same disk.
 //!
 //! Run with:
-//!   soldr cargo test -p zccache-daemon --test persist_pool_bench -- --nocapture --ignored
+//!   soldr cargo test -p zccache --test persist_pool_bench -- --nocapture --ignored
 //!
 //! Tune the workload via env vars:
 //!   PERSIST_BENCH_FILES        (default 191)

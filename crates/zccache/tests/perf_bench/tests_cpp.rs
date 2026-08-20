@@ -22,7 +22,7 @@ use super::cpp_project::{
 };
 
 #[tokio::test]
-#[ignore] // Run explicitly: soldr cargo test -p zccache-daemon --test perf_bench_test -- --nocapture --ignored
+#[ignore] // Run explicitly: soldr cargo test -p zccache --test perf_bench_test -- --nocapture --ignored
 async fn perf_warm_cache_zccache_vs_sccache() {
     let compiler_path = match zccache::test_support::find_clang() {
         Some(p) => p,

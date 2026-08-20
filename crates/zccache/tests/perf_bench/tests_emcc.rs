@@ -32,7 +32,7 @@ use super::sibling_remap::{make_git_workspace, path_remap_auto_env};
 /// Emscripten warm-cache benchmark: bare em++ vs sccache vs zccache.
 /// Mirrors `perf_warm_cache_zccache_vs_sccache` (C++) but uses em++.
 #[tokio::test]
-#[ignore] // Run explicitly: soldr cargo test -p zccache-daemon --test perf_bench_test -- perf_emcc_warm_cache_zccache_vs_sccache --nocapture --ignored
+#[ignore] // Run explicitly: soldr cargo test -p zccache --test perf_bench_test -- perf_emcc_warm_cache_zccache_vs_sccache --nocapture --ignored
 async fn perf_emcc_warm_cache_zccache_vs_sccache() {
     let compiler_path = match find_empp() {
         Some(p) => p,
@@ -293,7 +293,7 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
 /// `ZCCACHE_PATH_REMAP=auto` injects `-ffile-prefix-map` for em++ (Clang-family)
 /// so equivalent compiles share cache across sibling git roots.
 #[tokio::test]
-#[ignore] // Run explicitly: soldr cargo test -p zccache-daemon --test perf_bench_test -- perf_emcc_sibling_remap_warm --nocapture --ignored
+#[ignore] // Run explicitly: soldr cargo test -p zccache --test perf_bench_test -- perf_emcc_sibling_remap_warm --nocapture --ignored
 async fn perf_emcc_sibling_remap_warm() {
     let compiler_path = match find_empp() {
         Some(p) => p,

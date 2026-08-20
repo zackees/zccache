@@ -25,7 +25,7 @@ use super::sibling_remap::{
 /// ZCCACHE_PATH_REMAP=auto, primed from sibling workspace A) against bare clang
 /// and sccache (also primed from workspace A, then measured in workspace B).
 #[tokio::test]
-#[ignore] // Run explicitly: soldr cargo test -p zccache-daemon --test perf_bench_test -- perf_cpp_sibling_remap_warm --nocapture --ignored
+#[ignore] // Run explicitly: soldr cargo test -p zccache --test perf_bench_test -- perf_cpp_sibling_remap_warm --nocapture --ignored
 async fn perf_cpp_sibling_remap_warm() {
     let compiler_path = match zccache::test_support::find_clang() {
         Some(p) => p,
@@ -102,7 +102,7 @@ async fn perf_cpp_sibling_remap_warm() {
 /// ZCCACHE_PATH_REMAP=auto, primed from sibling workspace A) against bare rustc
 /// and sccache (each warm in workspace B).
 #[tokio::test]
-#[ignore] // Run explicitly: soldr cargo test -p zccache-daemon --test perf_bench_test -- perf_rustc_sibling_remap_warm --nocapture --ignored
+#[ignore] // Run explicitly: soldr cargo test -p zccache --test perf_bench_test -- perf_rustc_sibling_remap_warm --nocapture --ignored
 async fn perf_rustc_sibling_remap_warm() {
     let rustc_path = match zccache::test_support::find_rustc() {
         Some(p) => p,

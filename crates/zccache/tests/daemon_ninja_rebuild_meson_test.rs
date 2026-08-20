@@ -5,7 +5,7 @@
 //! The direct CLI/IPC ephemeral and stress/bench scenarios live in the sibling
 //! `daemon_ninja_rebuild_direct_test.rs` file.
 //!
-//! Run:    soldr cargo test -p zccache-daemon --test daemon_ninja_rebuild_meson_test -- --ignored --nocapture
+//! Run:    soldr cargo test -p zccache --test daemon_ninja_rebuild_meson_test -- --ignored --nocapture
 
 #![allow(
     clippy::unwrap_used,
@@ -116,7 +116,7 @@ fn find_ninja() -> Option<NormalizedPath> {
 ///   4. `ninja -t clean` + `ninja` warm rebuild (all cache hits)
 ///   5. Verify warm is significantly faster than cold
 ///
-/// Run:  soldr cargo test -p zccache-daemon --test daemon_ninja_rebuild_meson_test -- meson_ninja_cold --ignored --nocapture
+/// Run:  soldr cargo test -p zccache --test daemon_ninja_rebuild_meson_test -- meson_ninja_cold --ignored --nocapture
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn meson_ninja_cold_then_warm_rebuild() {
@@ -228,7 +228,7 @@ async fn meson_ninja_cold_then_warm_rebuild() {
 
 /// Meson+ninja benchmark: larger project, cold + 3 warm iterations.
 ///
-/// Run:  soldr cargo test -p zccache-daemon --test daemon_ninja_rebuild_meson_test -- meson_ninja_bench --ignored --nocapture
+/// Run:  soldr cargo test -p zccache --test daemon_ninja_rebuild_meson_test -- meson_ninja_bench --ignored --nocapture
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn meson_ninja_bench_warm_iterations() {
