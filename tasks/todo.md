@@ -618,3 +618,25 @@ Issue: https://github.com/zackees/zccache/issues/1361
 - Pending: Unix ignored integration proof.
 - clud-review: clean after cached-error rehydration and panic-free split
   follow-ups (one reviewer).
+
+# #1402 eliminate request-time probe hashing
+
+Issue: https://github.com/zackees/zccache/issues/1402
+
+- [x] Publish running-process 4.10.5 with cached legacy SHA-256 identity and
+  pre-4.10.4 identity-file compatibility.
+- [x] Upgrade zccache and encode probe identity from the daemon's cached digests.
+- [x] Prove probe responses succeed after the recorded executable path disappears.
+- [x] Run focused tests, formatting, affected-target checks, and Clippy.
+- [ ] Run the review gate, push the rewritten PR, merge, and close #1402.
+
+## Review
+
+- RED: running-process 4.10.4 rejects a 4.10.3 daemon identity JSON because
+  its new `legacy_exe_sha256` field lacked a serde default, so zccache cannot
+  establish the stale instance identity required for safe replacement.
+- GREEN: published running-process 4.10.5 reads the pre-4.10.4 identity fixture;
+  the compatibility decoder still reads historical protobuf field 3, while the
+  response succeeds with a deliberately nonexistent `exe_path`.
+- GREEN: affected IPC, CLI, and daemon targets compile and pass warnings-denied
+  Clippy with `test-support`; formatting and whitespace checks are clean.

@@ -108,17 +108,9 @@ fn backend_handle_probe_response(
 
     let mut payload = Vec::with_capacity(32 + 128);
     payload.extend_from_slice(&request.payload);
-    daemon.to_proto().encode(&mut payload).map_err(|err| {
+    daemon.encode_probe_identity(&mut payload).map_err(|err| {
         IpcError::Endpoint(format!("BackendHandle identity encode failed: {err}"))
     })?;
-    let legacy_exe_sha256 =
-        running_process::broker::backend_lifecycle::identity::sha256_file(&daemon.exe_path)
-            .map_err(|err| {
-                IpcError::Endpoint(format!("BackendHandle identity hash failed: {err}"))
-            })?;
-    payload.push(0x1a); // field 3, length-delimited (legacy exe_sha256)
-    payload.push(32); // fixed digest length, encoded as a one-byte varint
-    payload.extend_from_slice(&legacy_exe_sha256);
 
     Ok(Frame {
         envelope_version: 1,
@@ -178,8 +170,8 @@ mod tests {
     }
 
     #[test]
-    fn probe_reply_dual_writes_legacy_sha256_identity() {
-        let daemon =
+    fn probe_reply_uses_cached_legacy_sha256_identity() {
+        let mut daemon =
             running_process::broker::protocol_v2::backend_handle::DaemonProcess::current_process(
                 Endpoint {
                     namespace_id: "zccache-ipc-test".to_owned(),
@@ -188,6 +180,8 @@ mod tests {
                 None,
             )
             .expect("current daemon identity");
+        let expected_legacy_sha256 = daemon.legacy_exe_sha256;
+        daemon.exe_path = std::path::PathBuf::from("missing-after-daemon-start");
         let nonce = vec![0xa5; 32];
         let request = running_process::broker::protocol::Frame {
             payload: nonce.clone(),
@@ -199,11 +193,6 @@ mod tests {
             .expect("stable broker decodes probe identity");
 
         assert_eq!(legacy.exe_sha256.len(), 32);
-        assert_eq!(
-            legacy.exe_sha256,
-            running_process::broker::backend_lifecycle::identity::sha256_file(&daemon.exe_path)
-                .expect("sha256 executable")
-                .to_vec()
-        );
+        assert_eq!(legacy.exe_sha256, expected_legacy_sha256);
     }
 }
