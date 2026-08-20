@@ -36,6 +36,71 @@ async fn start_daemon() -> (
     (endpoint, handle, shutdown)
 }
 
+/// #1418: packed Linux debug information is part of the linked output set,
+/// not an optional byproduct. A hit must restore it byte-for-byte with the
+/// primary image.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore] // integration-level: starts a real daemon and compiler
+async fn test_packed_linux_dwarf_sidecar_cached() {
+    if !zccache::platform::host::is_linux() {
+        return;
+    }
+    let compiler = match zccache::test_support::find_rustc() {
+        Some(path) => path,
+        None => return,
+    };
+
+    zccache::test_support::test_timeout(async move {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("main.rs");
+        let output = temp.path().join("packed-app");
+        let sidecar = temp.path().join("packed-app.dwp");
+        std::fs::write(&source, "fn main() { println!(\"packed\"); }\n").unwrap();
+
+        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
+        let session_id = start_session(&mut client).await;
+        let compiler = compiler.to_string_lossy().into_owned();
+        let source = source.to_string_lossy().into_owned();
+        let output_arg = output.to_string_lossy().into_owned();
+        let args = [
+            "--edition=2021",
+            "--crate-type=bin",
+            "--crate-name=packed_app",
+            "--emit=link",
+            "-Cdebuginfo=2",
+            "-Csplit-debuginfo=packed",
+            source.as_str(),
+            "-o",
+            output_arg.as_str(),
+        ];
+
+        let (exit_code, cached) =
+            compile(&mut client, &session_id, &compiler, &args, temp.path()).await;
+        assert_eq!(exit_code, 0);
+        assert!(
+            !cached,
+            "first compile must populate the complete output set"
+        );
+        assert!(output.is_file());
+        assert!(sidecar.is_file());
+        let expected_sidecar = std::fs::read(&sidecar).unwrap();
+
+        std::fs::remove_file(&output).unwrap();
+        std::fs::remove_file(&sidecar).unwrap();
+        let (exit_code, cached) =
+            compile(&mut client, &session_id, &compiler, &args, temp.path()).await;
+        assert_eq!(exit_code, 0);
+        assert!(cached, "second compile must use the cached output set");
+        assert!(output.is_file());
+        assert_eq!(std::fs::read(&sidecar).unwrap(), expected_sidecar);
+
+        shutdown.notify_one();
+        server_handle.await.unwrap();
+    })
+    .await;
+}
+
 /// Helper: start session and return session ID.
 async fn start_session(client: &mut ClientConn) -> String {
     client

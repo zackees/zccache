@@ -567,7 +567,7 @@ pub struct RustcCompileContext {
     pub cfgs: Vec<String>,
     /// Sorted `--check-cfg` values.
     pub check_cfgs: Vec<String>,
-    /// Sorted cache-relevant `-C` codegen options.
+    /// Cache-relevant `-C` codegen options in command-line order.
     pub codegen_flags: Vec<String>,
     /// Cargo's `-C metadata=` disambiguator for this compilation unit.
     pub cargo_metadata: Option<String>,
@@ -690,7 +690,7 @@ impl RustcCompileContext {
     ) -> ContextKey {
         let mut hasher = blake3::Hasher::new();
 
-        hasher.update(b"zccache-rustc-context-key-v2\0");
+        hasher.update(b"zccache-rustc-context-key-v3\0");
 
         // Compiler binary hash (different rustc versions -> different
         // output). Unconditional (non-Option field, issue #1166).
@@ -759,7 +759,8 @@ impl RustcCompileContext {
             hasher.update(b"\0");
         }
 
-        // Codegen flags (sorted).
+        // Codegen flags retain command-line order. Repeated options can be
+        // additive or last-one-wins, so reordering would risk false hits.
         hasher.update(b"codegen\0");
         for flag in &self.codegen_flags {
             hasher.update(flag.as_bytes());

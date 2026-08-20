@@ -258,7 +258,6 @@ fn add_dylint_linker_key_material(
     args.codegen_flags
         .push(format!("dylint-linker-hash={linker_hash}"));
     args.codegen_flags.extend(args.linker_args.clone());
-    args.codegen_flags.sort();
 }
 
 fn rustc_args(compilation: &crate::compiler::CacheableCompilation) -> &[String] {
@@ -587,6 +586,10 @@ pub(super) fn rustc_expected_output_paths(
         }
     }
 
+    if let Some(dwp) = linux_packed_dwarf_sidecar_output_path(rustc_args, primary_output_path) {
+        push_unique_output_path(&mut paths, dwp);
+    }
+
     paths
 }
 
@@ -686,6 +689,35 @@ pub(super) fn msvc_pdb_sidecar_output_path(primary_output_path: &Path) -> Option
     Some(NormalizedPath::new(
         primary_output_path.with_extension("pdb"),
     ))
+}
+
+/// Packed DWARF product (`<complete-image-name>.dwp`) beside a Linux image.
+/// Static archives must not declare it because they skip the final pack step.
+pub(super) fn linux_packed_dwarf_sidecar_output_path(
+    rustc_args: &crate::depgraph::RustcParsedArgs,
+    primary_output_path: &Path,
+) -> Option<NormalizedPath> {
+    let is_linux = match rustc_args.target.as_deref() {
+        Some(triple) => triple.split('-').any(|part| part == "linux"),
+        None => crate::platform::host::is_linux(),
+    };
+    let links_image = rustc_args
+        .crate_types
+        .iter()
+        .any(|kind| matches!(kind.as_str(), "bin" | "dylib" | "cdylib" | "proc-macro"));
+    let emits_link =
+        rustc_args.emit_types.is_empty() || rustc_args.emit_types.iter().any(|kind| kind == "link");
+    let packed = rustc_args.effective_codegen_value("split-debuginfo") == Some("packed");
+    let debuginfo_enabled = rustc_args
+        .effective_codegen_value("debuginfo")
+        .is_some_and(|value| !matches!(value, "0" | "none"));
+    if !is_linux || !links_image || !emits_link || !packed || !debuginfo_enabled {
+        return None;
+    }
+
+    let mut sidecar_name = primary_output_path.as_os_str().to_owned();
+    sidecar_name.push(".dwp");
+    Some(NormalizedPath::new(Path::new(&sidecar_name)))
 }
 
 pub(super) fn dylint_cdylib_has_complete_output_identity(
@@ -822,6 +854,25 @@ pub(super) fn collect_rustc_output_files(
         }
     }
 
+    if let Some(dwp) = linux_packed_dwarf_sidecar_output_path(rustc_args, primary_output_path) {
+        if let Ok(meta) = std::fs::metadata(&dwp) {
+            if meta.is_file() {
+                let name = dwp
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                if !outputs.iter().any(|existing| existing.name == name) {
+                    outputs.push(RustcOutputFile {
+                        name,
+                        path: dwp,
+                        size: meta.len(),
+                    });
+                }
+            }
+        }
+    }
+
     outputs
 }
 pub(super) fn rust_remap_value_matches_old(value: &str, old: &Path) -> bool {
@@ -945,126 +996,5 @@ pub(super) fn rust_remap_gate(
 }
 
 #[cfg(test)]
-mod dylint_sidecar_tests {
-    use super::*;
-
-    #[test]
-    fn perf_dylint_cdylib_models_toolchain_sidecar_as_complete_output_set() {
-        if crate::platform::host::is_windows() {
-            return;
-        }
-        let cwd = Path::new("/repo");
-        let out_dir = "/repo/target/dylint/libraries/nightly/release/deps";
-        let args = vec![
-            "--crate-name=lint".to_string(),
-            "--crate-type=cdylib".to_string(),
-            "--emit=link".to_string(),
-            format!("--out-dir={out_dir}"),
-            "-Clinker=/tools/dylint-link".to_string(),
-            "src/lib.rs".to_string(),
-        ];
-        let parsed = crate::depgraph::parse_rustc_args(&args, cwd);
-        let extension = if crate::platform::host::is_macos() {
-            "dylib"
-        } else {
-            "so"
-        };
-        let primary = Path::new(out_dir).join(format!("liblint.{extension}"));
-        let env = vec![
-            ("CARGO_PKG_NAME".to_string(), "lint".to_string()),
-            (
-                "RUSTUP_TOOLCHAIN".to_string(),
-                "nightly-2026-01-18-x86_64-unknown-linux-gnu".to_string(),
-            ),
-        ];
-
-        let outputs = rustc_expected_output_paths(&parsed, &primary, cwd, Some(&env));
-        assert_eq!(outputs.len(), 2);
-        assert_eq!(outputs[0], NormalizedPath::new(&primary));
-        assert!(outputs[1].ends_with(format!(
-            "release/liblint@nightly-2026-01-18-x86_64-unknown-linux-gnu.{extension}"
-        )));
-
-        let without_identity = rustc_expected_output_paths(&parsed, &primary, cwd, None);
-        assert_eq!(without_identity, vec![NormalizedPath::new(primary)]);
-    }
-}
-
-/// soldr#2148. Deliberately NOT `cfg(not(target_os = "windows"))` like the
-/// dylint sidecar tests above: `msvc_pdb_sidecar_output_path` is pure path
-/// manipulation, and Windows is precisely where its absence was the bug.
-#[cfg(test)]
-mod pdb_sidecar_tests {
-    use super::*;
-
-    #[test]
-    fn msvc_pdb_is_declared_for_linked_images_only() {
-        // soldr#2148: a cached build produced the .exe without its .pdb, so
-        // crash dumps resolved to `module+0xNNNN`. The pdb was never in the
-        // output model, so it was never staged, stored or replayed.
-        for image in ["app.exe", "plugin.dll", "APP.EXE"] {
-            let pdb = msvc_pdb_sidecar_output_path(Path::new(image))
-                .unwrap_or_else(|| panic!("{image} should declare a pdb"));
-            assert_eq!(
-                pdb.extension().and_then(|e| e.to_str()),
-                Some("pdb"),
-                "{image} -> {pdb:?}"
-            );
-        }
-
-        // Artifacts that never have one. Declaring a pdb for these would be
-        // harmless (missing outputs are filtered at collection) but it would
-        // also be a lie about what the compile produces.
-        for other in ["libfoo.rlib", "libfoo.rmeta", "libfoo.a", "foo.d", "noext"] {
-            assert!(
-                msvc_pdb_sidecar_output_path(Path::new(other)).is_none(),
-                "{other} must not declare a pdb"
-            );
-        }
-    }
-
-    /// soldr#2347: the pdb declaration is target-aware. A windows-gnu
-    /// image is linked by mingw (DWARF in the image, no pdb ever); the
-    /// staged plan hard-fails materialization on a declared output that
-    /// never appears, which killed every Linux-hosted
-    /// `--target x86_64-pc-windows-gnu` linked-image compile.
-    #[test]
-    fn pdb_declaration_is_msvc_target_only() {
-        let cwd = Path::new("/repo");
-        let base = |target: Option<&str>| {
-            let mut args = vec![
-                "--crate-name=wg".to_string(),
-                "--crate-type=bin".to_string(),
-                "--emit=link".to_string(),
-                "--out-dir=/repo/target/deps".to_string(),
-                "src/main.rs".to_string(),
-            ];
-            if let Some(target) = target {
-                args.push(format!("--target={target}"));
-            }
-            crate::depgraph::parse_rustc_args(&args, cwd)
-        };
-
-        let msvc = base(Some("x86_64-pc-windows-msvc"));
-        assert!(msvc_target_writes_pdb(&msvc));
-        let primary = Path::new("/repo/target/deps/wg.exe");
-        let declared = rustc_expected_output_paths(&msvc, primary, cwd, None);
-        assert!(
-            declared
-                .iter()
-                .any(|p| p.extension() == Some("pdb".as_ref())),
-            "msvc target must declare the pdb sidecar: {declared:?}"
-        );
-
-        let gnu = base(Some("x86_64-pc-windows-gnu"));
-        assert!(!msvc_target_writes_pdb(&gnu));
-        let declared = rustc_expected_output_paths(&gnu, primary, cwd, None);
-        assert!(
-            !declared.iter().any(|p| p.extension() == Some("pdb".as_ref())),
-            "windows-gnu never writes a pdb; declaring one hard-fails the              staged materialization (soldr#2347): {declared:?}"
-        );
-
-        let aarch_gnu = base(Some("aarch64-pc-windows-gnullvm"));
-        assert!(!msvc_target_writes_pdb(&aarch_gnu));
-    }
-}
+#[path = "compiler_output_tests/tests.rs"]
+mod tests;

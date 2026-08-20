@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use crate::rustc_args::{ExternCrate, RustcParsedArgs};
+use crate::rustc_args::{parse_rustc_args, ExternCrate, RustcParsedArgs};
 use zccache_core::NormalizedPath;
 
 use super::super::{
@@ -192,6 +192,24 @@ fn rustc_different_codegen_different_key() {
     let mut ctx2 = make_rustc_context("/src/lib.rs", "2021");
     ctx2.codegen_flags = vec!["opt-level=3".to_string()];
     assert_ne!(ctx1.context_key(), ctx2.context_key());
+}
+
+#[test]
+fn rustc_reversed_repeated_codegen_values_have_distinct_keys() {
+    let parse = |values: [&str; 2]| {
+        let args = vec![
+            format!("-Copt-level={}", values[0]),
+            format!("-Copt-level={}", values[1]),
+            "src/lib.rs".to_string(),
+        ];
+        parse_rustc_args(&args, Path::new("/workspace"))
+    };
+    let first =
+        RustcCompileContext::from_parsed_args(&parse(["2", "3"]), &[], test_compiler_hash());
+    let reversed =
+        RustcCompileContext::from_parsed_args(&parse(["3", "2"]), &[], test_compiler_hash());
+
+    assert_ne!(first.context_key(), reversed.context_key());
 }
 
 /// Issue #1174: `target-cpu=native` resolves against the host. An injectable

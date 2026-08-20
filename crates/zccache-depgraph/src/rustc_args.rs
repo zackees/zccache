@@ -38,7 +38,7 @@ pub struct RustcParsedArgs {
     pub cfgs: Vec<String>,
     /// `--check-cfg` values (sorted).
     pub check_cfgs: Vec<String>,
-    /// Cache-relevant `-C` codegen options (sorted).
+    /// Cache-relevant `-C` codegen options in command-line order.
     /// Includes: opt-level, codegen-units, target-cpu, target-feature,
     /// lto, panic, debuginfo, strip, overflow-checks, embed-bitcode.
     /// Excludes: incremental and linker/pass-through options. Cargo metadata
@@ -87,6 +87,17 @@ pub struct RustcParsedArgs {
     pub sysroot: Option<NormalizedPath>,
     /// `-o` output file (explicit).
     pub output_file: Option<NormalizedPath>,
+}
+
+impl RustcParsedArgs {
+    /// Return the effective value for a last-one-wins codegen option.
+    #[must_use]
+    pub fn effective_codegen_value(&self, key: &str) -> Option<&str> {
+        self.codegen_flags.iter().rev().find_map(|flag| {
+            let (candidate, value) = flag.split_once('=').unwrap_or((flag, ""));
+            (candidate == key).then_some(value)
+        })
+    }
 }
 
 /// Codegen options excluded from cache key (cosmetic or path-dependent).
@@ -325,6 +336,20 @@ pub fn parse_rustc_args(args: &[String], cwd: &Path) -> RustcParsedArgs {
             }
         }
 
+        // Compiler shorthands participate in the same last-one-wins order as
+        // their explicit -C forms. Normalize them in place so hashing and
+        // output discovery see the effective value correctly.
+        if arg == "-g" {
+            handle_codegen_option("debuginfo=2", cwd, &mut result);
+            i += 1;
+            continue;
+        }
+        if arg == "-O" {
+            handle_codegen_option("opt-level=2", cwd, &mut result);
+            i += 1;
+            continue;
+        }
+
         // Lint flags: -A, -W, -D, -F
         if matches!(arg.as_str(), "-A" | "-W" | "-D" | "-F") {
             if let Some(next) = args.get(i + 1) {
@@ -358,11 +383,11 @@ pub fn parse_rustc_args(args: &[String], cwd: &Path) -> RustcParsedArgs {
         i += 1;
     }
 
-    // Sort all collections for deterministic hashing
+    // Sort order-insensitive collections for deterministic hashing. Codegen
+    // flags stay in command-line order because some options are additive and
+    // others are last-one-wins; reordering them can create false cache hits.
     result.cfgs.sort();
     result.check_cfgs.sort();
-    result.codegen_flags.sort();
-    result.linker_args.sort();
     result.lint_flags.sort();
     result.unknown_flags.sort();
 
@@ -413,7 +438,6 @@ fn handle_codegen_option(opt: &str, cwd: &Path, result: &mut RustcParsedArgs) {
         return;
     }
 
-    // Cache-relevant codegen options
     result.codegen_flags.push(opt.to_string());
 }
 
@@ -428,490 +452,5 @@ fn resolve_path(path: &str, cwd: &Path) -> NormalizedPath {
 }
 
 #[cfg(test)]
-mod tests {
-    use zccache_core::NormalizedPath;
-
-    use super::*;
-
-    fn args(s: &[&str]) -> Vec<String> {
-        s.iter().map(|x| x.to_string()).collect()
-    }
-
-    fn cwd() -> NormalizedPath {
-        NormalizedPath::from("/project")
-    }
-
-    #[test]
-    fn basic_parse_source_file() {
-        let parsed = parse_rustc_args(&args(&["src/lib.rs"]), &cwd());
-        assert_eq!(
-            parsed.source_file,
-            NormalizedPath::from("/project/src/lib.rs")
-        );
-    }
-
-    #[test]
-    fn parse_edition() {
-        let parsed = parse_rustc_args(&args(&["--edition", "2021", "src/lib.rs"]), &cwd());
-        assert_eq!(parsed.edition.as_deref(), Some("2021"));
-    }
-
-    #[test]
-    fn parse_edition_equals_form() {
-        let parsed = parse_rustc_args(&args(&["--edition=2021", "src/lib.rs"]), &cwd());
-        assert_eq!(parsed.edition.as_deref(), Some("2021"));
-    }
-
-    #[test]
-    fn parse_crate_type() {
-        let parsed = parse_rustc_args(
-            &args(&["--crate-type", "lib", "--crate-type", "rlib", "src/lib.rs"]),
-            &cwd(),
-        );
-        assert_eq!(parsed.crate_types, vec!["lib", "rlib"]);
-    }
-
-    #[test]
-    fn parse_crate_name() {
-        let parsed = parse_rustc_args(&args(&["--crate-name", "mylib", "src/lib.rs"]), &cwd());
-        assert_eq!(parsed.crate_name.as_deref(), Some("mylib"));
-    }
-
-    #[test]
-    fn parse_emit_types() {
-        let parsed = parse_rustc_args(
-            &args(&["--emit=dep-info,metadata,link", "src/lib.rs"]),
-            &cwd(),
-        );
-        assert_eq!(parsed.emit_types, vec!["dep-info", "metadata", "link"]);
-    }
-
-    #[test]
-    fn parse_emit_with_paths() {
-        // --emit=dep-info=/path/to/deps.d,metadata,link
-        let parsed = parse_rustc_args(
-            &args(&["--emit=dep-info=/tmp/deps.d,metadata,link", "src/lib.rs"]),
-            &cwd(),
-        );
-        assert_eq!(parsed.emit_types, vec!["dep-info", "metadata", "link"]);
-        assert_eq!(parsed.explicit_emit_paths.len(), 1);
-        assert_eq!(parsed.explicit_emit_paths[0].0, "dep-info");
-    }
-
-    #[test]
-    fn parse_cfg_values() {
-        let parsed = parse_rustc_args(
-            &args(&["--cfg", "feature=\"derive\"", "--cfg", "unix", "src/lib.rs"]),
-            &cwd(),
-        );
-        // Sorted
-        assert_eq!(parsed.cfgs, vec!["feature=\"derive\"", "unix"]);
-    }
-
-    #[test]
-    fn parse_codegen_flags() {
-        let parsed = parse_rustc_args(
-            &args(&["-C", "opt-level=2", "-C", "debuginfo=2", "src/lib.rs"]),
-            &cwd(),
-        );
-        // Sorted
-        assert!(parsed.codegen_flags.contains(&"debuginfo=2".to_string()));
-        assert!(parsed.codegen_flags.contains(&"opt-level=2".to_string()));
-    }
-
-    #[test]
-    fn parse_codegen_concatenated() {
-        let parsed = parse_rustc_args(&args(&["-Copt-level=3", "src/lib.rs"]), &cwd());
-        assert!(parsed.codegen_flags.contains(&"opt-level=3".to_string()));
-    }
-
-    #[test]
-    fn dylint_linker_inputs_have_dedicated_fields() {
-        let parsed = parse_rustc_args(
-            &args(&[
-                "-Clinker=tools/dylint-link",
-                "-C",
-                "link-arg=-Wl,--build-id=none",
-                "-Clink-args=-Wl,-z,now",
-                "src/lib.rs",
-            ]),
-            &cwd(),
-        );
-        assert_eq!(
-            parsed.linker,
-            Some(NormalizedPath::from("/project/tools/dylint-link"))
-        );
-        assert_eq!(
-            parsed.linker_args,
-            vec![
-                "link-arg=-Wl,--build-id=none".to_string(),
-                "link-args=-Wl,-z,now".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn excluded_codegen_not_in_cache_key() {
-        let parsed = parse_rustc_args(
-            &args(&[
-                "-C",
-                "metadata=abc123",
-                "-C",
-                "extra-filename=-abc123",
-                "-C",
-                "incremental=/tmp/incr",
-                "-C",
-                "linker=cc",
-                "src/lib.rs",
-            ]),
-            &cwd(),
-        );
-        // None of these should be in ordinary codegen_flags.
-        assert!(parsed.codegen_flags.is_empty());
-        // But they should be in their dedicated fields.
-        assert_eq!(parsed.cargo_metadata.as_deref(), Some("abc123"));
-        assert_eq!(parsed.extra_filename.as_deref(), Some("-abc123"));
-        assert_eq!(
-            parsed.incremental_dir,
-            Some(NormalizedPath::from("/tmp/incr"))
-        );
-        assert_eq!(parsed.linker, Some(NormalizedPath::from("/project/cc")));
-    }
-
-    #[test]
-    fn parse_extern_crates() {
-        let parsed = parse_rustc_args(
-            &args(&[
-                "--extern",
-                "serde=/target/deps/libserde.rlib",
-                "--extern",
-                "log=/target/deps/liblog.rmeta",
-                "src/lib.rs",
-            ]),
-            &cwd(),
-        );
-        assert_eq!(parsed.externs.len(), 2);
-        assert_eq!(parsed.externs[0].name, "serde");
-        assert_eq!(
-            parsed.externs[0].path,
-            NormalizedPath::from("/target/deps/libserde.rlib")
-        );
-        assert_eq!(parsed.externs[1].name, "log");
-    }
-
-    #[test]
-    fn parse_extern_noprelude() {
-        let parsed = parse_rustc_args(
-            &args(&[
-                "--extern",
-                "noprelude:core=/path/libcore.rlib",
-                "src/lib.rs",
-            ]),
-            &cwd(),
-        );
-        assert_eq!(parsed.externs[0].name, "core");
-    }
-
-    #[test]
-    fn search_paths_excluded_from_cache_key() {
-        let parsed = parse_rustc_args(
-            &args(&[
-                "-L",
-                "dependency=/target/deps",
-                "-L",
-                "native=/usr/lib",
-                "src/lib.rs",
-            ]),
-            &cwd(),
-        );
-        assert_eq!(parsed.search_paths.len(), 2);
-        // search_paths are stored but NOT in codegen_flags/cfgs/unknown_flags
-        assert!(parsed.codegen_flags.is_empty());
-        assert!(parsed.unknown_flags.is_empty());
-    }
-
-    #[test]
-    fn out_dir_excluded_from_cache_key() {
-        let parsed = parse_rustc_args(
-            &args(&["--out-dir", "/target/debug/deps", "src/lib.rs"]),
-            &cwd(),
-        );
-        assert_eq!(
-            parsed.out_dir,
-            Some(NormalizedPath::from("/target/debug/deps"))
-        );
-        assert!(parsed.unknown_flags.is_empty());
-    }
-
-    #[test]
-    fn cosmetic_flags_excluded() {
-        let parsed = parse_rustc_args(
-            &args(&[
-                "--error-format=json",
-                "--json=diagnostic-rendered-ansi",
-                "--color=always",
-                "--diagnostic-width=80",
-                "src/lib.rs",
-            ]),
-            &cwd(),
-        );
-        assert_eq!(parsed.error_format.as_deref(), Some("json"));
-        assert_eq!(
-            parsed.json_format.as_deref(),
-            Some("diagnostic-rendered-ansi")
-        );
-        assert_eq!(parsed.color.as_deref(), Some("always"));
-        assert_eq!(parsed.diagnostic_width.as_deref(), Some("80"));
-        // None of these should be in unknown_flags
-        assert!(parsed.unknown_flags.is_empty());
-    }
-
-    #[test]
-    fn parse_target() {
-        let parsed = parse_rustc_args(
-            &args(&["--target", "x86_64-unknown-linux-gnu", "src/lib.rs"]),
-            &cwd(),
-        );
-        assert_eq!(parsed.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
-    }
-
-    #[test]
-    fn parse_cap_lints() {
-        let parsed = parse_rustc_args(&args(&["--cap-lints", "allow", "src/lib.rs"]), &cwd());
-        assert_eq!(parsed.cap_lints.as_deref(), Some("allow"));
-    }
-
-    #[test]
-    fn parse_lint_flags() {
-        let parsed = parse_rustc_args(
-            &args(&[
-                "-A",
-                "dead_code",
-                "-W",
-                "unused",
-                "-D",
-                "warnings",
-                "src/lib.rs",
-            ]),
-            &cwd(),
-        );
-        assert_eq!(parsed.lint_flags.len(), 3);
-        assert!(parsed.lint_flags.contains(&"-A dead_code".to_string()));
-        assert!(parsed.lint_flags.contains(&"-D warnings".to_string()));
-        assert!(parsed.lint_flags.contains(&"-W unused".to_string()));
-    }
-
-    #[test]
-    fn parse_output_file() {
-        let parsed = parse_rustc_args(&args(&["-o", "libfoo.rlib", "src/lib.rs"]), &cwd());
-        assert_eq!(
-            parsed.output_file,
-            Some(NormalizedPath::from("/project/libfoo.rlib"))
-        );
-    }
-
-    #[test]
-    fn full_cargo_invocation() {
-        let parsed = parse_rustc_args(
-            &args(&[
-                "--edition",
-                "2021",
-                "--crate-type",
-                "lib",
-                "--crate-name",
-                "serde",
-                "--emit=dep-info,metadata,link",
-                "-C",
-                "opt-level=2",
-                "-C",
-                "metadata=abc123def",
-                "-C",
-                "extra-filename=-abc123def",
-                "--out-dir",
-                "/target/release/deps",
-                "-L",
-                "dependency=/target/release/deps",
-                "--extern",
-                "serde_derive=/target/release/deps/libserde_derive-xyz.so",
-                "--cap-lints",
-                "allow",
-                "--cfg",
-                "feature=\"derive\"",
-                "--cfg",
-                "feature=\"std\"",
-                "--error-format=json",
-                "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
-                "--diagnostic-width=211",
-                "-C",
-                "linker=cc",
-                "src/lib.rs",
-            ]),
-            &cwd(),
-        );
-
-        // Cache-key fields populated
-        assert_eq!(parsed.edition.as_deref(), Some("2021"));
-        assert_eq!(parsed.crate_types, vec!["lib"]);
-        assert_eq!(parsed.crate_name.as_deref(), Some("serde"));
-        assert_eq!(parsed.emit_types, vec!["dep-info", "metadata", "link"]);
-        assert!(parsed.codegen_flags.contains(&"opt-level=2".to_string()));
-        assert_eq!(parsed.cap_lints.as_deref(), Some("allow"));
-        assert!(parsed.cfgs.contains(&"feature=\"derive\"".to_string()));
-        assert!(parsed.cfgs.contains(&"feature=\"std\"".to_string()));
-        assert_eq!(parsed.externs.len(), 1);
-        assert_eq!(parsed.externs[0].name, "serde_derive");
-
-        // Excluded fields populated but NOT in cache-key collections
-        assert_eq!(parsed.cargo_metadata.as_deref(), Some("abc123def"));
-        assert_eq!(parsed.extra_filename.as_deref(), Some("-abc123def"));
-        assert_eq!(parsed.error_format.as_deref(), Some("json"));
-        assert!(parsed.search_paths.len() == 1);
-        assert!(parsed.unknown_flags.is_empty());
-    }
-
-    #[test]
-    fn z_flag_with_value_captured() {
-        let parsed = parse_rustc_args(
-            &args(&["-Z", "macro-backtrace", "--crate-type", "lib", "src/lib.rs"]),
-            &cwd(),
-        );
-        // -Z and its value should be combined into one entry
-        assert!(
-            parsed
-                .unknown_flags
-                .contains(&"-Z macro-backtrace".to_string()),
-            "got: {:?}",
-            parsed.unknown_flags
-        );
-    }
-
-    #[test]
-    fn z_flag_different_values_different_keys() {
-        let parsed1 = parse_rustc_args(&args(&["-Z", "query-threads=4", "src/lib.rs"]), &cwd());
-        let parsed2 = parse_rustc_args(&args(&["-Z", "query-threads=8", "src/lib.rs"]), &cwd());
-        assert_ne!(parsed1.unknown_flags, parsed2.unknown_flags);
-    }
-
-    #[test]
-    fn comma_separated_crate_types_split() {
-        let parsed = parse_rustc_args(&args(&["--crate-type", "lib,rlib", "src/lib.rs"]), &cwd());
-        assert_eq!(parsed.crate_types, vec!["lib", "rlib"]);
-    }
-
-    #[test]
-    fn relative_paths_resolved_against_cwd() {
-        let parsed = parse_rustc_args(&args(&["src/lib.rs"]), &cwd());
-        assert_eq!(
-            parsed.source_file,
-            NormalizedPath::from("/project/src/lib.rs")
-        );
-    }
-
-    #[test]
-    fn absolute_paths_unchanged() {
-        let parsed = parse_rustc_args(&args(&["/absolute/src/lib.rs"]), &cwd());
-        assert_eq!(
-            parsed.source_file,
-            NormalizedPath::from("/absolute/src/lib.rs")
-        );
-    }
-
-    #[test]
-    fn check_cfg_parsed() {
-        let parsed = parse_rustc_args(
-            &args(&["--check-cfg", "cfg(feature, values(\"std\"))", "src/lib.rs"]),
-            &cwd(),
-        );
-        assert_eq!(parsed.check_cfgs.len(), 1);
-    }
-
-    #[test]
-    fn sysroot_parsed() {
-        let parsed = parse_rustc_args(
-            &args(&[
-                "--sysroot",
-                "/home/user/.rustup/toolchains/stable",
-                "src/lib.rs",
-            ]),
-            &cwd(),
-        );
-        assert_eq!(
-            parsed.sysroot,
-            Some(NormalizedPath::from("/home/user/.rustup/toolchains/stable"))
-        );
-    }
-
-    #[test]
-    fn remap_path_prefix_parsed() {
-        let parsed = parse_rustc_args(
-            &args(&["--remap-path-prefix", "/home/user=/anon", "src/lib.rs"]),
-            &cwd(),
-        );
-        assert_eq!(parsed.remap_path_prefixes, vec!["/home/user=/anon"]);
-    }
-
-    #[test]
-    fn remap_path_prefix_equals_form_parsed() {
-        let parsed = parse_rustc_args(
-            &args(&["--remap-path-prefix=/home/user=/anon", "src/lib.rs"]),
-            &cwd(),
-        );
-        assert_eq!(parsed.remap_path_prefixes, vec!["/home/user=/anon"]);
-    }
-    // ─── zackees/soldr#2313: native link-lib flags must key the unit ─────
-
-    #[test]
-    fn link_lib_value_is_captured_not_dropped() {
-        let parsed = parse_rustc_args(
-            &args(&["--crate-name", "demo", "src/main.rs", "-l", "dylib=c++"]),
-            cwd().as_path(),
-        );
-        assert!(
-            parsed.unknown_flags.contains(&"-l dylib=c++".to_string()),
-            "the library NAME must be key material: {:?}",
-            parsed.unknown_flags
-        );
-        // The value must not leak into positional/source handling: the
-        // source stays main.rs (host path separators vary).
-        assert_eq!(
-            parsed
-                .source_file
-                .as_path()
-                .file_name()
-                .and_then(|n| n.to_str()),
-            Some("main.rs")
-        );
-    }
-
-    #[test]
-    fn fused_link_lib_spelling_is_captured() {
-        let parsed = parse_rustc_args(&args(&["src/main.rs", "-lstatic=sqlite3"]), cwd().as_path());
-        assert!(parsed
-            .unknown_flags
-            .contains(&"-l static=sqlite3".to_string()));
-    }
-
-    #[test]
-    fn changing_the_linked_library_changes_the_context_key() {
-        let base = ["--crate-name", "demo", "--crate-type", "bin", "src/main.rs"];
-        let key = |extra: &[&str]| {
-            let mut all: Vec<&str> = base.to_vec();
-            all.extend_from_slice(extra);
-            let parsed = parse_rustc_args(&args(&all), cwd().as_path());
-            crate::context::RustcCompileContext::from_parsed_args(
-                &parsed,
-                &[],
-                zccache_hash::ContentHash::from_bytes([7u8; 32]),
-            )
-            .context_key()
-        };
-        let none = key(&[]);
-        let cxx = key(&["-l", "dylib=c++"]);
-        let stdcxx = key(&["-l", "dylib=stdc++"]);
-        assert_ne!(none, cxx, "adding a native lib must change the key");
-        assert_ne!(
-            cxx, stdcxx,
-            "changing the native lib NAME must change the key — the              soldr#2313 stale-link-hit bug"
-        );
-    }
-}
+#[path = "rustc_args/tests.rs"]
+mod tests;
