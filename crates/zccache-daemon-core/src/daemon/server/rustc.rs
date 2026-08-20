@@ -717,7 +717,7 @@ pub(super) fn linux_packed_dwarf_sidecar_output_path(
 
     let mut sidecar_name = primary_output_path.as_os_str().to_owned();
     sidecar_name.push(".dwp");
-    Some(NormalizedPath::new(std::path::PathBuf::from(sidecar_name)))
+    Some(NormalizedPath::new(Path::new(&sidecar_name)))
 }
 
 pub(super) fn dylint_cdylib_has_complete_output_identity(
