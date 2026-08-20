@@ -561,6 +561,11 @@ Issue: https://github.com/zackees/zccache/issues/864
   when its `.dwp` outputs were not restored.
 - Final clud-review: clean after restricting the repair to Zig Linux targets
   and using soldr's sanctioned no-cache fallback (one reviewer).
+- Hosted RED: the next dry run cleared every Linux and macOS target, but the
+  ARM64 xwin build proved cargo-xwin replaces `CFLAGS_aarch64_pc_windows_msvc`
+  while injecting SDK flags, so clang-cl never received `-TP`.
+- Follow-up: pass `-TP` through general `CFLAGS`, which cc-rs composes with
+  cargo-xwin's target flags in this single-target ARM64 job.
 
 # #1414 isolate session-reaping lifecycle events
 

@@ -197,7 +197,10 @@ runs:
         # mimalloc's MSVC C atomics use intrinsics that clang-cl does not
         # declare for ARM64. Its own source recommends C++ compilation for
         # MSVC; /TP selects that std::atomic path without changing Rust code.
-        echo "CFLAGS_aarch64_pc_windows_msvc=-TP" >> "$GITHUB_ENV"
+        # cargo-xwin owns CFLAGS_<target> and replaces that variable when it
+        # injects the SDK include paths. General CFLAGS is additive in cc-rs
+        # and this job builds only the selected ARM64 target.
+        echo "CFLAGS=-TP" >> "$GITHUB_ENV"
 
     - name: Setup soldr build cache
       if: inputs.use_soldr == 'true'
