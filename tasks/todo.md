@@ -538,9 +538,11 @@ Issue: https://github.com/zackees/zccache/issues/864
 - RED: focused workflow contracts rejected the pre-migration native-runner
   matrix because it had no wrapper-free bootstrap artifact and invoked
   platform toolchains directly instead of soldr's zig/xwin drivers.
-- GREEN: 30 release-manifest/toolchain contracts pass; all edited YAML parses,
-  Ruff E/F and whitespace checks pass, and the repository review gate is clean
-  with one reviewer (15 focused release/workflow contracts).
+- GREEN: 36 release-manifest/toolchain contracts pass (one environment-gated
+  test skipped); all edited YAML parses, and Ruff E/F and whitespace checks pass.
+- Review follow-up: recheck PATH after installing LLVM, accept symlinked
+  versioned `llvm-dsymutil` executables, and verify the selected tool before
+  cross compilation starts.
 
 # #1414 isolate session-reaping lifecycle events
 
