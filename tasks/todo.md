@@ -543,6 +543,9 @@ Issue: https://github.com/zackees/zccache/issues/864
 - Review follow-up: recheck PATH after installing LLVM, accept symlinked
   versioned `llvm-dsymutil` executables, and verify the selected tool before
   cross compilation starts.
+- Hosted RED: the second dry run installed Ubuntu's LLVM meta-package, then
+  missed its versioned `llvm-dsymutil` symlink and exited before compilation.
+- clud-review: clean after both follow-ups (one reviewer).
 
 # #1414 isolate session-reaping lifecycle events
 
