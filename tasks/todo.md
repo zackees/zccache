@@ -578,3 +578,43 @@ Issue: https://github.com/zackees/zccache/issues/1419
 - GREEN: all 448 depgraph tests, six focused DWP tests, the ignored daemon
   integration build, formatting, diff checks, and warnings-denied Clippy pass.
 - clud-review: clean after ordered-key follow-up fixes (one reviewer).
+
+# #1361 separate Dylint artifact and verdict identity
+
+Issue: https://github.com/zackees/zccache/issues/1361
+
+- [x] Add RED coverage proving plain artifacts cannot satisfy a Dylint verdict.
+- [x] Remove the Dylint input hash from artifact and metadata-compat identity.
+- [x] Add a Dylint-keyed verdict layer that gates diagnostics and exit status.
+- [ ] Prove build/Dylint artifact sharing without skipped lint execution.
+- [x] Run focused tests, formatting, Clippy/checks, and the review gate.
+- [ ] Push, merge, and close #1361.
+
+## Review
+
+- RED: the Dylint input hash changed the rustc artifact context key, preventing
+  plain and linted invocations from sharing byte-identical outputs.
+- GREEN: rustc artifact identity excludes the Dylint hash; an embedded verdict
+  map keys stdout, stderr, and exit status by plain/Dylint identity and gates
+  materialization before any output is replayed.
+- Legacy index snapshots migrate with an empty verdict map, while malformed
+  current snapshots cannot fall back to the positional legacy decoder.
+- Missing verdicts are soft misses that preserve the shared artifact and its
+  depgraph entry; error verdict publication preserves existing output metadata
+  and follows the same ordered index-writer WAL as success publication.
+- Review follow-up: cached error verdicts now return before output payload
+  materialization, rehydrate staged-path markers in their diagnostic streams,
+  and replay byte-exact status/diagnostics without writing a sibling success
+  artifact to the destination.
+- Review follow-up: access checkpoints use timestamp-only WAL touches that
+  merge into the newest row, and cold commits merge durable output metadata
+  plus sibling verdicts before publication.
+- Repo hygiene: request validation, Dylint/time-macro setup, include discovery,
+  and invocation parsing moved into `pipeline/request_prep.rs`; both pipeline
+  modules are below the 1,000-line source ceiling.
+- GREEN: 104 active artifact tests (1 ignored), 449 depgraph tests, and 766
+  active daemon-core tests (25 ignored), plus focused merge/gating/loader
+  regressions, formatting, diff checks, and warnings-denied Clippy.
+- Pending: Unix ignored integration proof.
+- clud-review: clean after cached-error rehydration and panic-free split
+  follow-ups (one reviewer).

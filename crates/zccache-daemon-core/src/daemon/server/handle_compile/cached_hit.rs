@@ -30,6 +30,9 @@ pub(super) struct CachedHitMaterializeRequest<'a> {
     pub(super) state: &'a SharedState,
     pub(super) sid: &'a SessionId,
     pub(super) artifact_key_hex: &'a str,
+    /// Rustc diagnostics/exit-status entry paired with the output artifact.
+    /// `None` keeps the legacy single-layer path for non-rust compilers.
+    pub(super) verdict_key_hex: Option<&'a str>,
     pub(super) source_path: &'a NormalizedPath,
     pub(super) output_path: &'a NormalizedPath,
     pub(super) secondary_output_dir: NormalizedPath,
@@ -59,6 +62,10 @@ pub(super) struct CachedHitMaterializeRequest<'a> {
 
 #[derive(Debug)]
 pub(super) enum CachedHitFailure {
+    /// The shared rustc output exists, but this plain/Dylint identity has not
+    /// produced diagnostics and an exit status yet. This is a soft miss and
+    /// is not evidence that the artifact payload disappeared.
+    VerdictMissing,
     CacheBlobMissing(CacheBlobMissing),
     CacheRead,
     DestinationWrite,
@@ -81,6 +88,7 @@ pub(super) fn materialize_cached_compile_hit(
         state,
         sid,
         artifact_key_hex,
+        verdict_key_hex,
         source_path,
         output_path,
         secondary_output_dir,
@@ -104,19 +112,90 @@ pub(super) fn materialize_cached_compile_hit(
     // reuses `t0` for the maintenance-visible `last_used` write without an
     // additional clock read (issue #1148).
     let t0 = Instant::now();
-    let missing_artifact = || {
+    let missing_entry = |key: &str| {
         let failure = cache_blob_missing(
-            &state.artifact_dir.join(artifact_key_hex),
+            &state.artifact_dir.join(key),
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "cached artifact metadata or payload is unavailable",
             ),
         );
-        report_materialization_failure(&state.cache_dir, artifact_key_hex, "compile-hit", &failure);
+        report_materialization_failure(&state.cache_dir, key, "compile-hit", &failure);
         failure.into()
     };
     let cached = lookup_artifact_with_disk_fallback(state, artifact_key_hex)
-        .ok_or_else(&missing_artifact)?;
+        .ok_or_else(|| missing_entry(artifact_key_hex))?;
+    let verdict = verdict_key_hex
+        .map(|key| {
+            cached
+                .meta
+                .rustc_verdicts
+                .get(key)
+                .cloned()
+                .ok_or(CachedHitFailure::VerdictMissing)
+        })
+        .transpose()?;
+    let (exit_code, mut stdout, mut stderr) = verdict.as_ref().map_or_else(
+        || {
+            (
+                cached.meta.exit_code,
+                cached.stdout.clone(),
+                cached.stderr.clone(),
+            )
+        },
+        |verdict| {
+            (
+                verdict.exit_code,
+                verdict.stdout.clone(),
+                verdict.stderr.clone(),
+            )
+        },
+    );
+    if exit_code != 0 {
+        if let Some(requested_outputs) = rustc_metadata_compat_outputs.as_deref() {
+            stdout = Arc::new(rehydrate_staged_output_bytes(
+                stdout.as_slice(),
+                requested_outputs,
+            ));
+            stderr = Arc::new(rehydrate_staged_output_bytes(
+                stderr.as_slice(),
+                requested_outputs,
+            ));
+        }
+        // A verdict is diagnostics and status, not an authorization to write
+        // shared output bytes. In particular, a Dylint error may share an
+        // artifact key with a successful plain-rustc compile whose outputs
+        // must remain absent from this failed invocation.
+        record_artifact_access(state, artifact_key_hex, &cached, t0);
+        let t1 = Instant::now();
+        let artifact_lookup_ns = (t1 - t0).as_nanos() as u64;
+        crate::daemon::server::inner_trace::record_ns("cache_load", artifact_lookup_ns);
+        drop(cached);
+
+        if record_compilation {
+            state.stats.record_compilation();
+        }
+        state.stats.record_cached_error();
+        record_session_stat(&state.sessions, sid, |t| {
+            t.record_cached_error();
+        });
+        write_session_log(
+            &state.sessions,
+            sid,
+            &format!(
+                "[{}] {} -> {}",
+                cached_error_label,
+                source_path.display(),
+                output_path.display()
+            ),
+        );
+        return Ok(Response::CompileResult {
+            exit_code,
+            stdout,
+            stderr,
+            cached: true,
+        });
+    }
     let payloads = ensure_payloads_for_materialization_for_state(state, &cached, artifact_key_hex)
         .map_err(|error| {
             report_materialization_failure(
@@ -138,9 +217,6 @@ pub(super) fn materialize_cached_compile_hit(
     crate::daemon::server::inner_trace::record_ns("cache_load", artifact_lookup_ns);
 
     let names = Arc::clone(&cached.meta.output_names);
-    let exit_code = cached.meta.exit_code;
-    let mut stdout = cached.stdout.clone();
-    let mut stderr = cached.stderr.clone();
     let artifact_bytes = cached.meta.total_size;
     drop(cached);
 
@@ -169,7 +245,7 @@ pub(super) fn materialize_cached_compile_hit(
                             requested.display()
                         ),
                     );
-                    return Err(missing_artifact());
+                    return Err(missing_entry(artifact_key_hex));
                 };
                 targets.push(requested);
                 selected_payloads.push(payloads[i].clone());
@@ -307,8 +383,7 @@ pub(super) fn materialize_cached_compile_hit(
             .timing(StagedTiming::HitMaterialization, write_output_ns);
     }
 
-    let cached_error = exit_code != 0;
-    if !cached_error && downgrade_output_metadata {
+    if downgrade_output_metadata {
         state.cache_system.metadata().downgrade(output_path);
     }
 
@@ -319,28 +394,17 @@ pub(super) fn materialize_cached_compile_hit(
     // (record_hit / record_session_stat / write_session_log). Same boundary
     // as before — derived from `t2` instead of a fresh clock read.
     let latency_ns = (t2 - compile_start).as_nanos() as u64;
-    if cached_error {
-        state.stats.record_cached_error();
-        record_session_stat(&state.sessions, sid, |t| {
-            t.record_cached_error();
-        });
-    } else {
-        state.stats.record_hit(latency_ns, artifact_bytes);
-        let src = source_path.clone();
-        record_session_stat(&state.sessions, sid, move |t| {
-            t.record_hit(src, latency_ns, artifact_bytes);
-        });
-    }
+    state.stats.record_hit(latency_ns, artifact_bytes);
+    let src = source_path.clone();
+    record_session_stat(&state.sessions, sid, move |t| {
+        t.record_hit(src, latency_ns, artifact_bytes);
+    });
     write_session_log(
         &state.sessions,
         sid,
         &format!(
             "[{}] {} -> {}",
-            if cached_error {
-                cached_error_label
-            } else {
-                hit_label
-            },
+            hit_label,
             source_path.display(),
             output_path.display()
         ),
@@ -349,21 +413,19 @@ pub(super) fn materialize_cached_compile_hit(
     let bookkeeping_ns = (t3 - t2).as_nanos() as u64;
 
     let total_ns = (t3 - compile_start).as_nanos() as u64;
-    if !cached_error {
-        state.profiler.record_hit(&HitPhases {
-            parse_args_ns: phases.parse_args_ns,
-            build_context_ns: phases.build_context_ns,
-            hash_source_ns: phases.hash_source_ns,
-            hash_headers_ns: phases.hash_headers_ns,
-            depgraph_check_ns: phases.depgraph_check_ns,
-            request_cache_lookup_ns: phases.request_cache_lookup_ns,
-            cross_root_validate_ns: phases.cross_root_validate_ns,
-            artifact_lookup_ns,
-            write_output_ns,
-            bookkeeping_ns,
-            total_ns,
-        });
-    }
+    state.profiler.record_hit(&HitPhases {
+        parse_args_ns: phases.parse_args_ns,
+        build_context_ns: phases.build_context_ns,
+        hash_source_ns: phases.hash_source_ns,
+        hash_headers_ns: phases.hash_headers_ns,
+        depgraph_check_ns: phases.depgraph_check_ns,
+        request_cache_lookup_ns: phases.request_cache_lookup_ns,
+        cross_root_validate_ns: phases.cross_root_validate_ns,
+        artifact_lookup_ns,
+        write_output_ns,
+        bookkeeping_ns,
+        total_ns,
+    });
 
     Ok(Response::CompileResult {
         exit_code,
@@ -404,6 +466,129 @@ mod tests {
 
     fn file_time(path: &Path) -> filetime::FileTime {
         filetime::FileTime::from_last_modification_time(&std::fs::metadata(path).unwrap())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rustc_hit_requires_matching_verdict_and_replays_its_streams() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = crate::daemon::server::tests::bind_isolated_server(dir.path());
+        let state = server.state.as_ref();
+        let source_path: NormalizedPath = dir.path().join("source.rs").into();
+        let output_path: NormalizedPath = dir.path().join("output.rlib").into();
+        let cache_path = state.artifact_dir.join("artifact-key_0");
+        std::fs::write(&cache_path, b"artifact bytes").unwrap();
+        write_authoritative_blob_digest(&cache_path).unwrap();
+        let sid = state.sessions.create(crate::depgraph::SessionConfig {
+            client_pid: std::process::id(),
+            working_dir: dir.path().into(),
+            log_file: None,
+            track_stats: true,
+            journal_path: None,
+            profile: false,
+            private_env: Vec::new(),
+            owner_pids: Vec::new(),
+        });
+        let mut artifact_meta = ArtifactIndex::new(
+            vec!["output.rlib".to_string()],
+            vec![14],
+            Arc::new(Vec::new()),
+            Arc::new(Vec::new()),
+            0,
+        );
+        state.artifacts.insert(
+            "artifact-key".to_string(),
+            CachedArtifact::from_file_payloads(artifact_meta.clone(), vec![cache_path.clone()]),
+        );
+
+        let materialize = || {
+            materialize_cached_compile_hit(CachedHitMaterializeRequest {
+                state,
+                sid: &sid,
+                artifact_key_hex: "artifact-key",
+                verdict_key_hex: Some("verdict-key"),
+                source_path: &source_path,
+                output_path: &output_path,
+                secondary_output_dir: dir.path().into(),
+                current_depfile_dest: None,
+                compile_start: Instant::now(),
+                hit_label: "HIT_TEST",
+                cached_error_label: "CACHED_ERROR_TEST",
+                record_compilation: false,
+                downgrade_output_metadata: false,
+                mtime_floor_paths: Vec::new(),
+                rustc_metadata_compat_outputs: Some(vec![output_path.clone()]),
+                rustc_archive_hardlink_eligible: Some(true),
+                phases: CachedHitPhases::request_cache(0, 0),
+            })
+        };
+
+        assert!(matches!(
+            materialize(),
+            Err(CachedHitFailure::VerdictMissing)
+        ));
+        assert!(
+            !output_path.is_file(),
+            "missing verdict must gate artifact replay"
+        );
+
+        let requested_stdout = format!("error stdout: {}", output_path.display()).into_bytes();
+        let requested_stderr = format!("lint error: {}", output_path.display()).into_bytes();
+        let canonical_stdout = canonicalize_staged_output_bytes(&requested_stdout, dir.path());
+        let canonical_stderr = canonicalize_staged_output_bytes(&requested_stderr, dir.path());
+        assert!(contains_staged_output_marker(&canonical_stdout));
+        assert!(contains_staged_output_marker(&canonical_stderr));
+        artifact_meta.rustc_verdicts.insert(
+            "verdict-key".to_string(),
+            ArtifactVerdict {
+                stdout: Arc::new(canonical_stdout),
+                stderr: Arc::new(canonical_stderr),
+                exit_code: 1,
+            },
+        );
+        state.artifacts.insert(
+            "artifact-key".to_string(),
+            CachedArtifact::from_file_payloads(artifact_meta.clone(), vec![cache_path.clone()]),
+        );
+        let response = materialize().unwrap();
+        assert!(matches!(
+            response,
+            Response::CompileResult {
+                exit_code: 1,
+                cached: true,
+                ref stdout,
+                ref stderr,
+            } if stdout.as_slice() == requested_stdout
+                && stderr.as_slice() == requested_stderr
+        ));
+        assert!(
+            !output_path.is_file(),
+            "an error verdict must never materialize shared success outputs"
+        );
+
+        artifact_meta.rustc_verdicts.insert(
+            "verdict-key".to_string(),
+            ArtifactVerdict {
+                stdout: Arc::new(b"verdict stdout".to_vec()),
+                stderr: Arc::new(b"lint diagnostic".to_vec()),
+                exit_code: 0,
+            },
+        );
+        state.artifacts.insert(
+            "artifact-key".to_string(),
+            CachedArtifact::from_file_payloads(artifact_meta, vec![cache_path]),
+        );
+        let response = materialize().unwrap();
+        assert!(matches!(
+            response,
+            Response::CompileResult {
+                exit_code: 0,
+                cached: true,
+                ref stdout,
+                ref stderr,
+            } if stdout.as_slice() == b"verdict stdout"
+                && stderr.as_slice() == b"lint diagnostic"
+        ));
+        assert_eq!(std::fs::read(output_path).unwrap(), b"artifact bytes");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -449,6 +634,7 @@ mod tests {
             state,
             sid: &sid,
             artifact_key_hex: "artifact-key",
+            verdict_key_hex: None,
             source_path: &source_path,
             output_path: &output_path,
             secondary_output_dir: dir.path().into(),
@@ -564,6 +750,7 @@ mod tests {
             state,
             sid: &sid,
             artifact_key_hex: "depfile-key",
+            verdict_key_hex: None,
             source_path: &source_path,
             output_path: &output_path,
             secondary_output_dir: dir.path().into(),
@@ -664,6 +851,7 @@ mod tests {
             state,
             sid: &sid,
             artifact_key_hex: "legacy-key",
+            verdict_key_hex: None,
             source_path: &source_path,
             output_path: &output_path,
             secondary_output_dir: dir.path().into(),
@@ -748,6 +936,7 @@ mod tests {
                     state,
                     sid: &sid,
                     artifact_key_hex: "budget-key",
+                    verdict_key_hex: None,
                     source_path: &source_path,
                     output_path: &output_path,
                     secondary_output_dir: dir.path().into(),

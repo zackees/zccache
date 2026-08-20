@@ -9,7 +9,8 @@ use crate::rustc_args::{parse_rustc_args, ExternCrate, RustcParsedArgs};
 use zccache_core::NormalizedPath;
 
 use super::super::{
-    compute_rustc_artifact_key, compute_rustc_artifact_key_with_root, RustcCompileContext,
+    compute_rustc_artifact_key, compute_rustc_artifact_key_with_root, compute_rustc_verdict_key,
+    RustcCompileContext,
 };
 use super::{make_context, make_rustc_context, make_rustc_context_with_env, test_compiler_hash};
 
@@ -584,12 +585,35 @@ fn rustc_from_parsed_args_drops_cargo_target_dir() {
         ctx.env_vars
     );
     assert!(
-        ctx.env_vars
+        !ctx.env_vars
             .iter()
             .any(|(k, _)| k == "ZCCACHE_DYLINT_CACHE_INPUT_HASH"),
-        "from_parsed_args must keep the internal Dylint cache salt; got {:?}",
+        "the Dylint verdict salt must not enter artifact identity; got {:?}",
         ctx.env_vars
     );
+}
+
+#[test]
+fn rustc_dylint_hash_selects_verdict_without_rekeying_artifact_context() {
+    let plain = make_rustc_context_with_env(Vec::new());
+    let dylint_a = make_rustc_context_with_env(vec![(
+        "ZCCACHE_DYLINT_CACHE_INPUT_HASH".into(),
+        "lint-a".into(),
+    )]);
+    let dylint_b = make_rustc_context_with_env(vec![(
+        "ZCCACHE_DYLINT_CACHE_INPUT_HASH".into(),
+        "lint-b".into(),
+    )]);
+
+    assert_eq!(plain.context_key(), dylint_a.context_key());
+    assert_eq!(dylint_a.context_key(), dylint_b.context_key());
+
+    let artifact = "0707070707070707070707070707070707070707070707070707070707070707";
+    let plain_verdict = compute_rustc_verdict_key(artifact, None);
+    let dylint_a_verdict = compute_rustc_verdict_key(artifact, Some("lint-a"));
+    let dylint_b_verdict = compute_rustc_verdict_key(artifact, Some("lint-b"));
+    assert_ne!(plain_verdict, dylint_a_verdict);
+    assert_ne!(dylint_a_verdict, dylint_b_verdict);
 }
 
 /// T3 — Negative control: `CARGO_PKG_VERSION` MUST still affect the key

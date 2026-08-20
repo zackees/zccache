@@ -43,6 +43,40 @@ fn should_cache_rustc_error(
         && !rustc_args.emit_types.iter().any(|emit| emit == "link")
 }
 
+fn commit_rustc_verdict(
+    state: &SharedState,
+    artifact_key_hex: &str,
+    verdict_key_hex: String,
+    verdict: ArtifactVerdict,
+) {
+    use dashmap::mapref::entry::Entry;
+    let durable = super::rustc_index::durable_rustc_index(state, artifact_key_hex);
+    let mut incoming = ArtifactIndex::new(
+        Vec::new(),
+        Vec::new(),
+        Arc::new(Vec::new()),
+        Arc::new(Vec::new()),
+        0,
+    );
+    incoming.rustc_verdicts.insert(verdict_key_hex, verdict);
+    if let Some(durable) = durable {
+        incoming = super::rustc_index::merge_rustc_index(incoming, durable);
+    }
+
+    match state.artifacts.entry(artifact_key_hex.to_string()) {
+        Entry::Occupied(mut entry) => {
+            let artifact_meta =
+                super::rustc_index::merge_rustc_index(incoming, entry.get().meta.clone());
+            enqueue_index_insert(state, artifact_key_hex.to_string(), artifact_meta.clone());
+            entry.insert(CachedArtifact::from_index(artifact_meta));
+        }
+        Entry::Vacant(entry) => {
+            enqueue_index_insert(state, artifact_key_hex.to_string(), incoming.clone());
+            entry.insert(CachedArtifact::from_index(incoming));
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // Localized error-cache insertion path.
 pub(super) async fn maybe_store_rustc_error_artifact(
     state: &SharedState,
@@ -51,6 +85,7 @@ pub(super) async fn maybe_store_rustc_error_artifact(
     cwd_path: &NormalizedPath,
     ctx: &CompileContext,
     rustc_args: &crate::depgraph::RustcParsedArgs,
+    dylint_input_hash: Option<&str>,
     stdout: &Arc<Vec<u8>>,
     stderr: &Arc<Vec<u8>>,
     exit_code: i32,
@@ -60,8 +95,9 @@ pub(super) async fn maybe_store_rustc_error_artifact(
         return None;
     }
 
-    // Error artifacts publish synchronously, but still participate in the
-    // same Clear/GC/flush ordering contract as successful artifacts.
+    // Error artifacts participate in the same Clear/GC barrier and ordered
+    // index-writer WAL as successful artifacts. Sharing one writer prevents
+    // an older queued success row from overwriting a newer error verdict.
     let _publication_guard = begin_artifact_publication(state).await?;
 
     // Error-cache path ignores env-dep names: failed compiles are keyed
@@ -90,24 +126,123 @@ pub(super) async fn maybe_store_rustc_error_artifact(
         .load()
         .update(context_key, scan_result, get_hash)?;
     let artifact_key_hex = artifact_key.hash().to_hex();
-    let meta = ArtifactIndex::new(
-        Vec::new(),
-        Vec::new(),
-        Arc::clone(stdout),
-        Arc::clone(stderr),
+    let verdict_key_hex =
+        crate::depgraph::compute_rustc_verdict_key(&artifact_key_hex, dylint_input_hash)
+            .hash()
+            .to_hex();
+    let verdict = ArtifactVerdict {
+        stdout: Arc::clone(stdout),
+        stderr: Arc::clone(stderr),
         exit_code,
-    );
-    state.artifact_store.insert(&artifact_key_hex, &meta);
-    state.artifacts.insert(
-        artifact_key_hex.clone(),
-        CachedArtifact::from_file_payloads(meta, Vec::new()),
-    );
+    };
+    commit_rustc_verdict(state, &artifact_key_hex, verdict_key_hex, verdict);
     Some(artifact_key_hex)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cold_error_verdict_merges_durable_outputs_and_sibling_verdicts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut server = crate::daemon::server::tests::bind_isolated_server(tmp.path());
+        let mut durable = ArtifactIndex::new(
+            vec!["shared.rmeta".to_string()],
+            vec![17],
+            Arc::new(Vec::new()),
+            Arc::new(Vec::new()),
+            0,
+        );
+        durable.rustc_verdicts.insert(
+            "plain".to_string(),
+            ArtifactVerdict {
+                stdout: Arc::new(Vec::new()),
+                stderr: Arc::new(Vec::new()),
+                exit_code: 0,
+            },
+        );
+        server.state.artifact_store.insert("artifact", &durable);
+        assert!(!server.state.artifacts.contains_key("artifact"));
+
+        commit_rustc_verdict(
+            &server.state,
+            "artifact",
+            "dylint".to_string(),
+            ArtifactVerdict {
+                stdout: Arc::new(Vec::new()),
+                stderr: Arc::new(b"lint error".to_vec()),
+                exit_code: 1,
+            },
+        );
+
+        let cached = server.state.artifacts.get("artifact").unwrap();
+        assert_eq!(cached.meta.output_names.as_ref(), &["shared.rmeta"]);
+        assert_eq!(cached.meta.rustc_verdicts.len(), 2);
+        drop(cached);
+        let command = server.index_writer_rx.as_mut().unwrap().try_recv().unwrap();
+        let IndexWriterCommand::Insert(key, merged) = command else {
+            panic!("cold verdict publication must use the ordered index writer");
+        };
+        assert_eq!(key, "artifact");
+        assert_eq!(merged.output_names.as_ref(), &["shared.rmeta"]);
+        assert_eq!(merged.rustc_verdicts.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn error_verdict_preserves_existing_shared_artifact_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut server = crate::daemon::server::tests::bind_isolated_server(tmp.path());
+        let mut meta = ArtifactIndex::new(
+            vec!["shared.rmeta".to_string()],
+            vec![17],
+            Arc::new(Vec::new()),
+            Arc::new(Vec::new()),
+            0,
+        );
+        meta.rustc_verdicts.insert(
+            "plain".to_string(),
+            ArtifactVerdict {
+                stdout: Arc::new(Vec::new()),
+                stderr: Arc::new(Vec::new()),
+                exit_code: 0,
+            },
+        );
+        enqueue_index_insert(&server.state, "artifact".to_string(), meta.clone());
+        server
+            .state
+            .artifacts
+            .insert("artifact".to_string(), CachedArtifact::from_index(meta));
+
+        commit_rustc_verdict(
+            &server.state,
+            "artifact",
+            "dylint".to_string(),
+            ArtifactVerdict {
+                stdout: Arc::new(Vec::new()),
+                stderr: Arc::new(b"lint error".to_vec()),
+                exit_code: 1,
+            },
+        );
+
+        let cached = server.state.artifacts.get("artifact").unwrap();
+        assert_eq!(cached.meta.output_names.as_ref(), &["shared.rmeta"]);
+        assert_eq!(cached.meta.output_sizes, vec![17]);
+        assert_eq!(cached.meta.rustc_verdicts.len(), 2);
+        drop(cached);
+        let first = server.index_writer_rx.as_mut().unwrap().try_recv().unwrap();
+        let IndexWriterCommand::Insert(_, first) = first else {
+            panic!("successful artifact publication must precede the verdict");
+        };
+        assert_eq!(first.rustc_verdicts.len(), 1);
+        let second = server.index_writer_rx.as_mut().unwrap().try_recv().unwrap();
+        let IndexWriterCommand::Insert(key, durable) = second else {
+            panic!("verdict publication must use the ordered index writer");
+        };
+        assert_eq!(key, "artifact");
+        assert_eq!(durable.output_names.as_ref(), &["shared.rmeta"]);
+        assert_eq!(durable.rustc_verdicts.len(), 2);
+    }
 
     #[tokio::test]
     async fn rustc_error_publication_waits_for_clear_barrier() {
@@ -154,6 +289,7 @@ mod tests {
                 &NormalizedPath::new(tmp.path()),
                 &ctx,
                 &rustc_args,
+                None,
                 &stdout,
                 &stderr,
                 1,

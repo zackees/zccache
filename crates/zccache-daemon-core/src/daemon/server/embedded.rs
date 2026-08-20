@@ -129,7 +129,8 @@ impl EmbeddedDaemon {
             for (key, meta) in entries {
                 state
                     .artifacts
-                    .insert(key, CachedArtifact::from_index(meta));
+                    .entry(key)
+                    .or_insert_with(|| CachedArtifact::from_index(meta));
             }
             state.artifacts_loaded.store(true, Ordering::Release);
             state.artifact_store_loaded.store(true, Ordering::Release);

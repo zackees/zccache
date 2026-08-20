@@ -25,13 +25,26 @@
 //! on the keys that hadn't been flushed — the daemon repopulates them on
 //! next access. Graceful shutdown flushes synchronously.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use bincode::Options;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use zccache_core::NormalizedPath;
+
+/// Compiler result associated with one rustc/Dylint verdict identity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactVerdict {
+    /// Captured compiler stdout.
+    pub stdout: Arc<Vec<u8>>,
+    /// Captured compiler stderr.
+    pub stderr: Arc<Vec<u8>>,
+    /// Compiler exit code.
+    pub exit_code: i32,
+}
 
 /// Lightweight metadata stored in the index for each cached artifact.
 ///
@@ -58,6 +71,59 @@ pub struct ArtifactIndex {
     /// Unix epoch seconds when this artifact was stored or last access was
     /// checkpointed for retention. Reused for backward-compatible persistence.
     pub stored_at_secs: u64,
+    /// Rustc result streams keyed independently from shared output bytes.
+    /// [`ArtifactStore::load_from_disk`] migrates pre-verdict snapshots with
+    /// an empty map, which makes those old rows safely miss under the rustc
+    /// context-key domain introduced alongside this field.
+    pub rustc_verdicts: BTreeMap<String, ArtifactVerdict>,
+}
+
+/// Artifact-index row written before verdicts became a second cache layer.
+///
+/// Bincode encodes structs positionally, so `#[serde(default)]` cannot append
+/// a field compatibly. Decode the exact legacy shape and migrate it instead.
+#[derive(Debug, Serialize, Deserialize)]
+struct LegacyArtifactIndex {
+    output_names: Arc<[String]>,
+    output_sizes: Vec<u64>,
+    stdout: Arc<Vec<u8>>,
+    stderr: Arc<Vec<u8>>,
+    exit_code: i32,
+    total_size: u64,
+    stored_at_secs: u64,
+}
+
+impl From<LegacyArtifactIndex> for ArtifactIndex {
+    fn from(legacy: LegacyArtifactIndex) -> Self {
+        Self {
+            output_names: legacy.output_names,
+            output_sizes: legacy.output_sizes,
+            stdout: legacy.stdout,
+            stderr: legacy.stderr,
+            exit_code: legacy.exit_code,
+            total_size: legacy.total_size,
+            stored_at_secs: legacy.stored_at_secs,
+            rustc_verdicts: BTreeMap::new(),
+        }
+    }
+}
+
+fn decode_index_rows(bytes: &[u8]) -> bincode::Result<Vec<(String, ArtifactIndex)>> {
+    match bincode::deserialize(bytes) {
+        Ok(rows) => Ok(rows),
+        Err(current_error) => {
+            let legacy_options = bincode::DefaultOptions::new()
+                .with_fixint_encoding()
+                .reject_trailing_bytes();
+            match legacy_options.deserialize::<Vec<(String, LegacyArtifactIndex)>>(bytes) {
+                Ok(rows) => Ok(rows
+                    .into_iter()
+                    .map(|(key, meta)| (key, meta.into()))
+                    .collect()),
+                Err(_) => Err(current_error),
+            }
+        }
+    }
 }
 
 impl ArtifactIndex {
@@ -82,6 +148,7 @@ impl ArtifactIndex {
             exit_code,
             total_size,
             stored_at_secs,
+            rustc_verdicts: BTreeMap::new(),
         }
     }
 }
@@ -182,11 +249,14 @@ impl ArtifactStore {
     pub fn load_from_disk(&self) -> std::io::Result<()> {
         let path = self.path.as_path();
         match std::fs::read(path) {
-            Ok(bytes) => match bincode::deserialize::<Vec<(String, ArtifactIndex)>>(&bytes) {
+            Ok(bytes) => match decode_index_rows(&bytes) {
                 Ok(rows) => {
                     let count = rows.len();
                     for (k, v) in rows {
-                        self.entries.insert(k, v);
+                        // Deferred loading can race request-time publication.
+                        // Disk state fills holes but must not replace a row
+                        // already advanced by the running process.
+                        self.entries.entry(k).or_insert(v);
                     }
                     if count > 0 {
                         tracing::info!(
@@ -432,6 +502,76 @@ mod tests {
         let (_dir, store) = temp_store();
         assert_eq!(store.len(), 0);
         assert!(store.is_empty());
+    }
+
+    #[test]
+    fn legacy_index_snapshot_defaults_to_no_rustc_verdicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.bin");
+        let legacy = LegacyArtifactIndex {
+            output_names: Arc::from(vec!["foo.o".to_string()]),
+            output_sizes: vec![4],
+            stdout: Arc::new(Vec::new()),
+            stderr: Arc::new(Vec::new()),
+            exit_code: 0,
+            total_size: 4,
+            stored_at_secs: 42,
+        };
+        std::fs::write(
+            &path,
+            bincode::serialize(&vec![("legacy".to_string(), legacy)]).unwrap(),
+        )
+        .unwrap();
+
+        let store = ArtifactStore::open(&path).unwrap();
+        let loaded = store.get("legacy").expect("legacy index row should decode");
+        assert!(loaded.rustc_verdicts.is_empty());
+        assert_eq!(loaded.total_size, 4);
+    }
+
+    #[test]
+    fn rustc_verdicts_survive_index_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.bin");
+        let store = ArtifactStore::open(&path).unwrap();
+        let mut meta = sample_meta();
+        meta.rustc_verdicts.insert(
+            "dylint-hash".to_string(),
+            ArtifactVerdict {
+                stdout: Arc::new(b"verdict stdout".to_vec()),
+                stderr: Arc::new(b"lint diagnostic".to_vec()),
+                exit_code: 1,
+            },
+        );
+        store.insert("artifact", &meta);
+        store.flush().unwrap();
+        drop(store);
+
+        let reopened = ArtifactStore::open(&path).unwrap();
+        let verdict = &reopened
+            .get("artifact")
+            .expect("artifact should survive")
+            .rustc_verdicts["dylint-hash"];
+        assert_eq!(verdict.stdout.as_slice(), b"verdict stdout");
+        assert_eq!(verdict.stderr.as_slice(), b"lint diagnostic");
+        assert_eq!(verdict.exit_code, 1);
+    }
+
+    #[test]
+    fn corrupted_current_snapshot_is_not_accepted_as_legacy() {
+        let mut meta = sample_meta();
+        meta.rustc_verdicts.insert(
+            "dylint-hash".to_string(),
+            ArtifactVerdict {
+                stdout: Arc::new(Vec::new()),
+                stderr: Arc::new(b"lint diagnostic".to_vec()),
+                exit_code: 1,
+            },
+        );
+        let mut bytes = bincode::serialize(&vec![("artifact".to_string(), meta)]).unwrap();
+        bytes.pop();
+
+        assert!(decode_index_rows(&bytes).is_err());
     }
 
     #[test]

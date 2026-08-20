@@ -56,7 +56,7 @@ pub use rust_plan::{
 #[cfg(feature = "cli")]
 #[allow(unused_imports)]
 pub use rust_plan::{tar_gz_decode, tar_gz_encode};
-pub use store::{ArtifactIndex, ArtifactStore};
+pub use store::{ArtifactIndex, ArtifactStore, ArtifactVerdict};
 
 use std::path::Path;
 use zccache_core::NormalizedPath;

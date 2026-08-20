@@ -13,5 +13,6 @@ Split-out modules from the original `handle_compile.rs`. The compile pipeline is
 | `error_cache.rs` | Caching + materialization of cached compiler errors |
 | `miss_profile.rs` | Opt-in detailed per-phase profile of a miss (gated by `ZCCACHE_PROFILE_RUST_MISS`) |
 | `miss_store.rs` | Post-exec artifact store path |
+| `rustc_index.rs` | Merge rules for shared rustc output metadata and verdict rows |
 
 Tests live in `cached_hit.rs::tests` (mtime preservation, materialization shape) and in `pipeline.rs::tests` (phase wiring).

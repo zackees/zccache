@@ -165,6 +165,7 @@ impl CachedArtifact {
     }
 
     /// Create from index metadata and already-created payload files.
+    #[cfg(test)]
     pub(super) fn from_file_payloads(meta: ArtifactIndex, payloads: Vec<NormalizedPath>) -> Self {
         Self::with_payloads(
             meta,
@@ -227,9 +228,10 @@ impl CachedArtifact {
         }
     }
 
-    /// Record one hit and return updated index metadata when its durable
-    /// checkpoint is due.
-    pub(crate) fn record_access(&self, now: std::time::Instant) -> Option<ArtifactIndex> {
+    /// Record one hit and return its wall-clock timestamp when a durable
+    /// checkpoint is due. The index writer applies only this timestamp to its
+    /// newest row so a stale hit clone cannot overwrite newer metadata.
+    pub(crate) fn record_access(&self, now: std::time::Instant) -> Option<u64> {
         const PERSIST_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
         let mut access = self.access();
@@ -246,12 +248,12 @@ impl CachedArtifact {
         access.last_used_wall = wall_now;
         drop(access);
 
-        let mut meta = self.meta.clone();
-        meta.stored_at_secs = wall_now
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Some(meta)
+        Some(
+            wall_now
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        )
     }
 }
 
