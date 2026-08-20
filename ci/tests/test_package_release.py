@@ -216,13 +216,14 @@ def test_cross_build_driver_uses_soldr_cache_and_preserves_artifact_contracts() 
     assert "cross_driver:" in action
     assert "soldr cargo zigbuild" in action
     assert "soldr cargo xwin build" in action
-    assert "soldr --no-cache cargo zigbuild" not in action
+    assert action.count("soldr --no-cache cargo zigbuild --jobs 1") == 1
     assert "soldr --no-cache cargo xwin" not in action
     assert action.count("cargo_build=(soldr cargo zigbuild --jobs 1)") == 2
-    assert action.count("cargo_build=(soldr cargo xwin build --jobs 2)") == 2
+    assert action.count("cargo_build=(soldr cargo xwin build --jobs 1)") == 2
     assert "cargo_build=(soldr cargo zigbuild)" not in action
     assert "cargo_build=(soldr cargo zigbuild --jobs 2)" not in action
     assert "cargo_build=(soldr cargo xwin build)" not in action
+    assert "cargo_build=(soldr cargo xwin build --jobs 2)" not in action
     assert "verify-compile-cache:" in action
     assert "Bootstrap zccache is not first on PATH" in action
     for workflow in (release_workflow, build_workflow):
@@ -246,6 +247,20 @@ def test_zigbuild_cross_prerequisites_cover_vendored_c_and_macos_debug_info() ->
     assert 'test -x "$llvm_dsymutil"' in action
     assert 'ln -s "$llvm_dsymutil" /usr/local/bin/dsymutil' in action
     assert "test -x /usr/local/bin/dsymutil" in action
+
+
+def test_linux_cross_build_repairs_debug_sidecars_missing_from_cache_hits() -> None:
+    action = _repo_text(".github/actions/build-target/action.yml")
+
+    assert "name: Repair missing Linux debug sidecars" in action
+    assert (
+        "if: inputs.cross_driver == 'zigbuild' && "
+        "contains(inputs.target, 'unknown-linux')"
+    ) in action
+    assert 'soldr cargo clean -p zccache --release --target "$TARGET"' in action
+    assert "soldr --no-cache cargo zigbuild --jobs 1" in action
+    assert 'test -e "$TARGET_DIR/zccache.dwp"' in action
+    assert 'test -e "$TARGET_DIR/zccache-fp.dwp"' in action
 
 
 def test_xwin_arm64_compiles_mimalloc_c_as_recommended_cxx() -> None:

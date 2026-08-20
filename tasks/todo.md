@@ -552,6 +552,15 @@ Issue: https://github.com/zackees/zccache/issues/864
 - clud-review: clean after the initial hosted toolchain follow-ups (one reviewer).
 - Final clud-review: clean after bounding both binary and Python-extension
   cross-build paths (one reviewer).
+- Hosted RED: serializing Zig builds fixed every signaled compiler child and
+  both macOS targets completed; all four Linux targets then exposed missing
+  packed `.dwp` sidecars after cache-restored link outputs, while both xwin
+  lanes reproduced exit 255 at two jobs.
+- Final follow-up: serialize xwin too, and keep the normal cache-first Linux
+  build while rebuilding only the shipped umbrella package without the wrapper
+  when its `.dwp` outputs were not restored.
+- Final clud-review: clean after restricting the repair to Zig Linux targets
+  and using soldr's sanctioned no-cache fallback (one reviewer).
 
 # #1414 isolate session-reaping lifecycle events
 

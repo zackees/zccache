@@ -269,12 +269,13 @@ runs:
         # Zig cross builds are especially memory-heavy on the two-core hosted
         # Linux runners. Keep one rustc child alive at a time; exit 255 means a
         # signaled compiler child and persisted with two concurrent children.
-        # xwin remains bounded at two because its hosted lanes have not shown
-        # the same process-kill failure.
+        # The xwin lanes showed the same signaled rustc-child exit (255) once
+        # the Zig lanes were serialized. Keep every hosted cross lane to one
+        # rustc child at a time.
         if [ "${{ inputs.cross_driver }}" = "zigbuild" ]; then
           cargo_build=(soldr cargo zigbuild --jobs 1)
         elif [ "${{ inputs.cross_driver }}" = "xwin" ]; then
-          cargo_build=(soldr cargo xwin build --jobs 2)
+          cargo_build=(soldr cargo xwin build --jobs 1)
         elif [ "${{ inputs.use_soldr }}" = "true" ]; then
           cargo_build=(soldr --no-cache cargo build)
         else
@@ -346,7 +347,7 @@ runs:
         if [ "${{ inputs.cross_driver }}" = "zigbuild" ]; then
           cargo_build=(soldr cargo zigbuild --jobs 1)
         elif [ "${{ inputs.cross_driver }}" = "xwin" ]; then
-          cargo_build=(soldr cargo xwin build --jobs 2)
+          cargo_build=(soldr cargo xwin build --jobs 1)
         elif [ "${{ inputs.use_soldr }}" = "true" ]; then
           cargo_build=(soldr --no-cache cargo build)
         else
@@ -355,6 +356,33 @@ runs:
         "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-cli --features python --lib
         "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-watcher --features python --lib
         "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-fingerprint --features python --lib
+
+    - name: Repair missing Linux debug sidecars
+      if: inputs.cross_driver == 'zigbuild' && contains(inputs.target, 'unknown-linux')
+      shell: bash
+      env:
+        PYO3_PYTHON: python
+      run: |
+        set -euo pipefail
+        TARGET="${{ inputs.target }}"
+        TARGET_DIR="target/$TARGET/release"
+        if [ -e "$TARGET_DIR/zccache.dwp" ] && [ -e "$TARGET_DIR/zccache-fp.dwp" ]; then
+          echo "Linux debug sidecars were produced by the cache-first build"
+          exit 0
+        fi
+
+        # A cached rustc link can restore the executable without the packed
+        # split-debuginfo sidecar. Preserve the normal cache-first build and
+        # its warm dependencies, then rebuild only the shipped umbrella
+        # package without the wrapper so rustc emits both .dwp files locally.
+        echo "Packed Linux debug sidecars are missing; rebuilding zccache locally"
+        soldr cargo clean -p zccache --release --target "$TARGET"
+        soldr --no-cache cargo zigbuild --jobs 1 \
+          --release --target "$TARGET" -p zccache \
+          --features zccache-bin,fingerprint-bin \
+          --bin zccache --bin zccache-fp
+        test -e "$TARGET_DIR/zccache.dwp"
+        test -e "$TARGET_DIR/zccache-fp.dwp"
 
     - name: Stage artifacts
       shell: bash
