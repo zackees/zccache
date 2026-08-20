@@ -24,6 +24,37 @@ pub(super) fn decode_response_wire(
         .map_err(IpcError::Protocol)
 }
 
+/// Decode a response while preserving the one cross-lane signal needed by
+/// the prost-default rollout. An old bincode-only daemon rejects the prost
+/// request before dispatch, then sends its diagnostic on the bincode lane.
+/// Surface that lane mismatch structurally so callers can retry safely without
+/// classifying application error text.
+pub(super) fn decode_response_wire_for_expected(
+    message: Option<
+        zccache_protocol::DecodedWireMessage<
+            zccache_protocol::Response,
+            zccache_protocol::wire_prost::zccache_v1::Response,
+        >,
+    >,
+    expected: zccache_protocol::wire_prost::WireFormat,
+) -> Result<Option<zccache_protocol::Response>, IpcError> {
+    if matches!(
+        (&message, expected),
+        (
+            Some(zccache_protocol::DecodedWireMessage::BincodeV15(_)),
+            zccache_protocol::wire_prost::WireFormat::ProstV16
+        )
+    ) {
+        return Err(IpcError::Protocol(
+            zccache_protocol::ProtocolError::VersionMismatch {
+                expected: zccache_protocol::PROST_PROTOCOL_VERSION,
+                received: zccache_protocol::BINCODE_PROTOCOL_VERSION,
+            },
+        ));
+    }
+    decode_response_wire(message)
+}
+
 pub(super) async fn recv_bincode_loop<R, T>(
     reader: &mut R,
     read_buf: &mut BytesMut,

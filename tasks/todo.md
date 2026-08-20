@@ -573,7 +573,7 @@ Issue: https://github.com/zackees/zccache/issues/864
 - [x] Route the event through the explicit-root lifecycle writer and preserve its payload/cardinality contract.
 - [x] Run the focused regression repeatedly, the daemon-core suite, formatting, and clippy/checks.
 - [x] Run the repository review gate.
-- [ ] Push, merge, close #1414, and verify the Linux x86 gate.
+- [x] Push, merge, close #1414, and verify the Linux x86 gate.
 
 ## Review
 
@@ -584,6 +584,8 @@ Issue: https://github.com/zackees/zccache/issues/864
   warnings-denied clippy for every daemon-core target, and whitespace checks.
 - Post-merge GREEN: the focused regression passes against current main.
 - clud-review: clean (one reviewer).
+- Hosted GREEN: PR #1416 merged as `e39a9852` and closed #1414 after
+  the Linux x86 check and focused matrix gates passed.
 
 # #1418 cache packed Linux debug sidecars
 
@@ -730,3 +732,67 @@ Issue: https://github.com/zackees/zccache/issues/1423
 - Full GREEN: 258 CLI tests pass with two ignored; formatting, diff checks,
   and repository-policy Clippy pass with only three unrelated baseline warnings.
 - clud-review: clean (one reviewer).
+
+# #840 retire the bincode IPC body
+
+Issue: https://github.com/zackees/zccache/issues/840
+
+- [x] Add RED coverage for full-family auto fallback against a bincode-only daemon.
+- [x] Land compatibility fallback before changing the full-family default.
+- [x] Flip auto/unset full-family requests to prost while preserving explicit overrides.
+- [x] Add daemon telemetry for remaining bincode traffic and expose it in status.
+- [ ] Run the sanctioned performance matrix and full correctness/review gates.
+- [ ] Remove the bincode lane and flatten dispatch after compatibility evidence is clean.
+- [ ] Push, merge, close #840, and verify hosted CI.
+
+## Review
+
+- Slice 1 (complete in PR #1312): ExecProbe/ExecStore have real protobuf
+  messages and exhaustive conversion coverage.
+- RED: a fake bincode-only daemon rejects the first prost frame and requires
+  the exact request to arrive once on a new bincode connection.
+- GREEN: unset/auto full-family callers prefer prost and retry only a structured
+  protocol-version rejection; application errors, ambiguous closes, and I/O
+  failures never replay compile/link work. Explicit `prost`, `bincode`, and `frame`
+  selections remain strict.
+- Telemetry: the daemon counts decoded legacy requests by bounded request ID;
+  prost/human/JSON status expose the map, while a byte-for-byte compatibility
+  test proves the bincode `DaemonStatus` shape is unchanged.
+- Focused GREEN: protocol selection and bincode-shape tests, IPC old-daemon
+  fallback, wrapper retry policy, and live mixed-wire daemon status all pass.
+- Remaining gate: commit the finalized tree and run the clean-checkout
+  sanctioned performance matrix on a quiet host.
+- Final clud-review: clean after structured-only control fallback, telemetry
+  availability, no-replay retry gating, source splits, and directory READMEs
+  (one reviewer).
+- Review follow-up: full-family failures now retain connect-versus-delivery
+  phase, so idempotent session-end suppresses only a proven pre-dispatch
+  unreachable daemon. A peer close after receiving the request propagates.
+- Focused GREEN: the classified connect failure and Windows post-dispatch
+  close regressions pass on the normal Soldr wrapper.
+- Final review follow-up: the phase API moved into documented `full_family.rs`
+  to keep `lib.rs` below 1,000 lines; migration-era protocol docs now describe
+  the live non-streaming, control, and streaming prost-first paths accurately.
+- clud-review: clean after the phase-aware session-end repair and source split
+  (one reviewer).
+- Release-cycle constraint: the compatibility lane cannot be deleted until a
+  shipped release reports zero bincode traffic for the required soak period.
+
+# #1417 never replay compile/link after ambiguous delivery
+
+Issue: https://github.com/zackees/zccache/issues/1417
+
+- [x] Identify every outer retry and responsive-wedge replay after request send.
+- [x] Restrict transport recovery to proven pre-dispatch failures.
+- [x] Keep responsive-daemon no-kill behavior while failing the ambiguous request.
+- [x] Add RED/GREEN coverage for pre-dispatch retry and delivery-unknown refusal.
+- [ ] Run focused/full correctness and review gates, merge, and close #1417.
+
+## Review
+
+- RED: `link_with_retry` treated `DeliveryUnknown` exactly like connect failure,
+  and all three responsive-wedge branches sent a second compile/link while the
+  original could remain queued or executing.
+- GREEN: only `PreDispatch` failures recover; send/receive/wedge outcomes are
+  terminal after delivery becomes ambiguous. A responsive daemon is preserved
+  without replaying the current request.

@@ -88,6 +88,8 @@ pub(super) fn sample_daemon_status() -> DaemonStatus {
         watcher_active: true,
         watcher_degradations: 22,
         index_writer_gone: false,
+        bincode_requests_by_type: Default::default(),
+        bincode_request_telemetry_available: false,
     }
 }
 

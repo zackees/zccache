@@ -9,7 +9,7 @@ use prost::Message;
 
 use crate::{ProtocolError, MAX_MESSAGE_SIZE, PROST_PROTOCOL_VERSION};
 
-/// Serialize a prost message to the planned v16 length-prefixed frame.
+/// Serialize a prost message to the v16 length-prefixed frame.
 ///
 /// Format: `[4-byte LE length][4-byte LE protocol version][prost payload]`.
 /// The length field covers the protocol version plus payload bytes, matching

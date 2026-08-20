@@ -351,6 +351,9 @@ pub(super) struct SharedState {
     pub(super) start_time: u64,
     /// Global stats collector.
     pub(super) stats: StatsCollector,
+    /// Prost-only rollout telemetry for legacy IPC traffic. Keys come from
+    /// `default_request_id`, so cardinality is bounded by the Request enum.
+    pub(super) bincode_requests_by_type: DashMap<&'static str, u64>,
     /// Phase-level profiler for hot-path breakdown.
     pub(super) profiler: PhaseProfiler,
     /// On-disk artifact cache for hardlink optimization on cache hits.
@@ -611,6 +614,21 @@ pub(super) struct SharedState {
 }
 
 impl SharedState {
+    pub(super) fn record_bincode_request(&self, request: &crate::protocol::Request) {
+        let request_type = crate::protocol::wire_prost::default_request_id(request);
+        *self
+            .bincode_requests_by_type
+            .entry(request_type)
+            .or_insert(0) += 1;
+    }
+
+    pub(super) fn bincode_request_snapshot(&self) -> std::collections::BTreeMap<String, u64> {
+        self.bincode_requests_by_type
+            .iter()
+            .map(|entry| ((*entry.key()).to_string(), *entry.value()))
+            .collect()
+    }
+
     pub(super) fn begin_cache_request(&self) -> ActiveCacheRequest<'_> {
         self.active_cache_requests.fetch_add(1, Ordering::AcqRel);
         ActiveCacheRequest { state: self }

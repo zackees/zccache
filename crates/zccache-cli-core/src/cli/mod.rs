@@ -623,6 +623,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn session_end_idempotent_propagates_close_after_dispatch() {
+        let endpoint = crate::ipc::unique_test_endpoint();
+        let server_endpoint = endpoint.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(0);
+        let server = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build server runtime");
+            runtime.block_on(async move {
+                let mut listener =
+                    crate::ipc::IpcListener::bind(&server_endpoint).expect("bind test endpoint");
+                ready_tx.send(()).expect("signal listener readiness");
+                let mut connection = listener.accept().await.expect("accept session-end");
+                let request: Option<
+                    crate::protocol::DecodedWireMessage<
+                        crate::protocol::Request,
+                        crate::protocol::wire_prost::zccache_v1::Request,
+                    >,
+                > = connection.recv_wire().await.expect("receive session-end");
+                assert!(request.is_some(), "client must dispatch session-end");
+                // Drop without a response. Depending on the platform this is
+                // observed as EOF/ConnectionClosed or BrokenPipe; either way,
+                // delivery was possible and the error must not be swallowed.
+            });
+        });
+        ready_rx.recv().expect("wait for listener readiness");
+
+        let result = session_end_idempotent(&endpoint, "00000000-0000-0000-0000-000000000000");
+        server.join().expect("server thread");
+
+        assert!(
+            result.is_err(),
+            "a close after request dispatch is ambiguous and must propagate, got {result:?}"
+        );
+    }
+
     /// Control: non-unreachable errors (the function shouldn't be a
     /// blanket "ignore everything"). We can't easily synthesize a live
     /// daemon error here, but we can at least assert the routing via the

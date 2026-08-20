@@ -2,26 +2,31 @@
 
 Platform IPC endpoint discovery: Unix domain sockets or Windows named pipes.
 
-The default `IpcConnection::send` / `recv` path remains the v15 bincode daemon
-wire. The running-process#234 migration hook lives beside it:
-`send_prost` writes an explicit v16 prost frame, and `recv_wire` dispatches
-incoming frames by protocol-version header so a server can accept either v15
-bincode or v16 prost without breaking old clients.
+The low-level `IpcConnection::send` / `recv` primitives retain the v15 bincode
+wire for explicit compatibility callers. `send_prost` writes a v16 prost
+frame, and `recv_wire` dispatches incoming frames by protocol-version header so
+the daemon can accept both formats during migration.
 
-`daemon_control_roundtrip` is the only live client-side selector today. It
-honors `ZCCACHE_DAEMON_WIRE` for `Ping`, `Status`, `Shutdown`, and cache
-`Clear`; unset/`auto` tries v16 prost first and retries v15 bincode when an
-older daemon rejects the frame. The v16 control path accepts either v16 prost
-control replies or v15 bincode replies from compatibility daemons. The daemon
-also accepts direct v16 prost `ReleaseWorktreeHandles` requests and sends the
-matching v16 prost response, but there is no high-level client selector for
-that path yet. Compile, session, artifact lookup/store, fingerprint,
-generic-tool, and download-daemon requests still use v15 bincode directly.
+High-level non-streaming requests use `full_family_roundtrip`; session,
+generic-exec, artifact, and fingerprint callers therefore prefer v16 prost in
+unset/`auto` mode. `daemon_control_roundtrip` applies the same policy to
+control traffic, while the wrapper's streaming compile/link path preserves
+progress frames under an equivalent selection and fallback rule. Each path
+retries once over v15 bincode only after a structured protocol-version
+rejection proves the old daemon did not dispatch the request. Explicit prost,
+bincode, and running-process FrameV1 selections remain strict. The separate
+download-daemon protocol is not part of this wire migration.
+
+`full_family_roundtrip_classified` additionally retains connect-versus-delivery
+failure phase for idempotent callers.
+
+`full_family.rs` owns this prost-first selection, structured fallback, and
+failure-phase API; `lib.rs` re-exports its public entry points.
 
 `tests/daemon_wire_protocol_version.rs` includes the explicit previous-release
-compatibility harness: a v15-only daemon rejects the first v16 prost control
-frame, returns a v15 bincode mismatch response, and the public auto client
-retries the same control request as v15 bincode.
+compatibility harness: a v15-only daemon rejects the first v16 prost frame,
+returns a structured v15 bincode mismatch response, and the public auto client
+retries the same request as v15 bincode.
 
 Minimal running-process adoption is intentionally separate from the full broker
 rollout. The direct zccache daemon now records

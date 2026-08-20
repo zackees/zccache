@@ -477,6 +477,8 @@ async fn status_snapshot(state: &SharedState) -> crate::protocol::DaemonStatus {
         watcher_active: state.watcher_active.load(Ordering::Acquire),
         watcher_degradations: state.watcher_degradations.load(Ordering::Relaxed),
         index_writer_gone: state.index_writer_gone.load(Ordering::Relaxed),
+        bincode_requests_by_type: state.bincode_request_snapshot(),
+        bincode_request_telemetry_available: true,
     }
 }
 

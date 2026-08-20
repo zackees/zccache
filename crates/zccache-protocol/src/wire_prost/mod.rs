@@ -1,9 +1,9 @@
-//! Prost wire helpers and v16 dispatcher scaffolding.
+//! Prost wire helpers and v16 full-family dispatch.
 //!
-//! The public `encode_message` / `decode_message` helpers remain v15 bincode
-//! so hot-path requests keep their old wire shape. The live daemon dispatcher
-//! can accept v16 prost control requests through the explicit helpers in this
-//! module while the full enum conversion lands incrementally.
+//! Unset/`auto` clients prefer prost for the complete request family. During
+//! the compatibility window they retry once over the legacy v15 bincode wire
+//! only after a structured protocol-version rejection proves the request was
+//! not dispatched. Explicit wire selections remain strict.
 //!
 //! A third wire lane carries zccache prost payloads inside running-process
 //! broker `Frame` envelopes (`[u8 envelope_version=1][u32 LE body_len][Frame]`,
@@ -13,7 +13,7 @@
 
 use super::{BINCODE_PROTOCOL_VERSION, PROST_PROTOCOL_VERSION};
 
-/// Generated protobuf schema for the planned zccache v1 wire.
+/// Generated protobuf schema for the zccache v16 prost wire.
 pub mod zccache_v1 {
     include!(concat!(env!("OUT_DIR"), "/zccache.v1.rs"));
 }
@@ -32,7 +32,8 @@ pub use super::wire_frame::{
 };
 
 pub use api::{
-    default_request_id, full_family_wire_format_from_env, response_from_decoded_wire,
+    default_request_id, full_family_wire_format_from_env, full_family_wire_selection_from_env,
+    full_family_wire_selection_from_env_value, response_from_decoded_wire,
     supported_control_request_from_prost, supported_control_request_to_prost,
     supported_control_response_from_prost, supported_control_response_to_prost,
 };
@@ -48,7 +49,7 @@ pub const WIRE_FORMAT_ENV: &str = "ZCCACHE_DAEMON_WIRE";
 pub enum WireFormat {
     /// Current v15 bincode body.
     BincodeV15,
-    /// Planned v16 prost body.
+    /// Active v16 prost body.
     ProstV16,
     /// zccache prost payloads inside running-process broker `Frame`
     /// envelopes: `[u8 envelope_version=1][u32 LE body_len][Frame]` with
@@ -74,7 +75,7 @@ impl WireFormat {
     }
 }
 
-/// Planned default for new clients once the live transport uses the dispatcher.
+/// Default wire for full-family clients.
 pub const DEFAULT_CLIENT_WIRE_FORMAT: WireFormat = WireFormat::ProstV16;
 
 /// Client-side wire selection policy from `ZCCACHE_DAEMON_WIRE`.

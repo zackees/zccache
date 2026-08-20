@@ -377,7 +377,10 @@ pub(super) async fn handle_connection(
         state.last_activity.store(now_secs(), Ordering::Relaxed);
 
         let (request, response_wire) = match request {
-            DecodedWireMessage::BincodeV15(request) => (request, ResponseWire::BincodeV15),
+            DecodedWireMessage::BincodeV15(request) => {
+                state.record_bincode_request(&request);
+                (request, ResponseWire::BincodeV15)
+            }
             DecodedWireMessage::ProstV16(request) => {
                 let request_id = request.request_id.clone();
                 match wire_prost::request_from_prost(request) {

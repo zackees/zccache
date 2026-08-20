@@ -87,7 +87,7 @@ The difference comes from **architecture**, not better caching:
 
 - **Filesystem watcher** — a background `notify` watcher tracks file changes in real time, so the daemon already knows whether inputs are dirty before you even invoke a compile. No redundant stat/hash work on hit.
 - **In-memory metadata cache** — file sizes, mtimes, and content hashes live in a lock-free `DashMap`. Cache key computation is a memory lookup, not disk I/O.
-- **Single-roundtrip IPC** — each compile is one length-prefixed daemon message over a Unix socket (or named pipe on Windows). No subprocess spawning, no repeated handshakes. The active wire is v15 bincode; a v16 prost wire is staged behind the migration tracked by zackees/running-process#234.
+- **Single-roundtrip IPC** — each compile is one length-prefixed daemon message over a Unix socket (or named pipe on Windows). No subprocess spawning, no repeated handshakes. Clients prefer the prost wire and retry once with the legacy bincode wire only when an old daemon explicitly rejects the prost version.
 - **Hardlink delivery** — cache hits are served by hardlinking the cached artifact to the output path — a single syscall instead of reading + writing the file contents.
 - **Multi-file fast path** — when a build system passes N source files in one invocation, zccache checks all N against the cache in parallel, serves hits immediately, and compiles ordinary misses into private per-source output sets.
 
@@ -156,7 +156,7 @@ See [`docs/FEATURE-MATRIX.md`](docs/FEATURE-MATRIX.md) for the long-form view wi
 | Feature | zccache | sccache |
 |---|:---:|:---:|
 | Persistent daemon with sub-ms IPC | yes | partial |
-| Single-roundtrip IPC (length-prefixed bincode) | yes | no |
+| Single-roundtrip IPC (length-prefixed prost) | yes | no |
 | Safe hardlink delivery on hit | yes | no |
 | Reflink delivery (ReFS, btrfs/XFS, APFS) | yes | no |
 | In-memory metadata cache (DashMap) | yes | no |
@@ -480,10 +480,18 @@ successful migration of shared snapshots.
 
 ### Daemon wire migration
 
-The active daemon wire remains v15 bincode while the v16 prost schema and
-dispatcher foundation land. `ZCCACHE_DAEMON_WIRE=prost` is reserved for the
-future prost default, and `ZCCACHE_DAEMON_WIRE=bincode` is the documented
-fallback spelling for keeping v15 behavior during the migration.
+Unset or `ZCCACHE_DAEMON_WIRE=auto` clients prefer the prost wire for every
+request family. If an old daemon explicitly rejects that protocol version, the
+client reconnects and replays the request once with the legacy bincode wire.
+Connection closes, broken pipes, timeouts, and generic I/O failures never
+trigger a replay because doing so could duplicate a compile or link.
+
+`ZCCACHE_DAEMON_WIRE=prost` forces prost without compatibility fallback;
+`ZCCACHE_DAEMON_WIRE=bincode` forces the legacy lane. `zccache status` reports
+`bincode_requests_by_type` so operators can verify that legacy traffic has
+reached zero before the bincode decoder is removed after the compatibility
+release cycle. Older or bincode status responses report this telemetry as
+unavailable rather than a false zero.
 
 ### Worktree cache sharing
 

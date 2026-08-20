@@ -7,9 +7,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use super::super::session_end_idempotent;
-use super::util::{
-    connect, format_duration_ms, print_json_value, resolve_endpoint, LOST_CONNECTION_MSG,
-};
+use super::util::{format_duration_ms, print_json_value, resolve_endpoint, LOST_CONNECTION_MSG};
 use crate::cli::runtime::ensure_daemon;
 
 #[derive(Debug, Clone, Default)]
@@ -133,15 +131,6 @@ pub(crate) async fn cmd_session_start(
         return ExitCode::FAILURE;
     }
 
-    let mut conn = match connect(endpoint).await {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("zccache[err][C]: cannot connect to daemon at {endpoint}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
     let request = crate::protocol::Request::SessionStart {
         client_pid: std::process::id(),
         working_dir: cwd.into(),
@@ -162,15 +151,10 @@ pub(crate) async fn cmd_session_start(
             }
         }),
     };
-    if let Err(e) = conn.send_request(&request, wire).await {
-        eprintln!("zccache[err][S]: failed to send to daemon: {e}");
-        return ExitCode::FAILURE;
-    }
-
-    let recv_result = match conn.recv_response().await {
+    let recv_result = match crate::ipc::full_family_roundtrip(endpoint, &request, None).await {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("zccache[err][R]: broken connection to daemon: {e}");
+            eprintln!("zccache[err][R]: daemon roundtrip failed: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -251,37 +235,13 @@ pub(crate) fn cmd_session_end(endpoint: &str, session_id: String, json: bool) ->
 }
 
 pub(crate) async fn cmd_session_stats(endpoint: &str, session_id: String, json: bool) -> ExitCode {
-    let mut conn = match connect(endpoint).await {
-        Ok(c) => c,
-        Err(e) => {
-            let message = format!("cannot connect to daemon at {endpoint}: {e}");
-            if json {
-                print_session_stats_error_json(&session_id, &message);
-            } else {
-                eprintln!("{message}");
-            }
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
     let request = crate::protocol::Request::SessionStats {
         session_id: session_id.clone(),
     };
-    if let Err(e) = conn.send_request(&request, wire).await {
-        let message = format!("zccache: failed to send to daemon: {e}");
-        if json {
-            print_session_stats_error_json(&session_id, &message);
-        } else {
-            eprintln!("{message}");
-        }
-        return ExitCode::FAILURE;
-    }
-
-    let recv_result = match conn.recv_response().await {
+    let recv_result = match crate::ipc::full_family_roundtrip(endpoint, &request, None).await {
         Ok(r) => r,
         Err(e) => {
-            let message = format!("zccache: broken connection to daemon: {e}");
+            let message = format!("zccache: daemon roundtrip failed: {e}");
             if json {
                 print_session_stats_error_json(&session_id, &message);
             } else {
@@ -579,22 +539,12 @@ pub(crate) async fn query_session_stats(
     endpoint: &str,
     session_id: &str,
 ) -> Result<Option<crate::protocol::SessionStats>, String> {
-    let mut conn = connect(endpoint)
-        .await
-        .map_err(|err| format!("cannot connect to daemon at {endpoint}: {err}"))?;
-
-    let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
     let request = crate::protocol::Request::SessionStats {
         session_id: session_id.to_string(),
     };
-    conn.send_request(&request, wire)
+    let recv_result = crate::ipc::full_family_roundtrip(endpoint, &request, None)
         .await
-        .map_err(|err| format!("failed to send session stats request: {err}"))?;
-
-    let recv_result = conn
-        .recv_response()
-        .await
-        .map_err(|err| format!("broken daemon connection: {err}"))?;
+        .map_err(|err| format!("session stats daemon roundtrip failed: {err}"))?;
     match recv_result {
         Some(crate::protocol::Response::SessionStatsResult { stats }) => Ok(stats),
         Some(crate::protocol::Response::Error { message }) => Err(message),
