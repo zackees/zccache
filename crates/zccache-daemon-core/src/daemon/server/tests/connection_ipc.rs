@@ -60,6 +60,11 @@ async fn handle_connection_accepts_v15_and_v16_control_requests() {
                     panic!("expected Status response, got {response:?}");
                 };
                 assert_eq!(status.endpoint, endpoint);
+                assert!(status.bincode_request_telemetry_available);
+                assert_eq!(
+                    status.bincode_requests_by_type.get("control-ping"),
+                    Some(&1)
+                );
             }
             other => panic!("expected Status response, got {other:?}"),
         }

@@ -19,15 +19,14 @@ pub const UNKNOWN_MISS_WARNING_PREFIX: &str = "zccache[warn][M]:";
 
 /// Current bincode daemon wire version.
 ///
-/// This remains the active compatibility version until the v16 prost dispatcher
-/// is wired through the IPC transport. Do not change `PROTOCOL_VERSION` to v16
-/// while `encode_message` and `decode_message` still serialize bincode bodies.
+/// This remains the compatibility version used by the legacy encode/decode
+/// helpers while full-family clients prefer the separately versioned prost lane.
 pub const BINCODE_PROTOCOL_VERSION: u32 = 23;
 
 /// Prost daemon wire version.
 ///
-/// The prost schema and frame helpers use this value. A future change will make
-/// the daemon dispatch v15 bincode and v16 prost frames concurrently.
+/// The prost schema, frame helpers, and default client lane use this value. The
+/// daemon dispatches this concurrently with the bincode compatibility lane.
 pub const PROST_PROTOCOL_VERSION: u32 = 24;
 
 /// Protocol version number. Bump this when the wire format changes:

@@ -1,9 +1,9 @@
 # zccache-protocol
 
 Wire protocol: `Request`/`Response` enums over a length-prefixed daemon frame.
-The active compatibility path is v20 bincode. The v16-family prost schema is generated
-from `proto/zccache_v1.proto` and scaffolded in `wire_prost.rs` so the daemon can
-later dispatch both v15 bincode and v16 prost frames during migration.
+Clients prefer the prost lane for the full request family, while the daemon
+continues to dispatch both prost and legacy bincode frames during migration.
+The schema is generated from `proto/zccache_v1.proto`.
 
 ## Module Layout
 
@@ -25,24 +25,21 @@ enum variants must still be appended in `messages/mod.rs` and require a
 
 ## Wire Migration
 
-`PROTOCOL_VERSION` is `20` while the public `encode_message` and
-`decode_message` helpers emit and accept bincode bodies. `PROST_PROTOCOL_VERSION`
-is `21` for the current prost schema revision. Because the header version byte is
+`BINCODE_PROTOCOL_VERSION` and `PROST_PROTOCOL_VERSION` version the two lanes
+independently; `PROTOCOL_VERSION` remains the bincode compatibility alias for
+the legacy encode/decode helpers. Because the header version byte is
 what selects the decoding lane, a bump must never re-use a value the *other* lane
 has previously shipped — that is why #1216 moved bincode 18 → 20 and prost
 19 → 21 rather than 18 → 19. The live daemon receive path dispatches both frame
-versions, but only the control/maintenance request slice (`Ping`, `Status`,
-`Shutdown`, `Clear`, `ReleaseWorktreeHandles`) is converted from prost today,
-and only the matching control/maintenance response slice (`Pong`, `Status`,
-`ShuttingDown`, `Cleared`, `ReleaseWorktreeHandlesResult`, `Error`) is converted
-back to prost replies.
-`ZCCACHE_DAEMON_WIRE` is honored for that client control slice: unset or `auto`
-tries prost first and falls back to v15 bincode on a clear old-daemon protocol
-rejection; `bincode` forces the old path. The live daemon can accept a direct
-v16-family prost `ReleaseWorktreeHandles` request, but the high-level client selector
-does not route it yet. Compile, session, artifact lookup/store, fingerprint,
-generic-tool, and download-daemon requests remain on the bincode lane until their full
-protobuf conversion lands.
+versions and converts the full request/response family.
+
+Unset or `ZCCACHE_DAEMON_WIRE=auto` clients try prost first and reconnect once
+with bincode only after an explicit old-daemon protocol rejection. Explicit
+`prost` and `bincode` values force their respective lanes. Ambiguous transport
+failures never trigger a replay. Prost status responses include bounded
+`bincode_requests_by_type` telemetry plus an availability bit; both fields are
+skipped by legacy bincode serialization so the compatibility wire shape remains
+unchanged and an unavailable old response cannot be mistaken for a real zero.
 
 ## Request Variants
 

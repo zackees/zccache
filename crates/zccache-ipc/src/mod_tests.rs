@@ -115,6 +115,8 @@ fn test_daemon_status(endpoint: &str) -> zccache_protocol::DaemonStatus {
         watcher_active: true,
         watcher_degradations: 0,
         index_writer_gone: false,
+        bincode_requests_by_type: Default::default(),
+        bincode_request_telemetry_available: true,
     }
 }
 
@@ -166,7 +168,10 @@ async fn daemon_control_roundtrip_auto_prefers_prost_for_status() {
     .unwrap();
 
     match response {
-        Some(Response::Status(status)) => assert_eq!(status.endpoint, endpoint),
+        Some(Response::Status(status)) => {
+            assert_eq!(status.endpoint, endpoint);
+            assert!(status.bincode_request_telemetry_available);
+        }
         other => panic!("expected Status response, got {other:?}"),
     }
 
@@ -274,7 +279,10 @@ async fn daemon_control_roundtrip_bincode_selection_stays_v15_for_status() {
     .unwrap();
 
     match response {
-        Some(Response::Status(status)) => assert_eq!(status.endpoint, endpoint),
+        Some(Response::Status(status)) => {
+            assert_eq!(status.endpoint, endpoint);
+            assert!(!status.bincode_request_telemetry_available);
+        }
         other => panic!("expected bincode Status response, got {other:?}"),
     }
 
@@ -332,12 +340,18 @@ async fn daemon_control_roundtrip_auto_falls_back_to_bincode_for_old_daemon() {
     .unwrap();
 
     match response {
-        Some(Response::Status(status)) => assert_eq!(status.endpoint, endpoint),
+        Some(Response::Status(status)) => {
+            assert_eq!(status.endpoint, endpoint);
+            assert!(!status.bincode_request_telemetry_available);
+        }
         other => panic!("expected fallback Status response, got {other:?}"),
     }
 
     server.await.unwrap();
 }
+
+#[path = "mod_tests/full_family.rs"]
+mod full_family;
 
 /// Issue #720 Phase 1: with the broker lane active (here via the
 /// fake-backend seam, which yields a `Broker` route), the control

@@ -42,6 +42,8 @@ fn daemon_status_expanded_roundtrip() {
         watcher_active: true,
         watcher_degradations: 0,
         index_writer_gone: false,
+        bincode_requests_by_type: Default::default(),
+        bincode_request_telemetry_available: false,
     };
     roundtrip(&status);
 }
@@ -79,6 +81,27 @@ fn daemon_status_version_field_roundtrips() {
         watcher_active: false,
         watcher_degradations: 3,
         index_writer_gone: true,
+        bincode_requests_by_type: Default::default(),
+        bincode_request_telemetry_available: false,
     };
     roundtrip(&with_version);
+}
+
+#[test]
+fn daemon_status_bincode_shape_ignores_prost_only_wire_telemetry() {
+    let baseline = super::sample_daemon_status();
+    let mut with_telemetry = baseline.clone();
+    with_telemetry
+        .bincode_requests_by_type
+        .insert("compile".to_string(), 7);
+    with_telemetry.bincode_request_telemetry_available = true;
+
+    assert_eq!(
+        bincode::serialize(&baseline).unwrap(),
+        bincode::serialize(&with_telemetry).unwrap()
+    );
+    let decoded: DaemonStatus =
+        bincode::deserialize(&bincode::serialize(&with_telemetry).unwrap()).unwrap();
+    assert!(decoded.bincode_requests_by_type.is_empty());
+    assert!(!decoded.bincode_request_telemetry_available);
 }

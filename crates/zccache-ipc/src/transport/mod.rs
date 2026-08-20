@@ -2,9 +2,8 @@
 //!
 //! Provides platform-abstracted IPC using named pipes on Windows
 //! and Unix domain sockets on Unix. Messages are length-prefixed
-//! bincode via `zccache-protocol`. Explicit migration hooks can send v16 prost
-//! frames and receive either v15 bincode or v16 prost frames without changing
-//! the default v15 client/server path.
+//! bincode or prost via `zccache-protocol`. Full-family clients prefer prost;
+//! the daemon accepts both lanes during the compatibility release cycle.
 //!
 //! A third lane carries zccache prost payloads inside running-process broker
 //! `Frame` envelopes (`[u8 envelope_version=1][u32 LE body_len][Frame]`,
@@ -25,7 +24,9 @@ use super::error::IpcError;
 mod framing;
 mod probe;
 
-use framing::{decode_response_wire, recv_bincode_loop, recv_wire_loop};
+use framing::{
+    decode_response_wire, decode_response_wire_for_expected, recv_bincode_loop, recv_wire_loop,
+};
 
 pub type IpcClientConnection = IpcConnection;
 
@@ -281,6 +282,20 @@ impl IpcConnection {
             .recv_wire_with_timeout::<zccache_protocol::Response, zccache_protocol::wire_prost::zccache_v1::Response>(timeout)
             .await?;
         decode_response_wire(message)
+    }
+
+    /// Receive a response with a per-call timeout while retaining the selected
+    /// request wire. A bincode response to a prost request is the structured
+    /// old-daemon rejection signal used by the safe compatibility retry.
+    pub async fn recv_response_for_wire_with_timeout(
+        &mut self,
+        timeout: Duration,
+        expected: zccache_protocol::wire_prost::WireFormat,
+    ) -> Result<Option<zccache_protocol::Response>, IpcError> {
+        let message = self
+            .recv_wire_with_timeout::<zccache_protocol::Response, zccache_protocol::wire_prost::zccache_v1::Response>(timeout)
+            .await?;
+        decode_response_wire_for_expected(message, expected)
     }
 
     /// Resolve when the peer disconnects while the server is NOT otherwise

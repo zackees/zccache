@@ -67,6 +67,33 @@ location:
   (`D:P(A;;GA;;;OW)(A;;GA;;;SY)`), replacing the default descriptor that granted
   Everyone and ANONYMOUS LOGON read access.
 
+## Wire selection and compatibility fallback
+
+The daemon accepts both prost and legacy bincode frames during the migration.
+The client selection policy is:
+
+- unset or `ZCCACHE_DAEMON_WIRE=auto`: send prost first;
+- `ZCCACHE_DAEMON_WIRE=prost`: force prost and do not fall back;
+- `ZCCACHE_DAEMON_WIRE=bincode`: force the legacy lane;
+- `ZCCACHE_DAEMON_WIRE=frame`: use the explicitly requested broker frame.
+
+Auto mode reconnects and replays a request with bincode only after the receive
+path returns a structured `VersionMismatch`, proving that framing was rejected.
+It never treats an application `Response::Error`, EOF, broken pipe, timeout, or
+generic I/O failure as evidence of an old daemon. This distinction
+is load-bearing for compile and link requests: an ambiguous failure can happen
+after the daemon began work, so replaying it could execute the same operation
+twice.
+
+The daemon increments a bounded per-request-type counter whenever it decodes a
+bincode request. `DaemonStatus::bincode_requests_by_type` is carried on prost
+status responses and printed by `zccache status` (including JSON output). The
+field is deliberately omitted from legacy bincode serialization, preserving
+the old wire shape while giving upgraded clients the release-cycle evidence
+needed before the legacy lane is deleted. A separate prost availability bit
+keeps an old/legacy response distinguishable from a genuine empty map; the CLI
+prints telemetry as unavailable (and JSON `null`) unless that bit is present.
+
 ## Connection Lifecycle
 
 **CLI side (drop-in wrapper mode):**

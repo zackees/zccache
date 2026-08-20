@@ -8,7 +8,7 @@
 use crate::core::NormalizedPath;
 use std::path::Path;
 
-use super::{connect_client, ensure_daemon, resolve_endpoint, run_async};
+use super::{ensure_daemon, resolve_endpoint, run_async};
 
 #[derive(Debug, Clone)]
 pub struct SessionStartResponse {
@@ -77,10 +77,6 @@ pub fn client_session_start(
 
     run_async(async move {
         ensure_daemon(&endpoint).await?;
-        let mut conn = connect_client(&endpoint)
-            .await
-            .map_err(|e| format!("cannot connect to daemon at {endpoint}: {e}"))?;
-        let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
         let request = crate::protocol::Request::SessionStart {
             client_pid: std::process::id(),
             working_dir: cwd.into(),
@@ -90,11 +86,7 @@ pub fn client_session_start(
             profile: false,
             private_daemon: None,
         };
-        conn.send_request(&request, wire)
-            .await
-            .map_err(|e| format!("failed to send to daemon: {e}"))?;
-
-        match conn.recv_response().await {
+        match crate::ipc::full_family_roundtrip(&endpoint, &request, None).await {
             Ok(Some(crate::protocol::Response::SessionStarted {
                 session_id,
                 journal_path,
@@ -207,26 +199,28 @@ pub fn session_end_idempotent(
         })?;
 
     runtime.block_on(async move {
-        let mut conn = match connect_client(&endpoint).await {
-            Ok(c) => c,
-            Err(e) => {
-                if is_daemon_unreachable_err(&e) {
-                    eprintln!(
-                        "session-end: daemon unreachable at {endpoint}, treating session {session_id} as ended"
-                    );
-                    return Ok(None);
-                }
-                return Err(e);
-            }
-        };
-
-        let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
         let request = crate::protocol::Request::SessionEnd {
             session_id: session_id.clone(),
         };
-        conn.send_request(&request, wire).await?;
+        let response = match crate::ipc::full_family_roundtrip_classified(
+            &endpoint, &request, None,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(failure)
+                if failure.phase() == crate::ipc::FullFamilyFailurePhase::PreDispatch
+                    && is_daemon_unreachable_err(failure.error()) =>
+            {
+                eprintln!(
+                    "session-end: daemon unreachable at {endpoint}, treating session {session_id} as ended"
+                );
+                return Ok(None);
+            }
+            Err(failure) => return Err(failure.into_error()),
+        };
 
-        match conn.recv_response().await? {
+        match response {
             Some(crate::protocol::Response::SessionEnded { stats }) => Ok(stats),
             Some(crate::protocol::Response::Error { message }) => Err(
                 crate::ipc::IpcError::Endpoint(format!("session-end failed: {message}")),
@@ -246,18 +240,10 @@ pub fn client_session_stats(
     let endpoint = resolve_endpoint(endpoint);
     let session_id = session_id.to_string();
     run_async(async move {
-        let mut conn = connect_client(&endpoint)
-            .await
-            .map_err(|e| format!("cannot connect to daemon at {endpoint}: {e}"))?;
-        let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
         let request = crate::protocol::Request::SessionStats {
             session_id: session_id.clone(),
         };
-        conn.send_request(&request, wire)
-            .await
-            .map_err(|e| format!("failed to send to daemon: {e}"))?;
-
-        match conn.recv_response().await {
+        match crate::ipc::full_family_roundtrip(&endpoint, &request, None).await {
             Ok(Some(crate::protocol::Response::SessionStatsResult { stats })) => Ok(stats),
             Ok(Some(crate::protocol::Response::Error { message })) => Err(message),
             Ok(None) => Err("lost connection to daemon (no response received)".to_string()),
@@ -293,11 +279,6 @@ pub fn fingerprint_check(
 
     run_async(async move {
         ensure_daemon(&endpoint).await?;
-        let mut conn = connect_client(&endpoint)
-            .await
-            .map_err(|e| format!("cannot connect to daemon at {endpoint}: {e}"))?;
-
-        let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
         let request = crate::protocol::Request::FingerprintCheck {
             cache_file: cache_file.into(),
             cache_type,
@@ -306,11 +287,7 @@ pub fn fingerprint_check(
             include_globs,
             exclude,
         };
-        conn.send_request(&request, wire)
-            .await
-            .map_err(|e| format!("failed to send to daemon: {e}"))?;
-
-        match conn.recv_response().await {
+        match crate::ipc::full_family_roundtrip(&endpoint, &request, None).await {
             Ok(Some(crate::protocol::Response::FingerprintCheckResult {
                 decision,
                 reason,
@@ -345,9 +322,6 @@ fn fingerprint_mark(
     let cache_file = cache_file.to_path_buf();
     run_async(async move {
         ensure_daemon(&endpoint).await?;
-        let mut conn = connect_client(&endpoint)
-            .await
-            .map_err(|e| format!("cannot connect to daemon at {endpoint}: {e}"))?;
         let request = if success {
             crate::protocol::Request::FingerprintMarkSuccess {
                 cache_file: cache_file.into(),
@@ -357,11 +331,7 @@ fn fingerprint_mark(
                 cache_file: cache_file.into(),
             }
         };
-        let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
-        conn.send_request(&request, wire)
-            .await
-            .map_err(|e| format!("failed to send to daemon: {e}"))?;
-        match conn.recv_response().await {
+        match crate::ipc::full_family_roundtrip(&endpoint, &request, None).await {
             Ok(Some(crate::protocol::Response::FingerprintAck)) => Ok(()),
             Ok(Some(crate::protocol::Response::Error { message })) => Err(message),
             Ok(None) => Err("lost connection to daemon (no response received)".to_string()),
@@ -376,17 +346,10 @@ pub fn fingerprint_invalidate(endpoint: Option<&str>, cache_file: &Path) -> Resu
     let cache_file = cache_file.to_path_buf();
     run_async(async move {
         ensure_daemon(&endpoint).await?;
-        let mut conn = connect_client(&endpoint)
-            .await
-            .map_err(|e| format!("cannot connect to daemon at {endpoint}: {e}"))?;
-        let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
         let request = crate::protocol::Request::FingerprintInvalidate {
             cache_file: cache_file.into(),
         };
-        conn.send_request(&request, wire)
-            .await
-            .map_err(|e| format!("failed to send to daemon: {e}"))?;
-        match conn.recv_response().await {
+        match crate::ipc::full_family_roundtrip(&endpoint, &request, None).await {
             Ok(Some(crate::protocol::Response::FingerprintAck)) => Ok(()),
             Ok(Some(crate::protocol::Response::Error { message })) => Err(message),
             Ok(None) => Err("lost connection to daemon (no response received)".to_string()),

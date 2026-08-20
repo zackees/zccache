@@ -3,7 +3,6 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use super::util::connect;
 use crate::cli::runtime::ensure_daemon;
 
 pub(crate) async fn cmd_fp_check(
@@ -20,14 +19,6 @@ pub(crate) async fn cmd_fp_check(
         return ExitCode::from(2);
     }
 
-    let mut conn = match connect(endpoint).await {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("zccache fp: cannot connect to daemon: {e}");
-            return ExitCode::from(2);
-        }
-    };
-
     let request = crate::protocol::Request::FingerprintCheck {
         cache_file: cache_file.into(),
         cache_type: cache_type.to_string(),
@@ -37,13 +28,7 @@ pub(crate) async fn cmd_fp_check(
         exclude: exclude.to_vec(),
     };
 
-    let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
-    if let Err(e) = conn.send_request(&request, wire).await {
-        eprintln!("zccache fp: send error: {e}");
-        return ExitCode::from(2);
-    }
-
-    match conn.recv_response().await {
+    match crate::ipc::full_family_roundtrip(endpoint, &request, None).await {
         Ok(Some(crate::protocol::Response::FingerprintCheckResult {
             decision,
             reason,
@@ -86,14 +71,6 @@ pub(crate) async fn cmd_fp_mark(endpoint: &str, cache_file: &Path, success: bool
         return ExitCode::from(2);
     }
 
-    let mut conn = match connect(endpoint).await {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("zccache fp: cannot connect to daemon: {e}");
-            return ExitCode::from(2);
-        }
-    };
-
     let request = if success {
         crate::protocol::Request::FingerprintMarkSuccess {
             cache_file: cache_file.into(),
@@ -104,13 +81,7 @@ pub(crate) async fn cmd_fp_mark(endpoint: &str, cache_file: &Path, success: bool
         }
     };
 
-    let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
-    if let Err(e) = conn.send_request(&request, wire).await {
-        eprintln!("zccache fp: send error: {e}");
-        return ExitCode::from(2);
-    }
-
-    match conn.recv_response().await {
+    match crate::ipc::full_family_roundtrip(endpoint, &request, None).await {
         Ok(Some(crate::protocol::Response::FingerprintAck)) => {
             let label = if success {
                 "mark-success"
@@ -141,25 +112,11 @@ pub(crate) async fn cmd_fp_invalidate(endpoint: &str, cache_file: &Path) -> Exit
         return ExitCode::from(2);
     }
 
-    let mut conn = match connect(endpoint).await {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("zccache fp: cannot connect to daemon: {e}");
-            return ExitCode::from(2);
-        }
-    };
-
     let request = crate::protocol::Request::FingerprintInvalidate {
         cache_file: cache_file.into(),
     };
 
-    let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
-    if let Err(e) = conn.send_request(&request, wire).await {
-        eprintln!("zccache fp: send error: {e}");
-        return ExitCode::from(2);
-    }
-
-    match conn.recv_response().await {
+    match crate::ipc::full_family_roundtrip(endpoint, &request, None).await {
         Ok(Some(crate::protocol::Response::FingerprintAck)) => {
             eprintln!("zccache fp: invalidated");
             ExitCode::SUCCESS

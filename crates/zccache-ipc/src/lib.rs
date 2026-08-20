@@ -10,6 +10,7 @@ pub(crate) use zccache_platform as platform;
 
 pub mod broker;
 pub mod error;
+mod full_family;
 pub mod manifest;
 pub mod probe;
 pub mod transport;
@@ -19,6 +20,12 @@ pub use broker::{
     DaemonConnectRoute,
 };
 pub use error::IpcError;
+#[cfg(test)]
+pub(crate) use full_family::full_family_roundtrip_with_selection;
+pub use full_family::{
+    full_family_roundtrip, full_family_roundtrip_classified, full_family_wire_mismatch_error,
+    FullFamilyFailurePhase, FullFamilyRoundtripFailure,
+};
 pub use manifest::{publish_manifest, publish_manifest_in, publish_service_definition};
 pub use transport::IpcClientConnection;
 pub use transport::{
@@ -66,8 +73,8 @@ impl DaemonControlRequest {
 ///
 /// # Errors
 ///
-/// Returns the IPC error from the selected send/receive path, or an endpoint
-/// error when `ZCCACHE_DAEMON_WIRE` is invalid.
+/// Returns the IPC error from wire selection or the selected send/receive
+/// path. Invalid `ZCCACHE_DAEMON_WIRE` values are rejected.
 pub async fn daemon_release_worktree_handles_roundtrip(
     endpoint: &str,
     path: std::path::PathBuf,
@@ -97,18 +104,10 @@ pub async fn daemon_release_worktree_handles_roundtrip(
         wire_prost::WireFormat::FrameV1 => send_frame(endpoint, &request, recv_timeout).await,
         wire_prost::WireFormat::ProstV16 => {
             match send_prost(endpoint, &request, recv_timeout).await {
-                Ok(Some(Response::Error { message }))
-                    if selection.allows_bincode_fallback()
-                        && control_wire_mismatch_message(&message) =>
-                {
-                    send_bincode(endpoint, &request, recv_timeout).await
-                }
-                Ok(None) if selection.allows_bincode_fallback() => {
-                    send_bincode(endpoint, &request, recv_timeout).await
-                }
                 Ok(response) => Ok(response),
                 Err(err)
-                    if selection.allows_bincode_fallback() && control_wire_mismatch_error(&err) =>
+                    if selection.allows_bincode_fallback()
+                        && full_family_wire_mismatch_error(&err) =>
                 {
                     send_bincode(endpoint, &request, recv_timeout).await
                 }
@@ -137,7 +136,11 @@ async fn send_prost(
     let prost_req =
         wire_prost::supported_control_request_to_prost(request).map_err(IpcError::Endpoint)?;
     conn.send_prost(&prost_req).await?;
-    recv_control_wire_response(&mut conn, recv_timeout).await
+    conn.recv_response_for_wire_with_timeout(
+        recv_timeout.unwrap_or(DEFAULT_CLIENT_RECV_TIMEOUT),
+        wire_prost::WireFormat::ProstV16,
+    )
+    .await
 }
 
 async fn send_frame(
@@ -155,11 +158,9 @@ async fn send_frame(
 /// Send a daemon control request and receive its response.
 ///
 /// Only `Ping`, `Status`, `Shutdown`, and `Clear` are eligible for the v16
-/// prost client path. Unset/`auto` `ZCCACHE_DAEMON_WIRE` prefers prost, then
-/// retries the same control request as v15 bincode if an older daemon clearly
-/// rejects the v16 frame or closes the connection after the mismatch. Compile,
-/// session, artifact lookup/store, fingerprint, and download-daemon requests do
-/// not route through this helper and remain v15 bincode.
+/// prost client path. Unset/`auto` `ZCCACHE_DAEMON_WIRE` prefers prost and
+/// retries as bincode only when the response lane proves an old daemon rejected
+/// framing. EOF/I/O and application errors never trigger replay.
 ///
 /// # Errors
 ///
@@ -212,18 +213,10 @@ async fn daemon_control_roundtrip_with_selection(
         }
         wire_prost::WireFormat::ProstV16 => {
             match send_prost_control(endpoint, request, recv_timeout).await {
-                Ok(Some(Response::Error { message }))
-                    if selection.allows_bincode_fallback()
-                        && control_wire_mismatch_message(&message) =>
-                {
-                    send_bincode_control(endpoint, request, recv_timeout).await
-                }
-                Ok(None) if selection.allows_bincode_fallback() => {
-                    send_bincode_control(endpoint, request, recv_timeout).await
-                }
                 Ok(response) => Ok(response),
                 Err(err)
-                    if selection.allows_bincode_fallback() && control_wire_mismatch_error(&err) =>
+                    if selection.allows_bincode_fallback()
+                        && full_family_wire_mismatch_error(&err) =>
                 {
                     send_bincode_control(endpoint, request, recv_timeout).await
                 }
@@ -271,7 +264,11 @@ async fn send_prost_control(
     let request =
         wire_prost::supported_control_request_to_prost(&request).map_err(IpcError::Endpoint)?;
     conn.send_prost(&request).await?;
-    recv_control_wire_response(&mut conn, recv_timeout).await
+    conn.recv_response_for_wire_with_timeout(
+        recv_timeout.unwrap_or(DEFAULT_CLIENT_RECV_TIMEOUT),
+        wire_prost::WireFormat::ProstV16,
+    )
+    .await
 }
 
 async fn send_frame_control(
@@ -321,27 +318,6 @@ async fn recv_control_wire_response(
             }),
         None => Ok(None),
     }
-}
-
-fn control_wire_mismatch_error(err: &IpcError) -> bool {
-    match err {
-        IpcError::Protocol(protocol::ProtocolError::VersionMismatch { .. })
-        | IpcError::ConnectionClosed => true,
-        IpcError::Io(io) => matches!(
-            io.kind(),
-            std::io::ErrorKind::BrokenPipe
-                | std::io::ErrorKind::ConnectionReset
-                | std::io::ErrorKind::UnexpectedEof
-        ),
-        IpcError::Protocol(_) | IpcError::Endpoint(_) | IpcError::Timeout(_) => false,
-    }
-}
-
-fn control_wire_mismatch_message(message: &str) -> bool {
-    let message = message.to_ascii_lowercase();
-    message.contains("protocol version mismatch")
-        || message.contains("protocol_version")
-        || (message.contains("expected v15") && message.contains("received v16"))
 }
 
 /// Returns the platform-specific default IPC endpoint path.

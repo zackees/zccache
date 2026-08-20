@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::core::NormalizedPath;
 use crate::protocol::{ExecCachePolicy, ExecOutputStreams, Request, Response};
 
-use super::util::{absolute_path, connect, exit_code_from_i32, resolve_endpoint};
+use super::util::{absolute_path, exit_code_from_i32, resolve_endpoint};
 use crate::cli::runtime::ensure_daemon;
 
 /// Parsed view of `--input-file`, `--input-env`, etc. — pre-validates argv
@@ -198,21 +198,7 @@ pub(crate) fn cmd_exec(params: ExecParams) -> ExitCode {
             eprintln!("zccache exec: failed to start daemon: {e}");
             return ExitCode::from(2);
         }
-        let mut conn = match connect(&endpoint).await {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("zccache exec: cannot connect to daemon: {e}");
-                return ExitCode::from(2);
-            }
-        };
-
-        let wire = crate::protocol::wire_prost::full_family_wire_format_from_env();
-        if let Err(e) = conn.send_request(&request, wire).await {
-            eprintln!("zccache exec: send error: {e}");
-            return ExitCode::from(2);
-        }
-
-        match conn.recv_response().await {
+        match crate::ipc::full_family_roundtrip(&endpoint, &request, None).await {
             Ok(Some(Response::GenericToolExecResult {
                 exit_code,
                 stdout,
