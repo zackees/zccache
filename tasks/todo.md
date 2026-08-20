@@ -535,3 +535,46 @@ Issue: https://github.com/zackees/zccache/issues/1411
   warnings-denied clippy for every daemon-core target, and whitespace checks.
 - Post-merge GREEN: the focused regression passes against current main.
 - clud-review: clean (one reviewer).
+
+# #1418 cache packed Linux debug sidecars
+
+Issue: https://github.com/zackees/zccache/issues/1418
+
+- [x] Add RED coverage for staged expected outputs and legacy collected files.
+- [x] Model `<primary>.dwp` for explicit Linux targets without affecting other targets.
+- [ ] Prove miss/hit persistence and hosted cache-first release behavior.
+- [x] Run focused tests, formatting, Clippy/checks, and the review gate.
+- [ ] Push, merge, close #1418, and remove the #864 repair once hosted evidence is green.
+
+## Review
+
+- Hosted RED: release dry run 32355952002 restored both shipped Linux binaries
+  without their packed debug sidecars and entered the wrapper-free repair.
+- Local GREEN: three target/output-set regressions pass; the Linux-only real
+  daemon miss/delete/hit test builds on Windows and will execute on hosted
+  Linux. All-target Clippy passes with warnings denied.
+- Review follow-up: packed sidecars now require effective link emission and
+  enabled debug info, and repeated `split-debuginfo` values use command order.
+- clud-review: clean after two finding/fix passes (one reviewer).
+
+# #1419 preserve ordered codegen option semantics
+
+Issue: https://github.com/zackees/zccache/issues/1419
+
+- [x] Add RED parser and context-key coverage for reversed repeated options.
+- [x] Preserve ordered codegen/linker arguments and normalize `-g`/`-O` aliases.
+- [x] Bump the Rust context-key domain to prevent reuse of pre-fix artifacts.
+- [x] Run focused tests, formatting, Clippy/checks, and the review gate.
+- [ ] Push, merge, and close #1419.
+
+## Review
+
+- RED: reversed last-one-wins values sorted to the same parsed representation;
+  the Dylint lane repeated that sort, and linker arguments also lost order.
+- RED: `-g` and `-O` stayed in separately sorted unknown flags, so their order
+  relative to explicit `-C` values was invisible to both keys and DWP modeling.
+- GREEN: ordered parser, effective-value, alias-precedence, linker-order,
+  Dylint-key, and context-key regressions pass; the key domain is now v3.
+- GREEN: all 448 depgraph tests, six focused DWP tests, the ignored daemon
+  integration build, formatting, diff checks, and warnings-denied Clippy pass.
+- clud-review: clean after ordered-key follow-up fixes (one reviewer).
