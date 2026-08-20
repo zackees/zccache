@@ -62,9 +62,6 @@ INTENTIONAL_LEGACY: tuple[str, ...] = (
     "crates/zccache-artifact/src/rust_plan/tests/mod.rs",
     "crates/zccache-depgraph/src/context/tests/rustc.rs",
     "docs/architecture/rust-artifact-plan.md",
-    "ci/perf_standalone.py",
-    "ci/tests/test_perf_standalone.py",
-    "ci/tests/test_perf_embedded.py",
     "ci/tests/test_host_diag.py",
 )
 

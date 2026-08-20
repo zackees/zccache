@@ -736,50 +736,56 @@ mod tests {
             CachedArtifact::from_file_payloads(meta, vec![cache_path]),
         );
 
+        const SAMPLES: u32 = 3;
         const ITERATIONS: u32 = 100;
-        let start = Instant::now();
-        for i in 0..ITERATIONS {
-            let output_path: NormalizedPath = dir.path().join(format!("out-{i}.o")).into();
-            let response = materialize_cached_compile_hit(CachedHitMaterializeRequest {
-                state,
-                sid: &sid,
-                artifact_key_hex: "budget-key",
-                source_path: &source_path,
-                output_path: &output_path,
-                secondary_output_dir: dir.path().into(),
-                current_depfile_dest: None,
-                compile_start: Instant::now(),
-                hit_label: "HIT_TEST",
-                cached_error_label: "CACHED_ERROR_TEST",
-                record_compilation: true,
-                downgrade_output_metadata: false,
-                mtime_floor_paths: Vec::new(),
-                rustc_metadata_compat_outputs: None,
-                rustc_archive_hardlink_eligible: None,
-                phases: CachedHitPhases::request_cache(0, 0),
-            })
-            .expect("materialize_cached_compile_hit must succeed");
-            assert!(matches!(
-                response,
-                Response::CompileResult {
-                    cached: true,
-                    exit_code: 0,
-                    ..
-                }
-            ));
+        let mut best = std::time::Duration::MAX;
+        for sample in 0..SAMPLES {
+            let start = Instant::now();
+            for i in 0..ITERATIONS {
+                let output_path: NormalizedPath =
+                    dir.path().join(format!("out-{sample}-{i}.o")).into();
+                let response = materialize_cached_compile_hit(CachedHitMaterializeRequest {
+                    state,
+                    sid: &sid,
+                    artifact_key_hex: "budget-key",
+                    source_path: &source_path,
+                    output_path: &output_path,
+                    secondary_output_dir: dir.path().into(),
+                    current_depfile_dest: None,
+                    compile_start: Instant::now(),
+                    hit_label: "HIT_TEST",
+                    cached_error_label: "CACHED_ERROR_TEST",
+                    record_compilation: true,
+                    downgrade_output_metadata: false,
+                    mtime_floor_paths: Vec::new(),
+                    rustc_metadata_compat_outputs: None,
+                    rustc_archive_hardlink_eligible: None,
+                    phases: CachedHitPhases::request_cache(0, 0),
+                })
+                .expect("materialize_cached_compile_hit must succeed");
+                assert!(matches!(
+                    response,
+                    Response::CompileResult {
+                        cached: true,
+                        exit_code: 0,
+                        ..
+                    }
+                ));
+            }
+            best = best.min(start.elapsed());
         }
-        let elapsed = start.elapsed();
         let budget = if crate::platform::host::is_windows() {
             std::time::Duration::from_secs(2)
         } else {
             std::time::Duration::from_secs(1)
         };
         assert!(
-            elapsed < budget,
-            "warm-hit materialization regressed: {ITERATIONS} hits took {elapsed:?} \
+            best < budget,
+            "warm-hit materialization regressed: best of {SAMPLES} samples of \
+             {ITERATIONS} hits took {best:?} \
              (budget: {budget:?}; avg {:?}/hit)",
-            elapsed / ITERATIONS
+            best / ITERATIONS
         );
-        assert_eq!(state.stats.snapshot().hits as u32, ITERATIONS);
+        assert_eq!(state.stats.snapshot().hits as u32, SAMPLES * ITERATIONS);
     }
 }

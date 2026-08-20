@@ -136,6 +136,7 @@ jobs:
           fi
           exit $status
       - name: Remove build-harness journals before strict audit
+        if: always()
         shell: bash
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/integration

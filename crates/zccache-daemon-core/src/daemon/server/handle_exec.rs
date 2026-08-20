@@ -886,6 +886,7 @@ async fn try_exec_cache_hit(
 pub(super) struct PublicationHandoffGate {
     acquired: Notify,
     resume: Notify,
+    persisted: Notify,
 }
 
 #[cfg(test)]
@@ -894,6 +895,7 @@ impl PublicationHandoffGate {
         Arc::new(Self {
             acquired: Notify::new(),
             resume: Notify::new(),
+            persisted: Notify::new(),
         })
     }
 
@@ -903,6 +905,10 @@ impl PublicationHandoffGate {
 
     fn resume(&self) {
         self.resume.notify_one();
+    }
+
+    async fn wait_until_persisted(&self) {
+        self.persisted.notified().await;
     }
 }
 
@@ -959,10 +965,13 @@ async fn store_exec_artifact_inner(
             // so expose their index entry to the final shutdown flush now.
             state.artifact_store.insert(&key_hex, &persist_meta);
         }
-        if let Some(gate) = handoff_gate {
+        let completion_gate = if let Some(gate) = handoff_gate {
             gate.acquired.notify_one();
             gate.resume.notified().await;
-        }
+            Some(gate)
+        } else {
+            None
+        };
         state.artifacts.insert(key_hex.clone(), cached);
         let sem = Arc::clone(&state.persist_semaphore);
         let publication_guard_for_task =
@@ -987,6 +996,9 @@ async fn store_exec_artifact_inner(
             .await;
             if let Err(error) = written {
                 tracing::warn!(%error, "exec artifact persistence task failed to join");
+            }
+            if let Some(gate) = completion_gate {
+                gate.persisted.notify_one();
             }
         });
     }
