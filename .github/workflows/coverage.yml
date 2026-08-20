@@ -37,8 +37,11 @@ jobs:
           # build-cache so the daemon-isolated llvm-cov phase starts warm.
           seed-isolated-build-cache: ${{ runner.temp }}/zccache-self-tests/coverage
           verify-compile-cache: warn
-          # setup-soldr#305: see Formatting job comment in ci.yml.
-          solo-toolchain-cache: true
+          # llvm-tools-preview is installed after setup-soldr. A solo-cache
+          # restore can preserve its manifest without llvm-profdata; the
+          # action explicitly requires opting out for post-setup components.
+          # See #1429 and setup-soldr#334.
+          solo-toolchain-cache: false
       - name: Install Rust coverage component
         run: soldr rustup component add llvm-tools-preview
       - name: Install cargo-llvm-cov
