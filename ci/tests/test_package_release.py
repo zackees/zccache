@@ -218,8 +218,10 @@ def test_cross_build_driver_uses_soldr_cache_and_preserves_artifact_contracts() 
     assert "soldr cargo xwin build" in action
     assert "soldr --no-cache cargo zigbuild" not in action
     assert "soldr --no-cache cargo xwin" not in action
-    assert "soldr cargo zigbuild --jobs 2" in action
-    assert "soldr cargo xwin build --jobs 2" in action
+    assert action.count("cargo_build=(soldr cargo zigbuild --jobs 2)") == 2
+    assert action.count("cargo_build=(soldr cargo xwin build --jobs 2)") == 2
+    assert "cargo_build=(soldr cargo zigbuild)" not in action
+    assert "cargo_build=(soldr cargo xwin build)" not in action
     assert "verify-compile-cache:" in action
     assert "Bootstrap zccache is not first on PATH" in action
     for workflow in (release_workflow, build_workflow):

@@ -341,9 +341,9 @@ runs:
         # workflow-only build-target bug that latently broke the release path.
         # Surfaced when 1.9.1 became the first version bump after that split.
         if [ "${{ inputs.cross_driver }}" = "zigbuild" ]; then
-          cargo_build=(soldr cargo zigbuild)
+          cargo_build=(soldr cargo zigbuild --jobs 2)
         elif [ "${{ inputs.cross_driver }}" = "xwin" ]; then
-          cargo_build=(soldr cargo xwin build)
+          cargo_build=(soldr cargo xwin build --jobs 2)
         elif [ "${{ inputs.use_soldr }}" = "true" ]; then
           cargo_build=(soldr --no-cache cargo build)
         else
