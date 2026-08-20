@@ -2,6 +2,94 @@
 
 use super::*;
 
+pub(super) struct ParsedLinkTool {
+    pub(super) input_files: Vec<NormalizedPath>,
+    pub(super) output_file: NormalizedPath,
+    pub(super) secondary_outputs: Vec<NormalizedPath>,
+    pub(super) cache_relevant_flags: Vec<String>,
+    pub(super) non_deterministic: bool,
+    pub(super) non_determinism_hint: String,
+    /// Pure archivers only bundle declared inputs; they do not deploy sibling
+    /// runtime files, so link side-effect scans are unnecessary.
+    pub(super) is_archive: bool,
+    pub(super) output_kind: crate::compiler::parse_linker::LinkOutputKind,
+}
+
+pub(super) enum ParseLinkToolOutcome {
+    Cacheable(ParsedLinkTool),
+    NonCacheable {
+        archive_reason: String,
+        link_reason: String,
+    },
+}
+
+pub(super) fn parse_link_tool(tool: &Path, args: &[String]) -> ParseLinkToolOutcome {
+    use crate::compiler::parse_archiver::{parse_archive_invocation, ParsedArchiveInvocation};
+    use crate::compiler::parse_linker::{parse_linker_invocation, ParsedLinkerInvocation};
+
+    match parse_archive_invocation(tool.to_str().unwrap_or(""), args) {
+        ParsedArchiveInvocation::Cacheable(parsed) => {
+            ParseLinkToolOutcome::Cacheable(ParsedLinkTool {
+                non_determinism_hint: match parsed.family {
+                    crate::compiler::parse_archiver::ArchiverFamily::MsvcLib => {
+                        "/BREPRO".to_string()
+                    }
+                    _ => "D".to_string(),
+                },
+                input_files: parsed.input_files,
+                output_file: parsed.output_file,
+                secondary_outputs: Vec::new(),
+                cache_relevant_flags: parsed.cache_relevant_flags,
+                non_deterministic: parsed.non_deterministic,
+                is_archive: true,
+                output_kind: crate::compiler::parse_linker::LinkOutputKind::File,
+            })
+        }
+        ParsedArchiveInvocation::NonCacheable {
+            reason: archive_reason,
+        } => match parse_linker_invocation(tool.to_str().unwrap_or(""), args.to_vec()) {
+            ParsedLinkerInvocation::Cacheable(parsed) => {
+                ParseLinkToolOutcome::Cacheable(ParsedLinkTool {
+                    non_determinism_hint: match parsed.family {
+                        crate::compiler::parse_linker::LinkerFamily::MsvcLink => {
+                            "/DETERMINISTIC".to_string()
+                        }
+                        crate::compiler::parse_linker::LinkerFamily::Dsymutil => {
+                            "deterministic input debug information".to_string()
+                        }
+                        _ => "--build-id=sha1 (avoid --build-id=uuid)".to_string(),
+                    },
+                    input_files: parsed.input_files,
+                    output_file: parsed.output_file,
+                    secondary_outputs: parsed.secondary_outputs,
+                    cache_relevant_flags: parsed.cache_relevant_flags,
+                    non_deterministic: parsed.non_deterministic,
+                    is_archive: false,
+                    output_kind: parsed.output_kind,
+                })
+            }
+            ParsedLinkerInvocation::NonCacheable {
+                reason: link_reason,
+            } => ParseLinkToolOutcome::NonCacheable {
+                archive_reason,
+                link_reason,
+            },
+        },
+    }
+}
+
+pub(super) fn link_non_determinism_warning(parsed: &ParsedLinkTool) -> Option<String> {
+    if !parsed.non_deterministic {
+        return None;
+    }
+    let warning = format!(
+        "non-deterministic invocation (missing {} flag) — output is cached but may differ from a fresh link",
+        parsed.non_determinism_hint
+    );
+    tracing::warn!(%warning);
+    Some(warning)
+}
+
 pub(super) fn normalize_link_path_value_for_key(value: &str, key_root: Option<&Path>) -> String {
     let Some(root) = key_root else {
         return value.to_string();

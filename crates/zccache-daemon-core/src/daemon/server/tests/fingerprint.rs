@@ -283,6 +283,30 @@ fn request_fingerprint_keeps_malformed_rust_remap_detached_values_distinct() {
 }
 
 #[test]
+fn effective_compile_args_reuses_owned_strings_when_no_maps_are_added() {
+    let args = vec![
+        "-c".to_string(),
+        "src/main.cc".to_string(),
+        "-DBENCH_DEFINE_0001=1".to_string(),
+    ];
+    let string_buffers: Vec<*const u8> = args.iter().map(|arg| arg.as_ptr()).collect();
+
+    let effective = effective_compile_args(
+        args,
+        Path::new("/usr/bin/clang++"),
+        Path::new("/workspace"),
+        None,
+        None,
+    );
+
+    assert_eq!(
+        effective.iter().map(|arg| arg.as_ptr()).collect::<Vec<_>>(),
+        string_buffers,
+        "warm response-file preparation must not deep-clone every expanded argument",
+    );
+}
+
+#[test]
 fn effective_compile_args_auto_adds_root_and_cwd_maps() {
     // Issue #474: alongside `-ffile-prefix-map`, the auto-inject now
     // also emits `-fmacro-prefix-map` and `-fdebug-prefix-map` for both
@@ -298,7 +322,7 @@ fn effective_compile_args_auto_adds_root_and_cwd_maps() {
     let args = vec!["-c".to_string(), "src/main.cc".to_string()];
 
     let effective = effective_compile_args(
-        &args,
+        args,
         Path::new("/usr/bin/clang++"),
         &cwd,
         Some(&root),
@@ -349,7 +373,7 @@ fn effective_compile_args_auto_cc_maps_are_fallbacks_before_user_maps() {
     ];
 
     let effective = effective_compile_args(
-        &args,
+        args,
         Path::new("/usr/bin/clang++"),
         &root_path,
         Some(&root),
@@ -381,7 +405,7 @@ fn effective_compile_args_auto_cc_debug_map_does_not_suppress_file_map() {
     ];
 
     let effective = effective_compile_args(
-        &args,
+        args,
         Path::new("/usr/bin/clang++"),
         &root_path,
         Some(&root),
@@ -408,7 +432,7 @@ fn effective_compile_args_auto_adds_rust_root_remap_as_fallback() {
     ];
 
     let effective = effective_compile_args(
-        &args,
+        args,
         Path::new("rustc"),
         &root_path,
         Some(&root),
@@ -435,7 +459,7 @@ fn effective_compile_args_auto_rust_remap_is_before_user_subtree_remap() {
     let args = vec![user_remap.clone(), "src/lib.rs".to_string()];
 
     let effective = effective_compile_args(
-        &args,
+        args,
         Path::new("rustc"),
         &root_path,
         Some(&root),
@@ -468,7 +492,7 @@ fn effective_compile_args_auto_keeps_existing_rust_root_remap() {
     ];
 
     let effective = effective_compile_args(
-        &args,
+        args.clone(),
         Path::new("clippy-driver"),
         &root_path,
         Some(&root),

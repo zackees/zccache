@@ -68,7 +68,7 @@ pub(super) async fn prepare_request_arguments(
         .map_err(|err| compile_failure_stderr(format!("zccache: {err}")))?;
     let worktree_root = compile_worktree_root(state, &sid, cwd, client_env.as_deref());
     let effective_args = effective_compile_args(
-        &expanded_args,
+        expanded_args,
         compiler_path,
         cwd,
         worktree_root.as_ref(),

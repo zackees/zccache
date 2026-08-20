@@ -308,45 +308,45 @@ pub(super) fn request_key_root(
 }
 
 pub(super) fn effective_compile_args(
-    expanded_args: &[String],
+    mut expanded_args: Vec<String>,
     compiler_path: &Path,
     cwd: &Path,
     worktree_root: Option<&NormalizedPath>,
     client_env: Option<&[(String, String)]>,
 ) -> Vec<String> {
     if !path_remap_auto_enabled(client_env) {
-        return expanded_args.to_vec();
+        return expanded_args;
     }
 
     let Some(root) = worktree_root else {
-        return expanded_args.to_vec();
+        return expanded_args;
     };
 
     let root_path = root.as_path();
     if compiler_is_rustc_like(compiler_path) {
-        if rust_args_have_remap_for_old(expanded_args, root_path) {
-            return expanded_args.to_vec();
+        if rust_args_have_remap_for_old(&expanded_args, root_path) {
+            return expanded_args;
         }
 
         let mut effective = Vec::with_capacity(expanded_args.len() + 2);
         if crate::compiler::is_dylint_driver(&compiler_path.to_string_lossy()) {
-            let Some((inner_rustc, rustc_args)) = expanded_args.split_first() else {
-                return expanded_args.to_vec();
+            if expanded_args.is_empty() {
+                return expanded_args;
             };
-            effective.push(inner_rustc.clone());
+            effective.push(expanded_args.remove(0));
             effective.push("--remap-path-prefix".to_string());
             effective.push(format!("{}=.", root_path.to_string_lossy()));
-            effective.extend_from_slice(rustc_args);
+            effective.append(&mut expanded_args);
             return effective;
         }
         effective.push("--remap-path-prefix".to_string());
         effective.push(format!("{}=.", root_path.to_string_lossy()));
-        effective.extend_from_slice(expanded_args);
+        effective.append(&mut expanded_args);
         return effective;
     }
 
     if !compiler_supports_ffile_prefix_map(compiler_path) {
-        return expanded_args.to_vec();
+        return expanded_args;
     }
 
     // Inject the three siblings together. Modern clang treats
@@ -363,27 +363,26 @@ pub(super) fn effective_compile_args(
 
     let mut auto_args = Vec::with_capacity(AUTO_PREFIX_MAP_FLAGS.len() * 2);
     for flag in AUTO_PREFIX_MAP_FLAGS {
-        if !has_cc_prefix_map_for_old(expanded_args, flag, root_path) {
+        if !has_cc_prefix_map_for_old(&expanded_args, flag, root_path) {
             auto_args.push(format!("{}={}=.", flag, root_path.to_string_lossy()));
         }
     }
 
     if !same_key_path(root_path, cwd) {
         for flag in AUTO_PREFIX_MAP_FLAGS {
-            if !has_cc_prefix_map_for_old(expanded_args, flag, cwd) {
+            if !has_cc_prefix_map_for_old(&expanded_args, flag, cwd) {
                 auto_args.push(format!("{}={}=.", flag, cwd.to_string_lossy()));
             }
         }
     }
 
     if auto_args.is_empty() {
-        return expanded_args.to_vec();
+        return expanded_args;
     }
 
-    let mut effective = Vec::with_capacity(auto_args.len() + expanded_args.len());
-    effective.extend(auto_args);
-    effective.extend_from_slice(expanded_args);
-    effective
+    auto_args.reserve(expanded_args.len());
+    auto_args.append(&mut expanded_args);
+    auto_args
 }
 
 pub(super) fn normalize_request_arg(arg: &str, key_root: Option<&Path>) -> String {

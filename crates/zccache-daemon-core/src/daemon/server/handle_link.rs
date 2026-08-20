@@ -4,41 +4,6 @@ use super::link_hash::*;
 use super::link_process::*;
 use super::*;
 
-fn publish_and_materialize_staged_link(
-    state: &SharedState,
-    plan: &StagedCompilePlan,
-    key: &str,
-    metadata: ArtifactIndex,
-    sources: &[NormalizedPath],
-) -> std::io::Result<bool> {
-    let publication = publish_artifact_paths_observed(state, key, metadata, sources);
-    let salvage_reason = publication.as_ref().err().map(|reason| reason.id());
-    materialize_link_plan_observed(state, plan, salvage_reason)?;
-    Ok(publication.is_ok())
-}
-
-fn with_link_warning(result: Response, warning: Option<String>) -> Response {
-    match (result, warning) {
-        (
-            Response::LinkResult {
-                exit_code,
-                stdout,
-                stderr,
-                cached,
-                ..
-            },
-            warning @ Some(_),
-        ) => Response::LinkResult {
-            exit_code,
-            stdout,
-            stderr,
-            cached,
-            warning,
-        },
-        (result, _) => result,
-    }
-}
-
 /// Handle a single-roundtrip ephemeral link/archive request.
 ///
 /// Parses the tool invocation, computes a cache key from the tool binary and
@@ -52,17 +17,12 @@ pub(super) async fn handle_link_ephemeral(
     env: Option<Vec<(String, String)>>,
 ) -> Response {
     let _active_request = state.begin_cache_request();
-    // Issue #535: collect phase counters when `ZCCACHE_PROFILE_CC_MISS` is set
-    // so the bench / perf-guard logs carry breakdown data for cold link/
-    // archive operations (c-static-library-link, cpp-driver-link).
+    // Emit hosted cold link/archive phase profiles when requested (#535).
     let profile_enabled = std::env::var_os(CC_MISS_PROFILE_ENV).is_some();
     let link_start = std::time::Instant::now();
     let mut output_read_ns = 0;
     let mut artifact_store_ns = 0;
     let lineage = super::super::lineage::Lineage::current(Some(client_pid), None);
-    use crate::compiler::parse_archiver::{parse_archive_invocation, ParsedArchiveInvocation};
-    use crate::compiler::parse_linker::{parse_linker_invocation, ParsedLinkerInvocation};
-
     state.stats.record_link();
     let worktree_root = resolve_worktree_root(cwd, env.as_deref());
     let link_path_remap_key_root = if path_remap_auto_enabled(env.as_deref()) {
@@ -71,92 +31,33 @@ pub(super) async fn handle_link_ephemeral(
         None
     };
 
-    // 1. Parse the tool invocation — try archiver first, then linker
-    struct ParsedTool {
-        input_files: Vec<NormalizedPath>,
-        output_file: NormalizedPath,
-        secondary_outputs: Vec<NormalizedPath>,
-        cache_relevant_flags: Vec<String>,
-        non_deterministic: bool,
-        non_determinism_hint: String,
-        // True iff parsed as a pure archiver invocation (ar, lib, llvm-ar).
-        // Archive tools only bundle their declared inputs into the output
-        // archive — they never deploy runtime DLLs, PDBs, or other side-effect
-        // files alongside the output. The pre-link `snapshot_directory` and
-        // post-link `detect_side_effects` work is wasted for archive cold-misses.
-        is_archive: bool,
-        output_kind: crate::compiler::parse_linker::LinkOutputKind,
-    }
-
-    let parsed_tool = match parse_archive_invocation(tool.to_str().unwrap_or(""), args) {
-        ParsedArchiveInvocation::Cacheable(c) => ParsedTool {
-            non_determinism_hint: match c.family {
-                crate::compiler::parse_archiver::ArchiverFamily::MsvcLib => "/BREPRO".to_string(),
-                _ => "D".to_string(),
-            },
-            input_files: c.input_files,
-            output_file: c.output_file,
-            secondary_outputs: Vec::new(),
-            cache_relevant_flags: c.cache_relevant_flags,
-            non_deterministic: c.non_deterministic,
-            is_archive: true,
-            output_kind: crate::compiler::parse_linker::LinkOutputKind::File,
-        },
-        ParsedArchiveInvocation::NonCacheable { reason: ar_reason } => {
-            // Try linker parser
-            match parse_linker_invocation(tool.to_str().unwrap_or(""), args.to_vec()) {
-                ParsedLinkerInvocation::Cacheable(c) => ParsedTool {
-                    non_determinism_hint: match c.family {
-                        crate::compiler::parse_linker::LinkerFamily::MsvcLink => {
-                            "/DETERMINISTIC".to_string()
-                        }
-                        crate::compiler::parse_linker::LinkerFamily::Dsymutil => {
-                            "deterministic input debug information".to_string()
-                        }
-                        _ => "--build-id=sha1 (avoid --build-id=uuid)".to_string(),
-                    },
-                    input_files: c.input_files,
-                    output_file: c.output_file,
-                    secondary_outputs: c.secondary_outputs,
-                    cache_relevant_flags: c.cache_relevant_flags,
-                    non_deterministic: c.non_deterministic,
-                    is_archive: false,
-                    output_kind: c.output_kind,
-                },
-                ParsedLinkerInvocation::NonCacheable {
-                    reason: link_reason,
-                } => {
-                    tracing::debug!(
-                        ar_reason = %ar_reason,
-                        link_reason = %link_reason,
-                        "link non-cacheable, passing through"
-                    );
-                    state.stats.record_link_non_cacheable();
-                    return run_tool_passthrough(
-                        tool,
-                        args,
-                        cwd,
-                        env,
-                        &lineage,
-                        state.depfile_tmpdir.as_path(),
-                    )
-                    .await;
-                }
-            }
+    // 1. Parse the tool invocation — try archiver first, then linker.
+    let parsed_tool = match parse_link_tool(tool, args) {
+        ParseLinkToolOutcome::Cacheable(parsed) => parsed,
+        ParseLinkToolOutcome::NonCacheable {
+            archive_reason,
+            link_reason,
+        } => {
+            tracing::debug!(
+                %archive_reason,
+                %link_reason,
+                "link non-cacheable, passing through"
+            );
+            state.stats.record_link_non_cacheable();
+            return run_tool_passthrough(
+                tool,
+                args,
+                cwd,
+                env,
+                &lineage,
+                state.depfile_tmpdir.as_path(),
+            )
+            .await;
         }
     };
 
-    // 2. Non-determinism check: warn but still cache
-    let nd_warning = if parsed_tool.non_deterministic {
-        let w = format!(
-            "non-deterministic invocation (missing {} flag) — output is cached but may differ from a fresh link",
-            parsed_tool.non_determinism_hint
-        );
-        tracing::warn!(%w);
-        Some(w)
-    } else {
-        None
-    };
+    // 2. Non-determinism check: warn but still cache.
+    let nd_warning = link_non_determinism_warning(&parsed_tool);
 
     let parse_args_ns = if profile_enabled {
         link_start.elapsed().as_nanos() as u64
@@ -164,13 +65,7 @@ pub(super) async fn handle_link_ephemeral(
         0
     };
 
-    // 3+4. Hash tool binary and input files concurrently via rayon::join
-    // (issue #566). Both phases are file reads plus CPU-bound blake3 work.
-    // Before this overlap, they ran strictly sequentially —
-    // `tool_hash` (~150 MB rustc binary, 10–20 ms) blocked the start of
-    // input hashing (50 .rlibs in parallel via #564, also 5–15 ms wall).
-    // `rayon::join` reduces the combined wall-clock to ~max(tool_hash,
-    // input_hashes) instead of the prior sum.
+    // 3+4. Hash the tool and inputs concurrently; both are file/CPU bound.
     let tool_path = std::path::Path::new(tool);
     let cwd_path = std::path::Path::new(cwd);
 
@@ -193,31 +88,23 @@ pub(super) async fn handle_link_ephemeral(
         })
         .collect();
 
-    // Pure archives can safely run against an isolated staged output while
-    // their strong cache key is discovered. Restrict speculation to requests
-    // with at least one absent metadata-cache hash: established warm hits keep
-    // the existing 1 ms path and never launch the tool. A staged result is
-    // discarded if strong key discovery still finds an artifact cache hit.
+    // Only cold pure archives may execute while their strong key is discovered;
+    // warm hits never launch the tool, and cache hits discard the staged result.
     let output_path = if parsed_tool.output_file.is_absolute() {
         parsed_tool.output_file.clone()
     } else {
         cwd_path.join(&parsed_tool.output_file).into()
     };
     let output_dir = output_path.parent().unwrap_or(cwd_path);
-    // Inputs which reside directly in the output directory are declared by
-    // the linker invocation, so they cannot be implicit output side effects.
-    // Skip them in both directory scans. This avoids re-hashing every object
-    // around a large driver link while retaining full coverage of undeclared
-    // sibling files (DLLs, PDBs, wrapper-deployed runtimes, etc.).
+    // Exclude declared sibling inputs from implicit-output scans while still
+    // covering undeclared DLLs, PDBs, and wrapper-deployed runtimes.
     let sibling_input_names: std::collections::HashSet<std::ffi::OsString> = inputs
         .iter()
         .filter(|input| input.as_path().parent() == Some(output_dir))
         .filter_map(|input| input.file_name().map(std::ffi::OsStr::to_os_string))
         .collect();
 
-    // A cache hit also writes the complete artifact set into the output
-    // directory. It must therefore share the same exclusion window as a cold
-    // link's snapshot/link/capture sequence.
+    // Hits share the cold link's output-directory exclusion window.
     let _side_effect_guard = if parsed_tool.is_archive {
         None
     } else {
@@ -228,8 +115,8 @@ pub(super) async fn handle_link_ephemeral(
                 .await,
         )
     };
-    let archive_hash_speculating =
-        parsed_tool.is_archive && archive_hash_cache_is_cold(state, tool_path, &inputs);
+    let hash_cache_is_cold = link_hash_cache_is_cold(state, tool_path, &inputs);
+    let archive_hash_speculating = parsed_tool.is_archive && hash_cache_is_cold;
     let mut speculative_archive_plan = None;
     if archive_hash_speculating {
         use crate::daemon::staged_stats::{StagedCounter, StagedTiming};
@@ -269,48 +156,69 @@ pub(super) async fn handle_link_ephemeral(
         }
     }
 
-    let (hashes, mut speculative_archive) = if let Some(plan) = speculative_archive_plan {
-        let hash_state = Arc::clone(state);
-        let hash_tool = tool.to_path_buf();
-        let hash_inputs = inputs.clone();
-        let hash_task = tokio::task::spawn_blocking(move || {
-            hash_link_inputs(&hash_state, &hash_tool, &hash_inputs, profile_enabled)
-        });
-        let process_started = std::time::Instant::now();
-        let archive = async {
-            let result = run_archive_tool_passthrough(
-                tool,
-                &plan.rewritten_args,
-                cwd,
-                env.clone(),
-                &lineage,
+    let (hashes, mut speculative_archive, mut prepared_link_miss) =
+        if let Some(plan) = speculative_archive_plan {
+            let hash_state = Arc::clone(state);
+            let hash_tool = tool.to_path_buf();
+            let hash_inputs = inputs.clone();
+            let hash_task = tokio::task::spawn_blocking(move || {
+                hash_link_inputs(&hash_state, &hash_tool, &hash_inputs, profile_enabled)
+            });
+            let process_started = std::time::Instant::now();
+            let archive = async {
+                let result = run_archive_tool_passthrough(
+                    tool,
+                    &plan.rewritten_args,
+                    cwd,
+                    env.clone(),
+                    &lineage,
+                )
+                .await;
+                (result, process_started.elapsed().as_nanos() as u64)
+            };
+            let ((result, process_ns), hash_result) = tokio::join!(archive, hash_task);
+            let hashes = match hash_result {
+                Ok(hashes) => hashes,
+                Err(error) => {
+                    let _ = plan.cleanup();
+                    tracing::warn!(%error, "archive hash task failed; retrying without cache");
+                    return run_archive_tool_passthrough(tool, args, cwd, env, &lineage).await;
+                }
+            };
+            (
+                hashes,
+                Some(CompletedSpeculativeArchive {
+                    plan,
+                    result,
+                    process_ns,
+                }),
+                None,
             )
-            .await;
-            (result, process_started.elapsed().as_nanos() as u64)
+        } else if should_prepare_link_miss_during_hash(parsed_tool.is_archive, hash_cache_is_cold) {
+            let (hashes, prepared) = rayon::join(
+                || hash_link_inputs(state, tool_path, &inputs, profile_enabled),
+                || {
+                    prepare_link_miss(LinkMissPreparationRequest {
+                        staging_dir: state.staging.path(),
+                        args,
+                        output_path: &output_path,
+                        secondary_outputs: &parsed_tool.secondary_outputs,
+                        cwd: cwd_path,
+                        is_directory_bundle: parsed_tool.output_kind
+                            == crate::compiler::parse_linker::LinkOutputKind::DirectoryBundle,
+                        output_dir,
+                        sibling_input_names: &sibling_input_names,
+                    })
+                },
+            );
+            (hashes, None, Some(prepared))
+        } else {
+            (
+                hash_link_inputs(state, tool_path, &inputs, profile_enabled),
+                None,
+                None,
+            )
         };
-        let ((result, process_ns), hash_result) = tokio::join!(archive, hash_task);
-        let hashes = match hash_result {
-            Ok(hashes) => hashes,
-            Err(error) => {
-                let _ = plan.cleanup();
-                tracing::warn!(%error, "archive hash task failed; retrying without cache");
-                return run_archive_tool_passthrough(tool, args, cwd, env, &lineage).await;
-            }
-        };
-        (
-            hashes,
-            Some(CompletedSpeculativeArchive {
-                plan,
-                result,
-                process_ns,
-            }),
-        )
-    } else {
-        (
-            hash_link_inputs(state, tool_path, &inputs, profile_enabled),
-            None,
-        )
-    };
     let hash_wall_ns = hashes.wall_ns;
     let tool_hash_ns = hashes.tool_ns;
     let input_hash_ns = hashes.inputs_ns;
@@ -512,16 +420,39 @@ pub(super) async fn handle_link_ephemeral(
             ),
             None => (None, None, None),
         };
+    let (
+        prepared_during_hash,
+        prepared_directory_plan_result,
+        prepared_staged_plan_result,
+        prepared_dir_snapshot_result,
+        prepared_planning_ns,
+    ) = match prepared_link_miss.take() {
+        Some(prepared) => (
+            true,
+            prepared.directory_plan_result,
+            prepared.staged_plan_result,
+            prepared.dir_snapshot_result,
+            prepared.planning_ns,
+        ),
+        None => (false, None, None, None, 0),
+    };
     use crate::daemon::staged_stats::{StagedBytes, StagedCounter, StagedFailure, StagedTiming};
     let planning_started = std::time::Instant::now();
     let plans_now = speculative_plan.is_none();
     if plans_now {
         state.profiler.staged.count(StagedCounter::PlanAttempted);
     }
-    let directory_plan_result = (parsed_tool.output_kind
-        == crate::compiler::parse_linker::LinkOutputKind::DirectoryBundle)
-        .then(|| StagedDirectoryPlan::dsymutil(state.staging.path(), args, &output_path, cwd_path));
-    let staged_plan_result =
+    let directory_plan_result = if prepared_during_hash {
+        prepared_directory_plan_result
+    } else {
+        (parsed_tool.output_kind == crate::compiler::parse_linker::LinkOutputKind::DirectoryBundle)
+            .then(|| {
+                StagedDirectoryPlan::dsymutil(state.staging.path(), args, &output_path, cwd_path)
+            })
+    };
+    let staged_plan_result = if prepared_during_hash {
+        prepared_staged_plan_result
+    } else {
         (speculative_plan.is_none() && directory_plan_result.is_none()).then(|| {
             if parsed_tool.is_archive && parsed_tool.secondary_outputs.is_empty() {
                 StagedCompilePlan::archive(state.staging.path(), args, &output_path, cwd_path)
@@ -534,11 +465,16 @@ pub(super) async fn handle_link_ephemeral(
                     cwd_path,
                 )
             }
-        });
+        })
+    };
     if plans_now {
         state.profiler.staged.timing(
             StagedTiming::Planning,
-            planning_started.elapsed().as_nanos() as u64,
+            if prepared_during_hash {
+                prepared_planning_ns
+            } else {
+                planning_started.elapsed().as_nanos() as u64
+            },
         );
     }
     let mut staged_plan = match (speculative_plan, staged_plan_result) {
@@ -596,29 +532,27 @@ pub(super) async fn handle_link_ephemeral(
         },
         |plan| plan.rewritten_args.clone(),
     );
-    // Snapshot the output directory before the link so we can detect
-    // side-effect files (e.g., runtime DLLs deployed by compiler wrappers).
-    // Issue #605 pass 1: archive tools (ar, lib, llvm-ar) only bundle their
-    // declared inputs into the output archive; they never deploy sibling
-    // side-effect files. Skip both pre-link snapshot and post-link rescan
-    // for archives — saves a `read_dir` + per-entry `stat` on every archive
-    // cold-miss.
+    // Snapshot before non-archive links to detect undeclared sibling outputs.
     let mut side_effects_cacheable = true;
     let mut side_effects_uncacheable_reason = None;
-    let dir_snapshot = if parsed_tool.is_archive || directory_plan.is_some() {
+    let dir_snapshot_result = if prepared_during_hash {
+        prepared_dir_snapshot_result
+    } else if parsed_tool.is_archive || directory_plan.is_some() {
         None
     } else {
-        match super::super::side_effect::snapshot_directory_excluding(
+        Some(super::super::side_effect::snapshot_directory_excluding(
             output_dir,
             &sibling_input_names,
-        ) {
-            Ok(snapshot) => Some(snapshot),
-            Err(error) => {
-                side_effects_cacheable = false;
-                side_effects_uncacheable_reason =
-                    Some(format!("failed to snapshot link output directory: {error}"));
-                None
-            }
+        ))
+    };
+    let dir_snapshot = match dir_snapshot_result {
+        None => None,
+        Some(Ok(snapshot)) => Some(snapshot),
+        Some(Err(error)) => {
+            side_effects_cacheable = false;
+            side_effects_uncacheable_reason =
+                Some(format!("failed to snapshot link output directory: {error}"));
+            None
         }
     };
 
@@ -671,12 +605,7 @@ pub(super) async fn handle_link_ephemeral(
         );
     }
 
-    // 6b. Invoke optional post-link deploy command on successful link.
-    // This handles the case where the compiler driver does NOT auto-deploy
-    // runtime DLLs (e.g. a native trampoline that skips the Python wrapper
-    // layer where clang-tool-chain's `post_link_dll_deployment` lives).
-    // The hook runs BEFORE the side-effect scan so scanning picks up
-    // whatever it deployed.
+    // Run the optional deploy hook before scanning for its sibling outputs.
     if directory_plan.is_none() {
         if let (Some(cmd), Response::LinkResult { exit_code: 0, .. }) = (&deploy_cmd, &result) {
             run_post_link_deploy_hook(cmd, &output_path, env_for_hook.as_deref(), &lineage).await;
@@ -753,10 +682,7 @@ pub(super) async fn handle_link_ephemeral(
             return with_link_warning(result, nd_warning);
         }
 
-        // Enumerate primary, declared secondaries, and detected side effects
-        // in cache-index order so `outputs[i]` maps to `{key}_i` on disk.
-        // Every entry must be captured successfully; partial artifacts are
-        // uncacheable. Declared names are excluded from implicit discovery.
+        // Preserve cache-index order; any partial capture is uncacheable.
         let primary_name_os = parsed_tool
             .output_file
             .file_name()
@@ -868,9 +794,7 @@ pub(super) async fn handle_link_ephemeral(
             ));
         }
 
-        // Read all output files; preserve order. Falls back to a serial
-        // loop when there's only the primary output — rayon dispatch cost
-        // (~150 µs) is comparable to one fs::read for small outputs.
+        // Read all output files in cache-index order.
         let output_read_started = profile_enabled.then(std::time::Instant::now);
         let reads: std::io::Result<Vec<ArtifactOutput>> = read_targets
             .iter()
@@ -909,9 +833,7 @@ pub(super) async fn handle_link_ephemeral(
             }
         };
 
-        // Primary read gates the cache populate. If it fails, the link
-        // succeeded but the output file is no longer readable — skip
-        // caching, same as the prior serial behavior.
+        // A successful link with unreadable outputs remains uncacheable.
         if let Some(outputs) = outputs {
             // Log side-effect captures (preserves prior tracing).
             let side_effect_start = 1 + parsed_tool.secondary_outputs.len();
@@ -929,20 +851,10 @@ pub(super) async fn handle_link_ephemeral(
             // Build CachedArtifact once (no deep copies — all Arc clones).
             let cached = CachedArtifact::from_artifact_data(&artifact);
 
-            // Persist to disk in background (meta.clone() is cheap — Arc fields only).
-            //
-            // Issue #296: hardlink each `read_targets` source path into the cache
-            // instead of re-writing the in-memory bytes. We still keep the
-            // resident `Bytes` payload in the in-memory cache to serve subsequent
-            // warm hits inline; the disk persist routes through
-            // `persist_artifact_paths` so the cold-miss disk-write count drops
-            // from 2 (compiler + cache) to 1 (compiler + hardlink). Cross-volume
-            // case falls back to `std::fs::copy` — identical to prior semantics.
+            // Persist source paths in the background via hardlink/copy (#296),
+            // retaining resident bytes for immediate warm hits.
             let artifact_store_started = profile_enabled.then(std::time::Instant::now);
-            // One owned guard covers both the live-map insert and disk/index
-            // publication. The exact same guard is transferred to detached
-            // work, avoiding the fair-RwLock self-deadlock caused by acquiring
-            // a second read while a writer is queued.
+            // Transfer one owned guard through live-map and disk/index publication.
             let Some(guard) = begin_artifact_publication(state).await else {
                 if let Some(plan) = staged_plan.as_ref() {
                     if let Err(error) = materialize_link_plan_observed(state, plan, None) {
