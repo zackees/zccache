@@ -708,3 +708,25 @@ Issue: https://github.com/zackees/zccache/issues/1422
   emitted its listening marker.
 - GREEN target: use one named 30-second startup budget for dormant and active
   daemon log readiness while retaining the short negative TCP probe.
+
+# #1423 serialize cargo-registry test environment
+
+Issue: https://github.com/zackees/zccache/issues/1423
+
+- [x] Reproduce the cache-layout failure in the default parallel CLI suite.
+- [x] Serialize cargo-registry test environment reads and writes.
+- [x] Restore overrides during unwinding and cover the panic path.
+- [x] Run the full CLI suite, formatting, Clippy, and the review gate.
+- [ ] Push, merge, close #1423, and verify hosted CI.
+
+## Review
+
+- RED: the default parallel CLI suite observed the real cache root while a
+  sibling test temporarily installed a test `ZCCACHE_CACHE_DIR`; 258 passed,
+  one failed, and two were ignored. The failing assertion passed alone.
+- GREEN: one module-wide lock covers both environment variables and every
+  participating read; an RAII guard restores prior values during unwinding.
+- Focused GREEN: all four cargo-registry tests pass with 16 test threads.
+- Full GREEN: 258 CLI tests pass with two ignored; formatting, diff checks,
+  and repository-policy Clippy pass with only three unrelated baseline warnings.
+- clud-review: clean (one reviewer).
