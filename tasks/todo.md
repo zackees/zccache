@@ -546,6 +546,10 @@ Issue: https://github.com/zackees/zccache/issues/864
 - Hosted RED: the second dry run installed Ubuntu's LLVM meta-package, then
   missed its versioned `llvm-dsymutil` symlink and exited before compilation.
 - clud-review: clean after both follow-ups (one reviewer).
+- Hosted RED: all completed Linux cross lanes terminated multiple unrelated
+  rustc children together with exit 255 under four-way release parallelism;
+  cross lanes are now bounded to two jobs while native builds stay unchanged.
+- clud-review: clean after the initial hosted toolchain follow-ups (one reviewer).
 
 # #1414 isolate session-reaping lifecycle events
 

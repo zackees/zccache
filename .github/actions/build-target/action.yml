@@ -266,10 +266,12 @@ runs:
         # Native distribution builds keep the historical no-cache path. Linux
         # cross lanes deliberately use the current-worktree bootstrap zccache;
         # setup-soldr's post gate rejects a silently bypassed compiler cache.
+        # Bound cross builds to two rustc children: hosted four-way release
+        # builds can exhaust runner memory and kill several children together.
         if [ "${{ inputs.cross_driver }}" = "zigbuild" ]; then
-          cargo_build=(soldr cargo zigbuild)
+          cargo_build=(soldr cargo zigbuild --jobs 2)
         elif [ "${{ inputs.cross_driver }}" = "xwin" ]; then
-          cargo_build=(soldr cargo xwin build)
+          cargo_build=(soldr cargo xwin build --jobs 2)
         elif [ "${{ inputs.use_soldr }}" = "true" ]; then
           cargo_build=(soldr --no-cache cargo build)
         else
