@@ -231,6 +231,7 @@ pub(super) fn materialize_cached_compile_hit(
     // build tool is looking for, leaving the user's `-MF` target absent
     // and reproducing the exact stale-incremental-build bug this fix
     // closes.
+    let provisional_staged = payloads.is_provisional_staged();
     let (targets, payloads_to_write): (Vec<NormalizedPath>, Vec<CachedPayload>) =
         if let Some(requested_outputs) = rustc_metadata_compat_outputs {
             let mut targets = Vec::with_capacity(requested_outputs.len());
@@ -279,15 +280,25 @@ pub(super) fn materialize_cached_compile_hit(
             )
         })
         .collect::<Vec<_>>();
-    let has_staged_payload = payloads_to_write.iter().any(
-        |payload| matches!(payload, CachedPayload::File(path) if is_staged_artifact_path(path)),
-    );
-    let observed_result = write_payloads_par_with_mtime_floor_and_policies_observed(
-        &targets,
-        &payloads_to_write,
-        &mtime_floor_paths,
-        &delivery_policies,
-    );
+    let has_staged_payload = provisional_staged
+        || payloads_to_write.iter().any(
+            |payload| matches!(payload, CachedPayload::File(path) if is_staged_artifact_path(path)),
+        );
+    let observed_result = if provisional_staged {
+        write_provisional_payloads_par_with_mtime_floor_observed(
+            &targets,
+            &payloads_to_write,
+            &mtime_floor_paths,
+            &delivery_policies,
+        )
+    } else {
+        write_payloads_par_with_mtime_floor_and_policies_observed(
+            &targets,
+            &payloads_to_write,
+            &mtime_floor_paths,
+            &delivery_policies,
+        )
+    };
     payloads.record_staged_lock_timings(&state.profiler.staged);
     drop(payloads);
     let observed = match observed_result {
@@ -435,7 +446,10 @@ pub(super) fn materialize_cached_compile_hit(
     })
 }
 
-fn rustc_compat_payload_index_for(names: &[String], requested: &NormalizedPath) -> Option<usize> {
+pub(super) fn rustc_compat_payload_index_for(
+    names: &[String],
+    requested: &NormalizedPath,
+) -> Option<usize> {
     let requested_name = requested.file_name()?.to_str()?;
     if let Some(index) = names.iter().position(|name| name == requested_name) {
         return Some(index);

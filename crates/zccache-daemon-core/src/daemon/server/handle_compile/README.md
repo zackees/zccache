@@ -15,4 +15,6 @@ Split-out modules from the original `handle_compile.rs`. The compile pipeline is
 | `miss_store.rs` | Post-exec artifact store path |
 | `rustc_index.rs` | Merge rules for shared rustc output metadata and verdict rows |
 
-Tests live in `cached_hit.rs::tests` (mtime preservation, materialization shape) and in `pipeline.rs::tests` (phase wiring).
+Tests live in `cached_hit.rs::tests` (mtime preservation, materialization shape),
+`miss_store_tests.rs` (artifact publication), and `pipeline/` (phase wiring and
+request preparation).
