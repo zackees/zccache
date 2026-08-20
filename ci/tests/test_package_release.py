@@ -227,6 +227,25 @@ def test_cross_build_driver_uses_soldr_cache_and_preserves_artifact_contracts() 
         assert "name: release-${{ matrix.target }}" in workflow
 
 
+def test_zigbuild_cross_prerequisites_cover_vendored_c_and_macos_debug_info() -> None:
+    action = _repo_text(".github/actions/build-target/action.yml")
+
+    # Zig promotes __DATE__/__TIME__ in mimalloc-pprof's vendored C source to
+    # an error for cross targets. Keep the warning visible without failing the
+    # release, and make rustc's packed macOS debug-info tool available before
+    # the build (not only during packaging).
+    assert "-Wno-error=date-time" in action
+    assert "Install LLVM dSYM tools" in action
+    assert "llvm-dsymutil" in action
+    assert 'ln -s "$llvm_dsymutil" /usr/local/bin/dsymutil' in action
+
+
+def test_xwin_arm64_compiles_mimalloc_c_as_recommended_cxx() -> None:
+    action = _repo_text(".github/actions/build-target/action.yml")
+
+    assert "CFLAGS_aarch64_pc_windows_msvc=-TP" in action
+
+
 def test_release_workflow_dry_run_builds_without_publishing() -> None:
     workflow = _repo_text(".github/workflows/release-auto.yml")
 

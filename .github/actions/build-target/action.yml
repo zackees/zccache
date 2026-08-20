@@ -150,11 +150,49 @@ runs:
       with:
         tool: cargo-zigbuild
 
+    - name: Configure Zig C compatibility
+      if: inputs.cross_driver == 'zigbuild'
+      shell: bash
+      run: |
+        # Zig cross targets promote __DATE__/__TIME__ to an error. The
+        # mimalloc-pprof amalgamation reports its build timestamp, so retain
+        # the diagnostic without making that vendored C source unbuildable.
+        printf 'CFLAGS=%s\n' "${CFLAGS:+$CFLAGS }-Wno-error=date-time" >> "$GITHUB_ENV"
+        printf 'CXXFLAGS=%s\n' "${CXXFLAGS:+$CXXFLAGS }-Wno-error=date-time" >> "$GITHUB_ENV"
+
+    - name: Install LLVM dSYM tools
+      if: inputs.cross_driver == 'zigbuild' && contains(inputs.target, 'apple-darwin')
+      shell: bash
+      run: |
+        set -euo pipefail
+        if command -v dsymutil >/dev/null 2>&1; then
+          dsymutil --version
+          exit 0
+        fi
+        sudo apt-get update
+        sudo apt-get install --no-install-recommends -y llvm
+        llvm_dsymutil="$(command -v llvm-dsymutil || true)"
+        if [ -z "$llvm_dsymutil" ]; then
+          llvm_dsymutil="$(find /usr/bin -maxdepth 1 -type f -name 'llvm-dsymutil*' -print | sort -V | tail -n 1)"
+        fi
+        test -n "$llvm_dsymutil"
+        sudo ln -s "$llvm_dsymutil" /usr/local/bin/dsymutil
+        dsymutil --version
+
     - name: Install cargo-xwin
       if: inputs.cross_driver == 'xwin'
       uses: taiki-e/install-action@v2
       with:
         tool: cargo-xwin
+
+    - name: Configure xwin ARM64 C compatibility
+      if: inputs.cross_driver == 'xwin' && inputs.target == 'aarch64-pc-windows-msvc'
+      shell: bash
+      run: |
+        # mimalloc's MSVC C atomics use intrinsics that clang-cl does not
+        # declare for ARM64. Its own source recommends C++ compilation for
+        # MSVC; /TP selects that std::atomic path without changing Rust code.
+        echo "CFLAGS_aarch64_pc_windows_msvc=-TP" >> "$GITHUB_ENV"
 
     - name: Setup soldr build cache
       if: inputs.use_soldr == 'true'
