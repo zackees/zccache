@@ -2598,9 +2598,9 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.10.3"
+version = "4.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e275dee5fdb4657b67ae2fdb660f23192fbc0225b34491d0c38824d98cff58b"
+checksum = "bfdda961821d4aafd9600b5fdebb39003953fd4f47db613fdd078834a4cebfe6"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2611,7 +2611,6 @@ dependencies = [
  "getrandom 0.4.2",
  "interprocess",
  "libc",
- "png",
  "prost",
  "prost-build",
  "prost-types",
@@ -2627,21 +2626,24 @@ dependencies = [
  "toml",
  "winapi",
  "windows-sys 0.61.2",
- "x11rb",
 ]
 
 [[package]]
 name = "running-process-platform-internal"
-version = "4.10.3"
+version = "4.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e579bf42634c7ecc0d110a52149a6228183a8bc8973473546a4269e34cc1deab"
+checksum = "411f38a9f9281094d4d0e53bb5b4b52cbaf33787cf57816a6f178cfeee3869de"
 dependencies = [
  "interprocess",
  "libc",
+ "png",
  "sysinfo",
+ "thiserror",
  "tokio",
+ "toml",
  "winapi",
  "windows-sys 0.61.2",
+ "x11rb",
 ]
 
 [[package]]

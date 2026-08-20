@@ -667,3 +667,44 @@ Issue: https://github.com/zackees/zccache/issues/1361
 - Pending: Unix ignored integration proof.
 - clud-review: clean after cached-error rehydration and panic-free split
   follow-ups (one reviewer).
+
+# #1402 eliminate request-time probe hashing
+
+Issue: https://github.com/zackees/zccache/issues/1402
+
+- [x] Publish running-process 4.10.5 with cached legacy SHA-256 identity and
+  pre-4.10.4 identity-file compatibility.
+- [x] Upgrade zccache and encode probe identity from the daemon's cached digests.
+- [x] Prove probe responses succeed after the recorded executable path disappears.
+- [x] Run focused tests, formatting, affected-target checks, and Clippy.
+- [ ] Run the review gate, push the rewritten PR, merge, and close #1402.
+
+## Review
+
+- RED: running-process 4.10.4 rejects a 4.10.3 daemon identity JSON because
+  its new `legacy_exe_sha256` field lacked a serde default, so zccache cannot
+  establish the stale instance identity required for safe replacement.
+- GREEN: published running-process 4.10.5 reads the pre-4.10.4 identity fixture;
+  the compatibility decoder still reads historical protobuf field 3, while the
+  response succeeds with a deliberately nonexistent `exe_path`.
+- GREEN: all 53 IPC tests and the feature-complete 259-case CLI suite pass;
+  affected IPC, CLI, and daemon all-target Clippy passes under the repository
+  policy, and formatting plus whitespace checks are clean.
+- Repo hygiene: the pre-existing CLI runtime tests moved to `runtime/tests.rs`,
+  leaving the production lifecycle module at 771 lines.
+
+# #1422 bound Tokio Console integration startup realistically
+
+Issue: https://github.com/zackees/zccache/issues/1422
+
+- [x] Capture the hosted RED and compare it with recent green duration evidence.
+- [x] Keep daemon startup waits bounded while allowing loaded-runner variance.
+- [ ] Run the focused test, review gate, hosted Integration rerun, merge, and close.
+
+## Review
+
+- RED: hosted Integration run 32388028985 timed out after 10 seconds while the
+  dormant daemon had logged startup and resolved cache state but had not yet
+  emitted its listening marker.
+- GREEN target: use one named 30-second startup budget for dormant and active
+  daemon log readiness while retaining the short negative TCP probe.
