@@ -1,4 +1,5 @@
 import json
+from argparse import Namespace
 
 import pytest
 
@@ -52,9 +53,20 @@ def test_docker_command_uses_read_only_source_and_named_build_volumes(tmp_path):
 
     assert f"type=bind,src={tmp_path / 'source'},dst=/src,readonly" in joined
     assert f"type=bind,src={tmp_path / 'results'},dst=/results" in joined
+    assert (
+        f"type=bind,src={tmp_path / 'results' / 'fixture'},dst=/artifacts,readonly"
+        in joined
+    )
     for volume, destination in perf_standalone.BUILD_VOLUMES.items():
         assert f"type=volume,src={volume},dst={destination}" in joined
-    assert "dst=/artifacts,readonly" in joined
+    assert "zccache-standalone-artifacts" not in joined
+
+    build = " ".join(perf_standalone._benchmark_build_command(tmp_path / "results"))
+    fixture_mount = (
+        f"type=bind,src={tmp_path / 'results' / 'fixture'},dst=/artifacts"
+    )
+    assert fixture_mount in build
+    assert f"{fixture_mount},readonly" not in build
 
 
 def test_pinned_tool_versions_are_required():
@@ -83,7 +95,12 @@ def test_resume_identity_rejects_commit_image_host_or_inventory_changes():
         "host_fingerprint": "host-a",
         "inventory": [["c", "perf_c_zccache_vs_bare"]],
         "attempts": 5,
-        "fixture": {"binary": "perf_bench_test", "sha256": "a" * 64},
+        "fixture": {
+            "artifacts": {
+                "perf_bench_test": "a" * 64,
+                "zccache-ci": "b" * 64,
+            }
+        },
     }
 
     perf_standalone.validate_resume_identity(identity, dict(identity))
@@ -93,6 +110,158 @@ def test_resume_identity_rejects_commit_image_host_or_inventory_changes():
         changed[field] = "different"
         with pytest.raises(ValueError, match=field):
             perf_standalone.validate_resume_identity(identity, changed)
+
+
+def test_resume_reuses_recorded_fixture_without_rebuilding(tmp_path, monkeypatch):
+    commit = "a" * 40
+    fixture_hashes = {
+        "perf_bench_test": "b" * 64,
+        "zccache-ci": "c" * 64,
+    }
+    identity = {
+        "commit": commit,
+        "ref": "fix/perf-resume",
+        "dirty": False,
+        "image_digest": "sha256:image",
+        "host_fingerprint": "host-a",
+        "inventory": [],
+        "attempts": 5,
+        "fixture": {"artifacts": fixture_hashes},
+    }
+    (tmp_path / "campaign-identity.json").write_text(
+        json.dumps(identity), encoding="utf-8"
+    )
+
+    monkeypatch.setattr(perf_standalone, "_ensure_clean_checkout", lambda: commit)
+    monkeypatch.setattr(perf_standalone, "_selected_inventory", lambda *_: [])
+    monkeypatch.setattr(perf_standalone, "_build_image", lambda *_: None)
+    monkeypatch.setattr(perf_standalone, "_ensure_volumes", lambda: None)
+    monkeypatch.setattr(
+        perf_standalone,
+        "_build_benchmark",
+        lambda *_: pytest.fail("resume rebuilt the recorded benchmark fixture"),
+    )
+    monkeypatch.setattr(
+        perf_standalone,
+        "_tool_versions",
+        lambda *_: ({"rustc": "pinned"}, fixture_hashes, ["docker", "verify"]),
+    )
+    monkeypatch.setattr(
+        perf_standalone,
+        "_host_identity",
+        lambda: {"fingerprint": "host-a"},
+    )
+    monkeypatch.setattr(perf_standalone, "_image_digest", lambda: "sha256:image")
+    monkeypatch.setattr(perf_standalone, "_git_output", lambda *_: "fix/perf-resume")
+
+    result = perf_standalone.run_campaign(
+        Namespace(
+            language=None,
+            test=None,
+            attempts=5,
+            output_dir=tmp_path,
+            resume=True,
+            rebuild_image=False,
+        )
+    )
+
+    assert result == tmp_path
+
+    tampered_hashes = dict(fixture_hashes)
+    tampered_hashes["zccache-ci"] = "d" * 64
+    monkeypatch.setattr(
+        perf_standalone,
+        "_tool_versions",
+        lambda *_: ({"rustc": "pinned"}, tampered_hashes, ["docker", "verify"]),
+    )
+    monkeypatch.setattr(
+        perf_standalone,
+        "_run_sample",
+        lambda *_: pytest.fail("resume sampled with a tampered fixture"),
+    )
+
+    with pytest.raises(ValueError, match="resume identity mismatch for fixture"):
+        perf_standalone.run_campaign(
+            Namespace(
+                language=None,
+                test=None,
+                attempts=5,
+                output_dir=tmp_path,
+                resume=True,
+                rebuild_image=False,
+            )
+        )
+
+
+def test_verify_requires_hashes_for_every_reused_executable(tmp_path, monkeypatch):
+    valid_versions = {
+        "rustc": "rustc 1.95.0 (fake)",
+        "clang": "Ubuntu clang version 14.0.0",
+        "sccache": "sccache 0.10.0",
+        "emscripten": "emcc 3.1.74",
+        "soldr": "soldr 0.8.16",
+        "benchmark_sha256": "a" * 64,
+        "zccache_ci_sha256": "b" * 64,
+    }
+
+    monkeypatch.setattr(
+        perf_standalone,
+        "_run",
+        lambda *_args, **_kwargs: Namespace(stdout=json.dumps(valid_versions)),
+    )
+    versions, fixture_hashes, command = perf_standalone._tool_versions(tmp_path)
+
+    assert "benchmark_sha256" not in versions
+    assert "zccache_ci_sha256" not in versions
+    assert fixture_hashes == {
+        "perf_bench_test": "a" * 64,
+        "zccache-ci": "b" * 64,
+    }
+    assert (
+        f"type=bind,src={tmp_path / 'fixture'},dst=/artifacts,readonly"
+        in " ".join(command)
+    )
+    assert (
+        f"type=bind,src={tmp_path},dst=/results,readonly" in " ".join(command)
+    )
+
+    for artifact, missing_field in perf_standalone.FIXTURE_HASH_FIELDS.items():
+        incomplete = dict(valid_versions)
+        incomplete[missing_field] = ""
+        monkeypatch.setattr(
+            perf_standalone,
+            "_run",
+            lambda *_args, payload=incomplete, **_kwargs: Namespace(
+                stdout=json.dumps(payload)
+            ),
+        )
+
+        with pytest.raises(ValueError, match=artifact):
+            perf_standalone._tool_versions(tmp_path)
+
+
+def test_resume_requires_recorded_identity_before_container_work(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(perf_standalone, "_ensure_clean_checkout", lambda: "a" * 40)
+    monkeypatch.setattr(perf_standalone, "_selected_inventory", lambda *_: [])
+    monkeypatch.setattr(
+        perf_standalone,
+        "_build_image",
+        lambda *_: pytest.fail("resume touched Docker without recorded identity"),
+    )
+
+    with pytest.raises(RuntimeError, match="cannot resume campaign without"):
+        perf_standalone.run_campaign(
+            Namespace(
+                language=None,
+                test=None,
+                attempts=5,
+                output_dir=tmp_path,
+                resume=True,
+                rebuild_image=False,
+            )
+        )
 
 
 def test_invalid_or_fallback_sample_cannot_enter_campaign():

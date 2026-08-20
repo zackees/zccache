@@ -26,7 +26,10 @@ DEFAULT_ATTEMPTS = 5
 BUILD_VOLUMES = {
     "zccache-standalone-soldr-home": "/root/.soldr",
     "zccache-standalone-target": "/target",
-    "zccache-standalone-artifacts": "/artifacts",
+}
+FIXTURE_HASH_FIELDS = {
+    "perf_bench_test": "benchmark_sha256",
+    "zccache-ci": "zccache_ci_sha256",
 }
 TOOL_VERSION_MARKERS = {
     "rustc": "rustc 1.95.0",
@@ -109,15 +112,30 @@ def docker_run_command(
     results_dir: Path,
     container_name: str,
     entrypoint_args: list[str],
+    artifacts_dir: Path | None = None,
     artifacts_read_only: bool = True,
+    results_read_only: bool = False,
 ) -> list[str]:
+    artifacts_dir = artifacts_dir or results_dir / "fixture"
     command = ["docker", "run", "--rm", "--name", container_name]
     command.extend(
         [
             "--mount",
             _mount(repo_root.resolve(), "/src", kind="bind", readonly=True),
             "--mount",
-            _mount(results_dir.resolve(), "/results", kind="bind", readonly=False),
+            _mount(
+                results_dir.resolve(),
+                "/results",
+                kind="bind",
+                readonly=results_read_only,
+            ),
+            "--mount",
+            _mount(
+                artifacts_dir.resolve(),
+                "/artifacts",
+                kind="bind",
+                readonly=artifacts_read_only,
+            ),
         ]
     )
     for volume, destination in BUILD_VOLUMES.items():
@@ -128,7 +146,7 @@ def docker_run_command(
                     volume,
                     destination,
                     kind="volume",
-                    readonly=destination == "/artifacts" and artifacts_read_only,
+                    readonly=False,
                 ),
             ]
         )
@@ -549,33 +567,43 @@ def _host_identity() -> dict[str, Any]:
     return payload
 
 
-def _build_benchmark(campaign_dir: Path) -> list[str]:
-    command = docker_run_command(
+def _benchmark_build_command(campaign_dir: Path) -> list[str]:
+    return docker_run_command(
         repo_root=REPO_ROOT,
         results_dir=campaign_dir,
         container_name="zccache-standalone-build",
         entrypoint_args=["build"],
+        artifacts_dir=campaign_dir / "fixture",
         artifacts_read_only=False,
     )
+
+
+def _build_benchmark(campaign_dir: Path) -> list[str]:
+    command = _benchmark_build_command(campaign_dir)
     _run(command)
     return command
 
 
-def _tool_versions(campaign_dir: Path) -> tuple[dict[str, str], str, list[str]]:
+def _tool_versions(
+    campaign_dir: Path,
+) -> tuple[dict[str, str], dict[str, str], list[str]]:
     command = docker_run_command(
         repo_root=REPO_ROOT,
         results_dir=campaign_dir,
         container_name="zccache-standalone-verify",
         entrypoint_args=["verify"],
+        artifacts_dir=campaign_dir / "fixture",
+        results_read_only=True,
     )
     versions = json.loads(_run(command, capture=True).stdout)
     validate_tool_versions(versions)
-    benchmark_sha256 = versions.pop("benchmark_sha256", "")
-    if not isinstance(benchmark_sha256, str) or not re.fullmatch(
-        r"[0-9a-f]{64}", benchmark_sha256
-    ):
-        raise ValueError("benchmark fixture SHA-256 is missing or invalid")
-    return versions, benchmark_sha256, command
+    fixture_hashes = {}
+    for artifact, field in FIXTURE_HASH_FIELDS.items():
+        sha256 = versions.pop(field, "")
+        if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+            raise ValueError(f"{artifact} fixture SHA-256 is missing or invalid")
+        fixture_hashes[artifact] = sha256
+    return versions, fixture_hashes, command
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -686,6 +714,7 @@ def _run_sample(
         results_dir=sample_dir,
         container_name=f"zccache-standalone-{language.replace('+', 'p')}-{test_name}"[:63],
         entrypoint_args=["run", language, test_name, str(attempts)],
+        artifacts_dir=campaign_dir / "fixture",
     )
     result = _run(command, check=False)
     summary_path = sample_dir / "perf-guard-summary.json"
@@ -750,15 +779,32 @@ def _selected_inventory(language: str | None, test_name: str | None) -> list[tup
 def run_campaign(args: argparse.Namespace) -> Path:
     commit = _ensure_clean_checkout()
     inventory = _selected_inventory(args.language, args.test)
-    _build_image(args.rebuild_image)
-    _ensure_volumes()
     campaign_dir = (
         args.output_dir
         or default_campaign_dir(commit, args.language, args.test, args.attempts)
     ).resolve()
-    campaign_dir.mkdir(parents=True, exist_ok=True)
-    benchmark_build_command = _build_benchmark(campaign_dir)
-    versions, benchmark_sha256, verify_command = _tool_versions(campaign_dir)
+    identity_path = campaign_dir / "campaign-identity.json"
+    if args.resume:
+        if not identity_path.is_file():
+            raise RuntimeError(
+                f"cannot resume campaign without {identity_path}"
+            )
+    else:
+        campaign_dir.mkdir(parents=True, exist_ok=True)
+        if identity_path.exists():
+            raise RuntimeError(
+                f"campaign already exists: {campaign_dir}; pass --resume"
+            )
+        (campaign_dir / "fixture").mkdir(parents=True, exist_ok=True)
+
+    _build_image(args.rebuild_image)
+    _ensure_volumes()
+    benchmark_build_command = (
+        _benchmark_build_command(campaign_dir)
+        if args.resume
+        else _build_benchmark(campaign_dir)
+    )
+    versions, fixture_hashes, verify_command = _tool_versions(campaign_dir)
     host = _host_identity()
     identity = {
         "commit": commit,
@@ -769,14 +815,10 @@ def run_campaign(args: argparse.Namespace) -> Path:
         "inventory": [list(item) for item in inventory],
         "attempts": args.attempts,
         "fixture": {
-            "binary": "perf_bench_test",
-            "sha256": benchmark_sha256,
+            "artifacts": fixture_hashes,
         },
     }
-    identity_path = campaign_dir / "campaign-identity.json"
-    if identity_path.exists():
-        if not args.resume:
-            raise RuntimeError(f"campaign already exists: {campaign_dir}; pass --resume")
+    if args.resume:
         validate_resume_identity(_load_json(identity_path), identity)
     else:
         _write_json(identity_path, identity)

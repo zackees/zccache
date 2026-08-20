@@ -464,7 +464,7 @@ Issue: https://github.com/zackees/zccache/issues/1117
 - [x] Make wrapper failure-boundary lifecycle fixtures namespace-aware (#1412).
 - [x] Add RED contract coverage for each deterministic regression.
 - [x] Run focused tests, formatting, checks, clippy, and the repository review gate.
-- [ ] Push, merge, close #1404-#1409 and #1412, and verify current-main CI.
+- [x] Push, merge, close #1404-#1409 and #1412, and verify current-main CI.
 
 ## Review
 
@@ -489,6 +489,35 @@ Issue: https://github.com/zackees/zccache/issues/1117
   and toolchain Python contracts pass; all three ignored wrapper-boundary
   tests pass; feature-complete check, clippy with warnings denied, formatting,
   and diff whitespace checks pass.
+- Hosted GREEN: PR #1410 passed the full matrix, including MSRV, Dylint,
+  wrapper failure boundaries, full workspace integration, strict artifact
+  audit, and all platform jobs; it merged as `502827e3` and closed all seven
+  linked issues.
+
+# #1411 resumable standalone performance fixture
+
+Issue: https://github.com/zackees/zccache/issues/1411
+
+- [x] Add RED coverage proving resume never rebuilds or replaces the recorded fixture.
+- [x] Keep every retained executable campaign-local and verify it read-only.
+- [x] Preserve the normal build-and-record path for fresh campaigns.
+- [x] Run focused tests, lint/format checks, and the review gate.
+- [ ] Push, merge, close #1411, and resume the #1116 campaign.
+
+## Review
+
+- RED: resume called `_build_benchmark` before comparing the recorded fixture
+  digest, replacing the shared artifact before it could detect drift.
+- GREEN: 35 focused standalone/embedded tests pass; shell syntax, Python
+  syntax, E/F lint, and diff checks are clean.
+- Docker: a fresh interrupted campaign built and verified both local fixture
+  executables; `--resume` ran verify without a build and preserved both hashes
+  exactly before correctly refusing timing on unrelated active host compilers.
+- Review follow-ups: retain both runtime executables per campaign, hash both,
+  reject missing or changed artifacts before sampling, and mount both the
+  fixture and its parent results alias read-only during verification.
+- clud-review: clean (one reviewer).
+
 # #1414 isolate session-reaping lifecycle events
 
 - [x] Add a RED regression proving a state-owned reap event follows the daemon's explicit cache root, not the process-global environment.
