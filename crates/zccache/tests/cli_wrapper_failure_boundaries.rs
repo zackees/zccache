@@ -19,6 +19,7 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const TEST_DAEMON_NAMESPACE: &str = "wrapper-failure-boundaries";
 
 fn target_bin_dir() -> PathBuf {
     let mut path = std::env::current_exe().expect("current executable");
@@ -41,6 +42,7 @@ fn stop_daemon(zccache: &Path, cache_dir: &Path) -> Output {
     Command::new(zccache)
         .arg("stop")
         .env("ZCCACHE_CACHE_DIR", cache_dir)
+        .env("ZCCACHE_DAEMON_NAMESPACE", TEST_DAEMON_NAMESPACE)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
@@ -59,6 +61,7 @@ fn run_wrapper(
         .arg(echo_shim)
         .arg("7")
         .env("ZCCACHE_CACHE_DIR", cache_dir)
+        .env("ZCCACHE_DAEMON_NAMESPACE", TEST_DAEMON_NAMESPACE)
         .env("ZCCACHE_NO_SPAWN", "1")
         .env("ZCCACHE_DAEMON_WIRE", "bincode")
         // These tests assert that the refusal contract holds. They must not
@@ -101,8 +104,13 @@ fn run_wrapper(
 fn lifecycle_events(cache_dir: &Path) -> Vec<serde_json::Value> {
     let effective =
         zccache::core::config::effective_cache_root_from_top_level(&cache_dir.to_path_buf().into());
-    let path =
-        zccache::core::config::log_dir_from_cache_dir(&effective).join("daemon-lifecycle.log");
+    let daemon_state = zccache::core::config::daemon_state_dir_from_cache_dir_with_namespace(
+        &effective,
+        Some(TEST_DAEMON_NAMESPACE.to_owned()),
+    );
+    let path = daemon_state
+        .join("logs")
+        .join(format!("daemon-lifecycle-{TEST_DAEMON_NAMESPACE}.log"));
     std::fs::read_to_string(path)
         .unwrap_or_default()
         .lines()
@@ -170,6 +178,7 @@ fn daemon_answers(zccache: &Path, cache_dir: &Path) -> bool {
     Command::new(zccache)
         .arg("status")
         .env("ZCCACHE_CACHE_DIR", cache_dir)
+        .env("ZCCACHE_DAEMON_NAMESPACE", TEST_DAEMON_NAMESPACE)
         .env("ZCCACHE_NO_SPAWN", "1")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -295,6 +304,7 @@ fn session_pre_dispatch_failure_refuses_without_double_reading_stdin() {
     let session = Command::new(&zccache)
         .arg("session-start")
         .env("ZCCACHE_CACHE_DIR", cache_dir.path())
+        .env("ZCCACHE_DAEMON_NAMESPACE", TEST_DAEMON_NAMESPACE)
         .env("ZCCACHE_DAEMON_WIRE", "bincode")
         .output()
         .expect("start session");
@@ -382,6 +392,7 @@ fn a_fresh_cache_root_never_needs_its_deploy_dir_tightened() {
     let output = Command::new(&zccache)
         .arg("status")
         .env("ZCCACHE_CACHE_DIR", cache_dir.path())
+        .env("ZCCACHE_DAEMON_NAMESPACE", TEST_DAEMON_NAMESPACE)
         .env("ZCCACHE_NO_SPAWN", "1")
         .env_remove("ZCCACHE_DISABLE")
         .output()

@@ -453,7 +453,7 @@ Issue: https://github.com/zackees/zccache/issues/1117
 - PR #1401 merged as `d11f4bde`; all three hosted cargo-registry jobs passed
   and #1400 closed automatically.
 
-# #1404-#1409 current-main CI stability
+# #1404-#1409 / #1412 current-main CI stability
 
 - [x] Reproduce and fix the namespace-mismatched daemon lockfile budget test (#1404).
 - [x] Characterize the detached exec/Clear handoff timeout and keep its lock-order proof deterministic (#1405).
@@ -461,9 +461,10 @@ Issue: https://github.com/zackees/zccache/issues/1117
 - [x] Run build-harness journal cleanup after failed tests so the strict audit owns only runtime logs (#1407).
 - [x] Allow explicit scheduler tolerance around pending-write timeout wakeups (#1408).
 - [x] Remove obsolete legacy-toolchain allowlist entries while keeping the checker exact (#1409).
+- [x] Make wrapper failure-boundary lifecycle fixtures namespace-aware (#1412).
 - [x] Add RED contract coverage for each deterministic regression.
 - [x] Run focused tests, formatting, checks, clippy, and the repository review gate.
-- [ ] Push, merge, close #1404-#1409, and verify current-main CI.
+- [ ] Push, merge, close #1404-#1409 and #1412, and verify current-main CI.
 
 ## Review
 
@@ -480,7 +481,11 @@ Issue: https://github.com/zackees/zccache/issues/1117
   100.2205ms and failed an upper assertion of 100ms by 220.5us.
 - #1409 local RED: the exact legacy-toolchain checker listed three files that
   no longer contain the legacy marker and failed on its stale allowlist.
+- #1412 hosted RED: the wrapper contract tests read the legacy lifecycle log
+  while development children wrote namespaced events; the refusal exit code
+  was correct, but the test saw no refusal or spawn events.
 - GREEN: all focused tests pass; the full daemon-core suite passes with 754
   active tests and 25 ignored; both lockfile-budget tests pass; the workflow
-  and toolchain Python contracts pass; feature-complete check, clippy with
-  warnings denied, formatting, and diff whitespace checks pass.
+  and toolchain Python contracts pass; all three ignored wrapper-boundary
+  tests pass; feature-complete check, clippy with warnings denied, formatting,
+  and diff whitespace checks pass.
