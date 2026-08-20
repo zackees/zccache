@@ -116,9 +116,15 @@ async fn detached_exec_handoff_does_not_reacquire_behind_queued_clear() {
         .unwrap()
         .unwrap();
     drop(blocked_persist);
-    let response = tokio::time::timeout(std::time::Duration::from_secs(5), clear)
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        gate.wait_until_persisted(),
+    )
+    .await
+    .expect("transferred publication guard must reach persistence completion");
+    let response = tokio::time::timeout(std::time::Duration::from_secs(30), clear)
         .await
-        .unwrap()
+        .expect("Clear must finish after the transferred publication guard drops")
         .unwrap();
     assert!(matches!(response, Response::Cleared { .. }));
 

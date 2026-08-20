@@ -430,7 +430,7 @@ Issue: https://github.com/zackees/zccache/issues/1117
 - [x] Add RED tests proving daemon namespaces do not move CLI-owned shared cache paths.
 - [x] Keep daemon-owned state namespaced while restoring cargo-registry and symbols to the stable cache root.
 - [x] Run focused tests, formatter, checks, clippy, and the locally available workflow contract.
-- [ ] Review, commit, push, merge the PR, close #1400, and verify current main.
+- [x] Review, commit, push, merge the PR, close #1400, and verify current main.
 
 ## Review
 
@@ -450,3 +450,37 @@ Issue: https://github.com/zackees/zccache/issues/1117
   daemon namespace and requires the shared cache directory to be exactly
   `<default_cache_dir>/symbols`, rejecting a stale
   `daemon-state/<namespace>` intermediate path.
+- PR #1401 merged as `d11f4bde`; all three hosted cargo-registry jobs passed
+  and #1400 closed automatically.
+
+# #1404-#1409 current-main CI stability
+
+- [x] Reproduce and fix the namespace-mismatched daemon lockfile budget test (#1404).
+- [x] Characterize the detached exec/Clear handoff timeout and keep its lock-order proof deterministic (#1405).
+- [x] Make the warm-hit unit performance sentinel robust to hosted Windows runner noise (#1406).
+- [x] Run build-harness journal cleanup after failed tests so the strict audit owns only runtime logs (#1407).
+- [x] Allow explicit scheduler tolerance around pending-write timeout wakeups (#1408).
+- [x] Remove obsolete legacy-toolchain allowlist entries while keeping the checker exact (#1409).
+- [x] Add RED contract coverage for each deterministic regression.
+- [x] Run focused tests, formatting, checks, clippy, and the repository review gate.
+- [ ] Push, merge, close #1404-#1409, and verify current-main CI.
+
+## Review
+
+- #1404 hosted RED: the development daemon wrote its namespaced lockfile within
+  the nine-second cap, while the parent test polled the legacy unnamespaced path.
+- #1405 hosted RED: the queued Clear future timed out after the publisher
+  completed its single-guard handoff under the Linux x86 daemon-core suite.
+- #1406 hosted RED: one Windows x86 sample took 2.1811039s against a 2s absolute
+  budget; the dedicated COW performance guard passed in the same run.
+- #1407 hosted RED: a preceding workspace failure skipped the success-only
+  cleanup, then the unconditional audit reported 188 embedded v1.12.15
+  build-harness journal records as integration-runtime violations.
+- #1408 local full-suite RED: a 5ms pending-write timeout resumed at
+  100.2205ms and failed an upper assertion of 100ms by 220.5us.
+- #1409 local RED: the exact legacy-toolchain checker listed three files that
+  no longer contain the legacy marker and failed on its stale allowlist.
+- GREEN: all focused tests pass; the full daemon-core suite passes with 754
+  active tests and 25 ignored; both lockfile-budget tests pass; the workflow
+  and toolchain Python contracts pass; feature-complete check, clippy with
+  warnings denied, formatting, and diff whitespace checks pass.
