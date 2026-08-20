@@ -195,7 +195,10 @@ uv run --no-project python -m ci.perf_standalone --resume
 
 Evidence is retained under `.perf-standalone/results/`. Each campaign has a
 JSON index and Markdown table linking raw logs, parsed rows, cache phase/byte
-telemetry, command provenance, and resource usage for every test.
+telemetry, command provenance, and resource usage for every test. Its prebuilt
+benchmark and `zccache-ci` executables live in that campaign's `fixture/`
+directory; resume mounts them read-only and verifies both recorded SHA-256
+digests before running another sample.
 
 ## Soldr-embedded lifecycle campaign
 

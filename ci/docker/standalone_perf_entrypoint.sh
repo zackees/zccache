@@ -52,8 +52,12 @@ case "${command}" in
     verify)
         seed_soldr_home
         benchmark_sha256=""
+        zccache_ci_sha256=""
         if [[ -f /artifacts/perf_bench_test ]]; then
             benchmark_sha256="$(sha256sum /artifacts/perf_bench_test | cut -d' ' -f1)"
+        fi
+        if [[ -f /artifacts/zccache-ci ]]; then
+            zccache_ci_sha256="$(sha256sum /artifacts/zccache-ci | cut -d' ' -f1)"
         fi
         jq -n \
             --arg rustc "$(soldr rustc --version | head -n 1)" \
@@ -62,7 +66,8 @@ case "${command}" in
             --arg emscripten "$(em++ --version | head -n 1)" \
             --arg soldr "$(soldr version | head -n 1)" \
             --arg benchmark_sha256 "${benchmark_sha256}" \
-            '{rustc: $rustc, clang: $clang, sccache: $sccache, emscripten: $emscripten, soldr: $soldr, benchmark_sha256: $benchmark_sha256}'
+            --arg zccache_ci_sha256 "${zccache_ci_sha256}" \
+            '{rustc: $rustc, clang: $clang, sccache: $sccache, emscripten: $emscripten, soldr: $soldr, benchmark_sha256: $benchmark_sha256, zccache_ci_sha256: $zccache_ci_sha256}'
         ;;
     run)
         require_mount /artifacts/perf_bench_test
