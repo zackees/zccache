@@ -957,7 +957,8 @@ fn reap_finished_sessions_with_grace(
         // stderr goes anywhere unbounded. The durable event is what makes
         // "this daemon reclaims a session per compile" attributable after the
         // fact, which is the growth mode the finding is about.
-        zccache_core::lifecycle::write_event(
+        zccache_core::lifecycle::write_event_in_cache_root(
+            state.cache_dir.as_path(),
             zccache_core::lifecycle::EVENT_SESSIONS_REAPED,
             serde_json::json!({
                 "expired": expired.len(),

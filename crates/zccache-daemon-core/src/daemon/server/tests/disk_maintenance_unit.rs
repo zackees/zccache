@@ -963,15 +963,9 @@ async fn tombstone_reaping_is_a_noop_when_nothing_is_stale() {
     assert!(daemon.state.ended_sessions.contains_key(&fresh));
 }
 
-/// Count `sessions_reaped` rows currently in the lifecycle log.
-///
-/// The log path resolves from the process-global cache root, so a test cannot
-/// assume it owns the file — a concurrently running test may have written to
-/// it, and the resolved path can outlive any one test's env guard. Asserting
-/// on the *delta* across a single call is therefore the only stable shape;
-/// asserting a total, or an absence, is a flake waiting to happen.
-fn sessions_reaped_rows() -> usize {
-    let Ok(log) = std::fs::read_to_string(crate::core::lifecycle::log_file_path()) else {
+/// Count `sessions_reaped` rows in one explicitly selected lifecycle log.
+fn sessions_reaped_rows(log_path: &std::path::Path) -> usize {
+    let Ok(log) = std::fs::read_to_string(log_path) else {
         return 0;
     };
     log.lines()
@@ -992,8 +986,13 @@ fn sessions_reaped_rows() -> usize {
 #[tokio::test]
 async fn reaping_writes_a_durable_event_only_when_it_reclaims_something() {
     let root = tempfile::tempdir().unwrap();
-    let _cache_env = crate::daemon::server::tests::CacheDirEnvGuard::set(root.path());
-    let cache_dir: crate::core::NormalizedPath = root.path().join("cache").into();
+    let global_root = root.path().join("process-global");
+    let _cache_env = crate::daemon::server::tests::CacheDirEnvGuard::set(&global_root);
+    let cache_dir: crate::core::NormalizedPath = root.path().join("daemon-owned").into();
+    let daemon_log = cache_dir
+        .join("logs")
+        .join(crate::core::lifecycle::LIVE_LOG_FILENAME);
+    let global_log = crate::core::lifecycle::log_file_path();
     let daemon = Arc::new(
         EmbeddedDaemon::start(
             crate::ipc::unique_test_endpoint(),
@@ -1005,7 +1004,7 @@ async fn reaping_writes_a_durable_event_only_when_it_reclaims_something() {
         .unwrap(),
     );
 
-    let quiet_before = sessions_reaped_rows();
+    let quiet_before = sessions_reaped_rows(daemon_log.as_path());
     // #1324: zero grace so these exercise reclamation itself, not the
     // idle window that protects an in-use session from its exited starter.
     reap_finished_sessions_with_grace(
@@ -1014,7 +1013,7 @@ async fn reaping_writes_a_durable_event_only_when_it_reclaims_something() {
         std::time::Duration::ZERO,
     );
     assert_eq!(
-        sessions_reaped_rows(),
+        sessions_reaped_rows(daemon_log.as_path()),
         quiet_before,
         "a pass that reclaims nothing must not write an event"
     );
@@ -1042,11 +1041,16 @@ async fn reaping_writes_a_durable_event_only_when_it_reclaims_something() {
     );
 
     assert_eq!(
-        sessions_reaped_rows(),
+        sessions_reaped_rows(daemon_log.as_path()),
         quiet_before + 1,
         "reclaiming a dead client's session must leave exactly one record"
     );
-    let log = std::fs::read_to_string(crate::core::lifecycle::log_file_path()).unwrap();
+    assert_eq!(
+        sessions_reaped_rows(global_log.as_path()),
+        0,
+        "a state-owned reap event must not follow process-global cache state"
+    );
+    let log = std::fs::read_to_string(daemon_log.as_path()).unwrap();
     let event: serde_json::Value = log
         .lines()
         .filter_map(|line| serde_json::from_str(line).ok())
