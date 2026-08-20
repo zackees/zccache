@@ -237,7 +237,10 @@ def test_zigbuild_cross_prerequisites_cover_vendored_c_and_macos_debug_info() ->
     assert "-Wno-error=date-time" in action
     assert "Install LLVM dSYM tools" in action
     assert "llvm-dsymutil" in action
+    assert "find -L /usr/bin" in action
+    assert 'test -x "$llvm_dsymutil"' in action
     assert 'ln -s "$llvm_dsymutil" /usr/local/bin/dsymutil' in action
+    assert "test -x /usr/local/bin/dsymutil" in action
 
 
 def test_xwin_arm64_compiles_mimalloc_c_as_recommended_cxx() -> None:

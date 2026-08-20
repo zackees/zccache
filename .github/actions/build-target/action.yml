@@ -171,12 +171,17 @@ runs:
         fi
         sudo apt-get update
         sudo apt-get install --no-install-recommends -y llvm
+        if command -v dsymutil >/dev/null 2>&1; then
+          dsymutil --version
+          exit 0
+        fi
         llvm_dsymutil="$(command -v llvm-dsymutil || true)"
         if [ -z "$llvm_dsymutil" ]; then
-          llvm_dsymutil="$(find /usr/bin -maxdepth 1 -type f -name 'llvm-dsymutil*' -print | sort -V | tail -n 1)"
+          llvm_dsymutil="$(find -L /usr/bin -maxdepth 1 -type f -executable -name 'llvm-dsymutil*' -print | sort -V | tail -n 1)"
         fi
-        test -n "$llvm_dsymutil"
+        test -n "$llvm_dsymutil" && test -x "$llvm_dsymutil"
         sudo ln -s "$llvm_dsymutil" /usr/local/bin/dsymutil
+        test -x /usr/local/bin/dsymutil
         dsymutil --version
 
     - name: Install cargo-xwin
