@@ -233,13 +233,57 @@ pub(crate) fn cmd_cargo_registry_clean() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::{OsStr, OsString};
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvRestore(Vec<(&'static str, Option<OsString>)>);
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (var, previous) in self.0.drain(..).rev() {
+                // SAFETY: every test in this module that reads or writes these
+                // process-global variables holds `ENV_LOCK` for the full scope.
+                unsafe {
+                    match previous {
+                        Some(value) => std::env::set_var(var, value),
+                        None => std::env::remove_var(var),
+                    }
+                }
+            }
+        }
+    }
+
+    fn with_env_overrides<F: FnOnce()>(overrides: &[(&'static str, Option<&OsStr>)], f: F) {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let previous = overrides
+            .iter()
+            .map(|(var, _)| (*var, std::env::var_os(var)))
+            .collect();
+        let _restore = EnvRestore(previous);
+
+        for (var, value) in overrides {
+            // SAFETY: `ENV_LOCK` serializes every test-local access to these
+            // process-global variables, and `EnvRestore` restores them on unwind.
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(var, value),
+                    None => std::env::remove_var(var),
+                }
+            }
+        }
+        f();
+    }
 
     #[test]
     fn cargo_registry_command_uses_core_cache_layout() {
-        assert_eq!(
-            cargo_registry_cache_dir(),
-            crate::core::config::cargo_registry_cache_dir()
-        );
+        with_env_overrides(&[], || {
+            assert_eq!(
+                cargo_registry_cache_dir(),
+                crate::core::config::cargo_registry_cache_dir()
+            );
+        });
     }
 
     /// Process-shared env-var helper. The save fn reads
@@ -247,22 +291,8 @@ mod tests {
     /// below toggle it and must not race each other.
     fn with_skip_env<F: FnOnce()>(set: bool, f: F) {
         let var = "SOLDR_SKIP_CARGO_REGISTRY_SAVE";
-        let prev = std::env::var_os(var);
-        // SAFETY: documented in test-local guard; restored below.
-        unsafe {
-            if set {
-                std::env::set_var(var, "1");
-            } else {
-                std::env::remove_var(var);
-            }
-        }
-        f();
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var(var, v),
-                None => std::env::remove_var(var),
-            }
-        }
+        let value = set.then_some(OsStr::new("1"));
+        with_env_overrides(&[(var, value)], f);
     }
 
     /// `--output` suppresses the `SOLDR_SKIP_CARGO_REGISTRY_SAVE` skip:
@@ -305,13 +335,11 @@ mod tests {
     #[test]
     fn default_path_still_respects_soldr_skip_env() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        // Redirect zccache's cache root into the tempdir so the test
-        // does not touch the real home directory if the save WERE to
-        // run (it should not, per the env var).
-        let prev_cache_dir = std::env::var_os("ZCCACHE_CACHE_DIR");
-        unsafe { std::env::set_var("ZCCACHE_CACHE_DIR", tmp.path()) };
-
-        with_skip_env(true, || {
+        let overrides = [
+            ("ZCCACHE_CACHE_DIR", Some(tmp.path().as_os_str())),
+            ("SOLDR_SKIP_CARGO_REGISTRY_SAVE", Some(OsStr::new("1"))),
+        ];
+        with_env_overrides(&overrides, || {
             let _ = cmd_cargo_registry_save("noop-key", None, None);
             // The skip path returns before touching the disk, so no
             // archive should appear anywhere under the redirected root.
@@ -322,13 +350,20 @@ mod tests {
                 "skip path must not write any .gz archive; found: {stray:?}"
             );
         });
+    }
 
-        unsafe {
-            match prev_cache_dir {
-                Some(v) => std::env::set_var("ZCCACHE_CACHE_DIR", v),
-                None => std::env::remove_var("ZCCACHE_CACHE_DIR"),
-            }
-        }
+    #[test]
+    fn env_overrides_restore_after_panic() {
+        let var = "ZCCACHE_TEST_CARGO_REGISTRY_ENV_RESTORE";
+        let before = std::env::var_os(var);
+        let result = std::panic::catch_unwind(|| {
+            with_env_overrides(&[(var, Some(OsStr::new("panic-sentinel")))], || {
+                panic!("exercise unwind restoration");
+            });
+        });
+
+        assert!(result.is_err());
+        assert_eq!(std::env::var_os(var), before);
     }
 
     /// Shallow recursive walk for tests — avoid adding a `walkdir` dep
