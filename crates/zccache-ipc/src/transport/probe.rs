@@ -111,6 +111,14 @@ fn backend_handle_probe_response(
     daemon.to_proto().encode(&mut payload).map_err(|err| {
         IpcError::Endpoint(format!("BackendHandle identity encode failed: {err}"))
     })?;
+    let legacy_exe_sha256 =
+        running_process::broker::backend_lifecycle::identity::sha256_file(&daemon.exe_path)
+            .map_err(|err| {
+                IpcError::Endpoint(format!("BackendHandle identity hash failed: {err}"))
+            })?;
+    payload.push(0x1a); // field 3, length-delimited (legacy exe_sha256)
+    payload.push(32); // fixed digest length, encoded as a one-byte varint
+    payload.extend_from_slice(&legacy_exe_sha256);
 
     Ok(Frame {
         envelope_version: 1,
@@ -149,4 +157,53 @@ where
     writer.write_all(&body).await?;
     writer.flush().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use prost::Message;
+    use running_process::broker::protocol::Endpoint;
+
+    use super::*;
+
+    /// The daemon identity shape decoded by brokers released before BLAKE3.
+    #[derive(Clone, PartialEq, Message)]
+    struct LegacyDaemonProcess {
+        #[prost(uint32, tag = "1")]
+        pid: u32,
+        #[prost(string, tag = "2")]
+        exe_path: String,
+        #[prost(bytes = "vec", tag = "3")]
+        exe_sha256: Vec<u8>,
+    }
+
+    #[test]
+    fn probe_reply_dual_writes_legacy_sha256_identity() {
+        let daemon =
+            running_process::broker::protocol_v2::backend_handle::DaemonProcess::current_process(
+                Endpoint {
+                    namespace_id: "zccache-ipc-test".to_owned(),
+                    path: "zccache-ipc-test.sock".to_owned(),
+                },
+                None,
+            )
+            .expect("current daemon identity");
+        let nonce = vec![0xa5; 32];
+        let request = running_process::broker::protocol::Frame {
+            payload: nonce.clone(),
+            ..Default::default()
+        };
+        let reply = backend_handle_probe_response(&request, &daemon).expect("probe response");
+        assert_eq!(&reply.payload[..32], nonce.as_slice());
+        let legacy = LegacyDaemonProcess::decode(&reply.payload[32..])
+            .expect("stable broker decodes probe identity");
+
+        assert_eq!(legacy.exe_sha256.len(), 32);
+        assert_eq!(
+            legacy.exe_sha256,
+            running_process::broker::backend_lifecycle::identity::sha256_file(&daemon.exe_path)
+                .expect("sha256 executable")
+                .to_vec()
+        );
+    }
 }
