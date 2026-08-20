@@ -2,6 +2,19 @@
 
 use super::*;
 
+pub(super) fn publish_and_materialize_staged_link(
+    state: &SharedState,
+    plan: &StagedCompilePlan,
+    key: &str,
+    metadata: ArtifactIndex,
+    sources: &[NormalizedPath],
+) -> std::io::Result<bool> {
+    let publication = publish_artifact_paths_observed(state, key, metadata, sources);
+    let salvage_reason = publication.as_ref().err().map(|reason| reason.id());
+    materialize_link_plan_observed(state, plan, salvage_reason)?;
+    Ok(publication.is_ok())
+}
+
 pub(super) fn record_staged_publication_failure(state: &SharedState, reason: StagedPublishFailure) {
     use crate::daemon::staged_stats::{StagedCounter, StagedFailure};
     state

@@ -2,6 +2,28 @@
 
 use super::*;
 
+pub(super) fn with_link_warning(result: Response, warning: Option<String>) -> Response {
+    match (result, warning) {
+        (
+            Response::LinkResult {
+                exit_code,
+                stdout,
+                stderr,
+                cached,
+                ..
+            },
+            warning @ Some(_),
+        ) => Response::LinkResult {
+            exit_code,
+            stdout,
+            stderr,
+            cached,
+            warning,
+        },
+        (result, _) => result,
+    }
+}
+
 /// Run a tool directly (passthrough) and return a LinkResult response.
 ///
 /// `tmp_dir` is where the synthesized Windows response file lands when the

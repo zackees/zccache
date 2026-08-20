@@ -796,3 +796,33 @@ Issue: https://github.com/zackees/zccache/issues/1417
 - GREEN: only `PreDispatch` failures recover; send/receive/wedge outcomes are
   terminal after delivery becomes ambiguous. A responsive daemon is preserved
   without replaying the current request.
+
+# #1025 restore current C++ performance gates
+
+Issue: https://github.com/zackees/zccache/issues/1025
+
+- [x] Add a focused regression proving cached response-file expansion is not
+  deep-cloned again while preparing effective compile arguments.
+- [x] Preserve response-file mutation invalidation and nested dependency checks.
+- [x] Attribute the current compiler-driver cold-link gap from hosted miss profiles.
+- [x] Implement only measured zccache-owned hot-path reductions without changing APIs.
+- [ ] Run focused correctness, unchanged performance gates, review, merge, and close.
+
+## Review
+
+- RED: hosted Perf Guard run 32395073944 reports single-file response-file warm
+  at 1.417x versus sccache (1.50x required) and compiler-driver cold at 0.819x
+  versus bare clang++ (0.85x required).
+- Source trace: response-file hits clone the cached ~283-string expansion, then
+  `effective_compile_args` deep-clones that vector again before request-cache
+  lookup even when no path-remap flags are injected.
+- Driver-link attribution: hosted attempts spent 7.6–8.1 ms discovering the
+  tool/input hashes and another ~4.6 ms outside the compiler and named phases.
+- GREEN: effective argument preparation now consumes the cached expansion and
+  moves its string buffers through unchanged when no maps are inserted. Top-level
+  and nested response-file mutation regressions remain green.
+- GREEN: cold non-archive links prepare their staged output plan and read-only
+  side-effect snapshot alongside hash discovery. The compiler still starts only
+  after a proven cache miss, and warm metadata-cache hits retain the existing path.
+- Native diagnostic: driver-link unaccounted time fell from ~22 ms to ~9 ms;
+  warm driver hits remained ~3 ms. Hosted Linux remains the timing authority.

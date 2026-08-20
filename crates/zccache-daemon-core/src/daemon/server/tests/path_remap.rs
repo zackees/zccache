@@ -37,7 +37,7 @@ fn dylint_remap_is_injected_after_the_inner_rustc() {
     ];
 
     let effective = effective_compile_args(
-        &args,
+        args.clone(),
         Path::new("/tmp/dylint-driver"),
         &root_path,
         Some(&root),
@@ -65,7 +65,7 @@ fn injects_macro_prefix_map_for_clang() {
     let args = vec!["-c".to_string(), "src/main.cc".to_string()];
 
     let effective = effective_compile_args(
-        &args,
+        args.clone(),
         Path::new("/usr/bin/clang++"),
         &root_path,
         Some(&root),
@@ -91,7 +91,7 @@ fn injects_debug_prefix_map_for_clang() {
     let args = vec!["-c".to_string(), "src/main.cc".to_string()];
 
     let effective = effective_compile_args(
-        &args,
+        args.clone(),
         Path::new("/usr/bin/clang++"),
         &root_path,
         Some(&root),
@@ -114,7 +114,7 @@ fn injects_macro_prefix_map_for_gcc() {
     let args = vec!["-c".to_string(), "src/main.cc".to_string()];
 
     let effective = effective_compile_args(
-        &args,
+        args.clone(),
         Path::new("/usr/bin/g++"),
         &root_path,
         Some(&root),
@@ -146,7 +146,7 @@ fn does_not_inject_redundant_macro_prefix_map_for_clang() {
     ];
 
     let effective = effective_compile_args(
-        &args,
+        args.clone(),
         Path::new("/usr/bin/clang++"),
         &root_path,
         Some(&root),
@@ -178,7 +178,7 @@ fn does_not_inject_for_msvc() {
     let args = vec!["/c".to_string(), "src\\main.cpp".to_string()];
 
     let effective = effective_compile_args(
-        &args,
+        args.clone(),
         Path::new("cl.exe"),
         &root_path,
         Some(&root),
@@ -213,7 +213,7 @@ fn injects_remap_path_prefix_for_rustc() {
     ];
 
     let effective = effective_compile_args(
-        &args,
+        args.clone(),
         Path::new("rustc"),
         &root_path,
         Some(&root),
