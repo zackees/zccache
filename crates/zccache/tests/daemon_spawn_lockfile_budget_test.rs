@@ -27,6 +27,7 @@ use zccache::fscache::{Confidence, FileMetadata, MetadataCache};
 
 const LOCKFILE_BUDGET: Duration = Duration::from_secs(8);
 const HARD_CAP: Duration = Duration::from_secs(9);
+const TEST_DAEMON_NAMESPACE: &str = "lockfile-budget";
 
 const METADATA_MIN_BYTES: u64 = 100 * 1024 * 1024;
 const ARTIFACT_INDEX_ENTRIES: usize = 10_000;
@@ -37,40 +38,47 @@ fn daemon_writes_lockfile_within_budget_with_large_persisted_state() {
     let daemon_bin = env!("CARGO_BIN_EXE_zccache-daemon");
     let tmp = tempfile::tempdir().expect("create tempdir");
     let cache_dir = NormalizedPath::new(tmp.path().join("cache"));
-    std::fs::create_dir_all(cache_dir.as_path()).expect("create cache dir");
-    install_large_persisted_state(&cache_dir);
+    let effective_cache_dir = config::effective_cache_root_from_top_level(&cache_dir);
+    let daemon_state_dir = config::daemon_state_dir_from_cache_dir_with_namespace(
+        &effective_cache_dir,
+        Some(TEST_DAEMON_NAMESPACE.to_owned()),
+    );
+    std::fs::create_dir_all(daemon_state_dir.as_path()).expect("create daemon state dir");
+    install_large_persisted_state(&daemon_state_dir);
 
-    let metadata_path = config::metadata_path_from_cache_dir(&cache_dir);
+    let metadata_path = daemon_state_dir.join("metadata.bin");
     assert!(
         metadata_path.as_path().metadata().unwrap().len() >= METADATA_MIN_BYTES,
         "metadata fixture must remain large enough to catch sync reads"
     );
     assert_eq!(
-        ArtifactStore::open(config::index_path_from_cache_dir(&cache_dir).as_path())
+        ArtifactStore::open(daemon_state_dir.join("index.bin").as_path())
             .unwrap()
             .len(),
         ARTIFACT_INDEX_ENTRIES,
         "artifact index fixture must remain populated"
     );
     assert_eq!(
-        SystemIncludeCache::load_from_disk(
-            config::system_includes_cache_path_from_cache_dir(&cache_dir).as_path(),
-        )
-        .unwrap()
-        .len(),
+        SystemIncludeCache::load_from_disk(daemon_state_dir.join("system_includes.bin").as_path(),)
+            .unwrap()
+            .len(),
         SYSTEM_INCLUDE_ENTRIES,
         "system include fixture must remain populated"
     );
 
     let endpoint = zccache::ipc::unique_test_endpoint();
-    let lockfile = lock_file_path_for_cache_dir(cache_dir.as_path());
+    let lockfile = lock_file_path_for_cache_dir(cache_dir.as_path(), TEST_DAEMON_NAMESPACE);
     let _ = std::fs::remove_file(lockfile.as_path());
 
     let spawn_at = Instant::now();
     let mut child = Command::new(daemon_bin)
         .args(["--foreground", "--endpoint", &endpoint])
         .env("ZCCACHE_CACHE_DIR", cache_dir.as_path())
-        .env_remove("ZCCACHE_DAEMON_NAMESPACE")
+        .env("ZCCACHE_DAEMON_STATE_DIR", daemon_state_dir.as_path())
+        // Development binaries synthesize a hash namespace when this is
+        // absent. Supply an explicit isolated identity so the parent and
+        // daemon agree on the readiness lockfile (#1404).
+        .env("ZCCACHE_DAEMON_NAMESPACE", TEST_DAEMON_NAMESPACE)
         .env_remove("ZCCACHE_COLOCATE")
         .env("ZCCACHE_NO_UNLOCK", "1")
         .stdin(Stdio::null())
@@ -162,14 +170,14 @@ fn lockfile_window_has_no_synchronous_persisted_state_loads() {
     assert_no_sync_loads("daemon bind-to-lockfile", startup_window);
 }
 
-fn install_large_persisted_state(cache_dir: &NormalizedPath) {
-    write_large_metadata_snapshot(cache_dir);
-    write_artifact_index(cache_dir);
-    write_system_includes_snapshot(cache_dir);
-    write_compiler_hash_placeholder(cache_dir);
+fn install_large_persisted_state(daemon_state_dir: &NormalizedPath) {
+    write_large_metadata_snapshot(daemon_state_dir);
+    write_artifact_index(daemon_state_dir);
+    write_system_includes_snapshot(daemon_state_dir);
+    write_compiler_hash_placeholder(daemon_state_dir);
 }
 
-fn write_large_metadata_snapshot(cache_dir: &NormalizedPath) {
+fn write_large_metadata_snapshot(daemon_state_dir: &NormalizedPath) {
     let metadata = MetadataCache::new();
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
     for i in 0..256 {
@@ -185,7 +193,7 @@ fn write_large_metadata_snapshot(cache_dir: &NormalizedPath) {
         );
     }
 
-    let path = config::metadata_path_from_cache_dir(cache_dir);
+    let path = daemon_state_dir.join("metadata.bin");
     metadata.save_to_disk(path.as_path()).unwrap();
 
     // The public writer keeps snapshots compact. Pad the real metadata file so
@@ -198,8 +206,8 @@ fn write_large_metadata_snapshot(cache_dir: &NormalizedPath) {
     file.set_len(METADATA_MIN_BYTES).unwrap();
 }
 
-fn write_artifact_index(cache_dir: &NormalizedPath) {
-    let index_path = config::index_path_from_cache_dir(cache_dir);
+fn write_artifact_index(daemon_state_dir: &NormalizedPath) {
+    let index_path = daemon_state_dir.join("index.bin");
     let store = ArtifactStore::open_empty(index_path.as_path());
     let stdout = Arc::new(Vec::new());
     let stderr = Arc::new(Vec::new());
@@ -218,8 +226,8 @@ fn write_artifact_index(cache_dir: &NormalizedPath) {
     store.flush().unwrap();
 }
 
-fn write_system_includes_snapshot(cache_dir: &NormalizedPath) {
-    let compiler_dir = cache_dir.join("fixture-compilers");
+fn write_system_includes_snapshot(daemon_state_dir: &NormalizedPath) {
+    let compiler_dir = daemon_state_dir.join("fixture-compilers");
     std::fs::create_dir_all(compiler_dir.as_path()).unwrap();
 
     let mut cache = SystemIncludeCache::new();
@@ -236,12 +244,12 @@ fn write_system_includes_snapshot(cache_dir: &NormalizedPath) {
     }
 
     cache
-        .save_to_disk(config::system_includes_cache_path_from_cache_dir(cache_dir).as_path())
+        .save_to_disk(daemon_state_dir.join("system_includes.bin").as_path())
         .unwrap();
 }
 
-fn write_compiler_hash_placeholder(cache_dir: &NormalizedPath) {
-    let path = config::compiler_hash_cache_path_from_cache_dir(cache_dir);
+fn write_compiler_hash_placeholder(daemon_state_dir: &NormalizedPath) {
+    let path = daemon_state_dir.join("compiler_hash.bin");
     let mut file = std::fs::File::create(path.as_path()).unwrap();
     for i in 0..100 {
         writeln!(file, "compiler-hash-fixture-entry-{i:03}").unwrap();
@@ -249,13 +257,13 @@ fn write_compiler_hash_placeholder(cache_dir: &NormalizedPath) {
     file.flush().unwrap();
 }
 
-fn lock_file_path_for_cache_dir(cache_dir: &Path) -> PathBuf {
+fn lock_file_path_for_cache_dir(cache_dir: &Path, namespace: &str) -> PathBuf {
     let prev_cache_dir = std::env::var_os("ZCCACHE_CACHE_DIR");
     let prev_namespace = std::env::var_os("ZCCACHE_DAEMON_NAMESPACE");
     let prev_colocate = std::env::var_os("ZCCACHE_COLOCATE");
     unsafe {
         std::env::set_var("ZCCACHE_CACHE_DIR", cache_dir);
-        std::env::remove_var("ZCCACHE_DAEMON_NAMESPACE");
+        std::env::set_var("ZCCACHE_DAEMON_NAMESPACE", namespace);
         std::env::remove_var("ZCCACHE_COLOCATE");
     }
     let lockfile = zccache::ipc::lock_file_path().as_path().to_path_buf();
