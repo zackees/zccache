@@ -643,3 +643,19 @@ Issue: https://github.com/zackees/zccache/issues/1402
   policy, and formatting plus whitespace checks are clean.
 - Repo hygiene: the pre-existing CLI runtime tests moved to `runtime/tests.rs`,
   leaving the production lifecycle module at 771 lines.
+
+# #1422 bound Tokio Console integration startup realistically
+
+Issue: https://github.com/zackees/zccache/issues/1422
+
+- [x] Capture the hosted RED and compare it with recent green duration evidence.
+- [x] Keep daemon startup waits bounded while allowing loaded-runner variance.
+- [ ] Run the focused test, review gate, hosted Integration rerun, merge, and close.
+
+## Review
+
+- RED: hosted Integration run 32388028985 timed out after 10 seconds while the
+  dormant daemon had logged startup and resolved cache state but had not yet
+  emitted its listening marker.
+- GREEN target: use one named 30-second startup budget for dormant and active
+  daemon log readiness while retaining the short negative TCP probe.

@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[test]
 fn tokio_console_is_compiled_in_but_dormant_until_profile_start() {
     let daemon_bin = env!("CARGO_BIN_EXE_zccache-daemon");
@@ -32,7 +34,7 @@ fn tokio_console_is_compiled_in_but_dormant_until_profile_start() {
     wait_for_log(
         &dormant.log_file,
         "listening for connections",
-        Duration::from_secs(10),
+        DAEMON_STARTUP_TIMEOUT,
     )
     .expect("dormant daemon should reach listening state");
 
@@ -72,7 +74,7 @@ fn tokio_console_is_compiled_in_but_dormant_until_profile_start() {
             "tokio-console daemon profile enabled",
             "tokio-console daemon profile requested but unavailable",
         ],
-        Duration::from_secs(10),
+        DAEMON_STARTUP_TIMEOUT,
     )
     .expect("profile daemon should log tokio-console activation or unavailable warning");
 
