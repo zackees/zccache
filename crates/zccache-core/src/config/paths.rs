@@ -121,13 +121,19 @@ pub fn symbols_cache_dir() -> NormalizedPath {
 /// Returns the symbols-archive cache under an explicit cache root.
 #[must_use]
 pub fn symbols_cache_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
-    daemon_state_dir_from_cache_dir(cache_dir).join("symbols")
+    // Downloaded symbol bundles are CLI-owned shared payloads, not mutable
+    // daemon state. Keep them stable across development daemon namespaces so
+    // rebuilding the binary does not orphan or redownload the same archive.
+    cache_dir.join("symbols")
 }
 
 /// Returns the cargo registry archive cache under an explicit cache root.
 #[must_use]
 pub fn cargo_registry_cache_dir_from_cache_dir(cache_dir: &NormalizedPath) -> NormalizedPath {
-    daemon_state_dir_from_cache_dir(cache_dir).join("cargo-registry")
+    // The public `cargo-registry` contract is relative to `cache-root` and the
+    // archives are shared action/CLI payloads. A daemon namespace must not
+    // move them below daemon-state/<namespace> (#1400).
+    cache_dir.join("cargo-registry")
 }
 
 /// Returns the path to the artifact index database.

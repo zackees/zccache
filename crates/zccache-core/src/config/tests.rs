@@ -276,8 +276,14 @@ fn log_dir_is_under_cache_dir() {
 fn cargo_registry_cache_dir_is_under_cache_dir() {
     let (_temp, cache) = temp_cache_dir();
     let dir = cargo_registry_cache_dir_from_cache_dir(&cache);
-    assert!(dir.ends_with("cargo-registry"));
-    assert!(dir.starts_with(&cache));
+    assert_eq!(dir, cache.join("cargo-registry"));
+}
+
+#[test]
+fn symbols_cache_dir_is_stable_under_cache_dir() {
+    let (_temp, cache) = temp_cache_dir();
+    let dir = symbols_cache_dir_from_cache_dir(&cache);
+    assert_eq!(dir, cache.join("symbols"));
 }
 
 #[test]

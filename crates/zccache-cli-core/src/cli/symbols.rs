@@ -761,11 +761,55 @@ mod tests {
     }
 
     /// The archive cache lives under the configured `default_cache_dir`
-    /// (overridable via `ZCCACHE_CACHE_DIR`), never `$TMPDIR`. This is the
-    /// invariant that the `ban_unrooted_tempdir` dylint enforces from the
-    /// other direction.
+    /// (overridable via `ZCCACHE_CACHE_DIR`), never daemon-owned state or
+    /// `$TMPDIR`. This is the invariant that the `ban_unrooted_tempdir`
+    /// dylint enforces from the other direction.
     #[test]
     fn archive_cache_path_is_under_zccache_cache_dir() {
+        const CHILD_MARKER: &str = "ZCCACHE_TEST_SYMBOLS_NAMESPACE_CHILD";
+
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            let path =
+                archive_cache_path("1.6.0", "x86_64-pc-windows-msvc", ArchiveKind::WindowsPdb);
+            let expected_leaf = "zccache-v1.6.0-x86_64-pc-windows-msvc-debug.zip";
+            assert_eq!(
+                path.file_name().and_then(|s| s.to_str()),
+                Some(expected_leaf)
+            );
+
+            let expected_dir = crate::core::config::default_cache_dir().join("symbols");
+            assert_eq!(
+                path.parent(),
+                Some(expected_dir.as_path()),
+                "shared symbols cache must not move below daemon-owned state",
+            );
+            return;
+        }
+
+        // `ZCCACHE_DAEMON_NAMESPACE` is process-global and other tests run in
+        // parallel, so exercise the real environment-dependent resolver in an
+        // isolated copy of this test process.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let output = std::process::Command::new(std::env::current_exe().expect("current test exe"))
+            .arg("cli::symbols::tests::archive_cache_path_is_under_zccache_cache_dir")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(CHILD_MARKER, "1")
+            .env("ZCCACHE_CACHE_DIR", temp.path())
+            .env("ZCCACHE_DAEMON_NAMESPACE", "dev-binary-hash")
+            .env_remove("ZCCACHE_COLOCATE")
+            .output()
+            .expect("spawn isolated symbols cache path test");
+        assert!(
+            output.status.success(),
+            "isolated symbols cache path test failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[test]
+    fn archive_cache_path_has_expected_filename() {
         let path = archive_cache_path("1.6.0", "x86_64-pc-windows-msvc", ArchiveKind::WindowsPdb);
         let expected_leaf = "zccache-v1.6.0-x86_64-pc-windows-msvc-debug.zip";
         assert_eq!(
@@ -778,14 +822,6 @@ mod tests {
             .and_then(|p| p.file_name())
             .and_then(|s| s.to_str());
         assert_eq!(parent, Some("symbols"));
-
-        let expected_root = crate::core::config::daemon_state_dir();
-        assert!(
-            path.starts_with(expected_root.as_path()),
-            "cache path {} should be under default_cache_dir {}",
-            path.display(),
-            expected_root.as_path().display(),
-        );
     }
 
     /// #1172: `prefix.join(&inner)` trusted archive-controlled path
