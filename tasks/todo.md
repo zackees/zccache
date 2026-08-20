@@ -518,6 +518,30 @@ Issue: https://github.com/zackees/zccache/issues/1411
   fixture and its parent results alias read-only during verification.
 - clud-review: clean (one reviewer).
 
+# #864 soldr-driven release cross-compilation
+
+Issue: https://github.com/zackees/zccache/issues/864
+
+- [x] Inventory release/build matrices, composite-action artifact contracts,
+  and the soldr reference workflow.
+- [x] Add RED workflow contracts for a bare-cargo bootstrap and the first
+  Ubuntu cross target family.
+- [x] Stage bootstrap zccache and drive the selected cross jobs through soldr
+  zig/xwin without changing artifact shapes.
+- [x] Add or verify release dry-run behavior and publish suppression.
+- [x] Run workflow contracts, focused build validation, formatting, and the
+  review gate.
+- [ ] Push, run the hosted dry-run, merge, and close #864.
+
+## Review
+
+- RED: focused workflow contracts rejected the pre-migration native-runner
+  matrix because it had no wrapper-free bootstrap artifact and invoked
+  platform toolchains directly instead of soldr's zig/xwin drivers.
+- GREEN: 30 release-manifest/toolchain contracts pass; all edited YAML parses,
+  Ruff E/F and whitespace checks pass, and the repository review gate is clean
+  with one reviewer (15 focused release/workflow contracts).
+
 # #1414 isolate session-reaping lifecycle events
 
 - [x] Add a RED regression proving a state-owned reap event follows the daemon's explicit cache root, not the process-global environment.

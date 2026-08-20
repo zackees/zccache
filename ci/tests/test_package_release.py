@@ -173,13 +173,14 @@ def test_build_target_stamps_release_binaries_with_python_footer() -> None:
     assert 'soldr cargo build --release --target "$HOST_TARGET"' not in action
 
 
-def test_build_target_compiles_release_artifacts_without_compile_cache() -> None:
+def test_build_target_selects_native_or_cross_release_cache_policy() -> None:
     action = _repo_text(".github/actions/build-target/action.yml")
     compact_action = " ".join(action.replace("\\\n", "").split())
 
     assert "cargo_build=(soldr --no-cache cargo build)" in action
     assert 'cargo_build=(rustup run "$RELEASE_RUST_TOOLCHAIN" cargo build)' in action
-    assert "Release artifacts are distribution outputs" in action
+    assert "Native distribution builds keep the historical no-cache path" in action
+    assert "cross lanes deliberately use the current-worktree bootstrap zccache" in action
     assert (
         '"${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache '
         "--features zccache-bin,fingerprint-bin "
@@ -190,13 +191,49 @@ def test_build_target_compiles_release_artifacts_without_compile_cache() -> None
     assert '"${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-cli --features python --lib' in action
 
 
-def test_release_workflow_disables_soldr_for_artifact_builds() -> None:
+def test_release_workflow_uses_bootstrap_zccache_for_cross_builds() -> None:
     release_workflow = _repo_text(".github/workflows/release-auto.yml")
     action = _repo_text(".github/actions/build-target/action.yml")
 
-    assert 'use_soldr: "false"' in release_workflow
+    assert "bootstrap-zccache:" in release_workflow
+    assert "RUSTC_WRAPPER: \"\"" in release_workflow
+    assert "unset RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER" in release_workflow
+    assert "name: bootstrap-zccache" in release_workflow
+    assert "needs: [preflight, bootstrap-zccache]" in release_workflow
+    assert "SOLDR_RUSTC_WRAPPER=" in release_workflow
+    assert 'use_soldr: "true"' in release_workflow
+    assert "runs-on: ubuntu-24.04" in release_workflow
+    assert "runs-on: ${{ matrix.os }}" not in release_workflow
     assert "if: inputs.use_soldr == 'true'" in action
     assert "Use setup-soldr for setup and caching" in action
+
+
+def test_cross_build_driver_uses_soldr_cache_and_preserves_artifact_contracts() -> None:
+    action = _repo_text(".github/actions/build-target/action.yml")
+    release_workflow = _repo_text(".github/workflows/release-auto.yml")
+    build_workflow = _repo_text(".github/workflows/build.yml")
+
+    assert "cross_driver:" in action
+    assert "soldr cargo zigbuild" in action
+    assert "soldr cargo xwin build" in action
+    assert "soldr --no-cache cargo zigbuild" not in action
+    assert "soldr --no-cache cargo xwin" not in action
+    assert "verify-compile-cache:" in action
+    assert "Bootstrap zccache is not first on PATH" in action
+    for workflow in (release_workflow, build_workflow):
+        assert "cross_driver: zigbuild" in workflow
+        assert "cross_driver: xwin" in workflow
+        assert "name: binaries-${{ matrix.target }}" in workflow
+        assert "name: release-${{ matrix.target }}" in workflow
+
+
+def test_release_workflow_dry_run_builds_without_publishing() -> None:
+    workflow = _repo_text(".github/workflows/release-auto.yml")
+
+    assert "dry-run:" in workflow
+    assert "type: boolean" in workflow
+    assert "if: inputs['dry-run'] != true" in workflow
+    assert workflow.count("inputs['dry-run'] != true") >= 3
 
 
 def test_build_target_forces_msvc_host_toolchain_for_windows() -> None:
@@ -264,18 +301,16 @@ def test_build_target_uses_target_specific_binary_size_floor() -> None:
     assert "minimum $min_size" in action
 
 
-def test_release_and_build_workflows_disable_cook_cache_for_cross_targets() -> None:
+def test_release_and_build_workflows_disable_cook_cache_for_linux_cross_matrix() -> None:
     cross_targets = {
         "x86_64-unknown-linux-musl",
         "aarch64-unknown-linux-musl",
-        "aarch64-unknown-linux-gnu",
-        "aarch64-apple-darwin",
-        "aarch64-pc-windows-msvc",
-    }
-    native_targets = {
         "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
         "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
         "x86_64-pc-windows-msvc",
+        "aarch64-pc-windows-msvc",
     }
 
     build_workflow = _repo_text(".github/workflows/build.yml")
@@ -299,15 +334,6 @@ def test_release_and_build_workflows_disable_cook_cache_for_cross_targets() -> N
 
         windows_arm_block = _matrix_entry(workflow, "aarch64-pc-windows-msvc")
         assert 'require_debug_sidecars: "false"' in windows_arm_block
-
-    for target in native_targets:
-        block = _matrix_entry(build_workflow, target)
-        assert "prebuild_deps: none" not in block
-        assert "clear_target_after_setup:" not in block
-
-        release_block = _matrix_entry(release_workflow, target)
-        assert "prebuild_deps: none" not in release_block
-        assert 'clear_target_after_setup: "true"' in release_block
 
 
 def test_release_workflow_restart_attempts_resume_existing_github_release() -> None:
