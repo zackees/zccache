@@ -12,6 +12,8 @@ follows the question each half answers:
   Version-rooted self-materialization, content verification before execution
   (#1172), the deploy directory's permissions, spawn-log allocation and GC, and
   the spawn itself.
+- **`tests.rs`** — lifecycle decision, recovery, drain, and identity-gate tests
+  kept separate so the production module remains below the source-size ceiling.
 
 `mod.rs` re-exports `deploy`'s public items, so the paths callers use are
 unchanged.

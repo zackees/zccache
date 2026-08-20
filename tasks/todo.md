@@ -638,5 +638,8 @@ Issue: https://github.com/zackees/zccache/issues/1402
 - GREEN: published running-process 4.10.5 reads the pre-4.10.4 identity fixture;
   the compatibility decoder still reads historical protobuf field 3, while the
   response succeeds with a deliberately nonexistent `exe_path`.
-- GREEN: affected IPC, CLI, and daemon targets compile and pass warnings-denied
-  Clippy with `test-support`; formatting and whitespace checks are clean.
+- GREEN: all 53 IPC tests and the feature-complete 259-case CLI suite pass;
+  affected IPC, CLI, and daemon all-target Clippy passes under the repository
+  policy, and formatting plus whitespace checks are clean.
+- Repo hygiene: the pre-existing CLI runtime tests moved to `runtime/tests.rs`,
+  leaving the production lifecycle module at 771 lines.
