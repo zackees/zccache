@@ -439,16 +439,52 @@ fn emit_insecure_socket_dir(endpoint: &str, outcome: &str, error: Option<&std::i
 pub async fn connect(endpoint: &str) -> Result<IpcConnection, IpcError> {
     let native = crate::platform::ipc::Endpoint::from_native(endpoint);
     let timeout = native.connect_timeout();
-    let stream =
-        tokio::time::timeout(timeout, crate::platform::ipc::connect(&native))
-            .await
-            .map_err(|_| {
-                IpcError::Io(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            format!("cannot connect to daemon at {endpoint}: connect timed out after {timeout:?}"),
-        ))
-            })??;
+    let stream = tokio::time::timeout(timeout, crate::platform::ipc::connect(&native))
+        .await
+        .map_err(|_| {
+            contextualize_connect_error(
+                endpoint,
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("connect timed out after {timeout:?}"),
+                ),
+            )
+        })?
+        .map_err(|error| contextualize_connect_error(endpoint, error))?;
     Ok(IpcConnection::from_stream(stream))
+}
+
+fn contextualize_connect_error(endpoint: &str, error: std::io::Error) -> IpcError {
+    let kind = error.kind();
+    IpcError::Io(std::io::Error::new(
+        kind,
+        EndpointConnectError {
+            endpoint: endpoint.to_owned(),
+            source: error,
+        },
+    ))
+}
+
+#[derive(Debug)]
+struct EndpointConnectError {
+    endpoint: String,
+    source: std::io::Error,
+}
+
+impl std::fmt::Display for EndpointConnectError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "cannot connect to daemon at {}: {}",
+            self.endpoint, self.source
+        )
+    }
+}
+
+impl std::error::Error for EndpointConnectError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
 }
 
 /// Generate a unique test endpoint name.

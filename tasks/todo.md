@@ -854,3 +854,24 @@ Issue: https://github.com/zackees/zccache/issues/1432
 - GREEN: the eight-test staged-publication module and the independent ownership
   regression pass. The real ignored `perf_rust_workspace_link` fixture records
   one cold miss followed by five cached warm trials (21 ms median locally).
+
+# #1435 preserve endpoint context on immediate connection failures
+
+Issue: https://github.com/zackees/zccache/issues/1435
+
+- [x] Reproduce the rust-plan session-stats JSON regression locally.
+- [x] Add shared transport coverage for an immediate connection failure.
+- [x] Preserve the endpoint and original I/O error kind at the transport boundary.
+- [ ] Run focused correctness, review, merge, and close #1435.
+
+## Review
+
+- RED: `rust_plan_session_stats_lookup_errors_surface_in_json` loses the endpoint
+  after session stats moved to the shared full-family roundtrip in #1425.
+- Root cause: transport timeouts add endpoint context, but immediate platform
+  connection errors are propagated raw.
+- GREEN: the shared transport adds endpoint context while preserving the I/O
+  kind and original error source; all 58 IPC tests and the unchanged rust-plan
+  JSON regression pass.
+- clud-review: clean after retaining the original platform error in the source
+  chain (one reviewer).
