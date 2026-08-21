@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import os
+import re
 import zipfile
 from pathlib import Path
 
@@ -155,4 +156,55 @@ def test_command_check_registries_writes_registry_completion_outputs(
     assert output_path.read_text(encoding="utf-8") == (
         "pypi_complete=true\n"
         "crates_complete=true\n"
+    )
+
+
+def _release_workflow_job(job: str) -> str:
+    """Return the YAML text of one top-level job in `release-auto.yml`.
+
+    Text slicing rather than PyYAML: the repo does not carry a YAML runtime
+    dependency for CI tests, and the surrounding tests parse workflows the
+    same way.
+    """
+    path = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "release-auto.yml"
+    text = path.read_text(encoding="utf-8")
+    marker = f"\n  {job}:\n"
+    start = text.index(marker) + 1
+    match = re.search(r"\n  [a-z][a-z0-9-]*:\n", text[start + 1 :])
+    end = len(text) if match is None else start + 1 + match.start()
+    return text[start:end]
+
+
+def test_wheel_smoke_matrix_covers_exactly_the_built_wheel_families() -> None:
+    """Every smoke leg must name a wheel family `build-wheels` produces.
+
+    A leg for an unbuilt family (once: musllinux) can never pass, because
+    `pip --no-index --find-links dist/wheels` finds no candidate. That failure
+    is not cosmetic: `publish-pypi` needs `test-wheels`, so a stray leg blocks
+    every release. A missing leg is the opposite hole -- a family ships to
+    PyPI without ever being installed.
+    """
+    smoke_tags = set(
+        re.findall(r"^\s+wheel_plat:\s*(\S+)$", _release_workflow_job("test-wheels"), re.M)
+    )
+    built_tags = {
+        ".".join(plat_tags) for plat_tags in release_workflow.PLATFORMS.values()
+    }
+
+    assert smoke_tags == built_tags, (
+        "release-auto.yml test-wheels matrix drifted from "
+        f"ci/release_workflow.py PLATFORMS: unbuilt legs {sorted(smoke_tags - built_tags)}, "
+        f"untested wheels {sorted(built_tags - smoke_tags)}"
+    )
+
+
+def test_wheel_smoke_matrix_has_one_leg_per_wheel() -> None:
+    """No duplicate legs: a repeated family hides a missing one behind a
+    passing job name, which is how the musllinux legs stayed unnoticed."""
+    smoke_tags = re.findall(
+        r"^\s+wheel_plat:\s*(\S+)$", _release_workflow_job("test-wheels"), re.M
+    )
+
+    assert len(smoke_tags) == len(set(smoke_tags)), (
+        f"duplicate wheel_plat legs in release-auto.yml test-wheels: {sorted(smoke_tags)}"
     )

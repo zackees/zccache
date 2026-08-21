@@ -210,6 +210,14 @@ def test_release_workflow_uses_bootstrap_zccache_for_cross_builds() -> None:
 
 
 def test_release_tests_exec_cached_in_every_native_wheel_family() -> None:
+    """Every shipped wheel family runs the exec_cached smoke on real hardware.
+
+    Which families exist is asserted against `ci/release_workflow.PLATFORMS`
+    by `test_release_workflow.py`; this test owns the runner-OS coverage and
+    the publish gating. musllinux is deliberately absent: `build-wheels` does
+    not produce one (the musl build legs set `include_python: "false"`), so an
+    alpine smoke leg could only ever fail and block the release.
+    """
     workflow = _repo_text(".github/workflows/release-auto.yml")
 
     assert "test-wheels:" in workflow
@@ -222,10 +230,9 @@ def test_release_tests_exec_cached_in_every_native_wheel_family() -> None:
         "windows-11-arm",
     ):
         assert f"- os: {platform}" in workflow
-    assert "label: linux-musl-x86_64" in workflow
-    assert "label: linux-musl-aarch64" in workflow
     assert "python ci/test_exec_cached_wheel.py" in workflow
-    assert "python:3.13-alpine" in workflow
+    assert "musllinux" not in workflow
+    assert "alpine" not in workflow
     assert "needs: [preflight, publish-release, build-wheels, test-wheels]" in workflow
     assert "needs.test-wheels.result == 'success'" in workflow
 
