@@ -5,8 +5,8 @@
 //! - Cache persistence across session boundaries
 //! - Thundering herd (concurrent same-file compilation from multiple sessions)
 //!
-//! Run all:    soldr cargo test -p zccache-daemon --test adversarial_corner_cases -- --nocapture
-//! Run single: soldr cargo test -p zccache-daemon --test adversarial_corner_cases -- <test_name> --nocapture
+//! Run all:    soldr cargo test -p zccache --test adversarial_corner_cases -- --nocapture
+//! Run single: soldr cargo test -p zccache --test adversarial_corner_cases -- <test_name> --nocapture
 
 #![allow(
     clippy::unwrap_used,

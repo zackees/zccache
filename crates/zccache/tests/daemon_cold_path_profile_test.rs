@@ -8,7 +8,7 @@
 //!   - Artifact persistence overhead
 //!   - Scaling behavior (10, 50, 100, 200 files)
 //!
-//! Run with: soldr cargo test -p zccache-daemon --test cold_path_profile_test -- --nocapture --ignored
+//! Run with: soldr cargo test -p zccache --test cold_path_profile_test -- --nocapture --ignored
 
 #![allow(
     clippy::unwrap_used,

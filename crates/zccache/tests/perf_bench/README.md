@@ -7,7 +7,7 @@ are discovered by cargo under the same `perf_bench_test` test binary, so the
 canonical invocation pattern still works:
 
 ```
-soldr cargo test -p zccache-daemon --test perf_bench_test -- \
+soldr cargo test -p zccache --test perf_bench_test -- \
     perf_c_zccache_vs_bare --nocapture --ignored
 ```
 

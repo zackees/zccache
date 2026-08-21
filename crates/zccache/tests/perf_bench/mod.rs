@@ -5,7 +5,7 @@
 //! under the same `perf_bench_test` test binary (the thin shim
 //! `tests/perf_bench_test.rs` re-exports this module).
 //!
-//! Run with: soldr cargo test -p zccache-daemon --test perf_bench_test -- --nocapture --ignored
+//! Run with: soldr cargo test -p zccache --test perf_bench_test -- --nocapture --ignored
 
 // Shared helpers (constants, timing, daemon boot, tool finders, etc.)
 #![allow(

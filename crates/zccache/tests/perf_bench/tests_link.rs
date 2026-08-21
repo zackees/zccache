@@ -28,7 +28,7 @@ use super::link::{
 use super::common::clean_link_outputs;
 
 #[tokio::test]
-#[ignore] // Run explicitly: soldr cargo test -p zccache-daemon --test perf_bench_test -- perf_c_archive_link --nocapture --ignored
+#[ignore] // Run explicitly: soldr cargo test -p zccache --test perf_bench_test -- perf_c_archive_link --nocapture --ignored
 async fn perf_c_archive_link() {
     let archiver = match find_archiver() {
         Some(path) => path,
@@ -85,7 +85,7 @@ async fn perf_c_archive_link() {
 }
 
 #[tokio::test]
-#[ignore] // Run explicitly: soldr cargo test -p zccache-daemon --test perf_bench_test -- perf_cpp_driver_link --nocapture --ignored
+#[ignore] // Run explicitly: soldr cargo test -p zccache --test perf_bench_test -- perf_cpp_driver_link --nocapture --ignored
 async fn perf_cpp_driver_link() {
     let compiler_path = match zccache::test_support::find_clang() {
         Some(path) => path,
@@ -156,7 +156,7 @@ async fn perf_cpp_driver_link() {
 }
 
 #[tokio::test]
-#[ignore] // Run explicitly: soldr cargo test -p zccache-daemon --test perf_bench_test -- perf_emcc_link --nocapture --ignored
+#[ignore] // Run explicitly: soldr cargo test -p zccache --test perf_bench_test -- perf_emcc_link --nocapture --ignored
 async fn perf_emcc_link() {
     let compiler_path = match find_empp() {
         Some(path) => path,
@@ -251,7 +251,7 @@ async fn perf_emcc_link() {
 }
 
 #[tokio::test]
-#[ignore] // Run explicitly: soldr cargo test -p zccache-daemon --test perf_bench_test -- perf_rust_workspace_link --nocapture --ignored
+#[ignore] // Run explicitly: soldr cargo test -p zccache --test perf_bench_test -- perf_rust_workspace_link --nocapture --ignored
 async fn perf_rust_workspace_link() {
     let rustc_path = match zccache::test_support::find_rustc() {
         Some(path) => path,

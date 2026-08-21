@@ -7,7 +7,7 @@
 //!
 //! See [`perf_bench/README.md`](perf_bench/README.md) for the module map.
 //!
-//! Run with: soldr cargo test -p zccache-daemon --test perf_bench_test -- --nocapture --ignored
+//! Run with: soldr cargo test -p zccache --test perf_bench_test -- --nocapture --ignored
 
 #![allow(
     clippy::unwrap_used,

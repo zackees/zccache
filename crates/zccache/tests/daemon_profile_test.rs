@@ -1,6 +1,6 @@
 //! Profiling stress test: drives many compilations and reports phase-level timing breakdown.
 //!
-//! Run with: soldr cargo test -p zccache-daemon --test profile_test -- --nocapture --ignored
+//! Run with: soldr cargo test -p zccache --test profile_test -- --nocapture --ignored
 
 #![allow(
     clippy::unwrap_used,
@@ -212,7 +212,7 @@ fn print_profile(profile: &zccache::daemon::ProfileSnapshot) {
 
 /// Profiling stress test: cold + warm compilations with phase-level timing breakdown.
 ///
-/// Run with: soldr cargo test -p zccache-daemon --test profile_test -- --nocapture --ignored
+/// Run with: soldr cargo test -p zccache --test profile_test -- --nocapture --ignored
 #[tokio::test]
 #[ignore]
 async fn profile_compile_phases() {

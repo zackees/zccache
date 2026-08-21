@@ -20,7 +20,7 @@ use super::common::{
 };
 
 #[tokio::test]
-#[ignore] // Run explicitly: soldr cargo test -p zccache-daemon --test perf_bench_test -- perf_c_zccache_vs_bare --nocapture --ignored
+#[ignore] // Run explicitly: soldr cargo test -p zccache --test perf_bench_test -- perf_c_zccache_vs_bare --nocapture --ignored
 async fn perf_c_zccache_vs_bare() {
     zccache::test_support::ensure_clang_tool_chain_on_path();
     let compiler_path = match zccache::test_support::find_on_path("clang") {

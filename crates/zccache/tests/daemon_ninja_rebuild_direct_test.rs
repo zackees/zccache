@@ -16,8 +16,8 @@
 //! Each invocation goes through the real CLI binary in drop-in wrapper mode,
 //! exercising the full `CompileEphemeral` single-roundtrip IPC path.
 //!
-//! Run all:    soldr cargo test -p zccache-daemon --test daemon_ninja_rebuild_direct_test -- --nocapture
-//! Run stress: soldr cargo test -p zccache-daemon --test daemon_ninja_rebuild_direct_test -- --ignored --nocapture
+//! Run all:    soldr cargo test -p zccache --test daemon_ninja_rebuild_direct_test -- --nocapture
+//! Run stress: soldr cargo test -p zccache --test daemon_ninja_rebuild_direct_test -- --ignored --nocapture
 
 #![allow(
     clippy::unwrap_used,
@@ -726,7 +726,7 @@ async fn ninja_clear_forces_cold_rebuild() {
 
 /// Stress test: 250 files with heavy bodies, cold + warm + warm.
 ///
-/// Run:  soldr cargo test -p zccache-daemon --test daemon_ninja_rebuild_direct_test -- stress_large_project --ignored --nocapture
+/// Run:  soldr cargo test -p zccache --test daemon_ninja_rebuild_direct_test -- stress_large_project --ignored --nocapture
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore]
 async fn stress_large_project_cold_warm() {
@@ -817,7 +817,7 @@ async fn stress_large_project_cold_warm() {
 /// Benchmark: 100 files, medium bodies, cold + 5 warm iterations.
 /// Prints per-iteration timing for trend analysis.
 ///
-/// Run:  soldr cargo test -p zccache-daemon --test daemon_ninja_rebuild_direct_test -- bench_medium --ignored --nocapture
+/// Run:  soldr cargo test -p zccache --test daemon_ninja_rebuild_direct_test -- bench_medium --ignored --nocapture
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore]
 async fn bench_medium_project_warm_iterations() {

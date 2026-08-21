@@ -6,8 +6,8 @@
 //! (touch/delete-recreate with same content), independent file isolation,
 //! include-path differentiation, and preprocessor-flag differentiation.
 //!
-//! Run all:    soldr cargo test -p zccache-daemon --test adversarial_mutations -- --nocapture
-//! Run single: soldr cargo test -p zccache-daemon --test adversarial_mutations -- <test_name> --nocapture
+//! Run all:    soldr cargo test -p zccache --test adversarial_mutations -- --nocapture
+//! Run single: soldr cargo test -p zccache --test adversarial_mutations -- <test_name> --nocapture
 
 #![allow(
     clippy::unwrap_used,

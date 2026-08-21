@@ -6,7 +6,7 @@
 //! next daemon process loads it back and reports `dep_graph_persisted = true`
 //! over the IPC `Status` response.
 //!
-//! Run: soldr cargo test -p zccache-daemon --test depgraph_persistence_test -- --ignored --nocapture
+//! Run: soldr cargo test -p zccache --test depgraph_persistence_test -- --ignored --nocapture
 
 #![allow(
     clippy::unwrap_used,

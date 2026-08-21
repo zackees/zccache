@@ -827,6 +827,25 @@ Issue: https://github.com/zackees/zccache/issues/1025
 - Native diagnostic: driver-link unaccounted time fell from ~22 ms to ~9 ms;
   warm driver hits remained ~3 ms. Hosted Linux remains the timing authority.
 
+# #1428 fix stale test package commands
+
+Issue: https://github.com/zackees/zccache/issues/1428
+
+- [x] Inventory all 38 stale `zccache-daemon` package examples under `crates/zccache/tests`.
+- [x] Replace them with the current `zccache` package name without changing daemon binaries.
+- [x] Prove the corrected focused command resolves.
+- [ ] Merge and close #1428.
+
+## Review
+
+- RED: `soldr cargo test -p zccache-daemon ...` fails because the package was
+  renamed to `zccache` by #365.
+- GREEN target: every affected test comment and README uses `-p zccache`, and
+  the focused performance-test target compiles through the documented command.
+- GREEN: Cargo metadata resolves `zccache` and its `perf_bench_test` target;
+  the corrected no-run command reaches dependency compilation instead of
+  failing package selection, and the stale package string inventory is empty.
+
 # #1432 restore immediate Rust workspace-link cache hits
 
 Issue: https://github.com/zackees/zccache/issues/1432

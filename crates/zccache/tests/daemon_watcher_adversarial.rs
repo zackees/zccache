@@ -6,8 +6,8 @@
 //! covered: header edits, touch-without-change, deep directories, ephemeral
 //! file creation/deletion, and multi-session cache sharing.
 //!
-//! Run all:    soldr cargo test -p zccache-daemon --test watcher_adversarial -- --nocapture
-//! Run single: soldr cargo test -p zccache-daemon --test watcher_adversarial -- <test_name> --nocapture
+//! Run all:    soldr cargo test -p zccache --test watcher_adversarial -- --nocapture
+//! Run single: soldr cargo test -p zccache --test watcher_adversarial -- <test_name> --nocapture
 
 #![allow(
     clippy::unwrap_used,

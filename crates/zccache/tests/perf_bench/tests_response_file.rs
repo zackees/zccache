@@ -24,7 +24,7 @@ use super::response_file::{
 };
 
 #[tokio::test]
-#[ignore] // Run explicitly: soldr cargo test -p zccache-daemon --test perf_bench_test -- perf_response_file --nocapture --ignored
+#[ignore] // Run explicitly: soldr cargo test -p zccache --test perf_bench_test -- perf_response_file --nocapture --ignored
 async fn perf_response_file() {
     let compiler_path = match zccache::test_support::find_clang() {
         Some(p) => p,
