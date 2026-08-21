@@ -930,3 +930,54 @@ Issue: https://github.com/zackees/zccache/issues/1433
   where the already-derived 32-byte key stores its opaque result bytes.
 - Failure policy: daemon/protocol/store failures surface to Python and never
   invoke an uncached fallback behind the caller's back.
+
+# #1439 stop ARM64 xwin C++ mode from breaking ring
+
+- [x] Reproduce RED: auto-release run 32446557448 fails in `ring` with
+  `void *` init and `-Wc++11-narrowing` errors caused by global `CFLAGS=-TP`.
+- [x] Root-cause: the language mode can only be chosen package-scoped, inside
+  `mimalloc-pprof`'s own build script. `CFLAGS` reaches every `cc-rs` build
+  script, so no consumer-side flag can fix this without breaking `ring`.
+- [x] Confirm upstream already fixed it: zackees/mimalloc-pprof#224 selects
+  clang's C11 `stdatomic` for `aarch64-pc-windows-msvc` and bumped to 0.9.3 --
+  but 0.9.3 was never tagged, so crates.io still tops out at 0.9.2.
+- [x] Drop the global `-TP` injection from the xwin ARM64 lane.
+- [x] Raise the workspace `mimalloc-pprof` floor to 0.9.3.
+- [x] Add contract tests: no global `/TP`/`-TP` in the action, and a locked
+  `mimalloc-pprof` >= 0.9.3.
+- [x] Upstream docs PR zackees/mimalloc-pprof#228 records the cross-compilation
+  contract in both READMEs.
+- [x] Merge #228, tag `v0.9.3`, and let auto-release publish to crates.io.
+- [ ] `cargo update -p mimalloc-pprof` here, run validation, open/merge the
+  zccache PR, close #1439, resync `main`.
+
+## Review
+
+The `-TP` in the ARM64 xwin lane was never the fix -- it was a consumer trying
+to make a package-scoped decision with a process-global lever. `CFLAGS` is
+read by every `cc-rs` build script in the graph, so forcing mimalloc's C++
+atomics path also compiled `ring`'s C sources as C++ (`void *` initialisation
+errors, `-Wc++11-narrowing`) and stopped the 1.13.6 release before it
+published anything.
+
+The choice belongs in the crate that owns the source. zackees/mimalloc-pprof
+had already made it (#224: select clang's C11 `stdatomic` for
+`aarch64-pc-windows-msvc`, released as 0.9.3 in the changelog) -- but `v0.9.3`
+was never tagged, so crates.io topped out at 0.9.2 and no downstream lockfile
+could reach the fix. Tagging it was the actual unblock.
+
+Landed here:
+
+- deleted the `Configure xwin ARM64 C compatibility` step, so no global
+  language-mode flag reaches any `cc-rs` dependency
+- raised the workspace `mimalloc-pprof` floor to `0.9.3` and relocked
+- two contract tests: the action carries no `/TP`/`-TP` and declares no such
+  step; the locked `mimalloc-pprof` is >= 0.9.3
+
+mimalloc stays the global allocator on every shipped target, Windows ARM64
+included. Upstream `build (aarch64-pc-windows-msvc)` passed on #228, which is
+the direct evidence that 0.9.3 cross-compiles for that target.
+
+Upstream follow-through: #227 (my duplicate) closed against #223; #228 merged,
+documenting the cross-compilation contract and why `CFLAGS=-TP` is the wrong
+lever, in both the crate and repo READMEs.
