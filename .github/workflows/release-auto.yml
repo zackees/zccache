@@ -490,7 +490,13 @@ jobs:
           if-no-files-found: error
 
   test-wheels:
-    name: Test PyPI Wheel (${{ matrix.os }})
+    # One leg per wheel family actually produced by `build-wheels`, keyed by
+    # the platform tag so the coverage invariant is mechanical. A leg for a
+    # family that is not built can never pass: `pip --no-index --find-links`
+    # finds no candidate, so the whole release is blocked before publish.
+    # Keep this list in lockstep with `PLATFORMS` in `ci/release_workflow.py`
+    # -- `test_release_workflow.py` enforces set equality.
+    name: Test PyPI Wheel (${{ matrix.wheel_plat }})
     runs-on: ${{ matrix.os }}
     needs: [preflight, build-wheels]
     if: needs.preflight.outputs.pypi_complete != 'true'
@@ -499,23 +505,17 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            label: linux-x86_64
+            wheel_plat: manylinux_2_17_x86_64
           - os: ubuntu-24.04-arm
-            label: linux-aarch64
+            wheel_plat: manylinux_2_17_aarch64
           - os: macos-15-intel
-            label: macos-x86_64
+            wheel_plat: macosx_10_12_x86_64
           - os: macos-14
-            label: macos-aarch64
+            wheel_plat: macosx_11_0_arm64
           - os: windows-latest
-            label: windows-x86_64
+            wheel_plat: win_amd64
           - os: windows-11-arm
-            label: windows-aarch64
-          - os: ubuntu-latest
-            label: linux-musl-x86_64
-            alpine: true
-          - os: ubuntu-24.04-arm
-            label: linux-musl-aarch64
-            alpine: true
+            wheel_plat: win_arm64
     steps:
       - uses: actions/checkout@v6
         with:
@@ -531,20 +531,9 @@ jobs:
           path: dist/wheels
 
       - name: Install and test the platform wheel
-        if: matrix.alpine != true
         run: |
           python -m pip install --disable-pip-version-check --no-index --find-links dist/wheels "zccache==${{ needs.preflight.outputs.version }}"
           python ci/test_exec_cached_wheel.py
-
-      - name: Install and test the musllinux wheel
-        if: matrix.alpine == true
-        shell: bash
-        run: |
-          docker run --rm \
-            --volume "$GITHUB_WORKSPACE:/workspace" \
-            --workdir /workspace \
-            python:3.13-alpine \
-            sh -ec 'python -m pip install --disable-pip-version-check --no-index --find-links dist/wheels "zccache==${{ needs.preflight.outputs.version }}" && python ci/test_exec_cached_wheel.py'
 
   publish-pypi:
     name: Publish PyPI
