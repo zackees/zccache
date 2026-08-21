@@ -4,6 +4,50 @@ use super::*;
 use zccache_protocol::{wire_prost::zccache_v1 as pb, DecodedWireMessage, Request, Response};
 
 #[tokio::test]
+async fn connect_error_includes_endpoint_context() {
+    let endpoint = unique_test_endpoint();
+
+    let error = match connect(&endpoint).await {
+        Ok(_) => panic!("an unbound endpoint must reject the connection"),
+        Err(error) => error,
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("cannot connect to daemon at {endpoint}")),
+        "connection error should identify its endpoint: {error}"
+    );
+}
+
+#[test]
+fn connect_error_context_preserves_io_error_kind() {
+    let error = contextualize_connect_error(
+        "test-endpoint",
+        std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "test refusal"),
+    );
+
+    match error {
+        IpcError::Io(error) => {
+            assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
+            assert!(error.to_string().contains("test-endpoint"));
+            assert!(error.to_string().contains("test refusal"));
+            let context = error
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<EndpointConnectError>())
+                .expect("I/O error should retain its endpoint context");
+            assert_eq!(context.endpoint, "test-endpoint");
+            let source = std::error::Error::source(&error)
+                .and_then(|source| source.downcast_ref::<std::io::Error>())
+                .expect("original I/O error should remain in the error source chain");
+            assert_eq!(source.kind(), std::io::ErrorKind::ConnectionRefused);
+            assert_eq!(source.to_string(), "test refusal");
+        }
+        other => panic!("expected I/O error, got {other}"),
+    }
+}
+
+#[tokio::test]
 async fn test_ping_pong() {
     let endpoint = unique_test_endpoint();
     let mut listener = IpcListener::bind(&endpoint).unwrap();

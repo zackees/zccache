@@ -341,9 +341,9 @@ fn store_rustc_outputs(
     }
     stats.artifact_meta_build_ns = t_artifact_meta_build.elapsed().as_nanos() as u64;
 
-    // Rustc outputs are already on disk under target/. Persist them before
-    // publishing the in-memory artifact so depgraph hits never point at a
-    // key whose payload files have not landed yet.
+    // Rustc outputs already exist in the private compile plan. Publish those
+    // owned paths provisionally for immediate in-process hits; the detached
+    // publisher later replaces that entry with the durable generation/index.
     let t_artifact_index_build = Instant::now();
     let mut meta = ArtifactIndex::new(
         output_names,
@@ -369,6 +369,24 @@ fn store_rustc_outputs(
 
     if let Some(staged_plan) = staged_persist_plan {
         let _pending = pending_writes::register(&state.pending_cache_writes, artifact_key_hex);
+        let staged_plan = Arc::new(staged_plan);
+        // The publisher and provisional hit need the same metadata, paths,
+        // and private-plan lifetime. These clones deliberately split that
+        // ownership before the publisher moves its copies into the task.
+        let provisional = CachedArtifact::from_provisional_staged(
+            meta.clone(),
+            source_paths.clone(),
+            Arc::clone(&staged_plan),
+        );
+        let provisional = match state.artifacts.entry(artifact_key_hex.to_string()) {
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                // Retain one identity clone so a failed older publisher can
+                // remove only its own provisional row, never a replacement.
+                entry.insert(provisional.clone());
+                Some(provisional)
+            }
+            dashmap::mapref::entry::Entry::Occupied(_) => None,
+        };
         let state_ref = Arc::clone(state_arc);
         let state_for_publish = Arc::clone(state_arc);
         let artifact_dir = state.artifact_dir.clone();
@@ -377,6 +395,7 @@ fn store_rustc_outputs(
         let completion_key = artifact_key_hex.to_string();
         let t_persist_enqueue = Instant::now();
         tokio::spawn(async move {
+            let plan_for_publish = Arc::clone(&staged_plan);
             #[expect(
                 clippy::expect_used,
                 reason = "persist_semaphore is owned by ServerState for the daemon's lifetime; AcquireError here would be a logic bug"
@@ -388,7 +407,7 @@ fn store_rustc_outputs(
                 .expect("persist_semaphore is owned by ServerState and never closed");
             let published = tokio::task::spawn_blocking(move || {
                 let _publication_guard = publication_guard;
-                let _staged_plan = staged_plan;
+                let _staged_plan = plan_for_publish;
                 let snapshot =
                     persist_artifact_paths_with_stats(&artifact_dir, &key_hex, &source_paths)?;
                 commit_rustc_artifact_index(
@@ -454,13 +473,28 @@ fn store_rustc_outputs(
                             );
                         }
                     }
-                    state_ref.artifacts.remove(&completion_key);
+                    if reason == StagedPublishFailure::Conflict {
+                        state_ref.artifacts.remove(&completion_key);
+                    } else if let Some(provisional) = provisional.as_ref() {
+                        remove_provisional_artifact(
+                            state_ref.as_ref(),
+                            &completion_key,
+                            provisional,
+                        );
+                    }
                 }
                 Err(error) => {
                     tracing::warn!(%error, key = %completion_key, "staged artifact persistence task failed to join");
-                    state_ref.artifacts.remove(&completion_key);
+                    if let Some(provisional) = provisional.as_ref() {
+                        remove_provisional_artifact(
+                            state_ref.as_ref(),
+                            &completion_key,
+                            provisional,
+                        );
+                    }
                 }
             }
+            drop(staged_plan);
             pending_writes::complete(&state_ref.pending_cache_writes, &completion_key);
         });
         stats.persist_enqueue_ns = t_persist_enqueue.elapsed().as_nanos() as u64;
@@ -559,6 +593,16 @@ fn store_rustc_outputs(
     });
     stats.artifact_insert_stats_ns = t_artifact_insert_stats.elapsed().as_nanos() as u64;
     drop(publication_guard);
+}
+
+fn remove_provisional_artifact(state: &SharedState, key_hex: &str, provisional: &CachedArtifact) {
+    if let dashmap::mapref::entry::Entry::Occupied(entry) =
+        state.artifacts.entry(key_hex.to_owned())
+    {
+        if entry.get().same_instance(provisional) {
+            entry.remove();
+        }
+    }
 }
 
 fn commit_rustc_artifact_index(
@@ -889,95 +933,5 @@ fn store_single_output(
 }
 
 #[cfg(test)]
-mod staged_publication_diagnostic_tests {
-    use super::{
-        commit_rustc_artifact_index, enqueue_persisted_index,
-        preserve_staged_depfile_for_persistence, truncate_staged_publication_error, ArtifactIndex,
-        ArtifactVerdict, PersistOutcome, MAX_STAGED_PUBLICATION_ERROR_CHARS,
-    };
-    use crate::core::NormalizedPath;
-    use std::sync::Arc;
-
-    #[tokio::test]
-    async fn rustc_index_commit_merges_verdicts_for_shared_artifact_bytes() {
-        let temp = tempfile::tempdir().unwrap();
-        let server = crate::daemon::server::tests::bind_isolated_server(temp.path());
-        let mut meta = ArtifactIndex::new(vec![], vec![], vec![], vec![], 0);
-        for key in ["plain", "dylint"] {
-            meta.rustc_verdicts.insert(
-                key.to_string(),
-                ArtifactVerdict {
-                    stdout: Arc::new(Vec::new()),
-                    stderr: Arc::new(key.as_bytes().to_vec()),
-                    exit_code: 0,
-                },
-            );
-            commit_rustc_artifact_index(&server.state, "artifact".to_string(), meta, false)
-                .unwrap();
-            meta = ArtifactIndex::new(vec![], vec![], vec![], vec![], 0);
-        }
-        let cached = server.state.artifacts.get("artifact").unwrap();
-        assert_eq!(cached.meta.rustc_verdicts.len(), 2);
-    }
-
-    #[test]
-    fn failed_async_persist_never_enqueues_an_index_insert() {
-        let (index_tx, mut index_rx) = tokio::sync::mpsc::unbounded_channel();
-        let queued = enqueue_persisted_index(
-            PersistOutcome::failed(),
-            &index_tx,
-            "failed-persist-key".to_string(),
-        );
-
-        assert!(!queued, "a failed persist must not be indexed");
-        assert!(
-            index_rx.try_recv().is_err(),
-            "failed persist must not send IndexWriterCommand::Insert"
-        );
-    }
-
-    #[test]
-    fn publication_error_is_bounded_without_splitting_utf8() {
-        let error = format!("{}suffix", "å".repeat(MAX_STAGED_PUBLICATION_ERROR_CHARS));
-        let rendered = truncate_staged_publication_error(&error);
-
-        assert!(rendered.ends_with('…'));
-        assert_eq!(
-            rendered.trim_end_matches('…').chars().count(),
-            MAX_STAGED_PUBLICATION_ERROR_CHARS
-        );
-    }
-
-    #[test]
-    fn staged_depfile_persistence_source_survives_plan_cleanup() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let private_root = temp.path().join("private");
-        let staged_depfile: NormalizedPath = private_root.join("output-1").into();
-        let requested_depfile: NormalizedPath = temp.path().join("build/custom.mk").into();
-        std::fs::create_dir_all(&private_root).expect("private root");
-        std::fs::write(&staged_depfile, b"staged object: logical source\n")
-            .expect("staged depfile");
-        let mut capture = Some((staged_depfile, b"staged object: logical source\n".to_vec()));
-
-        let guard = preserve_staged_depfile_for_persistence(
-            &mut capture,
-            Some(&requested_depfile),
-            temp.path(),
-        )
-        .expect("preserve depfile")
-        .expect("persistence guard");
-        let preserved = capture.as_ref().expect("capture").0.clone();
-        assert_eq!(
-            preserved.file_name().and_then(|name| name.to_str()),
-            Some("custom.mk")
-        );
-
-        std::fs::remove_dir_all(&private_root).expect("simulate staged-plan cleanup");
-        assert_eq!(
-            std::fs::read(&preserved).expect("preserved canonical bytes"),
-            b"staged object: logical source\n"
-        );
-        drop(guard);
-        assert!(!preserved.as_path().exists());
-    }
-}
+#[path = "miss_store_tests.rs"]
+mod staged_publication_diagnostic_tests;

@@ -27,8 +27,8 @@ use super::cached_hit::{
 };
 use super::error_cache::maybe_store_rustc_error_artifact;
 use super::hit_branches::{
-    try_depgraph_cached_hit, try_fast_hit, try_request_cache_hit, DepgraphHitProbe, FastHitProbe,
-    RequestCacheHitProbe,
+    await_artifact_publication_if_needed, try_depgraph_cached_hit, try_fast_hit,
+    try_request_cache_hit, DepgraphHitProbe, FastHitProbe, RequestCacheHitProbe,
 };
 use super::request::CompileRequest;
 
@@ -709,12 +709,6 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 );
                 if let crate::depgraph::CacheVerdict::Hit { artifact_key } = compat_verdict {
                     let artifact_key_hex = artifact_key.hash().to_hex();
-                    pending_writes::await_pending(
-                        &state.pending_cache_writes,
-                        &artifact_key_hex,
-                        pending_writes::PENDING_WAIT_TIMEOUT,
-                    )
-                    .await;
                     let requested_outputs = rustc_expected_output_paths(
                         rustc_args,
                         output_path.as_path(),
@@ -730,6 +724,13 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                         crate::depgraph::compute_rustc_verdict_key(&artifact_key_hex, dylint_hash)
                             .hash()
                             .to_hex();
+                    await_artifact_publication_if_needed(
+                        state,
+                        &artifact_key_hex,
+                        Some(&verdict_key_hex),
+                        Some(&requested_outputs),
+                    )
+                    .await;
                     if let Ok(response) =
                         materialize_cached_compile_hit(CachedHitMaterializeRequest {
                             state,

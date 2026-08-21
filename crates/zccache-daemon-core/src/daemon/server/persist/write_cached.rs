@@ -486,6 +486,49 @@ where
     P: AsRef<Path> + Sync,
     R: AsRef<Path>,
 {
+    write_payloads_par_with_mtime_floor_and_policies_observed_impl(
+        targets,
+        payloads,
+        floor_paths,
+        policies,
+        false,
+    )
+}
+
+/// Deliver compiler-private staged paths before their durable cache blobs have
+/// been registered. These sources are protected by the payload guard's plan
+/// ownership, so they must use independent reflink/copy delivery and must not
+/// pass through durable-blob digest verification or hardlink registration.
+pub(in crate::daemon::server) fn write_provisional_payloads_par_with_mtime_floor_observed<P, R>(
+    targets: &[P],
+    payloads: &[CachedPayload],
+    floor_paths: &[R],
+    policies: &[crate::compiler::DeliveryPolicy],
+) -> MaterializationResult<StagedMaterializationStats>
+where
+    P: AsRef<Path> + Sync,
+    R: AsRef<Path>,
+{
+    write_payloads_par_with_mtime_floor_and_policies_observed_impl(
+        targets,
+        payloads,
+        floor_paths,
+        policies,
+        true,
+    )
+}
+
+fn write_payloads_par_with_mtime_floor_and_policies_observed_impl<P, R>(
+    targets: &[P],
+    payloads: &[CachedPayload],
+    floor_paths: &[R],
+    policies: &[crate::compiler::DeliveryPolicy],
+    provisional_staged: bool,
+) -> MaterializationResult<StagedMaterializationStats>
+where
+    P: AsRef<Path> + Sync,
+    R: AsRef<Path>,
+{
     if targets.len() != payloads.len() {
         return Err(payload_count_mismatch(targets.len(), payloads.len()));
     }
@@ -510,7 +553,22 @@ where
             std::fs::create_dir_all(parent)
                 .map_err(|error| destination_write_failure(out, error))?;
         }
-        write_cached_payload_with_policy_stats(out, payload, policy)
+        if provisional_staged {
+            match payload {
+                CachedPayload::File(path) => {
+                    crate::daemon::server::persist::materialize_independent_with_stats(
+                        path.as_path(),
+                        out,
+                    )
+                    .map_err(|error| classify_file_materialization_error(out, path, error))
+                }
+                CachedPayload::Bytes(_) => {
+                    write_cached_payload_with_policy_stats(out, payload, policy)
+                }
+            }
+        } else {
+            write_cached_payload_with_policy_stats(out, payload, policy)
+        }
     };
     let observed = if targets.len() < PAR_WRITE_THRESHOLD {
         let mut observed = StagedMaterializationStats::default();
