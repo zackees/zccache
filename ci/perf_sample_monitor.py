@@ -12,12 +12,21 @@ SAMPLE_CONTAINER_MONITOR_INTERVAL_SECONDS = 10.0
 
 
 def process_names_outside_container(
-    processes: list[tuple[int, str]],
+    processes: list[tuple[int, int, str]],
     container_pids_before: set[int],
     container_pids_after: set[int],
 ) -> list[str]:
     excluded_pids = container_pids_before | container_pids_after
-    return [name for pid, name in processes if pid not in excluded_pids]
+    while True:
+        descendants = {
+            pid
+            for pid, parent_pid, _name in processes
+            if parent_pid in excluded_pids and pid not in excluded_pids
+        }
+        if not descendants:
+            break
+        excluded_pids.update(descendants)
+    return [name for pid, _parent_pid, name in processes if pid not in excluded_pids]
 
 
 def monitor_sample_process(

@@ -465,7 +465,7 @@ def _sample_container_process_ids(container_name: str) -> set[int]:
 def _linux_sample_process_names(container_name: str) -> list[str]:
     container_pids_before = _sample_container_process_ids(container_name)
     host = subprocess.run(
-        ["ps", "-eo", "pid=,comm="],
+        ["ps", "-eo", "pid=,ppid=,comm="],
         capture_output=True,
         text=True,
         check=False,
@@ -475,9 +475,9 @@ def _linux_sample_process_names(container_name: str) -> list[str]:
         raise RuntimeError("host process enumeration failed")
     processes = []
     for line in host.stdout.splitlines():
-        fields = line.strip().split(maxsplit=1)
-        if len(fields) == 2 and fields[0].isdigit():
-            processes.append((int(fields[0]), fields[1]))
+        fields = line.strip().split(maxsplit=2)
+        if len(fields) == 3 and fields[0].isdigit() and fields[1].isdigit():
+            processes.append((int(fields[0]), int(fields[1]), fields[2]))
     container_pids_after = _sample_container_process_ids(container_name)
     return perf_sample_monitor.process_names_outside_container(
         processes, container_pids_before, container_pids_after

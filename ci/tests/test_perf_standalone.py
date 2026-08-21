@@ -398,13 +398,14 @@ def test_sample_monitor_rejects_activity_that_starts_after_launch():
 
 def test_linux_monitor_excludes_the_sample_container_process_tree():
     processes = [
-        (101, "perf_bench_test"),
-        (102, "em++"),
-        (201, "sccache"),
+        (101, 1, "perf_bench_test"),
+        (102, 101, "em++"),
+        (103, 102, "clang"),
+        (201, 1, "sccache"),
     ]
 
     assert perf_sample_monitor.process_names_outside_container(
-        processes, {101}, {101, 102}
+        processes, {101}, {101}
     ) == ["sccache"]
 
 
