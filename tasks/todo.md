@@ -894,3 +894,21 @@ Issue: https://github.com/zackees/zccache/issues/1435
   JSON regression pass.
 - clud-review: clean after retaining the original platform error in the source
   chain (one reviewer).
+
+# #1429 restore coverage llvm-profdata
+
+Issue: https://github.com/zackees/zccache/issues/1429
+
+- [x] Confirm the repeated hosted failure occurs after all unit tests pass.
+- [x] Trace the missing binary to a component installed after solo-cache restore.
+- [x] Opt Coverage out of the incompatible solo toolchain cache.
+- [ ] Merge, observe a successful hosted Coverage run, and close #1429.
+
+## Review
+
+- RED: main runs 32415853396 and 32419543131 report
+  `llvm-tools-preview` current, then fail because `llvm-profdata` is absent.
+- Root cause: setup-soldr documents that components installed after its action
+  are not part of the solo snapshot and explicitly directs such jobs to opt out.
+- GREEN target: a hosted warm Coverage run generates `lcov.info` and reaches a
+  successful Codecov upload without adding LLVM tools to unrelated jobs.
