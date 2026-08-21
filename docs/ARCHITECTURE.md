@@ -23,6 +23,8 @@ failed cache-root audit retain its diagnostic JSONL evidence.
 
 ## Quick Reference
 
+- **Python caller-owned byte caching** → [runtime.md § `exec_cached`](architecture/runtime.md#python-caller-owned-exec_cached)
+
 - **High-level design** → [overview.md](architecture/overview.md)
 - **"How does a cache hit work?"** → [data-flow.md](architecture/data-flow.md)
 - **Nested Dylint driver caching** → [data-flow.md](architecture/data-flow.md#nested-dylint-driver-caching)

@@ -1,10 +1,10 @@
-//! `Request::ExecProbe` / `Request::ExecStore` handlers (issue #838).
+//! `Request::ExecProbe` / `Request::ExecStore` handlers (issue #1433).
 //!
 //! Caller-owned tool caching: the *caller* runs the tool, the daemon only
 //! computes a stable cache key from declared inputs and stores opaque
 //! result bytes. This complements [`handle_generic_tool_exec`](super::handle_exec)
 //! (which spawns the tool inside the daemon) and powers the upcoming PyO3
-//! `zccache.exec` binding for Python build orchestrators that already own
+//! `zccache.exec_cached` binding for Python build orchestrators that already own
 //! their subprocess lifecycle.
 //!
 //! Cache-key composition (domain tag `zccache-exec-probe-v1`):
@@ -13,24 +13,25 @@
 //!   - sorted `(name, value)` declared env pairs
 //!   - opaque `input_extra` bytes
 //!
-//! Slice 1 holds the (key → bytes) map in an in-memory `DashMap` on
-//! `SharedState::exec_cache`. A follow-up slice swaps that to a
-//! [`KvStore`](crate::artifact::kv::KvStore)-backed table for persistence
-//! across daemon restarts.
+//! Results live in the daemon's crash-safe namespaced
+//! [`KvStore`](crate::artifact::KvStore), so a successful store is durable
+//! before acknowledgement and survives daemon restarts.
 
 use std::sync::Arc;
 
 use super::util::hash_file_via_cache;
 use super::SharedState;
+use crate::artifact::Key;
 use crate::core::NormalizedPath;
 use crate::protocol::Response;
 
 /// Domain separation tag for ExecProbe/ExecStore cache keys.
 const EXEC_PROBE_KEY_DOMAIN: &[u8] = b"zccache-exec-probe-v1";
+pub(super) const EXEC_PROBE_NAMESPACE: &str = "exec-probe-v1";
 
 /// Compute the cache key for an ExecProbe / ExecStore call and look it up
-/// in the in-memory exec cache.
-pub(super) fn handle_exec_probe(
+/// in the persistent caller-owned exec cache.
+pub(super) async fn handle_exec_probe(
     state: &Arc<SharedState>,
     name: &str,
     input_files: &[NormalizedPath],
@@ -38,23 +39,37 @@ pub(super) fn handle_exec_probe(
     input_extra: &Arc<Vec<u8>>,
 ) -> Response {
     let _active_request = state.begin_cache_request();
+    let _publication_guard = state.artifact_publication.read().await;
     let cache_key_hex =
         match compose_exec_probe_key(state, name, input_files, input_env, input_extra) {
             Ok(hex) => hex,
             Err(message) => return Response::Error { message },
         };
-    let cached_bytes = state
-        .exec_cache
-        .get(&cache_key_hex)
-        .map(|entry| Arc::clone(entry.value()));
+    let key = match Key::from_hex(&cache_key_hex) {
+        Ok(key) => key,
+        Err(error) => {
+            return Response::Error {
+                message: format!("invalid derived exec cache key: {error}"),
+            };
+        }
+    };
+    let cached_bytes = match state.exec_store.get_async(EXEC_PROBE_NAMESPACE, &key).await {
+        Ok(bytes) => bytes.map(Arc::new),
+        Err(error) => {
+            return Response::Error {
+                message: format!("exec cache read failed for {cache_key_hex}: {error}"),
+            };
+        }
+    };
     Response::ExecProbeResult {
         cache_key_hex,
         cached_bytes,
+        persistent: true,
     }
 }
 
 /// Write opaque result bytes under the caller-supplied cache key. Last-writer-wins.
-pub(super) fn handle_exec_store(
+pub(super) async fn handle_exec_store(
     state: &Arc<SharedState>,
     cache_key_hex: &str,
     result_bytes: &Arc<Vec<u8>>,
@@ -67,10 +82,28 @@ pub(super) fn handle_exec_store(
             ),
         };
     }
-    state
-        .exec_cache
-        .insert(cache_key_hex.to_string(), Arc::clone(result_bytes));
-    Response::ExecStoreAck { stored: true }
+    let key = match Key::from_hex(cache_key_hex) {
+        Ok(key) => key,
+        Err(error) => {
+            return Response::Error {
+                message: format!("invalid cache_key_hex: {error}"),
+            };
+        }
+    };
+    let _publication_guard = state.artifact_publication.read().await;
+    match state
+        .exec_store
+        .put_async(EXEC_PROBE_NAMESPACE, &key, result_bytes.as_slice())
+        .await
+    {
+        Ok(_) => Response::ExecStoreAck {
+            stored: true,
+            persistent: true,
+        },
+        Err(error) => Response::Error {
+            message: format!("exec cache store failed for {cache_key_hex}: {error}"),
+        },
+    }
 }
 
 /// Compose the deterministic blake3 cache key from declared inputs.

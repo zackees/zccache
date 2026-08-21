@@ -508,7 +508,8 @@ pub(super) async fn dispatch_request(
                 &input_files,
                 &input_env,
                 &input_extra,
-            ),
+            )
+            .await,
             None,
         ),
         Request::ExecStore {
@@ -519,7 +520,8 @@ pub(super) async fn dispatch_request(
                 state,
                 &cache_key_hex,
                 &result_bytes,
-            ),
+            )
+            .await,
             None,
         ),
     };

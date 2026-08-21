@@ -738,10 +738,12 @@ mod exhaustive_prost_coverage {
             Response::ExecProbeResult {
                 cache_key_hex: "a".repeat(64),
                 cached_bytes: Some(Arc::new(b"cached".to_vec())),
+                persistent: true,
             },
             Response::ExecProbeResult {
                 cache_key_hex: "b".repeat(64),
                 cached_bytes: None,
+                persistent: true,
             },
             // An empty cached payload is a HIT, not a miss. If `optional`
             // were dropped from the proto field this would decode as
@@ -749,9 +751,16 @@ mod exhaustive_prost_coverage {
             Response::ExecProbeResult {
                 cache_key_hex: "c".repeat(64),
                 cached_bytes: Some(Arc::new(Vec::new())),
+                persistent: true,
             },
-            Response::ExecStoreAck { stored: true },
-            Response::ExecStoreAck { stored: false },
+            Response::ExecStoreAck {
+                stored: true,
+                persistent: true,
+            },
+            Response::ExecStoreAck {
+                stored: false,
+                persistent: true,
+            },
         ]
     }
 

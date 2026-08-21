@@ -13,6 +13,7 @@ python/zccache/
 ├── __init__.py              # public re-exports (see __all__)
 ├── client.py                # ZcCacheClient + DaemonStatus + SessionStats
 ├── downloader.py            # DownloadApi + FetchResult + FetchState
+├── exec_cache.py            # caller-owned `exec_cached` byte results
 ├── fingerprint/             # FingerprintCache + FingerprintManager
 ├── watcher/                 # FileWatcher + DebouncedFileWatcherProcess
 ├── ino.py                   # InoConvertResult + convert_ino
@@ -30,6 +31,7 @@ is a breaking change. New surface lands additively.
 |------------------|------------------------------------------------------------------|
 | `client`         | `ZcCacheClient`, `DaemonStatus`, `SessionStartResult`, `SessionStats`. |
 | `downloader`     | `DownloadApi`, `DownloadHandle`, `FetchResult`, `FetchState`.    |
+| `exec_cache`     | `exec_cached` for daemon-backed caller-owned byte results.       |
 | `fingerprint`    | `FingerprintCache`, `FingerprintManager`, `FingerprintResult`.   |
 | `watcher`        | `FileWatcher`, `DebouncedFileWatcherProcess`, `watch_files`.     |
 | `cpp_lint`       | `cpp_lint`, `LintInput`, `AstQuery`, `IwyuItem`, `ResultItem`, `Summary`, ... (see `cpp_lint/README.md`). |

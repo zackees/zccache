@@ -7,6 +7,7 @@
 
 use crate::core::NormalizedPath;
 use std::path::Path;
+use std::sync::Arc;
 
 use super::{ensure_daemon, resolve_endpoint, run_async};
 
@@ -14,6 +15,97 @@ use super::{ensure_daemon, resolve_endpoint, run_async};
 pub struct SessionStartResponse {
     pub session_id: String,
     pub journal_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecProbeResponse {
+    pub cache_key_hex: String,
+    pub cached_bytes: Option<Vec<u8>>,
+}
+
+/// Probe caller-owned opaque bytes without silently starting or bypassing the
+/// daemon. Library consumers get a clear error when the configured daemon is
+/// unavailable and decide their own fallback policy.
+pub fn client_exec_probe(
+    endpoint: Option<&str>,
+    name: &str,
+    input_files: &[std::path::PathBuf],
+    input_env: &[(String, String)],
+    input_extra: &[u8],
+) -> Result<ExecProbeResponse, String> {
+    let endpoint = resolve_endpoint(endpoint);
+    let request = crate::protocol::Request::ExecProbe {
+        name: name.to_string(),
+        input_files: input_files.iter().map(NormalizedPath::from).collect(),
+        input_env: input_env.to_vec(),
+        input_extra: Arc::new(input_extra.to_vec()),
+    };
+    run_async(async move {
+        match crate::ipc::full_family_roundtrip(&endpoint, &request, None).await {
+            Ok(Some(crate::protocol::Response::ExecProbeResult {
+                cache_key_hex,
+                cached_bytes,
+                persistent: true,
+            })) => Ok(ExecProbeResponse {
+                cache_key_hex,
+                cached_bytes: cached_bytes.map(Arc::unwrap_or_clone),
+            }),
+            Ok(Some(crate::protocol::Response::ExecProbeResult { .. })) => Err(
+                "exec cache daemon does not guarantee durable storage; restart it with this zccache version"
+                    .to_string(),
+            ),
+            Ok(Some(crate::protocol::Response::Error { message })) => Err(message),
+            Ok(None) => Err(format!(
+                "exec cache probe lost connection to daemon at {endpoint}"
+            )),
+            Ok(Some(other)) => Err(format!(
+                "unexpected exec cache probe response from daemon at {endpoint}: {other:?}"
+            )),
+            Err(error) => Err(format!(
+                "exec cache probe could not reach daemon at {endpoint}: {error}"
+            )),
+        }
+    })
+}
+
+/// Persist caller-owned opaque bytes under a key returned by
+/// [`client_exec_probe`]. The daemon acknowledges only after the KV write is
+/// durable.
+pub fn client_exec_store(
+    endpoint: Option<&str>,
+    cache_key_hex: &str,
+    result_bytes: &[u8],
+) -> Result<(), String> {
+    let endpoint = resolve_endpoint(endpoint);
+    let request = crate::protocol::Request::ExecStore {
+        cache_key_hex: cache_key_hex.to_string(),
+        result_bytes: Arc::new(result_bytes.to_vec()),
+    };
+    run_async(async move {
+        match crate::ipc::full_family_roundtrip(&endpoint, &request, None).await {
+            Ok(Some(crate::protocol::Response::ExecStoreAck {
+                stored: true,
+                persistent: true,
+            })) => Ok(()),
+            Ok(Some(crate::protocol::Response::ExecStoreAck { stored: false, .. })) => {
+                Err("daemon declined the exec cache store".to_string())
+            }
+            Ok(Some(crate::protocol::Response::ExecStoreAck { .. })) => Err(
+                "exec cache daemon does not guarantee durable storage; restart it with this zccache version"
+                    .to_string(),
+            ),
+            Ok(Some(crate::protocol::Response::Error { message })) => Err(message),
+            Ok(None) => Err(format!(
+                "exec cache store lost connection to daemon at {endpoint}"
+            )),
+            Ok(Some(other)) => Err(format!(
+                "unexpected exec cache store response from daemon at {endpoint}: {other:?}"
+            )),
+            Err(error) => Err(format!(
+                "exec cache store could not reach daemon at {endpoint}: {error}"
+            )),
+        }
+    })
 }
 
 pub fn client_start(endpoint: Option<&str>) -> Result<(), String> {

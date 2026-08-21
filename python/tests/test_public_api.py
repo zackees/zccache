@@ -25,6 +25,7 @@ def test_top_level_import_exposes_expected_symbols() -> None:
     assert zccache.DownloadApi is DownloadApi
     assert zccache.FetchResult is FetchResult
     assert zccache.FetchState is FetchState
+    assert callable(zccache.exec_cached)
 
 
 def test_top_level_import_exposes_expected_submodules() -> None:

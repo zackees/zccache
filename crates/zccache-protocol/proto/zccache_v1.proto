@@ -434,8 +434,11 @@ message ExecProbeResult {
   // Absent on miss. `optional` is load-bearing: an empty cached result is a
   // legitimate hit, so it must stay distinguishable from "not cached".
   optional bytes cached_bytes = 2;
+  // False is the safe default for daemons predating durable exec caching.
+  bool persistent = 3;
 }
 
 message ExecStoreAck {
   bool stored = 1;
+  bool persistent = 2;
 }

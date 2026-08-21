@@ -203,9 +203,30 @@ def test_release_workflow_uses_bootstrap_zccache_for_cross_builds() -> None:
     assert "SOLDR_RUSTC_WRAPPER=" in release_workflow
     assert 'use_soldr: "true"' in release_workflow
     assert "runs-on: ubuntu-24.04" in release_workflow
-    assert "runs-on: ${{ matrix.os }}" not in release_workflow
+    assert release_workflow.count("runs-on: ${{ matrix.os }}") == 1
     assert "if: inputs.use_soldr == 'true'" in action
     assert "Use setup-soldr for setup and caching" in action
+
+
+def test_release_tests_exec_cached_in_every_native_wheel_family() -> None:
+    workflow = _repo_text(".github/workflows/release-auto.yml")
+
+    assert "test-wheels:" in workflow
+    for platform in (
+        "ubuntu-latest",
+        "ubuntu-24.04-arm",
+        "macos-15-intel",
+        "macos-14",
+        "windows-latest",
+        "windows-11-arm",
+    ):
+        assert f"- os: {platform}" in workflow
+    assert "label: linux-musl-x86_64" in workflow
+    assert "label: linux-musl-aarch64" in workflow
+    assert "python ci/test_exec_cached_wheel.py" in workflow
+    assert "python:3.13-alpine" in workflow
+    assert "needs: [preflight, publish-release, build-wheels, test-wheels]" in workflow
+    assert "needs.test-wheels.result == 'success'" in workflow
 
 
 def test_cross_build_driver_uses_soldr_cache_and_preserves_artifact_contracts() -> None:

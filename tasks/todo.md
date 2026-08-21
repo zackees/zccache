@@ -912,3 +912,21 @@ Issue: https://github.com/zackees/zccache/issues/1429
   are not part of the solo snapshot and explicitly directs such jobs to opt out.
 - GREEN target: a hosted warm Coverage run generates `lcov.info` and reaches a
   successful Codecov upload without adding LLVM tools to unrelated jobs.
+
+# #1433 publish the Python exec_cached API
+
+Issue: https://github.com/zackees/zccache/issues/1433
+
+- [ ] Add RED contracts for daemon-restart persistence and the public Python API.
+- [ ] Persist ExecProbe/ExecStore bytes in the normal namespaced KV store.
+- [ ] Expose `zccache.exec_cached(...)` with GIL-free IPC and exact bytes replay.
+- [ ] Gate release wheels on Linux, macOS, and Windows behavior smoke tests.
+- [ ] Run focused/full correctness and review gates, merge, and close #1433.
+- [ ] Publish the API and replace FastLED's bespoke AST cache with timing evidence.
+
+## Review
+
+- Key compatibility: retain `zccache-exec-probe-v1`; persistence changes only
+  where the already-derived 32-byte key stores its opaque result bytes.
+- Failure policy: daemon/protocol/store failures surface to Python and never
+  invoke an uncached fallback behind the caller's back.

@@ -111,10 +111,11 @@ pub use crate::download_client::{
     FetchStatus, WaitMode,
 };
 pub use client::{
-    client_session_end, client_session_start, client_session_stats, client_start, client_status,
-    client_stop, fingerprint_check, fingerprint_invalidate, fingerprint_mark_failure,
-    fingerprint_mark_success, is_daemon_unreachable_err, session_end_idempotent,
-    FingerprintCheckResponse, SessionStartResponse,
+    client_exec_probe, client_exec_store, client_session_end, client_session_start,
+    client_session_stats, client_start, client_status, client_stop, fingerprint_check,
+    fingerprint_invalidate, fingerprint_mark_failure, fingerprint_mark_success,
+    is_daemon_unreachable_err, session_end_idempotent, ExecProbeResponse, FingerprintCheckResponse,
+    SessionStartResponse,
 };
 
 #[derive(Debug, Clone)]

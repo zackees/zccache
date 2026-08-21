@@ -35,6 +35,14 @@ pub(super) async fn handle_clear(state: &SharedState) -> Response {
             .sum(),
         Err(_) => 0,
     };
+    match state
+        .exec_store
+        .namespace_bytes_async(handle_exec_probe::EXEC_PROBE_NAMESPACE)
+        .await
+    {
+        Ok(bytes) => on_disk_bytes_freed = on_disk_bytes_freed.saturating_add(bytes),
+        Err(error) => tracing::warn!(%error, "failed to measure caller-owned exec cache"),
+    }
 
     // Clear all subsystems.
     //
@@ -55,6 +63,13 @@ pub(super) async fn handle_clear(state: &SharedState) -> Response {
     state.rsp_cache.clear();
     state.watched_raw_dirs.clear();
     state.watched_dirs.lock().await.clear();
+    if let Err(error) = state
+        .exec_store
+        .clear_namespace_async(handle_exec_probe::EXEC_PROBE_NAMESPACE)
+        .await
+    {
+        tracing::warn!(%error, "failed to clear caller-owned exec cache");
+    }
 
     // Reset stats and profiler.
     state.stats.reset();
