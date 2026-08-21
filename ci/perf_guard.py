@@ -590,14 +590,33 @@ def _format_status_check(report: GuardReport, status: ScenarioStatus) -> str:
     )
 
 
+def format_attempt_spread(status: ScenarioStatus) -> str:
+    """Ratios for every retained attempt, in attempt order.
+
+    Empty when there is nothing to compare -- fewer than two samples means
+    there is no spread to report and the caller should say nothing.
+
+    A single "actual 0.849x" cannot distinguish a regression from run-to-run
+    variance, so reading the failure meant downloading the job log and
+    diffing against neighbouring commits (#1445). The distribution is already
+    retained on `status.samples` (#1115); this only renders it.
+    """
+    if len(status.samples) < 2:
+        return ""
+    ordered = sorted(status.samples, key=lambda sample: sample.attempt)
+    return ", ".join(f"{sample.ratio:.3f}x" for sample in ordered)
+
+
 def _format_status_summary_line(report: GuardReport, status: ScenarioStatus) -> str:
     sample = _selected_sample(report, status)
     attempt = "n/a" if sample is None else str(sample.attempt)
     state = "PASS" if report.status_passed(status) else "FAIL"
     attempt_label = "worst" if report.require_all_attempts else "best"
+    spread = format_attempt_spread(status)
+    spread_note = f"; ratios {spread}" if spread else ""
     return (
         f"- {state}: {_format_status_check(report, status)} "
-        f"({attempt_label} attempt {attempt}; seen {status.attempts_seen})"
+        f"({attempt_label} attempt {attempt}; seen {status.attempts_seen}{spread_note})"
     )
 
 
@@ -683,9 +702,11 @@ def format_final_status(report: GuardReport) -> str:
             ),
         )
         count = len(failed_statuses)
+        spread = format_attempt_spread(worst)
+        spread_note = f" Attempt ratios: {spread}." if spread else ""
         return (
             f"PERF GUARD FAILED: {count} check{'s' if count != 1 else ''} "
-            f"below floor; worst {_format_status_check(report, worst)}."
+            f"below floor; worst {_format_status_check(report, worst)}.{spread_note}"
         )
 
     if report.missing_requirements:
