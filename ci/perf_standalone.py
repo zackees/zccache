@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ci import benchmark_stats
+from ci import benchmark_stats, perf_sample_monitor
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -260,6 +260,31 @@ def artifact_paths(campaign_dir: Path, sample_dir: Path) -> dict[str, Any]:
     }
 
 
+def _quarantine_contaminated_sample(sample_dir: Path) -> Path:
+    destination = sample_dir.with_name(
+        f"{sample_dir.name}.contaminated-{time.time_ns()}"
+    )
+    sample_dir.rename(destination)
+    return destination
+
+
+def _reject_contaminated_sample(sample_dir: Path, contamination: list[str]) -> None:
+    _write_json(
+        sample_dir / "infrastructure-invalid.json",
+        {
+            "valid": False,
+            "invalid_reasons": [
+                f"timed sample overlapped {reason}" for reason in contamination
+            ],
+        },
+    )
+    quarantine = _quarantine_contaminated_sample(sample_dir)
+    raise RuntimeError(
+        "timed sample was contaminated; evidence retained at "
+        f"{quarantine}: " + "; ".join(contamination)
+    )
+
+
 def validate_completed_results(
     campaign_dir: Path, campaign: dict[str, Any], expected_attempts: int
 ) -> None:
@@ -311,6 +336,21 @@ def _run(
         check=check,
         timeout=timeout_seconds,
     )
+
+
+def _run_sample_command(
+    command: list[str], container_name: str
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    print("+ " + subprocess.list2cmdline(command), flush=True)
+    process = subprocess.Popen(command, cwd=REPO_ROOT, text=True, encoding="utf-8")
+    return_code, contamination = perf_sample_monitor.monitor_sample_process(
+        process,
+        container_name,
+        lambda finished: _sample_process_names(container_name, finished),
+        _container_stats,
+        busy_reasons,
+    )
+    return subprocess.CompletedProcess(command, return_code), contamination
 
 
 def _git_output(*args: str) -> str:
@@ -403,6 +443,51 @@ def _process_names() -> list[str]:
         check=False,
     ).stdout
     return [line.strip() for line in output.splitlines() if line.strip()]
+
+
+def _sample_container_process_ids(container_name: str) -> set[int]:
+    top = subprocess.run(
+        ["docker", "top", container_name, "-eo", "pid"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=HOST_PROCESS_ENUMERATION_TIMEOUT_SECONDS,
+    )
+    if top.returncode != 0:
+        raise RuntimeError("sample container process enumeration failed")
+    return {
+        int(line.strip())
+        for line in top.stdout.splitlines()
+        if line.strip().isdigit()
+    }
+
+
+def _linux_sample_process_names(container_name: str) -> list[str]:
+    container_pids_before = _sample_container_process_ids(container_name)
+    host = subprocess.run(
+        ["ps", "-eo", "pid=,ppid=,comm="],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=HOST_PROCESS_ENUMERATION_TIMEOUT_SECONDS,
+    )
+    if host.returncode != 0:
+        raise RuntimeError("host process enumeration failed")
+    processes = []
+    for line in host.stdout.splitlines():
+        fields = line.strip().split(maxsplit=2)
+        if len(fields) == 3 and fields[0].isdigit() and fields[1].isdigit():
+            processes.append((int(fields[0]), int(fields[1]), fields[2]))
+    container_pids_after = _sample_container_process_ids(container_name)
+    return perf_sample_monitor.process_names_outside_container(
+        processes, container_pids_before, container_pids_after
+    )
+
+
+def _sample_process_names(container_name: str, finished: bool) -> list[str]:
+    if os.name == "nt" or finished:
+        return _active_process_names()
+    return _linux_sample_process_names(container_name)
 
 
 def active_windows_process_names(
@@ -709,15 +794,18 @@ def _run_sample(
 ) -> dict[str, Any]:
     sample_dir = campaign_dir / language.replace("+", "p") / test_name
     sample_dir.mkdir(parents=True, exist_ok=True)
+    container_name = f"zccache-standalone-{language.replace('+', 'p')}-{test_name}"[:63]
     command = docker_run_command(
         repo_root=REPO_ROOT,
         results_dir=sample_dir,
-        container_name=f"zccache-standalone-{language.replace('+', 'p')}-{test_name}"[:63],
+        container_name=container_name,
         entrypoint_args=["run", language, test_name, str(attempts)],
         artifacts_dir=campaign_dir / "fixture",
     )
-    result = _run(command, check=False)
+    result, contamination = _run_sample_command(command, container_name)
     summary_path = sample_dir / "perf-guard-summary.json"
+    if contamination and not summary_path.is_file():
+        _reject_contaminated_sample(sample_dir, contamination)
     if not summary_path.is_file():
         raise RuntimeError(
             f"benchmark did not produce {summary_path} (exit={result.returncode})"
@@ -726,6 +814,14 @@ def _run_sample(
     summary = _enrich_summary(
         summary_path, result.returncode, identity, command, telemetry
     )
+    if contamination:
+        infrastructure = summary["infrastructure"]
+        infrastructure["valid"] = False
+        infrastructure["invalid_reasons"].extend(
+            f"timed sample overlapped {reason}" for reason in contamination
+        )
+        _write_json(summary_path, summary)
+        _reject_contaminated_sample(sample_dir, contamination)
     validate_sample_summary(summary, attempts)
     return {
         "language": language,

@@ -1,9 +1,10 @@
 import json
+import subprocess
 from argparse import Namespace
 
 import pytest
 
-from ci import benchmark_stats, perf_standalone
+from ci import benchmark_stats, perf_sample_monitor, perf_standalone
 
 
 def test_campaign_inventory_matches_registered_benchmarks():
@@ -369,6 +370,95 @@ def test_windows_process_activity_ignores_only_idle_orphan_rustc():
         "rustc",
         "cargo",
     ]
+
+
+def test_sample_monitor_rejects_activity_that_starts_after_launch():
+    class Process:
+        waits = 0
+
+        def wait(self, timeout):
+            assert timeout == perf_sample_monitor.SAMPLE_MONITOR_INTERVAL_SECONDS
+            self.waits += 1
+            if self.waits == 1:
+                raise subprocess.TimeoutExpired("sample", timeout)
+            return 0
+
+    process_samples = iter([[], ["perf_bench_test"]])
+    return_code, reasons = perf_sample_monitor.monitor_sample_process(
+        Process(),
+        "zccache-standalone-own-sample",
+        lambda _finished: next(process_samples),
+        lambda: [("zccache-standalone-own-sample", 90.0)],
+        perf_standalone.busy_reasons,
+    )
+
+    assert return_code == 0
+    assert reasons == ["host process perf_bench_test is active"]
+
+
+def test_linux_monitor_excludes_the_sample_container_process_tree():
+    processes = [
+        (101, 1, "perf_bench_test"),
+        (102, 101, "em++"),
+        (103, 102, "clang"),
+        (201, 1, "sccache"),
+    ]
+
+    assert perf_sample_monitor.process_names_outside_container(
+        processes, {101}, {101}
+    ) == ["sccache"]
+
+
+def test_sample_monitor_records_probe_failure_and_reaps_process():
+    class Process:
+        waits = 0
+
+        def wait(self, timeout):
+            self.waits += 1
+            if self.waits == 1:
+                raise subprocess.TimeoutExpired("sample", timeout)
+            return 0
+
+    process = Process()
+
+    def failed_probe(_finished):
+        raise RuntimeError("process enumeration unavailable")
+
+    return_code, reasons = perf_sample_monitor.monitor_sample_process(
+        process,
+        "zccache-standalone-own-sample",
+        failed_probe,
+        lambda: [],
+        perf_standalone.busy_reasons,
+    )
+
+    assert return_code == 0
+    assert process.waits == 2
+    assert reasons == [
+        "host process monitor failed: process enumeration unavailable"
+    ]
+
+
+def test_no_summary_contamination_is_quarantined_before_retry(tmp_path):
+    sample_dir = tmp_path / "sample"
+    sample_dir.mkdir()
+    evidence = sample_dir / "attempt-1.log"
+    evidence.write_bytes(b"contaminated evidence")
+
+    with pytest.raises(RuntimeError, match="evidence retained"):
+        perf_standalone._reject_contaminated_sample(
+            sample_dir, ["host process perf_bench_test is active"]
+        )
+    quarantine, = tmp_path.glob("sample.contaminated-*")
+    sample_dir.mkdir()
+    (sample_dir / "attempt-1.log").write_bytes(b"clean retry")
+
+    assert (quarantine / "attempt-1.log").read_bytes() == b"contaminated evidence"
+    invalid = json.loads(
+        (quarantine / "infrastructure-invalid.json").read_text(encoding="utf-8")
+    )
+    assert invalid["valid"] is False
+    assert evidence.read_bytes() == b"clean retry"
 
 
 def test_host_fingerprint_input_ignores_dynamic_docker_state():
