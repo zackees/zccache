@@ -1081,3 +1081,61 @@ def test_benchmark_env_enables_cc_profile_for_cc_languages(tmp_path):
 def test_benchmark_env_does_not_enable_cc_profile_for_rust(tmp_path):
     env = perf_guard._benchmark_env(tmp_path, "rust")
     assert "ZCCACHE_PROFILE_CC_MISS" not in env
+
+
+# ── attempt spread in failure output (#1445) ───────────────────────────────
+#
+# A lone "actual 0.849x" cannot distinguish a regression from run-to-run
+# variance. The distribution is already retained (#1115); these pin that it
+# reaches the line a reader actually sees.
+
+SLOWER_SCCACHE_LOG = PASSING_LOG.replace(
+    "| Single-file, Warm | 3.000s | 2.000s | **1.000s** | **2.0x faster** | **3.0x faster** |",
+    "| Single-file, Warm | 3.000s | 1.100s | **1.000s** | **1.1x faster** | **3.0x faster** |",
+)
+
+
+def test_failure_line_reports_every_attempt_ratio():
+    report = perf_guard.evaluate_attempts(
+        [rows(FAILING_SCCACHE_LOG), rows(SLOWER_SCCACHE_LOG)],
+        threshold=1.5,
+    )
+
+    final_status = perf_guard.format_final_status(report)
+
+    assert "Attempt ratios: 1.200x, 1.100x" in final_status, final_status
+
+
+def test_summary_line_reports_every_attempt_ratio():
+    report = perf_guard.evaluate_attempts(
+        [rows(FAILING_SCCACHE_LOG), rows(SLOWER_SCCACHE_LOG)],
+        threshold=1.5,
+    )
+    failed = [s for s in report.statuses if not report.status_passed(s)]
+
+    line = perf_guard._format_status_summary_line(report, failed[0])
+
+    assert "ratios 1.200x, 1.100x" in line, line
+
+
+def test_single_attempt_reports_no_spread():
+    """One sample has no spread to report, so the line stays as it was --
+    which is why the pre-existing message assertions still hold."""
+    report = perf_guard.evaluate_attempts([rows(FAILING_SCCACHE_LOG)], threshold=1.5)
+
+    final_status = perf_guard.format_final_status(report)
+
+    assert "Attempt ratios" not in final_status
+    assert final_status.endswith("(zccache 1.000s vs baseline 1.200s).")
+
+
+def test_attempt_spread_is_ordered_by_attempt_not_by_ratio():
+    """Attempt order is the informative order: it shows drift across a run.
+    Sorting by ratio would hide which attempt was which."""
+    report = perf_guard.evaluate_attempts(
+        [rows(SLOWER_SCCACHE_LOG), rows(FAILING_SCCACHE_LOG)],
+        threshold=1.5,
+    )
+    failed = [s for s in report.statuses if not report.status_passed(s)]
+
+    assert perf_guard.format_attempt_spread(failed[0]) == "1.100x, 1.200x"
