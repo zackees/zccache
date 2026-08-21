@@ -590,6 +590,30 @@ def _format_status_check(report: GuardReport, status: ScenarioStatus) -> str:
     )
 
 
+def format_floor_margin(status: ScenarioStatus, sample: ScenarioSample | None) -> str:
+    """How much faster zccache had to be for this check to clear its floor.
+
+    Derived arithmetic on numbers already in the report -- no calibration
+    constant. Ratios here are `baseline / zccache`, so the passing time is
+    `baseline / threshold` and the margin is how far the observed time
+    overshot it.
+
+    The point is to make an unresolvable assertion self-evident. "0.849x vs a
+    0.85x floor" reads like a near miss until you see it is 11ms on a 7s
+    benchmark; a driver-link row failing by 4ms on a 46ms baseline is asking
+    a shared runner to resolve single-digit milliseconds, which is the
+    substance of #1445. Stating the margin lets a reader judge that without
+    picking a resolvability threshold here.
+    """
+    if sample is None or status.threshold <= 0 or sample.baseline_seconds is None:
+        return ""
+    required = sample.baseline_seconds / status.threshold
+    overshoot = sample.zccache_seconds - required
+    if overshoot <= 0:
+        return ""
+    return _format_seconds(overshoot)
+
+
 def format_attempt_spread(status: ScenarioStatus) -> str:
     """Ratios for every retained attempt, in attempt order.
 
@@ -704,9 +728,12 @@ def format_final_status(report: GuardReport) -> str:
         count = len(failed_statuses)
         spread = format_attempt_spread(worst)
         spread_note = f" Attempt ratios: {spread}." if spread else ""
+        margin = format_floor_margin(worst, _selected_sample(report, worst))
+        margin_note = f" Missed the floor by {margin}." if margin else ""
         return (
             f"PERF GUARD FAILED: {count} check{'s' if count != 1 else ''} "
-            f"below floor; worst {_format_status_check(report, worst)}.{spread_note}"
+            f"below floor; worst {_format_status_check(report, worst)}."
+            f"{margin_note}{spread_note}"
         )
 
     if report.missing_requirements:
