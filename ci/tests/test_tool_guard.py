@@ -320,3 +320,70 @@ def test_uv_run_python_with_no_test_path_passes():
     """`uv run python ci/build_dist.py` — Python via uv on a non-test
     file (CI script), allowed."""
     assert _check("uv run python ci/build_dist.py") is None
+
+
+# ── uv run option arity ────────────────────────────────────────────────────
+#
+# `_resolve_uv_run_tool` skips two words for a value-taking option and one
+# for a boolean. A boolean filed as value-taking swallows the word after it
+# — which is the tool the guard exists to inspect.
+
+
+def test_uv_run_boolean_flag_does_not_hide_cargo():
+    """`uv run --frozen cargo build` — the flag is boolean, so `cargo` is
+    still the tool and the soldr gate must fire. It did not: `--frozen` was
+    filed as value-taking, so the resolver skipped past `cargo` to `build`
+    and returned no violation."""
+    result = _check("uv run --frozen cargo build")
+    assert result is not None
+    assert result[0] == "cargo"
+
+
+def test_uv_run_short_python_flag_does_not_hide_cargo():
+    """`uv run -p 3.13 cargo build` — short options were not in the arity
+    table at all, so `-p` fell through and `3.13` was resolved as the tool."""
+    result = _check("uv run -p 3.13 cargo build")
+    assert result is not None
+    assert result[0] == "cargo"
+
+
+def test_no_uv_run_option_prefix_hides_a_rust_tool():
+    """The invariant both arity sets exist to hold: no combination of a
+    single `uv run` option and its value may stop the guard from seeing the
+    tool behind it. Iterating the sets means a future mis-filed option fails
+    here instead of silently opening a bypass."""
+    hidden = []
+    for opt in sorted(tool_guard.UV_RUN_BOOLEAN_OPTIONS):
+        if _check(f"uv run {opt} cargo build") is None:
+            hidden.append(opt)
+    for opt in sorted(tool_guard.UV_RUN_OPTIONS_WITH_VALUE):
+        if _check(f"uv run {opt} VALUE cargo build") is None:
+            hidden.append(opt)
+        if _check(f"uv run {opt}=VALUE cargo build") is None:
+            hidden.append(f"{opt}=VALUE")
+
+    assert hidden == [], f"uv run options that hide a rust tool: {hidden}"
+
+
+def test_uv_run_option_arity_sets_are_disjoint():
+    """An option in both sets means one of the two entries is wrong; the
+    value-taking branch wins, so the boolean listing would be a lie."""
+    overlap = tool_guard.UV_RUN_BOOLEAN_OPTIONS & tool_guard.UV_RUN_OPTIONS_WITH_VALUE
+    assert overlap == set(), f"options listed with both arities: {sorted(overlap)}"
+
+
+def test_uv_run_pytest_with_sync_flags_passes():
+    """The hybrid-project gate requires one of `--frozen` / `--no-sync` /
+    `--no-project` on every `uv run`, so these are the forms actually used
+    to run the repo's own CI suite. All three were blocked with the
+    Python-in-tests message before the arity fix."""
+    for flag in ("--frozen", "--no-sync", "--no-project"):
+        assert _check(f"uv run {flag} pytest ci/tests/test_tool_guard.py") is None
+
+
+def test_uv_run_module_flag_still_sees_python():
+    """`-m`/`--module` is boolean and the word after it is the module being
+    run, so the guard must still resolve `python`-shaped invocations."""
+    result = _check("uv run --frozen python -m pytest tests/foo.py")
+    assert result is not None
+    assert result[0] == "python"

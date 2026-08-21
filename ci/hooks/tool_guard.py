@@ -25,49 +25,122 @@ RUST_TOOLS = {
 PYTHON_TOOLS = {"python", "python3", "pip", "pip3"}
 LEGACY_RUST_TRAMPOLINES = {"_cargo", "_rustc", "_rustfmt"}
 SHELL_WRAPPERS = {"cmd", "powershell", "pwsh", "bash", "sh", "zsh"}
+# `uv run` option arity, transcribed from `uv help run`.
+#
+# Arity is load-bearing, not cosmetic. `_resolve_uv_run_tool` skips two words
+# for a value-taking option and one for a boolean; misfiling a boolean as
+# value-taking makes it swallow the very word it was supposed to inspect, so
+# `uv run --frozen cargo build` resolves its "tool" to `build` and sails past
+# the soldr gate. Misfiling the other way is milder but still wrong: the
+# option's value is mistaken for the tool.
+#
+# Both sets are asserted against the guard's own behaviour by
+# `test_no_uv_run_option_prefix_hides_a_rust_tool`, so a wrong entry here
+# fails the suite rather than silently opening a hole.
+
+# Options that consume the following word.
 UV_RUN_OPTIONS_WITH_VALUE = {
-    "--active",
+    "--allow-insecure-host",
+    "--cache-dir",
+    "--color",
     "--config-file",
+    "--config-setting",
+    "--config-settings-package",
+    "--default-index",
     "--directory",
     "--env-file",
     "--exclude-newer",
+    "--exclude-newer-package",
     "--extra",
-    "--frozen",
+    "--extra-index-url",
+    "--find-links",
+    "--fork-strategy",
+    "--group",
     "--index",
     "--index-strategy",
-    "--isolated",
+    "--index-url",
     "--keyring-provider",
     "--link-mode",
+    "--no-binary-package",
+    "--no-build-isolation-package",
+    "--no-build-package",
+    "--no-editable-package",
+    "--no-extra",
+    "--no-group",
+    "--no-sources-package",
+    "--only-group",
+    "--package",
+    "--prerelease",
+    "--prerelease-package",
+    "--project",
+    "--python",
+    "--python-platform",
+    "--refresh-package",
+    "--reinstall-package",
+    "--resolution",
+    "--upgrade-group",
+    "--upgrade-package",
+    "--with",
+    "--with-editable",
+    "--with-requirements",
+    "-C",
+    "-P",
+    "-f",
+    "-i",
+    "-p",
+    "-w",
+}
+
+# Options that stand alone. Listed rather than inferred so the
+# arity test can prove neither kind hides the tool. `--module`/`-m` and
+# `--script`/`-s` belong here: the word after them is the module or script
+# being run, i.e. exactly the token the guard must look at.
+UV_RUN_BOOLEAN_OPTIONS = {
+    "--active",
+    "--all-extras",
+    "--all-groups",
+    "--all-packages",
+    "--compile-bytecode",
+    "--exact",
+    "--frozen",
+    "--gui-script",
+    "--help",
+    "--isolated",
+    "--locked",
     "--managed-python",
     "--module",
     "--no-binary",
-    "--no-binary-package",
     "--no-build",
-    "--no-build-isolation-package",
-    "--no-build-package",
+    "--no-build-isolation",
     "--no-cache",
     "--no-config",
     "--no-default-groups",
     "--no-dev",
     "--no-editable",
-    "--no-extra",
-    "--no-group",
+    "--no-env-file",
     "--no-index",
     "--no-managed-python",
+    "--no-progress",
     "--no-project",
     "--no-python-downloads",
+    "--no-sources",
+    "--no-sync",
+    "--offline",
     "--only-dev",
-    "--only-group",
-    "--project",
-    "--python",
-    "--python-platform",
-    "--refresh-package",
-    "--resolution",
+    "--quiet",
+    "--refresh",
+    "--reinstall",
     "--script",
-    "--upgrade-package",
-    "--with",
-    "--with-editable",
-    "--with-requirements",
+    "--system-certs",
+    "--upgrade",
+    "--verbose",
+    "-U",
+    "-h",
+    "-m",
+    "-n",
+    "-q",
+    "-s",
+    "-v",
 }
 
 # Path-shape: any path component named `bench`, `test`, or `tests` followed
