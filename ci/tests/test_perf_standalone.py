@@ -387,12 +387,67 @@ def test_sample_monitor_rejects_activity_that_starts_after_launch():
     return_code, reasons = perf_standalone._monitor_sample_process(
         Process(),
         "zccache-standalone-own-sample",
-        lambda: next(process_samples),
+        lambda _finished: next(process_samples),
         lambda: [("zccache-standalone-own-sample", 90.0)],
     )
 
     assert return_code == 0
     assert reasons == ["host process perf_bench_test is active"]
+
+
+def test_linux_monitor_excludes_the_sample_container_process_tree():
+    processes = [
+        (101, "perf_bench_test"),
+        (102, "em++"),
+        (201, "sccache"),
+    ]
+
+    assert perf_standalone._process_names_outside_pids(
+        processes, {101, 102}
+    ) == ["sccache"]
+
+
+def test_sample_monitor_records_probe_failure_and_reaps_process():
+    class Process:
+        waits = 0
+
+        def wait(self, timeout):
+            self.waits += 1
+            if self.waits == 1:
+                raise subprocess.TimeoutExpired("sample", timeout)
+            return 0
+
+    process = Process()
+
+    def failed_probe(_finished):
+        raise RuntimeError("process enumeration unavailable")
+
+    return_code, reasons = perf_standalone._monitor_sample_process(
+        process,
+        "zccache-standalone-own-sample",
+        failed_probe,
+        lambda: [],
+    )
+
+    assert return_code == 0
+    assert process.waits == 2
+    assert reasons == [
+        "host process monitor failed: process enumeration unavailable"
+    ]
+
+
+def test_quarantine_preserves_contaminated_evidence_across_retry(tmp_path):
+    sample_dir = tmp_path / "sample"
+    sample_dir.mkdir()
+    evidence = sample_dir / "attempt-1.log"
+    evidence.write_bytes(b"contaminated evidence")
+
+    quarantine = perf_standalone._quarantine_contaminated_sample(sample_dir)
+    sample_dir.mkdir()
+    (sample_dir / "attempt-1.log").write_bytes(b"clean retry")
+
+    assert (quarantine / "attempt-1.log").read_bytes() == b"contaminated evidence"
+    assert evidence.read_bytes() == b"clean retry"
 
 
 def test_host_fingerprint_input_ignores_dynamic_docker_state():

@@ -262,6 +262,14 @@ def artifact_paths(campaign_dir: Path, sample_dir: Path) -> dict[str, Any]:
     }
 
 
+def _quarantine_contaminated_sample(sample_dir: Path) -> Path:
+    destination = sample_dir.with_name(
+        f"{sample_dir.name}.contaminated-{time.time_ns()}"
+    )
+    sample_dir.rename(destination)
+    return destination
+
+
 def validate_completed_results(
     campaign_dir: Path, campaign: dict[str, Any], expected_attempts: int
 ) -> None:
@@ -331,13 +339,19 @@ def _monitor_sample_process(
         except subprocess.TimeoutExpired:
             finished = False
 
-        detected.update(busy_reasons([], process_probe()))
+        try:
+            detected.update(busy_reasons([], process_probe(finished)))
+        except (RuntimeError, subprocess.SubprocessError) as error:
+            detected.add(f"host process monitor failed: {error}")
         now = time.monotonic()
         if finished or now >= next_container_probe:
-            containers = [
-                item for item in container_probe() if item[0] != container_name
-            ]
-            detected.update(busy_reasons(containers, []))
+            try:
+                containers = [
+                    item for item in container_probe() if item[0] != container_name
+                ]
+                detected.update(busy_reasons(containers, []))
+            except (RuntimeError, subprocess.SubprocessError) as error:
+                detected.add(f"container monitor failed: {error}")
             next_container_probe = now + SAMPLE_CONTAINER_MONITOR_INTERVAL_SECONDS
         if finished:
             return return_code, sorted(detected)
@@ -351,7 +365,7 @@ def _run_sample_command(
     return_code, contamination = _monitor_sample_process(
         process,
         container_name,
-        _active_process_names,
+        lambda finished: _sample_process_names(container_name, finished),
         _container_stats,
     )
     return subprocess.CompletedProcess(command, return_code), contamination
@@ -447,6 +461,50 @@ def _process_names() -> list[str]:
         check=False,
     ).stdout
     return [line.strip() for line in output.splitlines() if line.strip()]
+
+
+def _process_names_outside_pids(
+    processes: list[tuple[int, str]], excluded_pids: set[int]
+) -> list[str]:
+    return [name for pid, name in processes if pid not in excluded_pids]
+
+
+def _linux_sample_process_names(container_name: str) -> list[str]:
+    top = subprocess.run(
+        ["docker", "top", container_name, "-eo", "pid"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=HOST_PROCESS_ENUMERATION_TIMEOUT_SECONDS,
+    )
+    if top.returncode != 0:
+        raise RuntimeError("sample container process enumeration failed")
+    excluded_pids = {
+        int(line.strip())
+        for line in top.stdout.splitlines()
+        if line.strip().isdigit()
+    }
+    host = subprocess.run(
+        ["ps", "-eo", "pid=,comm="],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=HOST_PROCESS_ENUMERATION_TIMEOUT_SECONDS,
+    )
+    if host.returncode != 0:
+        raise RuntimeError("host process enumeration failed")
+    processes = []
+    for line in host.stdout.splitlines():
+        fields = line.strip().split(maxsplit=1)
+        if len(fields) == 2 and fields[0].isdigit():
+            processes.append((int(fields[0]), fields[1]))
+    return _process_names_outside_pids(processes, excluded_pids)
+
+
+def _sample_process_names(container_name: str, finished: bool) -> list[str]:
+    if os.name == "nt" or finished:
+        return _active_process_names()
+    return _linux_sample_process_names(container_name)
 
 
 def active_windows_process_names(
@@ -778,8 +836,10 @@ def _run_sample(
             f"timed sample overlapped {reason}" for reason in contamination
         )
         _write_json(summary_path, summary)
+        quarantine = _quarantine_contaminated_sample(sample_dir)
         raise RuntimeError(
-            "timed sample was contaminated: " + "; ".join(contamination)
+            "timed sample was contaminated; evidence retained at "
+            f"{quarantine}: " + "; ".join(contamination)
         )
     validate_sample_summary(summary, attempts)
     return {
