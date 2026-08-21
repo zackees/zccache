@@ -388,11 +388,7 @@ const FORBIDDEN_SYNC_LOADS: [&str; 4] = [
     "std::fs::read_to_end(",
 ];
 
-fn assert_no_sync_loads(label: &str, source: &str) {
-    assert_no_sync_loads_in(label, source);
-}
-
-/// As [`assert_no_sync_loads`], but also follows calls made inside the
+/// As [`assert_no_sync_loads_in`], but also follows calls made inside the
 /// window into functions defined in `file`, one level deep.
 ///
 /// The literal-only scan has a blind spot that matters: a load moved behind
