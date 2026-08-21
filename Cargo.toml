@@ -82,7 +82,13 @@ ruzstd = "0.7"
 lzma-rs = "0.3"
 sevenz-rust = "0.6"
 rkyv = "0.8"
-mimalloc-pprof = "0.9"
+# 0.9.3 is the floor, not a preference (#1439): earlier releases compile the
+# vendored mimalloc amalgamation with MSVC's deprecated C-mode Interlocked
+# atomics wrapper, whose `_acq`/`_rel` ARM64 intrinsics clang-cl does not
+# declare, so the cargo-xwin `aarch64-pc-windows-msvc` release lane cannot
+# build them. 0.9.3 selects clang's C11 `stdatomic` for that target inside its
+# own build script -- the only package-scoped place the choice can be made.
+mimalloc-pprof = "0.9.3"
 running-process = { version = "4.10.5", default-features = false, features = ["client-async"] }
 zccache = { path = "crates/zccache" }
 zccache-artifact = { path = "crates/zccache-artifact" }

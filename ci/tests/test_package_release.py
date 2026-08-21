@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import tarfile
 import zipfile
 from pathlib import Path
@@ -284,11 +285,40 @@ def test_linux_cross_build_repairs_debug_sidecars_missing_from_cache_hits() -> N
     assert 'test -e "$TARGET_DIR/zccache-fp.dwp"' in action
 
 
-def test_xwin_arm64_compiles_mimalloc_c_as_recommended_cxx() -> None:
+def test_xwin_arm64_lane_injects_no_global_cxx_language_mode() -> None:
+    """zccache#1439: `CFLAGS` reaches every `cc-rs` build script.
+
+    A global `-TP`/`/TP` compiles `ring`'s C sources as C++, which fails with
+    `void *` initialisation and `-Wc++11-narrowing` errors and stops the
+    release before publication. Windows ARM64 uses the system allocator.
+    """
     action = _repo_text(".github/actions/build-target/action.yml")
 
-    assert 'echo "CFLAGS=-TP" >> "$GITHUB_ENV"' in action
-    assert "CFLAGS_aarch64_pc_windows_msvc=-TP" not in action
+    assert "-TP" not in action
+    assert "/TP" not in action
+    assert "Configure xwin ARM64 C compatibility" not in action
+
+
+def test_locked_mimalloc_pprof_selects_arm64_c11_atomics() -> None:
+    """zccache#1439: mimalloc's MSVC C-mode atomics wrapper calls Interlocked
+    intrinsics that clang-cl does not declare for ARM64.
+
+    mimalloc-pprof 0.9.3 selects clang's C11 `stdatomic` for that target in
+    its own build script, which is the only package-scoped place the choice
+    can be made. Anything older forces the consumer back to a global
+    `CFLAGS=-TP`, which breaks every other `cc-rs` dependency.
+    """
+    lockfile = _repo_text("Cargo.lock")
+    locked = re.search(
+        r'\[\[package\]\]\nname = "mimalloc-pprof"\nversion = "([^"]+)"', lockfile
+    )
+
+    assert locked is not None, "mimalloc-pprof missing from Cargo.lock"
+    major, minor, patch = (int(part) for part in locked.group(1).split(".")[:3])
+    assert (major, minor, patch) >= (0, 9, 3), (
+        f"mimalloc-pprof {locked.group(1)} predates the ARM64 C11-atomics fix; "
+        "aarch64-pc-windows-msvc cannot cross-compile against it"
+    )
 
 
 def test_release_workflow_dry_run_builds_without_publishing() -> None:
