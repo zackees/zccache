@@ -2,12 +2,64 @@
 
 use super::super::*;
 use super::cached_hit::{
-    materialize_cached_compile_hit, CachedHitFailure, CachedHitMaterializeRequest, CachedHitPhases,
+    materialize_cached_compile_hit, rustc_compat_payload_index_for, CachedHitFailure,
+    CachedHitMaterializeRequest, CachedHitPhases,
 };
 use crate::depgraph::depfile::user_depfile_destination;
 use crate::depgraph::UserDepFlags;
 
 const DYLINT_CACHE_INPUT_HASH_ENV: &str = "ZCCACHE_DYLINT_CACHE_INPUT_HASH";
+
+pub(super) fn artifact_ready_for_request(
+    state: &SharedState,
+    key_hex: &str,
+    verdict_key_hex: Option<&str>,
+    requested_outputs: Option<&[NormalizedPath]>,
+) -> bool {
+    let Some(cached) = state.artifacts.get(key_hex) else {
+        return false;
+    };
+    if let Some(verdict_key) = verdict_key_hex {
+        let Some(verdict) = cached.meta.rustc_verdicts.get(verdict_key) else {
+            return false;
+        };
+        if verdict.exit_code != 0 {
+            return true;
+        }
+    }
+    if let Some(outputs) = requested_outputs {
+        outputs.iter().all(|output| {
+            rustc_compat_payload_index_for(&cached.meta.output_names, output)
+                .is_some_and(|index| cached.materialization_payload_ready(index))
+        })
+    } else {
+        (0..cached.meta.output_names.len()).all(|index| cached.materialization_payload_ready(index))
+    }
+}
+
+pub(super) async fn await_artifact_publication_if_needed(
+    state: &SharedState,
+    key_hex: &str,
+    verdict_key_hex: Option<&str>,
+    requested_outputs: Option<&[NormalizedPath]>,
+) {
+    let deadline = tokio::time::Instant::now() + pending_writes::PENDING_PAYLOAD_WAIT_TIMEOUT;
+    while state.pending_cache_writes.contains_key(key_hex)
+        && !artifact_ready_for_request(state, key_hex, verdict_key_hex, requested_outputs)
+    {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero()
+            || !pending_writes::await_pending_payload(
+                &state.pending_cache_writes,
+                key_hex,
+                remaining,
+            )
+            .await
+        {
+            break;
+        }
+    }
+}
 
 fn rustc_verdict_key_hex(
     is_rustc: bool,
@@ -134,12 +186,8 @@ pub(super) async fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Op
     }
 
     // A cold miss may have installed a provisional in-memory payload while
-    // its durable write is pending. It is immediately usable in-process; only
-    // wait when that entry is not yet visible, then re-lookup after publish.
-    if !state.artifacts.contains_key(artifact_key_hex) {
-        pending_writes::await_pending_payload(&state.pending_cache_writes, artifact_key_hex).await;
-    }
-
+    // its durable write is pending. Wait only when the artifact, requested
+    // verdict, or requested output mapping is not ready for this hit.
     let hit_label = if same_root {
         "HIT_REQUEST"
     } else {
@@ -150,6 +198,13 @@ pub(super) async fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Op
     let rustc_archive_hardlink_eligible =
         is_rustc.then(|| crate::compiler::rustc_archive_hardlink_eligible(rustc_args));
     let verdict_key_hex = rustc_verdict_key_hex(is_rustc, artifact_key_hex, client_env);
+    await_artifact_publication_if_needed(
+        state,
+        artifact_key_hex,
+        verdict_key_hex.as_deref(),
+        rustc_requested_outputs.as_deref(),
+    )
+    .await;
     materialize_cached_compile_hit(CachedHitMaterializeRequest {
         state,
         sid,
@@ -245,19 +300,10 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
         return None;
     }
 
-    // Issue #610, DD-025: if a cold-miss for this artifact key is still
-    // publishing to the in-memory cache, briefly wait so the materialize
-    // step below hits instead of falling through to a recompile-on-race.
-    // A provisional in-memory payload remains usable for this process while
-    // persistence is in flight. Wait only if it is not yet visible; then a
-    // completion can publish it before we re-lookup. `await_pending` clones
-    // the inner `Arc<Notify>` before yielding so no DashMap shard lock
-    // straddles the await.
-    if !state.artifacts.contains_key(&entry_artifact_key_hex) {
-        pending_writes::await_pending_payload(&state.pending_cache_writes, &entry_artifact_key_hex)
-            .await;
-    }
-
+    // Issue #610, DD-025: if a cold miss is still publishing this artifact's
+    // request-specific verdict/output metadata, wait so materialization does
+    // not fall through to a recompile-on-race. Ready provisional payloads
+    // remain immediately usable while durable persistence is in flight.
     let secondary_output_dir = if is_rustc {
         output_path.parent().unwrap_or(cwd_path).into()
     } else {
@@ -281,6 +327,13 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
         None
     };
     let verdict_key_hex = rustc_verdict_key_hex(is_rustc, &entry_artifact_key_hex, client_env);
+    await_artifact_publication_if_needed(
+        state,
+        &entry_artifact_key_hex,
+        verdict_key_hex.as_deref(),
+        rustc_requested_outputs.as_deref(),
+    )
+    .await;
     let response = materialize_cached_compile_hit(CachedHitMaterializeRequest {
         state,
         sid,
@@ -420,9 +473,14 @@ pub(super) async fn try_depgraph_cached_hit(
     // background task. If the build removes its just-produced output before
     // that task completes, a depgraph hit can otherwise fail to materialize
     // and unnecessarily recompile. The fast-hit path has the same guard.
-    pending_writes::await_pending_payload(&state.pending_cache_writes, artifact_key_hex).await;
-
     let verdict_key_hex = rustc_verdict_key_hex(is_rustc, artifact_key_hex, client_env);
+    await_artifact_publication_if_needed(
+        state,
+        artifact_key_hex,
+        verdict_key_hex.as_deref(),
+        rustc_requested_outputs.as_deref(),
+    )
+    .await;
 
     let response = materialize_cached_compile_hit(CachedHitMaterializeRequest {
         state,

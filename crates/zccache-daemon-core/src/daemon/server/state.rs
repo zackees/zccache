@@ -583,20 +583,18 @@ pub(super) struct SharedState {
     ///
     /// Keyed by `artifact_key_hex` — every cold-miss path that defers its
     /// `state.artifacts` insert into a `tokio::spawn` task **must** register
-    /// an entry here *before* spawning and notify+remove after the spawned
-    /// work completes. Concurrent lookups for the same key check the
-    /// registry first: they may wait briefly on the `Notify` (~5 ms ceiling
-    /// per condition 3's blast-radius bound) and then either re-attempt the
-    /// in-memory lookup or fall through to "miss → recompile". The failure
-    /// mode (DD-025 condition 2) is always a miss, never a wrong-hit — the
+    /// a publisher here *before* spawning and complete it after the spawned
+    /// work finishes. Same-key publishers share an entry and are counted so
+    /// one completion cannot hide another publisher. Proven-hit lookups wait
+    /// for request-specific verdict/output readiness, bounded by the payload
+    /// wait timeout, then either materialize or fall through to recompile.
+    /// The failure mode (DD-025 condition 2) is always a miss, never a wrong-hit — the
     /// artifact's content identity stays bound by `blake3` (DD-005); only
     /// the *publication* is deferred.
     ///
-    /// At rest the map is empty. Entries live ≤ 100 ms (30× p99 of
-    /// `depgraph_update_ns + persist_enqueue` from #605 iter T2). At most
-    /// `persist_semaphore.available_permits()` entries may exist
-    /// concurrently — the same semaphore that bounds existing C/C++ persist
-    /// spawns provides the backpressure.
+    /// At rest the map is empty. Entries live until every registered
+    /// publisher for the key completes; the persist semaphore bounds active
+    /// persistence work and shutdown applies its own bounded drain.
     ///
     /// On daemon restart the registry is empty: recovered state comes from
     /// the WAL + on-disk artifacts (DD-008 / DD-017). Crash-mid-flight
@@ -604,7 +602,7 @@ pub(super) struct SharedState {
     /// `crash_mid_flight_recovery_never_surfaces_wrong_content` in
     /// `daemon/server/tests/deferred_cold_path.rs` (PR #618).
     ///
-    pub(super) pending_cache_writes: DashMap<String, Arc<Notify>>,
+    pub(super) pending_cache_writes: DashMap<String, pending_writes::PendingWrite>,
     /// In-memory exec-probe/store cache for caller-owned tool caching
     /// (issue #838 slice 1). Keyed by hex-encoded blake3 cache key,
     /// values are the opaque result bytes the caller supplied via

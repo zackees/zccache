@@ -19,12 +19,15 @@ pub(crate) enum CachedPayload {
 
 /// Payloads resolved for one requested-output delivery.
 ///
-/// Staged file payloads carry a shared store-lock guard. Its ownership is tied
-/// to this value so callers cannot retain generation paths while accidentally
-/// dropping the lock before reflink/hardlink/copy or directory unpacking.
+/// Staged file payloads carry the ownership needed to keep their source paths
+/// alive through delivery. Durable generation paths use the shared store-lock
+/// guard; provisional compile paths retain their private staging plan. Both
+/// lifetimes are tied to this value so callers cannot drop either protection
+/// before reflink/hardlink/copy or directory unpacking.
 pub(crate) struct MaterializationPayloads {
     payloads: Arc<[CachedPayload]>,
     staged_guard: Option<StagedMaterializationGuard>,
+    _provisional_staged_owner: Option<Arc<StagedCompilePlan>>,
 }
 
 impl std::ops::Deref for MaterializationPayloads {
@@ -36,6 +39,10 @@ impl std::ops::Deref for MaterializationPayloads {
 }
 
 impl MaterializationPayloads {
+    pub(crate) fn is_provisional_staged(&self) -> bool {
+        self._provisional_staged_owner.is_some()
+    }
+
     pub(crate) fn staged_lock_timings(&self) -> Option<(u64, u64)> {
         self.staged_guard
             .as_ref()
@@ -97,6 +104,10 @@ pub(crate) struct CachedArtifactInner {
     /// immediately. Filesystem discovery then initializes this cell without
     /// holding a map shard lock.
     payloads: OnceLock<Arc<[CachedPayload]>>,
+    /// Keeps private staged files alive while a detached durable publication
+    /// is still consuming them. Owned hit clones retain the same plan, so a
+    /// concurrent publisher cannot clean the paths during materialization.
+    _provisional_staged_owner: Option<Arc<StagedCompilePlan>>,
     /// Per-artifact access state used by durable retention.
     ///
     /// This lock is independent of the DashMap shard, so one hot artifact
@@ -114,6 +125,14 @@ impl std::ops::Deref for CachedArtifact {
 
 impl CachedArtifact {
     fn with_payloads(meta: ArtifactIndex, payloads: Arc<[CachedPayload]>) -> Self {
+        Self::with_payloads_and_owner(meta, payloads, None)
+    }
+
+    fn with_payloads_and_owner(
+        meta: ArtifactIndex,
+        payloads: Arc<[CachedPayload]>,
+        provisional_staged_owner: Option<Arc<StagedCompilePlan>>,
+    ) -> Self {
         let stdout = Arc::clone(&meta.stdout);
         let stderr = Arc::clone(&meta.stderr);
         let now = std::time::Instant::now();
@@ -123,6 +142,7 @@ impl CachedArtifact {
                 stdout,
                 stderr,
                 payloads: OnceLock::from(payloads),
+                _provisional_staged_owner: provisional_staged_owner,
                 access: std::sync::Mutex::new(ArtifactAccess {
                     last_used: now,
                     last_used_wall: std::time::SystemTime::now(),
@@ -178,6 +198,44 @@ impl CachedArtifact {
         )
     }
 
+    /// Publish private staged paths for immediate in-process hits while their
+    /// durable generation is still being copied, synced, and hashed.
+    pub(super) fn from_provisional_staged(
+        meta: ArtifactIndex,
+        payloads: Vec<NormalizedPath>,
+        owner: Arc<StagedCompilePlan>,
+    ) -> Self {
+        Self::with_payloads_and_owner(
+            meta,
+            Arc::from(
+                payloads
+                    .into_iter()
+                    .map(CachedPayload::File)
+                    .collect::<Vec<_>>(),
+            ),
+            Some(owner),
+        )
+    }
+
+    pub(super) fn same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    /// Whether a specific output can be materialized without waiting for a
+    /// same-key publisher. Lazy durable rows return false until payload
+    /// resolution initializes them; resident bytes and live staged paths are
+    /// immediately usable. Hit branches consult this only while publication
+    /// for the key is active.
+    pub(super) fn materialization_payload_ready(&self, index: usize) -> bool {
+        self.payloads
+            .get()
+            .and_then(|payloads| payloads.get(index))
+            .is_some_and(|payload| match payload {
+                CachedPayload::Bytes(_) => true,
+                CachedPayload::File(path) => path.as_path().exists(),
+            })
+    }
+
     /// Create from index metadata and an already-resolved payload list.
     #[cfg(test)]
     pub(crate) fn from_cached_payloads(meta: ArtifactIndex, payloads: Vec<CachedPayload>) -> Self {
@@ -197,6 +255,7 @@ impl CachedArtifact {
                 stdout,
                 stderr,
                 payloads: OnceLock::new(),
+                _provisional_staged_owner: None,
                 access: std::sync::Mutex::new(ArtifactAccess {
                     last_used: std::time::Instant::now(),
                     // Keep durable age in wall-clock form. Reconstructing it as an
@@ -350,6 +409,7 @@ fn ensure_payloads_for_materialization_with_guard(
             Ok(MaterializationPayloads {
                 payloads,
                 staged_guard,
+                _provisional_staged_owner: cached._provisional_staged_owner.clone(),
             })
         }
         None => Err(cache_blob_missing(
@@ -528,6 +588,62 @@ mod tests {
             ensure_payloads_with_staged_policy(&owned_clone, dir.path(), key, false).unwrap();
 
         assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn provisional_staged_payload_owns_private_files_through_hit_delivery() {
+        let dir = tempfile::tempdir().unwrap();
+        let root: NormalizedPath = dir.path().join("private").into();
+        std::fs::create_dir_all(&root).unwrap();
+        let staged: NormalizedPath = root.join("output.rlib");
+        let requested: NormalizedPath = dir.path().join("requested.rlib").into();
+        std::fs::write(&staged, b"staged payload").unwrap();
+        let plan = Arc::new(StagedCompilePlan::for_test(
+            root.clone(),
+            vec![StagedOutputPlan {
+                requested,
+                staged: staged.clone(),
+                role: StagedOutputRole::Regular,
+            }],
+        ));
+        let cached = CachedArtifact::from_provisional_staged(
+            ArtifactIndex::new(
+                vec!["output.rlib".to_string()],
+                vec![14],
+                Arc::new(Vec::new()),
+                Arc::new(Vec::new()),
+                0,
+            ),
+            vec![staged.clone()],
+            plan,
+        );
+        let hit = cached.clone();
+        drop(cached);
+
+        let payloads = ensure_payloads_for_materialization(
+            &hit,
+            &dir.path().join("artifacts"),
+            &"7".repeat(64),
+        )
+        .unwrap();
+        drop(hit);
+        assert!(
+            root.as_path().exists(),
+            "the payload guard must retain the private plan after its artifact is replaced"
+        );
+        assert_eq!(
+            std::fs::read(match &payloads[0] {
+                CachedPayload::File(path) => path,
+                CachedPayload::Bytes(_) => panic!("provisional payload must stay path-backed"),
+            })
+            .unwrap(),
+            b"staged payload"
+        );
+        drop(payloads);
+        assert!(
+            !root.as_path().exists(),
+            "the private plan should clean up after the final hit clone drops"
+        );
     }
 
     #[test]

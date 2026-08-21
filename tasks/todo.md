@@ -845,3 +845,52 @@ Issue: https://github.com/zackees/zccache/issues/1428
 - GREEN: Cargo metadata resolves `zccache` and its `perf_bench_test` target;
   the corrected no-run command reaches dependency compilation instead of
   failing package selection, and the stale package string inventory is empty.
+
+# #1432 restore immediate Rust workspace-link cache hits
+
+Issue: https://github.com/zackees/zccache/issues/1432
+
+- [x] Add a RED regression for a staged payload whose durable publication is still blocked.
+- [x] Publish an owned provisional artifact without weakening conflict handling.
+- [x] Run focused correctness and performance coverage.
+- [ ] Run review, push, merge, and verify the hosted Rust speed floor.
+
+## Review
+
+- Hosted RED: main Perf Guard runs 32415853442 and 32419543154 each reproduced
+  three warm workspace-link misses after an exact five-second pending wait.
+- Root cause: detached Rust staged publication keeps the private files alive but
+  withholds the in-memory artifact until copy/sync/hash publication completes.
+  The next proven depgraph hit times out and recompiles the same staticlib.
+- RED: once a provisional path was visible, the normal cache-blob delivery path
+  rejected it because compiler-private files do not yet have durable digest
+  registration; an in-flight hit could also outlive the artifact clone that
+  owned its staging plan.
+- GREEN: vacant keys publish a path-backed provisional artifact immediately.
+  Its materialization guard owns the private plan through byte delivery and
+  uses independent reflink/copy without durable-blob verification. Publication
+  failures remove only their own provisional instance.
+- GREEN: the eight-test staged-publication module and the independent ownership
+  regression pass. The real ignored `perf_rust_workspace_link` fixture records
+  one cold miss followed by five cached warm trials (21 ms median locally).
+
+# #1435 preserve endpoint context on immediate connection failures
+
+Issue: https://github.com/zackees/zccache/issues/1435
+
+- [x] Reproduce the rust-plan session-stats JSON regression locally.
+- [x] Add shared transport coverage for an immediate connection failure.
+- [x] Preserve the endpoint and original I/O error kind at the transport boundary.
+- [ ] Run focused correctness, review, merge, and close #1435.
+
+## Review
+
+- RED: `rust_plan_session_stats_lookup_errors_surface_in_json` loses the endpoint
+  after session stats moved to the shared full-family roundtrip in #1425.
+- Root cause: transport timeouts add endpoint context, but immediate platform
+  connection errors are propagated raw.
+- GREEN: the shared transport adds endpoint context while preserving the I/O
+  kind and original error source; all 58 IPC tests and the unchanged rust-plan
+  JSON regression pass.
+- clud-review: clean after retaining the original platform error in the source
+  chain (one reviewer).
