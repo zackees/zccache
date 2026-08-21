@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ci import benchmark_stats
+from ci import benchmark_stats, perf_sample_monitor
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -51,8 +51,6 @@ COMPETING_PROCESSES = {
 }
 BUSY_CPU_PERCENT = 5.0
 HOST_PROCESS_ENUMERATION_TIMEOUT_SECONDS = 30
-SAMPLE_MONITOR_INTERVAL_SECONDS = 2.0
-SAMPLE_CONTAINER_MONITOR_INTERVAL_SECONDS = 10.0
 RECIPE_FILES = (
     DOCKERFILE,
     REPO_ROOT / "ci/docker/standalone_perf_entrypoint.sh",
@@ -270,6 +268,23 @@ def _quarantine_contaminated_sample(sample_dir: Path) -> Path:
     return destination
 
 
+def _reject_contaminated_sample(sample_dir: Path, contamination: list[str]) -> None:
+    _write_json(
+        sample_dir / "infrastructure-invalid.json",
+        {
+            "valid": False,
+            "invalid_reasons": [
+                f"timed sample overlapped {reason}" for reason in contamination
+            ],
+        },
+    )
+    quarantine = _quarantine_contaminated_sample(sample_dir)
+    raise RuntimeError(
+        "timed sample was contaminated; evidence retained at "
+        f"{quarantine}: " + "; ".join(contamination)
+    )
+
+
 def validate_completed_results(
     campaign_dir: Path, campaign: dict[str, Any], expected_attempts: int
 ) -> None:
@@ -323,50 +338,17 @@ def _run(
     )
 
 
-def _monitor_sample_process(
-    process: subprocess.Popen[str],
-    container_name: str,
-    process_probe: Any,
-    container_probe: Any,
-) -> tuple[int, list[str]]:
-    """Wait for a timed sample while recording any competing host activity."""
-    detected: set[str] = set()
-    next_container_probe = 0.0
-    while True:
-        try:
-            return_code = process.wait(timeout=SAMPLE_MONITOR_INTERVAL_SECONDS)
-            finished = True
-        except subprocess.TimeoutExpired:
-            finished = False
-
-        try:
-            detected.update(busy_reasons([], process_probe(finished)))
-        except (RuntimeError, subprocess.SubprocessError) as error:
-            detected.add(f"host process monitor failed: {error}")
-        now = time.monotonic()
-        if finished or now >= next_container_probe:
-            try:
-                containers = [
-                    item for item in container_probe() if item[0] != container_name
-                ]
-                detected.update(busy_reasons(containers, []))
-            except (RuntimeError, subprocess.SubprocessError) as error:
-                detected.add(f"container monitor failed: {error}")
-            next_container_probe = now + SAMPLE_CONTAINER_MONITOR_INTERVAL_SECONDS
-        if finished:
-            return return_code, sorted(detected)
-
-
 def _run_sample_command(
     command: list[str], container_name: str
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     print("+ " + subprocess.list2cmdline(command), flush=True)
     process = subprocess.Popen(command, cwd=REPO_ROOT, text=True, encoding="utf-8")
-    return_code, contamination = _monitor_sample_process(
+    return_code, contamination = perf_sample_monitor.monitor_sample_process(
         process,
         container_name,
         lambda finished: _sample_process_names(container_name, finished),
         _container_stats,
+        busy_reasons,
     )
     return subprocess.CompletedProcess(command, return_code), contamination
 
@@ -463,13 +445,7 @@ def _process_names() -> list[str]:
     return [line.strip() for line in output.splitlines() if line.strip()]
 
 
-def _process_names_outside_pids(
-    processes: list[tuple[int, str]], excluded_pids: set[int]
-) -> list[str]:
-    return [name for pid, name in processes if pid not in excluded_pids]
-
-
-def _linux_sample_process_names(container_name: str) -> list[str]:
+def _sample_container_process_ids(container_name: str) -> set[int]:
     top = subprocess.run(
         ["docker", "top", container_name, "-eo", "pid"],
         capture_output=True,
@@ -479,11 +455,15 @@ def _linux_sample_process_names(container_name: str) -> list[str]:
     )
     if top.returncode != 0:
         raise RuntimeError("sample container process enumeration failed")
-    excluded_pids = {
+    return {
         int(line.strip())
         for line in top.stdout.splitlines()
         if line.strip().isdigit()
     }
+
+
+def _linux_sample_process_names(container_name: str) -> list[str]:
+    container_pids_before = _sample_container_process_ids(container_name)
     host = subprocess.run(
         ["ps", "-eo", "pid=,comm="],
         capture_output=True,
@@ -498,7 +478,10 @@ def _linux_sample_process_names(container_name: str) -> list[str]:
         fields = line.strip().split(maxsplit=1)
         if len(fields) == 2 and fields[0].isdigit():
             processes.append((int(fields[0]), fields[1]))
-    return _process_names_outside_pids(processes, excluded_pids)
+    container_pids_after = _sample_container_process_ids(container_name)
+    return perf_sample_monitor.process_names_outside_container(
+        processes, container_pids_before, container_pids_after
+    )
 
 
 def _sample_process_names(container_name: str, finished: bool) -> list[str]:
@@ -821,6 +804,8 @@ def _run_sample(
     )
     result, contamination = _run_sample_command(command, container_name)
     summary_path = sample_dir / "perf-guard-summary.json"
+    if contamination and not summary_path.is_file():
+        _reject_contaminated_sample(sample_dir, contamination)
     if not summary_path.is_file():
         raise RuntimeError(
             f"benchmark did not produce {summary_path} (exit={result.returncode})"
@@ -836,11 +821,7 @@ def _run_sample(
             f"timed sample overlapped {reason}" for reason in contamination
         )
         _write_json(summary_path, summary)
-        quarantine = _quarantine_contaminated_sample(sample_dir)
-        raise RuntimeError(
-            "timed sample was contaminated; evidence retained at "
-            f"{quarantine}: " + "; ".join(contamination)
-        )
+        _reject_contaminated_sample(sample_dir, contamination)
     validate_sample_summary(summary, attempts)
     return {
         "language": language,
