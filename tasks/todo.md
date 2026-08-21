@@ -851,6 +851,6 @@ Issue: https://github.com/zackees/zccache/issues/1432
   Its materialization guard owns the private plan through byte delivery and
   uses independent reflink/copy without durable-blob verification. Publication
   failures remove only their own provisional instance.
-- GREEN: the seven-test staged-publication module and the independent ownership
+- GREEN: the eight-test staged-publication module and the independent ownership
   regression pass. The real ignored `perf_rust_workspace_link` fixture records
   one cold miss followed by five cached warm trials (21 ms median locally).

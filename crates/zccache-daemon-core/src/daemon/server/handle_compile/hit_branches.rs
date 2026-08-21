@@ -27,11 +27,14 @@ pub(super) fn artifact_ready_for_request(
             return true;
         }
     }
-    requested_outputs.is_none_or(|outputs| {
+    if let Some(outputs) = requested_outputs {
         outputs.iter().all(|output| {
-            rustc_compat_payload_index_for(&cached.meta.output_names, output).is_some()
+            rustc_compat_payload_index_for(&cached.meta.output_names, output)
+                .is_some_and(|index| cached.materialization_payload_ready(index))
         })
-    })
+    } else {
+        (0..cached.meta.output_names.len()).all(|index| cached.materialization_payload_ready(index))
+    }
 }
 
 pub(super) async fn await_artifact_publication_if_needed(
@@ -41,7 +44,9 @@ pub(super) async fn await_artifact_publication_if_needed(
     requested_outputs: Option<&[NormalizedPath]>,
 ) {
     let deadline = tokio::time::Instant::now() + pending_writes::PENDING_PAYLOAD_WAIT_TIMEOUT;
-    while !artifact_ready_for_request(state, key_hex, verdict_key_hex, requested_outputs) {
+    while state.pending_cache_writes.contains_key(key_hex)
+        && !artifact_ready_for_request(state, key_hex, verdict_key_hex, requested_outputs)
+    {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero()
             || !pending_writes::await_pending_payload(

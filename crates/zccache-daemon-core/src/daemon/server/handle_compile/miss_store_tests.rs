@@ -261,6 +261,76 @@ async fn visible_artifact_waits_for_pending_sibling_verdict() {
     );
 }
 
+#[tokio::test]
+async fn visible_metadata_waits_for_pending_payload_replacement() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = crate::daemon::server::tests::bind_isolated_server(temp.path());
+    let state = Arc::clone(&server.state);
+    let key = "stale-rust-artifact";
+    let verdict_key = "rustc-verdict";
+    let requested_output: NormalizedPath = temp.path().join("output.rmeta").into();
+    let requested_outputs = vec![requested_output];
+    let metadata = || {
+        let mut meta = ArtifactIndex::new(
+            vec!["output.rmeta".to_string()],
+            vec![1],
+            Arc::new(Vec::new()),
+            Arc::new(Vec::new()),
+            0,
+        );
+        meta.rustc_verdicts.insert(
+            verdict_key.to_string(),
+            ArtifactVerdict {
+                stdout: Arc::new(Vec::new()),
+                stderr: Arc::new(Vec::new()),
+                exit_code: 0,
+            },
+        );
+        meta
+    };
+    state
+        .artifacts
+        .insert(key.to_string(), CachedArtifact::from_index(metadata()));
+    let _publisher = pending_writes::register(&state.pending_cache_writes, key);
+
+    let state_for_waiter = Arc::clone(&state);
+    let requested_outputs_for_waiter = requested_outputs.clone();
+    let mut waiter = tokio::spawn(async move {
+        super::super::hit_branches::await_artifact_publication_if_needed(
+            &state_for_waiter,
+            key,
+            Some(verdict_key),
+            Some(&requested_outputs_for_waiter),
+        )
+        .await;
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut waiter)
+            .await
+            .is_err(),
+        "visible metadata without a usable payload must wait for replacement"
+    );
+
+    state.artifacts.insert(
+        key.to_string(),
+        CachedArtifact::from_cached_payloads(
+            metadata(),
+            vec![CachedPayload::Bytes(Arc::new(vec![1]))],
+        ),
+    );
+    pending_writes::complete(&state.pending_cache_writes, key);
+    tokio::time::timeout(Duration::from_secs(1), waiter)
+        .await
+        .expect("payload replacement wait timed out")
+        .expect("payload replacement wait task panicked");
+    assert!(super::super::hit_branches::artifact_ready_for_request(
+        &state,
+        key,
+        Some(verdict_key),
+        Some(&requested_outputs),
+    ));
+}
+
 #[test]
 fn failed_async_persist_never_enqueues_an_index_insert() {
     let (index_tx, mut index_rx) = tokio::sync::mpsc::unbounded_channel();

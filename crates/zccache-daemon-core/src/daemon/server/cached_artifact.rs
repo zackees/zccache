@@ -221,6 +221,21 @@ impl CachedArtifact {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
+    /// Whether a specific output can be materialized without waiting for a
+    /// same-key publisher. Lazy durable rows return false until payload
+    /// resolution initializes them; resident bytes and live staged paths are
+    /// immediately usable. Hit branches consult this only while publication
+    /// for the key is active.
+    pub(super) fn materialization_payload_ready(&self, index: usize) -> bool {
+        self.payloads
+            .get()
+            .and_then(|payloads| payloads.get(index))
+            .is_some_and(|payload| match payload {
+                CachedPayload::Bytes(_) => true,
+                CachedPayload::File(path) => path.as_path().exists(),
+            })
+    }
+
     /// Create from index metadata and an already-resolved payload list.
     #[cfg(test)]
     pub(crate) fn from_cached_payloads(meta: ArtifactIndex, payloads: Vec<CachedPayload>) -> Self {
