@@ -1,4 +1,5 @@
 import json
+import subprocess
 from argparse import Namespace
 
 import pytest
@@ -369,6 +370,29 @@ def test_windows_process_activity_ignores_only_idle_orphan_rustc():
         "rustc",
         "cargo",
     ]
+
+
+def test_sample_monitor_rejects_activity_that_starts_after_launch():
+    class Process:
+        waits = 0
+
+        def wait(self, timeout):
+            assert timeout == perf_standalone.SAMPLE_MONITOR_INTERVAL_SECONDS
+            self.waits += 1
+            if self.waits == 1:
+                raise subprocess.TimeoutExpired("sample", timeout)
+            return 0
+
+    process_samples = iter([[], ["perf_bench_test"]])
+    return_code, reasons = perf_standalone._monitor_sample_process(
+        Process(),
+        "zccache-standalone-own-sample",
+        lambda: next(process_samples),
+        lambda: [("zccache-standalone-own-sample", 90.0)],
+    )
+
+    assert return_code == 0
+    assert reasons == ["host process perf_bench_test is active"]
 
 
 def test_host_fingerprint_input_ignores_dynamic_docker_state():

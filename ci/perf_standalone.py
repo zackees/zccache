@@ -51,6 +51,8 @@ COMPETING_PROCESSES = {
 }
 BUSY_CPU_PERCENT = 5.0
 HOST_PROCESS_ENUMERATION_TIMEOUT_SECONDS = 30
+SAMPLE_MONITOR_INTERVAL_SECONDS = 2.0
+SAMPLE_CONTAINER_MONITOR_INTERVAL_SECONDS = 10.0
 RECIPE_FILES = (
     DOCKERFILE,
     REPO_ROOT / "ci/docker/standalone_perf_entrypoint.sh",
@@ -311,6 +313,48 @@ def _run(
         check=check,
         timeout=timeout_seconds,
     )
+
+
+def _monitor_sample_process(
+    process: subprocess.Popen[str],
+    container_name: str,
+    process_probe: Any,
+    container_probe: Any,
+) -> tuple[int, list[str]]:
+    """Wait for a timed sample while recording any competing host activity."""
+    detected: set[str] = set()
+    next_container_probe = 0.0
+    while True:
+        try:
+            return_code = process.wait(timeout=SAMPLE_MONITOR_INTERVAL_SECONDS)
+            finished = True
+        except subprocess.TimeoutExpired:
+            finished = False
+
+        detected.update(busy_reasons([], process_probe()))
+        now = time.monotonic()
+        if finished or now >= next_container_probe:
+            containers = [
+                item for item in container_probe() if item[0] != container_name
+            ]
+            detected.update(busy_reasons(containers, []))
+            next_container_probe = now + SAMPLE_CONTAINER_MONITOR_INTERVAL_SECONDS
+        if finished:
+            return return_code, sorted(detected)
+
+
+def _run_sample_command(
+    command: list[str], container_name: str
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    print("+ " + subprocess.list2cmdline(command), flush=True)
+    process = subprocess.Popen(command, cwd=REPO_ROOT, text=True, encoding="utf-8")
+    return_code, contamination = _monitor_sample_process(
+        process,
+        container_name,
+        _active_process_names,
+        _container_stats,
+    )
+    return subprocess.CompletedProcess(command, return_code), contamination
 
 
 def _git_output(*args: str) -> str:
@@ -709,14 +753,15 @@ def _run_sample(
 ) -> dict[str, Any]:
     sample_dir = campaign_dir / language.replace("+", "p") / test_name
     sample_dir.mkdir(parents=True, exist_ok=True)
+    container_name = f"zccache-standalone-{language.replace('+', 'p')}-{test_name}"[:63]
     command = docker_run_command(
         repo_root=REPO_ROOT,
         results_dir=sample_dir,
-        container_name=f"zccache-standalone-{language.replace('+', 'p')}-{test_name}"[:63],
+        container_name=container_name,
         entrypoint_args=["run", language, test_name, str(attempts)],
         artifacts_dir=campaign_dir / "fixture",
     )
-    result = _run(command, check=False)
+    result, contamination = _run_sample_command(command, container_name)
     summary_path = sample_dir / "perf-guard-summary.json"
     if not summary_path.is_file():
         raise RuntimeError(
@@ -726,6 +771,16 @@ def _run_sample(
     summary = _enrich_summary(
         summary_path, result.returncode, identity, command, telemetry
     )
+    if contamination:
+        infrastructure = summary["infrastructure"]
+        infrastructure["valid"] = False
+        infrastructure["invalid_reasons"].extend(
+            f"timed sample overlapped {reason}" for reason in contamination
+        )
+        _write_json(summary_path, summary)
+        raise RuntimeError(
+            "timed sample was contaminated: " + "; ".join(contamination)
+        )
     validate_sample_summary(summary, attempts)
     return {
         "language": language,
