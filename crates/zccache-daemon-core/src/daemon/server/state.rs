@@ -603,12 +603,10 @@ pub(super) struct SharedState {
     /// `daemon/server/tests/deferred_cold_path.rs` (PR #618).
     ///
     pub(super) pending_cache_writes: DashMap<String, pending_writes::PendingWrite>,
-    /// In-memory exec-probe/store cache for caller-owned tool caching
-    /// (issue #838 slice 1). Keyed by hex-encoded blake3 cache key,
-    /// values are the opaque result bytes the caller supplied via
-    /// `Request::ExecStore`. Slice 1 keeps this in-memory only; a
-    /// follow-up slice swaps to `KvStore` for persistence.
-    pub(super) exec_cache: DashMap<String, Arc<Vec<u8>>>,
+    /// Persistent caller-owned opaque exec results (#1433 / #838).
+    /// Keys retain the `zccache-exec-probe-v1` derivation contract; values
+    /// live in a dedicated namespace under this daemon's normal cache root.
+    pub(super) exec_store: KvStore,
 }
 
 impl SharedState {

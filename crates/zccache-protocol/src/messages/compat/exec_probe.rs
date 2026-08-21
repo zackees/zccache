@@ -44,18 +44,23 @@ fn exec_probe_result_roundtrip_miss_and_hit() {
     let miss = Response::ExecProbeResult {
         cache_key_hex: "0".repeat(64),
         cached_bytes: None,
+        persistent: true,
     };
     roundtrip(&miss);
 
     let hit = Response::ExecProbeResult {
         cache_key_hex: "f".repeat(64),
         cached_bytes: Some(Arc::new(b"cached-ast-bytes".to_vec())),
+        persistent: true,
     };
     roundtrip(&hit);
 }
 
 #[test]
 fn exec_store_ack_roundtrip() {
-    let ack = Response::ExecStoreAck { stored: true };
+    let ack = Response::ExecStoreAck {
+        stored: true,
+        persistent: true,
+    };
     roundtrip(&ack);
 }

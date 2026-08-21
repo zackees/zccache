@@ -25,6 +25,7 @@ from zccache.downloader import (
     FetchResult,
     FetchState,
 )
+from zccache.exec_cache import exec_cached
 from zccache.fingerprint import (
     Api,
     FingerprintCache,
@@ -76,6 +77,7 @@ __all__ = [
     "cpp_lint",
     "cpp_lint_run",
     "downloader",
+    "exec_cached",
     "fingerprint",
     "ino",
     "watcher",

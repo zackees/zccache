@@ -107,7 +107,7 @@ pub(super) fn sample_artifact() -> ArtifactData {
 
 // Compile-time check: PROTOCOL_VERSION must be positive.
 const _: () = assert!(super::super::PROTOCOL_VERSION > 0);
-// Compile-time check: PROTOCOL_VERSION == 23 after `DaemonStatus` gained
+// Compile-time check: PROTOCOL_VERSION == 25 after durable exec-cache
 // `index_writer_gone` (issue #1177: a daemon that has stopped recording what
 // it caches still looks healthy, so the condition has to be reportable rather
 // than only inferable from the lifecycle log). v21 was the pin after
@@ -129,4 +129,4 @@ const _: () = assert!(super::super::PROTOCOL_VERSION > 0);
 // pin after SessionStats gained `phase_profile`. v8 was the pin after
 // Compile/CompileEphemeral gained `stdin` and ArtifactPayload replaced
 // ArtifactOutput.data: Arc<Vec<u8>> (issue #296 Option B).
-const _FINGERPRINT_VERSION: () = assert!(super::super::PROTOCOL_VERSION == 23);
+const _FINGERPRINT_VERSION: () = assert!(super::super::PROTOCOL_VERSION == 25);

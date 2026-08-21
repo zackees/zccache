@@ -279,9 +279,16 @@ fn response_variant_indices_are_append_only() {
             Response::ExecProbeResult {
                 cache_key_hex: "0".repeat(64),
                 cached_bytes: None,
+                persistent: true,
             },
         ),
-        (19, Response::ExecStoreAck { stored: true }),
+        (
+            19,
+            Response::ExecStoreAck {
+                stored: true,
+                persistent: true,
+            },
+        ),
         (
             20,
             Response::CompileProgress {

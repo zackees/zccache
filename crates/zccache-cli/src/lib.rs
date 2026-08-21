@@ -13,6 +13,8 @@ use zccache::cli::{
     run_ino_convert_cached, DownloadParams, DownloadSource, InoConvertOptions, WaitMode,
 };
 
+mod exec_cached;
+
 fn runtime_to_py_err(message: String) -> PyErr {
     PyErr::new::<PyRuntimeError, _>(message)
 }
@@ -784,5 +786,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(convert_ino, m)?)?;
     m.add_function(wrap_pyfunction!(default_endpoint, m)?)?;
     m.add_function(wrap_pyfunction!(check_running_daemon, m)?)?;
+    exec_cached::register(m)?;
     Ok(())
 }

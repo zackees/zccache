@@ -94,6 +94,12 @@ needed before the legacy lane is deleted. A separate prost availability bit
 keeps an old/legacy response distinguishable from a genuine empty map; the CLI
 prints telemetry as unavailable (and JSON `null`) unless that bit is present.
 
+`ExecProbe` and `ExecStore` use this same full-family selection path. Each is
+one ordinary request/response roundtrip; there is no preliminary handshake.
+Python callback execution happens between the miss response and the store
+request. Application errors and ambiguous transport failures are terminal, so
+the binding never runs or stores a callback result after an uncertain replay.
+
 ## Connection Lifecycle
 
 **CLI side (drop-in wrapper mode):**

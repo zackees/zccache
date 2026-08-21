@@ -198,6 +198,10 @@ pub(super) fn new_shared_state(
     // `MetadataCache::get_cached_hash_if_stat_valid` keeps cache
     // keys correct either way.
     let cache_system = CacheSystem::new();
+    let exec_store = KvStore::open(cache_dir).map_err(|error| match error {
+        KvError::Io(error) => error,
+        other => std::io::Error::other(format!("cannot open exec cache: {other}")),
+    })?;
 
     // Issue #813 / #810: log the effective compile-priority default
     // policy at daemon start so the behaviour is observable without
@@ -314,7 +318,7 @@ pub(super) fn new_shared_state(
             depgraph_load_warning: StdMutex::new(None),
             in_flight_exec: DashMap::new(),
             pending_cache_writes: DashMap::new(),
-            exec_cache: DashMap::new(),
+            exec_store,
         }),
         index_writer_rx,
     ))

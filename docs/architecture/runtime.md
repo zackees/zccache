@@ -337,6 +337,24 @@ Cache policies (`ExecCachePolicy`):
 
 The daemon runs the tool with `env_clear()` and only the declared env subset, so the cache key is the exact functional input of the run. Concurrent callers with the same full key coalesce on `state.in_flight_exec` — the first inserter spawns the tool; the rest wait on a shared `tokio::sync::Notify` and re-attempt the cache lookup once it fires, guaranteeing exactly one tool spawn per herd.
 
+### Python caller-owned `exec_cached`
+
+`zccache.exec_cached(name, input_files, input_env, extra_key, runner) -> bytes`
+uses the related `ExecProbe` / `ExecStore` request pair when the work is an
+in-process Python callback rather than a daemon-spawned command. The probe key
+keeps its original `zccache-exec-probe-v1` domain and hashes the name, sorted
+path/content pairs, sorted environment pairs, and opaque `extra_key`. Values
+are stored verbatim in the crash-safe `exec-probe-v1` KV namespace, so a
+successful store survives daemon restart without changing key compatibility.
+
+Both IPC/storage waits release the GIL. A hit returns the stored bytes without
+calling `runner`; a miss reacquires the GIL for exactly one callback invocation,
+requires a `bytes` result, persists it, and returns it. Callback exceptions are
+propagated unchanged and are never stored. Daemon/protocol/storage failures
+raise `RuntimeError` and do not trigger an implicit uncached fallback. The API
+expects the normal zccache daemon to be running; callers may start it with
+`zccache start` according to their own lifecycle policy.
+
 **Measured warm-hit latency**: ~190 µs / request on Windows NTFS (criterion `benches/exec.rs::exec_warm_hit`), versus ~15 ms / cold-miss request (dominated by tool spawn cost). The IPC roundtrip + cache-key compose + artifact-replay path lands well under the issue's "sub-millisecond" warm-hit target.
 
 The integration suite covering this handler spans two files:

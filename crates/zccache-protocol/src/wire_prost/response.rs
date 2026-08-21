@@ -140,12 +140,17 @@ pub fn response_to_prost(response: &crate::Response, request_id: &str) -> zccach
         crate::Response::ExecProbeResult {
             cache_key_hex,
             cached_bytes,
+            persistent,
         } => Body::ExecProbeResult(zccache_v1::ExecProbeResult {
             cache_key_hex: cache_key_hex.clone(),
             cached_bytes: cached_bytes.as_ref().map(|bytes| bytes.as_ref().clone()),
+            persistent: *persistent,
         }),
-        crate::Response::ExecStoreAck { stored } => {
-            Body::ExecStoreAck(zccache_v1::ExecStoreAck { stored: *stored })
+        crate::Response::ExecStoreAck { stored, persistent } => {
+            Body::ExecStoreAck(zccache_v1::ExecStoreAck {
+                stored: *stored,
+                persistent: *persistent,
+            })
         }
     };
 
@@ -253,8 +258,39 @@ pub fn response_from_prost(response: zccache_v1::Response) -> Result<crate::Resp
         Some(Body::ExecProbeResult(result)) => Ok(crate::Response::ExecProbeResult {
             cache_key_hex: result.cache_key_hex,
             cached_bytes: result.cached_bytes.map(std::sync::Arc::new),
+            persistent: result.persistent,
         }),
-        Some(Body::ExecStoreAck(ack)) => Ok(crate::Response::ExecStoreAck { stored: ack.stored }),
+        Some(Body::ExecStoreAck(ack)) => Ok(crate::Response::ExecStoreAck {
+            stored: ack.stored,
+            persistent: ack.persistent,
+        }),
         None => Err("v16 prost response is missing its response body".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_exec_probe_response_defaults_to_not_persistent() {
+        let legacy = zccache_v1::Response {
+            body: Some(zccache_v1::response::Body::ExecProbeResult(
+                zccache_v1::ExecProbeResult {
+                    cache_key_hex: "0".repeat(64),
+                    cached_bytes: None,
+                    persistent: false,
+                },
+            )),
+            request_id: String::new(),
+        };
+
+        assert!(matches!(
+            response_from_prost(legacy),
+            Ok(crate::Response::ExecProbeResult {
+                persistent: false,
+                ..
+            })
+        ));
     }
 }

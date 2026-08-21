@@ -21,7 +21,7 @@ pub const UNKNOWN_MISS_WARNING_PREFIX: &str = "zccache[warn][M]:";
 ///
 /// This remains the compatibility version used by the legacy encode/decode
 /// helpers while full-family clients prefer the separately versioned prost lane.
-pub const BINCODE_PROTOCOL_VERSION: u32 = 23;
+pub const BINCODE_PROTOCOL_VERSION: u32 = 25;
 
 /// Prost daemon wire version.
 ///

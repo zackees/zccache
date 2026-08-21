@@ -465,6 +465,10 @@ pub enum Response {
     },
     /// Result of an `ExecProbe` request (issue #838).
     ///
+    /// `persistent` must be true before a client may rely on a stored result
+    /// surviving daemon restart. It defaults to false on old prost daemons,
+    /// allowing newer clients to reject their legacy in-memory implementation.
+    ///
     /// `cached_bytes.is_some()` means the daemon found a stored result for
     /// the derived key — the caller should return those bytes to its
     /// consumer without invoking the runner. `cached_bytes.is_none()` means
@@ -482,6 +486,8 @@ pub enum Response {
         cache_key_hex: String,
         /// `Some(bytes)` on cache hit; `None` on miss.
         cached_bytes: Option<Arc<Vec<u8>>>,
+        /// True only when the daemon's exec cache is durable across restart.
+        persistent: bool,
     },
     /// Acknowledgement of an `ExecStore` request (issue #838).
     ///
@@ -496,6 +502,8 @@ pub enum Response {
     ExecStoreAck {
         /// Operational outcome of the store.
         stored: bool,
+        /// True only when the acknowledged store is durable across restart.
+        persistent: bool,
     },
     /// Interim, **non-terminal** progress heartbeat for an in-flight
     /// `Compile` / `CompileEphemeral` request (issue #1216).
