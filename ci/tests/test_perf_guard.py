@@ -512,10 +512,12 @@ def test_final_status_explains_worst_failed_floor():
 
     final_status = perf_guard.format_final_status(report)
 
+    # baseline 1.200s at a 1.50x floor needs zccache <= 0.800s; it took
+    # 1.000s, so the miss is 200ms of wall clock rather than "0.3x".
     assert final_status == (
         "PERF GUARD FAILED: 1 check below floor; worst c C inline args / "
         "Single-file, Warm vs sccache: expected >= 1.50x, actual 1.200x "
-        "(zccache 1.000s vs baseline 1.200s)."
+        "(zccache 1.000s vs baseline 1.200s). Missed the floor by 200.0ms."
     )
 
 
@@ -1126,7 +1128,9 @@ def test_single_attempt_reports_no_spread():
     final_status = perf_guard.format_final_status(report)
 
     assert "Attempt ratios" not in final_status
-    assert final_status.endswith("(zccache 1.000s vs baseline 1.200s).")
+    assert final_status.endswith(
+        "(zccache 1.000s vs baseline 1.200s). Missed the floor by 200.0ms."
+    )
 
 
 def test_attempt_spread_is_ordered_by_attempt_not_by_ratio():
@@ -1139,3 +1143,24 @@ def test_attempt_spread_is_ordered_by_attempt_not_by_ratio():
     failed = [s for s in report.statuses if not report.status_passed(s)]
 
     assert perf_guard.format_attempt_spread(failed[0]) == "1.100x, 1.200x"
+
+
+def test_failure_line_reports_absolute_margin_to_the_floor():
+    """A ratio alone hides how small the miss is in wall clock. 0.849x
+    against a 0.85x floor sounds like a near miss; the milliseconds say
+    whether the runner could have resolved it at all (#1445)."""
+    report = perf_guard.evaluate_attempts([rows(FAILING_SCCACHE_LOG)], threshold=1.5)
+
+    assert "Missed the floor by 200.0ms." in perf_guard.format_final_status(report)
+
+
+def test_floor_margin_is_empty_for_a_passing_sample():
+    """No margin to report when the sample already clears its floor."""
+    report = perf_guard.evaluate_attempts([rows(PASSING_LOG)], threshold=1.5)
+    status = report.statuses[0]
+
+    margin = perf_guard.format_floor_margin(
+        status, perf_guard._selected_sample(report, status)
+    )
+
+    assert margin == ""
