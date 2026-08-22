@@ -255,8 +255,48 @@ deterministic test at the narrowest useful layer:
 - Use the existing ignored benchmark tests plus `ci/perf_guard.py` for
   compile-time comparisons that are stable enough for a cheap hosted check.
 - Use a focused duration/counter assertion for a specific function or path.
-- Prefer approximately 3× headroom over the post-fix local measurement.
 - Prefix performance tests with `perf_` and reference the motivating issue.
 
 Do not add a second ad-hoc benchmark framework. Extend this harness or the
 existing focused regression tests.
+
+### Choosing a deadline — classify it before you pick a number
+
+Most wall-clock assertions that fail on CI were never measuring what they
+claimed to. Before choosing a duration, decide which of three things the
+deadline is. The right number differs, and so does the right fix when it goes
+red (issue #1452 collected the instances behind this).
+
+**1. The deadline *is* the assertion.** The property is latency, and the bound
+is what separates pass from fail. `perf_explicit_argv_dispatches_in_process_under_250ms`
+is the example: a process spawn costs ~10-50 ms, so the 250 ms bound is the
+whole test. Keep these tight, give them roughly 3× headroom over the post-fix
+local measurement, and **never widen one to quiet a flake** — the widened test
+passes with the regression present and is then decoration. If such a test is
+flaky, it needs a better instrument, not a bigger number.
+
+**2. The deadline is a proxy for a structural property.** The real claim is
+"no synchronous load here", "no subprocess spawned", "this ran in-process",
+and time is standing in for it. These are the worst offenders, because the
+proxy tracks machine speed rather than the property: a fast machine can satisfy
+the bound *with* the regression, and a loaded one violates it without.
+Assert the property directly where you can — a lifecycle event, a counter, a
+source-window scan. Where you cannot, measure a **differential** against a
+control so machine speed cancels. `daemon_spawn_lockfile_budget_test` is the
+worked example of both halves.
+
+**3. The deadline is only a hang detector.** Once a guard is released or a task
+is unblocked, the work either completes promptly or is broken and never
+completes. Nothing interesting lives between 5 s and 60 s, so a tight bound
+buys no detection and costs CI cycles. Be generous, and name the constant so
+the intent is legible — see `HANDOFF_HANG_DETECTOR` in
+`handle_exec_tests.rs`.
+
+Two rules that apply to all three:
+
+- **Do not apply a blanket multiplier** when a deadline goes red. It hides
+  genuine hangs, and for kind 1 it destroys the test outright.
+- **Size against CI, not your machine.** A dev box is routinely several times
+  faster than a loaded hosted runner; a unit suite measured at 57 s locally has
+  been observed taking 523 s in CI. 3× headroom over a local measurement is a
+  floor for kind 1 and not enough on its own for anything else.
