@@ -8,6 +8,11 @@ import pytest
 
 from ci import perf_watchdog
 
+# A wall-clock budget that must dominate interpreter startup, not merely
+# exceed it. Only the test that asserts on child output needs this; the
+# rest drive the watchdog's own clock and can stay fast.
+STARTUP_DOMINATING_TIMEOUT_SECONDS = 5.0
+
 
 def _run(
     tmp_path: Path, code: str, config: perf_watchdog.WatchdogConfig
@@ -50,6 +55,13 @@ def test_streamed_child_output_is_written_to_durable_log(tmp_path: Path) -> None
 
 
 def test_timeout_captures_summary_and_terminates_child(tmp_path: Path) -> None:
+    """The watchdog's own clock drives these, so a tight timeout is safe here.
+
+    Deliberately asserts nothing about the child's *output*: at this timeout the
+    child may never reach its first write. That property is covered separately
+    by test_output_emitted_before_a_timeout_is_preserved, which pays for a
+    startup margin so this test does not have to.
+    """
     config = perf_watchdog.WatchdogConfig(
         diagnostic_after_seconds=0.05,
         timeout_seconds=0.2,
@@ -58,7 +70,42 @@ def test_timeout_captures_summary_and_terminates_child(tmp_path: Path) -> None:
         debugger_timeout_seconds=0.1,
         enable_debugger=False,
     )
-    result, log, statuses = _run(
+    result, _log, statuses = _run(
+        tmp_path,
+        "import time; time.sleep(30)",
+        config,
+    )
+    assert result == perf_watchdog.CommandResult(
+        perf_watchdog.TIMEOUT_EXIT_CODE, timed_out=True
+    )
+    summaries = list((tmp_path / "output" / "diagnostics").glob("*/summary.json"))
+    assert len(summaries) == 1
+    assert any("symbolic stacks" in message for message in statuses)
+    assert any("terminating" in message for message in statuses)
+
+
+def test_output_emitted_before_a_timeout_is_preserved(tmp_path: Path) -> None:
+    """Output the child already wrote must survive being killed.
+
+    This is the forensic property: a timeout that discards what the child said
+    before it hung is far less useful than one that keeps it.
+
+    The timeout must *dominate* interpreter startup rather than merely exceed
+    it. At 0.2s this raced Python's own startup on Windows and failed roughly
+    2 runs in 5 with `assert 'waiting' in ''` -- the child was killed before it
+    reached its first write, so the test was measuring process-launch latency
+    rather than the watchdog. The child still sleeps far longer than the
+    budget, so the timeout is guaranteed to fire.
+    """
+    config = perf_watchdog.WatchdogConfig(
+        diagnostic_after_seconds=0.05,
+        timeout_seconds=STARTUP_DOMINATING_TIMEOUT_SECONDS,
+        heartbeat_seconds=0.05,
+        console_output="lite",
+        debugger_timeout_seconds=0.1,
+        enable_debugger=False,
+    )
+    result, log, _statuses = _run(
         tmp_path,
         "import time; print('waiting', flush=True); time.sleep(30)",
         config,
@@ -67,10 +114,6 @@ def test_timeout_captures_summary_and_terminates_child(tmp_path: Path) -> None:
         perf_watchdog.TIMEOUT_EXIT_CODE, timed_out=True
     )
     assert "waiting" in log
-    summaries = list((tmp_path / "output" / "diagnostics").glob("*/summary.json"))
-    assert len(summaries) == 1
-    assert any("symbolic stacks" in message for message in statuses)
-    assert any("terminating" in message for message in statuses)
 
 
 def test_environment_configuration_uses_confirmed_60_and_75_minute_windows() -> None:
