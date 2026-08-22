@@ -685,3 +685,73 @@ def test_resume_revalidates_completed_sample_artifacts(tmp_path):
     (sample_dir / "attempt-1.log").unlink()
     with pytest.raises(ValueError, match="missing artifacts"):
         perf_standalone.validate_completed_results(tmp_path, campaign, 1)
+
+
+# ── a failing sample is still evidence (#1116) ─────────────────────────────
+#
+# The campaign stops at the first row that misses its floor. That row ran,
+# produced artifacts, and was measured -- dropping it from the index is
+# backwards, and it left `campaign.json` with no record that the run reached
+# emscripten at all.
+
+
+def _guard_failure_item(language="emscripten", test="perf_emcc_link"):
+    return {
+        "language": language,
+        "test": test,
+        "passed": False,
+        "failure": "sample did not pass the strict perf guard",
+        "peak_rss_bytes": None,
+        "command": ["docker", "run"],
+        "cache_telemetry": {},
+        "artifacts": {
+            "summary_json": f"{language}/{test}/perf-guard-summary.json",
+            "raw_logs": [f"{language}/{test}/attempt-1.log"],
+            "attempt_json": [f"{language}/{test}/attempt-1.json"],
+        },
+    }
+
+
+def test_sample_guard_failure_carries_the_recorded_item():
+    """The exception exists to keep the evidence, not just to signal."""
+    item = _guard_failure_item()
+    error = perf_standalone.SampleGuardFailure(item, ValueError("below floor"))
+
+    assert error.item is item
+    assert error.item["passed"] is False
+    assert "below floor" in str(error)
+
+
+def test_markdown_reports_a_failed_sample_as_failed():
+    """The status column was the literal string PASS, so a campaign index
+    could not represent the failure it stopped on."""
+    campaign = {
+        "identity": {
+            "commit": "abc123",
+            "image_digest": "sha256:deadbeef",
+            "attempts": 1,
+            "host_fingerprint": "host",
+        },
+        "results": [_guard_failure_item()],
+    }
+
+    markdown = perf_standalone._render_markdown(campaign)
+
+    assert "| FAIL |" in markdown, markdown
+    assert "| PASS |" not in markdown
+
+
+def test_markdown_still_reports_a_passing_sample_as_passing():
+    item = _guard_failure_item()
+    item["passed"] = True
+    campaign = {
+        "identity": {
+            "commit": "abc123",
+            "image_digest": "sha256:deadbeef",
+            "attempts": 1,
+            "host_fingerprint": "host",
+        },
+        "results": [item],
+    }
+
+    assert "| PASS |" in perf_standalone._render_markdown(campaign)

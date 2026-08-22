@@ -285,6 +285,19 @@ def _reject_contaminated_sample(sample_dir: Path, contamination: list[str]) -> N
     )
 
 
+class SampleGuardFailure(RuntimeError):
+    """A sample that ran cleanly and then failed its perf floor.
+
+    Carries the recorded result so the campaign can index the evidence before
+    it stops. Distinct from an infrastructure failure, where there is no valid
+    sample to record.
+    """
+
+    def __init__(self, item: dict[str, Any], cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.item = item
+
+
 def validate_completed_results(
     campaign_dir: Path, campaign: dict[str, Any], expected_attempts: int
 ) -> None:
@@ -822,8 +835,7 @@ def _run_sample(
         )
         _write_json(summary_path, summary)
         _reject_contaminated_sample(sample_dir, contamination)
-    validate_sample_summary(summary, attempts)
-    return {
+    item = {
         "language": language,
         "test": test_name,
         "passed": True,
@@ -832,6 +844,16 @@ def _run_sample(
         "cache_telemetry": telemetry,
         "artifacts": artifact_paths(campaign_dir, sample_dir),
     }
+    try:
+        validate_sample_summary(summary, attempts)
+    except (ValueError, RuntimeError) as error:
+        # The sample is real evidence -- it ran, produced artifacts, and was
+        # measured. Losing it from the index because it missed a floor is
+        # exactly backwards: a failing row is the row you most want linked.
+        item["passed"] = False
+        item["failure"] = str(error)
+        raise SampleGuardFailure(item, error) from error
+    return item
 
 
 def _render_markdown(campaign: dict[str, Any]) -> str:
@@ -855,7 +877,8 @@ def _render_markdown(campaign: dict[str, Any]) -> str:
             for index, path in enumerate(artifacts["raw_logs"], start=1)
         )
         lines.append(
-            f"| {item['language']} | `{item['test']}` | PASS | {rss_text} | "
+            f"| {item['language']} | `{item['test']}` | "
+            f"{'PASS' if item.get('passed', True) else 'FAIL'} | {rss_text} | "
             f"[JSON]({artifacts['summary_json']}) | {log_links} |"
         )
     return "\n".join(lines) + "\n"
@@ -934,19 +957,39 @@ def run_campaign(args: argparse.Namespace) -> Path:
     }
     if args.resume:
         validate_completed_results(campaign_dir, campaign, args.attempts)
-    completed = {(item["language"], item["test"]) for item in campaign["results"]}
-    for language, test_name in inventory:
-        if (language, test_name) in completed:
-            continue
-        _require_quiet_host()
-        item = _run_sample(
-            campaign_dir, language, test_name, args.attempts, identity
-        )
+    # Only passing samples count as done, so `--resume` retries a row that
+    # missed its floor rather than treating the failure as settled.
+    completed = {
+        (item["language"], item["test"])
+        for item in campaign["results"]
+        if item.get("passed", True)
+    }
+
+    def record(item: dict[str, Any]) -> None:
+        campaign["results"] = [
+            existing
+            for existing in campaign["results"]
+            if (existing["language"], existing["test"])
+            != (item["language"], item["test"])
+        ]
         campaign["results"].append(item)
         _write_json(campaign_path, campaign)
         (campaign_dir / "README.md").write_text(
             _render_markdown(campaign), encoding="utf-8"
         )
+
+    for language, test_name in inventory:
+        if (language, test_name) in completed:
+            continue
+        _require_quiet_host()
+        try:
+            item = _run_sample(
+                campaign_dir, language, test_name, args.attempts, identity
+            )
+        except SampleGuardFailure as failure:
+            record(failure.item)
+            raise
+        record(item)
     return campaign_dir
 
 
