@@ -267,13 +267,23 @@ claimed to. Before choosing a duration, decide which of three things the
 deadline is. The right number differs, and so does the right fix when it goes
 red (issue #1452 collected the instances behind this).
 
-**1. The deadline *is* the assertion.** The property is latency, and the bound
-is what separates pass from fail. `perf_explicit_argv_dispatches_in_process_under_250ms`
-is the example: a process spawn costs ~10-50 ms, so the 250 ms bound is the
-whole test. Keep these tight, give them roughly 3× headroom over the post-fix
-local measurement, and **never widen one to quiet a flake** — the widened test
-passes with the regression present and is then decoration. If such a test is
-flaky, it needs a better instrument, not a bigger number.
+**1. The deadline *is* the assertion.** The property is latency and the bound
+is what separates pass from fail. Keep these tight, give them roughly 3×
+headroom over the post-fix local measurement, and **never widen one to quiet a
+flake** — the widened test passes with the regression present and is then
+decoration. If such a test is flaky it needs a better instrument, not a bigger
+number.
+
+Before assuming a deadline is this kind, **measure the regression it is meant
+to catch**. `perf_explicit_argv_dispatches_in_process_under_250ms` looks like
+this kind and is not. Its stated property is that an embedded dispatch stays a
+local function call "rather than regaining process-spawn cost", but
+`cmd_cache_root` does no IPC and no spawn — it resolves the cache root, formats
+JSON, and prints — so the work is around a millisecond, while spawning a debug
+binary on this repo measures ~145 ms once control-adjusted against
+`cmd /c exit`. A regression that regained a re-exec would therefore land near
+150 ms and **pass** the 250 ms bound. The bound only catches something
+catastrophically slow, which makes it kind 2 wearing kind 1's clothes.
 
 **2. The deadline is a proxy for a structural property.** The real claim is
 "no synchronous load here", "no subprocess spawned", "this ran in-process",
@@ -283,7 +293,9 @@ the bound *with* the regression, and a loaded one violates it without.
 Assert the property directly where you can — a lifecycle event, a counter, a
 source-window scan. Where you cannot, measure a **differential** against a
 control so machine speed cancels. `daemon_spawn_lockfile_budget_test` is the
-worked example of both halves.
+worked example of both halves, and the argv-dispatch test above is the
+cautionary one: a proxy whose bound was never checked against the cost of the
+thing it proxies for.
 
 **3. The deadline is only a hang detector.** Once a guard is released or a task
 is unblocked, the work either completes promptly or is broken and never
