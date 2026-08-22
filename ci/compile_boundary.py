@@ -20,13 +20,16 @@ COMPILE_ROOT_FILES = {
     "handle_compile_multi_staged.rs",
     "handle_compile_multi_types.rs",
 }
+# Production glob imports only. Test-module globs (`use super::*;` inside
+# `#[cfg(test)] mod tests`) are excluded by strip_test_items, so they must
+# never be listed here -- an entry that no longer corresponds to a real
+# production glob silently exempts that file from the check, which is how
+# cached_hit.rs / error_cache.rs / handle_compile_multi_args.rs ended up
+# here. test_allowlist_has_no_dead_entries guards against that recurring.
 ALLOWED_GLOB_IMPORTS = {
     "handle_compile.rs",
-    "handle_compile/cached_hit.rs",
-    "handle_compile/error_cache.rs",
     "handle_compile_ephemeral.rs",
     "handle_compile_multi.rs",
-    "handle_compile_multi_args.rs",
     "handle_compile_multi_preflight.rs",
     "handle_compile_multi_staged.rs",
     "handle_compile_multi_types.rs",
@@ -36,6 +39,72 @@ PRIVATE_ITEM = re.compile(
     r"\bpub\(super\)\s+(?:async\s+)?"
     r"(?:struct|enum|trait|fn|const|static|type)\s+([A-Za-z_][A-Za-z0-9_]*)"
 )
+CFG_TEST = re.compile(r"^\s*#\[cfg\(test\)\]\s*$")
+PATH_ATTR = re.compile(r'^\s*#\[path\s*=\s*"([^"]+)"\]')
+
+
+def strip_test_items(text: str) -> str:
+    """Drop `#[cfg(test)]` items so test code is not scanned as production code.
+
+    A `use super::*;` inside `#[cfg(test)] mod tests { ... }` is the ordinary
+    Rust idiom for reaching a module's own items from its test module. It is
+    not compile-handler coupling, and treating it as such is what pushed three
+    test-only files into ALLOWED_GLOB_IMPORTS -- which then had the side effect
+    of exempting those files from the check for real.
+
+    Brace counting ignores braces inside string literals, the same simplifying
+    assumption `module_private_items` already makes.
+    """
+    lines = text.splitlines()
+    kept: list[str] = []
+    index = 0
+    total = len(lines)
+    while index < total:
+        if not CFG_TEST.match(lines[index]):
+            kept.append(lines[index])
+            index += 1
+            continue
+        # Skip the attribute plus any attributes stacked under it.
+        index += 1
+        while index < total and lines[index].lstrip().startswith("#["):
+            index += 1
+        if index >= total:
+            break
+        # `mod name;` declares a whole test-only file; nothing to brace-match.
+        code = lines[index].split("//", 1)[0]
+        if "{" not in code:
+            index += 1
+            continue
+        depth = 0
+        while index < total:
+            code = lines[index].split("//", 1)[0]
+            depth += code.count("{") - code.count("}")
+            index += 1
+            if depth <= 0:
+                break
+    return "\n".join(kept)
+
+
+def test_only_module_files(path: Path) -> set[Path]:
+    """Files pulled in as `#[cfg(test)] #[path = "x.rs"] mod ...`.
+
+    Such a file is entirely test code, so its top-level globs are test globs.
+    Detected structurally rather than by a `*_tests.rs` naming convention, so
+    renaming a file cannot silently re-arm the false positive.
+    """
+    found: set[Path] = set()
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for position, line in enumerate(lines):
+        if not CFG_TEST.match(line):
+            continue
+        for lookahead in lines[position + 1 : position + 4]:
+            match = PATH_ATTR.match(lookahead)
+            if match:
+                found.add((path.parent / match.group(1)).resolve())
+            if lookahead.lstrip().startswith("mod "):
+                break
+    return found
+
 
 
 def compile_files(root: Path) -> list[Path]:
@@ -61,7 +130,17 @@ def module_private_items(text: str) -> set[str]:
 def inventory(root: Path) -> dict[str, object]:
     server = root / SERVER
     files = compile_files(root)
-    glob_files = [path.relative_to(server).as_posix() for path in files if GLOB_IMPORT.search(path.read_text(encoding="utf-8"))]
+    # Files that exist only as test modules are test code end to end, so their
+    # top-level globs are test globs too.
+    test_only: set[Path] = set()
+    for path in files:
+        test_only |= test_only_module_files(path)
+    glob_files = [
+        path.relative_to(server).as_posix()
+        for path in files
+        if path.resolve() not in test_only
+        and GLOB_IMPORT.search(strip_test_items(path.read_text(encoding="utf-8")))
+    ]
     private_symbols: set[str] = set()
     compile_set = {path.resolve() for path in files}
     for path in server.rglob("*.rs"):
