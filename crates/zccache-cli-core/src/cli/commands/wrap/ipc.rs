@@ -60,7 +60,9 @@ pub(super) async fn cmd_compile(
         env: Some(client_env.clone()),
         stdin: stdin_bytes.clone(),
     };
-    if let Err(e) = conn.send_request(&request, wire).await {
+    let send_result = conn.send_request(&request, wire).await;
+    super::profile::mark_request_sent();
+    if let Err(e) = send_result {
         let failure = TransportFailure {
             message: format!("failed to send to daemon: {e}"),
             phase: FailurePhase::DeliveryUnknown,
@@ -743,7 +745,9 @@ async fn run_ephemeral_attempt(
     };
     let selection = crate::protocol::wire_prost::full_family_wire_selection_from_env();
     let wire = selection.preferred_format();
-    if let Err(e) = conn.send_request(request, wire).await {
+    let send_result = conn.send_request(request, wire).await;
+    super::profile::mark_request_sent();
+    if let Err(e) = send_result {
         return failed_with_disconnect_event(
             endpoint,
             crate::core::lifecycle::CAUSE_PIPE_CLOSED_MID_WRITE,

@@ -42,6 +42,7 @@ static START: OnceLock<Option<Instant>> = OnceLock::new();
 static ROUTE: OnceLock<&'static str> = OnceLock::new();
 static SETUP_NS: AtomicU64 = AtomicU64::new(UNSET);
 static CONNECTED_NS: AtomicU64 = AtomicU64::new(UNSET);
+static SENT_NS: AtomicU64 = AtomicU64::new(UNSET);
 static RESPONSE_NS: AtomicU64 = AtomicU64::new(UNSET);
 
 /// Cached env lookup, matching the `OnceLock` pattern `zccache-depgraph`
@@ -89,6 +90,15 @@ pub(crate) fn mark_connected() {
     mark(&CONNECTED_NS);
 }
 
+/// The request is on the wire — end of encode/send, start of the daemon wait.
+///
+/// Splitting this out is what makes `wait_ns` comparable to the daemon's own
+/// `total_ns`: without it, request encoding and transmission were folded into
+/// the same number as the daemon's work.
+pub(crate) fn mark_request_sent() {
+    mark(&SENT_NS);
+}
+
 /// The daemon's response has arrived — end of the wait, start of output work.
 pub(crate) fn mark_response() {
     mark(&RESPONSE_NS);
@@ -115,18 +125,19 @@ fn span(from: u64, to: u64) -> Option<u64> {
     (from != UNSET && to != UNSET).then(|| to.saturating_sub(from))
 }
 
-fn render(total_ns: u64, setup: u64, connected: u64, response: u64) -> String {
+fn render(total_ns: u64, setup: u64, connected: u64, sent: u64, response: u64) -> String {
     // A phase that was not reached prints -1 rather than 0, so "never
     // happened" cannot be misread as "took no time".
     let field = |value: Option<u64>| value.map_or_else(|| "-1".to_string(), |ns| ns.to_string());
     format!(
         "zccache_wrapper_profile route={} total_ns={} setup_ns={} connect_ns={} \
-         wait_ns={} post_ns={}",
+         send_ns={} wait_ns={} post_ns={}",
         route(),
         total_ns,
         field(span(0, setup)),
         field(span(setup, connected)),
-        field(span(connected, response)),
+        field(span(connected, sent)),
+        field(span(sent, response)),
         field(span(response, total_ns)),
     )
 }
@@ -151,6 +162,7 @@ pub(crate) fn emit() {
             elapsed_ns(start),
             SETUP_NS.load(Ordering::Acquire),
             CONNECTED_NS.load(Ordering::Acquire),
+            SENT_NS.load(Ordering::Acquire),
             RESPONSE_NS.load(Ordering::Acquire),
         )
     );
@@ -186,31 +198,46 @@ mod tests {
     #[test]
     fn unreached_phases_render_as_minus_one_not_zero() {
         // A compile that never connected must not report "connect took 0ns".
-        let line = render(500, 100, UNSET, UNSET);
+        let line = render(500, 100, UNSET, UNSET, UNSET);
 
         assert!(line.contains("setup_ns=100"), "{line}");
         assert!(line.contains("connect_ns=-1"), "{line}");
+        assert!(line.contains("send_ns=-1"), "{line}");
         assert!(line.contains("wait_ns=-1"), "{line}");
         assert!(line.contains("post_ns=-1"), "{line}");
     }
 
     #[test]
+    fn a_send_that_never_completed_leaves_wait_unreported() {
+        // Connected, then the send failed: connect is real, everything after
+        // it is not. Reporting wait_ns=0 here would invent a daemon that
+        // answered instantly.
+        let line = render(500, 100, 250, UNSET, UNSET);
+
+        assert!(line.contains("connect_ns=150"), "{line}");
+        assert!(line.contains("send_ns=-1"), "{line}");
+        assert!(line.contains("wait_ns=-1"), "{line}");
+    }
+
+    #[test]
     fn a_complete_invocation_renders_every_phase() {
-        let line = render(1000, 100, 250, 900);
+        let line = render(1000, 100, 250, 300, 900);
 
         assert!(line.contains("total_ns=1000"), "{line}");
         assert!(line.contains("setup_ns=100"), "{line}");
         assert!(line.contains("connect_ns=150"), "{line}");
-        assert!(line.contains("wait_ns=650"), "{line}");
+        assert!(line.contains("send_ns=50"), "{line}");
+        assert!(line.contains("wait_ns=600"), "{line}");
         assert!(line.contains("post_ns=100"), "{line}");
     }
 
     #[test]
     fn phases_sum_to_the_total() {
-        let (total, setup, connected, response) = (1000u64, 100u64, 250u64, 900u64);
+        let (total, setup, connected, sent, response) = (1000u64, 100u64, 250u64, 300u64, 900u64);
         let parts = span(0, setup).unwrap()
             + span(setup, connected).unwrap()
-            + span(connected, response).unwrap()
+            + span(connected, sent).unwrap()
+            + span(sent, response).unwrap()
             + span(response, total).unwrap();
 
         assert_eq!(parts, total, "phases must account for the whole invocation");
