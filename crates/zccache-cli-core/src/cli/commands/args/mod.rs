@@ -438,6 +438,26 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         action: SymbolsCommands,
     },
+    /// Fetch an external tool binary through the global content-addressed
+    /// cache and print its path (issue #1469).
+    ///
+    /// The cache key is blake3 of the payload, so identical bytes from
+    /// different URLs or re-uploads resolve to one entry. ETag and
+    /// Last-Modified are used only to revalidate a URL (a 304 skips the
+    /// transfer); they are never the cache key, because a server-chosen
+    /// validator can change without the content changing and vice versa.
+    Fetch {
+        /// URL to fetch. HTTPS only.
+        url: String,
+        /// Expected blake3 digest (64 hex chars). Verified before the
+        /// artifact is published into the cache, so a mismatched payload is
+        /// never reachable.
+        #[arg(long, value_name = "DIGEST")]
+        expect: Option<String>,
+        /// Emit `{"path":..,"digest":..,"outcome":..}` instead of the path.
+        #[arg(long)]
+        json: bool,
+    },
     /// Print the resolved cache root directory and exit.
     ///
     /// Reads `ZCCACHE_CACHE_DIR` (or falls back to the platform default) and
@@ -614,6 +634,7 @@ pub(crate) enum Commands {
 /// `known_subcommands_matches_clap_enum` test in
 /// `cli/commands/tests/args_parsing.rs` enforces this contract.
 pub(crate) const KNOWN_SUBCOMMANDS: &[&str] = &[
+    "fetch",
     "start",
     "stop",
     "daemon",
