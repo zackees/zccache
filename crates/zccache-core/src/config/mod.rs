@@ -70,6 +70,38 @@ pub const COLOCATE_ENV: &str = "ZCCACHE_COLOCATE";
 /// spawning, not talking.
 pub const NO_SPAWN_ENV: &str = "ZCCACHE_NO_SPAWN";
 
+/// The canonical grammar for a zccache-**owned** boolean switch: `1` or
+/// case-insensitive `true` enables it; everything else — unset, empty, `0`,
+/// `false`, or any unrecognised value — leaves it disabled.
+///
+/// Unknown values must read as *disabled*, not enabled. Most of these knobs
+/// are named `*_DISABLE` / `*_NO_*`, so a permissive parser would let a typo
+/// turn the cache off. That is the opposite convention from a *foreign*
+/// variable whose value space we do not own (`CI`, `GITHUB_ACTIONS`), where
+/// presence with an unrecognised value is normally meant as "on" — those go
+/// through the denylist parser in `daemon::process`, not this one.
+///
+/// The value is trimmed. Environment variables acquire stray whitespace very
+/// easily (CI YAML, `set VAR=1 ` on Windows), and `ZCCACHE_DISABLE` is the
+/// documented emergency bypass — it silently doing nothing because of a
+/// trailing space is exactly the failure an operator cannot afford there.
+///
+/// Issue #1478: this grammar was previously written out three times as an
+/// inline expression, so nothing kept the copies in agreement.
+#[must_use]
+pub fn owned_flag_enabled(value: Option<&str>) -> bool {
+    value.is_some_and(|raw| {
+        let trimmed = raw.trim();
+        trimmed == "1" || trimmed.eq_ignore_ascii_case("true")
+    })
+}
+
+/// [`owned_flag_enabled`] applied to an environment variable.
+#[must_use]
+pub fn owned_env_flag_enabled(name: &str) -> bool {
+    owned_flag_enabled(std::env::var(name).ok().as_deref())
+}
+
 /// True when the host forbids standalone daemon spawns via [`NO_SPAWN_ENV`].
 #[must_use]
 pub fn daemon_spawn_disabled() -> bool {
@@ -79,9 +111,9 @@ pub fn daemon_spawn_disabled() -> bool {
 /// Testable core of [`daemon_spawn_disabled`] — no environment access.
 #[must_use]
 pub(crate) fn no_spawn_from_env_value(value: Option<&std::ffi::OsStr>) -> bool {
-    value
-        .map(|v| v.to_string_lossy())
-        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    // One grammar, three former copies (#1478). OsStr -> str first.
+    let value = value.map(|v| v.to_string_lossy());
+    owned_flag_enabled(value.as_deref())
 }
 
 /// Standard error for a refused spawn. Names [`NO_SPAWN_ENV`] so operators

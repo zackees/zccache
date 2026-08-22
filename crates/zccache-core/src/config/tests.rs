@@ -847,3 +847,81 @@ fn no_spawn_error_names_the_env_var() {
     assert!(message.contains("ZCCACHE_NO_SPAWN"));
     assert!(message.contains("zccache-daemon"));
 }
+
+// --- owned boolean switch grammar (#1478) ---
+
+#[test]
+fn an_owned_flag_accepts_only_one_and_true() {
+    use super::owned_flag_enabled;
+
+    for value in ["1", "true", "TRUE", "True"] {
+        assert!(
+            owned_flag_enabled(Some(value)),
+            "expected enabled: {value:?}"
+        );
+    }
+    for value in ["0", "", "false", "no", "off", "yes", "on", "maybe", "2"] {
+        assert!(
+            !owned_flag_enabled(Some(value)),
+            "expected disabled: {value:?}"
+        );
+    }
+    assert!(!owned_flag_enabled(None));
+}
+
+#[test]
+fn an_unrecognised_value_never_enables_an_owned_flag() {
+    use super::owned_flag_enabled;
+
+    // These knobs are mostly named *_DISABLE / *_NO_*, so "unknown means on"
+    // would let a typo switch the cache off. This is the opposite convention
+    // from foreign variables like CI, which are read with a denylist.
+    for typo in ["ture", "TRUE!", "1 1", "enabled", "y"] {
+        assert!(
+            !owned_flag_enabled(Some(typo)),
+            "typo enabled the flag: {typo:?}"
+        );
+    }
+}
+
+#[test]
+fn an_owned_flag_tolerates_surrounding_whitespace() {
+    use super::owned_flag_enabled;
+
+    // Regression for #1478: the three inline copies of this grammar did not
+    // trim, so `ZCCACHE_DISABLE=1 ` -- trivially produced by CI YAML or
+    // `set VAR=1 ` on Windows -- silently did nothing. That variable is the
+    // documented emergency bypass, so failing open there is the worst place
+    // for a whitespace bug.
+    for value in [" 1", "1 ", "  1  ", "\ttrue\n", " TRUE "] {
+        assert!(
+            owned_flag_enabled(Some(value)),
+            "whitespace defeated: {value:?}"
+        );
+    }
+    // Trimming must not invent a value out of blank input.
+    for value in ["   ", "\t", "\n"] {
+        assert!(
+            !owned_flag_enabled(Some(value)),
+            "blank enabled the flag: {value:?}"
+        );
+    }
+}
+
+#[test]
+fn no_spawn_really_shares_the_owned_flag_grammar() {
+    use super::{no_spawn_from_env_value, owned_flag_enabled};
+    use std::ffi::OsStr;
+
+    // `no_spawn_value_grammar_matches_zccache_disable` asserts a *cross-variable*
+    // invariant while only exercising one implementation, so it could not catch
+    // the copies drifting apart. Compare the two predicates directly instead.
+    for value in ["1", "true", "TRUE", " 1 ", "0", "", "yes", "on", "maybe"] {
+        assert_eq!(
+            no_spawn_from_env_value(Some(OsStr::new(value))),
+            owned_flag_enabled(Some(value)),
+            "no_spawn disagrees with the shared grammar on {value:?}"
+        );
+    }
+    assert_eq!(no_spawn_from_env_value(None), owned_flag_enabled(None));
+}
