@@ -10,3 +10,9 @@ Run with:
 ```bash
 uv run pytest ci/tests
 ```
+
+Some suites also exercise workflow YAML directly. `test_release_detect_bump.py`
+extracts the `detect-bump` step out of `.github/workflows/release-auto.yml` and
+runs it under bash with stubbed `gh`/`git`/`python3`, so the branching logic is
+tested rather than the file's text. It needs a POSIX bash and skips on Windows;
+the step it covers runs on `ubuntu-latest`.
