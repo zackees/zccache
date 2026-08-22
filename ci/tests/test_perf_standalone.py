@@ -755,3 +755,40 @@ def test_markdown_still_reports_a_passing_sample_as_passing():
     }
 
     assert "| PASS |" in perf_standalone._render_markdown(campaign)
+
+
+# ── --keep-going: coverage without pretending the run passed (#1116) ───────
+
+
+def test_failed_rows_reads_the_campaign_index():
+    campaign = {
+        "results": [
+            {"language": "c", "test": "perf_c_archive_link", "passed": True},
+            {"language": "emscripten", "test": "perf_emcc_link", "passed": False},
+            {"language": "rust", "test": "perf_rustc_zccache_vs_sccache"},
+        ]
+    }
+
+    assert perf_standalone.failed_rows(campaign) == [("emscripten", "perf_emcc_link")]
+
+
+def test_failed_rows_treats_a_missing_flag_as_passing():
+    """Pre-#1458 campaign files have no `passed` key; they only ever recorded
+    successes, so absence means pass."""
+    assert perf_standalone.failed_rows({"results": [{"language": "c", "test": "t"}]}) == []
+
+
+def test_failed_rows_is_empty_for_a_clean_campaign():
+    campaign = {"results": [{"language": "c", "test": "t", "passed": True}]}
+
+    assert perf_standalone.failed_rows(campaign) == []
+
+
+def test_keep_going_is_off_by_default():
+    """Fail-fast stays the default: --keep-going only exists so a campaign can
+    gather four-language coverage when a row is failing for structural reasons
+    (#1437), and it still exits non-zero."""
+    parser = perf_standalone.build_arg_parser()
+
+    assert parser.parse_args([]).keep_going is False
+    assert parser.parse_args(["--keep-going"]).keep_going is True
