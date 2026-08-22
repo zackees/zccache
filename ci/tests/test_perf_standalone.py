@@ -792,3 +792,62 @@ def test_keep_going_is_off_by_default():
 
     assert parser.parse_args([]).keep_going is False
     assert parser.parse_args(["--keep-going"]).keep_going is True
+
+
+# ── idle orphans must not mark the host busy ───────────────────────────────
+#
+# Hit for real: a cargo left behind by an earlier build sat at 1s of CPU over
+# 9 minutes and blocked every campaign, because presence alone counted as
+# busy for everything except rustc.
+
+
+def test_an_idle_orphan_cargo_is_not_active():
+    first = {10: ("cargo", 1.0)}
+    second = {10: ("cargo", 1.0)}
+
+    assert perf_standalone.active_windows_process_names(first, second) == []
+
+
+def test_a_working_cargo_is_active():
+    first = {10: ("cargo", 1.0)}
+    second = {10: ("cargo", 3.5)}
+
+    assert perf_standalone.active_windows_process_names(first, second) == ["cargo"]
+
+
+def test_an_idle_orphan_cargo_does_not_promote_an_idle_rustc():
+    """The cargo->rustc linkage exists because a *working* cargo is about to
+    spawn rustc. An idle cargo implies nothing."""
+    first = {10: ("rustc", 20.0), 20: ("cargo", 1.0)}
+    second = {10: ("rustc", 20.0), 20: ("cargo", 1.0)}
+
+    assert perf_standalone.active_windows_process_names(first, second) == []
+
+
+def test_a_working_cargo_still_promotes_an_idle_rustc():
+    """Preserved deliberately: rustc children may not have burned measurable
+    CPU yet when cargo is actively driving them."""
+    first = {10: ("rustc", 20.0), 20: ("cargo", 1.0)}
+    second = {10: ("rustc", 20.0), 20: ("cargo", 4.0)}
+
+    assert perf_standalone.active_windows_process_names(first, second) == [
+        "rustc",
+        "cargo",
+    ]
+
+
+def test_an_idle_orphan_clang_is_not_active():
+    """Generalized beyond cargo: the same reasoning applies to every
+    competing process, not just the two Rust ones."""
+    first = {10: ("clang", 2.0)}
+    second = {10: ("clang", 2.0)}
+
+    assert perf_standalone.active_windows_process_names(first, second) == []
+
+
+def test_a_newly_appeared_process_is_active_without_a_baseline():
+    """No previous sample means no evidence of idleness; assume it is about to
+    work rather than silently admitting a contaminated sample."""
+    assert perf_standalone.active_windows_process_names({}, {10: ("clang", 0.0)}) == [
+        "clang"
+    ]

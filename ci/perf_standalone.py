@@ -521,22 +521,37 @@ def active_windows_process_names(
     second: dict[int, tuple[str, float]],
     minimum_cpu_seconds: float = 0.001,
 ) -> list[str]:
-    cargo_present = any(
-        Path(name).stem.lower() == "cargo" for name, _ in second.values()
+    def progressed(pid: int, cpu_seconds: float) -> bool:
+        """Burned CPU between the two samples, or appeared during them.
+
+        A process that arrives mid-sample has no baseline to compare against
+        and is assumed active -- it may be about to do work.
+        """
+        previous = first.get(pid)
+        return previous is None or (cpu_seconds - previous[1] >= minimum_cpu_seconds)
+
+    # A cargo that is *working* implies rustc children are imminent even if
+    # none has burned measurable CPU yet. A cargo sitting idle implies
+    # nothing, which is the distinction this used to miss.
+    cargo_active = any(
+        Path(name).stem.lower() == "cargo" and progressed(pid, cpu_seconds)
+        for pid, (name, cpu_seconds) in second.items()
     )
+
     active = []
     for pid, (name, cpu_seconds) in second.items():
         normalized = Path(name).stem.lower()
         if normalized not in COMPETING_PROCESSES:
             continue
-        if normalized != "rustc":
+        if normalized == "rustc" and cargo_active:
             active.append(name)
             continue
-        previous = first.get(pid)
-        cpu_progress = previous is None or (
-            cpu_seconds - previous[1] >= minimum_cpu_seconds
-        )
-        if cargo_present or cpu_progress:
+        # Presence alone used to mean "busy" for everything except rustc, so a
+        # single idle orphan -- a cargo left behind by a killed build, burning
+        # no CPU -- marked the host permanently busy and blocked every
+        # campaign. Consuming no CPU between two samples is not competing for
+        # it, whatever the process is called.
+        if progressed(pid, cpu_seconds):
             active.append(name)
     return active
 
