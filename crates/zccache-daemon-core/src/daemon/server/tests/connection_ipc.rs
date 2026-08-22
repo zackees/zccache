@@ -164,3 +164,34 @@ async fn handle_connection_accepts_v15_and_v16_control_requests() {
     })
     .await;
 }
+
+/// #840 Slice 5: the legacy-lane counter is only reachable through
+/// `Request::Status`, so an idle-timed-out daemon takes its counts with it and
+/// the soak curve cannot be reconstructed afterwards. `bincode_request_totals`
+/// is what the death events log; it has to agree with the live snapshot.
+#[tokio::test]
+async fn bincode_request_totals_sum_the_live_snapshot() {
+    let endpoint = crate::ipc::unique_test_endpoint();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir: crate::core::NormalizedPath = temp.path().into();
+    let DaemonServer { state, .. } =
+        DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
+
+    let (total, by_type) = state.bincode_request_totals();
+    assert_eq!(total, 0, "a fresh daemon has seen no legacy traffic");
+    assert!(by_type.is_empty());
+
+    state.record_bincode_request(&crate::protocol::Request::Ping);
+    state.record_bincode_request(&crate::protocol::Request::Ping);
+    state.record_bincode_request(&crate::protocol::Request::Status);
+
+    let (total, by_type) = state.bincode_request_totals();
+    assert_eq!(total, 3, "total must sum every request family");
+    assert_eq!(by_type.get("control-ping"), Some(&2));
+    assert_eq!(by_type.get("control-status"), Some(&1));
+    assert_eq!(
+        total,
+        by_type.values().sum::<u64>(),
+        "the logged total must agree with the logged breakdown"
+    );
+}

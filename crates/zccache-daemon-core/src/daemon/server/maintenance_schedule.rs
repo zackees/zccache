@@ -447,12 +447,18 @@ impl MaintenanceSchedule {
                     // see why the daemon exited. Pair this with the "spawn"
                     // entry to reconstruct daemon lifetime from the lifecycle
                     // log alone — tracing stderr is NUL'd.
+                    let (bincode_requests, bincode_requests_by_type) =
+                        state.bincode_request_totals();
                     crate::core::lifecycle::write_event(
                         crate::core::lifecycle::EVENT_DIED_IDLE,
                         serde_json::json!({
                             "reason": crate::core::lifecycle::REASON_IDLE_TIMEOUT,
                             "idle_secs": idle,
                             "idle_timeout_secs": timeout,
+                            // #840 Slice 5: idle timeout is the common death,
+                            // so this is where most of the curve would be lost.
+                            "bincode_requests": bincode_requests,
+                            "bincode_requests_by_type": bincode_requests_by_type,
                         }),
                     );
                     state.shutdown_requested.store(true, Ordering::Release);
