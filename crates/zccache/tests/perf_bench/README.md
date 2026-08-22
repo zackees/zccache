@@ -33,3 +33,56 @@ test" for the rules on adding new perf benchmarks here.
 | `tests_sibling_remap.rs` | `perf_cpp_sibling_remap_warm`, `perf_rustc_sibling_remap_warm`. |
 | `tests_emcc.rs` | `perf_emcc_warm_cache_zccache_vs_sccache`, `perf_emcc_sibling_remap_warm`. |
 | `tests_link.rs` | `perf_c_archive_link`, `perf_cpp_driver_link`, `perf_emcc_link`, `perf_rust_workspace_link`. |
+
+## What the three sides actually execute
+
+The bare / sccache / zccache columns are **not** three ways of running the same
+command. Anyone reading a ratio, and especially anyone treating a failing floor
+as a regression, needs the differences:
+
+| side | invocation |
+|---|---|
+| bare | `Command::new(compiler)` — a subprocess |
+| sccache | `Command::new(sccache)` — a subprocess, one per source file |
+| zccache | in-process `ClientConn`, one `Request::Compile` |
+
+Two consequences follow, both measured rather than assumed (issue #1437).
+
+### Multi-file bare batches; zccache cannot
+
+`baseline_multi` passes all sources to **one** compiler process
+(`cpp_project.rs`), so the compiler's startup cost is amortized across the
+whole set. zccache caches per translation unit, so the daemon invokes the
+compiler **once per source** — the profile emits one `zccache_cc_miss_profile`
+row per file.
+
+For a driver with meaningful startup this is a fixed handicap that scales with
+source count. Measured in the pinned image on 50 sources, with zccache removed
+from the experiment entirely:
+
+```
+batched  (1 em++ invocation , 50 TUs)   40966 ms
+separate (50 em++ invocations, 50 TUs)  44267 ms
+penalty                                  3301 ms   (~67 ms per extra invocation)
+```
+
+em++ is an Emscripten Python driver, so its startup dominates; native clang's
+is roughly an order of magnitude smaller, which is why the C and C++
+multi-file rows pass on runs where the emscripten one does not.
+
+**A cold multi-file zccache run cannot beat a single batched invocation of a
+slow-starting driver on any hardware.** A `Multi-file, Cold vs Bare` floor for
+such a driver is measuring batching strategy, not cache performance. Treat a
+failure there as a fixture question before hunting for a regression.
+
+### zccache is measured without per-invocation cost
+
+zccache goes through an in-process client; sccache and bare are subprocesses.
+Real users reach zccache through the `zccache <compiler> ...` wrapper, which
+pays process start, argv parse, tool resolution, endpoint resolve and IPC on
+every compile — none of which these numbers include. `zccache_wrapper_profile`
+(issue #1460) measures that path, but the benchmark does not exercise it.
+
+So a passing floor here does not by itself establish that a user sees the same
+win, and the vs-sccache comparison is the fairer of the two for per-file work
+because both sides spawn per file.
