@@ -75,17 +75,13 @@ pub(crate) fn run_wrap(args: &[String], overrides: WrapperOverrides) -> ExitCode
     // Issue #1460: the per-invocation path is otherwise unmeasured, and it is
     // where ~63% of #1437's emscripten cold gap lives. Inert unless the
     // daemon's own profiling env is set.
-    let wrapper_profile = profile::WrapperProfile::start();
-    let code = run_wrap_routed(args, overrides, &wrapper_profile);
-    wrapper_profile.emit();
+    profile::start();
+    let code = run_wrap_routed(args, overrides);
+    profile::emit();
     code
 }
 
-fn run_wrap_routed(
-    args: &[String],
-    overrides: WrapperOverrides,
-    wrapper_profile: &profile::WrapperProfile,
-) -> ExitCode {
+fn run_wrap_routed(args: &[String], overrides: WrapperOverrides) -> ExitCode {
     diag::emit(args);
 
     if args.is_empty() {
@@ -96,7 +92,7 @@ fn run_wrap_routed(
     if env::wrapper_disabled() {
         // Never silent (issue #1211): the user opted out, but each uncached
         // invocation still announces itself and the reason.
-        wrapper_profile.set_route("disabled");
+        profile::set_route("disabled");
         return passthrough::run_passthrough(args, Some("ZCCACHE_DISABLE is set"));
     }
 
@@ -120,15 +116,15 @@ fn run_wrap_routed(
     let _ = std::env::set_current_dir(std::env::temp_dir());
 
     // Everything above is wrapper setup; everything below is the routed call.
-    wrapper_profile.mark_setup_done();
+    profile::mark_setup_done();
 
     match routing::classify_invocation(&args[0], &tool_args) {
         WrapperRoute::Formatter => {
-            wrapper_profile.set_route("formatter");
+            profile::set_route("formatter");
             rustfmt::run_rustfmt_cached(&wrapped_tool, &tool_args, &cwd, None)
         }
         WrapperRoute::LinkOrArchive => {
-            wrapper_profile.set_route("link_or_archive");
+            profile::set_route("link_or_archive");
             run_async(ipc::cmd_link_ephemeral(
                 &endpoint,
                 &wrapped_tool,
@@ -140,11 +136,11 @@ fn run_wrap_routed(
         // Silent by design: probe callers parse the tool's stderr, so a
         // warning line here would corrupt the probe (see run_passthrough).
         WrapperRoute::ProbeBypass => {
-            wrapper_profile.set_route(profile::ROUTE_PROBE_BYPASS);
+            profile::set_route(profile::ROUTE_PROBE_BYPASS);
             passthrough::run_passthrough(args, None)
         }
         WrapperRoute::Compile => {
-            wrapper_profile.set_route("compile");
+            profile::set_route("compile");
             run_compile_route(
                 &endpoint,
                 &args[0],

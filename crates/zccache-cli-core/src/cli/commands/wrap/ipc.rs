@@ -24,7 +24,10 @@ pub(super) async fn cmd_compile(
     // client's timeout becomes a kill chain through a `-j16` herd.
     let served_by = current_daemon_instance();
     let mut conn = match connect(endpoint).await {
-        Ok(c) => c,
+        Ok(c) => {
+            super::profile::mark_connected();
+            c
+        }
         Err(e) => {
             let reason = format!("cannot connect to daemon at {endpoint}: {e}");
             emit_client_disconnected_event(
@@ -77,6 +80,8 @@ pub(super) async fn cmd_compile(
         retry_bincode_on_explicit_wire_mismatch(endpoint, &request, selection, outcome).await;
     match outcome {
         CompileRecvOutcome::Done(recv_result) => {
+            // End of the daemon wait; everything after this is output work.
+            super::profile::mark_response();
             report_relay_outcome(relay_compile_response_to_stdio(recv_result))
         }
         CompileRecvOutcome::Wedged => {
@@ -571,6 +576,8 @@ async fn cmd_compile_ephemeral_with_stdin(
 
     match outcome {
         CompileRecvOutcome::Done(recv_result) => {
+            // End of the daemon wait; everything after this is output work.
+            super::profile::mark_response();
             report_relay_outcome(relay_compile_response_to_stdio(recv_result))
         }
         // #1170 change 2: this arm used to kill unconditionally. A busy
@@ -721,7 +728,10 @@ async fn run_ephemeral_attempt(
         );
     }
     let mut conn = match connect(endpoint).await {
-        Ok(c) => c,
+        Ok(c) => {
+            super::profile::mark_connected();
+            c
+        }
         Err(e) => {
             return failed_with_disconnect_event(
                 endpoint,
