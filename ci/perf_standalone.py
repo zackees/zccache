@@ -511,6 +511,28 @@ def _linux_sample_process_names(container_name: str) -> list[str]:
 
 
 def _sample_process_names(container_name: str, finished: bool) -> list[str]:
+    """Competing processes seen during a timed sample.
+
+    The Windows branch deliberately skips the container-tree exclusion that
+    #1438 added for Linux, and that is safe for a reason worth stating rather
+    than leaving implicit: under Docker Desktop's WSL2 backend, container
+    processes live in the WSL VM and are **invisible** to Windows process
+    enumeration. Verified directly -- a container running a process named
+    `rustc` yields zero hits from `Get-Process rustc` on the host -- so the
+    sample cannot flag its own container work no matter what it compiles.
+
+    Two consequences:
+
+    - Adding the exclusion here would be dead code. Container PIDs are Linux
+      PIDs in the VM and would never match a Windows PID.
+    - The safety is a property of the *backend*, not of a guard in this file.
+      If the Docker backend ever changes to one whose container processes are
+      visible to the host (Windows containers, process isolation), a campaign
+      would start flagging itself and this branch would need a real exclusion.
+
+    `finished` takes the same path because a completed sample has no container
+    tree left to exclude.
+    """
     if os.name == "nt" or finished:
         return _active_process_names()
     return _linux_sample_process_names(container_name)
