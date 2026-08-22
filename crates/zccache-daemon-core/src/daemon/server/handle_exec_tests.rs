@@ -1,6 +1,23 @@
 //! Key-composition and exact-exec staging planner tests.
 use super::*;
+use std::time::Duration;
 use tempfile::tempdir;
+
+/// How long a task is given to *stay blocked* while a guard is held.
+///
+/// A real assertion: the point is that `clear` has not finished yet. Load only
+/// makes it more true, so this stays tight.
+const MUST_REMAIN_BLOCKED: Duration = Duration::from_millis(25);
+
+/// How long a task is given to finish once its guard is released.
+///
+/// Purely a hang detector. Once the blocking guard is gone the work either
+/// completes promptly or the handoff is broken and it never completes at all;
+/// nothing interesting lives in between, so this is deliberately generous.
+/// The 5s values this replaces expired on a loaded runner where this suite
+/// took 523s (#1452), while sibling assertions in the same file had already
+/// drifted to 30s -- one name instead of three magic numbers.
+const HANDOFF_HANG_DETECTOR: Duration = Duration::from_secs(60);
 
 fn h(byte: u8) -> ContentHash {
     ContentHash::from_bytes([byte; 32])
@@ -45,16 +62,16 @@ async fn detached_exec_publisher_cannot_resurrect_artifact_after_clear() {
     let mut clear =
         tokio::spawn(async move { super::super::handle_clear::handle_clear(&clear_state).await });
     assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(25), &mut clear)
+        tokio::time::timeout(MUST_REMAIN_BLOCKED, &mut clear)
             .await
             .is_err(),
         "Clear must wait for the detached publisher's pre-spawn guard handoff"
     );
 
     drop(blocked_persist);
-    let response = tokio::time::timeout(std::time::Duration::from_secs(5), clear)
+    let response = tokio::time::timeout(HANDOFF_HANG_DETECTOR, clear)
         .await
-        .unwrap()
+        .expect("clear never finished after the persist guard was released")
         .unwrap();
     assert!(matches!(response, Response::Cleared { .. }));
     assert!(!server.state.artifacts.contains_key(&key));
@@ -103,26 +120,23 @@ async fn detached_exec_handoff_does_not_reacquire_behind_queued_clear() {
     let mut clear =
         tokio::spawn(async move { super::super::handle_clear::handle_clear(&clear_state).await });
     assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(25), &mut clear)
+        tokio::time::timeout(MUST_REMAIN_BLOCKED, &mut clear)
             .await
             .is_err(),
         "Clear must queue behind the publisher's first read guard"
     );
 
     gate.resume();
-    tokio::time::timeout(std::time::Duration::from_secs(5), &mut publisher)
+    tokio::time::timeout(HANDOFF_HANG_DETECTOR, &mut publisher)
         .await
         .expect("publisher must transfer its guard instead of reacquiring")
         .unwrap()
         .unwrap();
     drop(blocked_persist);
-    tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        gate.wait_until_persisted(),
-    )
-    .await
-    .expect("transferred publication guard must reach persistence completion");
-    let response = tokio::time::timeout(std::time::Duration::from_secs(30), clear)
+    tokio::time::timeout(HANDOFF_HANG_DETECTOR, gate.wait_until_persisted())
+        .await
+        .expect("transferred publication guard must reach persistence completion");
+    let response = tokio::time::timeout(HANDOFF_HANG_DETECTOR, clear)
         .await
         .expect("Clear must finish after the transferred publication guard drops")
         .unwrap();
