@@ -40,11 +40,11 @@ The bare / sccache / zccache columns are **not** three ways of running the same
 command. Anyone reading a ratio, and especially anyone treating a failing floor
 as a regression, needs the differences:
 
-| side | invocation |
-|---|---|
-| bare | `Command::new(compiler)` — a subprocess |
-| sccache | `Command::new(sccache)` — a subprocess, one per source file |
-| zccache | in-process `ClientConn`, one `Request::Compile` |
+| side | single-file | multi-file |
+|---|---|---|
+| bare | one `Command::new(compiler)` | **one** process, all sources |
+| sccache | one `Command::new(sccache)` | **one** process, all sources |
+| zccache | in-process `ClientConn` | one `Request::Compile`, daemon invokes the compiler **per source** |
 
 Two consequences follow, both measured rather than assumed (issue #1437).
 
@@ -84,5 +84,27 @@ every compile — none of which these numbers include. `zccache_wrapper_profile`
 (issue #1460) measures that path, but the benchmark does not exercise it.
 
 So a passing floor here does not by itself establish that a user sees the same
-win, and the vs-sccache comparison is the fairer of the two for per-file work
-because both sides spawn per file.
+win.
+
+### sccache does not cache the multi-file fixture at all
+
+`sccache_compile_multi` passes all 50 sources to **one** sccache process, and
+sccache does not cache multi-source invocations. Measured in the pinned image
+after one such call:
+
+```
+Compile requests                      1
+Compile requests executed             0
+Non-cacheable compilations            0
+Non-cacheable calls                   1
+```
+
+One request, classified non-cacheable, forwarded straight through. The
+vs-sccache multi-file baseline is therefore a batched `em++` run with a thin
+wrapper on it — **not** a per-file cache.
+
+So the batching asymmetry above applies to *both* cold multi-file baselines,
+not only vs-bare. Neither is a cache-vs-cache comparison, and neither
+currently distinguishes a zccache regression from the invocation-shape
+difference. Do not reach for vs-sccache as the "fairer" multi-file row; for
+per-file work it is the single-file rows that compare like with like.
