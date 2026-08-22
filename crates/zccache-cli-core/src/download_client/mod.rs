@@ -1,6 +1,6 @@
 #![allow(clippy::missing_errors_doc)]
 
-mod artifact;
+pub(crate) mod artifact;
 
 use std::path::Path;
 

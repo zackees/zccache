@@ -472,9 +472,12 @@ fn dispatch(command: Commands, global_overrides: wrap::WrapperOverrides) -> Exit
             } => symbols::cmd_symbols_install(version, target, prefix, force),
             SymbolsCommands::Symbolicate { dumps } => symbols::cmd_symbols_symbolicate(dumps),
         },
-        Commands::Fetch { url, expect, json } => {
-            run_async(fetch::cmd_fetch(&url, expect.as_deref(), json))
-        }
+        Commands::Fetch {
+            url,
+            expect,
+            extract,
+            json,
+        } => run_async(fetch::cmd_fetch(&url, expect.as_deref(), extract, json)),
         Commands::CacheRoot { json } => cache_ops::cmd_cache_root(json),
         Commands::DefenderExclusions { action } => match action {
             DefenderExclusionsCommands::Check { json } => defender::cmd_check(json),

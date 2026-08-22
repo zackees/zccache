@@ -14,7 +14,7 @@ pub(super) fn detect_archive_format(
     }
 }
 
-pub(super) fn auto_archive_format(path: &Path) -> Result<ArchiveFormat, String> {
+pub(crate) fn auto_archive_format(path: &Path) -> Result<ArchiveFormat, String> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_ascii_lowercase())
@@ -42,17 +42,34 @@ pub(super) fn extract_archive(
     request: &ResolvedFetchRequest,
     expanded_path: &Path,
 ) -> Result<(), String> {
-    match detect_archive_format(request)? {
-        ArchiveFormat::None => {
-            copy_file(&request.cache_path, expanded_path).map_err(|e| e.to_string())
-        }
+    extract_archive_at(
+        &request.cache_path,
+        detect_archive_format(request)?,
+        expanded_path,
+    )
+}
+
+/// Extract `archive_path` into `destination` using an already-resolved format.
+///
+/// Split out of [`extract_archive`] so a caller holding only a path -- the
+/// `zccache fetch` extraction cache -- reuses this exact traversal-checked
+/// implementation rather than growing a second extractor. Every guard here
+/// (no absolute entries, no `..`, no symlink or hard-link entries) applies
+/// to both callers by construction.
+pub(crate) fn extract_archive_at(
+    archive_path: &Path,
+    format: ArchiveFormat,
+    expanded_path: &Path,
+) -> Result<(), String> {
+    match format {
+        ArchiveFormat::None => copy_file(archive_path, expanded_path).map_err(|e| e.to_string()),
         ArchiveFormat::Zst => {
-            let input = File::open(&request.cache_path).map_err(|e| e.to_string())?;
+            let input = File::open(archive_path).map_err(|e| e.to_string())?;
             let mut decoder = ruzstd::StreamingDecoder::new(input).map_err(|e| e.to_string())?;
             write_decoded_to_file(&mut decoder, expanded_path).map_err(|e| e.to_string())
         }
         ArchiveFormat::Xz => {
-            let input = File::open(&request.cache_path).map_err(|e| e.to_string())?;
+            let input = File::open(archive_path).map_err(|e| e.to_string())?;
             if let Some(parent) = expanded_path.parent() {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
@@ -60,25 +77,25 @@ pub(super) fn extract_archive(
             let mut input = io::BufReader::new(input);
             lzma_rs::xz_decompress(&mut input, &mut output).map_err(|e| e.to_string())
         }
-        ArchiveFormat::Zip => extract_zip(&request.cache_path, expanded_path),
+        ArchiveFormat::Zip => extract_zip(archive_path, expanded_path),
         ArchiveFormat::TarGz => {
-            let input = File::open(&request.cache_path).map_err(|e| e.to_string())?;
+            let input = File::open(archive_path).map_err(|e| e.to_string())?;
             let decoder = flate2::read::GzDecoder::new(input);
             extract_tar(decoder, expanded_path)
         }
         ArchiveFormat::TarXz => {
-            let input = File::open(&request.cache_path).map_err(|e| e.to_string())?;
+            let input = File::open(archive_path).map_err(|e| e.to_string())?;
             let mut decoded = Vec::new();
             let mut input = io::BufReader::new(input);
             lzma_rs::xz_decompress(&mut input, &mut decoded).map_err(|e| e.to_string())?;
             extract_tar(io::Cursor::new(decoded), expanded_path)
         }
         ArchiveFormat::TarZst => {
-            let input = File::open(&request.cache_path).map_err(|e| e.to_string())?;
+            let input = File::open(archive_path).map_err(|e| e.to_string())?;
             let decoder = ruzstd::StreamingDecoder::new(input).map_err(|e| e.to_string())?;
             extract_tar(decoder, expanded_path)
         }
-        ArchiveFormat::SevenZip => extract_7z(&request.cache_path, expanded_path),
+        ArchiveFormat::SevenZip => extract_7z(archive_path, expanded_path),
         ArchiveFormat::Auto => Err("archive format auto-detection failed".to_string()),
     }
 }

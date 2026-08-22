@@ -365,6 +365,75 @@ The test fixture is the `exec_test_tool` binary (built under `--features test-su
 
 ---
 
+## External tool fetch (`zccache fetch`, issue #1469)
+
+`zccache fetch <url>` acquires an external tool through a global,
+content-addressed cache and prints a path. It is independent of the compile
+cache: no daemon, no IPC. `cli/commands/fetch.rs` owns it.
+
+### Three layers, deliberately not conflated
+
+| Layer | Mechanism | What it buys |
+|---|---|---|
+| Freshness | conditional GET (`If-None-Match` / `If-Modified-Since`) | a 304 skips the transfer entirely |
+| Identity | blake3 of the payload bytes | the CAS key; dedups across mirrors and re-uploads |
+| Pinning | `--expect <digest>` | the only layer that defends against a compromised origin |
+
+**The validator is never the cache key.** ETag is server-chosen and opaque:
+GitHub Releases serves an Azure blob timestamp, so re-uploading identical
+content changes it (a false miss), while nginx's default `mtime-size` can stay
+identical across a content swap (a false *hit*, which is worse). Hashing the
+bytes ourselves is the only thing that resolves both directions.
+
+`--expect` is enforced on **every** route into the cache, including a
+revalidated warm hit. A pin checked only on cold fetches is bypassed exactly
+when the artifact is most likely to be reused.
+
+### Layout under the cache root
+
+```
+<root>/fetch/cas/<aa>/<bb>/<digest>      immutable blobs, keyed by content
+<root>/fetch/trees/<aa>/<bb>/<tree-key>  extracted trees
+<root>/fetch/kv/                         per-URL validators (never a key)
+<root>/fetch/tmp/                        staging; never observed as complete
+```
+
+### Extraction cache (`--extract`)
+
+Extraction and AV scanning dominate the transfer for large toolchains — the
+issue measured 3.1 s to unpack 2,134 files against 14.2 s to download them, and
+the download is the half that segmented transfer already fixes. So extracted
+trees are CAS entries in their own right.
+
+The tree key is domain-separated blake3 over **archive digest + format tag**,
+not the URL. Two consequences, both verified against a live origin:
+
+- Two URLs serving identical bytes share one extraction. A refetch forced by a
+  changed validator still reports `extraction: cached` — you lose the transfer
+  but keep everything derived from it.
+- The format tag is a written-out string, not a `Debug` derive, so renaming an
+  `ArchiveFormat` variant cannot silently invalidate every cached tree on disk.
+  A future flag that changes extraction output (strip-components, filters)
+  extends this key rather than reusing a tree built under different options.
+
+**Publication is a single directory rename.** That is what makes "the tree
+directory exists" mean "the extraction finished". Checking for the directory
+and then extracting *into* it would leave a half-populated tree at the final
+path when interrupted, and the next run would hand it out as a hit; debris can
+only ever sit in `tmp/`. A concurrent process that publishes the same key first
+wins, and the loser discards its own staging — the keys are equal, so the bytes
+are too.
+
+Extraction reuses the traversal-checked extractor in
+`download_client/artifact/archive.rs` (`extract_archive_at`) rather than
+growing a second one, so the guards against absolute entries, `..`, symlink and
+hard-link entries apply to both callers by construction. A URL whose extension
+is not a recognized archive is refused rather than guessed — treating an
+unknown payload as a single-file copy would produce a "tree" that is really one
+file at a directory path.
+
+---
+
 ## Daemon unavailable is a hard error (issue #1170)
 
 When the daemon/cache pipeline fails **before request dispatch** (daemon spawn failure, connect timeout, `ZCCACHE_NO_SPAWN` refusal), the wrapper **refuses to run the tool**. There is no uncached fallback.
