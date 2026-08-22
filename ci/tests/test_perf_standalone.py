@@ -851,3 +851,40 @@ def test_a_newly_appeared_process_is_active_without_a_baseline():
     assert perf_standalone.active_windows_process_names({}, {10: ("clang", 0.0)}) == [
         "clang"
     ]
+
+
+def test_active_process_names_samples_whenever_anything_competes(monkeypatch):
+    """The CPU-progress filter has to be *reached*, not just correct.
+
+    `_active_process_names` used to short-circuit unless rustc was the only
+    competing process type, so with a cargo present it reported presence and
+    never sampled. That made the idle-orphan fix unreachable in exactly the
+    case that motivated it.
+    """
+    monkeypatch.setattr(perf_standalone.os, "name", "nt", raising=False)
+    monkeypatch.setattr(perf_standalone, "_process_names", lambda: ["cargo.exe"])
+
+    sampled = {"count": 0}
+    idle = {4242: ("cargo.exe", 1.14)}
+
+    def snapshot():
+        sampled["count"] += 1
+        return idle
+
+    monkeypatch.setattr(perf_standalone, "_windows_process_snapshot", snapshot)
+    monkeypatch.setattr(perf_standalone.time, "sleep", lambda _s: None)
+
+    result = perf_standalone._active_process_names()
+
+    assert sampled["count"] == 2, "must take a before/after snapshot, not short-circuit"
+    assert result == [], "an idle cargo with no CPU progress is not competing"
+
+
+def test_active_process_names_reports_presence_when_snapshots_fail(monkeypatch):
+    """No snapshot means no evidence of idleness. Refusing to time is safer
+    than timing under unknown load."""
+    monkeypatch.setattr(perf_standalone.os, "name", "nt", raising=False)
+    monkeypatch.setattr(perf_standalone, "_process_names", lambda: ["cargo.exe"])
+    monkeypatch.setattr(perf_standalone, "_windows_process_snapshot", lambda: None)
+
+    assert perf_standalone._active_process_names() == ["cargo.exe"]
