@@ -298,6 +298,19 @@ class SampleGuardFailure(RuntimeError):
         self.item = item
 
 
+def failed_rows(campaign: dict[str, Any]) -> list[tuple[str, str]]:
+    """`(language, test)` for every recorded sample that missed its floor.
+
+    Reads the campaign index rather than a parallel tally, so a run cannot
+    report success while `campaign.json` records a failure.
+    """
+    return [
+        (item["language"], item["test"])
+        for item in campaign.get("results", [])
+        if not item.get("passed", True)
+    ]
+
+
 def validate_completed_results(
     campaign_dir: Path, campaign: dict[str, Any], expected_attempts: int
 ) -> None:
@@ -988,12 +1001,25 @@ def run_campaign(args: argparse.Namespace) -> Path:
             )
         except SampleGuardFailure as failure:
             record(failure.item)
-            raise
+            if not getattr(args, "keep_going", False):
+                raise
+            # Coverage mode: a row that misses its floor is recorded and the
+            # campaign moves on. #1116's close criterion wants evidence for
+            # all four language families, and at least one row is failing for
+            # structural reasons rather than fixable ones (#1437), so
+            # stopping at the first red row makes that criterion unreachable.
+            print(
+                f"WARNING: {language}/{test_name} missed its floor; continuing "
+                "because --keep-going was passed",
+                file=sys.stderr,
+            )
+            continue
         record(item)
     return campaign_dir
 
 
-def main() -> int:
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Campaign CLI. Split out of `main` so flag defaults are testable."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--language", choices=benchmark_stats.LANGUAGES)
     parser.add_argument("--test")
@@ -1001,6 +1027,20 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--rebuild-image", action="store_true")
+    parser.add_argument(
+        "--keep-going",
+        action="store_true",
+        help=(
+            "record a sample that misses its perf floor and continue, instead "
+            "of stopping. Still exits non-zero. Use to gather full "
+            "four-language coverage when a row is failing (#1116)."
+        ),
+    )
+    return parser
+
+
+def main() -> int:
+    parser = build_arg_parser()
     args = parser.parse_args()
     if args.attempts < 1:
         parser.error("--attempts must be at least 1")
@@ -1010,6 +1050,15 @@ def main() -> int:
         output = run_campaign(args)
     except (RuntimeError, ValueError, subprocess.CalledProcessError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    # Derived from the recorded results rather than tracked separately, so the
+    # exit code cannot disagree with the campaign index (#1458 records a
+    # failing sample; this reads it back).
+    failed = failed_rows(_load_json(output / "campaign.json"))
+    if failed:
+        rows = ", ".join(f"{language}/{test}" for language, test in failed)
+        print(f"campaign complete with failing rows: {output}")
+        print(f"ERROR: {len(failed)} sample(s) below floor: {rows}", file=sys.stderr)
         return 1
     print(f"campaign complete: {output}")
     return 0
