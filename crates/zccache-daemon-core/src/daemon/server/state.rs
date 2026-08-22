@@ -625,6 +625,19 @@ impl SharedState {
             .collect()
     }
 
+    /// Legacy-lane counts for a durable lifecycle payload: `(total, by_type)`.
+    ///
+    /// The live counter is only reachable through `Request::Status`, so it
+    /// dies with the daemon. #840 Slice 5 has to watch this fall to zero
+    /// across a release cycle before the bincode lane can be deleted, and an
+    /// idle-timed-out daemon takes its counts with it. Emitting the totals on
+    /// death makes the curve reconstructable from `daemon-lifecycle.log`
+    /// alone, which is the same contract every other death statistic uses.
+    pub(super) fn bincode_request_totals(&self) -> (u64, std::collections::BTreeMap<String, u64>) {
+        let by_type = self.bincode_request_snapshot();
+        (by_type.values().sum(), by_type)
+    }
+
     pub(super) fn begin_cache_request(&self) -> ActiveCacheRequest<'_> {
         self.active_cache_requests.fetch_add(1, Ordering::AcqRel);
         ActiveCacheRequest { state: self }
