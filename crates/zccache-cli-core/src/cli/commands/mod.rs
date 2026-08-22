@@ -16,6 +16,7 @@ pub(crate) mod daemon;
 pub(crate) mod download;
 pub(crate) mod engine_profile;
 pub(crate) mod exec;
+pub(crate) mod fetch;
 pub(crate) mod fp;
 pub(crate) mod gha;
 pub(crate) mod meson_cache;
@@ -471,6 +472,9 @@ fn dispatch(command: Commands, global_overrides: wrap::WrapperOverrides) -> Exit
             } => symbols::cmd_symbols_install(version, target, prefix, force),
             SymbolsCommands::Symbolicate { dumps } => symbols::cmd_symbols_symbolicate(dumps),
         },
+        Commands::Fetch { url, expect, json } => {
+            run_async(fetch::cmd_fetch(&url, expect.as_deref(), json))
+        }
         Commands::CacheRoot { json } => cache_ops::cmd_cache_root(json),
         Commands::DefenderExclusions { action } => match action {
             DefenderExclusionsCommands::Check { json } => defender::cmd_check(json),
