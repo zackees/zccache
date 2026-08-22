@@ -8,6 +8,7 @@ mod diag;
 mod env;
 pub(crate) mod ipc;
 mod passthrough;
+mod profile;
 mod routing;
 mod rustfmt;
 mod tool_resolution;
@@ -71,6 +72,20 @@ fn emit_wrapper_warning(text: &str) {
 /// If `ZCCACHE_SESSION_ID` is set, uses that session and sends the tool as a
 /// per-request override. If unset, auto-creates an ephemeral session.
 pub(crate) fn run_wrap(args: &[String], overrides: WrapperOverrides) -> ExitCode {
+    // Issue #1460: the per-invocation path is otherwise unmeasured, and it is
+    // where ~63% of #1437's emscripten cold gap lives. Inert unless the
+    // daemon's own profiling env is set.
+    let wrapper_profile = profile::WrapperProfile::start();
+    let code = run_wrap_routed(args, overrides, &wrapper_profile);
+    wrapper_profile.emit();
+    code
+}
+
+fn run_wrap_routed(
+    args: &[String],
+    overrides: WrapperOverrides,
+    wrapper_profile: &profile::WrapperProfile,
+) -> ExitCode {
     diag::emit(args);
 
     if args.is_empty() {
@@ -81,6 +96,7 @@ pub(crate) fn run_wrap(args: &[String], overrides: WrapperOverrides) -> ExitCode
     if env::wrapper_disabled() {
         // Never silent (issue #1211): the user opted out, but each uncached
         // invocation still announces itself and the reason.
+        wrapper_profile.set_route("disabled");
         return passthrough::run_passthrough(args, Some("ZCCACHE_DISABLE is set"));
     }
 
@@ -103,29 +119,42 @@ pub(crate) fn run_wrap(args: &[String], overrides: WrapperOverrides) -> ExitCode
     // being deleted. We've captured everything we need into local variables.
     let _ = std::env::set_current_dir(std::env::temp_dir());
 
+    // Everything above is wrapper setup; everything below is the routed call.
+    wrapper_profile.mark_setup_done();
+
     match routing::classify_invocation(&args[0], &tool_args) {
         WrapperRoute::Formatter => {
+            wrapper_profile.set_route("formatter");
             rustfmt::run_rustfmt_cached(&wrapped_tool, &tool_args, &cwd, None)
         }
-        WrapperRoute::LinkOrArchive => run_async(ipc::cmd_link_ephemeral(
-            &endpoint,
-            &wrapped_tool,
-            tool_args,
-            cwd.into(),
-            client_env,
-        )),
+        WrapperRoute::LinkOrArchive => {
+            wrapper_profile.set_route("link_or_archive");
+            run_async(ipc::cmd_link_ephemeral(
+                &endpoint,
+                &wrapped_tool,
+                tool_args,
+                cwd.into(),
+                client_env,
+            ))
+        }
         // Silent by design: probe callers parse the tool's stderr, so a
         // warning line here would corrupt the probe (see run_passthrough).
-        WrapperRoute::ProbeBypass => passthrough::run_passthrough(args, None),
-        WrapperRoute::Compile => run_compile_route(
-            &endpoint,
-            &args[0],
-            &tool_args,
-            strict_paths_mode,
-            wrapped_tool,
-            cwd.into(),
-            client_env,
-        ),
+        WrapperRoute::ProbeBypass => {
+            wrapper_profile.set_route(profile::ROUTE_PROBE_BYPASS);
+            passthrough::run_passthrough(args, None)
+        }
+        WrapperRoute::Compile => {
+            wrapper_profile.set_route("compile");
+            run_compile_route(
+                &endpoint,
+                &args[0],
+                &tool_args,
+                strict_paths_mode,
+                wrapped_tool,
+                cwd.into(),
+                client_env,
+            )
+        }
     }
 }
 
