@@ -25,6 +25,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::download::{DownloadOptions, DownloadPhase};
+use crate::download_client::ArchiveFormat;
 
 /// KV namespace holding one revalidation record per URL. Lowercase and
 /// hyphenated to satisfy `zccache_artifact::kv::is_valid_namespace`.
@@ -84,18 +85,25 @@ impl FetchOutcome {
 ///
 /// Pure so the layout is testable without touching a filesystem.
 pub(crate) fn cas_path_for(root: &Path, digest_hex: &str) -> PathBuf {
-    let mut path = root.join(FETCH_DIR).join(CAS_DIR);
+    sharded(root.join(FETCH_DIR).join(CAS_DIR), digest_hex)
+}
+
+/// Shard `hex` under `base` as `<aa>/<bb>/<hex>`.
+///
+/// Shared by the blob CAS and the tree cache so the two layouts cannot drift.
+fn sharded(base: PathBuf, hex: &str) -> PathBuf {
+    let mut path = base;
     for level in 0..SHARD_LEVELS {
         let start = level * SHARD_BYTES * 2;
         let end = start + SHARD_BYTES * 2;
-        match digest_hex.get(start..end) {
+        match hex.get(start..end) {
             Some(part) => path.push(part),
             // A digest too short to shard is a caller bug; keep it addressable
             // rather than panicking in a CLI path.
             None => break,
         }
     }
-    path.join(digest_hex)
+    path.join(hex)
 }
 
 /// Stable per-URL key. blake3 of the URL bytes — an index into the record
@@ -192,7 +200,12 @@ async fn read_validators(url: &str) -> (Option<String>, Option<String>) {
     )
 }
 
-pub(crate) async fn cmd_fetch(url: &str, expect: Option<&str>, json: bool) -> ExitCode {
+pub(crate) async fn cmd_fetch(
+    url: &str,
+    expect: Option<&str>,
+    extract: bool,
+    json: bool,
+) -> ExitCode {
     // Validate the pin before any network work, so a typo fails immediately
     // rather than after a 30 MB transfer.
     if let Some(pin) = expect {
@@ -236,7 +249,15 @@ pub(crate) async fn cmd_fetch(url: &str, expect: Option<&str>, json: bool) -> Ex
                     }
                 }
             }
-            return report(&cached, &record.digest, FetchOutcome::Revalidated, json);
+            return finish(
+                &root,
+                url,
+                &cached,
+                &record.digest,
+                FetchOutcome::Revalidated,
+                extract,
+                json,
+            );
         }
     }
 
@@ -326,21 +347,219 @@ pub(crate) async fn cmd_fetch(url: &str, expect: Option<&str>, json: bool) -> Ex
         },
     );
 
-    report(&cas, &digest, outcome, json)
+    finish(&root, url, &cas, &digest, outcome, extract, json)
 }
 
-fn report(path: &Path, digest: &str, outcome: FetchOutcome, json: bool) -> ExitCode {
+/// Extracted trees live beside the blob CAS, sharded the same way.
+const TREES_DIR: &str = "trees";
+
+/// Domain separator for tree keys. Without it a tree key could collide with a
+/// blob digest, which is a bare blake3 of file bytes.
+const TREE_KEY_DOMAIN: &str = "zccache-fetch-tree-v1";
+
+/// Whether an extraction was served from cache or actually performed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExtractOutcome {
+    Cached,
+    Extracted,
+}
+
+impl ExtractOutcome {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Cached => "cached",
+            Self::Extracted => "extracted",
+        }
+    }
+}
+
+/// Stable tag per archive format, used in the tree key.
+///
+/// Written out rather than derived from `Debug` so that renaming a variant
+/// cannot silently invalidate every cached tree on disk.
+pub(crate) fn format_tag(format: ArchiveFormat) -> &'static str {
+    match format {
+        ArchiveFormat::Auto => "auto",
+        ArchiveFormat::None => "none",
+        ArchiveFormat::Zst => "zst",
+        ArchiveFormat::Zip => "zip",
+        ArchiveFormat::Xz => "xz",
+        ArchiveFormat::TarGz => "tar.gz",
+        ArchiveFormat::TarXz => "tar.xz",
+        ArchiveFormat::TarZst => "tar.zst",
+        ArchiveFormat::SevenZip => "7z",
+    }
+}
+
+/// Key for an extracted tree: archive digest + the extraction options that
+/// produced it.
+///
+/// This is the issue's open question answered as "yes" -- an extracted tree is
+/// a CAS entry in its own right. Keying on the *archive digest* rather than on
+/// the URL means two URLs serving identical bytes share one extraction, and an
+/// origin that changes its validator without changing content still hits.
+/// Including the format means a future flag that changes extraction output
+/// (strip-components, filters) extends this key instead of silently reusing a
+/// tree produced under different options.
+pub(crate) fn tree_key(archive_digest: &str, format: ArchiveFormat) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(TREE_KEY_DOMAIN.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(archive_digest.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(format_tag(format).as_bytes());
+    hasher.finalize().to_hex().to_string()
+}
+
+/// `<root>/fetch/trees/<aa>/<bb>/<hex>` for an extracted tree.
+pub(crate) fn tree_path_for(root: &Path, tree_key_hex: &str) -> PathBuf {
+    sharded(root.join(FETCH_DIR).join(TREES_DIR), tree_key_hex)
+}
+
+/// The archive file name implied by a URL, used only for format detection.
+///
+/// The CAS path has no extension -- it is a bare digest -- so the format has
+/// to come from the URL. Query and fragment are stripped first, because
+/// `...node.tar.gz?token=x` is common and would otherwise detect as `None`.
+pub(crate) fn archive_name_from_url(url: &str) -> String {
+    let without_fragment = url.split('#').next().unwrap_or(url);
+    let without_query = without_fragment
+        .split('?')
+        .next()
+        .unwrap_or(without_fragment);
+    without_query
+        .rsplit('/')
+        .find(|segment| !segment.is_empty())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Resolve the extraction format for a URL, or explain why it cannot be.
+fn extraction_format(url: &str) -> Result<ArchiveFormat, String> {
+    let name = archive_name_from_url(url);
+    let format = crate::download_client::artifact::archive::auto_archive_format(Path::new(&name))
+        .unwrap_or(ArchiveFormat::None);
+    if matches!(format, ArchiveFormat::None | ArchiveFormat::Auto) {
+        return Err(format!(
+            "--extract: cannot determine an archive format from {name:?} \
+             (supported: .zip, .tar.gz, .tar.xz, .tar.zst, .tzst, .7z, .xz, .zst)"
+        ));
+    }
+    Ok(format)
+}
+
+/// Extract `archive` into the tree cache, or report that it is already there.
+///
+/// Publication is a single directory rename. That is what makes "the tree
+/// directory exists" mean "the extraction finished": a run interrupted partway
+/// leaves its debris in `tmp/`, never at the final path, so the next run
+/// cannot mistake a half-extracted tree for a complete one. Checking for the
+/// directory and extracting *into* it would have exactly that bug.
+fn ensure_extracted(
+    root: &Path,
+    archive: &Path,
+    digest: &str,
+    format: ArchiveFormat,
+) -> Result<(PathBuf, ExtractOutcome), String> {
+    let key = tree_key(digest, format);
+    let final_path = tree_path_for(root, &key);
+    if final_path.is_dir() {
+        return Ok((final_path, ExtractOutcome::Cached));
+    }
+
+    let tmp_root = root.join(FETCH_DIR).join(TMP_DIR);
+    std::fs::create_dir_all(&tmp_root)
+        .map_err(|e| format!("cannot create extraction staging dir: {e}"))?;
+    let staging = tmp_root.join(format!("{key}.tree"));
+    // Debris from an interrupted earlier run must not be extracted over.
+    let _ = std::fs::remove_dir_all(&staging);
+
+    crate::download_client::artifact::archive::extract_archive_at(archive, format, &staging)
+        .map_err(|e| {
+            let _ = std::fs::remove_dir_all(&staging);
+            format!("extraction failed: {e}")
+        })?;
+
+    if let Some(parent) = final_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create tree cache directory: {e}"))?;
+    }
+    match std::fs::rename(&staging, &final_path) {
+        Ok(()) => Ok((final_path, ExtractOutcome::Extracted)),
+        // Another process published the same tree while we were extracting.
+        // Its bytes are ours by construction (same key), so ours is redundant.
+        Err(_) if final_path.is_dir() => {
+            let _ = std::fs::remove_dir_all(&staging);
+            Ok((final_path, ExtractOutcome::Cached))
+        }
+        Err(err) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            Err(format!("cannot publish extracted tree: {err}"))
+        }
+    }
+}
+
+/// Common tail for every route into a cached blob: optionally extract, then
+/// report. Shared so `--extract` cannot be honoured on one path and skipped on
+/// another -- the bug `--expect` already had on the revalidated path.
+fn finish(
+    root: &Path,
+    url: &str,
+    cas: &Path,
+    digest: &str,
+    outcome: FetchOutcome,
+    extract: bool,
+    json: bool,
+) -> ExitCode {
+    if !extract {
+        return report(cas, digest, outcome, None, None, json);
+    }
+    let format = match extraction_format(url) {
+        Ok(format) => format,
+        Err(err) => {
+            eprintln!("zccache: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match ensure_extracted(root, cas, digest, format) {
+        Ok((tree, extract_outcome)) => report(
+            cas,
+            digest,
+            outcome,
+            Some(&tree),
+            Some(extract_outcome),
+            json,
+        ),
+        Err(err) => {
+            eprintln!("zccache: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn report(
+    path: &Path,
+    digest: &str,
+    outcome: FetchOutcome,
+    tree: Option<&Path>,
+    extract_outcome: Option<ExtractOutcome>,
+    json: bool,
+) -> ExitCode {
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "path": path,
-                "digest": digest,
-                "outcome": outcome.as_str(),
-            })
-        );
+        let mut payload = serde_json::json!({
+            "path": path,
+            "digest": digest,
+            "outcome": outcome.as_str(),
+        });
+        if let (Some(tree), Some(extract_outcome)) = (tree, extract_outcome) {
+            payload["extracted"] = serde_json::json!(tree);
+            payload["extraction"] = serde_json::json!(extract_outcome.as_str());
+        }
+        println!("{payload}");
     } else {
-        println!("{}", path.display());
+        // With --extract the useful path is the tree, not the archive blob:
+        // the caller wants something to run, not something to unpack.
+        println!("{}", tree.unwrap_or(path).display());
     }
     ExitCode::SUCCESS
 }
@@ -459,5 +678,170 @@ mod tests {
 
         assert_eq!(pin_matches(&"a".repeat(64), cached), Ok(false));
         assert_eq!(pin_matches(cached, cached), Ok(true));
+    }
+
+    // --- extraction cache (issue #1469, acceptance criterion 7) ---
+
+    /// Build a real `.tar.gz` so the extraction tests exercise the actual
+    /// decoder rather than a stand-in.
+    fn write_targz(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = std::fs::File::create(path).expect("create archive");
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
+        let mut builder = tar::Builder::new(encoder);
+        for (name, body) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, name, *body)
+                .expect("append entry");
+        }
+        builder
+            .into_inner()
+            .expect("finish tar")
+            .finish()
+            .expect("finish gz");
+    }
+
+    #[test]
+    fn a_tree_key_is_not_the_archive_digest() {
+        // Domain separation: a tree key must never collide with a blob digest,
+        // since both are 64 hex chars living under the same root.
+        let digest = "ab".repeat(32);
+
+        assert_ne!(tree_key(&digest, ArchiveFormat::TarGz), digest);
+    }
+
+    #[test]
+    fn a_tree_key_depends_on_the_extraction_format() {
+        // Same bytes unpacked under different options are different trees.
+        let digest = "cd".repeat(32);
+
+        assert_ne!(
+            tree_key(&digest, ArchiveFormat::TarGz),
+            tree_key(&digest, ArchiveFormat::Zip)
+        );
+    }
+
+    #[test]
+    fn identical_archives_share_one_tree_key() {
+        // This is what makes two URLs serving identical bytes -- or an origin
+        // that changed only its ETag -- reuse one extraction.
+        let digest = "ef".repeat(32);
+
+        assert_eq!(
+            tree_key(&digest, ArchiveFormat::TarGz),
+            tree_key(&digest, ArchiveFormat::TarGz)
+        );
+    }
+
+    #[test]
+    fn a_url_name_drops_query_and_fragment() {
+        // `?token=` on a release URL is common; without stripping it the
+        // format would detect as None and --extract would refuse a valid
+        // archive.
+        assert_eq!(
+            archive_name_from_url("https://h/x/node.tar.gz?token=abc"),
+            "node.tar.gz"
+        );
+        assert_eq!(
+            archive_name_from_url("https://h/x/node.tar.gz#frag"),
+            "node.tar.gz"
+        );
+        assert_eq!(archive_name_from_url("https://h/x/node.zip"), "node.zip");
+    }
+
+    #[test]
+    fn an_unrecognized_extension_is_refused_rather_than_guessed() {
+        // Silently treating an unknown payload as a single-file copy would
+        // produce a "tree" that is really one file at a directory path.
+        assert!(extraction_format("https://h/tool.bin").is_err());
+        assert!(extraction_format("https://h/tool.tar.gz").is_ok());
+    }
+
+    #[test]
+    fn an_archive_is_extracted_once_and_reused() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let archive = root.join("payload.tar.gz");
+        write_targz(&archive, &[("bin/tool", b"payload")]);
+        let digest = "11".repeat(32);
+
+        let (first, first_outcome) =
+            ensure_extracted(root, &archive, &digest, ArchiveFormat::TarGz).expect("extract");
+        let (second, second_outcome) =
+            ensure_extracted(root, &archive, &digest, ArchiveFormat::TarGz).expect("reuse");
+
+        assert_eq!(first_outcome, ExtractOutcome::Extracted);
+        assert_eq!(
+            second_outcome,
+            ExtractOutcome::Cached,
+            "second call re-extracted"
+        );
+        assert_eq!(first, second);
+        assert_eq!(
+            std::fs::read(first.join("bin/tool")).expect("read entry"),
+            b"payload"
+        );
+    }
+
+    #[test]
+    fn a_partial_extraction_is_never_served_as_complete() {
+        // The failure this guards: check-then-extract-in-place leaves a
+        // half-populated directory at the final path when interrupted, and
+        // the next run sees "directory exists" and hands it out. Publication
+        // by rename means debris can only ever sit in tmp/.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let archive = root.join("payload.tar.gz");
+        write_targz(&archive, &[("bin/tool", b"payload")]);
+        let digest = "22".repeat(32);
+        let key = tree_key(&digest, ArchiveFormat::TarGz);
+
+        // Simulate an interrupted run: staging debris, nothing published.
+        let staging = root
+            .join(FETCH_DIR)
+            .join(TMP_DIR)
+            .join(format!("{key}.tree"));
+        std::fs::create_dir_all(staging.join("bin")).expect("staging");
+        std::fs::write(staging.join("bin/truncated"), b"partial").expect("debris");
+
+        let (tree, outcome) =
+            ensure_extracted(root, &archive, &digest, ArchiveFormat::TarGz).expect("extract");
+
+        assert_eq!(
+            outcome,
+            ExtractOutcome::Extracted,
+            "debris was served as a hit"
+        );
+        assert!(tree.join("bin/tool").is_file(), "real entry missing");
+        assert!(
+            !tree.join("bin/truncated").exists(),
+            "debris from the interrupted run leaked into the published tree"
+        );
+    }
+
+    #[test]
+    fn extraction_outcomes_have_distinct_labels() {
+        assert_ne!(
+            ExtractOutcome::Cached.as_str(),
+            ExtractOutcome::Extracted.as_str()
+        );
+    }
+
+    #[test]
+    fn a_tree_path_sits_under_two_shard_levels() {
+        let key = "ab".repeat(32);
+        let path = tree_path_for(Path::new("/root"), &key);
+        let parts: Vec<_> = path
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+
+        assert!(parts.contains(&TREES_DIR.to_string()));
+        assert_eq!(parts[parts.len() - 1], key);
+        assert_eq!(parts[parts.len() - 2], "ab");
+        assert_eq!(parts[parts.len() - 3], "ab");
     }
 }

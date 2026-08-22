@@ -454,7 +454,17 @@ pub(crate) enum Commands {
         /// never reachable.
         #[arg(long, value_name = "DIGEST")]
         expect: Option<String>,
+        /// Unpack the fetched archive into the tree cache and print the
+        /// extracted directory instead of the archive blob.
+        ///
+        /// The extraction is itself cached, keyed by the archive digest
+        /// plus the format -- extraction and AV scanning dominate the
+        /// transfer for large toolchains, so caching only the bytes
+        /// leaves most of the cost in place (issue #1469).
+        #[arg(long)]
+        extract: bool,
         /// Emit `{"path":..,"digest":..,"outcome":..}` instead of the path.
+        /// With `--extract`, also `extracted` and `extraction`.
         #[arg(long)]
         json: bool,
     },

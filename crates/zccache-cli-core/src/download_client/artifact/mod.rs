@@ -12,7 +12,7 @@ use crate::download::{DownloadOptions, DownloadPhase};
 
 use super::DownloadClient;
 
-mod archive;
+pub(crate) mod archive;
 mod hashing;
 mod lock;
 mod marker;
