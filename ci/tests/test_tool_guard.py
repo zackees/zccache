@@ -387,3 +387,53 @@ def test_uv_run_module_flag_still_sees_python():
     result = _check("uv run --frozen python -m pytest tests/foo.py")
     assert result is not None
     assert result[0] == "python"
+
+
+# ── heredoc bodies: data, not commands ─────────────────────────────────────
+#
+# `check_command` splits on `;`, `&&`, `|` with no awareness of quoting, so a
+# heredoc body reading "don't run `cargo build`" was parsed as an invocation
+# and rejected. The body is stdin for the program, not a command -- unless the
+# program is a shell, which really does execute it.
+
+
+def test_heredoc_body_fed_to_a_non_shell_is_data():
+    """`gh issue create --body-file - <<EOF` whose prose mentions a blocked
+    command must not be rejected for the prose."""
+    command = "gh issue create --body-file - <<'EOF'\nuv run --frozen cargo build\nEOF"
+    assert _check(command) is None
+
+
+def test_heredoc_body_with_unquoted_delimiter_is_data():
+    assert _check("gh pr comment 1 --body-file - <<EOF\ncargo build\nEOF") is None
+
+
+def test_heredoc_body_with_dash_delimiter_is_data():
+    """`<<-EOF` strips leading tabs; the delimiter line is indented too."""
+    assert _check("cat <<-EOF\n\tcargo build\n\tEOF") is None
+
+
+def test_shell_heredoc_body_is_still_executed_and_checked():
+    """The bypass this fix must not open: `bash <<EOF` runs its body, so the
+    body stays subject to the guard."""
+    for shell in ("bash", "sh", "zsh"):
+        result = _check(f"{shell} <<'EOF'\nuv run cargo build\nEOF")
+        assert result is not None, shell
+        assert result[0] == "cargo"
+
+
+def test_command_after_a_heredoc_is_still_checked():
+    """Consuming the body must not swallow what follows the delimiter."""
+    result = _check("cat <<'EOF' > f.txt\nhello\nEOF\ncargo build")
+    assert result is not None
+    assert result[0] == "cargo"
+
+
+def test_data_heredoc_then_shell_heredoc_still_blocks():
+    command = "cat <<'A' > x\ncargo build\nA\nbash <<'B'\ncargo build\nB"
+    assert _check(command) is not None
+
+
+def test_heredoc_body_mentioning_a_test_path_is_data():
+    command = "gh issue create --body-file - <<'EOF'\npython tests/foo.py is blocked\nEOF"
+    assert _check(command) is None

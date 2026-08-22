@@ -342,6 +342,47 @@ def _nested_shell_command(words):
     return None
 
 
+# `<<WORD`, `<<'WORD'`, `<<"WORD"`, `<<-WORD` -- the operator that starts a
+# heredoc. The body that follows is stdin for the command, not a command.
+HEREDOC_RE = re.compile(r"""<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1""")
+
+
+def _split_heredocs(command):
+    """Split `command` into (command_text, [(owner_program, body), ...]).
+
+    A heredoc body is data being fed to a program, so scanning it for tool
+    invocations is a category error -- `gh issue create --body-file - <<EOF`
+    whose prose happens to mention a blocked command was rejected as if the
+    prose were the command.
+
+    The exception is a shell reading its script from stdin (`bash <<EOF`),
+    where the body genuinely *is* executed. Those bodies are returned with
+    their owner so the caller keeps checking them; dropping every body
+    wholesale would turn this fix into a bypass.
+    """
+    lines = command.split("\n")
+    kept = []
+    bodies = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        kept.append(line)
+        delimiters = [match.group(2) for match in HEREDOC_RE.finditer(line)]
+        index += 1
+        if not delimiters:
+            continue
+        owner_words = _command_words(line)
+        owner = _program_name(owner_words[0]) if owner_words else ""
+        for delimiter in delimiters:
+            body = []
+            while index < len(lines) and lines[index].strip() != delimiter:
+                body.append(lines[index])
+                index += 1
+            index += 1  # consume the delimiter line
+            bodies.append((owner, "\n".join(body)))
+    return "\n".join(kept), bodies
+
+
 def check_command(command):
     """Return (tool, reason) if forbidden, otherwise None.
 
@@ -355,6 +396,15 @@ def check_command(command):
     argument. Now only `python tests/foo.py` (and `uv run python
     tests/foo.py`) trigger the block.
     """
+    command, heredoc_bodies = _split_heredocs(command)
+    for owner, body in heredoc_bodies:
+        # Only a shell executes its heredoc; every other program is being
+        # fed data. See `_split_heredocs`.
+        if owner in SHELL_WRAPPERS:
+            result = check_command(body)
+            if result:
+                return result
+
     segments = _split_shell_segments(command)
 
     for seg in segments:
