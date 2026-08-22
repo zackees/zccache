@@ -601,12 +601,15 @@ fn rust_plan_session_stats_lookup_errors_surface_in_json() {
         stats.get("session_id").and_then(Value::as_str),
         Some("session-123")
     );
+    // Bind the observed value so a mismatch reports what actually arrived.
+    // This assertion failed once on `main` (run 32419543163) and the panic
+    // named only the expectation, so there was nothing to diagnose from and
+    // no way to tell a changed message from a changed failure mode (#1452).
+    let observed_error = stats.get("error").and_then(Value::as_str);
     assert!(
-        stats
-            .get("error")
-            .and_then(Value::as_str)
+        observed_error
             .is_some_and(|error| error.contains("cannot connect to daemon at tcp:127.0.0.1:9")),
-        "expected endpoint lookup failure to be surfaced in compile_cache_stats"
+        "expected endpoint lookup failure in compile_cache_stats; \n         got error={observed_error:?}, stats={stats:?}"
     );
 }
 
