@@ -624,6 +624,17 @@ pub(super) async fn try_handle_staged_misses(
 mod tests {
     use super::*;
 
+    /// How long the queued clear is given to finish once the publication
+    /// guard is dropped. This is a hang detector, not a measurement -- the
+    /// assertion is `Response::Cleared`, and this bound only exists so a
+    /// lost wakeup fails the test instead of hanging the suite.
+    const CLEAR_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// Extra time granted *after* CLEAR_BUDGET expires, solely to classify
+    /// the failure. See the call site: a bare `Elapsed(())` cannot tell a
+    /// slow runner from a barrier that never released (#1476).
+    const HANG_CONFIRM: std::time::Duration = std::time::Duration::from_secs(55);
+
     #[tokio::test]
     async fn staged_multi_visibility_stays_inside_queued_clear_barrier() {
         let temp = tempfile::tempdir().unwrap();
@@ -670,10 +681,30 @@ mod tests {
         assert!(server.state.fast_hit_cache.contains_key(&context_key));
 
         drop(publication_guard);
-        let response = tokio::time::timeout(std::time::Duration::from_secs(5), clear)
-            .await
-            .unwrap()
-            .unwrap();
+        // A bare `Elapsed(())` here says nothing about *why* the clear did not
+        // finish, which left #1476 unactionable: "CI was slow" and "the barrier
+        // never released" produce the identical panic. So on expiry, poll the
+        // same handle again for much longer and report which one happened.
+        // Either way the test still fails -- this classifies the failure, it
+        // does not tolerate it.
+        let joined = match tokio::time::timeout(CLEAR_BUDGET, &mut clear).await {
+            Ok(joined) => joined,
+            Err(_) => match tokio::time::timeout(HANG_CONFIRM, &mut clear).await {
+                Ok(_) => panic!(
+                    "clear missed {CLEAR_BUDGET:?} but finished within {:?}: the \
+                     barrier released and this host was merely slow, so the budget \
+                     is undersized rather than the code being wrong (#1476)",
+                    CLEAR_BUDGET + HANG_CONFIRM
+                ),
+                Err(_) => panic!(
+                    "clear never finished within {:?} of the publication guard being \
+                     dropped: the barrier did not release. This is a lost wakeup, not \
+                     load -- do not raise the budget (#1476)",
+                    CLEAR_BUDGET + HANG_CONFIRM
+                ),
+            },
+        };
+        let response = joined.unwrap();
         assert!(matches!(response, Response::Cleared { .. }));
         assert!(!server.state.artifacts.contains_key(&key));
         assert!(!server.state.fast_hit_cache.contains_key(&context_key));
