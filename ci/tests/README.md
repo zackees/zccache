@@ -30,3 +30,8 @@ matching in both `CLAUDE.md` files.
 `test_readme_coverage.py` asserts every directory with tracked files carries a
 `README.md`. The `readme_guard.py` hook only fires on an *edited* directory, so
 untouched ones could sit without one indefinitely — seven did.
+
+`test_documented_commands.py` checks that `-p <crate>` in any documented
+command names a real workspace member, and that documented `cargo bench`
+targets a crate that actually has benches — `cargo bench` on a crate with none
+exits 0 and measures nothing.
