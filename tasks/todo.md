@@ -310,3 +310,15 @@ Issue: https://github.com/zackees/zccache/issues/1117
   and review gate in Linux Docker.
 - [ ] Merge the upstream PR, bump soldr's vendored commit, rerun the hosted
   real Dylint/watchdog acceptance, and close the meta issue.
+
+## Issue #864 — release-auto.yml → soldr cross-compile (single linux-x86 runner family)
+
+- [ ] Add `bootstrap-zccache` job: bare cargo (`RUSTC_WRAPPER: ""`) on ubuntu-24.04, upload `bootstrap-zccache` artifact
+- [ ] Move all 8 release targets onto `ubuntu-24.04` (no macOS/Windows runners in the build matrix)
+- [ ] Use `soldr prepare --target <triple> --github-env $GITHUB_ENV` for the blessed cross toolchain (zig for linux/darwin, xwin/LLVM for msvc)
+- [ ] Wire bootstrap zccache onto PATH + `RUSTC_WRAPPER` with a job-local `ZCCACHE_CACHE_DIR` (no restored cache -> release artifacts still built from source)
+- [ ] Add `dry_run` workflow_dispatch input that runs the full matrix and skips every publish job
+- [ ] build-target: gate the legacy apt/linker cross setup behind `manage_cross_toolchain`
+- [ ] build-target: replace hardcoded cross-exec skip lists with host-vs-target runnability, and add a `file`-based architecture assertion so cross lanes keep a real artifact check
+- [ ] Validate: actionlint/YAML parse, hooks, ci/*.py tests
+- [ ] Push branch, open PR referencing #864, trigger dry-run, merge on green

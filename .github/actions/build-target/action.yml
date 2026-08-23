@@ -36,6 +36,16 @@ inputs:
     description: Python version to install for packaging and optional Python extension builds.
     required: false
     default: "3.13"
+  manage_cross_toolchain:
+    description: >
+      Install and configure the legacy apt/musl cross toolchain (musl-tools,
+      gcc-aarch64-linux-gnu, musl-cross, CARGO_TARGET_*_LINKER). Set to "false"
+      when the caller has already prepared the target toolchain some other way
+      — release-auto.yml uses `soldr prepare --target <triple>`, which owns the
+      zig / xwin / Apple-SDK dispatch for every target and must not have its
+      linker selection overwritten here.
+    required: false
+    default: "true"
   linker:
     description: Optional linker executable for cross-compilation.
     required: false
@@ -72,15 +82,19 @@ runs:
       with:
         python-version: ${{ inputs.python_version }}
 
+    # A Windows-MSVC target built ON a Windows runner must use the MSVC host
+    # toolchain. Built on Linux there is no MSVC host toolchain to select — the
+    # sanctioned path is the cross toolchain `soldr prepare` materializes
+    # (xwin CRT/SDK + clang-cl/lld-link), so the host stays the Linux triple.
     - name: Select Rust toolchain
       shell: bash
       run: |
-        echo "RELEASE_RUST_TOOLCHAIN=${{ contains(inputs.target, 'pc-windows-msvc') && '1.94.1-x86_64-pc-windows-msvc' || '1.94.1' }}" >> "$GITHUB_ENV"
+        echo "RELEASE_RUST_TOOLCHAIN=${{ runner.os == 'Windows' && contains(inputs.target, 'pc-windows-msvc') && '1.94.1-x86_64-pc-windows-msvc' || '1.94.1' }}" >> "$GITHUB_ENV"
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: ${{ contains(inputs.target, 'pc-windows-msvc') && '1.94.1-x86_64-pc-windows-msvc' || '1.94.1' }}
+        toolchain: ${{ runner.os == 'Windows' && contains(inputs.target, 'pc-windows-msvc') && '1.94.1-x86_64-pc-windows-msvc' || '1.94.1' }}
         targets: ${{ inputs.target }}
 
     - name: Verify Rust host toolchain
@@ -89,20 +103,27 @@ runs:
         info="$(rustup run "$RELEASE_RUST_TOOLCHAIN" rustc -vV)"
         printf '%s\n' "$info"
         host="$(printf '%s\n' "$info" | awk '/^host: / { print $2 }')"
-        if [[ "${{ inputs.target }}" == *pc-windows-msvc && "$host" != "x86_64-pc-windows-msvc" ]]; then
-          echo "::error::Windows release builds must use the MSVC host toolchain, got: ${host:-<missing>}" >&2
+        if [ -z "$host" ]; then
+          echo "::error::could not determine rustc host triple" >&2
+          exit 1
+        fi
+        # Consumed by the smoke/validation steps below to decide whether the
+        # freshly built binary can be executed on this runner at all.
+        echo "RELEASE_HOST_TARGET=$host" >> "$GITHUB_ENV"
+        if [[ "${{ runner.os }}" == "Windows" && "${{ inputs.target }}" == *pc-windows-msvc && "$host" != "x86_64-pc-windows-msvc" ]]; then
+          echo "::error::Windows release builds on a Windows runner must use the MSVC host toolchain, got: $host" >&2
           exit 1
         fi
 
     - name: Install musl tools
-      if: inputs.target == 'x86_64-unknown-linux-musl'
+      if: inputs.manage_cross_toolchain == 'true' && inputs.target == 'x86_64-unknown-linux-musl'
       shell: bash
       run: |
         sudo apt-get update
         sudo apt-get install -y musl-tools
 
     - name: Install musl cross-compilation tools
-      if: inputs.target == 'aarch64-unknown-linux-musl'
+      if: inputs.manage_cross_toolchain == 'true' && inputs.target == 'aarch64-unknown-linux-musl'
       shell: bash
       run: |
         curl -fsSL -o aarch64-unknown-linux-musl.tar.xz \
@@ -111,7 +132,7 @@ runs:
         echo "$PWD/aarch64-unknown-linux-musl/bin" >> "$GITHUB_PATH"
 
     - name: Install GNU cross-compilation tools
-      if: inputs.target == 'aarch64-unknown-linux-gnu'
+      if: inputs.manage_cross_toolchain == 'true' && inputs.target == 'aarch64-unknown-linux-gnu'
       shell: bash
       run: |
         sudo apt-get update
