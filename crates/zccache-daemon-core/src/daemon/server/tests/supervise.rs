@@ -21,7 +21,17 @@ fn never_shutting_down() -> impl Fn() -> bool + Send + 'static {
 /// A panicking loop is restarted. This is the failure #1177 is about: before
 /// supervision the panic was silent, the task vanished, and the only symptom
 /// was that eviction quietly stopped happening.
-#[tokio::test]
+///
+/// Runs on tokio's virtual clock (`start_paused`). The supervisor sleeps
+/// `RESTART_INITIAL_BACKOFF` (1s) before the first restart, and the old
+/// real-time version allowed 10s for that — a 10x margin that still failed
+/// intermittently on CI. Not because a restart takes 10 seconds, but because
+/// `cargo test` runs this alongside ~770 other tests: a current-thread runtime
+/// on an oversubscribed 2-core Windows runner can simply be starved that long.
+/// With the clock paused, tokio advances time only when the runtime is idle,
+/// so the backoff costs nothing and the test measures the supervisor rather
+/// than the runner's load.
+#[tokio::test(start_paused = true)]
 async fn a_panicking_idempotent_task_is_restarted() {
     let attempts = Arc::new(AtomicU32::new(0));
     let counter = Arc::clone(&attempts);
