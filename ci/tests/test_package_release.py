@@ -472,3 +472,28 @@ def test_stage_debug_tree_skips_missing_input(tmp_path: Path) -> None:
         )
         is None
     )
+
+
+def test_patch_crates_io_carries_no_git_sources() -> None:
+    """A `[patch.crates-io]` git pin makes the workspace build code that the
+    published crate does not depend on, so a local GREEN stops proving anything
+    about what users install. Vendored `path` patches ship in-tree and are fine.
+
+    #1439 pinned `mimalloc-pprof` at a fork rev while the identical 0.9.3 was
+    already on crates.io; the pin was redundant and silently divergence-prone.
+    """
+    manifest = _repo_text("Cargo.toml")
+
+    start = manifest.index("[patch.crates-io]")
+    end = manifest.find("\n[", start + 1)
+    patch_block = manifest[start:] if end == -1 else manifest[start:end]
+
+    offenders = [
+        line.strip()
+        for line in patch_block.splitlines()
+        if "git =" in line and not line.lstrip().startswith("#")
+    ]
+    assert not offenders, (
+        "[patch.crates-io] must not pin git sources; "
+        f"publish the fix upstream and depend on the registry instead: {offenders}"
+    )

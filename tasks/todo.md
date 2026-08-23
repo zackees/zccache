@@ -939,6 +939,7 @@ Issue: https://github.com/zackees/zccache/issues/1439
 - [x] Add a RED contract rejecting global C/C++ language overrides.
 - [x] Remove the global `/TP` injection without weakening the target matrix.
 - [x] Prove the full ARM64 cargo-xwin release build, including Python libraries.
+- [x] Drop the redundant `[patch.crates-io]` git pin; registry 0.9.3 is identical.
 - [ ] Run focused lint/tests/review, merge, and rerun the 1.13.6 release.
 
 ## Review
