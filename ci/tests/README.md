@@ -8,7 +8,7 @@ all benchmarks and application tests are written in Rust.
 Run with the same command CI uses, so a local pass means what the job means:
 
 ```bash
-PYTHONPATH=. uv run --no-project --python 3.13 --with pytest --with pillow python -m pytest ci/tests
+PYTHONPATH=. uv run --no-project --python 3.13 --with pytest --with pillow --with pyyaml python -m pytest ci/tests
 ```
 
 `--no-project` because the suite reads the repo from source and needs nothing
@@ -40,6 +40,12 @@ untouched ones could sit without one indefinitely — seven did.
 command names a real workspace member, and that documented `cargo bench`
 targets a crate that actually has benches — `cargo bench` on a crate with none
 exits 0 and measures nothing.
+
+`test_workflow_permissions.py` asserts every workflow declares an explicit
+`permissions:` scope, at the top level or on every job (job-level blocks replace
+the workflow-level one rather than merging). Without a block a job inherits the
+default token scope, which is far broader than the read-only access nearly all
+of them need.
 
 CI runs this suite via `.github/workflows/python-tests.yml` on every push and
 pull request. It is deliberately not a job in `ci.yml`: that workflow sets

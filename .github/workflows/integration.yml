@@ -38,6 +38,9 @@ on:
       - ".editorconfig"
       - "tasks/**"
 
+permissions:
+  contents: read
+
 concurrency:
   # Keep scheduled/manual discovery runs together while separating them from
   # normal push/PR gates on the same ref.

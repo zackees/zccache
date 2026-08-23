@@ -33,6 +33,9 @@ on:
 # what produced the 16 -> 32 -> 49 -> 59 minute queue staircase. Pushes to
 # main are never cancelled: release-auto.yml triggers on push-to-main
 # version bumps, so every commit that lands must be fully tested.
+permissions:
+  contents: read
+
 concurrency:
   # run_id fallback on non-PR events: GitHub keeps at most ONE pending run
   # per group, so a ref-only group silently cancels queued main-push SHAs.

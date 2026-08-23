@@ -27,7 +27,7 @@ name: Python Tests
 #
 # Re-run locally with the same command the job uses:
 #   PYTHONPATH=. uv run --no-project --python 3.13 --with pytest --with pillow \
-#     python -m pytest ci/tests
+#     --with pyyaml python -m pytest ci/tests
 
 on:
   push:
@@ -76,4 +76,5 @@ jobs:
           uv run --no-project --python 3.13 \
             --with pytest \
             --with pillow \
+            --with pyyaml \
             python -m pytest ci/tests -q -rs --durations=10

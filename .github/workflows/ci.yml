@@ -32,6 +32,12 @@ on:
 # supersedes the in-flight run instead of queueing behind it. Non-PR events
 # key on run_id so each gets its own group -- GitHub keeps only ONE pending
 # run per group, so a shared group silently drops queued main-push SHAs.
+# Workflow-level floor. The msrv job overrides this with its own block
+# (job-level permissions replace, not merge) because it needs
+# actions: write for cache eviction.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
