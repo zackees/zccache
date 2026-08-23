@@ -47,7 +47,7 @@ soldr cargo check --workspace --all-targets
 soldr cargo clippy --workspace --all-targets -- -D warnings
 soldr cargo fmt --all
 RUSTDOCFLAGS="-D warnings" soldr cargo doc --workspace --no-deps
-soldr cargo bench -p zccache-hash
+soldr cargo bench -p zccache            # criterion benches live in crates/zccache/benches/
 ./perf.sh                   # performance benchmark (zccache vs sccache vs bare clang)
 ```
 

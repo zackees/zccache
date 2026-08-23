@@ -19,7 +19,7 @@ soldr cargo fmt --all
 PowerShell example:
 
 ```powershell
-soldr cargo check -p zccache-download-client
+soldr cargo check -p zccache-cli-core --features download-client
 soldr cargo test -p zccache-download
 ```
 
