@@ -113,6 +113,22 @@ runs:
         echo "CARGO_TARGET_${TARGET_UPPER}_LINKER=${{ inputs.linker }}" >> "$GITHUB_ENV"
         echo "CC_${TARGET_CC}=${{ inputs.linker }}" >> "$GITHUB_ENV"
 
+    - name: Serialize cargo for hosted cross runners
+      if: inputs.cross_compile == 'true'
+      shell: bash
+      run: |
+        # soldr's `--jobs` caps the DAEMON's concurrent compiles and is
+        # explicitly "not forwarded as cargo's own -j" (soldr build --help).
+        # Under the previous cross driver the flag reached cargo directly; under
+        # `soldr build` it does not, so cargo kept its default parallelism and
+        # rustc children were signal-killed (exit 255) part-way through
+        # zccache-daemon-core on the two-core hosted runners -- the same
+        # failure the --jobs 1 comment below already describes.
+        #
+        # CARGO_BUILD_JOBS is the unambiguous way to cap cargo itself; passing
+        # `-j` through soldr's [ARGS] would collide with its own --jobs flag.
+        echo "CARGO_BUILD_JOBS=1" >> "$GITHUB_ENV"
+
     - name: Configure cross C compatibility
       if: inputs.cross_compile == 'true'
       shell: bash
