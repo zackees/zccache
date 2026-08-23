@@ -26,3 +26,7 @@ three-hop navigation guarantee in `docs/CLAUDE.md` cannot rot silently.
 `test_crate_docs.py` checks `crates/CLAUDE.md` against the actual workspace
 members — no phantom crates, no undocumented ones, and the stated count
 matching in both `CLAUDE.md` files.
+
+`test_readme_coverage.py` asserts every directory with tracked files carries a
+`README.md`. The `readme_guard.py` hook only fires on an *edited* directory, so
+untouched ones could sit without one indefinitely — seven did.
