@@ -930,3 +930,23 @@ Issue: https://github.com/zackees/zccache/issues/1433
   where the already-derived 32-byte key stores its opaque result bytes.
 - Failure policy: daemon/protocol/store failures surface to Python and never
   invoke an uncached fallback behind the caller's back.
+
+# #1439 stop ARM64 xwin C++ mode from breaking ring
+
+Issue: https://github.com/zackees/zccache/issues/1439
+
+- [x] Capture the failed 1.13.6 ARM64 release lane as RED evidence.
+- [x] Add a RED contract rejecting global C/C++ language overrides.
+- [x] Remove the global `/TP` injection without weakening the target matrix.
+- [x] Prove the full ARM64 cargo-xwin release build, including Python libraries.
+- [ ] Run focused lint/tests/review, merge, and rerun the 1.13.6 release.
+
+## Review
+
+- RED: release run 32446557448 compiles `ring` `.c` sources with `-TP` and
+  fails on C++ pointer conversions and narrowing after #1415 exported
+  `CFLAGS=-TP` for the entire ARM64 xwin job.
+- GREEN: the managed Linux xwin harness built both release binaries and all
+  three Python extension libraries for `aarch64-pc-windows-msvc` against
+  reviewed `mimalloc-pprof` 0.9.3 commit `9ecc9ca8`; `ring` remained C and
+  mimalloc used its package-local C11 atomics define.

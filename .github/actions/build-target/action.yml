@@ -190,18 +190,6 @@ runs:
       with:
         tool: cargo-xwin
 
-    - name: Configure xwin ARM64 C compatibility
-      if: inputs.cross_driver == 'xwin' && inputs.target == 'aarch64-pc-windows-msvc'
-      shell: bash
-      run: |
-        # mimalloc's MSVC C atomics use intrinsics that clang-cl does not
-        # declare for ARM64. Its own source recommends C++ compilation for
-        # MSVC; /TP selects that std::atomic path without changing Rust code.
-        # cargo-xwin owns CFLAGS_<target> and replaces that variable when it
-        # injects the SDK include paths. General CFLAGS is additive in cc-rs
-        # and this job builds only the selected ARM64 target.
-        echo "CFLAGS=-TP" >> "$GITHUB_ENV"
-
     - name: Setup soldr build cache
       if: inputs.use_soldr == 'true'
       uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e

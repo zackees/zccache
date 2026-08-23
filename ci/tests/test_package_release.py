@@ -284,11 +284,12 @@ def test_linux_cross_build_repairs_debug_sidecars_missing_from_cache_hits() -> N
     assert 'test -e "$TARGET_DIR/zccache-fp.dwp"' in action
 
 
-def test_xwin_arm64_compiles_mimalloc_c_as_recommended_cxx() -> None:
+def test_xwin_arm64_never_forces_every_native_dependency_to_cxx() -> None:
     action = _repo_text(".github/actions/build-target/action.yml")
 
-    assert 'echo "CFLAGS=-TP" >> "$GITHUB_ENV"' in action
-    assert "CFLAGS_aarch64_pc_windows_msvc=-TP" not in action
+    assert 'CFLAGS=-TP' not in action
+    assert 'CFLAGS_aarch64_pc_windows_msvc=-TP' not in action
+    assert 'CXXFLAGS=-TP' not in action
 
 
 def test_release_workflow_dry_run_builds_without_publishing() -> None:
