@@ -48,13 +48,16 @@ MUST_PIN: tuple[str, ...] = (
     "Dockerfile.jobserver-test",
 )
 
-# Files that intentionally keep LEGACY: fixture toolchains modeling a user's
-# compiler, audit/plan fixtures with arbitrary compiler identity strings,
-# historical docs, and this checker itself (which spells LEGACY out).
+# Files that intentionally keep LEGACY: audit/plan fixtures with arbitrary
+# compiler identity strings, historical docs, and this checker itself (which
+# spells LEGACY out).
+#
+# The rollout fixtures under perf/fixtures/ are deliberately NOT here. #1283
+# ties their channel to the runner image so the perf container never downloads
+# a second toolchain mid-benchmark; leaving them on LEGACY after the MSRV bump
+# cost 75s + 570MB per run with network and failed outright without it (#1474).
 INTENTIONAL_LEGACY: tuple[str, ...] = (
     "ci/tests/test_toolchain_consistency.py",
-    "perf/fixtures/medium/rust-toolchain.toml",
-    "perf/fixtures/sqlite-link/rust-toolchain.toml",
     # Fixture lockfiles pin the fixture toolchain they were generated with.
     "perf/fixtures/medium/Cargo.lock",
     "crates/zccache/tests/audit-fixtures/embedded-cold-compile.jsonl",
