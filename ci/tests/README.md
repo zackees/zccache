@@ -22,3 +22,7 @@ nothing, that `dry-run` defaults to rehearsing, and that a partial release resum
 `test_doc_links.py` resolves every internal Markdown link in tracked files
 (`vendor/` excluded) and fails on a missing file or heading anchor, so the
 three-hop navigation guarantee in `docs/CLAUDE.md` cannot rot silently.
+
+`test_crate_docs.py` checks `crates/CLAUDE.md` against the actual workspace
+members — no phantom crates, no undocumented ones, and the stated count
+matching in both `CLAUDE.md` files.
