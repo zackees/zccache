@@ -58,8 +58,6 @@ MUST_PIN: tuple[str, ...] = (
 # cost 75s + 570MB per run with network and failed outright without it (#1474).
 INTENTIONAL_LEGACY: tuple[str, ...] = (
     "ci/tests/test_toolchain_consistency.py",
-    # Fixture lockfiles pin the fixture toolchain they were generated with.
-    "perf/fixtures/medium/Cargo.lock",
     "crates/zccache/tests/audit-fixtures/embedded-cold-compile.jsonl",
     "crates/zccache/tests/audit-fixtures/embedded-cancelled-compile.jsonl",
     "crates/zccache-artifact/src/rust_plan/tests/mod.rs",
@@ -75,16 +73,16 @@ def _read(relative: str) -> str:
 
 def _tracked_files_with_legacy() -> set[str]:
     result = subprocess.run(
-        ["git", "grep", "-l", "-I", LEGACY],
+        # -F: LEGACY is a literal, and as a regex its dots are wildcards --
+        # which matched the substring "1394014" inside a Cargo.lock checksum
+        # and made two lockfiles look like toolchain declarations.
+        ["git", "grep", "-l", "-I", "-F", LEGACY],
         cwd=ROOT,
         capture_output=True,
         text=True,
         check=True,
     )
-    files = {line.replace("\\", "/") for line in result.stdout.splitlines()}
-    # Lockfile and build artifacts are not declarations.
-    files.discard("Cargo.lock")
-    return files
+    return {line.replace("\\", "/") for line in result.stdout.splitlines()}
 
 
 def test_zccache_own_toolchain_declarations_pin_expected() -> None:

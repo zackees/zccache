@@ -50,6 +50,11 @@ COMPETING_PROCESSES = {
     "sccache",
 }
 BUSY_CPU_PERCENT = 5.0
+# Floor for the CPU-progress threshold. The threshold is derived from the
+# measured sample gap, and a coarse monotonic clock can report that gap as
+# exactly 0.0 -- which would make `delta >= threshold` true for a process
+# that burned no CPU at all, i.e. report every idle process as busy.
+MINIMUM_CPU_PROGRESS_SECONDS = 0.001
 HOST_PROCESS_ENUMERATION_TIMEOUT_SECONDS = 30
 RECIPE_FILES = (
     DOCKERFILE,
@@ -669,8 +674,9 @@ def _active_process_names() -> list[str]:
     if second is None:
         return competing
     elapsed = time.monotonic() - started
-    minimum_cpu_seconds = (
-        elapsed * max(os.cpu_count() or 1, 1) * BUSY_CPU_PERCENT / 100.0
+    minimum_cpu_seconds = max(
+        elapsed * max(os.cpu_count() or 1, 1) * BUSY_CPU_PERCENT / 100.0,
+        MINIMUM_CPU_PROGRESS_SECONDS,
     )
     return active_windows_process_names(first, second, minimum_cpu_seconds)
 

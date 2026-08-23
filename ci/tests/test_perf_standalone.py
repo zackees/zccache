@@ -880,6 +880,34 @@ def test_active_process_names_samples_whenever_anything_competes(monkeypatch):
     assert result == [], "an idle cargo with no CPU progress is not competing"
 
 
+def test_active_process_names_survives_a_zero_length_sample_gap(monkeypatch):
+    """A stopped clock must not make every idle process look busy.
+
+    The CPU-progress threshold is derived from the measured gap between the
+    two snapshots: `elapsed * cpus * BUSY_CPU_PERCENT / 100`. On a coarse
+    monotonic clock -- Windows' default tick is ~15.6ms -- a fast sample can
+    report that gap as exactly 0.0, collapsing the threshold to zero. The
+    progress test is `delta >= threshold`, so a process that burned *no* CPU
+    (delta 0.0) then clears it, and `_require_quiet_host` refuses to benchmark
+    on a host that is in fact idle.
+
+    Pinning monotonic to a constant reproduces that deterministically instead
+    of leaving it to clock resolution -- it previously failed on 3.11/3.12 and
+    passed on 3.13 for exactly this reason.
+    """
+    monkeypatch.setattr(perf_standalone.os, "name", "nt", raising=False)
+    monkeypatch.setattr(perf_standalone, "_process_names", lambda: ["cargo.exe"])
+    monkeypatch.setattr(perf_standalone.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(perf_standalone.time, "monotonic", lambda: 1234.5)
+
+    idle = {4242: ("cargo.exe", 1.14)}
+    monkeypatch.setattr(perf_standalone, "_windows_process_snapshot", lambda: idle)
+
+    assert perf_standalone._active_process_names() == [], (
+        "a zero-length sample gap must not mark an idle process as competing"
+    )
+
+
 def test_active_process_names_reports_presence_when_snapshots_fail(monkeypatch):
     """No snapshot means no evidence of idleness. Refusing to time is safer
     than timing under unknown load."""
