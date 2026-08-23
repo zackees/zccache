@@ -3,6 +3,7 @@
 GitHub Actions workflow definitions.
 
 - **ci.yml** - Runs fmt, Dylint, MSRV, and doc builds on main and pull requests.
+- **python-tests.yml** - Runs the `ci/tests/` pytest suite (CI helper modules plus the doc-link, README-coverage, crate-map, documented-command, and toolchain-consistency guards). Separate from `ci.yml` because that workflow ignores `**/*.md`, which would skip the Markdown guards on docs-only PRs.
 - **ci-check.yml** - Reusable check/test workflow used by the OS-specific CI workflows.
 - **integration.yml** - Runs the normal Linux workspace integration suite on pushes and PRs; weekly/manual runs additionally execute every ignored integration/stress test without gating pull requests.
 - **fs-matrix.yml** - Requires real ReFS/FAT, btrfs/ext4/vfat, and macOS fixtures on PRs; scheduled/manual runs also execute >4 GiB ReFS and btrfs COW acceptance.

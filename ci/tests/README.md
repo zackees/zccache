@@ -5,11 +5,16 @@ Python-level pytest suites that exercise the CI helper modules in `ci/`
 tests for the CI scripts themselves — not project tests. Per project policy,
 all benchmarks and application tests are written in Rust.
 
-Run with:
+Run with the same command CI uses, so a local pass means what the job means:
 
 ```bash
-uv run pytest ci/tests
+PYTHONPATH=. uv run --no-project --python 3.13 --with pytest --with pillow python -m pytest ci/tests
 ```
+
+`--no-project` because the suite reads the repo from source and needs nothing
+built; `PYTHONPATH=.` makes `ci` importable without installing it. Do not reach
+for `--frozen` — `uv.lock` is gitignored, so it only works on a machine that
+happens to have one, and `pytest` is not declared in any dependency group.
 
 Some suites also exercise workflow YAML directly. `test_release_detect_bump.py`
 extracts the `detect-bump` step out of `.github/workflows/release-auto.yml` and
@@ -35,3 +40,8 @@ untouched ones could sit without one indefinitely — seven did.
 command names a real workspace member, and that documented `cargo bench`
 targets a crate that actually has benches — `cargo bench` on a crate with none
 exits 0 and measures nothing.
+
+CI runs this suite via `.github/workflows/python-tests.yml` on every push and
+pull request. It is deliberately not a job in `ci.yml`: that workflow sets
+`paths-ignore: "**/*.md"`, which would skip the Markdown guards on precisely the
+docs-only PRs they exist to gate.
