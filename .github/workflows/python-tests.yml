@@ -1,0 +1,79 @@
+name: Python Tests
+
+# Runs the pytest suite under `ci/tests/` -- ~430 tests covering the CI helper
+# modules in `ci/` plus the repo-hygiene guards (doc links, README coverage,
+# crate map, documented commands, toolchain consistency).
+#
+# This is a dedicated workflow rather than a job in `ci.yml` because `ci.yml`
+# sets `paths-ignore: "**/*.md"`. Several of these tests exist specifically to
+# police Markdown -- test_doc_links, test_readme_coverage, test_crate_docs,
+# test_documented_commands -- so hanging them off `ci.yml` would skip them on
+# exactly the docs-only PRs they are meant to gate (#1487 was one).
+#
+# No paths filter: the suite asserts against Markdown, workflow YAML,
+# Cargo.toml, and perf fixtures, so almost any change can move it.
+#
+# Runs on `ubuntu-latest` for `git` and `jq`, both preinstalled -- `jq` is
+# required by the `perf/lib/common.sh` helpers that test_perf_infrastructure_guard
+# drives (without it 15 tests fail).
+#
+# Python floor is 3.11: `ci/tests` imports `tomllib` directly, which is stdlib
+# only from 3.11, so 3.10 fails at collection with 7 import errors. 3.13 is
+# pinned rather than run as a matrix because these are repo-hygiene tests --
+# nothing here ships across multiple interpreters, so a matrix would buy
+# nothing. The pin is passed to `uv run` explicitly: `uv` selects its own
+# interpreter and prefers its managed builds, so an `actions/setup-python`
+# step alone would NOT determine the version actually used.
+#
+# Re-run locally with the same command the job uses:
+#   PYTHONPATH=. uv run --no-project --python 3.13 --with pytest --with pillow \
+#     python -m pytest ci/tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Auto-cancel superseded PR runs: pushing again to a feature branch
+# supersedes the in-flight run instead of queueing behind it. Non-PR events
+# key on run_id so each gets its own group -- GitHub keeps only ONE pending
+# run per group, so a shared group silently drops queued main-push SHAs.
+concurrency:
+  group: python-tests-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pytest:
+    name: ci/tests
+    runs-on: ubuntu-latest
+    # Observed wall time is ~90s; this only has to catch a genuine hang.
+    # test_perf_watchdog spawns real child processes and one test shells out
+    # to `docker info`, so an unbounded default of 6h is the wrong backstop.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          # `uv.lock` is gitignored, so the default glob has no key input and
+          # the cache key would never vary. Key on this file instead, so
+          # editing the `--with` list below rolls the cache.
+          cache-dependency-glob: ".github/workflows/python-tests.yml"
+
+      # --no-project: the suite is pure Python and reads the repo from source,
+      # so there is nothing to build, and `uv.lock` is gitignored (no --frozen).
+      # PYTHONPATH makes `ci` importable without installing the project.
+      - name: Run ci/tests
+        env:
+          PYTHONPATH: .
+        run: |
+          uv run --no-project --python 3.13 \
+            --with pytest \
+            --with pillow \
+            python -m pytest ci/tests -q -rs --durations=10
