@@ -72,6 +72,76 @@ def test_perf_local_runner_installs_scenario_dependencies() -> None:
     assert "        procps \\\n" in runner
 
 
+# Mirrors the excludes in regen.sh. If that script grows another one, this
+# list has to grow with it or the comparison below reports a phantom drift.
+FIXTURE_ARCHIVE_EXCLUDES = ("target", ".DS_Store")
+
+
+def _source_files(fixture: str) -> dict[str, bytes]:
+    """Every file regen.sh would put in the archive, keyed by archive path."""
+    root = FIXTURE_ROOT / fixture
+    found: dict[str, bytes] = {}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root)
+        if relative.parts[0] in FIXTURE_ARCHIVE_EXCLUDES:
+            continue
+        if path.suffix == ".gz":
+            continue
+        found[f"{fixture}/{relative.as_posix()}"] = path.read_bytes()
+    return found
+
+
+def _archive_files(fixture: str) -> dict[str, bytes]:
+    found: dict[str, bytes] = {}
+    with tarfile.open(FIXTURE_ROOT / f"{fixture}.tar.gz", "r:gz") as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            handle = tar.extractfile(member)
+            assert handle is not None, f"unreadable member {member.name}"
+            found[member.name] = handle.read()
+    return found
+
+
+def test_rollout_fixture_archives_match_their_source_tree() -> None:
+    """The checked-in tarball must be exactly what regen.sh would produce.
+
+    Workers materialise a fixture by untarring, never by building the source
+    tree, so the archive *is* what gets benchmarked. Only the toolchain pin
+    used to be compared, which left every other file free to drift: edit
+    src/main.rs, forget regen.sh, and the archive keeps shipping the old code
+    with no failing test and no reviewable diff -- `git grep -I` skips the
+    binary archive, so it surfaces as `Bin 14914 -> 14915 bytes` or not at all.
+
+    regen.sh pins --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0,
+    so this is a stable byte equality rather than a heuristic.
+    """
+    for fixture in ROLLOUT_FIXTURES:
+        source = _source_files(fixture)
+        archived = _archive_files(fixture)
+
+        assert source, f"{fixture}: no source files found -- test would pass vacuously"
+
+        missing = sorted(set(source) - set(archived))
+        extra = sorted(set(archived) - set(source))
+        assert not missing, (
+            f"{fixture}.tar.gz is missing files present in the source tree "
+            f"(re-run perf/fixtures/regen.sh {fixture}): {missing}"
+        )
+        assert not extra, (
+            f"{fixture}.tar.gz carries files no longer in the source tree "
+            f"(re-run perf/fixtures/regen.sh {fixture}): {extra}"
+        )
+
+        differing = sorted(name for name in source if source[name] != archived[name])
+        assert not differing, (
+            f"{fixture}.tar.gz content differs from the source tree "
+            f"(re-run perf/fixtures/regen.sh {fixture}): {differing}"
+        )
+
+
 def test_rollout_fixture_archives_pin_the_runner_toolchain() -> None:
     runner = LOCAL_RUNNER.read_text(encoding="utf-8")
     channels: set[str] = set()
