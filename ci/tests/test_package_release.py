@@ -237,40 +237,68 @@ def test_release_tests_exec_cached_in_every_native_wheel_family() -> None:
     assert "needs.test-wheels.result == 'success'" in workflow
 
 
-def test_cross_build_driver_uses_soldr_cache_and_preserves_artifact_contracts() -> None:
+def test_cross_builds_go_through_the_blessed_soldr_surface() -> None:
+    """zccache#1497: one toolchain owner, one build surface.
+
+    Two providers is what broke 1.13.6. `dtolnay/rust-toolchain` installed
+    into a repo-local RUSTUP_HOME before setup-soldr ran, so setup-soldr had
+    no toolchain to cache but still wrote a 6-file, 2.5 MB entry under the
+    shared `solo-toolchain-v2-<host>-…` key that other jobs fill with
+    146-219 MB. Newest-wins restore let the small entry shadow the good one
+    and every cross target died on `can't find crate for core`.
+
+    `soldr cargo …` is the documented legacy passthrough; `soldr build` is
+    the blessed surface that prepares the sysroot and compiler/linker. Cross
+    lanes must use the latter.
+    """
     action = _repo_text(".github/actions/build-target/action.yml")
     release_workflow = _repo_text(".github/workflows/release-auto.yml")
     build_workflow = _repo_text(".github/workflows/build.yml")
 
-    assert "cross_driver:" in action
-    assert "soldr cargo zigbuild" in action
-    assert "soldr cargo xwin build" in action
-    assert action.count("soldr --no-cache cargo zigbuild --jobs 1") == 1
-    assert "soldr --no-cache cargo xwin" not in action
-    assert action.count("cargo_build=(soldr cargo zigbuild --jobs 1)") == 2
-    assert action.count("cargo_build=(soldr cargo xwin build --jobs 1)") == 2
-    assert "cargo_build=(soldr cargo zigbuild)" not in action
-    assert "cargo_build=(soldr cargo zigbuild --jobs 2)" not in action
-    assert "cargo_build=(soldr cargo xwin build)" not in action
-    assert "cargo_build=(soldr cargo xwin build --jobs 2)" not in action
+    # The purge: no second toolchain provider, no legacy cross drivers.
+    assert "dtolnay/rust-toolchain" not in action
+    assert "mlugg/setup-zig" not in action
+    assert "cargo-zigbuild" not in action
+    assert "cargo-xwin" not in action
+    assert "cross_driver" not in action
+    assert "zigbuild" not in action
+    assert "cargo xwin" not in action
+
+    # setup-soldr owns the whole target lifecycle for cross lanes.
+    assert "zackees/setup-soldr@" in action
+    assert "cross-targets: ${{ inputs.cross_compile == 'true'" in action
+
+    # Builds go through the blessed surface, still one rustc child at a time.
+    assert action.count("cargo_build=(soldr build --jobs 1)") == 2
+    assert "cargo_build=(soldr build)" not in action
+    assert "cargo_build=(soldr build --jobs 2)" not in action
+
     assert "verify-compile-cache:" in action
     assert "Bootstrap zccache is not first on PATH" in action
     for workflow in (release_workflow, build_workflow):
-        assert "cross_driver: zigbuild" in workflow
-        assert "cross_driver: xwin" in workflow
+        assert "cross_driver" not in workflow
         assert "name: binaries-${{ matrix.target }}" in workflow
         assert "name: release-${{ matrix.target }}" in workflow
 
 
-def test_zigbuild_cross_prerequisites_cover_vendored_c_and_macos_debug_info() -> None:
+def test_cross_prerequisites_cover_vendored_c_and_macos_debug_info() -> None:
+    """The two cross prerequisites that outlived the zig/xwin purge (#1497).
+
+    Both were previously keyed on `cross_driver`; they are keyed on the target
+    or on `cross_compile` now, because the driver input is gone -- not because
+    the underlying need went away.
+    """
     action = _repo_text(".github/actions/build-target/action.yml")
 
-    # Zig promotes __DATE__/__TIME__ in mimalloc-pprof's vendored C source to
-    # an error for cross targets. Keep the warning visible without failing the
-    # release, and make rustc's packed macOS debug-info tool available before
-    # the build (not only during packaging).
+    # soldr still materializes zig for the Linux/Darwin cross lanes, and the
+    # mimalloc-pprof amalgamation reports __DATE__/__TIME__.
     assert "-Wno-error=date-time" in action
+    assert "if: inputs.cross_compile == 'true'" in action
+
+    # dsymutil is consumed by debug-sidecar staging, so it is keyed on the
+    # target rather than on the deleted driver.
     assert "Install LLVM dSYM tools" in action
+    assert "if: contains(inputs.target, 'apple-darwin')" in action
     assert "llvm-dsymutil" in action
     assert "find -L /usr/bin" in action
     assert 'test -x "$llvm_dsymutil"' in action
@@ -283,11 +311,11 @@ def test_linux_cross_build_repairs_debug_sidecars_missing_from_cache_hits() -> N
 
     assert "name: Repair missing Linux debug sidecars" in action
     assert (
-        "if: inputs.cross_driver == 'zigbuild' && "
+        "if: inputs.cross_compile == 'true' && "
         "contains(inputs.target, 'unknown-linux')"
     ) in action
     assert 'soldr cargo clean -p zccache --release --target "$TARGET"' in action
-    assert "soldr --no-cache cargo zigbuild --jobs 1" in action
+    assert "soldr --no-cache build --jobs 1" in action
     assert 'test -e "$TARGET_DIR/zccache.dwp"' in action
     assert 'test -e "$TARGET_DIR/zccache-fp.dwp"' in action
 
