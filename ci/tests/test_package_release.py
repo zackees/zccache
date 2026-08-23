@@ -536,3 +536,35 @@ def test_stage_debug_tree_skips_missing_input(tmp_path: Path) -> None:
         )
         is None
     )
+
+
+def test_action_pins_use_full_length_commit_shas() -> None:
+    """GitHub Actions rejects a shortened commit SHA in `uses:`.
+
+    A 12-char pin fails at *action resolution*, before any step runs, so every
+    job in the matrix dies with `Unable to resolve action ... is the shortened
+    version of a commit SHA`. Nothing in local YAML validation catches it —
+    the file parses fine.
+
+    Tags (`@v0`, `@stable`) stay allowed; this only rejects a hex ref that is
+    too short to be a full SHA.
+    """
+    import re
+
+    workflow_dir = Path(__file__).resolve().parents[2] / ".github"
+    offenders: list[str] = []
+    for path in sorted(workflow_dir.rglob("*.yml")):
+        for number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            match = re.search(r"uses:\s*\S+@([0-9a-f]{6,})\s*$", line)
+            if match and len(match.group(1)) != 40:
+                offenders.append(
+                    f"{path.relative_to(workflow_dir.parent)}:{number} "
+                    f"-> @{match.group(1)} ({len(match.group(1))} chars)"
+                )
+
+    assert not offenders, (
+        "action pins must use the full 40-character commit SHA; "
+        f"GitHub cannot resolve these: {offenders}"
+    )

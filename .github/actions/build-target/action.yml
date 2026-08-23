@@ -155,7 +155,7 @@ runs:
 
     - name: Setup soldr build cache
       if: inputs.use_soldr == 'true'
-      uses: zackees/setup-soldr@e76cf1b175e1
+      uses: zackees/setup-soldr@e76cf1b175e13d0b00e35a990590f14f49ec1d5a
       with:
         toolchain: 1.95.0
         cross-targets: ${{ inputs.cross_compile == 'true' && inputs.target || '' }}
