@@ -34,7 +34,9 @@ on:
 # main are never cancelled: release-auto.yml triggers on push-to-main
 # version bumps, so every commit that lands must be fully tested.
 concurrency:
-  group: ci-macos-${{ github.ref }}
+  # run_id fallback on non-PR events: GitHub keeps at most ONE pending run
+  # per group, so a ref-only group silently cancels queued main-push SHAs.
+  group: ci-macos-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

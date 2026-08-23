@@ -28,6 +28,14 @@ on:
       - ".editorconfig"
       - "tasks/**"
 
+# Auto-cancel superseded PR runs: pushing again to a feature branch
+# supersedes the in-flight run instead of queueing behind it. Non-PR events
+# key on run_id so each gets its own group -- GitHub keeps only ONE pending
+# run per group, so a shared group silently drops queued main-push SHAs.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
