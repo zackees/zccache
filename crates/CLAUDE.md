@@ -1,6 +1,6 @@
 # Crates Architecture
 
-21 crates split into two product surfaces: the **compile cache** and a separate **download cache**, plus utility binaries (`zccache-fp`, `zccache-stamp`) and one CI lib (`zccache-ci`).
+22 crates split into two product surfaces: the **compile cache** and a separate **download cache**, plus utility binaries (`zccache-fp`, `zccache-stamp`) and one CI lib (`zccache-ci`).
 
 > [!NOTE]
 > **Binary layout (#997–#1000).** Release archives and wheels ship `zccache` plus the intentionally separate `zccache-fp`. `zccache` is a **multi-call binary**: copies named `zccache-daemon` and `zccache-download-daemon` dispatch to their respective daemon entry points. Both daemons are self-deployed beneath `~/.zccache/v<VERSION>/`; their legacy `[[bin]]` targets remain buildable as transitional source/test shims but are not distribution artifacts. `crates/zccache-cli` is **not** the CLI — it is the PyO3 `cdylib` hosting `zccache._native`. See [docs/architecture/runtime.md § Standalone daemon identity, deployment & lifecycle](../docs/architecture/runtime.md#standalone-daemon-identity-deployment--lifecycle).
@@ -10,17 +10,24 @@
 ```
 APPLICATION BINARIES
 ────────────────────
-zccache-cli (bin "zccache")  ──┐
-  deps: artifact, compiler, core, hash, ipc, protocol,
-        download, download-client, gha, symbols      │
+zccache (bins "zccache", "zccache-download")  ──┐
+  the shipped multi-call binary; CLI surface lives │
+  in zccache-cli-core                              │
                                                       │
-zccache-daemon (legacy bin shim) ┤
+zccache-cli (PyO3 cdylib, NOT the CLI)  ┤  hosts zccache._native
+                                                      │
+zccache-cli-core ──────────────────────┤
+  the CLI subcommands + wrapper mode, plus the       │
+  download_client / download_daemon modules behind   │
+  the download-client / download-daemon features     │
+  deps: artifact, compiler, core, hash, ipc, protocol,
+        daemon-core, download, download-protocol,     │
+        gha, symbols                                  │
+                                                      │
+zccache-daemon-core ───────────────────┤
   deps: artifact, compiler, core, hash, ipc, protocol,
         fscache, watcher, depgraph, fingerprint,      │
         test-support (dev only)                       │
-                                                      │
-zccache-download-daemon (legacy bin shim) ┤  deps: core, ipc, download, download-protocol
-zccache-download-cli (bin "zccache-download")  ┤  deps: download, download-client
                                                       │
 SIDECAR BINARIES                                      │
 ────────────────                                      │
@@ -45,8 +52,8 @@ DOWNLOAD-CACHE SUBSYSTEM LIBS                         │
 ─────────────────────────────                         │
 zccache-download ──── core
 zccache-download-protocol ─── download, core
-zccache-download-client  ──── download, download-protocol,
-                              download-daemon, core, ipc
+(the download client/daemon/CLI are NOT separate crates -- they are
+ modules of zccache-cli-core and bins of zccache; see the note above)
                                                       │
 SHARED FOUNDATIONS                                    │
 ──────────────────                                    │
@@ -79,20 +86,24 @@ zccache-test-support (dev-only test utilities)
 - **zccache-fingerprint** — File fingerprinting engine + `zccache-fp` CLI for inspecting/marking fingerprints
 
 ### Compile-cache application binaries
-- **zccache-daemon** — Tokio async runtime, IPC server, orchestrates all compile-cache subsystems; hosted by the shipped multicall `zccache` binary
-- **zccache-cli** — shipped `zccache` binary: subcommands (start/stop/status/clear/analyze/warm/session/snapshot/cargo-registry/gha/rust-plan/fp/symbols), compiler wrapper mode, both daemon entry points, daemon lifecycle, GHA + Rust-plan save/restore
+- **zccache** — the transitional absorber crate (#365) and the home of every shipped `[[bin]]`. `zccache` itself is the multi-call binary; `zccache-daemon`, `zccache-download-daemon`, and `zccache-ci` (the Stop-hook process/thread dumper) are **bin targets of this crate**, not crates of their own.
+- **zccache-daemon-core** — Tokio async runtime, IPC server, orchestrates all compile-cache subsystems (#1018 crate split). Reached through the `zccache` multicall binary's daemon entry.
+- **zccache-cli-core** — the CLI subsystem (#1022 Split A): subcommands (start/stop/status/clear/analyze/warm/session/snapshot/cargo-registry/gha/rust-plan/fp/symbols/fetch), compiler wrapper mode, daemon lifecycle, GHA + Rust-plan save/restore, plus the `download_client` / `download_daemon` modules.
+- **zccache-cli** — **not** the CLI. PyO3 `rlib`+`cdylib` hosting `zccache._native` for the Python package.
 
 ### Download-cache (separate daemon for fetching cached artifact archives)
 - **zccache-download** — Core download engine and types
 - **zccache-download-protocol** — IPC protocol for download daemon
-- **zccache-download-client** — Rust client API for the download daemon
-- **zccache-download-daemon** — Per-user daemon self-deployed from the shipped multicall `zccache` binary
-- **zccache-download-cli** — `zccache-download` CLI binary
+- **download client / daemon / CLI** — *not* separate crates. `download_client`
+  and `download_daemon` are modules of `zccache-cli-core` behind the
+  `download-client` / `download-daemon` features, and the `zccache-download`
+  binary is a `[[bin]]` of the `zccache` crate.
 
 ### Other
 - **zccache-symbols** — Release-build marker, symbol cache, and symbol-archive fetcher; ships `zccache-stamp` CI helper
 - **zccache-gha** — GitHub Actions Cache API client (used by both daemons for shared caching)
-- **zccache-ci** — Stop-hook helper (process/thread dumping) run after every Claude Code Stop event
+- **zccache-audit** — Durable audit schema types for embedded zccache integrations
+- **zccache-compile-trace** — Per-sub-phase JSONL trace inside the embedded compile path
 - **zccache-test-support** — Shared test utilities (dev-dependency only)
 
 ## Key Design Patterns
