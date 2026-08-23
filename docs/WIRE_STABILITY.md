@@ -22,9 +22,9 @@ in-process or out-of-process client:
   so the SDK's compile-time collision checks fire on every build.
 - The inner payload. Prost-encoded `zccache.v1.Request` / `zccache.v1.Response`
   messages (plus their transitive types) defined in
-  [`crates/zccache/proto/zccache_v1.proto`](../crates/zccache/proto/zccache_v1.proto)
+  [`crates/zccache/proto/zccache_v1.proto`](../crates/zccache-protocol/proto/zccache_v1.proto)
   and the auxiliary
-  [`crates/zccache/src/artifact/rust_plan_manifest.proto`](../crates/zccache/src/artifact/rust_plan_manifest.proto).
+  [`crates/zccache/src/artifact/rust_plan_manifest.proto`](../crates/zccache-artifact/src/rust_plan_manifest.proto).
   These messages are the focus of the rest of this document.
 
 ## The contract
@@ -59,7 +59,7 @@ What **is** allowed without bumping the protocol version:
 ## Versioning
 
 The package is `zccache.v1` and the file's frozen body lives at
-[`crates/zccache/proto/zccache_v1.proto`](../crates/zccache/proto/zccache_v1.proto).
+[`crates/zccache/proto/zccache_v1.proto`](../crates/zccache-protocol/proto/zccache_v1.proto).
 A future incompatible change — if one is ever needed — would ship as a
 parallel `zccache.v2` namespace with its own `.proto`, never as an in-place
 mutation of v1. Old daemons keep speaking v1 forever; clients that need v2
