@@ -46,7 +46,7 @@ failed cache-root audit retain its diagnostic JSONL evidence.
 - **Async/process bridge — watchdogs, cancellation & timeouts (deadlock hardening)** → [runtime.md § Async / process bridge](architecture/runtime.md#async--process-bridge-watchdogs-cancellation--timeouts)
 - **Where zccache writes on disk (`ZCCACHE_CACHE_DIR` contract)** → [runtime.md § Cache root invariants](architecture/runtime.md#cache-root-invariants)
 - **Host no-spawn guard (`ZCCACHE_NO_SPAWN`, embedding hosts)** → [runtime.md § Host no-spawn guard](architecture/runtime.md#host-no-spawn-guard-zccache_no_spawn)
-- **Uncached-fallback policy (`ZCCACHE_FALLBACK`, CI hard-error)** → [runtime.md § Wrapper fallback policy](architecture/runtime.md#wrapper-fallback-policy-zccache_fallback-issue-1211)
+- **Daemon-unavailable policy (hard error, exit 125; the `ZCCACHE_FALLBACK` gate was removed with the fallback)** → [runtime.md § Daemon unavailable is a hard error](architecture/runtime.md#daemon-unavailable-is-a-hard-error-issue-1170)
 - **Standalone daemon identity, deployment & lifecycle (argv[0] single binary, version-rooted deploy, versioned endpoints)** → [runtime.md § Standalone daemon identity, deployment & lifecycle](architecture/runtime.md#standalone-daemon-identity-deployment--lifecycle)
 - **Rejected depgraph snapshots — quarantine, recovery, why no migration** → [runtime.md § Depgraph snapshot quarantine](architecture/runtime.md#depgraph-snapshot-quarantine)
 - **Windows/macOS/Linux differences** → [portability.md](architecture/portability.md)

@@ -725,7 +725,7 @@ A few things worth knowing:
   misses and recompiles — the cache cannot be poisoned across siblings (the
   invariant fixed in #197).
 - Measured win. The
-  [`perf_cpp_sibling_remap_warm` / `perf_rustc_sibling_remap_warm`](crates/zccache-daemon/tests/perf_bench_test.rs)
+  [`perf_cpp_sibling_remap_warm` / `perf_rustc_sibling_remap_warm`](crates/zccache/tests/perf_bench_test.rs)
   benchmarks (introduced in #238) confirm warm-state hits across sibling
   worktrees run an order of magnitude faster than bare compiles and sccache
   even though sccache cannot share across sibling roots at all.

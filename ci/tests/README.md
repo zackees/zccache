@@ -18,3 +18,7 @@ tested rather than the file's text. It needs a POSIX bash and skips on Windows;
 the step it covers runs on `ubuntu-latest`. `test_release_publish_gating.py` guards the
 release recovery contract in CLAUDE.md § Publishing — that a failed run publishes
 nothing, that `dry-run` defaults to rehearsing, and that a partial release resumes.
+
+`test_doc_links.py` resolves every internal Markdown link in tracked files
+(`vendor/` excluded) and fails on a missing file or heading anchor, so the
+three-hop navigation guarantee in `docs/CLAUDE.md` cannot rot silently.

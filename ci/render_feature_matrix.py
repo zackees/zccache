@@ -183,6 +183,25 @@ def _render_value(value: str) -> str:
     return VALUE_DISPLAY[value]
 
 
+def _repo_relative_to_docs(citation: str) -> str:
+    """Rewrite a repo-relative citation for a page that lives in `docs/`.
+
+    Citations in the YAML are written repo-relative (`README.md#anchor`,
+    `docs/journal-schema.md`) because that is how a human reads them. This
+    table is emitted to `docs/FEATURE-MATRIX.md`, so a verbatim href resolves
+    against `docs/` and 404s -- `README.md` became `docs/README.md`, and
+    `docs/journal-schema.md` became `docs/docs/journal-schema.md`.
+    """
+    path, sep, frag = citation.partition("#")
+    if not path:
+        return citation
+    if path.startswith("docs/"):
+        path = path[len("docs/") :]
+    else:
+        path = f"../{path}"
+    return f"{path}{sep}{frag}"
+
+
 def _evidence_link(evidence: str) -> str:
     """Render an evidence cell. If it looks like a URL, wrap as a Markdown link."""
     if not evidence:
@@ -190,7 +209,8 @@ def _evidence_link(evidence: str) -> str:
     if evidence.startswith("http://") or evidence.startswith("https://"):
         return f"[link]({evidence})"
     # Path-style citation like `README.md#anchor` or `docs/journal-schema.md`.
-    return f"[{evidence}]({evidence})"
+    # Label stays repo-relative; only the target is rewritten.
+    return f"[{evidence}]({_repo_relative_to_docs(evidence)})"
 
 
 def _ordered_categories(rows: Iterable[Row]) -> list[str]:

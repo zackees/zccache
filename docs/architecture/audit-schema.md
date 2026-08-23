@@ -9,7 +9,7 @@
 This document is the public contract for the JSON Lines (JSONL) audit
 events that an embedded zccache emits when a host product configures
 `AuditConfig::mode > Off`. The on-disk source of truth is
-[`crates/zccache/src/audit.rs`](../../crates/zccache/src/audit.rs); this
+[`crates/zccache/src/audit.rs`](../../crates/zccache-audit/src/log_audit.rs); this
 doc explains the wire shape, the compatibility policy, the redaction
 contract, and how host products correlate event causality across crate
 boundaries.

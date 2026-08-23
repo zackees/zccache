@@ -1,9 +1,9 @@
 # Audit-trace fixtures
 
 Canonical JSONL fixtures referenced by
-[`docs/architecture/audit-schema.md`](../../../docs/architecture/audit-schema.md).
+[`docs/architecture/audit-schema.md`](../../../../docs/architecture/audit-schema.md).
 Each line is a single audit event matching the `soldr.audit.v1` schema
-defined in [`crates/zccache/src/audit.rs`](../../src/audit.rs).
+defined in [`crates/zccache/src/audit.rs`](../../../zccache-audit/src/log_audit.rs).
 
 ## Normalization
 
@@ -27,7 +27,7 @@ asserts byte-for-byte equality against the fixture.
 ## Contributing new fixtures
 
 Host products that surface a new validation scenario during the
-[vendored-hotfix-workflow](../../../docs/architecture/vendored-hotfix-workflow.md)
+[vendored-hotfix-workflow](../../../../docs/architecture/vendored-hotfix-workflow.md)
 contribute the captured trace back here under the naming convention
 `embedded-<scenario>.jsonl`. The fixture's first event MUST be the
 `host.lifecycle.run.started` that opens the scope, and the last event
