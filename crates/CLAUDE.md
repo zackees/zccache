@@ -84,7 +84,8 @@ zccache-test-support (dev-only test utilities)
 - **zccache-compiler** — `CompilerFamily` detection, `ParsedInvocation` for cacheability checks (clang/gcc/msvc/rustc/clang-cl), plus `parse_linker`, `parse_archiver`, `parse_msvc`, `parse_rustfmt`, `response_file`, `strict_paths`, `arduino` submodules
 - **zccache-depgraph** — Persistent dependency graph for cache invalidation; snapshot save/load, dep walker
 - **zccache-fingerprint** — File fingerprinting engine + `zccache-fp` CLI for inspecting/marking fingerprints
-- **zccache-watcher-py** / **zccache-fingerprint-py** — the PyO3 `cdylib`s for `zccache.watcher._native` / `zccache.fingerprint._native`. Separate crates because cargo cannot make a crate-type conditional: a `cdylib` alongside `rlib` is built by every consumer that only wants the rlib, and under `+crt-static` that link fails (#1497). `[lib] name` keeps the output filenames unchanged.
+- **zccache-watcher-py** — the PyO3 `cdylib` for `zccache.watcher._native`. A separate crate because cargo cannot make a crate-type conditional: a `cdylib` alongside `rlib` is built by every consumer that only wants the rlib, and under `+crt-static` that link fails (#1497). `[lib] name` keeps the output filename unchanged.
+- **zccache-fingerprint-py** — the PyO3 `cdylib` for `zccache.fingerprint._native`; same split as `zccache-watcher-py`, same reason.
 
 ### Compile-cache application binaries
 - **zccache** — the transitional absorber crate (#365) and the home of every shipped `[[bin]]`. `zccache` itself is the multi-call binary; `zccache-daemon`, `zccache-download-daemon`, and `zccache-ci` (the Stop-hook process/thread dumper) are **bin targets of this crate**, not crates of their own.
