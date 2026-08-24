@@ -11,7 +11,7 @@ description = "PyO3 cdylib hosting the `zccache._native` extension module"
 publish = false
 
 [lib]
-crate-type = ["rlib", "cdylib"]
+crate-type = ["cdylib"]
 
 [features]
 default = []

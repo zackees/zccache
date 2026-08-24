@@ -20,9 +20,11 @@ members = [
     "crates/zccache-symbols",
     "crates/zccache-test-support",
     "crates/zccache-watcher",
+    "crates/zccache-watcher-py",
     "crates/zccache-cli",
     "crates/zccache-cli-core",
     "crates/zccache-fingerprint",
+    "crates/zccache-fingerprint-py",
 ]
 exclude = [
     "dylints/ban_std_pathbuf",

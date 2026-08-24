@@ -237,40 +237,73 @@ def test_release_tests_exec_cached_in_every_native_wheel_family() -> None:
     assert "needs.test-wheels.result == 'success'" in workflow
 
 
-def test_cross_build_driver_uses_soldr_cache_and_preserves_artifact_contracts() -> None:
+def test_cross_builds_go_through_the_blessed_soldr_surface() -> None:
+    """zccache#1497: one toolchain owner, one build surface.
+
+    Two providers is what broke 1.13.6. `dtolnay/rust-toolchain` installed
+    into a repo-local RUSTUP_HOME before setup-soldr ran, so setup-soldr had
+    no toolchain to cache but still wrote a 6-file, 2.5 MB entry under the
+    shared `solo-toolchain-v2-<host>-…` key that other jobs fill with
+    146-219 MB. Newest-wins restore let the small entry shadow the good one
+    and every cross target died on `can't find crate for core`.
+
+    `soldr cargo …` is the documented legacy passthrough; `soldr build` is
+    the blessed surface that prepares the sysroot and compiler/linker. Cross
+    lanes must use the latter.
+    """
     action = _repo_text(".github/actions/build-target/action.yml")
     release_workflow = _repo_text(".github/workflows/release-auto.yml")
     build_workflow = _repo_text(".github/workflows/build.yml")
 
-    assert "cross_driver:" in action
-    assert "soldr cargo zigbuild" in action
-    assert "soldr cargo xwin build" in action
-    assert action.count("soldr --no-cache cargo zigbuild --jobs 1") == 1
-    assert "soldr --no-cache cargo xwin" not in action
-    assert action.count("cargo_build=(soldr cargo zigbuild --jobs 1)") == 2
-    assert action.count("cargo_build=(soldr cargo xwin build --jobs 1)") == 2
-    assert "cargo_build=(soldr cargo zigbuild)" not in action
-    assert "cargo_build=(soldr cargo zigbuild --jobs 2)" not in action
-    assert "cargo_build=(soldr cargo xwin build)" not in action
-    assert "cargo_build=(soldr cargo xwin build --jobs 2)" not in action
+    # The purge: no second toolchain provider, no legacy cross drivers.
+    assert "dtolnay/rust-toolchain" not in action
+    assert "mlugg/setup-zig" not in action
+    assert "cargo-zigbuild" not in action
+    # Prose references to cargo-xwin are fine (the upstream fix we are porting
+    # lives there); what must not come back is invoking it.
+    assert "cargo xwin build" not in action
+    assert "taiki-e/install-action" not in action or "cargo-xwin" not in (
+        action.split("taiki-e/install-action")[1][:200] if "taiki-e/install-action" in action else ""
+    )
+    assert "cross_driver" not in action
+    assert "zigbuild" not in action
+    assert "cargo xwin" not in action
+
+    # setup-soldr owns the whole target lifecycle for cross lanes.
+    assert "zackees/setup-soldr@" in action
+    assert "cross-targets: ${{ inputs.cross_compile == 'true'" in action
+
+    # Builds go through the blessed surface, still one rustc child at a time.
+    assert action.count("cargo_build=(soldr build --jobs 1 -j 1)") == 2
+    assert "cargo_build=(soldr build)" not in action
+    assert "cargo_build=(soldr build --jobs 2)" not in action
+
     assert "verify-compile-cache:" in action
     assert "Bootstrap zccache is not first on PATH" in action
     for workflow in (release_workflow, build_workflow):
-        assert "cross_driver: zigbuild" in workflow
-        assert "cross_driver: xwin" in workflow
+        assert "cross_driver" not in workflow
         assert "name: binaries-${{ matrix.target }}" in workflow
         assert "name: release-${{ matrix.target }}" in workflow
 
 
-def test_zigbuild_cross_prerequisites_cover_vendored_c_and_macos_debug_info() -> None:
+def test_cross_prerequisites_cover_vendored_c_and_macos_debug_info() -> None:
+    """The two cross prerequisites that outlived the zig/xwin purge (#1497).
+
+    Both were previously keyed on `cross_driver`; they are keyed on the target
+    or on `cross_compile` now, because the driver input is gone -- not because
+    the underlying need went away.
+    """
     action = _repo_text(".github/actions/build-target/action.yml")
 
-    # Zig promotes __DATE__/__TIME__ in mimalloc-pprof's vendored C source to
-    # an error for cross targets. Keep the warning visible without failing the
-    # release, and make rustc's packed macOS debug-info tool available before
-    # the build (not only during packaging).
+    # soldr still materializes zig for the Linux/Darwin cross lanes, and the
+    # mimalloc-pprof amalgamation reports __DATE__/__TIME__.
     assert "-Wno-error=date-time" in action
+    assert "if: inputs.cross_compile == 'true'" in action
+
+    # dsymutil is consumed by debug-sidecar staging, so it is keyed on the
+    # target rather than on the deleted driver.
     assert "Install LLVM dSYM tools" in action
+    assert "if: contains(inputs.target, 'apple-darwin')" in action
     assert "llvm-dsymutil" in action
     assert "find -L /usr/bin" in action
     assert 'test -x "$llvm_dsymutil"' in action
@@ -283,11 +316,11 @@ def test_linux_cross_build_repairs_debug_sidecars_missing_from_cache_hits() -> N
 
     assert "name: Repair missing Linux debug sidecars" in action
     assert (
-        "if: inputs.cross_driver == 'zigbuild' && "
+        "if: inputs.cross_compile == 'true' && "
         "contains(inputs.target, 'unknown-linux')"
     ) in action
     assert 'soldr cargo clean -p zccache --release --target "$TARGET"' in action
-    assert "soldr --no-cache cargo zigbuild --jobs 1" in action
+    assert "soldr --no-cache build --jobs 1 -j 1" in action
     assert 'test -e "$TARGET_DIR/zccache.dwp"' in action
     assert 'test -e "$TARGET_DIR/zccache-fp.dwp"' in action
 
@@ -508,3 +541,91 @@ def test_stage_debug_tree_skips_missing_input(tmp_path: Path) -> None:
         )
         is None
     )
+
+
+def test_action_pins_use_full_length_commit_shas() -> None:
+    """GitHub Actions rejects a shortened commit SHA in `uses:`.
+
+    A 12-char pin fails at *action resolution*, before any step runs, so every
+    job in the matrix dies with `Unable to resolve action ... is the shortened
+    version of a commit SHA`. Nothing in local YAML validation catches it —
+    the file parses fine.
+
+    Tags (`@v0`, `@stable`) stay allowed; this only rejects a hex ref that is
+    too short to be a full SHA.
+    """
+    import re
+
+    workflow_dir = Path(__file__).resolve().parents[2] / ".github"
+    offenders: list[str] = []
+    for path in sorted(workflow_dir.rglob("*.yml")):
+        for number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            match = re.search(r"uses:\s*\S+@([0-9a-f]{6,})\s*$", line)
+            if match and len(match.group(1)) != 40:
+                offenders.append(
+                    f"{path.relative_to(workflow_dir.parent)}:{number} "
+                    f"-> @{match.group(1)} ({len(match.group(1))} chars)"
+                )
+
+    assert not offenders, (
+        "action pins must use the full 40-character commit SHA; "
+        f"GitHub cannot resolve these: {offenders}"
+    )
+
+
+def test_pyo3_cdylibs_live_in_dedicated_crates() -> None:
+    """zccache#1497: a `cdylib` crate-type must not sit alongside `rlib` on a
+    crate the shipped binaries depend on.
+
+    Cargo cannot make a crate-type conditional, so `crate-type = ["rlib",
+    "cdylib"]` means every build that needs the rlib also links the cdylib.
+    That is invisible until `-C target-feature=+crt-static` (needed for the
+    shipped .exe, #269) reaches the unwanted cdylib and x64 fails with
+    `duplicate symbol: __vcrt_InitializeCriticalSectionEx` — static vcruntime
+    against the dynamic import library. A PyO3 extension must keep the host
+    interpreter's dynamic CRT, so the two cannot share a crate.
+
+    Keep each PyO3 extension in its own cdylib-only crate.
+    """
+    import re
+
+    crates_dir = Path(__file__).resolve().parents[2] / "crates"
+    offenders: list[str] = []
+    for manifest in sorted(crates_dir.glob("*/Cargo.toml")):
+        text = manifest.read_text(encoding="utf-8")
+        crate_types = re.search(r"^crate-type\s*=\s*\[(.+?)\]", text, re.M)
+        if not crate_types:
+            continue
+        types = {t.strip().strip('"') for t in crate_types.group(1).split(",")}
+        if {"rlib", "cdylib"} <= types:
+            offenders.append(manifest.parent.name)
+
+    assert not offenders, (
+        "these crates pair rlib with cdylib; split the cdylib into its own "
+        f"crate so +crt-static never reaches it: {offenders}"
+    )
+
+
+def test_windows_release_asserts_static_crt_linkage() -> None:
+    """zccache#269 has no test, which is how #1497 nearly shipped a regression.
+
+    `Smoke test built binary` skips every cross-compiled target, so nothing
+    verified CRT linkage on Windows. The soldr migration silently produced an
+    aarch64 binary importing VCRUNTIME140.dll and seven api-ms-win-crt-*
+    apisets -- a green matrix would have shipped it. Only x64 failed loudly,
+    and only because lld-link hit a duplicate symbol first.
+
+    The gate reads the PE for dynamic-CRT imports, so it works cross-compiled
+    and needs no execution.
+    """
+    action = _repo_text(".github/actions/build-target/action.yml")
+
+    assert "Assert Windows binaries link the CRT statically" in action
+    assert "if: contains(inputs.target, 'pc-windows-msvc')" in action
+    assert "api-ms-win-crt-" in action
+    assert "vcruntime" in action.lower()
+    # The .pyd extensions must keep the dynamic CRT, so the gate covers only
+    # the shipped executables.
+    assert "for bin in zccache zccache-fp; do" in action

@@ -17,9 +17,6 @@ pub mod polling_watcher;
 pub mod recovery;
 pub mod settle;
 
-#[cfg(feature = "python")]
-mod python;
-
 use zccache_core::NormalizedPath;
 
 pub use ignore::IgnoreFilter;
@@ -27,8 +24,6 @@ pub use notify_watcher::NotifyWatcher;
 pub use polling_watcher::{
     PollWatchBatch, PollWatchObserver, PollingWatcher, PollingWatcherConfig,
 };
-#[cfg(feature = "python")]
-pub use python::{NativeWatcher, WatchBatch};
 pub use recovery::OverflowRecovery;
 pub use settle::{SettleBuffer, SettledEvent};
 

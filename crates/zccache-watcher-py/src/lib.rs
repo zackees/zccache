@@ -1,4 +1,9 @@
-//! PyO3 bindings for the polling watcher.
+//! PyO3 bindings for `zccache-watcher` (zccache#1497).
+//!
+//! Lives in its own crate so `zccache-watcher` can stay a pure `rlib`. When the
+//! cdylib was a second crate-type on that crate, every build that needed the
+//! rlib -- including the Windows release binaries -- also linked a cdylib
+//! nothing consumed, which fails under `+crt-static` on x64.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -6,7 +11,7 @@ use std::time::Duration;
 use pyo3::exceptions::{PyOSError, PyRuntimeError};
 use pyo3::prelude::*;
 
-use crate::{PollWatchBatch, PollingWatcher, PollingWatcherConfig};
+use zccache_watcher::{PollWatchBatch, PollingWatcher, PollingWatcherConfig};
 
 fn io_to_py_err(e: std::io::Error) -> PyErr {
     PyErr::new::<PyOSError, _>(e.to_string())

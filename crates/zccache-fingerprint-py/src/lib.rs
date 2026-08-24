@@ -1,4 +1,7 @@
-//! PyO3 cdylib for the fingerprint engine.
+//! PyO3 bindings for `zccache-fingerprint` (zccache#1497).
+//!
+//! Separate crate so `zccache-fingerprint` stays a pure `rlib` -- see
+//! ../zccache-watcher-py/README.md for why the cdylib cannot live alongside it.
 //!
 //! The Rust fingerprint engine lives in this crate; this module hosts the
 //! `_native` Python extension module so the polished `zccache.fingerprint`
@@ -6,9 +9,9 @@
 
 use pyo3::prelude::*;
 
-use crate::error::FingerprintError;
-use crate::hash_cache::compute_aggregate_hash;
-use crate::scan::{self, ScannedFile};
+use zccache_fingerprint::error::FingerprintError;
+use zccache_fingerprint::hash_cache::compute_aggregate_hash;
+use zccache_fingerprint::scan::{self, ScannedFile};
 
 fn to_py_err(e: FingerprintError) -> PyErr {
     PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
