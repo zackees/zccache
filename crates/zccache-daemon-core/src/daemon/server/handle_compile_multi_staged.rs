@@ -207,28 +207,27 @@ pub(super) async fn try_handle_staged_misses(
         }
         apply_client_env(&mut command, client_env, &lineage);
         command.kill_on_drop(true);
-        let compile_concurrency = state.compile_concurrency.clone();
+        let admission_state = Arc::clone(state);
+        let family = compilations[miss.unit_index].family;
+        let exclusive = crate::daemon::server::compile_resource_gate::requires_exclusive_access(
+            family,
+            &compiler_args,
+            miss.source_path.as_path(),
+        );
         // Issue #1216: keep the global queue gauge accurate for the staged
         // lane too. These waits run on spawned tasks, so the per-request
         // task-local slot is out of reach — the daemon-wide `queue_depth` /
         // `in_flight` counters still are not, and those are what other
         // clients' heartbeats report.
-        let compile_queue = Arc::clone(&state.compile_queue);
         let unit_index = miss.unit_index;
         compiler_set.spawn(async move {
-            let available_before = compile_concurrency
-                .as_ref()
-                .map_or(usize::MAX, |semaphore| semaphore.available_permits());
-            let mut queue_guard = compile_queue.enqueue();
-            let _permit = if let Some(semaphore) = compile_concurrency.as_ref() {
-                let permit = Arc::clone(semaphore).acquire_owned().await.ok();
-                queue_guard.admit();
-                permit
-            } else {
-                queue_guard.admit();
-                None
-            };
-            if compile_concurrency.is_some() {
+            let (_compiler_admission, available_before) =
+                crate::daemon::server::compile_resource_gate::acquire_compiler_admission(
+                    &admission_state,
+                    exclusive,
+                )
+                .await;
+            if let Some(available_before) = available_before {
                 tracing::info!(
                     event = "compile_start",
                     client_pid,
@@ -239,7 +238,7 @@ pub(super) async fn try_handle_staged_misses(
             let compiler_started = std::time::Instant::now();
             let output = process::tokio_command_output_with_priority(&mut command, priority).await;
             let elapsed_ns = compiler_started.elapsed().as_nanos() as u64;
-            if compile_concurrency.is_some() {
+            if admission_state.compile_concurrency.is_some() {
                 let exit_code = output
                     .as_ref()
                     .ok()

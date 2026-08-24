@@ -247,6 +247,28 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         CompilePriority::from_client_env_for_link_like(client_env.as_deref(), is_link_like);
     let compiler_priority_decision = compiler_priority.resolve_for_current_load();
 
+    // soldr#2781: this point is reached only after every cache-hit branch has
+    // missed. Ordinary compiler children share the gate; an amalgamated C
+    // translation unit or known amalgamated Rust release crate drains those
+    // readers and runs alone. The shared helper acquires the bounded FIFO
+    // compile slot first and the resource gate second, then both remain held
+    // across overlapping input hashing and the compiler child.
+    let exclusive = crate::daemon::server::compile_resource_gate::requires_exclusive_access(
+        compilation.family,
+        effective_args,
+        source_path.as_path(),
+    );
+    let (_compiler_admission, available_before) =
+        crate::daemon::server::compile_resource_gate::acquire_compiler_admission(state, exclusive)
+            .await;
+    if exclusive {
+        tracing::info!(
+            event = "compile_exclusive",
+            source = %source_path.display(),
+            "amalgamated compiler unit acquired exclusive build access"
+        );
+    }
+
     // Issue #532: kick off hashing of pre-known inputs (source +
     // rustc_extern_paths) on a blocking thread, in parallel with the
     // rustc spawn. The 50-rlib externs of a workspace link dominate
@@ -299,12 +321,6 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     // request's queue position while it sits here. `_compile_gate` restores
     // the permit and counters on every exit path, including cancellation.
     let client_pid = lineage.client_pid.unwrap_or(0);
-    let (_compile_gate, available_before) =
-        crate::daemon::server::compile_progress::acquire_compile_gate(
-            state.compile_concurrency.as_ref(),
-            &state.compile_queue,
-        )
-        .await;
     if let Some(available_before) = available_before {
         tracing::info!(
             event = "compile_start",

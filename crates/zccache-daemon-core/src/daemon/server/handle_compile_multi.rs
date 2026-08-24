@@ -755,9 +755,22 @@ pub(super) async fn handle_compile_multi(
     }
     apply_client_env(&mut cmd, &client_env, &lineage);
     let compiler_priority = CompilePriority::from_client_env(client_env.as_deref());
+    let exclusive =
+        crate::daemon::server::compile_resource_gate::requires_exclusive_access_for_misses(
+            compilations[0].family,
+            &compiler_args,
+            unit_results.iter().map(|unit| match unit {
+                UnitCacheResult::Miss { source_path, .. } => Some(source_path.as_path()),
+                UnitCacheResult::Hit { .. } => None,
+            }),
+        );
+    let (compiler_admission, _) =
+        crate::daemon::server::compile_resource_gate::acquire_compiler_admission(&state, exclusive)
+            .await;
     let result =
         super::super::process::tokio_command_output_with_priority(&mut cmd, compiler_priority)
             .await;
+    drop(compiler_admission);
 
     let output = match result {
         Ok(o) => o,

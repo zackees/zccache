@@ -214,6 +214,7 @@ pub(super) async fn prepare_dylint_request(
         &format!("non-cacheable: Dylint cache disabled: {reason}"),
     );
     let response = run_compiler_direct(
+        state,
         &bypass_compiler,
         raw_args,
         cwd,
@@ -269,6 +270,7 @@ pub(super) async fn bypass_time_macro_request(
     warn_time_macro_uncacheable(&found);
     Some(
         run_compiler_direct(
+            state,
             &bypass_compiler,
             raw_args,
             cwd,
@@ -322,6 +324,7 @@ pub(super) async fn discover_request_system_includes(
         "non-cacheable: system include discovery returned zero paths",
     );
     Err(run_compiler_direct(
+        state,
         compiler,
         raw_args,
         cwd,
@@ -373,6 +376,7 @@ pub(super) async fn parse_single_compile_request(
             });
             write_session_log(&state.sessions, sid, &format!("non-cacheable: {reason}"));
             return Err(run_compiler_direct(
+                state,
                 compiler,
                 raw_args,
                 cwd,
@@ -447,6 +451,7 @@ pub(super) async fn parse_single_compile_request(
                 "non-cacheable: Dylint cdylib output identity is incomplete",
             );
             return Err(run_compiler_direct(
+                state,
                 compiler,
                 raw_args,
                 cwd,
