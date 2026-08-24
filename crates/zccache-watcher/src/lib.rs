@@ -17,7 +17,6 @@ pub mod polling_watcher;
 pub mod recovery;
 pub mod settle;
 
-
 use zccache_core::NormalizedPath;
 
 pub use ignore::IgnoreFilter;

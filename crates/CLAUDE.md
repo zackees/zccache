@@ -1,6 +1,6 @@
 # Crates Architecture
 
-22 crates split into two product surfaces: the **compile cache** and a separate **download cache**, plus utility binaries (`zccache-fp`, `zccache-stamp`) and one CI lib (`zccache-ci`).
+24 crates split into two product surfaces: the **compile cache** and a separate **download cache**, plus utility binaries (`zccache-fp`, `zccache-stamp`) and one CI lib (`zccache-ci`).
 
 > [!NOTE]
 > **Binary layout (#997–#1000).** Release archives and wheels ship `zccache` plus the intentionally separate `zccache-fp`. `zccache` is a **multi-call binary**: copies named `zccache-daemon` and `zccache-download-daemon` dispatch to their respective daemon entry points. Both daemons are self-deployed beneath `~/.zccache/v<VERSION>/`; their legacy `[[bin]]` targets remain buildable as transitional source/test shims but are not distribution artifacts. `crates/zccache-cli` is **not** the CLI — it is the PyO3 `cdylib` hosting `zccache._native`. See [docs/architecture/runtime.md § Standalone daemon identity, deployment & lifecycle](../docs/architecture/runtime.md#standalone-daemon-identity-deployment--lifecycle).
@@ -84,6 +84,7 @@ zccache-test-support (dev-only test utilities)
 - **zccache-compiler** — `CompilerFamily` detection, `ParsedInvocation` for cacheability checks (clang/gcc/msvc/rustc/clang-cl), plus `parse_linker`, `parse_archiver`, `parse_msvc`, `parse_rustfmt`, `response_file`, `strict_paths`, `arduino` submodules
 - **zccache-depgraph** — Persistent dependency graph for cache invalidation; snapshot save/load, dep walker
 - **zccache-fingerprint** — File fingerprinting engine + `zccache-fp` CLI for inspecting/marking fingerprints
+- **zccache-watcher-py** / **zccache-fingerprint-py** — the PyO3 `cdylib`s for `zccache.watcher._native` / `zccache.fingerprint._native`. Separate crates because cargo cannot make a crate-type conditional: a `cdylib` alongside `rlib` is built by every consumer that only wants the rlib, and under `+crt-static` that link fails (#1497). `[lib] name` keeps the output filenames unchanged.
 
 ### Compile-cache application binaries
 - **zccache** — the transitional absorber crate (#365) and the home of every shipped `[[bin]]`. `zccache` itself is the multi-call binary; `zccache-daemon`, `zccache-download-daemon`, and `zccache-ci` (the Stop-hook process/thread dumper) are **bin targets of this crate**, not crates of their own.

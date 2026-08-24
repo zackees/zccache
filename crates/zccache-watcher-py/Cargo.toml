@@ -15,6 +15,10 @@ publish = false
 [lib]
 name = "zccache_watcher"
 crate-type = ["cdylib"]
+# The `name` override keeps the output filename stable for packaging, which
+# collides with the parent crate's docs. The Rust API is the parent's; this
+# crate is the Python extension surface.
+doc = false
 
 [dependencies]
 zccache-watcher = { workspace = true }

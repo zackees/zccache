@@ -23,7 +23,6 @@ pub mod persist;
 pub mod scan;
 pub mod two_layer;
 
-
 pub use decision::{CacheDecision, RunReason};
 pub use error::{FingerprintError, Result};
 pub use hash_cache::{compute_aggregate_hash, HashCache};
