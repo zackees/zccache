@@ -113,22 +113,6 @@ runs:
         echo "CARGO_TARGET_${TARGET_UPPER}_LINKER=${{ inputs.linker }}" >> "$GITHUB_ENV"
         echo "CC_${TARGET_CC}=${{ inputs.linker }}" >> "$GITHUB_ENV"
 
-    - name: Serialize cargo for hosted cross runners
-      if: inputs.cross_compile == 'true'
-      shell: bash
-      run: |
-        # soldr's `--jobs` caps the DAEMON's concurrent compiles and is
-        # explicitly "not forwarded as cargo's own -j" (soldr build --help).
-        # Under the previous cross driver the flag reached cargo directly; under
-        # `soldr build` it does not, so cargo kept its default parallelism and
-        # rustc children were signal-killed (exit 255) part-way through
-        # zccache-daemon-core on the two-core hosted runners -- the same
-        # failure the --jobs 1 comment below already describes.
-        #
-        # CARGO_BUILD_JOBS is the unambiguous way to cap cargo itself; passing
-        # `-j` through soldr's [ARGS] would collide with its own --jobs flag.
-        echo "CARGO_BUILD_JOBS=1" >> "$GITHUB_ENV"
-
     - name: Configure cross C compatibility
       if: inputs.cross_compile == 'true'
       shell: bash
@@ -259,7 +243,7 @@ runs:
         # the Zig lanes were serialized. Keep every hosted cross lane to one
         # rustc child at a time.
         if [ "${{ inputs.cross_compile }}" = "true" ]; then
-          cargo_build=(soldr build --jobs 1)
+          cargo_build=(soldr build --jobs 1 -j 1)
         elif [ "${{ inputs.use_soldr }}" = "true" ]; then
           cargo_build=(soldr --no-cache cargo build)
         else
@@ -329,7 +313,7 @@ runs:
         # workflow-only build-target bug that latently broke the release path.
         # Surfaced when 1.9.1 became the first version bump after that split.
         if [ "${{ inputs.cross_compile }}" = "true" ]; then
-          cargo_build=(soldr build --jobs 1)
+          cargo_build=(soldr build --jobs 1 -j 1)
         elif [ "${{ inputs.use_soldr }}" = "true" ]; then
           cargo_build=(soldr --no-cache cargo build)
         else
@@ -359,7 +343,7 @@ runs:
         # package without the wrapper so rustc emits both .dwp files locally.
         echo "Packed Linux debug sidecars are missing; rebuilding zccache locally"
         soldr cargo clean -p zccache --release --target "$TARGET"
-        soldr --no-cache build --jobs 1 \
+        soldr --no-cache build --jobs 1 -j 1 \
           --release --target "$TARGET" -p zccache \
           --features zccache-bin,fingerprint-bin \
           --bin zccache --bin zccache-fp

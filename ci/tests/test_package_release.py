@@ -269,7 +269,7 @@ def test_cross_builds_go_through_the_blessed_soldr_surface() -> None:
     assert "cross-targets: ${{ inputs.cross_compile == 'true'" in action
 
     # Builds go through the blessed surface, still one rustc child at a time.
-    assert action.count("cargo_build=(soldr build --jobs 1)") == 2
+    assert action.count("cargo_build=(soldr build --jobs 1 -j 1)") == 2
     assert "cargo_build=(soldr build)" not in action
     assert "cargo_build=(soldr build --jobs 2)" not in action
 
@@ -315,7 +315,7 @@ def test_linux_cross_build_repairs_debug_sidecars_missing_from_cache_hits() -> N
         "contains(inputs.target, 'unknown-linux')"
     ) in action
     assert 'soldr cargo clean -p zccache --release --target "$TARGET"' in action
-    assert "soldr --no-cache build --jobs 1" in action
+    assert "soldr --no-cache build --jobs 1 -j 1" in action
     assert 'test -e "$TARGET_DIR/zccache.dwp"' in action
     assert 'test -e "$TARGET_DIR/zccache-fp.dwp"' in action
 
