@@ -293,10 +293,19 @@ runs:
             # which is a port of the already-merged cargo-xwin PR #166
             # (`is_static_crt_enabled`, shipped in cargo-xwin 0.20.0). The
             # CRT-linkage gate below is what proves either path.
+            # Pass the static libs as POSITIONAL inputs, not /DEFAULTLIB.
+            # soldr already emits /NODEFAULTLIB:libucrt.lib, and
+            # /NODEFAULTLIB beats /DEFAULTLIB for the same name regardless of
+            # order -- so answering it with /DEFAULTLIB:libucrt.lib banned
+            # every UCRT variant at once and left the startup symbols
+            # (_initterm, _configure_narrow_argv, __stdio_common_vsprintf...)
+            # undefined. A library named directly on the command line is not
+            # subject to /NODEFAULTLIB, which is the only lever that survives
+            # soldr's flags without editing them.
             crt_flags="$crt_flags -C link-arg=/NODEFAULTLIB:ucrt.lib"
             crt_flags="$crt_flags -C link-arg=/NODEFAULTLIB:vcruntime.lib"
-            crt_flags="$crt_flags -C link-arg=/DEFAULTLIB:libucrt.lib"
-            crt_flags="$crt_flags -C link-arg=/DEFAULTLIB:libvcruntime.lib"
+            crt_flags="$crt_flags -C link-arg=libucrt.lib"
+            crt_flags="$crt_flags -C link-arg=libvcruntime.lib"
           fi
           export RUSTFLAGS="${RUSTFLAGS:-} $crt_flags"
         fi
