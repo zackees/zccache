@@ -461,6 +461,9 @@ pub(super) struct SharedState {
     /// `None` when the override is `0` (or `unlimited`) — preserves the
     /// historical uncapped behavior for users who want it.
     pub(super) compile_concurrency: Option<Arc<tokio::sync::Semaphore>>,
+    /// Shared admission for ordinary compiler children and exclusive
+    /// admission for unusually memory-intensive C/Rust amalgamations.
+    pub(super) compile_resource_gate: super::compile_resource_gate::CompileResourceGate,
     /// Issue #1216 — compile-queue counters backing the `CompileProgress`
     /// heartbeats. `tokio::sync::Semaphore` reports available permits but
     /// not its waiter count or original capacity, so the gate maintains

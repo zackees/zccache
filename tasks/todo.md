@@ -981,3 +981,11 @@ the direct evidence that 0.9.3 cross-compiles for that target.
 Upstream follow-through: #227 (my duplicate) closed against #223; #228 merged,
 documenting the cross-compilation contract and why `CFLAGS=-TP` is the wrong
 lever, in both the crate and repo READMEs.
+
+# Rust/C amalgamation compile admission
+
+- [x] Add RED coverage for the published zccache crate as a Rust amalgamation.
+- [x] Give known Rust amalgamations and oversized C translation units exclusive compiler access.
+- [x] Prove ordinary compiles remain concurrent and cache hits skip the barrier.
+- [x] Run focused tests, formatting, Clippy, full validation, and review.
+- [ ] Merge and publish the next zccache release.

@@ -297,6 +297,8 @@ pub(super) fn new_shared_state(
             staged_materialization_lock: Arc::new(StdMutex::new(std::sync::Weak::new())),
             persist_semaphore: Arc::new(tokio::sync::Semaphore::new(persist_workers_default())),
             compile_concurrency,
+            compile_resource_gate:
+                crate::daemon::server::compile_resource_gate::CompileResourceGate::default(),
             compile_queue: Arc::new(
                 crate::daemon::server::compile_progress::CompileQueueGauge::default(),
             ),

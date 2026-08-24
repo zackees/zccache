@@ -399,6 +399,7 @@ pub(super) async fn run_depfile_stdout_batch(
     }
     Some(
         run_compiler_direct(
+            state,
             compiler,
             original_args,
             cwd,
@@ -483,6 +484,7 @@ pub(super) async fn run_unsupported_batch(
                 });
             }
             let response = run_compiler_direct_with_family(
+                state,
                 compiler,
                 original_args,
                 cwd,

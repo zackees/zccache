@@ -73,6 +73,7 @@ pub(super) async fn handle_compile_ephemeral(
 /// covered by the wrapper's Defender exclusion — see issue #275.
 #[allow(clippy::too_many_arguments)] // Mirrors handle_compile's surface — refactor parked.
 pub(super) async fn run_compiler_direct(
+    state: &SharedState,
     compiler: &NormalizedPath,
     args: &[String],
     cwd: &Path,
@@ -90,6 +91,7 @@ pub(super) async fn run_compiler_direct(
     // names, which matches the historical behaviour.
     let family_hint = crate::compiler::detect_family(&compiler.to_string_lossy());
     run_compiler_direct_with_family(
+        state,
         compiler,
         args,
         cwd,
@@ -105,6 +107,7 @@ pub(super) async fn run_compiler_direct(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_compiler_direct_with_family(
+    state: &SharedState,
     compiler: &NormalizedPath,
     args: &[String],
     cwd: &Path,
@@ -145,6 +148,16 @@ pub(super) async fn run_compiler_direct_with_family(
     } else {
         Some(stdin_bytes)
     };
+    let exclusive =
+        super::compile_resource_gate::requires_exclusive_access_from_args(family_hint, args, cwd);
+    let (_compiler_admission, _) =
+        super::compile_resource_gate::acquire_compiler_admission(state, exclusive).await;
+    if exclusive {
+        tracing::info!(
+            event = "compile_exclusive",
+            "direct amalgamated compiler unit acquired exclusive build access"
+        );
+    }
     let (result, streamed_output) = if let Some(context) = crate::daemon::compile_output::current()
     {
         let (sender, receiver) = tokio::sync::mpsc::channel(8);
