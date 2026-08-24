@@ -217,14 +217,32 @@ runs:
     # Static-link the MSVC C runtime (vcruntime + UCRT) for Windows release
     # binaries. Without `+crt-static` the published `zccache.exe` declares
     # imports against `VCRUNTIME140.dll` and the `api-ms-win-crt-*` UCRT
-    # API-set forwarders; on runner images where any of those DLLs is
-    # missing or version-skewed, the Windows loader rejects the image
-    # before `main` with `STATUS_DLL_INIT_FAILED` (exit `-1073741502` /
-    # `0xC0000142`). Self-contained CRT linkage is the standard approach
-    # for distributable Rust binaries on Windows (rustc/cargo/rustup all
-    # ship this way). See zccache#269.
+    # API-set forwarders, and then fails to start wherever those are not
+    # resolvable.
+    #
+    # The load-bearing case is the PyPI install path. CPython on Windows
+    # ships `vcruntime140.dll` *app-locally*, next to `python.exe` -- see
+    # cpython's `PC/layout/support/python.props`. A wheel-installed
+    # `zccache.exe` lands in `<env>/Scripts/`, and the loader searches the
+    # directory of the *executable*, so it never sees Python's copy. It then
+    # depends on a system-wide VC++ redist that may simply not be there.
+    # This is astral-sh/ruff#11503 exactly; their fix was +crt-static too.
+    # The raw-binary paths (this action's curl install, install.ps1) have no
+    # Python process involved at all.
+    #
+    # NB: zccache#269 attributed this to `STATUS_DLL_INIT_FAILED`
+    # (`0xC0000142`). That code means the DLL was found and its DllMain
+    # returned FALSE; a *missing* DLL is `STATUS_DLL_NOT_FOUND`
+    # (`0xC0000135`). The hosted runner images do ship the VC++ redist, so
+    # whatever produced 0xC0000142 there is still unexplained -- the flag is
+    # kept for the `Scripts/` argument above, which is independently sound.
+    #
+    # Self-contained CRT linkage is the norm for distributable Rust binaries
+    # on Windows: ripgrep, fd, bat, uv, ruff, and rustup all set this, and
+    # rustc/cargo hard-code it in bootstrap (`crt_static()`).
     #
     # We DO NOT apply +crt-static to the Python extension (.pyd) builds
+    # below — those load into the host Python process and must share its
     # below — those load into the host Python process and must share its
     # C runtime. Static CRT linkage is appended to RUSTFLAGS only for the
     # standalone binary build step.
@@ -250,7 +268,37 @@ runs:
           cargo_build=(rustup run "$RELEASE_RUST_TOOLCHAIN" cargo build)
         fi
         if [[ "${{ inputs.target }}" == *pc-windows-msvc ]]; then
-          export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static"
+          crt_flags="-C target-feature=+crt-static"
+          if [ "${{ inputs.cross_compile }}" = "true" ]; then
+            # `soldr prepare` injects a DYNAMIC-CRT link set for msvc targets
+            # (/NODEFAULTLIB:libucrt.lib /DEFAULTLIB:ucrt.lib
+            # /DEFAULTLIB:vcruntime.lib) and merges our RUSTFLAGS in rather
+            # than replacing them, so both land on the same link line.
+            #
+            # x64 fails loudly -- lld-link finds
+            # __vcrt_InitializeCriticalSectionEx in both libvcruntime.lib
+            # (static, pulled by rustc's /defaultlib:libcmt) and
+            # vcruntime.lib (dynamic, from soldr). aarch64 does NOT fail: it
+            # silently produces a dynamic-CRT binary, i.e. a silent zccache#269
+            # regression. Verified against run 32680158073's aarch64 artifact,
+            # which imports VCRUNTIME140.dll and seven api-ms-win-crt-* apisets;
+            # the shipped 1.13.6 aarch64 exe imports none.
+            #
+            # Neutralize rather than string-edit soldr's flag set:
+            # /NODEFAULTLIB beats /DEFAULTLIB for the same library, and the
+            # static halves are re-added explicitly. Order-independent and it
+            # does not depend on soldr's exact string.
+            #
+            # Remove when soldr honours +crt-static itself -- zackees/soldr#2794,
+            # which is a port of the already-merged cargo-xwin PR #166
+            # (`is_static_crt_enabled`, shipped in cargo-xwin 0.20.0). The
+            # CRT-linkage gate below is what proves either path.
+            crt_flags="$crt_flags -C link-arg=/NODEFAULTLIB:ucrt.lib"
+            crt_flags="$crt_flags -C link-arg=/NODEFAULTLIB:vcruntime.lib"
+            crt_flags="$crt_flags -C link-arg=/DEFAULTLIB:libucrt.lib"
+            crt_flags="$crt_flags -C link-arg=/DEFAULTLIB:libvcruntime.lib"
+          fi
+          export RUSTFLAGS="${RUSTFLAGS:-} $crt_flags"
         fi
         # #1017 Lever 1: build all three shipped binaries in ONE cargo
         # invocation with unified features. Building them separately (one
@@ -273,6 +321,44 @@ runs:
     # the one that actually catches the regression. ARM64 Windows builds
     # are cross-compiled on x64 runners and so cannot exec the binary on
     # this leg — skip the smoke for that target only.
+    - name: Assert Windows binaries link the CRT statically
+      if: contains(inputs.target, 'pc-windows-msvc')
+      shell: bash
+      run: |
+        set -euo pipefail
+        # zccache#269 regression gate. The shipped .exe must not import the
+        # dynamic CRT: a wheel-installed zccache.exe lives in <env>/Scripts/,
+        # while CPython keeps its own vcruntime140.dll app-local next to
+        # python.exe, so the loader does not find it from Scripts/. Same story
+        # for the raw-binary install paths (action.yml curl, install.ps1),
+        # which involve no Python process at all. See astral-sh/ruff#11503.
+        #
+        # This runs on the cross host and needs no execution, which is the
+        # point: "Smoke test built binary" skips every cross target, so
+        # nothing verified CRT linkage. The soldr migration (#1497) silently
+        # produced a dynamic-CRT aarch64 binary that a green matrix would
+        # have shipped -- x64 only failed loudly because lld-link hit a
+        # duplicate symbol first.
+        #
+        # .pyd extensions are deliberately excluded: a PyO3 module MUST share
+        # the host interpreter's dynamic CRT.
+        fail=0
+        for bin in zccache zccache-fp; do
+          path="target/${{ inputs.target }}/release/${bin}${{ inputs.binary_ext }}"
+          [ -e "$path" ] || { echo "::error::$path was not built"; fail=1; continue; }
+          found="$(strings -a "$path" \
+            | grep -iE '^(vcruntime[0-9]*\.dll|ucrtbase\.dll|api-ms-win-crt-[a-z]+-l[0-9]-[0-9]-[0-9]\.dll)$' \
+            | sort -u || true)"
+          if [ -n "$found" ]; then
+            echo "::error::$path imports the dynamic CRT; +crt-static did not take effect (zccache#269)"
+            printf '  %s\n' $found
+            fail=1
+          else
+            echo "OK: $path links the CRT statically"
+          fi
+        done
+        exit "$fail"
+
     - name: Smoke test built binary
       shell: bash
       run: |

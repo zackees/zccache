@@ -259,7 +259,12 @@ def test_cross_builds_go_through_the_blessed_soldr_surface() -> None:
     assert "dtolnay/rust-toolchain" not in action
     assert "mlugg/setup-zig" not in action
     assert "cargo-zigbuild" not in action
-    assert "cargo-xwin" not in action
+    # Prose references to cargo-xwin are fine (the upstream fix we are porting
+    # lives there); what must not come back is invoking it.
+    assert "cargo xwin build" not in action
+    assert "taiki-e/install-action" not in action or "cargo-xwin" not in (
+        action.split("taiki-e/install-action")[1][:200] if "taiki-e/install-action" in action else ""
+    )
     assert "cross_driver" not in action
     assert "zigbuild" not in action
     assert "cargo xwin" not in action
@@ -601,3 +606,26 @@ def test_pyo3_cdylibs_live_in_dedicated_crates() -> None:
         "these crates pair rlib with cdylib; split the cdylib into its own "
         f"crate so +crt-static never reaches it: {offenders}"
     )
+
+
+def test_windows_release_asserts_static_crt_linkage() -> None:
+    """zccache#269 has no test, which is how #1497 nearly shipped a regression.
+
+    `Smoke test built binary` skips every cross-compiled target, so nothing
+    verified CRT linkage on Windows. The soldr migration silently produced an
+    aarch64 binary importing VCRUNTIME140.dll and seven api-ms-win-crt-*
+    apisets -- a green matrix would have shipped it. Only x64 failed loudly,
+    and only because lld-link hit a duplicate symbol first.
+
+    The gate reads the PE for dynamic-CRT imports, so it works cross-compiled
+    and needs no execution.
+    """
+    action = _repo_text(".github/actions/build-target/action.yml")
+
+    assert "Assert Windows binaries link the CRT statically" in action
+    assert "if: contains(inputs.target, 'pc-windows-msvc')" in action
+    assert "api-ms-win-crt-" in action
+    assert "vcruntime" in action.lower()
+    # The .pyd extensions must keep the dynamic CRT, so the gate covers only
+    # the shipped executables.
+    assert "for bin in zccache zccache-fp; do" in action
