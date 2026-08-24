@@ -4419,8 +4419,6 @@ dependencies = [
  "fs2",
  "globset",
  "jwalk",
- "pyo3",
- "pyo3-build-config",
  "rayon",
  "serde",
  "serde_json",
@@ -4428,6 +4426,16 @@ dependencies = [
  "thiserror",
  "tracing",
  "zccache-core",
+ "zccache-hash",
+]
+
+[[package]]
+name = "zccache-fingerprint-py"
+version = "1.13.6"
+dependencies = [
+ "pyo3",
+ "pyo3-build-config",
+ "zccache-fingerprint",
  "zccache-hash",
 ]
 
@@ -4543,14 +4551,21 @@ dependencies = [
  "globset",
  "jwalk",
  "notify",
- "pyo3",
- "pyo3-build-config",
  "rayon",
  "tempfile",
  "tokio",
  "tracing",
  "zccache-core",
  "zccache-fscache",
+]
+
+[[package]]
+name = "zccache-watcher-py"
+version = "1.13.6"
+dependencies = [
+ "pyo3",
+ "pyo3-build-config",
+ "zccache-watcher",
 ]
 
 [[package]]

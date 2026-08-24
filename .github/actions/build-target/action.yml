@@ -320,8 +320,8 @@ runs:
           cargo_build=(rustup run "$RELEASE_RUST_TOOLCHAIN" cargo build)
         fi
         "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-cli --features python --lib
-        "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-watcher --features python --lib
-        "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-fingerprint --features python --lib
+        "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-watcher-py --lib
+        "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-fingerprint-py --lib
 
     - name: Repair missing Linux debug sidecars
       if: inputs.cross_compile == 'true' && contains(inputs.target, 'unknown-linux')

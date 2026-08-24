@@ -7,15 +7,14 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
-description = "Cross-platform file watcher engine and optional Python extension for zccache"
+description = "Cross-platform file watcher engine for zccache"
 publish = false
 
 [lib]
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib"]
 
 [features]
 default = []
-python = ["dep:pyo3"]
 
 [dependencies]
 zccache-core = { workspace = true }
@@ -26,17 +25,9 @@ notify = { workspace = true }
 rayon = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-pyo3 = { version = "0.23", features = [
-    "extension-module",
-    "generate-import-lib",
-    "abi3-py310",
-], optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-
-[build-dependencies]
-pyo3-build-config = "0.23"
 
 [lints]
 workspace = true

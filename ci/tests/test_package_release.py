@@ -568,3 +568,36 @@ def test_action_pins_use_full_length_commit_shas() -> None:
         "action pins must use the full 40-character commit SHA; "
         f"GitHub cannot resolve these: {offenders}"
     )
+
+
+def test_pyo3_cdylibs_live_in_dedicated_crates() -> None:
+    """zccache#1497: a `cdylib` crate-type must not sit alongside `rlib` on a
+    crate the shipped binaries depend on.
+
+    Cargo cannot make a crate-type conditional, so `crate-type = ["rlib",
+    "cdylib"]` means every build that needs the rlib also links the cdylib.
+    That is invisible until `-C target-feature=+crt-static` (needed for the
+    shipped .exe, #269) reaches the unwanted cdylib and x64 fails with
+    `duplicate symbol: __vcrt_InitializeCriticalSectionEx` — static vcruntime
+    against the dynamic import library. A PyO3 extension must keep the host
+    interpreter's dynamic CRT, so the two cannot share a crate.
+
+    Keep each PyO3 extension in its own cdylib-only crate.
+    """
+    import re
+
+    crates_dir = Path(__file__).resolve().parents[2] / "crates"
+    offenders: list[str] = []
+    for manifest in sorted(crates_dir.glob("*/Cargo.toml")):
+        text = manifest.read_text(encoding="utf-8")
+        crate_types = re.search(r"^crate-type\s*=\s*\[(.+?)\]", text, re.M)
+        if not crate_types:
+            continue
+        types = {t.strip().strip('"') for t in crate_types.group(1).split(",")}
+        if {"rlib", "cdylib"} <= types:
+            offenders.append(manifest.parent.name)
+
+    assert not offenders, (
+        "these crates pair rlib with cdylib; split the cdylib into its own "
+        f"crate so +crt-static never reaches it: {offenders}"
+    )

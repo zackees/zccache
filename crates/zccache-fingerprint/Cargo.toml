@@ -11,11 +11,10 @@ description = "Fingerprint engine and PyO3 extension module for zccache"
 publish = false
 
 [lib]
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib"]
 
 [features]
 default = []
-python = ["dep:pyo3"]
 
 [dependencies]
 zccache-core = { workspace = true }
@@ -23,11 +22,6 @@ zccache-hash = { workspace = true }
 fs2 = { workspace = true }
 globset = "0.4"
 jwalk = { workspace = true }
-pyo3 = { version = "0.23", features = [
-    "extension-module",
-    "generate-import-lib",
-    "abi3-py310",
-], optional = true }
 rayon = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -39,7 +33,6 @@ filetime = { workspace = true }
 tempfile = { workspace = true }
 
 [build-dependencies]
-pyo3-build-config = "0.23"
 
 [lints]
 workspace = true

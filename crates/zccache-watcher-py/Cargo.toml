@@ -1,5 +1,5 @@
 [package]
-name = "zccache-cli"
+name = "zccache-watcher-py"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,26 +7,22 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
-description = "PyO3 cdylib hosting the `zccache._native` extension module"
+description = "PyO3 extension module (zccache.watcher._native) for zccache-watcher"
 publish = false
 
+# cdylib ONLY. Keeping this crate-type off `zccache-watcher` is the whole point
+# of this crate: see README.md and zccache#1497.
 [lib]
+name = "zccache_watcher"
 crate-type = ["cdylib"]
 
-[features]
-default = []
-python = ["dep:pyo3", "zccache/cli"]
-
 [dependencies]
-zccache = { workspace = true }
+zccache-watcher = { workspace = true }
 pyo3 = { version = "0.23", features = [
     "extension-module",
     "generate-import-lib",
     "abi3-py310",
-], optional = true }
+] }
 
 [build-dependencies]
 pyo3-build-config = "0.23"
-
-[lints]
-workspace = true
