@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import re
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -629,3 +630,31 @@ def test_windows_release_asserts_static_crt_linkage() -> None:
     # The .pyd extensions must keep the dynamic CRT, so the gate covers only
     # the shipped executables.
     assert "for bin in zccache zccache-fp; do" in action
+
+
+def test_patch_tables_carry_no_git_sources() -> None:
+    """A git pin under `[patch]` makes the workspace build code the published
+    crate does not depend on, so a local GREEN stops proving anything about
+    what users install, and the fork stays free to diverge on its next commit.
+    Vendored `path` patches ship in-tree and stay allowed.
+
+    zccache#1439 pinned `mimalloc-pprof` at a fork rev while the byte-identical
+    0.9.3 was already on the registry. Publish the fix upstream, then depend on
+    the registry.
+
+    Parsed rather than string-scanned: `[patch.crates-io.name]` with `git` on
+    its own line is valid Cargo and evades a line-oriented check, which is the
+    one spelling a reviewer is least likely to notice.
+    """
+    patch_tables = tomllib.loads(_repo_text("Cargo.toml")).get("patch", {})
+
+    offenders = [
+        f"[patch.{registry}] {name}"
+        for registry, deps in patch_tables.items()
+        for name, spec in deps.items()
+        if isinstance(spec, dict) and "git" in spec
+    ]
+    assert not offenders, (
+        "patch tables must not pin git sources; "
+        f"publish the fix upstream and depend on the registry instead: {offenders}"
+    )
