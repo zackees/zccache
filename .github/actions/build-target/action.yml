@@ -153,9 +153,25 @@ runs:
         dsymutil --version
 
 
+    - name: Request a static CRT before soldr prepares the target
+      if: contains(inputs.target, 'pc-windows-msvc')
+      shell: bash
+      run: |
+        # Must land in $GITHUB_ENV *before* setup-soldr runs. `soldr prepare`
+        # decides the CRT halves once, at setup time, and bakes them into
+        # CARGO_ENCODED_RUSTFLAGS; exporting +crt-static later in the build
+        # step is too late for that decision. Doing exactly that produced a
+        # link carrying soldr's dynamic set on 11 invocations and the static
+        # set on 1 -- `undefined symbol: strlen / abort / calloc`, i.e. no
+        # usable CRT at all.
+        #
+        # See zackees/soldr#2798 for the detection soldr does here, and
+        # zccache#269 for why the shipped .exe needs the static CRT.
+        printf 'RUSTFLAGS=%s\n' "${RUSTFLAGS:+$RUSTFLAGS }-C target-feature=+crt-static" >> "$GITHUB_ENV"
+
     - name: Setup soldr build cache
       if: inputs.use_soldr == 'true'
-      uses: zackees/setup-soldr@e76cf1b175e13d0b00e35a990590f14f49ec1d5a
+      uses: zackees/setup-soldr@e138f3c43682cb3f6afa0eb5a1e808b24a0224bb
       with:
         toolchain: 1.95.0
         cross-targets: ${{ inputs.cross_compile == 'true' && inputs.target || '' }}
@@ -266,48 +282,6 @@ runs:
           cargo_build=(soldr --no-cache cargo build)
         else
           cargo_build=(rustup run "$RELEASE_RUST_TOOLCHAIN" cargo build)
-        fi
-        if [[ "${{ inputs.target }}" == *pc-windows-msvc ]]; then
-          crt_flags="-C target-feature=+crt-static"
-          if [ "${{ inputs.cross_compile }}" = "true" ]; then
-            # `soldr prepare` injects a DYNAMIC-CRT link set for msvc targets
-            # (/NODEFAULTLIB:libucrt.lib /DEFAULTLIB:ucrt.lib
-            # /DEFAULTLIB:vcruntime.lib) and merges our RUSTFLAGS in rather
-            # than replacing them, so both land on the same link line.
-            #
-            # x64 fails loudly -- lld-link finds
-            # __vcrt_InitializeCriticalSectionEx in both libvcruntime.lib
-            # (static, pulled by rustc's /defaultlib:libcmt) and
-            # vcruntime.lib (dynamic, from soldr). aarch64 does NOT fail: it
-            # silently produces a dynamic-CRT binary, i.e. a silent zccache#269
-            # regression. Verified against run 32680158073's aarch64 artifact,
-            # which imports VCRUNTIME140.dll and seven api-ms-win-crt-* apisets;
-            # the shipped 1.13.6 aarch64 exe imports none.
-            #
-            # Neutralize rather than string-edit soldr's flag set:
-            # /NODEFAULTLIB beats /DEFAULTLIB for the same library, and the
-            # static halves are re-added explicitly. Order-independent and it
-            # does not depend on soldr's exact string.
-            #
-            # Remove when soldr honours +crt-static itself -- zackees/soldr#2794,
-            # which is a port of the already-merged cargo-xwin PR #166
-            # (`is_static_crt_enabled`, shipped in cargo-xwin 0.20.0). The
-            # CRT-linkage gate below is what proves either path.
-            # Pass the static libs as POSITIONAL inputs, not /DEFAULTLIB.
-            # soldr already emits /NODEFAULTLIB:libucrt.lib, and
-            # /NODEFAULTLIB beats /DEFAULTLIB for the same name regardless of
-            # order -- so answering it with /DEFAULTLIB:libucrt.lib banned
-            # every UCRT variant at once and left the startup symbols
-            # (_initterm, _configure_narrow_argv, __stdio_common_vsprintf...)
-            # undefined. A library named directly on the command line is not
-            # subject to /NODEFAULTLIB, which is the only lever that survives
-            # soldr's flags without editing them.
-            crt_flags="$crt_flags -C link-arg=/NODEFAULTLIB:ucrt.lib"
-            crt_flags="$crt_flags -C link-arg=/NODEFAULTLIB:vcruntime.lib"
-            crt_flags="$crt_flags -C link-arg=libucrt.lib"
-            crt_flags="$crt_flags -C link-arg=libvcruntime.lib"
-          fi
-          export RUSTFLAGS="${RUSTFLAGS:-} $crt_flags"
         fi
         # #1017 Lever 1: build all three shipped binaries in ONE cargo
         # invocation with unified features. Building them separately (one
