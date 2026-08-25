@@ -84,9 +84,7 @@ pub(super) fn requires_exclusive_access(
     source_path: &Path,
 ) -> bool {
     match family {
-        CompilerFamily::Rustc => {
-            rust_crate_name(args).is_some_and(|name| KNOWN_RUST_AMALGAMATIONS.contains(&name))
-        }
+        CompilerFamily::Rustc => is_known_rust_amalgamation(args),
         CompilerFamily::Gcc | CompilerFamily::Clang | CompilerFamily::Msvc => {
             let known = source_path
                 .file_name()
@@ -98,6 +96,40 @@ pub(super) fn requires_exclusive_access(
         }
         CompilerFamily::Rustfmt => false,
     }
+}
+
+fn is_known_rust_amalgamation(args: &[String]) -> bool {
+    rust_crate_name(args).is_some_and(|name| KNOWN_RUST_AMALGAMATIONS.contains(&name))
+        && rust_crate_types_are_non_linking(args)
+}
+
+fn rust_crate_types_are_non_linking(args: &[String]) -> bool {
+    if args.iter().any(|arg| arg == "--test") {
+        return false;
+    }
+
+    let mut saw_crate_type = false;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let value = if arg == "--crate-type" {
+            let Some(value) = args.next() else {
+                return false;
+            };
+            value.as_str()
+        } else if let Some(value) = arg.strip_prefix("--crate-type=") {
+            value
+        } else {
+            continue;
+        };
+
+        for crate_type in value.split(',') {
+            saw_crate_type = true;
+            if !matches!(crate_type, "lib" | "rlib") {
+                return false;
+            }
+        }
+    }
+    saw_crate_type
 }
 
 fn rust_crate_name(args: &[String]) -> Option<&str> {
@@ -120,7 +152,7 @@ pub(super) fn requires_exclusive_access_from_args(
     cwd: &Path,
 ) -> bool {
     if family == CompilerFamily::Rustc {
-        return rust_crate_name(args).is_some_and(|name| KNOWN_RUST_AMALGAMATIONS.contains(&name));
+        return is_known_rust_amalgamation(args);
     }
     if !matches!(
         family,
@@ -170,9 +202,66 @@ mod tests {
     fn the_published_zccache_crate_is_a_rust_amalgamation() {
         assert!(requires_exclusive_access(
             CompilerFamily::Rustc,
-            &["--crate-name".into(), "zccache".into()],
+            &[
+                "--crate-name".into(),
+                "zccache".into(),
+                "--crate-type=lib".into(),
+            ],
             Path::new("/registry/zccache/src/lib.rs"),
         ));
+    }
+
+    #[test]
+    fn a_known_rust_binary_remains_shared_for_nested_linker_calls() {
+        assert!(!requires_exclusive_access(
+            CompilerFamily::Rustc,
+            &["--crate-name=zccache".into(), "--crate-type=bin".into(),],
+            Path::new("/registry/zccache/src/main.rs"),
+        ));
+    }
+
+    #[test]
+    fn a_known_rust_test_harness_remains_shared_for_nested_linker_calls() {
+        assert!(!requires_exclusive_access(
+            CompilerFamily::Rustc,
+            &[
+                "--crate-name=zccache".into(),
+                "--crate-type=lib".into(),
+                "--test".into(),
+            ],
+            Path::new("/registry/zccache/src/lib.rs"),
+        ));
+    }
+
+    #[test]
+    fn explicit_rlib_forms_are_exclusive() {
+        for crate_type_args in [
+            vec!["--crate-type=rlib".into()],
+            vec!["--crate-type".into(), "rlib".into()],
+            vec!["--crate-type=lib,rlib".into()],
+        ] {
+            let mut args = vec!["--crate-name=zccache".into()];
+            args.extend(crate_type_args);
+            assert!(requires_exclusive_access(
+                CompilerFamily::Rustc,
+                &args,
+                Path::new("/registry/zccache/src/lib.rs"),
+            ));
+        }
+    }
+
+    #[test]
+    fn any_linking_crate_type_keeps_a_mixed_invocation_shared() {
+        for crate_types in ["lib,bin", "bin,lib", "lib,cdylib", "cdylib,lib"] {
+            assert!(!requires_exclusive_access(
+                CompilerFamily::Rustc,
+                &[
+                    "--crate-name=zccache".into(),
+                    format!("--crate-type={crate_types}"),
+                ],
+                Path::new("/registry/zccache/src/lib.rs"),
+            ));
+        }
     }
 
     #[test]
@@ -268,7 +357,11 @@ mod tests {
     fn direct_rust_and_c_invocations_use_the_same_classifier() {
         assert!(requires_exclusive_access_from_args(
             CompilerFamily::Rustc,
-            &["--crate-name=zccache".into(), "src/lib.rs".into()],
+            &[
+                "--crate-name=zccache".into(),
+                "--crate-type=lib".into(),
+                "src/lib.rs".into(),
+            ],
             Path::new("."),
         ));
         assert!(requires_exclusive_access_from_args(
