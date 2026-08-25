@@ -17,7 +17,7 @@ use super::SharedState;
 
 const AMALGAMATION_BYTES: u64 = 1_000_000;
 const KNOWN_C_AMALGAMATIONS: &[&str] = &["sqlite3.c", "zstd.c", "rocksdb.cc"];
-const KNOWN_RUST_AMALGAMATIONS: &[&str] = &["zccache"];
+const KNOWN_RUST_AMALGAMATIONS: &[&str] = &["zccache", "zccache_cli_core", "zccache_daemon_core"];
 
 /// Fair shared/exclusive admission around real compiler execution.
 ///
@@ -209,6 +209,20 @@ mod tests {
             ],
             Path::new("/registry/zccache/src/lib.rs"),
         ));
+    }
+
+    #[test]
+    fn the_large_vendored_zccache_engine_crates_are_rust_amalgamations() {
+        for crate_name in ["zccache_cli_core", "zccache_daemon_core"] {
+            assert!(requires_exclusive_access(
+                CompilerFamily::Rustc,
+                &[
+                    format!("--crate-name={crate_name}"),
+                    "--crate-type=lib".into(),
+                ],
+                Path::new("/vendor/zccache/src/lib.rs"),
+            ));
+        }
     }
 
     #[test]
