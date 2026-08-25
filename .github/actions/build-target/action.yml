@@ -153,6 +153,22 @@ runs:
         dsymutil --version
 
 
+    - name: Request a static CRT before soldr prepares the target
+      if: contains(inputs.target, 'pc-windows-msvc')
+      shell: bash
+      run: |
+        # Must land in $GITHUB_ENV *before* setup-soldr runs. `soldr prepare`
+        # decides the CRT halves once, at setup time, and bakes them into
+        # CARGO_ENCODED_RUSTFLAGS; exporting +crt-static later in the build
+        # step is too late for that decision. Doing exactly that produced a
+        # link carrying soldr's dynamic set on 11 invocations and the static
+        # set on 1 -- `undefined symbol: strlen / abort / calloc`, i.e. no
+        # usable CRT at all.
+        #
+        # See zackees/soldr#2798 for the detection soldr does here, and
+        # zccache#269 for why the shipped .exe needs the static CRT.
+        printf 'RUSTFLAGS=%s\n' "${RUSTFLAGS:+$RUSTFLAGS }-C target-feature=+crt-static" >> "$GITHUB_ENV"
+
     - name: Setup soldr build cache
       if: inputs.use_soldr == 'true'
       uses: zackees/setup-soldr@e138f3c43682cb3f6afa0eb5a1e808b24a0224bb
@@ -266,14 +282,6 @@ runs:
           cargo_build=(soldr --no-cache cargo build)
         else
           cargo_build=(rustup run "$RELEASE_RUST_TOOLCHAIN" cargo build)
-        fi
-        if [[ "${{ inputs.target }}" == *pc-windows-msvc ]]; then
-          # soldr >= 0.9.4 reads +crt-static from CARGO_ENCODED_RUSTFLAGS,
-          # CARGO_TARGET_<TRIPLE>_RUSTFLAGS and RUSTFLAGS, and emits the
-          # matching CRT halves itself (zackees/soldr#2794 -> #2798). The
-          # counter-flags this block used to carry are gone with it; the
-          # CRT-linkage gate below is what proves the replacement.
-          export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static"
         fi
         # #1017 Lever 1: build all three shipped binaries in ONE cargo
         # invocation with unified features. Building them separately (one
