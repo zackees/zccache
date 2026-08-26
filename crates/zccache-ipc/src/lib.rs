@@ -566,11 +566,11 @@ fn running_process_endpoint_path(endpoint: &str) -> String {
 /// namespace.
 ///
 /// ISSUE-601 / #1511: the identity is keyed by endpoint and cached for the
-/// process lifetime. The first call builds the same running-process wire
-/// identity by streaming both required hashes in one pass instead of
+/// process lifetime. The first call streams the BLAKE3 identity instead of
 /// `DaemonProcess::current_process`, whose `fs::read` temporarily allocated the
-/// full daemon executable. First-call errors still bubble up; only successful
-/// values are inserted, so a transient failure retries on the next call.
+/// full daemon executable and whose legacy SHA-256 duplicated the hashing work.
+/// First-call errors still bubble up; only successful values are inserted, so a
+/// transient failure retries on the next call.
 pub fn current_backend_identity(
     endpoint: &str,
 ) -> Result<
@@ -605,7 +605,7 @@ fn current_process_identity_streaming(
     use running_process::broker::protocol_v2::backend_handle::{DaemonProcess, IdentityError};
 
     let exe_path = std::env::current_exe().map_err(IdentityError::CurrentExe)?;
-    let (exe_hash, legacy_exe_sha256) = executable_hashes_streaming(&exe_path)?;
+    let exe_hash = executable_hash_streaming(&exe_path)?;
     let started_at_unix_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
@@ -615,7 +615,10 @@ fn current_process_identity_streaming(
         pid: std::process::id(),
         exe_path,
         exe_hash,
-        legacy_exe_sha256,
+        // zccache and current running-process brokers identify executables with
+        // BLAKE3. Keep the required legacy wire slot empty rather than paying
+        // for a second digest used only by pre-BLAKE3 brokers.
+        legacy_exe_sha256: [0; 32],
         boot_id: running_process::broker::host_identity::current().boot_id,
         ipc_endpoint,
         started_at_unix_ms,
@@ -623,13 +626,11 @@ fn current_process_identity_streaming(
     })
 }
 
-fn executable_hashes_streaming(path: &std::path::Path) -> std::io::Result<([u8; 32], [u8; 32])> {
-    use sha2::{Digest as _, Sha256};
+fn executable_hash_streaming(path: &std::path::Path) -> std::io::Result<[u8; 32]> {
     use std::io::Read as _;
 
     let mut file = std::fs::File::open(path)?;
     let mut blake3 = blake3::Hasher::new();
-    let mut sha256 = Sha256::new();
     let mut buffer = [0_u8; IDENTITY_HASH_BUFFER_BYTES];
     loop {
         let read = file.read(&mut buffer)?;
@@ -637,9 +638,8 @@ fn executable_hashes_streaming(path: &std::path::Path) -> std::io::Result<([u8; 
             break;
         }
         blake3.update(&buffer[..read]);
-        sha256.update(&buffer[..read]);
     }
-    Ok((*blake3.finalize().as_bytes(), sha256.finalize().into()))
+    Ok(*blake3.finalize().as_bytes())
 }
 
 /// Persist the daemon identity used by future `BackendHandle` probes.
