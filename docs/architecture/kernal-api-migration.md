@@ -27,7 +27,13 @@ The inventory names focused evidence for embedded lifecycle; process lifecycle; 
 
 ## Measurement protocol
 
-The checked-in [phase-0 baseline record](kernal-api-phase-0-baseline.md) defines the required feature sets, commands, result filenames, and capture status. Record raw phase-0 evidence under `docs/evidence/kernal-api-migration/phase-0/<host>/<timestamp>/`; do not commit machine-specific raw output. Update the record with toolchain, host, revision, commands, feature sets, and result filenames only after collection completes.
+The checked-in [phase-0 baseline record](kernal-api-phase-0-baseline.md) and its
+linked evidence directory are the authoritative accepted capture. The inventory
+checker verifies its status, provenance, and every named artifact. Do not commit
+failed or partial attempts; retain a later accepted capture under
+`docs/evidence/kernal-api-migration/phase-0/<host>/<timestamp>/` and update the
+record atomically with its toolchain, host, revision, commands, feature sets,
+and result filenames.
 
 For every comparable later slice, collect the same feature sets and command order:
 
@@ -36,7 +42,9 @@ For every comparable later slice, collect the same feature sets and command orde
 3. Package-from-archive evidence after a published kernel release is pinned.
 4. The [sanctioned PERF matrix](../../PERF.md) only when runtime behavior changes; retain its `.perf-local/results/` evidence rather than treating a wall-clock unit test as a performance baseline.
 
-Phase 0 records the starting graph and timings. It does not claim a build-time improvement; compare that evidence only after the phase-8 release result from kernal-api#5.
+Phase 0 records the starting graph and timings for the workspace-default
+feature set. It does not claim a build-time improvement; compare that evidence
+only after the phase-8 release result from kernal-api#5.
 
 ## Ownership boundary
 

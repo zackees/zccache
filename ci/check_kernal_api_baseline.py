@@ -20,7 +20,8 @@ PUBLIC_ITEM = re.compile(
     r"^\s*pub\s+(?:async\s+)?(?:const\s+)?(?:fn|struct|enum|trait|type|const)\s+([A-Za-z_][A-Za-z0-9_]*)"
 )
 VALID_DISPOSITIONS = {"reuse", "extend", "move", "retain"}
-VALID_BASELINE_STATUSES = {"pending-capture", "captured"}
+VALID_BASELINE_STATUSES = {"captured"}
+CAPTURE_PROVENANCE_FIELDS = {"capture", "captured_at", "host", "revision", "toolchain"}
 REQUIRED_BASELINE_ARTIFACTS = {
     "clean-build-timing.html",
     "incremental-build-timing.html",
@@ -66,8 +67,34 @@ def check(root: Path = ROOT) -> list[str]:
     missing_artifacts = sorted(REQUIRED_BASELINE_ARTIFACTS - result_files)
     if missing_artifacts:
         errors.append(f"baseline lacks result filenames: {', '.join(missing_artifacts)}")
+    if baseline_status == "captured":
+        for field in sorted(CAPTURE_PROVENANCE_FIELDS):
+            if not baseline.get(field):
+                errors.append(f"captured baseline lacks {field}")
+        capture = baseline.get("capture")
+        if capture:
+            capture_root = root / capture
+            if not capture_root.is_dir():
+                errors.append(f"baseline capture missing: {capture}")
+            else:
+                for artifact in sorted(REQUIRED_BASELINE_ARTIFACTS):
+                    if not (capture_root / artifact).is_file():
+                        errors.append(f"baseline capture artifact missing: {capture}: {artifact}")
+                capture_readme = capture_root / "README.md"
+                if not capture_readme.is_file():
+                    errors.append(f"baseline capture provenance missing: {capture}: README.md")
+                else:
+                    provenance = capture_readme.read_text(encoding="utf-8")
+                    for field, label in (("captured_at", "Captured at"), ("host", "Host")):
+                        if f"{label}: {baseline[field]}" not in provenance:
+                            errors.append(
+                                f"baseline capture provenance mismatch: {capture}: {field}"
+                            )
+                    if "Status: captured" not in provenance:
+                        errors.append(f"baseline capture status missing: {capture}")
     mapped_by_source: dict[str, set[str]] = defaultdict(set)
-    for group in data.get("platform_group", []):
+    mapped_item_groups: dict[tuple[str, str], tuple[str | None, int]] = {}
+    for group_index, group in enumerate(data.get("platform_group", []), start=1):
         source = group.get("source", "")
         disposition = group.get("disposition")
         if disposition not in VALID_DISPOSITIONS:
@@ -76,7 +103,24 @@ def check(root: Path = ROOT) -> list[str]:
             errors.append(f"retained mapping lacks owner or reason: {source}")
         if disposition != "retain" and not group.get("kernel_capability"):
             errors.append(f"kernel mapping lacks capability: {source}")
-        mapped_by_source[source].update(group.get("items", []))
+        for item in group.get("items", []):
+            previous = mapped_item_groups.get((source, item))
+            if previous is not None:
+                previous_disposition, previous_index = previous
+                if previous_disposition != disposition:
+                    errors.append(
+                        "duplicate mapped public platform item has conflicting dispositions: "
+                        f"{source}: {item} (groups {previous_index} and {group_index}: "
+                        f"{previous_disposition!r} vs {disposition!r})"
+                    )
+                else:
+                    errors.append(
+                        f"duplicate mapped public platform item: {source}: {item} "
+                        f"(groups {previous_index} and {group_index})"
+                    )
+            else:
+                mapped_item_groups[(source, item)] = (disposition, group_index)
+            mapped_by_source[source].add(item)
 
     for source in sorted(platform_root.rglob("*.rs")):
         if source.name == "tests.rs":

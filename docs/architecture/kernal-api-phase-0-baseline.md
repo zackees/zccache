@@ -5,15 +5,20 @@ metadata is in `kernal-api-migration.toml` under `[baseline]`.
 
 ## Status
 
-**Pending capture.** The migration inventory and its current dependency ownership
-are checked in, but this repository does not commit host-specific timing or
-dependency-tree output. No build-time improvement is claimed here.
+**Captured.** This accepted phase-0 record is the checked-in Windows baseline;
+it makes no build-time improvement claim.
 
-Collect raw evidence under
-`docs/evidence/kernal-api-migration/phase-0/<host>/<timestamp>/`, then update the
-status to `captured` only after every named result is present in that untracked
-location. Record the host triple, toolchain, Git revision, and each command's
-exit status in the accompanying collection summary.
+- Capture: `docs/evidence/kernal-api-migration/phase-0/windows-x86_64/20260826T194847Z`
+- Captured at: `2026-08-26T19:48:47Z`
+- Host: `x86_64-pc-windows-msvc`
+- Revision: `5ad45b835008093b6699c01007823976fef86ee9`
+- Toolchain: `1.95.0 (59807616e 2026-04-14)`
+- Feature set: workspace default
+
+The capture directory contains the two timing reports plus duplicate and
+reverse-feature trees named by `[baseline]` in `kernal-api-migration.toml`.
+Failed or partial collection attempts are not baseline evidence and must not be
+committed.
 
 ## Comparable collection plan
 
@@ -27,7 +32,6 @@ Use the exact feature sets and command order in the `[baseline]` manifest:
    reports for Tokio and `running-process` as
    `tokio-reverse-features.txt` and `running-process-reverse-features.txt`.
 
-The feature sets cover the workspace default graph, CLI download client, and
-embedded service. The report and manifest are deliberately structural until the
-raw result files exist; later kernal-api slices must compare the same host,
-toolchain, revision family, feature set, and command order.
+The accepted capture covers the workspace-default graph. Later kernal-api slices
+must compare the same host, toolchain, revision family, feature set, and command
+order; any new feature-set baseline needs its own accepted evidence record.

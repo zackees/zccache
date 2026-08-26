@@ -6,13 +6,17 @@ kernel_implementation = "zackees/kernal-api#5"
 kernel_packaging = "zackees/kernal-api#3"
 
 [baseline]
-# This is deliberately pending until a supported host captures the raw files.
-# The report records structural facts and the exact comparable collection plan;
-# it must not be read as a timing or build-improvement claim.
-status = "pending-capture"
+# This accepted Windows capture is the phase-0 reference point. It records
+# observed timing and graph facts only; it makes no build-improvement claim.
+status = "captured"
 report = "docs/architecture/kernal-api-phase-0-baseline.md"
 raw_evidence_root = "docs/evidence/kernal-api-migration/phase-0/<host>/<timestamp>/"
-feature_sets = ["workspace default", "zccache-cli-core download-client", "zccache embedded-service"]
+capture = "docs/evidence/kernal-api-migration/phase-0/windows-x86_64/20260826T194847Z"
+captured_at = "2026-08-26T19:48:47Z"
+host = "x86_64-pc-windows-msvc"
+revision = "5ad45b835008093b6699c01007823976fef86ee9"
+toolchain = "1.95.0 (59807616e 2026-04-14)"
+feature_sets = ["workspace default"]
 commands = ["soldr cargo build --workspace --timings", "soldr cargo build --workspace --timings", "soldr cargo tree --workspace --duplicates", "soldr cargo tree --workspace -e features -i tokio", "soldr cargo tree --workspace -e features -i running-process"]
 result_files = ["clean-build-timing.html", "incremental-build-timing.html", "duplicates.txt", "tokio-reverse-features.txt", "running-process-reverse-features.txt"]
 

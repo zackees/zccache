@@ -52,8 +52,8 @@ cmd = "bash /work/ci/docker/profile/run_bosn_profile.sh all"
 
 [task.lint]
 stack = "perf"
-cmd = "cd /work && soldr cargo fmt --all -- --check && soldr cargo clippy --workspace --all-targets -- -D warnings"
+cmd = "bash /work/ci/docker/profile/run_bosn_check.sh lint"
 
 [task.test]
 stack = "perf"
-cmd = "cd /work && bash ./test"
+cmd = "bash /work/ci/docker/profile/run_bosn_check.sh test"
