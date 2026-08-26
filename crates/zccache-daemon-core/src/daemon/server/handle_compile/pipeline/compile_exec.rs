@@ -89,9 +89,10 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     let pre_exec_ns = compile_start.elapsed().as_nanos() as u64;
     let t_exec = std::time::Instant::now();
     let supports_depfile = compilation.family.supports_depfile();
-    let inject_header_trace = should_inject_header_trace(
+    let inject_header_trace = should_inject_header_trace_for_source(
         dependency_mode,
         compilation.family,
+        source_path.as_path(),
         effective_args,
         dep_flags,
     );
@@ -245,7 +246,6 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         .is_some_and(|rustc_args| rustc_args.emit_types.iter().any(|emit| emit == "link"));
     let compiler_priority =
         CompilePriority::from_client_env_for_link_like(client_env.as_deref(), is_link_like);
-    let compiler_priority_decision = compiler_priority.resolve_for_current_load();
 
     // soldr#2781: this point is reached only after every cache-hit branch has
     // missed. Ordinary compiler children share the gate; an amalgamated C
@@ -331,7 +331,8 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     }
     let compile_span_start = std::time::Instant::now();
 
-    let (result, streamed_output) = if let Some(context) = crate::daemon::compile_output::current()
+    let (result, compiler_priority_decision, streamed_output) = if let Some(context) =
+        crate::daemon::compile_output::current()
     {
         let (sender, receiver) = tokio::sync::mpsc::channel(8);
         let filter = if depfile_strategy == DepfileStrategy::ShowIncludes {
@@ -347,24 +348,22 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         } else {
             crate::daemon::compile_output::StderrFilter::None
         };
-        let process = crate::daemon::process::tokio_command_output_streaming_with_priority_stdin(
+        let process = crate::daemon::process::tokio_command_output_streaming_with_priority_decision(
             &mut cmd,
-            compiler_priority_decision.effective,
-            None,
+            compiler_priority,
             sender,
         );
         let consume = crate::daemon::compile_output::consume(receiver, context, filter);
         let (process_result, capture_result) = tokio::join!(process, consume);
-        (process_result, Some(capture_result))
+        (process_result.0, process_result.1, Some(capture_result))
     } else {
-        (
-            crate::daemon::process::tokio_command_output_with_priority(
+        let (result, decision) =
+            crate::daemon::process::tokio_command_output_with_priority_decision(
                 &mut cmd,
-                compiler_priority_decision.effective,
+                compiler_priority,
             )
-            .await,
-            None,
-        )
+            .await;
+        (result, decision, None)
     };
     let compiler_process_ns = t_compiler_process.elapsed().as_nanos() as u64;
     if staged_plan.is_some() {
@@ -501,9 +500,8 @@ fn prepare_private_clang_header_trace(
 }
 
 /// Clang's file-backed frontend trace avoids `-H` stderr traffic on the hot C
-/// miss path. Keep it deliberately narrower than the rejected all-language
-/// candidate: C++ continues to use the public trace because its much larger
-/// header graph previously made the private path exceed the hosted watchdog.
+/// miss path. C++ uses its exact full depfile instead (#1511): it is faster than
+/// both public `-H` and Clang's private trace on the sanctioned C++ fixture.
 fn use_private_clang_header_trace(
     family: crate::compiler::CompilerFamily,
     source: &Path,
@@ -517,6 +515,20 @@ fn use_private_clang_header_trace(
                 || contains_private_header_trace_flag(arg)
                 || contains_sysroot_flag(arg)
         })
+}
+
+fn use_full_clang_depfile_for_cpp(family: crate::compiler::CompilerFamily, source: &Path) -> bool {
+    if family != crate::compiler::CompilerFamily::Clang {
+        return false;
+    }
+    let Some(extension) = source.extension().and_then(std::ffi::OsStr::to_str) else {
+        return false;
+    };
+    extension == "C"
+        || matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "cc" | "cp" | "cpp" | "cxx" | "c++"
+        )
 }
 
 fn contains_private_header_trace_flag(arg: &str) -> bool {
@@ -578,10 +590,22 @@ fn should_inject_header_trace(
         && header_trace_is_supported(family, args)
 }
 
+fn should_inject_header_trace_for_source(
+    dependency_mode: DependencyDiscoveryMode,
+    family: crate::compiler::CompilerFamily,
+    source: &Path,
+    args: &[String],
+    dep_flags: &UserDepFlags,
+) -> bool {
+    should_inject_header_trace(dependency_mode, family, args, dep_flags)
+        && !use_full_clang_depfile_for_cpp(family, source)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         header_trace_is_supported, prepare_private_clang_header_trace, should_inject_header_trace,
+        should_inject_header_trace_for_source, use_full_clang_depfile_for_cpp,
         use_private_clang_header_trace,
     };
     use crate::compiler::CompilerFamily;
@@ -688,6 +712,11 @@ mod tests {
         ));
         assert!(!use_private_clang_header_trace(
             CompilerFamily::Clang,
+            std::path::Path::new("main.cxx"),
+            &args(&["-c", "main.cxx"]),
+        ));
+        assert!(!use_private_clang_header_trace(
+            CompilerFamily::Clang,
             std::path::Path::new("main.c"),
             &args(&["-x", "c++", "-c", "main.c"]),
         ));
@@ -717,6 +746,39 @@ mod tests {
                 &args(&["-c", "main.c", incompatible]),
             ));
         }
+    }
+
+    #[test]
+    fn plain_clang_cpp_uses_exact_full_depfile_without_header_trace() {
+        let dep_flags = UserDepFlags::default();
+        for source in ["main.cc", "main.cpp", "main.cxx", "main.c++", "main.C"] {
+            assert!(use_full_clang_depfile_for_cpp(
+                CompilerFamily::Clang,
+                std::path::Path::new(source),
+            ));
+            assert!(!should_inject_header_trace_for_source(
+                DependencyDiscoveryMode::AllHeaders,
+                CompilerFamily::Clang,
+                std::path::Path::new(source),
+                &args(&["-c", source]),
+                &dep_flags,
+            ));
+        }
+        assert!(!use_full_clang_depfile_for_cpp(
+            CompilerFamily::Clang,
+            std::path::Path::new("main.c"),
+        ));
+        assert!(should_inject_header_trace_for_source(
+            DependencyDiscoveryMode::AllHeaders,
+            CompilerFamily::Clang,
+            std::path::Path::new("main.c"),
+            &args(&["-c", "main.c"]),
+            &dep_flags,
+        ));
+        assert!(!use_full_clang_depfile_for_cpp(
+            CompilerFamily::Gcc,
+            std::path::Path::new("main.cpp"),
+        ));
     }
 
     #[test]

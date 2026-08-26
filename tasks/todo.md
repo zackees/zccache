@@ -989,3 +989,48 @@ lever, in both the crate and repo READMEs.
 - [x] Prove ordinary compiles remain concurrent and cache hits skip the barrier.
 - [x] Run focused tests, formatting, Clippy, full validation, and review.
 - [ ] Merge and publish the next zccache release.
+
+# Current-main performance regression profile
+
+Issue: https://github.com/zackees/zccache/issues/1511
+
+- [x] Audit the sanctioned benchmark, existing #1036/#1099 campaign, and open profiling work.
+- [x] Add a bosn-managed Linux stack for the existing benchmark with persistent soldr/target caches.
+- [x] Capture current-main wall-time, on-CPU, off-CPU/syscall-wait, RSS, heap, and Massif evidence.
+- [x] Rank the top three owned slowdowns and file the evidence-backed implementation issue.
+- [x] Add RED performance tests, implement the fixes, and capture paired GREEN evidence.
+- [x] Attempt the full sanctioned repeat-5 matrix and retain every clean or invalid sample.
+- [ ] Merge, close the issue, and restore clean `origin/main`.
+
+## Review
+
+- Daemon identity now computes only BLAKE3, using its memory-mapped parallel
+  reader; the required legacy SHA-256 slot stays zero. Bounded Linux Callgrind
+  moved `current_backend_identity` from 56.59% of instructions to 0.05%, while
+  heaptrack moved the executable-sized allocation from 57.37 MiB to a 1.05 MiB
+  peak heap.
+- Ordinary Clang C++ misses now consume the compiler's exact `-MD/-MF`
+  dependency file instead of paying for public `-H` stderr tracing. The clean
+  50-file cold benchmark improved from 58.515 s to 16.795 s; its compiler-span
+  ratio is 1.064x bare, below the 1.25x target. The ignored system-header
+  mutation test passes under Bosn Linux.
+- Interactive Rust link-like work uses the existing Auto priority policy
+  instead of unconditional Low priority. Clean final observations were 7.620 s
+  for build mode and 5.377 s for check mode, with explicit foreground
+  materialization timing and effective Normal priority in every serial row.
+- The sanctioned harness had silently continued to build registry zccache
+  1.13.11 after Soldr externalized the dependency. It now patches the exact
+  read-only checkout and rejects a lockfile that still names a registry source;
+  all 52 focused harness tests pass.
+- The exact-source medium `cold-tar-untar-warm` cell passed all five clean
+  samples: cold median 95.834 s (MAD 2.709 s, 87.403-106.237 s), warm median
+  13.747 s (MAD 0.244 s, 13.381-13.996 s), with 141 hits, zero misses, and no
+  aborts, retries, or daemon fallbacks in every sample.
+- A clean exact-source repeat-5 attempt completed the medium worktree cell:
+  cold median 96.791 s (MAD 3.223 s, 88.017-130.487 s), warm median 14.013 s
+  (MAD 0.113 s, 12.947-14.126 s). The overall matrix still failed 7/8 cells.
+  One medium cold sample was invalid because `tokio`'s rustc was killed by
+  signal while cgroup `memory.events` reported no OOM. The remaining failures
+  were current Soldr/Cargo lifecycle ceilings despite cache success: sqlite
+  warm phases took 55-69 s with 100% zccache hits. No threshold was widened,
+  and the invalid sample is not claimed as performance evidence.

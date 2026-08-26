@@ -406,7 +406,7 @@ async fn mutation_include_path_creates_different_cache_entry() {
 /// dependency: after it changes, the same compile must not restore stale code.
 #[tokio::test]
 #[ignore] // integration: spawns clang, run with --full
-async fn mutation_system_header_forces_miss() {
+async fn mutation_cpp_system_header_forces_miss() {
     let mut h = match TestHarness::new().await {
         Some(h) => h,
         None => return,
@@ -416,8 +416,8 @@ async fn mutation_system_header_forces_miss() {
     let header = system_dir.join("system_value.h");
     std::fs::write(&header, "#define SYSTEM_VALUE 7\n").unwrap();
     h.write_file(
-        "system_header.c",
-        "#include <system_value.h>\nint system_value(void) { return SYSTEM_VALUE; }\n",
+        "system_header.cpp",
+        "#include <system_value.h>\nint system_value() { return SYSTEM_VALUE; }\n",
     );
     let isystem_arg = format!("-isystem{}", system_dir.display());
     let compiler = h.compiler_str();
@@ -425,7 +425,7 @@ async fn mutation_system_header_forces_miss() {
     let object = h.path("system_header.o");
     let args = [
         "-c",
-        "system_header.c",
+        "system_header.cpp",
         "-o",
         "system_header.o",
         isystem_arg.as_str(),

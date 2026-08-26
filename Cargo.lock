@@ -4480,6 +4480,7 @@ dependencies = [
 name = "zccache-ipc"
 version = "1.13.11"
 dependencies = [
+ "blake3",
  "bytes",
  "dashmap",
  "interprocess",

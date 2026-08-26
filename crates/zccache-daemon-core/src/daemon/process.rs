@@ -195,11 +195,12 @@ impl CompilePriority {
                 return Self::parse_or_warn(value, ZCCACHE_COMPILE_PRIORITY_LINK);
             }
 
-            // Issue #813 / #810: linker priority is the single biggest UI
-            // win on Windows (link.exe is the worst single-thread hog).
-            // Interactive hosts default to `Low`; CI keeps the historical
-            // `Normal` so dedicated runners don't yield.
-            return if is_ci { Self::Normal } else { Self::Low };
+            // #1511: feed interactive link-like work through the existing Auto
+            // wave policy. A lone link/rustc leader stays Normal while parallel
+            // followers remain Low, preserving #813's responsiveness without
+            // demoting every sequential Rust build miss. CI keeps its explicit
+            // historical Normal default.
+            return if is_ci { Self::Normal } else { Self::Auto };
         }
 
         Self::from_client_env_with_daemon_env(env, daemon_compile_value)
@@ -213,17 +214,6 @@ impl CompilePriority {
             Self::Idle => "idle",
             Self::High => "high",
         }
-    }
-
-    /// Observation variant — samples the in-flight counter without
-    /// incrementing it. Spawn sites must call [`Self::resolve_and_track`]
-    /// instead so the decision is race-free against concurrent spawns.
-    pub(crate) fn resolve_for_current_load(self) -> CompilePriorityDecision {
-        let cpu_usage_percent = matches!(self, Self::Auto)
-            .then(current_cpu_usage_percent)
-            .flatten();
-        let in_flight = total_in_flight(current_in_flight_compiles());
-        self.resolve_with_cpu_usage_and_ci(cpu_usage_percent, is_ci_host().is_some(), in_flight)
     }
 
     /// Spawn-site resolution. Acquires an [`InFlightCompileTicket`] so the
@@ -506,13 +496,6 @@ impl Drop for HostInFlightGuard {
     }
 }
 
-/// Observation-only sampler. `Auto` resolution at *spawn sites* must use
-/// the pre-increment value returned by [`InFlightCompileTicket::acquire`]
-/// instead, so concurrent decisions are race-free (fetch-add ordering).
-pub(crate) fn current_in_flight_compiles() -> usize {
-    IN_FLIGHT_COMPILES.load(Ordering::Acquire)
-}
-
 /// RAII ticket representing one in-flight compile spawn. Acquire **before**
 /// resolving `Auto` priority; the pre-increment count is exposed via
 /// [`Self::in_flight_before`] and is the deterministic input for the
@@ -592,6 +575,16 @@ pub(crate) async fn tokio_command_output_with_priority(
     tokio_command_output_with_priority_stdin(cmd, priority, None).await
 }
 
+/// Compiler-spawn variant that returns the race-free `Auto` decision used for
+/// the child. Callers that emit miss profiles must use this instead of
+/// sampling [`CompilePriority::resolve_for_current_load`] before admission.
+pub(crate) async fn tokio_command_output_with_priority_decision(
+    cmd: &mut tokio::process::Command,
+    priority: CompilePriority,
+) -> (io::Result<Output>, CompilePriorityDecision) {
+    tokio_command_output_with_priority_stdin_inner(cmd, priority, None, None).await
+}
+
 /// Wait for an async command after applying compiler child priority, killing
 /// the child and returning `TimedOut` when `timeout` elapses.
 pub(crate) async fn tokio_command_output_with_priority_timeout(
@@ -620,7 +613,9 @@ pub(crate) async fn tokio_command_output_with_priority_stdin(
     priority: CompilePriority,
     stdin_bytes: Option<&[u8]>,
 ) -> io::Result<Output> {
-    tokio_command_output_with_priority_stdin_inner(cmd, priority, stdin_bytes, None).await
+    tokio_command_output_with_priority_stdin_inner(cmd, priority, stdin_bytes, None)
+        .await
+        .0
 }
 
 /// Streaming counterpart used by the embedded compile API. Process setup,
@@ -632,7 +627,19 @@ pub(crate) async fn tokio_command_output_streaming_with_priority_stdin(
     stdin_bytes: Option<&[u8]>,
     sender: tokio::sync::mpsc::Sender<crate::daemon::compile_output::RawOutputChunk>,
 ) -> io::Result<Output> {
-    tokio_command_output_with_priority_stdin_inner(cmd, priority, stdin_bytes, Some(sender)).await
+    tokio_command_output_with_priority_stdin_inner(cmd, priority, stdin_bytes, Some(sender))
+        .await
+        .0
+}
+
+/// Streaming compiler-spawn variant that reports the decision made while its
+/// in-flight ticket was acquired.
+pub(crate) async fn tokio_command_output_streaming_with_priority_decision(
+    cmd: &mut tokio::process::Command,
+    priority: CompilePriority,
+    sender: tokio::sync::mpsc::Sender<crate::daemon::compile_output::RawOutputChunk>,
+) -> (io::Result<Output>, CompilePriorityDecision) {
+    tokio_command_output_with_priority_stdin_inner(cmd, priority, None, Some(sender)).await
 }
 
 async fn tokio_command_output_with_priority_stdin_inner(
@@ -640,7 +647,7 @@ async fn tokio_command_output_with_priority_stdin_inner(
     priority: CompilePriority,
     stdin_bytes: Option<&[u8]>,
     stream: Option<tokio::sync::mpsc::Sender<crate::daemon::compile_output::RawOutputChunk>>,
-) -> io::Result<Output> {
+) -> (io::Result<Output>, CompilePriorityDecision) {
     let (decision, _ticket) = priority.resolve_and_track();
     let priority = decision.effective;
     let pipe_stdin = matches!(stdin_bytes, Some(b) if !b.is_empty());
@@ -658,7 +665,10 @@ async fn tokio_command_output_with_priority_stdin_inner(
     }
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    let mut child = running_process::spawn_tokio(cmd, owned_child_spawn_options())?;
+    let mut child = match running_process::spawn_tokio(cmd, owned_child_spawn_options()) {
+        Ok(child) => child,
+        Err(error) => return (Err(error), decision),
+    };
     attach_child_owner_death(&child);
     apply_priority_to_child(&child, priority);
     if pipe_stdin {
@@ -667,7 +677,7 @@ async fn tokio_command_output_with_priority_stdin_inner(
             let _ = stdin.shutdown().await;
         }
     }
-    match stream {
+    let result = match stream {
         Some(sender) => {
             crate::daemon::child_watchdog::wait_with_output_watchdog_streaming(
                 child, &cmd_desc, sender,
@@ -675,7 +685,8 @@ async fn tokio_command_output_with_priority_stdin_inner(
             .await
         }
         None => crate::daemon::child_watchdog::wait_with_output_watchdog(child, &cmd_desc).await,
-    }
+    };
+    (result, decision)
 }
 
 /// Run a leaf tool without the orphan-pipe watchdog used for compilers.

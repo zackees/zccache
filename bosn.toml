@@ -1,0 +1,51 @@
+[stack.perf]
+dockerfile = "ci/docker/profile/Dockerfile.bosn-perf-linux"
+family = "zccache-perf"
+default = true
+workdir = "/work"
+
+[stack.perf.env]
+CARGO_TARGET_DIR = "/target"
+RUSTFLAGS = "-C force-frame-pointers=yes -C debuginfo=2"
+ZCCACHE_PROFILE_WORKLOAD = "perf_rustc_zccache_vs_sccache"
+
+[stack.perf.volumes]
+target = { scope = "stack", destination = "/target" }
+soldr-home = { scope = "machine", destination = "/root/.soldr" }
+soldr-cargo-home = { scope = "machine", destination = "/zccache-profile/cargo" }
+soldr-rustup-home = { scope = "machine", destination = "/zccache-profile/rustup" }
+
+[stack.perf.mounts]
+repo = { source = ".", destination = "/work" }
+
+[task.build-profile]
+stack = "perf"
+cmd = "bash /work/ci/docker/profile/run_bosn_profile.sh build"
+
+[task.bench-profile]
+stack = "perf"
+cmd = "bash /work/ci/docker/profile/run_bosn_profile.sh bench"
+
+[task.oncpu-profile]
+stack = "perf"
+cmd = "bash /work/ci/docker/profile/run_bosn_profile.sh oncpu"
+
+[task.offcpu-profile]
+stack = "perf"
+cmd = "bash /work/ci/docker/profile/run_bosn_profile.sh offcpu"
+
+[task.memory-profile]
+stack = "perf"
+cmd = "bash /work/ci/docker/profile/run_bosn_profile.sh memory"
+
+[task.heaptrack-profile]
+stack = "perf"
+cmd = "bash /work/ci/docker/profile/run_bosn_profile.sh heaptrack"
+
+[task.massif-profile]
+stack = "perf"
+cmd = "bash /work/ci/docker/profile/run_bosn_profile.sh massif"
+
+[task.profile]
+stack = "perf"
+cmd = "bash /work/ci/docker/profile/run_bosn_profile.sh all"

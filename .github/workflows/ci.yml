@@ -117,10 +117,13 @@ jobs:
       - name: Install stable Rust components
         run: soldr rustup component add rustfmt
       - name: Install Dylint
-        if: steps.setup-soldr.outputs.dylint-cache-hit != 'true'
         run: |
-          soldr cargo install cargo-dylint --version 6.0.1 --locked
-          soldr cargo install dylint-link --version 6.0.1 --locked
+          if ! command -v cargo-dylint >/dev/null 2>&1; then
+            soldr cargo install cargo-dylint --version 6.0.1 --locked
+          fi
+          if ! command -v dylint-link >/dev/null 2>&1; then
+            soldr cargo install dylint-link --version 6.0.1 --locked
+          fi
       - name: Check Dylint wiring
         run: uv run python ci/check_dylint_wiring.py
       - name: Check Dylint Library Formatting (ban_std_pathbuf)

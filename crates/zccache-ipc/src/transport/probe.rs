@@ -170,17 +170,12 @@ mod tests {
     }
 
     #[test]
-    fn probe_reply_uses_cached_legacy_sha256_identity() {
-        let mut daemon =
-            running_process::broker::protocol_v2::backend_handle::DaemonProcess::current_process(
-                Endpoint {
-                    namespace_id: "zccache-ipc-test".to_owned(),
-                    path: "zccache-ipc-test.sock".to_owned(),
-                },
-                None,
-            )
-            .expect("current daemon identity");
-        let expected_legacy_sha256 = daemon.legacy_exe_sha256;
+    fn probe_reply_leaves_the_legacy_sha256_identity_empty() {
+        let mut daemon = crate::current_process_identity_blake3(Endpoint {
+            namespace_id: "zccache-ipc-test".to_owned(),
+            path: "zccache-ipc-test.sock".to_owned(),
+        })
+        .expect("current daemon identity");
         daemon.exe_path = std::path::PathBuf::from("missing-after-daemon-start");
         let nonce = vec![0xa5; 32];
         let request = running_process::broker::protocol::Frame {
@@ -193,6 +188,6 @@ mod tests {
             .expect("stable broker decodes probe identity");
 
         assert_eq!(legacy.exe_sha256.len(), 32);
-        assert_eq!(legacy.exe_sha256, expected_legacy_sha256);
+        assert_eq!(legacy.exe_sha256, [0; 32]);
     }
 }

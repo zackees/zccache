@@ -11,6 +11,8 @@ WORKFLOW = ROOT / ".github" / "workflows" / "perf-rust-cluster.yml"
 LOCAL_ENTRYPOINT = ROOT / "ci" / "docker" / "perf_entrypoint.sh"
 LOCAL_RUNNER = ROOT / "ci" / "docker" / "runner.Dockerfile"
 LOCAL_ORCHESTRATOR = ROOT / "ci" / "perf_local.py"
+LOCAL_RESULTS = ROOT / "ci" / "perf_local_results.py"
+LOCAL_ORCHESTRATOR_SOURCES = (LOCAL_ORCHESTRATOR, LOCAL_RESULTS)
 COMMON_SH = ROOT / "perf" / "lib" / "common.sh"
 FIXTURE_ROOT = ROOT / "perf" / "fixtures"
 FIXTURE_REGEN = FIXTURE_ROOT / "regen.sh"
@@ -23,6 +25,10 @@ ROLLOUT_SCENARIOS = SNAPSHOT_SCENARIOS + (
     ROOT / "perf" / "scenarios" / "worktree-share" / "run.sh",
     ROOT / "perf" / "scenarios" / "touch-no-change" / "run.sh",
 )
+
+
+def local_orchestrator_source() -> str:
+    return "\n".join(path.read_text(encoding="utf-8") for path in LOCAL_ORCHESTRATOR_SOURCES)
 
 
 def test_hosted_perf_cluster_is_removed() -> None:
@@ -111,7 +117,7 @@ def test_fixture_regeneration_requires_and_deterministically_archives_pin() -> N
 
 
 def test_perf_local_final_rollout_matrix_and_gates_are_required() -> None:
-    orchestrator = LOCAL_ORCHESTRATOR.read_text(encoding="utf-8")
+    orchestrator = local_orchestrator_source()
 
     assert '"--matrix"' in orchestrator
     assert 'VALID_FIXTURES = ("medium", "sqlite-link")' in orchestrator
@@ -138,7 +144,7 @@ def test_perf_local_final_rollout_matrix_and_gates_are_required() -> None:
 
 
 def test_perf_local_fails_closed_on_soldr_abort_contamination() -> None:
-    orchestrator = LOCAL_ORCHESTRATOR.read_text(encoding="utf-8")
+    orchestrator = local_orchestrator_source()
 
     for required in (
         "infrastructure_valid",
@@ -173,7 +179,7 @@ def test_perf_local_fails_closed_on_soldr_abort_contamination() -> None:
 
 
 def test_perf_local_requires_soldr_daemon_for_measured_runs() -> None:
-    orchestrator = LOCAL_ORCHESTRATOR.read_text(encoding="utf-8")
+    orchestrator = local_orchestrator_source()
 
     assert '"SOLDR_DAEMON_REQUIRED=1"' in orchestrator
 

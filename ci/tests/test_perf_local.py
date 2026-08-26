@@ -7,9 +7,11 @@ container.
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -19,11 +21,20 @@ def _load_perf_local():
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.path.insert(0, str(module_path.parent))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.pop(0)
     return module
 
 
 perf_local = _load_perf_local()
+
+
+def test_perf_local_supports_package_import() -> None:
+    imported = importlib.import_module("ci.perf_local")
+    assert imported.PERF_THRESHOLDS["schema_version"] == 1
 
 
 def test_buildkit_gc_is_scoped_to_zccache_builder() -> None:
@@ -144,6 +155,11 @@ def test_git_is_worktree_root_rejects_empty_submodule_directory(tmp_path):
 
 def test_pin_soldr_zccache_source_initializes_and_pins_current_checkout(tmp_path, monkeypatch):
     soldr_src = tmp_path / "soldr-src"
+    soldr_src.mkdir()
+    (soldr_src / ".gitmodules").write_text(
+        '[submodule "_vender/zccache"]\npath = _vender/zccache\n',
+        encoding="utf-8",
+    )
     commands = []
 
     monkeypatch.setattr(
@@ -176,6 +192,11 @@ def test_pin_soldr_zccache_source_initializes_and_pins_current_checkout(tmp_path
 
 def test_pin_soldr_zccache_source_rejects_wrong_checkout(tmp_path, monkeypatch):
     soldr_src = tmp_path / "soldr-src"
+    soldr_src.mkdir()
+    (soldr_src / ".gitmodules").write_text(
+        '[submodule "_vender/zccache"]\npath = _vender/zccache\n',
+        encoding="utf-8",
+    )
     heads = iter(["abc123", "000000", "def456"])
     monkeypatch.setattr(perf_local, "run", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(perf_local, "git_head", lambda _repo: next(heads))
@@ -200,6 +221,21 @@ def test_pin_soldr_zccache_source_rejects_dirty_checkout(tmp_path, monkeypatch):
         assert "commit or stash" in str(error)
     else:
         raise AssertionError("dirty zccache source must not be silently ignored")
+
+
+def test_pin_soldr_zccache_source_patches_current_registry_dependency(tmp_path, monkeypatch):
+    soldr_src = tmp_path / "soldr-src"
+    config = soldr_src / ".cargo" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text("[build]\nrustflags = []\n", encoding="utf-8")
+    monkeypatch.setattr(perf_local, "git_is_dirty", lambda _repo: False)
+
+    perf_local.pin_soldr_zccache_source(soldr_src)
+
+    contents = config.read_text(encoding="utf-8")
+    assert "[build]" in contents
+    assert "[patch.crates-io.zccache]" in contents
+    assert 'path = "/zccache-src/crates/zccache"' in contents
 
 
 def test_ensure_soldr_source_refreshes_requested_ref(tmp_path, monkeypatch):
