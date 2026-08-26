@@ -21,6 +21,11 @@ seed_soldr_home() {
     fi
     export CARGO_HOME=/root/.soldr/cargo
     export RUSTUP_HOME=/root/.soldr/rustup
+    export PATH="${CARGO_HOME}/bin:/root/.soldr/bin:${PATH}"
+    if ! command -v rustc >/dev/null 2>&1; then
+        echo "ERROR: soldr's seeded rustc proxy is not on PATH" >&2
+        exit 2
+    fi
 }
 
 find_benchmark() {
@@ -49,7 +54,7 @@ prepare_run() {
     mkdir -p "${OUT_DIR}"
     {
         echo "revision=$(git -C /work rev-parse HEAD)"
-        echo "dirty=$(if git -C /work diff --quiet && git -C /work diff --cached --quiet; then echo false; else echo true; fi)"
+        echo "dirty=$(if git -C /work -c core.filemode=false diff --quiet && git -C /work -c core.filemode=false diff --cached --quiet; then echo false; else echo true; fi)"
         echo "workload=${WORKLOAD}"
         echo "kernel=$(uname -r)"
         echo "soldr=$(soldr version | head -n 1)"
