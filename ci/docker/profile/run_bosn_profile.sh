@@ -7,21 +7,22 @@ set -euo pipefail
 MODE=${1:-all}
 WORKLOAD=${ZCCACHE_PROFILE_WORKLOAD:-perf_rustc_zccache_vs_sccache}
 SAMPLE_HZ=${ZCCACHE_PROFILE_HZ:-99}
-SOLDR_SENTINEL=".standalone-toolchain-${SOLDR_VERSION}-${RUST_VERSION}"
+SOLDR_SENTINEL="/work/.rustup/.standalone-toolchain-${SOLDR_VERSION}-${RUST_VERSION}"
 
 seed_soldr_home() {
-    if [[ ! -f "/opt/soldr-seed/${SOLDR_SENTINEL}" ]]; then
+    if [[ ! -f "/opt/soldr-seed/.standalone-toolchain-${SOLDR_VERSION}-${RUST_VERSION}" ]]; then
         echo "ERROR: cached soldr toolchain seed is incomplete" >&2
         exit 2
     fi
-    if [[ ! -f "/root/.soldr/${SOLDR_SENTINEL}" ]]; then
-        mkdir -p /root/.soldr
-        cp -a /opt/soldr-seed/.soldr/. /root/.soldr/
-        touch "/root/.soldr/${SOLDR_SENTINEL}"
+    if [[ ! -f "${SOLDR_SENTINEL}" ]]; then
+        mkdir -p /work/.cargo /work/.rustup
+        cp -a /opt/soldr-seed/.soldr/cargo/. /work/.cargo/
+        cp -a /opt/soldr-seed/.soldr/rustup/. /work/.rustup/
+        touch "${SOLDR_SENTINEL}"
     fi
-    export CARGO_HOME=/root/.soldr/cargo
-    export RUSTUP_HOME=/root/.soldr/rustup
-    export PATH="${CARGO_HOME}/bin:/root/.soldr/bin:${PATH}"
+    export CARGO_HOME=/work/.cargo
+    export RUSTUP_HOME=/work/.rustup
+    export PATH="${CARGO_HOME}/bin:${PATH}"
     if ! command -v rustc >/dev/null 2>&1; then
         echo "ERROR: soldr's seeded rustc proxy is not on PATH" >&2
         exit 2
@@ -37,7 +38,11 @@ find_benchmark() {
 build_benchmark() {
     seed_soldr_home
     cd /work
-    soldr cargo test -p zccache --test perf_bench_test --release --no-run
+    # The Windows checkout may contain repo-local .cargo/.rustup homes. This
+    # container intentionally injects its seeded Linux homes, so retain them
+    # instead of re-resolving the bind-mounted host workspace.
+    soldr --trust-inherited-soldr-env cargo test \
+        -p zccache --test perf_bench_test --release --no-run
     TEST_BIN=$(find_benchmark)
     if [[ -z "${TEST_BIN}" || ! -x "${TEST_BIN}" ]]; then
         echo "ERROR: perf_bench_test executable was not produced" >&2

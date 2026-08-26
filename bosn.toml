@@ -12,6 +12,8 @@ ZCCACHE_PROFILE_WORKLOAD = "perf_rustc_zccache_vs_sccache"
 [stack.perf.volumes]
 target = { scope = "stack", destination = "/target" }
 soldr-home = { scope = "machine", destination = "/root/.soldr" }
+soldr-cargo-home = { scope = "machine", destination = "/work/.cargo" }
+soldr-rustup-home = { scope = "machine", destination = "/work/.rustup" }
 
 [stack.perf.mounts]
 repo = { source = ".", destination = "/work" }
