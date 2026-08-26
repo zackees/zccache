@@ -4,6 +4,23 @@
 
 use super::test_env::ENV_LOCK;
 use super::*;
+
+#[test]
+fn identity_sha256_streams_files_larger_than_its_fixed_buffer() {
+    use sha2::{Digest as _, Sha256};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("large-daemon-image");
+    let bytes: Vec<u8> = (0..(IDENTITY_HASH_BUFFER_BYTES * 3 + 17))
+        .map(|index| (index % 251) as u8)
+        .collect();
+    std::fs::write(&path, &bytes).unwrap();
+
+    let actual = sha256_file_streaming(&path).unwrap();
+    let expected: [u8; 32] = Sha256::digest(&bytes).into();
+
+    assert_eq!(actual, expected);
+}
 use std::ffi::OsString;
 use std::sync::MutexGuard;
 

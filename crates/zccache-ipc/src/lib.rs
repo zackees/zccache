@@ -565,16 +565,12 @@ fn running_process_endpoint_path(endpoint: &str) -> String {
 /// Slice 24 of zccache#782: migrated to the `protocol_v2::backend_handle`
 /// namespace.
 ///
-/// ISSUE-601 / Linux Docker profile 2026-06-25: the underlying
-/// `DaemonProcess::current_process` SHA-256-hashes the daemon binary (via
-/// `running_process::broker::backend_lifecycle::identity::sha256_file`). The
-/// flame chart showed that single chain owning **43.06% of on-CPU** because
-/// `DaemonServer::bind` / `bind_with_cache_dir` / `EmbeddedDaemon::start`
-/// were repeatedly recomputing it. The daemon exe is immutable inside a
-/// running process, so the hash is keyed-by-endpoint cached for the process
-/// lifetime here. First-call errors still bubble up; only success values
-/// are inserted into the cache, so a transient failure (e.g. the exe was
-/// briefly unreadable) will retry on the next call.
+/// ISSUE-601 / #1511: the identity is keyed by endpoint and cached for the
+/// process lifetime. The first call builds the same running-process wire
+/// identity with a streaming legacy SHA-256 instead of
+/// `DaemonProcess::current_process`, whose `fs::read` temporarily allocated the
+/// full daemon executable. First-call errors still bubble up; only successful
+/// values are inserted, so a transient failure retries on the next call.
 pub fn current_backend_identity(
     endpoint: &str,
 ) -> Result<
@@ -593,13 +589,57 @@ pub fn current_backend_identity(
         return Ok((**cached).clone());
     }
 
-    let identity =
-        running_process::broker::protocol_v2::backend_handle::DaemonProcess::current_process(
-            running_process_endpoint(endpoint),
-            None,
-        )?;
+    let identity = current_process_identity_streaming(running_process_endpoint(endpoint))?;
     IDENTITY_CACHE.insert(endpoint.to_string(), std::sync::Arc::new(identity.clone()));
     Ok(identity)
+}
+
+const IDENTITY_HASH_BUFFER_BYTES: usize = 64 * 1024;
+
+fn current_process_identity_streaming(
+    ipc_endpoint: running_process::broker::protocol::Endpoint,
+) -> Result<
+    running_process::broker::protocol_v2::backend_handle::DaemonProcess,
+    running_process::broker::protocol_v2::backend_handle::IdentityError,
+> {
+    use running_process::broker::protocol_v2::backend_handle::{DaemonProcess, IdentityError};
+
+    let exe_path = std::env::current_exe().map_err(IdentityError::CurrentExe)?;
+    let exe_hash =
+        running_process::broker::backend_lifecycle::identity::executable_hash_file(&exe_path)?;
+    let legacy_exe_sha256 = sha256_file_streaming(&exe_path)?;
+    let started_at_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+
+    Ok(DaemonProcess {
+        pid: std::process::id(),
+        exe_path,
+        exe_hash,
+        legacy_exe_sha256,
+        boot_id: running_process::broker::host_identity::current().boot_id,
+        ipc_endpoint,
+        started_at_unix_ms,
+        idle_timeout_secs: None,
+    })
+}
+
+fn sha256_file_streaming(path: &std::path::Path) -> std::io::Result<[u8; 32]> {
+    use sha2::{Digest as _, Sha256};
+    use std::io::Read as _;
+
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; IDENTITY_HASH_BUFFER_BYTES];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().into())
 }
 
 /// Persist the daemon identity used by future `BackendHandle` probes.

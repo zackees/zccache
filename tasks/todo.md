@@ -992,9 +992,11 @@ lever, in both the crate and repo READMEs.
 
 # Current-main performance regression profile
 
+Issue: https://github.com/zackees/zccache/issues/1511
+
 - [x] Audit the sanctioned benchmark, existing #1036/#1099 campaign, and open profiling work.
 - [x] Add a bosn-managed Linux stack for the existing benchmark with persistent soldr/target caches.
-- [ ] Capture current-main repeated wall-time, on-CPU, off-CPU/syscall-wait, RSS, heap, and Massif evidence.
-- [ ] Rank the top three owned slowdowns and file the evidence-backed implementation issue.
+- [x] Capture current-main wall-time, on-CPU, off-CPU/syscall-wait, RSS, heap, and Massif evidence.
+- [x] Rank the top three owned slowdowns and file the evidence-backed implementation issue.
 - [ ] Add RED performance tests, implement the fixes, and capture paired GREEN evidence.
 - [ ] Run the full sanctioned matrix, review, merge, close issues, and restore clean `origin/main`.

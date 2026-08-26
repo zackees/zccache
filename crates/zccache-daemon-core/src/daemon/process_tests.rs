@@ -479,10 +479,9 @@ fn link_like_compile_priority_on_ci_defaults_to_normal_without_link_override() {
 }
 
 #[test]
-fn link_like_compile_priority_on_interactive_defaults_to_low_without_link_override() {
-    // Issue #813 / #810: link.exe is the single worst single-thread
-    // hog on Windows MSVC. Interactive hosts demote it to Low so the
-    // late-build link step doesn't lock up the UI.
+fn link_like_compile_priority_on_interactive_defaults_to_auto_without_link_override() {
+    // #1511: Auto keeps a lone link-like compile at Normal and demotes only
+    // followers in a parallel wave, retaining #813's UI protection.
     let env = vec![(COMPILE_PRIORITY_ENV.to_string(), "idle".to_string())];
 
     assert_eq!(
@@ -493,7 +492,7 @@ fn link_like_compile_priority_on_interactive_defaults_to_low_without_link_overri
             None,
             false, // interactive
         ),
-        CompilePriority::Low
+        CompilePriority::Auto
     );
 }
 

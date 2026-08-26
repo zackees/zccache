@@ -500,17 +500,26 @@ fn prepare_private_clang_header_trace(
     trace
 }
 
-/// Clang's file-backed frontend trace avoids `-H` stderr traffic on the hot C
-/// miss path. Keep it deliberately narrower than the rejected all-language
-/// candidate: C++ continues to use the public trace because its much larger
-/// header graph previously made the private path exceed the hosted watchdog.
+/// Clang's file-backed frontend trace avoids `-H` stderr traffic on C and C++
+/// misses while retaining system-header correctness. Restrict it to source
+/// extensions whose language is unambiguous; explicit `-x`, sysroots, and
+/// caller-owned private tracing keep the public fallback.
 fn use_private_clang_header_trace(
     family: crate::compiler::CompilerFamily,
     source: &Path,
     args: &[String],
 ) -> bool {
+    let supported_source = source
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "c" | "cc" | "cp" | "cpp" | "cxx" | "c++"
+            )
+        });
     family == crate::compiler::CompilerFamily::Clang
-        && source.extension().is_some_and(|extension| extension == "c")
+        && supported_source
         && !args.iter().any(|arg| {
             arg == "-x"
                 || arg.starts_with("-x")
@@ -670,21 +679,26 @@ mod tests {
     }
 
     #[test]
-    fn private_clang_trace_is_bounded_to_plain_c_translation_units() {
+    fn private_clang_trace_covers_plain_c_and_cpp_translation_units() {
         assert!(use_private_clang_header_trace(
             CompilerFamily::Clang,
             std::path::Path::new("main.c"),
             &args(&["-c", "main.c"]),
         ));
-        assert!(!use_private_clang_header_trace(
+        assert!(use_private_clang_header_trace(
             CompilerFamily::Clang,
             std::path::Path::new("main.cpp"),
             &args(&["-c", "main.cpp"]),
         ));
-        assert!(!use_private_clang_header_trace(
+        assert!(use_private_clang_header_trace(
             CompilerFamily::Clang,
             std::path::Path::new("main.C"),
             &args(&["-c", "main.C"]),
+        ));
+        assert!(use_private_clang_header_trace(
+            CompilerFamily::Clang,
+            std::path::Path::new("main.cxx"),
+            &args(&["-c", "main.cxx"]),
         ));
         assert!(!use_private_clang_header_trace(
             CompilerFamily::Clang,

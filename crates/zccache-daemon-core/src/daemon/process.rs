@@ -195,11 +195,12 @@ impl CompilePriority {
                 return Self::parse_or_warn(value, ZCCACHE_COMPILE_PRIORITY_LINK);
             }
 
-            // Issue #813 / #810: linker priority is the single biggest UI
-            // win on Windows (link.exe is the worst single-thread hog).
-            // Interactive hosts default to `Low`; CI keeps the historical
-            // `Normal` so dedicated runners don't yield.
-            return if is_ci { Self::Normal } else { Self::Low };
+            // #1511: feed interactive link-like work through the existing Auto
+            // wave policy. A lone link/rustc leader stays Normal while parallel
+            // followers remain Low, preserving #813's responsiveness without
+            // demoting every sequential Rust build miss. CI keeps its explicit
+            // historical Normal default.
+            return if is_ci { Self::Normal } else { Self::Auto };
         }
 
         Self::from_client_env_with_daemon_env(env, daemon_compile_value)

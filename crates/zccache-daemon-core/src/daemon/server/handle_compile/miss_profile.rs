@@ -20,6 +20,7 @@ pub(super) struct RustMissProfile<'a> {
     pub(super) post_exec_ns: u64,
     pub(super) apply_changes_ns: u64,
     pub(super) collect_outputs_ns: u64,
+    pub(super) staged_materialization_ns: u64,
     pub(super) rust_output_count: usize,
     pub(super) rust_output_bytes: u64,
     pub(super) include_scan_ns: u64,
@@ -63,6 +64,7 @@ pub(super) fn emit_rust_miss_profile(profile: RustMissProfile<'_>) {
         post_exec_ns,
         apply_changes_ns,
         collect_outputs_ns,
+        staged_materialization_ns,
         rust_output_count,
         rust_output_bytes,
         include_scan_ns,
@@ -116,6 +118,7 @@ pub(super) fn emit_rust_miss_profile(profile: RustMissProfile<'_>) {
         .saturating_add(post_exec_ns)
         .saturating_add(apply_changes_ns)
         .saturating_add(collect_outputs_ns)
+        .saturating_add(staged_materialization_ns)
         .saturating_add(include_scan_ns)
         .saturating_add(register_tracked_ns)
         .saturating_add(dep_dirs_ns)
@@ -135,7 +138,7 @@ pub(super) fn emit_rust_miss_profile(profile: RustMissProfile<'_>) {
             "system_watch_ns={} parse_args_ns={} build_context_ns={} ",
             "hash_source_ns={} hash_headers_ns={} depgraph_check_ns={} ",
             "pre_exec_other_ns={} break_outputs_ns={} compiler_prep_ns={} compiler_process_ns={} ",
-            "post_exec_ns={} apply_changes_ns={} collect_outputs_ns={} ",
+            "post_exec_ns={} apply_changes_ns={} collect_outputs_ns={} staged_materialization_ns={} ",
             "outputs={} output_bytes={} include_scan_ns={} ",
             "register_tracked_ns={} dep_dirs_ns={} hash_all_ns={} ",
             "artifact_store_ns={} depgraph_update_ns={} artifact_build_ns={} ",
@@ -168,6 +171,7 @@ pub(super) fn emit_rust_miss_profile(profile: RustMissProfile<'_>) {
         post_exec_ns,
         apply_changes_ns,
         collect_outputs_ns,
+        staged_materialization_ns,
         rust_output_count,
         rust_output_bytes,
         include_scan_ns,
