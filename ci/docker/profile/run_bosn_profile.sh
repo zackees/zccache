@@ -37,11 +37,15 @@ find_benchmark() {
 
 build_benchmark() {
     seed_soldr_home
-    cd /work
+    # Run soldr outside the bind-mounted checkout so its repo-local home
+    # discovery cannot select a host-created `.rustup` directory. Cargo still
+    # receives the exact workspace manifest and target directory explicitly.
+    cd /tmp
     # The Windows checkout may contain repo-local .cargo/.rustup homes. This
     # container intentionally injects its seeded Linux homes, so retain them
     # instead of re-resolving the bind-mounted host workspace.
     soldr --trust-inherited-soldr-env cargo test \
+        --manifest-path /work/Cargo.toml \
         -p zccache --test perf_bench_test --release --no-run
     TEST_BIN=$(find_benchmark)
     if [[ -z "${TEST_BIN}" || ! -x "${TEST_BIN}" ]]; then
