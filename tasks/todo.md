@@ -989,3 +989,12 @@ lever, in both the crate and repo READMEs.
 - [x] Prove ordinary compiles remain concurrent and cache hits skip the barrier.
 - [x] Run focused tests, formatting, Clippy, full validation, and review.
 - [ ] Merge and publish the next zccache release.
+
+# Current-main performance regression profile
+
+- [x] Audit the sanctioned benchmark, existing #1036/#1099 campaign, and open profiling work.
+- [x] Add a bosn-managed Linux stack for the existing benchmark with persistent soldr/target caches.
+- [ ] Capture current-main repeated wall-time, on-CPU, off-CPU/syscall-wait, RSS, heap, and Massif evidence.
+- [ ] Rank the top three owned slowdowns and file the evidence-backed implementation issue.
+- [ ] Add RED performance tests, implement the fixes, and capture paired GREEN evidence.
+- [ ] Run the full sanctioned matrix, review, merge, close issues, and restore clean `origin/main`.
