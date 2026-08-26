@@ -13,3 +13,6 @@ Feature set: workspace default
 This is the accepted phase-0 workspace-default capture. The two timing reports,
 duplicate tree, and reverse-feature trees alongside this record are its
 authoritative artifacts; failed or partial collection attempts are excluded.
+`Revision:` and `Toolchain:` are machine-checked exact labels. The toolchain
+value may retain the literal `r` immediately followed by `ustc ` prefix; the
+inventory format omits exactly that prefix and no other normalization occurs.

@@ -22,6 +22,7 @@ PUBLIC_ITEM = re.compile(
 VALID_DISPOSITIONS = {"reuse", "extend", "move", "retain"}
 VALID_BASELINE_STATUSES = {"captured"}
 CAPTURE_PROVENANCE_FIELDS = {"capture", "captured_at", "host", "revision", "toolchain"}
+COMPILER_TOOLCHAIN_PREFIX = "r" "ustc "
 REQUIRED_BASELINE_ARTIFACTS = {
     "clean-build-timing.html",
     "incremental-build-timing.html",
@@ -42,6 +43,17 @@ def production_dependencies(manifest: Path) -> set[str]:
     for target in parsed.get("target", {}).values():
         found |= set(target.get("dependencies", {})) & BACKENDS
     return found
+
+
+def evidence_label_value(provenance: str, label: str) -> str | None:
+    """Return one exact `Label: value` evidence line, rejecting ambiguity."""
+    prefix = f"{label}: "
+    values = [
+        line.removeprefix(prefix)
+        for line in provenance.splitlines()
+        if line.startswith(prefix)
+    ]
+    return values[0] if len(values) == 1 else None
 
 
 def check(root: Path = ROOT) -> list[str]:
@@ -85,8 +97,18 @@ def check(root: Path = ROOT) -> list[str]:
                     errors.append(f"baseline capture provenance missing: {capture}: README.md")
                 else:
                     provenance = capture_readme.read_text(encoding="utf-8")
-                    for field, label in (("captured_at", "Captured at"), ("host", "Host")):
-                        if f"{label}: {baseline[field]}" not in provenance:
+                    for field, label in (
+                        ("captured_at", "Captured at"),
+                        ("host", "Host"),
+                        ("revision", "Revision"),
+                        ("toolchain", "Toolchain"),
+                    ):
+                        actual = evidence_label_value(provenance, label)
+                        if field == "toolchain" and actual is not None:
+                            # Captures preserve the compiler command spelling. The
+                            # inventory omits only this exact documented prefix.
+                            actual = actual.removeprefix(COMPILER_TOOLCHAIN_PREFIX)
+                        if actual != baseline[field]:
                             errors.append(
                                 f"baseline capture provenance mismatch: {capture}: {field}"
                             )
@@ -139,7 +161,8 @@ def check(root: Path = ROOT) -> list[str]:
         errors.append(f"inventory source is absent or non-public: {source}: {', '.join(sorted(items))}")
 
     expected: set[tuple[str, str]] = set()
-    for dependency in data.get("backend_dependency", []):
+    backend_mappings: dict[tuple[str, str], tuple[str | None, int]] = {}
+    for dependency_index, dependency in enumerate(data.get("backend_dependency", []), start=1):
         name, disposition = dependency.get("name"), dependency.get("disposition")
         if name not in BACKENDS:
             errors.append(f"unknown backend dependency: {name!r}")
@@ -147,7 +170,25 @@ def check(root: Path = ROOT) -> list[str]:
             errors.append(f"invalid backend disposition for {name}: {disposition!r}")
         if not dependency.get("kernel_capability"):
             errors.append(f"backend mapping lacks capability: {name}")
-        expected |= {(manifest, name) for manifest in dependency.get("manifests", [])}
+        for manifest in dependency.get("manifests", []):
+            key = (manifest, name)
+            previous = backend_mappings.get(key)
+            if previous is not None:
+                previous_disposition, previous_index = previous
+                if previous_disposition != disposition:
+                    errors.append(
+                        "duplicate backend dependency mapping has conflicting dispositions: "
+                        f"{manifest}: {name} (entries {previous_index} and {dependency_index}: "
+                        f"{previous_disposition!r} vs {disposition!r})"
+                    )
+                else:
+                    errors.append(
+                        f"duplicate backend dependency mapping: {manifest}: {name} "
+                        f"(entries {previous_index} and {dependency_index})"
+                    )
+            else:
+                backend_mappings[key] = (disposition, dependency_index)
+            expected.add(key)
     actual: set[tuple[str, str]] = set()
     for manifest in sorted((root / "crates").glob("*/Cargo.toml")):
         relative = manifest.relative_to(root).as_posix()

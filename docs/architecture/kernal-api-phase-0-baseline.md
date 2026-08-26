@@ -20,6 +20,11 @@ reverse-feature trees named by `[baseline]` in `kernal-api-migration.toml`.
 Failed or partial collection attempts are not baseline evidence and must not be
 committed.
 
+The evidence README uses exact `Revision:` and `Toolchain:` provenance labels.
+The latter may retain the compiler command's standard prefix from raw output
+(the literal `r` immediately followed by `ustc `). The TOML record omits exactly
+that prefix, which is the only normalization the inventory checker permits.
+
 ## Comparable collection plan
 
 Use the exact feature sets and command order in the `[baseline]` manifest:
