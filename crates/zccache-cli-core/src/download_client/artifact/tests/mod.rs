@@ -22,7 +22,7 @@ use crate::download_daemon::DownloadDaemon;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
-use super::archive::{auto_archive_format, extract_tar, extract_zip, safe_join};
+use super::archive::{auto_archive_format, extract_7z, extract_tar, extract_zip, safe_join};
 use super::{ArchiveFormat, FetchRequest, FetchResult};
 
 #[derive(Clone)]
@@ -466,6 +466,29 @@ fn auto_detect_archive_formats() {
 fn safe_join_rejects_parent_traversal() {
     let err = safe_join(Path::new("out"), Path::new("../evil")).unwrap_err();
     assert!(err.contains("unsafe"));
+}
+
+#[test]
+fn seven_zip_extraction_rejects_path_traversal_end_to_end() {
+    use sevenz_rust::{ArchiveEntry, ArchiveWriter};
+
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("bad.7z");
+    let escaped = dir.path().join("evil.txt");
+    let mut bytes = Vec::new();
+    {
+        let mut writer = ArchiveWriter::new(io::Cursor::new(&mut bytes)).unwrap();
+        writer
+            .push_archive_entry(ArchiveEntry::new_file("../evil.txt"), Some(b"bad" as &[u8]))
+            .unwrap();
+        writer.finish().unwrap();
+    }
+    fs::write(&archive, bytes).unwrap();
+
+    let out = dir.path().join("extract");
+    let err = extract_7z(&archive, &out).unwrap_err();
+    assert!(err.contains("unsafe"), "unexpected extraction error: {err}");
+    assert!(!escaped.exists(), "archive escaped the extraction root");
 }
 
 #[test]
