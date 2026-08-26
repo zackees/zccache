@@ -7,6 +7,7 @@ container.
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import json
 import subprocess
@@ -29,6 +30,11 @@ def _load_perf_local():
 
 
 perf_local = _load_perf_local()
+
+
+def test_perf_local_supports_package_import() -> None:
+    imported = importlib.import_module("ci.perf_local")
+    assert imported.PERF_THRESHOLDS["schema_version"] == 1
 
 
 def test_buildkit_gc_is_scoped_to_zccache_builder() -> None:

@@ -121,16 +121,14 @@ DEFAULT_SCENARIO = "cold-tar-untar-warm"
 DEFAULT_FIXTURE = "medium"
 
 
-from perf_local_results import (
-    LOCAL_MAX_MATERIALIZATION_COPIED_BYTES, LOCAL_MAX_STAGED_OVERHEAD_MS_PER_PUBLICATION,
-    LOCAL_MAX_WARM_MS, LOCAL_MIN_SPEEDUP, PERF_THRESHOLDS,
-    _distribution, _shell_quote, _write_repeat_summary,
-    evaluate_rollout_result, fmt_bytes, fmt_count_pct, fmt_ms,
-    remove_previous_results as _remove_previous_results,
-    render_phase_breakdown, render_summary,
-    run_scenario as _run_scenario,
-    validate_infrastructure_result,
-)
+if __package__:
+    from . import perf_local_results as _results
+else:
+    import perf_local_results as _results
+
+
+def __getattr__(name: str):
+    return getattr(_results, name)
 
 
 # ---------------------------------------------------------------------------
@@ -620,7 +618,7 @@ def run_scenario(
     jobs: int,
     results_dir: Path | None = None,
 ) -> Path:
-    return _run_scenario(
+    return _results.run_scenario(
         layout,
         scenario,
         fixture,
@@ -634,7 +632,7 @@ def run_scenario(
 
 
 def remove_previous_results(results_dir: Path) -> None:
-    _remove_previous_results(
+    _results.remove_previous_results(
         results_dir,
         run_command=run,
         host_volume_spec=host_volume,
@@ -761,7 +759,7 @@ def run_clippy(args: list[str]) -> int:
         cargo_args += ["-p", "zccache", "--lib", "--tests"]
     if not has_separator:
         cargo_args += ["--", "-D", "warnings"]
-    script = f"{_ENSURE_RUSTFMT_CLIPPY} && cargo {' '.join(_shell_quote(a) for a in cargo_args)}"
+    script = f"{_ENSURE_RUSTFMT_CLIPPY} && cargo {' '.join(_results._shell_quote(a) for a in cargo_args)}"
     cmd = build_zccache_docker_cmd(bash_script=script)
     return run_zccache_docker_cmd(cmd)
 
@@ -801,7 +799,7 @@ def run_exec(args: list[str]) -> int:
     if len(args) != 1 or not args[0].startswith("/src/"):
         print("usage: perf_local.py exec /src/ci/local_pre_pr_steps/<suite>.sh", file=sys.stderr)
         return 2
-    cmd = build_zccache_docker_cmd(bash_script=f"bash {_shell_quote(args[0])}")
+    cmd = build_zccache_docker_cmd(bash_script=f"bash {_results._shell_quote(args[0])}")
     return run_zccache_docker_cmd(cmd)
 
 
@@ -824,8 +822,8 @@ def run_rollout_matrix(layout: dict[str, Path], jobs: int, repeat: int) -> int:
                     print(f"[perf-local] FAIL {cell} sample {sample_number}: scenario exited {error.returncode}")
                     cell_failed = True
                     break
-                render_summary(results_dir, scenario, fixture)
-                failures = evaluate_rollout_result(results_dir, scenario, fixture)
+                _results.render_summary(results_dir, scenario, fixture)
+                failures = _results.evaluate_rollout_result(results_dir, scenario, fixture)
                 if failures:
                     cell_failed = True
                     for failure in failures:
@@ -835,7 +833,7 @@ def run_rollout_matrix(layout: dict[str, Path], jobs: int, repeat: int) -> int:
                 samples.append((results_dir, result))
             if not cell_failed:
                 if repeat > 1:
-                    _write_repeat_summary(base_dir, samples, scenario, fixture)
+                    _results._write_repeat_summary(base_dir, samples, scenario, fixture)
                 warm = [int(result["b_ms" if scenario == "worktree-share" else "warm_ms"]) for _, result in samples]
                 print(f"[perf-local] HARD-GATE PASS {cell} ({repeat} sample(s), warm median={statistics.median(warm):.0f}ms)")
             else:
@@ -989,7 +987,7 @@ def main() -> int:
         return 0
 
     results_dir = run_scenario(layout, args.scenario, args.fixture, args.jobs)
-    return render_summary(results_dir, args.scenario, args.fixture)
+    return _results.render_summary(results_dir, args.scenario, args.fixture)
 
 
 if __name__ == "__main__":

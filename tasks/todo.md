@@ -999,7 +999,8 @@ Issue: https://github.com/zackees/zccache/issues/1511
 - [x] Capture current-main wall-time, on-CPU, off-CPU/syscall-wait, RSS, heap, and Massif evidence.
 - [x] Rank the top three owned slowdowns and file the evidence-backed implementation issue.
 - [x] Add RED performance tests, implement the fixes, and capture paired GREEN evidence.
-- [ ] Run the full sanctioned matrix, review, merge, close issues, and restore clean `origin/main`.
+- [x] Attempt the full sanctioned repeat-5 matrix and retain every clean or invalid sample.
+- [ ] Merge, close the issue, and restore clean `origin/main`.
 
 ## Review
 
@@ -1025,8 +1026,11 @@ Issue: https://github.com/zackees/zccache/issues/1511
   samples: cold median 95.834 s (MAD 2.709 s, 87.403-106.237 s), warm median
   13.747 s (MAD 0.244 s, 13.381-13.996 s), with 141 hits, zero misses, and no
   aborts, retries, or daemon fallbacks in every sample.
-- The remaining repeat-5 matrix was stopped after current Soldr/Cargo lifecycle
-  overhead missed unrelated absolute ceilings (zccache phase totals were only
-  1.73 s for touch and 0.13 s for restore). A focused retry then became invalid:
-  `reqwest` was killed by signal, while cgroup `memory.events` reported no OOM.
-  No threshold was widened and no contaminated sample is claimed as evidence.
+- A clean exact-source repeat-5 attempt completed the medium worktree cell:
+  cold median 96.791 s (MAD 3.223 s, 88.017-130.487 s), warm median 14.013 s
+  (MAD 0.113 s, 12.947-14.126 s). The overall matrix still failed 7/8 cells.
+  One medium cold sample was invalid because `tokio`'s rustc was killed by
+  signal while cgroup `memory.events` reported no OOM. The remaining failures
+  were current Soldr/Cargo lifecycle ceilings despite cache success: sqlite
+  warm phases took 55-69 s with 100% zccache hits. No threshold was widened,
+  and the invalid sample is not claimed as performance evidence.
