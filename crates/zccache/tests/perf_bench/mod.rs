@@ -1,6 +1,6 @@
 //! Performance benchmark: warm-cache compilation latency.
 //!
-//! Twelve `#[ignore]` perf benchmarks plus one always-on regression test.
+//! Ignored perf benchmarks plus one always-on regression test.
 //! The test functions are split across submodules but cargo discovers them all
 //! under the same `perf_bench_test` test binary (the thin shim
 //! `tests/perf_bench_test.rs` re-exports this module).
