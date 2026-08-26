@@ -1,0 +1,205 @@
+# Machine-checked inventory for zccache#1519.
+[inventory]
+issue = "zccache#1519"
+consumer_umbrella = "zccache#1518"
+kernel_implementation = "zackees/kernal-api#5"
+kernel_packaging = "zackees/kernal-api#3"
+
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/executable.rs"
+items = ["native_name", "native_library_name", "find_in_paths", "find_on_path", "current_image", "images_equal", "stem_matches", "unlock_for_replacement"]
+disposition = "extend"
+kernel_capability = "executable identity, discovery, naming, and safe replacement"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/executable.rs"
+items = ["clang_library_candidates"]
+disposition = "retain"
+owner = "zccache-cli-core"
+reason = "Compiler-specific candidate ordering is product policy, not host discovery."
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/host.rs"
+items = ["os", "arch", "home_dir", "runtime_dir", "current_user", "cpu_identity_material", "available_parallelism", "is_elevated"]
+disposition = "extend"
+kernel_capability = "host facts, user/runtime directories, and privilege facts"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/host.rs"
+items = ["DefenderError", "defender_supported", "defender_exclusions", "add_defender_exclusion", "remove_defender_exclusion"]
+disposition = "retain"
+owner = "zccache-core and zccache-cli-core"
+reason = "Defender exclusion UX and policy are zccache-specific."
+
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/fs/identity.rs"
+items = ["FileIdentity", "ChangeMarker", "file_identity", "same_file", "change_marker"]
+disposition = "extend"
+kernel_capability = "opaque file identity and change markers"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/fs/durability.rs"
+items = ["sync_directory", "open_shared_append"]
+disposition = "extend"
+kernel_capability = "durable directory sync and shared append"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/fs/links.rs"
+items = ["LinkKind", "hard_link_count", "classify", "symlink_file"]
+disposition = "extend"
+kernel_capability = "link classification, counts, and safe symlink creation"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/fs/path.rs"
+items = ["strip_verbatim_prefix", "case_fold", "from_msys", "canonicalize_private_prefix", "verbatim_path", "from_raw_bytes", "system_root_candidate"]
+disposition = "extend"
+kernel_capability = "native and canonical path conversion"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/fs/permissions.rs"
+items = ["ensure_dir_private", "create_dir_all_private", "set_readonly", "make_writable", "make_executable", "mode", "apply_mode"]
+disposition = "extend"
+kernel_capability = "private-directory and portable permission operations"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/fs/replace.rs"
+items = ["atomic_replace", "rename_without_replace", "replace_with_delete_fallback", "install_directory", "is_transient_share_error", "is_lock_contention"]
+disposition = "extend"
+kernel_capability = "atomic replacement, staged installation, and contention classification"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/fs/volume.rs"
+items = ["VolumeIdentity", "volume_identity", "file_id_width", "hard_link_limit", "volume_identity_u128", "allocated_bytes"]
+disposition = "extend"
+kernel_capability = "volume identity, allocation, and link-limit facts"
+
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/process/command.rs"
+items = ["hide_window", "configure_process_group"]
+disposition = "extend"
+kernel_capability = "semantic command presentation and containment preparation"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/process/exit.rs"
+items = ["NativeExit", "crash_label", "context_label", "context_summary"]
+disposition = "extend"
+kernel_capability = "native exit and crash-context classification"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/process/inspect.rs"
+items = ["is_alive", "executable_path", "cpu_ticks"]
+disposition = "extend"
+kernel_capability = "process inspection"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/process/jobserver.rs"
+items = ["NativeJobserver", "is_supported", "create", "auth_string"]
+disposition = "extend"
+kernel_capability = "native jobserver primitives"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/process/priority.rs"
+items = ["Priority", "apply_to_child"]
+disposition = "extend"
+kernel_capability = "semantic priority application without Tokio child types"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/process/spawn.rs"
+items = ["sleeping_child", "echo_output", "attach_owner_death", "uses_pre_spawn_owner_death", "run_cli_entry"]
+disposition = "extend"
+kernel_capability = "contained child lifecycle and detached entry execution"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/process/stdio.rs"
+items = ["detach", "redirect_to_log"]
+disposition = "extend"
+kernel_capability = "detached stdio and log redirection"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/process/terminate.rs"
+items = ["force", "force_group"]
+disposition = "extend"
+kernel_capability = "process and process-group termination"
+
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/ipc/endpoint.rs"
+items = ["Endpoint", "from_native", "as_str", "retire", "unique_test", "select", "to_running_process", "from_running_process", "file_path_is_portable", "uses_file_path", "connect_timeout"]
+disposition = "extend"
+kernel_capability = "opaque local endpoint, retirement, and connection deadline"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/ipc/listener.rs"
+items = ["Listener", "bind", "bind_async", "accept", "tightened_parent", "drain_accept_pool"]
+disposition = "extend"
+kernel_capability = "local listener, peer acceptance, and pool management"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/ipc/peer.rs"
+items = ["PeerIdentity", "pid", "is_current_user", "rejection_reason"]
+disposition = "extend"
+kernel_capability = "local peer identity and refusal reason"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/ipc/stream.rs"
+items = ["Stream"]
+disposition = "extend"
+kernel_capability = "facade-owned async local byte stream"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/ipc/connect.rs"
+items = ["connect"]
+disposition = "extend"
+kernel_capability = "deadline-aware local connection"
+[[platform_group]]
+source = "crates/zccache-platform/src/platform/ipc/mod.rs"
+items = ["current_user_name", "select_host_text", "probe_native"]
+disposition = "retain"
+owner = "zccache-ipc"
+reason = "Endpoint display wording and probe policy are product protocol policy."
+
+[[backend_dependency]]
+name = "tokio"
+disposition = "extend"
+kernel_capability = "runtime, task, clock, channel, I/O, and blocking-work facade"
+manifests = ["crates/zccache/Cargo.toml", "crates/zccache-artifact/Cargo.toml", "crates/zccache-cli-core/Cargo.toml", "crates/zccache-daemon-core/Cargo.toml", "crates/zccache-download/Cargo.toml", "crates/zccache-fscache/Cargo.toml", "crates/zccache-ipc/Cargo.toml", "crates/zccache-platform/Cargo.toml", "crates/zccache-watcher/Cargo.toml"]
+[[backend_dependency]]
+name = "tokio-util"
+disposition = "extend"
+kernel_capability = "cancellation facade"
+manifests = ["crates/zccache/Cargo.toml", "crates/zccache-cli-core/Cargo.toml", "crates/zccache-daemon-core/Cargo.toml", "crates/zccache-download/Cargo.toml"]
+[[backend_dependency]]
+name = "running-process"
+disposition = "reuse"
+kernel_capability = "private native process and broker substrate"
+manifests = ["crates/zccache/Cargo.toml", "crates/zccache-cli-core/Cargo.toml", "crates/zccache-daemon-core/Cargo.toml", "crates/zccache-ipc/Cargo.toml", "crates/zccache-protocol/Cargo.toml"]
+[[backend_dependency]]
+name = "interprocess"
+disposition = "extend"
+kernel_capability = "private local transport implementation"
+manifests = ["crates/zccache/Cargo.toml", "crates/zccache-cli-core/Cargo.toml", "crates/zccache-ipc/Cargo.toml", "crates/zccache-platform/Cargo.toml"]
+[[backend_dependency]]
+name = "crash-handler"
+disposition = "extend"
+kernel_capability = "crash capture and native exit report"
+manifests = ["crates/zccache/Cargo.toml", "crates/zccache-cli-core/Cargo.toml", "crates/zccache-core/Cargo.toml", "crates/zccache-daemon-core/Cargo.toml", "crates/zccache-platform/Cargo.toml"]
+[[backend_dependency]]
+name = "memmap2"
+disposition = "extend"
+kernel_capability = "mapped-file access"
+manifests = ["crates/zccache/Cargo.toml", "crates/zccache-cli-core/Cargo.toml", "crates/zccache-daemon-core/Cargo.toml", "crates/zccache-hash/Cargo.toml"]
+[[backend_dependency]]
+name = "fs2"
+disposition = "extend"
+kernel_capability = "advisory file locks"
+manifests = ["crates/zccache/Cargo.toml", "crates/zccache-artifact/Cargo.toml", "crates/zccache-cli-core/Cargo.toml", "crates/zccache-daemon-core/Cargo.toml", "crates/zccache-fingerprint/Cargo.toml"]
+[[backend_dependency]]
+name = "blake3"
+disposition = "extend"
+kernel_capability = "fast content hashing and file identity"
+manifests = ["crates/zccache/Cargo.toml", "crates/zccache-artifact/Cargo.toml", "crates/zccache-cli-core/Cargo.toml", "crates/zccache-daemon-core/Cargo.toml", "crates/zccache-depgraph/Cargo.toml", "crates/zccache-download/Cargo.toml", "crates/zccache-hash/Cargo.toml", "crates/zccache-ipc/Cargo.toml"]
+[[backend_dependency]]
+name = "libc"
+disposition = "extend"
+kernel_capability = "private Unix OS implementation"
+manifests = ["crates/zccache/Cargo.toml", "crates/zccache-platform/Cargo.toml"]
+[[backend_dependency]]
+name = "windows-sys"
+disposition = "extend"
+kernel_capability = "private Windows OS implementation"
+manifests = ["crates/zccache/Cargo.toml", "crates/zccache-platform/Cargo.toml"]
+
+[[characterization]]
+contract = "embedded runtime ownership, cancellation, forced shutdown, admission, flush, and child cleanup"
+tests = ["crates/zccache-daemon-core/src/embedded/tests.rs", "crates/zccache-daemon-core/src/embedded/contract_tests.rs", "crates/zccache/tests/embedded_service_test.rs"]
+[[characterization]]
+contract = "process containment, bounded probe, detached launch, priority, jobserver, and executable identity"
+tests = ["crates/zccache-daemon-core/src/daemon/process_tests.rs", "crates/zccache-cli-core/src/cli/runtime/tests.rs", "crates/zccache-platform/src/platform/process/tests.rs"]
+[[characterization]]
+contract = "local IPC peer security, endpoint retirement, broker identity/probe, manifest, route, and refusal behavior"
+tests = ["crates/zccache-ipc/src/mod_tests.rs", "crates/zccache-ipc/src/transport/tests.rs", "crates/zccache-platform/src/platform/ipc/tests.rs"]
+[[characterization]]
+contract = "frozen frame bytes, payload protocol 0x7A63, and single-round-trip path"
+tests = ["crates/zccache/tests/daemon_wire_frame_v1_test.rs", "crates/zccache/tests/daemon_wire_prost_roundtrip.rs", "crates/zccache/tests/daemon_wire_protocol_version.rs", "crates/zccache/tests/daemon_wire_dispatcher.rs"]
+[[characterization]]
+contract = "filesystem identity, links, permissions, replacement, stored mtimes, and hardlink-safe materialization"
+tests = ["crates/zccache-daemon-core/src/daemon/server/persist/tests.rs", "crates/zccache-daemon-core/src/daemon/server/tests/write_cached.rs", "crates/zccache-platform/src/platform/fs/README.md"]

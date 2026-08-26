@@ -72,6 +72,8 @@ jobs:
         run: soldr cargo fmt --all -- --check
       - name: Check log-audit registry snapshot
         run: uv run python ci/check_log_audit_registry.py
+      - name: Check kernal-api migration inventory
+        run: uv run --no-project python ci/check_kernal_api_baseline.py
 
   dylint:
     name: Dylint
