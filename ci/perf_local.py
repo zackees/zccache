@@ -72,6 +72,7 @@ import statistics
 import subprocess
 import sys
 import time
+import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -453,12 +454,30 @@ def git_is_worktree_root(repo: Path) -> bool:
 def pin_soldr_zccache_source(soldr_src: Path, *, initialize_submodules: bool = True) -> None:
     """Build soldr with the zccache checkout under test embedded in it.
 
-    soldr consumes zccache as a git submodule, so cloning soldr alone is no
-    longer enough. Materialize all soldr
-    submodules, then move its zccache submodule to this checkout's exact SHA.
+    Older soldr refs consume zccache as a git submodule. Materialize and pin
+    that checkout when the ref still declares it. Current soldr releases use
+    the registry instead, so write a harness-owned source override for the
+    read-only checkout mounted by ``run_soldr_builder``.
     """
     if git_is_dirty(REPO_ROOT):
         raise RuntimeError("the zccache checkout is dirty; commit or stash changes before running perf_local.py so embedded source cannot differ from the requested run")
+    gitmodules = soldr_src / ".gitmodules"
+    if not gitmodules.is_file() or "_vender/zccache" not in gitmodules.read_text(
+        encoding="utf-8"
+    ):
+        config_path = soldr_src / ".cargo" / "config.toml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        marker = "# perf-local exact zccache source"
+        existing = config_path.read_text(encoding="utf-8") if config_path.is_file() else ""
+        existing = existing.split(marker, 1)[0].rstrip()
+        override = (
+            f"{marker}\n"
+            "[patch.crates-io.zccache]\n"
+            'path = "/zccache-src/crates/zccache"\n'
+        )
+        config_path.write_text(f"{existing}\n\n{override}", encoding="utf-8")
+        print("[perf-local] soldr registry dependency patched to the local zccache checkout")
+        return
     zccache_sha = git_head(REPO_ROOT)
     vendored = soldr_src / "_vender" / "zccache"
     if initialize_submodules or not git_is_worktree_root(vendored):
@@ -605,6 +624,8 @@ def run_soldr_builder(layout: dict[str, Path], *, force: bool = False) -> None:
             # requested soldr ref moves, so a rewritten lock never accumulates.
             host_volume(layout["soldr_src"], "/src"),
             "-v",
+            host_volume(REPO_ROOT, "/zccache-src", "ro"),
+            "-v",
             f"{VOLUME_TARGET_SOLDR}:/target",
             "-v",
             f"{VOLUME_CARGO_HOME_SOLDR}:/cargo-home",
@@ -615,6 +636,12 @@ def run_soldr_builder(layout: dict[str, Path], *, force: bool = False) -> None:
     )
     if not binary.is_file():
         raise FileNotFoundError(f"soldr builder succeeded without publishing {binary}")
+    lock = tomllib.loads((layout["soldr_src"] / "Cargo.lock").read_text(encoding="utf-8"))
+    resolved = [package for package in lock["package"] if package["name"] == "zccache"]
+    if len(resolved) != 1 or "source" in resolved[0]:
+        raise RuntimeError(
+            "soldr builder did not resolve zccache from the mounted checkout under test"
+        )
     stamp_tmp = stamp.with_suffix(".json.tmp")
     stamp_tmp.write_text(json.dumps(identity, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     stamp_tmp.replace(stamp)
