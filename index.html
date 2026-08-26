@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>zccache benchmark stats</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 32px 20px 44px;
+        font-family: Arial, sans-serif;
+        color: #f0f6fc;
+        background: #0d1117;
+      }
+      main {
+        max-width: 1080px;
+        margin: 0 auto;
+      }
+      h1 {
+        margin: 0 0 10px;
+        font-size: 34px;
+      }
+      h2 {
+        margin: 28px 0 10px;
+        font-size: 22px;
+      }
+      p, li {
+        line-height: 1.5;
+      }
+      .meta {
+        color: #8b949e;
+      }
+      .note {
+        padding: 12px 14px;
+        background: #161b22;
+        border: 1px solid #30363d;
+      }
+      a {
+        color: #58a6ff;
+      }
+      .images {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        margin: 20px 0;
+      }
+      figure {
+        margin: 0;
+      }
+      figcaption {
+        color: #8b949e;
+        font-size: 13px;
+        margin-top: 6px;
+      }
+      .table-wrap {
+        overflow-x: auto;
+      }
+      table {
+        width: 100%;
+        min-width: 820px;
+        border-collapse: collapse;
+        margin-top: 18px;
+        background: #161b22;
+      }
+      th, td {
+        border: 1px solid #30363d;
+        padding: 10px 12px;
+        text-align: left;
+        font-size: 14px;
+      }
+      thead th, tr.group th {
+        background: #21262d;
+      }
+      .strong {
+        font-weight: 700;
+      }
+      img {
+        max-width: 100%;
+        border: 1px solid #30363d;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>zccache benchmark stats</h1>
+      <p class="meta">
+        Generated 2026-08-26T10:09:23+00:00 |
+        ref main |
+        sha 63af69f8419f | <a href="https://github.com/zackees/zccache/actions/runs/32955481969">workflow run</a>
+      </p>
+      <p class="note">
+        Raw machine-readable data: <a href="latest.json">latest.json</a> and
+        <a href="history.jsonl">history.jsonl</a>.
+        Per-language README images:
+      </p>
+      <ul>
+        <li><a href="benchmark-c.jpg">benchmark-c.jpg</a></li>
+<li><a href="benchmark-cpp.jpg">benchmark-cpp.jpg</a></li>
+<li><a href="benchmark-emscripten.jpg">benchmark-emscripten.jpg</a></li>
+<li><a href="benchmark-rust.jpg">benchmark-rust.jpg</a></li>
+      </ul>
+      <div class="images">
+        <figure><a href="benchmark-c.jpg"><img src="benchmark-c.jpg" alt="Latest zccache C benchmark stats" /></a><figcaption>C</figcaption></figure>
+<figure><a href="benchmark-cpp.jpg"><img src="benchmark-cpp.jpg" alt="Latest zccache C++ benchmark stats" /></a><figcaption>C++</figcaption></figure>
+<figure><a href="benchmark-emscripten.jpg"><img src="benchmark-emscripten.jpg" alt="Latest zccache Emscripten benchmark stats" /></a><figcaption>Emscripten</figcaption></figure>
+<figure><a href="benchmark-rust.jpg"><img src="benchmark-rust.jpg" alt="Latest zccache Rust benchmark stats" /></a><figcaption>Rust</figcaption></figure>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Scenario</th>
+              <th>Bare compiler</th>
+              <th>sccache</th>
+              <th>zccache</th>
+              <th>bare cache</th>
+              <th>sccache cache</th>
+              <th>zccache cache</th>
+              <th>zccache vs sccache</th>
+              <th>zccache vs bare</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="group"><th colspan="9">C inline args</th></tr><tr><td>Single-file, Cold</td><td>1.912s</td><td>3.535s</td><td class="strong">2.847s</td><td>0 B</td><td>576 KiB</td><td>124 KiB</td><td>1.2x faster</td><td>1.5x slower</td></tr><tr><td>Single-file, Warm</td><td>1.928s</td><td>0.185s</td><td class="strong">0.094s</td><td>0 B</td><td>576 KiB</td><td>208 KiB</td><td>2.0x faster</td><td>20.5x faster</td></tr><tr class="group"><th colspan="9">C static-library link</th></tr><tr><td>Static archive, Cold</td><td>0.051s</td><td>0.050s</td><td class="strong">0.056s</td><td>0 B</td><td>0 B</td><td>369 KiB</td><td>1.1x slower</td><td>1.1x slower</td></tr><tr><td>Static archive, Warm</td><td>0.050s</td><td>0.051s</td><td class="strong">0.001s</td><td>0 B</td><td>0 B</td><td>374 KiB</td><td>51.0x faster</td><td>50.0x faster</td></tr><tr class="group"><th colspan="9">C++ inline args</th></tr><tr><td>Single-file, Cold</td><td>6.626s</td><td>9.269s</td><td class="strong">7.272s</td><td>0 B</td><td>0 B</td><td>231 KiB</td><td>1.3x faster</td><td>1.1x slower</td></tr><tr><td>Single-file, Warm</td><td>6.669s</td><td>0.226s</td><td class="strong">0.100s</td><td>0 B</td><td>0 B</td><td>231 KiB</td><td>2.3x faster</td><td>66.7x faster</td></tr><tr><td>Multi-file, Cold</td><td>6.580s</td><td>6.616s</td><td class="strong">7.533s</td><td>0 B</td><td>0 B</td><td>231 KiB</td><td>1.1x slower</td><td>1.1x slower</td></tr><tr><td>Multi-file, Warm</td><td>6.560s</td><td>6.436s</td><td class="strong">0.016s</td><td>0 B</td><td>0 B</td><td>231 KiB</td><td>402.2x faster</td><td>410.0x faster</td></tr><tr class="group"><th colspan="9">C++ response files</th></tr><tr><td>Single-file RSP, Cold</td><td>6.632s</td><td>9.391s</td><td class="strong">7.946s</td><td>0 B</td><td>0 B</td><td>714 KiB</td><td>1.2x faster</td><td>1.2x slower</td></tr><tr><td>Single-file RSP, Warm</td><td>6.644s</td><td>0.222s</td><td class="strong">0.172s</td><td>0 B</td><td>0 B</td><td>714 KiB</td><td>1.3x faster</td><td>38.6x faster</td></tr><tr><td>Multi-file RSP, Cold</td><td>6.537s</td><td>6.561s</td><td class="strong">7.577s</td><td>0 B</td><td>0 B</td><td>714 KiB</td><td>1.2x slower</td><td>1.2x slower</td></tr><tr><td>Multi-file RSP, Warm</td><td>6.550s</td><td>6.559s</td><td class="strong">0.038s</td><td>0 B</td><td>0 B</td><td>714 KiB</td><td>172.6x faster</td><td>172.4x faster</td></tr><tr class="group"><th colspan="9">C++ sibling git remap</th></tr><tr><td>Sibling-workspace no __FILE__, Warm</td><td>6.518s</td><td>0.219s</td><td class="strong">0.149s</td><td>0 B</td><td>1.7 MiB</td><td>553 KiB</td><td>1.5x faster</td><td>43.7x faster</td></tr><tr><td>Sibling-workspace with __FILE__, Warm</td><td>6.492s</td><td>9.128s</td><td class="strong">0.153s</td><td>0 B</td><td>1.8 MiB</td><td>1.0 MiB</td><td>59.7x faster</td><td>42.4x faster</td></tr><tr class="group"><th colspan="9">C++ driver link</th></tr><tr><td>Driver link, Cold</td><td>0.055s</td><td>0.080s</td><td class="strong">0.065s</td><td>0 B</td><td>0 B</td><td>85 KiB</td><td>1.2x faster</td><td>1.2x slower</td></tr><tr><td>Driver link, Warm</td><td>0.055s</td><td>0.060s</td><td class="strong">0.001s</td><td>0 B</td><td>0 B</td><td>90 KiB</td><td>60.0x faster</td><td>55.0x faster</td></tr><tr class="group"><th colspan="9">Emscripten em++</th></tr><tr><td>Single-file, Cold</td><td>5.981s</td><td>10.536s</td><td class="strong">7.357s</td><td>0 B</td><td>0 B</td><td>172 KiB</td><td>1.4x faster</td><td>1.2x slower</td></tr><tr><td>Single-file, Warm</td><td>5.974s</td><td>0.254s</td><td class="strong">0.107s</td><td>0 B</td><td>0 B</td><td>172 KiB</td><td>2.4x faster</td><td>55.8x faster</td></tr><tr><td>Multi-file, Cold</td><td>2.886s</td><td>3.005s</td><td class="strong">3.818s</td><td>0 B</td><td>0 B</td><td>172 KiB</td><td>1.3x slower</td><td>1.3x slower</td></tr><tr><td>Multi-file, Warm</td><td>2.862s</td><td>2.896s</td><td class="strong">0.018s</td><td>0 B</td><td>0 B</td><td>172 KiB</td><td>160.9x faster</td><td>159.0x faster</td></tr><tr class="group"><th colspan="9">Emscripten sibling git remap</th></tr><tr><td>Sibling-workspace, Warm</td><td>6.051s</td><td>0.285s</td><td class="strong">0.164s</td><td>0 B</td><td>1.8 MiB</td><td>1.8 MiB</td><td>1.7x faster</td><td>36.9x faster</td></tr><tr class="group"><th colspan="9">Emscripten link</th></tr><tr><td>HTML link, Cold</td><td>0.314s</td><td>0.480s</td><td class="strong">0.330s</td><td>0 B</td><td>0 B</td><td>71 KiB</td><td>1.5x faster</td><td>1.1x slower</td></tr><tr><td>HTML link, Warm</td><td>0.315s</td><td>0.321s</td><td class="strong">0.001s</td><td>0 B</td><td>0 B</td><td>98 KiB</td><td>321.0x faster</td><td>315.0x faster</td></tr><tr><td>Wasm link, Cold</td><td>0.142s</td><td>0.303s</td><td class="strong">0.154s</td><td>0 B</td><td>0 B</td><td>2.1 KiB</td><td>2.0x faster</td><td>1.1x slower</td></tr><tr><td>Wasm link, Warm</td><td>0.143s</td><td>0.152s</td><td class="strong">0.001s</td><td>0 B</td><td>0 B</td><td>6.5 KiB</td><td>152.0x faster</td><td>143.0x faster</td></tr><tr class="group"><th colspan="9">Rust rustc</th></tr><tr><td>Build, Cold</td><td>1.677s</td><td>1.876s</td><td class="strong">4.778s</td><td>0 B</td><td>0 B</td><td>3.0 MiB</td><td>2.5x slower</td><td>2.8x slower</td></tr><tr><td>Build, Warm</td><td>1.696s</td><td>1.782s</td><td class="strong">1.559s</td><td>0 B</td><td>0 B</td><td>3.0 MiB</td><td>1.1x faster</td><td>1.1x faster</td></tr><tr><td>Check, Cold</td><td>0.960s</td><td>1.158s</td><td class="strong">2.474s</td><td>0 B</td><td>0 B</td><td>522 KiB</td><td>2.1x slower</td><td>2.6x slower</td></tr><tr><td>Check, Warm</td><td>0.932s</td><td>1.052s</td><td class="strong">0.632s</td><td>0 B</td><td>0 B</td><td>522 KiB</td><td>1.7x faster</td><td>1.5x faster</td></tr><tr class="group"><th colspan="9">Rust sibling git remap</th></tr><tr><td>Sibling-workspace, Warm</td><td>1.645s</td><td>1.772s</td><td class="strong">0.689s</td><td>0 B</td><td>0 B</td><td>3.4 MiB</td><td>2.6x faster</td><td>2.4x faster</td></tr><tr class="group"><th colspan="9">Rust workspace link</th></tr><tr><td>Workspace staticlib link, Cold</td><td>0.042s</td><td>0.134s</td><td class="strong">0.093s</td><td>0 B</td><td>0 B</td><td>33 MiB</td><td>1.4x faster</td><td>2.2x slower</td></tr><tr><td>Workspace staticlib link, Warm</td><td>0.042s</td><td>0.046s</td><td class="strong">0.010s</td><td>0 B</td><td>0 B</td><td>47 MiB</td><td>4.6x faster</td><td>4.2x faster</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h2>Environment</h2>
+      <ul>
+        <li><strong>Runner</strong>: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39</li>
+        <li><strong>Benchmark command</strong>: <code>soldr --no-cache cargo test -p zccache --test perf_bench_test -- perf_c_zccache_vs_bare --nocapture --ignored --test-threads=1 ; soldr --no-cache cargo test -p zccache --test perf_bench_test -- perf_c_archive_link --nocapture --ignored --test-threads=1 ; soldr --no-cache cargo test -p zccache --test perf_bench_test -- perf_warm_cache_zccache_vs_sccache --nocapture --ignored --test-threads=1 ; soldr --no-cache cargo test -p zccache --test perf_bench_test -- perf_response_file --nocapture --ignored --test-threads=1 ; soldr --no-cache cargo test -p zccache --test perf_bench_test -- perf_cpp_sibling_remap_warm --nocapture --ignored --test-threads=1 ; soldr --no-cache cargo test -p zccache --test perf_bench_test -- perf_cpp_driver_link --nocapture --ignored --test-threads=1 ; soldr --no-cache cargo test -p zccache --test perf_bench_test -- perf_emcc_warm_cache_zccache_vs_sccache --nocapture --ignored --test-threads=1 ; soldr --no-cache cargo test -p zccache --test perf_bench_test -- perf_emcc_sibling_remap_warm --nocapture --ignored --test-threads=1 ; soldr --no-cache cargo test -p zccache --test perf_bench_test -- perf_emcc_link --nocapture --ignored --test-threads=1 ; soldr --no-cache cargo test -p zccache --test perf_bench_test -- perf_rustc_zccache_vs_sccache --nocapture --ignored --test-threads=1 ; soldr --no-cache cargo test -p zccache --test perf_bench_test -- perf_rustc_sibling_remap_warm --nocapture --ignored --test-threads=1 ; soldr --no-cache cargo test -p zccache --test perf_bench_test -- perf_rust_workspace_link --nocapture --ignored --test-threads=1</code></li>
+        <li><strong>soldr</strong>: soldr 0.8.13</li>
+<li><strong>rustc</strong>: rustc 1.95.0 (59807616e 2026-04-14)</li>
+<li><strong>clang</strong>: Ubuntu clang version 18.1.3 (1ubuntu1)</li>
+<li><strong>sccache</strong>: sccache 0.17.0</li>
+      </ul>
+    </main>
+  </body>
+</html>
