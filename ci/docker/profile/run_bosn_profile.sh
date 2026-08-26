@@ -52,14 +52,12 @@ prepare_run() {
     RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)
     OUT_DIR="/work/.perf-local/bosn-profile/${revision}/${WORKLOAD}/${RUN_ID}"
     mkdir -p "${OUT_DIR}"
-    # Docker Desktop can leave index stat data stale after rustc has read many
-    # source files. Refresh metadata so provenance reports content changes,
-    # not a transient host/VM timestamp disagreement.
-    git -C /work -c core.filemode=false update-index --refresh -q \
-        >/dev/null 2>&1 || true
     {
         echo "revision=$(git -C /work rev-parse HEAD)"
-        echo "dirty=$(if git -C /work -c core.filemode=false diff --quiet && git -C /work -c core.filemode=false diff --cached --quiet; then echo false; else echo true; fi)"
+        # The Windows checkout contains a small CRLF subset that Linux Git
+        # sees as rewritten. Ignore only end-of-line whitespace so provenance
+        # still fails closed on semantic staged or unstaged content changes.
+        echo "dirty=$(if git -C /work -c core.filemode=false diff --ignore-space-at-eol --quiet HEAD --; then echo false; else echo true; fi)"
         echo "workload=${WORKLOAD}"
         echo "kernel=$(uname -r)"
         echo "soldr=$(soldr version | head -n 1)"
