@@ -36,6 +36,14 @@ cmd = "bash /work/ci/docker/profile/run_bosn_profile.sh offcpu"
 stack = "perf"
 cmd = "bash /work/ci/docker/profile/run_bosn_profile.sh memory"
 
+[task.heaptrack-profile]
+stack = "perf"
+cmd = "bash /work/ci/docker/profile/run_bosn_profile.sh heaptrack"
+
+[task.massif-profile]
+stack = "perf"
+cmd = "bash /work/ci/docker/profile/run_bosn_profile.sh massif"
+
 [task.profile]
 stack = "perf"
 cmd = "bash /work/ci/docker/profile/run_bosn_profile.sh all"

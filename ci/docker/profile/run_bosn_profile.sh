@@ -122,7 +122,7 @@ run_offcpu() {
         2> "${OUT_DIR}/offcpu.stderr.log"
 }
 
-run_memory() {
+run_heaptrack() {
     prepare_run
     /usr/bin/time -v -o "${OUT_DIR}/heaptrack-resource-usage.txt" \
         heaptrack -o "${OUT_DIR}/heaptrack" \
@@ -134,13 +134,21 @@ run_memory() {
     if [[ -n "${heaptrack_file}" ]]; then
         heaptrack_print "${heaptrack_file}" > "${OUT_DIR}/heaptrack-report.txt"
     fi
+}
 
+run_massif() {
+    prepare_run
     valgrind --tool=massif --stacks=yes --pages-as-heap=yes --time-unit=ms \
         --massif-out-file="${OUT_DIR}/massif.out" \
         "${TEST_BIN}" "${WORKLOAD}" --nocapture --ignored --test-threads=1 \
         > "${OUT_DIR}/massif.stdout.log" \
         2> "${OUT_DIR}/massif.stderr.log"
     ms_print "${OUT_DIR}/massif.out" > "${OUT_DIR}/massif-report.txt"
+}
+
+run_memory() {
+    run_heaptrack
+    run_massif
 }
 
 case "${MODE}" in
@@ -159,6 +167,12 @@ case "${MODE}" in
     memory)
         run_memory
         ;;
+    heaptrack)
+        run_heaptrack
+        ;;
+    massif)
+        run_massif
+        ;;
     all)
         run_bench
         run_oncpu
@@ -166,7 +180,7 @@ case "${MODE}" in
         run_memory
         ;;
     *)
-        echo "usage: run_bosn_profile.sh {build|bench|oncpu|offcpu|memory|all}" >&2
+        echo "usage: run_bosn_profile.sh {build|bench|oncpu|offcpu|heaptrack|massif|memory|all}" >&2
         exit 2
         ;;
 esac
