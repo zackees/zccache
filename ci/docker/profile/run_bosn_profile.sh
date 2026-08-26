@@ -52,6 +52,10 @@ prepare_run() {
     RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)
     OUT_DIR="/work/.perf-local/bosn-profile/${revision}/${WORKLOAD}/${RUN_ID}"
     mkdir -p "${OUT_DIR}"
+    # Docker Desktop can leave index stat data stale after rustc has read many
+    # source files. Refresh metadata so provenance reports content changes,
+    # not a transient host/VM timestamp disagreement.
+    git -C /work -c core.filemode=false update-index --refresh -q
     {
         echo "revision=$(git -C /work rev-parse HEAD)"
         echo "dirty=$(if git -C /work -c core.filemode=false diff --quiet && git -C /work -c core.filemode=false diff --cached --quiet; then echo false; else echo true; fi)"
