@@ -998,5 +998,35 @@ Issue: https://github.com/zackees/zccache/issues/1511
 - [x] Add a bosn-managed Linux stack for the existing benchmark with persistent soldr/target caches.
 - [x] Capture current-main wall-time, on-CPU, off-CPU/syscall-wait, RSS, heap, and Massif evidence.
 - [x] Rank the top three owned slowdowns and file the evidence-backed implementation issue.
-- [ ] Add RED performance tests, implement the fixes, and capture paired GREEN evidence.
+- [x] Add RED performance tests, implement the fixes, and capture paired GREEN evidence.
 - [ ] Run the full sanctioned matrix, review, merge, close issues, and restore clean `origin/main`.
+
+## Review
+
+- Daemon identity now computes only BLAKE3, using its memory-mapped parallel
+  reader; the required legacy SHA-256 slot stays zero. Bounded Linux Callgrind
+  moved `current_backend_identity` from 56.59% of instructions to 0.05%, while
+  heaptrack moved the executable-sized allocation from 57.37 MiB to a 1.05 MiB
+  peak heap.
+- Ordinary Clang C++ misses now consume the compiler's exact `-MD/-MF`
+  dependency file instead of paying for public `-H` stderr tracing. The clean
+  50-file cold benchmark improved from 58.515 s to 16.795 s; its compiler-span
+  ratio is 1.064x bare, below the 1.25x target. The ignored system-header
+  mutation test passes under Bosn Linux.
+- Interactive Rust link-like work uses the existing Auto priority policy
+  instead of unconditional Low priority. Clean final observations were 7.620 s
+  for build mode and 5.377 s for check mode, with explicit foreground
+  materialization timing and effective Normal priority in every serial row.
+- The sanctioned harness had silently continued to build registry zccache
+  1.13.11 after Soldr externalized the dependency. It now patches the exact
+  read-only checkout and rejects a lockfile that still names a registry source;
+  all 52 focused harness tests pass.
+- The exact-source medium `cold-tar-untar-warm` cell passed all five clean
+  samples: cold median 95.834 s (MAD 2.709 s, 87.403-106.237 s), warm median
+  13.747 s (MAD 0.244 s, 13.381-13.996 s), with 141 hits, zero misses, and no
+  aborts, retries, or daemon fallbacks in every sample.
+- The remaining repeat-5 matrix was stopped after current Soldr/Cargo lifecycle
+  overhead missed unrelated absolute ceilings (zccache phase totals were only
+  1.73 s for touch and 0.13 s for restore). A focused retry then became invalid:
+  `reqwest` was killed by signal, while cgroup `memory.events` reported no OOM.
+  No threshold was widened and no contaminated sample is claimed as evidence.
