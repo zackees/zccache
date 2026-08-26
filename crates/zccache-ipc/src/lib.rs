@@ -589,14 +589,12 @@ pub fn current_backend_identity(
         return Ok((**cached).clone());
     }
 
-    let identity = current_process_identity_streaming(running_process_endpoint(endpoint))?;
+    let identity = current_process_identity_blake3(running_process_endpoint(endpoint))?;
     IDENTITY_CACHE.insert(endpoint.to_string(), std::sync::Arc::new(identity.clone()));
     Ok(identity)
 }
 
-const IDENTITY_HASH_BUFFER_BYTES: usize = 64 * 1024;
-
-fn current_process_identity_streaming(
+fn current_process_identity_blake3(
     ipc_endpoint: running_process::broker::protocol::Endpoint,
 ) -> Result<
     running_process::broker::protocol_v2::backend_handle::DaemonProcess,
@@ -605,7 +603,7 @@ fn current_process_identity_streaming(
     use running_process::broker::protocol_v2::backend_handle::{DaemonProcess, IdentityError};
 
     let exe_path = std::env::current_exe().map_err(IdentityError::CurrentExe)?;
-    let exe_hash = executable_hash_streaming(&exe_path)?;
+    let exe_hash = executable_hash_blake3(&exe_path)?;
     let started_at_unix_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
@@ -626,20 +624,10 @@ fn current_process_identity_streaming(
     })
 }
 
-fn executable_hash_streaming(path: &std::path::Path) -> std::io::Result<[u8; 32]> {
-    use std::io::Read as _;
-
-    let mut file = std::fs::File::open(path)?;
-    let mut blake3 = blake3::Hasher::new();
-    let mut buffer = [0_u8; IDENTITY_HASH_BUFFER_BYTES];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        blake3.update(&buffer[..read]);
-    }
-    Ok(*blake3.finalize().as_bytes())
+fn executable_hash_blake3(path: &std::path::Path) -> std::io::Result<[u8; 32]> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_mmap_rayon(path)?;
+    Ok(*hasher.finalize().as_bytes())
 }
 
 /// Persist the daemon identity used by future `BackendHandle` probes.

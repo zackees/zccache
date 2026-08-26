@@ -171,7 +171,7 @@ mod tests {
 
     #[test]
     fn probe_reply_leaves_the_legacy_sha256_identity_empty() {
-        let mut daemon = crate::current_process_identity_streaming(Endpoint {
+        let mut daemon = crate::current_process_identity_blake3(Endpoint {
             namespace_id: "zccache-ipc-test".to_owned(),
             path: "zccache-ipc-test.sock".to_owned(),
         })
