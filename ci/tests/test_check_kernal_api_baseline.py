@@ -52,3 +52,23 @@ kernel_capability = "host facts"
     (root / "crates").mkdir(exist_ok=True)
 
     assert any("stale platform mapping" in error for error in check_kernal_api_baseline.check(root))
+
+
+def test_check_rejects_a_missing_baseline_report(tmp_path: Path) -> None:
+    root = tmp_path
+    inventory = root / "docs/architecture/kernal-api-migration.toml"
+    inventory.parent.mkdir(parents=True)
+    inventory.write_text(
+        """[baseline]
+status = "pending-capture"
+report = "docs/architecture/missing.md"
+raw_evidence_root = "docs/evidence/kernal-api-migration/phase-0/<host>/<timestamp>/"
+feature_sets = ["workspace default"]
+commands = ["soldr cargo build --workspace --timings"]
+result_files = ["clean-build-timing.html", "incremental-build-timing.html", "duplicates.txt", "tokio-reverse-features.txt", "running-process-reverse-features.txt"]
+""",
+        encoding="utf-8",
+    )
+    (root / "crates").mkdir(exist_ok=True)
+
+    assert any("baseline report missing" in error for error in check_kernal_api_baseline.check(root))

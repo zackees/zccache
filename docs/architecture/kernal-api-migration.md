@@ -27,7 +27,7 @@ The inventory names focused evidence for embedded lifecycle; process lifecycle; 
 
 ## Measurement protocol
 
-Record raw phase-0 evidence under `docs/evidence/kernal-api-migration/phase-0/<host>/<timestamp>/`; do not commit machine-specific raw output. Commit a Markdown summary beside the raw location with toolchain, host, revision, commands, feature sets, and result filenames.
+The checked-in [phase-0 baseline record](kernal-api-phase-0-baseline.md) defines the required feature sets, commands, result filenames, and capture status. Record raw phase-0 evidence under `docs/evidence/kernal-api-migration/phase-0/<host>/<timestamp>/`; do not commit machine-specific raw output. Update the record with toolchain, host, revision, commands, feature sets, and result filenames only after collection completes.
 
 For every comparable later slice, collect the same feature sets and command order:
 

@@ -5,6 +5,17 @@ consumer_umbrella = "zccache#1518"
 kernel_implementation = "zackees/kernal-api#5"
 kernel_packaging = "zackees/kernal-api#3"
 
+[baseline]
+# This is deliberately pending until a supported host captures the raw files.
+# The report records structural facts and the exact comparable collection plan;
+# it must not be read as a timing or build-improvement claim.
+status = "pending-capture"
+report = "docs/architecture/kernal-api-phase-0-baseline.md"
+raw_evidence_root = "docs/evidence/kernal-api-migration/phase-0/<host>/<timestamp>/"
+feature_sets = ["workspace default", "zccache-cli-core download-client", "zccache embedded-service"]
+commands = ["soldr cargo build --workspace --timings", "soldr cargo build --workspace --timings", "soldr cargo tree --workspace --duplicates", "soldr cargo tree --workspace -e features -i tokio", "soldr cargo tree --workspace -e features -i running-process"]
+result_files = ["clean-build-timing.html", "incremental-build-timing.html", "duplicates.txt", "tokio-reverse-features.txt", "running-process-reverse-features.txt"]
+
 [[platform_group]]
 source = "crates/zccache-platform/src/platform/executable.rs"
 items = ["native_name", "native_library_name", "find_in_paths", "find_on_path", "current_image", "images_equal", "stem_matches", "unlock_for_replacement"]

@@ -20,6 +20,14 @@ PUBLIC_ITEM = re.compile(
     r"^\s*pub\s+(?:async\s+)?(?:const\s+)?(?:fn|struct|enum|trait|type|const)\s+([A-Za-z_][A-Za-z0-9_]*)"
 )
 VALID_DISPOSITIONS = {"reuse", "extend", "move", "retain"}
+VALID_BASELINE_STATUSES = {"pending-capture", "captured"}
+REQUIRED_BASELINE_ARTIFACTS = {
+    "clean-build-timing.html",
+    "incremental-build-timing.html",
+    "duplicates.txt",
+    "tokio-reverse-features.txt",
+    "running-process-reverse-features.txt",
+}
 
 
 def public_items(path: Path) -> set[str]:
@@ -40,6 +48,24 @@ def check(root: Path = ROOT) -> list[str]:
     platform_root = root / PLATFORM_ROOT.relative_to(ROOT)
     data = tomllib.loads(inventory_path.read_text(encoding="utf-8"))
     errors: list[str] = []
+    baseline = data.get("baseline", {})
+    baseline_status = baseline.get("status")
+    if baseline_status not in VALID_BASELINE_STATUSES:
+        errors.append(f"invalid baseline status: {baseline_status!r}")
+    for field in ("report", "raw_evidence_root"):
+        if not baseline.get(field):
+            errors.append(f"baseline lacks {field}")
+    report = baseline.get("report")
+    if report and not (root / report).is_file():
+        errors.append(f"baseline report missing: {report}")
+    if not baseline.get("feature_sets"):
+        errors.append("baseline lacks feature sets")
+    if not baseline.get("commands"):
+        errors.append("baseline lacks reproducible commands")
+    result_files = set(baseline.get("result_files", []))
+    missing_artifacts = sorted(REQUIRED_BASELINE_ARTIFACTS - result_files)
+    if missing_artifacts:
+        errors.append(f"baseline lacks result filenames: {', '.join(missing_artifacts)}")
     mapped_by_source: dict[str, set[str]] = defaultdict(set)
     for group in data.get("platform_group", []):
         source = group.get("source", "")
