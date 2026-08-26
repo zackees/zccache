@@ -45,7 +45,7 @@ RUN apt-get update \
 # /usr/bin/perf wrapper.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends linux-tools-generic \
- && perf_bin="$(find /usr/lib/linux-tools -type f -name perf -print -quit)" \
+ && perf_bin="$(find /usr/lib -path '*/linux-tools*/*' -type f -name perf -print -quit)" \
  && test -n "${perf_bin}" \
  && ln -sf "${perf_bin}" /usr/local/bin/perf \
  && rm -rf /var/lib/apt/lists/*
