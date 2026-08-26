@@ -18,6 +18,9 @@ pub mod ci;
 /// tests) is unchanged.
 #[cfg(feature = "cli")]
 pub use zccache_cli_core::cli;
+/// Daemon-free rustfmt format-cache API for embedding hosts.
+#[cfg(feature = "formatter")]
+pub use zccache_cli_core::formatter;
 /// The download-cache client, moved to `zccache-cli-core` (#1022 Split A).
 /// Re-exported so `zccache::download_client::…` is unchanged.
 #[cfg(feature = "download-client")]

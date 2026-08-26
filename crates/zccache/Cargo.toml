@@ -11,6 +11,9 @@ description = "Local-first compiler cache for C/C++/Rust/Emscripten"
 
 [features]
 default = []
+# Daemon-free rustfmt format-cache API for embedding hosts. This intentionally
+# does not enable the standalone CLI, daemon entry, download, symbols, or clap.
+formatter = ["dep:zccache-cli-core", "zccache-cli-core/formatter"]
 # Enables zccache::test_support (dev-only helpers), now in zccache-daemon-core.
 test-support = ["zccache-daemon-core/test-support"]
 ci = ["dep:wait-timeout"]
@@ -23,6 +26,7 @@ daemon-entry = ["zccache-daemon-core/daemon-entry", "dep:clap", "dep:tracing-sub
 # re-exports `cli`/`download_client`/`download_daemon` from it. clap +
 # tracing-subscriber stay here for the facade's own bins.
 cli = [
+    "formatter",
     "dep:clap",
     "dep:tracing-subscriber",
     "daemon-entry",

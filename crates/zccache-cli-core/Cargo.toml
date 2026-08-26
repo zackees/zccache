@@ -13,9 +13,14 @@ publish = false
 
 [features]
 default = []
+# The daemon-free rustfmt format-cache engine for embedding hosts. Keep this
+# separate from `cli`: Soldr owns process policy and must not pull the
+# standalone CLI, daemon entry, download, symbols, or clap surface.
+formatter = []
 # The CLI surface (subcommands + wrapper mode). Routes to the daemon via
 # daemon-core's argv[0]-dispatched entry.
 cli = [
+    "formatter",
     "dep:clap",
     "dep:tracing-subscriber",
     "zccache-daemon-core/daemon-entry",
