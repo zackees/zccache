@@ -34,10 +34,10 @@ pub use zccache_symbols as symbols;
 // The CLI subsystem modules, moved here from `zccache`.
 #[cfg(feature = "cli")]
 pub mod cli;
-/// Daemon-free rustfmt format-cache API for embedding hosts.
-#[cfg(feature = "formatter")]
-pub mod formatter;
 #[cfg(feature = "download-client")]
 pub mod download_client;
 #[cfg(feature = "download-daemon")]
 pub mod download_daemon;
+/// Daemon-free rustfmt format-cache API for embedding hosts.
+#[cfg(feature = "formatter")]
+pub mod formatter;

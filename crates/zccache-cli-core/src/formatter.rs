@@ -64,7 +64,10 @@ where
         } else {
             hasher.update(b"unknown-binary");
         }
-        let config_path = parsed.config_path.clone().or_else(|| find_rustfmt_config(cwd));
+        let config_path = parsed
+            .config_path
+            .clone()
+            .or_else(|| find_rustfmt_config(cwd));
         if let Some(config_path) = config_path {
             if let Ok(config_hash) = crate::hash::hash_file(&config_path) {
                 hasher.update(config_hash.as_bytes());
@@ -232,7 +235,9 @@ mod tests {
 
     #[test]
     fn public_runner_controls_child_and_preserves_exact_exit_code() {
-        let _lock = CWD_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let _lock = CWD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let _cwd_restore = CwdRestore(std::env::current_dir().ok());
         let root = tempfile::tempdir().unwrap();
         let rustfmt = root.path().join("rustfmt-test-bin");
@@ -263,7 +268,9 @@ mod tests {
 
     #[test]
     fn recursive_invocation_never_uses_root_only_marker() {
-        let _lock = CWD_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let _lock = CWD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let _cwd_restore = CwdRestore(std::env::current_dir().ok());
         let root = tempfile::tempdir().unwrap();
         let rustfmt = root.path().join("rustfmt-test-bin");
@@ -295,13 +302,18 @@ mod tests {
         })
         .unwrap();
 
-        assert!(second_called, "recursive rustfmt must re-check child modules");
+        assert!(
+            second_called,
+            "recursive rustfmt must re-check child modules"
+        );
         assert_eq!(std::fs::read(&child).unwrap(), b"pub fn child() {}\n");
     }
 
     #[test]
     fn explicit_skip_children_can_use_content_marker() {
-        let _lock = CWD_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let _lock = CWD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let _cwd_restore = CwdRestore(std::env::current_dir().ok());
         let root = tempfile::tempdir().unwrap();
         let rustfmt = root.path().join("rustfmt-test-bin");
@@ -315,22 +327,15 @@ mod tests {
             source.display().to_string(),
         ];
 
-        run_rustfmt_cached_with_runner(&rustfmt, &args, root.path(), Some(&cache_root), |_| {
-            Ok(0)
-        })
-        .unwrap();
+        run_rustfmt_cached_with_runner(&rustfmt, &args, root.path(), Some(&cache_root), |_| Ok(0))
+            .unwrap();
         let mut second_called = false;
-        let code = run_rustfmt_cached_with_runner(
-            &rustfmt,
-            &args,
-            root.path(),
-            Some(&cache_root),
-            |_| {
+        let code =
+            run_rustfmt_cached_with_runner(&rustfmt, &args, root.path(), Some(&cache_root), |_| {
                 second_called = true;
                 Ok(0)
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
 
         assert!(!second_called);
         assert_eq!(code, 0);
