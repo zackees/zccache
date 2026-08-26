@@ -18,7 +18,7 @@ owner = "zccache-cli-core"
 reason = "Compiler-specific candidate ordering is product policy, not host discovery."
 [[platform_group]]
 source = "crates/zccache-platform/src/platform/host.rs"
-items = ["os", "arch", "home_dir", "runtime_dir", "current_user", "cpu_identity_material", "available_parallelism", "is_elevated"]
+items = ["os", "arch", "is_windows", "is_macos", "is_linux", "home_dir", "runtime_dir", "current_user", "cpu_identity_material", "available_parallelism", "is_elevated"]
 disposition = "extend"
 kernel_capability = "host facts, user/runtime directories, and privilege facts"
 [[platform_group]]

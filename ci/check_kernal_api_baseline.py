@@ -13,7 +13,12 @@ ROOT = Path(__file__).resolve().parent.parent
 INVENTORY = ROOT / "docs" / "architecture" / "kernal-api-migration.toml"
 PLATFORM_ROOT = ROOT / "crates" / "zccache-platform" / "src" / "platform"
 BACKENDS = {"tokio", "tokio-util", "running-process", "interprocess", "crash-handler", "memmap2", "fs2", "blake3", "libc", "windows-sys"}
-PUBLIC_ITEM = re.compile(r"^\s*pub\s+(?:async\s+)?(?:fn|struct|enum|type)\s+([A-Za-z_][A-Za-z0-9_]*)")
+# The facade exposes both free functions and associated methods.  Keep this
+# deliberately lexical: the inventory is a drift detector, not a Rust parser,
+# and every externally visible declaration starts with `pub` in these modules.
+PUBLIC_ITEM = re.compile(
+    r"^\s*pub\s+(?:async\s+)?(?:const\s+)?(?:fn|struct|enum|trait|type|const)\s+([A-Za-z_][A-Za-z0-9_]*)"
+)
 VALID_DISPOSITIONS = {"reuse", "extend", "move", "retain"}
 
 
