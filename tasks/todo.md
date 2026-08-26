@@ -1,3 +1,11 @@
+# #1513 replace vulnerable sevenz-rust
+
+- [x] RED: `soldr cargo audit` reports RUSTSEC-2026-0245 through sevenz-rust 0.6.1.
+- [x] Migrate the workspace dependency to sevenz-rust2 while preserving zccache's checked extraction callback.
+- [x] Add an end-to-end malicious 7z traversal regression and retain the existing round-trip test.
+- [x] Run focused tests, format, publish checks, and confirm the advisory/package is absent. Full feature Clippy is blocked by three pre-existing warnings in analyze.rs and engine_profile.rs; main CI is green at d8890ab2.
+- [ ] Push, open and merge the linked PR, then publish a patch release for Soldr.
+
 # #1365 centralize host-platform mechanics behind zccache-platform
 
 Parent: https://github.com/zackees/zccache/issues/1365 — 6 phase sub-issues (#1366-#1369 exist; two more to be created for phases 5/6). Parent auto-closes when all sub-issues close. Starting branch: `refactor/platform/phase2-fs`.
