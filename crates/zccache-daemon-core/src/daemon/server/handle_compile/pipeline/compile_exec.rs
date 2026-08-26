@@ -246,7 +246,6 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         .is_some_and(|rustc_args| rustc_args.emit_types.iter().any(|emit| emit == "link"));
     let compiler_priority =
         CompilePriority::from_client_env_for_link_like(client_env.as_deref(), is_link_like);
-    let compiler_priority_decision = compiler_priority.resolve_for_current_load();
 
     // soldr#2781: this point is reached only after every cache-hit branch has
     // missed. Ordinary compiler children share the gate; an amalgamated C
@@ -332,7 +331,8 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     }
     let compile_span_start = std::time::Instant::now();
 
-    let (result, streamed_output) = if let Some(context) = crate::daemon::compile_output::current()
+    let (result, compiler_priority_decision, streamed_output) = if let Some(context) =
+        crate::daemon::compile_output::current()
     {
         let (sender, receiver) = tokio::sync::mpsc::channel(8);
         let filter = if depfile_strategy == DepfileStrategy::ShowIncludes {
@@ -348,24 +348,22 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         } else {
             crate::daemon::compile_output::StderrFilter::None
         };
-        let process = crate::daemon::process::tokio_command_output_streaming_with_priority_stdin(
+        let process = crate::daemon::process::tokio_command_output_streaming_with_priority_decision(
             &mut cmd,
-            compiler_priority_decision.effective,
-            None,
+            compiler_priority,
             sender,
         );
         let consume = crate::daemon::compile_output::consume(receiver, context, filter);
         let (process_result, capture_result) = tokio::join!(process, consume);
-        (process_result, Some(capture_result))
+        (process_result.0, process_result.1, Some(capture_result))
     } else {
-        (
-            crate::daemon::process::tokio_command_output_with_priority(
+        let (result, decision) =
+            crate::daemon::process::tokio_command_output_with_priority_decision(
                 &mut cmd,
-                compiler_priority_decision.effective,
+                compiler_priority,
             )
-            .await,
-            None,
-        )
+            .await;
+        (result, decision, None)
     };
     let compiler_process_ns = t_compiler_process.elapsed().as_nanos() as u64;
     if staged_plan.is_some() {
