@@ -30,6 +30,7 @@ def test_zccache_publish_manifest_keeps_gha_feature_dependencies(
     manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
 
     assert manifest["features"]["gha"] == ["dep:reqwest", "dep:sha2"]
+    assert manifest["features"]["formatter"] == []
     assert manifest["dependencies"]["sha2"] == {
         "workspace": True,
         "optional": True,
@@ -96,6 +97,7 @@ name = "zccache"
 
 [features]
 cli = ["download-client", "gha", "zccache-artifact/cli"]
+formatter = ["dep:zccache-cli-core", "zccache-cli-core/formatter"]
 download = ["dep:zccache-download", "dep:futures", "dep:reqwest"]
 download-protocol = ["download", "dep:zccache-download-protocol"]
 gha = ["dep:zccache-gha", "zccache-artifact/gha"]
@@ -135,6 +137,7 @@ tokio = { workspace = true }
     assert "zccache-core =" not in text
     assert "zccache-download =" not in text
     assert 'cli = ["download-client", "gha"]' in text
+    assert "formatter = []" in text
     assert 'download = ["dep:futures", "dep:reqwest"]' in text
     assert 'download-protocol = ["download"]' in text
     assert 'gha = ["dep:reqwest", "dep:sha2"]' in text
@@ -230,6 +233,12 @@ sha2 = { workspace = true, optional = true }
         zccache / "src" / "lib.rs"
     ).read_text(encoding="utf-8")
     assert "pub mod dev_daemon_identity;" in (
+        zccache / "src" / "lib.rs"
+    ).read_text(encoding="utf-8")
+    assert '#[cfg(feature = "formatter")]' in (
+        zccache / "src" / "lib.rs"
+    ).read_text(encoding="utf-8")
+    assert "pub use cli_core::formatter;" in (
         zccache / "src" / "lib.rs"
     ).read_text(encoding="utf-8")
     assert "zccache-core =" not in (zccache / "Cargo.toml").read_text(

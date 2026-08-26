@@ -48,7 +48,7 @@ pub fn run_embedded_rustfmt(
     cwd: &Path,
     cache_root: &Path,
 ) -> ExitCode {
-    wrap::run_embedded_rustfmt(rustfmt_path, args, cwd, cache_root)
+    crate::formatter::run_rustfmt_cached(rustfmt_path, args, cwd, Some(cache_root))
 }
 
 /// Run the formatter cache while delegating child execution to the host.
@@ -66,7 +66,13 @@ pub fn run_embedded_rustfmt_with_runner<F>(
 where
     F: FnOnce(&mut std::process::Command) -> std::io::Result<i32>,
 {
-    wrap::run_embedded_rustfmt_with_runner(rustfmt_path, args, cwd, cache_root, runner)
+    crate::formatter::run_rustfmt_cached_with_runner(
+        rustfmt_path,
+        args,
+        cwd,
+        Some(cache_root),
+        runner,
+    )
 }
 
 /// Parse argv, run the requested subcommand or wrapper path, and return

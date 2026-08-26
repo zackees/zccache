@@ -38,3 +38,6 @@ pub mod cli;
 pub mod download_client;
 #[cfg(feature = "download-daemon")]
 pub mod download_daemon;
+/// Daemon-free rustfmt format-cache API for embedding hosts.
+#[cfg(feature = "formatter")]
+pub mod formatter;

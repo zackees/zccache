@@ -79,6 +79,7 @@ INTERNAL_MODULES: tuple[AmalgamatedModule, ...] = (
 
 INTERNAL_FEATURE_REMOVALS: dict[str, set[str]] = {
     "test-support": {"zccache-daemon-core/test-support"},
+    "formatter": {"dep:zccache-cli-core", "zccache-cli-core/formatter"},
     "daemon-entry": {"zccache-daemon-core/daemon-entry"},
     "cli": {
         "zccache-artifact/cli",
@@ -179,6 +180,8 @@ pub use daemon_core::audit_writer;
 pub mod ci;
 #[cfg(feature = "cli")]
 pub use cli_core::cli;
+#[cfg(feature = "formatter")]
+pub use cli_core::formatter;
 #[cfg(feature = "symbols")]
 #[doc(hidden)]
 pub mod dev_daemon_identity;
