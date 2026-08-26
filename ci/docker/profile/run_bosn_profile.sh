@@ -7,7 +7,7 @@ set -euo pipefail
 MODE=${1:-all}
 WORKLOAD=${ZCCACHE_PROFILE_WORKLOAD:-perf_rustc_zccache_vs_sccache}
 SAMPLE_HZ=${ZCCACHE_PROFILE_HZ:-99}
-SOLDR_SENTINEL="/bosn/rustup/.standalone-toolchain-${SOLDR_VERSION}-${RUST_VERSION}"
+SOLDR_SENTINEL="/zccache-profile/rustup/.standalone-toolchain-${SOLDR_VERSION}-${RUST_VERSION}"
 
 seed_soldr_home() {
     if [[ ! -f "/opt/soldr-seed/.standalone-toolchain-${SOLDR_VERSION}-${RUST_VERSION}" ]]; then
@@ -15,13 +15,13 @@ seed_soldr_home() {
         exit 2
     fi
     if [[ ! -f "${SOLDR_SENTINEL}" ]]; then
-        mkdir -p /bosn/cargo /bosn/rustup
-        cp -a /opt/soldr-seed/.soldr/cargo/. /bosn/cargo/
-        cp -a /opt/soldr-seed/.soldr/rustup/. /bosn/rustup/
+        mkdir -p /zccache-profile/cargo /zccache-profile/rustup
+        cp -a /opt/soldr-seed/.soldr/cargo/. /zccache-profile/cargo/
+        cp -a /opt/soldr-seed/.soldr/rustup/. /zccache-profile/rustup/
         touch "${SOLDR_SENTINEL}"
     fi
-    export CARGO_HOME=/bosn/cargo
-    export RUSTUP_HOME=/bosn/rustup
+    export CARGO_HOME=/zccache-profile/cargo
+    export RUSTUP_HOME=/zccache-profile/rustup
     export PATH="${CARGO_HOME}/bin:${PATH}"
     if ! command -v rustc >/dev/null 2>&1; then
         echo "ERROR: soldr's seeded rustc proxy is not on PATH" >&2
