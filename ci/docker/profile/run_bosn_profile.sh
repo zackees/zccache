@@ -130,7 +130,8 @@ run_heaptrack() {
         > "${OUT_DIR}/heaptrack.stdout.log" \
         2> "${OUT_DIR}/heaptrack.stderr.log"
     local heaptrack_file
-    heaptrack_file=$(find "${OUT_DIR}" -maxdepth 1 -type f -name 'heaptrack*.gz' -print -quit)
+    heaptrack_file=$(find "${OUT_DIR}" -maxdepth 1 -type f \
+        \( -name 'heaptrack*.gz' -o -name 'heaptrack*.zst' \) -print -quit)
     if [[ -n "${heaptrack_file}" ]]; then
         heaptrack_print "${heaptrack_file}" > "${OUT_DIR}/heaptrack-report.txt"
     fi
