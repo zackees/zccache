@@ -173,6 +173,50 @@ pub fn parse_header_trace(stderr: &[u8], source: &Path, cwd: &Path) -> (ScanResu
     (parser.finish(&mut filtered), filtered)
 }
 
+/// Parse Clang's private `-header-include-file` output.
+///
+/// The file contains one compiler-opened header path per line. Pairing it with
+/// `-sys-header-deps` retains the same user + system header set as `-H` without
+/// routing trace records through the diagnostic stream or constructing a DOT
+/// graph. Missing, overlong, or malformed records fail closed.
+#[must_use]
+pub fn parse_header_include_file(path: &Path, source: &Path, cwd: &Path) -> ScanResult {
+    use std::io::BufRead as _;
+
+    let mut parser = HeaderTraceParser::new(source, cwd);
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => {
+            parser.incomplete = true;
+            return parser.finish(&mut Vec::new());
+        }
+    };
+    let mut reader = std::io::BufReader::new(file);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                if line.len() > MAX_PARTIAL_LINE_BYTES {
+                    parser.incomplete = true;
+                    continue;
+                }
+                let record = line.strip_suffix(b"\n").unwrap_or(&line);
+                let record = record.strip_suffix(b"\r").unwrap_or(record);
+                if record.is_empty() || !parser.record_path_bytes(record) {
+                    parser.incomplete = true;
+                }
+            }
+            Err(_) => {
+                parser.incomplete = true;
+                break;
+            }
+        }
+    }
+    parser.finish(&mut Vec::new())
+}
+
 /// Parse Clang's private `-dependency-dot` output.
 ///
 /// This sink contains compiler-selected user and system headers without
@@ -331,6 +375,39 @@ fn resolve_dependency_graph_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_private_header_include_file_with_system_paths() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("main.cpp");
+        let user = temp.path().join("user.hpp");
+        let system = temp.path().join("system.hpp");
+        let trace = temp.path().join("headers.txt");
+        std::fs::write(&source, "").unwrap();
+        std::fs::write(&user, "").unwrap();
+        std::fs::write(&system, "").unwrap();
+        std::fs::write(
+            &trace,
+            format!(
+                "{}\n{}\n{}\n",
+                user.display(),
+                system.display(),
+                user.display()
+            ),
+        )
+        .unwrap();
+
+        let scan = parse_header_include_file(&trace, &source, temp.path());
+
+        assert_eq!(
+            scan.resolved,
+            vec![
+                crate::depfile::canonicalize_path(&user, temp.path()),
+                crate::depfile::canonicalize_path(&system, temp.path()),
+            ]
+        );
+        assert!(!scan.has_computed);
+    }
 
     #[test]
     fn parses_paths_with_spaces_and_preserves_diagnostics() {
