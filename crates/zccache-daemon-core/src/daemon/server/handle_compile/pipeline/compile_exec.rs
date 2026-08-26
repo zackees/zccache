@@ -50,13 +50,6 @@ pub(super) enum CompileExecResult {
 
 struct PrivateHeaderTrace {
     path: NormalizedPath,
-    kind: PrivateHeaderTraceKind,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PrivateHeaderTraceKind {
-    DependencyDot,
-    HeaderIncludeFile,
 }
 
 impl Drop for PrivateHeaderTrace {
@@ -96,9 +89,10 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     let pre_exec_ns = compile_start.elapsed().as_nanos() as u64;
     let t_exec = std::time::Instant::now();
     let supports_depfile = compilation.family.supports_depfile();
-    let inject_header_trace = should_inject_header_trace(
+    let inject_header_trace = should_inject_header_trace_for_source(
         dependency_mode,
         compilation.family,
+        source_path.as_path(),
         effective_args,
         dep_flags,
     );
@@ -115,13 +109,12 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     );
     let header_trace_enabled =
         inject_header_trace && matches!(depfile_strategy, DepfileStrategy::InjectedMmd { .. });
-    let private_header_trace_kind =
-        private_clang_header_trace_kind(compilation.family, source_path.as_path(), effective_args);
-    let private_header_trace = if header_trace_enabled && private_header_trace_kind.is_some() {
+    let private_header_trace = if header_trace_enabled
+        && use_private_clang_header_trace(compilation.family, source_path.as_path(), effective_args)
+    {
         Some(prepare_private_clang_header_trace(
             &mut extra_args,
             &mut depfile_strategy,
-            private_header_trace_kind.expect("checked above"),
         ))
     } else {
         None
@@ -441,22 +434,11 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         (output.stdout, None, output.stderr)
     };
     let dependency_scan = if let Some(trace) = private_header_trace.as_ref() {
-        let scan = match trace.kind {
-            PrivateHeaderTraceKind::DependencyDot => {
-                crate::depgraph::header_trace::parse_dependency_graph_file(
-                    trace.path.as_path(),
-                    source_path,
-                    cwd_path,
-                )
-            }
-            PrivateHeaderTraceKind::HeaderIncludeFile => {
-                crate::depgraph::header_trace::parse_header_include_file(
-                    trace.path.as_path(),
-                    source_path,
-                    cwd_path,
-                )
-            }
-        };
+        let scan = crate::depgraph::header_trace::parse_dependency_graph_file(
+            trace.path.as_path(),
+            source_path,
+            cwd_path,
+        );
         Some(scan)
     } else {
         dependency_scan
@@ -497,7 +479,6 @@ fn header_trace_path(depfile: &NormalizedPath) -> NormalizedPath {
 fn prepare_private_clang_header_trace(
     extra_args: &mut Vec<String>,
     depfile_strategy: &mut DepfileStrategy,
-    kind: PrivateHeaderTraceKind,
 ) -> PrivateHeaderTrace {
     let DepfileStrategy::InjectedMmd { path } =
         std::mem::replace(depfile_strategy, DepfileStrategy::CompilerTrace)
@@ -506,65 +487,50 @@ fn prepare_private_clang_header_trace(
     };
     let trace = PrivateHeaderTrace {
         path: header_trace_path(&path),
-        kind,
     };
-    // Each private trace is complete on its own, so no second manifest is
-    // needed. C keeps the compact dependency graph; C++ avoids building that
-    // graph and writes Clang's flat include stream instead (#1511).
+    // Clang's dependency graph includes system headers without the
+    // `-sys-header-deps` switch that makes the compact MMD path expensive.
+    // It is complete on its own, so no second manifest is needed.
     extra_args.clear();
-    match kind {
-        PrivateHeaderTraceKind::DependencyDot => extra_args.extend([
-            "-Xclang".to_string(),
-            "-dependency-dot".to_string(),
-            "-Xclang".to_string(),
-            trace.path.to_string_lossy().into_owned(),
-        ]),
-        PrivateHeaderTraceKind::HeaderIncludeFile => extra_args.extend([
-            "-Xclang".to_string(),
-            "-header-include-file".to_string(),
-            "-Xclang".to_string(),
-            trace.path.to_string_lossy().into_owned(),
-            "-Xclang".to_string(),
-            "-sys-header-deps".to_string(),
-        ]),
-    }
+    extra_args.extend([
+        "-Xclang".to_string(),
+        "-dependency-dot".to_string(),
+        "-Xclang".to_string(),
+        trace.path.to_string_lossy().into_owned(),
+    ]);
     trace
 }
 
-/// Clang's file-backed frontend trace avoids `-H` stderr traffic on C and C++
-/// misses while retaining system-header correctness. Restrict it to source
-/// extensions whose language is unambiguous; explicit `-x`, sysroots, and
-/// caller-owned private tracing keep the public fallback.
-fn private_clang_header_trace_kind(
+/// Clang's file-backed frontend trace avoids `-H` stderr traffic on the hot C
+/// miss path. C++ uses its exact full depfile instead (#1511): it is faster than
+/// both public `-H` and Clang's private trace on the sanctioned C++ fixture.
+fn use_private_clang_header_trace(
     family: crate::compiler::CompilerFamily,
     source: &Path,
     args: &[String],
-) -> Option<PrivateHeaderTraceKind> {
-    let extension = source
-        .extension()
-        .and_then(std::ffi::OsStr::to_str)
-        .map(str::to_ascii_lowercase)?;
-    if family != crate::compiler::CompilerFamily::Clang
-        || !matches!(
-            extension.as_str(),
-            "c" | "cc" | "cp" | "cpp" | "cxx" | "c++"
-        )
-        || args.iter().any(|arg| {
+) -> bool {
+    family == crate::compiler::CompilerFamily::Clang
+        && source.extension().is_some_and(|extension| extension == "c")
+        && !args.iter().any(|arg| {
             arg == "-x"
                 || arg.starts_with("-x")
                 || contains_private_header_trace_flag(arg)
                 || contains_sysroot_flag(arg)
         })
-    {
-        return None;
+}
+
+fn use_full_clang_depfile_for_cpp(family: crate::compiler::CompilerFamily, source: &Path) -> bool {
+    if family != crate::compiler::CompilerFamily::Clang {
+        return false;
     }
-    Some(
-        if extension == "c" && source.extension() != Some(std::ffi::OsStr::new("C")) {
-            PrivateHeaderTraceKind::DependencyDot
-        } else {
-            PrivateHeaderTraceKind::HeaderIncludeFile
-        },
-    )
+    let Some(extension) = source.extension().and_then(std::ffi::OsStr::to_str) else {
+        return false;
+    };
+    extension == "C"
+        || matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "cc" | "cp" | "cpp" | "cxx" | "c++"
+        )
 }
 
 fn contains_private_header_trace_flag(arg: &str) -> bool {
@@ -626,11 +592,23 @@ fn should_inject_header_trace(
         && header_trace_is_supported(family, args)
 }
 
+fn should_inject_header_trace_for_source(
+    dependency_mode: DependencyDiscoveryMode,
+    family: crate::compiler::CompilerFamily,
+    source: &Path,
+    args: &[String],
+    dep_flags: &UserDepFlags,
+) -> bool {
+    should_inject_header_trace(dependency_mode, family, args, dep_flags)
+        && !use_full_clang_depfile_for_cpp(family, source)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        header_trace_is_supported, prepare_private_clang_header_trace,
-        private_clang_header_trace_kind, should_inject_header_trace, PrivateHeaderTraceKind,
+        header_trace_is_supported, prepare_private_clang_header_trace, should_inject_header_trace,
+        should_inject_header_trace_for_source, use_full_clang_depfile_for_cpp,
+        use_private_clang_header_trace,
     };
     use crate::compiler::CompilerFamily;
     use crate::daemon::server::dependency_policy::DependencyDiscoveryMode;
@@ -718,55 +696,37 @@ mod tests {
     }
 
     #[test]
-    fn private_clang_trace_covers_plain_c_and_cpp_translation_units() {
-        assert_eq!(
-            private_clang_header_trace_kind(
-                CompilerFamily::Clang,
-                std::path::Path::new("main.c"),
-                &args(&["-c", "main.c"]),
-            ),
-            Some(PrivateHeaderTraceKind::DependencyDot)
-        );
-        assert_eq!(
-            private_clang_header_trace_kind(
-                CompilerFamily::Clang,
-                std::path::Path::new("main.cpp"),
-                &args(&["-c", "main.cpp"]),
-            ),
-            Some(PrivateHeaderTraceKind::HeaderIncludeFile)
-        );
-        assert_eq!(
-            private_clang_header_trace_kind(
-                CompilerFamily::Clang,
-                std::path::Path::new("main.C"),
-                &args(&["-c", "main.C"]),
-            ),
-            Some(PrivateHeaderTraceKind::HeaderIncludeFile)
-        );
-        assert_eq!(
-            private_clang_header_trace_kind(
-                CompilerFamily::Clang,
-                std::path::Path::new("main.cxx"),
-                &args(&["-c", "main.cxx"]),
-            ),
-            Some(PrivateHeaderTraceKind::HeaderIncludeFile)
-        );
-        assert_eq!(
-            private_clang_header_trace_kind(
-                CompilerFamily::Clang,
-                std::path::Path::new("main.c"),
-                &args(&["-x", "c++", "-c", "main.c"]),
-            ),
-            None
-        );
-        assert_eq!(
-            private_clang_header_trace_kind(
-                CompilerFamily::Gcc,
-                std::path::Path::new("main.c"),
-                &args(&["-c", "main.c"]),
-            ),
-            None
-        );
+    fn private_clang_trace_is_bounded_to_plain_c_translation_units() {
+        assert!(use_private_clang_header_trace(
+            CompilerFamily::Clang,
+            std::path::Path::new("main.c"),
+            &args(&["-c", "main.c"]),
+        ));
+        assert!(!use_private_clang_header_trace(
+            CompilerFamily::Clang,
+            std::path::Path::new("main.cpp"),
+            &args(&["-c", "main.cpp"]),
+        ));
+        assert!(!use_private_clang_header_trace(
+            CompilerFamily::Clang,
+            std::path::Path::new("main.C"),
+            &args(&["-c", "main.C"]),
+        ));
+        assert!(!use_private_clang_header_trace(
+            CompilerFamily::Clang,
+            std::path::Path::new("main.cxx"),
+            &args(&["-c", "main.cxx"]),
+        ));
+        assert!(!use_private_clang_header_trace(
+            CompilerFamily::Clang,
+            std::path::Path::new("main.c"),
+            &args(&["-x", "c++", "-c", "main.c"]),
+        ));
+        assert!(!use_private_clang_header_trace(
+            CompilerFamily::Gcc,
+            std::path::Path::new("main.c"),
+            &args(&["-c", "main.c"]),
+        ));
         for incompatible in [
             "-Xclang=-header-include-file",
             "-Xclang=-sys-header-deps",
@@ -782,15 +742,45 @@ mod tests {
             "-Wp,-isysroot,/sdk",
             "-Wp,--sysroot,/sdk",
         ] {
-            assert_eq!(
-                private_clang_header_trace_kind(
-                    CompilerFamily::Clang,
-                    std::path::Path::new("main.c"),
-                    &args(&["-c", "main.c", incompatible]),
-                ),
-                None
-            );
+            assert!(!use_private_clang_header_trace(
+                CompilerFamily::Clang,
+                std::path::Path::new("main.c"),
+                &args(&["-c", "main.c", incompatible]),
+            ));
         }
+    }
+
+    #[test]
+    fn plain_clang_cpp_uses_exact_full_depfile_without_header_trace() {
+        let dep_flags = UserDepFlags::default();
+        for source in ["main.cc", "main.cpp", "main.cxx", "main.c++", "main.C"] {
+            assert!(use_full_clang_depfile_for_cpp(
+                CompilerFamily::Clang,
+                std::path::Path::new(source),
+            ));
+            assert!(!should_inject_header_trace_for_source(
+                DependencyDiscoveryMode::AllHeaders,
+                CompilerFamily::Clang,
+                std::path::Path::new(source),
+                &args(&["-c", source]),
+                &dep_flags,
+            ));
+        }
+        assert!(!use_full_clang_depfile_for_cpp(
+            CompilerFamily::Clang,
+            std::path::Path::new("main.c"),
+        ));
+        assert!(should_inject_header_trace_for_source(
+            DependencyDiscoveryMode::AllHeaders,
+            CompilerFamily::Clang,
+            std::path::Path::new("main.c"),
+            &args(&["-c", "main.c"]),
+            &dep_flags,
+        ));
+        assert!(!use_full_clang_depfile_for_cpp(
+            CompilerFamily::Gcc,
+            std::path::Path::new("main.cpp"),
+        ));
     }
 
     #[test]
@@ -802,11 +792,7 @@ mod tests {
             path: depfile.into(),
         };
 
-        let trace = prepare_private_clang_header_trace(
-            &mut extra_args,
-            &mut strategy,
-            PrivateHeaderTraceKind::DependencyDot,
-        );
+        let trace = prepare_private_clang_header_trace(&mut extra_args, &mut strategy);
 
         assert_eq!(strategy, crate::depgraph::DepfileStrategy::CompilerTrace);
         assert!(!extra_args.iter().any(|arg| arg == "-MMD" || arg == "-MF"));
