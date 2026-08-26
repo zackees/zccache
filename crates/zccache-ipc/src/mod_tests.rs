@@ -6,7 +6,7 @@ use super::test_env::ENV_LOCK;
 use super::*;
 
 #[test]
-fn identity_sha256_streams_files_larger_than_its_fixed_buffer() {
+fn identity_hashes_stream_files_larger_than_their_fixed_buffer() {
     use sha2::{Digest as _, Sha256};
 
     let dir = tempfile::tempdir().unwrap();
@@ -16,10 +16,12 @@ fn identity_sha256_streams_files_larger_than_its_fixed_buffer() {
         .collect();
     std::fs::write(&path, &bytes).unwrap();
 
-    let actual = sha256_file_streaming(&path).unwrap();
-    let expected: [u8; 32] = Sha256::digest(&bytes).into();
+    let (actual_blake3, actual_sha256) = executable_hashes_streaming(&path).unwrap();
+    let expected_blake3 = *blake3::hash(&bytes).as_bytes();
+    let expected_sha256: [u8; 32] = Sha256::digest(&bytes).into();
 
-    assert_eq!(actual, expected);
+    assert_eq!(actual_blake3, expected_blake3);
+    assert_eq!(actual_sha256, expected_sha256);
 }
 use std::ffi::OsString;
 use std::sync::MutexGuard;

@@ -567,7 +567,7 @@ fn running_process_endpoint_path(endpoint: &str) -> String {
 ///
 /// ISSUE-601 / #1511: the identity is keyed by endpoint and cached for the
 /// process lifetime. The first call builds the same running-process wire
-/// identity with a streaming legacy SHA-256 instead of
+/// identity by streaming both required hashes in one pass instead of
 /// `DaemonProcess::current_process`, whose `fs::read` temporarily allocated the
 /// full daemon executable. First-call errors still bubble up; only successful
 /// values are inserted, so a transient failure retries on the next call.
@@ -605,9 +605,7 @@ fn current_process_identity_streaming(
     use running_process::broker::protocol_v2::backend_handle::{DaemonProcess, IdentityError};
 
     let exe_path = std::env::current_exe().map_err(IdentityError::CurrentExe)?;
-    let exe_hash =
-        running_process::broker::backend_lifecycle::identity::executable_hash_file(&exe_path)?;
-    let legacy_exe_sha256 = sha256_file_streaming(&exe_path)?;
+    let (exe_hash, legacy_exe_sha256) = executable_hashes_streaming(&exe_path)?;
     let started_at_unix_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
@@ -625,21 +623,23 @@ fn current_process_identity_streaming(
     })
 }
 
-fn sha256_file_streaming(path: &std::path::Path) -> std::io::Result<[u8; 32]> {
+fn executable_hashes_streaming(path: &std::path::Path) -> std::io::Result<([u8; 32], [u8; 32])> {
     use sha2::{Digest as _, Sha256};
     use std::io::Read as _;
 
     let mut file = std::fs::File::open(path)?;
-    let mut hasher = Sha256::new();
+    let mut blake3 = blake3::Hasher::new();
+    let mut sha256 = Sha256::new();
     let mut buffer = [0_u8; IDENTITY_HASH_BUFFER_BYTES];
     loop {
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
         }
-        hasher.update(&buffer[..read]);
+        blake3.update(&buffer[..read]);
+        sha256.update(&buffer[..read]);
     }
-    Ok(hasher.finalize().into())
+    Ok((*blake3.finalize().as_bytes(), sha256.finalize().into()))
 }
 
 /// Persist the daemon identity used by future `BackendHandle` probes.
