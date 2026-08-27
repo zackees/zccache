@@ -1,5 +1,6 @@
 //! Rustc invocation parsing: crate types, --emit, --out-dir, proc-macro/bin output naming.
 
+use super::super::parse_rustc::{parse_rustc_invocation_with_policy, CACHE_TEST_BINS_ENV};
 use super::super::{detect_family, parse_invocation, CompilerFamily, ParsedInvocation};
 use super::args;
 use zccache_core::NormalizedPath;
@@ -591,16 +592,131 @@ fn rustc_comma_separated_crate_type_equals_form() {
     assert!(matches!(result, ParsedInvocation::Cacheable(_)));
 }
 
+// ─── `--test` harness admission (zccache#1525) ────────────────────────
+//
+// These drive `parse_rustc_invocation_with_policy` rather than
+// `parse_invocation` so the policy value is explicit in each case. The env
+// read is the one-line `owned_env_flag_enabled(CACHE_TEST_BINS_ENV)` call that
+// feeds this seam; keeping it out of the assertions means no test has to
+// mutate process-global environment state that the rest of the suite races on.
+
 #[test]
 fn rustc_test_flag_makes_non_cacheable() {
-    // --test compiles a test harness (implicitly bin, not cacheable)
-    let result = parse_invocation(
+    // Policy: a `--test` invocation produces a test harness executable, which
+    // relinks on any workspace source edit while statically linking the whole
+    // dependency graph. Multi-megabyte entries under keys that can never be
+    // requested twice, so it is refused at admission (soldr#2931).
+    //
+    // The explicit `--crate-type lib` here is the deliberate hard case: `lib`
+    // is cacheable on its own, but `--test` overrides what rustc actually
+    // emits, so the exclusion wins over the declared crate type.
+    let result = parse_rustc_invocation_with_policy(
         "rustc",
         &args(&["--crate-type", "lib", "--test", "src/lib.rs"]),
+        false,
     );
-    // --test gets captured as unknown_flag. Since --crate-type lib is specified
-    // the compilation IS cacheable. The --test flag is in unknown_flags which
-    // is part of the cache key, so different --test values produce different keys.
-    // This is correct: `--test` with `--crate-type lib` is a valid cacheable invocation.
+    match result {
+        ParsedInvocation::NonCacheable { reason } => {
+            assert!(
+                reason.contains("test harness"),
+                "expected the test-harness policy reason, got: {reason}"
+            );
+        }
+        other => panic!("expected --test to be non-cacheable, got: {other:?}"),
+    }
+}
+
+#[test]
+fn rustc_cargo_shaped_test_harness_is_non_cacheable() {
+    // The real-world shape from zccache#1525: cargo compiles an integration
+    // test with `--test` and NO `--crate-type`, so the default-to-`bin`
+    // fallback used to admit every linked test executable into the store.
+    let result = parse_rustc_invocation_with_policy(
+        "rustc",
+        &args(&[
+            "--edition",
+            "2021",
+            "--crate-name",
+            "integration",
+            "--test",
+            "--emit=dep-info,link",
+            "-C",
+            "extra-filename=-abc123",
+            "--out-dir",
+            "/target/debug/deps",
+            "tests/integration.rs",
+        ]),
+        false,
+    );
+    match result {
+        ParsedInvocation::NonCacheable { reason } => {
+            assert!(
+                reason.contains("test harness"),
+                "expected the test-harness policy reason, got: {reason}"
+            );
+        }
+        other => panic!("expected cargo-shaped --test to be non-cacheable, got: {other:?}"),
+    }
+}
+
+#[test]
+fn rustc_test_harness_opt_in_readmits_the_harness() {
+    // ZCCACHE_CACHE_TEST_BINS is the explicit escape hatch for anyone who can
+    // demonstrate a real hit rate. `--test` stays in unknown_flags so the
+    // harness cannot collide with a non-harness build of the same source.
+    let result = parse_rustc_invocation_with_policy(
+        "rustc",
+        &args(&[
+            "--crate-name",
+            "integration",
+            "--test",
+            "--out-dir",
+            "/target/debug/deps",
+            "tests/integration.rs",
+        ]),
+        true,
+    );
+    let cc = match result {
+        ParsedInvocation::Cacheable(c) => c,
+        other => panic!("expected the opt-in to re-admit the harness, got: {other:?}"),
+    };
+    assert!(
+        cc.unknown_flags.iter().any(|flag| flag == "--test"),
+        "--test must stay in the cache key: {:?}",
+        cc.unknown_flags
+    );
+}
+
+#[test]
+fn rustc_test_harness_opt_in_uses_the_canonical_owned_flag_grammar() {
+    // One grammar for every zccache-owned switch (zccache#1478). Re-asserted
+    // here because soldr#2740 is what hand-rolling a sixth truthy parser
+    // costs: `FOO=false` ended up turning a switch on.
+    assert_eq!(CACHE_TEST_BINS_ENV, "ZCCACHE_CACHE_TEST_BINS");
+    for enabled in ["1", "true", "TRUE", " true "] {
+        assert!(
+            zccache_core::config::owned_flag_enabled(Some(enabled)),
+            "{enabled:?} must enable the opt-in"
+        );
+    }
+    for disabled in ["0", "false", "no", "yes", "on", ""] {
+        assert!(
+            !zccache_core::config::owned_flag_enabled(Some(disabled)),
+            "{disabled:?} must leave the exclusion in force"
+        );
+    }
+    assert!(!zccache_core::config::owned_flag_enabled(None));
+}
+
+#[test]
+fn rustc_lib_without_test_flag_stays_cacheable() {
+    // Guard against over-broadening zccache#1525: the exclusion keys on
+    // `--test` alone, so an ordinary library compile is untouched even with
+    // the opt-in off.
+    let result = parse_rustc_invocation_with_policy(
+        "rustc",
+        &args(&["--crate-type", "lib", "src/lib.rs"]),
+        false,
+    );
     assert!(matches!(result, ParsedInvocation::Cacheable(_)));
 }
