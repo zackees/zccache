@@ -17,4 +17,13 @@ def test_mode_capture_does_not_embed_braced_usage_text() -> None:
 
     assert 'MODE="${1:-}"' in text
     assert "MODE=${1:?usage:" not in text
-    assert 'echo "usage: run_bosn_check.sh {lint|test}" >&2' in text
+    validation = '''case "${MODE}" in
+    lint|test)
+        ;;
+    *)
+        echo "usage: run_bosn_check.sh {lint|test}" >&2
+        exit 2
+        ;;
+esac'''
+    assert validation in text
+    assert text.index(validation) < text.index("seed_soldr_home")

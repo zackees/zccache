@@ -7,6 +7,15 @@
 set -euo pipefail
 
 MODE="${1:-}"
+case "${MODE}" in
+    lint|test)
+        ;;
+    *)
+        echo "usage: run_bosn_check.sh {lint|test}" >&2
+        exit 2
+        ;;
+esac
+
 SOLDR_SENTINEL="/zccache-profile/rustup/.standalone-toolchain-${SOLDR_VERSION}-${RUST_VERSION}"
 PREBUILD_BIN_FEATURES="zccache-bin,daemon-bin,download-bin,download-daemon-bin,fingerprint-bin,stamp-bin,ci-bin,crash-tools,tokio-console,test-support"
 
@@ -46,9 +55,5 @@ case "${MODE}" in
         # without letting its /work subprocess rediscover host toolchain homes.
         run_soldr cargo build --manifest-path /work/Cargo.toml -p zccache --bins --features "${PREBUILD_BIN_FEATURES}"
         run_soldr cargo test --manifest-path /work/Cargo.toml --workspace -- --test-threads=1
-        ;;
-    *)
-        echo "usage: run_bosn_check.sh {lint|test}" >&2
-        exit 2
         ;;
 esac
