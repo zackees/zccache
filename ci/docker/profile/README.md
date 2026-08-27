@@ -25,6 +25,11 @@ ignored benchmark. The build and toolchain caches are bosn-managed volumes;
 the source checkout is mounted directly so retained evidence lands in the
 repository's existing ignored performance tree.
 
+`bosn lint` and `bosn test` use the same seeded Linux Soldr homes as the
+profiling tasks. They execute from outside the bind-mounted checkout with an
+explicit workspace manifest, so a host Windows `.cargo` or `.rustup` directory
+cannot be selected by toolchain discovery.
+
 ## Files
 
 - `Dockerfile.perf-linux` — image with `rust:1.95.0-bookworm` + `perf` +

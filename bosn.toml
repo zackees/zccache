@@ -49,3 +49,11 @@ cmd = "bash /work/ci/docker/profile/run_bosn_profile.sh massif"
 [task.profile]
 stack = "perf"
 cmd = "bash /work/ci/docker/profile/run_bosn_profile.sh all"
+
+[task.lint]
+stack = "perf"
+cmd = "bash /work/ci/docker/profile/run_bosn_check.sh lint"
+
+[task.test]
+stack = "perf"
+cmd = "bash /work/ci/docker/profile/run_bosn_check.sh test"
