@@ -116,6 +116,8 @@ pub(in crate::daemon::server) fn fs_caps(src: &Path, dst: &Path) -> VolumeCaps {
         return (*caps).effective();
     }
     let caps = probe_caps(src, dst);
+    #[cfg(test)]
+    record_probe(&key);
     let _insert_guard = CAPS_INSERT_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
@@ -133,6 +135,39 @@ pub(in crate::daemon::server) fn fs_caps(src: &Path, dst: &Path) -> VolumeCaps {
     }
     cache().insert(key, caps);
     caps.effective()
+}
+
+/// Per-volume-pair probe tally, for tests only.
+///
+/// A process-wide total cannot answer "was this pair re-probed?" while ~770
+/// other tests run in parallel and probe their own directories -- measured at
+/// 102 unrelated probes during one suite run. Counting per key isolates the
+/// question from that noise.
+#[cfg(test)]
+static PROBES_BY_KEY: OnceLock<dashmap::DashMap<VolumePair, u64>> = OnceLock::new();
+
+#[cfg(test)]
+fn record_probe(key: &VolumePair) {
+    *PROBES_BY_KEY
+        .get_or_init(dashmap::DashMap::new)
+        .entry(key.clone())
+        .or_insert(0) += 1;
+}
+
+/// The highest number of probes any single volume pair has incurred.
+///
+/// The cache promises one probe per pair, so this stays at 1 no matter how many
+/// deliveries or concurrent tests run. A regression that re-probes per delivery
+/// pushes exactly one key up to the delivery count, which is visible here
+/// without needing to know which key belongs to which test.
+#[cfg(test)]
+pub(in crate::daemon::server) fn max_probes_for_any_volume_pair() -> u64 {
+    PROBES_BY_KEY
+        .get_or_init(dashmap::DashMap::new)
+        .iter()
+        .map(|entry| *entry.value())
+        .max()
+        .unwrap_or(0)
 }
 
 fn probe_caps(src: &Path, dst: &Path) -> VolumeCaps {
