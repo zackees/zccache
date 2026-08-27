@@ -9,6 +9,9 @@ on:
       - "action/**"
       - ".github/workflows/bench-action.yml"
 
+permissions:
+  contents: read
+
 concurrency:
   group: bench-action-${{ github.ref }}
   cancel-in-progress: true
