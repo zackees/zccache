@@ -6,7 +6,7 @@
 # Linux homes explicitly preserved.
 set -euo pipefail
 
-MODE=${1:?usage: run_bosn_check.sh {lint|test}}
+MODE="${1:-}"
 SOLDR_SENTINEL="/zccache-profile/rustup/.standalone-toolchain-${SOLDR_VERSION}-${RUST_VERSION}"
 PREBUILD_BIN_FEATURES="zccache-bin,daemon-bin,download-bin,download-daemon-bin,fingerprint-bin,stamp-bin,ci-bin,crash-tools,tokio-console,test-support"
 
