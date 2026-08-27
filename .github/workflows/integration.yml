@@ -55,6 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
       - uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
           zccache-seed-strict: true
@@ -106,10 +107,8 @@ jobs:
           # The isolated cache is seeded with build artifacts, but runtime
           # journals describe a prior job. Keep the artifacts warm while
           # ensuring the audit below evaluates only this job's behavior.
-          journal_root="$SOLDR_CACHE_DIR/cache/zccache/daemon-state"
-          if [[ -d "$journal_root" ]]; then
-            find "$journal_root" -type f -path '*/logs/*.jsonl' -print -delete
-          fi
+          uv run --no-project python ci/clear_runtime_telemetry.py \
+            --cache-root "$SOLDR_CACHE_DIR/cache/zccache"
       - name: Test (full workspace)
         shell: bash
         env:
@@ -146,10 +145,8 @@ jobs:
           # orchestration, whereas the strict fixture below owns and audits
           # its own runtime cache. Preserve artifacts but exclude harness
           # telemetry from the integration runtime audit.
-          journal_root="$SOLDR_CACHE_DIR/cache/zccache/daemon-state"
-          if [[ -d "$journal_root" ]]; then
-            find "$journal_root" -type f -path '*/logs/*.jsonl' -print -delete
-          fi
+          uv run --no-project python ci/clear_runtime_telemetry.py \
+            --cache-root "$SOLDR_CACHE_DIR/cache/zccache"
       - name: Wrapper daemon-unavailable contract (exit 125)
         shell: bash
         env:
@@ -174,6 +171,14 @@ jobs:
           # workspace-wide log.
           unset ZCCACHE_CACHE_DIR
           soldr cargo test -p zccache --features "$ZCCACHE_INTEGRATION_FEATURES" --test cli_wrapper_failure_boundaries -- --ignored --test-threads=1
+      - name: Remove wrapper-contract telemetry before strict audit
+        if: always()
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/integration
+        run: >
+          uv run --no-project python ci/clear_runtime_telemetry.py
+          --cache-root "$SOLDR_CACHE_DIR/cache/zccache"
       - name: Strict artifact-layout validation
         shell: bash
         env:
@@ -222,10 +227,8 @@ jobs:
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/integration
         run: |
-          journal_root="$SOLDR_CACHE_DIR/cache/zccache/daemon-state"
-          if [[ -d "$journal_root" ]]; then
-            find "$journal_root" -type f -path '*/logs/*.jsonl' -print -delete
-          fi
+          uv run --no-project python ci/clear_runtime_telemetry.py \
+            --cache-root "$SOLDR_CACHE_DIR/cache/zccache"
       - name: Stop isolated test cache
         if: always()
         shell: bash
