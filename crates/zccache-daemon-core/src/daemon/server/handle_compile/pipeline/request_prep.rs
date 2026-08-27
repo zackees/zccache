@@ -305,6 +305,7 @@ pub(super) async fn discover_request_system_includes(
         lineage,
         compiler_priority,
         want_rust_miss_profile,
+        client_env.as_deref(),
     )
     .await;
     if !outcome.empty_discovery {

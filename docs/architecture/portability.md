@@ -30,6 +30,66 @@ values are portable and retained through 1.13.x. The kill switch leaves legacy
 v1/pack reads available on Linux, macOS, and Windows; v2-only entries become
 misses rather than being reinterpreted.
 
+### System include discovery: `cl.exe` reads `%INCLUDE%`, never a probe
+
+For gcc and clang the daemon discovers the default `#include <...>` search
+roots by spawning the compiler (`-v -E -x c++ NUL`, or the faster `-###` for
+the clang family) and parsing the printed search list. **Microsoft's `cl.exe`
+has no equivalent discovery mode**: it resolves `#include <...>` purely against
+the `;`-separated `%INCLUDE%` that `vcvars` exports. Probing it spawns a
+compiler that rejects the preprocessor flags and prints no search list, and the
+resulting "process succeeded, zero paths" outcome is indistinguishable from a
+degraded probe — which is exactly how the issue #1167 guard read it, sending
+every MSVC compile down the uncached bypass and (because #1167 correctly never
+memoizes an empty result) re-firing on every single compile. That was issue
+#1530: a 2,300-compile MSVC build cached zero artifacts.
+
+So `cl.exe` short-circuits discovery and reads `INCLUDE` out of the forwarded
+client environment (`msvc_cl_system_includes` in the compile pipeline;
+`zccache_depgraph::msvc_system_includes_from_env` does the parsing). Two
+consequences worth keeping in mind:
+
+- **The result is not memoized in the L1/L2 system-include cache.** `%INCLUDE%`
+  belongs to the client shell — which `vcvars` ran, for which architecture —
+  not to the compiler binary, so a per-compiler-path entry would leak one
+  shell's roots into another's. `INCLUDE` is already a cache-key input
+  (`compile_journal/env.rs`), so a different shell yields a different key.
+- **An absent `INCLUDE` is a known-empty result, not a degraded one.** `cl.exe`
+  genuinely has no other search roots, and the miss path recovers the real
+  header set from `/showIncludes` regardless.
+
+`clang-cl` also classifies as `CompilerFamily::Msvc` (it speaks MSVC argument
+syntax) but *is* a clang driver: it answers the probe and owns builtin header
+directories that `%INCLUDE%` does not list, so it stays on the discovery path.
+`zccache_compiler::is_msvc_cl` is the discriminator.
+
+### `/showIncludes` is read from stdout, and stripped only when injected
+
+MSVC's dependency mechanism is `/showIncludes`, which prints one
+`Note: including file: <path>` line per header. Unlike `gcc -H` / `clang -H`
+(stderr), **`cl.exe` and `clang-cl` write these notes to stdout.** The daemon
+scanned stderr, found nothing, and recorded zero dependencies for every MSVC
+compile — harmless only for as long as MSVC never cached at all. The moment the
+`%INCLUDE%` fix above made MSVC cacheable, that turned into a stale hit: edit a
+header, get the pre-edit object back. Both halves of issue #1530 therefore ship
+together; the `%INCLUDE%` change is not safe to land alone.
+
+Whether the notes are stripped from the caller's stdout depends on **who asked
+for the flag**, tracked as `injected_show_includes` at the injection site in
+`compile_exec.rs`:
+
+- **Daemon injected it** (the caller passed no `/showIncludes`): the notes are
+  internal bookkeeping and are filtered out, so the caller's stdout looks
+  exactly as it would without zccache.
+- **Caller passed it** (CMake + Ninja MSVC builds do, and parse the notes into
+  their own depfiles): the notes are scanned but passed through byte-for-byte.
+  Stripping them would silently break the build system's dependency tracking.
+
+`StderrFilter::reads_stdout()` / `strips_scanned_lines()` in
+`daemon/compile_output.rs` encode this for the streaming path; the buffered
+path in `compile_exec.rs` mirrors it. `clang -H` header traces keep reading
+stderr and keep being stripped unconditionally — they are only ever injected.
+
 ---
 
 ## Host-Platform Boundary (`zccache-platform`)

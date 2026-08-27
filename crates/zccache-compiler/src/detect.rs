@@ -83,6 +83,22 @@ pub fn detect_family(compiler: &str) -> CompilerFamily {
     }
 }
 
+/// Whether `compiler` is Microsoft's own `cl.exe` rather than `clang-cl`.
+///
+/// Both classify as [`CompilerFamily::Msvc`] because they share the argument
+/// syntax, but they differ where it matters for system-include discovery:
+/// `clang-cl` is a clang driver and answers `-v -E`, while `cl.exe` has no
+/// discovery mode at all and takes its search roots from `%INCLUDE%`.
+#[must_use]
+pub fn is_msvc_cl(compiler: &str) -> bool {
+    let basename = compiler.rsplit(['/', '\\']).next().unwrap_or(compiler);
+    let name = match basename.rsplit_once('.') {
+        Some((stem, _)) => stem,
+        None => basename,
+    };
+    name.eq_ignore_ascii_case("cl")
+}
+
 /// Whether the executable basename refers to clang-cl (the MSVC-syntax driver).
 ///
 /// Matches `clang-cl`, `clang-cl-17`, `Clang-CL.EXE`, etc. `name` is the

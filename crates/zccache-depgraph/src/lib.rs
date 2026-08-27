@@ -44,7 +44,8 @@ pub use snapshot::{
     DepGraphLoadOutcome, SnapshotError, DEPGRAPH_VERSION,
 };
 pub use system_includes::{
-    discovery_args, discovery_args_fast, parse_cc1_system_include_output,
-    parse_system_include_output, SystemIncludeCache,
+    discovery_args, discovery_args_fast, msvc_system_includes_from_env,
+    parse_cc1_system_include_output, parse_msvc_include_env, parse_system_include_output,
+    SystemIncludeCache, MSVC_INCLUDE_ENV,
 };
 pub use watcher_support::WatchSet;

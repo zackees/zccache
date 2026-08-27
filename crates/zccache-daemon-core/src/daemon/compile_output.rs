@@ -61,10 +61,46 @@ pub(crate) fn current() -> Option<OutputContext> {
     OUTPUT_CONTEXT.try_with(Clone::clone).ok()
 }
 
+/// Which compiler stream the dependency scanner reads, and whether its lines
+/// are ours to remove.
+///
+/// `clang -H` writes its trace to **stderr**. MSVC / clang-cl `/showIncludes`
+/// writes `Note: including file:` to **stdout** (issue #1530 — the daemon used
+/// to scan stderr for it, found nothing, and recorded zero dependencies, which
+/// turned every subsequent MSVC compile into a stale cache hit after a header
+/// edit).
 pub(crate) enum StderrFilter<'a> {
     None,
-    ShowIncludes { source: &'a Path, cwd: &'a Path },
-    HeaderTrace { source: &'a Path, cwd: &'a Path },
+    ShowIncludes {
+        source: &'a Path,
+        cwd: &'a Path,
+        /// True when the daemon added `/showIncludes` itself, so the notes are
+        /// its own bookkeeping and must not reach the caller. False when the
+        /// caller passed the flag — CMake + Ninja MSVC builds parse those notes
+        /// into their own depfiles, so they are scanned but passed through.
+        injected: bool,
+    },
+    HeaderTrace {
+        source: &'a Path,
+        cwd: &'a Path,
+    },
+}
+
+impl StderrFilter<'_> {
+    /// The stream the parser attaches to. Everything except `/showIncludes`
+    /// reads stderr.
+    fn reads_stdout(&self) -> bool {
+        matches!(self, Self::ShowIncludes { .. })
+    }
+
+    /// Whether the scanned lines are removed from the stream the caller sees.
+    fn strips_scanned_lines(&self) -> bool {
+        match self {
+            Self::None => false,
+            Self::ShowIncludes { injected, .. } => *injected,
+            Self::HeaderTrace { .. } => true,
+        }
+    }
 }
 
 pub(crate) struct CapturedOutput {
@@ -102,9 +138,11 @@ pub(crate) async fn consume(
     context.mark_live();
     let mut stdout = BoundedCapture::new(context.capture_limit, "stdout");
     let mut stderr = BoundedCapture::new(context.capture_limit, "stderr");
+    let parser_reads_stdout = stderr_filter.reads_stdout();
+    let strips_scanned_lines = stderr_filter.strips_scanned_lines();
     let mut dependency_parser = match stderr_filter {
         StderrFilter::None => None,
-        StderrFilter::ShowIncludes { source, cwd } => Some(DependencyParser::ShowIncludes(
+        StderrFilter::ShowIncludes { source, cwd, .. } => Some(DependencyParser::ShowIncludes(
             crate::depgraph::show_includes::ShowIncludesParser::new(source, cwd),
         )),
         StderrFilter::HeaderTrace { source, cwd } => Some(DependencyParser::HeaderTrace(
@@ -112,21 +150,41 @@ pub(crate) async fn consume(
         )),
     };
 
+    // Run `bytes` through the dependency parser and return what the caller
+    // should see: the parser's residue when we own the scanned lines, the
+    // original bytes when the caller asked for them itself.
+    fn scan_chunk(parser: &mut Option<DependencyParser>, strip: bool, bytes: Vec<u8>) -> Vec<u8> {
+        let Some(parser) = parser.as_mut() else {
+            return bytes;
+        };
+        let mut residue = Vec::new();
+        parser.push(&bytes, &mut residue);
+        if strip {
+            residue
+        } else {
+            bytes
+        }
+    }
+
     while let Some(chunk) = receiver.recv().await {
         match chunk {
             RawOutputChunk::Stdout(bytes) => {
+                let bytes = if parser_reads_stdout {
+                    scan_chunk(&mut dependency_parser, strips_scanned_lines, bytes)
+                } else {
+                    bytes
+                };
                 if let Some(bytes) = stdout.push(&bytes) {
                     send(&context.sender, OutputChunk::Stdout(bytes)).await?;
                 }
             }
             RawOutputChunk::Stderr(bytes) => {
-                let mut filtered = Vec::new();
-                if let Some(parser) = dependency_parser.as_mut() {
-                    parser.push(&bytes, &mut filtered);
+                let bytes = if parser_reads_stdout {
+                    bytes
                 } else {
-                    filtered = bytes;
-                }
-                if let Some(bytes) = stderr.push(&filtered) {
+                    scan_chunk(&mut dependency_parser, strips_scanned_lines, bytes)
+                };
+                if let Some(bytes) = stderr.push(&bytes) {
                     send(&context.sender, OutputChunk::Stderr(bytes)).await?;
                 }
             }
@@ -134,10 +192,25 @@ pub(crate) async fn consume(
     }
 
     let dependency_scan = if let Some(parser) = dependency_parser {
-        let mut filtered = Vec::new();
-        let scan = parser.finish(&mut filtered);
-        if let Some(bytes) = stderr.push(&filtered) {
-            send(&context.sender, OutputChunk::Stderr(bytes)).await?;
+        // Flush whatever the line splitter is still holding. When we are not
+        // stripping, that tail already went through verbatim, so the residue
+        // is dropped rather than duplicated.
+        let mut residue = Vec::new();
+        let scan = parser.finish(&mut residue);
+        if strips_scanned_lines {
+            let capture = if parser_reads_stdout {
+                &mut stdout
+            } else {
+                &mut stderr
+            };
+            if let Some(bytes) = capture.push(&residue) {
+                let chunk = if parser_reads_stdout {
+                    OutputChunk::Stdout(bytes)
+                } else {
+                    OutputChunk::Stderr(bytes)
+                };
+                send(&context.sender, chunk).await?;
+            }
         }
         Some(scan)
     } else {
@@ -350,6 +423,129 @@ mod tests {
         );
         assert_eq!(captured.stderr, b"warning: retained\n");
         assert_eq!(emitted, captured.stderr);
+    }
+
+    // ── Issue #1530: /showIncludes lives on stdout ──────────────────────
+
+    /// Feed a `/showIncludes` transcript in on one stream and return
+    /// `(scan, stdout, stderr)`.
+    async fn run_show_includes(
+        transcript_on_stdout: bool,
+        injected: bool,
+        source: &Path,
+        cwd: &Path,
+        transcript: &str,
+    ) -> (Option<crate::depgraph::ScanResult>, Vec<u8>, Vec<u8>) {
+        let (sender, _chunks) = mpsc::channel(256);
+        let context = OutputContext::new(sender);
+        let (raw_sender, raw_receiver) = mpsc::channel(256);
+        // Chunk it finely so the line splitter has to reassemble across
+        // boundaries, the way a real pipe delivers it.
+        for bytes in transcript.as_bytes().chunks(7) {
+            let chunk = if transcript_on_stdout {
+                RawOutputChunk::Stdout(bytes.to_vec())
+            } else {
+                RawOutputChunk::Stderr(bytes.to_vec())
+            };
+            raw_sender.send(chunk).await.expect("raw receiver");
+        }
+        drop(raw_sender);
+        let captured = super::consume(
+            raw_receiver,
+            context,
+            StderrFilter::ShowIncludes {
+                source,
+                cwd,
+                injected,
+            },
+        )
+        .await
+        .expect("capture");
+        (captured.dependency_scan, captured.stdout, captured.stderr)
+    }
+
+    #[tokio::test]
+    async fn show_includes_is_scanned_from_stdout_and_stripped_when_injected() {
+        // The regression: cl.exe prints these notes on stdout. Scanning
+        // stderr recorded zero dependencies, so a header edit did not
+        // invalidate the cached object.
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let source = temp.path().join("main.c");
+        let header = temp.path().join("dep.h");
+        std::fs::write(&source, "").expect("source");
+        std::fs::write(&header, "").expect("header");
+        let transcript = format!("main.c\r\nNote: including file: {}\r\n", header.display());
+
+        let (scan, stdout, stderr) =
+            run_show_includes(true, true, &source, temp.path(), &transcript).await;
+        let scan = scan.expect("show-includes scan");
+        assert_eq!(
+            scan.resolved,
+            vec![crate::depgraph::depfile::canonicalize_path(
+                &header,
+                temp.path()
+            )]
+        );
+        assert_eq!(stdout, b"main.c\r\n");
+        assert!(stderr.is_empty());
+    }
+
+    #[tokio::test]
+    async fn show_includes_notes_survive_when_the_caller_asked_for_them() {
+        // CMake + Ninja MSVC builds pass /showIncludes themselves and parse
+        // the notes into their own depfiles. Stripping them would break the
+        // build system's dependency tracking.
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let source = temp.path().join("main.c");
+        let header = temp.path().join("dep.h");
+        std::fs::write(&source, "").expect("source");
+        std::fs::write(&header, "").expect("header");
+        let transcript = format!("main.c\r\nNote: including file: {}\r\n", header.display());
+
+        let (scan, stdout, _stderr) =
+            run_show_includes(true, false, &source, temp.path(), &transcript).await;
+        assert_eq!(
+            scan.expect("show-includes scan").resolved,
+            vec![crate::depgraph::depfile::canonicalize_path(
+                &header,
+                temp.path()
+            )]
+        );
+        assert_eq!(stdout, transcript.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn show_includes_leaves_stderr_untouched() {
+        // Real diagnostics go to stderr and must pass through whole even
+        // though the dependency parser is attached to stdout.
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let source = temp.path().join("main.c");
+        std::fs::write(&source, "").expect("source");
+        let (sender, _chunks) = mpsc::channel(64);
+        let context = OutputContext::new(sender);
+        let (raw_sender, raw_receiver) = mpsc::channel(64);
+        raw_sender
+            .send(RawOutputChunk::Stderr(
+                b"main.c(1): warning C4101: unreferenced\r\n".to_vec(),
+            ))
+            .await
+            .expect("raw receiver");
+        drop(raw_sender);
+        let captured = super::consume(
+            raw_receiver,
+            context,
+            StderrFilter::ShowIncludes {
+                source: &source,
+                cwd: temp.path(),
+                injected: true,
+            },
+        )
+        .await
+        .expect("capture");
+        assert_eq!(
+            captured.stderr,
+            b"main.c(1): warning C4101: unreferenced\r\n"
+        );
     }
 
     #[tokio::test]

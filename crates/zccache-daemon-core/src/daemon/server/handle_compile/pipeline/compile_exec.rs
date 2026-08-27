@@ -127,11 +127,19 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     // For MSVC, use /showIncludes to get complete dependency info
     // (equivalent to depfiles for gcc/clang). This enables cache hits
     // for files with computed includes like `#include MACRO`.
+    //
+    // `injected_show_includes` records whether *we* added the flag. When the
+    // caller passed it (CMake + Ninja MSVC builds do, and parse the notes into
+    // their own depfiles), the notes are output the build system is waiting
+    // for: scan them, but pass them through untouched. Only notes we asked for
+    // get stripped.
+    let mut injected_show_includes = false;
     if compilation.family == crate::compiler::CompilerFamily::Msvc
         && depfile_strategy == DepfileStrategy::Unsupported
     {
         if !dep_flags.has_md {
             extra_args.push("/showIncludes".to_string());
+            injected_show_includes = true;
         }
         depfile_strategy = DepfileStrategy::ShowIncludes;
     }
@@ -339,6 +347,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
             crate::daemon::compile_output::StderrFilter::ShowIncludes {
                 source: source_path.as_path(),
                 cwd: cwd_path.as_path(),
+                injected: injected_show_includes,
             }
         } else if stderr_header_trace {
             crate::daemon::compile_output::StderrFilter::HeaderTrace {
@@ -415,12 +424,22 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     let (stdout_bytes, dependency_scan, stderr_bytes) = if let Some(streamed) = streamed_output {
         (streamed.stdout, streamed.dependency_scan, streamed.stderr)
     } else if depfile_strategy == DepfileStrategy::ShowIncludes {
+        // Issue #1530: MSVC / clang-cl write `/showIncludes` notes to STDOUT,
+        // not stderr. Scanning stderr found nothing, so every MSVC compile
+        // recorded zero dependencies and went on serving a stale object after
+        // a header edit. The notes are stripped only when the daemon injected
+        // the flag — a caller that passed it (CMake + Ninja) is parsing them.
         let (scan, filtered) = crate::depgraph::show_includes::parse_show_includes(
-            &output.stderr,
+            &output.stdout,
             source_path,
             cwd_path,
         );
-        (output.stdout, Some(scan), filtered)
+        let stdout = if injected_show_includes {
+            filtered
+        } else {
+            output.stdout
+        };
+        (stdout, Some(scan), output.stderr)
     } else if stderr_header_trace {
         let (scan, filtered) = crate::depgraph::header_trace::parse_header_trace(
             &output.stderr,

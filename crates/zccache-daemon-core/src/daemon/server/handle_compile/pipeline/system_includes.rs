@@ -44,6 +44,7 @@ pub(super) async fn discover_system_includes(
     lineage: &crate::daemon::lineage::Lineage,
     compiler_priority: CompilePriority,
     want_rust_miss_profile: bool,
+    client_env: Option<&[(String, String)]>,
 ) -> SystemIncludesOutcome {
     // Discover system includes for this compiler (cached per compiler path).
     //
@@ -58,7 +59,10 @@ pub(super) async fn discover_system_includes(
     let t_system_includes = want_rust_miss_profile.then(std::time::Instant::now);
     let compiler_family = crate::compiler::detect_family(&compiler.to_string_lossy());
     let needs_discovery = compiler_family.needs_system_include_discovery();
-    let (system_includes, empty_discovery) = if !needs_discovery {
+    let msvc_cl_includes = msvc_cl_system_includes(&compiler.to_string_lossy(), client_env);
+    let (system_includes, empty_discovery) = if let Some(includes) = msvc_cl_includes {
+        (includes, false)
+    } else if !needs_discovery {
         (Vec::new(), false)
     } else {
         // Issue #541 option B: for the clang family the daemon prefers
@@ -232,6 +236,51 @@ async fn discover_system_include_paths(
     }
 }
 
+/// System include roots for Microsoft's `cl.exe`, read from `%INCLUDE%`.
+///
+/// Returns `None` for every other compiler, meaning "use the spawn-based
+/// discovery path".
+///
+/// Issue #1530: `cl.exe` has no `-v -E` discovery mode. Probing it spawns a
+/// compiler that rejects the C/C++-preprocessor flags and prints no
+/// `#include <...> search starts here:` section, so the parse yields zero
+/// paths. Under the issue #1167 guard that "process succeeded, zero paths"
+/// result is a *degraded* probe, and the caller diverts the compile to the
+/// uncached bypass. Because #1167 also (correctly) refuses to memoize an empty
+/// result, the probe re-ran and the bypass re-fired on every single compile —
+/// so an MSVC build cached nothing, ever.
+///
+/// `cl.exe` resolves `#include <...>` against `%INCLUDE%`, which `vcvars`
+/// exports. Reading it from the forwarded client environment is both correct
+/// and free, so `cl.exe` never spawns a discovery process at all.
+///
+/// The result is deliberately **not** memoized in the L1/L2 system-include
+/// cache: `%INCLUDE%` is a property of the client shell (which `vcvars` ran,
+/// for which architecture), not of the compiler binary, so a
+/// per-compiler-path entry would leak one shell's roots into another's.
+///
+/// An absent or empty `INCLUDE` yields `Some(vec![])` — a *known* empty
+/// result, not a degraded one. `cl.exe` genuinely has no other search roots,
+/// and the miss path recovers the real header set from `/showIncludes`
+/// regardless. Reporting it as degraded would resurrect the bypass this fixes.
+///
+/// `clang-cl` also classifies as [`crate::compiler::CompilerFamily::Msvc`],
+/// but it *is* a clang driver and answers the probe, so it is excluded here
+/// and keeps its discovered builtin header directory.
+fn msvc_cl_system_includes(
+    compiler: &str,
+    client_env: Option<&[(String, String)]>,
+) -> Option<Vec<NormalizedPath>> {
+    if !crate::compiler::is_msvc_cl(compiler) {
+        return None;
+    }
+    Some(
+        client_env
+            .map(crate::depgraph::msvc_system_includes_from_env)
+            .unwrap_or_default(),
+    )
+}
+
 async fn run_discovery_command(
     compiler: &NormalizedPath,
     args: &[&str],
@@ -265,5 +314,60 @@ mod tests {
     fn nonempty_discovery_is_cacheable() {
         let paths = [NormalizedPath::new("/toolchain/include")];
         assert!(discovery_result_is_cacheable(Some(&paths)));
+    }
+
+    // ── Issue #1530: MSVC cl.exe takes its roots from %INCLUDE% ─────────
+
+    fn env(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn msvc_cl_reads_include_env_instead_of_probing() {
+        let block = env(&[("INCLUDE", "C:\\VC\\include;C:\\Windows Kits\\10\\ucrt;")]);
+        let includes = msvc_cl_system_includes(
+            "C:\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\cl.EXE",
+            Some(&block),
+        )
+        .expect("cl.exe must bypass the spawn-based probe");
+        assert_eq!(
+            includes,
+            vec![
+                NormalizedPath::new("C:\\VC\\include"),
+                NormalizedPath::new("C:\\Windows Kits\\10\\ucrt"),
+            ]
+        );
+    }
+
+    #[test]
+    fn msvc_cl_without_include_env_is_known_empty_not_degraded() {
+        // The regression: a `Some(vec![])` here must NOT be reported as
+        // `empty_discovery`, or every cl.exe compile takes the #1167
+        // uncached bypass and the cache stays at zero artifacts forever.
+        assert_eq!(msvc_cl_system_includes("cl.exe", Some(&[])), Some(vec![]));
+        assert_eq!(msvc_cl_system_includes("cl", None), Some(vec![]));
+    }
+
+    #[test]
+    fn clang_cl_still_uses_the_spawn_probe() {
+        // clang-cl classifies as Msvc but is a real clang driver: it answers
+        // `-v -E` and owns builtin headers that %INCLUDE% does not list.
+        let block = env(&[("INCLUDE", "C:\\VC\\include")]);
+        assert_eq!(
+            msvc_cl_system_includes("C:\\LLVM\\bin\\clang-cl.exe", Some(&block)),
+            None
+        );
+        assert_eq!(msvc_cl_system_includes("clang-cl", Some(&block)), None);
+    }
+
+    #[test]
+    fn non_msvc_compilers_still_use_the_spawn_probe() {
+        let block = env(&[("INCLUDE", "C:\\VC\\include")]);
+        for compiler in ["gcc", "/usr/bin/clang++", "rustc", "cl-something"] {
+            assert_eq!(msvc_cl_system_includes(compiler, Some(&block)), None);
+        }
     }
 }

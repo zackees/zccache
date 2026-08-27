@@ -51,6 +51,8 @@ failed cache-root audit retain its diagnostic JSONL evidence.
 - **Standalone daemon identity, deployment & lifecycle (argv[0] single binary, version-rooted deploy, versioned endpoints)** → [runtime.md § Standalone daemon identity, deployment & lifecycle](architecture/runtime.md#standalone-daemon-identity-deployment--lifecycle)
 - **Rejected depgraph snapshots — quarantine, recovery, why no migration** → [runtime.md § Depgraph snapshot quarantine](architecture/runtime.md#depgraph-snapshot-quarantine)
 - **Windows/macOS/Linux differences** → [portability.md](architecture/portability.md)
+- **MSVC `cl.exe` system includes (`%INCLUDE%`, issue #1530)** → [portability.md](architecture/portability.md#system-include-discovery-clexe-reads-include-never-a-probe)
+- **MSVC `/showIncludes` on stdout, strip-only-when-injected (issue #1530)** → [portability.md](architecture/portability.md#showincludes-is-read-from-stdout-and-stripped-only-when-injected)
 - **Host-platform boundary (zccache-platform)** → [portability.md](architecture/portability.md#host-platform-boundary-zccache-platform)
 - **kernal-api migration inventory and baselines** → [kernal-api-migration.md](architecture/kernal-api-migration.md)
 - **Compile journal fields & `miss_reason` enum** → [journal-schema.md](journal-schema.md)
