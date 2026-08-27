@@ -25,6 +25,8 @@ use super::{CacheableCompilation, CompilerFamily, ParsedInvocation};
 ///   its declared library and toolchain-qualified byte-copy sidecar are
 ///   modeled as one complete artifact set by the daemon.
 const RUSTC_CACHEABLE_CRATE_TYPES: &[&str] = &["lib", "rlib", "staticlib", "proc-macro", "bin"];
+const RUSTC_TEST_HARNESS_NON_CACHEABLE_REASON: &str =
+    "non-cacheable rustc test harness (--test policy)";
 
 /// Host dynamic-library file-name pattern for proc-macros, matching
 /// rustc's output naming. Linux/macOS use the `lib` prefix; Windows
@@ -210,7 +212,7 @@ const RUSTC_FLAGS_WITH_VALUE: &[&str] = &[
 /// Parse a rustc invocation to determine cacheability.
 ///
 /// Cacheable: `--crate-type` is `lib`, `rlib`, `staticlib`, `proc-macro`, or `bin`.
-/// Non-cacheable: `dylib`, `cdylib`.
+/// Non-cacheable: `dylib`, `cdylib`, and every `--test` harness invocation.
 pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedInvocation {
     let execution_args = args;
     let args = match super::dylint_inner_rustc_args(compiler, args) {
@@ -234,10 +236,17 @@ pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedI
     let mut explicit_link_output: Option<String> = None;
     let mut explicit_output: Option<String> = None;
     let mut unknown_flags: Vec<String> = Vec::new();
+    let mut is_test_harness = false;
 
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
+
+        if arg == "--test" {
+            is_test_harness = true;
+            i += 1;
+            continue;
+        }
 
         // --crate-type <type> or --crate-type=<type>
         // Rustc accepts comma-separated types: --crate-type lib,rlib
@@ -401,6 +410,16 @@ pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedI
             };
         }
     };
+
+    // `--test` requests a linked test-harness executable, even when an
+    // explicit crate type is present. Its source closure changes with the
+    // workspace library, so it is intentionally excluded from reusable store
+    // content rather than falling through to the default `bin` crate type.
+    if is_test_harness {
+        return ParsedInvocation::NonCacheable {
+            reason: RUSTC_TEST_HARNESS_NON_CACHEABLE_REASON.to_string(),
+        };
+    }
 
     // autocfg 1.5+ deliberately puts a process-random UUID in each probe
     // crate name. rustc embeds that identity in the emitted LLVM IR, so the

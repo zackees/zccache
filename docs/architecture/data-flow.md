@@ -161,6 +161,12 @@ its own:
   `bin`.** `dylib`/`cdylib` are deliberately not cached (platform
   linker state is not modeled) — PyO3/maturin `cdylib` final artifacts
   recompile every time while their rlib deps still hit.
+- **Test-harness link products are never cacheable.** `--test` is refused at
+  admission with the `--test policy` reason, before a Cargo-shaped invocation
+  with no `--crate-type` can fall through to the default `bin` type. An
+  explicit otherwise-cacheable crate type (such as `--crate-type lib --test`)
+  does not override the policy: rustc still links a test-harness executable
+  whose workspace-library closure is expected to change frequently.
 - **Native libraries in link steps are a documented blind spot.**
   `bin`/`staticlib` units linking system libraries via `-L`/`-l` do not
   content-hash the resolved library bytes (matching sccache). An

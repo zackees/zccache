@@ -592,15 +592,35 @@ fn rustc_comma_separated_crate_type_equals_form() {
 }
 
 #[test]
+fn rustc_cargo_shaped_test_harness_is_non_cacheable() {
+    // zccache#1525: Cargo passes --test without an explicit --crate-type.
+    let result = parse_invocation(
+        "rustc",
+        &args(&[
+            "--crate-name",
+            "parser_tests",
+            "--test",
+            "src/parser_tests.rs",
+        ]),
+    );
+    assert!(matches!(
+        result,
+        ParsedInvocation::NonCacheable { ref reason }
+            if reason == "non-cacheable rustc test harness (--test policy)"
+    ));
+}
+
+#[test]
 fn rustc_test_flag_makes_non_cacheable() {
-    // --test compiles a test harness (implicitly bin, not cacheable)
+    // An explicit cacheable crate type does not override the --test policy:
+    // rustc still links a test-harness executable.
     let result = parse_invocation(
         "rustc",
         &args(&["--crate-type", "lib", "--test", "src/lib.rs"]),
     );
-    // --test gets captured as unknown_flag. Since --crate-type lib is specified
-    // the compilation IS cacheable. The --test flag is in unknown_flags which
-    // is part of the cache key, so different --test values produce different keys.
-    // This is correct: `--test` with `--crate-type lib` is a valid cacheable invocation.
-    assert!(matches!(result, ParsedInvocation::Cacheable(_)));
+    assert!(matches!(
+        result,
+        ParsedInvocation::NonCacheable { ref reason }
+            if reason == "non-cacheable rustc test harness (--test policy)"
+    ));
 }
