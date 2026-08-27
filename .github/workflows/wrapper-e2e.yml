@@ -65,8 +65,12 @@ jobs:
 
       - name: setup soldr with cook prebuild (Unix)
         if: runner.os != 'Windows'
-        uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+        uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
+          # Release compilation includes zccache-daemon-core, which can exceed
+          # the hosted Linux memory budget at Cargo's default parallelism.
+          # Keep this CI compile in the prescribed bounded resource domain.
+          ci-tests: true
           zccache-seed-strict: true
           cache: true
           cache-key-suffix: wrapper-e2e-${{ matrix.os }}
@@ -76,8 +80,10 @@ jobs:
 
       - name: setup soldr without cook prebuild (Windows)
         if: runner.os == 'Windows'
-        uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+        uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
+          # Match the Unix release-build resource contract above.
+          ci-tests: true
           zccache-seed-strict: true
           cache: true
           cache-key-suffix: wrapper-e2e-${{ matrix.os }}
@@ -209,7 +215,7 @@ jobs:
           Add-Content $env:GITHUB_PATH $installDir
 
       - name: Stop setup-soldr builder cache before wrapper smoke test
-        uses: zackees/setup-soldr/cleanup@01aea6d47db8fedcafd350e2d42e19290c68824e
+        uses: zackees/setup-soldr/cleanup@5f1f68dcb8377818413c28ce52214261ae8ff771
 
       - name: smoke compile through wrapper (Unix)
         if: runner.os != 'Windows'

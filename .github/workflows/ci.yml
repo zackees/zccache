@@ -47,7 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v6
-      - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+      - uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
           # This action ref's default soldr (0.8.13) predates zackees/soldr#1820
           # and GCs live target/ artifacts after every build — which is what
@@ -55,7 +55,7 @@ jobs:
           # .so despite successful build": the compiled cdylib was collected
           # between the build and dylint's post-build lookup (and between the
           # workflow's two passes). Pin a post-#1820 soldr.
-          version: 0.9.2
+          version: 0.9.10
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
@@ -87,7 +87,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v6
       - id: setup-soldr
-        uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+        uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
           # Post-#1820 soldr (see the identical pin above): 0.8.13's live
           # target-artifact GC is what collected the freshly built dylint
@@ -100,6 +100,9 @@ jobs:
           cache-key-suffix: dylint
           linker: fast
           prebuild-deps: soldr-cook
+          # The prescribed profile materializes the exact nightly, driver,
+          # and tool binaries once; the Dylint stages below only consume it.
+          ci-tests: true
           dylint-cache: true
           dylint-toolchain: nightly-2026-05-26
           cargo-dylint-version: 6.0.1
@@ -229,7 +232,7 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+      - uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
           # This action ref's default soldr (0.8.13) predates zackees/soldr#1820
           # and GCs live target/ artifacts after every build — which is what
@@ -267,7 +270,7 @@ jobs:
       RUSTDOCFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+      - uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
           # This action ref's default soldr (0.8.13) predates zackees/soldr#1820
           # and GCs live target/ artifacts after every build — which is what
