@@ -248,7 +248,17 @@ pub(super) fn materialize_cached_compile_hit(
                     );
                     return Err(missing_entry(artifact_key_hex));
                 };
-                targets.push(requested);
+                let target = if requested
+                    .file_name()
+                    .is_some_and(|name| name == std::ffi::OsStr::new(names[i].as_str()))
+                {
+                    requested
+                } else {
+                    requested
+                        .parent()
+                        .map_or_else(|| requested.clone(), |parent| parent.join(&names[i]).into())
+                };
+                targets.push(target);
                 selected_payloads.push(payloads[i].clone());
             }
             (targets, selected_payloads)
@@ -256,7 +266,20 @@ pub(super) fn materialize_cached_compile_hit(
             let targets = (0..payloads.len())
                 .map(|i| {
                     let out: NormalizedPath = if i == 0 {
-                        output_path.clone()
+                        // The compiler may have materialized a physical name
+                        // different from its declared primary path (for
+                        // example by appending a suffix). The cold staged
+                        // plan records that observed filename in `names`; use
+                        // it on a fresh-root hit rather than replaying the
+                        // extensionless declaration.
+                        if output_path
+                            .file_name()
+                            .is_some_and(|name| name == std::ffi::OsStr::new(names[i].as_str()))
+                        {
+                            output_path.clone()
+                        } else {
+                            secondary_output_dir.join(&names[i])
+                        }
                     } else if i == 1 && payloads.len() == 2 {
                         current_depfile_dest
                             .clone()
@@ -452,6 +475,14 @@ pub(super) fn rustc_compat_payload_index_for(
 ) -> Option<usize> {
     let requested_name = requested.file_name()?.to_str()?;
     if let Some(index) = names.iter().position(|name| name == requested_name) {
+        return Some(index);
+    }
+    let prefixed_observed = format!("{requested_name}.");
+    let mut observed = names.iter().enumerate().filter(|(_, name)| {
+        name.starts_with(&prefixed_observed)
+            && rustc_output_kind(std::path::Path::new(name)).is_none()
+    });
+    if let (Some((index, _)), None) = (observed.next(), observed.next()) {
         return Some(index);
     }
     let wanted = rustc_output_kind(requested)?;
