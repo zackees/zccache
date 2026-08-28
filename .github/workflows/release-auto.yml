@@ -512,6 +512,20 @@ jobs:
     runs-on: ${{ matrix.os }}
     needs: [preflight, build-wheels]
     if: needs.preflight.outputs.pypi_complete != 'true'
+    # #1535: the Intel macOS leg must not be able to hold the publish chain
+    # hostage. `publish-crates` needs `publish-pypi` needs `test-wheels`, so
+    # one unschedulable runner blocks *every* crates.io release. GitHub is
+    # retiring Intel macOS hosts: during 1.13.14 the `macos-14` arm64 leg
+    # finished in minutes while this one never started at all, and a
+    # cancel-and-rerun re-queued it with the same result. The wheel is still
+    # built and still published -- it is only its smoke test that stops being
+    # a gate, because a gate that cannot run is not a gate.
+    #
+    # Deliberately expressed per-leg rather than by deleting the entry: the
+    # matrix is kept in set-equality lockstep with `PLATFORMS` in
+    # `ci/release_workflow.py` by `test_release_workflow.py`, and dropping
+    # Intel coverage is a product decision, not a CI workaround.
+    continue-on-error: ${{ matrix.os == 'macos-15-intel' }}
     strategy:
       fail-fast: false
       matrix:
