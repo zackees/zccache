@@ -34,6 +34,7 @@ on:
 # main are never cancelled: release-auto.yml triggers on push-to-main
 # version bumps, so every commit that lands must be fully tested.
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -43,13 +44,28 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # macos-14 is Apple Silicon. This was previously two jobs, `x86` and `arm`,
-  # both pinned to macos-14 — byte-identical duplicates that also derived the
+  # macos-15 is Apple Silicon. This was previously two jobs, `x86` and `arm`,
+  # both pinned to the same arm64 image, byte-identical duplicates that also derived the
   # same cache-key-suffix and so raced each other on cache save. Real Intel
   # coverage would mean macos-13, which is deliberately avoided: see
   # wrapper-e2e.yml, where that pool cost 15+ minutes of queue wait per run.
   macos:
     uses: ./.github/workflows/ci-check.yml
     with:
-      os: macos-14
+      os: macos-15
       run_check: false
+
+  observe-macos-queue:
+    name: Observe macOS runner queue
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
+      - name: Bound macOS queue starvation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --no-project --python 3.13 python ci/observe_runner_queue.py
+          --repository "${{ github.repository }}" --run-id "${{ github.run_id }}"
+          --runner macos-15 --job "macos / Test" --token "$GITHUB_TOKEN"

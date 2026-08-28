@@ -32,6 +32,7 @@ on:
       - "tasks/**"
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -45,7 +46,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-14]
+        os: [windows-latest, ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -96,6 +97,21 @@ jobs:
         run: >-
           soldr cargo test -p zccache-daemon-core --features test-support
           refs_non_cluster_multiple_round_trips -- --nocapture --test-threads=1
+
+  observe-macos-queue:
+    name: Observe macOS runner queue
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
+      - name: Bound macOS queue starvation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --no-project --python 3.13 python ci/observe_runner_queue.py
+          --repository "${{ github.repository }}" --run-id "${{ github.run_id }}"
+          --runner macos-15 --job "matrix (macos-15)" --token "$GITHUB_TOKEN"
 
   large-cow:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'

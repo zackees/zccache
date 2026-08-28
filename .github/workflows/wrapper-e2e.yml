@@ -5,7 +5,7 @@ name: Wrapper end-to-end
 # small crate with proc-macro build scripts (serde --features derive),
 # routing every rustc invocation through the freshly-built wrapper.
 #
-# Green on macos-13 / macos-14 is the acceptance signal that the 1.7.2
+# Green on the supported Apple Silicon runner is the acceptance signal that the 1.7.2
 # macOS regression — build-script rustc failing in ~4ms with stderr
 # swallowed — is fixed.
 
@@ -38,6 +38,7 @@ on:
       - "tasks/**"
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -52,13 +53,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macos-14 (arm64) is the active macOS leg. It already validates
+          # macos-15 (arm64) is the active macOS leg. It already validates
           # the 1.7.2 regression fix end-to-end and runs on the modern
           # Apple Silicon image where the Intel-only `macos-13` runner
           # pool is consistently scarce — keeping macos-13 in the matrix
           # added 15+ minutes of queue wait per run for redundant coverage.
           # Re-add if a future regression turns out to be Intel-specific.
-          - os: macos-14       # Apple Silicon — primary macOS coverage
+          - os: macos-15       # Apple Silicon — primary macOS coverage
           - os: ubuntu-latest  # parity reference
           - os: windows-latest # parity reference
     runs-on: ${{ matrix.os }}
@@ -329,3 +330,18 @@ jobs:
               Get-Content $_.FullName -ErrorAction SilentlyContinue
             }
           }
+
+  observe-macos-queue:
+    name: Observe macOS runner queue
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
+      - name: Bound macOS queue starvation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --no-project --python 3.13 python ci/observe_runner_queue.py
+          --repository "${{ github.repository }}" --run-id "${{ github.run_id }}"
+          --runner macos-15 --job "wrapper-e2e (macos-15)" --token "$GITHUB_TOKEN"
