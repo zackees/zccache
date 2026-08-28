@@ -1,6 +1,6 @@
 //! `detect_family` + `supports_depfile` for clang/gcc/msvc/emcc.
 
-use super::super::{detect_family, CompilerFamily};
+use super::super::{detect_family, is_msvc_cl, CompilerFamily};
 
 #[test]
 fn detect_clang_family() {
@@ -66,4 +66,38 @@ fn clang_supports_depfile() {
 #[test]
 fn msvc_no_depfile() {
     assert!(!CompilerFamily::Msvc.supports_depfile());
+}
+
+// --- Issue #1530: cl.exe vs clang-cl for system-include discovery ---------
+
+#[test]
+fn is_msvc_cl_matches_only_microsofts_driver() {
+    for compiler in [
+        "cl",
+        "cl.exe",
+        "CL.EXE",
+        "Cl.exe",
+        r"C:\Program Files\MSVC\bin\cl.EXE",
+        "/mnt/c/MSVC/cl",
+    ] {
+        assert!(is_msvc_cl(compiler), "expected cl.exe: {compiler}");
+    }
+}
+
+#[test]
+fn is_msvc_cl_excludes_clang_cl_and_others() {
+    // clang-cl parses MSVC syntax (family Msvc) but is a clang driver: it
+    // answers the `-v -E` include probe, so it must keep using it.
+    for compiler in [
+        "clang-cl",
+        "clang-cl.exe",
+        r"C:\LLVM\bin\clang-cl.exe",
+        "clang-cl-17",
+        "gcc",
+        "clang",
+        "cl-wrapper",
+        "mycl.exe",
+    ] {
+        assert!(!is_msvc_cl(compiler), "expected not cl.exe: {compiler}");
+    }
 }

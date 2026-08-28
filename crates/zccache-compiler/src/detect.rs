@@ -54,11 +54,7 @@ pub fn dylint_inner_rustc_args<'a>(
 #[must_use]
 pub fn detect_family(compiler: &str) -> CompilerFamily {
     // Split on both `/` and `\` so Windows-style paths work on all platforms.
-    let basename = compiler.rsplit(['/', '\\']).next().unwrap_or(compiler);
-    let name = match basename.rsplit_once('.') {
-        Some((stem, _)) => stem,
-        None => basename,
-    };
+    let name = compiler_stem(compiler);
     if name == "rustfmt" || name.starts_with("rustfmt-") {
         CompilerFamily::Rustfmt
     } else if is_dylint_driver(compiler)
@@ -80,6 +76,31 @@ pub fn detect_family(compiler: &str) -> CompilerFamily {
         CompilerFamily::Msvc
     } else {
         CompilerFamily::Gcc
+    }
+}
+
+/// Whether `compiler` is Microsoft's own `cl.exe` rather than `clang-cl`.
+///
+/// Both classify as [`CompilerFamily::Msvc`] because they share the argument
+/// syntax, but they differ where it matters for system-include discovery:
+/// `clang-cl` is a clang driver and answers `-v -E`, while `cl.exe` has no
+/// discovery mode at all and takes its search roots from `%INCLUDE%`.
+#[must_use]
+pub fn is_msvc_cl(compiler: &str) -> bool {
+    compiler_stem(compiler).eq_ignore_ascii_case("cl")
+}
+
+/// The compiler's basename with any final `.<ext>` stripped.
+///
+/// Splits on both `/` and `\` so Windows-style paths work on every host. Unlike
+/// [`executable_stem`], which only removes a `.exe` suffix, this drops whatever
+/// extension is present — the family table matches on names like `clang-18`
+/// and `cl` that may or may not carry one.
+fn compiler_stem(compiler: &str) -> &str {
+    let basename = compiler.rsplit(['/', '\\']).next().unwrap_or(compiler);
+    match basename.rsplit_once('.') {
+        Some((stem, _)) => stem,
+        None => basename,
     }
 }
 

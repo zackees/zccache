@@ -510,6 +510,33 @@ pub(super) fn msvc_env_key_flags(
     flags
 }
 
+/// Key flag separating MSVC compiles by who asked for `/showIncludes`.
+///
+/// Issue #1530: `parse_msvc_args` consumes `/showIncludes` without recording it
+/// in `flags`, so `cl /c a.c` and `cl /showIncludes /c a.c` hash to the same
+/// `ContextKey`. Their stored stdout is not interchangeable: when the daemon
+/// injects the flag it strips the `Note: including file:` lines, and when the
+/// caller passes it they are kept. Replaying a stripped entry to a CMake +
+/// Ninja caller would hand it an empty depfile and silently under-rebuild;
+/// replaying the other direction would spam notes into a plain caller's stdout.
+///
+/// Salting the key keeps the two populations in separate entries. Within a
+/// single build every compile is spelled the same way, so this costs no hits.
+pub(super) fn msvc_show_includes_key_flags(
+    family: crate::compiler::CompilerFamily,
+    args: &[String],
+) -> Option<String> {
+    use crate::depgraph::msvc_args::ShowIncludesMode;
+    if family != crate::compiler::CompilerFamily::Msvc {
+        return None;
+    }
+    let mode = match crate::depgraph::msvc_args::msvc_show_includes_mode(args)? {
+        ShowIncludesMode::All => "all",
+        ShowIncludesMode::UserOnly => "user",
+    };
+    Some(format!("zccache:msvc-showincludes:{mode}"))
+}
+
 /// Compute a fast fingerprint of a compile request for the request-level cache.
 ///
 /// Streams bytes directly into blake3 without intermediate buffer allocation.
@@ -786,4 +813,65 @@ pub(super) fn strict_paths_mode_from_client_env(
             .map(|(key, value)| (key.as_str(), value.as_str())),
     )
     .map_err(|err| err.to_string())
+}
+
+#[cfg(test)]
+mod show_includes_key_tests {
+    use super::msvc_show_includes_key_flags;
+    use crate::compiler::CompilerFamily;
+
+    fn args(s: &[&str]) -> Vec<String> {
+        s.iter().map(|x| (*x).to_string()).collect()
+    }
+
+    #[test]
+    fn injected_and_caller_passed_compiles_key_differently() {
+        // Issue #1530: the parser drops `/showIncludes`, so without this salt
+        // both spellings hash to one ContextKey while storing different
+        // stdout — and a stripped entry replayed to a CMake + Ninja caller
+        // hands it an empty depfile.
+        let plain = msvc_show_includes_key_flags(CompilerFamily::Msvc, &args(&["/c", "a.c"]));
+        let caller = msvc_show_includes_key_flags(
+            CompilerFamily::Msvc,
+            &args(&["/c", "/showIncludes", "a.c"]),
+        );
+        let user_only = msvc_show_includes_key_flags(
+            CompilerFamily::Msvc,
+            &args(&["/c", "/showIncludes:user", "a.c"]),
+        );
+        assert_eq!(plain, None);
+        assert_eq!(
+            caller,
+            Some("zccache:msvc-showincludes:all".to_string()),
+            "caller-passed /showIncludes must salt the key"
+        );
+        assert_ne!(
+            caller, user_only,
+            "the full and user-only traces produce different stdout"
+        );
+    }
+
+    #[test]
+    fn spelling_variants_share_one_salt() {
+        // `-showincludes` and `/showIncludes` are the same flag, so they must
+        // not fragment the cache.
+        assert_eq!(
+            msvc_show_includes_key_flags(CompilerFamily::Msvc, &args(&["-showincludes", "a.c"])),
+            msvc_show_includes_key_flags(CompilerFamily::Msvc, &args(&["/showIncludes", "a.c"]))
+        );
+    }
+
+    #[test]
+    fn non_msvc_families_are_never_salted() {
+        for family in [
+            CompilerFamily::Gcc,
+            CompilerFamily::Clang,
+            CompilerFamily::Rustc,
+        ] {
+            assert_eq!(
+                msvc_show_includes_key_flags(family, &args(&["/showIncludes", "a.c"])),
+                None
+            );
+        }
+    }
 }

@@ -73,6 +73,44 @@ pub fn parse_system_include_output(output: &str) -> Vec<NormalizedPath> {
     paths
 }
 
+/// Name of the MSVC environment variable that lists the system include roots.
+///
+/// `vcvarsall.bat` (and every `vcvars<arch>.bat` wrapper) exports `INCLUDE` as
+/// a `;`-separated list of directories. `cl.exe` resolves every
+/// `#include <...>` against that list -- it has no compiled-in default search
+/// path and no `-v -E` style discovery mode.
+pub const MSVC_INCLUDE_ENV: &str = "INCLUDE";
+
+/// Split an MSVC `INCLUDE` value into system include roots.
+///
+/// The value is `;`-separated. Segments are trimmed and empty segments are
+/// dropped -- a trailing `;` is idiomatic in `vcvars`-generated values and must
+/// not produce a bogus empty root.
+#[must_use]
+pub fn parse_msvc_include_env(value: &str) -> Vec<NormalizedPath> {
+    value
+        .split(';')
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .map(NormalizedPath::new)
+        .collect()
+}
+
+/// Extract the MSVC system include roots from a client environment block.
+///
+/// Windows environment variable names are case-insensitive, and the block is
+/// forwarded verbatim from the client shell, so the lookup must be too. The
+/// last matching entry wins, mirroring how a process environment collapses
+/// duplicate names.
+#[must_use]
+pub fn msvc_system_includes_from_env(env: &[(String, String)]) -> Vec<NormalizedPath> {
+    env.iter()
+        .rev()
+        .find(|(name, _)| name.eq_ignore_ascii_case(MSVC_INCLUDE_ENV))
+        .map(|(_, value)| parse_msvc_include_env(value))
+        .unwrap_or_default()
+}
+
 /// Build the compiler discovery command arguments.
 ///
 /// Returns the arguments to pass to the compiler to discover system include
@@ -506,6 +544,61 @@ fn write_atomic_durable(tmp: &Path, target: &Path, bytes: &[u8]) -> std::io::Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Issue #1530: MSVC %INCLUDE% parsing ─────────────────────────────
+
+    #[test]
+    fn msvc_include_env_splits_on_semicolons() {
+        assert_eq!(
+            parse_msvc_include_env("C:\\VC\\include;C:\\Kits\\10\\ucrt"),
+            vec![
+                NormalizedPath::new("C:\\VC\\include"),
+                NormalizedPath::new("C:\\Kits\\10\\ucrt"),
+            ]
+        );
+    }
+
+    #[test]
+    fn msvc_include_env_drops_empty_and_trims_segments() {
+        // vcvars emits a trailing `;`, and hand-edited values pick up spaces.
+        assert_eq!(
+            parse_msvc_include_env(";C:\\a ; ;  C:\\b with spaces\\inc ;"),
+            vec![
+                NormalizedPath::new("C:\\a"),
+                NormalizedPath::new("C:\\b with spaces\\inc"),
+            ]
+        );
+        assert!(parse_msvc_include_env("").is_empty());
+        assert!(parse_msvc_include_env(";;  ;").is_empty());
+    }
+
+    #[test]
+    fn msvc_include_env_lookup_is_case_insensitive() {
+        let block = vec![("Include".to_string(), "C:\\a".to_string())];
+        assert_eq!(
+            msvc_system_includes_from_env(&block),
+            vec![NormalizedPath::new("C:\\a")]
+        );
+    }
+
+    #[test]
+    fn msvc_include_env_lookup_takes_the_last_duplicate() {
+        let block = vec![
+            ("INCLUDE".to_string(), "C:\\stale".to_string()),
+            ("include".to_string(), "C:\\live".to_string()),
+        ];
+        assert_eq!(
+            msvc_system_includes_from_env(&block),
+            vec![NormalizedPath::new("C:\\live")]
+        );
+    }
+
+    #[test]
+    fn msvc_include_env_absent_is_empty() {
+        let block = vec![("PATH".to_string(), "C:\\bin".to_string())];
+        assert!(msvc_system_includes_from_env(&block).is_empty());
+        assert!(msvc_system_includes_from_env(&[]).is_empty());
+    }
 
     #[test]
     fn parse_gcc_output() {
