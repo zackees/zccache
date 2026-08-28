@@ -37,6 +37,7 @@ mod staged_link_args;
 mod staged_multi;
 mod staged_paths;
 mod staged_plan;
+mod staged_plan_observed;
 mod staged_store;
 mod write_cached;
 

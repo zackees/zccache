@@ -157,7 +157,7 @@ pub(in crate::daemon::server) struct StagedOutputPlan {
 pub(in crate::daemon::server) struct StagedCompilePlan {
     pub(in crate::daemon::server) outputs: Vec<StagedOutputPlan>,
     pub(in crate::daemon::server) rewritten_args: Vec<String>,
-    root: NormalizedPath,
+    pub(super) root: NormalizedPath,
 }
 
 impl StagedCompilePlan {

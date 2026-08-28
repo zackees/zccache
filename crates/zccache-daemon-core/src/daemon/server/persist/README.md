@@ -37,8 +37,9 @@ re-exports `*` from each submodule.
   staging marker normalization and requested-path rehydration.
 - **[`staged_link_args.rs`](staged_link_args.rs)** — Linker argument planning
   for private staged outputs.
-- **[`staged_plan.rs`](staged_plan.rs)** / **[`staged_multi.rs`](staged_multi.rs)** —
-  Compiler output-role planning and multi-output staging.
+- **[`staged_plan.rs`](staged_plan.rs)** / **[`staged_plan_observed.rs`](staged_plan_observed.rs)** /
+  **[`staged_multi.rs`](staged_multi.rs)** — Compiler output-role planning,
+  physical output-name observation, and multi-output staging.
 - **[`staged_store.rs`](staged_store.rs)** and
   **[`staged_store/`](staged_store/)** — Immutable generations, atomic pointer
   publication, materialization, root safety, maintenance, and test fault hooks.
