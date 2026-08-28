@@ -47,6 +47,11 @@ jobs:
       # matrix so pull requests cannot merge before exercising the budget.
       - name: Run COW materialization budget
         shell: bash
+        env:
+          # The required gate compiles the daemon-core library test from a
+          # cold target tree on a constrained hosted runner.
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: |
           set -euo pipefail
           soldr cargo test -p zccache-daemon-core --features test-support perf_cow_materialization_128_hits_under_two_seconds

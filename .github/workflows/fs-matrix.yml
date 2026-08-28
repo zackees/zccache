@@ -75,6 +75,9 @@ jobs:
           # No-op on Linux/macOS, which use TMPDIR instead.
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
+          # This compiles the daemon-core library test on each hosted OS.
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: >-
           soldr cargo test -p zccache-daemon-core --features test-support
           filesystem_materialization_matrix_prints_loud_summary -- --nocapture --test-threads=1
@@ -85,6 +88,8 @@ jobs:
           ZCCACHE_REQUIRE_REFS: "1"
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: >-
           soldr cargo test -p zccache-daemon-core --features test-support
           refs_non_cluster_multiple_round_trips -- --nocapture --test-threads=1
@@ -115,6 +120,8 @@ jobs:
           ZCCACHE_REQUIRE_LARGE_COW: "1"
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: >-
           soldr cargo test -p zccache-daemon-core --features test-support
           reflink_larger_than_four_gib_uses_chunked_clone -- --nocapture --test-threads=1

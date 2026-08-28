@@ -86,6 +86,11 @@ jobs:
           # so use the same guard as the isolated test phase below rather
           # than setup-soldr's 5 GiB default.
           SOLDR_TARGET_BLOCK_FREE_GB: "2"
+          # The prebuild also compiles the daemon-core library test. Cargo's
+          # worker count remains relevant even though this phase bypasses the
+          # cache service.
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: |
           # The build cache can contain zccache COW materializations, whose
           # artifacts are intentionally read-only while shared with the cache.
