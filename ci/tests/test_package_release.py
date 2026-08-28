@@ -205,7 +205,30 @@ def test_release_workflow_uses_bootstrap_zccache_for_cross_builds() -> None:
     assert "SOLDR_RUSTC_WRAPPER=" in release_workflow
     assert 'use_soldr: "true"' in release_workflow
     assert "runs-on: ubuntu-24.04" in release_workflow
-    assert release_workflow.count("runs-on: ${{ matrix.os }}") == 1
+
+    # `runs-on: ${{ matrix.os }}` belongs to the wheel smoke jobs alone: those
+    # must install the wheel on its own hardware. `build` must NOT use it --
+    # cross builds run on the ubuntu-24.04 bootstrap host, which is what this
+    # test is about.
+    #
+    # Named rather than counted. The count was `== 1` until #1535 split the
+    # smoke matrix into a gating job and an ungated one, at which point a bare
+    # count has to be relaxed to 2 -- and `== 2` is then satisfied by `build`
+    # regressing onto a matrix runner while a smoke job moves off it, which is
+    # exactly the swap this line exists to catch.
+    matrix_os_jobs = {
+        name
+        for name, body in re.findall(
+            r"^  ([a-z][a-z0-9-]*):\n(.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)",
+            release_workflow,
+            re.M | re.S,
+        )
+        if "runs-on: ${{ matrix.os }}" in body
+    }
+    assert matrix_os_jobs == {"test-wheels", "test-wheels-ungated"}, (
+        "only the wheel smoke jobs may run on a per-target matrix runner; "
+        f"got {sorted(matrix_os_jobs)}"
+    )
     assert "if: inputs.use_soldr == 'true'" in action
     assert "Use setup-soldr for setup and caching" in action
 
