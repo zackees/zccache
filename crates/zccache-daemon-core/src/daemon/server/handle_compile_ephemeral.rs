@@ -170,7 +170,7 @@ pub(super) async fn run_compiler_direct_with_family(
         let consume = crate::daemon::compile_output::consume(
             receiver,
             context,
-            crate::daemon::compile_output::StderrFilter::None,
+            crate::daemon::compile_output::OutputFilter::None,
         );
         let (process_result, capture_result) = tokio::join!(process, consume);
         (process_result, Some(capture_result))

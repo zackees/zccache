@@ -52,8 +52,14 @@ consequences worth keeping in mind:
 - **The result is not memoized in the L1/L2 system-include cache.** `%INCLUDE%`
   belongs to the client shell — which `vcvars` ran, for which architecture —
   not to the compiler binary, so a per-compiler-path entry would leak one
-  shell's roots into another's. `INCLUDE` is already a cache-key input
-  (`compile_journal/env.rs`), so a different shell yields a different key.
+  shell's roots into another's. Two shells cannot collide on one cache entry:
+  the discovered roots are pushed into `ctx.include_search.system`
+  (`daemon/server/rustc.rs`) and hashed **in order** into `ContextKey`
+  (`depgraph/src/context/mod.rs`), so a different `%INCLUDE%` — different
+  directories, or the same ones in a different order — yields a different key.
+  (Note this is the keying path; the `INCLUDE` entry in
+  `compile_journal/env.rs` is the durable-journal allowlist and does *not*
+  feed the cache key.)
 - **An absent `INCLUDE` is a known-empty result, not a degraded one.** `cl.exe`
   genuinely has no other search roots, and the miss path recovers the real
   header set from `/showIncludes` regardless.
@@ -84,6 +90,21 @@ for the flag**, tracked as `injected_show_includes` at the injection site in
 - **Caller passed it** (CMake + Ninja MSVC builds do, and parse the notes into
   their own depfiles): the notes are scanned but passed through byte-for-byte.
   Stripping them would silently break the build system's dependency tracking.
+
+Because the argument parser consumes `/showIncludes` without recording it as a
+cache-relevant flag, those two shapes would otherwise hash to the *same*
+`ContextKey` while storing different stdout — so a stripped entry could be
+replayed to a Ninja caller as an empty depfile. `keys::msvc_show_includes_key_flags`
+salts the key with who asked for the flag, keeping the populations separate. It
+costs no hits: every compile in a given build is spelled the same way.
+
+The flag is matched case-insensitively with either prefix (`cl.exe` accepts
+`-showincludes` for `/showIncludes`). clang-cl's suffixed
+`/showIncludes:user` deliberately omits system headers, so it is *not* treated
+as a usable dependency set: the daemon neither injects a competing
+`/showIncludes` nor trusts the partial trace — it leaves the strategy
+`Unsupported`, falls back to its own header scanner, and leaves the caller's
+stdout untouched.
 
 `StderrFilter::reads_stdout()` / `strips_scanned_lines()` in
 `daemon/compile_output.rs` encode this for the streaming path; the buffered

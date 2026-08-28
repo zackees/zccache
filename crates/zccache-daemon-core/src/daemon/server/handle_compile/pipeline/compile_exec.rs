@@ -132,16 +132,31 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     // caller passed it (CMake + Ninja MSVC builds do, and parse the notes into
     // their own depfiles), the notes are output the build system is waiting
     // for: scan them, but pass them through untouched. Only notes we asked for
-    // get stripped.
+    // get stripped. `keys::msvc_show_includes_key_flags` keeps the two
+    // populations in separate cache entries so a stripped one is never
+    // replayed to a caller that is parsing the notes.
     let mut injected_show_includes = false;
     if compilation.family == crate::compiler::CompilerFamily::Msvc
         && depfile_strategy == DepfileStrategy::Unsupported
     {
-        if !dep_flags.has_md {
-            extra_args.push("/showIncludes".to_string());
-            injected_show_includes = true;
+        use crate::depgraph::msvc_args::ShowIncludesMode;
+        match crate::depgraph::msvc_args::msvc_show_includes_mode(effective_args) {
+            None => {
+                extra_args.push("/showIncludes".to_string());
+                injected_show_includes = true;
+                depfile_strategy = DepfileStrategy::ShowIncludes;
+            }
+            Some(ShowIncludesMode::All) => {
+                depfile_strategy = DepfileStrategy::ShowIncludes;
+            }
+            // `/showIncludes:user` omits system headers on purpose, so its
+            // trace is not a dependency set we can trust — and we cannot add a
+            // second `/showIncludes` to get a full one without overriding what
+            // the caller asked for. Leave the strategy `Unsupported` so the
+            // daemon's own header scanner supplies the dependencies, and leave
+            // the caller's stdout alone.
+            Some(ShowIncludesMode::UserOnly) => {}
         }
-        depfile_strategy = DepfileStrategy::ShowIncludes;
     }
 
     let expected_outputs = if let Some(rustc_args) = rustc_args_opt {
@@ -344,18 +359,18 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     {
         let (sender, receiver) = tokio::sync::mpsc::channel(8);
         let filter = if depfile_strategy == DepfileStrategy::ShowIncludes {
-            crate::daemon::compile_output::StderrFilter::ShowIncludes {
+            crate::daemon::compile_output::OutputFilter::ShowIncludes {
                 source: source_path.as_path(),
                 cwd: cwd_path.as_path(),
                 injected: injected_show_includes,
             }
         } else if stderr_header_trace {
-            crate::daemon::compile_output::StderrFilter::HeaderTrace {
+            crate::daemon::compile_output::OutputFilter::HeaderTrace {
                 source: source_path.as_path(),
                 cwd: cwd_path.as_path(),
             }
         } else {
-            crate::daemon::compile_output::StderrFilter::None
+            crate::daemon::compile_output::OutputFilter::None
         };
         let process = crate::daemon::process::tokio_command_output_streaming_with_priority_decision(
             &mut cmd,

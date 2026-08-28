@@ -69,7 +69,7 @@ pub(crate) fn current() -> Option<OutputContext> {
 /// to scan stderr for it, found nothing, and recorded zero dependencies, which
 /// turned every subsequent MSVC compile into a stale cache hit after a header
 /// edit).
-pub(crate) enum StderrFilter<'a> {
+pub(crate) enum OutputFilter<'a> {
     None,
     ShowIncludes {
         source: &'a Path,
@@ -86,7 +86,7 @@ pub(crate) enum StderrFilter<'a> {
     },
 }
 
-impl StderrFilter<'_> {
+impl OutputFilter<'_> {
     /// The stream the parser attaches to. Everything except `/showIncludes`
     /// reads stderr.
     fn reads_stdout(&self) -> bool {
@@ -133,34 +133,42 @@ impl DependencyParser {
 pub(crate) async fn consume(
     mut receiver: mpsc::Receiver<RawOutputChunk>,
     context: OutputContext,
-    stderr_filter: StderrFilter<'_>,
+    output_filter: OutputFilter<'_>,
 ) -> io::Result<CapturedOutput> {
     context.mark_live();
     let mut stdout = BoundedCapture::new(context.capture_limit, "stdout");
     let mut stderr = BoundedCapture::new(context.capture_limit, "stderr");
-    let parser_reads_stdout = stderr_filter.reads_stdout();
-    let strips_scanned_lines = stderr_filter.strips_scanned_lines();
-    let mut dependency_parser = match stderr_filter {
-        StderrFilter::None => None,
-        StderrFilter::ShowIncludes { source, cwd, .. } => Some(DependencyParser::ShowIncludes(
+    let parser_reads_stdout = output_filter.reads_stdout();
+    let strips_scanned_lines = output_filter.strips_scanned_lines();
+    let mut dependency_parser = match output_filter {
+        OutputFilter::None => None,
+        OutputFilter::ShowIncludes { source, cwd, .. } => Some(DependencyParser::ShowIncludes(
             crate::depgraph::show_includes::ShowIncludesParser::new(source, cwd),
         )),
-        StderrFilter::HeaderTrace { source, cwd } => Some(DependencyParser::HeaderTrace(
+        OutputFilter::HeaderTrace { source, cwd } => Some(DependencyParser::HeaderTrace(
             crate::depgraph::header_trace::HeaderTraceParser::new(source, cwd),
         )),
     };
 
     // Run `bytes` through the dependency parser and return what the caller
     // should see: the parser's residue when we own the scanned lines, the
-    // original bytes when the caller asked for them itself.
-    fn scan_chunk(parser: &mut Option<DependencyParser>, strip: bool, bytes: Vec<u8>) -> Vec<u8> {
+    // original bytes when the caller asked for them itself. `residue` is
+    // reused across chunks so the no-strip path does not allocate per chunk
+    // just to throw the buffer away.
+    let mut residue = Vec::new();
+    fn scan_chunk(
+        parser: &mut Option<DependencyParser>,
+        strip: bool,
+        residue: &mut Vec<u8>,
+        bytes: Vec<u8>,
+    ) -> Vec<u8> {
         let Some(parser) = parser.as_mut() else {
             return bytes;
         };
-        let mut residue = Vec::new();
-        parser.push(&bytes, &mut residue);
+        residue.clear();
+        parser.push(&bytes, residue);
         if strip {
-            residue
+            std::mem::take(residue)
         } else {
             bytes
         }
@@ -170,7 +178,12 @@ pub(crate) async fn consume(
         match chunk {
             RawOutputChunk::Stdout(bytes) => {
                 let bytes = if parser_reads_stdout {
-                    scan_chunk(&mut dependency_parser, strips_scanned_lines, bytes)
+                    scan_chunk(
+                        &mut dependency_parser,
+                        strips_scanned_lines,
+                        &mut residue,
+                        bytes,
+                    )
                 } else {
                     bytes
                 };
@@ -182,7 +195,12 @@ pub(crate) async fn consume(
                 let bytes = if parser_reads_stdout {
                     bytes
                 } else {
-                    scan_chunk(&mut dependency_parser, strips_scanned_lines, bytes)
+                    scan_chunk(
+                        &mut dependency_parser,
+                        strips_scanned_lines,
+                        &mut residue,
+                        bytes,
+                    )
                 };
                 if let Some(bytes) = stderr.push(&bytes) {
                     send(&context.sender, OutputChunk::Stderr(bytes)).await?;
@@ -195,7 +213,7 @@ pub(crate) async fn consume(
         // Flush whatever the line splitter is still holding. When we are not
         // stripping, that tail already went through verbatim, so the residue
         // is dropped rather than duplicated.
-        let mut residue = Vec::new();
+        residue.clear();
         let scan = parser.finish(&mut residue);
         if strips_scanned_lines {
             let capture = if parser_reads_stdout {
@@ -360,7 +378,7 @@ mod tests {
             .expect("raw output receiver");
         drop(raw_sender);
 
-        let captured = super::consume(raw_receiver, context, StderrFilter::None)
+        let captured = super::consume(raw_receiver, context, OutputFilter::None)
             .await
             .expect("capture");
         let mut emitted = Vec::new();
@@ -398,7 +416,7 @@ mod tests {
         let captured = super::consume(
             raw_receiver,
             context,
-            StderrFilter::HeaderTrace {
+            OutputFilter::HeaderTrace {
                 source: &source,
                 cwd: temp.path(),
             },
@@ -453,7 +471,7 @@ mod tests {
         let captured = super::consume(
             raw_receiver,
             context,
-            StderrFilter::ShowIncludes {
+            OutputFilter::ShowIncludes {
                 source,
                 cwd,
                 injected,
@@ -534,7 +552,7 @@ mod tests {
         let captured = super::consume(
             raw_receiver,
             context,
-            StderrFilter::ShowIncludes {
+            OutputFilter::ShowIncludes {
                 source: &source,
                 cwd: temp.path(),
                 injected: true,
@@ -568,7 +586,7 @@ mod tests {
             None,
             raw_sender,
         );
-        let consume = super::consume(raw_receiver, context, StderrFilter::None);
+        let consume = super::consume(raw_receiver, context, OutputFilter::None);
         let operation = async {
             let (process, capture) = tokio::join!(process, consume);
             (
@@ -616,7 +634,7 @@ mod tests {
                     None,
                     raw_sender,
                 );
-            let consume = super::consume(raw_receiver, context, StderrFilter::None);
+            let consume = super::consume(raw_receiver, context, OutputFilter::None);
             tokio::join!(process, consume)
         };
         let mut operation = Box::pin(operation);
