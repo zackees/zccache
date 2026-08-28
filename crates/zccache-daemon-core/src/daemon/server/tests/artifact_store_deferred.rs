@@ -1,6 +1,6 @@
 //! Tests for the issue #784 phase 2d deferred-load path on the
 //! `ArtifactStore` index blob. Companion to the on-disk-fallback test
-//! at `tests/daemon_perf_artifact_fallback_test.rs` — these cover the
+//! at `tests/perf/daemon_perf_artifact_fallback_test.rs` — these cover the
 //! deferred-load invariants, the perf test covers the in-process
 //! disk-fallback contract.
 

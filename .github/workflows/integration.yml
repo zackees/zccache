@@ -183,7 +183,7 @@ jobs:
           # failure here is legible on sight instead of buried in a
           # workspace-wide log.
           unset ZCCACHE_CACHE_DIR
-          soldr cargo test -p zccache --features "$ZCCACHE_INTEGRATION_FEATURES" --test cli_wrapper_failure_boundaries -- --ignored --test-threads=1
+          soldr cargo test -p zccache --features "$ZCCACHE_INTEGRATION_FEATURES" --test cli cli_wrapper_failure_boundaries:: -- --ignored --test-threads=1
       - name: Remove wrapper-contract telemetry before strict audit
         if: always()
         shell: bash

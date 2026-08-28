@@ -106,7 +106,7 @@ mod tests {
         // Inside a scope the read succeeds, so `record_ns` reaches
         // `compile_trace::record` (which is itself a no-op unless the env var
         // is set). We assert the task-local is visible; the file-format wire
-        // shape is covered by tests/inner_trace_file_test.rs.
+        // shape is covered by tests/perf/inner_trace_file_test.rs.
         scope("z00000001".to_owned(), async {
             assert_eq!(INNER_COMPILE_ID.with(|id| id.clone()), "z00000001");
             record_ns("cache_store", 12_000);

@@ -10,7 +10,7 @@
 
 #[test]
 fn embedded_service_docs_record_mvp_boundary() {
-    let docs = include_str!("../../../docs/architecture/embedded-service.md");
+    let docs = include_str!("../../../../docs/architecture/embedded-service.md");
 
     assert!(docs.contains("## MVP Status"));
     assert!(docs.contains("Public Rust API | MVP landed"));

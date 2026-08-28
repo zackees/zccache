@@ -52,5 +52,5 @@ open an `inner_trace::scope`, so the shared pipeline seams stay silent there.
 
 - `crate::daemon::server::inner_trace` unit tests cover the task-local
   gating (no-op outside a scope, id visible inside).
-- `crates/zccache/tests/inner_trace_file_test.rs` covers the JSONL writer
+- `crates/zccache/tests/perf/inner_trace_file_test.rs` covers the JSONL writer
   wire shape end-to-end in its own test binary (fresh `OnceLock`).

@@ -453,7 +453,7 @@ mod tests {
     }
 
     /// Sorted-percentile helper matching the convention in
-    /// `tests/daemon_perf_test.rs`.
+    /// `tests/perf/daemon_perf_test.rs`.
     fn percentile_ms(sorted: &[f64], pct: f64) -> f64 {
         let idx = ((sorted.len() as f64 * pct) as usize).min(sorted.len() - 1);
         sorted[idx]

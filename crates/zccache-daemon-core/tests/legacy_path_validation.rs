@@ -92,7 +92,7 @@ impl Daemon {
         // warm-hit assertions below deterministically fail — the depgraph
         // check is the only cross-restart hit path (`try_fast_hit` /
         // `try_request_cache_hit` are in-memory-only). See
-        // `crates/zccache/tests/daemon_rustc_restore_test.rs` for the same
+        // `crates/zccache/tests/cache_rust/daemon_rustc_restore_test.rs` for the same
         // pattern in another harness.
         // `bind_with_cache_dir` keeps this fixture independent of the
         // process-global `ZCCACHE_CACHE_DIR`; restore from the same explicit

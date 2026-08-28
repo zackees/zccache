@@ -290,7 +290,7 @@ fn rename_shard(dest: &Path) -> &'static std::sync::Mutex<()> {
 /// was serialized through a single database write transaction. File-per-key
 /// removes that serialization, which is the point — but it means same-key
 /// writers now race at the rename. `c1_thundering_herd_same_key` in
-/// `tests/artifact_kv_stress.rs` (16 threads x 100 writes to one key) fails
+/// `tests/stress/artifact_kv_stress.rs` (16 threads x 100 writes to one key) fails
 /// without this retry.
 ///
 /// Bounded so a genuine permissions error still surfaces rather than hanging:
@@ -958,7 +958,7 @@ mod tests {
 
     // ---- I6: max value bytes (allocates 64 MiB, runs only under --full) ----
     #[test]
-    #[ignore = "allocates 64 MiB; see tests/artifact_kv_stress.rs for max-cap coverage"]
+    #[ignore = "allocates 64 MiB; see tests/stress/artifact_kv_stress.rs for max-cap coverage"]
     fn i6_too_large_rejected() {
         let (_d, s) = store();
         let k = key_from(b"big");

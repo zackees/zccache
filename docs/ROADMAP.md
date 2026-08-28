@@ -342,7 +342,7 @@ This document describes the phased implementation plan for **zccache**, a high-p
 - Meson exit code != 0 → do NOT cache. A re-run after the fix gives meson a fresh chance.
 - Cache restore I/O error → log warning, fall through to a fresh meson setup. Self-healing.
 
-**Tests:** `crates/zccache/tests/cli_meson_configure_cache.rs` — TDD-pinned MISS → HIT → invalidate-on-meson.build-change.
+**Tests:** `crates/zccache/tests/cli/cli_meson_configure_cache.rs` — TDD-pinned MISS → HIT → invalidate-on-meson.build-change.
 
 **Future work (not in v1):**
 - CMake / Bazel equivalents (same shape, different file set)

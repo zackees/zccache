@@ -23,7 +23,7 @@ failure phase for idempotent callers.
 `full_family.rs` owns this prost-first selection, structured fallback, and
 failure-phase API; `lib.rs` re-exports its public entry points.
 
-`tests/daemon_wire_protocol_version.rs` includes the explicit previous-release
+`tests/wire/daemon_wire_protocol_version.rs` includes the explicit previous-release
 compatibility harness: a v15-only daemon rejects the first v16 prost frame,
 returns a structured v15 bincode mismatch response, and the public auto client
 retries the same request as v15 bincode.

@@ -6,8 +6,6 @@
     clippy::unwrap_in_result
 )]
 
-mod common;
-
 use std::sync::Arc;
 use tempfile::TempDir;
 use zccache::fingerprint::{walk_files, CacheDecision, HashCache, TwoLayerCache};
@@ -17,7 +15,7 @@ use zccache::fingerprint::{walk_files, CacheDecision, HashCache, TwoLayerCache};
 #[test]
 fn independent_caches_parallel() {
     let src = TempDir::new().unwrap();
-    common::create_file(src.path(), "a.rs", "a");
+    crate::common::create_file(src.path(), "a.rs", "a");
 
     let src_path = src.path().to_path_buf();
 
@@ -51,7 +49,7 @@ fn independent_caches_parallel() {
 fn parallel_check_same_hash_cache() {
     let src = TempDir::new().unwrap();
     for i in 0..10 {
-        common::create_file(src.path(), &format!("f{i}.rs"), &format!("{i}"));
+        crate::common::create_file(src.path(), &format!("f{i}.rs"), &format!("{i}"));
     }
 
     let cache_dir = TempDir::new().unwrap();
@@ -89,7 +87,7 @@ fn parallel_check_same_hash_cache() {
 #[ignore]
 fn parallel_check_mark_interleave() {
     let src = TempDir::new().unwrap();
-    common::create_file(src.path(), "a.rs", "a");
+    crate::common::create_file(src.path(), "a.rs", "a");
 
     let cache_dir = TempDir::new().unwrap();
     let cache_path = cache_dir.path().join("shared.json");
@@ -128,7 +126,7 @@ fn parallel_check_mark_interleave() {
 #[ignore]
 fn parallel_invalidate_while_checking() {
     let src = TempDir::new().unwrap();
-    common::create_file(src.path(), "a.rs", "a");
+    crate::common::create_file(src.path(), "a.rs", "a");
 
     let cache_dir = TempDir::new().unwrap();
     let cache_path = cache_dir.path().join("shared.json");
@@ -170,7 +168,7 @@ fn parallel_invalidate_while_checking() {
 fn parallel_two_layer_check() {
     let src = TempDir::new().unwrap();
     for i in 0..5 {
-        common::create_file(src.path(), &format!("f{i}.rs"), &format!("{i}"));
+        crate::common::create_file(src.path(), &format!("f{i}.rs"), &format!("{i}"));
     }
 
     let cache_dir = TempDir::new().unwrap();
