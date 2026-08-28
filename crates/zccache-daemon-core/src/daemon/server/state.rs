@@ -464,6 +464,10 @@ pub(super) struct SharedState {
     /// Shared admission for ordinary compiler children and exclusive
     /// admission for unusually memory-intensive C/Rust amalgamations.
     pub(super) compile_resource_gate: super::compile_resource_gate::CompileResourceGate,
+    /// Optional host-only classifier for embedded compiler admission. It can
+    /// request exclusivity but never owns or acquires the daemon's gates.
+    pub(super) host_admission_classifier:
+        Option<Arc<dyn super::compile_resource_gate::HostAdmissionClassifier>>,
     /// Issue #1216 — compile-queue counters backing the `CompileProgress`
     /// heartbeats. `tokio::sync::Semaphore` reports available permits but
     /// not its waiter count or original capacity, so the gate maintains

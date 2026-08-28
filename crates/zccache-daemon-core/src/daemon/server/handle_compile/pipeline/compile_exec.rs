@@ -253,11 +253,26 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     // readers and runs alone. The shared helper acquires the bounded FIFO
     // compile slot first and the resource gate second, then both remain held
     // across overlapping input hashing and the compiler child.
-    let exclusive = crate::daemon::server::compile_resource_gate::requires_exclusive_access(
+    let built_in_exclusive =
+        crate::daemon::server::compile_resource_gate::requires_exclusive_access(
+            compilation.family,
+            effective_args,
+            source_path.as_path(),
+        );
+    let exclusive = match crate::daemon::server::compile_resource_gate::requires_exclusive_admission(
+        state,
         compilation.family,
         effective_args,
-        source_path.as_path(),
-    );
+        Some(source_path.as_path()),
+        built_in_exclusive,
+    ) {
+        Ok(exclusive) => exclusive,
+        Err(error) => {
+            return CompileExecResult::Error(Response::Error {
+                message: format!("host compiler-admission classification failed: {error}"),
+            });
+        }
+    };
     let (_compiler_admission, available_before) =
         crate::daemon::server::compile_resource_gate::acquire_compiler_admission(state, exclusive)
             .await;

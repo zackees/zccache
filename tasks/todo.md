@@ -1,3 +1,13 @@
+# #1539 embedded host compiler-admission classifier
+
+- [x] Read the issue, service admission paths, and embedded configuration surface.
+- [x] Add a RED policy/ordering contract covering host-only exclusivity and cache-hit bypass.
+- [x] Add the opt-in host classifier and pass it through canonical post-hit admission.
+- [x] Cover built-in predicate composition, contention/cancellation, and default compatibility.
+- [x] Document the host-policy, hit-bypass, and semaphore-then-RwLock contract.
+- [x] Run focused and broader validation.
+- [ ] Obtain independent review, push, open the resolving PR, and monitor CI.
+
 # #1513 replace vulnerable sevenz-rust
 
 - [x] RED: `soldr cargo audit` reports RUSTSEC-2026-0245 through sevenz-rust 0.6.1.

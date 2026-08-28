@@ -755,7 +755,7 @@ pub(super) async fn handle_compile_multi(
     }
     apply_client_env(&mut cmd, &client_env, &lineage);
     let compiler_priority = CompilePriority::from_client_env(client_env.as_deref());
-    let exclusive =
+    let built_in_exclusive =
         crate::daemon::server::compile_resource_gate::requires_exclusive_access_for_misses(
             compilations[0].family,
             &compiler_args,
@@ -764,6 +764,20 @@ pub(super) async fn handle_compile_multi(
                 UnitCacheResult::Hit { .. } => None,
             }),
         );
+    let exclusive = match crate::daemon::server::compile_resource_gate::requires_exclusive_admission(
+        &state,
+        compilations[0].family,
+        &compiler_args,
+        None,
+        built_in_exclusive,
+    ) {
+        Ok(exclusive) => exclusive,
+        Err(error) => {
+            return Response::Error {
+                message: format!("host compiler-admission classification failed: {error}"),
+            };
+        }
+    };
     let (compiler_admission, _) =
         crate::daemon::server::compile_resource_gate::acquire_compiler_admission(&state, exclusive)
             .await;

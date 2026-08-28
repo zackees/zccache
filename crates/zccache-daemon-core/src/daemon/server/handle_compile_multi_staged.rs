@@ -209,11 +209,27 @@ pub(super) async fn try_handle_staged_misses(
         command.kill_on_drop(true);
         let admission_state = Arc::clone(state);
         let family = compilations[miss.unit_index].family;
-        let exclusive = crate::daemon::server::compile_resource_gate::requires_exclusive_access(
-            family,
-            &compiler_args,
-            miss.source_path.as_path(),
-        );
+        let built_in_exclusive =
+            crate::daemon::server::compile_resource_gate::requires_exclusive_access(
+                family,
+                &compiler_args,
+                miss.source_path.as_path(),
+            );
+        let exclusive =
+            match crate::daemon::server::compile_resource_gate::requires_exclusive_admission(
+                state.as_ref(),
+                family,
+                &compiler_args,
+                Some(miss.source_path.as_path()),
+                built_in_exclusive,
+            ) {
+                Ok(exclusive) => exclusive,
+                Err(error) => {
+                    return Some(Response::Error {
+                        message: format!("host compiler-admission classification failed: {error}"),
+                    });
+                }
+            };
         // Issue #1216: keep the global queue gauge accurate for the staged
         // lane too. These waits run on spawned tasks, so the per-request
         // task-local slot is out of reach — the daemon-wide `queue_depth` /

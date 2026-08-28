@@ -40,6 +40,7 @@ impl EmbeddedDaemon {
             runtime_handle,
             maintenance_policy,
             true,
+            None,
         )
         .await
     }
@@ -51,12 +52,20 @@ impl EmbeddedDaemon {
         runtime_handle: Option<tokio::runtime::Handle>,
         maintenance_policy: MaintenancePolicy,
         automatic_maintenance: bool,
+        host_admission_classifier: Option<
+            Arc<dyn super::compile_resource_gate::HostAdmissionClassifier>,
+        >,
     ) -> Result<Self, crate::ipc::IpcError> {
         let backend_identity = crate::ipc::current_backend_identity(&endpoint)
             .map_err(|err| super::lifecycle::daemon_identity_error(&endpoint, &err))?;
-        let (state, index_writer_rx) =
-            new_shared_state(&endpoint, &cache_dir, staging_root, backend_identity)
-                .map_err(|error| super::lifecycle::cache_root_error(&cache_dir, &error))?;
+        let (state, index_writer_rx) = new_shared_state(
+            &endpoint,
+            &cache_dir,
+            staging_root,
+            backend_identity,
+            host_admission_classifier,
+        )
+        .map_err(|error| super::lifecycle::cache_root_error(&cache_dir, &error))?;
         // Arm the startup depgraph-load gate as early as possible — before
         // this state can serve any compile. The shared `dep_graph_load_complete`
         // flag inits `true` ("assume loaded"); the standalone daemon flips it
@@ -836,6 +845,7 @@ mod flush_ownership_tests {
             None,
             MaintenancePolicy::default(),
             false,
+            None,
         )
         .await
         .expect("embedded daemon");
@@ -866,6 +876,7 @@ mod flush_ownership_tests {
             None,
             MaintenancePolicy::default(),
             false,
+            None,
         );
         let start_b = EmbeddedDaemon::start_with_maintenance(
             crate::ipc::unique_test_endpoint(),
@@ -874,6 +885,7 @@ mod flush_ownership_tests {
             None,
             MaintenancePolicy::default(),
             false,
+            None,
         );
         let (daemon_a, daemon_b) = tokio::join!(start_a, start_b);
         let daemon_a = daemon_a.expect("embedded daemon a");
