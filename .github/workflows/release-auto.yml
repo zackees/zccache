@@ -293,7 +293,6 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             binary_ext: ""
-            cross_driver: zigbuild
             prebuild_deps: none
             clear_target_after_setup: "true"
             include_python: "false"
@@ -302,7 +301,6 @@ jobs:
 
           - target: aarch64-unknown-linux-musl
             binary_ext: ""
-            cross_driver: zigbuild
             prebuild_deps: none
             clear_target_after_setup: "true"
             include_python: "false"
@@ -311,7 +309,6 @@ jobs:
 
           - target: x86_64-unknown-linux-gnu
             binary_ext: ""
-            cross_driver: zigbuild
             prebuild_deps: none
             clear_target_after_setup: "true"
             include_python: "true"
@@ -320,7 +317,6 @@ jobs:
 
           - target: aarch64-unknown-linux-gnu
             binary_ext: ""
-            cross_driver: zigbuild
             prebuild_deps: none
             clear_target_after_setup: "true"
             include_python: "true"
@@ -329,7 +325,6 @@ jobs:
 
           - target: x86_64-apple-darwin
             binary_ext: ""
-            cross_driver: zigbuild
             prebuild_deps: none
             clear_target_after_setup: "true"
             include_python: "true"
@@ -338,7 +333,6 @@ jobs:
 
           - target: aarch64-apple-darwin
             binary_ext: ""
-            cross_driver: zigbuild
             prebuild_deps: none
             clear_target_after_setup: "true"
             include_python: "true"
@@ -347,7 +341,6 @@ jobs:
 
           - target: x86_64-pc-windows-msvc
             binary_ext: ".exe"
-            cross_driver: xwin
             prebuild_deps: none
             clear_target_after_setup: "true"
             include_python: "true"
@@ -356,7 +349,6 @@ jobs:
 
           - target: aarch64-pc-windows-msvc
             binary_ext: ".exe"
-            cross_driver: xwin
             prebuild_deps: none
             clear_target_after_setup: "true"
             require_debug_sidecars: "false"
@@ -391,7 +383,6 @@ jobs:
           cache_key: release-${{ matrix.target }}
           use_soldr: "true"
           cross_compile: "true"
-          cross_driver: ${{ matrix.cross_driver }}
           prebuild_deps: ${{ matrix.prebuild_deps || 'soldr-cook' }}
           clear_target_after_setup: ${{ matrix.clear_target_after_setup || 'false' }}
           require_debug_sidecars: ${{ matrix.require_debug_sidecars || 'true' }}
@@ -529,14 +520,62 @@ jobs:
             wheel_plat: manylinux_2_17_x86_64
           - os: ubuntu-24.04-arm
             wheel_plat: manylinux_2_17_aarch64
-          - os: macos-15-intel
-            wheel_plat: macosx_10_12_x86_64
           - os: macos-14
             wheel_plat: macosx_11_0_arm64
           - os: windows-latest
             wheel_plat: win_amd64
           - os: windows-11-arm
             wheel_plat: win_arm64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: pypi-wheels
+          path: dist/wheels
+
+      - name: Install and test the platform wheel
+        run: |
+          python -m pip install --disable-pip-version-check --no-index --find-links dist/wheels "zccache==${{ needs.preflight.outputs.version }}"
+          python ci/test_exec_cached_wheel.py
+
+  # #1535: wheel families whose runner cannot be relied on to schedule. Split
+  # into a separate job rather than flagged inside `test-wheels`, because
+  # nothing in the publish chain may `needs:` this one.
+  #
+  # `continue-on-error` was the first attempt and does not work here. It
+  # neutralizes a job that RUNS and FAILS; the observed failure is a job that
+  # never starts. A queued job has no result, so `needs: test-wheels` simply
+  # waits -- for the 24h queue limit, not for the fix. During 1.13.14 the
+  # `macos-14` arm64 leg finished in minutes while `macos-15-intel` never
+  # picked up a host, twice, and the crates.io publish sat behind it both
+  # times. A gate that cannot run is not a gate, and the only way to stop it
+  # gating is to take it out of the dependency edge.
+  #
+  # The wheel is still built, still published, and still smoke-tested when a
+  # host is available -- the result just cannot block the release. Coverage
+  # stays enforced: `test_release_workflow.py` unions this matrix with
+  # `test-wheels` and holds the total in set-equality lockstep with
+  # `PLATFORMS`, so a family cannot lose its smoke test by being moved here.
+  # Dropping Intel macOS entirely remains a product decision, not a CI one.
+  test-wheels-ungated:
+    name: Test PyPI Wheel (${{ matrix.wheel_plat }})
+    runs-on: ${{ matrix.os }}
+    needs: [preflight, build-wheels]
+    if: needs.preflight.outputs.pypi_complete != 'true'
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            wheel_plat: macosx_10_12_x86_64
     steps:
       - uses: actions/checkout@v6
         with:

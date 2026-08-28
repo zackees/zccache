@@ -236,6 +236,36 @@ fn deferred_materialization_keeps_staged_source_for_durable_publication() {
 }
 
 #[test]
+fn observed_output_name_updates_tracked_requested_destination() {
+    let temp = tempdir().unwrap();
+    let root: NormalizedPath = temp.path().join("private").into();
+    std::fs::create_dir_all(root.as_path()).unwrap();
+    let requested: NormalizedPath = temp.path().join("target/wasm_restore").into();
+    let staged: NormalizedPath = root.join("wasm_restore");
+    let observed: NormalizedPath = root.join("wasm_restore.wasm");
+    std::fs::write(observed.as_path(), b"wasm artifact").unwrap();
+    let mut plan = StagedCompilePlan::for_test(
+        root,
+        vec![StagedOutputPlan {
+            requested,
+            staged,
+            role: StagedOutputRole::Regular,
+        }],
+    );
+
+    plan.observe_compiler_output_names().unwrap();
+
+    assert_eq!(
+        plan.requested_output_paths(),
+        vec![NormalizedPath::from(
+            temp.path().join("target/wasm_restore.wasm"),
+        )],
+        "watcher invalidation must target the compiler-observed public filename"
+    );
+    plan.cleanup().unwrap();
+}
+
+#[test]
 fn cc_custom_mf_destination_is_classified_as_a_depfile() {
     if !staged_tests_enabled() {
         return;

@@ -38,6 +38,9 @@ on:
       - ".editorconfig"
       - "tasks/**"
 
+permissions:
+  contents: read
+
 concurrency:
   # Keep scheduled/manual discovery runs together while separating them from
   # normal push/PR gates on the same ref.
@@ -55,7 +58,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+      - uses: astral-sh/setup-uv@v6
+      - uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
           zccache-seed-strict: true
           toolchain: 1.95.0
@@ -85,6 +89,11 @@ jobs:
           # so use the same guard as the isolated test phase below rather
           # than setup-soldr's 5 GiB default.
           SOLDR_TARGET_BLOCK_FREE_GB: "2"
+          # The prebuild also compiles the daemon-core library test. Cargo's
+          # worker count remains relevant even though this phase bypasses the
+          # cache service.
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: |
           # The build cache can contain zccache COW materializations, whose
           # artifacts are intentionally read-only while shared with the cache.
@@ -97,7 +106,7 @@ jobs:
           soldr cargo test --workspace --features "$ZCCACHE_INTEGRATION_FEATURES" --no-fail-fast --no-run
           soldr cargo build -p zccache --features ci-bin --bin zccache-ci
       - name: Stop setup-soldr builder cache before tests
-        uses: zackees/setup-soldr/cleanup@01aea6d47db8fedcafd350e2d42e19290c68824e
+        uses: zackees/setup-soldr/cleanup@5f1f68dcb8377818413c28ce52214261ae8ff771
       - name: Remove seeded runtime journals before tests
         shell: bash
         env:
@@ -106,10 +115,8 @@ jobs:
           # The isolated cache is seeded with build artifacts, but runtime
           # journals describe a prior job. Keep the artifacts warm while
           # ensuring the audit below evaluates only this job's behavior.
-          journal_root="$SOLDR_CACHE_DIR/cache/zccache/daemon-state"
-          if [[ -d "$journal_root" ]]; then
-            find "$journal_root" -type f -path '*/logs/*.jsonl' -print -delete
-          fi
+          uv run --no-project python ci/clear_runtime_telemetry.py \
+            --cache-root "$SOLDR_CACHE_DIR/cache/zccache"
       - name: Test (full workspace)
         shell: bash
         env:
@@ -117,6 +124,11 @@ jobs:
           SOLDR_CACHE_LIFECYCLE: command
           SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
           SOLDR_TARGET_BLOCK_FREE_GB: "2"
+          # Cargo schedules compiler processes separately from the test
+          # harness's --test-threads setting. Bound both admission layers for
+          # the daemon-core lib test on the hosted runner.
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: |
           set +e
           unset ZCCACHE_CACHE_DIR
@@ -146,10 +158,8 @@ jobs:
           # orchestration, whereas the strict fixture below owns and audits
           # its own runtime cache. Preserve artifacts but exclude harness
           # telemetry from the integration runtime audit.
-          journal_root="$SOLDR_CACHE_DIR/cache/zccache/daemon-state"
-          if [[ -d "$journal_root" ]]; then
-            find "$journal_root" -type f -path '*/logs/*.jsonl' -print -delete
-          fi
+          uv run --no-project python ci/clear_runtime_telemetry.py \
+            --cache-root "$SOLDR_CACHE_DIR/cache/zccache"
       - name: Wrapper daemon-unavailable contract (exit 125)
         shell: bash
         env:
@@ -174,6 +184,14 @@ jobs:
           # workspace-wide log.
           unset ZCCACHE_CACHE_DIR
           soldr cargo test -p zccache --features "$ZCCACHE_INTEGRATION_FEATURES" --test cli_wrapper_failure_boundaries -- --ignored --test-threads=1
+      - name: Remove wrapper-contract telemetry before strict audit
+        if: always()
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/integration
+        run: >
+          uv run --no-project python ci/clear_runtime_telemetry.py
+          --cache-root "$SOLDR_CACHE_DIR/cache/zccache"
       - name: Strict artifact-layout validation
         shell: bash
         env:
@@ -195,6 +213,9 @@ jobs:
           SOLDR_CACHE_LIFECYCLE: command
           SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
           SOLDR_TARGET_BLOCK_FREE_GB: "2"
+          # This repeats the full-workspace compilation shape above.
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: |
           set +e
           unset ZCCACHE_CACHE_DIR
@@ -222,10 +243,8 @@ jobs:
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/integration
         run: |
-          journal_root="$SOLDR_CACHE_DIR/cache/zccache/daemon-state"
-          if [[ -d "$journal_root" ]]; then
-            find "$journal_root" -type f -path '*/logs/*.jsonl' -print -delete
-          fi
+          uv run --no-project python ci/clear_runtime_telemetry.py \
+            --cache-root "$SOLDR_CACHE_DIR/cache/zccache"
       - name: Stop isolated test cache
         if: always()
         shell: bash

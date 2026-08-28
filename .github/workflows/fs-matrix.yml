@@ -31,6 +31,9 @@ on:
       - ".editorconfig"
       - "tasks/**"
 
+permissions:
+  contents: read
+
 concurrency:
   # run_id fallback on non-PR events: GitHub keeps at most ONE pending run
   # per group, so a ref-only group silently cancels queued main-push SHAs.
@@ -46,7 +49,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+      - uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
           zccache-seed-strict: true
           toolchain: 1.95.0
@@ -75,6 +78,9 @@ jobs:
           # No-op on Linux/macOS, which use TMPDIR instead.
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
+          # This compiles the daemon-core library test on each hosted OS.
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: >-
           soldr cargo test -p zccache-daemon-core --features test-support
           filesystem_materialization_matrix_prints_loud_summary -- --nocapture --test-threads=1
@@ -85,6 +91,8 @@ jobs:
           ZCCACHE_REQUIRE_REFS: "1"
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: >-
           soldr cargo test -p zccache-daemon-core --features test-support
           refs_non_cluster_multiple_round_trips -- --nocapture --test-threads=1
@@ -99,7 +107,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+      - uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
           zccache-seed-strict: true
           toolchain: 1.95.0
@@ -115,6 +123,8 @@ jobs:
           ZCCACHE_REQUIRE_LARGE_COW: "1"
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: >-
           soldr cargo test -p zccache-daemon-core --features test-support
           reflink_larger_than_four_gib_uses_chunked_clone -- --nocapture --test-threads=1

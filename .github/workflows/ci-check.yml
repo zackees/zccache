@@ -17,6 +17,9 @@ on:
         type: boolean
         default: true
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
@@ -29,7 +32,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+      - uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
           zccache-seed-strict: true
           toolchain: 1.95.0
@@ -62,12 +65,16 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+      - uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
           cache-key-suffix: test-${{ inputs.os }}
+          # Bound compile and test concurrency for the 8-GB ARM runner. This
+          # is the prescribed ci-tests resource contract; the Test step below
+          # remains the only lib/bin test-profile compilation.
+          ci-tests: true
           linker: fast
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
@@ -86,16 +93,24 @@ jobs:
       # cost ~4m of Windows CI time per run (issue #106). Full integration
       # coverage is provided by the `integration` workflow on Linux.
       - name: Build test binaries
+        # Kept as a skipped breadcrumb for one release cycle: the following
+        # test step compiles and runs the same lib/bin test profile.
+        if: ${{ false }}
         shell: bash
         run: soldr cargo test --workspace --lib --bins --no-fail-fast --no-run
       - name: Stop setup-soldr builder cache before tests
-        uses: zackees/setup-soldr/cleanup@01aea6d47db8fedcafd350e2d42e19290c68824e
+        if: ${{ false }} # no preceding builder compile remains to stop.
+        uses: zackees/setup-soldr/cleanup@5f1f68dcb8377818413c28ce52214261ae8ff771
       - name: Test
         shell: bash
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/test-${{ inputs.os }}
           SOLDR_CACHE_LIFECYCLE: command
           SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
+          # The workspace lib/bin test profile includes the daemon-core
+          # library test, whose compiler admission must be memory-bounded.
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: |
           set +e
           unset ZCCACHE_CACHE_DIR

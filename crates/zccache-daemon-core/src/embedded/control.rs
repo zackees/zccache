@@ -7,8 +7,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    EmbeddedError, HostIdentity, MaintenanceOwnership, MaintenancePolicy, Result, ZccacheConfig,
-    ZccacheService, ZccacheStartOptions,
+    EmbeddedError, HostAdmissionClassifier, HostIdentity, MaintenanceOwnership, MaintenancePolicy,
+    Result, ZccacheConfig, ZccacheService, ZccacheStartOptions,
 };
 use crate::daemon::server::EmbeddedDaemon;
 
@@ -42,7 +42,13 @@ impl ZccacheService {
         config: ZccacheConfig,
         event_sink: Arc<dyn EmbeddedEventSink>,
     ) -> Result<Self> {
-        Self::start_internal(config, ZccacheStartOptions::default(), Some(event_sink)).await
+        Self::start_internal(
+            config,
+            ZccacheStartOptions::default(),
+            Some(event_sink),
+            None,
+        )
+        .await
     }
 
     /// Start with both additive service options and a host event sink.
@@ -51,13 +57,14 @@ impl ZccacheService {
         options: ZccacheStartOptions,
         event_sink: Arc<dyn EmbeddedEventSink>,
     ) -> Result<Self> {
-        Self::start_internal(config, options, Some(event_sink)).await
+        Self::start_internal(config, options, Some(event_sink), None).await
     }
 
     pub(super) async fn start_internal(
         config: ZccacheConfig,
         options: ZccacheStartOptions,
         event_sink: Option<Arc<dyn EmbeddedEventSink>>,
+        host_admission_classifier: Option<Arc<dyn HostAdmissionClassifier>>,
     ) -> Result<Self> {
         let compile_permits = match config.limits.max_parallel_compiles {
             Some(0) => {
@@ -89,6 +96,7 @@ impl ZccacheService {
             config.runtime.handle.clone(),
             maintenance_policy,
             options.maintenance_ownership == MaintenanceOwnership::Embedded,
+            host_admission_classifier,
         )
         .await
         .map_err(|err| EmbeddedError::Start(err.to_string()))?;

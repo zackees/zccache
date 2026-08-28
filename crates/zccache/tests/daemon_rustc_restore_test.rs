@@ -15,6 +15,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use tokio::task::JoinHandle;
 
@@ -297,6 +298,28 @@ fn expected_outputs(project_dir: &Path) -> Vec<PathBuf> {
     ]
 }
 
+fn wasm_link_args() -> Vec<String> {
+    vec![
+        "--edition=2021".into(),
+        "--target=wasm32-unknown-unknown".into(),
+        "--crate-type=bin".into(),
+        "--crate-name=wasm_restore".into(),
+        "--emit=dep-info,link".into(),
+        "--out-dir=target/wasm32-unknown-unknown/debug/deps".into(),
+        "src/main.rs".into(),
+    ]
+}
+
+fn rustc_target_is_available(rustc: &Path, target: &str) -> bool {
+    Command::new(rustc)
+        .args(["--print", "target-libdir", "--target", target])
+        .output()
+        .is_ok_and(|output| {
+            output.status.success()
+                && Path::new(String::from_utf8_lossy(&output.stdout).trim()).is_dir()
+        })
+}
+
 fn assert_outputs_exist(outputs: &[PathBuf], context: &str) {
     for output in outputs {
         assert!(
@@ -483,6 +506,94 @@ async fn rustc_multi_output_hit_survives_cache_restore_without_target_dir() {
             "second compile should be restored from the cache after target/ deletion",
         );
         assert_outputs_exist(&outputs, "cached restore");
+        end_session(&mut client2, session2).await;
+        shutdown_daemon(client2, handle2).await;
+    })
+    .await;
+}
+
+/// soldr#2919: rustc's `-o` plan is not necessarily the physical output
+/// filename. For `wasm32-unknown-unknown`, `--emit=dep-info,link` writes both
+/// `<crate>.d` and `<crate>.wasm` beside the extensionless primary path.
+/// The staged lane must observe and persist that mapping, then replay it from
+/// a fresh daemon after the complete target tree has been removed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wasm_link_hit_restores_compiler_observed_output_after_fresh_daemon() {
+    let rustc = match zccache::test_support::find_rustc() {
+        Some(path) => path,
+        None => {
+            eprintln!("skipping test: rustc not found");
+            return;
+        }
+    };
+    if !rustc_target_is_available(rustc.as_path(), "wasm32-unknown-unknown") {
+        eprintln!("skipping test: wasm32-unknown-unknown target not installed");
+        return;
+    }
+
+    zccache::test_support::test_timeout(async move {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache_dir = tmp.path().join("zccache-cache");
+        let project_dir = tmp.path().join("workspace");
+        std::fs::create_dir_all(project_dir.join("src")).expect("create src");
+        std::fs::write(project_dir.join("src/main.rs"), "fn main() {}\n")
+            .expect("write wasm source");
+        let _cache_env = CacheEnvGuard::new(&cache_dir);
+        let args = wasm_link_args();
+        let wasm = project_dir.join("target/wasm32-unknown-unknown/debug/deps/wasm_restore.wasm");
+
+        let (endpoint1, handle1) = start_daemon_like_zccache_daemon().await;
+        let mut client1 = connect(&endpoint1).await;
+        let session1 = start_session(&mut client1, &project_dir).await;
+        let first = compile_rustc(
+            &mut client1,
+            &session1,
+            rustc.as_path(),
+            &args,
+            &project_dir,
+        )
+        .await;
+        assert_eq!(
+            first.exit_code,
+            0,
+            "first wasm compile failed: {}",
+            String::from_utf8_lossy(&first.stderr)
+        );
+        assert!(!first.cached, "first wasm compile must populate the cache");
+        assert!(
+            wasm.is_file(),
+            "cold staged compile must materialize compiler-observed {wasm:?}"
+        );
+        end_session(&mut client1, session1).await;
+        shutdown_daemon(client1, handle1).await;
+
+        std::fs::remove_dir_all(project_dir.join("target")).expect("remove target tree");
+
+        let (endpoint2, handle2) = start_daemon_like_zccache_daemon().await;
+        let mut client2 = connect(&endpoint2).await;
+        let session2 = start_session(&mut client2, &project_dir).await;
+        let second = compile_rustc(
+            &mut client2,
+            &session2,
+            rustc.as_path(),
+            &args,
+            &project_dir,
+        )
+        .await;
+        assert_eq!(
+            second.exit_code,
+            0,
+            "warm wasm compile failed: {}",
+            String::from_utf8_lossy(&second.stderr)
+        );
+        assert!(
+            second.cached,
+            "fresh daemon must reload the staged wasm artifact"
+        );
+        assert!(
+            wasm.is_file(),
+            "warm hit must materialize compiler-observed {wasm:?}"
+        );
         end_session(&mut client2, session2).await;
         shutdown_daemon(client2, handle2).await;
     })

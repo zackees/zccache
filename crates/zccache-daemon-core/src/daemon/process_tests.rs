@@ -279,17 +279,17 @@ fn auto_priority_decision_normal_on_interactive_when_idle() {
 
 #[test]
 fn in_flight_ticket_returns_pre_increment_count_atomically() {
-    let baseline = current_in_flight_compiles();
+    let baseline = IN_FLIGHT_COMPILES.load(Ordering::Acquire);
     let t1 = InFlightCompileTicket::acquire();
     assert_eq!(t1.in_flight_before(), baseline);
-    assert_eq!(current_in_flight_compiles(), baseline + 1);
+    assert_eq!(IN_FLIGHT_COMPILES.load(Ordering::Acquire), baseline + 1);
     let t2 = InFlightCompileTicket::acquire();
     assert_eq!(t2.in_flight_before(), baseline + 1);
-    assert_eq!(current_in_flight_compiles(), baseline + 2);
+    assert_eq!(IN_FLIGHT_COMPILES.load(Ordering::Acquire), baseline + 2);
     drop(t2);
-    assert_eq!(current_in_flight_compiles(), baseline + 1);
+    assert_eq!(IN_FLIGHT_COMPILES.load(Ordering::Acquire), baseline + 1);
     drop(t1);
-    assert_eq!(current_in_flight_compiles(), baseline);
+    assert_eq!(IN_FLIGHT_COMPILES.load(Ordering::Acquire), baseline);
 }
 
 /// zccache#924: serialize tests that touch the process-wide host
@@ -396,19 +396,6 @@ fn host_counter_saturates_without_overflow() {
 }
 
 #[test]
-fn auto_priority_can_sample_current_load() {
-    let decision = CompilePriority::Auto.resolve_for_current_load();
-    assert_eq!(decision.requested, CompilePriority::Auto);
-    assert!(matches!(
-        decision.effective,
-        CompilePriority::Normal | CompilePriority::Low
-    ));
-    if let Some(cpu_usage_percent) = decision.cpu_usage_percent {
-        assert!((0.0..=100.0).contains(&cpu_usage_percent));
-    }
-}
-
-#[test]
 fn client_env_selects_high_mode() {
     let env = vec![(COMPILE_PRIORITY_ENV.to_string(), "high".to_string())];
     assert_eq!(
@@ -479,10 +466,9 @@ fn link_like_compile_priority_on_ci_defaults_to_normal_without_link_override() {
 }
 
 #[test]
-fn link_like_compile_priority_on_interactive_defaults_to_low_without_link_override() {
-    // Issue #813 / #810: link.exe is the single worst single-thread
-    // hog on Windows MSVC. Interactive hosts demote it to Low so the
-    // late-build link step doesn't lock up the UI.
+fn link_like_compile_priority_on_interactive_defaults_to_auto_without_link_override() {
+    // #1511: Auto keeps a lone link-like compile at Normal and demotes only
+    // followers in a parallel wave, retaining #813's UI protection.
     let env = vec![(COMPILE_PRIORITY_ENV.to_string(), "idle".to_string())];
 
     assert_eq!(
@@ -493,7 +479,7 @@ fn link_like_compile_priority_on_interactive_defaults_to_low_without_link_overri
             None,
             false, // interactive
         ),
-        CompilePriority::Low
+        CompilePriority::Auto
     );
 }
 

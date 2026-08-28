@@ -399,3 +399,55 @@ async fn perf_warm_cache_zccache_vs_sccache() {
     }
     eprintln!();
 }
+
+/// Minimal cold-miss workload for instruction and allocation profilers.
+///
+/// The comparative benchmark above is the wall-clock authority, but running
+/// all bare/sccache phases under Callgrind can exceed Bosn's command deadline.
+/// This keeps daemon startup, identity hashing, exact dependency discovery,
+/// and one successful C++ miss while omitting unrelated comparison phases.
+#[tokio::test]
+#[ignore]
+async fn profile_single_cpp_cold_miss() {
+    let Some(compiler_path) = zccache::test_support::find_clang() else {
+        eprintln!("SKIP: no C++ compiler found");
+        return;
+    };
+    let compiler = compiler_path.to_string_lossy().into_owned();
+    let project = zccache::test_support::temp_cache_dir().unwrap();
+    generate_project(project.path());
+    let cwd = project.path().to_string_lossy().into_owned();
+    let sources = vec!["unit_000.cpp".to_string()];
+
+    let (_cache_dir, endpoint, server_handle, shutdown) = start_daemon().await;
+    let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
+    client
+        .send(&Request::SessionStart {
+            client_pid: std::process::id(),
+            working_dir: cwd.clone().into(),
+            log_file: None,
+            track_stats: true,
+            journal_path: None,
+            profile: false,
+            private_daemon: None,
+        })
+        .await
+        .unwrap();
+    let session_id = match client.recv().await.unwrap() {
+        Some(Response::SessionStarted { session_id, .. }) => session_id,
+        other => panic!("expected SessionStarted, got: {other:?}"),
+    };
+
+    let elapsed = zccache_compile_single(&mut client, &session_id, &compiler, &cwd, &sources).await;
+    eprintln!("single C++ cold miss: {}", fmt_dur(elapsed));
+
+    client
+        .send(&Request::SessionEnd {
+            session_id: session_id.clone(),
+        })
+        .await
+        .unwrap();
+    let _ = client.recv::<Response>().await;
+    shutdown.notify_one();
+    server_handle.await.unwrap();
+}

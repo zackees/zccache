@@ -8,6 +8,9 @@ on:
         required: false
         default: "main"
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
@@ -60,56 +63,48 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             binary_ext: ""
-            cross_driver: zigbuild
             prebuild_deps: none
             clear_target_after_setup: "true"
             include_python: false
 
           - target: aarch64-unknown-linux-musl
             binary_ext: ""
-            cross_driver: zigbuild
             prebuild_deps: none
             clear_target_after_setup: "true"
             include_python: false
 
           - target: x86_64-unknown-linux-gnu
             binary_ext: ""
-            cross_driver: zigbuild
             prebuild_deps: none
             clear_target_after_setup: "true"
             include_python: true
 
           - target: aarch64-unknown-linux-gnu
             binary_ext: ""
-            cross_driver: zigbuild
             prebuild_deps: none
             clear_target_after_setup: "true"
             include_python: true
 
           - target: x86_64-apple-darwin
             binary_ext: ""
-            cross_driver: zigbuild
             prebuild_deps: none
             clear_target_after_setup: "true"
             include_python: true
 
           - target: aarch64-apple-darwin
             binary_ext: ""
-            cross_driver: zigbuild
             prebuild_deps: none
             clear_target_after_setup: "true"
             include_python: true
 
           - target: x86_64-pc-windows-msvc
             binary_ext: ".exe"
-            cross_driver: xwin
             prebuild_deps: none
             clear_target_after_setup: "true"
             include_python: true
 
           - target: aarch64-pc-windows-msvc
             binary_ext: ".exe"
-            cross_driver: xwin
             prebuild_deps: none
             clear_target_after_setup: "true"
             require_debug_sidecars: "false"
@@ -142,7 +137,6 @@ jobs:
           cache_key: ${{ matrix.target }}
           use_soldr: "true"
           cross_compile: "true"
-          cross_driver: ${{ matrix.cross_driver }}
           prebuild_deps: ${{ matrix.prebuild_deps || 'soldr-cook' }}
           clear_target_after_setup: ${{ matrix.clear_target_after_setup || 'false' }}
           require_debug_sidecars: ${{ matrix.require_debug_sidecars || 'true' }}

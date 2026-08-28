@@ -29,6 +29,9 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
@@ -39,6 +42,9 @@ jobs:
     runs-on: ${{ inputs.os }}
     steps:
       - uses: actions/checkout@v6
+      # The newer action revision regresses native ARM-musl compiler selection
+      # (GNU std paired with a musl linker). Keep this unrelated cross-only
+      # lane on its last known-good action while ci-test consumers use v0.
       - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
         with:
           zccache-seed-strict: true

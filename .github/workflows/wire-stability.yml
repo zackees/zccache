@@ -27,6 +27,9 @@ on:
 # supersedes the in-flight run instead of queueing behind it. Non-PR events
 # key on run_id so each gets its own group -- GitHub keeps only ONE pending
 # run per group, so a shared group silently drops queued main-push SHAs.
+permissions:
+  contents: read
+
 concurrency:
   group: wire-stability-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

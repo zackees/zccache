@@ -15,6 +15,7 @@ zccache-core = { workspace = true }
 zccache-platform = { workspace = true }
 zccache-protocol = { workspace = true }
 
+blake3 = { workspace = true, features = ["mmap"] }
 bytes = { workspace = true }
 dashmap = { workspace = true }
 interprocess = "2.4.2"

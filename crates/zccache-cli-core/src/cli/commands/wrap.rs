@@ -10,7 +10,6 @@ pub(crate) mod ipc;
 mod passthrough;
 mod profile;
 mod routing;
-mod rustfmt;
 mod tool_resolution;
 mod unavailable;
 
@@ -121,7 +120,7 @@ fn run_wrap_routed(args: &[String], overrides: WrapperOverrides) -> ExitCode {
     match routing::classify_invocation(&args[0], &tool_args) {
         WrapperRoute::Formatter => {
             profile::set_route("formatter");
-            rustfmt::run_rustfmt_cached(&wrapped_tool, &tool_args, &cwd, None)
+            crate::formatter::run_rustfmt_cached(&wrapped_tool, &tool_args, &cwd, None)
         }
         WrapperRoute::LinkOrArchive => {
             profile::set_route("link_or_archive");
@@ -152,28 +151,6 @@ fn run_wrap_routed(args: &[String], overrides: WrapperOverrides) -> ExitCode {
             )
         }
     }
-}
-
-pub(crate) fn run_embedded_rustfmt(
-    rustfmt_path: &std::path::Path,
-    args: &[String],
-    cwd: &std::path::Path,
-    cache_root: &std::path::Path,
-) -> ExitCode {
-    rustfmt::run_rustfmt_cached(rustfmt_path, args, cwd, Some(cache_root))
-}
-
-pub(crate) fn run_embedded_rustfmt_with_runner<F>(
-    rustfmt_path: &std::path::Path,
-    args: &[String],
-    cwd: &std::path::Path,
-    cache_root: &std::path::Path,
-    runner: F,
-) -> std::io::Result<i32>
-where
-    F: FnOnce(&mut std::process::Command) -> std::io::Result<i32>,
-{
-    rustfmt::run_rustfmt_cached_with_runner(rustfmt_path, args, cwd, Some(cache_root), runner)
 }
 
 fn run_compile_route(

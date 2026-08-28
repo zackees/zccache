@@ -22,6 +22,9 @@ on:
     - cron: "23 4 * * 1"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: soldr-broker-stress-${{ github.ref }}
   cancel-in-progress: true
@@ -37,7 +40,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+      - uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
           zccache-seed-strict: true
           toolchain: 1.95.0

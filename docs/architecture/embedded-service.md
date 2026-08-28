@@ -142,6 +142,31 @@ Any persistent write in embedded mode must be rooted under the host-provided
 cache root or audit output root unless the design explicitly documents an
 exception.
 
+### Host compiler-admission policy
+
+An embedded host may call
+`ZccacheService::start_with_host_admission_classifier` (or its explicit
+options counterpart) to request exclusive admission for a product-specific
+compiler unit. The policy receives stable compiler facts (`CompilerFamily`,
+argument vector, and an optional source path) and returns only a boolean; it
+never receives a permit, lock, or daemon state handle. The ordinary `start`
+and `start_with_options` constructors remain no-ops for this policy, preserving
+standalone and existing embedded-service behavior and source compatibility.
+
+Zccache invokes this policy only after the request has missed all cache-hit
+paths and immediately before a real compiler child would be spawned. A cache
+hit therefore neither invokes the host policy nor waits for compiler
+admission. The host result is ORed with zccache's built-in large-C and known
+Rust-amalgamation predicate, so either owner can request exclusive execution.
+
+Zccache remains the sole owner of scheduling. It acquires the bounded compile
+semaphore first and then its fair shared/exclusive `RwLock`; policies cannot
+reverse that order or retain permits during cancellation or shutdown. Hosts
+should keep classification pure and quick, and own the product-specific
+predicate and its regression tests. A classifier error rejects the request
+before either admission layer is acquired, so it cannot leak a permit or
+silently change the host's intended scheduling policy.
+
 ## API Sketch
 
 The exact Rust API will be finalized in zccache#905. The design should
@@ -176,6 +201,17 @@ pub struct ZccacheStartOptions {
     pub disk_limits: DiskCacheLimits,
     pub maintenance_ownership: MaintenanceOwnership,
     pub staging_root: Option<NormalizedPath>,
+}
+
+pub struct HostCompilerRequest<'a> {
+    // compiler family, argv, optional source path; accessors only
+}
+
+pub trait HostAdmissionClassifier: Send + Sync + 'static {
+    fn requires_exclusive(
+        &self,
+        request: &HostCompilerRequest<'_>,
+    ) -> Result<bool, HostAdmissionError>;
 }
 
 pub enum DiskMaintenanceKind {
@@ -273,6 +309,15 @@ impl ZccacheService {
     pub async fn start_with_options(
         config: ZccacheConfig,
         options: ZccacheStartOptions,
+    ) -> Result<Self>;
+    pub async fn start_with_host_admission_classifier(
+        config: ZccacheConfig,
+        classifier: Arc<dyn HostAdmissionClassifier>,
+    ) -> Result<Self>;
+    pub async fn start_with_options_and_host_admission_classifier(
+        config: ZccacheConfig,
+        options: ZccacheStartOptions,
+        classifier: Arc<dyn HostAdmissionClassifier>,
     ) -> Result<Self>;
     pub async fn compile(&self, request: CompileRequest) -> Result<CompileResponse>;
     pub async fn compile_streaming<F>(&self, request: CompileRequest, on_chunk: F) -> Result<()>

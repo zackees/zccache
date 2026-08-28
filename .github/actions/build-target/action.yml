@@ -20,10 +20,6 @@ inputs:
     description: Build from a Linux x86 host with a soldr-managed cross driver.
     required: false
     default: "false"
-  cross_driver:
-    description: Cross-build cargo driver (native, zigbuild, or xwin).
-    required: false
-    default: native
   prebuild_deps:
     description: setup-soldr prebuild dependency mode.
     required: false
@@ -85,27 +81,6 @@ runs:
       run: |
         echo "RELEASE_RUST_TOOLCHAIN=${{ inputs.cross_compile == 'true' && '1.95.0' || (contains(inputs.target, 'pc-windows-msvc') && '1.95.0-x86_64-pc-windows-msvc' || '1.95.0') }}" >> "$GITHUB_ENV"
 
-    - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        toolchain: ${{ inputs.cross_compile == 'true' && '1.95.0' || (contains(inputs.target, 'pc-windows-msvc') && '1.95.0-x86_64-pc-windows-msvc' || '1.95.0') }}
-        targets: ${{ inputs.target }}
-
-    - name: Verify Rust host toolchain
-      shell: bash
-      run: |
-        info="$(rustup run "$RELEASE_RUST_TOOLCHAIN" rustc -vV)"
-        printf '%s\n' "$info"
-        host="$(printf '%s\n' "$info" | awk '/^host: / { print $2 }')"
-        if [ "${{ inputs.cross_compile }}" = "true" ] && [ "$host" != "x86_64-unknown-linux-gnu" ]; then
-          echo "::error::Cross release builds require the Linux x86 host toolchain, got: ${host:-<missing>}" >&2
-          exit 1
-        fi
-        if [ "${{ inputs.cross_compile }}" != "true" ] && [[ "${{ inputs.target }}" == *pc-windows-msvc ]] && [ "$host" != "x86_64-pc-windows-msvc" ]; then
-          echo "::error::Windows release builds must use the MSVC host toolchain, got: ${host:-<missing>}" >&2
-          exit 1
-        fi
-
     - name: Install musl tools
       if: inputs.cross_compile != 'true' && inputs.target == 'x86_64-unknown-linux-musl'
       shell: bash
@@ -138,30 +113,23 @@ runs:
         echo "CARGO_TARGET_${TARGET_UPPER}_LINKER=${{ inputs.linker }}" >> "$GITHUB_ENV"
         echo "CC_${TARGET_CC}=${{ inputs.linker }}" >> "$GITHUB_ENV"
 
-    - name: Install Zig
-      if: inputs.cross_driver == 'zigbuild'
-      uses: mlugg/setup-zig@v2
-      with:
-        version: "0.14.1"
-
-    - name: Install cargo-zigbuild
-      if: inputs.cross_driver == 'zigbuild'
-      uses: taiki-e/install-action@v2
-      with:
-        tool: cargo-zigbuild
-
-    - name: Configure Zig C compatibility
-      if: inputs.cross_driver == 'zigbuild'
+    - name: Configure cross C compatibility
+      if: inputs.cross_compile == 'true'
       shell: bash
       run: |
-        # Zig cross targets promote __DATE__/__TIME__ to an error. The
+        # Zig cross targets promote __DATE__/__TIME__ to an error, and soldr
+        # still materializes zig for the Linux/Darwin cross lanes. The
         # mimalloc-pprof amalgamation reports its build timestamp, so retain
         # the diagnostic without making that vendored C source unbuildable.
+        #
+        # Unlike the C++ language-mode override removed in #1439, this is a warning
+        # flag: it is safe to apply graph-wide because it does not change how
+        # any source is interpreted.
         printf 'CFLAGS=%s\n' "${CFLAGS:+$CFLAGS }-Wno-error=date-time" >> "$GITHUB_ENV"
         printf 'CXXFLAGS=%s\n' "${CXXFLAGS:+$CXXFLAGS }-Wno-error=date-time" >> "$GITHUB_ENV"
 
     - name: Install LLVM dSYM tools
-      if: inputs.cross_driver == 'zigbuild' && contains(inputs.target, 'apple-darwin')
+      if: contains(inputs.target, 'apple-darwin')
       shell: bash
       run: |
         set -euo pipefail
@@ -184,17 +152,29 @@ runs:
         test -x /usr/local/bin/dsymutil
         dsymutil --version
 
-    - name: Install cargo-xwin
-      if: inputs.cross_driver == 'xwin'
-      uses: taiki-e/install-action@v2
-      with:
-        tool: cargo-xwin
+
+    - name: Request a static CRT before soldr prepares the target
+      if: contains(inputs.target, 'pc-windows-msvc')
+      shell: bash
+      run: |
+        # Must land in $GITHUB_ENV *before* setup-soldr runs. `soldr prepare`
+        # decides the CRT halves once, at setup time, and bakes them into
+        # CARGO_ENCODED_RUSTFLAGS; exporting +crt-static later in the build
+        # step is too late for that decision. Doing exactly that produced a
+        # link carrying soldr's dynamic set on 11 invocations and the static
+        # set on 1 -- `undefined symbol: strlen / abort / calloc`, i.e. no
+        # usable CRT at all.
+        #
+        # See zackees/soldr#2798 for the detection soldr does here, and
+        # zccache#269 for why the shipped .exe needs the static CRT.
+        printf 'RUSTFLAGS=%s\n' "${RUSTFLAGS:+$RUSTFLAGS }-C target-feature=+crt-static" >> "$GITHUB_ENV"
 
     - name: Setup soldr build cache
       if: inputs.use_soldr == 'true'
-      uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+      uses: zackees/setup-soldr@e138f3c43682cb3f6afa0eb5a1e808b24a0224bb
       with:
         toolchain: 1.95.0
+        cross-targets: ${{ inputs.cross_compile == 'true' && inputs.target || '' }}
         cache: true
         cache-key-suffix: build-${{ inputs.cache_key }}
         linker: ${{ inputs.cross_compile == 'true' && 'platform-default' || 'fast' }}
@@ -202,6 +182,21 @@ runs:
         prebuild-deps-flags: "--release --target ${{ inputs.target }}"
         compile-cache-stats: detailed
         verify-compile-cache: ${{ inputs.cross_compile == 'true' && 'error' || 'off' }}
+
+    - name: Verify Rust host toolchain
+      shell: bash
+      run: |
+        info="$(rustup run "$RELEASE_RUST_TOOLCHAIN" rustc -vV)"
+        printf '%s\n' "$info"
+        host="$(printf '%s\n' "$info" | awk '/^host: / { print $2 }')"
+        if [ "${{ inputs.cross_compile }}" = "true" ] && [ "$host" != "x86_64-unknown-linux-gnu" ]; then
+          echo "::error::Cross release builds require the Linux x86 host toolchain, got: ${host:-<missing>}" >&2
+          exit 1
+        fi
+        if [ "${{ inputs.cross_compile }}" != "true" ] && [[ "${{ inputs.target }}" == *pc-windows-msvc ]] && [ "$host" != "x86_64-pc-windows-msvc" ]; then
+          echo "::error::Windows release builds must use the MSVC host toolchain, got: ${host:-<missing>}" >&2
+          exit 1
+        fi
 
     - name: Verify bootstrap zccache selection
       if: inputs.cross_compile == 'true'
@@ -238,14 +233,32 @@ runs:
     # Static-link the MSVC C runtime (vcruntime + UCRT) for Windows release
     # binaries. Without `+crt-static` the published `zccache.exe` declares
     # imports against `VCRUNTIME140.dll` and the `api-ms-win-crt-*` UCRT
-    # API-set forwarders; on runner images where any of those DLLs is
-    # missing or version-skewed, the Windows loader rejects the image
-    # before `main` with `STATUS_DLL_INIT_FAILED` (exit `-1073741502` /
-    # `0xC0000142`). Self-contained CRT linkage is the standard approach
-    # for distributable Rust binaries on Windows (rustc/cargo/rustup all
-    # ship this way). See zccache#269.
+    # API-set forwarders, and then fails to start wherever those are not
+    # resolvable.
+    #
+    # The load-bearing case is the PyPI install path. CPython on Windows
+    # ships `vcruntime140.dll` *app-locally*, next to `python.exe` -- see
+    # cpython's `PC/layout/support/python.props`. A wheel-installed
+    # `zccache.exe` lands in `<env>/Scripts/`, and the loader searches the
+    # directory of the *executable*, so it never sees Python's copy. It then
+    # depends on a system-wide VC++ redist that may simply not be there.
+    # This is astral-sh/ruff#11503 exactly; their fix was +crt-static too.
+    # The raw-binary paths (this action's curl install, install.ps1) have no
+    # Python process involved at all.
+    #
+    # NB: zccache#269 attributed this to `STATUS_DLL_INIT_FAILED`
+    # (`0xC0000142`). That code means the DLL was found and its DllMain
+    # returned FALSE; a *missing* DLL is `STATUS_DLL_NOT_FOUND`
+    # (`0xC0000135`). The hosted runner images do ship the VC++ redist, so
+    # whatever produced 0xC0000142 there is still unexplained -- the flag is
+    # kept for the `Scripts/` argument above, which is independently sound.
+    #
+    # Self-contained CRT linkage is the norm for distributable Rust binaries
+    # on Windows: ripgrep, fd, bat, uv, ruff, and rustup all set this, and
+    # rustc/cargo hard-code it in bootstrap (`crt_static()`).
     #
     # We DO NOT apply +crt-static to the Python extension (.pyd) builds
+    # below — those load into the host Python process and must share its
     # below — those load into the host Python process and must share its
     # C runtime. Static CRT linkage is appended to RUSTFLAGS only for the
     # standalone binary build step.
@@ -260,20 +273,15 @@ runs:
         # Zig cross builds are especially memory-heavy on the two-core hosted
         # Linux runners. Keep one rustc child alive at a time; exit 255 means a
         # signaled compiler child and persisted with two concurrent children.
-        # The xwin lanes showed the same signaled rustc-child exit (255) once
+        # The Windows MSVC lanes showed the same signaled rustc-child exit (255) once
         # the Zig lanes were serialized. Keep every hosted cross lane to one
         # rustc child at a time.
-        if [ "${{ inputs.cross_driver }}" = "zigbuild" ]; then
-          cargo_build=(soldr cargo zigbuild --jobs 1)
-        elif [ "${{ inputs.cross_driver }}" = "xwin" ]; then
-          cargo_build=(soldr cargo xwin build --jobs 1)
+        if [ "${{ inputs.cross_compile }}" = "true" ]; then
+          cargo_build=(soldr build --jobs 1 -j 1)
         elif [ "${{ inputs.use_soldr }}" = "true" ]; then
           cargo_build=(soldr --no-cache cargo build)
         else
           cargo_build=(rustup run "$RELEASE_RUST_TOOLCHAIN" cargo build)
-        fi
-        if [[ "${{ inputs.target }}" == *pc-windows-msvc ]]; then
-          export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static"
         fi
         # #1017 Lever 1: build all three shipped binaries in ONE cargo
         # invocation with unified features. Building them separately (one
@@ -296,6 +304,44 @@ runs:
     # the one that actually catches the regression. ARM64 Windows builds
     # are cross-compiled on x64 runners and so cannot exec the binary on
     # this leg — skip the smoke for that target only.
+    - name: Assert Windows binaries link the CRT statically
+      if: contains(inputs.target, 'pc-windows-msvc')
+      shell: bash
+      run: |
+        set -euo pipefail
+        # zccache#269 regression gate. The shipped .exe must not import the
+        # dynamic CRT: a wheel-installed zccache.exe lives in <env>/Scripts/,
+        # while CPython keeps its own vcruntime140.dll app-local next to
+        # python.exe, so the loader does not find it from Scripts/. Same story
+        # for the raw-binary install paths (action.yml curl, install.ps1),
+        # which involve no Python process at all. See astral-sh/ruff#11503.
+        #
+        # This runs on the cross host and needs no execution, which is the
+        # point: "Smoke test built binary" skips every cross target, so
+        # nothing verified CRT linkage. The soldr migration (#1497) silently
+        # produced a dynamic-CRT aarch64 binary that a green matrix would
+        # have shipped -- x64 only failed loudly because lld-link hit a
+        # duplicate symbol first.
+        #
+        # .pyd extensions are deliberately excluded: a PyO3 module MUST share
+        # the host interpreter's dynamic CRT.
+        fail=0
+        for bin in zccache zccache-fp; do
+          path="target/${{ inputs.target }}/release/${bin}${{ inputs.binary_ext }}"
+          [ -e "$path" ] || { echo "::error::$path was not built"; fail=1; continue; }
+          found="$(strings -a "$path" \
+            | grep -iE '^(vcruntime[0-9]*\.dll|ucrtbase\.dll|api-ms-win-crt-[a-z]+-l[0-9]-[0-9]-[0-9]\.dll)$' \
+            | sort -u || true)"
+          if [ -n "$found" ]; then
+            echo "::error::$path imports the dynamic CRT; +crt-static did not take effect (zccache#269)"
+            printf '  %s\n' $found
+            fail=1
+          else
+            echo "OK: $path links the CRT statically"
+          fi
+        done
+        exit "$fail"
+
     - name: Smoke test built binary
       shell: bash
       run: |
@@ -335,21 +381,19 @@ runs:
         # carry the `python` feature, so `-p zccache --features python` is a
         # workflow-only build-target bug that latently broke the release path.
         # Surfaced when 1.9.1 became the first version bump after that split.
-        if [ "${{ inputs.cross_driver }}" = "zigbuild" ]; then
-          cargo_build=(soldr cargo zigbuild --jobs 1)
-        elif [ "${{ inputs.cross_driver }}" = "xwin" ]; then
-          cargo_build=(soldr cargo xwin build --jobs 1)
+        if [ "${{ inputs.cross_compile }}" = "true" ]; then
+          cargo_build=(soldr build --jobs 1 -j 1)
         elif [ "${{ inputs.use_soldr }}" = "true" ]; then
           cargo_build=(soldr --no-cache cargo build)
         else
           cargo_build=(rustup run "$RELEASE_RUST_TOOLCHAIN" cargo build)
         fi
         "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-cli --features python --lib
-        "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-watcher --features python --lib
-        "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-fingerprint --features python --lib
+        "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-watcher-py --lib
+        "${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-fingerprint-py --lib
 
     - name: Repair missing Linux debug sidecars
-      if: inputs.cross_driver == 'zigbuild' && contains(inputs.target, 'unknown-linux')
+      if: inputs.cross_compile == 'true' && contains(inputs.target, 'unknown-linux')
       shell: bash
       env:
         PYO3_PYTHON: python
@@ -368,7 +412,7 @@ runs:
         # package without the wrapper so rustc emits both .dwp files locally.
         echo "Packed Linux debug sidecars are missing; rebuilding zccache locally"
         soldr cargo clean -p zccache --release --target "$TARGET"
-        soldr --no-cache cargo zigbuild --jobs 1 \
+        soldr --no-cache build --jobs 1 -j 1 \
           --release --target "$TARGET" -p zccache \
           --features zccache-bin,fingerprint-bin \
           --bin zccache --bin zccache-fp

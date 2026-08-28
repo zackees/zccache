@@ -37,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+      - uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
           zccache-seed-strict: true
           cache: false
@@ -47,6 +47,11 @@ jobs:
       # matrix so pull requests cannot merge before exercising the budget.
       - name: Run COW materialization budget
         shell: bash
+        env:
+          # The required gate compiles the daemon-core library test from a
+          # cold target tree on a constrained hosted runner.
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: |
           set -euo pipefail
           soldr cargo test -p zccache-daemon-core --features test-support perf_cow_materialization_128_hits_under_two_seconds
@@ -60,7 +65,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+      - uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
           zccache-seed-strict: true
           cache: false
@@ -128,7 +133,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v6
 
-      - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+      - uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
           zccache-seed-strict: true
           cache: false

@@ -161,6 +161,25 @@ its own:
   `bin`.** `dylib`/`cdylib` are deliberately not cached (platform
   linker state is not modeled) — PyO3/maturin `cdylib` final artifacts
   recompile every time while their rlib deps still hit.
+- **`--test` harness links are refused at admission** (zccache#1525,
+  soldr#2931), reason string `test harness link product not cacheable`.
+  Cargo builds an integration test with `--test` and no `--crate-type`,
+  so the parser's default-to-`bin` fallback used to admit every linked
+  test executable. A harness is the worst possible store entry: it
+  statically links the full dependency graph (maximal size) and its
+  input closure includes the workspace library it tests, so any
+  workspace source edit relinks it (maximal volatility). Each run minted
+  a fresh multi-megabyte entry under a key that could never be requested
+  again — a 3.3 GB CI archive downstream, uploaded to `actions/cache`
+  every run. Unlike the `dylib`/`cdylib` exclusion this is an economics
+  rule, not a correctness one: harness replay would be sound, it just
+  can never pay. The gate keys on `--test` itself, so it also covers
+  `--crate-type lib --test` (a lib's unit-test harness) — `--test`
+  overrides what rustc emits regardless of the declared crate type.
+  Opt back in with `ZCCACHE_CACHE_TEST_BINS=1` (canonical zccache-owned
+  boolean grammar: `1`/`true` only) if you can demonstrate a real hit
+  rate; `--test` stays in `unknown_flags` so harness and non-harness
+  builds of the same source keep distinct keys.
 - **Native libraries in link steps are a documented blind spot.**
   `bin`/`staticlib` units linking system libraries via `-L`/`-l` do not
   content-hash the resolved library bytes (matching sccache). An

@@ -20,9 +20,11 @@ members = [
     "crates/zccache-symbols",
     "crates/zccache-test-support",
     "crates/zccache-watcher",
+    "crates/zccache-watcher-py",
     "crates/zccache-cli",
     "crates/zccache-cli-core",
     "crates/zccache-fingerprint",
+    "crates/zccache-fingerprint-py",
 ]
 exclude = [
     "dylints/ban_std_pathbuf",
@@ -37,7 +39,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "1.13.6"
+version = "1.13.14"
 edition = "2021"
 rust-version = "1.95.0"
 license = "AGPL-3.0-only"
@@ -80,7 +82,10 @@ tar = "0.4"
 flate2 = "1"
 ruzstd = "0.7"
 lzma-rs = "0.3"
-sevenz-rust = "0.6"
+# RUSTSEC-2026-0245: the abandoned predecessor permits archive path
+# traversal. Keep the dependency key stable for the amalgamated crate while
+# sourcing the maintained successor recommended by RustSec.
+sevenz-rust = { package = "sevenz-rust2", version = "0.22.2" }
 rkyv = "0.8"
 # 0.9.3 is the floor, not a preference (#1439): earlier releases compile the
 # vendored mimalloc amalgamation with MSVC's deprecated C-mode Interlocked

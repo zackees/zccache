@@ -73,6 +73,13 @@ fn build_cc_compile_context(
     let mut ctx = CompileContext::from_parsed_args(parsed, compiler_hash);
     ctx.flags
         .extend(msvc_env_key_flags(compilation.family, client_env));
+    // Issue #1530: a caller-passed `/showIncludes` changes what the stored
+    // stdout must contain, but the parser drops the flag, so without this the
+    // two shapes would share one entry.
+    ctx.flags.extend(super::keys::msvc_show_includes_key_flags(
+        compilation.family,
+        &compilation.original_args,
+    ));
     ctx.flags.sort();
 
     // For multi-file compilations, the parsed source_file might be wrong

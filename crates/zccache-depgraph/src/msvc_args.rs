@@ -10,6 +10,55 @@ use zccache_core::NormalizedPath;
 use super::args::{ParsedArgs, UserDepFlags};
 use super::search_paths::IncludeSearchPaths;
 
+/// How a caller spelled its own `/showIncludes`.
+///
+/// The distinction is load-bearing (issue #1530): the daemon must not inject a
+/// second `/showIncludes`, must not strip notes the caller is parsing, and must
+/// not treat a deliberately partial trace as a complete dependency set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShowIncludesMode {
+    /// Plain `/showIncludes` — every header, system ones included. A complete
+    /// dependency set.
+    All,
+    /// A suffixed form, i.e. clang-cl's `/showIncludes:user`. It deliberately
+    /// omits system headers, so it is *not* a complete dependency set and the
+    /// daemon falls back to its own scanner rather than trusting it.
+    UserOnly,
+}
+
+/// Recognise a caller-supplied `/showIncludes` argument.
+///
+/// `cl.exe` accepts `-` for every `/` option and matches option names
+/// case-insensitively, so `-showincludes` is the same flag as `/showIncludes`.
+/// A `:`-suffixed form is reported as [`ShowIncludesMode::UserOnly`] — that
+/// covers clang-cl's `/showIncludes:user` and treats any future suffix
+/// conservatively rather than assuming it yields a full trace.
+#[must_use]
+pub fn parse_show_includes_arg(arg: &str) -> Option<ShowIncludesMode> {
+    let body = arg.strip_prefix('/').or_else(|| arg.strip_prefix('-'))?;
+    let (head, suffix) = match body.split_once(':') {
+        Some((head, suffix)) => (head, Some(suffix)),
+        None => (body, None),
+    };
+    if !head.eq_ignore_ascii_case("showIncludes") {
+        return None;
+    }
+    Some(if suffix.is_some() {
+        ShowIncludesMode::UserOnly
+    } else {
+        ShowIncludesMode::All
+    })
+}
+
+/// Find a caller-supplied `/showIncludes` anywhere in `args`.
+///
+/// `args` must already have response files expanded — MSVC builds routinely
+/// pass the whole command line via `@rsp`.
+#[must_use]
+pub fn msvc_show_includes_mode(args: &[String]) -> Option<ShowIncludesMode> {
+    args.iter().find_map(|arg| parse_show_includes_arg(arg))
+}
+
 /// Parse MSVC-style compile arguments into structured form.
 ///
 /// MSVC uses `/` prefix for flags (e.g., `/I`, `/D`, `/O2`).
@@ -180,7 +229,7 @@ pub fn parse_msvc_args(args: &[String], cwd: &Path) -> ParsedArgs {
         }
 
         // /showIncludes â€” MSVC's dep tracking (like -MD for gcc)
-        if arg == "/showIncludes" {
+        if parse_show_includes_arg(arg).is_some() {
             result.dep_flags.has_md = true;
             i += 1;
             continue;
@@ -264,6 +313,76 @@ mod tests {
 
     fn args(s: &[&str]) -> Vec<String> {
         s.iter().map(|x| x.to_string()).collect()
+    }
+
+    // ── Issue #1530: /showIncludes recognition ──────────────────────────
+
+    #[test]
+    fn show_includes_accepts_both_prefixes_and_any_case() {
+        // cl.exe takes `-` for every `/` option and matches option names
+        // case-insensitively. Missing one of these spellings makes the daemon
+        // inject a second /showIncludes and strip notes the caller is parsing.
+        for arg in [
+            "/showIncludes",
+            "-showIncludes",
+            "/showincludes",
+            "-SHOWINCLUDES",
+            "/ShowIncludes",
+        ] {
+            assert_eq!(
+                parse_show_includes_arg(arg),
+                Some(ShowIncludesMode::All),
+                "expected full-trace /showIncludes: {arg}"
+            );
+        }
+    }
+
+    #[test]
+    fn show_includes_suffixed_form_is_user_only() {
+        // clang-cl's `/showIncludes:user` omits system headers, so it is not a
+        // usable dependency set. Any other suffix is treated the same way
+        // rather than optimistically assumed complete.
+        for arg in ["/showIncludes:user", "-showincludes:USER", "/showIncludes:"] {
+            assert_eq!(
+                parse_show_includes_arg(arg),
+                Some(ShowIncludesMode::UserOnly),
+                "expected partial trace: {arg}"
+            );
+        }
+    }
+
+    #[test]
+    fn show_includes_does_not_match_unrelated_args() {
+        for arg in [
+            "showIncludes",
+            "/showIncludesExtra",
+            "/show",
+            "/nologo",
+            "showIncludes.c",
+        ] {
+            assert_eq!(parse_show_includes_arg(arg), None, "false positive: {arg}");
+        }
+    }
+
+    #[test]
+    fn show_includes_mode_scans_the_whole_argv() {
+        assert_eq!(
+            msvc_show_includes_mode(&args(&["/nologo", "/c", "-showincludes", "a.c"])),
+            Some(ShowIncludesMode::All)
+        );
+        assert_eq!(
+            msvc_show_includes_mode(&args(&["/nologo", "/c", "a.c"])),
+            None
+        );
+    }
+
+    #[test]
+    fn every_show_includes_spelling_sets_has_md() {
+        // `has_md` is what stops the daemon appending its own copy of the flag.
+        for arg in ["-showincludes", "/showIncludes:user", "/SHOWINCLUDES"] {
+            let parsed = parse_msvc_args(&args(&[arg, "/c", "foo.c"]), Path::new("/tmp"));
+            assert!(parsed.dep_flags.has_md, "has_md not set for {arg}");
+        }
     }
 
     #[test]

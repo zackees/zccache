@@ -15,6 +15,9 @@ on:
       - ".editorconfig"
       - "tasks/**"
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -24,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+      - uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
           zccache-seed-strict: true
           toolchain: 1.95.0
@@ -47,12 +50,16 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Stop setup-soldr builder cache before coverage tests
-        uses: zackees/setup-soldr/cleanup@01aea6d47db8fedcafd350e2d42e19290c68824e
+        uses: zackees/setup-soldr/cleanup@5f1f68dcb8377818413c28ce52214261ae8ff771
       - name: Generate coverage
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/coverage
           SOLDR_CACHE_LIFECYCLE: command
           SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
+          # llvm-cov builds the workspace lib/bin test profile in its own
+          # target directory, including the daemon-core library test.
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: |
           unset ZCCACHE_CACHE_DIR
           echo "Using isolated coverage SOLDR_CACHE_DIR=$SOLDR_CACHE_DIR"

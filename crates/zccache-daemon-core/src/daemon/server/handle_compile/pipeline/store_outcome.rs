@@ -185,7 +185,13 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
 
     let state = state_arc.as_ref();
 
-    if let Some(plan) = staged_plan.as_ref() {
+    if let Some(plan) = staged_plan.as_mut() {
+        if let Err(error) = plan.observe_compiler_output_names() {
+            let _ = plan.cleanup();
+            return Some(Response::Error {
+                message: format!("failed to observe staged compiler outputs: {error}"),
+            });
+        }
         if let Err(error) = plan.rewrite_logical_side_outputs() {
             use crate::daemon::staged_stats::{StagedCounter, StagedFailure};
             state
@@ -217,7 +223,11 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
     // (e.g. via -include-pch) sees the change immediately — no need
     // to wait for a watcher event.
     let t_apply_changes = std::time::Instant::now();
-    state.cache_system.apply_changes(vec![output_path.clone()]);
+    let changed_outputs = staged_plan
+        .as_ref()
+        .map(StagedCompilePlan::requested_output_paths)
+        .unwrap_or_else(|| vec![output_path.clone()]);
+    state.cache_system.apply_changes(changed_outputs);
     let apply_changes_ns = t_apply_changes.elapsed().as_nanos() as u64;
 
     // Capture output metadata. Rust payload bytes are snapshotted into
@@ -230,7 +240,10 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         rustc_args_owned.clone(),
         compiler_output_path.clone(),
         cwd_path.clone(),
-        staged_output_paths,
+        staged_plan
+            .as_ref()
+            .map(StagedCompilePlan::output_paths)
+            .or(staged_output_paths),
     )
     .await
     {
@@ -487,6 +500,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
     // second copy/hash publication on the response path.
     let staged_cc_materialized = if !is_rustc { staged_plan.take() } else { None };
     let mut staged_cc_materialization = None;
+    let mut staged_materialization_ns = 0;
     if let Some(plan) = staged_cc_materialized {
         use crate::daemon::staged_stats::{
             StagedBytes, StagedCounter, StagedFailure, StagedTiming,
@@ -494,6 +508,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         let started = std::time::Instant::now();
         match plan.materialize() {
             Ok(materialized) => {
+                staged_materialization_ns = started.elapsed().as_nanos() as u64;
                 state.profiler.staged.add_count(
                     StagedCounter::MaterializeReflink,
                     materialized.reflink_count,
@@ -506,15 +521,16 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
                     .profiler
                     .staged
                     .bytes(StagedBytes::Materialization, materialized.copy_bytes);
-                state.profiler.staged.timing(
-                    StagedTiming::MissMaterialization,
-                    started.elapsed().as_nanos() as u64,
-                );
+                state
+                    .profiler
+                    .staged
+                    .timing(StagedTiming::MissMaterialization, staged_materialization_ns);
                 compiler_output_path = output_path.clone();
                 state.cache_system.apply_changes(vec![output_path.clone()]);
                 staged_cc_materialization = Some(());
             }
             Err(error) => {
+                staged_materialization_ns = started.elapsed().as_nanos() as u64;
                 state
                     .profiler
                     .staged
@@ -523,10 +539,10 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
                     .profiler
                     .staged
                     .failure(StagedFailure::RequestedMaterialization);
-                state.profiler.staged.timing(
-                    StagedTiming::MissMaterialization,
-                    started.elapsed().as_nanos() as u64,
-                );
+                state
+                    .profiler
+                    .staged
+                    .timing(StagedTiming::MissMaterialization, staged_materialization_ns);
                 return Some(Response::Error {
                     message: format!("failed to materialize compiler output: {error}"),
                 });
@@ -545,6 +561,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
             let started = std::time::Instant::now();
             match plan.materialize_without_cleanup() {
                 Ok(materialized) => {
+                    staged_materialization_ns = started.elapsed().as_nanos() as u64;
                     state.profiler.staged.add_count(
                         StagedCounter::MaterializeReflink,
                         materialized.reflink_count,
@@ -557,15 +574,18 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
                         .profiler
                         .staged
                         .bytes(StagedBytes::Materialization, materialized.copy_bytes);
-                    state.profiler.staged.timing(
-                        StagedTiming::MissMaterialization,
-                        started.elapsed().as_nanos() as u64,
-                    );
+                    state
+                        .profiler
+                        .staged
+                        .timing(StagedTiming::MissMaterialization, staged_materialization_ns);
                     compiler_output_path = output_path.clone();
-                    state.cache_system.apply_changes(vec![output_path.clone()]);
+                    state
+                        .cache_system
+                        .apply_changes(plan.requested_output_paths());
                     Some(plan)
                 }
                 Err(error) => {
+                    staged_materialization_ns = started.elapsed().as_nanos() as u64;
                     state
                         .profiler
                         .staged
@@ -574,10 +594,10 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
                         .profiler
                         .staged
                         .failure(StagedFailure::RequestedMaterialization);
-                    state.profiler.staged.timing(
-                        StagedTiming::MissMaterialization,
-                        started.elapsed().as_nanos() as u64,
-                    );
+                    state
+                        .profiler
+                        .staged
+                        .timing(StagedTiming::MissMaterialization, staged_materialization_ns);
                     return Some(Response::Error {
                         message: format!("failed to materialize compiler output: {error}"),
                     });
@@ -732,6 +752,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
             post_exec_ns,
             apply_changes_ns,
             collect_outputs_ns,
+            staged_materialization_ns,
             rust_output_count,
             rust_output_bytes,
             include_scan_ns,

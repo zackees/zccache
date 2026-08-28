@@ -41,7 +41,7 @@ mod tests;
 use std::sync::Arc;
 use zccache_core::NormalizedPath;
 
-pub use detect::{detect_family, dylint_inner_rustc_args, is_dylint_driver};
+pub use detect::{detect_family, dylint_inner_rustc_args, is_dylint_driver, is_msvc_cl};
 pub use dylint::{
     dylint_env_affects_output, prepare_dylint_cache_env, prepare_dylint_cache_env_with_identities,
     DYLINT_CACHE_INPUT_HASH_ENV, DYLINT_LIBS_ENV,

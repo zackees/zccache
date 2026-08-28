@@ -565,16 +565,12 @@ fn running_process_endpoint_path(endpoint: &str) -> String {
 /// Slice 24 of zccache#782: migrated to the `protocol_v2::backend_handle`
 /// namespace.
 ///
-/// ISSUE-601 / Linux Docker profile 2026-06-25: the underlying
-/// `DaemonProcess::current_process` SHA-256-hashes the daemon binary (via
-/// `running_process::broker::backend_lifecycle::identity::sha256_file`). The
-/// flame chart showed that single chain owning **43.06% of on-CPU** because
-/// `DaemonServer::bind` / `bind_with_cache_dir` / `EmbeddedDaemon::start`
-/// were repeatedly recomputing it. The daemon exe is immutable inside a
-/// running process, so the hash is keyed-by-endpoint cached for the process
-/// lifetime here. First-call errors still bubble up; only success values
-/// are inserted into the cache, so a transient failure (e.g. the exe was
-/// briefly unreadable) will retry on the next call.
+/// ISSUE-601 / #1511: the identity is keyed by endpoint and cached for the
+/// process lifetime. The first call streams the BLAKE3 identity instead of
+/// `DaemonProcess::current_process`, whose `fs::read` temporarily allocated the
+/// full daemon executable and whose legacy SHA-256 duplicated the hashing work.
+/// First-call errors still bubble up; only successful values are inserted, so a
+/// transient failure retries on the next call.
 pub fn current_backend_identity(
     endpoint: &str,
 ) -> Result<
@@ -593,13 +589,45 @@ pub fn current_backend_identity(
         return Ok((**cached).clone());
     }
 
-    let identity =
-        running_process::broker::protocol_v2::backend_handle::DaemonProcess::current_process(
-            running_process_endpoint(endpoint),
-            None,
-        )?;
+    let identity = current_process_identity_blake3(running_process_endpoint(endpoint))?;
     IDENTITY_CACHE.insert(endpoint.to_string(), std::sync::Arc::new(identity.clone()));
     Ok(identity)
+}
+
+fn current_process_identity_blake3(
+    ipc_endpoint: running_process::broker::protocol::Endpoint,
+) -> Result<
+    running_process::broker::protocol_v2::backend_handle::DaemonProcess,
+    running_process::broker::protocol_v2::backend_handle::IdentityError,
+> {
+    use running_process::broker::protocol_v2::backend_handle::{DaemonProcess, IdentityError};
+
+    let exe_path = std::env::current_exe().map_err(IdentityError::CurrentExe)?;
+    let exe_hash = executable_hash_blake3(&exe_path)?;
+    let started_at_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+
+    Ok(DaemonProcess {
+        pid: std::process::id(),
+        exe_path,
+        exe_hash,
+        // zccache and current running-process brokers identify executables with
+        // BLAKE3. Keep the required legacy wire slot empty rather than paying
+        // for a second digest used only by pre-BLAKE3 brokers.
+        legacy_exe_sha256: [0; 32],
+        boot_id: running_process::broker::host_identity::current().boot_id,
+        ipc_endpoint,
+        started_at_unix_ms,
+        idle_timeout_secs: None,
+    })
+}
+
+fn executable_hash_blake3(path: &std::path::Path) -> std::io::Result<[u8; 32]> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_mmap_rayon(path)?;
+    Ok(*hasher.finalize().as_bytes())
 }
 
 /// Persist the daemon identity used by future `BackendHandle` probes.

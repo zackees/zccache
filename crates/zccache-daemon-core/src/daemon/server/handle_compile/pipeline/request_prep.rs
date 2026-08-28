@@ -214,6 +214,7 @@ pub(super) async fn prepare_dylint_request(
         &format!("non-cacheable: Dylint cache disabled: {reason}"),
     );
     let response = run_compiler_direct(
+        state,
         &bypass_compiler,
         raw_args,
         cwd,
@@ -269,6 +270,7 @@ pub(super) async fn bypass_time_macro_request(
     warn_time_macro_uncacheable(&found);
     Some(
         run_compiler_direct(
+            state,
             &bypass_compiler,
             raw_args,
             cwd,
@@ -303,6 +305,7 @@ pub(super) async fn discover_request_system_includes(
         lineage,
         compiler_priority,
         want_rust_miss_profile,
+        client_env.as_deref(),
     )
     .await;
     if !outcome.empty_discovery {
@@ -322,6 +325,7 @@ pub(super) async fn discover_request_system_includes(
         "non-cacheable: system include discovery returned zero paths",
     );
     Err(run_compiler_direct(
+        state,
         compiler,
         raw_args,
         cwd,
@@ -367,12 +371,19 @@ pub(super) async fn parse_single_compile_request(
     let compilation = match parsed {
         crate::compiler::ParsedInvocation::Cacheable(compilation) => compilation,
         crate::compiler::ParsedInvocation::NonCacheable { reason } => {
+            // Preserve the parser's decision before the direct compiler can
+            // remove an @response file that later journal attribution would
+            // otherwise need to re-read (issue #1529).
+            crate::daemon::compile_journal::record_miss_reason(
+                crate::daemon::compile_journal::miss_reason::UNCACHEABLE_INPUT,
+            );
             state.stats.record_non_cacheable();
             record_session_stat(&state.sessions, sid, |tracker| {
                 tracker.record_non_cacheable()
             });
             write_session_log(&state.sessions, sid, &format!("non-cacheable: {reason}"));
             return Err(run_compiler_direct(
+                state,
                 compiler,
                 raw_args,
                 cwd,
@@ -447,6 +458,7 @@ pub(super) async fn parse_single_compile_request(
                 "non-cacheable: Dylint cdylib output identity is incomplete",
             );
             return Err(run_compiler_direct(
+                state,
                 compiler,
                 raw_args,
                 cwd,

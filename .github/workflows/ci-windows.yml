@@ -28,6 +28,9 @@ on:
       - ".editorconfig"
       - "tasks/**"
 
+permissions:
+  contents: read
+
 concurrency:
   # run_id fallback on non-PR events: GitHub keeps at most ONE pending run
   # per group, so a ref-only group silently cancels queued main-push SHAs.

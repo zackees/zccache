@@ -16,6 +16,7 @@ This document is the index for zccache's architecture specification. Each subsys
 | [architecture/target-cache.md](architecture/target-cache.md) | ~70 | Legacy action target snapshot ownership, outputs, and rust-plan boundary |
 | [architecture/runtime.md](architecture/runtime.md) | ~130 | Concurrency model, correctness guarantees, failure modes, crash recovery |
 | [architecture/portability.md](architecture/portability.md) | ~200 | Platform differences, host-platform boundary (zccache-platform), path handling, file identity, future extensions |
+| [architecture/kernal-api-migration.md](architecture/kernal-api-migration.md) | ~80 | Phase-0 kernal-api migration inventory, contracts, and measurement protocol |
 
 Cache-root lifecycle logs are verified by the shared `zccache-audit` catalog at
 perf and integration boundaries. This keeps CI policy in Rust and makes a
@@ -40,6 +41,7 @@ failed cache-root audit retain its diagnostic JSONL evidence.
 - **Embedded soldr/fbuild service integration** → [embedded-service.md](architecture/embedded-service.md)
 - **Embedded heap snapshots** → [embedded-service.md § Heap snapshots](architecture/embedded-service.md#heap-snapshots)
 - **Embedded maintenance limits and shutdown reporting** → [embedded-service.md § Maintenance limits and task ownership](architecture/embedded-service.md#maintenance-limits-and-task-ownership)
+- **Embedded host compiler-admission policy and cache-hit bypass** → [embedded-service.md § Host compiler-admission policy](architecture/embedded-service.md#host-compiler-admission-policy)
 - **Shared periodic maintenance schedule (both service modes)** → [embedded-service.md § Maintenance limits and task ownership](architecture/embedded-service.md#maintenance-limits-and-task-ownership)
 - **Legacy action target snapshots** → [target-cache.md](architecture/target-cache.md)
 - **Thread safety & crash safety** → [runtime.md](architecture/runtime.md)
@@ -50,7 +52,10 @@ failed cache-root audit retain its diagnostic JSONL evidence.
 - **Standalone daemon identity, deployment & lifecycle (argv[0] single binary, version-rooted deploy, versioned endpoints)** → [runtime.md § Standalone daemon identity, deployment & lifecycle](architecture/runtime.md#standalone-daemon-identity-deployment--lifecycle)
 - **Rejected depgraph snapshots — quarantine, recovery, why no migration** → [runtime.md § Depgraph snapshot quarantine](architecture/runtime.md#depgraph-snapshot-quarantine)
 - **Windows/macOS/Linux differences** → [portability.md](architecture/portability.md)
+- **MSVC `cl.exe` system includes (`%INCLUDE%`, issue #1530)** → [portability.md](architecture/portability.md#system-include-discovery-clexe-reads-include-never-a-probe)
+- **MSVC `/showIncludes` on stdout, strip-only-when-injected (issue #1530)** → [portability.md](architecture/portability.md#showincludes-is-read-from-stdout-and-stripped-only-when-injected)
 - **Host-platform boundary (zccache-platform)** → [portability.md](architecture/portability.md#host-platform-boundary-zccache-platform)
+- **kernal-api migration inventory and baselines** → [kernal-api-migration.md](architecture/kernal-api-migration.md)
 - **Compile journal fields & `miss_reason` enum** → [journal-schema.md](journal-schema.md)
 
 See also: [DESIGN_DECISIONS.md](DESIGN_DECISIONS.md) for rationale behind key choices, [ROADMAP.md](ROADMAP.md) for implementation phases.

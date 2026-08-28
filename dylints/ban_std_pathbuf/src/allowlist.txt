@@ -91,4 +91,4 @@ crates/zccache-compile-trace/src/lib.rs
 crates/zccache-daemon-core/src/audit_writer.rs
 crates/zccache-daemon-core/src/daemon/server/handle_compile_ephemeral.rs
 crates/zccache-daemon-core/src/embedded.rs
-crates/zccache-watcher/src/python.rs
+crates/zccache-watcher-py/src/lib.rs

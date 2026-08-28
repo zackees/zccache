@@ -464,6 +464,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         HashSourceOutcome::Ready(outcome) => outcome,
         HashSourceOutcome::Fallback => {
             return run_compiler_direct(
+                state,
                 &compiler,
                 args,
                 cwd,
