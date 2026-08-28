@@ -19,6 +19,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -53,7 +54,7 @@ jobs:
             os: macos-15
             target: aarch64-apple-darwin
           - name: macOS x86_64
-            os: macos-14
+            os: macos-15
             target: x86_64-apple-darwin
           - name: Windows x86_64
             os: windows-2025
@@ -174,6 +175,22 @@ jobs:
         uses: ./action/cleanup
 
   # Test that save-cache: false works (for PR builds)
+  observe-macos-queue:
+    name: Observe macOS runner queue
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
+      - name: Bound macOS queue starvation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --no-project --python 3.13 python ci/observe_runner_queue.py
+          --repository "${{ github.repository }}" --run-id "${{ github.run_id }}"
+          --runner macos-15 --job "macOS ARM" --job "macOS x86_64"
+          --token "$GITHUB_TOKEN"
+
   test-no-save:
     name: "No-save mode (Linux)"
     runs-on: ubuntu-24.04

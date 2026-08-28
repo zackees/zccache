@@ -35,9 +35,7 @@ stamp_release = _load_stamp_release()
 
 
 def _repo_text(*parts: str) -> str:
-    return (Path(__file__).resolve().parents[2] / Path(*parts)).read_text(
-        encoding="utf-8"
-    )
+    return (Path(__file__).resolve().parents[2] / Path(*parts)).read_text(encoding="utf-8")
 
 
 def _matrix_entry(workflow_text: str, target: str) -> str:
@@ -127,9 +125,7 @@ def test_stage_debug_tree_packages_dwp_files(tmp_path: Path) -> None:
     with tarfile.open(archive, "r:gz") as tf:
         members = {member.name for member in tf.getmembers()}
         for name in package_release.INCLUDE:
-            assert (
-                f"zccache-v1.3.10-x86_64-unknown-linux-gnu-debug/{name}.dwp" in members
-            )
+            assert f"zccache-v1.3.10-x86_64-unknown-linux-gnu-debug/{name}.dwp" in members
 
 
 def test_stage_debug_tree_handles_dsym_directories(tmp_path: Path) -> None:
@@ -154,10 +150,7 @@ def test_stage_debug_tree_handles_dsym_directories(tmp_path: Path) -> None:
 
     with tarfile.open(archive, "r:gz") as tf:
         members = {member.name for member in tf.getmembers()}
-        assert (
-            "zccache-v1.3.10-x86_64-apple-darwin-debug/zccache.dSYM/"
-            "Contents/Resources/DWARF/zccache" in members
-        )
+        assert "zccache-v1.3.10-x86_64-apple-darwin-debug/zccache.dSYM/Contents/Resources/DWARF/zccache" in members
 
 
 def test_build_target_dereferences_debug_sidecar_symlinks() -> None:
@@ -183,12 +176,7 @@ def test_build_target_selects_native_or_cross_release_cache_policy() -> None:
     assert 'cargo_build=(rustup run "$RELEASE_RUST_TOOLCHAIN" cargo build)' in action
     assert "Native distribution builds keep the historical no-cache path" in action
     assert "cross lanes deliberately use the current-worktree bootstrap zccache" in action
-    assert (
-        '"${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache '
-        "--features zccache-bin,fingerprint-bin "
-        "--bin zccache --bin zccache-fp"
-        in compact_action
-    )
+    assert '"${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache --features zccache-bin,fingerprint-bin --bin zccache --bin zccache-fp' in compact_action
     assert "--bin zccache-daemon" not in compact_action
     assert '"${cargo_build[@]}" --release --target ${{ inputs.target }} -p zccache-cli --features python --lib' in action
 
@@ -198,7 +186,7 @@ def test_release_workflow_uses_bootstrap_zccache_for_cross_builds() -> None:
     action = _repo_text(".github/actions/build-target/action.yml")
 
     assert "bootstrap-zccache:" in release_workflow
-    assert "RUSTC_WRAPPER: \"\"" in release_workflow
+    assert 'RUSTC_WRAPPER: ""' in release_workflow
     assert "unset RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER" in release_workflow
     assert "name: bootstrap-zccache" in release_workflow
     assert "needs: [preflight, bootstrap-zccache]" in release_workflow
@@ -225,10 +213,7 @@ def test_release_workflow_uses_bootstrap_zccache_for_cross_builds() -> None:
         )
         if "runs-on: ${{ matrix.os }}" in body
     }
-    assert matrix_os_jobs == {"test-wheels", "test-wheels-ungated"}, (
-        "only the wheel smoke jobs may run on a per-target matrix runner; "
-        f"got {sorted(matrix_os_jobs)}"
-    )
+    assert matrix_os_jobs == {"test-wheels", "test-wheels-ungated"}, f"only the wheel smoke jobs may run on a per-target matrix runner; got {sorted(matrix_os_jobs)}"
     assert "if: inputs.use_soldr == 'true'" in action
     assert "Use setup-soldr for setup and caching" in action
 
@@ -248,8 +233,7 @@ def test_release_tests_exec_cached_in_every_native_wheel_family() -> None:
     for platform in (
         "ubuntu-latest",
         "ubuntu-24.04-arm",
-        "macos-15-intel",
-        "macos-14",
+        "macos-15",
         "windows-latest",
         "windows-11-arm",
     ):
@@ -286,9 +270,7 @@ def test_cross_builds_go_through_the_blessed_soldr_surface() -> None:
     # Prose references to cargo-xwin are fine (the upstream fix we are porting
     # lives there); what must not come back is invoking it.
     assert "cargo xwin build" not in action
-    assert "taiki-e/install-action" not in action or "cargo-xwin" not in (
-        action.split("taiki-e/install-action")[1][:200] if "taiki-e/install-action" in action else ""
-    )
+    assert "taiki-e/install-action" not in action or "cargo-xwin" not in (action.split("taiki-e/install-action")[1][:200] if "taiki-e/install-action" in action else "")
     assert "cross_driver" not in action
     assert "zigbuild" not in action
     assert "cargo xwin" not in action
@@ -339,10 +321,7 @@ def test_linux_cross_build_repairs_debug_sidecars_missing_from_cache_hits() -> N
     action = _repo_text(".github/actions/build-target/action.yml")
 
     assert "name: Repair missing Linux debug sidecars" in action
-    assert (
-        "if: inputs.cross_compile == 'true' && "
-        "contains(inputs.target, 'unknown-linux')"
-    ) in action
+    assert ("if: inputs.cross_compile == 'true' && contains(inputs.target, 'unknown-linux')") in action
     assert 'soldr cargo clean -p zccache --release --target "$TARGET"' in action
     assert "soldr --no-cache build --jobs 1 -j 1" in action
     assert 'test -e "$TARGET_DIR/zccache.dwp"' in action
@@ -373,16 +352,11 @@ def test_locked_mimalloc_pprof_selects_arm64_c11_atomics() -> None:
     `CFLAGS=-TP`, which breaks every other `cc-rs` dependency.
     """
     lockfile = _repo_text("Cargo.lock")
-    locked = re.search(
-        r'\[\[package\]\]\nname = "mimalloc-pprof"\nversion = "([^"]+)"', lockfile
-    )
+    locked = re.search(r'\[\[package\]\]\nname = "mimalloc-pprof"\nversion = "([^"]+)"', lockfile)
 
     assert locked is not None, "mimalloc-pprof missing from Cargo.lock"
     major, minor, patch = (int(part) for part in locked.group(1).split(".")[:3])
-    assert (major, minor, patch) >= (0, 9, 3), (
-        f"mimalloc-pprof {locked.group(1)} predates the ARM64 C11-atomics fix; "
-        "aarch64-pc-windows-msvc cannot cross-compile against it"
-    )
+    assert (major, minor, patch) >= (0, 9, 3), f"mimalloc-pprof {locked.group(1)} predates the ARM64 C11-atomics fix; aarch64-pc-windows-msvc cannot cross-compile against it"
 
 
 def test_release_workflow_dry_run_builds_without_publishing() -> None:
@@ -427,7 +401,7 @@ def test_build_target_exposes_cross_cache_controls() -> None:
 def test_build_target_configures_target_c_compiler_for_cross_c_sources() -> None:
     action = _repo_text(".github/actions/build-target/action.yml")
 
-    assert 'TARGET_CC=$(echo "${{ inputs.target }}" | tr \'-\' \'_\')' in action
+    assert "TARGET_CC=$(echo \"${{ inputs.target }}\" | tr '-' '_')" in action
     assert 'echo "CC_${TARGET_CC}=${{ inputs.linker }}" >> "$GITHUB_ENV"' in action
 
 
@@ -476,14 +450,8 @@ def test_release_and_build_workflows_disable_cook_cache_for_linux_cross_matrix()
 
     for workflow in (build_workflow, release_workflow):
         assert "prebuild_deps: ${{ matrix.prebuild_deps || 'soldr-cook' }}" in workflow
-        assert (
-            "clear_target_after_setup: "
-            "${{ matrix.clear_target_after_setup || 'false' }}"
-        ) in workflow
-        assert (
-            "require_debug_sidecars: "
-            "${{ matrix.require_debug_sidecars || 'true' }}"
-        ) in workflow
+        assert ("clear_target_after_setup: ${{ matrix.clear_target_after_setup || 'false' }}") in workflow
+        assert ("require_debug_sidecars: ${{ matrix.require_debug_sidecars || 'true' }}") in workflow
 
         for target in cross_targets:
             block = _matrix_entry(workflow, target)
@@ -583,20 +551,12 @@ def test_action_pins_use_full_length_commit_shas() -> None:
     workflow_dir = Path(__file__).resolve().parents[2] / ".github"
     offenders: list[str] = []
     for path in sorted(workflow_dir.rglob("*.yml")):
-        for number, line in enumerate(
-            path.read_text(encoding="utf-8").splitlines(), start=1
-        ):
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             match = re.search(r"uses:\s*\S+@([0-9a-f]{6,})\s*$", line)
             if match and len(match.group(1)) != 40:
-                offenders.append(
-                    f"{path.relative_to(workflow_dir.parent)}:{number} "
-                    f"-> @{match.group(1)} ({len(match.group(1))} chars)"
-                )
+                offenders.append(f"{path.relative_to(workflow_dir.parent)}:{number} -> @{match.group(1)} ({len(match.group(1))} chars)")
 
-    assert not offenders, (
-        "action pins must use the full 40-character commit SHA; "
-        f"GitHub cannot resolve these: {offenders}"
-    )
+    assert not offenders, f"action pins must use the full 40-character commit SHA; GitHub cannot resolve these: {offenders}"
 
 
 def test_pyo3_cdylibs_live_in_dedicated_crates() -> None:
@@ -626,10 +586,7 @@ def test_pyo3_cdylibs_live_in_dedicated_crates() -> None:
         if {"rlib", "cdylib"} <= types:
             offenders.append(manifest.parent.name)
 
-    assert not offenders, (
-        "these crates pair rlib with cdylib; split the cdylib into its own "
-        f"crate so +crt-static never reaches it: {offenders}"
-    )
+    assert not offenders, f"these crates pair rlib with cdylib; split the cdylib into its own crate so +crt-static never reaches it: {offenders}"
 
 
 def test_windows_release_asserts_static_crt_linkage() -> None:
@@ -671,13 +628,5 @@ def test_patch_tables_carry_no_git_sources() -> None:
     """
     patch_tables = tomllib.loads(_repo_text("Cargo.toml")).get("patch", {})
 
-    offenders = [
-        f"[patch.{registry}] {name}"
-        for registry, deps in patch_tables.items()
-        for name, spec in deps.items()
-        if isinstance(spec, dict) and "git" in spec
-    ]
-    assert not offenders, (
-        "patch tables must not pin git sources; "
-        f"publish the fix upstream and depend on the registry instead: {offenders}"
-    )
+    offenders = [f"[patch.{registry}] {name}" for registry, deps in patch_tables.items() for name, spec in deps.items() if isinstance(spec, dict) and "git" in spec]
+    assert not offenders, f"patch tables must not pin git sources; publish the fix upstream and depend on the registry instead: {offenders}"
