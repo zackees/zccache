@@ -49,7 +49,7 @@ impl DaemonServer {
         let backend_identity = crate::ipc::current_backend_identity(endpoint)
             .map_err(|err| daemon_identity_error(endpoint, &err))?;
         let (state, index_writer_rx) =
-            new_shared_state(endpoint, cache_dir, staging_root, backend_identity)
+            new_shared_state(endpoint, cache_dir, staging_root, backend_identity, None)
                 .map_err(|error| cache_root_error(cache_dir, &error))?;
 
         Ok(Self {
@@ -113,6 +113,7 @@ pub(super) fn new_shared_state(
     cache_dir: &crate::core::NormalizedPath,
     staging_root: Option<&crate::core::NormalizedPath>,
     backend_identity: running_process::broker::protocol_v2::backend_handle::DaemonProcess,
+    host_admission_classifier: Option<Arc<dyn compile_resource_gate::HostAdmissionClassifier>>,
 ) -> std::io::Result<(
     Arc<SharedState>,
     tokio::sync::mpsc::UnboundedReceiver<IndexWriterCommand>,
@@ -299,6 +300,7 @@ pub(super) fn new_shared_state(
             compile_concurrency,
             compile_resource_gate:
                 crate::daemon::server::compile_resource_gate::CompileResourceGate::default(),
+            host_admission_classifier,
             compile_queue: Arc::new(
                 crate::daemon::server::compile_progress::CompileQueueGauge::default(),
             ),

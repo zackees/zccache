@@ -17,6 +17,9 @@ use crate::daemon::server::{
 };
 
 pub use crate::audit::{AuditConfig, AuditContext, AuditEvent};
+pub use crate::daemon::server::compile_resource_gate::{
+    HostAdmissionClassifier, HostAdmissionError, HostCompilerRequest,
+};
 pub use control::EmbeddedEventSink;
 
 mod control;
@@ -520,7 +523,7 @@ impl ZccacheService {
             ZccacheStartOptions {
                 disk_limits,
                 maintenance_ownership,
-                staging_root: None,
+                ..ZccacheStartOptions::default()
             },
         )
         .await
@@ -534,7 +537,35 @@ impl ZccacheService {
         config: ZccacheConfig,
         options: ZccacheStartOptions,
     ) -> Result<Self> {
-        Self::start_internal(config, options, None).await
+        Self::start_internal(config, options, None, None).await
+    }
+
+    /// Start with an opt-in host compiler-admission policy.
+    ///
+    /// The policy is evaluated only after cache-hit classification and before
+    /// zccache acquires its canonical compiler admission. This additive
+    /// constructor keeps existing [`ZccacheConfig`] and
+    /// [`ZccacheStartOptions`] struct literals source-compatible.
+    pub async fn start_with_host_admission_classifier(
+        config: ZccacheConfig,
+        classifier: Arc<dyn HostAdmissionClassifier>,
+    ) -> Result<Self> {
+        Self::start_internal(
+            config,
+            ZccacheStartOptions::default(),
+            None,
+            Some(classifier),
+        )
+        .await
+    }
+
+    /// Start with explicit service options and a host compiler-admission policy.
+    pub async fn start_with_options_and_host_admission_classifier(
+        config: ZccacheConfig,
+        options: ZccacheStartOptions,
+        classifier: Arc<dyn HostAdmissionClassifier>,
+    ) -> Result<Self> {
+        Self::start_internal(config, options, None, Some(classifier)).await
     }
 
     /// Emit one durable audit event, if the host enabled audit.
@@ -961,3 +992,7 @@ mod contract_tests;
 #[cfg(test)]
 #[path = "embedded/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "embedded/admission_tests.rs"]
+mod admission_tests;

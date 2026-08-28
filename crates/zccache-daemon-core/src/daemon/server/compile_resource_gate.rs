@@ -19,6 +19,76 @@ const AMALGAMATION_BYTES: u64 = 1_000_000;
 const KNOWN_C_AMALGAMATIONS: &[&str] = &["sqlite3.c", "zstd.c", "rocksdb.cc"];
 const KNOWN_RUST_AMALGAMATIONS: &[&str] = &["zccache", "zccache_cli_core", "zccache_daemon_core"];
 
+/// Stable compiler facts supplied to an embedded host admission policy.
+///
+/// This deliberately exposes neither the daemon's semaphore nor its resource
+/// lock. The host can classify the child zccache is about to spawn, but only
+/// zccache can acquire its canonical admission in the safe order.
+#[derive(Debug)]
+pub struct HostCompilerRequest<'a> {
+    family: CompilerFamily,
+    args: &'a [String],
+    source: Option<&'a Path>,
+}
+
+impl<'a> HostCompilerRequest<'a> {
+    fn new(family: CompilerFamily, args: &'a [String], source: Option<&'a Path>) -> Self {
+        Self {
+            family,
+            args,
+            source,
+        }
+    }
+
+    #[must_use]
+    pub fn family(&self) -> CompilerFamily {
+        self.family
+    }
+
+    #[must_use]
+    pub fn args(&self) -> &'a [String] {
+        self.args
+    }
+
+    #[must_use]
+    pub fn source(&self) -> Option<&'a Path> {
+        self.source
+    }
+}
+
+/// A host policy could not classify an otherwise valid compiler request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostAdmissionError(String);
+
+impl HostAdmissionError {
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
+impl std::fmt::Display for HostAdmissionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for HostAdmissionError {}
+
+/// Optional embedded-host classification layered onto zccache's own policy.
+///
+/// Called only for a request that has already missed every cache-hit path and
+/// is immediately about to acquire zccache-owned compiler admission. A host
+/// returns `true` only to request exclusive admission; it cannot acquire or
+/// reorder zccache's synchronization primitives. Returning an error rejects
+/// the compile before any admission permit is acquired.
+pub trait HostAdmissionClassifier: Send + Sync + 'static {
+    fn requires_exclusive(
+        &self,
+        request: &HostCompilerRequest<'_>,
+    ) -> Result<bool, HostAdmissionError>;
+}
+
 /// Fair shared/exclusive admission around real compiler execution.
 ///
 /// Tokio's write-preferring lock prevents newly arriving ordinary compiles
@@ -194,6 +264,37 @@ pub(super) fn requires_exclusive_access_for_misses<'a>(
         .any(|source| requires_exclusive_access(family, args, source))
 }
 
+/// Combine zccache's built-in predicate with an opt-in embedded-host policy.
+///
+/// Every caller reaches this only after cache-hit classification. The policy
+/// has no effect when absent, and the result still feeds the single canonical
+/// semaphore-then-RwLock admission helper below.
+pub(super) fn requires_exclusive_admission(
+    state: &SharedState,
+    family: CompilerFamily,
+    args: &[String],
+    source: Option<&Path>,
+    built_in: bool,
+) -> Result<bool, HostAdmissionError> {
+    combines_exclusive_admission(
+        built_in,
+        state.host_admission_classifier.as_deref(),
+        HostCompilerRequest::new(family, args, source),
+    )
+}
+
+fn combines_exclusive_admission(
+    built_in: bool,
+    classifier: Option<&dyn HostAdmissionClassifier>,
+    request: HostCompilerRequest<'_>,
+) -> Result<bool, HostAdmissionError> {
+    let host = classifier
+        .map(|classifier| classifier.requires_exclusive(&request))
+        .transpose()?
+        .unwrap_or(false);
+    Ok(built_in || host)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,6 +386,88 @@ mod tests {
             &["--crate-name=serde".into()],
             Path::new("/registry/serde/src/lib.rs"),
         ));
+    }
+
+    struct KernalApiPolicy;
+
+    impl HostAdmissionClassifier for KernalApiPolicy {
+        fn requires_exclusive(
+            &self,
+            request: &HostCompilerRequest<'_>,
+        ) -> Result<bool, HostAdmissionError> {
+            Ok(request.family() == CompilerFamily::Rustc
+                && rust_crate_name(request.args()) == Some("kernal_api"))
+        }
+    }
+
+    struct FailingPolicy;
+
+    impl HostAdmissionClassifier for FailingPolicy {
+        fn requires_exclusive(
+            &self,
+            _request: &HostCompilerRequest<'_>,
+        ) -> Result<bool, HostAdmissionError> {
+            Err(HostAdmissionError::new("host policy unavailable"))
+        }
+    }
+
+    #[test]
+    fn host_only_rust_crate_can_request_exclusive_admission() {
+        let args = [
+            "--crate-name=kernal_api".to_string(),
+            "--crate-type=lib".to_string(),
+        ];
+        let request =
+            HostCompilerRequest::new(CompilerFamily::Rustc, &args, Some(Path::new("src/lib.rs")));
+        assert!(!requires_exclusive_access(
+            CompilerFamily::Rustc,
+            request.args(),
+            Path::new("src/lib.rs"),
+        ));
+        assert!(
+            combines_exclusive_admission(false, Some(&KernalApiPolicy), request)
+                .expect("host policy result")
+        );
+    }
+
+    #[test]
+    fn absent_host_policy_preserves_builtin_admission() {
+        let args = ["--crate-name=ordinary".to_string()];
+        let request = HostCompilerRequest::new(CompilerFamily::Rustc, &args, None);
+        assert!(!combines_exclusive_admission(false, None, request).expect("no host policy"));
+
+        let request = HostCompilerRequest::new(CompilerFamily::Rustc, &args, None);
+        assert!(combines_exclusive_admission(true, None, request).expect("no host policy"));
+    }
+
+    #[test]
+    fn builtin_and_host_policies_are_or_combined() {
+        let args = ["--crate-name=ordinary".to_string()];
+        let request = HostCompilerRequest::new(CompilerFamily::Rustc, &args, None);
+        assert!(
+            combines_exclusive_admission(true, Some(&KernalApiPolicy), request)
+                .expect("combined result")
+        );
+    }
+
+    #[test]
+    fn failing_host_policy_rejects_before_admission() {
+        let args = ["--crate-name=ordinary".to_string()];
+        let error = combines_exclusive_admission(
+            false,
+            Some(&FailingPolicy),
+            HostCompilerRequest::new(CompilerFamily::Rustc, &args, None),
+        )
+        .expect_err("a host classification failure must reject before admission");
+        assert_eq!(error.to_string(), "host policy unavailable");
+
+        let error = combines_exclusive_admission(
+            true,
+            Some(&FailingPolicy),
+            HostCompilerRequest::new(CompilerFamily::Rustc, &args, None),
+        )
+        .expect_err("a built-in exclusive unit must not hide a host-policy failure");
+        assert_eq!(error.to_string(), "host policy unavailable");
     }
 
     #[test]
@@ -429,7 +612,7 @@ mod tests {
     }
 
     #[test]
-    fn every_compile_spawn_surface_uses_shared_admission() {
+    fn every_compile_spawn_surface_combines_host_policy_before_shared_admission() {
         for (name, source) in [
             (
                 "single cache miss",
@@ -448,6 +631,10 @@ mod tests {
                 include_str!("handle_compile_multi_staged.rs"),
             ),
         ] {
+            assert!(
+                source.contains("requires_exclusive_admission("),
+                "{name} compiler path bypasses the host policy"
+            );
             assert!(
                 source.contains("acquire_compiler_admission("),
                 "{name} compiler path bypasses shared admission"
