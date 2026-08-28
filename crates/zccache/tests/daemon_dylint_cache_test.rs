@@ -322,6 +322,113 @@ async fn nested_dylint_hits_and_invalidates_every_external_input() {
     .await;
 }
 
+/// A Dylint driver's build-style invocation can supply a later Cargo
+/// check-style metadata request through the rustc emit-compat alias.  The
+/// cache entry's cold filename selects the payload, but must never replace the
+/// current request's identity-derived destination.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "integration-level: starts a real daemon and rustc"]
+async fn dylint_metadata_compat_hit_uses_current_cargo_destination() {
+    let Some(rustc) = zccache::test_support::find_rustc() else {
+        eprintln!("skipping test: rustc not found");
+        return;
+    };
+
+    zccache::test_support::test_timeout(async move {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let _cache_env = CacheDirEnvGuard::set(&cache);
+        let driver = tmp.path().join("dylint-driver");
+        let library = tmp.path().join("libworkspace_lint.so");
+        let source = tmp.path().join("lib.rs");
+        let cold_dir = tmp.path().join("target/debug/deps");
+        let warm_dir = tmp.path().join("target/check/deps");
+        std::fs::create_dir_all(&cold_dir).unwrap();
+        std::fs::create_dir_all(&warm_dir).unwrap();
+        write_driver(&driver, "metadata-compatible Dylint diagnostic");
+        std::fs::write(&library, b"metadata-compatible-lint-library").unwrap();
+        std::fs::write(&source, "pub fn checked() -> u32 { 42 }\n").unwrap();
+
+        let dylint_libs = serde_json::to_string(&vec![library]).unwrap();
+        let cold_metadata = cold_dir.join("libchecked-cold.rmeta");
+        let warm_metadata = warm_dir.join("libchecked-warm.rmeta");
+        let cold_args = vec![
+            rustc.display().to_string(),
+            "--edition=2021".to_string(),
+            "--crate-type=lib".to_string(),
+            "--crate-name=checked".to_string(),
+            "--emit=dep-info,metadata,link".to_string(),
+            "-Cmetadata=cold".to_string(),
+            "-Cextra-filename=-cold".to_string(),
+            "--out-dir".to_string(),
+            cold_dir.display().to_string(),
+            source.display().to_string(),
+        ];
+        let warm_args = vec![
+            rustc.display().to_string(),
+            "--edition=2021".to_string(),
+            "--crate-type=lib".to_string(),
+            "--crate-name=checked".to_string(),
+            "--emit=dep-info,metadata".to_string(),
+            "-Cmetadata=warm".to_string(),
+            "-Cextra-filename=-warm".to_string(),
+            "--out-dir".to_string(),
+            warm_dir.display().to_string(),
+            source.display().to_string(),
+        ];
+
+        let (endpoint, server_handle, shutdown) = start_daemon().await;
+        let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
+        let session_id = start_session(&mut client, None).await;
+
+        let cold = compile(
+            &mut client,
+            &session_id,
+            &driver,
+            &cold_args,
+            tmp.path(),
+            &dylint_libs,
+            "same-dylint-verdict",
+            false,
+        )
+        .await;
+        assert_eq!(cold.0, 0, "cold Dylint build should succeed");
+        assert!(!cold.1, "cold Dylint build should populate the cache");
+        let expected_metadata = std::fs::read(&cold_metadata).unwrap();
+        std::fs::remove_file(&cold_metadata).unwrap();
+        assert!(
+            !warm_metadata.exists(),
+            "the distinct Cargo check destination must start absent"
+        );
+
+        let warm = compile(
+            &mut client,
+            &session_id,
+            &driver,
+            &warm_args,
+            tmp.path(),
+            &dylint_libs,
+            "same-dylint-verdict",
+            false,
+        )
+        .await;
+        assert_eq!(warm.0, 0, "metadata-compatible request should succeed");
+        assert!(
+            warm.1,
+            "check-style request must use the cached build artifact"
+        );
+        assert_eq!(std::fs::read(&warm_metadata).unwrap(), expected_metadata);
+        assert!(
+            !cold_metadata.exists(),
+            "a compatible hit must not replay into the stale cold-build destination"
+        );
+
+        shutdown.notify_one();
+        server_handle.await.unwrap();
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "integration-level: starts a real daemon and rustc"]
 async fn plain_and_dylint_share_artifact_bytes_but_not_verdicts() {

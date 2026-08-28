@@ -248,17 +248,11 @@ pub(super) fn materialize_cached_compile_hit(
                     );
                     return Err(missing_entry(artifact_key_hex));
                 };
-                let target = if requested
-                    .file_name()
-                    .is_some_and(|name| name == std::ffi::OsStr::new(names[i].as_str()))
-                {
-                    requested
-                } else {
-                    requested
-                        .parent()
-                        .map_or_else(|| requested.clone(), |parent| parent.join(&names[i]).into())
-                };
-                targets.push(target);
+                // The cached name identifies the matching payload, but a
+                // metadata-compatible request owns its current Cargo output
+                // destination. Replaying to the observed cold-build name can
+                // leave the requested identity-derived `.rmeta` absent.
+                targets.push(requested);
                 selected_payloads.push(payloads[i].clone());
             }
             (targets, selected_payloads)
@@ -514,12 +508,16 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn rustc_hit_requires_matching_verdict_and_replays_its_streams() {
+    async fn metadata_compatible_rustc_hit_requires_matching_verdict_and_replays_its_streams() {
         let dir = tempfile::tempdir().unwrap();
         let server = crate::daemon::server::tests::bind_isolated_server(dir.path());
         let state = server.state.as_ref();
         let source_path: NormalizedPath = dir.path().join("source.rs").into();
-        let output_path: NormalizedPath = dir.path().join("output.rlib").into();
+        // A Dylint driver can reuse metadata from a cold compilation while
+        // Cargo gives the compatible request a different identity-derived
+        // destination. The cached name chooses the payload; the current
+        // request must choose where that payload lands.
+        let output_path: NormalizedPath = dir.path().join("libfoldhash-new.rmeta").into();
         let cache_path = state.artifact_dir.join("artifact-key_0");
         std::fs::write(&cache_path, b"artifact bytes").unwrap();
         write_authoritative_blob_digest(&cache_path).unwrap();
@@ -534,7 +532,7 @@ mod tests {
             owner_pids: Vec::new(),
         });
         let mut artifact_meta = ArtifactIndex::new(
-            vec!["output.rlib".to_string()],
+            vec!["libfoldhash-cold.rmeta".to_string()],
             vec![14],
             Arc::new(Vec::new()),
             Arc::new(Vec::new()),
@@ -634,6 +632,10 @@ mod tests {
                 && stderr.as_slice() == b"lint diagnostic"
         ));
         assert_eq!(std::fs::read(output_path).unwrap(), b"artifact bytes");
+        assert!(
+            !dir.path().join("libfoldhash-cold.rmeta").exists(),
+            "a metadata-compatible hit must not redirect output to the cached identity"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
