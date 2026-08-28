@@ -370,6 +370,12 @@ pub(super) async fn parse_single_compile_request(
     let compilation = match parsed {
         crate::compiler::ParsedInvocation::Cacheable(compilation) => compilation,
         crate::compiler::ParsedInvocation::NonCacheable { reason } => {
+            // Preserve the parser's decision before the direct compiler can
+            // remove an @response file that later journal attribution would
+            // otherwise need to re-read (issue #1529).
+            crate::daemon::compile_journal::record_miss_reason(
+                crate::daemon::compile_journal::miss_reason::UNCACHEABLE_INPUT,
+            );
             state.stats.record_non_cacheable();
             record_session_stat(&state.sessions, sid, |tracker| {
                 tracker.record_non_cacheable()

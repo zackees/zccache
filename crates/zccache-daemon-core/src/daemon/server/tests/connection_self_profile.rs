@@ -231,6 +231,96 @@ fn rsp_missing_at_journal_time_keeps_default_reason() {
     );
 }
 
+// Issue #1529: the compiler can remove a response file after the daemon has
+// expanded and classified it, but before the asynchronous journal row is
+// attributed. The parser's non-cacheable result must survive that cleanup.
+#[cfg(unix)]
+#[tokio::test]
+async fn deleted_non_cacheable_response_file_keeps_parse_time_reason() {
+    use std::os::unix::fs::PermissionsExt;
+
+    crate::test_support::test_timeout(async {
+        let temp = tempfile::tempdir().unwrap();
+        let endpoint = crate::ipc::unique_test_endpoint();
+        let mut server = super::bind_isolated_server_at(&endpoint, temp.path());
+        let shutdown = server.shutdown_handle();
+        let server_task = tokio::spawn(async move { server.run(0).await.unwrap() });
+
+        let compiler = temp.path().join("rustc");
+        std::fs::write(&compiler, "#!/bin/sh\nrm -- \"${1#@}\"\nexit 0\n").unwrap();
+        std::fs::set_permissions(&compiler, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let rsp = temp.path().join("preprocess.rsp");
+        let source = temp.path().join("fixture.rs");
+        std::fs::write(&source, "fn main() {}\n").unwrap();
+        std::fs::write(&rsp, format!("--test\n{}\n", source.display())).unwrap();
+
+        let mut client = crate::ipc::connect(&endpoint).await.unwrap();
+        client
+            .send(&Request::SessionStart {
+                client_pid: std::process::id(),
+                working_dir: temp.path().into(),
+                log_file: None,
+                track_stats: false,
+                journal_path: None,
+                profile: false,
+                private_daemon: None,
+            })
+            .await
+            .unwrap();
+        let session_id = match client.recv().await.unwrap() {
+            Some(Response::SessionStarted { session_id, .. }) => session_id,
+            response => panic!("expected SessionStarted, got {response:?}"),
+        };
+
+        client
+            .send(&Request::Compile {
+                session_id,
+                args: vec![format!("@{}", rsp.display())],
+                cwd: temp.path().into(),
+                compiler: compiler.into(),
+                env: None,
+                stdin: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            client.recv().await.unwrap(),
+            Some(Response::CompileResult {
+                exit_code: 0,
+                cached: false,
+                ..
+            })
+        ));
+        assert!(
+            !rsp.exists(),
+            "the direct compiler must remove the response file"
+        );
+
+        let journal = temp
+            .path()
+            .join("zccache-cache")
+            .join("logs")
+            .join("compile_journal.jsonl");
+        let row = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Ok(contents) = std::fs::read_to_string(&journal) {
+                    if let Some(line) = contents.lines().next() {
+                        break serde_json::from_str::<serde_json::Value>(line).unwrap();
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("compile journal row");
+        assert_eq!(row["miss_reason"], miss_reason::UNCACHEABLE_INPUT);
+
+        shutdown.notify_one();
+        server_task.await.unwrap();
+    })
+    .await;
+}
+
 #[test]
 fn hit_split_has_non_zero_hash_lookup_decompress() {
     let s = derive_approx_spans("hit", 999).unwrap();

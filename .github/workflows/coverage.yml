@@ -56,6 +56,10 @@ jobs:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/coverage
           SOLDR_CACHE_LIFECYCLE: command
           SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
+          # llvm-cov builds the workspace lib/bin test profile in its own
+          # target directory, including the daemon-core library test.
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: |
           unset ZCCACHE_CACHE_DIR
           echo "Using isolated coverage SOLDR_CACHE_DIR=$SOLDR_CACHE_DIR"

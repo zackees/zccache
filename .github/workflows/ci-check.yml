@@ -107,6 +107,10 @@ jobs:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/test-${{ inputs.os }}
           SOLDR_CACHE_LIFECYCLE: command
           SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
+          # The workspace lib/bin test profile includes the daemon-core
+          # library test, whose compiler admission must be memory-bounded.
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: |
           set +e
           unset ZCCACHE_CACHE_DIR
