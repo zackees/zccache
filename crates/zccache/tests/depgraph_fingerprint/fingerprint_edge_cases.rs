@@ -6,8 +6,6 @@
     clippy::unwrap_in_result
 )]
 
-mod common;
-
 use tempfile::TempDir;
 use zccache::fingerprint::{
     walk_files, walk_files_glob, CacheDecision, HashCache, RunReason, TwoLayerCache,
@@ -18,9 +16,9 @@ use zccache::fingerprint::{
 #[test]
 fn unicode_filenames() {
     let dir = TempDir::new().unwrap();
-    common::create_file(dir.path(), "café.rs", "french");
-    common::create_file(dir.path(), "日本語.rs", "japanese");
-    common::create_file(dir.path(), "normal.rs", "ascii");
+    crate::common::create_file(dir.path(), "café.rs", "french");
+    crate::common::create_file(dir.path(), "日本語.rs", "japanese");
+    crate::common::create_file(dir.path(), "normal.rs", "ascii");
 
     let files = walk_files(dir.path(), &["rs"], &[]).unwrap();
     assert_eq!(files.len(), 3);
@@ -29,8 +27,8 @@ fn unicode_filenames() {
 #[test]
 fn unicode_directory_names() {
     let dir = TempDir::new().unwrap();
-    common::create_file(dir.path(), "données/a.rs", "data");
-    common::create_file(dir.path(), "ソース/b.rs", "source");
+    crate::common::create_file(dir.path(), "données/a.rs", "data");
+    crate::common::create_file(dir.path(), "ソース/b.rs", "source");
 
     let files = walk_files(dir.path(), &[], &[]).unwrap();
     assert_eq!(files.len(), 2);
@@ -39,7 +37,7 @@ fn unicode_directory_names() {
 #[test]
 fn unicode_with_hash_cache() {
     let (src, cache_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
-    common::create_file(src.path(), "café.rs", "content");
+    crate::common::create_file(src.path(), "café.rs", "content");
 
     let cache = HashCache::new(cache_dir.path().join("fp.json"));
     let files = walk_files(src.path(), &[], &[]).unwrap();
@@ -58,8 +56,8 @@ fn unicode_with_hash_cache() {
 #[test]
 fn files_with_spaces() {
     let dir = TempDir::new().unwrap();
-    common::create_file(dir.path(), "my file.rs", "spaced");
-    common::create_file(dir.path(), "dir with spaces/a.rs", "nested");
+    crate::common::create_file(dir.path(), "my file.rs", "spaced");
+    crate::common::create_file(dir.path(), "dir with spaces/a.rs", "nested");
 
     let files = walk_files(dir.path(), &[], &[]).unwrap();
     assert_eq!(files.len(), 2);
@@ -68,9 +66,9 @@ fn files_with_spaces() {
 #[test]
 fn files_with_special_chars() {
     let dir = TempDir::new().unwrap();
-    common::create_file(dir.path(), "hello-world.rs", "dash");
-    common::create_file(dir.path(), "under_score.rs", "under");
-    common::create_file(dir.path(), "dot.name.rs", "dot");
+    crate::common::create_file(dir.path(), "hello-world.rs", "dash");
+    crate::common::create_file(dir.path(), "under_score.rs", "under");
+    crate::common::create_file(dir.path(), "dot.name.rs", "dot");
 
     let files = walk_files(dir.path(), &["rs"], &[]).unwrap();
     assert_eq!(files.len(), 3);
@@ -90,7 +88,7 @@ fn very_long_relative_path() {
     }
     path.push_str("/deep.rs");
 
-    common::create_file(dir.path(), &path, "deep");
+    crate::common::create_file(dir.path(), &path, "deep");
 
     let files = walk_files(dir.path(), &[], &[]).unwrap();
     assert_eq!(files.len(), 1);
@@ -112,7 +110,7 @@ fn empty_directory_tree() {
 #[test]
 fn single_file_at_root() {
     let dir = TempDir::new().unwrap();
-    common::create_file(dir.path(), "only.rs", "solo");
+    crate::common::create_file(dir.path(), "only.rs", "solo");
 
     let files = walk_files(dir.path(), &[], &[]).unwrap();
     assert_eq!(files.len(), 1);
@@ -124,8 +122,8 @@ fn single_file_at_root() {
 #[test]
 fn glob_unicode_filenames() {
     let dir = TempDir::new().unwrap();
-    common::create_file(dir.path(), "café.rs", "french");
-    common::create_file(dir.path(), "normal.rs", "ascii");
+    crate::common::create_file(dir.path(), "café.rs", "french");
+    crate::common::create_file(dir.path(), "normal.rs", "ascii");
 
     let files = walk_files_glob(dir.path(), &["**/*.rs"], &[]).unwrap();
     assert_eq!(files.len(), 2);
@@ -134,8 +132,8 @@ fn glob_unicode_filenames() {
 #[test]
 fn glob_with_spaces_in_path() {
     let dir = TempDir::new().unwrap();
-    common::create_file(dir.path(), "my dir/a.rs", "r");
-    common::create_file(dir.path(), "normal/b.rs", "r");
+    crate::common::create_file(dir.path(), "my dir/a.rs", "r");
+    crate::common::create_file(dir.path(), "normal/b.rs", "r");
 
     let files = walk_files_glob(dir.path(), &["**/*.rs"], &[]).unwrap();
     assert_eq!(files.len(), 2);
@@ -147,7 +145,7 @@ fn glob_with_spaces_in_path() {
 fn two_layer_with_many_small_files() {
     let (src, cache_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
     for i in 0..50 {
-        common::create_file(src.path(), &format!("f{i:03}.rs"), &format!("{i}"));
+        crate::common::create_file(src.path(), &format!("f{i:03}.rs"), &format!("{i}"));
     }
 
     let cache = TwoLayerCache::new(cache_dir.path().join("fp.json"));
@@ -201,7 +199,7 @@ fn cache_with_binary_content() {
 #[cfg_attr(windows, ignore)]
 fn symlink_to_file_not_followed() {
     let dir = TempDir::new().unwrap();
-    common::create_file(dir.path(), "real.rs", "content");
+    crate::common::create_file(dir.path(), "real.rs", "content");
 
     #[cfg(unix)]
     std::os::unix::fs::symlink(dir.path().join("real.rs"), dir.path().join("link.rs")).unwrap();
@@ -216,7 +214,7 @@ fn symlink_to_file_not_followed() {
 #[cfg_attr(windows, ignore)]
 fn symlink_to_directory_not_followed() {
     let dir = TempDir::new().unwrap();
-    common::create_file(dir.path(), "real_dir/a.rs", "ok");
+    crate::common::create_file(dir.path(), "real_dir/a.rs", "ok");
 
     #[cfg(unix)]
     std::os::unix::fs::symlink(dir.path().join("real_dir"), dir.path().join("linked_dir")).unwrap();

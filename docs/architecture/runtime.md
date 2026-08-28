@@ -358,8 +358,8 @@ expects the normal zccache daemon to be running; callers may start it with
 **Measured warm-hit latency**: ~190 µs / request on Windows NTFS (criterion `benches/exec.rs::exec_warm_hit`), versus ~15 ms / cold-miss request (dominated by tool spawn cost). The IPC roundtrip + cache-key compose + artifact-replay path lands well under the issue's "sub-millisecond" warm-hit target.
 
 The integration suite covering this handler spans two files:
-- `tests/daemon_generic_exec_test.rs` (12 tests): baseline shape — warm hit, input change, mtime touch, env, cwd, no-cache, output-file capture/restore, daemon-restart persistence, output-stream toggles.
-- `tests/daemon_generic_exec_advanced_test.rs` (15 tests): Path A (3), Path B (4), hybrid A+B, non-determinism, key-args filter, concurrent coalescing, tool-binary hash override, tool-touch with content unchanged, tar-restore with normalized mtimes, missing-input diagnostic.
+- `tests/cache_native/daemon_generic_exec_test.rs` (12 tests): baseline shape — warm hit, input change, mtime touch, env, cwd, no-cache, output-file capture/restore, daemon-restart persistence, output-stream toggles.
+- `tests/cache_native/daemon_generic_exec_advanced_test.rs` (15 tests): Path A (3), Path B (4), hybrid A+B, non-determinism, key-args filter, concurrent coalescing, tool-binary hash override, tool-touch with content unchanged, tar-restore with normalized mtimes, missing-input diagnostic.
 
 The test fixture is the `exec_test_tool` binary (built under `--features test-support`); the criterion benchmark is `benches/exec.rs` (`exec_warm_hit`, `exec_cold_miss`, `exec_one_input_changed`).
 

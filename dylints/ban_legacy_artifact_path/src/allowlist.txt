@@ -5,8 +5,8 @@ crates/zccache-artifact/src/layout.rs
 
 # Storage compatibility tests intentionally seed or assert flat-v1 fixtures.
 crates/zccache/benches/persist_payloads.rs
-crates/zccache/tests/daemon_perf_artifact_fallback_test.rs
-crates/zccache/tests/daemon_persist_pool_bench.rs
+crates/zccache/tests/perf/daemon_perf_artifact_fallback_test.rs
+crates/zccache/tests/perf/daemon_persist_pool_bench.rs
 crates/zccache-cli-core/src/cli/commands/tests/cache_ops.rs
 crates/zccache-cli-core/src/cli/commands/tests/warm_lockfile.rs
 crates/zccache-daemon-core/src/daemon/eviction.rs

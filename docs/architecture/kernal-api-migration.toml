@@ -205,7 +205,7 @@ manifests = ["crates/zccache/Cargo.toml", "crates/zccache-platform/Cargo.toml"]
 
 [[characterization]]
 contract = "embedded runtime ownership, cancellation, forced shutdown, admission, flush, and child cleanup"
-tests = ["crates/zccache-daemon-core/src/embedded/tests.rs", "crates/zccache-daemon-core/src/embedded/contract_tests.rs", "crates/zccache/tests/embedded_service_test.rs"]
+tests = ["crates/zccache-daemon-core/src/embedded/tests.rs", "crates/zccache-daemon-core/src/embedded/contract_tests.rs", "crates/zccache/tests/daemon_lifecycle/embedded_service_test.rs"]
 [[characterization]]
 contract = "process containment, bounded probe, detached launch, priority, jobserver, and executable identity"
 tests = ["crates/zccache-daemon-core/src/daemon/process_tests.rs", "crates/zccache-cli-core/src/cli/runtime/tests.rs", "crates/zccache-platform/src/platform/process/tests.rs"]
@@ -214,7 +214,7 @@ contract = "local IPC peer security, endpoint retirement, broker identity/probe,
 tests = ["crates/zccache-ipc/src/mod_tests.rs", "crates/zccache-ipc/src/transport/tests.rs", "crates/zccache-platform/src/platform/ipc/tests.rs"]
 [[characterization]]
 contract = "frozen frame bytes, payload protocol 0x7A63, and single-round-trip path"
-tests = ["crates/zccache/tests/daemon_wire_frame_v1_test.rs", "crates/zccache/tests/daemon_wire_prost_roundtrip.rs", "crates/zccache/tests/daemon_wire_protocol_version.rs", "crates/zccache/tests/daemon_wire_dispatcher.rs"]
+tests = ["crates/zccache/tests/wire/daemon_wire_frame_v1_test.rs", "crates/zccache/tests/wire/daemon_wire_prost_roundtrip.rs", "crates/zccache/tests/wire/daemon_wire_protocol_version.rs", "crates/zccache/tests/wire/daemon_wire_dispatcher.rs"]
 [[characterization]]
 contract = "filesystem identity, links, permissions, replacement, stored mtimes, and hardlink-safe materialization"
 tests = ["crates/zccache-daemon-core/src/daemon/server/persist/tests.rs", "crates/zccache-daemon-core/src/daemon/server/tests/write_cached.rs", "crates/zccache-platform/src/platform/fs/README.md"]

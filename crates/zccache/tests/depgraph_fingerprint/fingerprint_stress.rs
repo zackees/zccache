@@ -6,8 +6,6 @@
     clippy::unwrap_in_result
 )]
 
-mod common;
-
 use tempfile::TempDir;
 use zccache::fingerprint::{walk_files, walk_files_glob, CacheDecision, HashCache, TwoLayerCache};
 
@@ -22,7 +20,7 @@ fn setup() -> (TempDir, TempDir) {
 fn rapid_cycles_hash_cache() {
     let (src, cache_dir) = setup();
     for i in 0..10 {
-        common::create_file(src.path(), &format!("f{i}.rs"), &format!("init{i}"));
+        crate::common::create_file(src.path(), &format!("f{i}.rs"), &format!("init{i}"));
     }
 
     let cache = HashCache::new(cache_dir.path().join("fp.json"));
@@ -36,7 +34,7 @@ fn rapid_cycles_hash_cache() {
         cache.mark_success().unwrap();
 
         // Modify one file per cycle.
-        common::create_file(
+        crate::common::create_file(
             src.path(),
             &format!("f{}.rs", cycle % 10),
             &format!("cycle{cycle}"),
@@ -49,13 +47,13 @@ fn rapid_cycles_hash_cache() {
 fn rapid_cycles_two_layer() {
     let (src, cache_dir) = setup();
     for i in 0..10 {
-        common::create_file(src.path(), &format!("f{i}.rs"), &format!("init{i}"));
+        crate::common::create_file(src.path(), &format!("f{i}.rs"), &format!("init{i}"));
     }
 
     let cache = TwoLayerCache::new(cache_dir.path().join("fp.json"));
 
     for cycle in 0..20 {
-        common::wait_for_mtime_change();
+        crate::common::wait_for_mtime_change();
         let files = walk_files(src.path(), &[], &[]).unwrap();
         let d = cache.check(&files).unwrap();
         if cycle == 0 {
@@ -63,7 +61,7 @@ fn rapid_cycles_two_layer() {
         }
         cache.mark_success().unwrap();
 
-        common::create_file(
+        crate::common::create_file(
             src.path(),
             &format!("f{}.rs", cycle % 10),
             &format!("cycle{cycle}"),
@@ -78,7 +76,7 @@ fn rapid_cycles_two_layer() {
 fn large_file_set_hash_cache() {
     let (src, cache_dir) = setup();
     for i in 0..150 {
-        common::create_file(
+        crate::common::create_file(
             src.path(),
             &format!("src/mod_{i:03}.rs"),
             &format!("content {i}"),
@@ -103,7 +101,7 @@ fn large_file_set_hash_cache() {
 fn large_file_set_two_layer() {
     let (src, cache_dir) = setup();
     for i in 0..150 {
-        common::create_file(
+        crate::common::create_file(
             src.path(),
             &format!("src/mod_{i:03}.rs"),
             &format!("content {i}"),
@@ -131,7 +129,7 @@ fn large_files_hash_cache() {
     let (src, cache_dir) = setup();
     for i in 0..5 {
         let content = "x".repeat(10 * 1024); // 10KB
-        common::create_file(src.path(), &format!("big_{i}.bin"), &content);
+        crate::common::create_file(src.path(), &format!("big_{i}.bin"), &content);
     }
 
     let cache = HashCache::new(cache_dir.path().join("fp.json"));
@@ -153,7 +151,7 @@ fn large_files_hash_cache() {
 fn many_glob_patterns() {
     let (src, _cache_dir) = setup();
     for i in 0..50 {
-        common::create_file(src.path(), &format!("dir_{i:02}/file.rs"), &format!("{i}"));
+        crate::common::create_file(src.path(), &format!("dir_{i:02}/file.rs"), &format!("{i}"));
     }
 
     let include: Vec<String> = (0..50).map(|i| format!("dir_{i:02}/**")).collect();
@@ -171,7 +169,7 @@ fn many_glob_patterns() {
 fn mixed_modifications_many_cycles() {
     let (src, cache_dir) = setup();
     for i in 0..20 {
-        common::create_file(src.path(), &format!("f{i}.rs"), &format!("v0_{i}"));
+        crate::common::create_file(src.path(), &format!("f{i}.rs"), &format!("v0_{i}"));
     }
 
     let cache = HashCache::new(cache_dir.path().join("fp.json"));
@@ -184,14 +182,14 @@ fn mixed_modifications_many_cycles() {
         // Alternate: edit, add, remove.
         match cycle % 3 {
             0 => {
-                common::create_file(
+                crate::common::create_file(
                     src.path(),
                     &format!("f{}.rs", cycle % 20),
                     &format!("edited_{cycle}"),
                 );
             }
             1 => {
-                common::create_file(
+                crate::common::create_file(
                     src.path(),
                     &format!("new_{cycle}.rs"),
                     &format!("added_{cycle}"),

@@ -7,8 +7,8 @@ totalling a few hundred MB, which is the realistic shape that exercises the
 daemon's persist semaphore and background index writer.
 
 Microbench-style measurement of the *daemon's* persist path lives in
-`crates/zccache/tests/daemon_persist_pool_bench.rs` (run with `soldr cargo
-test --release -p zccache --test daemon_persist_pool_bench -- --nocapture
+`crates/zccache/tests/perf/daemon_persist_pool_bench.rs` (run with `soldr cargo
+test --release -p zccache --test perf daemon_persist_pool_bench:: -- --nocapture
 --ignored`). This crate is the end-to-end shape: invoke `soldr cargo build`
 in this directory after clearing `~/.zccache/artifacts/` to measure the
 full pipeline.

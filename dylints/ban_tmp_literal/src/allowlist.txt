@@ -40,7 +40,7 @@ crates/zccache-daemon-core/src/daemon/eviction.rs
 crates/zccache-daemon-core/src/daemon/server/session.rs
 crates/zccache-daemon-core/src/daemon/server/tests/cache_trim.rs
 crates/zccache-daemon-core/src/daemon/server/tests/client_env.rs
-crates/zccache/tests/daemon_wire_prost_roundtrip.rs
+crates/zccache/tests/wire/daemon_wire_prost_roundtrip.rs
 crates/zccache-compiler/src/response_file.rs
 crates/zccache-compiler/src/tests/rustc.rs
 crates/zccache-core/src/config/tests.rs
