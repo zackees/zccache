@@ -175,6 +175,24 @@ def _release_workflow_job(job: str) -> str:
     return text[start:end]
 
 
+def _smoke_legs() -> list[str]:
+    """Every `wheel_plat` leg across both smoke jobs, in file order.
+
+    #1535 split the smoke matrix in two: `test-wheels` gates the publish
+    chain, `test-wheels-ungated` carries families whose runner cannot be
+    relied on to schedule and which therefore must not sit on a `needs:`
+    edge. Coverage is a property of the union -- checking only the gating job
+    would let a family lose its smoke test simply by being moved.
+    """
+    return [
+        tag
+        for job in ("test-wheels", "test-wheels-ungated")
+        for tag in re.findall(
+            r"^\s+wheel_plat:\s*(\S+)$", _release_workflow_job(job), re.M
+        )
+    ]
+
+
 def test_wheel_smoke_matrix_covers_exactly_the_built_wheel_families() -> None:
     """Every smoke leg must name a wheel family `build-wheels` produces.
 
@@ -184,9 +202,7 @@ def test_wheel_smoke_matrix_covers_exactly_the_built_wheel_families() -> None:
     every release. A missing leg is the opposite hole -- a family ships to
     PyPI without ever being installed.
     """
-    smoke_tags = set(
-        re.findall(r"^\s+wheel_plat:\s*(\S+)$", _release_workflow_job("test-wheels"), re.M)
-    )
+    smoke_tags = set(_smoke_legs())
     built_tags = {
         ".".join(plat_tags) for plat_tags in release_workflow.PLATFORMS.values()
     }
@@ -201,10 +217,38 @@ def test_wheel_smoke_matrix_covers_exactly_the_built_wheel_families() -> None:
 def test_wheel_smoke_matrix_has_one_leg_per_wheel() -> None:
     """No duplicate legs: a repeated family hides a missing one behind a
     passing job name, which is how the musllinux legs stayed unnoticed."""
-    smoke_tags = re.findall(
-        r"^\s+wheel_plat:\s*(\S+)$", _release_workflow_job("test-wheels"), re.M
-    )
+    smoke_tags = _smoke_legs()
 
     assert len(smoke_tags) == len(set(smoke_tags)), (
         f"duplicate wheel_plat legs in release-auto.yml test-wheels: {sorted(smoke_tags)}"
+    )
+
+
+def test_no_job_depends_on_the_ungated_wheel_smoke() -> None:
+    """`test-wheels-ungated` must not sit on any `needs:` edge.
+
+    This is the entire point of #1535 and it is one word away from being
+    undone. `continue-on-error` was the first attempt and does not help: it
+    neutralizes a job that runs and fails, while the observed failure is a
+    job that never starts, which has no result for `needs:` to evaluate and
+    so blocks until the 24h queue limit. Taking it off the dependency edge is
+    what makes it non-blocking, so the edge is what has to be guarded.
+    """
+    path = (
+        Path(__file__).resolve().parents[2]
+        / ".github"
+        / "workflows"
+        / "release-auto.yml"
+    )
+    text = path.read_text(encoding="utf-8")
+
+    offenders = [
+        line.strip()
+        for line in text.splitlines()
+        if re.match(r"^\s+needs:", line) and "test-wheels-ungated" in line
+    ]
+
+    assert not offenders, (
+        "a job now needs test-wheels-ungated, which restores the #1535 "
+        f"deadlock -- an unschedulable runner blocks the release again: {offenders}"
     )
