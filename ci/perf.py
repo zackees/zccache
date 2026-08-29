@@ -24,7 +24,11 @@ def main():
     cmd = cargo_command(
         "test",
         "-p", "zccache",
-        "--test", "daemon_perf_bench_test",
+        # The four benchmarks named in this module's docstring live in the
+        # `perf_bench_test` target (`tests/perf_bench/tests_*.rs`). There has
+        # never been a `daemon_perf_bench_test` target, so `./perf.sh` exited
+        # with `error: no test target named daemon_perf_bench_test`.
+        "--test", "perf_bench_test",
         "--",
         "--nocapture",
         "--ignored",
