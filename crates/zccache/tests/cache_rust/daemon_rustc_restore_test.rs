@@ -541,6 +541,8 @@ async fn wasm_link_hit_restores_compiler_observed_output_after_fresh_daemon() {
         let _cache_env = CacheEnvGuard::new(&cache_dir);
         let args = wasm_link_args();
         let wasm = project_dir.join("target/wasm32-unknown-unknown/debug/deps/wasm_restore.wasm");
+        let declared_primary =
+            project_dir.join("target/wasm32-unknown-unknown/debug/deps/wasm_restore");
 
         let (endpoint1, handle1) = start_daemon_like_zccache_daemon().await;
         let mut client1 = connect(&endpoint1).await;
@@ -563,6 +565,10 @@ async fn wasm_link_hit_restores_compiler_observed_output_after_fresh_daemon() {
         assert!(
             wasm.is_file(),
             "cold staged compile must materialize compiler-observed {wasm:?}"
+        );
+        assert!(
+            !declared_primary.exists(),
+            "cold Wasm compile must not create the extensionless declared primary {declared_primary:?}"
         );
         end_session(&mut client1, session1).await;
         shutdown_daemon(client1, handle1).await;
@@ -593,6 +599,10 @@ async fn wasm_link_hit_restores_compiler_observed_output_after_fresh_daemon() {
         assert!(
             wasm.is_file(),
             "warm hit must materialize compiler-observed {wasm:?}"
+        );
+        assert!(
+            !declared_primary.exists(),
+            "warm hit must preserve the observed `.wasm` suffix instead of creating {declared_primary:?}"
         );
         end_session(&mut client2, session2).await;
         shutdown_daemon(client2, handle2).await;

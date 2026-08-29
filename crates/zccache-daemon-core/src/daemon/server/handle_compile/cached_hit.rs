@@ -248,11 +248,15 @@ pub(super) fn materialize_cached_compile_hit(
                     );
                     return Err(missing_entry(artifact_key_hex));
                 };
-                // The cached name identifies the matching payload, but a
+                // The cached name identifies the matching payload, while a
                 // metadata-compatible request owns its current Cargo output
-                // destination. Replaying to the observed cold-build name can
-                // leave the requested identity-derived `.rmeta` absent.
-                targets.push(requested);
+                // destination.  That is safe when the requested destination
+                // has the payload's extension (the Dylint `.rmeta` case), but
+                // Rustc's Wasm plan declares an extensionless primary path
+                // and physically emits `<crate>.wasm`.  Preserve that observed
+                // suffix beneath the current request's directory instead of
+                // turning a Wasm artifact back into an extensionless file.
+                targets.push(rustc_compat_materialization_target(&requested, &names[i]));
                 selected_payloads.push(payloads[i].clone());
             }
             (targets, selected_payloads)
@@ -485,6 +489,20 @@ pub(super) fn rustc_compat_payload_index_for(
         .position(|name| rustc_output_kind(std::path::Path::new(name)) == Some(wanted))
 }
 
+fn rustc_compat_materialization_target(
+    requested: &NormalizedPath,
+    observed_name: &str,
+) -> NormalizedPath {
+    let observed = std::path::Path::new(observed_name);
+    if requested.extension() == observed.extension() {
+        return requested.clone();
+    }
+    requested.parent().map_or_else(
+        || requested.clone(),
+        |parent| parent.join(observed_name).into(),
+    )
+}
+
 fn rustc_output_kind(path: &std::path::Path) -> Option<&'static str> {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some("rmeta") => Some("metadata"),
@@ -505,6 +523,24 @@ mod tests {
 
     fn file_time(path: &Path) -> filetime::FileTime {
         filetime::FileTime::from_last_modification_time(&std::fs::metadata(path).unwrap())
+    }
+
+    #[test]
+    fn rustc_compat_target_keeps_requested_metadata_name_but_restores_observed_wasm_suffix() {
+        let root = tempfile::tempdir().unwrap();
+        let requested_metadata: NormalizedPath = root.path().join("libchecked-warm.rmeta").into();
+        assert_eq!(
+            rustc_compat_materialization_target(&requested_metadata, "libchecked-cold.rmeta",),
+            requested_metadata,
+            "a compatible metadata request owns its current Cargo identity"
+        );
+
+        let requested_wasm: NormalizedPath = root.path().join("wasm_restore").into();
+        assert_eq!(
+            rustc_compat_materialization_target(&requested_wasm, "wasm_restore.wasm"),
+            NormalizedPath::from(root.path().join("wasm_restore.wasm")),
+            "an extensionless Rustc plan must retain the compiler-observed Wasm suffix"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
