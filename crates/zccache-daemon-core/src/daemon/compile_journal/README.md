@@ -25,7 +25,9 @@ unchanged.
   `derive_output_ext`).
 - **outcome.rs** — `extract_outcome`: maps a `Response` to
   `(outcome_str, exit_code, default_miss_reason)`. The canonical translation
-  point for issue #322 (every miss carries a reason).
+  point for issue #322 (every miss carries a reason). Unix compiler signal
+  `N` uses `exit_code == -(128 + N)`; `termination_signal()` supplies the explicit
+  additive JSON field that distinguishes SIGHUP from daemon error `-1`.
 - **journal_thread.rs** — Background writer thread (`journal_thread`),
   `JournalMessage` enum, rotation (`rotate_journal`,
   `JOURNAL_MAX_SIZE`/`JOURNAL_MAX_FILES`), and GC (`gc_journal_files`).

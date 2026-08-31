@@ -484,6 +484,56 @@ mod journal_tests {
         }
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn embedded_compile_preserves_exact_termination_signal() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = TempDir::new().expect("temp cache root");
+        let compiler = temp.path().join("signal-compiler");
+        std::fs::write(&compiler, "#!/bin/sh\nkill -TERM $$\n").expect("write compiler");
+        std::fs::set_permissions(&compiler, std::fs::Permissions::from_mode(0o755))
+            .expect("make compiler executable");
+        let mut audit = AuditConfig::default();
+        audit.mode = crate::audit::AuditMode::Off;
+        let service = ZccacheService::start(ZccacheConfig {
+            host: HostIdentity {
+                product: "zccache-test".into(),
+                instance_id: "embedded-signal".into(),
+                workspace_id: "embedded-signal".into(),
+            },
+            cache_root: temp.path().join("zccache").into(),
+            audit,
+            limits: ServiceLimits::default(),
+            runtime: RuntimeHooks::default(),
+            cancellation: None,
+        })
+        .await
+        .expect("service start");
+        let response = service
+            .compile(CompileRequest {
+                audit: AuditContext::new(
+                    crate::audit::AuditId::new("signal-run").expect("non-empty"),
+                    crate::audit::AuditId::new("signal-trace").expect("non-empty"),
+                ),
+                compiler: compiler.into(),
+                args: Vec::new(),
+                cwd: temp.path().into(),
+                env: Vec::new(),
+                stdin: Vec::new(),
+            })
+            .await
+            .expect("signaled compiler returns a compile response");
+
+        assert_eq!(response.exit_code, -143);
+        assert_eq!(response.cache_outcome, CacheOutcome::Error);
+
+        service
+            .shutdown(ShutdownMode::Graceful)
+            .await
+            .expect("shutdown service");
+    }
+
     #[tokio::test]
     async fn embedded_compile_writes_compile_journal() {
         let temp = TempDir::new().expect("temp cache root");

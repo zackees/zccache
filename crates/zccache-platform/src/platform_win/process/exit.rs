@@ -1,5 +1,13 @@
 //! Windows exit interpretation.
 
+pub fn termination_signal(_status: &std::process::ExitStatus) -> Option<i32> {
+    None
+}
+
+pub fn termination_signal_from_exit_code(_exit_code: i32) -> Option<i32> {
+    None
+}
+
 pub fn context_label(context: &crash_handler::CrashContext) -> String {
     let code = exception_code(context);
     match code {

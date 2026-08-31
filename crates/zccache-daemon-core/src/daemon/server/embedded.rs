@@ -312,6 +312,7 @@ impl EmbeddedDaemon {
         // above plus serde serialization — parity with the IPC path's
         // accepted cost (issue #459).
         if let Some((outcome, exit_code, default_reason)) = extract_outcome(&response) {
+            let termination_signal = crate::daemon::compile_journal::termination_signal(&response);
             let latency_ns = total.elapsed().as_nanos();
             let miss_reason = super::connection::compile_miss_reason(
                 &journal_ctx,
@@ -328,7 +329,8 @@ impl EmbeddedDaemon {
                 );
             }
             let entry = JournalEntry::new(journal_ctx, outcome, exit_code, latency_ns, miss_reason)
-                .with_context_key(context_key);
+                .with_context_key(context_key)
+                .with_termination_signal(termination_signal);
             self.state.journal.log(&entry, None);
         }
         match response {

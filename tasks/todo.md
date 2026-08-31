@@ -1,3 +1,13 @@
+# soldr#3031 preserve compiler termination signals
+
+- [x] Read the embedded-service, journal, protocol, and portability contracts.
+- [x] Trace the signal-loss boundary across single, direct, multi-source, staged-multi, embedded, IPC, and journal paths.
+- [x] RED: prove Unix signal termination remains distinguishable from daemon-side errors in the canonical process-status representation and compile journal.
+- [x] GREEN: preserve termination metadata through every compiler response path, the embedded API, audit events, and the durable journal without changing successful/error-cache semantics.
+- [x] Cover protobuf/bincode compatibility; the reserved integer encoding leaves both wire shapes unchanged, so no protocol bump is required.
+- [x] Run focused tests, formatter, clippy/check, and broader compile-path validation. All signal-path tests pass; the full daemon-core suite has one unrelated filesystem-matrix mtime assertion that reproduces alone on macOS.
+- [ ] Review, push, open and merge the linked zccache PR, publish a patch release, then update Soldr's exact pin and six release assets.
+
 # #1539 embedded host compiler-admission classifier
 
 - [x] Read the issue, service admission paths, and embedded configuration surface.

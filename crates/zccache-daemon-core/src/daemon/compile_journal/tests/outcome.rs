@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::protocol::{LookupOutcomes, Response};
 
-use super::super::{extract_outcome, miss_reason};
+use super::super::{extract_outcome, miss_reason, termination_signal};
 
 #[test]
 fn test_extract_outcome_compile_hit() {
@@ -75,6 +75,23 @@ fn test_extract_outcome_error_response() {
         message: "something broke".to_string(),
     };
     assert_eq!(extract_outcome(&resp), Some(("error", -1, None)));
+}
+
+#[cfg(unix)]
+#[test]
+fn compile_signal_is_distinct_from_daemon_error() {
+    let compile = Response::CompileResult {
+        exit_code: -143,
+        stdout: Arc::new(Vec::new()),
+        stderr: Arc::new(Vec::new()),
+        cached: false,
+    };
+    let daemon_error = Response::Error {
+        message: "spawn failed".to_string(),
+    };
+
+    assert_eq!(termination_signal(&compile), Some(15));
+    assert_eq!(termination_signal(&daemon_error), None);
 }
 
 #[test]

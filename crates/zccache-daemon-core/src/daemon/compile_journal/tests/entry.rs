@@ -216,6 +216,17 @@ fn test_serialization_exit_code_boundary_values() {
 }
 
 #[test]
+fn signal_termination_is_explicit_and_additive_in_json() {
+    let entry = JournalEntry::new(make_ctx(vec!["--version"]), "error", -143, 42, None)
+        .with_termination_signal(Some(15));
+
+    let value = serde_json::to_value(entry).expect("serialize signaled compile");
+
+    assert_eq!(value["exit_code"], -143);
+    assert_eq!(value["termination_signal"], 15);
+}
+
+#[test]
 fn test_serialization_latency_precision_boundary() {
     // serde_json::Value stores numbers as i64/u64/f64 internally.
     // Values up to u64::MAX round-trip exactly (stored as u64).
@@ -274,6 +285,7 @@ fn serializes_extended_fields_when_present() {
         cwd: "/project".to_string(),
         env: None,
         exit_code: 0,
+        termination_signal: None,
         session_id: Some("sess-1".to_string()),
         daemon_generation: None,
         latency_ns: 1_234_567,

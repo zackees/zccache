@@ -45,3 +45,16 @@ pub fn extract_outcome(response: &Response) -> Option<(&'static str, i32, Option
         _ => None,
     }
 }
+
+/// Return exact Unix compiler-signal metadata carried by a compile response.
+/// Infrastructure errors remain signal-less even though their sentinel exit
+/// code is also negative.
+#[must_use]
+pub fn termination_signal(response: &Response) -> Option<i32> {
+    match response {
+        Response::CompileResult { exit_code, .. } => {
+            crate::platform::process::exit::termination_signal_from_exit_code(*exit_code)
+        }
+        _ => None,
+    }
+}

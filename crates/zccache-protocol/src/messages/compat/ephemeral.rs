@@ -88,7 +88,8 @@ fn existing_response_variants_still_work() {
     roundtrip(&Response::Pong);
     roundtrip(&Response::ShuttingDown);
     roundtrip(&Response::CompileResult {
-        exit_code: 0,
+        // SIGTERM in the wire-compatible reserved negative namespace.
+        exit_code: -143,
         stdout: Arc::new(vec![]),
         stderr: Arc::new(vec![]),
         cached: true,

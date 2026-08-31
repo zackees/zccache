@@ -415,11 +415,9 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
 
     if state.compile_concurrency.is_some() {
         let duration_ns = compile_span_start.elapsed().as_nanos() as u64;
-        let exit_code = result
-            .as_ref()
-            .ok()
-            .and_then(|o| o.status.code())
-            .unwrap_or(-1);
+        let exit_code = result.as_ref().map_or(-1, |output| {
+            crate::platform::process::exit::outcome(&output.status).exit_code
+        });
         tracing::info!(
             event = "compile_end",
             client_pid,
@@ -450,7 +448,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     let compiler_prep_ns = compiler_exec_ns.saturating_sub(compiler_process_ns);
 
     let t_post_exec = std::time::Instant::now();
-    let exit_code = output.status.code().unwrap_or(-1);
+    let exit_code = crate::platform::process::exit::outcome(&output.status).exit_code;
     let (stdout_bytes, dependency_scan, stderr_bytes) = if let Some(streamed) = streamed_output {
         (streamed.stdout, streamed.dependency_scan, streamed.stderr)
     } else if depfile_strategy == DepfileStrategy::ShowIncludes {

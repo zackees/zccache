@@ -458,8 +458,10 @@ async fn watchdog_inner_impl(
 /// fires when there has been no output, so stderr is empty by construction.
 /// The caller therefore saw `error: could not compile <crate>` with an empty
 /// cause and no way to tell "your code is broken" from "we shot the compiler".
-/// On Unix the same kill yields `status.code() == None` (reported as `-1`),
-/// which is precisely why this only ever reproduced on Windows (soldr#1857).
+/// On Unix the same kill yields `status.code() == None`; the process facade
+/// preserves its exact signal in the reserved negative namespace. This is
+/// precisely why the empty-diagnostic ambiguity only reproduced on Windows
+/// (soldr#1857).
 ///
 /// Only annotates when the child both failed and said nothing: `stderr_bytes`
 /// counts bytes actually read from the pipe, so it is the honest signal on the
@@ -509,6 +511,7 @@ fn emit_pipe_read_error_diagnostics(
     stderr_bytes: usize,
     status: &ExitStatus,
 ) {
+    let exit = crate::platform::process::exit::outcome(status);
     tracing::warn!(
         event = "child_wait_watchdog_fired",
         stage = "pipe_read_error",
@@ -519,7 +522,8 @@ fn emit_pipe_read_error_diagnostics(
         stderr_failed,
         stdout_bytes,
         stderr_bytes,
-        exit_code = status.code().unwrap_or(-1),
+        exit_code = exit.exit_code,
+        termination_signal = exit.termination_signal,
         "reading the child's output pipe failed; the drain ended early and any          diagnostics still buffered in that pipe are lost. The exit status is          still the child's real one, so a non-zero exit here may carry no          explanation of its own (soldr#1857)."
     );
     crate::core::lifecycle::write_event(
@@ -533,7 +537,8 @@ fn emit_pipe_read_error_diagnostics(
             "stderr_failed": stderr_failed,
             "stdout_bytes": stdout_bytes,
             "stderr_bytes": stderr_bytes,
-            "exit_code": status.code(),
+            "exit_code": exit.exit_code,
+            "termination_signal": exit.termination_signal,
         }),
     );
     // Also record it in the dedicated termination stream so these are
@@ -550,7 +555,8 @@ fn emit_pipe_read_error_diagnostics(
             "stderr_failed": stderr_failed,
             "stdout_bytes": stdout_bytes,
             "stderr_bytes": stderr_bytes,
-            "exit_code": status.code(),
+            "exit_code": exit.exit_code,
+            "termination_signal": exit.termination_signal,
         }),
     );
 }
