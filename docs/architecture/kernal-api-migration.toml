@@ -86,7 +86,7 @@ disposition = "extend"
 kernel_capability = "semantic command presentation and containment preparation"
 [[platform_group]]
 source = "crates/zccache-platform/src/platform/process/exit.rs"
-items = ["NativeExit", "crash_label", "context_label", "context_summary"]
+items = ["NativeExit", "ExitOutcome", "outcome", "termination_signal_from_exit_code", "crash_label", "context_label", "context_summary"]
 disposition = "extend"
 kernel_capability = "native exit and crash-context classification"
 [[platform_group]]
