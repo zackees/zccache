@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use crate::protocol::{LookupOutcomes, Response};
 
-use super::super::{extract_outcome, miss_reason, termination_signal};
+#[cfg(unix)]
+use super::super::termination_signal;
+use super::super::{extract_outcome, miss_reason};
 
 #[test]
 fn test_extract_outcome_compile_hit() {
