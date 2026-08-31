@@ -16,7 +16,8 @@ scripts) can rely on.
 | `args`         | array of string | yes            | Full argument list, suitable for diagnostic replay when combined with an independently captured environment. |
 | `cwd`          | string          | yes            | Working directory at request time. |
 | `env`          | array of `[k, v]` | no           | Sanitized build-diagnostic allowlist. Secret-looking names/values and all non-allowlisted variables are omitted. |
-| `exit_code`    | integer         | yes            | Process exit code. `-1` is reserved for daemon-side errors. |
+| `exit_code`    | integer         | yes            | Process exit code. Unix signal `N` is encoded as `-(128 + N)`; `-1` remains the legacy/daemon-error sentinel. |
+| `termination_signal` | integer   | no             | Exact Unix signal that terminated the compiler. Omitted for normal exits, Windows exits, and daemon-side errors. |
 | `session_id`   | string \| null  | yes            | UUID for session-attached requests; `null` for ephemeral. |
 | `daemon_generation` | string     | no             | Which daemon process generation served the compile (zackees/soldr#2436 D4). The embedded host passes its route-generation identity; a standalone daemon mints one per-process UUID. Restart-warmth analysis joins rows to generations with it. |
 | `latency_ns`   | integer         | yes            | Wall-clock nanoseconds (per the project's `_ns` convention). |

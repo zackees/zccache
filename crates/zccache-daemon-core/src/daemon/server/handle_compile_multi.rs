@@ -795,7 +795,7 @@ pub(super) async fn handle_compile_multi(
         }
     };
 
-    let exit_code = output.status.code().unwrap_or(-1);
+    let exit_code = crate::platform::process::exit::outcome(&output.status).exit_code;
     all_stdout.extend_from_slice(&output.stdout);
     all_stderr.extend_from_slice(&output.stderr);
 

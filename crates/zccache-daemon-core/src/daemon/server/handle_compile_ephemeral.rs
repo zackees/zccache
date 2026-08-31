@@ -215,7 +215,7 @@ pub(super) async fn run_compiler_direct_with_family(
                     }
                 }
             }
-            let exit_code = output.status.code().unwrap_or(-1);
+            let exit_code = crate::platform::process::exit::outcome(&output.status).exit_code;
             write_session_log(sessions, sid, &format!("[DIRECT] exit_code={exit_code}"));
             Response::CompileResult {
                 exit_code,

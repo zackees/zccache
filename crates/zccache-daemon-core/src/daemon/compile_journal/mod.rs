@@ -39,7 +39,7 @@ mod tests;
 
 pub use derive::{derive_crate_name, derive_crate_type, derive_output_ext};
 pub use env::{sanitize_journal_env, SanitizedJournalEnv};
-pub use outcome::extract_outcome;
+pub use outcome::{extract_outcome, termination_signal};
 
 use journal_thread::{journal_thread, JournalMessage};
 
@@ -191,8 +191,12 @@ pub struct JournalEntry {
     /// pairs. Secret-bearing and non-allowlisted variables are omitted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<SanitizedJournalEnv>,
-    /// Process exit code (-1 for errors).
+    /// Process exit code. Unix signal `N` is encoded as `-(128 + N)`; `-1`
+    /// remains the legacy/daemon-error sentinel.
     pub exit_code: i32,
+    /// Unix signal that terminated the compiler, when applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub termination_signal: Option<i32>,
     /// Session UUID or null for ephemeral.
     pub session_id: Option<String>,
     /// zackees/soldr#2436 D4: which daemon process generation served this
@@ -315,6 +319,7 @@ impl JournalEntry {
             cwd: ctx.cwd,
             env: ctx.env,
             exit_code,
+            termination_signal: None,
             session_id: ctx.session_id,
             daemon_generation: Some(daemon_generation().to_string()),
             latency_ns,
@@ -331,6 +336,12 @@ impl JournalEntry {
     #[must_use]
     pub fn with_context_key(mut self, context_key: Option<String>) -> Self {
         self.context_key = context_key;
+        self
+    }
+
+    #[must_use]
+    pub fn with_termination_signal(mut self, termination_signal: Option<i32>) -> Self {
+        self.termination_signal = termination_signal;
         self
     }
 

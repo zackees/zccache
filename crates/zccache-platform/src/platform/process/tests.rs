@@ -34,6 +34,39 @@ fn disposable_child_output_and_exit_status_are_observable() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("zccache-platform-child"));
 }
 
+#[cfg(unix)]
+#[test]
+fn signal_termination_is_preserved_in_the_reserved_negative_namespace() {
+    let status = std::process::Command::new("sh")
+        .args(["-c", "kill -TERM $$"])
+        .status()
+        .expect("spawn signal-terminated child");
+
+    let outcome = exit::outcome(&status);
+
+    assert_eq!(outcome.exit_code, -143);
+    assert_eq!(outcome.termination_signal, Some(15));
+    assert_eq!(exit::termination_signal_from_exit_code(-1), None);
+    assert_eq!(exit::termination_signal_from_exit_code(-128), None);
+    assert_eq!(exit::termination_signal_from_exit_code(i32::MIN), None);
+}
+
+#[cfg(windows)]
+#[test]
+fn negative_windows_status_remains_native_and_signal_less() {
+    use std::os::windows::process::ExitStatusExt as _;
+
+    let status = std::process::ExitStatus::from_raw(0xC000_0005);
+    let outcome = exit::outcome(&status);
+
+    assert_eq!(outcome.exit_code, 0xC000_0005_u32 as i32);
+    assert_eq!(outcome.termination_signal, None);
+    assert_eq!(
+        exit::termination_signal_from_exit_code(outcome.exit_code),
+        None
+    );
+}
+
 #[test]
 fn child_cpu_ticks_are_nondecreasing() {
     let mut child = spawn::sleeping_child(Duration::from_secs(30)).expect("spawn child");

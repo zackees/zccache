@@ -24,6 +24,7 @@ pub use control::EmbeddedEventSink;
 
 mod control;
 mod reporting;
+mod termination;
 
 /// Result type used by the embedded service API.
 pub type Result<T> = std::result::Result<T, EmbeddedError>;
@@ -304,7 +305,9 @@ pub enum CompileChunk {
     Stdout(Vec<u8>),
     /// A chunk of compiler stderr bytes.
     Stderr(Vec<u8>),
-    /// Terminal event with the compile's outcome metadata.
+    /// Terminal event with the compile's outcome metadata. Unix signal
+    /// termination uses the same reserved negative `exit_code` representation
+    /// as [`CompileResponse`].
     Done {
         exit_code: i32,
         cached: bool,
@@ -775,21 +778,7 @@ impl ZccacheService {
             // below carries the exit code.
             CacheOutcome::Error => {}
         }
-        self.emit_audit(
-            &audit,
-            crate::audit::AuditCategory::ZCCACHE_COMPILE,
-            crate::audit::AuditEventName::COMPILE_FINISHED,
-            if response.exit_code == 0 {
-                crate::audit::AuditLevel::Info
-            } else {
-                crate::audit::AuditLevel::Error
-            },
-            Some(elapsed_ns),
-            &[
-                ("exit_code", serde_json::Value::from(response.exit_code)),
-                ("cached", serde_json::Value::from(response.cached)),
-            ],
-        );
+        termination::emit_compile_finished(self, &audit, &response, elapsed_ns);
         Ok(CompileResponse {
             exit_code: response.exit_code,
             stdout: response.stdout.as_ref().clone(),

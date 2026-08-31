@@ -494,7 +494,7 @@ mod full_family {
     #[test]
     fn compile_result_response_roundtrips() {
         roundtrip_response(Response::CompileResult {
-            exit_code: 1,
+            exit_code: -143,
             stdout: Arc::new(b"warning".to_vec()),
             stderr: Arc::new(b"error".to_vec()),
             cached: true,

@@ -255,11 +255,9 @@ pub(super) async fn try_handle_staged_misses(
             let output = process::tokio_command_output_with_priority(&mut command, priority).await;
             let elapsed_ns = compiler_started.elapsed().as_nanos() as u64;
             if admission_state.compile_concurrency.is_some() {
-                let exit_code = output
-                    .as_ref()
-                    .ok()
-                    .and_then(|value| value.status.code())
-                    .unwrap_or(-1);
+                let exit_code = output.as_ref().map_or(-1, |value| {
+                    crate::platform::process::exit::outcome(&value.status).exit_code
+                });
                 tracing::info!(
                     event = "compile_end",
                     client_pid,
@@ -321,7 +319,7 @@ pub(super) async fn try_handle_staged_misses(
             crate::daemon::staged_stats::StagedTiming::Compiler,
             elapsed_ns,
         );
-        let exit_code = output.status.code().unwrap_or(-1);
+        let exit_code = crate::platform::process::exit::outcome(&output.status).exit_code;
         let stderr = if miss.plan.msvc_syntax {
             let (scan_result, filtered_stderr) =
                 crate::depgraph::show_includes::parse_show_includes(

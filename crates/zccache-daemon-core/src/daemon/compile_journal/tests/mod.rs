@@ -57,6 +57,7 @@ pub(super) fn legacy_entry(
         cwd: cwd.to_string(),
         env: sanitize_journal_env(env),
         exit_code,
+        termination_signal: None,
         session_id,
         daemon_generation: None,
         latency_ns,

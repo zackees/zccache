@@ -281,6 +281,7 @@ pub struct CompileRequest {
 }
 
 pub struct CompileResponse {
+    // Unix signal N is -(128 + N); normal and Windows exits are unchanged.
     pub exit_code: i32,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
@@ -405,6 +406,14 @@ that collects the same chunks. Compiler misses and direct invocations emit
 output while the child is running; cache hits replay stored output in 64 KiB
 chunks. Ordering is preserved within stdout and stderr, while cross-stream
 ordering follows the runtime pipe drain.
+
+Compiler termination metadata is preserved without widening the established
+response or wire shape: Unix signal `N` is returned as
+`exit_code == -(128 + N)`.
+Normal compiler exits and Windows process exits retain their native code. The
+durable compile journal additionally emits `termination_signal: N`, which
+distinguishes compiler SIGHUP (`exit_code: -129`) from the legacy/daemon-error
+`-1` sentinel.
 
 The callback runs inline. A slow callback therefore applies backpressure to a
 bounded channel and eventually to the compiler pipes. Retained output is capped
