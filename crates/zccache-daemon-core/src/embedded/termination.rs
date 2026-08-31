@@ -66,15 +66,10 @@ mod tests {
     #[test]
     fn response_encoding_recovers_only_exact_signals() {
         assert_eq!(response(-143).exit_code, -143);
-        #[cfg(unix)]
+        let expected = (!crate::platform::host::is_windows()).then_some(15);
         assert_eq!(
             crate::platform::process::exit::termination_signal_from_exit_code(-143),
-            Some(15)
-        );
-        #[cfg(windows)]
-        assert_eq!(
-            crate::platform::process::exit::termination_signal_from_exit_code(-143),
-            None
+            expected
         );
         for exit_code in [0, 1, -1] {
             assert_eq!(
@@ -84,7 +79,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     fn find_named_file(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
         for entry in std::fs::read_dir(dir).ok()?.flatten() {
             let path = entry.path();
@@ -99,10 +93,11 @@ mod tests {
         None
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn cacheable_rust_compile_preserves_signal_in_response_journal_and_audit() {
-        use std::os::unix::fs::PermissionsExt as _;
+        if crate::platform::host::is_windows() {
+            return;
+        }
 
         let temp = tempfile::TempDir::new().expect("temp root");
         let compiler = temp.path().join("rustc");
@@ -115,7 +110,7 @@ mod tests {
             "#!/bin/sh\nif [ \"$1\" = \"-vV\" ]; then\n  printf 'rustc 1.95.0 (fixture 2026-01-01)\\nbinary: rustc\\ncommit-hash: fixture\\ncommit-date: 2026-01-01\\nhost: x86_64-unknown-linux-gnu\\nrelease: 1.95.0\\nLLVM version: 20.1.0\\n'\n  exit 0\nfi\nprintf x >> \"$ZCCACHE_SIGNAL_COUNT\"\nkill -TERM $$\n",
         )
         .expect("compiler script");
-        std::fs::set_permissions(&compiler, std::fs::Permissions::from_mode(0o755))
+        crate::platform::fs::permissions::make_executable(&compiler)
             .expect("make compiler executable");
 
         let service = super::super::ZccacheService::start(super::super::ZccacheConfig {
