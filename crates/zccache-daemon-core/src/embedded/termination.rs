@@ -66,9 +66,15 @@ mod tests {
     #[test]
     fn response_encoding_recovers_only_exact_signals() {
         assert_eq!(response(-143).exit_code, -143);
+        #[cfg(unix)]
         assert_eq!(
             crate::platform::process::exit::termination_signal_from_exit_code(-143),
             Some(15)
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            crate::platform::process::exit::termination_signal_from_exit_code(-143),
+            None
         );
         for exit_code in [0, 1, -1] {
             assert_eq!(
