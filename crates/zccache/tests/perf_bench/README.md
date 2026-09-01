@@ -36,44 +36,25 @@ test" for the rules on adding new perf benchmarks here.
 
 ## What the three sides actually execute
 
-The bare / sccache / zccache columns are **not** three ways of running the same
-command. Anyone reading a ratio, and especially anyone treating a failing floor
-as a regression, needs the differences:
+The cold multi-file rows deliberately use one compiler invocation per
+translation unit on every side (#1437). zccache receives one in-process
+`Request::Compile` containing all sources, then its multi-source cache path
+invokes the compiler separately for each source. The bare and sccache cold
+baselines now do the same, so their floors compare like invocation shapes:
 
-| side | single-file | multi-file |
-|---|---|---|
-| bare | one `Command::new(compiler)` | **one** process, all sources |
-| sccache | one `Command::new(sccache)` | **one** process, all sources |
-| zccache | in-process `ClientConn` | one `Request::Compile`, daemon invokes the compiler **per source** |
+| side | single-file | cold multi-file | warm multi-file |
+|---|---|---|---|
+| bare | one process per source | one process per source | one process, all sources |
+| sccache | one wrapper process per source | one wrapper process per source | one wrapper process, all sources |
+| zccache | one in-process request per source | one request; daemon invokes the compiler per source | one request; daemon serves per-source hits |
 
-Two consequences follow, both measured rather than assumed (issue #1437).
+The response-file variant follows the same rule. Its cold baselines invoke
+`-c unit.cpp @flags.rsp` once per source; its warm baselines retain the
+historical single `@sources_multi.rsp` invocation.
 
-### Multi-file bare batches; zccache cannot
-
-`baseline_multi` passes all sources to **one** compiler process
-(`cpp_project.rs`), so the compiler's startup cost is amortized across the
-whole set. zccache caches per translation unit, so the daemon invokes the
-compiler **once per source** — the profile emits one `zccache_cc_miss_profile`
-row per file.
-
-For a driver with meaningful startup this is a fixed handicap that scales with
-source count. Measured in the pinned image on 50 sources, with zccache removed
-from the experiment entirely:
-
-```
-batched  (1 em++ invocation , 50 TUs)   40966 ms
-separate (50 em++ invocations, 50 TUs)  44267 ms
-penalty                                  3301 ms   (~67 ms per extra invocation)
-```
-
-em++ is an Emscripten Python driver, so its startup dominates; native clang's
-is roughly an order of magnitude smaller, which is why the C and C++
-multi-file rows pass on runs where the emscripten one does not.
-
-**A cold multi-file zccache run cannot beat a single batched invocation of a
-slow-starting driver on any hardware.** A `Multi-file, Cold vs Bare` floor for
-such a driver is measuring batching strategy, not cache performance. Treat a
-failure there as a fixture question before hunting for a regression.
+Warm multi-file measurements intentionally retain their historical batched
+bare and sccache semantics. Their numbers remain comparable to prior warm
+results; they are not used as cold cache-miss parity baselines.
 
 ### zccache is measured without per-invocation cost
 
@@ -86,7 +67,7 @@ every compile — none of which these numbers include. `zccache_wrapper_profile`
 So a passing floor here does not by itself establish that a user sees the same
 win.
 
-### sccache does not cache the multi-file fixture at all
+### sccache does not cache the batched warm multi-file fixture
 
 `sccache_compile_multi` passes all 50 sources to **one** sccache process, and
 sccache does not cache multi-source invocations. Measured in the pinned image
@@ -99,12 +80,13 @@ Non-cacheable compilations            0
 Non-cacheable calls                   1
 ```
 
-One request, classified non-cacheable, forwarded straight through. The
-vs-sccache multi-file baseline is therefore a batched `em++` run with a thin
-wrapper on it — **not** a per-file cache.
+One request, classified non-cacheable, forwarded straight through. This is
+why the warm multi-file row deliberately retains its historical batched
+baseline semantics rather than presenting it as a cache-vs-cache comparison.
 
-So the batching asymmetry above applies to *both* cold multi-file baselines,
-not only vs-bare. Neither is a cache-vs-cache comparison, and neither
-currently distinguishes a zccache regression from the invocation-shape
-difference. Do not reach for vs-sccache as the "fairer" multi-file row; for
-per-file work it is the single-file rows that compare like with like.
+The cold multi-file row is different: bare and sccache both run one compiler
+invocation per translation unit, matching zccache's per-source compiler work.
+Those cold rows are therefore invocation-shape comparable, and the sccache
+side is cacheable. The benchmark purges those per-TU sccache entries before
+measuring the historical batched warm row so the two meanings do not leak into
+one another.

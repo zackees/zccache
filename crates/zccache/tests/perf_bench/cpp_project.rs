@@ -255,6 +255,37 @@ pub fn sccache_compile_multi(
     start.elapsed()
 }
 
+/// Run the cold multi-file comparison as one compiler invocation per source.
+///
+/// zccache receives the sources in one request, but its multi-source cache
+/// path invokes the compiler separately for each translation unit. Keep the
+/// cold baselines in that same invocation shape (#1437); the existing batched
+/// multi helper below remains the historical warm baseline.
+pub fn sccache_compile_multi_cold_per_tu(
+    sccache: &Path,
+    compiler: &str,
+    cwd: &Path,
+    sources: &[String],
+) -> Duration {
+    clean_objects(cwd);
+    let start = Instant::now();
+    for src in sources {
+        let status = std::process::Command::new(sccache)
+            .arg(compiler)
+            .args(multi_cold_per_tu_args(src))
+            .current_dir(cwd)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("failed to run sccache");
+        assert!(
+            status.success(),
+            "sccache cold multi-file compile failed for {src}"
+        );
+    }
+    start.elapsed()
+}
+
 // ── Baseline (direct compiler, no cache) ────────────────────────────────
 
 pub fn baseline_single(compiler: &str, cwd: &Path, sources: &[String]) -> Duration {
@@ -297,6 +328,48 @@ pub fn baseline_multi(compiler: &str, cwd: &Path, sources: &[String]) -> Duratio
     let status = cmd.status().expect("failed to run compiler");
     assert!(status.success(), "multi-file compile failed");
     start.elapsed()
+}
+
+/// Run the cold multi-file bare comparison as one compiler invocation per
+/// translation unit. The regular [`baseline_multi`] helper intentionally
+/// remains batched for the historical warm measurement.
+pub fn baseline_multi_cold_per_tu(compiler: &str, cwd: &Path, sources: &[String]) -> Duration {
+    clean_objects(cwd);
+    let start = Instant::now();
+    for src in sources {
+        let status = std::process::Command::new(compiler)
+            .args(multi_cold_per_tu_args(src))
+            .current_dir(cwd)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("failed to run compiler");
+        assert!(status.success(), "cold multi-file compile failed for {src}");
+    }
+    start.elapsed()
+}
+
+fn multi_cold_per_tu_args(source: &str) -> Vec<String> {
+    vec![
+        "-c".into(),
+        source.into(),
+        "-Iinclude".into(),
+        "-O2".into(),
+        "-std=c++17".into(),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::multi_cold_per_tu_args;
+
+    #[test]
+    fn cold_multi_per_tu_args_select_one_source_without_an_output_override() {
+        assert_eq!(
+            multi_cold_per_tu_args("unit_007.cpp"),
+            vec!["-c", "unit_007.cpp", "-Iinclude", "-O2", "-std=c++17"]
+        );
+    }
 }
 
 pub async fn zccache_compile_cpp_single_with_env(

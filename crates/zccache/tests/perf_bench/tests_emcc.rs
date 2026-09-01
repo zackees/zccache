@@ -23,7 +23,8 @@ use super::common::{
     WARM_TRIALS,
 };
 use super::cpp_project::{
-    baseline_multi, baseline_single, generate_project, nuke_and_regenerate, sccache_compile_multi,
+    baseline_multi, baseline_multi_cold_per_tu, baseline_single, generate_project,
+    nuke_and_regenerate, sccache_compile_multi, sccache_compile_multi_cold_per_tu,
     sccache_compile_single, source_names, warmup_compiler, zccache_compile_cpp_single_with_env,
     zccache_compile_multi, zccache_compile_single,
 };
@@ -66,8 +67,8 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
 
     nuke_and_regenerate(bl_dir.path());
     warmup_compiler(&compiler, bl_dir.path());
-    let bl_cold_multi = baseline_multi(&compiler, bl_dir.path(), &sources);
-    eprintln!("        multi cold:   {}", fmt_dur(bl_cold_multi));
+    let bl_cold_multi = baseline_multi_cold_per_tu(&compiler, bl_dir.path(), &sources);
+    eprintln!("        multi cold (per-TU):   {}", fmt_dur(bl_cold_multi));
     let bl_warm_multi = baseline_multi(&compiler, bl_dir.path(), &sources);
     eprintln!("        multi warm:   {}", fmt_dur(bl_warm_multi));
     eprintln!();
@@ -78,7 +79,9 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
     let sccache_warm_single;
     let sccache_cold_multi;
     let sccache_warm_multi;
-    let mut sccache_cache_bytes = None;
+    let mut sccache_single_cache_bytes = None;
+    let mut sccache_cold_multi_cache_bytes = None;
+    let mut sccache_warm_multi_cache_bytes = None;
     if let Some(sccache_bin) = find_sccache() {
         let sc_dir = zccache::test_support::temp_cache_dir().unwrap();
         generate_project(sc_dir.path());
@@ -124,13 +127,21 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
         }
         print_trials("single warm:", &warm);
         sccache_warm_single = Some(warm);
+        sccache_single_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
 
         stop_purge_start(&sccache_bin, &sc_cache_str);
         nuke_and_regenerate(sc_dir.path());
         warmup_compiler(&compiler, sc_dir.path());
-        let cold = sccache_compile_multi(&sccache_bin, &compiler, sc_dir.path(), &sources);
-        eprintln!("        multi cold:   {}", fmt_dur(cold));
+        let cold =
+            sccache_compile_multi_cold_per_tu(&sccache_bin, &compiler, sc_dir.path(), &sources);
+        eprintln!("        multi cold (per-TU):   {}", fmt_dur(cold));
         sccache_cold_multi = Some(cold);
+        sccache_cold_multi_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
+
+        // Keep the batched warm baseline in its pre-#1437 empty-cache state.
+        // The cold parity pass above populated sccache per translation unit.
+        stop_purge_start(&sccache_bin, &sc_cache_str);
+
         let mut warm = Vec::with_capacity(WARM_TRIALS);
         for _ in 0..WARM_TRIALS {
             warm.push(sccache_compile_multi(
@@ -142,7 +153,7 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
         }
         print_trials("multi warm:", &warm);
         sccache_warm_multi = Some(warm);
-        sccache_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
+        sccache_warm_multi_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
 
         let _ = std::process::Command::new(&sccache_bin)
             .arg("--stop-server")
@@ -224,7 +235,9 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
     let sc_warm_multi_str = sccache_warm_multi.as_ref().map(|t| fmt_dur(median(t)));
     let sc_cold_single_str = sccache_cold_single.map(fmt_dur);
     let sc_cold_multi_str = sccache_cold_multi.map(fmt_dur);
-    let sccache_cache_str = sccache_cache_bytes.map(fmt_bytes);
+    let sccache_single_cache_str = sccache_single_cache_bytes.map(fmt_bytes);
+    let sccache_cold_multi_cache_str = sccache_cold_multi_cache_bytes.map(fmt_bytes);
+    let sccache_warm_multi_cache_str = sccache_warm_multi_cache_bytes.map(fmt_bytes);
     let zccache_cache_str = fmt_bytes(zccache_cache_bytes);
     let vs_sccache_cold_single = sccache_cold_single.map(|d| fmt_ratio(d, zc_cold_single, false));
     let vs_sccache_cold_multi = sccache_cold_multi.map(|d| fmt_ratio(d, zc_cold_multi, false));
@@ -246,7 +259,7 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
         sc_cold_single_str.as_deref().unwrap_or(dash),
         fmt_dur(zc_cold_single),
         fmt_bytes(0),
-        sccache_cache_str.as_deref().unwrap_or(dash),
+        sccache_single_cache_str.as_deref().unwrap_or(dash),
         zccache_cache_str,
         vs_sccache_cold_single.as_deref().unwrap_or(dash),
         fmt_ratio(bl_cold_single, zc_cold_single, false),
@@ -257,18 +270,18 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
         sc_warm_single_str.as_deref().unwrap_or(dash),
         fmt_dur(zc_single_med),
         fmt_bytes(0),
-        sccache_cache_str.as_deref().unwrap_or(dash),
+        sccache_single_cache_str.as_deref().unwrap_or(dash),
         zccache_cache_str,
         vs_sccache_warm_single.as_deref().unwrap_or(dash),
         fmt_ratio(bl_warm_single, zc_single_med, true),
     );
     eprintln!(
-        "| Multi-file, Cold | {} | {} | {} | {} | {} | {} | {} | {} |",
+        "| Multi-file, Cold (per-TU) | {} | {} | {} | {} | {} | {} | {} | {} |",
         fmt_dur(bl_cold_multi),
         sc_cold_multi_str.as_deref().unwrap_or(dash),
         fmt_dur(zc_cold_multi),
         fmt_bytes(0),
-        sccache_cache_str.as_deref().unwrap_or(dash),
+        sccache_cold_multi_cache_str.as_deref().unwrap_or(dash),
         zccache_cache_str,
         vs_sccache_cold_multi.as_deref().unwrap_or(dash),
         fmt_ratio(bl_cold_multi, zc_cold_multi, false),
@@ -279,13 +292,14 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
         sc_warm_multi_str.as_deref().unwrap_or(dash),
         fmt_dur(zc_multi_med),
         fmt_bytes(0),
-        sccache_cache_str.as_deref().unwrap_or(dash),
+        sccache_warm_multi_cache_str.as_deref().unwrap_or(dash),
         zccache_cache_str,
         vs_sccache_warm_multi.as_deref().unwrap_or(dash),
         fmt_ratio(bl_warm_multi, zc_multi_med, true),
     );
     eprintln!();
     eprintln!("> **Cold** = first compile (empty cache). **Warm** = median of {WARM_TRIALS} subsequent runs.");
+    eprintln!("> Multi-file cold uses one compiler invocation per translation unit on every side; multi-file warm retains its historical batched bare and sccache baselines.");
     eprintln!();
 }
 

@@ -123,6 +123,30 @@ pub fn baseline_multi_rsp(compiler: &str, cwd: &Path) -> Duration {
     start.elapsed()
 }
 
+/// Run the cold multi-file response-file comparison once per translation unit.
+///
+/// This mirrors zccache's per-source compiler work while retaining the nested
+/// response-file flag fixture. [`baseline_multi_rsp`] remains the batched warm
+/// baseline (#1437).
+pub fn baseline_multi_rsp_cold_per_tu(compiler: &str, cwd: &Path, sources: &[String]) -> Duration {
+    clean_objects(cwd);
+    let start = Instant::now();
+    for src in sources {
+        let status = std::process::Command::new(compiler)
+            .args(multi_rsp_cold_per_tu_args(src))
+            .current_dir(cwd)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("failed to run compiler with rsp");
+        assert!(
+            status.success(),
+            "cold multi-file rsp compile failed for {src}"
+        );
+    }
+    start.elapsed()
+}
+
 // ── Response-file benchmarks: sccache ───────────────────────────────────
 
 pub fn sccache_compile_single_rsp(
@@ -164,6 +188,33 @@ pub fn sccache_compile_multi_rsp(sccache: &Path, compiler: &str, cwd: &Path) -> 
     let start = Instant::now();
     let status = cmd.status().expect("failed to run sccache with multi rsp");
     assert!(status.success(), "sccache multi-file rsp compile failed");
+    start.elapsed()
+}
+
+/// Run the cold multi-file response-file sccache comparison once per
+/// translation unit. The batched helper above remains the warm baseline.
+pub fn sccache_compile_multi_rsp_cold_per_tu(
+    sccache: &Path,
+    compiler: &str,
+    cwd: &Path,
+    sources: &[String],
+) -> Duration {
+    clean_objects(cwd);
+    let start = Instant::now();
+    for src in sources {
+        let status = std::process::Command::new(sccache)
+            .arg(compiler)
+            .args(multi_rsp_cold_per_tu_args(src))
+            .current_dir(cwd)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("failed to run sccache with rsp");
+        assert!(
+            status.success(),
+            "sccache cold multi-file rsp compile failed for {src}"
+        );
+    }
     start.elapsed()
 }
 
@@ -224,4 +275,21 @@ pub async fn zccache_compile_multi_rsp(
     let (exit_code, ..) = recv_compile_result(client).await;
     assert_eq!(exit_code, 0, "multi-file rsp compile failed");
     start.elapsed()
+}
+
+fn multi_rsp_cold_per_tu_args(source: &str) -> Vec<String> {
+    vec!["-c".into(), source.into(), "@flags.rsp".into()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::multi_rsp_cold_per_tu_args;
+
+    #[test]
+    fn cold_multi_rsp_per_tu_args_keep_the_flag_fixture_and_one_source() {
+        assert_eq!(
+            multi_rsp_cold_per_tu_args("unit_007.cpp"),
+            vec!["-c", "unit_007.cpp", "@flags.rsp"]
+        );
+    }
 }
