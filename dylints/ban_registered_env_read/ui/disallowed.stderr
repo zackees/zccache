@@ -1,0 +1,22 @@
+error: `ZCCACHE_DISABLE` is registered environment policy; use its typed zccache_core::config accessor instead of std::env::var
+  --> $DIR/disallowed.rs:11:13
+   |
+LL |     let _ = std::env::var("ZCCACHE_DISABLE");
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[deny(ban_registered_env_read)]` on by default
+
+error: `ZCCACHE_CACHE_TEST_BINS` is registered environment policy; use its typed zccache_core::config accessor instead of std::env::var
+  --> $DIR/disallowed.rs:12:13
+   |
+LL |     let _ = std::env::var_os(zccache_core::config::CACHE_TEST_BINS_ENV);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: `ZCCACHE_CACHE_TEST_BINS` is registered environment policy; use its typed zccache_core::config accessor instead of std::env::var
+  --> $DIR/disallowed.rs:13:13
+   |
+LL |     let _ = std::env::var(LOCAL_ALIAS);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 3 previous errors
+

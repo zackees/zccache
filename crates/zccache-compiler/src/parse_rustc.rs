@@ -53,27 +53,24 @@ const RUSTC_CACHEABLE_CRATE_TYPES: &[&str] = &["lib", "rlib", "staticlib", "proc
 /// crate-type table.
 ///
 /// The exclusion keys on `--test` itself, not on the crate type. See
-/// [`CACHE_TEST_BINS_ENV`] for the opt-in escape hatch.
+/// [`zccache_core::config::CACHE_TEST_BINS_ENV`] for the opt-in escape hatch.
 const RUSTC_TEST_HARNESS_REASON: &str = "test harness link product not cacheable";
 
-/// Opt-in re-admission of `--test` harness invocations (zccache#1525).
+/// True when [`zccache_core::config::CACHE_TEST_BINS_ENV`] opts this process
+/// back into caching `--test` harness links (zccache#1525).
 ///
 /// Set it if you can demonstrate a real hit rate on your workload — e.g. a
 /// build where the harness's input closure genuinely does not move between
 /// runs. Off by default because the common case is the opposite.
 ///
 /// Value grammar is the canonical zccache-owned boolean, parsed by
-/// [`zccache_core::config::owned_env_flag_enabled`]: `1` or case-insensitive
+/// [`zccache_core::config::cache_test_binaries_enabled`]: `1` or case-insensitive
 /// `true` enables it, and everything else — unset, empty, `0`, `false`, or any
 /// typo — leaves the exclusion in force. Deliberately NOT a hand-rolled
 /// parser: soldr#2740 found five mutually disagreeing truthy parsers in the
 /// sibling repo, one of which made `FOO=false` turn a switch *on*.
-pub(crate) const CACHE_TEST_BINS_ENV: &str = "ZCCACHE_CACHE_TEST_BINS";
-
-/// True when [`CACHE_TEST_BINS_ENV`] opts this process back into caching
-/// `--test` harness links.
 fn test_harness_caching_enabled() -> bool {
-    zccache_core::config::owned_env_flag_enabled(CACHE_TEST_BINS_ENV)
+    zccache_core::config::cache_test_binaries_enabled()
 }
 
 /// Host dynamic-library file-name pattern for proc-macros, matching
@@ -268,7 +265,8 @@ pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedI
 
 /// Testable core of [`parse_rustc_invocation`] — no environment access.
 ///
-/// `cache_test_bins` is the already-resolved value of [`CACHE_TEST_BINS_ENV`].
+/// `cache_test_bins` is the already-resolved value of
+/// [`zccache_core::config::CACHE_TEST_BINS_ENV`].
 /// Threading it in as an argument keeps the crate's parallel test suite
 /// deterministic: no test has to mutate process-global environment state to
 /// exercise either side of the policy. Mirrors the

@@ -1,0 +1,20 @@
+[package]
+name = "ban_registered_env_read"
+version = "0.1.0"
+description = "Require registered zccache environment variables to use typed accessors"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+dylint_linting = "=6.0.3"
+
+[dev-dependencies]
+dylint_testing = "=6.0.3"
+
+[package.metadata.rust-analyzer]
+rustc_private = true
+
+[workspace]

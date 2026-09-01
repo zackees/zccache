@@ -149,7 +149,7 @@ pub(super) fn client_env(overrides: WrapperOverrides) -> Vec<(String, String)> {
 }
 
 pub(super) fn wrapper_disabled() -> bool {
-    crate::core::config::owned_env_flag_enabled("ZCCACHE_DISABLE")
+    crate::core::config::zccache_disabled()
 }
 
 fn set_client_env(env: &mut Vec<(String, String)>, key: &str, value: String) {
