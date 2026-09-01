@@ -46,7 +46,7 @@ pub(super) fn classify_invocation(tool: &str, tool_args: &[String]) -> WrapperRo
 /// without restarting the daemon. Default: disabled — opt-in only until
 /// the heuristic has shipped to enough downstream consumers.
 fn probe_bypass_enabled() -> bool {
-    crate::core::config::owned_env_flag_enabled("ZCCACHE_PROBE_BYPASS")
+    crate::core::config::probe_bypass_enabled()
 }
 
 /// Returns `true` when `tool_args` describes a probe-shaped compile that

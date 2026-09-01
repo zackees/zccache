@@ -828,7 +828,7 @@ fn colocate_basename_appears_in_path() {
 
 #[test]
 fn no_spawn_value_grammar_matches_zccache_disable() {
-    use super::no_spawn_from_env_value;
+    use super::env_policy::no_spawn_from_env_value;
     use std::ffi::OsStr;
 
     assert!(no_spawn_from_env_value(Some(OsStr::new("1"))));
@@ -910,7 +910,7 @@ fn an_owned_flag_tolerates_surrounding_whitespace() {
 
 #[test]
 fn no_spawn_really_shares_the_owned_flag_grammar() {
-    use super::{no_spawn_from_env_value, owned_flag_enabled};
+    use super::{env_policy::no_spawn_from_env_value, owned_flag_enabled};
     use std::ffi::OsStr;
 
     // `no_spawn_value_grammar_matches_zccache_disable` asserts a *cross-variable*

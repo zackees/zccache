@@ -36,6 +36,7 @@ exclude = [
     "dylints/ban_dashmap_guard_across_blocking",
     "dylints/ban_discarded_write_result",
     "dylints/enforce_platform_boundary",
+    "dylints/ban_registered_env_read",
 ]
 
 [workspace.package]

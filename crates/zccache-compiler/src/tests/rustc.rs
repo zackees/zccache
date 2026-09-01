@@ -1,9 +1,9 @@
 //! Rustc invocation parsing: crate types, --emit, --out-dir, proc-macro/bin output naming.
 
-use super::super::parse_rustc::{parse_rustc_invocation_with_policy, CACHE_TEST_BINS_ENV};
+use super::super::parse_rustc::parse_rustc_invocation_with_policy;
 use super::super::{detect_family, parse_invocation, CompilerFamily, ParsedInvocation};
 use super::args;
-use zccache_core::NormalizedPath;
+use zccache_core::{config::CACHE_TEST_BINS_ENV, NormalizedPath};
 
 // ─── Rustc detection tests ────────────────────────────────────────────
 
@@ -596,7 +596,7 @@ fn rustc_comma_separated_crate_type_equals_form() {
 //
 // These drive `parse_rustc_invocation_with_policy` rather than
 // `parse_invocation` so the policy value is explicit in each case. The env
-// read is the one-line `owned_env_flag_enabled(CACHE_TEST_BINS_ENV)` call that
+// read is the typed `cache_test_binaries_enabled()` accessor that
 // feeds this seam; keeping it out of the assertions means no test has to
 // mutate process-global environment state that the rest of the suite races on.
 
