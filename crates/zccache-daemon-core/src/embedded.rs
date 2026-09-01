@@ -59,6 +59,11 @@ pub struct ZccacheService {
     /// host token, this is always present so forced shutdown can abort work
     /// submitted through any cloned handle.
     force_cancellation: CancellationToken,
+    /// Fired when any shutdown begins so admission waiters do not outlive the
+    /// service. This is intentionally separate from `force_cancellation`:
+    /// graceful shutdown rejects queued work without aborting work already in
+    /// the daemon engine.
+    admission_shutdown: CancellationToken,
     /// Optional admission gate implementing `max_parallel_compiles`.
     compile_permits: Option<Arc<Semaphore>>,
     /// RAII handle for the optional host-in-flight counter registration
@@ -240,6 +245,18 @@ pub struct ServiceLimits {
     /// double-register case is debuggable. `None` keeps today's
     /// behavior — `Auto` consults only zccache's internal counter.
     pub host_in_flight: Option<Arc<std::sync::atomic::AtomicUsize>>,
+}
+
+/// Opaque RAII reservation for one unit of embedded host work.
+///
+/// Obtain this from [`ZccacheService::acquire_external_work_permit`] before
+/// starting host-owned compiler-adjacent work. It shares the exact admission
+/// capacity used by [`ZccacheService::compile`], and releases that capacity
+/// when dropped. When `ServiceLimits::max_parallel_compiles` is `None`, the
+/// guard is still usable but carries no semaphore reservation.
+#[must_use = "keep this permit alive while the admitted host work runs"]
+pub struct ExternalWorkPermit {
+    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 /// Optional artifact-store limits for [`ZccacheService::start_with_disk_limits`].
@@ -927,6 +944,7 @@ impl ZccacheService {
         if self.shutdown.swap(true, Ordering::AcqRel) {
             return Err(EmbeddedError::ShutDown);
         }
+        self.admission_shutdown.cancel();
         if matches!(mode, ShutdownMode::Force) {
             self.force_cancellation.cancel();
         }

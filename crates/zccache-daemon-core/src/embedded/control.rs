@@ -3,12 +3,12 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    EmbeddedError, HostAdmissionClassifier, HostIdentity, MaintenanceOwnership, MaintenancePolicy,
-    Result, ZccacheConfig, ZccacheService, ZccacheStartOptions,
+    EmbeddedError, ExternalWorkPermit, HostAdmissionClassifier, HostIdentity, MaintenanceOwnership,
+    MaintenancePolicy, Result, ZccacheConfig, ZccacheService, ZccacheStartOptions,
 };
 use crate::daemon::server::EmbeddedDaemon;
 
@@ -114,6 +114,7 @@ impl ZccacheService {
             shutdown: Arc::new(AtomicBool::new(false)),
             host_cancellation: config.cancellation,
             force_cancellation: CancellationToken::new(),
+            admission_shutdown: CancellationToken::new(),
             compile_permits,
             _host_inflight_guard: host_inflight_guard,
             audit_sink,
@@ -122,7 +123,14 @@ impl ZccacheService {
         })
     }
 
-    pub(super) async fn acquire_compile_permit(&self) -> Result<Option<OwnedSemaphorePermit>> {
+    /// Reserve one unit from the shared embedded compiler-work budget for
+    /// host-owned work. The returned opaque guard releases its reservation on
+    /// drop, including when a host task is cancelled.
+    pub async fn acquire_external_work_permit(&self) -> Result<ExternalWorkPermit> {
+        self.acquire_compile_permit().await
+    }
+
+    pub(super) async fn acquire_compile_permit(&self) -> Result<ExternalWorkPermit> {
         if self.shutdown.load(Ordering::Acquire) {
             return Err(EmbeddedError::ShutDown);
         }
@@ -135,7 +143,7 @@ impl ZccacheService {
             return Err(EmbeddedError::Cancelled);
         }
         let Some(semaphore) = &self.compile_permits else {
-            return Ok(None);
+            return Ok(ExternalWorkPermit { _permit: None });
         };
         let permit = Arc::clone(semaphore).acquire_owned();
         let permit = match &self.host_cancellation {
@@ -144,6 +152,7 @@ impl ZccacheService {
                     biased;
                     () = self.force_cancellation.cancelled() => return Err(EmbeddedError::Cancelled),
                     () = token.cancelled() => return Err(EmbeddedError::Cancelled),
+                    () = self.admission_shutdown.cancelled() => return Err(EmbeddedError::ShutDown),
                     permit = permit => permit,
                 }
             }
@@ -151,12 +160,26 @@ impl ZccacheService {
                 tokio::select! {
                     biased;
                     () = self.force_cancellation.cancelled() => return Err(EmbeddedError::Cancelled),
+                    () = self.admission_shutdown.cancelled() => return Err(EmbeddedError::ShutDown),
                     permit = permit => permit,
                 }
             }
         }
         .map_err(|_| EmbeddedError::ShutDown)?;
-        Ok(Some(permit))
+        if self.force_cancellation.is_cancelled()
+            || self
+                .host_cancellation
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled)
+        {
+            return Err(EmbeddedError::Cancelled);
+        }
+        if self.shutdown.load(Ordering::Acquire) {
+            return Err(EmbeddedError::ShutDown);
+        }
+        Ok(ExternalWorkPermit {
+            _permit: Some(permit),
+        })
     }
 
     pub(super) async fn await_compile<T, F>(&self, compile: F) -> Result<T>

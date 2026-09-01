@@ -142,6 +142,21 @@ Any persistent write in embedded mode must be rooted under the host-provided
 cache root or audit output root unless the design explicitly documents an
 exception.
 
+### Shared host-work admission
+
+Hosts that start compiler-adjacent work themselves can call
+`ZccacheService::acquire_external_work_permit().await` and retain the returned
+opaque `ExternalWorkPermit` until that work exits. Each guard reserves one slot
+from the exact `ServiceLimits::max_parallel_compiles` semaphore used by
+embedded compiles, so host work and zccache compiles share one combined budget.
+Dropping the guard releases its slot, including when the host task is cancelled.
+
+The permit is admission only: it does not execute a host command, choose a
+tool-specific policy, or add IPC. `None` remains unlimited and returns a
+usable guard without a semaphore reservation. Waiters return cancellation or
+shutdown errors when the host token fires or the service shuts down, rather
+than being left behind a retiring service.
+
 ### Host compiler-admission policy
 
 An embedded host may call
@@ -438,6 +453,8 @@ without a real compiler invocation:
   cloned handles before stopping the engine, and does not wait for audit drain.
 - `ServiceLimits::max_parallel_compiles` bounds admission with an async
   semaphore; `None` is unlimited and zero is rejected at startup.
+- `acquire_external_work_permit()` lets host-owned compiler-adjacent work share
+  that same admission budget through an opaque drop-released guard.
 - Hosts can supply an `EmbeddedEventSink` callback without enabling file audit
   output; callbacks receive redacted structured events and cannot panic the
   compile path.
