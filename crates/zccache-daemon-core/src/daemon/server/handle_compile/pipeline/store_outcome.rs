@@ -45,14 +45,13 @@ pub(super) struct StoreOutcomeRequest<'a> {
     pub(super) exit_code: i32,
     pub(super) depfile_strategy: DepfileStrategy,
     pub(super) compiler_dependency_scan: Option<crate::depgraph::ScanResult>,
-    pub(super) pre_hash_task: Option<tokio::task::JoinHandle<HashMap<NormalizedPath, ContentHash>>>,
     /// Issue #401: pre-compile hashes already produced by `hash_and_verify`
     /// on the cc/cpp miss path. `None` means the pre-compile hash phase did
     /// not run (e.g. cold context, source-hash fallback) — fall back to
     /// hashing everything as before. When `Some`, the same `(path, hash)`
     /// pairs are seeded into the post-compile `hash_map` so the parallel
-    /// rayon hash skips files already covered. The rustc path uses
-    /// `pre_hash_task` (a `JoinHandle`) instead and is unaffected.
+    /// rayon hash skips files already covered. Rustc pre-hashing is joined by
+    /// the exec phase before it releases compiler admission.
     pub(super) pre_hashed: Option<HashMap<NormalizedPath, ContentHash>>,
     pub(super) compiler_priority_decision: crate::daemon::process::CompilePriorityDecision,
     pub(super) compile_start: std::time::Instant,
@@ -163,7 +162,6 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         exit_code,
         depfile_strategy,
         compiler_dependency_scan,
-        pre_hash_task,
         pre_hashed,
         compiler_priority_decision,
         compile_start,
@@ -414,10 +412,9 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
     // ── Phase: hash all files (parallel) ─────────────────────────
     // Hash source + resolved headers + force-includes + rustc externs
     // using rayon parallel iteration. Issue #532: for rustc, the
-    // source + extern paths were already kicked off pre-compile via
-    // `pre_hash_task`; join here and then only hash the late-arriving
-    // includes (scan_result.resolved + force_includes), which are
-    // typically empty for workspace link.
+    // source + extern paths were already hashed by the exec phase; only hash
+    // the late-arriving includes (scan_result.resolved + force_includes),
+    // which are typically empty for a workspace link.
     //
     // Issue #401: for cc/cpp, the miss path already hashed source +
     // the depgraph's stored include set in `hash_and_verify`. Seed the
@@ -425,10 +422,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
     // below skips files already present, instead of re-hashing every
     // header from scratch.
     let t_hash = std::time::Instant::now();
-    let mut hash_map: HashMap<NormalizedPath, ContentHash> = match pre_hash_task {
-        Some(task) => task.await.unwrap_or_default(),
-        None => pre_hashed.unwrap_or_default(),
-    };
+    let mut hash_map: HashMap<NormalizedPath, ContentHash> = pre_hashed.unwrap_or_default();
     let pre_hashed_count = hash_map.len();
     // #955: run the parallel hash under block_in_place so a large extern
     // set (the whole workspace, for a consolidated crate) doesn't park the
@@ -437,8 +431,8 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
     crate::daemon::process::run_cpu_blocking(|| {
         use rayon::prelude::*;
         // Build the post-compile path list. When the pre-hash phase
-        // populated `hash_map` (either rustc's `pre_hash_task` or the
-        // cc/cpp `pre_hashed` seed from `hash_and_verify`), skip paths
+        // populated `hash_map` (either rustc's exec-phase map or the cc/cpp
+        // `pre_hashed` seed from `hash_and_verify`), skip paths
         // already covered. Otherwise hash everything as before.
         let post_paths: Vec<&NormalizedPath> = if pre_hashed_count > 0 {
             std::iter::once(source_path)

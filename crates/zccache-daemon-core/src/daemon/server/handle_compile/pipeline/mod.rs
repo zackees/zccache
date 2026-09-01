@@ -440,10 +440,9 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
     // Issue #401 plumbing: the `hash_map` extracted here is fed back
     // into the cc/cpp miss path's `StoreOutcomeRequest.pre_hashed` so
     // the post-compile parallel hash skips files we already hashed
-    // here. The rustc miss path uses `pre_hash_task` (a background
-    // join handle) instead and ignores `pre_hashed`. The binding is
-    // marked `mut` so the rustc compat-check branch below can take it
-    // by `mem::take` without forcing a clone.
+    // here. The rustc miss path receives its ready pre-hash map from
+    // `run_compile_exec`. The binding is marked `mut` so the rustc
+    // compat-check branch below can take it by `mem::take` without a clone.
     let HashVerifyOutcome {
         mut hash_map,
         hash_source_ns,
@@ -836,7 +835,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         stderr,
         depfile_strategy,
         dependency_scan,
-        pre_hash_task,
+        pre_hashed: exec_pre_hashed,
         compiler_priority_decision,
         pre_exec_ns,
         break_outputs_ns,
@@ -949,15 +948,16 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             exit_code,
             depfile_strategy,
             compiler_dependency_scan: dependency_scan,
-            pre_hash_task,
             // Issue #401: hand the cc/cpp miss path the hashes already
             // computed in `hash_and_verify` so `store_outcome.rs` skips
             // re-hashing the same headers in its parallel `t_hash` phase.
-            // For rustc the same hashes arrive via `pre_hash_task` and
-            // `pre_hashed` is left `None`. If we got here via cold context
-            // or fell back to a direct compile, `hash_map` is empty and
-            // the store path will hash everything as before.
-            pre_hashed: if is_rustc || hash_map.is_empty() {
+            // For rustc the same hashes arrive from `run_compile_exec` after
+            // shared admission has covered the entire background task. If we
+            // got here via cold context or fell back to a direct compile,
+            // `hash_map` is empty and the store path hashes everything.
+            pre_hashed: if is_rustc {
+                exec_pre_hashed
+            } else if hash_map.is_empty() {
                 None
             } else {
                 Some(hash_map)

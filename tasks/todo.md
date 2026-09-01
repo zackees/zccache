@@ -1,3 +1,11 @@
+# #1555 exclusive compiler admission includes pre-hashing
+
+- [x] Trace soldr CI's signal-terminated exclusive `soldr_cli --test` compile to zccache's post-admission Rayon pre-hash overlap.
+- [x] RED: deterministically prove exclusive pre-hash work completes before the compiler phase while shared work retains overlap.
+- [x] GREEN: await pre-hashing for exclusive units and pass its ready hashes into the existing store outcome without adding a global job cap.
+- [ ] Run focused tests, formatter, clippy/check, and the sanctioned performance matrix.
+- [ ] Review, push, merge, publish a patch release, then update Soldr's exact pin and release assets.
+
 # soldr#3031 preserve compiler termination signals
 
 - [x] Read the embedded-service, journal, protocol, and portability contracts.
