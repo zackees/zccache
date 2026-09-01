@@ -1,8 +1,12 @@
 name: Python Tests
 
-# Runs the pytest suite under `ci/tests/` -- ~430 tests covering the CI helper
-# modules in `ci/` plus the repo-hygiene guards (doc links, README coverage,
-# crate map, documented commands, toolchain consistency).
+# Runs two Python test shapes:
+#   * the fast `ci/tests/` repo-hygiene suite, which needs no native build;
+#   * all source Python suites with the three real PyO3 modules staged in place.
+#
+# The native job is Linux-only by design.  Release wheel smoke tests cover the
+# other native platform families; a matrix here would rebuild the same PyO3
+# contracts without adding a distinct source-level test surface.
 #
 # This is a dedicated workflow rather than a job in `ci.yml` because `ci.yml`
 # sets `paths-ignore: "**/*.md"`. Several of these tests exist specifically to
@@ -78,3 +82,109 @@ jobs:
             --with pillow \
             --with pyyaml \
             python -m pytest ci/tests -q -rs --durations=10
+
+  native-pytest:
+    name: native Python suites (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      # The PyO3 modules use abi3-py310, and 3.13 is the canonical workflow
+      # interpreter. setup-python also supplies the interpreter PYO3 probes.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: ".github/workflows/python-tests.yml"
+
+      - uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
+        with:
+          zccache-seed-strict: true
+          toolchain: 1.95.0
+          cache: true
+          linker: fast
+          prebuild-deps: soldr-cook
+          solo-toolchain-cache: true
+
+      - name: Build native Python test artifacts
+        shell: bash
+        run: |
+          export PYO3_PYTHON="$(uv python find 3.13)"
+          # Keep each package in a separate Cargo invocation. Combining the
+          # three cdylibs makes Windows link the same PyO3 symbols twice.
+          soldr cargo build --release -p zccache --features zccache-bin --bin zccache
+          soldr cargo build --release -p zccache-cli --features python --lib
+          # #1497 split these featureless PyO3 hosts from their rlib engines;
+          # `python` is intentionally only a feature of zccache-cli.
+          soldr cargo build --release -p zccache-watcher-py --lib
+          soldr cargo build --release -p zccache-fingerprint-py --lib
+
+      - name: Stage native Python extensions
+        shell: bash
+        run: |
+          EXT_SUFFIX="$(uv run --no-project --python 3.13 python -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')"
+          test -n "$EXT_SUFFIX"
+          cp target/release/libzccache_cli.so "python/zccache/_native$EXT_SUFFIX"
+          cp target/release/libzccache_watcher.so "python/zccache/watcher/_native$EXT_SUFFIX"
+          cp target/release/libzccache_fingerprint.so "python/zccache/fingerprint/_native$EXT_SUFFIX"
+          cp target/release/libzccache_watcher.so "crates/zccache-watcher/python/zccache/watcher/_native$EXT_SUFFIX"
+          cp target/release/libzccache_fingerprint.so "crates/zccache-fingerprint/python/zccache/fingerprint/_native$EXT_SUFFIX"
+          # NativeClient must see a daemon started from the real multi-call
+          # binary, not attempt to deploy the Python interpreter as a daemon.
+          echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
+
+      - name: Start isolated native Python daemon
+        shell: bash
+        env:
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/zccache-python-tests/cache
+          ZCCACHE_DAEMON_NAMESPACE: native-python-tests
+        run: |
+          target/release/zccache start
+          for attempt in $(seq 1 30); do
+            if target/release/zccache status; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "zccache daemon did not become ready" >&2
+          exit 1
+
+      - name: Run native Python suites
+        env:
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/zccache-python-tests/cache
+          ZCCACHE_DAEMON_NAMESPACE: native-python-tests
+        run: |
+          PYTHONPATH=python uv run --no-project --python 3.13 \
+            --with pytest \
+            --with clang-tool-chain-bins \
+            python -m pytest \
+            python/tests \
+            -q -rs --durations=10
+          # The watcher and fingerprint roots both expose a top-level `tests`
+          # package. Keep their collection processes separate so neither can
+          # shadow the other's module names or use an installed distribution.
+          PYTHONPATH=crates/zccache-watcher/python uv run --no-project --python 3.13 \
+            --with pytest \
+            python -m pytest \
+            crates/zccache-watcher/python/tests \
+            -q -rs --durations=10
+          PYTHONPATH=crates/zccache-fingerprint/python uv run --no-project --python 3.13 \
+            --with pytest \
+            python -m pytest \
+            crates/zccache-fingerprint/python/tests \
+            -q -rs --durations=10
+
+      - name: Stop isolated native Python daemon
+        if: always()
+        shell: bash
+        env:
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/zccache-python-tests/cache
+          ZCCACHE_DAEMON_NAMESPACE: native-python-tests
+        run: |
+          target/release/zccache stop || true
+          rm -rf "$ZCCACHE_CACHE_DIR"
