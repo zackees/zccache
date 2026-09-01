@@ -77,11 +77,13 @@ fn packed_dwarf_declaration_is_target_and_link_kind_aware() {
 mod dylint_sidecar_tests {
     use super::*;
 
+    /// soldr#2349: this used to bail out with `if is_windows() { return; }`
+    /// because `dylint_library_sidecar_output_path` unconditionally
+    /// returned `None` on a Windows host, making `outputs.len()` 1 instead
+    /// of 2. The gate is gone, so this now runs — and must pass — on every
+    /// host in the CI matrix, asserting the host-appropriate sidecar name.
     #[test]
     fn perf_dylint_cdylib_models_toolchain_sidecar_as_complete_output_set() {
-        if crate::platform::host::is_windows() {
-            return;
-        }
         let cwd = Path::new("/repo");
         let out_dir = "/repo/target/dylint/libraries/nightly/release/deps";
         let args = vec![
@@ -93,12 +95,12 @@ mod dylint_sidecar_tests {
             "src/lib.rs".to_string(),
         ];
         let parsed = crate::depgraph::parse_rustc_args(&args, cwd);
-        let extension = if crate::platform::host::is_macos() {
-            "dylib"
-        } else {
-            "so"
-        };
-        let primary = Path::new(out_dir).join(format!("liblint.{extension}"));
+        // The synthetic primary's own name is not load-bearing here — the
+        // sidecar function only walks its *parent* directory to find
+        // `sidecar_dir`, then names the sidecar from `crate_name` — so a
+        // fixed non-Windows-style stand-in name is fine even when this test
+        // happens to run on a real Windows host.
+        let primary = Path::new(out_dir).join("liblint.so");
         let env = vec![
             ("CARGO_PKG_NAME".to_string(), "lint".to_string()),
             (
@@ -110,12 +112,343 @@ mod dylint_sidecar_tests {
         let outputs = rustc_expected_output_paths(&parsed, &primary, cwd, Some(&env));
         assert_eq!(outputs.len(), 2);
         assert_eq!(outputs[0], NormalizedPath::new(&primary));
-        assert!(outputs[1].ends_with(format!(
-            "release/liblint@nightly-2026-01-18-x86_64-unknown-linux-gnu.{extension}"
-        )));
+        let expected_sidecar_suffix = if crate::platform::host::is_windows() {
+            "release/lint@nightly-2026-01-18-x86_64-unknown-linux-gnu.dll".to_string()
+        } else if crate::platform::host::is_macos() {
+            "release/liblint@nightly-2026-01-18-x86_64-unknown-linux-gnu.dylib".to_string()
+        } else {
+            "release/liblint@nightly-2026-01-18-x86_64-unknown-linux-gnu.so".to_string()
+        };
+        assert!(
+            outputs[1].ends_with(&expected_sidecar_suffix),
+            "expected sidecar ending in {expected_sidecar_suffix}, got {:?}",
+            outputs[1]
+        );
 
         let without_identity = rustc_expected_output_paths(&parsed, &primary, cwd, None);
         assert_eq!(without_identity, vec![NormalizedPath::new(primary)]);
+    }
+
+    /// Pure-function coverage for the sidecar filename split, exercised
+    /// directly with an explicit `HostFamily` (soldr#2349) so the Windows
+    /// naming — no `lib` prefix, `.dll` extension — is proven from Linux
+    /// CI rather than only on a real Windows runner. Production callers
+    /// resolve the real host via `HostFamily::current()`.
+    #[test]
+    fn dylint_sidecar_name_matches_host_convention() {
+        let cwd = Path::new("/repo");
+        let out_dir = "/repo/target/dylint/libraries/nightly/release/deps";
+        let args = vec![
+            "--crate-name=lint".to_string(),
+            "--crate-type=cdylib".to_string(),
+            "--emit=link".to_string(),
+            format!("--out-dir={out_dir}"),
+            "-Clinker=/tools/dylint-link.exe".to_string(),
+            "src/lib.rs".to_string(),
+        ];
+        let parsed = crate::depgraph::parse_rustc_args(&args, cwd);
+        let primary = Path::new(out_dir).join("lint.dll");
+        let env = vec![
+            ("CARGO_PKG_NAME".to_string(), "lint".to_string()),
+            (
+                "RUSTUP_TOOLCHAIN".to_string(),
+                "nightly-2026-01-18-x86_64-pc-windows-msvc".to_string(),
+            ),
+        ];
+
+        let windows_sidecar = dylint_library_sidecar_output_path(
+            &parsed,
+            &primary,
+            cwd,
+            Some(&env),
+            HostFamily::Windows,
+        )
+        .expect("windows sidecar should resolve when identity is complete");
+        assert!(
+            windows_sidecar.ends_with("release/lint@nightly-2026-01-18-x86_64-pc-windows-msvc.dll")
+        );
+        assert!(
+            !windows_sidecar.to_string_lossy().contains("liblint"),
+            "Windows sidecar must not carry the unix `lib` prefix: {windows_sidecar:?}"
+        );
+
+        let macos_sidecar = dylint_library_sidecar_output_path(
+            &parsed,
+            &primary,
+            cwd,
+            Some(&env),
+            HostFamily::MacOs,
+        )
+        .expect("macos sidecar should resolve when identity is complete");
+        assert!(macos_sidecar
+            .ends_with("release/liblint@nightly-2026-01-18-x86_64-pc-windows-msvc.dylib"));
+
+        let other_sidecar = dylint_library_sidecar_output_path(
+            &parsed,
+            &primary,
+            cwd,
+            Some(&env),
+            HostFamily::Other,
+        )
+        .expect("linux sidecar should resolve when identity is complete");
+        assert!(
+            other_sidecar.ends_with("release/liblint@nightly-2026-01-18-x86_64-pc-windows-msvc.so")
+        );
+    }
+
+    /// A missing toolchain-qualified sidecar identity must still fail
+    /// closed to non-cacheable on Windows, exactly as it already does on
+    /// Linux/macOS (soldr#2349 must not weaken the existing fail-closed
+    /// contract while extending it).
+    #[test]
+    fn dylint_cdylib_windows_missing_identity_is_incomplete() {
+        let cwd = Path::new("/repo");
+        let out_dir = "/repo/target/dylint/libraries/nightly/release/deps";
+        let args = vec![
+            "--crate-name=lint".to_string(),
+            "--crate-type=cdylib".to_string(),
+            "--emit=link".to_string(),
+            format!("--out-dir={out_dir}"),
+            "-Clinker=/tools/dylint-link.exe".to_string(),
+            "src/lib.rs".to_string(),
+        ];
+        let parsed = crate::depgraph::parse_rustc_args(&args, cwd);
+        let primary = Path::new(out_dir).join("lint.dll");
+
+        // No client_env at all -- CARGO_PKG_NAME/RUSTUP_TOOLCHAIN unknown.
+        assert!(dylint_library_sidecar_output_path(
+            &parsed,
+            &primary,
+            cwd,
+            None,
+            HostFamily::Windows
+        )
+        .is_none());
+        assert!(!dylint_cdylib_has_complete_output_identity(
+            &parsed, &primary, cwd, None
+        ));
+
+        // CARGO_PKG_NAME present but RUSTUP_TOOLCHAIN missing.
+        let partial_env = vec![("CARGO_PKG_NAME".to_string(), "lint".to_string())];
+        assert!(dylint_library_sidecar_output_path(
+            &parsed,
+            &primary,
+            cwd,
+            Some(&partial_env),
+            HostFamily::Windows
+        )
+        .is_none());
+        assert!(!dylint_cdylib_has_complete_output_identity(
+            &parsed,
+            &primary,
+            cwd,
+            Some(&partial_env)
+        ));
+    }
+
+    /// A Windows cdylib that is not a Dylint lint library (no
+    /// `dylint-link` linker) must still be refused by the daemon-side
+    /// mirror gate, matching the compiler-crate side.
+    #[test]
+    fn is_dylint_cdylib_args_refuses_non_dylint_windows_cdylib() {
+        let cwd = Path::new("/repo");
+        let out_dir = "/repo/target/dylint/libraries/nightly/release/deps";
+        let args = vec![
+            "--crate-name=extmod".to_string(),
+            "--crate-type=cdylib".to_string(),
+            "--emit=link".to_string(),
+            format!("--out-dir={out_dir}"),
+            "-Clinker=/tools/link.exe".to_string(),
+            "src/lib.rs".to_string(),
+        ];
+        let parsed = crate::depgraph::parse_rustc_args(&args, cwd);
+        assert!(!is_dylint_cdylib_args(&parsed));
+    }
+
+    /// A Windows Dylint cdylib invocation is recognized by the daemon-side
+    /// mirror gate — the counterpart to
+    /// `zccache-compiler`'s `rustc_dylint_library_cdylib_is_cacheable`.
+    /// `dylint-link.exe`'s `.exe` suffix must not break the basename match.
+    #[test]
+    fn is_dylint_cdylib_args_accepts_windows_dylint_cdylib() {
+        let cwd = Path::new("/repo");
+        let out_dir = "/repo/target/dylint/libraries/nightly/release/deps";
+        let args = vec![
+            "--crate-name=lint".to_string(),
+            "--crate-type=cdylib".to_string(),
+            "--emit=link".to_string(),
+            format!("--out-dir={out_dir}"),
+            "-Clinker=/tools/dylint-link.exe".to_string(),
+            "src/lib.rs".to_string(),
+        ];
+        let parsed = crate::depgraph::parse_rustc_args(&args, cwd);
+        assert!(is_dylint_cdylib_args(&parsed));
+    }
+}
+
+/// soldr#2349: the MSVC import-library pair (`<dll>.lib` + `.exp`) beside a
+/// linked Windows DLL. Uses an explicit `--target` throughout (rather than
+/// a host parameter) because `msvc_target_writes_pdb` already resolves the
+/// MSVC-ness from the target triple when one is given — the same testable
+/// seam the existing `pdb_sidecar_tests` module below relies on.
+#[cfg(test)]
+mod msvc_implib_sidecar_tests {
+    use super::*;
+
+    fn parsed_cdylib_for_target(cwd: &Path, target: &str) -> crate::depgraph::RustcParsedArgs {
+        let args = vec![
+            "--crate-name=lint".to_string(),
+            "--crate-type=cdylib".to_string(),
+            "--emit=link".to_string(),
+            "--out-dir=/repo/target/dylint/libraries/nightly/release/deps".to_string(),
+            format!("--target={target}"),
+            "-Clinker=/tools/dylint-link".to_string(),
+            "src/lib.rs".to_string(),
+        ];
+        crate::depgraph::parse_rustc_args(&args, cwd)
+    }
+
+    /// The naming function itself still resolves the pair correctly for an
+    /// MSVC-target DLL -- this is what `collect_rustc_output_files` (the
+    /// opportunistic, tolerant path) uses to look for the files on disk.
+    #[test]
+    fn msvc_target_resolves_implib_and_exp_names_beside_dll() {
+        let cwd = Path::new("/repo");
+        let parsed = parsed_cdylib_for_target(cwd, "x86_64-pc-windows-msvc");
+        let primary = Path::new("/repo/target/dylint/libraries/nightly/release/deps/lint.dll");
+
+        let [implib, exp] = msvc_dll_implib_sidecar_output_paths(&parsed, primary)
+            .expect("MSVC-target DLL must resolve an import-lib pair name");
+        assert_eq!(
+            implib,
+            NormalizedPath::new("/repo/target/dylint/libraries/nightly/release/deps/lint.dll.lib")
+        );
+        assert_eq!(
+            exp,
+            NormalizedPath::new("/repo/target/dylint/libraries/nightly/release/deps/lint.dll.exp")
+        );
+    }
+
+    /// soldr#2349 (post-review revision): the import-lib pair must NOT be
+    /// part of the staged plan's *required* output declaration. A staged
+    /// output that is declared but never materializes hard-fails the whole
+    /// compile via `StagedCompilePlan::materialize` (soldr#2347's failure
+    /// class), and the `<dll>.lib` naming was never confirmed against a
+    /// live Windows build. Requiring it would turn an unverified filename
+    /// guess into a build-breaking risk on the exact platform this change
+    /// targets, for a file nothing reads back. See the doc comment on
+    /// `msvc_dll_implib_sidecar_output_paths`.
+    #[test]
+    fn staged_declaration_never_requires_the_implib_pair() {
+        let cwd = Path::new("/repo");
+        let parsed = parsed_cdylib_for_target(cwd, "x86_64-pc-windows-msvc");
+        let primary = Path::new("/repo/target/dylint/libraries/nightly/release/deps/lint.dll");
+
+        let declared = rustc_expected_output_paths(&parsed, primary, cwd, None);
+        assert!(
+            !declared
+                .iter()
+                .any(|p| p.extension() == Some("lib".as_ref())),
+            "staged declaration must not require the import lib: {declared:?}"
+        );
+        assert!(
+            !declared
+                .iter()
+                .any(|p| p.extension() == Some("exp".as_ref())),
+            "staged declaration must not require the .exp file: {declared:?}"
+        );
+    }
+
+    /// soldr#2349: `msvc_dll_implib_sidecar_output_paths` (and therefore the
+    /// opportunistic `collect_rustc_output_files` path that calls it) is
+    /// deliberately scoped OFF proc-macro, even though a Windows proc-macro
+    /// is also a `/DLL`-mode MSVC link and would otherwise match the
+    /// extension/target gate. Proc-macro Windows caching is a shipped,
+    /// working lane; there's no reason to touch its collected output set
+    /// on an unverified filename guess for a file nothing reads back. (The
+    /// staged declaration is unconditionally excluded for every crate type
+    /// now — see `staged_declaration_never_requires_the_implib_pair` — so
+    /// the crate-type scope matters only for this tolerant collection
+    /// path.) See the doc comment on `msvc_dll_implib_sidecar_output_paths`.
+    #[test]
+    fn proc_macro_never_resolves_implib_even_on_msvc_target() {
+        let cwd = Path::new("/repo");
+        let args = vec![
+            "--crate-name=serde_derive".to_string(),
+            "--crate-type=proc-macro".to_string(),
+            "--emit=link".to_string(),
+            "--out-dir=/repo/target/deps".to_string(),
+            "--target=x86_64-pc-windows-msvc".to_string(),
+            "src/lib.rs".to_string(),
+        ];
+        let parsed = crate::depgraph::parse_rustc_args(&args, cwd);
+        let primary = Path::new("/repo/target/deps/serde_derive.dll");
+        assert!(msvc_dll_implib_sidecar_output_paths(&parsed, primary).is_none());
+    }
+
+    #[test]
+    fn windows_gnu_target_never_declares_implib() {
+        // mingw's `--out-implib` naming differs entirely (`.dll.a`, via
+        // `-Wl,--out-implib=`) and is not modeled by this MSVC-specific
+        // helper — see the risk list in the task report. Declaring the
+        // MSVC name here would hard-fail staged materialization exactly
+        // like the pdb case (soldr#2347).
+        let cwd = Path::new("/repo");
+        let parsed = parsed_cdylib_for_target(cwd, "x86_64-pc-windows-gnu");
+        let primary = Path::new("/repo/target/dylint/libraries/nightly/release/deps/lint.dll");
+        assert!(msvc_dll_implib_sidecar_output_paths(&parsed, primary).is_none());
+    }
+
+    #[test]
+    fn non_dll_primary_never_declares_implib() {
+        let cwd = Path::new("/repo");
+        let parsed = parsed_cdylib_for_target(cwd, "x86_64-pc-windows-msvc");
+        let exe_primary = Path::new("/repo/target/dylint/libraries/nightly/release/deps/app.exe");
+        assert!(msvc_dll_implib_sidecar_output_paths(&parsed, exe_primary).is_none());
+    }
+
+    #[test]
+    fn legacy_collection_includes_existing_implib_pair() {
+        let temp = tempfile::tempdir().unwrap();
+        let primary = temp.path().join("lint.dll");
+        let implib = temp.path().join("lint.dll.lib");
+        let exp = temp.path().join("lint.dll.exp");
+        std::fs::write(&primary, b"image").unwrap();
+        std::fs::write(&implib, b"implib").unwrap();
+        std::fs::write(&exp, b"exp").unwrap();
+        let parsed = parsed_cdylib_for_target(temp.path(), "x86_64-pc-windows-msvc");
+
+        let collected = collect_rustc_output_files(&parsed, &primary, temp.path());
+
+        assert!(collected.iter().any(|output| output.path == implib));
+        assert!(collected.iter().any(|output| output.path == exp));
+    }
+
+    /// The counterpart to `legacy_collection_includes_existing_implib_pair`:
+    /// when the import lib / `.exp` are absent (a wrong filename guess, a
+    /// windows-gnu host, or a DLL with debug info that genuinely has no
+    /// import lib), collection is a silent no-op rather than a failure --
+    /// this is the entire point of keeping the feature opportunistic
+    /// instead of a staged-required output. Only the primary DLL is
+    /// collected.
+    #[test]
+    fn legacy_collection_is_a_noop_when_implib_pair_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let primary = temp.path().join("lint.dll");
+        std::fs::write(&primary, b"image").unwrap();
+        let parsed = parsed_cdylib_for_target(temp.path(), "x86_64-pc-windows-msvc");
+
+        let collected = collect_rustc_output_files(&parsed, &primary, temp.path());
+
+        // `RustcOutputFile` has no `Debug`, so name the paths explicitly rather
+        // than formatting the collection.
+        let names: Vec<_> = collected.iter().map(|file| file.path.clone()).collect();
+        assert_eq!(
+            collected.len(),
+            1,
+            "no import-lib/.exp on disk must not synthesize entries: {names:?}"
+        );
+        assert_eq!(collected[0].path, primary);
     }
 }
 
