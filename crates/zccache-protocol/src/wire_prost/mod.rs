@@ -1,9 +1,6 @@
 //! Prost wire helpers and v16 full-family dispatch.
 //!
-//! Unset/`auto` clients prefer prost for the complete request family. During
-//! the compatibility window they retry once over the legacy v15 bincode wire
-//! only after a structured protocol-version rejection proves the request was
-//! not dispatched. Explicit wire selections remain strict.
+//! Unset/`auto` clients select prost for the complete request family.
 //!
 //! A third wire lane carries zccache prost payloads inside running-process
 //! broker `Frame` envelopes (`[u8 envelope_version=1][u32 LE body_len][Frame]`,
@@ -11,7 +8,7 @@
 //! selected only by an explicit `ZCCACHE_DAEMON_WIRE=frame`; `auto` never
 //! prefers it.
 
-use super::{BINCODE_PROTOCOL_VERSION, PROST_PROTOCOL_VERSION};
+use super::PROST_PROTOCOL_VERSION;
 
 /// Generated protobuf schema for the zccache v16 prost wire.
 pub mod zccache_v1 {
@@ -41,14 +38,12 @@ pub use frame::{decode_prost_message, encode_prost_message};
 pub use request::{request_from_prost, request_to_prost};
 pub use response::{response_from_prost, response_to_prost};
 
-/// Environment variable reserved for the daemon wire migration fallback.
+/// Environment variable selecting the daemon's supported wire envelope.
 pub const WIRE_FORMAT_ENV: &str = "ZCCACHE_DAEMON_WIRE";
 
 /// Supported daemon wire families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WireFormat {
-    /// Current v15 bincode body.
-    BincodeV15,
     /// Active v16 prost body.
     ProstV16,
     /// zccache prost payloads inside running-process broker `Frame`
@@ -68,7 +63,6 @@ impl WireFormat {
     #[must_use]
     pub const fn protocol_version(self) -> Option<u32> {
         match self {
-            Self::BincodeV15 => Some(BINCODE_PROTOCOL_VERSION),
             Self::ProstV16 => Some(PROST_PROTOCOL_VERSION),
             Self::FrameV1 => None,
         }
@@ -80,14 +74,10 @@ pub const DEFAULT_CLIENT_WIRE_FORMAT: WireFormat = WireFormat::ProstV16;
 
 /// Client-side wire selection policy from `ZCCACHE_DAEMON_WIRE`.
 ///
-/// `Auto` preserves the user's unset/auto intent so control-request callers
-/// can prefer prost while still retrying v15 bincode against older daemons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientWireSelection {
-    /// Prefer prost and allow a bincode retry on a clear protocol mismatch.
+    /// Select prost using the default/unset intent.
     Auto,
-    /// Force the v15 bincode compatibility path.
-    BincodeV15,
     /// Force the v16 prost path.
     ProstV16,
     /// Force the running-process `Frame` envelope path. Forced-only:
@@ -101,15 +91,8 @@ impl ClientWireSelection {
     pub const fn preferred_format(self) -> WireFormat {
         match self {
             Self::Auto | Self::ProstV16 => WireFormat::ProstV16,
-            Self::BincodeV15 => WireFormat::BincodeV15,
             Self::FrameV1 => WireFormat::FrameV1,
         }
-    }
-
-    /// Whether a failed prost control request may be retried as bincode.
-    #[must_use]
-    pub const fn allows_bincode_fallback(self) -> bool {
-        matches!(self, Self::Auto)
     }
 }
 
@@ -117,7 +100,6 @@ impl ClientWireSelection {
 #[must_use]
 pub const fn wire_format_for_protocol_version(version: u32) -> Option<WireFormat> {
     match version {
-        BINCODE_PROTOCOL_VERSION => Some(WireFormat::BincodeV15),
         PROST_PROTOCOL_VERSION => Some(WireFormat::ProstV16),
         _ => None,
     }
@@ -125,8 +107,7 @@ pub const fn wire_format_for_protocol_version(version: u32) -> Option<WireFormat
 
 /// Parse a `ZCCACHE_DAEMON_WIRE` value.
 ///
-/// `None` and `auto` model the migration target: new clients prefer v16 prost,
-/// while `bincode` remains the explicit v15 fallback spelling. Use
+/// `None` and `auto` select v16 prost. Use
 /// [`client_wire_selection_from_env_value`] when callers need to distinguish
 /// auto from forced prost.
 ///
@@ -147,7 +128,7 @@ pub fn wire_format_from_env() -> Result<WireFormat, String> {
 }
 
 /// Parse `ZCCACHE_DAEMON_WIRE` while preserving unset/auto as a distinct
-/// selection for compatibility fallbacks.
+/// selection intent.
 ///
 /// # Errors
 ///
@@ -161,11 +142,10 @@ pub fn client_wire_selection_from_env_value(
 
     match value.trim().to_ascii_lowercase().as_str() {
         "" | "auto" => Ok(ClientWireSelection::Auto),
-        "bincode" | "bincode-v15" | "v15" => Ok(ClientWireSelection::BincodeV15),
         "prost" | "prost-v16" | "v16" => Ok(ClientWireSelection::ProstV16),
         "frame" | "frame-v1" => Ok(ClientWireSelection::FrameV1),
         other => Err(format!(
-            "invalid {WIRE_FORMAT_ENV}={other:?}; expected auto, bincode, prost, or frame"
+            "unsupported {WIRE_FORMAT_ENV}={other:?}; expected auto, prost, or frame"
         )),
     }
 }

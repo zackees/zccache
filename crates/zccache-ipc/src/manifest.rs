@@ -23,7 +23,7 @@
 //! Publishing is best-effort and never blocks daemon startup: a registry write
 //! failure is logged and ignored, exactly like the `BackendHandle` identity
 //! write. `RUNNING_PROCESS_DISABLE=1` skips publishing entirely so the direct
-//! bincode path stays byte-for-byte the pre-adoption behavior.
+//! prost path stays byte-for-byte the pre-adoption behavior.
 //!
 //! ## v2 dual-write (slice 23 of zccache#782)
 //!
@@ -116,7 +116,7 @@ pub fn publish_manifest_in(
 /// the new one. A registry write failure is logged and ignored, exactly like
 /// the [`publish_manifest`] / `write_backend_identity` siblings.
 /// `RUNNING_PROCESS_DISABLE=1` skips installation entirely so the direct
-/// bincode path stays byte-for-byte the pre-adoption behavior.
+/// prost path stays byte-for-byte the pre-adoption behavior.
 ///
 /// Phase 0 of #720 is the version-policy refinement that turns the current
 /// exact-version pin (`min_version = allow_version = CARGO_PKG_VERSION`) into

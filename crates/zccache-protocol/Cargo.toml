@@ -14,7 +14,6 @@ description = "Internal daemon protocol types and wire codecs for zccache"
 zccache-core = { workspace = true }
 zccache-depgraph = { workspace = true }
 
-bincode = { workspace = true }
 bytes = { workspace = true }
 prost = { workspace = true }
 running-process = { workspace = true }

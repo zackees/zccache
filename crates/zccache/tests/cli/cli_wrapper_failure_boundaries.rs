@@ -63,7 +63,6 @@ fn run_wrapper(
         .env("ZCCACHE_CACHE_DIR", cache_dir)
         .env("ZCCACHE_DAEMON_NAMESPACE", TEST_DAEMON_NAMESPACE)
         .env("ZCCACHE_NO_SPAWN", "1")
-        .env("ZCCACHE_DAEMON_WIRE", "bincode")
         // These tests assert that the refusal contract holds. They must not
         // inherit the sanctioned bypasses they exist to contrast against:
         // `ZCCACHE_DISABLE` and `ZCCACHE_PROBE_BYPASS` both passthrough-exec
@@ -305,7 +304,6 @@ fn session_pre_dispatch_failure_refuses_without_double_reading_stdin() {
         .arg("session-start")
         .env("ZCCACHE_CACHE_DIR", cache_dir.path())
         .env("ZCCACHE_DAEMON_NAMESPACE", TEST_DAEMON_NAMESPACE)
-        .env("ZCCACHE_DAEMON_WIRE", "bincode")
         .output()
         .expect("start session");
     assert!(

@@ -41,19 +41,24 @@ For every field that has ever shipped on the wire:
 3. **Its name never changes.** Field names are not on the wire for the
    common case but they are part of the public API (codegen output) and
    downstream code reads them. We treat renames as breaking.
-4. **It is never removed.** Deprecation is fine (rename to `deprecated_*`
-   with a comment); deletion is not. The CI guard rejects the deletion.
+4. **It is never removed without a tombstone.** A retired field must reserve
+   both its former number and name in the same message. The CI guard retains
+   the historical snapshot record and accepts the removal only when both
+   reservations are present.
 5. **Enum value names + numbers never change** for the same reasons.
 
 What **is** allowed without bumping the protocol version:
 
 - **Adding new fields** to existing messages with previously-unused field
   numbers. Old readers will skip the unknown field and continue. Forward-
-  compatible by protobuf's wire semantics.
-- **Adding new messages and enums.**
+  compatible by protobuf's wire semantics. Record the new field in the
+  snapshot in the same change.
+- **Adding new messages and enums,** with every live enum value and field
+  recorded in the snapshot.
 - **Adding new oneof variants** to existing `oneof`s, again using
   previously-unused field numbers. Old readers see the unknown variant as
-  "not set" and should treat it as a generic error.
+  "not set" and should treat it as a generic error; record the variant in the
+  snapshot.
 - **Documentation changes** (comments in the `.proto`).
 
 ## Versioning
@@ -74,18 +79,21 @@ follow-up issues for the handshake (#693 Phases 2–4).
 result against `ci/wire_stability_snapshot.txt`. The script:
 
 - **Fails** if any snapshot entry is missing or has a different
-  `(name, type)` in the current proto — that's a removal, rename, or
-  type-change.
-- **Succeeds** if the snapshot is a subset of the current proto — adding
-  new fields, messages, enums, or oneof variants does not require touching
-  the snapshot.
+  `(name, type)` in the current proto — unless its exact number and name are
+  both reserved in that message. A one-sided reservation remains a removal.
+- **Fails** if any live field, enum value, or oneof variant is absent from the
+  snapshot. Additions are wire-compatible, but must be recorded so any later
+  removal is caught.
+- **Succeeds** when every snapshot field is still live or is dual-reserved and
+  every live field is tracked.
 - **Always re-parses both `.proto` files end-to-end.** Syntax it does not
   model is treated as a hard parse error rather than silently skipped;
   bias is toward failing closed.
 
 If a wire change is intentional and you understand its compatibility
 impact (i.e. you're cutting a `v2` lane, or rotating a deprecated field
-that no shipped client has read), regenerate the snapshot:
+that no shipped client has read), regenerate the snapshot. Existing
+dual-reserved tombstones remain in the regenerated ledger:
 
 ```
 uv run python ci/check_wire_stability.py --write-snapshot

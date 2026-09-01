@@ -10,9 +10,8 @@
 //! 2. A live IPC round-trip against a real daemon with
 //!    `WireFormat::FrameV1`, including multiple sequential requests on one
 //!    connection.
-//! 3. Mixed-wire coexistence: sequential connections speaking v15 bincode,
-//!    v16 prost, FrameV1, and a running-process `BackendHandle` identity
-//!    probe against the same daemon endpoint.
+//! 3. Coexistence of direct prost, FrameV1, and a running-process
+//!    `BackendHandle` identity probe against the same daemon endpoint.
 
 #![allow(
     clippy::unwrap_used,
@@ -164,12 +163,9 @@ fn golden_response_frame_decodes_to_sample() {
 }
 
 #[test]
-fn zccache_v15_and_v16_headers_are_not_mistaken_for_frames() {
-    // v15 bincode and v16 prost frames start with a u32 LE length whose low
-    // byte may be 1 — the disambiguator must still classify them as zccache.
-    let v15 = zccache::protocol::encode_message(&Request::Ping).unwrap();
-    assert_eq!(buffer_starts_running_process_frame(&v15), Some(false));
-
+fn zccache_v16_headers_are_not_mistaken_for_frames() {
+    // A v16 prost frame starts with a u32 LE length whose low byte may be 1;
+    // the disambiguator must still classify it as zccache.
     let v16 = zccache::protocol::wire_prost::encode_prost_message(&sample_ping_request()).unwrap();
     assert_eq!(buffer_starts_running_process_frame(&v16), Some(false));
 
@@ -261,7 +257,7 @@ async fn frame_v1_response_echoes_client_frame_request_id() {
                 .await
                 .unwrap();
             // Read the raw frame back so the echoed id is observable.
-            let response: Option<zccache::protocol::DecodedWireMessage<Response, pb::Response>> =
+            let response: Option<zccache::protocol::DecodedWireMessage<pb::Response>> =
                 client.recv_wire().await.unwrap();
             match response {
                 Some(zccache::protocol::DecodedWireMessage::FrameV1 {
@@ -288,7 +284,7 @@ async fn mixed_wires_and_backend_probe_coexist_on_one_endpoint() {
         let temp = tempfile::tempdir().unwrap();
         let (endpoint, server_handle, shutdown) = start_daemon(&temp);
 
-        // 1) v15 bincode connection.
+        // 1) Direct prost connection.
         {
             let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
             client.send(&Request::Ping).await.unwrap();
@@ -377,7 +373,6 @@ fn frame_env_spelling_is_forced_only() {
         ClientWireSelection::FrameV1.preferred_format(),
         WireFormat::FrameV1
     );
-    assert!(!ClientWireSelection::FrameV1.allows_bincode_fallback());
     // Auto must NOT prefer the Frame lane.
     assert_ne!(
         ClientWireSelection::Auto.preferred_format(),

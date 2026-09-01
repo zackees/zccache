@@ -616,7 +616,7 @@ v1 is deliberately minimal. The goal is a correct, useful tool for the most comm
 
 **Context:** Any version difference between CLI and daemon caused an error requiring `zccache stop`. This was too strict — patch bumps for bug fixes or performance improvements that don't change the wire format shouldn't force daemon restarts. The `DaemonStatus.version` field was compared as a string against the CLI's package version.
 
-**Decision:** Introduce a `PROTOCOL_VERSION: u32` constant in `zccache-protocol` and embed it in the message framing layer. Every message is now `[4-byte LE length][4-byte LE protocol version][bincode payload]`. The protocol version is checked automatically on every `decode_message` call — no separate handshake roundtrip needed.
+**Decision:** Introduce a `PROTOCOL_VERSION: u32` constant in `zccache-protocol` and embed it in the message framing layer. Every direct IPC message is `[4-byte LE length][4-byte LE protocol version][prost payload]`. The protocol version is checked automatically during decode — no separate handshake roundtrip needed.
 
 **Rationale:**
 - Patch releases (e.g., 1.0.22 → 1.0.23) that only fix bugs or improve performance should not require a daemon restart.
@@ -630,7 +630,7 @@ v1 is deliberately minimal. The goal is a correct, useful tool for the most comm
 | Compare major.minor only | Semantic versioning is not granular enough — a minor bump might or might not change the wire format. |
 | Separate version handshake roundtrip | Adds latency to every connection. The version check should piggyback on real work. |
 | `protocol_version` field in `DaemonStatus` | Requires a dedicated Status roundtrip to discover. Adds an extra connection just for version checking. |
-| `#[serde(default)]` for backward compat | Bincode does not honor `serde(default)` — it requires exact field matching. Only works for JSON-style formats. |
+| A status-only version handshake | Adds an extra roundtrip before useful work and does not protect every direct request. |
 
 **Consequences:**
 - Developers must remember to bump `PROTOCOL_VERSION` when changing `Request`, `Response`, or any struct sent over the wire. This is documented in the constant's doc comment.
@@ -786,7 +786,7 @@ The bytes are carried as a single `Vec<u8>`, not a streaming channel.
 Streaming would require splitting the request frame from a follow-up
 data frame (a new IPC dance) for a use case that almost never appears
 in practice; the 16 MiB cap leaves the door open for `rustc -` plus
-some headroom while staying within today's bincode message budget.
+some headroom while staying within today's prost message budget.
 
 **Mismatch surfacing.** Because PROTOCOL_VERSION 7 and 8 are wire-
 incompatible, a 1.7.3 CLI connecting to a 1.7.2 daemon (or vice versa)

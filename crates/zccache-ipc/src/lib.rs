@@ -20,11 +20,9 @@ pub use broker::{
     DaemonConnectRoute,
 };
 pub use error::IpcError;
-#[cfg(test)]
-pub(crate) use full_family::full_family_roundtrip_with_selection;
 pub use full_family::{
-    full_family_roundtrip, full_family_roundtrip_classified, full_family_wire_mismatch_error,
-    FullFamilyFailurePhase, FullFamilyRoundtripFailure,
+    full_family_roundtrip, full_family_roundtrip_classified, FullFamilyFailurePhase,
+    FullFamilyRoundtripFailure,
 };
 pub use manifest::{publish_manifest, publish_manifest_in, publish_service_definition};
 pub use transport::IpcClientConnection;
@@ -100,31 +98,9 @@ pub async fn daemon_release_worktree_handles_roundtrip(
     // inlined here because `Request::ReleaseWorktreeHandles` carries a path
     // (and so cannot route through the `Copy` `DaemonControlRequest` enum).
     match selection.preferred_format() {
-        wire_prost::WireFormat::BincodeV15 => send_bincode(endpoint, &request, recv_timeout).await,
         wire_prost::WireFormat::FrameV1 => send_frame(endpoint, &request, recv_timeout).await,
-        wire_prost::WireFormat::ProstV16 => {
-            match send_prost(endpoint, &request, recv_timeout).await {
-                Ok(response) => Ok(response),
-                Err(err)
-                    if selection.allows_bincode_fallback()
-                        && full_family_wire_mismatch_error(&err) =>
-                {
-                    send_bincode(endpoint, &request, recv_timeout).await
-                }
-                Err(err) => Err(err),
-            }
-        }
+        wire_prost::WireFormat::ProstV16 => send_prost(endpoint, &request, recv_timeout).await,
     }
-}
-
-async fn send_bincode(
-    endpoint: &str,
-    request: &protocol::Request,
-    recv_timeout: Option<std::time::Duration>,
-) -> Result<Option<Response>, IpcError> {
-    let mut conn = connect_control_client(endpoint).await?;
-    conn.send(request).await?;
-    recv_control_response(&mut conn, recv_timeout).await
 }
 
 async fn send_prost(
@@ -158,9 +134,7 @@ async fn send_frame(
 /// Send a daemon control request and receive its response.
 ///
 /// Only `Ping`, `Status`, `Shutdown`, and `Clear` are eligible for the v16
-/// prost client path. Unset/`auto` `ZCCACHE_DAEMON_WIRE` prefers prost and
-/// retries as bincode only when the response lane proves an old daemon rejected
-/// framing. EOF/I/O and application errors never trigger replay.
+/// prost client path. Unset/`auto` `ZCCACHE_DAEMON_WIRE` selects prost.
 ///
 /// # Errors
 ///
@@ -185,8 +159,7 @@ async fn daemon_control_roundtrip_with_selection(
     // wire itself must be the version-checked 0x7A63 FrameV1 envelope. Connect
     // once through the broker route; if it was actually taken, send the control
     // request over FrameV1 to the broker-resolved endpoint (the daemon serve
-    // loop already auto-detects it) with no bincode fallback — the broker lane
-    // is version-authoritative. A direct/fallback route keeps the existing
+    // loop already auto-detects it). A direct/fallback route keeps the existing
     // env-selected behavior byte-for-byte.
     if broker::broker_lane_active() {
         let (mut conn, route) = connect_control_client_with_route(endpoint).await?;
@@ -203,25 +176,11 @@ async fn daemon_control_roundtrip_with_selection(
     }
 
     match selection.preferred_format() {
-        wire_prost::WireFormat::BincodeV15 => {
-            send_bincode_control(endpoint, request, recv_timeout).await
-        }
-        // Forced-only lane (`ZCCACHE_DAEMON_WIRE=frame`): no bincode
-        // fallback, the caller asked for the Frame envelope explicitly.
         wire_prost::WireFormat::FrameV1 => {
             send_frame_control(endpoint, request, recv_timeout).await
         }
         wire_prost::WireFormat::ProstV16 => {
-            match send_prost_control(endpoint, request, recv_timeout).await {
-                Ok(response) => Ok(response),
-                Err(err)
-                    if selection.allows_bincode_fallback()
-                        && full_family_wire_mismatch_error(&err) =>
-                {
-                    send_bincode_control(endpoint, request, recv_timeout).await
-                }
-                Err(err) => Err(err),
-            }
+            send_prost_control(endpoint, request, recv_timeout).await
         }
     }
 }
@@ -241,17 +200,6 @@ async fn connect_control_client_with_route(
     let (mut conn, route) = connect_daemon_with_route(endpoint).await?;
     conn.set_recv_timeout(DEFAULT_CLIENT_RECV_TIMEOUT);
     Ok((conn, route))
-}
-
-async fn send_bincode_control(
-    endpoint: &str,
-    request: DaemonControlRequest,
-    recv_timeout: Option<std::time::Duration>,
-) -> Result<Option<Response>, IpcError> {
-    let mut conn = connect_control_client(endpoint).await?;
-    let request = request.to_protocol_request();
-    conn.send(&request).await?;
-    recv_control_response(&mut conn, recv_timeout).await
 }
 
 async fn send_prost_control(
@@ -284,28 +232,17 @@ async fn send_frame_control(
     recv_control_wire_response(&mut conn, recv_timeout).await
 }
 
-async fn recv_control_response(
-    conn: &mut ClientConnection,
-    recv_timeout: Option<std::time::Duration>,
-) -> Result<Option<Response>, IpcError> {
-    match recv_timeout {
-        Some(timeout) => conn.recv_with_timeout(timeout).await,
-        None => conn.recv().await,
-    }
-}
-
 async fn recv_control_wire_response(
     conn: &mut ClientConnection,
     recv_timeout: Option<std::time::Duration>,
 ) -> Result<Option<Response>, IpcError> {
-    let response: Option<protocol::DecodedWireMessage<Response, wire_prost::zccache_v1::Response>> =
+    let response: Option<protocol::DecodedWireMessage<wire_prost::zccache_v1::Response>> =
         match recv_timeout {
             Some(timeout) => conn.recv_wire_with_timeout(timeout).await?,
             None => conn.recv_wire().await?,
         };
 
     match response {
-        Some(protocol::DecodedWireMessage::BincodeV15(response)) => Ok(Some(response)),
         Some(
             protocol::DecodedWireMessage::ProstV16(response)
             | protocol::DecodedWireMessage::FrameV1 {

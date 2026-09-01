@@ -1,21 +1,17 @@
-//! Shared framing helpers for the IPC transport: length-prefixed bincode
-//! and dual-wire prost decode loops.
+//! Shared framing helpers for the IPC transport's prost decode loops.
 
 use bytes::BytesMut;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::error::IpcError;
 
-/// Decode a dual-wire response message into the internal [`Response`]
+/// Decode a prost response message into the internal [`Response`]
 /// type, mapping prost conversion failures into [`IpcError::Protocol`].
 ///
 /// [`Response`]: zccache_protocol::Response
 pub(super) fn decode_response_wire(
     message: Option<
-        zccache_protocol::DecodedWireMessage<
-            zccache_protocol::Response,
-            zccache_protocol::wire_prost::zccache_v1::Response,
-        >,
+        zccache_protocol::DecodedWireMessage<zccache_protocol::wire_prost::zccache_v1::Response>,
     >,
 ) -> Result<Option<zccache_protocol::Response>, IpcError> {
     message
@@ -24,66 +20,16 @@ pub(super) fn decode_response_wire(
         .map_err(IpcError::Protocol)
 }
 
-/// Decode a response while preserving the one cross-lane signal needed by
-/// the prost-default rollout. An old bincode-only daemon rejects the prost
-/// request before dispatch, then sends its diagnostic on the bincode lane.
-/// Surface that lane mismatch structurally so callers can retry safely without
-/// classifying application error text.
-pub(super) fn decode_response_wire_for_expected(
-    message: Option<
-        zccache_protocol::DecodedWireMessage<
-            zccache_protocol::Response,
-            zccache_protocol::wire_prost::zccache_v1::Response,
-        >,
-    >,
-    expected: zccache_protocol::wire_prost::WireFormat,
-) -> Result<Option<zccache_protocol::Response>, IpcError> {
-    if matches!(
-        (&message, expected),
-        (
-            Some(zccache_protocol::DecodedWireMessage::BincodeV15(_)),
-            zccache_protocol::wire_prost::WireFormat::ProstV16
-        )
-    ) {
-        return Err(IpcError::Protocol(
-            zccache_protocol::ProtocolError::VersionMismatch {
-                expected: zccache_protocol::PROST_PROTOCOL_VERSION,
-                received: zccache_protocol::BINCODE_PROTOCOL_VERSION,
-            },
-        ));
-    }
-    decode_response_wire(message)
-}
-
-pub(super) async fn recv_bincode_loop<R, T>(
+pub(super) async fn recv_wire_loop<R, Prost>(
     reader: &mut R,
     read_buf: &mut BytesMut,
-) -> Result<Option<T>, IpcError>
+) -> Result<Option<zccache_protocol::DecodedWireMessage<Prost>>, IpcError>
 where
     R: AsyncRead + Unpin,
-    T: serde::de::DeserializeOwned,
-{
-    loop {
-        if let Some(msg) = zccache_protocol::decode_message::<T>(read_buf)? {
-            return Ok(Some(msg));
-        }
-        if !read_next_chunk(reader, read_buf).await? {
-            return Ok(None);
-        }
-    }
-}
-
-pub(super) async fn recv_wire_loop<R, Bincode, Prost>(
-    reader: &mut R,
-    read_buf: &mut BytesMut,
-) -> Result<Option<zccache_protocol::DecodedWireMessage<Bincode, Prost>>, IpcError>
-where
-    R: AsyncRead + Unpin,
-    Bincode: serde::de::DeserializeOwned,
     Prost: prost::Message + Default,
 {
     loop {
-        if let Some(msg) = zccache_protocol::decode_wire_message::<Bincode, Prost>(read_buf)? {
+        if let Some(msg) = zccache_protocol::decode_wire_message::<Prost>(read_buf)? {
             return Ok(Some(msg));
         }
         if !read_next_chunk(reader, read_buf).await? {

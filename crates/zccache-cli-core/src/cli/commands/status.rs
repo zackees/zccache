@@ -145,22 +145,6 @@ pub(crate) async fn cmd_status(endpoint: &str, json: bool) -> ExitCode {
                      not survive a restart; restart the daemon"
                 );
             }
-            if !s.bincode_request_telemetry_available {
-                println!("  Legacy wire:   telemetry unavailable (requires current prost status)");
-            } else {
-                let bincode_total: u64 = s.bincode_requests_by_type.values().sum();
-                if bincode_total == 0 {
-                    println!("  Legacy wire:   0 bincode requests");
-                } else {
-                    let by_type = s
-                        .bincode_requests_by_type
-                        .iter()
-                        .map(|(request, count)| format!("{request}={count}"))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    println!("  Legacy wire:   {bincode_total} bincode requests ({by_type})");
-                }
-            }
             println!();
             if s.total_links > 0 {
                 println!();
@@ -217,9 +201,6 @@ fn print_status_ok_json(endpoint: &str, s: &crate::protocol::DaemonStatus) {
     } else {
         None
     };
-    let bincode_requests = s
-        .bincode_request_telemetry_available
-        .then_some(&s.bincode_requests_by_type);
     let value = serde_json::json!({
         "status": "ok",
         "endpoint": endpoint,
@@ -228,7 +209,6 @@ fn print_status_ok_json(endpoint: &str, s: &crate::protocol::DaemonStatus) {
         "protocol_version": crate::protocol::PROTOCOL_VERSION,
         "hit_rate": hit_rate,
         "link_hit_rate": link_hit_rate,
-        "bincode_requests_by_type": bincode_requests,
         "daemon": s,
     });
     print_json_value(&value);

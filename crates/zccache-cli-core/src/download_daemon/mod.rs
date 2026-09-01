@@ -113,7 +113,9 @@ impl DownloadDaemon {
                     break;
                 }
                 accepted = self.listener.accept() => {
-                    let conn = accepted?;
+                    let conn = crate::download_ipc::DownloadIpcConnection::from_connection(
+                        accepted?,
+                    );
                     let state = Arc::clone(&self.state);
                     tokio::spawn(async move {
                         if let Err(err) = handle_connection(state, conn).await {
@@ -135,7 +137,7 @@ impl DownloadDaemon {
 
 async fn handle_connection(
     state: Arc<SharedState>,
-    mut conn: crate::ipc::IpcConnection,
+    mut conn: crate::download_ipc::DownloadIpcConnection,
 ) -> Result<(), String> {
     let client_id = state.next_client_id.fetch_add(1, Ordering::Relaxed);
     let mut attached_job_id: Option<String> = None;
@@ -308,7 +310,7 @@ async fn handle_connection(
 }
 
 async fn send_terminal(
-    conn: &mut crate::ipc::IpcConnection,
+    conn: &mut crate::download_ipc::DownloadIpcConnection,
     status: DownloadStatus,
 ) -> Result<(), String> {
     match status.phase {

@@ -2,10 +2,11 @@
 
 Implements zackees/zccache#693 Phase 1: extracts every `(message, field_number) ->
 (field_name, field_type)` tuple from the zccache proto files and compares the
-result against `ci/wire_stability_snapshot.txt`. Adding new fields is allowed
-(forward-compatible per protobuf semantics); removing, renumbering, or
-type-changing an existing field is **not** — it breaks deployed clients reading
-the wire.
+result against `ci/wire_stability_snapshot.txt`. Every live field must appear
+in the snapshot, so adding a field requires regenerating that ledger. Removing
+a field requires both its number and name to remain reserved; renumbering or
+type-changing an existing field is **not** allowed — it breaks deployed clients
+reading the wire.
 
 The snapshot file is the canonical contract. To intentionally amend it, run
 this script with `--write-snapshot` and commit the diff along with a comment
@@ -26,6 +27,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
@@ -73,6 +75,12 @@ FIELD_RE = re.compile(
     re.VERBOSE,
 )
 ENUM_VALUE_RE = re.compile(r"^\s*(?P<name>[A-Z_][A-Z0-9_]*)\s*=\s*(?P<number>\d+)\s*;\s*$")
+RESERVED_NUMBERS_RE = re.compile(
+    r"^\s*reserved\s+(?P<ranges>\d+(?:\s+to\s+\d+)?(?:\s*,\s*\d+(?:\s+to\s+\d+)?)*?)\s*;\s*$"
+)
+RESERVED_NAMES_RE = re.compile(
+    r'^\s*reserved\s+"(?P<first>[^"]+)"(?:\s*,\s*"(?P<rest>[^"]+)")*\s*;\s*$'
+)
 BLOCK_END_RE = re.compile(r"^\s*\}\s*$")
 COMMENT_OR_BLANK_RE = re.compile(r"^\s*(//.*)?$")
 
@@ -85,15 +93,31 @@ class ProtoParseError(RuntimeError):
     """
 
 
-def parse_proto(path: Path) -> dict[str, dict[int, tuple[str, str]]]:
-    """Return `{ qualified_name: { number: (field_name, field_type) } }`.
+@dataclass
+class ProtoSchema:
+    """Parsed fields plus the number/name tombstones declared by a proto."""
+
+    fields: dict[str, dict[int, tuple[str, str]]] = field(default_factory=dict)
+    reserved_numbers: dict[str, set[int]] = field(default_factory=dict)
+    reserved_names: dict[str, set[str]] = field(default_factory=dict)
+
+    def safely_retires(self, message: str, number: int, name: str) -> bool:
+        """Whether a removed snapshot field has both required tombstones."""
+        return (
+            number in self.reserved_numbers.get(message, set())
+            and name in self.reserved_names.get(message, set())
+        )
+
+
+def parse_proto(path: Path) -> ProtoSchema:
+    """Return fields plus reserved names/numbers for a parsed proto.
 
     `qualified_name` is the message or enum name (no nested-type support is
     needed today since the zccache protos are flat). Oneof variants are
     flattened into the parent message's field table — they share the field
     number space per protobuf semantics.
     """
-    contents: dict[str, dict[int, tuple[str, str]]] = {}
+    contents = ProtoSchema()
     stack: list[tuple[str, dict[int, tuple[str, str]]]] = []
 
     with path.open(encoding="utf-8") as fh:
@@ -106,16 +130,16 @@ def parse_proto(path: Path) -> dict[str, dict[int, tuple[str, str]]]:
 
             if m := MESSAGE_INLINE_EMPTY_RE.match(line):
                 # `message Foo {}` — register the name with an empty field table.
-                contents.setdefault(m.group(1), {})
+                contents.fields.setdefault(m.group(1), {})
                 continue
             if m := MESSAGE_OPEN_RE.match(line):
                 name = m.group(1)
-                table = contents.setdefault(name, {})
+                table = contents.fields.setdefault(name, {})
                 stack.append((name, table))
                 continue
             if m := ENUM_OPEN_RE.match(line):
                 name = m.group(1)
-                table = contents.setdefault(name, {})
+                table = contents.fields.setdefault(name, {})
                 stack.append((name, table))
                 continue
             if m := ONEOF_OPEN_RE.match(line):
@@ -133,6 +157,22 @@ def parse_proto(path: Path) -> dict[str, dict[int, tuple[str, str]]]:
             if not stack:
                 raise ProtoParseError(f"{path}:{lineno}: unexpected line at file scope: {line!r}")
             parent_name, table = stack[-1]
+
+            if m := RESERVED_NUMBERS_RE.match(line):
+                if parent_name.endswith(".<oneof>"):
+                    raise ProtoParseError(f"{path}:{lineno}: reserved declaration inside oneof")
+                reserved = contents.reserved_numbers.setdefault(parent_name, set())
+                for declared_range in m.group("ranges").split(","):
+                    bounds = [int(value.strip()) for value in declared_range.split("to")]
+                    reserved.update(range(bounds[0], bounds[-1] + 1))
+                continue
+            if m := RESERVED_NAMES_RE.match(line):
+                if parent_name.endswith(".<oneof>"):
+                    raise ProtoParseError(f"{path}:{lineno}: reserved declaration inside oneof")
+                contents.reserved_names.setdefault(parent_name, set()).update(
+                    re.findall(r'"([^"]+)"', line)
+                )
+                continue
 
             if m := FIELD_RE.match(line):
                 number = int(m.group("number"))
@@ -157,15 +197,23 @@ def parse_proto(path: Path) -> dict[str, dict[int, tuple[str, str]]]:
     return contents
 
 
-def parse_proto_files(paths: Iterable[Path]) -> dict[str, dict[int, tuple[str, str]]]:
-    merged: dict[str, dict[int, tuple[str, str]]] = {}
+def parse_proto_files(paths: Iterable[Path]) -> ProtoSchema:
+    merged = ProtoSchema()
     for path in paths:
-        for name, table in parse_proto(path).items():
-            target = merged.setdefault(name, {})
+        parsed = parse_proto(path)
+        for name, table in parsed.fields.items():
+            target = merged.fields.setdefault(name, {})
             for number, value in table.items():
                 if number in target and target[number] != value:
-                    raise ProtoParseError(f"{path}: {name}.{number} disagrees across proto files: {target[number]} vs {value}")
+                    raise ProtoParseError(
+                        f"{path}: {name}.{number} disagrees across proto files: "
+                        f"{target[number]} vs {value}"
+                    )
                 target[number] = value
+        for name, numbers in parsed.reserved_numbers.items():
+            merged.reserved_numbers.setdefault(name, set()).update(numbers)
+        for name, names in parsed.reserved_names.items():
+            merged.reserved_names.setdefault(name, set()).update(names)
     return merged
 
 
@@ -176,10 +224,10 @@ SNAPSHOT_HEADER = """\
 #
 # This file is the canonical record of every protobuf field number, name,
 # and type that has shipped on the wire. The CI guard
-# `ci/check_wire_stability.py` rejects PRs that remove, renumber, or
-# type-change any tuple listed here. Adding new fields is allowed and
-# does NOT require updating this file — they only need to appear in the
-# .proto sources.
+# `ci/check_wire_stability.py` rejects PRs that renumber or type-change any
+# tuple listed here. Retiring a field requires reserving both its number and
+# name in the proto; `--write-snapshot` retains that historical record. Every
+# live field must be recorded here, so adding a field requires updating it.
 #
 # When making an intentional, documented wire change (typically a
 # `PROTOCOL_VERSION` bump), regenerate this file with:
@@ -200,8 +248,19 @@ def snapshot_lines(contents: dict[str, dict[int, tuple[str, str]]]) -> list[str]
     return lines
 
 
-def write_snapshot(contents: dict[str, dict[int, tuple[str, str]]]) -> None:
-    body = SNAPSHOT_HEADER + "\n".join(snapshot_lines(contents)) + "\n"
+def write_snapshot(contents: ProtoSchema) -> None:
+    """Record every live field while retaining safely retired history."""
+    snapshot = read_snapshot() if SNAPSHOT_PATH.exists() else {}
+    merged = {name: dict(fields) for name, fields in contents.fields.items()}
+    for name, fields in snapshot.items():
+        for number, field_info in fields.items():
+            if (
+                number not in merged.get(name, {})
+                and contents.safely_retires(name, number, field_info[0])
+            ):
+                merged.setdefault(name, {})[number] = field_info
+
+    body = SNAPSHOT_HEADER + "\n".join(snapshot_lines(merged)) + "\n"
     SNAPSHOT_PATH.write_text(body, encoding="utf-8")
 
 
@@ -227,20 +286,29 @@ def read_snapshot() -> dict[str, dict[int, tuple[str, str]]]:
 
 def diff_against_snapshot(
     snapshot: dict[str, dict[int, tuple[str, str]]],
-    current: dict[str, dict[int, tuple[str, str]]],
+    current: ProtoSchema,
 ) -> list[str]:
     violations: list[str] = []
     for name in sorted(snapshot):
-        if name not in current:
+        if name not in current.fields:
             violations.append(f"REMOVED message/enum: {name}")
             continue
         for number in sorted(snapshot[name]):
             snap_value = snapshot[name][number]
-            curr_value = current[name].get(number)
+            curr_value = current.fields[name].get(number)
             if curr_value is None:
-                violations.append(f"REMOVED field: {name}.{number} ({snap_value[0]}: {snap_value[1]})")
+                if not current.safely_retires(name, number, snap_value[0]):
+                    violations.append(f"REMOVED field: {name}.{number} ({snap_value[0]}: {snap_value[1]})")
             elif curr_value != snap_value:
                 violations.append(f"CHANGED field: {name}.{number}: {snap_value} -> {curr_value}")
+    for name in sorted(current.fields):
+        snapshot_fields = snapshot.get(name, {})
+        for number in sorted(current.fields[name]):
+            if number not in snapshot_fields:
+                field_name, field_type = current.fields[name][number]
+                violations.append(
+                    f"UNTRACKED field: {name}.{number} ({field_name}: {field_type})"
+                )
     return violations
 
 
@@ -249,7 +317,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--write-snapshot",
         action="store_true",
-        help="regenerate ci/wire_stability_snapshot.txt from the current proto files",
+        help="record all live fields and retain safely dual-reserved tombstones",
     )
     args = parser.parse_args(argv)
 
@@ -285,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    print(f"wire stability OK: {sum(len(t) for t in current.values())} fields across {len(current)} message/enum types")
+    print(f"wire stability OK: {sum(len(t) for t in current.fields.values())} fields across {len(current.fields)} message/enum types")
     return 0
 
 

@@ -263,7 +263,6 @@ pub(super) fn new_shared_state(
             cache_requests_idle: Notify::new(),
             start_time: now,
             stats: StatsCollector::new(),
-            bincode_requests_by_type: DashMap::new(),
             profiler: PhaseProfiler::new(),
             artifact_dir,
             staging: StagingRoot::new(

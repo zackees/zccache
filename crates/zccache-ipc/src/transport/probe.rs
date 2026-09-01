@@ -1,6 +1,7 @@
 //! Running-process `BackendHandle` identity probe served on the same
 //! endpoint as the zccache daemon wire. Disambiguates probe frames from
-//! v15/v16 zccache traffic and the FrameV1 zccache lane.
+//! direct zccache traffic (including the retired v25 header) and the FrameV1
+//! zccache lane.
 //!
 //! ## Slice 17 of #500 — v1 envelope retention decision
 //!
@@ -48,14 +49,10 @@ where
         return Ok(false);
     }
 
-    let zccache_len = u32::from_le_bytes([read_buf[0], read_buf[1], read_buf[2], read_buf[3]]);
-    let zccache_version = u32::from_le_bytes([read_buf[4], read_buf[5], read_buf[6], read_buf[7]]);
-    if zccache_len >= 4
-        && matches!(
-            zccache_version,
-            zccache_protocol::BINCODE_PROTOCOL_VERSION | zccache_protocol::PROST_PROTOCOL_VERSION
-        )
-    {
+    if matches!(
+        zccache_protocol::wire_frame::buffer_starts_running_process_frame(read_buf),
+        Some(false)
+    ) {
         return Ok(false);
     }
 

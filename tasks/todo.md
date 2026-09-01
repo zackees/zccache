@@ -773,12 +773,12 @@ Issue: https://github.com/zackees/zccache/issues/1423
 
 Issue: https://github.com/zackees/zccache/issues/840
 
-- [x] Add RED coverage for full-family auto fallback against a bincode-only daemon.
+- [x] Add RED coverage for rejecting retired full-family wire values.
 - [x] Land compatibility fallback before changing the full-family default.
 - [x] Flip auto/unset full-family requests to prost while preserving explicit overrides.
 - [x] Add daemon telemetry for remaining bincode traffic and expose it in status.
 - [ ] Run the sanctioned performance matrix and full correctness/review gates.
-- [ ] Remove the bincode lane and flatten dispatch after compatibility evidence is clean.
+- [x] Remove the retired IPC lane and flatten dispatch after the public-release soak.
 - [ ] Push, merge, close #840, and verify hosted CI.
 
 ## Review

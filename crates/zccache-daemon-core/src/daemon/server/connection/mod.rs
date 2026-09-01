@@ -27,7 +27,6 @@ pub(in crate::daemon::server) use attribution::{
 use dispatch::dispatch_request;
 
 enum ResponseWire {
-    BincodeV15,
     ProstV16 {
         request_id: String,
     },
@@ -311,7 +310,7 @@ pub(super) async fn handle_connection(
 
     loop {
         let request = match conn
-            .recv_wire_with_timeout::<Request, pb::Request>(SERVER_REQUEST_RECV_TIMEOUT)
+            .recv_wire_with_timeout::<pb::Request>(SERVER_REQUEST_RECV_TIMEOUT)
             .await
         {
             Ok(req) => req,
@@ -359,11 +358,13 @@ pub(super) async fn handle_connection(
                         "reason": "incompatible IPC PROTOCOL_VERSION; client must stop the daemon and let the new one start",
                     }),
                 );
-                let _ = conn
-                    .send(&Response::Error {
+                let response = wire_prost::response_to_prost(
+                    &Response::Error {
                         message: msg.clone(),
-                    })
-                    .await;
+                    },
+                    "protocol-version-mismatch",
+                );
+                let _ = conn.send_prost(&response).await;
                 return Err(crate::ipc::IpcError::Protocol(
                     crate::protocol::ProtocolError::VersionMismatch { expected, received },
                 ));
@@ -377,10 +378,6 @@ pub(super) async fn handle_connection(
         state.last_activity.store(now_secs(), Ordering::Relaxed);
 
         let (request, response_wire) = match request {
-            DecodedWireMessage::BincodeV15(request) => {
-                state.record_bincode_request(&request);
-                (request, ResponseWire::BincodeV15)
-            }
             DecodedWireMessage::ProstV16(request) => {
                 let request_id = request.request_id.clone();
                 match wire_prost::request_from_prost(request) {
@@ -539,7 +536,6 @@ async fn send_response_for_wire(
     response: &Response,
 ) -> Result<(), crate::ipc::IpcError> {
     match response_wire {
-        ResponseWire::BincodeV15 => conn.send(response).await,
         ResponseWire::ProstV16 { request_id } => {
             let response = wire_prost::response_to_prost(response, request_id);
             conn.send_prost(&response).await

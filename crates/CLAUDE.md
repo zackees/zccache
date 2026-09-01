@@ -76,7 +76,7 @@ zccache-test-support (dev-only test utilities)
 - **zccache-platform** — Dependency-leaf crate for host-platform mechanics (#1365): one `cfg_select!` host selector in its `lib.rs` and five neutral facades (`process`, `fs`, `ipc`, `executable`, `host`). Every consuming crate aliases it as `crate::platform`; concrete `platform_{win,linux,macos}` trees are private. Never depends on a zccache crate and never contains product types. Amalgamated as a private `platform` module of the published `zccache` crate.
 
 ### Compile-cache subsystem libs
-- **zccache-protocol** — `Request`/`Response` enums, `ArtifactData`, length-prefixed bincode framing; bump `PROTOCOL_VERSION` on any wire-format change
+- **zccache-protocol** — `Request`/`Response` enums, `ArtifactData`, length-prefixed prost framing; bump `PROTOCOL_VERSION` on any wire-format change
 - **zccache-ipc** — Platform IPC endpoint discovery (`default_endpoint()`: Unix sockets vs named pipes)
 - **zccache-fscache** — `MetadataCache` (DashMap-backed) with `Confidence` levels and time-based decay
 - **zccache-artifact** — Content-addressed disk store with 2-level hex sharding, in-memory index snapshotted to a bincode blob (`index.bin`) for LRU eviction; also Rust-plan bundle save/restore
@@ -112,7 +112,7 @@ zccache-test-support (dev-only test utilities)
 
 **Correctness model (layered invalidation):** Watcher events set confidence to Medium, never High. `lookup_since()` has a fast path (one stat, zero hash) that checks `(mtime, size)` against the cached entry even when the journal says "no changes"; `metadata.lookup()` is the full stat-verify + hash fallback. Content hashing is ground truth. A wrong cache hit is catastrophic; an extra stat is cheap.
 
-**IPC:** Unix domain sockets on Linux/macOS, named pipes on Windows, behind a transport trait. Messages are length-prefixed bincode. Daemon is lazily started by CLI if not running.
+**IPC:** Unix domain sockets on Linux/macOS, named pipes on Windows, behind a transport trait. Messages are length-prefixed prost. Daemon is lazily started by CLI if not running.
 
 **File identity:** Tracked as (path, file_id) where file_id = inode on Unix, nFileIndex on Windows. Catches file replacement even when mtime is unchanged.
 

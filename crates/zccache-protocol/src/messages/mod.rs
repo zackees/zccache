@@ -1,9 +1,7 @@
 //! Protocol wire enums and domain type re-exports.
 //!
-//! `Request` and `Response` stay in this module because bincode encodes enum
-//! variants by declaration order. Domain structs live in sibling modules so new
-//! soldr-facing protocol fields have an obvious home without interleaving all
-//! helper types in one append-only file.
+//! Domain structs live in sibling modules so new soldr-facing protocol fields
+//! have an obvious home without interleaving all helper types in one file.
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -12,9 +10,6 @@ use zccache_core::NormalizedPath;
 mod artifact;
 mod exec;
 mod status;
-
-#[cfg(test)]
-mod compat;
 
 pub use artifact::{
     ArtifactData, ArtifactOutput, ArtifactPayload, LookupResult, RustArtifactInfo, StoreResult,
@@ -150,13 +145,11 @@ pub enum Request {
         env: Option<Vec<(String, String)>>,
     },
     /// Query per-session statistics without ending the session.
-    /// NOTE: Appended at end to preserve bincode variant indices.
     SessionStats {
         /// Session ID to query (UUID string).
         session_id: String,
     },
     /// Check if files have changed since last successful fingerprint.
-    /// NOTE: Appended at end to preserve bincode variant indices.
     FingerprintCheck {
         /// Path to the cache file (e.g., .cache/lint.json).
         cache_file: NormalizedPath,
@@ -189,7 +182,6 @@ pub enum Request {
         cache_file: NormalizedPath,
     },
     /// List all cached Rust artifacts with their output paths.
-    /// NOTE: Appended at end to preserve bincode variant indices.
     ListRustArtifacts,
     /// Generic tool exec — cache an arbitrary tool's run by declared inputs.
     ///
@@ -198,7 +190,6 @@ pub enum Request {
     /// `input_extra`); on hit the tool process is NOT spawned and the cached
     /// stdout/stderr/exit code/output files are replayed.
     ///
-    /// NOTE: Appended at end to preserve bincode variant indices.
     GenericToolExec {
         /// Path to the tool executable. Must be absolute (CLI resolves PATH).
         tool: NormalizedPath,
@@ -262,7 +253,6 @@ pub enum Request {
     /// or any ancestor of it — that path is shared by every concurrent
     /// session and is never owned by a worktree.
     ///
-    /// NOTE: Appended at end to preserve bincode variant indices.
     ReleaseWorktreeHandles {
         /// Canonical path prefix to release. Must be absolute.
         path: NormalizedPath,
@@ -281,7 +271,6 @@ pub enum Request {
     /// and so a 1000-file input list never has to serialize through the
     /// Windows 32K argv ceiling (cf #837).
     ///
-    /// NOTE: Appended at end to preserve bincode variant indices.
     ExecProbe {
         /// Cache namespace (e.g. `"noexcept_ast"`). Mixed into the key so
         /// two consumers using the same input set but different semantics
@@ -303,7 +292,6 @@ pub enum Request {
     /// persistent KV store so the next `ExecProbe` for the same inputs
     /// returns the cached bytes without invoking the runner.
     ///
-    /// NOTE: Appended at end to preserve bincode variant indices.
     ExecStore {
         /// 64-char hex cache key returned by the prior `ExecProbeResult`.
         cache_key_hex: String,
@@ -379,13 +367,11 @@ pub enum Response {
         on_disk_bytes_freed: u64,
     },
     /// Mid-session statistics snapshot.
-    /// NOTE: Appended at end to preserve bincode variant indices.
     SessionStatsResult {
         /// Per-session stats, if the session exists and opted in to tracking.
         stats: Option<SessionStats>,
     },
     /// Result of a fingerprint check.
-    /// NOTE: Appended at end to preserve bincode variant indices.
     FingerprintCheckResult {
         /// "skip" or "run".
         decision: String,
@@ -397,11 +383,9 @@ pub enum Response {
     /// Fingerprint mark/invalidate acknowledged.
     FingerprintAck,
     /// List of cached Rust artifacts.
-    /// NOTE: Appended at end to preserve bincode variant indices.
     RustArtifactList { artifacts: Vec<RustArtifactInfo> },
     /// Result of a `GenericToolExec` request.
     ///
-    /// NOTE: Appended at end to preserve bincode variant indices.
     GenericToolExecResult {
         /// Tool exit code (cached on miss, replayed on hit).
         exit_code: i32,
@@ -427,7 +411,6 @@ pub enum Response {
     /// `ERROR_PIPE_BUSY` or recv-timeout. See issue tracker for the
     /// back-pressure design doc.
     ///
-    /// NOTE: Appended at end to preserve bincode variant indices.
     Backpressure {
         /// Daemon's current queue depth at the moment of decision.
         /// Diagnostic — the client treats this as advisory only.
@@ -448,7 +431,6 @@ pub enum Response {
     /// specific handle; soldr's caller decides whether to fall back to
     /// Tier 2 (move-to-trash) or surface a diagnostic.
     ///
-    /// NOTE: Appended at end to preserve bincode variant indices.
     ReleaseWorktreeHandlesResult {
         /// Active sessions inspected against the path prefix.
         inspected: u32,
@@ -478,7 +460,6 @@ pub enum Response {
     /// `cache_key_hex` is always populated so the caller knows what key to
     /// store under on miss.
     ///
-    /// NOTE: Appended at end to preserve bincode variant indices.
     ExecProbeResult {
         /// 64-char hex cache key derived from the probe's inputs. Stable
         /// regardless of hit/miss so the follow-up `ExecStore` references
@@ -498,7 +479,6 @@ pub enum Response {
     /// exists so a future eviction policy can refuse a store without a
     /// wire-shape change.
     ///
-    /// NOTE: Appended at end to preserve bincode variant indices.
     ExecStoreAck {
         /// Operational outcome of the store.
         stored: bool,
@@ -523,7 +503,6 @@ pub enum Response {
     /// only emits heartbeats after the request has been decoded, i.e. once
     /// the client's own wire version is known.
     ///
-    /// NOTE: Appended at end to preserve bincode variant indices.
     CompileProgress {
         /// Number of compile requests admitted ahead of this one that have
         /// not yet been granted a concurrency permit — i.e. how many

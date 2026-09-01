@@ -111,16 +111,6 @@ pub struct DaemonStatus {
     /// publishes will survive a restart. Distinct from a slow daemon, and not
     /// otherwise visible without reading the lifecycle log.
     pub index_writer_gone: bool,
-    /// Legacy v15 bincode requests observed since daemon start, keyed by the
-    /// bounded protocol request family name. Prost-only rollout telemetry:
-    /// skipping serde preserves the exact legacy bincode `DaemonStatus` shape.
-    #[serde(skip)]
-    pub bincode_requests_by_type: BTreeMap<String, u64>,
-    /// Whether the response actually carried the prost-only telemetry map.
-    /// False for legacy bincode responses and older prost daemons; without
-    /// this bit, an absent map would be indistinguishable from a real zero.
-    #[serde(skip)]
-    pub bincode_request_telemetry_available: bool,
 }
 
 /// Per-session statistics, returned when the session opted in to tracking.

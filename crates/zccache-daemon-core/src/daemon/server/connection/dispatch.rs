@@ -58,17 +58,11 @@ pub(super) async fn dispatch_request(
                 .shutdown_event_logged
                 .swap(true, std::sync::atomic::Ordering::AcqRel)
             {
-                let (bincode_requests, bincode_requests_by_type) = state.bincode_request_totals();
                 crate::daemon::lifecycle::write_event(
                     crate::daemon::lifecycle::EVENT_DIED_SHUTDOWN,
                     serde_json::json!({
                         "reason": crate::daemon::lifecycle::REASON_GRACEFUL_SHUTDOWN,
                         "uptime_secs": now_secs().saturating_sub(state.start_time),
-                        // #840 Slice 5: the legacy-lane curve has to be
-                        // readable after the fact, and the live counter dies
-                        // with the daemon.
-                        "bincode_requests": bincode_requests,
-                        "bincode_requests_by_type": bincode_requests_by_type,
                     }),
                 );
             }
@@ -122,8 +116,6 @@ pub(super) async fn dispatch_request(
                     watcher_active: state.watcher_active.load(Ordering::Acquire),
                     watcher_degradations: state.watcher_degradations.load(Ordering::Relaxed),
                     index_writer_gone: state.index_writer_gone.load(Ordering::Relaxed),
-                    bincode_requests_by_type: state.bincode_request_snapshot(),
-                    bincode_request_telemetry_available: true,
                 }),
                 None,
             )

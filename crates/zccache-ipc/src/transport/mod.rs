@@ -2,8 +2,7 @@
 //!
 //! Provides platform-abstracted IPC using named pipes on Windows
 //! and Unix domain sockets on Unix. Messages are length-prefixed
-//! bincode or prost via `zccache-protocol`. Full-family clients prefer prost;
-//! the daemon accepts both lanes during the compatibility release cycle.
+//! prost via `zccache-protocol`.
 //!
 //! A third lane carries zccache prost payloads inside running-process broker
 //! `Frame` envelopes (`[u8 envelope_version=1][u32 LE body_len][Frame]`,
@@ -11,7 +10,7 @@
 //! [`ZCCACHE_FRAME_PAYLOAD_PROTOCOL`](zccache_protocol::wire_frame::ZCCACHE_FRAME_PAYLOAD_PROTOCOL)).
 //! It is selected only by an explicit `ZCCACHE_DAEMON_WIRE=frame` and shares
 //! the running-process framing already used by the `BackendHandle` identity
-//! probe; `recv_wire` disambiguates it from v15/v16 the same way
+//! probe; `recv_wire` disambiguates it from direct prost the same way
 //! `try_serve_backend_handle_probe` does.
 
 use std::time::Duration;
@@ -24,11 +23,47 @@ use super::error::IpcError;
 mod framing;
 mod probe;
 
-use framing::{
-    decode_response_wire, decode_response_wire_for_expected, recv_bincode_loop, recv_wire_loop,
-};
+use framing::{decode_response_wire, recv_wire_loop};
 
 pub type IpcClientConnection = IpcConnection;
+
+/// Daemon IPC message convertible to and from the prost body schema.
+pub trait DaemonWireMessage: Sized {
+    /// Prost schema message paired with this internal message.
+    type Prost: prost::Message + Default;
+
+    /// Convert this message to its prost body.
+    fn to_prost(&self) -> Self::Prost;
+    /// Convert a decoded prost body to this message.
+    fn from_prost(message: Self::Prost) -> Result<Self, zccache_protocol::ProtocolError>;
+}
+
+impl DaemonWireMessage for zccache_protocol::Request {
+    type Prost = zccache_protocol::wire_prost::zccache_v1::Request;
+
+    fn to_prost(&self) -> Self::Prost {
+        let request_id = zccache_protocol::wire_prost::default_request_id(self);
+        zccache_protocol::wire_prost::request_to_prost(self, request_id)
+    }
+
+    fn from_prost(message: Self::Prost) -> Result<Self, zccache_protocol::ProtocolError> {
+        zccache_protocol::wire_prost::request_from_prost(message)
+            .map_err(zccache_protocol::ProtocolError::Deserialization)
+    }
+}
+
+impl DaemonWireMessage for zccache_protocol::Response {
+    type Prost = zccache_protocol::wire_prost::zccache_v1::Response;
+
+    fn to_prost(&self) -> Self::Prost {
+        zccache_protocol::wire_prost::response_to_prost(self, "unpaired-response")
+    }
+
+    fn from_prost(message: Self::Prost) -> Result<Self, zccache_protocol::ProtocolError> {
+        zccache_protocol::wire_prost::response_from_prost(message)
+            .map_err(zccache_protocol::ProtocolError::Deserialization)
+    }
+}
 
 /// Suggested per-recv timeout for client-side request/response IPC.
 ///
@@ -109,19 +144,24 @@ impl IpcConnection {
         .await
     }
 
-    /// Send a serializable message over the connection.
-    pub async fn send<T: serde::Serialize>(&mut self, msg: &T) -> Result<(), IpcError> {
-        let buf = zccache_protocol::encode_message(msg)?;
-        self.writer.write_all(&buf).await?;
+    /// Send a daemon request or response over the prost wire.
+    pub async fn send<T: DaemonWireMessage>(&mut self, msg: &T) -> Result<(), IpcError> {
+        self.send_prost(&msg.to_prost()).await
+    }
+
+    /// Send a complete frame owned by a separate, non-daemon IPC protocol.
+    ///
+    /// The bytes are deliberately opaque to this transport: their framing and
+    /// codec remain owned by the caller. Main daemon traffic must use
+    /// [`Self::send`], [`Self::send_request`], or the explicit FrameV1 APIs.
+    pub async fn send_opaque_bytes(&mut self, frame: &[u8]) -> Result<(), IpcError> {
+        self.writer.write_all(frame).await?;
         self.writer.flush().await?;
         Ok(())
     }
 
     /// Send a prost message over the v16 daemon wire.
     ///
-    /// This is an explicit migration hook. The default [`Self::send`] method
-    /// remains v15 bincode so existing clients keep working until the daemon
-    /// flips its live protocol policy.
     pub async fn send_prost<M: prost::Message>(&mut self, msg: &M) -> Result<(), IpcError> {
         let buf = zccache_protocol::wire_prost::encode_prost_message(msg)?;
         self.writer.write_all(&buf).await?;
@@ -179,23 +219,23 @@ impl IpcConnection {
         self.recv_timeout
     }
 
-    /// Receive a deserializable message from the connection.
+    /// Receive a daemon message from the connection.
     ///
     /// Returns `None` if the connection was closed cleanly. If a default
     /// timeout has been configured via [`Self::set_recv_timeout`] and the
     /// next message does not arrive within that window, returns
     /// `Err(IpcError::Timeout(_))`.
-    pub async fn recv<T: serde::de::DeserializeOwned>(&mut self) -> Result<Option<T>, IpcError> {
+    pub async fn recv<T: DaemonWireMessage>(&mut self) -> Result<Option<T>, IpcError> {
         match self.recv_timeout {
             Some(t) => self.recv_with_timeout(t).await,
             None => self.recv_loop().await,
         }
     }
 
-    /// Receive a deserializable message with a per-call timeout override.
+    /// Receive a daemon message with a per-call timeout override.
     ///
     /// Independent of any default set via [`Self::set_recv_timeout`].
-    pub async fn recv_with_timeout<T: serde::de::DeserializeOwned>(
+    pub async fn recv_with_timeout<T: DaemonWireMessage>(
         &mut self,
         timeout: Duration,
     ) -> Result<Option<T>, IpcError> {
@@ -205,15 +245,38 @@ impl IpcConnection {
         }
     }
 
+    /// Receive one message using a decoder owned by a separate, non-daemon
+    /// IPC protocol.
+    ///
+    /// The decoder is called against the shared read buffer until it returns a
+    /// complete message. Returning `Ok(None)` retains partial bytes and reads
+    /// more input, exactly like the daemon wire receive paths.
+    pub async fn recv_opaque_with<T, E, Decode>(
+        &mut self,
+        mut decode: Decode,
+    ) -> Result<Option<T>, IpcError>
+    where
+        E: std::fmt::Display,
+        Decode: FnMut(&mut BytesMut) -> Result<Option<T>, E>,
+    {
+        match self.recv_timeout {
+            Some(timeout) => {
+                match tokio::time::timeout(timeout, self.recv_opaque_with_loop(&mut decode)).await {
+                    Ok(result) => result,
+                    Err(_) => Err(IpcError::Timeout(timeout)),
+                }
+            }
+            None => self.recv_opaque_with_loop(&mut decode).await,
+        }
+    }
+
     /// Receive a message using the version-dispatching daemon wire decoder.
     ///
-    /// This accepts both v15 bincode and v16 prost frames while preserving
-    /// [`Self::recv`] as the compatibility-only bincode receive path.
-    pub async fn recv_wire<Bincode, Prost>(
+    /// This accepts prost and FrameV1 envelopes.
+    pub async fn recv_wire<Prost>(
         &mut self,
-    ) -> Result<Option<zccache_protocol::DecodedWireMessage<Bincode, Prost>>, IpcError>
+    ) -> Result<Option<zccache_protocol::DecodedWireMessage<Prost>>, IpcError>
     where
-        Bincode: serde::de::DeserializeOwned,
         Prost: prost::Message + Default,
     {
         match self.recv_timeout {
@@ -223,12 +286,11 @@ impl IpcConnection {
     }
 
     /// Receive a version-dispatched daemon wire message with a timeout.
-    pub async fn recv_wire_with_timeout<Bincode, Prost>(
+    pub async fn recv_wire_with_timeout<Prost>(
         &mut self,
         timeout: Duration,
-    ) -> Result<Option<zccache_protocol::DecodedWireMessage<Bincode, Prost>>, IpcError>
+    ) -> Result<Option<zccache_protocol::DecodedWireMessage<Prost>>, IpcError>
     where
-        Bincode: serde::de::DeserializeOwned,
         Prost: prost::Message + Default,
     {
         match tokio::time::timeout(timeout, self.recv_wire_loop()).await {
@@ -239,8 +301,7 @@ impl IpcConnection {
 
     /// Send a protocol [`Request`](zccache_protocol::Request) on the selected wire.
     ///
-    /// `BincodeV15` keeps the legacy [`Self::send`] frame; `ProstV16`
-    /// converts via [`wire_prost::request_to_prost`] using the canonical
+    /// `ProstV16` converts via [`wire_prost::request_to_prost`] using the canonical
     /// per-family request id and sends a v16 prost frame.
     ///
     /// [`wire_prost::request_to_prost`]: zccache_protocol::wire_prost::request_to_prost
@@ -250,7 +311,6 @@ impl IpcConnection {
         wire: zccache_protocol::wire_prost::WireFormat,
     ) -> Result<(), IpcError> {
         match wire {
-            zccache_protocol::wire_prost::WireFormat::BincodeV15 => self.send(request).await,
             zccache_protocol::wire_prost::WireFormat::ProstV16 => {
                 let request_id = zccache_protocol::wire_prost::default_request_id(request);
                 let request = zccache_protocol::wire_prost::request_to_prost(request, request_id);
@@ -265,10 +325,10 @@ impl IpcConnection {
     }
 
     /// Receive a protocol [`Response`](zccache_protocol::Response), accepting
-    /// v15 bincode, v16 prost, and running-process `Frame` envelopes.
+    /// prost and running-process `Frame` envelopes.
     pub async fn recv_response(&mut self) -> Result<Option<zccache_protocol::Response>, IpcError> {
         let message = self
-            .recv_wire::<zccache_protocol::Response, zccache_protocol::wire_prost::zccache_v1::Response>()
+            .recv_wire::<zccache_protocol::wire_prost::zccache_v1::Response>()
             .await?;
         decode_response_wire(message)
     }
@@ -279,23 +339,22 @@ impl IpcConnection {
         timeout: Duration,
     ) -> Result<Option<zccache_protocol::Response>, IpcError> {
         let message = self
-            .recv_wire_with_timeout::<zccache_protocol::Response, zccache_protocol::wire_prost::zccache_v1::Response>(timeout)
+            .recv_wire_with_timeout::<zccache_protocol::wire_prost::zccache_v1::Response>(timeout)
             .await?;
         decode_response_wire(message)
     }
 
     /// Receive a response with a per-call timeout while retaining the selected
-    /// request wire. A bincode response to a prost request is the structured
-    /// old-daemon rejection signal used by the safe compatibility retry.
+    /// request wire.
     pub async fn recv_response_for_wire_with_timeout(
         &mut self,
         timeout: Duration,
-        expected: zccache_protocol::wire_prost::WireFormat,
+        _expected: zccache_protocol::wire_prost::WireFormat,
     ) -> Result<Option<zccache_protocol::Response>, IpcError> {
         let message = self
-            .recv_wire_with_timeout::<zccache_protocol::Response, zccache_protocol::wire_prost::zccache_v1::Response>(timeout)
+            .recv_wire_with_timeout::<zccache_protocol::wire_prost::zccache_v1::Response>(timeout)
             .await?;
-        decode_response_wire_for_expected(message, expected)
+        decode_response_wire(message)
     }
 
     /// Resolve when the peer disconnects while the server is NOT otherwise
@@ -333,15 +392,43 @@ impl IpcConnection {
     /// The recv read loop, factored out so both `recv` and
     /// `recv_with_timeout` share the same implementation. Always
     /// unbounded â€” the wrapping methods add the deadline.
-    async fn recv_loop<T: serde::de::DeserializeOwned>(&mut self) -> Result<Option<T>, IpcError> {
-        recv_bincode_loop(&mut self.reader, &mut self.read_buf).await
+    async fn recv_loop<T: DaemonWireMessage>(&mut self) -> Result<Option<T>, IpcError> {
+        let message = self.recv_wire_loop::<T::Prost>().await?;
+        message
+            .map(|message| match message {
+                zccache_protocol::DecodedWireMessage::ProstV16(message)
+                | zccache_protocol::DecodedWireMessage::FrameV1 { message, .. } => {
+                    T::from_prost(message)
+                }
+            })
+            .transpose()
+            .map_err(IpcError::Protocol)
     }
 
-    async fn recv_wire_loop<Bincode, Prost>(
+    async fn recv_opaque_with_loop<T, E, Decode>(
         &mut self,
-    ) -> Result<Option<zccache_protocol::DecodedWireMessage<Bincode, Prost>>, IpcError>
+        decode: &mut Decode,
+    ) -> Result<Option<T>, IpcError>
     where
-        Bincode: serde::de::DeserializeOwned,
+        E: std::fmt::Display,
+        Decode: FnMut(&mut BytesMut) -> Result<Option<T>, E>,
+    {
+        loop {
+            if let Some(message) = decode(&mut self.read_buf)
+                .map_err(|error| IpcError::OpaqueProtocol(error.to_string()))?
+            {
+                return Ok(Some(message));
+            }
+            if !framing::read_next_chunk(&mut self.reader, &mut self.read_buf).await? {
+                return Ok(None);
+            }
+        }
+    }
+
+    async fn recv_wire_loop<Prost>(
+        &mut self,
+    ) -> Result<Option<zccache_protocol::DecodedWireMessage<Prost>>, IpcError>
+    where
         Prost: prost::Message + Default,
     {
         recv_wire_loop(&mut self.reader, &mut self.read_buf).await

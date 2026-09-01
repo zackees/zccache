@@ -427,12 +427,6 @@ pub(super) fn daemon_status_to_prost(status: &crate::DaemonStatus) -> zccache_v1
         watcher_active: status.watcher_active,
         watcher_degradations: status.watcher_degradations,
         index_writer_gone: status.index_writer_gone,
-        bincode_requests_by_type: status
-            .bincode_requests_by_type
-            .iter()
-            .map(|(request, count)| (request.clone(), *count))
-            .collect(),
-        bincode_request_telemetry_available: status.bincode_request_telemetry_available,
     }
 }
 
@@ -476,8 +470,6 @@ pub(super) fn daemon_status_from_prost(
         watcher_active: status.watcher_active,
         watcher_degradations: status.watcher_degradations,
         index_writer_gone: status.index_writer_gone,
-        bincode_requests_by_type: status.bincode_requests_by_type.into_iter().collect(),
-        bincode_request_telemetry_available: status.bincode_request_telemetry_available,
     })
 }
 

@@ -641,7 +641,6 @@ mod tests {
                 let mut connection = listener.accept().await.expect("accept session-end");
                 let request: Option<
                     crate::protocol::DecodedWireMessage<
-                        crate::protocol::Request,
                         crate::protocol::wire_prost::zccache_v1::Request,
                     >,
                 > = connection.recv_wire().await.expect("receive session-end");

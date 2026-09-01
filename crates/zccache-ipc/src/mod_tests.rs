@@ -118,8 +118,6 @@ fn test_daemon_status(endpoint: &str) -> zccache_protocol::DaemonStatus {
         watcher_active: true,
         watcher_degradations: 0,
         index_writer_gone: false,
-        bincode_requests_by_type: Default::default(),
-        bincode_request_telemetry_available: true,
     }
 }
 
@@ -139,10 +137,7 @@ async fn daemon_control_roundtrip_auto_prefers_prost_for_status() {
     let server = tokio::spawn(async move {
         let mut conn = listener.accept().await.unwrap();
         let msg: Option<
-            zccache_protocol::DecodedWireMessage<
-                zccache_protocol::Request,
-                zccache_protocol::wire_prost::zccache_v1::Request,
-            >,
+            zccache_protocol::DecodedWireMessage<zccache_protocol::wire_prost::zccache_v1::Request>,
         > = conn.recv_wire().await.unwrap();
         match msg {
             Some(zccache_protocol::DecodedWireMessage::ProstV16(request)) => {
@@ -173,7 +168,6 @@ async fn daemon_control_roundtrip_auto_prefers_prost_for_status() {
     match response {
         Some(Response::Status(status)) => {
             assert_eq!(status.endpoint, endpoint);
-            assert!(status.bincode_request_telemetry_available);
         }
         other => panic!("expected Status response, got {other:?}"),
     }
@@ -196,10 +190,7 @@ async fn daemon_control_roundtrip_auto_prefers_prost_for_clear() {
     let server = tokio::spawn(async move {
         let mut conn = listener.accept().await.unwrap();
         let msg: Option<
-            zccache_protocol::DecodedWireMessage<
-                zccache_protocol::Request,
-                zccache_protocol::wire_prost::zccache_v1::Request,
-            >,
+            zccache_protocol::DecodedWireMessage<zccache_protocol::wire_prost::zccache_v1::Request>,
         > = conn.recv_wire().await.unwrap();
         match msg {
             Some(zccache_protocol::DecodedWireMessage::ProstV16(request)) => {
@@ -250,116 +241,10 @@ async fn daemon_control_roundtrip_auto_prefers_prost_for_clear() {
     server.await.unwrap();
 }
 
-#[tokio::test]
-async fn daemon_control_roundtrip_bincode_selection_stays_v15_for_status() {
-    use super::broker::RUNNING_PROCESS_FAKE_BACKEND_ENV;
-    use super::test_env::EnvVarGuard;
-
-    let _env = EnvVarGuard::set_all(&[
-        (RUNNING_PROCESS_DISABLE_ENV, Some("1".to_string())),
-        (RUNNING_PROCESS_FAKE_BACKEND_ENV, None),
-    ]);
-    let endpoint = unique_test_endpoint();
-    let mut listener = IpcListener::bind(&endpoint).unwrap();
-    let expected_endpoint = endpoint.clone();
-
-    let server = tokio::spawn(async move {
-        let mut conn = listener.accept().await.unwrap();
-        let request: Option<zccache_protocol::Request> = conn.recv().await.unwrap();
-        assert_eq!(request, Some(zccache_protocol::Request::Status));
-        conn.send(&Response::Status(test_daemon_status(&expected_endpoint)))
-            .await
-            .unwrap();
-    });
-
-    let response = daemon_control_roundtrip_with_selection(
-        &endpoint,
-        DaemonControlRequest::Status,
-        None,
-        wire_prost::ClientWireSelection::BincodeV15,
-    )
-    .await
-    .unwrap();
-
-    match response {
-        Some(Response::Status(status)) => {
-            assert_eq!(status.endpoint, endpoint);
-            assert!(!status.bincode_request_telemetry_available);
-        }
-        other => panic!("expected bincode Status response, got {other:?}"),
-    }
-
-    server.await.unwrap();
-}
-
-#[tokio::test]
-async fn daemon_control_roundtrip_auto_falls_back_to_bincode_for_old_daemon() {
-    use super::broker::RUNNING_PROCESS_FAKE_BACKEND_ENV;
-    use super::test_env::EnvVarGuard;
-
-    let _env = EnvVarGuard::set_all(&[
-        (RUNNING_PROCESS_DISABLE_ENV, Some("1".to_string())),
-        (RUNNING_PROCESS_FAKE_BACKEND_ENV, None),
-    ]);
-    let endpoint = unique_test_endpoint();
-    let mut listener = IpcListener::bind(&endpoint).unwrap();
-    let expected_endpoint = endpoint.clone();
-
-    let server = tokio::spawn(async move {
-        let mut first = listener.accept().await.unwrap();
-        match first.recv::<zccache_protocol::Request>().await {
-            Err(IpcError::Protocol(zccache_protocol::ProtocolError::VersionMismatch {
-                expected: zccache_protocol::BINCODE_PROTOCOL_VERSION,
-                received: zccache_protocol::PROST_PROTOCOL_VERSION,
-            })) => {
-                first
-                    .send(&Response::Error {
-                        message: "protocol version mismatch: expected v15, received v16"
-                            .to_string(),
-                    })
-                    .await
-                    .unwrap();
-            }
-            Ok(None) => {}
-            other => panic!("v16 prost request must not decode as v15 bincode: {other:?}"),
-        }
-
-        let mut second = listener.accept().await.unwrap();
-        let request: Option<zccache_protocol::Request> = second.recv().await.unwrap();
-        assert_eq!(request, Some(zccache_protocol::Request::Status));
-        second
-            .send(&Response::Status(test_daemon_status(&expected_endpoint)))
-            .await
-            .unwrap();
-    });
-
-    let response = daemon_control_roundtrip_with_selection(
-        &endpoint,
-        DaemonControlRequest::Status,
-        None,
-        wire_prost::ClientWireSelection::Auto,
-    )
-    .await
-    .unwrap();
-
-    match response {
-        Some(Response::Status(status)) => {
-            assert_eq!(status.endpoint, endpoint);
-            assert!(!status.bincode_request_telemetry_available);
-        }
-        other => panic!("expected fallback Status response, got {other:?}"),
-    }
-
-    server.await.unwrap();
-}
-
-#[path = "mod_tests/full_family.rs"]
-mod full_family;
-
 /// Issue #720 Phase 1: with the broker lane active (here via the
 /// fake-backend seam, which yields a `Broker` route), the control
 /// roundtrip must carry real traffic over the version-checked 0x7A63
-/// FrameV1 envelope rather than resolve-and-drop to a bincode re-dial.
+/// FrameV1 envelope rather than resolving and dropping the connection.
 /// The server asserts it decodes a `FrameV1` request and echoes a
 /// FrameV1 response on the frame correlation id.
 #[tokio::test]
@@ -387,16 +272,12 @@ async fn broker_lane_control_roundtrip_uses_frame_v1() {
                 Ok(conn) => conn,
                 Err(_) => return false,
             };
-            let msg: Option<
-                zccache_protocol::DecodedWireMessage<
-                    zccache_protocol::Request,
-                    wire_prost::zccache_v1::Request,
-                >,
-            > = match conn.recv_wire().await {
-                Ok(msg) => msg,
-                // Resolution dial closed without a payload; keep waiting.
-                Err(_) => continue,
-            };
+            let msg: Option<zccache_protocol::DecodedWireMessage<wire_prost::zccache_v1::Request>> =
+                match conn.recv_wire().await {
+                    Ok(msg) => msg,
+                    // Resolution dial closed without a payload; keep waiting.
+                    Err(_) => continue,
+                };
             match msg {
                 Some(zccache_protocol::DecodedWireMessage::FrameV1 {
                     message,

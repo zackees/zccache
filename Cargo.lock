@@ -4556,7 +4556,6 @@ dependencies = [
 name = "zccache-protocol"
 version = "1.13.20"
 dependencies = [
- "bincode",
  "bytes",
  "prost",
  "prost-build",

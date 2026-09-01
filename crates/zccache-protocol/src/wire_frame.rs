@@ -19,7 +19,12 @@ use prost::Message;
 use running_process::broker::protocol::frame_ext::{encode_framed, try_decode_framed};
 use running_process::register_payload_protocol;
 
-use super::{ProtocolError, BINCODE_PROTOCOL_VERSION, PROST_PROTOCOL_VERSION};
+use super::{ProtocolError, PROST_PROTOCOL_VERSION};
+
+// Retained only for direct-frame discrimination. The v25 bincode body codec
+// was retired by #840 and is never decoded; recognizing this header prevents a
+// frame with a low length byte of `1` from being mistaken for FrameV1.
+const RETIRED_BINCODE_PROTOCOL_VERSION: u32 = 25;
 
 register_payload_protocol! {
     /// `payload_protocol` registry value for zccache requests/responses carried
@@ -114,7 +119,8 @@ fn encode_framed_bytes(
 /// probe detector exactly: a first byte equal to the running-process
 /// `ENVELOPE_VERSION` (1) is still treated as a zccache frame when bytes
 /// 0..4 form a plausible zccache length and bytes 4..8 carry a known
-/// zccache protocol version (v15/v16).
+/// zccache protocol version, including the retired v25 header solely for
+/// discrimination.
 #[must_use]
 pub fn buffer_starts_running_process_frame(buf: &[u8]) -> Option<bool> {
     if buf.is_empty() {
@@ -132,7 +138,7 @@ pub fn buffer_starts_running_process_frame(buf: &[u8]) -> Option<bool> {
         !(zccache_len >= 4
             && matches!(
                 zccache_version,
-                BINCODE_PROTOCOL_VERSION | PROST_PROTOCOL_VERSION
+                PROST_PROTOCOL_VERSION | RETIRED_BINCODE_PROTOCOL_VERSION
             )),
     )
 }

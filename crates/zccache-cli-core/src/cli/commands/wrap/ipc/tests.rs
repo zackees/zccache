@@ -7,7 +7,6 @@ fn failed(message: &str) -> CompileRecvOutcome {
     CompileRecvOutcome::Failed(TransportFailure {
         message: message.to_string(),
         phase: FailurePhase::DeliveryUnknown,
-        explicit_wire_mismatch: false,
     })
 }
 
@@ -15,49 +14,7 @@ fn predispatch_failed(message: &str) -> CompileRecvOutcome {
     CompileRecvOutcome::Failed(TransportFailure {
         message: message.to_string(),
         phase: FailurePhase::PreDispatch,
-        explicit_wire_mismatch: false,
     })
-}
-
-#[test]
-fn bincode_retry_requires_auto_and_an_explicit_wire_rejection() {
-    let rejected = CompileRecvOutcome::Failed(TransportFailure {
-        message: "protocol version mismatch".to_string(),
-        phase: FailurePhase::DeliveryUnknown,
-        explicit_wire_mismatch: true,
-    });
-    assert!(outcome_requires_bincode_retry(
-        crate::protocol::wire_prost::ClientWireSelection::Auto,
-        &rejected
-    ));
-    assert!(!outcome_requires_bincode_retry(
-        crate::protocol::wire_prost::ClientWireSelection::ProstV16,
-        &rejected
-    ));
-
-    let application_error = CompileRecvOutcome::Done(Some(crate::protocol::Response::Error {
-        message: "nested protocol version mismatch".to_string(),
-    }));
-    assert!(!outcome_requires_bincode_retry(
-        crate::protocol::wire_prost::ClientWireSelection::Auto,
-        &application_error
-    ));
-
-    let ambiguous_close = failed("broken connection to daemon: connection closed");
-    assert!(!outcome_requires_bincode_retry(
-        crate::protocol::wire_prost::ClientWireSelection::Auto,
-        &ambiguous_close
-    ));
-
-    let version_mismatch = CompileRecvOutcome::Failed(TransportFailure {
-        message: "protocol version mismatch".to_string(),
-        phase: FailurePhase::DeliveryUnknown,
-        explicit_wire_mismatch: true,
-    });
-    assert!(outcome_requires_bincode_retry(
-        crate::protocol::wire_prost::ClientWireSelection::Auto,
-        &version_mismatch
-    ));
 }
 
 #[test]
@@ -367,7 +324,7 @@ async fn wedge_detection_returns_done_on_normal_response() {
     let outcome = compile_recv_with_wedge_detection(
         &mut conn,
         TEST_BUDGET,
-        crate::protocol::wire_prost::WireFormat::BincodeV15,
+        crate::protocol::wire_prost::WireFormat::ProstV16,
     )
     .await;
     assert!(matches!(
@@ -396,7 +353,7 @@ async fn wedge_detection_returns_wedged_on_recv_timeout() {
     let outcome = compile_recv_with_wedge_detection(
         &mut conn,
         TEST_BUDGET,
-        crate::protocol::wire_prost::WireFormat::BincodeV15,
+        crate::protocol::wire_prost::WireFormat::ProstV16,
     )
     .await;
     let elapsed = started.elapsed();
@@ -436,7 +393,7 @@ async fn compile_progress_heartbeats_reset_the_wedge_budget() {
     let outcome = compile_recv_with_wedge_detection(
         &mut conn,
         TEST_BUDGET,
-        crate::protocol::wire_prost::WireFormat::BincodeV15,
+        crate::protocol::wire_prost::WireFormat::ProstV16,
     )
     .await;
     let elapsed = started.elapsed();
@@ -474,7 +431,7 @@ async fn silence_after_heartbeats_still_trips_wedge_detection() {
     let outcome = compile_recv_with_wedge_detection(
         &mut conn,
         TEST_BUDGET,
-        crate::protocol::wire_prost::WireFormat::BincodeV15,
+        crate::protocol::wire_prost::WireFormat::ProstV16,
     )
     .await;
     assert!(
@@ -501,7 +458,7 @@ async fn compile_progress_is_never_relayed_as_a_terminal_response() {
     let outcome = compile_recv_with_wedge_detection(
         &mut conn,
         TEST_BUDGET,
-        crate::protocol::wire_prost::WireFormat::BincodeV15,
+        crate::protocol::wire_prost::WireFormat::ProstV16,
     )
     .await;
     let CompileRecvOutcome::Done(response) = outcome else {
@@ -533,7 +490,7 @@ async fn queue_progress_is_not_reported_as_the_cause_of_a_terminal_daemon_error(
     let outcome = compile_recv_with_wedge_detection(
         &mut conn,
         TEST_BUDGET,
-        crate::protocol::wire_prost::WireFormat::BincodeV15,
+        crate::protocol::wire_prost::WireFormat::ProstV16,
     )
     .await;
     let CompileRecvOutcome::Done(response) = outcome else {
@@ -579,7 +536,7 @@ async fn wedge_detection_does_not_misclassify_broken_pipe_as_wedge() {
     let outcome = compile_recv_with_wedge_detection(
         &mut conn,
         TEST_BUDGET,
-        crate::protocol::wire_prost::WireFormat::BincodeV15,
+        crate::protocol::wire_prost::WireFormat::ProstV16,
     )
     .await;
     assert!(matches!(outcome, CompileRecvOutcome::Failed(_)));
@@ -835,7 +792,7 @@ async fn wedge_detection_disabled_when_budget_is_none() {
     let outcome = compile_recv_with_wedge_detection(
         &mut conn,
         None,
-        crate::protocol::wire_prost::WireFormat::BincodeV15,
+        crate::protocol::wire_prost::WireFormat::ProstV16,
     )
     .await;
     // Disabled means a timeout is surfaced as a normal failure, not a
