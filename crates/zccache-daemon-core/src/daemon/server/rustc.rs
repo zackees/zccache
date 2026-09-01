@@ -238,9 +238,15 @@ pub(super) async fn build_rustc_compile_context_async(
     }
 }
 
+/// Mirrors `is_dylint_cdylib` in
+/// `zccache-compiler/src/parse_rustc.rs` — that crate parses raw argv
+/// during admission (before a request even reaches the daemon);
+/// this one re-derives the identical predicate from the daemon's own
+/// `RustcParsedArgs` because `zccache-depgraph` does not depend on
+/// `zccache-compiler`. Keep both gates in lockstep: soldr#2349 removed
+/// the non-Windows-only restriction from both sides together.
 fn is_dylint_cdylib_args(args: &crate::depgraph::RustcParsedArgs) -> bool {
-    !crate::platform::host::is_windows()
-        && args.crate_types == ["cdylib"]
+    args.crate_types == ["cdylib"]
         && args.target.is_none()
         && args.extra_filename.as_deref().is_none_or(str::is_empty)
         && args.linker.as_ref().is_some_and(|linker| {
@@ -570,9 +576,13 @@ pub(super) fn rustc_expected_output_paths(
         }
     }
 
-    if let Some(sidecar) =
-        dylint_library_sidecar_output_path(rustc_args, primary_output_path, cwd, client_env)
-    {
+    if let Some(sidecar) = dylint_library_sidecar_output_path(
+        rustc_args,
+        primary_output_path,
+        cwd,
+        client_env,
+        HostFamily::current(),
+    ) {
         push_unique_output_path(&mut paths, sidecar);
     }
 
@@ -593,6 +603,22 @@ pub(super) fn rustc_expected_output_paths(
         }
     }
 
+    // soldr#2349: deliberately NOT declaring the MSVC import-lib pair here.
+    // Unlike `.pdb`/`.dwp` above, `msvc_dll_implib_sidecar_output_paths`'s
+    // `<dll>.lib` naming was never verified against a live Windows build in
+    // the session that added it. A *declared* staged output that never
+    // materializes is not a soft miss: `StagedCompilePlan::materialize`
+    // (`persist/staged_plan.rs`) hard-fails the whole compile with
+    // `Response::Error` (soldr#2347's failure class) -- and the staged lane
+    // is default-on for rustc (`staged_lane_enabled`). Nothing reads the
+    // import lib back (Dylint loads its cdylib via `LoadLibrary`, never a
+    // static link against it), so the file is only ever nice-to-have. Given
+    // that, an unverified filename guess belongs on the tolerant, opportunistic
+    // [`collect_rustc_output_files`] path below (present -> collected, absent
+    // -> silently skipped), never on this required-output path, on the exact
+    // platform this whole change targets. See `msvc_dll_implib_sidecar_output_paths`'s
+    // doc comment for the full naming-risk writeup.
+
     if let Some(dwp) = linux_packed_dwarf_sidecar_output_path(rustc_args, primary_output_path) {
         push_unique_output_path(&mut paths, dwp);
     }
@@ -600,13 +626,44 @@ pub(super) fn rustc_expected_output_paths(
     paths
 }
 
+/// Host OS family, threaded explicitly through the Dylint sidecar-naming
+/// helper below instead of reading `crate::platform::host::is_windows()`
+/// inline.
+///
+/// Same rationale as the identically-named (but crate-private, so not
+/// shared — see the mirroring note on `is_dylint_cdylib_args` above)
+/// enum in `zccache-compiler/src/parse_rustc.rs`: `is_windows()`/
+/// `is_macos()` are compile-time constants, so a function reading them
+/// directly can only be exercised from the one host actually running the
+/// test. Threading the value in keeps the sidecar-name derivation
+/// testable for all three families from a single CI runner.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum HostFamily {
+    Windows,
+    MacOs,
+    Other,
+}
+
+impl HostFamily {
+    pub(super) fn current() -> Self {
+        if crate::platform::host::is_windows() {
+            HostFamily::Windows
+        } else if crate::platform::host::is_macos() {
+            HostFamily::MacOs
+        } else {
+            HostFamily::Other
+        }
+    }
+}
+
 fn dylint_library_sidecar_output_path(
     rustc_args: &crate::depgraph::RustcParsedArgs,
     primary_output_path: &Path,
     cwd: &Path,
     client_env: Option<&[(String, String)]>,
+    host: HostFamily,
 ) -> Option<NormalizedPath> {
-    if crate::platform::host::is_windows() || rustc_args.crate_types != ["cdylib"] {
+    if rustc_args.crate_types != ["cdylib"] {
         return None;
     }
     let linker_stem = rustc_args.linker.as_ref()?.file_stem()?.to_str()?;
@@ -647,16 +704,15 @@ fn dylint_library_sidecar_output_path(
     } else {
         parent
     };
-    let suffix = if crate::platform::host::is_macos() {
-        ".dylib"
-    } else {
-        ".so"
+    // Windows carries no `lib` prefix — matches `rustc_dylint_cdylib_filename`
+    // in `zccache-compiler/src/parse_rustc.rs` for the primary output, and
+    // `rustc_proc_macro_filename` for the same host-dylib convention.
+    let sidecar_name = match host {
+        HostFamily::Windows => format!("{crate_name}@{toolchain}.dll"),
+        HostFamily::MacOs => format!("lib{crate_name}@{toolchain}.dylib"),
+        HostFamily::Other => format!("lib{crate_name}@{toolchain}.so"),
     };
-    Some(
-        sidecar_dir
-            .join(format!("lib{crate_name}@{toolchain}{suffix}"))
-            .into(),
-    )
+    Some(sidecar_dir.join(sidecar_name).into())
 }
 
 /// `<primary>.pdb` beside a linked Windows image.
@@ -698,6 +754,75 @@ pub(super) fn msvc_pdb_sidecar_output_path(primary_output_path: &Path) -> Option
     ))
 }
 
+/// `<primary>.lib` + `<primary>.exp` import-library pair beside a linked
+/// Windows DLL (soldr#2349).
+///
+/// MSVC's linker writes both whenever it is asked to (rustc requests them
+/// via `/IMPLIB:<dll>.lib` for any `/DLL`-mode link), unconditionally on
+/// the DLL's export count or debug-info settings — unlike the neighboring
+/// `.pdb`, which is conditional on `-Cdebuginfo`. Nothing zccache models
+/// reads the import lib back: Dylint loads its cdylib dynamically
+/// (`LoadLibrary`, not a static link against the import lib), so it is
+/// purely a nice-to-have for store/replay fidelity, never load-bearing —
+/// see the HARD CONSTRAINT in the task that motivated this: "a cdylib
+/// cache that loses the import lib is worse than no cache."
+///
+/// **Deliberately `collect_rustc_output_files`-only — NOT wired into
+/// [`rustc_expected_output_paths`]'s staged/required-output declaration,**
+/// unlike the neighboring `.pdb`/`.dwp` helpers. The `<dll>.lib` naming
+/// below is inferred from widely-observed cargo-xwin/maturin cdylib
+/// output, not confirmed against a live `rustc`/`link.exe` invocation in
+/// this session (no Windows build was run — see the task report's risk
+/// list). A *declared* staged output that never materializes is not a
+/// soft miss: `StagedCompilePlan::materialize` (`persist/staged_plan.rs`)
+/// hard-fails the *whole compile* with `Response::Error` — the exact
+/// soldr#2347 failure class — and the staged lane is default-on for rustc
+/// (`staged_lane_enabled`). Declaring an unverified filename there would
+/// trade "no cache for this file" for "the Windows build outright fails
+/// the first time the guess is wrong," on the exact platform this change
+/// targets. Kept opportunistic instead: called only from
+/// [`collect_rustc_output_files`], where a `std::fs::metadata` probe means
+/// present -> collected, absent (wrong guess, or windows-gnu host) ->
+/// silently skipped, never a build failure.
+///
+/// Scoped to `cdylib` for the same reason, one layer up: `/DLL`-mode links
+/// also include Windows proc-macro — a *shipped, working* cached lane,
+/// unlike Dylint cdylib which currently caches nothing on Windows. Even
+/// on the tolerant collection path, there is no reason to touch that
+/// lane's output set on an unverified filename guess for a file nothing
+/// reads back. Within cacheable crate-type shapes, `cdylib` on Windows
+/// already implies Dylint (see `is_dylint_cdylib_args`), so this check
+/// does not need the fuller `target.is_none()` gate that function applies
+/// — doing so here would also break this function's own
+/// `--target=x86_64-pc-windows-msvc` test seam (Dylint compiles are always
+/// host-native, but this helper is deliberately more general than the
+/// Dylint gate so it stays testable via an explicit `--target`, matching
+/// [`msvc_target_writes_pdb`]'s existing seam).
+///
+/// Gated the same way as [`msvc_pdb_sidecar_output_path`]/
+/// [`msvc_target_writes_pdb`]: MSVC target/host only, and reuses
+/// `msvc_target_writes_pdb`'s over-approximation (a windows-gnu host
+/// toolchain also reads as MSVC-capable with no explicit `--target`) — the
+/// same residual risk the existing (staged-declared) `.pdb` above already
+/// carries; harmless here since this path never hard-fails.
+pub(super) fn msvc_dll_implib_sidecar_output_paths(
+    rustc_args: &crate::depgraph::RustcParsedArgs,
+    primary_output_path: &Path,
+) -> Option<[NormalizedPath; 2]> {
+    if rustc_args.crate_types != ["cdylib"] {
+        return None;
+    }
+    let extension = primary_output_path.extension()?.to_str()?;
+    if !extension.eq_ignore_ascii_case("dll") || !msvc_target_writes_pdb(rustc_args) {
+        return None;
+    }
+    let mut implib_name = primary_output_path.as_os_str().to_owned();
+    implib_name.push(".lib");
+    let implib_path = NormalizedPath::new(Path::new(&implib_name));
+    let exp_path = NormalizedPath::new(implib_path.with_extension("exp"));
+    Some([implib_path, exp_path])
+}
+
 /// Packed DWARF product (`<complete-image-name>.dwp`) beside a Linux image.
 /// Static archives must not declare it because they skip the final pack step.
 pub(super) fn linux_packed_dwarf_sidecar_output_path(
@@ -734,8 +859,14 @@ pub(super) fn dylint_cdylib_has_complete_output_identity(
     client_env: Option<&[(String, String)]>,
 ) -> bool {
     rustc_args.crate_types != ["cdylib"]
-        || dylint_library_sidecar_output_path(rustc_args, primary_output_path, cwd, client_env)
-            .is_some()
+        || dylint_library_sidecar_output_path(
+            rustc_args,
+            primary_output_path,
+            cwd,
+            client_env,
+            HostFamily::current(),
+        )
+        .is_some()
 }
 
 /// Collect output file metadata from a rustc compilation without reading bytes.
@@ -875,6 +1006,31 @@ pub(super) fn collect_rustc_output_files(
                         path: dwp,
                         size: meta.len(),
                     });
+                }
+            }
+        }
+    }
+
+    // soldr#2349: same non-staged-fallback symmetry argument as the `.pdb`
+    // block above, for the MSVC import-lib pair.
+    if let Some(implib_files) =
+        msvc_dll_implib_sidecar_output_paths(rustc_args, primary_output_path)
+    {
+        for candidate in implib_files {
+            if let Ok(meta) = std::fs::metadata(&candidate) {
+                if meta.is_file() {
+                    let name = candidate
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned();
+                    if !outputs.iter().any(|existing| existing.name == name) {
+                        outputs.push(RustcOutputFile {
+                            name,
+                            path: candidate,
+                            size: meta.len(),
+                        });
+                    }
                 }
             }
         }

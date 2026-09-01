@@ -21,9 +21,14 @@ use super::{CacheableCompilation, CompilerFamily, ParsedInvocation};
 ///   libraries embed platform linker state (soname/install-name, import
 ///   libs) that the artifact store does not model, so PyO3/maturin
 ///   `cdylib` final artifacts recompile every time while their rlib deps
-///   still hit. A Dylint lint-library `cdylib` is the narrow exception:
-///   its declared library and toolchain-qualified byte-copy sidecar are
-///   modeled as one complete artifact set by the daemon.
+///   still hit. A Dylint lint-library `cdylib` is the narrow exception,
+///   on Linux, macOS, and Windows: its declared library and
+///   toolchain-qualified byte-copy sidecar are modeled as one complete
+///   artifact set by the daemon (see
+///   `dylint_cdylib_has_complete_output_identity` in
+///   `zccache-daemon-core`), and on Windows the MSVC linker's import
+///   library (`<dll>.lib` + `.exp`) is modeled too, as a best-effort
+///   secondary output alongside the existing `.pdb` handling.
 const RUSTC_CACHEABLE_CRATE_TYPES: &[&str] = &["lib", "rlib", "staticlib", "proc-macro", "bin"];
 
 /// Why a `--test` harness link is refused regardless of crate type
@@ -86,12 +91,51 @@ fn rustc_proc_macro_filename(crate_name: &str, extra: &str) -> String {
     }
 }
 
+/// Host OS family, threaded explicitly through the Dylint-cdylib naming
+/// helpers below instead of reading `crate::platform::host::is_windows()`
+/// inline.
+///
+/// `crate::platform::host::is_windows()`/`is_macos()` resolve to
+/// **compile-time** constants selected by the build's own host-selector
+/// `cfg_select!` (see `zccache-platform`), so a function that reads them
+/// directly can only ever exercise the branch matching whichever OS
+/// happens to be running the test suite — the Windows Dylint-cdylib
+/// naming added for this repo's Windows carve-out would otherwise be
+/// unreachable from Linux CI (soldr#2349). Threading the value as a plain
+/// parameter keeps this pure naming logic exercisable from any host;
+/// [`HostFamily::current`] is how production call sites resolve the real
+/// one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum HostFamily {
+    Windows,
+    MacOs,
+    Other,
+}
+
+impl HostFamily {
+    /// The actual host this process is running on.
+    pub(crate) fn current() -> Self {
+        if crate::platform::host::is_windows() {
+            HostFamily::Windows
+        } else if crate::platform::host::is_macos() {
+            HostFamily::MacOs
+        } else {
+            HostFamily::Other
+        }
+    }
+}
+
 /// Host dynamic-library file-name pattern for a Dylint lint cdylib.
-fn rustc_dylint_cdylib_filename(crate_name: &str) -> String {
-    if crate::platform::host::is_macos() {
-        format!("lib{crate_name}.dylib")
-    } else {
-        format!("lib{crate_name}.so")
+///
+/// Windows carries no `lib` prefix (matching [`rustc_proc_macro_filename`]'s
+/// Windows arm and real cdylib output observed from cargo-xwin/maturin
+/// builds): `dylint-link` on Windows ultimately drives `link.exe`/`lld-link`,
+/// which name the DLL after the crate alone.
+pub(crate) fn rustc_dylint_cdylib_filename(crate_name: &str, host: HostFamily) -> String {
+    match host {
+        HostFamily::Windows => format!("{crate_name}.dll"),
+        HostFamily::MacOs => format!("lib{crate_name}.dylib"),
+        HostFamily::Other => format!("lib{crate_name}.so"),
     }
 }
 
@@ -190,7 +234,7 @@ fn rustc_primary_output_filename(shape: &RustcOutputShape<'_>) -> String {
         return rustc_proc_macro_filename(name, suffix);
     }
     if is_dylint_cdylib {
-        return rustc_dylint_cdylib_filename(name);
+        return rustc_dylint_cdylib_filename(name, HostFamily::current());
     }
     if is_bin {
         return rustc_bin_filename(name, suffix, target);
@@ -513,10 +557,19 @@ pub(crate) fn parse_rustc_invocation_with_policy(
     }
 
     // The Dylint bootstrap is the only cdylib form whose full output set is
-    // modeled. Keep it host-only and reject extra-filename because
-    // dylint-link's package-name guard would not create the sidecar.
-    let is_dylint_cdylib = !crate::platform::host::is_windows()
-        && crate_types == ["cdylib"]
+    // modeled — on Linux, macOS, *and* Windows (soldr#2349 extended this
+    // off Linux/macOS-only). Reject extra-filename because dylint-link's
+    // package-name guard would not create the sidecar; reject an explicit
+    // `--target` because Dylint lint libraries are always host-native.
+    //
+    // This mirrors `is_dylint_cdylib_args` in
+    // `zccache-daemon-core/src/daemon/server/rustc.rs` — the daemon
+    // re-derives the same predicate from its own parsed-args type because
+    // that crate cannot depend back on this one's raw-argv parse loop.
+    // Keep the two gates in lockstep; a platform/shape carve-out here that
+    // is not mirrored there re-opens the general `cdylib` exclusion's
+    // safety argument on one side only.
+    let is_dylint_cdylib = crate_types == ["cdylib"]
         && target.is_none()
         && extra_filename.as_deref().is_none_or(str::is_empty)
         && is_dylint_linker(linker.as_deref())
