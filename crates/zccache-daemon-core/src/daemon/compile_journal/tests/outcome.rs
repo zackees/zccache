@@ -179,8 +179,6 @@ fn test_extract_outcome_all_non_journalable() {
             watcher_active: true,
             watcher_degradations: 0,
             index_writer_gone: false,
-            bincode_requests_by_type: Default::default(),
-            bincode_request_telemetry_available: false,
         }),
         Response::LookupResult(LR::Miss),
         Response::StoreResult(SR::Stored),

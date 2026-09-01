@@ -4,7 +4,7 @@
 //! [`super::response`] to the subset of `Request`/`Response` variants that
 //! today's prost control roundtrip helper accepts, and centralize the small
 //! glue (`default_request_id`, `full_family_wire_format_from_env`,
-//! `response_from_decoded_wire`) that ties the prost lane to the dual-wire
+//! `response_from_decoded_wire`) that ties the prost lane to the daemon
 //! dispatcher.
 
 use super::zccache_v1;
@@ -167,50 +167,44 @@ pub const fn default_request_id(request: &crate::Request) -> &'static str {
 /// Wire family for full-message-family (non-control) client requests.
 ///
 /// Unset/`auto` now selects v16 prost for wrapper, session, fingerprint, and
-/// exec clients. Explicit `bincode` remains the rollout escape hatch, while
-/// invalid values retain the historical build-safe bincode behavior.
+/// exec clients. Invalid values are rejected rather than silently selecting
+/// another wire format.
 #[must_use]
-pub fn full_family_wire_format_from_env() -> WireFormat {
-    match full_family_wire_selection_from_env() {
+pub fn full_family_wire_format_from_env() -> Result<WireFormat, String> {
+    Ok(match full_family_wire_selection_from_env()? {
         ClientWireSelection::FrameV1 => WireFormat::FrameV1,
         ClientWireSelection::Auto | ClientWireSelection::ProstV16 => WireFormat::ProstV16,
-        ClientWireSelection::BincodeV15 => WireFormat::BincodeV15,
-    }
+    })
 }
 
-/// Full-family client policy while the default migration is staged.
+/// Full-family client policy for direct prost and explicit FrameV1 requests.
 ///
-/// Unlike the control-plane parser, invalid values retain the historical
-/// fail-safe behavior and select bincode instead of breaking a compiler
-/// invocation. `Auto` stays distinct so callers that own a complete
-/// request/response cycle can prefer prost and perform the compatibility
-/// retry before the remaining hot paths flip their default.
+/// `Auto` stays distinct for callers that need to retain the user's explicit
+/// selection intent.
 #[must_use]
-pub fn full_family_wire_selection_from_env() -> ClientWireSelection {
+pub fn full_family_wire_selection_from_env() -> Result<ClientWireSelection, String> {
     full_family_wire_selection_from_env_value(std::env::var(WIRE_FORMAT_ENV).ok().as_deref())
 }
 
 /// Value-based form of [`full_family_wire_selection_from_env`] for tests and
 /// embedders that already own their environment snapshot.
 #[must_use]
-pub fn full_family_wire_selection_from_env_value(value: Option<&str>) -> ClientWireSelection {
-    client_wire_selection_from_env_value(value).unwrap_or(ClientWireSelection::BincodeV15)
+pub fn full_family_wire_selection_from_env_value(
+    value: Option<&str>,
+) -> Result<ClientWireSelection, String> {
+    client_wire_selection_from_env_value(value)
 }
 
-/// Convert a dual-wire decoded daemon response into the internal enum.
-///
-/// v15 bincode responses pass through unchanged; v16 prost responses are
-/// converted via [`response_from_prost`].
+/// Convert a prost decoded daemon response into the internal enum.
 ///
 /// # Errors
 ///
 /// Returns a deserialization error when a v16 prost response body is missing
 /// or carries malformed required fields.
 pub fn response_from_decoded_wire(
-    message: crate::DecodedWireMessage<crate::Response, zccache_v1::Response>,
+    message: crate::DecodedWireMessage<zccache_v1::Response>,
 ) -> Result<crate::Response, crate::ProtocolError> {
     match message {
-        crate::DecodedWireMessage::BincodeV15(response) => Ok(response),
         crate::DecodedWireMessage::ProstV16(response)
         | crate::DecodedWireMessage::FrameV1 {
             message: response, ..
@@ -223,30 +217,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn full_family_selection_preserves_auto_and_explicit_formats() {
+    fn full_family_selection_accepts_supported_formats() {
         assert_eq!(
-            full_family_wire_selection_from_env_value(None),
+            full_family_wire_selection_from_env_value(None).unwrap(),
             ClientWireSelection::Auto
         );
         assert_eq!(
-            full_family_wire_selection_from_env_value(Some("prost")),
+            full_family_wire_selection_from_env_value(Some("prost")).unwrap(),
             ClientWireSelection::ProstV16
         );
         assert_eq!(
-            full_family_wire_selection_from_env_value(Some("frame")),
+            full_family_wire_selection_from_env_value(Some("frame")).unwrap(),
             ClientWireSelection::FrameV1
-        );
-        assert_eq!(
-            full_family_wire_selection_from_env_value(Some("bincode")),
-            ClientWireSelection::BincodeV15
         );
     }
 
     #[test]
-    fn full_family_selection_keeps_invalid_values_build_safe() {
-        assert_eq!(
-            full_family_wire_selection_from_env_value(Some("not-a-wire")),
-            ClientWireSelection::BincodeV15
-        );
+    fn full_family_selection_rejects_unsupported_values() {
+        let error = full_family_wire_selection_from_env_value(Some("bincode")).unwrap_err();
+        assert!(error.contains("unsupported"));
     }
 }

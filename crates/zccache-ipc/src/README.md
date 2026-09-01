@@ -2,31 +2,24 @@
 
 Platform IPC endpoint discovery: Unix domain sockets or Windows named pipes.
 
-The low-level `IpcConnection::send` / `recv` primitives retain the v15 bincode
-wire for explicit compatibility callers. `send_prost` writes a v16 prost
-frame, and `recv_wire` dispatches incoming frames by protocol-version header so
-the daemon can accept both formats during migration.
+The low-level `IpcConnection::send` / `recv` primitives use the v16 prost wire.
+`send_prost` writes the same length-prefixed prost frame, and `recv_wire`
+dispatches incoming prost frames by their protocol-version header.
 
 High-level non-streaming requests use `full_family_roundtrip`; session,
-generic-exec, artifact, and fingerprint callers therefore prefer v16 prost in
+generic-exec, artifact, and fingerprint callers therefore use v16 prost in
 unset/`auto` mode. `daemon_control_roundtrip` applies the same policy to
 control traffic, while the wrapper's streaming compile/link path preserves
-progress frames under an equivalent selection and fallback rule. Each path
-retries once over v15 bincode only after a structured protocol-version
-rejection proves the old daemon did not dispatch the request. Explicit prost,
-bincode, and running-process FrameV1 selections remain strict. The separate
-download-daemon protocol is not part of this wire migration.
+progress frames under the same selection. Explicit prost and running-process
+FrameV1 selections remain strict; retired wire values return a clear
+unsupported-value error. The separate download-daemon protocol is not part of
+this wire migration.
 
 `full_family_roundtrip_classified` additionally retains connect-versus-delivery
 failure phase for idempotent callers.
 
-`full_family.rs` owns this prost-first selection, structured fallback, and
-failure-phase API; `lib.rs` re-exports its public entry points.
-
-`tests/wire/daemon_wire_protocol_version.rs` includes the explicit previous-release
-compatibility harness: a v15-only daemon rejects the first v16 prost frame,
-returns a structured v15 bincode mismatch response, and the public auto client
-retries the same request as v15 bincode.
+`full_family.rs` owns this prost-only selection and failure-phase API; `lib.rs`
+re-exports its public entry points.
 
 Minimal running-process adoption is intentionally separate from the full broker
 rollout. The direct zccache daemon now records

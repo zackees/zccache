@@ -9,9 +9,7 @@
 //! attributes at the top of each file, so nothing is widened to a
 //! common denominator.
 
-mod daemon_wire_dispatcher;
 mod daemon_wire_frame_v1_test;
 mod daemon_wire_perf_scaffold;
 mod daemon_wire_prost_roundtrip;
-mod daemon_wire_protocol_version;
 mod ipc_timeout;

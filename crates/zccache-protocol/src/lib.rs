@@ -17,83 +17,28 @@ pub use messages::*;
 /// sides from silently drifting.
 pub const UNKNOWN_MISS_WARNING_PREFIX: &str = "zccache[warn][M]:";
 
-/// Current bincode daemon wire version.
-///
-/// This remains the compatibility version used by the legacy encode/decode
-/// helpers while full-family clients prefer the separately versioned prost lane.
-pub const BINCODE_PROTOCOL_VERSION: u32 = 25;
-
 /// Prost daemon wire version.
 ///
-/// The prost schema, frame helpers, and default client lane use this value. The
-/// daemon dispatches this concurrently with the bincode compatibility lane.
+/// The direct prost body lane uses this value.
 pub const PROST_PROTOCOL_VERSION: u32 = 24;
 
 /// Protocol version number. Bump this when the wire format changes:
 /// new/removed/reordered enum variants or struct field changes.
 /// Patch releases that don't change the protocol keep the same version.
 ///
-/// v23 (bincode) / v24 (prost): `DaemonStatus` gained `index_writer_gone` so
-///                  an operator can see that a daemon has stopped recording
-///                  what it caches — the cache is effectively write-only and
-///                  nothing it publishes survives a restart (issue #1177).
-///                  Both lanes bump past the previous prost version so no
-///                  historical header value is re-used by the other lane.
-/// v21 (bincode) / v22 (prost): `DaemonStatus` gained `watcher_active` and
-///                  `watcher_degradations` so an operator can see that a
-///                  daemon is running without a file watcher — both fast hit
-///                  tiers disabled — instead of inferring it from startup
-///                  logs (issue #1156).
-/// v20 (bincode) / v21 (prost): added `Response::CompileProgress` — interim,
-///                  non-terminal queue/in-flight heartbeats pushed on the
-///                  request connection while a compile waits for a
-///                  compile-concurrency permit (issue #1216). Both lanes are
-///                  bumped past the previous prost version so no historical
-///                  header value is ever re-used by the other lane.
-/// v19: v16-family prost body with staged-output telemetry. The schema lives in
-///                  `proto/zccache_v1.proto`; the bincode lane remains
-///                  separately versioned during the transition.
-/// v15 (current bincode): added `Request::ReleaseWorktreeHandles` /
-///                  `Response::ReleaseWorktreeHandlesResult` so callers
-///                  (soldr Tier 3 worktree teardown, issue #690) can ask
-///                  the daemon to drop sessions and close per-session
-///                  journal handles under a path prefix before the
-///                  worktree is deleted.
-/// v14: `SessionStart` gained private daemon options, and
-///                  `DaemonStatus` gained redacted private daemon diagnostics.
-/// v13: `DaemonStatus` gained `daemon_namespace` and `endpoint`
-///                  for soldr/zccache daemon namespace diagnostics.
-/// v12: `DaemonStatus` and `SessionStats` gained cached-error
-///                  counters for rustc negative-result caching.
-/// v17: added `Request::ExecProbe` / `Request::ExecStore` (caller-owned-
-///                  tool variant of GenericToolExec, issue #838) plus
-///                  `Response::ExecProbeResult` / `Response::ExecStoreAck`.
-///                  Lets a Python binding cache an in-process function call
-///                  via the daemon's KV store without serializing argv
-///                  (subsumes #837 for Python consumers).
-/// v18: `PhaseProfileSummary` gained bounded staged-output pipeline
-///                  counters, timings, byte totals, and failure reasons.
-/// v11: `Request::GenericToolExec` gained Path A (include scan)
-///                  + Path B (depfile) + `non_deterministic` +
-///                  `key_args_filter` fields completing issue #272.
-/// v10: added `Request::GenericToolExec` / `Response::GenericToolExecResult`
-///      for arbitrary-tool caching (issue #272). New protocol types
-///      `ExecOutputStreams` and `ExecCachePolicy`.
-/// v9: `SessionStats` gained `phase_profile: Option<PhaseProfileSummary>`
-///     so per-session aggregate phase timing reaches clients.
-/// v8: `Compile` / `CompileEphemeral` gained `stdin: Vec<u8>` and
-///     `ArtifactPayload` replaced `ArtifactOutput.data: Arc<Vec<u8>>`.
-pub const PROTOCOL_VERSION: u32 = BINCODE_PROTOCOL_VERSION;
+/// v24: `DaemonStatus` gained `index_writer_gone` (issue #1177).
+/// v22: `DaemonStatus` gained watcher state (issue #1156).
+/// v21: added `Response::CompileProgress` (issue #1216).
+/// v19: added staged-output telemetry to the prost schema.
+pub const PROTOCOL_VERSION: u32 = PROST_PROTOCOL_VERSION;
 
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::BytesMut;
 use prost::Message as ProstMessage;
 
 /// Message decoded from a version-dispatched daemon frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DecodedWireMessage<Bincode, Prost> {
-    /// Bincode payload (historical variant name; current header version is v18).
-    BincodeV15(Bincode),
-    /// Prost payload (historical variant name; current header version is v19).
+pub enum DecodedWireMessage<Prost> {
+    /// Prost payload (historical variant name; current header version is v24).
     ProstV16(Prost),
     /// Prost payload carried inside a running-process broker `Frame`
     /// envelope. `request_id` is the frame correlation id the responder
@@ -106,113 +51,29 @@ pub enum DecodedWireMessage<Bincode, Prost> {
     },
 }
 
-impl<Bincode, Prost> DecodedWireMessage<Bincode, Prost> {
+impl<Prost> DecodedWireMessage<Prost> {
     /// Wire family selected by the frame protocol-version header (or the
     /// running-process envelope byte for the `Frame` lane).
     #[must_use]
     pub const fn wire_format(&self) -> wire_prost::WireFormat {
         match self {
-            Self::BincodeV15(_) => wire_prost::WireFormat::BincodeV15,
             Self::ProstV16(_) => wire_prost::WireFormat::ProstV16,
             Self::FrameV1 { .. } => wire_prost::WireFormat::FrameV1,
         }
     }
 }
 
-/// Serialize a message to a length-prefixed byte buffer with protocol version.
-///
-/// Format: `[4-byte LE length][4-byte LE protocol version][bincode payload]`
-///
-/// The length field covers the protocol version + payload bytes.
-///
-/// # Errors
-///
-/// Returns an error if serialization fails.
-pub fn encode_message<T: serde::Serialize>(msg: &T) -> Result<BytesMut, ProtocolError> {
-    encode_bincode_message(msg)
-}
-
-/// Serialize a message to the v15 bincode compatibility frame.
-///
-/// # Errors
-///
-/// Returns an error if serialization fails.
-pub fn encode_bincode_message<T: serde::Serialize>(msg: &T) -> Result<BytesMut, ProtocolError> {
-    let payload =
-        bincode::serialize(msg).map_err(|e| ProtocolError::Serialization(e.to_string()))?;
-    let frame_len: u32 = (4 + payload.len())
-        .try_into()
-        .map_err(|_| ProtocolError::MessageTooLarge(payload.len()))?;
-
-    let mut buf = BytesMut::with_capacity(4 + 4 + payload.len());
-    buf.put_u32_le(frame_len);
-    buf.put_u32_le(BINCODE_PROTOCOL_VERSION);
-    buf.extend_from_slice(&payload);
-    Ok(buf)
-}
-
-/// Try to decode a message from a byte buffer.
-///
-/// Returns `None` if the buffer does not contain a complete message.
-/// Advances the buffer past the consumed message on success.
-///
-/// # Errors
-///
-/// Returns `VersionMismatch` if the sender's protocol version differs.
-/// Returns a deserialization error if the payload is malformed.
-pub fn decode_message<T: serde::de::DeserializeOwned>(
-    buf: &mut BytesMut,
-) -> Result<Option<T>, ProtocolError> {
-    decode_bincode_message(buf)
-}
-
-/// Try to decode a v15 bincode compatibility frame from a byte buffer.
-///
-/// Returns `None` if the buffer does not contain a complete message.
-/// Advances the buffer past the consumed message on success.
-///
-/// # Errors
-///
-/// Returns `VersionMismatch` if the sender is not using v15 bincode.
-/// Returns a deserialization error if the payload is malformed.
-pub fn decode_bincode_message<T: serde::de::DeserializeOwned>(
-    buf: &mut BytesMut,
-) -> Result<Option<T>, ProtocolError> {
-    let Some((remote_ver, payload)) = take_complete_frame(buf)? else {
-        return Ok(None);
-    };
-
-    if remote_ver != BINCODE_PROTOCOL_VERSION {
-        return Err(ProtocolError::VersionMismatch {
-            expected: BINCODE_PROTOCOL_VERSION,
-            received: remote_ver,
-        });
-    }
-
-    let msg = bincode::deserialize(&payload[..])
-        .map_err(|e| ProtocolError::Deserialization(e.to_string()))?;
-    Ok(Some(msg))
-}
-
-/// Try to decode a v15 bincode frame, a v16 prost frame, or a zccache prost
-/// message carried in a running-process broker `Frame` envelope.
-///
-/// The live transport still calls [`decode_message`], which keeps today's v15
-/// behavior. This helper is the migration hook for the daemon dispatcher: it
-/// peeks the existing protocol-version header (or the running-process
-/// envelope byte, disambiguated exactly like the daemon's BackendHandle probe
-/// detector) and routes to the compatible decoder without consuming
-/// incomplete or unsupported frames.
+/// Try to decode a v16 prost frame or a zccache prost message carried in a
+/// running-process broker `Frame` envelope.
 ///
 /// # Errors
 ///
 /// Returns a protocol error if the frame version is unsupported, too large, or
 /// if the selected decoder cannot deserialize the payload.
-pub fn decode_wire_message<Bincode, Prost>(
+pub fn decode_wire_message<Prost>(
     buf: &mut BytesMut,
-) -> Result<Option<DecodedWireMessage<Bincode, Prost>>, ProtocolError>
+) -> Result<Option<DecodedWireMessage<Prost>>, ProtocolError>
 where
-    Bincode: serde::de::DeserializeOwned,
     Prost: ProstMessage + Default,
 {
     match wire_frame::buffer_starts_running_process_frame(buf) {
@@ -234,9 +95,6 @@ where
     };
 
     match wire_prost::wire_format_for_protocol_version(version) {
-        Some(wire_prost::WireFormat::BincodeV15) => {
-            decode_bincode_message(buf).map(|msg| msg.map(DecodedWireMessage::BincodeV15))
-        }
         Some(wire_prost::WireFormat::ProstV16) => {
             wire_prost::decode_prost_message(buf).map(|msg| msg.map(DecodedWireMessage::ProstV16))
         }
@@ -281,33 +139,6 @@ pub fn peek_frame_protocol_version(buf: &BytesMut) -> Result<Option<u32>, Protoc
     Ok(Some(u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]])))
 }
 
-fn take_complete_frame(buf: &mut BytesMut) -> Result<Option<(u32, BytesMut)>, ProtocolError> {
-    if buf.len() < 4 {
-        return Ok(None);
-    }
-
-    let len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-
-    if len > MAX_MESSAGE_SIZE {
-        return Err(ProtocolError::MessageTooLarge(len));
-    }
-
-    if len < 4 {
-        return Err(ProtocolError::Deserialization(
-            "frame too small for protocol version".into(),
-        ));
-    }
-
-    if buf.len() < 4 + len {
-        return Ok(None);
-    }
-
-    buf.advance(4);
-    let mut frame = buf.split_to(len);
-    let remote_ver = frame.get_u32_le();
-    Ok(Some((remote_ver, frame)))
-}
-
 /// Maximum message size (16 MB).
 const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 
@@ -335,60 +166,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encode_decode_roundtrip() {
-        let msg = messages::Request::Ping;
-        let encoded = encode_message(&msg).unwrap();
-        let mut buf = BytesMut::from(&encoded[..]);
-        let decoded: Option<messages::Request> = decode_message(&mut buf).unwrap();
-        assert_eq!(decoded, Some(messages::Request::Ping));
-        assert!(buf.is_empty());
+    fn protocol_version_uses_the_prost_wire_version() {
+        assert_eq!(PROTOCOL_VERSION, PROST_PROTOCOL_VERSION);
     }
 
     #[test]
-    fn frame_includes_protocol_version() {
-        let encoded = encode_message(&messages::Request::Ping).unwrap();
-        // Bytes 4..8 should be PROTOCOL_VERSION in LE
-        let ver = u32::from_le_bytes([encoded[4], encoded[5], encoded[6], encoded[7]]);
-        assert_eq!(ver, PROTOCOL_VERSION);
-    }
+    fn retired_v25_header_with_low_length_byte_one_is_not_a_frame_v1_envelope() {
+        // The first byte is also the running-process envelope version. Keep
+        // enough body bytes buffered that direct-frame version dispatch runs.
+        let mut buf = BytesMut::with_capacity(4 + 0x101);
+        buf.extend_from_slice(&0x101_u32.to_le_bytes());
+        buf.extend_from_slice(&25_u32.to_le_bytes());
+        buf.resize(4 + 0x101, 0);
 
-    #[test]
-    fn version_mismatch_returns_error() {
-        let mut encoded = encode_message(&messages::Request::Ping).unwrap();
-        // Overwrite protocol version with a different value
-        let bad_ver: u32 = PROTOCOL_VERSION + 1;
-        encoded[4..8].copy_from_slice(&bad_ver.to_le_bytes());
-
-        let mut buf = BytesMut::from(&encoded[..]);
-        let result: Result<Option<messages::Request>, _> = decode_message(&mut buf);
-        assert!(matches!(result, Err(ProtocolError::VersionMismatch { .. })));
-    }
-
-    #[test]
-    fn old_frame_without_protocol_version_fails() {
-        // Simulate an old-format frame: [len][payload] with no protocol version.
-        // Build a raw old-style frame (4-byte len + bincode payload, no proto ver).
-        let payload = bincode::serialize(&messages::Request::Ping).unwrap();
-        let len = payload.len() as u32;
-        let mut buf = BytesMut::with_capacity(4 + payload.len());
-        buf.put_u32_le(len);
-        buf.extend_from_slice(&payload);
-
-        let result: Result<Option<messages::Request>, _> = decode_message(&mut buf);
-        // Either VersionMismatch (garbage proto ver) or Deserialization error —
-        // either way, it must not succeed.
-        assert!(
-            result.is_err(),
-            "old-format frame must not decode successfully"
+        assert_eq!(
+            wire_frame::buffer_starts_running_process_frame(&buf),
+            Some(false)
         );
-    }
-
-    #[test]
-    fn incomplete_frame_returns_none() {
-        let encoded = encode_message(&messages::Request::Ping).unwrap();
-        // Provide only part of the frame
-        let mut buf = BytesMut::from(&encoded[..encoded.len() - 1]);
-        let result: Option<messages::Request> = decode_message(&mut buf).unwrap();
-        assert!(result.is_none());
+        assert!(matches!(
+            decode_wire_message::<wire_prost::zccache_v1::Request>(&mut buf),
+            Err(ProtocolError::VersionMismatch {
+                expected: PROST_PROTOCOL_VERSION,
+                received: 25,
+            })
+        ));
     }
 }

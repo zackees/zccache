@@ -50,7 +50,13 @@ pub(super) async fn cmd_compile(
         }
     };
 
-    let selection = crate::protocol::wire_prost::full_family_wire_selection_from_env();
+    let selection = match crate::protocol::wire_prost::full_family_wire_selection_from_env() {
+        Ok(selection) => selection,
+        Err(error) => {
+            eprintln!("zccache[err][S]: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     let wire = selection.preferred_format();
     let request = crate::protocol::Request::Compile {
         session_id: session_id.to_string(),
@@ -66,7 +72,6 @@ pub(super) async fn cmd_compile(
         let failure = TransportFailure {
             message: format!("failed to send to daemon: {e}"),
             phase: FailurePhase::DeliveryUnknown,
-            explicit_wire_mismatch: false,
         };
         emit_client_disconnected_event(
             endpoint,
@@ -78,8 +83,6 @@ pub(super) async fn cmd_compile(
     }
 
     let outcome = compile_recv_with_wedge_detection(&mut conn, wedge_recv_timeout(), wire).await;
-    let outcome =
-        retry_bincode_on_explicit_wire_mismatch(endpoint, &request, selection, outcome).await;
     match outcome {
         CompileRecvOutcome::Done(recv_result) => {
             // End of the daemon wait; everything after this is output work.
@@ -186,9 +189,6 @@ enum FailurePhase {
 struct TransportFailure {
     message: String,
     phase: FailurePhase,
-    /// Framing was rejected before daemon dispatch, so an auto-selected prost
-    /// request may be replayed once over bincode without duplicating work.
-    explicit_wire_mismatch: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -314,75 +314,13 @@ async fn compile_recv_with_wedge_detection<C: ConnRecv>(
                 return CompileRecvOutcome::Wedged
             }
             Err(e) => {
-                let explicit_wire_mismatch = crate::ipc::full_family_wire_mismatch_error(&e);
                 return CompileRecvOutcome::Failed(TransportFailure {
                     message: format!("broken connection to daemon: {e}"),
                     phase: FailurePhase::DeliveryUnknown,
-                    explicit_wire_mismatch,
                 });
             }
         }
     }
-}
-
-fn outcome_requires_bincode_retry(
-    selection: crate::protocol::wire_prost::ClientWireSelection,
-    outcome: &CompileRecvOutcome,
-) -> bool {
-    if !selection.allows_bincode_fallback() {
-        return false;
-    }
-    matches!(
-        outcome,
-        CompileRecvOutcome::Failed(TransportFailure {
-            explicit_wire_mismatch: true,
-            ..
-        })
-    )
-}
-
-/// Retry an auto-selected prost streaming request exactly once over bincode
-/// only when the first peer explicitly rejected framing before dispatch.
-/// Ambiguous close/write failures never enter this path because replaying a
-/// compile or link could execute the tool twice.
-async fn retry_bincode_on_explicit_wire_mismatch(
-    endpoint: &str,
-    request: &crate::protocol::Request,
-    selection: crate::protocol::wire_prost::ClientWireSelection,
-    outcome: CompileRecvOutcome,
-) -> CompileRecvOutcome {
-    if !outcome_requires_bincode_retry(selection, &outcome) {
-        return outcome;
-    }
-
-    let mut conn = match connect(endpoint).await {
-        Ok(conn) => conn,
-        Err(err) => {
-            return failed_with_disconnect_event(
-                endpoint,
-                crate::core::lifecycle::CAUSE_COMM_ERROR,
-                FailurePhase::PreDispatch,
-                format!("cannot reconnect for bincode compatibility retry: {err}"),
-            );
-        }
-    };
-    if let Err(err) = conn
-        .send_request(request, crate::protocol::wire_prost::WireFormat::BincodeV15)
-        .await
-    {
-        return failed_with_disconnect_event(
-            endpoint,
-            crate::core::lifecycle::CAUSE_PIPE_CLOSED_MID_WRITE,
-            FailurePhase::DeliveryUnknown,
-            format!("failed to send bincode compatibility retry: {err}"),
-        );
-    }
-    compile_recv_with_wedge_detection(
-        &mut conn,
-        wedge_recv_timeout(),
-        crate::protocol::wire_prost::WireFormat::BincodeV15,
-    )
-    .await
 }
 
 /// Human-readable one-liner for a `CompileProgress` heartbeat.
@@ -796,7 +734,15 @@ async fn run_ephemeral_attempt(
             );
         }
     };
-    let selection = crate::protocol::wire_prost::full_family_wire_selection_from_env();
+    let selection = match crate::protocol::wire_prost::full_family_wire_selection_from_env() {
+        Ok(selection) => selection,
+        Err(error) => {
+            return CompileRecvOutcome::Failed(TransportFailure {
+                message: error,
+                phase: FailurePhase::PreDispatch,
+            });
+        }
+    };
     let wire = selection.preferred_format();
     let send_result = conn.send_request(request, wire).await;
     super::profile::mark_request_sent();
@@ -809,8 +755,6 @@ async fn run_ephemeral_attempt(
         );
     }
     let outcome = compile_recv_with_wedge_detection(&mut conn, wedge_recv_timeout(), wire).await;
-    let outcome =
-        retry_bincode_on_explicit_wire_mismatch(endpoint, request, selection, outcome).await;
     if let CompileRecvOutcome::Failed(msg) = &outcome {
         emit_client_disconnected_event(
             endpoint,
@@ -834,7 +778,6 @@ fn failed_with_disconnect_event(
     CompileRecvOutcome::Failed(TransportFailure {
         message: msg,
         phase,
-        explicit_wire_mismatch: false,
     })
 }
 

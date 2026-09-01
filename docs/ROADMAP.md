@@ -72,7 +72,7 @@ This document describes the phased implementation plan for **zccache**, a high-p
   - `Ping` / `Pong`
   - `Shutdown`
   - `Status` (daemon uptime, version, connection count)
-  - Length-prefixed framing with serde/bincode serialization
+  - Length-prefixed prost framing
 - Daemon lifecycle management:
   - Startup: bind socket/pipe, write lock file (containing PID)
   - Lock file: prevent multiple daemon instances

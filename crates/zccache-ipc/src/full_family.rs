@@ -1,4 +1,4 @@
-//! Prost-first full-family request roundtrips with legacy fallback.
+//! Prost full-family request roundtrips.
 
 use super::{connect_control_client, IpcError, DEFAULT_CLIENT_RECV_TIMEOUT};
 use zccache_protocol::{self as protocol, wire_prost, Response};
@@ -42,15 +42,12 @@ impl FullFamilyRoundtripFailure {
 /// Send any daemon request and receive its terminal response on the selected
 /// full-family wire.
 ///
-/// Unset/`auto` prefers prost and retries exactly once over bincode only when
-/// the peer explicitly reports a protocol-version mismatch. The retry uses a
-/// fresh connection because an old daemon has already rejected the prost
-/// frame. Forced prost/frame selections never downgrade.
+/// Unset/`auto` selects prost. Frame is available only by explicit selection.
 ///
 /// # Errors
 ///
-/// Returns the IPC error from the selected send/receive path. Invalid
-/// `ZCCACHE_DAEMON_WIRE` values preserve the historical bincode behavior.
+/// Returns the IPC error from the selected send/receive path, including an
+/// unsupported `ZCCACHE_DAEMON_WIRE` value.
 pub async fn full_family_roundtrip(
     endpoint: &str,
     request: &protocol::Request,
@@ -66,28 +63,20 @@ pub async fn full_family_roundtrip(
 ///
 /// # Errors
 ///
-/// Returns the IPC error together with its delivery phase. A structured prost
-/// version mismatch may still retry once over bincode in auto mode.
+/// Returns the IPC error together with its delivery phase.
 pub async fn full_family_roundtrip_classified(
     endpoint: &str,
     request: &protocol::Request,
     recv_timeout: Option<std::time::Duration>,
 ) -> Result<Option<Response>, FullFamilyRoundtripFailure> {
-    let selection = wire_prost::full_family_wire_selection_from_env();
+    let selection = wire_prost::full_family_wire_selection_from_env().map_err(|error| {
+        FullFamilyRoundtripFailure {
+            phase: FullFamilyFailurePhase::PreDispatch,
+            error: IpcError::Endpoint(error),
+        }
+    })?;
     full_family_roundtrip_with_selection_classified(endpoint, request, recv_timeout, selection)
         .await
-}
-
-#[cfg(test)]
-pub(crate) async fn full_family_roundtrip_with_selection(
-    endpoint: &str,
-    request: &protocol::Request,
-    recv_timeout: Option<std::time::Duration>,
-    selection: wire_prost::ClientWireSelection,
-) -> Result<Option<Response>, IpcError> {
-    full_family_roundtrip_with_selection_classified(endpoint, request, recv_timeout, selection)
-        .await
-        .map_err(FullFamilyRoundtripFailure::into_error)
 }
 
 async fn full_family_roundtrip_with_selection_classified(
@@ -96,40 +85,13 @@ async fn full_family_roundtrip_with_selection_classified(
     recv_timeout: Option<std::time::Duration>,
     selection: wire_prost::ClientWireSelection,
 ) -> Result<Option<Response>, FullFamilyRoundtripFailure> {
-    let first = send_full_family_classified(
+    send_full_family_classified(
         endpoint,
         request,
         recv_timeout,
         selection.preferred_format(),
     )
-    .await;
-
-    match first {
-        Err(ref err)
-            if selection.allows_bincode_fallback()
-                && full_family_wire_mismatch_error(err.error()) =>
-        {
-            send_full_family_classified(
-                endpoint,
-                request,
-                recv_timeout,
-                wire_prost::WireFormat::BincodeV15,
-            )
-            .await
-        }
-        result => result,
-    }
-}
-
-/// Whether a full-family receive error proves that framing was rejected
-/// before request dispatch. Connection closes and generic I/O errors are
-/// intentionally excluded because delivery is ambiguous for compile/link.
-#[must_use]
-pub const fn full_family_wire_mismatch_error(err: &IpcError) -> bool {
-    matches!(
-        err,
-        IpcError::Protocol(protocol::ProtocolError::VersionMismatch { .. })
-    )
+    .await
 }
 
 async fn send_full_family_classified(

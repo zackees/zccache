@@ -9,6 +9,10 @@ pub enum IpcError {
     #[error("protocol error: {0}")]
     Protocol(#[from] zccache_protocol::ProtocolError),
 
+    /// A separately-owned opaque protocol could not encode or decode a frame.
+    #[error("opaque protocol error: {0}")]
+    OpaqueProtocol(String),
+
     #[error("connection closed")]
     ConnectionClosed,
 

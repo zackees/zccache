@@ -133,7 +133,9 @@ async fn a_saturated_compile_gate_reports_queued_then_delivers_the_terminal_resp
     let outcome = guarded_dispatch_with_progress_every(
         Some(std::time::Duration::from_millis(40)),
         &mut conn,
-        &ResponseWire::BincodeV15,
+        &ResponseWire::ProstV16 {
+            request_id: "progress-test".to_string(),
+        },
         &server.state,
         async {
             let (_gate, _) = super::super::compile_progress::acquire_compile_gate(
@@ -147,9 +149,15 @@ async fn a_saturated_compile_gate_reports_queued_then_delivers_the_terminal_resp
     .await;
 
     let (response, _journal) = outcome.expect("handler completes rather than disconnecting");
-    super::send_response_for_wire(&mut conn, &ResponseWire::BincodeV15, &response)
-        .await
-        .expect("terminal response is written");
+    super::send_response_for_wire(
+        &mut conn,
+        &ResponseWire::ProstV16 {
+            request_id: "progress-test".to_string(),
+        },
+        &response,
+    )
+    .await
+    .expect("terminal response is written");
 
     let terminal = tokio::time::timeout(std::time::Duration::from_secs(5), client)
         .await
@@ -193,16 +201,24 @@ async fn a_disabled_interval_pushes_no_frames_but_still_completes() {
     let outcome = guarded_dispatch_with_progress_every(
         None,
         &mut conn,
-        &ResponseWire::BincodeV15,
+        &ResponseWire::ProstV16 {
+            request_id: "disabled-progress-test".to_string(),
+        },
         &server.state,
         slow_handler(std::time::Duration::from_millis(120)),
     )
     .await;
 
     let (response, _journal) = outcome.expect("handler completes");
-    super::send_response_for_wire(&mut conn, &ResponseWire::BincodeV15, &response)
-        .await
-        .expect("terminal response is written");
+    super::send_response_for_wire(
+        &mut conn,
+        &ResponseWire::ProstV16 {
+            request_id: "disabled-progress-test".to_string(),
+        },
+        &response,
+    )
+    .await
+    .expect("terminal response is written");
 
     let (progress_frames, terminal) = client.await.expect("client task");
     assert_eq!(

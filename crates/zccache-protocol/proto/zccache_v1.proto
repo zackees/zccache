@@ -263,8 +263,10 @@ message DaemonStatus {
   bool watcher_active = 28;
   uint64 watcher_degradations = 29;
   bool index_writer_gone = 30;
-  map<string, uint64> bincode_requests_by_type = 31;
-  bool bincode_request_telemetry_available = 32;
+  // #840 retired the bincode IPC telemetry. Reserve both tags and names so
+  // neither can be reused by a future prost field.
+  reserved 31, 32;
+  reserved "bincode_requests_by_type", "bincode_request_telemetry_available";
 }
 
 message PrivateDaemonOwnerStatus {

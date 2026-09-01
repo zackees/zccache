@@ -15,18 +15,7 @@
 crates/zccache-ipc/src/lib.rs
 crates/zccache-download-protocol/src/daemon_mgmt.rs
 
-# ── Group 2: wire-format compat pins ────────────────────────────────────────
-# Fixture literals in these files feed pinned bincode fingerprints and
-# variant-index golden values. Changing the bytes is a wire-format change by
-# definition; the literals stay verbatim. Permanent exemptions.
-crates/zccache-protocol/src/messages/compat/variant_indices.rs
-crates/zccache-protocol/src/messages/compat/fingerprint.rs
-crates/zccache-protocol/src/messages/compat/session_lifecycle.rs
-crates/zccache-protocol/src/messages/compat/ephemeral.rs
-crates/zccache-protocol/src/messages/compat/artifact_payload.rs
-crates/zccache-protocol/src/messages/compat/mod.rs
-
-# ── Group 3: fs-inert legacy test fixtures ──────────────────────────────────
+# ── Group 2: fs-inert legacy test fixtures ──────────────────────────────────
 # Map keys, parser inputs, and Unix-only test socket names that never touch
 # the filesystem on Windows. Migrate to neutral fake paths (`/fixture/...`)
 # as you touch each file; do not add new entries in this group. See #828.

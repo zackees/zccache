@@ -92,33 +92,13 @@ async fn test_multiple_messages() {
 }
 
 #[tokio::test]
-async fn recv_wire_accepts_bincode_request_on_live_ipc() {
-    let endpoint = unique_test_endpoint();
-    let mut listener = IpcListener::bind(&endpoint).unwrap();
-
-    let server = tokio::spawn(async move {
-        let mut conn = listener.accept().await.unwrap();
-        let msg: Option<DecodedWireMessage<Request, pb::Request>> = conn.recv_wire().await.unwrap();
-        assert_eq!(msg, Some(DecodedWireMessage::BincodeV15(Request::Ping)));
-        conn.send(&Response::Pong).await.unwrap();
-    });
-
-    let mut client = connect(&endpoint).await.unwrap();
-    client.send(&Request::Ping).await.unwrap();
-    let resp: Option<Response> = client.recv().await.unwrap();
-    assert_eq!(resp, Some(Response::Pong));
-
-    server.await.unwrap();
-}
-
-#[tokio::test]
 async fn recv_wire_accepts_prost_request_on_live_ipc() {
     let endpoint = unique_test_endpoint();
     let mut listener = IpcListener::bind(&endpoint).unwrap();
 
     let server = tokio::spawn(async move {
         let mut conn = listener.accept().await.unwrap();
-        let msg: Option<DecodedWireMessage<Request, pb::Request>> = conn.recv_wire().await.unwrap();
+        let msg: Option<DecodedWireMessage<pb::Request>> = conn.recv_wire().await.unwrap();
         match msg {
             Some(DecodedWireMessage::ProstV16(request)) => {
                 assert_eq!(request.request_id, "live-prost");
@@ -159,6 +139,36 @@ async fn backend_handle_probe_detector_preserves_zccache_requests() {
     client.send(&Request::Ping).await.unwrap();
     let resp: Option<Response> = client.recv().await.unwrap();
     assert_eq!(resp, Some(Response::Pong));
+
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn backend_handle_probe_detector_leaves_retired_v25_headers_for_version_rejection() {
+    let endpoint = unique_test_endpoint();
+    let daemon = crate::current_backend_identity(&endpoint).unwrap();
+    let mut listener = IpcListener::bind(&endpoint).unwrap();
+
+    let server = tokio::spawn(async move {
+        let mut conn = listener.accept().await.unwrap();
+        assert!(!conn.try_serve_backend_handle_probe(&daemon).await.unwrap());
+        assert!(matches!(
+            conn.recv_wire::<pb::Request>().await,
+            Err(IpcError::Protocol(
+                zccache_protocol::ProtocolError::VersionMismatch {
+                    expected: zccache_protocol::PROST_PROTOCOL_VERSION,
+                    received: 25,
+                }
+            ))
+        ));
+    });
+
+    let mut client = connect(&endpoint).await.unwrap();
+    let mut retired_v25 = Vec::with_capacity(4 + 0x101);
+    retired_v25.extend_from_slice(&0x101_u32.to_le_bytes());
+    retired_v25.extend_from_slice(&25_u32.to_le_bytes());
+    retired_v25.resize(4 + 0x101, 0);
+    client.send_opaque_bytes(&retired_v25).await.unwrap();
 
     server.await.unwrap();
 }

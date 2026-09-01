@@ -11,7 +11,6 @@ mod clear_handler;
 mod client_env;
 mod compiler_hash;
 mod connection_disconnect;
-mod connection_ipc;
 mod connection_self_profile;
 mod deferred_cold_path;
 mod depgraph_reset_reachability;

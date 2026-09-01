@@ -20,6 +20,8 @@ pub use zccache_depgraph as depgraph;
 pub use zccache_download as download;
 #[cfg(feature = "download-protocol")]
 pub use zccache_download_protocol as download_protocol;
+#[cfg(feature = "download-protocol")]
+mod download_ipc;
 #[cfg(feature = "gha")]
 pub use zccache_gha as gha;
 pub use zccache_hash as hash;

@@ -14,7 +14,7 @@ use zccache::protocol::wire_prost::{
     supported_control_response_to_prost, wire_format_for_protocol_version, zccache_v1 as pb,
     WireFormat,
 };
-use zccache::protocol::{decode_message, encode_message, PROST_PROTOCOL_VERSION};
+use zccache::protocol::PROST_PROTOCOL_VERSION;
 
 #[test]
 fn prost_request_frame_roundtrips_with_v16_header() {
@@ -161,22 +161,7 @@ fn generated_frame_envelope_can_carry_opaque_payload() {
 }
 
 #[test]
-fn bincode_v15_frame_still_roundtrips_on_current_api() {
-    let encoded = encode_message(&zccache::protocol::Request::Ping).unwrap();
-    let mut buf = BytesMut::from(&encoded[..]);
-    let decoded = decode_message::<zccache::protocol::Request>(&mut buf)
-        .unwrap()
-        .unwrap();
-
-    assert_eq!(decoded, zccache::protocol::Request::Ping);
-}
-
-#[test]
-fn protocol_version_dispatch_models_v15_and_v16() {
-    assert_eq!(
-        wire_format_for_protocol_version(WireFormat::BincodeV15.protocol_version().unwrap()),
-        Some(WireFormat::BincodeV15)
-    );
+fn protocol_version_dispatch_models_prost_and_frame() {
     assert_eq!(
         wire_format_for_protocol_version(WireFormat::ProstV16.protocol_version().unwrap()),
         Some(WireFormat::ProstV16)
@@ -620,19 +605,17 @@ mod full_family {
 
 // ── Exhaustiveness trip-wire (issue #840) ──────────────────────────────
 //
-// Why this exists: `ExecProbe`/`ExecStore` were added to the enum and to
-// the bincode lane, but their prost arms were left as `Body::Ping` /
-// `Body::Pong` stubs. Nothing failed. Every test in `full_family` above is
+// Why this exists: `ExecProbe`/`ExecStore` were added to the enum, but their
+// prost arms were left as `Body::Ping` / `Body::Pong` stubs. Nothing failed.
+// Every test in `full_family` above is
 // a hand-written per-variant `#[test]`, so a new variant simply had no
 // test and compiled green — while `request_to_prost` silently encoded an
 // ExecProbe as a bare Ping, which `request_from_prost` then decoded back
 // as `Request::Ping`. Payload discarded, no error, indistinguishable from
 // a legitimate keepalive.
 //
-// The bincode lane did not have this hole because
-// `messages/compat/variant_indices.rs` pins every variant in one list, so
-// an omission is visible there. This module gives the prost lane a match
-// that stops compiling when a variant is added.
+// This module gives the prost lane a match that stops compiling when a variant
+// is added.
 
 mod exhaustive_prost_coverage {
     use std::sync::Arc;

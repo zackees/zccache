@@ -1,8 +1,7 @@
 //! Length-prefixed v16 prost frame encoder and decoder.
 //!
 //! Format: `[4-byte LE length][4-byte LE protocol version][prost payload]`.
-//! The length field covers the protocol version plus payload bytes, matching
-//! the existing bincode frame envelope.
+//! The length field covers the protocol version plus payload bytes.
 
 use bytes::{Buf, BufMut, BytesMut};
 use prost::Message;
@@ -12,8 +11,7 @@ use crate::{ProtocolError, MAX_MESSAGE_SIZE, PROST_PROTOCOL_VERSION};
 /// Serialize a prost message to the v16 length-prefixed frame.
 ///
 /// Format: `[4-byte LE length][4-byte LE protocol version][prost payload]`.
-/// The length field covers the protocol version plus payload bytes, matching
-/// the existing bincode frame envelope.
+/// The length field covers the protocol version plus payload bytes.
 ///
 /// # Errors
 ///

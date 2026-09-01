@@ -28,7 +28,7 @@
 //! back by `AsyncBrokerSession::into_backend_io` is **adopted directly** as
 //! the data connection — no re-dial. The adopted socket is byte-identical to a
 //! fresh `connect()` stream (the broker hands back a `backend_pipe` the client
-//! dials itself), so recv timeouts and the v15/v16/FrameV1 wire lanes keep
+//! dials itself), so recv timeouts and the prost/FrameV1 wire lanes keep
 //! working unchanged. On Windows `into_backend_io` is unsupported (the
 //! `OwnedHandle` handoff is deferred, running-process #720), so the resolved
 //! endpoint is re-dialed with zccache's own transport (resolve-and-drop). The

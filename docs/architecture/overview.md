@@ -104,9 +104,9 @@ let (stream, peer): (Stream, PeerIdentity) = listener.accept().await?;
 
 **Responsibility:** Serialization and framing of messages over the transport.
 
-**Message format:** Length-prefixed bincode. Each message is:
+**Message format:** Length-prefixed prost. Each direct IPC message is:
 ```
-[u32 little-endian: payload length][payload: bincode-serialized Message]
+[u32 little-endian: payload length][u32 little-endian: protocol version][prost-encoded message]
 ```
 
 **Message types (simplified):**

@@ -16,7 +16,7 @@ pub use artifact::{
     FetchStatus, WaitMode,
 };
 
-type ClientConn = crate::ipc::IpcConnection;
+type ClientConn = crate::download_ipc::DownloadIpcConnection;
 
 pub use crate::download_protocol::daemon_mgmt::{
     default_endpoint, lock_file_path, read_lock_file_pid, remove_lock_file, write_lock_file,
@@ -37,7 +37,7 @@ pub fn check_running_daemon() -> Option<u32> {
 }
 
 async fn connect_client(endpoint: &str) -> Result<ClientConn, crate::ipc::IpcError> {
-    crate::ipc::connect(endpoint).await
+    ClientConn::connect(endpoint).await
 }
 
 fn resolve_endpoint(explicit: Option<&str>) -> String {

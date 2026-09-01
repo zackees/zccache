@@ -59,10 +59,15 @@ fn query_daemon_status(endpoint: &str) -> Result<crate::download::DownloadDaemon
         let mut conn = crate::ipc::connect(endpoint)
             .await
             .map_err(|e| format!("download daemon not running at {endpoint}: {e}"))?;
-        conn.send(&Request::Status)
+        let frame = crate::download_protocol::encode_message(&Request::Status)
+            .map_err(|error| format!("failed to encode download status request: {error}"))?;
+        conn.send_opaque_bytes(&frame)
             .await
             .map_err(|e| format!("failed to query download daemon: {e}"))?;
-        match conn.recv::<Response>().await {
+        match conn
+            .recv_opaque_with(crate::download_protocol::decode_message::<Response>)
+            .await
+        {
             Ok(Some(Response::Status(status))) => Ok(status),
             Ok(Some(Response::Error { message })) => Err(message),
             Ok(Some(other)) => Err(format!("unexpected response: {other:?}")),

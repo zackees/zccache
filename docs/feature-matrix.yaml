@@ -206,7 +206,7 @@
   feature: Single-roundtrip IPC (length-prefixed prost)
   zccache: yes
   sccache: no
-  notes: One length-prefixed prost message per compile, with a bincode retry only after an explicit old-daemon version rejection. sccache's protocol uses multiple subprocess invocations per call.
+  notes: One length-prefixed prost message per compile. sccache's protocol uses multiple subprocess invocations per call.
   evidence: https://github.com/mozilla/sccache/blob/main/README.md
 
 - id: hardlink-delivery

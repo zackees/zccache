@@ -1,45 +1,31 @@
 # zccache-protocol
 
-Wire protocol: `Request`/`Response` enums over a length-prefixed daemon frame.
-Clients prefer the prost lane for the full request family, while the daemon
-continues to dispatch both prost and legacy bincode frames during migration.
-The schema is generated from `proto/zccache_v1.proto`.
+Wire protocol: `Request`/`Response` enums over a length-prefixed prost daemon
+frame. The schema is generated from `proto/zccache_v1.proto`.
 
 ## Module Layout
 
-`messages/mod.rs` owns the append-only `Request` and `Response` enum order.
-Domain payloads live next to it:
+`messages/mod.rs` owns `Request` and `Response`. Domain payloads live next to
+it:
 
 - `messages/status.rs`: daemon status, session stats, phase timing.
 - `messages/artifact.rs`: artifact cache payloads and Rust artifact listings.
 - `messages/exec.rs`: generic tool execution request options.
-- `messages/compat.rs`: bincode roundtrip and variant-index guards.
 - `wire_prost.rs`: generated protobuf module, v16 frame helpers, and
   `ZCCACHE_DAEMON_WIRE` parsing.
-- `decode_wire_message`: migration dispatcher hook that peeks the frame
-  protocol-version header and selects v15 bincode or v16 prost decoding.
+- `decode_wire_message`: dispatcher hook for prost frames and `FrameV1`
+  envelopes.
 
-New protocol payload structs should land in the closest domain module. New
-enum variants must still be appended in `messages/mod.rs` and require a
-`PROTOCOL_VERSION` bump.
+New protocol payload structs should land in the closest domain module. Wire
+schema changes require a `PROTOCOL_VERSION` bump.
 
-## Wire Migration
+## Wire selection
 
-`BINCODE_PROTOCOL_VERSION` and `PROST_PROTOCOL_VERSION` version the two lanes
-independently; `PROTOCOL_VERSION` remains the bincode compatibility alias for
-the legacy encode/decode helpers. Because the header version byte is
-what selects the decoding lane, a bump must never re-use a value the *other* lane
-has previously shipped — that is why #1216 moved bincode 18 → 20 and prost
-19 → 21 rather than 18 → 19. The live daemon receive path dispatches both frame
-versions and converts the full request/response family.
-
-Unset or `ZCCACHE_DAEMON_WIRE=auto` clients try prost first and reconnect once
-with bincode only after an explicit old-daemon protocol rejection. Explicit
-`prost` and `bincode` values force their respective lanes. Ambiguous transport
-failures never trigger a replay. Prost status responses include bounded
-`bincode_requests_by_type` telemetry plus an availability bit; both fields are
-skipped by legacy bincode serialization so the compatibility wire shape remains
-unchanged and an unavailable old response cannot be mistaken for a real zero.
+Unset or `ZCCACHE_DAEMON_WIRE=auto` selects prost. `prost`, `prost-v16`, and
+`v16` are equivalent explicit values; `frame` selects the running-process
+envelope. Legacy bincode values return an unsupported-value error. The
+retirement follows the elapsed public release soak without asserting a fleet
+telemetry sample.
 
 ## Request Variants
 

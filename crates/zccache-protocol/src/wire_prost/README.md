@@ -1,8 +1,8 @@
 # wire_prost
 
 Prost (protobuf) wire helpers for the live v16 full-family zccache daemon IPC
-protocol. Unset/`auto` clients prefer this wire and retain structured fallback
-to v15 bincode during the compatibility window.
+protocol. Unset/`auto` clients select this wire; retired wire values return a
+clear unsupported-value error.
 
 The public path `protocol::wire_prost::<Name>` is preserved by re-exports from
 `mod.rs`; callers do not need to know about the submodule split.

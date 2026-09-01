@@ -2,10 +2,10 @@
 #
 # This file is the canonical record of every protobuf field number, name,
 # and type that has shipped on the wire. The CI guard
-# `ci/check_wire_stability.py` rejects PRs that remove, renumber, or
-# type-change any tuple listed here. Adding new fields is allowed and
-# does NOT require updating this file — they only need to appear in the
-# .proto sources.
+# `ci/check_wire_stability.py` rejects PRs that renumber or type-change any
+# tuple listed here. Retiring a field requires reserving both its number and
+# name in the proto; `--write-snapshot` retains that historical record. Every
+# live field must be recorded here, so adding a field requires updating it.
 #
 # When making an intentional, documented wire change (typically a
 # `PROTOCOL_VERSION` bump), regenerate this file with:
@@ -79,6 +79,11 @@ DaemonStatus	24	cache_dir	Path
 DaemonStatus	25	dep_graph_version	uint32
 DaemonStatus	26	dep_graph_disk_size	uint64
 DaemonStatus	27	dep_graph_persisted	bool
+DaemonStatus	28	watcher_active	bool
+DaemonStatus	29	watcher_degradations	uint64
+DaemonStatus	30	index_writer_gone	bool
+DaemonStatus	31	bincode_requests_by_type	map<string, uint64>
+DaemonStatus	32	bincode_request_telemetry_available	bool
 EnvVar	1	name	string
 EnvVar	2	value	string
 Error	1	message	string
@@ -88,6 +93,16 @@ ExecCachePolicy	2	EXEC_CACHE_POLICY_BYPASS	<enum>
 ExecCachePolicy	3	EXEC_CACHE_POLICY_READ_ONLY	<enum>
 ExecOutputStreams	1	stdout	bool
 ExecOutputStreams	2	stderr	bool
+ExecProbe	1	name	string
+ExecProbe	2	input_files	Path
+ExecProbe	3	input_env	EnvVar
+ExecProbe	4	input_extra	bytes
+ExecProbeResult	1	cache_key_hex	string
+ExecProbeResult	3	persistent	bool
+ExecStore	1	cache_key_hex	string
+ExecStore	2	result_bytes	bytes
+ExecStoreAck	1	stored	bool
+ExecStoreAck	2	persistent	bool
 FingerprintCheck	1	cache_file	Path
 FingerprintCheck	2	cache_type	string
 FingerprintCheck	3	root	Path
@@ -192,6 +207,8 @@ Request	16	fingerprint_invalidate	FingerprintInvalidate
 Request	17	list_rust_artifacts	Empty
 Request	18	generic_tool_exec	GenericToolExec
 Request	19	release_worktree_handles	ReleaseWorktreeHandles
+Request	20	exec_probe	ExecProbe
+Request	21	exec_store	ExecStore
 Request	100	request_id	string
 Response	1	pong	Empty
 Response	2	shutting_down	Empty
@@ -212,6 +229,8 @@ Response	16	generic_tool_exec_result	GenericToolExecResult
 Response	17	backpressure	Backpressure
 Response	18	release_worktree_handles_result	ReleaseWorktreeHandlesResult
 Response	19	compile_progress	CompileProgress
+Response	20	exec_probe_result	ExecProbeResult
+Response	21	exec_store_ack	ExecStoreAck
 Response	100	request_id	string
 RustArtifactBundleManifest	1	manifest_schema_version	uint32
 RustArtifactBundleManifest	2	plan_schema_version	uint32
