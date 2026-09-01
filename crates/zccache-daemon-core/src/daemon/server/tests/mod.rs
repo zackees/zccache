@@ -1,7 +1,7 @@
 //! Unit tests for `server/` submodules. Originally a single 2.3K-LOC
 //! `tests.rs`; split per domain so each file stays well under 1,000 LOC.
 //! Each module owns whatever fixture / helper code its tests use, except
-//! for the truly cross-module `CacheDirEnvGuard` defined below.
+//! for the crate-wide `CacheDirEnvGuard` defined below.
 
 use std::path::Path;
 
@@ -63,12 +63,11 @@ pub(super) fn bind_isolated_server_at(endpoint: &str, cache_root: &Path) -> supe
 }
 
 /// RAII guard that overrides `ZCCACHE_CACHE_DIR` for the duration of a
-/// single test, restoring the previous value on drop. Shared between
-/// `link_cache` (link side-effects test) and `server_ipc`
-/// (`cli_compile_unknown_uuid_is_idempotent`) — both need an isolated
-/// per-test cache dir so they don't clash with any production daemon
-/// writing the global index blob.
-pub(super) struct CacheDirEnvGuard {
+/// single test, restoring the previous value on drop. This is the one owner
+/// for process-global cache-dir test mutations across the daemon crate. It
+/// also clears the daemon namespace while installed and restores it on drop,
+/// so a fixture cannot inherit another test's daemon identity.
+pub(crate) struct CacheDirEnvGuard {
     _lock: std::sync::MutexGuard<'static, ()>,
     previous_cache_dir: Option<std::ffi::OsString>,
     previous_namespace: Option<std::ffi::OsString>,
@@ -80,14 +79,30 @@ impl CacheDirEnvGuard {
     /// Serializes tests that read or mutate daemon process environment without
     /// changing any variables itself. Tests with explicit cache roots use
     /// this when they must remain immune to concurrent staged-policy changes.
-    pub(super) fn lock() -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) fn lock() -> std::sync::MutexGuard<'static, ()> {
         CACHE_DIR_ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    pub(super) fn set(path: &Path) -> Self {
+    pub(crate) fn set(path: &Path) -> Self {
         let lock = Self::lock();
+        Self::set_with_lock(path, lock)
+    }
+
+    /// Attempts to override the cache directory without waiting for another
+    /// test that owns the process-global environment. Used by regression tests
+    /// to prove their fixture shares this guard rather than a private lock.
+    pub(crate) fn try_set(path: &Path) -> Option<Self> {
+        let lock = match CACHE_DIR_ENV_LOCK.try_lock() {
+            Ok(lock) => lock,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        Some(Self::set_with_lock(path, lock))
+    }
+
+    fn set_with_lock(path: &Path, lock: std::sync::MutexGuard<'static, ()>) -> Self {
         let previous_cache_dir = std::env::var_os(crate::core::config::CACHE_DIR_ENV);
         let previous_namespace = std::env::var_os(crate::core::config::DAEMON_NAMESPACE_ENV);
         std::env::set_var(crate::core::config::CACHE_DIR_ENV, path);

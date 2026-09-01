@@ -7,7 +7,8 @@ PCH resolution, write-cached-output, post-link hook, server IPC end-to-end).
 `fs_matrix.rs` runs the same materialization contract against every available
 filesystem fixture and always prints executed/skipped rows with reasons.
 
-`mod.rs` declares the per-domain submodules and owns only the cross-module
-helpers (`CacheDirEnvGuard`). Per-domain helpers (fixture builders,
+`mod.rs` declares the per-domain submodules and owns the crate-wide canonical
+test guard for process-global cache-dir mutations (`CacheDirEnvGuard`).
+Per-domain helpers (fixture builders,
 `start_daemon`, jobserver-env constructors, `write_fake_linker`, etc.) live
 next to the tests that use them — no `common.rs` indirection.

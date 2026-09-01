@@ -236,4 +236,4 @@ use wal::*;
 use watch::*;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
