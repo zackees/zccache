@@ -462,12 +462,15 @@ def test_release_and_build_workflows_disable_cook_cache_for_linux_cross_matrix()
         assert 'require_debug_sidecars: "false"' in windows_arm_block
 
 
-def test_release_workflow_restart_attempts_resume_existing_github_release() -> None:
+def test_release_workflow_uses_manual_dispatch_to_resume_existing_github_release() -> None:
     workflow = _repo_text(".github/workflows/release-auto.yml")
 
     assert "RUN_ATTEMPT: ${{ github.run_attempt }}" in workflow
     assert 'if [ "${RUN_ATTEMPT:-1}" != "1" ]; then' in workflow
-    assert "GitHub Release checkpoint" in workflow
+    assert "diagnostic-only" in workflow
+    assert "Recovery is manual: run workflow_dispatch" in workflow
+    assert "existing tag and dry-run inputs" in workflow
+    assert "restart - proceeding" not in workflow
     assert "overwrite_files: true" in workflow
 
 

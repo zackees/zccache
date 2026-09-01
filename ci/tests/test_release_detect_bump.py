@@ -26,7 +26,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "release-auto.yml"
 
-WARNING_MARKER = "::warning title=Version"
+RETRY_WARNING_MARKER = "::warning title=Release skipped"
+UNRELEASED_WARNING_MARKER = "::warning title=Version"
 NEXT_JOB_RE = re.compile(r"^  [a-z][a-z0-9-]*:$")
 
 def _bash() -> str | None:
@@ -111,6 +112,7 @@ def _run(
     released_tags: str,
     event_name: str = "push",
     ref_type: str = "branch",
+    run_attempt: str = "1",
 ) -> tuple[str, str]:
     """Run detect-bump; return (combined output, GITHUB_OUTPUT contents)."""
     stub_dir = tmp_path / "stub"
@@ -128,7 +130,7 @@ def _run(
     env.update(
         EVENT_NAME=event_name,
         REF_TYPE=ref_type,
-        RUN_ATTEMPT="1",
+        RUN_ATTEMPT=run_attempt,
         GITHUB_REPOSITORY="zackees/zccache",
         GITHUB_OUTPUT=str(github_output),
         OLD_MANIFEST=old_manifest,
@@ -150,7 +152,54 @@ def _run(
     return proc.stdout + proc.stderr, github_output.read_text(encoding="utf-8")
 
 
-def test_an_unreleased_version_warns_on_a_quiet_push(tmp_path: Path) -> None:
+def test_a_second_push_attempt_with_existing_release_warns_and_skips(
+    tmp_path: Path,
+) -> None:
+    """A push retry cannot resume a release after a version bump already landed."""
+    out, gh_output = _run(
+        tmp_path,
+        version="1.13.6",
+        old_manifest='version = "1.13.6"',
+        released_tags="1.13.6",
+        run_attempt="2",
+    )
+
+    assert RETRY_WARNING_MARKER in out, "a skipped release retry must not be silent"
+    assert "diagnostic-only" in out
+    assert "nothing was published" in out
+    assert "workflow_dispatch" in out
+    assert "tag" in out
+    assert "dry-run" in out
+    assert "should_release=false" in gh_output
+
+
+@pytest.mark.parametrize(
+    "released_tags",
+    [
+        pytest.param("1.13.6", id="existing-release"),
+        pytest.param("", id="unreleased"),
+    ],
+)
+def test_a_second_attempt_with_a_version_bump_warns_and_skips(
+    tmp_path: Path, released_tags: str
+) -> None:
+    """A rerun never reaches the normal version-bump release path."""
+    out, gh_output = _run(
+        tmp_path,
+        version="1.13.6",
+        old_manifest='version = "1.13.5"',
+        released_tags=released_tags,
+        run_attempt="2",
+    )
+
+    assert RETRY_WARNING_MARKER in out
+    assert "nothing was published" in out
+    assert "workflow_dispatch" in out
+    assert "version bumped" not in out
+    assert "should_release=false" in gh_output
+
+
+def test_an_unreleased_version_warns_on_a_first_quiet_push(tmp_path: Path) -> None:
     """The stuck case: no bump, and this version never shipped."""
     out, gh_output = _run(
         tmp_path,
@@ -159,14 +208,16 @@ def test_an_unreleased_version_warns_on_a_quiet_push(tmp_path: Path) -> None:
         released_tags="1.13.5",
     )
 
-    assert WARNING_MARKER in out, "a stuck release must not be silent"
-    assert "1.13.6" in out
-    # Warning only -- an unrelated push must still skip cleanly, not fail.
+    assert UNRELEASED_WARNING_MARKER in out, "a stuck release must not be silent"
+    assert "workflow_dispatch" in out
+    assert "rerun" not in out
     assert "should_release=false" in gh_output
 
 
-def test_a_released_version_stays_quiet(tmp_path: Path) -> None:
-    """The normal case. Warning on every quiet push would train people to ignore it."""
+def test_a_released_version_stays_quiet_on_a_first_push_attempt(
+    tmp_path: Path,
+) -> None:
+    """The normal case must not train people to ignore recovery warnings."""
     out, gh_output = _run(
         tmp_path,
         version="1.13.6",
@@ -174,20 +225,21 @@ def test_a_released_version_stays_quiet(tmp_path: Path) -> None:
         released_tags="1.13.5 1.13.6",
     )
 
-    assert WARNING_MARKER not in out
+    assert "::warning" not in out
     assert "should_release=false" in gh_output
 
 
-def test_a_v_prefixed_release_tag_also_counts_as_released(tmp_path: Path) -> None:
-    """Both tag spellings are accepted elsewhere in this workflow."""
-    out, _ = _run(
+def test_a_v_prefixed_release_tag_also_stays_quiet(tmp_path: Path) -> None:
+    """Both tag spellings are accepted by the first-attempt release check."""
+    out, gh_output = _run(
         tmp_path,
         version="1.13.6",
         old_manifest='version = "1.13.6"',
         released_tags="v1.13.6",
     )
 
-    assert WARNING_MARKER not in out
+    assert "::warning" not in out
+    assert "should_release=false" in gh_output
 
 
 def test_a_real_bump_proceeds_and_reports_the_transition(tmp_path: Path) -> None:
@@ -201,21 +253,23 @@ def test_a_real_bump_proceeds_and_reports_the_transition(tmp_path: Path) -> None
     )
 
     assert "version bumped: 1.13.5 -> 1.13.6" in out
-    assert WARNING_MARKER not in out, "a bump is releasing right now, not stuck"
+    assert "::warning" not in out, "a bump is releasing right now, not stuck"
     assert "should_release=true" in gh_output
 
 
 def test_manual_dispatch_still_short_circuits(tmp_path: Path) -> None:
+    """Manual dispatch remains the recovery path, even after a failed retry."""
     out, gh_output = _run(
         tmp_path,
         version="1.13.6",
         old_manifest='version = "1.13.6"',
-        released_tags="",
+        released_tags="1.13.6",
         event_name="workflow_dispatch",
+        run_attempt="2",
     )
 
     assert "should_release=true" in gh_output
-    assert WARNING_MARKER not in out
+    assert "::warning" not in out
 
 
 def test_a_tag_push_is_unaffected(tmp_path: Path) -> None:
@@ -228,4 +282,19 @@ def test_a_tag_push_is_unaffected(tmp_path: Path) -> None:
     )
 
     assert "should_release=true" in gh_output
-    assert WARNING_MARKER not in out
+    assert "::warning" not in out
+
+
+def test_a_second_tag_push_attempt_is_diagnostic_only(tmp_path: Path) -> None:
+    out, gh_output = _run(
+        tmp_path,
+        version="1.13.6",
+        old_manifest='version = "1.13.6"',
+        released_tags="",
+        ref_type="tag",
+        run_attempt="2",
+    )
+
+    assert RETRY_WARNING_MARKER in out
+    assert "diagnostic-only" in out
+    assert "should_release=false" in gh_output

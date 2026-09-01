@@ -20,7 +20,7 @@ Python scripts for development tooling. Rust commands go through `soldr <tool>` 
 - **Workflow helper** - `ci/release_workflow.py` provides preflight checks, wheel assembly, and crates publish helpers for the release workflow only
 - **Fast fail** - preflight checks PyPI and crates.io before any build fan-out and skips registry jobs that are already complete
 - **Trigger** - push a tag matching the workspace version (`1.3.6` or `v1.3.6`)
-- **Manual runs and restarts** - `Run workflow` can leave `tag` empty; the workflow derives the current workspace version from the selected branch. Existing GitHub Releases are updated, and rerun attempts proceed so PyPI/crates.io can resume from the GitHub Release checkpoint.
+- **Manual recovery** - `Run workflow` can leave `tag` empty; the workflow derives the current workspace version from the selected branch. Existing GitHub Releases are updated. A first same-version push stays quiet when that version is already released, while an unreleased version warns that it published nothing. Any rerun skips before bump/tag/release checks and cannot resume a prior release: use `workflow_dispatch` with the existing `tag` and `dry-run` inputs to resume PyPI/crates.io from the GitHub Release checkpoint.
 - **PyPI** - use Trusted Publishing with GitHub environment `pypi` and workflow `.github/workflows/release-auto.yml`
 - **crates.io** - add repository secret `CARGO_REGISTRY_TOKEN`
 - **GitHub Release** - created automatically with standalone archives, installer scripts, and `SHA256SUMS`
