@@ -764,23 +764,30 @@ pub(super) async fn handle_compile_multi(
                 UnitCacheResult::Hit { .. } => None,
             }),
         );
-    let exclusive = match crate::daemon::server::compile_resource_gate::requires_exclusive_admission(
-        &state,
-        compilations[0].family,
-        &compiler_args,
-        None,
-        built_in_exclusive,
-    ) {
-        Ok(exclusive) => exclusive,
-        Err(error) => {
-            return Response::Error {
-                message: format!("host compiler-admission classification failed: {error}"),
-            };
-        }
-    };
+    let (exclusive, host_admission) =
+        match crate::daemon::server::compile_resource_gate::host_admission(
+            &state,
+            compilations[0].family,
+            &compiler_args,
+            None,
+            built_in_exclusive,
+        )
+        .await
+        {
+            Ok(exclusive) => exclusive,
+            Err(error) => {
+                return Response::Error {
+                    message: format!("host compiler admission failed: {error}"),
+                };
+            }
+        };
     let (compiler_admission, _) =
-        crate::daemon::server::compile_resource_gate::acquire_compiler_admission(&state, exclusive)
-            .await;
+        crate::daemon::server::compile_resource_gate::acquire_compiler_admission(
+            &state,
+            exclusive,
+            host_admission,
+        )
+        .await;
     let result =
         super::super::process::tokio_command_output_with_priority(&mut cmd, compiler_priority)
             .await;

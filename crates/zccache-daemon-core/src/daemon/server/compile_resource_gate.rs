@@ -9,7 +9,9 @@
 //! bounded compiler slot is returned, so post-compiler work cannot overlap a
 //! queued exclusive unit.
 
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
@@ -90,6 +92,32 @@ pub trait HostAdmissionClassifier: Send + Sync + 'static {
         &self,
         request: &HostCompilerRequest<'_>,
     ) -> Result<bool, HostAdmissionError>;
+
+    /// Acquire host-owned admission after cache-hit classification and before
+    /// zccache's canonical compiler gates. The returned permit is retained
+    /// through compiler exit. Existing classifiers remain no-op by default.
+    fn acquire<'a>(
+        &'a self,
+        _request: HostCompilerRequest<'a>,
+    ) -> Pin<Box<dyn Future<Output = Result<HostAdmissionPermit, HostAdmissionError>> + Send + 'a>>
+    {
+        Box::pin(async { Ok(HostAdmissionPermit::default()) })
+    }
+}
+
+/// Type-erased host resource lease retained through compiler exit.
+#[derive(Default)]
+pub struct HostAdmissionPermit {
+    _guard: Option<Box<dyn Send + Sync + 'static>>,
+}
+
+impl HostAdmissionPermit {
+    #[must_use]
+    pub fn new(guard: impl Send + Sync + 'static) -> Self {
+        Self {
+            _guard: Some(Box::new(guard)),
+        }
+    }
 }
 
 /// Fair shared/exclusive admission around real compiler execution.
@@ -115,6 +143,7 @@ pub(super) enum CompileResourcePermit {
 pub(super) struct CompilerAdmission {
     _resource: CompileResourcePermit,
     _compile: super::compile_progress::CompileGateGuard,
+    _host: HostAdmissionPermit,
 }
 
 impl CompilerAdmission {
@@ -124,8 +153,10 @@ impl CompilerAdmission {
         let Self {
             _resource: resource,
             _compile: compile,
+            _host: host,
         } = self;
         drop(compile);
+        drop(host);
         resource
     }
 }
@@ -147,6 +178,7 @@ impl CompileResourceGate {
 pub(super) async fn acquire_compiler_admission(
     state: &SharedState,
     exclusive: bool,
+    host: HostAdmissionPermit,
 ) -> (CompilerAdmission, Option<usize>) {
     let (compile, available_before) = super::compile_progress::acquire_compile_gate(
         state.compile_concurrency.as_ref(),
@@ -158,6 +190,7 @@ pub(super) async fn acquire_compiler_admission(
         CompilerAdmission {
             _resource: resource,
             _compile: compile,
+            _host: host,
         },
         available_before,
     )
@@ -285,18 +318,24 @@ pub(super) fn requires_exclusive_access_for_misses<'a>(
 /// Every caller reaches this only after cache-hit classification. The policy
 /// has no effect when absent, and the result still feeds the single canonical
 /// semaphore-then-RwLock admission helper below.
-pub(super) fn requires_exclusive_admission(
+pub(super) async fn host_admission(
     state: &SharedState,
     family: CompilerFamily,
     args: &[String],
     source: Option<&Path>,
     built_in: bool,
-) -> Result<bool, HostAdmissionError> {
-    combines_exclusive_admission(
+) -> Result<(bool, HostAdmissionPermit), HostAdmissionError> {
+    let request = HostCompilerRequest::new(family, args, source);
+    let exclusive = combines_exclusive_admission(
         built_in,
         state.host_admission_classifier.as_deref(),
         HostCompilerRequest::new(family, args, source),
-    )
+    )?;
+    let permit = match state.host_admission_classifier.as_deref() {
+        Some(classifier) => classifier.acquire(request).await?,
+        None => HostAdmissionPermit::default(),
+    };
+    Ok((exclusive, permit))
 }
 
 fn combines_exclusive_admission(
@@ -576,13 +615,26 @@ mod tests {
         let (compile, _) =
             crate::daemon::server::compile_progress::acquire_compile_gate(Some(&semaphore), &queue)
                 .await;
+        struct DropProbe(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let host_live = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let admission = CompilerAdmission {
             _resource: resource_gate.acquire(false).await,
             _compile: compile,
+            _host: HostAdmissionPermit::new(DropProbe(Arc::clone(&host_live))),
         };
 
         assert_eq!(semaphore.available_permits(), 0);
+        assert!(host_live.load(std::sync::atomic::Ordering::SeqCst));
         let resource = admission.release_compiler_slot();
+        assert!(
+            !host_live.load(std::sync::atomic::Ordering::SeqCst),
+            "host lease must drop at compiler exit"
+        );
         assert_eq!(
             semaphore.available_permits(),
             1,
@@ -687,7 +739,7 @@ mod tests {
             ),
         ] {
             assert!(
-                source.contains("requires_exclusive_admission("),
+                source.contains("host_admission("),
                 "{name} compiler path bypasses the host policy"
             );
             assert!(

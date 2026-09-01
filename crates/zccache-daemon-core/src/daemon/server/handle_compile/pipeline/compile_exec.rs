@@ -287,23 +287,30 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
             effective_args,
             source_path.as_path(),
         );
-    let exclusive = match crate::daemon::server::compile_resource_gate::requires_exclusive_admission(
-        state,
-        compilation.family,
-        effective_args,
-        Some(source_path.as_path()),
-        built_in_exclusive,
-    ) {
-        Ok(exclusive) => exclusive,
-        Err(error) => {
-            return CompileExecResult::Error(Response::Error {
-                message: format!("host compiler-admission classification failed: {error}"),
-            });
-        }
-    };
+    let (exclusive, host_admission) =
+        match crate::daemon::server::compile_resource_gate::host_admission(
+            state,
+            compilation.family,
+            effective_args,
+            Some(source_path.as_path()),
+            built_in_exclusive,
+        )
+        .await
+        {
+            Ok(exclusive) => exclusive,
+            Err(error) => {
+                return CompileExecResult::Error(Response::Error {
+                    message: format!("host compiler admission failed: {error}"),
+                });
+            }
+        };
     let (compiler_admission, available_before) =
-        crate::daemon::server::compile_resource_gate::acquire_compiler_admission(state, exclusive)
-            .await;
+        crate::daemon::server::compile_resource_gate::acquire_compiler_admission(
+            state,
+            exclusive,
+            host_admission,
+        )
+        .await;
     if exclusive {
         tracing::info!(
             event = "compile_exclusive",
