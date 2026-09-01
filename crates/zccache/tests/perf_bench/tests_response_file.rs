@@ -19,7 +19,8 @@ use super::cpp_project::{
     generate_project, nuke_and_regenerate_with_rsp, source_names, warmup_compiler,
 };
 use super::response_file::{
-    baseline_multi_rsp, baseline_single_rsp, generate_response_files, sccache_compile_multi_rsp,
+    baseline_multi_rsp, baseline_multi_rsp_cold_per_tu, baseline_single_rsp,
+    generate_response_files, sccache_compile_multi_rsp, sccache_compile_multi_rsp_cold_per_tu,
     sccache_compile_single_rsp, zccache_compile_multi_rsp, zccache_compile_single_rsp,
 };
 
@@ -64,8 +65,8 @@ async fn perf_response_file() {
 
     nuke_and_regenerate_with_rsp(bl_dir.path());
     warmup_compiler(&compiler, bl_dir.path());
-    let bl_cold_multi = baseline_multi_rsp(&compiler, bl_dir.path());
-    eprintln!("        multi cold:   {}", fmt_dur(bl_cold_multi));
+    let bl_cold_multi = baseline_multi_rsp_cold_per_tu(&compiler, bl_dir.path(), &sources);
+    eprintln!("        multi cold (per-TU):   {}", fmt_dur(bl_cold_multi));
 
     let bl_warm_multi = baseline_multi_rsp(&compiler, bl_dir.path());
     eprintln!("        multi warm:   {}", fmt_dur(bl_warm_multi));
@@ -77,7 +78,9 @@ async fn perf_response_file() {
     let sccache_cold_multi;
     let sccache_single_times;
     let sccache_multi_times;
-    let mut sccache_cache_bytes = None;
+    let mut sccache_single_cache_bytes = None;
+    let mut sccache_cold_multi_cache_bytes = None;
+    let mut sccache_warm_multi_cache_bytes = None;
 
     if let Some(sccache_bin) = find_sccache() {
         let sc_dir = zccache::test_support::temp_cache_dir().unwrap();
@@ -129,15 +132,22 @@ async fn perf_response_file() {
         }
         print_trials("single warm:", &times);
         sccache_single_times = Some(times);
+        sccache_single_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
 
         stop_purge_start(&sccache_bin, &sc_cache_str);
 
         nuke_and_regenerate_with_rsp(sc_dir.path());
         warmup_compiler(&compiler, sc_dir.path());
         eprint!("        multi cold:   ");
-        let cold_m = sccache_compile_multi_rsp(&sccache_bin, &compiler, sc_dir.path());
-        eprintln!("{}", fmt_dur(cold_m));
+        let cold_m =
+            sccache_compile_multi_rsp_cold_per_tu(&sccache_bin, &compiler, sc_dir.path(), &sources);
+        eprintln!("(per-TU) {}", fmt_dur(cold_m));
         sccache_cold_multi = Some(cold_m);
+        sccache_cold_multi_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
+
+        // The cold parity pass populates sccache per source. Preserve the
+        // historical empty-cache state for the batched warm RSP measurement.
+        stop_purge_start(&sccache_bin, &sc_cache_str);
 
         let mut times = Vec::with_capacity(WARM_TRIALS);
         for _ in 0..WARM_TRIALS {
@@ -149,7 +159,7 @@ async fn perf_response_file() {
         }
         print_trials("multi warm:", &times);
         sccache_multi_times = Some(times);
-        sccache_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
+        sccache_warm_multi_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
 
         let _ = std::process::Command::new(&sccache_bin)
             .arg("--stop-server")
@@ -252,7 +262,9 @@ async fn perf_response_file() {
     let scc_multi_str = sccache_multi_times.as_ref().map(|t| fmt_dur(median(t)));
     let scc_cold_s_str = sccache_cold_single.map(fmt_dur);
     let scc_cold_m_str = sccache_cold_multi.map(fmt_dur);
-    let sccache_cache_str = sccache_cache_bytes.map(fmt_bytes);
+    let sccache_single_cache_str = sccache_single_cache_bytes.map(fmt_bytes);
+    let sccache_cold_multi_cache_str = sccache_cold_multi_cache_bytes.map(fmt_bytes);
+    let sccache_warm_multi_cache_str = sccache_warm_multi_cache_bytes.map(fmt_bytes);
     let zccache_cache_str = fmt_bytes(zccache_cache_bytes);
     let dash = "\u{2014}";
 
@@ -279,7 +291,7 @@ async fn perf_response_file() {
         scc_cs,
         fmt_dur(zc_cold_single),
         fmt_bytes(0),
-        sccache_cache_str.as_deref().unwrap_or(dash),
+        sccache_single_cache_str.as_deref().unwrap_or(dash),
         zccache_cache_str,
         vs_scc_cold_s.as_deref().unwrap_or(dash),
         vs_bare_cold_s,
@@ -297,23 +309,23 @@ async fn perf_response_file() {
         scc_ws,
         fmt_dur(zc_single_med),
         fmt_bytes(0),
-        sccache_cache_str.as_deref().unwrap_or(dash),
+        sccache_single_cache_str.as_deref().unwrap_or(dash),
         zccache_cache_str,
         vs_scc_warm_s.as_deref().unwrap_or(dash),
         vs_bare_warm_s,
     );
 
-    // Multi-file RSP, Cold
+    // Multi-file RSP, Cold (per translation unit on every side)
     let scc_cm = scc_cold_m_str.as_deref().unwrap_or(dash);
     let vs_scc_cold_m = sccache_cold_multi.map(|t| fmt_ratio(t, zc_cold_multi, false));
     let vs_bare_cold_m = fmt_ratio(bl_cold_multi, zc_cold_multi, false);
     eprintln!(
-        "| Multi-file RSP, Cold | {} | {} | {} | {} | {} | {} | {} | {} |",
+        "| Multi-file RSP, Cold (per-TU) | {} | {} | {} | {} | {} | {} | {} | {} |",
         fmt_dur(bl_cold_multi),
         scc_cm,
         fmt_dur(zc_cold_multi),
         fmt_bytes(0),
-        sccache_cache_str.as_deref().unwrap_or(dash),
+        sccache_cold_multi_cache_str.as_deref().unwrap_or(dash),
         zccache_cache_str,
         vs_scc_cold_m.as_deref().unwrap_or(dash),
         vs_bare_cold_m,
@@ -331,7 +343,7 @@ async fn perf_response_file() {
         scc_wm,
         fmt_dur(zc_multi_med),
         fmt_bytes(0),
-        sccache_cache_str.as_deref().unwrap_or(dash),
+        sccache_warm_multi_cache_str.as_deref().unwrap_or(dash),
         zccache_cache_str,
         vs_scc_warm_m.as_deref().unwrap_or(dash),
         vs_bare_warm_m,
@@ -344,6 +356,7 @@ async fn perf_response_file() {
     );
     eprintln!("> {RSP_NUM_DEFINES} -D defines + {RSP_NUM_INCLUDES} -I paths + 30 warning flags = ~{} total expanded args per compile.",
         RSP_NUM_DEFINES + RSP_NUM_INCLUDES + 30 + 3);
+    eprintln!("> Multi-file RSP cold uses `-c unit.cpp @flags.rsp` once per translation unit on every side; multi-file RSP warm retains the historical batched `@sources_multi.rsp` baselines.");
 
     // ── Bottom Line ─────────────────────────────────────────────────
     eprintln!();
