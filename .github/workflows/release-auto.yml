@@ -60,6 +60,10 @@ jobs:
           PY
           }
 
+          manual_recovery_warning() {
+            echo "::warning title=Release skipped::This automated rerun is diagnostic-only and was skipped; nothing was published. Recovery is manual: run workflow_dispatch for release-auto.yml with the existing tag and dry-run inputs."
+          }
+
           # Manual dispatch always proceeds — operator chose to run it.
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "manual dispatch — proceeding"
@@ -69,6 +73,14 @@ jobs:
 
           NEW_VERSION="$(read_version)"
 
+          # A rerun is diagnostic only: manual dispatch is the sole recovery
+          # route, so a rerun must not reach bump, tag, or release checks.
+          if [ "${RUN_ATTEMPT:-1}" != "1" ]; then
+            manual_recovery_warning
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # Push to main: only proceed when Cargo.toml workspace version changed.
           if [ "$EVENT_NAME" = "push" ] && [ "$REF_TYPE" = "branch" ]; then
             OLD_VERSION="$(git show HEAD^:Cargo.toml 2>/dev/null \
@@ -76,17 +88,9 @@ jobs:
               || echo "")"
             if [ -z "$OLD_VERSION" ] || [ "$NEW_VERSION" = "$OLD_VERSION" ]; then
               echo "no workspace version change ($NEW_VERSION) — skipping release"
-              # A skip is the normal case. It is also exactly what a *stuck*
-              # release looks like: the bump commit's run failed, and every
-              # push after it skips and reports success, so the failure is
-              # buried under an unbroken wall of green (issue #1472 -- 1.13.6
-              # sat unpublished for a day this way). Check whether this version
-              # actually shipped and say so if it did not.
-              #
-              # Warning, never failure: a missing release is not this push's
-              # fault, and failing here would block unrelated work. The point
-              # is only to make the state visible on the next push instead of
-              # on the next manual PyPI check.
+              # A quiet first-attempt skip is normal when this version has
+              # already shipped. An unreleased version instead means an
+              # earlier release failed and needs a manual recovery.
               RELEASED=""
               for CANDIDATE in "$NEW_VERSION" "v$NEW_VERSION"; do
                 if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$CANDIDATE" >/dev/null 2>&1; then
@@ -95,7 +99,7 @@ jobs:
                 fi
               done
               if [ -z "$RELEASED" ]; then
-                echo "::warning title=Version $NEW_VERSION is bumped but unreleased::No GitHub release exists for $NEW_VERSION. A failed release run does not retry on its own: re-run the bump commit's Auto-Release run, or dispatch release-auto.yml manually. See issue #1472."
+                echo "::warning title=Version $NEW_VERSION is bumped but unreleased::No GitHub release exists for $NEW_VERSION. A failed release run does not retry on its own: use workflow_dispatch for release-auto.yml with the existing tag and dry-run inputs. See issue #1472."
               fi
               echo "should_release=false" >> "$GITHUB_OUTPUT"
               exit 0
@@ -105,15 +109,8 @@ jobs:
 
           # Skip if a GitHub release already exists for this version. Prevents
           # double-runs when publish-release creates the tag and re-triggers us.
-          # Rerun attempts are allowed through so an operator can restart after
-          # the GitHub Release checkpoint exists and resume PyPI/crates.io.
           for CANDIDATE in "$NEW_VERSION" "v$NEW_VERSION"; do
             if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$CANDIDATE" >/dev/null 2>&1; then
-              if [ "${RUN_ATTEMPT:-1}" != "1" ]; then
-                echo "release $CANDIDATE already exists, but run attempt $RUN_ATTEMPT is a restart - proceeding"
-                echo "should_release=true" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
               echo "release $CANDIDATE already exists — skipping"
               echo "should_release=false" >> "$GITHUB_OUTPUT"
               exit 0
