@@ -230,7 +230,20 @@ fn emit_reset_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::server::tests::CacheDirEnvGuard;
     use crate::depgraph::DEPGRAPH_VERSION;
+
+    /// The typed cache-dir guard used by every depgraph fixture load. Keeping
+    /// this seam typed to the canonical owner prevents a test-local guard from
+    /// silently reintroducing a second process-environment lock.
+    fn fixture_cache_dir_guard(root: &Path) -> CacheDirEnvGuard {
+        CacheDirEnvGuard::set(root)
+    }
+
+    /// Nonblocking companion for the lock-sharing regression below.
+    fn try_fixture_cache_dir_guard(root: &Path) -> Option<CacheDirEnvGuard> {
+        CacheDirEnvGuard::try_set(root)
+    }
 
     /// Drives the real call site (unlike the earlier hand-rolled payload
     /// tests this replaces): writes a version-skewed snapshot, runs
@@ -257,7 +270,7 @@ mod tests {
         /// `write_event` resolves the cache root from the process environment;
         /// point it at this fixture for the duration of one load.
         fn load(&self) -> (StartupLoad, serde_json::Value) {
-            let _guard = CacheRootEnv::set(&self.cache_root);
+            let _guard = fixture_cache_dir_guard(&self.cache_root);
             let load = load_for_startup(&self.snapshot);
             // Resolve the log exactly the way production's `write_event` does,
             // so the test cannot pass by reading a path the daemon never uses.
@@ -286,34 +299,6 @@ mod tests {
                 let mut bytes = std::fs::read(&self.snapshot).unwrap();
                 bytes[4..8].copy_from_slice(&version.to_le_bytes());
                 std::fs::write(&self.snapshot, &bytes).unwrap();
-            }
-        }
-    }
-
-    struct CacheRootEnv {
-        _lock: std::sync::MutexGuard<'static, ()>,
-        previous: Option<std::ffi::OsString>,
-    }
-
-    static CACHE_ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    impl CacheRootEnv {
-        fn set(root: &Path) -> Self {
-            let lock = CACHE_ROOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            let previous = std::env::var_os("ZCCACHE_CACHE_DIR");
-            std::env::set_var("ZCCACHE_CACHE_DIR", root);
-            Self {
-                _lock: lock,
-                previous,
-            }
-        }
-    }
-
-    impl Drop for CacheRootEnv {
-        fn drop(&mut self) {
-            match self.previous.take() {
-                Some(value) => std::env::set_var("ZCCACHE_CACHE_DIR", value),
-                None => std::env::remove_var("ZCCACHE_CACHE_DIR"),
             }
         }
     }
@@ -469,12 +454,41 @@ mod tests {
     #[test]
     fn a_missing_snapshot_is_a_plain_cold_start_with_no_event() {
         let fixture = Fixture::new();
-        let _guard = CacheRootEnv::set(&fixture.cache_root);
+        let _guard = fixture_cache_dir_guard(&fixture.cache_root);
         let load = load_for_startup(&fixture.snapshot);
         assert!(load.graph.is_none());
         assert!(
             load.warning.is_none(),
             "a first run is not a degraded load and must not warn"
         );
+    }
+
+    #[test]
+    fn fixture_guard_reports_canonical_cache_dir_contention() {
+        let fixture = Fixture::new();
+        let held_temp = tempfile::tempdir().unwrap();
+        let held_root = held_temp.path().join("held-cache-root");
+        let held = CacheDirEnvGuard::set(&held_root);
+
+        assert!(
+            try_fixture_cache_dir_guard(&fixture.cache_root).is_none(),
+            "a depgraph fixture must contend on the canonical guard instead \
+             of acquiring a private cache-dir lock"
+        );
+        assert_eq!(
+            std::env::var_os(crate::core::config::CACHE_DIR_ENV).as_deref(),
+            Some(held_root.as_os_str()),
+            "a contended fixture must not mutate the canonical guard owner's \
+             cache root"
+        );
+
+        drop(held);
+        let fixture_guard = fixture_cache_dir_guard(&fixture.cache_root);
+        assert_eq!(
+            std::env::var_os(crate::core::config::CACHE_DIR_ENV).as_deref(),
+            Some(fixture.cache_root.as_os_str()),
+            "the fixture guard must install its own cache root after contention ends"
+        );
+        drop(fixture_guard);
     }
 }
