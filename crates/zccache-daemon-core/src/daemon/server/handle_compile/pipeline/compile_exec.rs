@@ -32,7 +32,7 @@ pub(super) struct CompileExecOutcome {
     pub(super) stderr: Arc<Vec<u8>>,
     pub(super) depfile_strategy: DepfileStrategy,
     pub(super) dependency_scan: Option<crate::depgraph::ScanResult>,
-    pub(super) pre_hash_task: Option<tokio::task::JoinHandle<HashMap<NormalizedPath, ContentHash>>>,
+    pub(super) pre_hashed: Option<HashMap<NormalizedPath, ContentHash>>,
     pub(super) compiler_priority_decision: crate::daemon::process::CompilePriorityDecision,
     pub(super) pre_exec_ns: u64,
     pub(super) break_outputs_ns: u64,
@@ -59,9 +59,10 @@ impl Drop for PrivateHeaderTrace {
 }
 
 /// Prepare depfile/response-file/output-paths, spawn the compiler, and gather
-/// timings. The `pre_hash_task` returned is the rustc-only background hash of
-/// source + externs (issue #532) — `await`ed later in the store phase so its
-/// work overlaps with the compiler process itself.
+/// timings. Shared compiles overlap the rustc-only background hash of source +
+/// externs with the compiler (issue #532), then join it before releasing shared
+/// admission. Exclusive compiles finish that work before spawning the compiler
+/// (issue #1555). Both paths return the ready map in `pre_hashed`.
 pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExecResult {
     let CompileExecRequest {
         state_arc,
@@ -275,7 +276,9 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     // translation unit or known amalgamated Rust release crate drains those
     // readers and runs alone. The shared helper acquires the bounded FIFO
     // compile slot first and the resource gate second, then both remain held
-    // across overlapping input hashing and the compiler child.
+    // through input hashing and the compiler child. Shared compiles overlap
+    // those phases; exclusive compiles serialize them so the compiler truly
+    // has exclusive access to the build system.
     let built_in_exclusive =
         crate::daemon::server::compile_resource_gate::requires_exclusive_access(
             compilation.family,
@@ -296,7 +299,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
             });
         }
     };
-    let (_compiler_admission, available_before) =
+    let (compiler_admission, available_before) =
         crate::daemon::server::compile_resource_gate::acquire_compiler_admission(state, exclusive)
             .await;
     if exclusive {
@@ -307,40 +310,35 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         );
     }
 
-    // Issue #532: kick off hashing of pre-known inputs (source +
-    // rustc_extern_paths) on a blocking thread, in parallel with the
-    // rustc spawn. The 50-rlib externs of a workspace link dominate
-    // hash_all_ns (~64 ms on a 4-core CI runner); overlapping them with
-    // the ~38 ms rustc exec hides most of that cost. Late-arriving
-    // include paths (from rustc's dep-info) are hashed post-compile and
-    // merged with the pre-hash result. Skip for non-rustc compilers —
-    // they don't have a known-ahead extern list, and their cold hash_all
-    // is small anyway.
-    let pre_hash_task: Option<tokio::task::JoinHandle<HashMap<NormalizedPath, ContentHash>>> =
-        if is_rustc && !rustc_extern_paths.is_empty() {
-            let pre_state = Arc::clone(state_arc);
-            let pre_source = source_path.clone();
-            let pre_externs: Vec<NormalizedPath> = rustc_extern_paths.to_vec();
-            let pre_clock = snap_clock;
-            Some(tokio::task::spawn_blocking(move || {
-                use rayon::prelude::*;
-                let all_paths: Vec<&NormalizedPath> = std::iter::once(&pre_source)
-                    .chain(pre_externs.iter())
-                    .collect();
-                all_paths
-                    .par_iter()
-                    .filter_map(|path| {
-                        let hash_path = resolve_pch_source(path, &pre_state.pch_source_map)
-                            .unwrap_or_else(|| (*path).clone());
-                        hash_file(&pre_state.cache_system, &hash_path, pre_clock)
-                            .ok()
-                            .map(|h| ((*path).clone(), h))
-                    })
-                    .collect()
-            }))
-        } else {
-            None
-        };
+    // Issue #532: hash pre-known rustc inputs (source + externs) on a blocking
+    // thread. Shared compiles retain the fast overlap with the compiler. Issue
+    // #1555: exclusive compiles await this work while holding the exclusive
+    // admission guard, before spawning the memory-heavy compiler child.
+    let (pre_hash_task, pre_hashed) = if is_rustc && !rustc_extern_paths.is_empty() {
+        let pre_state = Arc::clone(state_arc);
+        let pre_source = source_path.clone();
+        let pre_externs: Vec<NormalizedPath> = rustc_extern_paths.to_vec();
+        let pre_clock = snap_clock;
+        schedule_pre_hash(exclusive, move || {
+            use rayon::prelude::*;
+            let all_paths: Vec<&NormalizedPath> = std::iter::once(&pre_source)
+                .chain(pre_externs.iter())
+                .collect();
+            all_paths
+                .par_iter()
+                .filter_map(|path| {
+                    let hash_path = resolve_pch_source(path, &pre_state.pch_source_map)
+                        .unwrap_or_else(|| (*path).clone());
+                    hash_file(&pre_state.cache_system, &hash_path, pre_clock)
+                        .ok()
+                        .map(|h| ((*path).clone(), h))
+                })
+                .collect()
+        })
+        .await
+    } else {
+        (None, None)
+    };
 
     // Issue #813 / #816: acquire a compile-concurrency permit before
     // spawning the compiler. The semaphore (when present — None means
@@ -492,6 +490,13 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     let stderr = Arc::new(stderr_bytes);
     let post_exec_ns = t_post_exec.elapsed().as_nanos() as u64;
 
+    // Shared compiles overlap pre-hashing with rustc, but must join it before
+    // releasing shared admission. Otherwise a queued exclusive compiler can
+    // acquire the write side while this request's Rayon workers are still
+    // consuming CPU and memory. Exclusive compiles already carry a ready map.
+    let pre_hashed = finish_pre_hash(pre_hash_task, pre_hashed).await;
+    drop(compiler_admission);
+
     // Drop the response-file guard now that the compiler has exited. The
     // pre-split function held the guard until end-of-function via `let
     // _rsp_guard = ...`; keeping it bound to a local in this helper does
@@ -505,7 +510,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         stderr,
         depfile_strategy,
         dependency_scan,
-        pre_hash_task,
+        pre_hashed,
         compiler_priority_decision,
         pre_exec_ns,
         break_outputs_ns,
@@ -515,6 +520,32 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         post_exec_ns,
         staged_plan,
     })
+}
+
+async fn schedule_pre_hash<T, F>(
+    exclusive: bool,
+    work: F,
+) -> (Option<tokio::task::JoinHandle<T>>, Option<T>)
+where
+    T: Default + Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let task = tokio::task::spawn_blocking(work);
+    if exclusive {
+        (None, Some(task.await.unwrap_or_default()))
+    } else {
+        (Some(task), None)
+    }
+}
+
+async fn finish_pre_hash<T>(task: Option<tokio::task::JoinHandle<T>>, ready: Option<T>) -> Option<T>
+where
+    T: Default + Send + 'static,
+{
+    match task {
+        Some(task) => Some(task.await.unwrap_or_default()),
+        None => ready,
+    }
 }
 
 fn header_trace_path(depfile: &NormalizedPath) -> NormalizedPath {
@@ -651,9 +682,9 @@ fn should_inject_header_trace_for_source(
 #[cfg(test)]
 mod tests {
     use super::{
-        header_trace_is_supported, prepare_private_clang_header_trace, should_inject_header_trace,
-        should_inject_header_trace_for_source, use_full_clang_depfile_for_cpp,
-        use_private_clang_header_trace,
+        finish_pre_hash, header_trace_is_supported, prepare_private_clang_header_trace,
+        schedule_pre_hash, should_inject_header_trace, should_inject_header_trace_for_source,
+        use_full_clang_depfile_for_cpp, use_private_clang_header_trace,
     };
     use crate::compiler::CompilerFamily;
     use crate::daemon::server::dependency_policy::DependencyDiscoveryMode;
@@ -661,6 +692,28 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn exclusive_pre_hash_finishes_before_the_compiler_phase() {
+        let (task, ready) = schedule_pre_hash(true, || 42_u32).await;
+
+        assert!(
+            task.is_none(),
+            "exclusive hashing must not overlap the compiler"
+        );
+        assert_eq!(ready, Some(42));
+    }
+
+    #[tokio::test]
+    async fn shared_pre_hash_retains_compiler_overlap() {
+        let (task, ready) = schedule_pre_hash(false, || 42_u32).await;
+
+        assert!(
+            ready.is_none(),
+            "shared hashing must stay on the overlap path"
+        );
+        assert_eq!(finish_pre_hash(task, ready).await, Some(42));
     }
 
     #[test]
