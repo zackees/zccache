@@ -72,7 +72,8 @@ def test_fingerprint_cache_lifecycle() -> None:
 
         first = fp.check(root=root, include=["**/*.cpp"])
         assert first.should_run is True
-        assert first.changed_files
+        assert first.reason == "no cache file"
+        assert first.changed_files == ()
 
         fp.mark_success()
 
@@ -82,7 +83,7 @@ def test_fingerprint_cache_lifecycle() -> None:
         source.write_text("int main() { return 1; }\n", encoding="utf-8")
         third = fp.check(root=root, include=["**/*.cpp"])
         assert third.should_run is True
-        assert str(source.resolve()) in third.changed_files
+        assert "main.cpp" in third.changed_files
 
 
 def test_client_session_lifecycle() -> None:
