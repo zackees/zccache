@@ -41,6 +41,8 @@ pub(super) struct CompileExecOutcome {
     pub(super) compiler_prep_ns: u64,
     pub(super) post_exec_ns: u64,
     pub(super) staged_plan: Option<StagedCompilePlan>,
+    pub(super) resource_admission:
+        crate::daemon::server::compile_resource_gate::CompileResourcePermit,
 }
 
 pub(super) enum CompileExecResult {
@@ -491,11 +493,13 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     let post_exec_ns = t_post_exec.elapsed().as_nanos() as u64;
 
     // Shared compiles overlap pre-hashing with rustc, but must join it before
-    // releasing shared admission. Otherwise a queued exclusive compiler can
-    // acquire the write side while this request's Rayon workers are still
-    // consuming CPU and memory. Exclusive compiles already carry a ready map.
+    // returning the bounded compiler slot. Resource admission stays live in
+    // the returned outcome through cache hashing/publication. Otherwise a
+    // queued exclusive compiler can acquire the write side while this
+    // request's Rayon workers are still consuming CPU and memory. Exclusive
+    // compiles already carry a ready map.
     let pre_hashed = finish_pre_hash(pre_hash_task, pre_hashed).await;
-    drop(compiler_admission);
+    let resource_admission = compiler_admission.release_compiler_slot();
 
     // Drop the response-file guard now that the compiler has exited. The
     // pre-split function held the guard until end-of-function via `let
@@ -519,6 +523,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         compiler_prep_ns,
         post_exec_ns,
         staged_plan,
+        resource_admission,
     })
 }
 

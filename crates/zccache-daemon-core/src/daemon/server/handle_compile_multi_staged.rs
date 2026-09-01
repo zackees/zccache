@@ -56,6 +56,7 @@ struct StagedCompilerOutput {
     unit_index: usize,
     output: std::process::Output,
     elapsed_ns: u64,
+    resource_admission: crate::daemon::server::compile_resource_gate::CompileResourcePermit,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -237,7 +238,7 @@ pub(super) async fn try_handle_staged_misses(
         // clients' heartbeats report.
         let unit_index = miss.unit_index;
         compiler_set.spawn(async move {
-            let (_compiler_admission, available_before) =
+            let (compiler_admission, available_before) =
                 crate::daemon::server::compile_resource_gate::acquire_compiler_admission(
                     &admission_state,
                     exclusive,
@@ -269,11 +270,13 @@ pub(super) async fn try_handle_staged_misses(
             let output = output.map_err(|error| {
                 format!("failed to run staged multi-source compiler: {error}")
             })?;
+            let resource_admission = compiler_admission.release_compiler_slot();
             drop(rsp_guard);
             Ok::<_, String>(StagedCompilerOutput {
                 unit_index,
                 output,
                 elapsed_ns,
+                resource_admission,
             })
         });
     }
@@ -302,15 +305,20 @@ pub(super) async fn try_handle_staged_misses(
         return Some(Response::Error { message });
     }
 
+    let mut _resource_admissions = Vec::with_capacity(misses.len());
     for miss in &mut misses {
         let Some(StagedCompilerOutput {
-            output, elapsed_ns, ..
+            output,
+            elapsed_ns,
+            resource_admission,
+            ..
         }) = compiler_outputs[miss.unit_index].take()
         else {
             return Some(Response::Error {
                 message: "staged multi-source compiler produced no result".to_string(),
             });
         };
+        _resource_admissions.push(resource_admission);
         state
             .profiler
             .staged

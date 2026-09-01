@@ -844,6 +844,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         compiler_prep_ns,
         post_exec_ns,
         staged_plan,
+        resource_admission: _resource_admission,
     } = match exec_result {
         CompileExecResult::Ok(outcome) => outcome,
         CompileExecResult::Error(resp) => return resp,
@@ -978,6 +979,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             hash_headers_ns,
             depgraph_check_ns,
             break_outputs_ns,
+            resource_admission: _resource_admission,
         })
         .await
         {
